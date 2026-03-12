@@ -2,284 +2,130 @@
 
 Generated from: `architecture/odh-3.3.0/PLATFORM.md`
 Date: 2026-03-12
-Components Analyzed: 5 (OpenDataHub Operator, ODH Dashboard, Kubeflow Notebooks, MLflow, Feast)
 
 ## Available Diagrams
 
 ### For Architects
 - [Component Dependency Graph](./platform-dependency-graph.mmd) - Shows component relationships and dependencies
 - [Platform Workflows](./platform-workflows.mmd) - End-to-end flows spanning multiple components
-- [Platform Maturity](./platform-maturity.txt) - Health metrics and component statistics
+- [Platform Maturity](./platform-maturity.mmd) - Health metrics and component statistics
 
 ### For Security Teams
-- [Platform Network Topology](./platform-network-topology.txt) - Complete network architecture with ports, protocols, TLS, auth
+- [Platform Network Topology (Mermaid)](./platform-network-topology.mmd) - Visual network architecture diagram
+- [Platform Network Topology (ASCII)](./platform-network-topology.txt) - Precise text format for SAR submissions
 - [Platform Security Overview](./platform-security-overview.mmd) - RBAC, auth mechanisms, secrets, service mesh policies
 
 ### For Platform Engineers
 - [Component Dependency Graph](./platform-dependency-graph.mmd) - Understand integration points
-- [Platform Network Topology](./platform-network-topology.txt) - Debug connectivity issues
+- [Platform Network Topology (Mermaid)](./platform-network-topology.mmd) - Visualize network architecture
+- [Platform Network Topology (ASCII)](./platform-network-topology.txt) - Debug connectivity issues (precise details)
 - [Platform Workflows](./platform-workflows.mmd) - Trace request flows
 
 ## How to Use
 
 ### Mermaid Diagrams (.mmd files)
-
-**View in GitHub/GitLab:**
-Paste into markdown with ` ```mermaid ` code blocks. Example:
-
-````markdown
-```mermaid
-graph TB
-    A --> B
-```
-````
-
-**Render to PNG locally:**
-```bash
-# Install mermaid-cli (requires Node.js)
-npm install -g @mermaid-js/mermaid-cli
-
-# Render with Chrome (recommended for best quality)
-PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i platform-dependency-graph.mmd -o platform-dependency-graph.png -s 3
-
-# Or use default browser
-mmdc -i platform-dependency-graph.mmd -o platform-dependency-graph.png -s 3
-```
-
-**Online rendering:**
-- Copy file contents to [Mermaid Live Editor](https://mermaid.live)
-- Export as PNG/SVG for presentations
+- **In GitHub/GitLab**: Paste into markdown with ````mermaid` code blocks
+- **Render to PNG locally**:
+   ```bash
+   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i diagram.mmd -o diagram.png -s 3
+   ```
+- **In VS Code**: Install "Markdown Preview Mermaid Support" extension
 
 ### ASCII Diagrams (.txt files)
-- View in any text editor or terminal
+- View in any text editor
 - Include directly in security documentation
 - Perfect for SAR (Security Architecture Review) submissions
-- Copy-paste into emails, tickets, or Confluence
-
-```bash
-# View in terminal
-cat platform-network-topology.txt
-
-# View in less
-less platform-maturity.txt
-```
 
 ## Diagram Descriptions
 
-### 1. Component Dependency Graph
-**File:** `platform-dependency-graph.mmd` (Mermaid)
-**Audience:** Architects, Platform Engineers
-**Purpose:** Shows how platform components depend on each other
+### Component Dependency Graph
+Shows how platform components depend on each other. Central components (most dependencies) are highlighted with thicker borders. Useful for understanding blast radius of changes and planning upgrades.
 
-Central components (most dependencies) are highlighted with thicker borders:
-- **Kubernetes API Server** (gray, thick border) - All components depend on it
-- **OpenDataHub Operator** (red, thick border) - Deploys all other components
-- **ODH Dashboard** (blue, thick border) - Primary user interface
+**Color Coding**:
+- Gray: External platform services (K8s API, OLM, OAuth, Istio)
+- Blue (thick border): Central control plane (ODH Operator)
+- Green (thick border): Primary user interface (Dashboard)
+- Green: ODH components (Notebook Controller, MLflow, Feast)
+- Orange: External services (PostgreSQL, Redis, S3, BigQuery, Quay)
 
-Useful for:
-- Understanding blast radius of changes
-- Planning component upgrades
-- Identifying critical dependencies
-- Onboarding new team members
+### Platform Network Topology
+Complete network architecture showing all ingress points, service mesh communication, and egress destinations. Includes exact port numbers, protocols, encryption, and authentication mechanisms.
 
-### 2. Platform Network Topology
-**File:** `platform-network-topology.txt` (ASCII)
-**Audience:** Security Teams, SREs, Compliance
-**Purpose:** Complete network architecture showing all ingress points, service mesh communication, and egress destinations
+**Two formats provided**:
+- **Mermaid (.mmd)**: Visual diagram with color-coded trust zones. Great for presentations and architecture discussions.
+  - Trust zones: External (gray), Ingress (orange), Service Mesh (green), Egress (yellow)
+  - Shows protocol and port details on edges
+- **ASCII (.txt)**: Precise text format with no ambiguity. Required for SAR (Security Architecture Review) submissions and compliance documentation.
+  - Detailed tables for namespaces, RBAC, authentication, secrets
+  - Complete connection details with trust boundaries
 
-Includes exact details:
-- Port numbers (external and internal)
-- Protocols (HTTPS, HTTP, gRPC, PostgreSQL, Redis)
-- Encryption (TLS versions)
-- Authentication mechanisms (OAuth, Bearer Tokens, mTLS, AWS IAM)
-- Namespaces and ServiceAccounts
-- Trust boundaries (External, Ingress, Service Mesh, Egress)
+Both formats contain the same information - use Mermaid for visual clarity, ASCII for security reviews.
 
-**Required for:**
-- Security Architecture Reviews (SAR)
-- Compliance audits
-- Network policy configuration
-- Firewall rule documentation
-- Incident response planning
+### Cross-Component Workflows
+Sequence diagrams showing end-to-end user workflows that span multiple components.
 
-### 3. Cross-Component Workflows
-**File:** `platform-workflows.mmd` (Mermaid Sequence Diagrams)
-**Audience:** Architects, Product Managers, SREs
-**Purpose:** Shows end-to-end user workflows that span multiple components
+**Workflows included**:
+1. User Accesses Dashboard to Create Notebook
+2. Experiment Tracking with MLflow from Notebook
+3. Feature Engineering with Feast from Notebook
+4. Platform Installation via DataScienceCluster
+5. Idle Notebook Culling
 
-**Workflows included:**
-1. **User Creates Notebook via Dashboard** - OAuth flow, CR creation, notebook provisioning
-2. **ML Experiment Tracking with MLflow** - Training script to artifact storage
-3. **Feature Store Lifecycle** - Feature definition to online serving
-4. **Platform Installation** - DataScienceCluster deployment via operator
+Shows component interactions over time with protocol details (mTLS, HTTPS, gRPC) and authentication at each boundary crossing.
 
-Useful for:
-- Understanding user journeys
-- Debugging cross-component issues
-- API integration planning
-- Performance optimization
+### Platform Security Overview
+Visual representation of security architecture including ServiceAccounts, ClusterRoles, secrets, and service mesh policies. Shows which components have which permissions.
 
-### 4. Platform Security Overview
-**File:** `platform-security-overview.mmd` (Mermaid)
-**Audience:** Security Teams, Compliance
-**Purpose:** Visual representation of security architecture
+**Color Coding**:
+- Red: Privileged ClusterRoles (controller-manager, notebook-controller-role)
+- Yellow: Sensitive secrets (credentials, OAuth configs)
+- Green: Service mesh policies (PeerAuthentication, AuthorizationPolicy)
 
-Shows:
-- **Authentication mechanisms** (OAuth, Bearer Tokens, mTLS, AWS IAM, OIDC)
-- **ServiceAccounts and ClusterRoles** (RBAC bindings)
-- **Critical secrets** (TLS certs, OAuth configs, S3 credentials, DB passwords)
-- **Service mesh policies** (PeerAuthentication, AuthorizationPolicy)
-- **Webhook security** (admission controllers)
+**Elements shown**:
+- 6 authentication mechanisms (OAuth, Bearer tokens, mTLS, OIDC, SA tokens, K8s RBAC)
+- 6 key ServiceAccounts with namespace context
+- 6 ClusterRoles (high privilege)
+- 8+ critical secrets
+- Service mesh policies (optional)
 
-**Highlights:**
-- Highly privileged ClusterRoles (red)
-- Sensitive secrets containing credentials (yellow)
-- Service mesh enforcement (green)
+### Platform Maturity Dashboard
+High-level metrics about platform health: component counts, mTLS coverage, API maturity, dependency counts. Useful for executive reviews and maturity assessments.
 
-### 5. Platform Maturity Dashboard
-**File:** `platform-maturity.txt` (ASCII Tables)
-**Audience:** Platform Engineers, Executives, Product Managers
-**Purpose:** High-level metrics about platform health and maturity
-
-**Metrics included:**
-- Component counts and types (operators, services, web UIs)
-- Security posture (mTLS, OAuth, RBAC, webhooks)
-- Dependencies (external platform, data stores, integrations)
-- API maturity (CRD versions, endpoint counts)
-- High availability status
-- Multi-tenancy implementation
-- Storage backend flexibility
-- Cloud compatibility
-- Resource requirements
-- Platform readiness assessment (85% production-ready)
-
-**Use cases:**
-- Executive reviews and roadmap planning
-- Maturity assessments for certifications
-- Capacity planning
-- Cloud migration planning
+**Metrics categories**:
+- Component Statistics (blue): Total components, operators, CRDs
+- Security Posture (orange/yellow for optional, green for strong): Service mesh, mTLS, auth mechanisms, secrets
+- Architecture Patterns (green): Multi-tenancy, HA, storage backends
+- Cloud Compatibility (blue/green): AWS, GCP, Azure, CoreWeave support
+- API Maturity (blue/green): HTTP endpoints, gRPC services, API versions
+- Integration Points (orange/blue): External platform, services, internal integrations
 
 ## Updating Diagrams
 
 To regenerate after platform changes:
+1. Update component architectures: `/repo-to-architecture-summary`
+2. Collect components: `/collect-component-architectures`
+3. Aggregate platform: `/aggregate-platform-architecture`
+4. Regenerate diagrams: `/generate-platform-diagrams`
 
-```bash
-# Step 1: Update component architectures (run in each component repo)
-/repo-to-architecture-summary
+## Platform Details
 
-# Step 2: Collect all component architectures
-/collect-component-architectures
+- **Platform**: Open Data Hub 3.3.0
+- **Base Platform**: OpenShift Container Platform 4.19+ / Kubernetes 1.25+
+- **Components**: 5 core components (ODH Operator, Dashboard, Notebooks, MLflow, Feast)
+- **Architecture**: 100% operator-based, namespace multi-tenancy
+- **Security**: Optional Istio service mesh, multi-layered authentication
+- **Storage**: Flexible backends (PostgreSQL, Redis, MongoDB, S3, GCS, BigQuery, Snowflake)
+- **Cloud Support**: AWS, GCP, Azure, CoreWeave
 
-# Step 3: Aggregate into platform view
-/aggregate-platform-architecture
+## Notes
 
-# Step 4: Regenerate diagrams (this skill)
-/generate-platform-diagrams
-```
-
-## Customization
-
-### Generate specific formats only
-```bash
-/generate-platform-diagrams --formats=dependency,network
-```
-
-Available formats: `dependency`, `network`, `workflow`, `security`, `maturity`
-
-### Use with different platform files
-```bash
-/generate-platform-diagrams --platform-file=architecture/rhoai-2.19/PLATFORM.md
-```
-
-### Specify output directory
-```bash
-/generate-platform-diagrams --output-dir=./custom-diagrams
-```
-
-## Integration with Documentation
-
-### Embed in Markdown Docs
-```markdown
-## Architecture Overview
-
-See our [platform dependency graph](./diagrams/platform-dependency-graph.mmd) for component relationships.
-
-For security reviews, see [network topology](./diagrams/platform-network-topology.txt).
-```
-
-### Include in Security Reviews
-```markdown
-# Security Architecture Review - ODH 3.3.0
-
-## Network Architecture
-<paste contents of platform-network-topology.txt>
-
-## Security Posture
-<render platform-security-overview.mmd to PNG>
-```
-
-### Present to Stakeholders
-1. Render Mermaid diagrams to PNG at 3x scale for clarity
-2. Use platform-maturity.txt for executive summaries
-3. Use platform-workflows.mmd to explain user journeys
-4. Use platform-dependency-graph.mmd for technical discussions
-
-## Differences from Component Diagrams
-
-| Aspect | Component Diagrams | Platform Diagrams |
-|--------|-------------------|-------------------|
-| **Input** | GENERATED_ARCHITECTURE.md | PLATFORM.md |
-| **Scope** | Single component internals | Cross-component relationships |
-| **Audience** | Component developers | Architects, security teams |
-| **Focus** | Component APIs, internal structure | Dependencies, workflows, network |
-| **Security** | Component-specific RBAC | Platform-wide security posture |
-| **Workflows** | Internal component flows | End-to-end multi-component flows |
-
-## Troubleshooting
-
-### Mermaid rendering issues
-If diagrams don't render in GitHub:
-1. Ensure file extension is `.mmd` or use ` ```mermaid ` code blocks in markdown
-2. Check GitHub's Mermaid version compatibility
-3. Use Mermaid Live Editor for validation
-
-### PNG export with mmdc
-If `mmdc` fails with "browser not found":
-```bash
-# Install Chrome/Chromium
-sudo dnf install chromium  # Fedora/RHEL
-sudo apt install chromium-browser  # Ubuntu
-
-# Set browser path
-export PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
-mmdc -i diagram.mmd -o diagram.png -s 3
-```
-
-### ASCII diagram formatting
-If ASCII diagrams look misaligned:
-- Use a monospace font (Courier New, Consolas, Monaco)
-- Ensure editor doesn't auto-format or wrap lines
-- View in terminal with `cat` or `less` for best results
-
-## Related Skills
-
-- `/repo-to-architecture-summary` - Analyze component repos
-- `/collect-component-architectures` - Gather GENERATED_ARCHITECTURE.md files
-- `/aggregate-platform-architecture` - Create PLATFORM.md from components
-- `/rhoai-security-scanner:audit` - Security audit of repos
-- `/fips-compliance-checker:fips-scan` - FIPS compliance checking
-
-## Support
-
-For issues or enhancements:
-1. Check if PLATFORM.md is up-to-date
-2. Verify component architectures are complete
-3. Re-run `/aggregate-platform-architecture` if needed
-4. Report issues with specific diagram format
-
-## Version History
-
-- **2026-03-12**: Initial generation for ODH 3.3.0
-  - 5 components analyzed
-  - 5 diagram formats created
-  - ASCII + Mermaid formats
+- Diagrams are generated from PLATFORM.md (aggregated view), not individual component architectures
+- Focus is on platform-level concerns: dependencies, cross-component flows, aggregated security
+- **Network topology has dual formats**:
+  - **Mermaid**: Visual, color-coded trust zones, great for presentations
+  - **ASCII**: Precise text format, no ambiguity, required for SAR submissions
+  - Both contain the same information, just different representations
+- Mermaid diagrams can be embedded directly in documentation or rendered to PNG
+- ASCII diagrams are precise and unambiguous for security reviews
+- Service mesh (Istio) integration is optional; diagrams show both optional and required components
+- Regenerate after running `/aggregate-platform-architecture` with updated component data
