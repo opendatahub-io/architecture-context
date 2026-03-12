@@ -2,14 +2,114 @@
 
 Utility scripts for collecting and organizing ODH/RHOAI architecture documentation.
 
+## get_git_changes.py
+
+Extracts comprehensive git information from a repository including version, branch, remote URL, and commit history. Wrapper around multiple git commands that allows single permission grant for multiple invocations.
+
+### Usage
+
+```bash
+# Get commit history (text format)
+python scripts/get_git_changes.py /path/to/repo [--since="3 months ago"] [--limit=20]
+
+# Get all git metadata in one call (recommended for skills)
+python scripts/get_git_changes.py /path/to/repo --format=metadata
+
+# Get structured JSON output
+python scripts/get_git_changes.py /path/to/repo --format=json
+```
+
+### Arguments
+
+- `repo_path`: Path to the git repository (positional)
+- `--since`: Time period to look back (default: "3 months ago")
+- `--limit`: Maximum number of commits (default: 20)
+- `--format`: Output format:
+  - `text`: Commit list only (default, same as `git log --pretty=format:"%h %s"`)
+  - `count`: Number of commits only
+  - `metadata`: Human-readable comprehensive output with version, branch, remote, and commits
+  - `json`: JSON output with all metadata (structured data)
+
+### Version Detection
+
+The script uses the same priority order as `collect_architectures.py`:
+
+1. **Makefile VERSION** (primary - developer's intended version)
+   - Matches: `VERSION = 3.3.0`, `VERSION ?= 3.3.0`, `VERSION := 3.3.0`
+   - Handles indented VERSION (inside `ifeq` blocks)
+2. **VERSION** or **version.txt** file
+3. **git describe --tags --always** (fallback - current checkout state)
+4. **"unknown"** if all methods fail
+
+**Why Makefile first?** In development branches, git tags may show `v2.8.0-1325-gfa1fcdc0` (1325 commits past v2.8.0 tag), but the Makefile shows `VERSION = 3.3.0` which is the developer's intended version for the current code.
+
+### Benefits
+
+- **Single permission grant**: Permission is for the script, not each unique git command
+- **Comprehensive data**: Get version, branch, remote URL, and commits in one call
+- **Correct version detection**: Uses Makefile VERSION (same as collect_architectures.py)
+- **Multiple formats**: Choose between human-readable or structured JSON output
+- **Error handling**: Graceful failures with helpful error messages
+
+### Examples
+
+#### Text format (commit list)
+```bash
+$ python scripts/get_git_changes.py checkouts/opendatahub-io/kserve --since="6 months ago" --limit=3
+
+a1b2c3d Add new inference runtime
+e4f5g6h Fix scaling issue
+i7j8k9l Update documentation
+```
+
+#### Metadata format (comprehensive)
+```bash
+$ python scripts/get_git_changes.py checkouts/opendatahub-io/opendatahub-operator --format=metadata --limit=3
+
+Repository: checkouts/opendatahub-io/opendatahub-operator
+Version: 3.3.0
+Branch: main
+Remote: https://github.com/opendatahub-io/opendatahub-operator.git
+
+Recent commits (3):
+  23dab7a1 RHAIENG-414: chore(workbenches): move manifests
+  1d1f55b4 fix: updated spark image map var
+  6d541e8f owners: add rinaldodev to platform alias
+```
+
+**Note**: Version is `3.3.0` from Makefile (not `v2.8.0-1325-gfa1fcdc0` from git describe).
+
+#### JSON format (structured)
+```bash
+$ python scripts/get_git_changes.py checkouts/opendatahub-io/opendatahub-operator --format=json --limit=3
+
+{
+  "version": "3.3.0",
+  "branch": "main",
+  "remote_url": "https://github.com/opendatahub-io/opendatahub-operator.git",
+  "recent_commits": [
+    "23dab7a1 RHAIENG-414: chore(workbenches): move manifests",
+    "1d1f55b4 fix: updated spark image map var",
+    "6d541e8f owners: add rinaldodev to platform alias"
+  ],
+  "commit_count": 3,
+  "repo_path": "checkouts/opendatahub-io/opendatahub-operator"
+}
+```
+
+### Integration with Skills
+
+Used by `/analyze-platform-components` and `/repo-to-architecture-summary` to extract all git information without requiring permission for each component or each git command.
+
 ## parse_manifests_script.py
 
-Parses `get_all_manifests.sh` from the operator repository to extract the authoritative list of platform components.
+Parses `get_all_manifests.sh` from the operator repository to extract the authoritative list of platform components and their analysis status.
 
 ### Usage
 
 ```bash
 python scripts/parse_manifests_script.py --platform=odh [--format=list|paths|json]
+python scripts/parse_manifests_script.py --platform=odh --filter-missing
 ```
 
 ### Arguments
@@ -18,9 +118,10 @@ python scripts/parse_manifests_script.py --platform=odh [--format=list|paths|jso
 - `--manifest-script`: Path to get_all_manifests.sh (default: auto-detect)
 - `--checkouts-dir`: Checkouts directory (default: ./checkouts)
 - `--format`: Output format (default: list)
-  - `list`: Human-readable list with repo names
+  - `list`: Human-readable list with status indicators and repo names
   - `paths`: Just checkout paths (for scripting)
-  - `json`: Full component info as JSON
+  - `json`: Full component info as JSON with has_architecture field
+- `--filter-missing`: Only show components without GENERATED_ARCHITECTURE.md
 
 ### Output
 
@@ -28,22 +129,61 @@ Returns only components that:
 1. Are defined in get_all_manifests.sh
 2. Have a matching checkout directory
 
-### Example
+**New**: Each component includes analysis status (whether GENERATED_ARCHITECTURE.md exists)
 
+### Examples
+
+#### List format (with status indicators)
 ```bash
 $ python scripts/parse_manifests_script.py --platform=odh --format=list
 
 Found 16 ODH component(s) with checkouts:
+  Analyzed: 7, Missing: 9
 
-  - dashboard                 odh-dashboard                            (checkouts/opendatahub-io/odh-dashboard)
-  - kserve                    kserve                                   (checkouts/opendatahub-io/kserve)
-  - modelregistry             model-registry-operator                  (checkouts/opendatahub-io/model-registry-operator)
+  ✓ dashboard                 odh-dashboard                            (checkouts/opendatahub-io/odh-dashboard)
+  ✓ kserve                    kserve                                   (checkouts/opendatahub-io/kserve)
+  ✗ modelregistry             model-registry-operator                  (checkouts/opendatahub-io/model-registry-operator)
   ...
+```
+
+Legend: ✓ = GENERATED_ARCHITECTURE.md exists, ✗ = needs analysis
+
+#### Paths format with filter (only missing)
+```bash
+$ python scripts/parse_manifests_script.py --platform=odh --format=paths --filter-missing
+
+checkouts/opendatahub-io/mlflow-operator
+checkouts/opendatahub-io/model-registry-operator
+checkouts/opendatahub-io/kuberay
+...
+```
+
+#### JSON format (with has_architecture field)
+```bash
+$ python scripts/parse_manifests_script.py --platform=odh --format=json
+
+{
+  "dashboard": {
+    "repo_org": "opendatahub-io",
+    "repo_name": "odh-dashboard",
+    "ref": "main@b46b6a5d",
+    "source_folder": "manifests",
+    "checkout_path": "checkouts/opendatahub-io/odh-dashboard",
+    "has_architecture": true
+  },
+  "modelregistry": {
+    ...
+    "has_architecture": false
+  }
+}
 ```
 
 ### Integration with Skills
 
-This script is used by the `/analyze-platform-components` skill to discover which components to analyze.
+This script is used by the `/analyze-platform-components` skill to:
+1. Discover which components to analyze
+2. Check analysis status without separate ls commands
+3. Skip already-analyzed components (when has_architecture is true)
 
 ## collect_architectures.py
 

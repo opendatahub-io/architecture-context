@@ -97,10 +97,31 @@ Search for and analyze:
 **Service Mesh**: Istio PeerAuthentication, AuthorizationPolicy
 - Extract: mTLS settings, authorization rules
 
-### Step 5: Extract Recent Changes
+### Step 5: Extract Git Information
+
+Use the Python script to get all git information in one call (version, branch, remote URL, and recent commits):
 
 ```bash
-git log --since="3 months ago" --pretty=format:"%h %s" --no-merges | head -20
+python scripts/get_git_changes.py . --format=metadata --since="3 months ago" --limit=20
+```
+
+This single command provides:
+- **Version**: From `git describe --tags --always` (use this if --version not specified)
+- **Branch**: Current git branch
+- **Remote URL**: Repository URL
+- **Recent commits**: Last 20 commits for Recent Changes section
+
+**Example output**:
+```
+Repository: .
+Version: v0.15.2-45-ga1b2c3d
+Branch: main
+Remote: https://github.com/opendatahub-io/kserve.git
+
+Recent commits (20):
+  a1b2c3d Add new inference runtime
+  e4f5g6h Fix scaling issue
+  ...
 ```
 
 ### Step 6: Generate GENERATED_ARCHITECTURE.md

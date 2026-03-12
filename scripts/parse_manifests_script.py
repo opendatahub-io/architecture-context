@@ -21,6 +21,7 @@ class ComponentInfo:
     ref: str  # Branch/tag/commit
     source_folder: str  # Folder within repo
     checkout_path: Optional[Path] = None  # Path to local checkout
+    has_architecture: bool = False  # Whether GENERATED_ARCHITECTURE.md exists
 
 
 def parse_manifest_array(content: str, array_name: str) -> dict[str, ComponentInfo]:
@@ -72,6 +73,8 @@ def find_component_checkouts(
     """
     Map components to their checkout directories and filter for existing checkouts.
 
+    Also checks for GENERATED_ARCHITECTURE.md existence.
+
     Returns only components that have a matching checkout directory.
     """
     found_components = {}
@@ -82,6 +85,11 @@ def find_component_checkouts(
 
         if checkout_path.exists() and checkout_path.is_dir():
             component.checkout_path = checkout_path
+
+            # Check if GENERATED_ARCHITECTURE.md exists
+            arch_file = checkout_path / "GENERATED_ARCHITECTURE.md"
+            component.has_architecture = arch_file.exists()
+
             found_components[key] = component
 
     return found_components
@@ -147,6 +155,11 @@ def main():
         default='list',
         help='Output format (default: list)'
     )
+    parser.add_argument(
+        '--filter-missing',
+        action='store_true',
+        help='Only show components without GENERATED_ARCHITECTURE.md'
+    )
 
     args = parser.parse_args()
 
@@ -172,11 +185,30 @@ def main():
         print(f"Expected in: {args.checkouts_dir}")
         return 1
 
+    # Apply filter if requested
+    if args.filter_missing:
+        components = {k: v for k, v in components.items() if not v.has_architecture}
+
+    if not components:
+        if args.filter_missing:
+            print(f"No components need analysis - all have GENERATED_ARCHITECTURE.md")
+        else:
+            print(f"No component checkouts found for {args.platform.upper()}")
+            print(f"Expected in: {args.checkouts_dir}")
+        return 0
+
     # Output based on format
     if args.format == 'list':
-        print(f"Found {len(components)} {args.platform.upper()} component(s) with checkouts:\n")
+        # Count components by status
+        analyzed = sum(1 for c in components.values() if c.has_architecture)
+        missing = len(components) - analyzed
+
+        print(f"Found {len(components)} {args.platform.upper()} component(s) with checkouts:")
+        print(f"  Analyzed: {analyzed}, Missing: {missing}\n")
+
         for key, component in sorted(components.items()):
-            print(f"  - {key:25s} {component.repo_name:40s} ({component.checkout_path})")
+            status = "✓" if component.has_architecture else "✗"
+            print(f"  {status} {key:25s} {component.repo_name:40s} ({component.checkout_path})")
 
     elif args.format == 'paths':
         # Just output checkout paths (for use in scripts)
@@ -191,7 +223,8 @@ def main():
                 'repo_name': c.repo_name,
                 'ref': c.ref,
                 'source_folder': c.source_folder,
-                'checkout_path': str(c.checkout_path)
+                'checkout_path': str(c.checkout_path),
+                'has_architecture': c.has_architecture
             }
             for key, c in components.items()
         }
