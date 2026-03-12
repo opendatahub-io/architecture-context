@@ -17,11 +17,22 @@ Read a `GENERATED_ARCHITECTURE.md` file and generate multiple diagram formats fo
 
 Required/optional arguments:
 - `--architecture=<path>` (default: ./GENERATED_ARCHITECTURE.md)
-- `--output-dir=<path>` (default: ./diagrams)
+- `--output-dir=<path>` (default: auto - relative to architecture file)
 - `--formats=<comma-separated>` (default: all) - Options: mermaid, c4, security, dataflow, component
 - `--audience=<audience>` (optional) - Optimize for: developer, architect, security, executive
 
-Example: `/generate-architecture-diagrams --architecture=./GENERATED_ARCHITECTURE.md --formats=mermaid,security`
+Examples:
+```bash
+# Auto output to diagrams/ relative to architecture file
+/generate-architecture-diagrams --architecture=architecture/odh-3.3.0/feast.md
+# → Outputs to: architecture/odh-3.3.0/diagrams/
+
+# Specify custom output directory
+/generate-architecture-diagrams --architecture=./GENERATED_ARCHITECTURE.md --output-dir=./custom-diagrams
+
+# Generate specific formats only
+/generate-architecture-diagrams --architecture=architecture/odh-3.3.0/feast.md --formats=mermaid,security
+```
 
 ## Instructions
 
@@ -43,13 +54,36 @@ Parse the structured markdown to extract:
 - **Data flows**: From "### Flow" tables
 - **Integration points**: From integration tables
 
-### Step 2: Create Output Directory
+### Step 2: Determine Output Directory
+
+If `--output-dir` is NOT provided, auto-determine based on architecture file location:
+
+**Auto mode** (recommended for organized structure):
+- Architecture file: `architecture/odh-3.3.0/feast.md`
+- Output directory: `architecture/odh-3.3.0/diagrams/`
+
+**Logic**:
+```bash
+# Get directory containing the architecture file
+ARCH_DIR=$(dirname "$ARCHITECTURE_FILE")
+# Set output to diagrams/ subdirectory
+OUTPUT_DIR="$ARCH_DIR/diagrams"
+```
+
+**Examples**:
+- `architecture/odh-3.3.0/feast.md` → `architecture/odh-3.3.0/diagrams/`
+- `./GENERATED_ARCHITECTURE.md` → `./diagrams/`
+- `/path/to/kserve/GENERATED_ARCHITECTURE.md` → `/path/to/kserve/diagrams/`
+
+If `--output-dir` IS provided, use that exactly as specified.
+
+### Step 3: Create Output Directory
 
 ```bash
 mkdir -p {output-dir}
 ```
 
-### Step 3: Generate Diagrams
+### Step 4: Generate Diagrams
 
 Generate the requested diagram formats:
 
@@ -357,7 +391,7 @@ graph TD
 
 ---
 
-### Step 4: Generate Index/README
+### Step 5: Generate Index/README
 
 Create `{output-dir}/README.md` with links to all diagrams:
 
@@ -437,7 +471,7 @@ To regenerate after architecture changes:
 
 ---
 
-### Step 5: Report Results
+### Step 6: Report Results
 
 Output a summary:
 
@@ -469,23 +503,71 @@ Next steps:
 
 ## Notes
 
+### Output Directory Behavior
+
+**Auto mode** (recommended - no --output-dir specified):
+- Output directory is created **relative to the architecture file**
+- Example: `architecture/odh-3.3.0/feast.md` → `architecture/odh-3.3.0/diagrams/`
+- This keeps component diagrams organized with their architecture files
+
+**Manual mode** (--output-dir specified):
+- Use the exact path provided
+- Useful for custom directory structures
+
+### Organized Structure Example
+
+```
+architecture/odh-3.3.0/
+├── feast.md                          # Component architecture
+├── kserve.md
+├── model-registry.md
+├── diagrams/                          # Auto-created (shared by all components)
+│   ├── feast-component.mmd
+│   ├── feast-dataflow.mmd
+│   ├── feast-security-network.txt
+│   ├── kserve-component.mmd
+│   ├── kserve-dataflow.mmd
+│   └── ...
+└── PLATFORM.md                        # Aggregated platform view
+```
+
+### General Notes
+
 - Diagrams are generated from structured markdown tables (LLM-based transpilation)
 - All technical details (ports, protocols, TLS, auth) are preserved from source
 - Multiple formats serve different audiences (developers, architects, security)
 - ASCII diagrams are perfect for security reviews (no ambiguity)
 - Mermaid diagrams can be embedded directly in markdown
 - C4 diagrams provide architectural context
-- Regenerate diagrams after updating GENERATED_ARCHITECTURE.md
+- Regenerate diagrams after updating component architecture files
 
 ## Customization
 
-To generate only specific formats:
+### Generate for Specific Component
+
 ```bash
-/generate-architecture-diagrams --formats=mermaid,security
+# Auto output to architecture/odh-3.3.0/diagrams/
+/generate-architecture-diagrams --architecture=architecture/odh-3.3.0/feast.md
+
+# Generate only specific formats
+/generate-architecture-diagrams --architecture=architecture/odh-3.3.0/feast.md --formats=mermaid,security
+
+# Custom output directory
+/generate-architecture-diagrams --architecture=architecture/odh-3.3.0/feast.md --output-dir=./feast-diagrams
 ```
 
-To optimize for specific audience:
+### Optimize for Audience
+
 ```bash
-/generate-architecture-diagrams --audience=security  # Emphasizes security details
-/generate-architecture-diagrams --audience=executive # Simplified, high-level views
+/generate-architecture-diagrams --architecture=architecture/odh-3.3.0/feast.md --audience=security  # Emphasizes security details
+/generate-architecture-diagrams --architecture=architecture/odh-3.3.0/feast.md --audience=executive # Simplified, high-level views
+```
+
+### Workflow Integration
+
+```bash
+# Full workflow for a single component
+/repo-to-architecture-summary checkouts/opendatahub-io/feast
+/collect-component-architectures
+/generate-architecture-diagrams --architecture=architecture/odh-3.3.0/feast.md
 ```
