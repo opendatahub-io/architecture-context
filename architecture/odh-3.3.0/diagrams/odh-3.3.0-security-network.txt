@@ -1,0 +1,177 @@
+ODH 3.3.0 - Security & Network Architecture
+===========================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           EXTERNAL NETWORK (Internet)                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ┌──────────────┐  ┌──────────────┐  ┌─────────┐  ┌───────┐  ┌──────────┐ │
+│  │ Data         │  │ External     │  │   S3    │  │ PyPI  │  │ HuggingF │ │
+│  │ Scientist    │  │ Client       │  │ Storage │  │       │  │   Hub    │ │
+│  │ (OAuth)      │  │ (API)        │  │(AWS IAM)│  │       │  │(API Keys)│ │
+│  └──────┬───────┘  └──────┬───────┘  └────┬────┘  └───┬───┘  └────┬─────┘ │
+│         │                 │                │            │           │       │
+│    HTTPS/443         HTTPS/443        HTTPS/443   HTTPS/443   HTTPS/443    │
+│    OAuth Bearer      Inference        TLS 1.2+    TLS 1.2+    TLS 1.2+     │
+│         │                 │                │            │           │       │
+└─────────┼─────────────────┼────────────────┼────────────┼───────────┼───────┘
+          │                 │                │            │           │
+          ▼                 ▼                ▼            ▼           ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    OPENSHIFT CLUSTER (Kubernetes API: 6443)                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │                  OpenShift Router / Ingress Layer                     │  │
+│  │  ┌──────────────────────────────────────────────────────────────┐   │  │
+│  │  │  Routes / HTTPRoutes (TLS 1.2+ Edge/Reencrypt Termination)   │   │  │
+│  │  │  - Dashboard Route: HTTPS/443 → odh-dashboard (OAuth Proxy)  │   │  │
+│  │  │  - KServe Routes: HTTPS/443 → InferenceServices (mTLS)       │   │  │
+│  │  │  - MLflow Routes: HTTPS/443 → MLflow (OAuth Proxy)           │   │  │
+│  │  └──────────────────────────────────────────────────────────────┘   │  │
+│  └─────────────────────────────┬────────────────────────────────────────┘  │
+│                                │                                            │
+│  ┌─────────────────────────────┼────────────────────────────────────────┐  │
+│  │         Namespace: opendatahub (Control Plane)                      │  │
+│  │  ┌──────────────────────────▼───────────────────────────────────┐  │  │
+│  │  │ odh-dashboard (React/Node.js)                                │  │  │
+│  │  │ Security: OAuth Proxy + kube-rbac-proxy                      │  │  │
+│  │  │ Secrets: OAuth certs (TLS)                                   │  │  │
+│  │  └──────────────────────────────────────────────────────────────┘  │  │
+│  │  ┌──────────────────────────────────────────────────────────────┐  │  │
+│  │  │ opendatahub-operator (Go Controller)                         │  │  │
+│  │  │ Auth: ServiceAccount Token + ClusterRole RBAC                │  │  │
+│  │  │ Permissions: DataScienceCluster CRDs, all component CRs      │  │  │
+│  │  └────────────────────┬─────────────────────────────────────────┘  │  │
+│  └───────────────────────┼─────────────────────────────────────────────┘  │
+│                          │ Manages all components via CRs                  │
+│                          ▼                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────┐  │
+│  │          Namespace: User Workload Namespaces (Multi-tenant)         │  │
+│  │  ┌──────────────────────────────────────────────────────────────┐  │  │
+│  │  │ Notebook Pods (Jupyter/VSCode/RStudio)                       │  │  │
+│  │  │ Auth: ServiceAccount Token + Role RBAC                       │  │  │
+│  │  │ NetworkPolicy: Egress to S3, PyPI, HF, K8s API               │  │  │
+│  │  │ Egress: HTTPS/443 to S3 (AWS creds), PyPI, HuggingFace       │  │  │
+│  │  └──────────────────────────────────────────────────────────────┘  │  │
+│  │  ┌──────────────────────────────────────────────────────────────┐  │  │
+│  │  │ KServe InferenceServices (Model Serving)                     │  │  │
+│  │  │ Auth: mTLS via Istio + ServiceAccount Token                  │  │  │
+│  │  │ NetworkPolicy: Ingress (Route) + Egress (S3, Registry)       │  │  │
+│  │  │ Egress: HTTPS/443 to S3 (model artifacts, AWS creds)         │  │  │
+│  │  │ Ingress: HTTPS/443 from OpenShift Route (TLS termination)    │  │  │
+│  │  └──────────────────────────────────────────────────────────────┘  │  │
+│  │  ┌──────────────────────────────────────────────────────────────┐  │  │
+│  │  │ Training Pods (PyTorchJob, TFJob, TrainJob)                  │  │  │
+│  │  │ Auth: ServiceAccount Token + Role RBAC                       │  │  │
+│  │  │ NetworkPolicy: Egress to S3, PyPI, HF, K8s API               │  │  │
+│  │  │ Egress: HTTPS/443 to S3 (data, AWS creds), PyPI, HF          │  │  │
+│  │  └──────────────────────────────────────────────────────────────┘  │  │
+│  └─────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐  │
+│  │          Namespace: istio-system (Service Mesh)                     │  │
+│  │  ┌──────────────────────────────────────────────────────────────┐  │  │
+│  │  │ Istio Control Plane (istiod)                                 │  │  │
+│  │  │ mTLS Mode: PERMISSIVE / STRICT (configurable)                │  │  │
+│  │  │ AuthorizationPolicy: Per-service access control              │  │  │
+│  │  │ Sidecar Injection: InferenceServices, Model Registry         │  │  │
+│  │  └──────────────────────────────────────────────────────────────┘  │  │
+│  └─────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐  │
+│  │         Namespace: knative-serving (Serverless Platform)            │  │
+│  │  ┌──────────────────────────────────────────────────────────────┐  │  │
+│  │  │ Knative Serving (Queue Proxy for KServe autoscaling)         │  │  │
+│  │  └──────────────────────────────────────────────────────────────┘  │  │
+│  └─────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐  │
+│  │               Kubernetes API Server (kube-apiserver)                │  │
+│  │  Protocol: HTTPS/6443                                               │  │
+│  │  Auth: Bearer Token (ServiceAccount JWT), OAuth                     │  │
+│  │  AuthZ: RBAC (ClusterRoles, Roles, Bindings)                        │  │
+│  │  Encryption: TLS 1.2+                                               │  │
+│  │  Accessed by: All operators, pods, dashboard, external users        │  │
+│  └─────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Security Controls Summary
+=========================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ AUTHENTICATION MECHANISMS                                                   │
+├──────────────────────────┬──────────────────────────────────────────────────┤
+│ OAuth Bearer Tokens      │ Dashboard, Model Registry, MLflow (kube-rbac-   │
+│                          │ proxy / OAuth Proxy)                             │
+├──────────────────────────┼──────────────────────────────────────────────────┤
+│ mTLS Client Certificates │ KServe (Istio service mesh), Model Registry     │
+├──────────────────────────┼──────────────────────────────────────────────────┤
+│ ServiceAccount Tokens    │ All operators and workload pods (Kubernetes RBAC)│
+├──────────────────────────┼──────────────────────────────────────────────────┤
+│ AWS IAM Credentials      │ S3 access (KServe, Notebooks, Pipelines)        │
+├──────────────────────────┼──────────────────────────────────────────────────┤
+│ API Keys                 │ HuggingFace Hub, External LLM APIs              │
+└──────────────────────────┴──────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ ENCRYPTION & TLS                                                            │
+├──────────────────────────┬──────────────────────────────────────────────────┤
+│ External Endpoints       │ All HTTPS/443 with TLS 1.2+ (Routes/Ingress)    │
+├──────────────────────────┼──────────────────────────────────────────────────┤
+│ Service Mesh (Istio)     │ mTLS PERMISSIVE or STRICT (configurable)        │
+├──────────────────────────┼──────────────────────────────────────────────────┤
+│ Kubernetes API           │ HTTPS/6443 with TLS 1.2+                        │
+├──────────────────────────┼──────────────────────────────────────────────────┤
+│ Webhook TLS              │ All operators use cert-manager for webhook certs│
+├──────────────────────────┼──────────────────────────────────────────────────┤
+│ S3 Access                │ HTTPS/443 with TLS 1.2+ (AWS SDK)              │
+└──────────────────────────┴──────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ NETWORK POLICIES                                                            │
+├──────────────────────────┬──────────────────────────────────────────────────┤
+│ Notebooks                │ Egress: K8s API, S3, PyPI, HuggingFace          │
+├──────────────────────────┼──────────────────────────────────────────────────┤
+│ InferenceServices        │ Ingress: OpenShift Route, Egress: S3, Registry  │
+├──────────────────────────┼──────────────────────────────────────────────────┤
+│ Training Pods            │ Egress: K8s API, S3, PyPI, HuggingFace          │
+├──────────────────────────┼──────────────────────────────────────────────────┤
+│ Operators                │ Egress: K8s API, Container Registry             │
+└──────────────────────────┴──────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ RBAC ROLES (Top-Level ClusterRoles)                                        │
+├──────────────────────────┬──────────────────────────────────────────────────┤
+│ opendatahub-operator     │ DataScienceCluster, Component CRs, Deployments  │
+├──────────────────────────┼──────────────────────────────────────────────────┤
+│ kserve-controller        │ InferenceService, ServingRuntime, VirtualService │
+├──────────────────────────┼──────────────────────────────────────────────────┤
+│ notebook-controller      │ Notebook CRs, StatefulSets                      │
+├──────────────────────────┼──────────────────────────────────────────────────┤
+│ training-operator        │ PyTorchJob, TFJob, MPIJob, JAXJob, XGBoostJob   │
+├──────────────────────────┼──────────────────────────────────────────────────┤
+│ pipelines-operator       │ DSPA CRs, Argo Workflows, Deployments           │
+└──────────────────────────┴──────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ SECRETS MANAGEMENT                                                          │
+├──────────────────────────┬──────────────────────────────────────────────────┤
+│ Webhook TLS              │ kubernetes.io/tls (cert-manager provisioned)    │
+├──────────────────────────┼──────────────────────────────────────────────────┤
+│ S3 Credentials           │ Opaque secrets (user-provided AWS access keys)  │
+├──────────────────────────┼──────────────────────────────────────────────────┤
+│ Database Credentials     │ Opaque secrets (Model Registry, MLflow, DSP)    │
+├──────────────────────────┼──────────────────────────────────────────────────┤
+│ OAuth Certificates       │ kubernetes.io/tls (Dashboard, Model Registry)   │
+└──────────────────────────┴──────────────────────────────────────────────────┘
+
+Key Ports & Protocols
+=====================
+- External Ingress: 80/TCP (HTTP redirect), 443/TCP (HTTPS TLS 1.2+)
+- Kubernetes API: 6443/TCP (HTTPS TLS 1.2+)
+- S3 Storage: 443/TCP (HTTPS TLS 1.2+)
+- PyPI/HuggingFace: 443/TCP (HTTPS TLS 1.2+)
+- Container Registry: 443/TCP (HTTPS TLS 1.2+)
+- Service Mesh: mTLS (PERMISSIVE/STRICT)
+- Operator Webhooks: 9443/TCP (HTTPS TLS 1.2+)
