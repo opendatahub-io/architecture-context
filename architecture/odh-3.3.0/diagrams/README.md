@@ -117,10 +117,36 @@ To regenerate after platform changes:
 - **Storage**: Flexible backends (PostgreSQL, Redis, MongoDB, S3, GCS, BigQuery, Snowflake)
 - **Cloud Support**: AWS, GCP, Azure, CoreWeave
 
+## Component-Specific Diagrams
+
+### Feast Feature Store
+
+Generated from: `architecture/odh-3.3.0/feast.md`
+
+#### For Developers
+- [Feast Component Structure](./feast-component.mmd) - Internal components, services, CRDs, and storage backends
+- [Feast Data Flows](./feast-dataflow.mmd) - Sequence diagrams for online serving, offline serving, materialization, and feature push
+- [Feast Dependencies](./feast-dependencies.mmd) - Component dependency graph with required/optional dependencies
+
+#### For Architects
+- [Feast C4 Context](./feast-c4-context.dsl) - System context in C4 format showing Feast in the ML platform ecosystem
+- [Feast Component Overview](./feast-component.mmd) - High-level component view with operator, services, and storage backends
+
+#### For Security Teams
+- [Feast Security Network (Mermaid)](./feast-security-network.mmd) - Visual network topology with trust zones, ports, protocols, and auth
+- [Feast Security Network (ASCII)](./feast-security-network.txt) - Precise text format for SAR with detailed network flows, RBAC, secrets, and policies
+- [Feast RBAC Visualization](./feast-rbac.mmd) - RBAC permissions, ClusterRoles, RoleBindings, and API resource access
+
+#### Key Details
+- **Network**: OpenShift Route/K8s Ingress (443→80), Services (Online 80:6566, Offline 80:8815, Registry 80:6570/6572, Transform 80:6569, UI 80:8888)
+- **Security**: Optional Bearer Token (JWT), Optional OIDC (UI), ServiceAccount Token (Operator), Optional mTLS via Istio
+- **Storage**: Redis/PostgreSQL/DynamoDB (online), BigQuery/Snowflake/S3 (offline), PostgreSQL/S3/GCS (registry)
+- **Data Flows**: Online serving, Offline serving, Materialization (offline→online), Push (streaming→online/offline)
+
 ## Notes
 
-- Diagrams are generated from PLATFORM.md (aggregated view), not individual component architectures
-- Focus is on platform-level concerns: dependencies, cross-component flows, aggregated security
+- Diagrams are generated from PLATFORM.md (aggregated view) and individual component architectures (feast.md, etc.)
+- Platform diagrams focus on cross-component concerns; component diagrams focus on internal architecture
 - **Network topology has dual formats**:
   - **Mermaid**: Visual, color-coded trust zones, great for presentations
   - **ASCII**: Precise text format, no ambiguity, required for SAR submissions
@@ -128,4 +154,5 @@ To regenerate after platform changes:
 - Mermaid diagrams can be embedded directly in documentation or rendered to PNG
 - ASCII diagrams are precise and unambiguous for security reviews
 - Service mesh (Istio) integration is optional; diagrams show both optional and required components
-- Regenerate after running `/aggregate-platform-architecture` with updated component data
+- Regenerate platform diagrams after running `/aggregate-platform-architecture` with updated component data
+- Regenerate component diagrams after running `/generate-architecture-diagrams --architecture=<component>.md`

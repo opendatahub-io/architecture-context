@@ -158,18 +158,22 @@ sequenceDiagram
 
 ---
 
-#### Format 3: Security Network Diagram (ASCII Art)
+#### Format 3: Security Network Diagram (ASCII + Mermaid)
 
 **Purpose**: Precise network topology for Security Architecture Reviews
 **Audience**: Security teams, compliance
-**File**: `{output-dir}/{component-name}-security-network.txt`
+**Files**:
+- `{output-dir}/{component-name}-security-network.txt` (ASCII - for SAR documentation)
+- `{output-dir}/{component-name}-security-network.mmd` (Mermaid - for visual presentations)
 
-Read network and security sections to create a detailed ASCII diagram with:
+Read network and security sections to create detailed diagrams with:
 - Exact port numbers (e.g., 8443/TCP)
 - Protocols (HTTP/HTTPS/gRPC)
 - Encryption (TLS 1.3, mTLS, plaintext)
 - Authentication mechanisms (Bearer, mTLS certs, AWS IAM)
 - Trust boundaries (external, internal, service mesh)
+
+Generate BOTH formats - ASCII for precision/security reviews, Mermaid for visual clarity.
 
 **Example output**:
 ```
@@ -243,6 +247,58 @@ Secrets:
 - kserve-webhook-server-cert (kubernetes.io/tls) - TLS cert, cert-manager, 90d rotation
 - storage-config (Opaque) - S3 credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
 ```
+
+**Mermaid version** (`{component-name}-security-network.mmd`):
+
+```mermaid
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[External Client]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Gateway["Istio Gateway<br/>443/TCP → 8080/TCP<br/>TLS 1.3<br/>RequestAuthentication"]
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (mTLS STRICT)"]
+        direction TB
+
+        subgraph NS_Knative["Namespace: knative-serving"]
+            Activator["Knative Activator<br/>SA: activator"]
+        end
+
+        subgraph NS_User["Namespace: {user-namespace}"]
+            Predictor["Predictor Pod<br/>SA: {infer-service-name}-sa<br/>Image: {predictor-image}"]
+        end
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        S3["S3 Storage<br/>s3.amazonaws.com<br/>TLS 1.2+<br/>AWS IAM"]
+    end
+
+    %% Flows
+    Client -->|HTTPS/443<br/>TLS 1.3<br/>Bearer Token| Gateway
+    Gateway -->|HTTP/8012<br/>mTLS STRICT<br/>Service Identity| Activator
+    Activator -->|HTTP/8080<br/>mTLS<br/>Service Identity| Predictor
+    Predictor -->|HTTPS/443<br/>TLS 1.2+<br/>AWS IAM IRSA| S3
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    class Client external
+    class Gateway ingress
+    class Activator,Predictor servicemesh
+    class S3 externalservice
+```
+
+**Notes**:
+- **ASCII format**: Include RBAC summary, Service Mesh config, Secrets at bottom
+- **Mermaid format**: Focus on visual network flow with trust zones
+- Both formats should contain the same network architecture information
+- Use ASCII for SAR documentation, Mermaid for presentations
 
 ---
 
@@ -413,7 +469,8 @@ Date: {date}
 - [Component Overview](./NAME-component.mmd) - High-level component view
 
 ### For Security Teams
-- [Security Network Diagram](./NAME-security-network.txt) - Detailed network topology with ports, protocols, TLS, auth
+- [Security Network Diagram (Mermaid)](./NAME-security-network.mmd) - Visual network topology diagram
+- [Security Network Diagram (ASCII)](./NAME-security-network.txt) - Precise text format for SAR submissions
 - [RBAC Visualization](./NAME-rbac.mmd) - RBAC permissions and bindings
 
 ## How to Use
@@ -485,7 +542,8 @@ Output directory: {output-dir}/
 Diagrams created:
 - ✅ {component-name}-component.mmd (Mermaid component diagram)
 - ✅ {component-name}-dataflow.mmd (Mermaid data flow diagram)
-- ✅ {component-name}-security-network.txt (ASCII security diagram)
+- ✅ {component-name}-security-network.mmd (Mermaid security diagram - visual)
+- ✅ {component-name}-security-network.txt (ASCII security diagram - precise/SAR)
 - ✅ {component-name}-c4-context.dsl (C4 context diagram)
 - ✅ {component-name}-dependencies.mmd (Mermaid dependency graph)
 - ✅ {component-name}-rbac.mmd (RBAC visualization)
@@ -524,10 +582,16 @@ architecture/odh-3.3.0/
 ├── diagrams/                          # Auto-created (shared by all components)
 │   ├── feast-component.mmd
 │   ├── feast-dataflow.mmd
-│   ├── feast-security-network.txt
+│   ├── feast-security-network.mmd    # Mermaid (visual)
+│   ├── feast-security-network.txt    # ASCII (precise)
+│   ├── feast-c4-context.dsl
+│   ├── feast-dependencies.mmd
+│   ├── feast-rbac.mmd
 │   ├── kserve-component.mmd
 │   ├── kserve-dataflow.mmd
-│   └── ...
+│   ├── kserve-security-network.mmd
+│   ├── kserve-security-network.txt
+│   └── README.md
 └── PLATFORM.md                        # Aggregated platform view
 ```
 
@@ -536,8 +600,12 @@ architecture/odh-3.3.0/
 - Diagrams are generated from structured markdown tables (LLM-based transpilation)
 - All technical details (ports, protocols, TLS, auth) are preserved from source
 - Multiple formats serve different audiences (developers, architects, security)
+- **Security network diagrams have dual formats**:
+  - **Mermaid**: Visual, color-coded trust zones, great for presentations
+  - **ASCII**: Precise text format, no ambiguity, required for SAR submissions
+  - Both contain the same information, just different representations
+- Mermaid diagrams can be embedded directly in markdown or rendered to PNG
 - ASCII diagrams are perfect for security reviews (no ambiguity)
-- Mermaid diagrams can be embedded directly in markdown
 - C4 diagrams provide architectural context
 - Regenerate diagrams after updating component architecture files
 
