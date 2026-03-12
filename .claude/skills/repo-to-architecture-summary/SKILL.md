@@ -10,17 +10,48 @@ Analyze a component repository (for Open Data Hub or Red Hat OpenShift AI) and g
 
 ## Arguments
 
-Pass optional arguments:
+Positional argument:
+- `[directory]` - Path to repository directory (default: current directory)
+
+Optional flags:
 - `--distribution=odh|rhoai|both` (default: both)
 - `--version=X.Y` (default: auto-detect)
 
-Example: `/repo-to-architecture-summary --distribution=rhoai --version=3.3`
+Examples:
+```bash
+/repo-to-architecture-summary                                    # analyze current directory
+/repo-to-architecture-summary checkouts/opendatahub-io/kserve   # analyze specific directory
+/repo-to-architecture-summary ./kserve --distribution=rhoai --version=3.3
+```
 
 ## Instructions
 
 Generate a comprehensive architecture summary following these steps:
 
-### Step 1: Discover Repository Structure
+### Step 0: Parse Arguments and Navigate to Repository
+
+Parse the arguments string:
+1. Extract first non-flag argument as directory path (if provided)
+2. If directory path is provided, change to that directory:
+   ```bash
+   cd [directory-path]
+   ```
+3. Extract flag arguments (--distribution, --version) for later use
+
+### Step 1: Prepare Repository (Special Cases)
+
+**For opendatahub-operator repository specifically**:
+```bash
+make get-manifests
+```
+- This clones kustomize manifests into `./opt/` directory
+- These manifests are used at deployment time when components are enabled
+- Critical for analyzing actual deployment configuration (not just operator code)
+- Without this step, you'll miss component deployment details
+
+**For other repositories**: Skip to discovery below.
+
+### Step 3: Discover Repository Structure
 
 Identify:
 1. Repository name and purpose
@@ -28,13 +59,17 @@ Identify:
    - Go operators: look for `main.go`, `controllers/`, `api/`
    - Python services: `setup.py`, `requirements.txt`, `pyproject.toml`
    - React/TypeScript: `package.json`, `src/`
-   - Containers: `Dockerfile`, `Containerfile`
+   - Containers: **PRIORITIZE `Dockerfile.konflux` or `Containerfile.konflux`** if they exist
+     - RHOAI is completely built by Konflux; ODH is transitioning to Konflux
+     - Regular `Dockerfile`/`Containerfile` may be outdated/unused - verify they're actually used in builds
+     - If both exist, prefer Konflux files for analysis
 3. Deployment artifacts:
    - Helm charts: `Chart.yaml`
    - Kustomize: `kustomization.yaml`
    - Manifests: `*.yaml` in `manifests/`, `config/`, `deploy/`
+   - **For opendatahub-operator**: Check `./opt/` directory for component manifests (populated by `make get-manifests`)
 
-### Step 2: Analyze Code Artifacts
+### Step 4: Analyze Code Artifacts
 
 Search for and analyze:
 
@@ -62,13 +97,13 @@ Search for and analyze:
 **Service Mesh**: Istio PeerAuthentication, AuthorizationPolicy
 - Extract: mTLS settings, authorization rules
 
-### Step 3: Extract Recent Changes
+### Step 5: Extract Recent Changes
 
 ```bash
 git log --since="3 months ago" --pretty=format:"%h %s" --no-merges | head -20
 ```
 
-### Step 4: Generate GENERATED_ARCHITECTURE.md
+### Step 6: Generate GENERATED_ARCHITECTURE.md
 
 Create a file with this structure (use **precise technical details** in tables):
 
@@ -204,11 +239,11 @@ When filling tables, be **extremely precise**:
 ✅ **Authentication**: `Bearer Token (JWT)`, `mTLS client certs`, `AWS IAM credentials` (not "authenticated")
 ✅ **RBAC**: Exact API groups: `""` for core, `apps`, `serving.kserve.io` (not "Kubernetes API")
 
-### Step 5: Write File
+### Step 7: Write File
 
 Create `GENERATED_ARCHITECTURE.md` in the repository root.
 
-### Step 6: Report Results
+### Step 8: Report Results
 
 After creating the file, output:
 

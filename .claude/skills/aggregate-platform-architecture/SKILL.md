@@ -7,16 +7,30 @@ disable-model-invocation: true
 
 # Aggregate Platform Architecture
 
-Combine component architecture summaries (`GENERATED_ARCHITECTURE.md` files) into a comprehensive platform-level architecture document.
+Combine component architecture summaries into a comprehensive platform-level architecture document.
+
+**Recommended**: Use with organized architecture directory created by `/collect-component-architectures`.
+**Legacy**: Can also search repository checkouts directly for `GENERATED_ARCHITECTURE.md` files.
 
 ## Arguments
 
 Required/optional arguments:
 - `--distribution=odh|rhoai` (default: rhoai)
 - `--version=X.Y` (default: 3.3)
-- `--repos-dir=<path>` (default: current directory)
+- `--architecture-dir=<path>` (default: ./architecture)
+- `--repos-dir=<path>` (deprecated: use --architecture-dir instead)
 
-Example: `/aggregate-platform-architecture --distribution=rhoai --version=3.3 --repos-dir=~/repos`
+Examples:
+```bash
+# Use organized architecture directory (recommended)
+/aggregate-platform-architecture --distribution=odh --version=3.3
+
+# Custom architecture directory
+/aggregate-platform-architecture --distribution=rhoai --version=2.19 --architecture-dir=./docs/arch
+
+# Legacy: search checkout repos directly
+/aggregate-platform-architecture --distribution=rhoai --version=3.3 --repos-dir=./checkouts/opendatahub-io
+```
 
 ## Instructions
 
@@ -24,25 +38,58 @@ Aggregate component architectures into a platform-level document by following th
 
 ### Step 1: Discover Component Summaries
 
-Find all `GENERATED_ARCHITECTURE.md` files in subdirectories:
+Determine where to find component architecture files based on arguments:
 
+**Preferred: Organized architecture directory**
+If `--architecture-dir` is provided (or using default `./architecture`):
 ```bash
-find $repos-dir -name "GENERATED_ARCHITECTURE.md" -type f
+# Check if organized directory exists
+ARCH_DIR={architecture-dir}/{distribution}-{version}
+if [ -d "$ARCH_DIR" ]; then
+  find $ARCH_DIR -name "*.md" -type f ! -name "README.md"
+fi
 ```
 
-If no files found, output error and stop.
+**Legacy: Search repos-dir**
+If `--repos-dir` is provided OR organized directory doesn't exist:
+```bash
+find {repos-dir} -name "GENERATED_ARCHITECTURE.md" -type f
+```
+
+**Examples**:
+- With `--distribution=odh --version=3.3` → looks in `./architecture/odh-3.3/`
+- With `--distribution=rhoai --version=2.19 --architecture-dir=./docs` → looks in `./docs/rhoai-2.19/`
+- With `--repos-dir=./checkouts/opendatahub-io` → searches checkouts (legacy mode)
+
+If no files found in either location, output error and stop:
+```
+⚠️  No component architecture files found
+
+Searched:
+- {architecture-dir}/{distribution}-{version}/ (preferred)
+- {repos-dir}/ (legacy)
+
+Run /collect-component-architectures first to organize architecture files,
+or run /repo-to-architecture-summary on component repositories.
+```
 
 ### Step 2: Read Component Summaries
 
-For each `GENERATED_ARCHITECTURE.md` file found:
+For each architecture file found:
 1. Read the entire file
 2. Extract component name from the "# Component:" heading
 3. Extract metadata (distribution, version, deployment type)
 4. Store the content for aggregation
 
+**Note on file sources**:
+- **Organized structure** (`architecture/{dist}-{ver}/{component}.md`): Files are already filtered by platform/version
+- **Legacy structure** (`checkouts/**/GENERATED_ARCHITECTURE.md`): Need to filter by distribution in Step 3
+
 ### Step 3: Filter by Distribution
 
-Include only components that match the requested distribution:
+**If using organized architecture directory**: Skip this step (files are already filtered by directory structure)
+
+**If using legacy repos-dir**: Filter components by distribution metadata:
 - If `--distribution=odh`: Include components with "Distribution: ODH" or "Distribution: ODH, RHOAI"
 - If `--distribution=rhoai`: Include components with "Distribution: RHOAI" or "Distribution: ODH, RHOAI"
 
@@ -261,9 +308,22 @@ Example:
 
 ### Step 9: Write Output File
 
-Create the platform architecture file:
-- Filename: `{distribution}-{version}-PLATFORM.md` (e.g., `rhoai-3.3-PLATFORM.md`)
-- Location: `platform-architecture/` subdirectory of repos-dir (create if doesn't exist)
+Create the platform architecture file based on input source:
+
+**If using organized architecture directory** (recommended):
+- Filename: `PLATFORM.md`
+- Location: `{architecture-dir}/{distribution}-{version}/PLATFORM.md`
+- Example: `./architecture/odh-3.3/PLATFORM.md`
+
+**If using legacy repos-dir**:
+- Filename: `{distribution}-{version}-PLATFORM.md`
+- Location: `platform-architecture/{distribution}-{version}-PLATFORM.md`
+- Example: `platform-architecture/rhoai-3.3-PLATFORM.md`
+
+Create output directory if needed:
+```bash
+mkdir -p {output-directory}
+```
 
 ### Step 10: Report Results
 
@@ -275,6 +335,7 @@ Output a summary:
 Distribution: {distribution}
 Version: {version}
 Components analyzed: {count}
+Source: {architecture-dir or repos-dir}
 
 Components:
 - {component1}
@@ -282,7 +343,7 @@ Components:
 ...
 
 File created:
-- platform-architecture/{distribution}-{version}-PLATFORM.md
+- {output-path}
 
 Summary:
 - {N} components aggregated
@@ -292,16 +353,34 @@ Summary:
 - {N} internal integrations mapped
 
 Next steps:
-1. Review platform-architecture/{distribution}-{version}-PLATFORM.md
+1. Review {output-path}
 2. Share with Architecture Council for feedback
-3. Generate diagrams from structured markdown (Mermaid, C4, security diagrams)
+3. Generate diagrams: /generate-architecture-diagrams --architecture={output-path}
 4. Use for Security Architecture Review (SAR) documentation
 ```
 
+**Example outputs**:
+- Using organized directory: `./architecture/odh-3.3/PLATFORM.md`
+- Using legacy mode: `platform-architecture/rhoai-3.3-PLATFORM.md`
+
 ## Notes
 
-- Component summaries must exist first (run `/repo-to-architecture-summary` on each component)
+### Recommended Workflow
+
+1. **Generate component architectures**: Run `/repo-to-architecture-summary` on each component repository
+2. **Organize files**: Run `/collect-component-architectures` to organize into `architecture/{platform}-{version}/` structure
+3. **Aggregate**: Run this skill with `--distribution` and `--version` to create platform-level view
+
+### Legacy Workflow
+
+If you haven't run `/collect-component-architectures`, use `--repos-dir` to search checkout directories directly.
+
+### Behavior Notes
+
 - This skill parses markdown tables to extract structured data
+- **Organized directory mode** (recommended): Automatically filtered by platform/version based on directory structure
+- **Legacy repos-dir mode**: Filters components by Distribution metadata from markdown
 - The aggregation focuses on platform-level relationships, not repeating all component details
 - The output is optimized for generating platform-wide diagrams
 - Pay attention to cross-component integration patterns
+- Output location adapts based on input source (organized vs legacy)
