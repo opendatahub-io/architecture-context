@@ -1,0 +1,491 @@
+---
+name: generate-architecture-diagrams
+description: Generate architecture diagrams (Mermaid, C4, security network diagrams) from GENERATED_ARCHITECTURE.md. Creates visual representations for different audiences - developers, architects, security teams.
+allowed-tools: Read, Write, Bash(*)
+disable-model-invocation: true
+---
+
+# Generate Architecture Diagrams
+
+Read a `GENERATED_ARCHITECTURE.md` file and generate multiple diagram formats for different audiences:
+- **Mermaid diagrams**: For embedding in markdown, PRs, wikis
+- **C4 diagrams**: For architectural documentation
+- **Security network diagrams**: For Security Architecture Reviews (SAR)
+- **Data flow diagrams**: For understanding component interactions
+
+## Arguments
+
+Required/optional arguments:
+- `--architecture=<path>` (default: ./GENERATED_ARCHITECTURE.md)
+- `--output-dir=<path>` (default: ./diagrams)
+- `--formats=<comma-separated>` (default: all) - Options: mermaid, c4, security, dataflow, component
+- `--audience=<audience>` (optional) - Optimize for: developer, architect, security, executive
+
+Example: `/generate-architecture-diagrams --architecture=./GENERATED_ARCHITECTURE.md --formats=mermaid,security`
+
+## Instructions
+
+Generate visual diagrams from structured markdown architecture documentation:
+
+### Step 1: Read Architecture Documentation
+
+Read the `GENERATED_ARCHITECTURE.md` file:
+
+Parse the structured markdown to extract:
+- **Component metadata**: Name, type, purpose
+- **Architecture components**: From "## Architecture Components" table
+- **CRDs**: From "### Custom Resource Definitions" table
+- **HTTP/gRPC endpoints**: From API tables
+- **Dependencies**: External and internal from dependency tables
+- **Network services**: From "### Services" table
+- **Ingress/Egress**: From network tables
+- **RBAC**: From security tables
+- **Data flows**: From "### Flow" tables
+- **Integration points**: From integration tables
+
+### Step 2: Create Output Directory
+
+```bash
+mkdir -p {output-dir}
+```
+
+### Step 3: Generate Diagrams
+
+Generate the requested diagram formats:
+
+---
+
+#### Format 1: Mermaid Component Diagram
+
+**Purpose**: Show component structure and relationships
+**Audience**: Developers, architects
+**File**: `{output-dir}/{component-name}-component.mmd`
+
+Read the architecture markdown and generate a Mermaid diagram showing:
+- Component internal structure
+- CRDs watched/created
+- External dependencies
+- Internal integrations
+
+**Example output**:
+```mermaid
+graph TB
+    subgraph "KServe Component"
+        Controller[KServe Controller]
+        Webhook[Webhook Server]
+        Controller -->|validates| Webhook
+    end
+
+    User[User] -->|creates| InferenceServiceCR[InferenceService CR]
+    InferenceServiceCR -->|watched by| Controller
+    Controller -->|creates| KnativeService[Knative Service]
+    Controller -->|creates| Deployment[Predictor Deployment]
+
+    Controller -->|depends on| Istio[Istio]
+    Controller -->|depends on| Knative[Knative Serving]
+    Controller -->|integrates| ModelRegistry[Model Registry]
+
+    style Controller fill:#4a90e2
+    style Webhook fill:#4a90e2
+    style InferenceServiceCR fill:#f5a623
+    style Istio fill:#e8e8e8
+    style Knative fill:#e8e8e8
+    style ModelRegistry fill:#7ed321
+```
+
+---
+
+#### Format 2: Mermaid Data Flow Diagram
+
+**Purpose**: Show request/response flows with technical details
+**Audience**: Developers, SREs
+**File**: `{output-dir}/{component-name}-dataflow.mmd`
+
+Read the "## Data Flows" section and generate a sequence diagram:
+
+**Example output**:
+```mermaid
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Istio Gateway<br/>443/TCP HTTPS TLS1.3
+    participant Activator as Knative Activator<br/>8012/TCP mTLS
+    participant Predictor as Predictor Pod<br/>8080/TCP mTLS
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+
+    Client->>Gateway: POST /v1/models/model:predict<br/>Auth: Bearer Token
+    Gateway->>Activator: Forward (mTLS)<br/>Service Identity
+    Activator->>Predictor: Inference Request<br/>mTLS
+    Predictor->>S3: Load Model<br/>AWS IAM Auth
+    S3-->>Predictor: Model Artifacts
+    Predictor-->>Activator: Prediction Result
+    Activator-->>Gateway: Response
+    Gateway-->>Client: JSON Response
+```
+
+---
+
+#### Format 3: Security Network Diagram (ASCII Art)
+
+**Purpose**: Precise network topology for Security Architecture Reviews
+**Audience**: Security teams, compliance
+**File**: `{output-dir}/{component-name}-security-network.txt`
+
+Read network and security sections to create a detailed ASCII diagram with:
+- Exact port numbers (e.g., 8443/TCP)
+- Protocols (HTTP/HTTPS/gRPC)
+- Encryption (TLS 1.3, mTLS, plaintext)
+- Authentication mechanisms (Bearer, mTLS certs, AWS IAM)
+- Trust boundaries (external, internal, service mesh)
+
+**Example output**:
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.3                                            │
+│         │ Auth: Bearer Token (optional)                                  │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                          │
+│                                                                          │
+│  [Istio Gateway]                                                         │
+│  - Port: 443/TCP (external) → 8080/TCP (internal)                      │
+│  - TLS Termination: TLS 1.3                                             │
+│  - AuthN: RequestAuthentication (validates JWT if present)              │
+│         │                                                                │
+│         │ Port: 8012/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: mTLS (STRICT)                                      │
+│         │ Auth: Service Identity (Istio)                                 │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Trusted - mTLS STRICT)                                   │
+│                                                                          │
+│  [Knative Activator]                                                     │
+│  - Namespace: knative-serving                                            │
+│  - ServiceAccount: activator                                             │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: mTLS (ServiceMesh sidecar)                         │
+│         │ Auth: Service Identity                                         │
+│         ▼                                                                │
+│  [Predictor Pod]                                                         │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: {infer-service-name}-sa                              │
+│  - Image: {predictor-image}:tag                                          │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: AWS IAM Role (IRSA)                                      │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [S3 Storage - s3.amazonaws.com]                                         │
+│  - Purpose: Model artifact storage                                       │
+│  - Auth: AWS IAM credentials                                             │
+│  - Encryption: TLS 1.2+                                                  │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: kserve-manager-role
+  - API Groups: serving.kserve.io
+  - Resources: inferenceservices, trainedmodels
+  - Verbs: get, list, watch, create, update, patch, delete
+
+Service Mesh Configuration:
+- PeerAuthentication: STRICT (namespace-scoped)
+- AuthorizationPolicy: kserve-controller-access
+  - Allows: cluster.local/ns/{namespace}/sa/kserve-controller-manager
+  - Methods: GET, POST, PUT, DELETE
+
+Secrets:
+- kserve-webhook-server-cert (kubernetes.io/tls) - TLS cert, cert-manager, 90d rotation
+- storage-config (Opaque) - S3 credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+```
+
+---
+
+#### Format 4: C4 Context Diagram (Structurizr DSL)
+
+**Purpose**: System context showing component in broader ecosystem
+**Audience**: Architects, stakeholders
+**File**: `{output-dir}/{component-name}-c4-context.dsl`
+
+Read dependencies and integration points to create C4 context:
+
+**Example output**:
+```
+workspace {
+    model {
+        user = person "Data Scientist" "Creates and deploys ML models"
+
+        kserve = softwareSystem "KServe" "Standardized serverless ML inference platform" {
+            controller = container "KServe Controller" "Manages InferenceService lifecycle" "Go Operator"
+            webhook = container "Webhook Server" "Validates and mutates InferenceServices" "Go Service"
+        }
+
+        istio = softwareSystem "Istio" "Service mesh for traffic management" "External"
+        knative = softwareSystem "Knative Serving" "Serverless autoscaling platform" "External"
+        modelRegistry = softwareSystem "Model Registry" "Stores model metadata" "Internal ODH"
+        s3 = softwareSystem "S3 Storage" "Model artifact storage" "External"
+
+        user -> kserve "Creates InferenceService via kubectl"
+        kserve -> istio "Uses for traffic routing and mTLS"
+        kserve -> knative "Uses for autoscaling"
+        kserve -> modelRegistry "Fetches model metadata" "gRPC/9090"
+        kserve -> s3 "Downloads model artifacts" "HTTPS/443"
+    }
+
+    views {
+        systemContext kserve "SystemContext" {
+            include *
+            autoLayout
+        }
+
+        container kserve "Containers" {
+            include *
+            autoLayout
+        }
+
+        styles {
+            element "External" {
+                background #999999
+            }
+            element "Internal ODH" {
+                background #7ed321
+            }
+        }
+    }
+}
+```
+
+---
+
+#### Format 5: Component Dependency Graph (Mermaid)
+
+**Purpose**: Show component dependencies and integration points
+**Audience**: Architects, integration engineers
+**File**: `{output-dir}/{component-name}-dependencies.mmd`
+
+Read "## Dependencies" and "## Integration Points" sections:
+
+**Example output**:
+```mermaid
+graph LR
+    KServe[KServe Operator]
+
+    %% External Dependencies
+    KServe -->|traffic mgmt| Istio[Istio 1.20+]
+    KServe -->|autoscaling| Knative[Knative Serving 1.12+]
+    KServe -->|certificates| CertManager[cert-manager 1.13+]
+
+    %% Internal ODH Dependencies
+    KServe -->|API calls| ModelRegistry[Model Registry]
+    KServe -.->|sidecars| ServiceMesh[Service Mesh]
+
+    %% Integration Points
+    Dashboard[ODH Dashboard] -->|UI mgmt| KServe
+    Pipelines[Data Science Pipelines] -->|auto deploy| KServe
+
+    %% External Services
+    KServe -->|model storage| S3[S3 Storage]
+    KServe -->|API server| K8sAPI[Kubernetes API]
+
+    style KServe fill:#4a90e2,stroke:#333,stroke-width:4px
+    style Istio fill:#999,stroke:#333
+    style Knative fill:#999,stroke:#333
+    style CertManager fill:#999,stroke:#333
+    style ModelRegistry fill:#7ed321,stroke:#333
+    style ServiceMesh fill:#7ed321,stroke:#333
+    style Dashboard fill:#7ed321,stroke:#333
+    style Pipelines fill:#7ed321,stroke:#333
+    style S3 fill:#f5a623,stroke:#333
+    style K8sAPI fill:#f5a623,stroke:#333
+```
+
+---
+
+#### Format 6: RBAC Matrix Diagram (Markdown Table → Mermaid)
+
+**Purpose**: Visualize RBAC permissions
+**Audience**: Security, compliance
+**File**: `{output-dir}/{component-name}-rbac.mmd`
+
+Read "### RBAC" tables and create visual representation:
+
+**Example output**:
+```mermaid
+graph TD
+    subgraph "Service Account"
+        SA[kserve-controller-manager]
+    end
+
+    subgraph "ClusterRole Bindings"
+        CRB[kserve-manager-rolebinding]
+    end
+
+    subgraph "ClusterRole Permissions"
+        CR[kserve-manager-role]
+    end
+
+    subgraph "API Resources"
+        InferenceService[serving.kserve.io<br/>InferenceService]
+        TrainedModel[serving.kserve.io<br/>TrainedModel]
+        Services[core<br/>Services]
+        Deployments[apps<br/>Deployments]
+    end
+
+    SA -->|bound via| CRB
+    CRB -->|grants| CR
+    CR -->|get,list,watch,create,update,patch,delete| InferenceService
+    CR -->|get,list,watch,create,update,patch,delete| TrainedModel
+    CR -->|get,list,watch,create,update,patch,delete| Services
+    CR -->|get,list,watch,create,update,patch,delete| Deployments
+
+    style SA fill:#4a90e2
+    style CR fill:#f5a623
+    style InferenceService fill:#7ed321
+    style TrainedModel fill:#7ed321
+```
+
+---
+
+### Step 4: Generate Index/README
+
+Create `{output-dir}/README.md` with links to all diagrams:
+
+```markdown
+# Architecture Diagrams for {Component Name}
+
+Generated from: `{architecture-file}`
+Date: {date}
+
+## Available Diagrams
+
+### For Developers
+- [Component Structure](./NAME-component.mmd) - Mermaid diagram showing internal components
+- [Data Flows](./NAME-dataflow.mmd) - Sequence diagram of request/response flows
+- [Dependencies](./NAME-dependencies.mmd) - Component dependency graph
+
+### For Architects
+- [C4 Context](./NAME-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./NAME-component.mmd) - High-level component view
+
+### For Security Teams
+- [Security Network Diagram](./NAME-security-network.txt) - Detailed network topology with ports, protocols, TLS, auth
+- [RBAC Visualization](./NAME-rbac.mmd) - RBAC permissions and bindings
+
+## How to Use
+
+### Mermaid Diagrams (.mmd files)
+- **In GitHub/GitLab**: Paste into markdown with ````mermaid` code blocks - renders automatically!
+- **Live editor**: https://mermaid.live (paste code, click "Export PNG")
+
+**Render to PNG locally (recommended)**:
+
+1. **Install Mermaid CLI** (one-time setup):
+   ```bash
+   npm install -g @mermaid-js/mermaid-cli
+   ```
+
+2. **Generate PNG** (using system Chrome for rendering):
+   ```bash
+   # Basic (default resolution)
+   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i diagram.mmd -o diagram.png
+
+   # High resolution (recommended - 3x scale)
+   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i diagram.mmd -o diagram.png -s 3
+
+   # Custom width (height auto-adjusts)
+   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i diagram.mmd -o diagram.png -w 2400
+   ```
+
+3. **Alternative formats**:
+   ```bash
+   # SVG (vector, scales perfectly)
+   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i diagram.mmd -o diagram.svg
+
+   # PDF
+   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i diagram.mmd -o diagram.pdf
+   ```
+
+**Note**: If `google-chrome` is not at `/usr/bin/google-chrome`, find it with `which google-chrome` or `which chromium`
+
+### C4 Diagrams (.dsl files)
+- **Structurizr Lite**: `docker run -p 8080:8080 -v .:/usr/local/structurizr structurizr/lite`
+- **CLI export**: `structurizr-cli export -workspace diagram.dsl -format png`
+
+### ASCII Diagrams (.txt files)
+- View in any text editor
+- Include in documentation as-is
+- Perfect for security reviews (precise technical details)
+
+## Updating Diagrams
+
+To regenerate after architecture changes:
+```bash
+/generate-architecture-diagrams --architecture=../GENERATED_ARCHITECTURE.md
+```
+```
+
+---
+
+### Step 5: Report Results
+
+Output a summary:
+
+```
+✅ Architecture diagrams generated!
+
+Component: {component-name}
+Source: {architecture-file}
+Output directory: {output-dir}/
+
+Diagrams created:
+- ✅ {component-name}-component.mmd (Mermaid component diagram)
+- ✅ {component-name}-dataflow.mmd (Mermaid data flow diagram)
+- ✅ {component-name}-security-network.txt (ASCII security diagram)
+- ✅ {component-name}-c4-context.dsl (C4 context diagram)
+- ✅ {component-name}-dependencies.mmd (Mermaid dependency graph)
+- ✅ {component-name}-rbac.mmd (RBAC visualization)
+- ✅ README.md (Index of all diagrams)
+
+Next steps:
+1. Review diagrams in {output-dir}/
+2. Embed Mermaid diagrams in markdown: ```mermaid ... ```
+3. Use security network diagram for SAR documentation
+4. Share C4 diagrams with Architecture Council
+5. Render to PNG/SVG for presentations:
+   - Mermaid (high-res): PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i diagram.mmd -o diagram.png -s 3
+   - C4: docker run --rm -v $(pwd):/usr/local/structurizr structurizr/cli export -workspace diagram.dsl -format png
+```
+
+## Notes
+
+- Diagrams are generated from structured markdown tables (LLM-based transpilation)
+- All technical details (ports, protocols, TLS, auth) are preserved from source
+- Multiple formats serve different audiences (developers, architects, security)
+- ASCII diagrams are perfect for security reviews (no ambiguity)
+- Mermaid diagrams can be embedded directly in markdown
+- C4 diagrams provide architectural context
+- Regenerate diagrams after updating GENERATED_ARCHITECTURE.md
+
+## Customization
+
+To generate only specific formats:
+```bash
+/generate-architecture-diagrams --formats=mermaid,security
+```
+
+To optimize for specific audience:
+```bash
+/generate-architecture-diagrams --audience=security  # Emphasizes security details
+/generate-architecture-diagrams --audience=executive # Simplified, high-level views
+```
