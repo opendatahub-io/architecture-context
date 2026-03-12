@@ -148,13 +148,17 @@ graph TB
 
 ---
 
-#### Format 2: Platform Network Topology (ASCII Security Diagram)
+#### Format 2: Platform Network Topology (ASCII + Mermaid)
 
 **Purpose**: Complete network architecture for Security Architecture Reviews
 **Audience**: Security teams, compliance, SREs
-**File**: `{output-dir}/platform-network-topology.txt`
+**Files**:
+- `{output-dir}/platform-network-topology.txt` (ASCII - for SAR documentation)
+- `{output-dir}/platform-network-topology.mmd` (Mermaid - for visual presentations)
 
 Read "## Platform Network Architecture" section (all subsections).
+
+Generate BOTH formats - ASCII for precision/security reviews, Mermaid for visual clarity.
 
 **Example output**:
 ```
@@ -240,13 +244,95 @@ RBAC SUMMARY:
 - odh-dashboard-role: opendatahub.io/*, monitoring.coreos.com/servicemonitors
 ```
 
+**Mermaid version** (`platform-network-topology.mmd`):
+
+```mermaid
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Clients[External Clients]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Dashboard_GW["ODH Dashboard Gateway<br/>443/TCP → 8080/TCP<br/>HTTPS, TLS 1.3<br/>OAuth (optional)"]
+        KServe_GW["KServe Gateway<br/>443/TCP → 8012/TCP<br/>HTTPS, TLS 1.3<br/>Bearer Token (optional)"]
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (mTLS STRICT)"]
+        direction TB
+
+        subgraph NS_ODH["Namespace: opendatahub"]
+            Dashboard["ODH Dashboard<br/>SA: odh-dashboard"]
+            KServe["KServe Controller<br/>SA: kserve-controller-manager"]
+            Registry["Model Registry<br/>SA: model-registry"]
+            Pipelines["DS Pipelines<br/>SA: pipeline-runner"]
+        end
+
+        subgraph NS_Knative["Namespace: knative-serving"]
+            Knative["Knative Serving"]
+        end
+
+        subgraph NS_Istio["Namespace: istio-system"]
+            Istio["Istio Control Plane"]
+        end
+    end
+
+    subgraph Egress["EGRESS (External Services)"]
+        S3["S3 Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>AWS IAM"]
+        Quay["Container Registry<br/>quay.io<br/>443/TCP HTTPS<br/>Pull secrets"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>SA tokens"]
+    end
+
+    %% External to Ingress
+    Clients -->|HTTPS/443| Dashboard_GW
+    Clients -->|HTTPS/443| KServe_GW
+
+    %% Ingress to Service Mesh
+    Dashboard_GW -->|HTTP/8080<br/>mTLS| Dashboard
+    KServe_GW -->|HTTP/8012<br/>mTLS| KServe
+
+    %% Service Mesh Internal
+    Dashboard -->|gRPC/9090<br/>mTLS| Registry
+    Dashboard -->|HTTP/8080<br/>mTLS| KServe
+    Dashboard -->|HTTPS/443<br/>SA token| K8sAPI
+
+    KServe -->|gRPC/9090<br/>mTLS| Registry
+    KServe -->|HTTP/8080<br/>mTLS| Knative
+    KServe -->|HTTP/8080<br/>mTLS| Istio
+    KServe -->|HTTPS/443<br/>SA token| K8sAPI
+
+    Pipelines -->|HTTP/8080<br/>mTLS| KServe
+    Pipelines -->|gRPC/9090<br/>mTLS| Registry
+    Pipelines -->|HTTPS/443<br/>SA token| K8sAPI
+
+    %% Service Mesh to Egress
+    Registry -->|HTTPS/443<br/>AWS IAM| S3
+    KServe -->|HTTPS/443<br/>AWS IAM| S3
+    Pipelines -->|HTTPS/443<br/>AWS IAM| S3
+    KServe -->|HTTPS/443<br/>Pull secret| Quay
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    class Clients external
+    class Dashboard_GW,KServe_GW ingress
+    class Dashboard,KServe,Registry,Pipelines,Knative,Istio servicemesh
+    class S3,Quay,K8sAPI egress
+```
+
+**ASCII version** (same content, text format - keep existing example)
+
 **Instructions**:
-- Create clear trust boundaries (External, Ingress, Service Mesh, Egress)
+- **ASCII format**: Create clear trust boundaries (External, Ingress, Service Mesh, Egress)
 - List ALL ingress points with exact details (ports, protocols, TLS, auth)
 - Show component-to-component communication within service mesh
 - Include namespace, ServiceAccount for each component
 - List egress destinations with encryption and auth details
 - Add platform-wide security summary (mTLS mode, RBAC, namespaces)
+- **Mermaid format**: Use subgraphs for trust zones, include protocol/port details on edges
+- Both formats should contain the same information, just different representations
 
 ---
 
@@ -502,12 +588,14 @@ Date: {date}
 - [Platform Maturity](./platform-maturity.mmd) - Health metrics and component statistics
 
 ### For Security Teams
-- [Platform Network Topology](./platform-network-topology.txt) - Complete network architecture with ports, protocols, TLS, auth
+- [Platform Network Topology (Mermaid)](./platform-network-topology.mmd) - Visual network architecture diagram
+- [Platform Network Topology (ASCII)](./platform-network-topology.txt) - Precise text format for SAR submissions
 - [Platform Security Overview](./platform-security-overview.mmd) - RBAC, auth mechanisms, secrets, service mesh policies
 
 ### For Platform Engineers
 - [Component Dependency Graph](./platform-dependency-graph.mmd) - Understand integration points
-- [Platform Network Topology](./platform-network-topology.txt) - Debug connectivity issues
+- [Platform Network Topology (Mermaid)](./platform-network-topology.mmd) - Visualize network architecture
+- [Platform Network Topology (ASCII)](./platform-network-topology.txt) - Debug connectivity issues (precise details)
 - [Platform Workflows](./platform-workflows.mmd) - Trace request flows
 
 ## How to Use
@@ -530,7 +618,13 @@ Date: {date}
 Shows how platform components depend on each other. Central components (most dependencies) are highlighted. Useful for understanding blast radius of changes and planning upgrades.
 
 ### Platform Network Topology
-Complete network architecture showing all ingress points, service mesh communication, and egress destinations. Includes exact port numbers, protocols, encryption, and authentication mechanisms. Required for security architecture reviews.
+Complete network architecture showing all ingress points, service mesh communication, and egress destinations. Includes exact port numbers, protocols, encryption, and authentication mechanisms.
+
+**Two formats provided**:
+- **Mermaid (.mmd)**: Visual diagram with color-coded trust zones. Great for presentations and architecture discussions.
+- **ASCII (.txt)**: Precise text format with no ambiguity. Required for SAR (Security Architecture Review) submissions and compliance documentation.
+
+Both formats contain the same information - use Mermaid for visual clarity, ASCII for security reviews.
 
 ### Cross-Component Workflows
 Sequence diagrams showing end-to-end user workflows that span multiple components. Examples: model training to deployment, user authentication flow, pipeline execution.
@@ -565,7 +659,8 @@ Output directory: {output-dir}/
 
 Diagrams created:
 - ✅ platform-dependency-graph.mmd (Component dependencies)
-- ✅ platform-network-topology.txt (Network architecture for SAR)
+- ✅ platform-network-topology.mmd (Network architecture - visual)
+- ✅ platform-network-topology.txt (Network architecture - precise/SAR)
 - ✅ platform-workflows.mmd (Cross-component flows)
 - ✅ platform-security-overview.mmd (RBAC, auth, secrets)
 - ✅ platform-maturity.mmd (Health metrics)
@@ -573,18 +668,23 @@ Diagrams created:
 
 Next steps:
 1. Review diagrams in {output-dir}/
-2. Render to PNG for presentations:
-   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i {output-dir}/platform-dependency-graph.mmd -o diagram.png -s 3
-3. Use platform-network-topology.txt for Security Architecture Review
-4. Share with Architecture Council for platform-level discussions
+2. Render Mermaid diagrams to PNG for presentations:
+   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i {output-dir}/platform-dependency-graph.mmd -o dependency.png -s 3
+   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i {output-dir}/platform-network-topology.mmd -o network.png -s 3
+3. Use platform-network-topology.txt (ASCII) for Security Architecture Review submissions
+4. Use platform-network-topology.mmd (Mermaid) for architecture presentations
+5. Share with Architecture Council for platform-level discussions
 ```
 
 ## Notes
 
 - Diagrams are generated from PLATFORM.md (aggregated view), not individual component architectures
 - Focus is on platform-level concerns: dependencies, cross-component flows, aggregated security
-- Network topology diagram is critical for SAR (Security Architecture Review) submissions
-- Mermaid diagrams can be embedded directly in documentation
+- **Network topology has dual formats**:
+  - **Mermaid**: Visual, color-coded trust zones, great for presentations
+  - **ASCII**: Precise text format, no ambiguity, required for SAR submissions
+  - Both contain the same information, just different representations
+- Mermaid diagrams can be embedded directly in documentation or rendered to PNG
 - ASCII diagrams are precise and unambiguous for security reviews
 - Regenerate after running `/aggregate-platform-architecture` with updated component data
 
@@ -597,6 +697,8 @@ Next steps:
 | Audience | Component developers | Architects, security teams |
 | Focus | Component APIs, internal structure | Dependencies, workflows, network |
 | Security | Component-specific RBAC | Platform-wide security posture |
+| Network | Component services | Full topology (Mermaid + ASCII) |
+| Formats | Mermaid, C4, ASCII | Mermaid, ASCII (dual format for network) |
 
 ## Customization
 
