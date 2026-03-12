@@ -2,6 +2,49 @@
 
 Utility scripts for collecting and organizing ODH/RHOAI architecture documentation.
 
+## parse_manifests_script.py
+
+Parses `get_all_manifests.sh` from the operator repository to extract the authoritative list of platform components.
+
+### Usage
+
+```bash
+python scripts/parse_manifests_script.py --platform=odh [--format=list|paths|json]
+```
+
+### Arguments
+
+- `--platform`: Platform to parse (odh or rhoai)
+- `--manifest-script`: Path to get_all_manifests.sh (default: auto-detect)
+- `--checkouts-dir`: Checkouts directory (default: ./checkouts)
+- `--format`: Output format (default: list)
+  - `list`: Human-readable list with repo names
+  - `paths`: Just checkout paths (for scripting)
+  - `json`: Full component info as JSON
+
+### Output
+
+Returns only components that:
+1. Are defined in get_all_manifests.sh
+2. Have a matching checkout directory
+
+### Example
+
+```bash
+$ python scripts/parse_manifests_script.py --platform=odh --format=list
+
+Found 16 ODH component(s) with checkouts:
+
+  - dashboard                 odh-dashboard                            (checkouts/opendatahub-io/odh-dashboard)
+  - kserve                    kserve                                   (checkouts/opendatahub-io/kserve)
+  - modelregistry             model-registry-operator                  (checkouts/opendatahub-io/model-registry-operator)
+  ...
+```
+
+### Integration with Skills
+
+This script is used by the `/analyze-platform-components` skill to discover which components to analyze.
+
 ## collect_architectures.py
 
 Collects `GENERATED_ARCHITECTURE.md` files from repository checkouts and organizes them by platform and version.
