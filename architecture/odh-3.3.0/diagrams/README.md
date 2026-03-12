@@ -1,158 +1,324 @@
-# Platform Diagrams for Open Data Hub 3.3.0
+# ODH 3.3.0 - Architecture Diagrams
 
 Generated from: `architecture/odh-3.3.0/PLATFORM.md`
 Date: 2026-03-12
+Components: 17
 
-## Available Diagrams
+## Overview
 
-### For Architects
-- [Component Dependency Graph](./platform-dependency-graph.mmd) - Shows component relationships and dependencies
-- [Platform Workflows](./platform-workflows.mmd) - End-to-end flows spanning multiple components
-- [Platform Maturity](./platform-maturity.mmd) - Health metrics and component statistics
+This directory contains comprehensive architecture diagrams for Open Data Hub 3.3.0 platform. The diagrams cover platform-level views including component dependencies, data flows, security architecture, and RBAC policies.
+
+## Diagram Inventory
+
+### 1. Platform Overview (`odh-3.3.0-platform-overview.mmd`)
+
+**Format**: Mermaid Graph
+**Purpose**: High-level platform architecture showing all 17 components organized by functional layers
+
+**What it shows**:
+- Control Plane layer (opendatahub-operator, odh-dashboard)
+- Model Serving layer (KServe, odh-model-controller)
+- Model Management layer (model-registry, MLflow)
+- Development Workbenches (notebooks, notebook-controller)
+- Training & Distributed Computing (training-operator, trainer, kuberay, spark-operator)
+- ML Workflows & Data (data-science-pipelines, feast)
+- AI Governance (TrustyAI)
+- LLM Tools (llama-stack)
+- External dependencies (S3, PyPI, HuggingFace, Container Registry)
+- Component relationships and integration points
+
+**When to use**: Understanding overall platform architecture, onboarding new users, architecture reviews
+
+**Rendering**:
+```bash
+# Using Mermaid CLI
+mmdc -i odh-3.3.0-platform-overview.mmd -o odh-3.3.0-platform-overview.png
+
+# Or view in VS Code with Mermaid Preview extension
+# Or paste into https://mermaid.live
+```
+
+---
+
+### 2. Component Dependencies (`odh-3.3.0-dependencies.mmd`)
+
+**Format**: Mermaid Graph (Left-to-Right)
+**Purpose**: Component dependency graph showing how components depend on and integrate with each other
+
+**What it shows**:
+- ODH Operator manages all component lifecycles
+- Dashboard creates CRs for notebooks, KServe, model registry
+- Model serving dependencies (KServe → Model Registry, TrustyAI)
+- Notebook integrations (notebooks → MLflow, Feast, Model Registry, KServe, Pipelines)
+- Pipeline orchestration (pipelines → training operators, KServe)
+- Training integrations (training-operator/trainer → MLflow, Model Registry)
+- TrustyAI monitoring (TrustyAI → KServe, MLflow)
+
+**When to use**: Understanding component relationships, planning deployments, troubleshooting integration issues
+
+**Rendering**:
+```bash
+mmdc -i odh-3.3.0-dependencies.mmd -o odh-3.3.0-dependencies.png
+```
+
+---
+
+### 3. Data Flow: Model Development to Production (`odh-3.3.0-flow-model-dev-to-prod.mmd`)
+
+**Format**: Mermaid Sequence Diagram
+**Purpose**: End-to-end workflow from model development in notebooks to production deployment
+
+**What it shows**:
+1. User accesses dashboard and creates notebook
+2. Model development (read features from Feast, train, log to MLflow)
+3. Model registration (register to Model Registry)
+4. Model deployment (create InferenceService via KServe)
+5. OpenShift integration (odh-model-controller creates Route)
+6. AI governance (TrustyAI monitors inferences)
+7. Inference requests from external clients
+
+**When to use**: Understanding ML lifecycle, training data scientists, documenting workflows
+
+**Rendering**:
+```bash
+mmdc -i odh-3.3.0-flow-model-dev-to-prod.mmd -o odh-3.3.0-flow-model-dev-to-prod.png
+```
+
+---
+
+### 4. Data Flow: Automated ML Pipeline (`odh-3.3.0-flow-ml-pipeline.mmd`)
+
+**Format**: Mermaid Sequence Diagram
+**Purpose**: MLOps pipeline workflow using Data Science Pipelines (Argo Workflows)
+
+**What it shows**:
+1. User submits pipeline via dashboard
+2. Data preparation step (read/write from S3)
+3. Training step (create PyTorchJob/TFJob, distributed training)
+4. Model registration (register to Model Registry)
+5. Model deployment (create InferenceService)
+6. Pipeline completion and status updates
+
+**When to use**: MLOps automation, pipeline development, CI/CD for ML
+
+**Rendering**:
+```bash
+mmdc -i odh-3.3.0-flow-ml-pipeline.mmd -o odh-3.3.0-flow-ml-pipeline.png
+```
+
+---
+
+### 5. Data Flow: Distributed LLM Fine-tuning (`odh-3.3.0-flow-llm-finetuning.mmd`)
+
+**Format**: Mermaid Sequence Diagram
+**Purpose**: LLM fine-tuning workflow using Trainer v2 with distributed training
+
+**What it shows**:
+1. User creates TrainJob CR for LLM fine-tuning
+2. Trainer creates JobSet for distributed pod coordination
+3. Download base LLM from HuggingFace
+4. Load training dataset from S3
+5. Distributed training with DeepSpeed/Megatron
+6. Checkpointing and metrics logging (S3, MLflow)
+7. Model registration and deployment as LLMInferenceService
+
+**When to use**: LLM fine-tuning, generative AI workflows, distributed training
+
+**Rendering**:
+```bash
+mmdc -i odh-3.3.0-flow-llm-finetuning.mmd -o odh-3.3.0-flow-llm-finetuning.png
+```
+
+---
+
+### 6. Security & Network Architecture (`odh-3.3.0-security-network.mmd` / `.txt`)
+
+**Format**: Mermaid Graph + ASCII Diagram
+**Purpose**: Platform security architecture showing namespaces, network policies, auth mechanisms, encryption
+
+**What it shows**:
+- External network (users, S3, PyPI, HuggingFace, Container Registry)
+- OpenShift cluster namespaces (opendatahub, istio-system, knative-serving, user namespaces)
+- Ingress layer (OpenShift Router with TLS termination)
+- Authentication mechanisms (OAuth, mTLS, ServiceAccount tokens, AWS IAM, API keys)
+- Network policies (ingress/egress rules per component)
+- Encryption (TLS 1.2+ for all external endpoints, mTLS for service mesh)
+- RBAC enforcement points
+- Secrets management
+
+**When to use**: Security assessments, SAR documentation, network architecture planning, compliance reviews
+
+**Rendering**:
+```bash
+# Mermaid version
+mmdc -i odh-3.3.0-security-network.mmd -o odh-3.3.0-security-network.png
+
+# ASCII version (view in terminal or text editor)
+cat odh-3.3.0-security-network.txt
+```
+
+---
+
+### 7. C4 Context Diagram (`odh-3.3.0-c4-context.dsl`)
+
+**Format**: Structurizr DSL
+**Purpose**: C4 model system context showing ODH platform, users, and external systems
+
+**What it shows**:
+- Users: Data Scientist, ML Engineer, Platform Administrator, External Client
+- Main system: Open Data Hub 3.3.0
+- External systems: S3 Storage, PyPI, HuggingFace, Container Registry
+- Infrastructure: Kubernetes API, Service Mesh (Istio)
+- Relationships and protocols (HTTPS/443, OAuth, AWS IAM, mTLS)
+
+**When to use**: Architecture presentations, system context documentation, stakeholder communication
+
+**Rendering**:
+```bash
+# Using Structurizr CLI
+structurizr-cli export -workspace odh-3.3.0-c4-context.dsl -format plantuml
+
+# Using Structurizr Lite (Docker)
+docker run -it --rm -p 8080:8080 -v $(pwd):/usr/local/structurizr structurizr/lite
+
+# Or upload to https://structurizr.com
+```
+
+---
+
+### 8. RBAC Visualization (`odh-3.3.0-rbac.mmd`)
+
+**Format**: Mermaid Graph
+**Purpose**: RBAC policies showing users, service accounts, roles, and resource permissions
+
+**What it shows**:
+- User identities (Platform Administrator, Data Scientist)
+- Service accounts for all operators and workload pods
+- ClusterRoles for platform components
+- Namespace Roles for user workloads
+- Kubernetes resources (CRDs, Pods, Services, Deployments, Secrets)
+- Permission mappings (manage, create, read, watch)
+- RoleBindings and ClusterRoleBindings
+
+**When to use**: RBAC audits, permission troubleshooting, security reviews, least-privilege analysis
+
+**Rendering**:
+```bash
+mmdc -i odh-3.3.0-rbac.mmd -o odh-3.3.0-rbac.png
+```
+
+---
+
+## Rendering All Diagrams
+
+### Prerequisites
+
+Install Mermaid CLI:
+```bash
+npm install -g @mermaid-js/mermaid-cli
+```
+
+Install Structurizr CLI (optional):
+```bash
+# Download from https://github.com/structurizr/cli/releases
+```
+
+### Batch Rendering
+
+```bash
+#!/bin/bash
+# Render all Mermaid diagrams to PNG
+
+for file in *.mmd; do
+    echo "Rendering $file..."
+    mmdc -i "$file" -o "${file%.mmd}.png" -b transparent
+done
+
+echo "All diagrams rendered successfully!"
+```
+
+### Rendering Options
+
+**Mermaid CLI (`mmdc`) options**:
+- `-b transparent` - Transparent background
+- `-w 2048` - Width in pixels
+- `-H 1536` - Height in pixels
+- `-t default|dark|forest|neutral` - Theme
+
+Example:
+```bash
+mmdc -i odh-3.3.0-platform-overview.mmd -o odh-3.3.0-platform-overview.png -b transparent -w 2048 -t default
+```
+
+---
+
+## Diagram Usage Guidelines
+
+### For Data Scientists
+- **Start with**: Platform Overview (understand available components)
+- **Workflow diagrams**: Model Dev to Prod, ML Pipeline (understand ML lifecycle)
+- **LLM work**: LLM Fine-tuning flow
+
+### For ML Engineers
+- **Essential**: Component Dependencies (understand integration points)
+- **MLOps**: ML Pipeline, Model Dev to Prod flows
+- **Training**: LLM Fine-tuning flow
+
+### For Platform Administrators
+- **Architecture**: Platform Overview, Component Dependencies
+- **Security**: Security & Network Architecture, RBAC Visualization
+- **Planning**: C4 Context Diagram
 
 ### For Security Teams
-- [Platform Network Topology (Mermaid)](./platform-network-topology.mmd) - Visual network architecture diagram
-- [Platform Network Topology (ASCII)](./platform-network-topology.txt) - Precise text format for SAR submissions
-- [Platform Security Overview](./platform-security-overview.mmd) - RBAC, auth mechanisms, secrets, service mesh policies
+- **Critical**: Security & Network Architecture (both formats)
+- **Access Control**: RBAC Visualization
+- **System Context**: C4 Context Diagram
 
-### For Platform Engineers
-- [Component Dependency Graph](./platform-dependency-graph.mmd) - Understand integration points
-- [Platform Network Topology (Mermaid)](./platform-network-topology.mmd) - Visualize network architecture
-- [Platform Network Topology (ASCII)](./platform-network-topology.txt) - Debug connectivity issues (precise details)
-- [Platform Workflows](./platform-workflows.mmd) - Trace request flows
+### For Stakeholders
+- **Executive Summary**: Platform Overview, C4 Context Diagram
+- **Use Cases**: Workflow diagrams (Model Dev to Prod, ML Pipeline, LLM Fine-tuning)
 
-## How to Use
+---
 
-### Mermaid Diagrams (.mmd files)
-- **In GitHub/GitLab**: Paste into markdown with ````mermaid` code blocks
-- **Render to PNG locally**:
+## Diagram Maintenance
+
+These diagrams are generated from the platform architecture document (`PLATFORM.md`). When the platform is updated:
+
+1. Update component architecture files (`*.md`)
+2. Regenerate platform aggregation:
    ```bash
-   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i diagram.mmd -o diagram.png -s 3
+   /aggregate-platform-architecture --distribution=odh --version=3.3.0
    ```
-- **In VS Code**: Install "Markdown Preview Mermaid Support" extension
+3. Regenerate diagrams:
+   ```bash
+   /generate-architecture-diagrams --architecture=architecture/odh-3.3.0/PLATFORM.md
+   ```
 
-### ASCII Diagrams (.txt files)
-- View in any text editor
-- Include directly in security documentation
-- Perfect for SAR (Security Architecture Review) submissions
+---
 
-## Diagram Descriptions
+## File Formats
 
-### Component Dependency Graph
-Shows how platform components depend on each other. Central components (most dependencies) are highlighted with thicker borders. Useful for understanding blast radius of changes and planning upgrades.
+| Extension | Format | Rendering | Use Case |
+|-----------|--------|-----------|----------|
+| `.mmd` | Mermaid | mmdc CLI, mermaid.live, VS Code | Most diagrams (graph, sequence) |
+| `.dsl` | Structurizr DSL | Structurizr CLI/Lite | C4 model diagrams |
+| `.txt` | ASCII | Text editor, terminal | Security architecture (plain text) |
 
-**Color Coding**:
-- Gray: External platform services (K8s API, OLM, OAuth, Istio)
-- Blue (thick border): Central control plane (ODH Operator)
-- Green (thick border): Primary user interface (Dashboard)
-- Green: ODH components (Notebook Controller, MLflow, Feast)
-- Orange: External services (PostgreSQL, Redis, S3, BigQuery, Quay)
+---
 
-### Platform Network Topology
-Complete network architecture showing all ingress points, service mesh communication, and egress destinations. Includes exact port numbers, protocols, encryption, and authentication mechanisms.
+## Additional Resources
 
-**Two formats provided**:
-- **Mermaid (.mmd)**: Visual diagram with color-coded trust zones. Great for presentations and architecture discussions.
-  - Trust zones: External (gray), Ingress (orange), Service Mesh (green), Egress (yellow)
-  - Shows protocol and port details on edges
-- **ASCII (.txt)**: Precise text format with no ambiguity. Required for SAR (Security Architecture Review) submissions and compliance documentation.
-  - Detailed tables for namespaces, RBAC, authentication, secrets
-  - Complete connection details with trust boundaries
+- **Source**: `architecture/odh-3.3.0/PLATFORM.md`
+- **Component Details**: `architecture/odh-3.3.0/*.md`
+- **Mermaid Docs**: https://mermaid.js.org/
+- **Structurizr**: https://structurizr.com/
+- **C4 Model**: https://c4model.com/
 
-Both formats contain the same information - use Mermaid for visual clarity, ASCII for security reviews.
+---
 
-### Cross-Component Workflows
-Sequence diagrams showing end-to-end user workflows that span multiple components.
+## Questions or Issues
 
-**Workflows included**:
-1. User Accesses Dashboard to Create Notebook
-2. Experiment Tracking with MLflow from Notebook
-3. Feature Engineering with Feast from Notebook
-4. Platform Installation via DataScienceCluster
-5. Idle Notebook Culling
-
-Shows component interactions over time with protocol details (mTLS, HTTPS, gRPC) and authentication at each boundary crossing.
-
-### Platform Security Overview
-Visual representation of security architecture including ServiceAccounts, ClusterRoles, secrets, and service mesh policies. Shows which components have which permissions.
-
-**Color Coding**:
-- Red: Privileged ClusterRoles (controller-manager, notebook-controller-role)
-- Yellow: Sensitive secrets (credentials, OAuth configs)
-- Green: Service mesh policies (PeerAuthentication, AuthorizationPolicy)
-
-**Elements shown**:
-- 6 authentication mechanisms (OAuth, Bearer tokens, mTLS, OIDC, SA tokens, K8s RBAC)
-- 6 key ServiceAccounts with namespace context
-- 6 ClusterRoles (high privilege)
-- 8+ critical secrets
-- Service mesh policies (optional)
-
-### Platform Maturity Dashboard
-High-level metrics about platform health: component counts, mTLS coverage, API maturity, dependency counts. Useful for executive reviews and maturity assessments.
-
-**Metrics categories**:
-- Component Statistics (blue): Total components, operators, CRDs
-- Security Posture (orange/yellow for optional, green for strong): Service mesh, mTLS, auth mechanisms, secrets
-- Architecture Patterns (green): Multi-tenancy, HA, storage backends
-- Cloud Compatibility (blue/green): AWS, GCP, Azure, CoreWeave support
-- API Maturity (blue/green): HTTP endpoints, gRPC services, API versions
-- Integration Points (orange/blue): External platform, services, internal integrations
-
-## Updating Diagrams
-
-To regenerate after platform changes:
-1. Update component architectures: `/repo-to-architecture-summary`
-2. Collect components: `/collect-component-architectures`
-3. Aggregate platform: `/aggregate-platform-architecture`
-4. Regenerate diagrams: `/generate-platform-diagrams`
-
-## Platform Details
-
-- **Platform**: Open Data Hub 3.3.0
-- **Base Platform**: OpenShift Container Platform 4.19+ / Kubernetes 1.25+
-- **Components**: 5 core components (ODH Operator, Dashboard, Notebooks, MLflow, Feast)
-- **Architecture**: 100% operator-based, namespace multi-tenancy
-- **Security**: Optional Istio service mesh, multi-layered authentication
-- **Storage**: Flexible backends (PostgreSQL, Redis, MongoDB, S3, GCS, BigQuery, Snowflake)
-- **Cloud Support**: AWS, GCP, Azure, CoreWeave
-
-## Component-Specific Diagrams
-
-### Feast Feature Store
-
-Generated from: `architecture/odh-3.3.0/feast.md`
-
-#### For Developers
-- [Feast Component Structure](./feast-component.mmd) - Internal components, services, CRDs, and storage backends
-- [Feast Data Flows](./feast-dataflow.mmd) - Sequence diagrams for online serving, offline serving, materialization, and feature push
-- [Feast Dependencies](./feast-dependencies.mmd) - Component dependency graph with required/optional dependencies
-
-#### For Architects
-- [Feast C4 Context](./feast-c4-context.dsl) - System context in C4 format showing Feast in the ML platform ecosystem
-- [Feast Component Overview](./feast-component.mmd) - High-level component view with operator, services, and storage backends
-
-#### For Security Teams
-- [Feast Security Network (Mermaid)](./feast-security-network.mmd) - Visual network topology with trust zones, ports, protocols, and auth
-- [Feast Security Network (ASCII)](./feast-security-network.txt) - Precise text format for SAR with detailed network flows, RBAC, secrets, and policies
-- [Feast RBAC Visualization](./feast-rbac.mmd) - RBAC permissions, ClusterRoles, RoleBindings, and API resource access
-
-#### Key Details
-- **Network**: OpenShift Route/K8s Ingress (443→80), Services (Online 80:6566, Offline 80:8815, Registry 80:6570/6572, Transform 80:6569, UI 80:8888)
-- **Security**: Optional Bearer Token (JWT), Optional OIDC (UI), ServiceAccount Token (Operator), Optional mTLS via Istio
-- **Storage**: Redis/PostgreSQL/DynamoDB (online), BigQuery/Snowflake/S3 (offline), PostgreSQL/S3/GCS (registry)
-- **Data Flows**: Online serving, Offline serving, Materialization (offline→online), Push (streaming→online/offline)
-
-## Notes
-
-- Diagrams are generated from PLATFORM.md (aggregated view) and individual component architectures (feast.md, etc.)
-- Platform diagrams focus on cross-component concerns; component diagrams focus on internal architecture
-- **Network topology has dual formats**:
-  - **Mermaid**: Visual, color-coded trust zones, great for presentations
-  - **ASCII**: Precise text format, no ambiguity, required for SAR submissions
-  - Both contain the same information, just different representations
-- Mermaid diagrams can be embedded directly in documentation or rendered to PNG
-- ASCII diagrams are precise and unambiguous for security reviews
-- Service mesh (Istio) integration is optional; diagrams show both optional and required components
-- Regenerate platform diagrams after running `/aggregate-platform-architecture` with updated component data
-- Regenerate component diagrams after running `/generate-architecture-diagrams --architecture=<component>.md`
+For questions about these diagrams or to report issues:
+1. Check the source architecture document: `architecture/odh-3.3.0/PLATFORM.md`
+2. Review component-specific architecture: `architecture/odh-3.3.0/<component>.md`
+3. Regenerate diagrams if architecture has been updated
