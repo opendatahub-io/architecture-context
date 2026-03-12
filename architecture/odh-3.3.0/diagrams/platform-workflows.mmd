@@ -1,0 +1,201 @@
+%% Workflow 1: User Accesses Dashboard to Create Notebook
+sequenceDiagram
+    participant User as Data Scientist
+    participant Browser as Web Browser
+    participant Route as OpenShift Route
+    participant Proxy as kube-rbac-proxy
+    participant Dashboard as ODH Dashboard Backend
+    participant K8sAPI as Kubernetes API
+    participant Webhook as Notebook Webhook
+    participant Controller as Notebook Controller
+    participant OAuth as OpenShift OAuth
+    participant Notebook as Notebook Pod
+
+    Note over User,Notebook: Workflow 1: User Creates Notebook via Dashboard
+
+    User->>Browser: Navigate to dashboard URL
+    Browser->>Route: HTTPS request<br/>(TLS 1.2+)
+    Route->>Proxy: Forward to dashboard service<br/>(Port 8443)
+    Proxy->>OAuth: Validate user session<br/>(OAuth 2.0)
+    OAuth-->>Proxy: User authenticated
+    Proxy->>Dashboard: Forward with user headers<br/>(X-Forwarded-User, etc.)
+    Dashboard->>K8sAPI: Get user namespaces<br/>(SubjectAccessReview)
+    K8sAPI-->>Dashboard: Namespace list
+    Dashboard-->>Browser: Dashboard UI rendered<br/>(React SPA)
+
+    Note over User: User creates notebook via UI
+
+    Browser->>Dashboard: POST /api/notebooks<br/>(Bearer Token)
+    Dashboard->>K8sAPI: Create Notebook CR<br/>(ServiceAccount token)
+    K8sAPI->>Webhook: Validate Notebook CR<br/>(HTTPS webhook call)
+    Webhook-->>K8sAPI: Validation successful
+    K8sAPI-->>Dashboard: Notebook CR created
+    Dashboard-->>Browser: Success response
+
+    Note over Controller: Notebook Controller reconciles new Notebook CR
+
+    Controller->>K8sAPI: Watch Notebook CR<br/>(list-watch)
+    Controller->>K8sAPI: Create StatefulSet<br/>(notebook container)
+    Controller->>K8sAPI: Create Service<br/>(notebook service)
+    Controller->>OAuth: Create OAuth client<br/>(for notebook auth)
+    Controller->>K8sAPI: Create Route<br/>(external access)
+    K8sAPI-->>Controller: Resources created
+
+    User->>Browser: Click notebook URL
+    Browser->>Route: HTTPS request to notebook route
+    Route->>Notebook: Forward to OAuth Proxy sidecar
+    Notebook->>OAuth: Validate user token
+    OAuth-->>Notebook: User authorized
+    Notebook-->>Browser: Jupyter UI
+
+---
+
+%% Workflow 2: Data Scientist Tracks Experiment in MLflow from Notebook
+sequenceDiagram
+    participant User as Data Scientist
+    participant Notebook as Notebook Pod
+    participant SDK as MLflow SDK
+    participant Gateway as Istio Gateway
+    participant MLflow as MLflow Server
+    participant K8sAPI as Kubernetes API
+    participant PostgreSQL as PostgreSQL
+    participant S3 as S3 Storage
+
+    Note over User,S3: Workflow 2: ML Experiment Tracking with MLflow
+
+    User->>Notebook: Run training script<br/>(mlflow.start_run())
+    Notebook->>SDK: Initialize MLflow client<br/>(tracking_uri set)
+    SDK->>Gateway: POST /api/2.0/mlflow/experiments/create<br/>(HTTPS, TLS 1.2+)
+    Gateway->>MLflow: Forward request<br/>(optional mTLS)
+    MLflow->>K8sAPI: SubjectAccessReview<br/>(validate user permissions)
+    K8sAPI-->>MLflow: User authorized for experiments
+    MLflow->>PostgreSQL: INSERT experiment metadata<br/>(TLS optional)
+    PostgreSQL-->>MLflow: Experiment created
+    MLflow-->>Gateway: Experiment ID
+    Gateway-->>SDK: Response
+    SDK-->>Notebook: Experiment context
+
+    Note over User: Model training in progress
+
+    Notebook->>SDK: Log metrics<br/>(mlflow.log_metric())
+    SDK->>MLflow: POST /api/2.0/mlflow/runs/log-metric<br/>(Bearer Token)
+    MLflow->>K8sAPI: Validate permissions
+    MLflow->>PostgreSQL: INSERT metric data
+    PostgreSQL-->>MLflow: Success
+
+    Notebook->>SDK: Log model artifact<br/>(mlflow.log_artifact())
+    SDK->>MLflow: POST /api/2.0/mlflow/runs/log-artifact
+    MLflow->>S3: PUT /bucket/experiment-id/artifacts/<br/>(HTTPS, AWS IAM auth)
+    S3-->>MLflow: Upload complete
+    MLflow->>PostgreSQL: UPDATE artifact URI
+    MLflow-->>SDK: Success
+    SDK-->>Notebook: Artifacts logged
+
+    User->>Browser: Open MLflow UI
+    Browser->>Gateway: GET / (HTTPS)
+    Gateway->>MLflow: Forward request
+    MLflow->>PostgreSQL: SELECT experiments, runs, metrics
+    PostgreSQL-->>MLflow: Query results
+    MLflow-->>Browser: React UI with experiment data
+
+---
+
+%% Workflow 3: Feature Engineering with Feast
+sequenceDiagram
+    participant User as Data Scientist
+    participant Notebook as Notebook Pod
+    participant ConfigMap as Feast ConfigMap
+    participant FeastSDK as Feast Python SDK
+    participant Registry as Feast Registry Service
+    participant Offline as Feast Offline Store<br/>(BigQuery)
+    participant Online as Feast Online Store<br/>(Redis)
+    participant Training as Training Job
+    participant Serving as Model Serving
+
+    Note over User,Serving: Workflow 3: Feature Store Lifecycle
+
+    Note over Notebook: Notebook Controller injects Feast config at startup
+
+    Notebook->>ConfigMap: Read Feast connection config<br/>(mounted as volume)
+    User->>Notebook: Define feature views<br/>(Feast Python SDK)
+    Notebook->>FeastSDK: Apply feature definitions<br/>(feast apply)
+    FeastSDK->>Registry: Register feature views<br/>(gRPC/6570 or HTTP/6572)
+    Registry->>S3: Store registry.db<br/>(S3/GCS backend)
+    Registry-->>FeastSDK: Features registered
+
+    Note over User: Push historical features for training
+
+    Notebook->>FeastSDK: Push features to offline store<br/>(feast push)
+    FeastSDK->>Offline: Write historical features<br/>(BigQuery API, HTTPS/443)
+    Offline-->>FeastSDK: Features stored
+
+    Note over Training: Training job retrieves historical features
+
+    Training->>FeastSDK: Get historical features<br/>(get_historical_features())
+    FeastSDK->>Offline: Query feature data<br/>(SQL query to BigQuery)
+    Offline-->>FeastSDK: Feature dataset
+    FeastSDK-->>Training: Training dataset with features
+
+    Note over User: Materialize features to online store for serving
+
+    Notebook->>FeastSDK: Materialize features<br/>(feast materialize)
+    FeastSDK->>Offline: Read historical features<br/>(BigQuery SELECT)
+    Offline-->>FeastSDK: Feature values
+    FeastSDK->>Online: Write to online store<br/>(Redis MSET, TLS optional)
+    Online-->>FeastSDK: Materialization complete
+
+    Note over Serving: Model serving retrieves online features for inference
+
+    Serving->>FeastSDK: Get online features<br/>(get_online_features())
+    FeastSDK->>Online: Read from Redis<br/>(Redis GET commands)
+    Online-->>FeastSDK: Feature values
+    FeastSDK-->>Serving: Real-time features for inference
+
+---
+
+%% Workflow 4: Platform Operator Installs Components
+sequenceDiagram
+    participant Admin as Platform Admin
+    participant K8sAPI as Kubernetes API
+    participant Webhook as ODH Operator Webhook
+    participant ODHOp as ODH Operator
+    participant Renderer as Manifest Renderer
+    participant OLM as OLM
+    participant Quay as Quay.io Registry
+    participant ComponentOp as Component Operators<br/>(Feast, MLflow)
+
+    Note over Admin,ComponentOp: Workflow 4: Platform Installation via DataScienceCluster
+
+    Admin->>K8sAPI: kubectl apply -f datasciencecluster.yaml
+    K8sAPI->>Webhook: Validate DataScienceCluster CR<br/>(HTTPS webhook)
+    Webhook-->>K8sAPI: Validation successful
+    K8sAPI-->>Admin: CR created
+    K8sAPI->>ODHOp: Reconcile event<br/>(CR watch notification)
+
+    ODHOp->>ODHOp: Read component configurations<br/>(Dashboard, Notebooks, MLflow, Feast enabled)
+    ODHOp->>Renderer: Render component manifests<br/>(Kustomize/Helm processing)
+    Renderer-->>ODHOp: Rendered YAML
+
+    Note over ODHOp: Deploy Dashboard and Notebook Controller directly
+
+    ODHOp->>K8sAPI: Create Dashboard Deployment<br/>(opendatahub namespace)
+    ODHOp->>K8sAPI: Create Notebook Controller Deployment<br/>(redhat-ods-applications)
+    K8sAPI-->>ODHOp: Resources created
+
+    Note over ODHOp: Install component operators via OLM
+
+    ODHOp->>K8sAPI: Create Subscription CR<br/>(for Feast Operator)
+    ODHOp->>K8sAPI: Create Subscription CR<br/>(for MLflow Operator)
+    K8sAPI->>OLM: Process Subscriptions
+    OLM->>Quay: Pull operator images<br/>(HTTPS/443, TLS 1.2+)
+    Quay-->>OLM: Operator images
+    OLM->>K8sAPI: Create Operator Deployments
+    K8sAPI->>ComponentOp: Operators running
+
+    Note over ComponentOp: Component operators deploy services
+
+    ComponentOp->>K8sAPI: Create component resources<br/>(FeatureStore, MLflowConfig CRs)
+    K8sAPI-->>ComponentOp: Services deployed
+
+    ODHOp->>K8sAPI: Update DataScienceCluster status<br/>(all components ready)
+    K8sAPI-->>Admin: kubectl get dsc<br/>(STATUS: Ready)
