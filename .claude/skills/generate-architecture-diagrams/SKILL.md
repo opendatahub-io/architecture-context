@@ -38,11 +38,28 @@ Examples:
 
 Generate visual diagrams from structured markdown architecture documentation:
 
-### Step 1: Read Architecture Documentation
+### Step 1: Determine Component Name
 
-Read the `GENERATED_ARCHITECTURE.md` file:
+Derive the component name from the architecture filename (not from file content):
 
-Parse the structured markdown to extract:
+**Logic**:
+```bash
+# Get basename without extension
+FILENAME=$(basename "$ARCHITECTURE_FILE" .md)
+# Convert to lowercase for consistency
+COMPONENT_NAME=$(echo "$FILENAME" | tr '[:upper:]' '[:lower:]')
+```
+
+**Examples**:
+- `architecture/odh-3.3.0/feast.md` → `feast`
+- `architecture/odh-3.3.0/PLATFORM.md` → `platform`
+- `./GENERATED_ARCHITECTURE.md` → `generated_architecture`
+
+**Important**: Use the filename-derived name for ALL diagram filenames. Do NOT extract component name from file content or include version numbers in filenames (the directory is already versioned).
+
+### Step 2: Read Architecture Documentation
+
+Read the architecture file and parse the structured markdown to extract:
 - **Component metadata**: Name, type, purpose
 - **Architecture components**: From "## Architecture Components" table
 - **CRDs**: From "### Custom Resource Definitions" table
@@ -54,7 +71,7 @@ Parse the structured markdown to extract:
 - **Data flows**: From "### Flow" tables
 - **Integration points**: From integration tables
 
-### Step 2: Determine Output Directory
+### Step 3: Determine Output Directory
 
 If `--output-dir` is NOT provided, auto-determine based on architecture file location:
 
@@ -77,15 +94,21 @@ OUTPUT_DIR="$ARCH_DIR/diagrams"
 
 If `--output-dir` IS provided, use that exactly as specified.
 
-### Step 3: Create Output Directory
+### Step 4: Create Output Directory
 
 ```bash
 mkdir -p {output-dir}
 ```
 
-### Step 4: Generate Diagrams
+### Step 5: Generate Diagrams
 
-Generate the requested diagram formats:
+Generate the requested diagram formats using the component name from Step 1:
+
+**File naming**: All diagrams use `{component-name}` from Step 1 (derived from filename, no version).
+
+**Examples**:
+- `feast.md` → `feast-component.mmd`, `feast-dataflow.mmd`, etc.
+- `PLATFORM.md` → `platform-component.mmd`, `platform-dataflow.mmd`, etc.
 
 ---
 
@@ -447,9 +470,11 @@ graph TD
 
 ---
 
-### Step 5: Generate Index/README
+### Step 6: Generate Index/README
 
 Create `{output-dir}/README.md` with links to all diagrams:
+
+**Important**: Use `{component-name}` from Step 1 (derived from filename) for all links.
 
 ```markdown
 # Architecture Diagrams for {Component Name}
@@ -457,21 +482,23 @@ Create `{output-dir}/README.md` with links to all diagrams:
 Generated from: `{architecture-file}`
 Date: {date}
 
+**Note**: Diagram filenames use base component name without version (directory is already versioned).
+
 ## Available Diagrams
 
 ### For Developers
-- [Component Structure](./NAME-component.mmd) - Mermaid diagram showing internal components
-- [Data Flows](./NAME-dataflow.mmd) - Sequence diagram of request/response flows
-- [Dependencies](./NAME-dependencies.mmd) - Component dependency graph
+- [Component Structure](./{component-name}-component.mmd) - Mermaid diagram showing internal components
+- [Data Flows](./{component-name}-dataflow.mmd) - Sequence diagram of request/response flows
+- [Dependencies](./{component-name}-dependencies.mmd) - Component dependency graph
 
 ### For Architects
-- [C4 Context](./NAME-c4-context.dsl) - System context in C4 format (Structurizr)
-- [Component Overview](./NAME-component.mmd) - High-level component view
+- [C4 Context](./{component-name}-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./{component-name}-component.mmd) - High-level component view
 
 ### For Security Teams
-- [Security Network Diagram (Mermaid)](./NAME-security-network.mmd) - Visual network topology diagram
-- [Security Network Diagram (ASCII)](./NAME-security-network.txt) - Precise text format for SAR submissions
-- [RBAC Visualization](./NAME-rbac.mmd) - RBAC permissions and bindings
+- [Security Network Diagram (Mermaid)](./{component-name}-security-network.mmd) - Visual network topology diagram
+- [Security Network Diagram (ASCII)](./{component-name}-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./{component-name}-rbac.mmd) - RBAC permissions and bindings
 
 ## How to Use
 
@@ -528,14 +555,14 @@ To regenerate after architecture changes:
 
 ---
 
-### Step 6: Report Results
+### Step 7: Report Results
 
 Output a summary:
 
 ```
 ✅ Architecture diagrams generated!
 
-Component: {component-name}
+Component: {component-name} (from filename)
 Source: {architecture-file}
 Output directory: {output-dir}/
 
@@ -548,6 +575,8 @@ Diagrams created:
 - ✅ {component-name}-dependencies.mmd (Mermaid dependency graph)
 - ✅ {component-name}-rbac.mmd (RBAC visualization)
 - ✅ README.md (Index of all diagrams)
+
+Note: Filenames use base component name without version (directory is already versioned)
 
 Next steps:
 1. Review diagrams in {output-dir}/
@@ -575,25 +604,30 @@ Next steps:
 ### Organized Structure Example
 
 ```
-architecture/odh-3.3.0/
-├── feast.md                          # Component architecture
+architecture/odh-3.3.0/                # ← Directory is versioned
+├── feast.md                           # Component architecture
 ├── kserve.md
 ├── model-registry.md
 ├── diagrams/                          # Auto-created (shared by all components)
-│   ├── feast-component.mmd
+│   ├── feast-component.mmd            # ← No version in filename (redundant)
 │   ├── feast-dataflow.mmd
-│   ├── feast-security-network.mmd    # Mermaid (visual)
-│   ├── feast-security-network.txt    # ASCII (precise)
+│   ├── feast-security-network.mmd     # Mermaid (visual)
+│   ├── feast-security-network.txt     # ASCII (precise)
 │   ├── feast-c4-context.dsl
 │   ├── feast-dependencies.mmd
 │   ├── feast-rbac.mmd
-│   ├── kserve-component.mmd
+│   ├── kserve-component.mmd           # ← Simple names
 │   ├── kserve-dataflow.mmd
 │   ├── kserve-security-network.mmd
 │   ├── kserve-security-network.txt
+│   ├── platform-component.mmd         # ← PLATFORM.md → platform-*.mmd
+│   ├── platform-dataflow.mmd
+│   ├── platform-security-network.mmd
 │   └── README.md
 └── PLATFORM.md                        # Aggregated platform view
 ```
+
+**Key principle**: Filenames use base component name only (no version). The directory `odh-3.3.0/` provides versioning context.
 
 ### General Notes
 
