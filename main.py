@@ -9,11 +9,13 @@ Supports multiple phases:
 
 import os
 import sys
+import re
 import asyncio
 import argparse
 from pathlib import Path
 
 from dotenv import load_dotenv
+from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
 
 # Import phase modules
 from lib.fetch import fetch_repositories
@@ -118,6 +120,17 @@ def parse_args():
         "--script-path",
         help="Override path to get_all_manifests.sh script (auto-detected if not provided)"
     )
+    generate_arch_parser.add_argument(
+        "--max-concurrent",
+        type=int,
+        default=5,
+        help="Maximum number of agents to run concurrently (default: 5)"
+    )
+    generate_arch_parser.add_argument(
+        "--limit",
+        type=int,
+        help="Limit number of components to process (for testing)"
+    )
 
     # All phases
     all_parser = subparsers.add_parser(
@@ -219,10 +232,81 @@ async def run_manifest_phase(args) -> None:
         print(f"{'=' * 60}")
 
 
+async def run_agent(name: str, cwd: str, prompt: str, log_dir: Path) -> dict:
+    """
+    Launch one independent Claude agent session to generate architecture.
+
+    Args:
+        name: Component name for identification
+        cwd: Working directory for the agent
+        prompt: Prompt to send to the agent
+        log_dir: Directory to write log files
+
+    Returns:
+        dict with 'name', 'success', 'log_file', and optional 'error' keys
+    """
+    # Create log file for this agent
+    log_file = log_dir / f"{name.replace('/', '_')}.log"
+
+    options = ClaudeAgentOptions(
+        cwd=cwd,
+        allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+        permission_mode="bypassPermissions",
+        # No max_turns - let agent run as long as needed for thorough analysis
+    )
+
+    print(f"\n{'=' * 60}")
+    print(f"Starting agent: {name}")
+    print(f"Working directory: {cwd}")
+    print(f"Log file: {log_file}")
+    print(f"{'=' * 60}")
+
+    try:
+        with open(log_file, 'w') as log:
+            # Write header
+            log.write(f"Agent: {name}\n")
+            log.write(f"Working directory: {cwd}\n")
+            log.write(f"{'=' * 60}\n\n")
+            log.write("PROMPT:\n")
+            log.write(prompt)
+            log.write(f"\n\n{'=' * 60}\n")
+            log.write("AGENT OUTPUT:\n\n")
+            log.flush()
+
+            async with ClaudeSDKClient(options=options) as client:
+                await client.query(prompt)
+
+                async for msg in client.receive_response():
+                    # Print to console with component name prefix
+                    print(f"[{name}] {msg}")
+                    # Also write to log file
+                    log.write(f"{msg}\n")
+                    log.flush()
+
+        print(f"\n{'=' * 60}")
+        print(f"✓ Completed: {name}")
+        print(f"{'=' * 60}")
+
+        return {"name": name, "success": True, "log_file": str(log_file)}
+
+    except Exception as e:
+        print(f"\n{'=' * 60}")
+        print(f"✗ Failed: {name}")
+        print(f"Error: {e}")
+        print(f"{'=' * 60}")
+
+        # Log the error
+        with open(log_file, 'a') as log:
+            log.write(f"\n\n{'=' * 60}\n")
+            log.write(f"ERROR: {e}\n")
+
+        return {"name": name, "success": False, "error": str(e), "log_file": str(log_file)}
+
+
 async def run_generate_architecture_phase(args) -> None:
     """Run Phase 3: Generate architecture documentation."""
     print("\n" + "=" * 60)
-    print("PHASE 3: Checking component architectures")
+    print("PHASE 3: Generating component architectures")
     print("=" * 60 + "\n")
 
     # Auto-detect org if not provided
@@ -256,34 +340,125 @@ async def run_generate_architecture_phase(args) -> None:
         print("No components found with checkouts")
         return
 
-    # Count by status
-    has_arch = [c for c in components.values() if c.has_architecture]
+    # Filter to components missing architecture
     missing_arch = [c for c in components.values() if not c.has_architecture]
+    has_arch = [c for c in components.values() if c.has_architecture]
 
     print(f"Found {len(components)} components:")
-    print(f"  With GENERATED_ARCHITECTURE.md: {len(has_arch)}")
-    print(f"  Missing GENERATED_ARCHITECTURE.md: {len(missing_arch)}")
+    print(f"  Already documented: {len(has_arch)}")
+    print(f"  Need architecture: {len(missing_arch)}")
     print()
 
-    # Display components with architecture
-    if has_arch:
-        print("Components with architecture documentation:")
-        for component in sorted(has_arch, key=lambda c: c.key):
-            print(f"  ✓ {component.key:25s} {component.repo_org}/{component.repo_name}")
-            print(f"     {component.checkout_path / 'GENERATED_ARCHITECTURE.md'}")
+    if not missing_arch:
+        print("All components already have architecture documentation!")
+        return
+
+    # Read the skill prompt template
+    skill_path = Path(".claude/skills/repo-to-architecture-summary/SKILL.md")
+    if not skill_path.exists():
+        print(f"ERROR: Skill file not found: {skill_path}")
+        return
+
+    skill_content = skill_path.read_text()
+
+    # Extract the instructions section (everything after "## Instructions")
+    instructions_match = re.search(r'## Instructions\n\n(.+)', skill_content, re.DOTALL)
+    if not instructions_match:
+        print("ERROR: Could not extract instructions from skill file")
+        return
+
+    instructions = instructions_match.group(1).strip()
+
+    # Prepare agent jobs
+    jobs = []
+    for component in sorted(missing_arch, key=lambda c: c.key):
+        # Determine distribution
+        distribution = args.platform  # "odh" or "rhoai"
+
+        # Build prompt from skill instructions
+        prompt = f"""Generate a comprehensive architecture summary for this component repository.
+
+Distribution: {distribution}
+Repository: {component.repo_org}/{component.repo_name}
+Manifests folder: {component.source_folder}
+
+IMPORTANT: The manifests folder location shows where kustomize deployment manifests are located.
+This is critical for understanding how this component is deployed in production.
+
+{instructions}
+"""
+
+        job = {
+            "name": f"{component.key}",
+            "cwd": str(component.checkout_path),
+            "prompt": prompt,
+            "repo": f"{component.repo_org}/{component.repo_name}",
+        }
+        jobs.append(job)
+
+    # Apply limit if specified
+    if args.limit:
+        jobs = jobs[:args.limit]
+        print(f"Limited to first {args.limit} component(s)\n")
+
+    # Display prepared jobs
+    print(f"Prepared {len(jobs)} agent job(s):\n")
+    for i, job in enumerate(jobs, 1):
+        print(f"{i:2d}. {job['name']:30s} {job['repo']}")
+        print(f"    cwd: {job['cwd']}")
         print()
 
-    # Display components missing architecture
-    if missing_arch:
-        print("Components missing architecture documentation:")
-        for component in sorted(missing_arch, key=lambda c: c.key):
-            print(f"  ✗ {component.key:25s} {component.repo_org}/{component.repo_name}")
-            print(f"     {component.checkout_path}")
-        print()
+    # Create logs directory
+    log_dir = Path("logs/generate-architecture")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Logs will be written to: {log_dir}\n")
 
     print(f"{'=' * 60}")
-    print(f"Architecture check complete: {len(has_arch)}/{len(components)} documented")
-    print(f"{'=' * 60}")
+    print(f"Ready to process {len(jobs)} component(s)")
+    print(f"Max concurrent agents: {args.max_concurrent}")
+    print(f"{'=' * 60}\n")
+
+    # Run agents with concurrency limit
+    semaphore = asyncio.Semaphore(args.max_concurrent)
+
+    async def run_agent_with_semaphore(job):
+        async with semaphore:
+            return await run_agent(job["name"], job["cwd"], job["prompt"], log_dir)
+
+    print("Starting agent execution...\n")
+    results = await asyncio.gather(
+        *(run_agent_with_semaphore(job) for job in jobs),
+        return_exceptions=True
+    )
+
+    # Summary
+    successful = [r for r in results if isinstance(r, dict) and r.get("success")]
+    failed = [r for r in results if isinstance(r, dict) and not r.get("success")]
+    exceptions = [r for r in results if isinstance(r, Exception)]
+
+    print("\n" + "=" * 60)
+    print("ARCHITECTURE GENERATION COMPLETE")
+    print("=" * 60)
+    print(f"Total components: {len(jobs)}")
+    print(f"Successful: {len(successful)}")
+    print(f"Failed: {len(failed)}")
+    if exceptions:
+        print(f"Exceptions: {len(exceptions)}")
+
+    if failed:
+        print("\nFailed components:")
+        for r in failed:
+            print(f"  ✗ {r['name']}: {r.get('error', 'unknown error')}")
+            if r.get('log_file'):
+                print(f"    Log: {r['log_file']}")
+
+    if exceptions:
+        print("\nComponents with exceptions:")
+        for i, exc in enumerate(exceptions):
+            print(f"  ✗ Exception {i+1}: {exc}")
+
+    print(f"\nAll agent logs available in: {log_dir}")
+    print("=" * 60)
 
 
 async def run_all_phases(args) -> None:
