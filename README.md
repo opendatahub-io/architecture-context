@@ -34,7 +34,35 @@ cp .env.example .env
 
 ## Usage
 
-The tool provides subcommands for each processing phase:
+The tool provides subcommands for each processing phase.
+
+### Quick Start Examples
+
+For OpenDataHub (ODH):
+```bash
+# Fetch all ODH repos
+python main.py fetch opendatahub-io
+
+# Parse manifests
+python main.py parse-manifests --platform odh
+
+# Or run all phases
+python main.py all --platform odh
+```
+
+For Red Hat OpenShift AI (RHOAI) with versioning:
+```bash
+# Fetch RHOAI 2.14 repos
+python main.py fetch red-hat-data-services --branch rhoai-2.14
+
+# Parse manifests for RHOAI 2.14
+python main.py parse-manifests --platform rhoai --branch rhoai-2.14
+
+# Or run all phases
+python main.py all --platform rhoai --branch rhoai-2.14
+```
+
+### Detailed Command Reference
 
 ### Phase 1: Fetch Repositories
 
@@ -53,9 +81,15 @@ python main.py fetch red-hat-data-services --checkouts-dir my-checkouts
 python main.py fetch red-hat-data-services --branch main
 
 # Clone versioned checkouts for different releases:
-python main.py fetch red-hat-data-services --branch rhoai-2.13 --checkouts-dir checkouts/rhoai-2.13
-python main.py fetch red-hat-data-services --branch rhoai-2.14 --checkouts-dir checkouts/rhoai-2.14
-python main.py fetch red-hat-data-services --branch rhoai-2.15 --checkouts-dir checkouts/rhoai-2.15
+# Note: --branch automatically creates <org>.<branch>/ directories
+python main.py fetch red-hat-data-services --branch rhoai-2.13
+python main.py fetch red-hat-data-services --branch rhoai-2.14
+python main.py fetch red-hat-data-services --branch rhoai-2.15
+
+# This creates:
+#   checkouts/red-hat-data-services.rhoai-2.13/
+#   checkouts/red-hat-data-services.rhoai-2.14/
+#   checkouts/red-hat-data-services.rhoai-2.15/
 ```
 
 ### Phase 2: Parse Component Manifests
@@ -63,22 +97,88 @@ python main.py fetch red-hat-data-services --branch rhoai-2.15 --checkouts-dir c
 Extract component information from `get_all_manifests.sh`:
 
 ```bash
-python main.py parse-manifests
+# For ODH (human-readable summary):
+python main.py parse-manifests --platform odh
 
-# With custom script path:
-python main.py parse-manifests --script-path path/to/get_all_manifests.sh
+# For RHOAI with specific version:
+python main.py parse-manifests --platform rhoai --branch rhoai-2.14
+
+# Get structured JSON output for programmatic use:
+python main.py parse-manifests --platform odh --format json
+
+# With custom organization override:
+python main.py parse-manifests --platform odh --org my-custom-org
+
+# With custom script path override:
+python main.py parse-manifests --platform odh --script-path path/to/get_all_manifests.sh
 ```
+
+The parser extracts component information from bash associative arrays in the script:
+- `ODH_COMPONENT_MANIFESTS` for ODH platform
+- `RHOAI_COMPONENT_MANIFESTS` for RHOAI platform
+
+Each component includes:
+- Repository organization and name
+- Git reference (branch/tag/commit)
+- Source folder within the repo
+- Checkout path (if repo is cloned)
+- Whether GENERATED_ARCHITECTURE.md exists
+
+#### Output Formats
+
+**Summary format** (default, `--format summary`):
+- Human-readable output with status indicators
+- Shows analyzed vs. missing components
+- Displays full component details
+
+**JSON format** (`--format json`):
+- Structured data suitable for piping to other tools
+- Can be used programmatically in scripts
+- See `examples/use_manifest_data.py` for usage examples
 
 ### Run All Phases
 
 Execute all phases in sequence:
 
 ```bash
-python main.py all
+# For ODH (default):
+python main.py all --platform odh
 
-# With custom organization:
-python main.py all --org my-github-org
+# For RHOAI with specific version:
+python main.py all --platform rhoai --branch rhoai-2.14
 ```
+
+## Programmatic Usage
+
+The manifest parser can be used programmatically in your own Python scripts:
+
+```python
+from lib.manifest_parser import process_manifest_script, components_to_json
+
+# Get structured component data (silent - no output)
+components = await process_manifest_script(
+    script_path="checkouts/opendatahub-io/opendatahub-operator/get_all_manifests.sh",
+    platform="odh"
+)
+
+# Filter components needing analysis
+needs_analysis = {
+    key: comp
+    for key, comp in components.items()
+    if not comp.has_architecture
+}
+
+# Export to JSON
+json_output = components_to_json(components, indent=2)
+
+# Access component data
+for key, component in components.items():
+    print(f"{key}: {component.repo_org}/{component.repo_name}")
+    print(f"  Checkout: {component.checkout_path}")
+    print(f"  Ref: {component.ref}")
+```
+
+See `examples/use_manifest_data.py` for complete examples.
 
 ## Development
 
@@ -96,6 +196,7 @@ All phase modules follow this pattern:
 - Clear function signatures with type hints
 - Dataclasses for structured data
 - Proper error handling
+- **Separation of concerns**: Data processing functions are silent and return structured data, display functions handle output
 
 ## Requirements
 
