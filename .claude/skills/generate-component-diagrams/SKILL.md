@@ -34,11 +34,36 @@ Examples:
 
 ## Instructions
 
+## ⚠️ CRITICAL ANTI-EFFICIENCY RULES ⚠️
+
+**YOU ARE ABSOLUTELY FORBIDDEN FROM TRYING TO BE "EFFICIENT"**
+
+The following behaviors are STRICTLY PROHIBITED and will result in failure:
+
+❌ **NEVER say or do**:
+- "Due to context length, I'll streamline..."
+- "I'll process the remaining X efficiently..."
+- "Batch processing remaining components..."
+- "I'll complete X efficiently then continue with Y..."
+- "Let me optimize by processing multiple components..."
+- "To save time/tokens/context, I'll..."
+- ANY variation of "efficient", "streamline", "batch", "optimize" when describing your approach
+
+✅ **ALWAYS do**:
+- Process EXACTLY ONE component at a time
+- Read the .md file fresh for EACH component (no reusing data)
+- Generate ALL diagrams for one component BEFORE starting the next
+- Report completion for each component individually
+- Move to the next component only after fully completing the current one
+
+**WHY**: Each component requires FULL context from its architecture file. "Efficiency" means you're cutting corners, skipping reads, or using stale data. This produces INCORRECT diagrams.
+
 **CRITICAL**: This skill processes components SEQUENTIALLY in a single execution context.
 - DO NOT use the Task tool
 - DO NOT spawn sub-agents or background processes
 - DO NOT try to "optimize" or "streamline" the process
 - DO NOT reuse "content generated earlier" across components
+- DO NOT mention context length, efficiency, or optimization
 - Execute diagram generation directly for each component
 - Process each component COMPLETELY before moving to the next one
 
@@ -96,7 +121,25 @@ ls {architecture-dir}/diagrams/${COMPONENT_NAME}-*.mmd 2>/dev/null
 
 ### Step 3: Process Each Component Sequentially
 
-**IMPORTANT**: Process components ONE AT A TIME. Do not try to "streamline", "optimize", or work on multiple components in parallel. Complete the entire workflow for one component before starting the next.
+**MANDATORY BEHAVIOR**: Process EXACTLY ONE component at a time.
+
+**PROHIBITED**: You are FORBIDDEN from mentioning or attempting:
+- "Streamlining" the remaining components
+- "Batch processing" multiple components
+- "Efficiently processing" components
+- Any reference to "context length" as a reason to change behavior
+- Processing multiple components together
+- Skipping the full workflow for any component
+
+**REQUIRED**: For EVERY SINGLE component, you MUST:
+1. Read the .md file (use Read tool)
+2. Extract data from markdown tables
+3. Generate ALL 7 diagram files
+4. Run PNG generation
+5. Report completion
+6. Move to next component (if any)
+
+Complete the ENTIRE workflow for one component before starting the next. No exceptions.
 
 For each component architecture file (in alphabetical order):
 
@@ -123,17 +166,35 @@ If generating (no existing diagrams):
 
 #### 3b. Execute Diagram Generation
 
+## 🛑 STOP - READ THIS BEFORE PROCEEDING 🛑
+
+If you are thinking about "streamlining", "batching", or "efficiently processing" multiple components together - **STOP IMMEDIATELY**. That is WRONG and PROHIBITED.
+
+You MUST process this SINGLE component COMPLETELY before even THINKING about the next component.
+
+**MANDATORY FOR THIS COMPONENT**:
+1. ✅ Read THIS component's .md file using Read tool
+2. ✅ Extract data from THIS component's markdown tables
+3. ✅ Generate ALL 7 diagram files for THIS component
+4. ✅ Write each diagram file individually
+5. ✅ Run PNG generation for the diagrams directory
+6. ✅ Report completion for THIS component
+
+After step 6, and ONLY after step 6, move to the next component and repeat steps 1-6.
+
 **IMPORTANT**: DO NOT use the Task tool or Skill tool. Execute diagram generation directly by following these steps.
 
 **CRITICAL**: Diagrams MUST be generated from the ACTUAL content in the component's .md file, NOT from templates or hardcoded metadata.
 
-**PROHIBITED**:
+**ABSOLUTELY PROHIBITED**:
 - ❌ DO NOT create Python scripts with hardcoded component metadata
 - ❌ DO NOT generate template/placeholder diagrams
 - ❌ DO NOT skip reading the architecture .md files
 - ❌ DO NOT try to "optimize", "streamline", or "batch process" components
 - ❌ DO NOT reuse "content generated earlier" or keep diagrams "in memory"
 - ❌ DO NOT say things like "I'll complete X efficiently then continue with Y"
+- ❌ DO NOT say "Due to context length..." or any efficiency-based excuse
+- ❌ DO NOT process multiple components in the same section/batch
 - ✅ MUST read each component's .md file fresh for EACH component
 - ✅ MUST extract actual data from markdown tables for EACH diagram
 - ✅ MUST complete one component fully before starting the next
