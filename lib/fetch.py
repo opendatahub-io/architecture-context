@@ -15,8 +15,14 @@ async def fetch_repositories(
 
     Args:
         org: GitHub organization name
-        checkouts_dir: Directory to clone repositories into
+        checkouts_dir: Base directory for cloning repositories
         branch: Optional specific branch to clone (skips repos without this branch)
+
+    Note:
+        When branch is specified, gh-org-clone automatically creates a directory
+        named <org>.<branch> inside checkouts_dir. For example:
+        - Without branch: checkouts/red-hat-data-services/
+        - With branch:    checkouts/red-hat-data-services.rhoai-2.14/
     """
     checkouts_path = Path(checkouts_dir).absolute()
     checkouts_path.mkdir(parents=True, exist_ok=True)
