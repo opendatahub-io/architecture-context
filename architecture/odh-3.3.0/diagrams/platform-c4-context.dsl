@@ -1,208 +1,178 @@
 workspace {
-    name "Open Data Hub 3.3.0 Platform"
-    description "End-to-end AI/ML platform for OpenShift"
-
     model {
-        // People
-        dataScientist = person "Data Scientist" "Develops ML models, runs experiments, deploys models"
-        mlEngineer = person "ML Engineer" "Builds ML pipelines, manages model deployment, monitors production models"
-        platformAdmin = person "Platform Admin" "Manages ODH platform, configures components, monitors infrastructure"
+        dataScientist = person "Data Scientist" "Develops and deploys ML models using notebooks and pipelines"
+        platformEngineer = person "Platform Engineer" "Manages ODH platform deployment and configuration"
+        mlEngineer = person "ML Engineer" "Builds and maintains ML pipelines and model deployments"
+        externalClient = person "External Client" "Consumes model inference APIs"
 
-        // Open Data Hub Platform
-        odh = softwareSystem "Open Data Hub 3.3.0" "Cloud-native AI/ML platform for OpenShift" {
-            // Control Plane
-            odhOperator = container "ODH Operator" "Platform orchestration" "Go Operator" "Manages all components via DataScienceCluster CRD"
-            dashboard = container "ODH Dashboard" "Web UI" "React/Node.js" "Unified interface for platform management and user workflows"
-
-            // Development
-            notebookController = container "Notebook Controller" "Workbench manager" "Kubeflow Operator" "Manages Jupyter notebook lifecycle"
-            notebooks = container "Notebook Workbenches" "Development environments" "Jupyter/VSCode/RStudio" "Pre-configured images with ML frameworks (PyTorch, TensorFlow)"
-
-            // Model Serving
-            kserve = container "KServe" "Model serving platform" "Go Operator + Predictors" "Multi-framework inference with autoscaling and GPU support"
-            odhModelController = container "ODH Model Controller" "KServe extensions" "Go Controller" "OpenShift integrations: Routes, NIM, LLM services"
-
-            // Model Management
-            modelRegistry = container "Model Registry" "Model versioning" "Python/Go" "Model metadata, lineage, and versioning"
-            mlflow = container "MLflow" "Experiment tracking" "Python" "Tracking server for experiments and model registry"
-
-            // Training
-            trainingOperator = container "Training Operator" "Distributed training" "Go Operator" "PyTorch, TensorFlow, MPI, JAX, XGBoost jobs"
-            trainerV2 = container "Trainer v2" "LLM fine-tuning" "Go Operator" "Next-gen training for LLMs with JobSet"
-            kuberay = container "KubeRay" "Ray clusters" "Go Operator" "Distributed computing for ML workloads"
-            sparkOperator = container "Spark Operator" "Big data processing" "Go Operator" "Apache Spark on Kubernetes"
-
-            // ML Workflows
-            dspOperator = container "Data Science Pipelines" "ML workflow orchestration" "Go Operator + Argo" "Kubeflow Pipelines integration"
-
-            // Data & Governance
-            feast = container "Feast" "Feature store" "Go Operator + Python" "ML feature management and serving"
+        odh = softwareSystem "Open Data Hub 3.3.0" "Cloud-native AI/ML platform for OpenShift providing end-to-end data science capabilities" {
+            odhOperator = container "ODH Operator" "Central platform orchestrator" "Go Operator" "Manages component lifecycle via DataScienceCluster CRD"
+            dashboard = container "ODH Dashboard" "Web UI for platform management" "React/Node.js" "Provides unified interface for notebooks, models, pipelines"
+            
+            kserve = container "KServe" "Model serving platform" "Go Operator" "Multi-framework inference with autoscaling and GPU support"
+            modelController = container "ODH Model Controller" "OpenShift integrations for KServe" "Go Controller" "Routes, NIM, LLM services"
+            
+            notebookController = container "Notebook Controller" "Workbench management" "Go Operator (Kubeflow)" "Deploys Jupyter, VSCode, RStudio environments"
+            notebookImages = container "Notebook Images" "Pre-configured workbench containers" "Container Images" "PyTorch, TensorFlow, JAX with CUDA support"
+            
+            modelRegistry = container "Model Registry" "Model versioning and lineage" "Go Operator + gRPC Service" "Tracks model versions and metadata"
+            mlflow = container "MLflow" "Experiment tracking" "Python Application" "Logs experiments, metrics, parameters"
+            
+            trainingOperator = container "Training Operator" "Distributed training" "Go Operator (Kubeflow)" "PyTorch, TensorFlow, MPI, JAX, XGBoost jobs"
+            trainer = container "Trainer v2" "LLM fine-tuning" "Go Operator" "DeepSpeed, Megatron with JobSet"
+            
+            pipelines = container "Data Science Pipelines" "ML workflow orchestration" "Kubeflow Pipelines" "Argo Workflows for training and deployment"
+            feast = container "Feast" "Feature store" "Python/Go" "Feature management and serving"
             trustyai = container "TrustyAI" "AI governance" "Java Service" "Explainability, fairness, LLM evaluation"
-
-            // LLM Tools
-            llamaStack = container "Llama Stack" "LLM development" "Go Operator" "Llama Stack integration for LLM workflows"
-
-            // Relationships within ODH
-            odhOperator -> dashboard "manages"
-            odhOperator -> notebookController "manages"
-            odhOperator -> kserve "manages"
-            odhOperator -> modelRegistry "manages"
-            odhOperator -> mlflow "manages"
-            odhOperator -> trainingOperator "manages"
-            odhOperator -> trainerV2 "manages"
-            odhOperator -> kuberay "manages"
-            odhOperator -> sparkOperator "manages"
-            odhOperator -> dspOperator "manages"
-            odhOperator -> feast "manages"
-            odhOperator -> trustyai "manages"
-            odhOperator -> llamaStack "manages"
-
-            dashboard -> notebookController "creates Notebook CRs"
-            dashboard -> kserve "creates InferenceService CRs"
-            dashboard -> modelRegistry "reads model metadata"
-
-            notebookController -> notebooks "deploys"
-            notebooks -> dspOperator "executes pipelines" "REST API"
-            notebooks -> modelRegistry "registers models" "REST API"
-            notebooks -> mlflow "logs experiments" "REST API"
-            notebooks -> kserve "deploys models" "kubectl"
-
-            kserve -> odhModelController "extended by"
-            kserve -> modelRegistry "fetches model metadata" "REST API"
-            kserve -> trustyai "monitored by" "gRPC"
-
-            dspOperator -> trainingOperator "orchestrates training jobs"
-            dspOperator -> kserve "orchestrates model deployment"
-            dspOperator -> modelRegistry "tracks pipeline models"
-
-            trainingOperator -> mlflow "logs metrics" "REST API"
-            trainerV2 -> mlflow "logs metrics" "REST API"
-
-            feast -> trainingOperator "serves features to" "gRPC"
-            feast -> kserve "serves features to" "gRPC"
-
-            trustyai -> kserve "monitors inferences"
+            
+            kuberay = container "KubeRay" "Ray distributed computing" "Go Operator" "Parallel processing and ML workloads"
+            spark = container "Spark Operator" "Big data processing" "Go Operator" "Apache Spark on Kubernetes"
+            llamaStack = container "Llama Stack" "LLM development platform" "Go Operator" "Llama model integration"
         }
 
-        // External Systems
-        istio = softwareSystem "Istio" "Service mesh" "External Dependency" {
-            description "Traffic management, mTLS, AuthZ policies"
-        }
-        knative = softwareSystem "Knative Serving" "Serverless platform" "External Dependency" {
-            description "Autoscaling (0-N) for KServe predictors"
-        }
-        certManager = softwareSystem "cert-manager" "Certificate management" "External Dependency" {
-            description "TLS certificate provisioning and rotation"
-        }
-        openshift = softwareSystem "OpenShift" "Kubernetes platform" "External Dependency" {
-            description "Container orchestration, networking, storage"
-        }
+        k8s = softwareSystem "Kubernetes / OpenShift" "Container orchestration platform" "External"
+        istio = softwareSystem "Istio" "Service mesh for traffic management and security" "External"
+        knative = softwareSystem "Knative Serving" "Serverless autoscaling platform" "External"
+        certManager = softwareSystem "cert-manager" "Certificate management" "External"
+        
+        s3 = softwareSystem "S3-compatible Storage" "Object storage for models and data" "External"
+        database = softwareSystem "PostgreSQL/MySQL" "Metadata databases" "External"
+        huggingface = softwareSystem "HuggingFace Hub" "LLM model repository" "External"
+        containerRegistry = softwareSystem "Container Registry" "Container image repository (quay.io, docker.io)" "External"
+        pypi = softwareSystem "PyPI / pip index" "Python package repository" "External"
 
-        s3Storage = softwareSystem "S3 Storage" "Object storage" "External Service" {
-            description "Model artifacts, datasets, pipeline artifacts"
-        }
-        postgresql = softwareSystem "PostgreSQL/MySQL" "Relational database" "External Service" {
-            description "Metadata persistence for Model Registry, MLflow, Pipelines"
-        }
-        huggingface = softwareSystem "HuggingFace Hub" "Model repository" "External Service" {
-            description "LLM models and datasets"
-        }
-        containerRegistry = softwareSystem "Container Registry" "Image registry" "External Service" {
-            description "Container images (quay.io, gcr.io, docker.io)"
-        }
+        # User interactions
+        dataScientist -> dashboard "Accesses via browser (HTTPS)"
+        dataScientist -> notebookImages "Develops models in"
+        dataScientist -> kserve "Creates InferenceServices"
+        mlEngineer -> pipelines "Creates ML workflows"
+        platformEngineer -> odhOperator "Deploys via DataScienceCluster CR"
+        externalClient -> kserve "Sends inference requests (HTTPS/gRPC)"
 
-        // User interactions
-        dataScientist -> dashboard "accesses platform" "HTTPS/Browser"
-        dataScientist -> notebooks "develops models" "HTTPS/Browser"
-        mlEngineer -> dashboard "manages deployments" "HTTPS/Browser"
-        mlEngineer -> dspOperator "creates pipelines" "kubectl/UI"
-        platformAdmin -> odhOperator "configures platform" "kubectl"
+        # Core platform relationships
+        odhOperator -> k8s "Manages components via"
+        odhOperator -> dashboard "Deploys and manages"
+        odhOperator -> kserve "Deploys and manages"
+        odhOperator -> notebookController "Deploys and manages"
+        odhOperator -> modelRegistry "Deploys and manages"
+        odhOperator -> pipelines "Deploys and manages"
+        odhOperator -> trainingOperator "Deploys and manages"
 
-        // External client interactions
-        externalClient = person "External Client" "Sends inference requests to deployed models"
-        externalClient -> kserve "inference requests" "HTTPS/REST"
+        # Dashboard integrations
+        dashboard -> notebookController "Creates Notebook CRs via K8s API"
+        dashboard -> kserve "Creates InferenceService CRs"
+        dashboard -> modelRegistry "Creates ModelRegistry CRs"
+        dashboard -> pipelines "Monitors pipeline status"
+        dashboard -> trustyai "Monitors AI governance metrics"
 
-        // ODH dependencies on external systems
-        kserve -> istio "uses for traffic routing"
-        kserve -> knative "uses for autoscaling"
-        kserve -> certManager "uses for certificates"
-        modelRegistry -> certManager "uses for certificates"
-        mlflow -> certManager "uses for certificates"
+        # Workbench workflows
+        notebookController -> notebookImages "Deploys as StatefulSets"
+        notebookImages -> mlflow "Logs experiments (REST API)"
+        notebookImages -> modelRegistry "Registers models (gRPC/REST)"
+        notebookImages -> feast "Reads features (Python SDK)"
+        notebookImages -> kserve "Deploys models (K8s API)"
+        notebookImages -> s3 "Loads data (HTTPS)"
+        notebookImages -> pypi "Installs packages (HTTPS)"
 
-        odh -> openshift "deployed on" "Kubernetes API"
+        # Model serving flows
+        kserve -> modelController "Extended by"
+        kserve -> modelRegistry "Fetches model metadata (gRPC)"
+        kserve -> trustyai "Monitored by (inference logging)"
+        kserve -> istio "Uses for traffic routing and mTLS"
+        kserve -> knative "Uses for autoscaling"
+        kserve -> s3 "Downloads model artifacts (HTTPS)"
+        kserve -> certManager "TLS certificates"
 
-        // External service dependencies
-        kserve -> s3Storage "loads model artifacts" "HTTPS/AWS IAM"
-        notebooks -> s3Storage "reads/writes data" "HTTPS/AWS IAM"
-        trainingOperator -> s3Storage "reads training data" "HTTPS/AWS IAM"
-        dspOperator -> s3Storage "stores pipeline artifacts" "HTTPS/AWS IAM"
+        # Training workflows
+        trainingOperator -> mlflow "Logs training metrics (REST)"
+        trainingOperator -> modelRegistry "Registers trained models (gRPC)"
+        trainingOperator -> s3 "Loads data, saves checkpoints (HTTPS)"
+        trainer -> mlflow "Logs LLM fine-tuning metrics"
+        trainer -> modelRegistry "Registers fine-tuned models"
+        trainer -> s3 "Loads data, saves checkpoints"
+        trainer -> huggingface "Downloads LLM models (HTTPS)"
 
-        modelRegistry -> postgresql "stores metadata" "PostgreSQL/5432"
-        mlflow -> postgresql "stores metadata" "PostgreSQL/5432"
-        dspOperator -> postgresql "stores metadata" "PostgreSQL/5432"
+        # Pipeline orchestration
+        pipelines -> trainingOperator "Orchestrates training jobs (K8s API)"
+        pipelines -> trainer "Orchestrates LLM fine-tuning (K8s API)"
+        pipelines -> kserve "Deploys models (K8s API)"
+        pipelines -> modelRegistry "Tracks pipeline models (gRPC)"
+        pipelines -> s3 "Stores pipeline artifacts (HTTPS)"
+        pipelines -> database "Persists pipeline metadata (PostgreSQL/MySQL)"
 
-        notebooks -> huggingface "downloads models" "HTTPS"
-        trustyai -> huggingface "downloads models" "HTTPS"
+        # Model and experiment management
+        modelRegistry -> database "Persists metadata (PostgreSQL/MySQL)"
+        modelRegistry -> certManager "TLS certificates"
+        mlflow -> database "Persists experiments (PostgreSQL/MySQL)"
+        mlflow -> s3 "Stores artifacts (HTTPS)"
+        mlflow -> certManager "TLS certificates"
 
-        odh -> containerRegistry "pulls images" "HTTPS/Docker API"
+        # Distributed computing
+        kuberay -> notebookImages "Used from notebooks (Ray SDK)"
+        kuberay -> pipelines "Orchestrated by (K8s API)"
+        spark -> pipelines "Orchestrated by (K8s API)"
+        spark -> s3 "Reads/writes data (HTTPS)"
+
+        # AI governance
+        trustyai -> mlflow "Logs evaluation results (REST)"
+        trustyai -> huggingface "Uses LLM evaluation models (HTTPS)"
+
+        # Infrastructure dependencies
+        dashboard -> k8s "K8s API (6443/TCP HTTPS)"
+        kserve -> k8s "K8s API"
+        notebookController -> k8s "K8s API"
+        trainingOperator -> k8s "K8s API"
+        pipelines -> k8s "K8s API"
+
+        # Container image pulls
+        notebookImages -> containerRegistry "Pulls base images (HTTPS)"
+        kserve -> containerRegistry "Pulls runtime images (HTTPS)"
+        trainingOperator -> containerRegistry "Pulls training images (HTTPS)"
     }
 
     views {
         systemContext odh "SystemContext" {
             include *
             autoLayout
-            description "System context diagram for Open Data Hub 3.3.0 platform"
         }
 
         container odh "Containers" {
             include *
             autoLayout
-            description "Container diagram showing ODH platform components"
         }
 
-        systemContext odh "DevelopmentWorkflow" {
-            include dataScientist dashboard notebookController notebooks mlflow modelRegistry kserve s3Storage huggingface
-            autoLayout lr
-            description "Data scientist development workflow"
-        }
-
-        systemContext odh "ServingWorkflow" {
-            include externalClient kserve odhModelController istio knative modelRegistry trustyai feast s3Storage
-            autoLayout lr
-            description "Model serving and inference workflow"
-        }
-
-        systemContext odh "TrainingWorkflow" {
-            include mlEngineer dspOperator trainingOperator trainerV2 kuberay mlflow modelRegistry s3Storage
-            autoLayout lr
-            description "ML training and pipeline workflow"
+        deployment odh "Production" "Deployment" {
+            include *
+            autoLayout
         }
 
         styles {
+            element "Person" {
+                shape person
+                background #08427b
+                color #ffffff
+            }
             element "Software System" {
                 background #1168bd
+                color #ffffff
+            }
+            element "External" {
+                background #999999
                 color #ffffff
             }
             element "Container" {
                 background #438dd5
                 color #ffffff
             }
-            element "Person" {
-                shape person
-                background #08427b
-                color #ffffff
+            element "Go Operator" {
+                background #7ed321
+                color #000000
             }
-            element "External Dependency" {
-                background #999999
-                color #ffffff
-            }
-            element "External Service" {
-                background #f5a623
+            element "React/Node.js" {
+                background #4a90e2
                 color #ffffff
             }
         }
-
-        theme default
     }
 
     configuration {

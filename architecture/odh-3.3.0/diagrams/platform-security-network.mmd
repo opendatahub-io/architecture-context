@@ -1,111 +1,169 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["External User<br/>Browser"]
-        APIClient["External Client<br/>API Requests"]
+        Client[Data Scientist /<br/>External Client]
     end
 
     subgraph Ingress["INGRESS (DMZ)"]
-        Router["OpenShift Router<br/>443/TCP → varied<br/>TLS 1.2+ Reencrypt<br/>OAuth Proxy"]
-        Gateway["Istio Gateway<br/>443/TCP → 8080/TCP<br/>TLS 1.3<br/>RequestAuthentication"]
+        Gateway["Istio Gateway / OpenShift Router<br/>443/TCP → internal services<br/>TLS 1.2+ Reencrypt<br/>Routes: dashboard, kserve, model-registry, mlflow"]
     end
 
-    subgraph ServiceMesh["SERVICE MESH (mTLS PERMISSIVE/STRICT)"]
+    subgraph ControlPlane["PLATFORM CONTROL PLANE (opendatahub namespace - Trusted)"]
         direction TB
+        
+        ODHOperator["ODH Operator<br/>SA: opendatahub-operator-controller-manager<br/>ClusterRole: opendatahub-operator-manager-role"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>ServiceAccount Token Auth"]
+        Dashboard["ODH Dashboard<br/>SA: odh-dashboard<br/>8080/TCP internal, 443/TCP external<br/>TLS 1.2+ OAuth Proxy"]
+    end
 
-        subgraph NS_ODH["Namespace: opendatahub (Control Plane)"]
-            direction TB
-            ODHOp["ODH Operator<br/>SA: opendatahub-operator-controller-manager<br/>Manages: DataScienceCluster"]
-            Dashboard["ODH Dashboard<br/>SA: odh-dashboard<br/>8080/TCP HTTP<br/>OAuth Proxy: 8443/TCP"]
-            KServe["KServe Controller<br/>SA: kserve-controller-manager<br/>Webhook: 9443/TCP HTTPS"]
-            ModelRegOp["Model Registry Operator<br/>SA: model-registry-operator-sa"]
-            TrainingOp["Training Operator<br/>SA: training-operator<br/>Webhook: 9443/TCP HTTPS"]
-            DSPOp["DSP Operator<br/>SA: data-science-pipelines-operator"]
-
-            ODHOp -->|manages| Dashboard
-            ODHOp -->|manages| KServe
-            ODHOp -->|manages| ModelRegOp
-            ODHOp -->|manages| TrainingOp
-            ODHOp -->|manages| DSPOp
+    subgraph ModelServing["MODEL SERVING LAYER (user-namespaces - Service Mesh)"]
+        direction TB
+        
+        subgraph NS_OpenDataHub["Namespace: opendatahub"]
+            KServeCtrl["KServe Controller<br/>SA: kserve-controller-manager<br/>ClusterRole: kserve-manager-role"]
         end
-
+        
         subgraph NS_Knative["Namespace: knative-serving"]
-            Activator["Knative Activator<br/>SA: activator<br/>8012/TCP HTTP<br/>mTLS sidecar"]
-            Autoscaler["Knative Autoscaler<br/>SA: autoscaler<br/>Scales: 0-N predictors"]
+            Activator["Knative Activator<br/>8012/TCP HTTP<br/>mTLS PERMISSIVE/STRICT"]
         end
-
-        subgraph NS_User["Namespace: {user-namespace} (Workloads)"]
-            direction TB
-            Notebook["Jupyter Notebook Pod<br/>SA: {notebook-name}-sa<br/>8888/TCP HTTP<br/>GPU: nvidia.com/gpu"]
-            ModelReg["Model Registry Service<br/>8080/TCP REST<br/>OAuth Proxy: 8443/TCP<br/>Backend: PostgreSQL 5432/TCP"]
-            MLflow["MLflow Server<br/>5000/TCP HTTP<br/>OAuth Proxy: 8443/TCP<br/>Backend: PostgreSQL 5432/TCP"]
-            Feast["Feast Feature Store<br/>6566/TCP gRPC<br/>Redis: 6379/TCP"]
-            Predictor["KServe Predictor Pod<br/>SA: {infer-service-name}-sa<br/>8080/TCP HTTP<br/>mTLS sidecar<br/>GPU: nvidia.com/gpu"]
-            TrustyAI["TrustyAI Service<br/>8080/TCP gRPC<br/>Monitoring: Fairness/Drift"]
-            TrainingPods["PyTorchJob Training Pods<br/>SA: {pytorchjob-name}-sa<br/>master + worker (N)<br/>GPU: nvidia.com/gpu<br/>NCCL: gRPC"]
-
-            Notebook -->|REST API| ModelReg
-            Notebook -->|REST API| MLflow
-            Notebook -->|gRPC| Feast
-            Predictor -->|gRPC metrics| TrustyAI
-            Predictor -->|gRPC features| Feast
+        
+        subgraph NS_User_Serving["Namespace: {user-namespace}"]
+            Predictor["Predictor Pod<br/>SA: {infer-service-name}-sa<br/>Image: vLLM/TensorFlow/Triton<br/>8080/TCP HTTP, 8081/TCP gRPC<br/>mTLS (Istio sidecar)"]
         end
+        
+        subgraph NS_ModelReg["Namespace: opendatahub"]
+            ModelRegistry["Model Registry Service<br/>SA: model-registry-{name}<br/>8080/TCP REST, 9090/TCP gRPC<br/>mTLS"]
+        end
+    end
 
-        subgraph NS_Istio["Namespace: istio-system"]
-            Istiod["Istiod<br/>SA: istiod<br/>15012/TCP xDS gRPC<br/>mTLS cert mgmt (SPIFFE)<br/>PeerAuthentication<br/>AuthorizationPolicy"]
+    subgraph Development["DEVELOPMENT WORKBENCHES (user-namespaces - Trusted)"]
+        direction TB
+        
+        subgraph NS_ODH_Dev["Namespace: opendatahub"]
+            NotebookCtrl["Notebook Controller<br/>SA: notebook-controller-service-account<br/>ClusterRole: notebook-controller-role"]
+        end
+        
+        subgraph NS_User_Dev["Namespace: {user-namespace}"]
+            Notebook["Notebook Pod<br/>SA: {notebook-name}<br/>Jupyter/VSCode/RStudio<br/>8888/TCP, 3000/TCP<br/>TLS (OAuth Proxy)"]
+            MLflow["MLflow Server<br/>SA: mlflow-{name}<br/>5000/TCP REST, 443/TCP via Route<br/>OAuth Bearer Token"]
+        end
+    end
+
+    subgraph Training["TRAINING LAYER (user-namespaces - Trusted)"]
+        direction TB
+        
+        subgraph NS_ODH_Training["Namespace: opendatahub"]
+            TrainingOp["Training Operator<br/>SA: training-operator<br/>ClusterRole: training-operator<br/>Manages: PyTorchJob, TFJob, etc."]
+            TrainerOp["Trainer v2 Operator<br/>SA: trainer-controller-manager<br/>LLM fine-tuning with JobSet"]
+        end
+        
+        subgraph NS_User_Training["Namespace: {user-namespace}"]
+            TrainingPods["Training Worker Pods<br/>SA: {job-name}-sa<br/>NCCL/Gloo (GPU), MPI (CPU)"]
+        end
+    end
+
+    subgraph Workflows["ML WORKFLOWS (user-namespaces - Trusted)"]
+        direction TB
+        
+        subgraph NS_ODH_Pipelines["Namespace: opendatahub"]
+            DSPOp["Data Science Pipelines Operator<br/>SA: data-science-pipelines-operator-controller-manager"]
+        end
+        
+        subgraph NS_User_Pipelines["Namespace: {user-namespace}"]
+            Argo["Argo Workflows<br/>SA: pipeline-runner<br/>Orchestrates: training, data prep, deployment"]
         end
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        direction TB
-        S3["S3 Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM (IRSA)<br/>Purpose: Models, data, artifacts"]
-        PostgreSQL["PostgreSQL/MySQL<br/>5432/3306 TCP<br/>TLS 1.2+ (sslmode=require)<br/>Auth: User/pass (Secret)<br/>Databases: model_registry, mlflow, dspa"]
-        HuggingFace["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: HF_TOKEN<br/>Purpose: LLM downloads"]
-        ContainerReg["Container Registry<br/>quay.io, gcr.io<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Image pull secrets<br/>Purpose: Image pulls"]
-        K8sAPI["Kubernetes API<br/>api.{cluster}:6443<br/>HTTPS TLS 1.2+<br/>Auth: ServiceAccount tokens<br/>Purpose: Resource mgmt"]
+        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM (Access Key / IRSA)<br/>Purpose: Model artifacts, datasets"]
+        HF["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.3<br/>API Key (HF_TOKEN)<br/>Purpose: LLM downloads"]
+        Registry["Container Registry<br/>quay.io, docker.io<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Pull secrets"]
+        Database["PostgreSQL/MySQL<br/>5432/TCP, 3306/TCP<br/>TLS optional<br/>Username/Password<br/>Model Registry, MLflow, Pipelines"]
+    end
+
+    subgraph Infrastructure["INFRASTRUCTURE (istio-system, knative-serving)"]
+        Istio["Istio<br/>Service mesh<br/>mTLS enforcement"]
+        Knative["Knative Serving<br/>Autoscaling"]
+        CertManager["cert-manager<br/>Certificate management<br/>90-day rotation"]
     end
 
     %% External to Ingress
-    User -->|HTTPS/443<br/>TLS 1.2+<br/>OAuth Bearer| Router
-    APIClient -->|HTTPS/443<br/>TLS 1.3<br/>Bearer Token| Gateway
+    Client -->|HTTPS/443<br/>TLS 1.2+<br/>OAuth Bearer Token| Gateway
 
-    %% Ingress to Service Mesh
-    Router -->|HTTPS/8080<br/>Dashboard| Dashboard
-    Router -->|HTTPS/8443<br/>OAuth| ModelReg
-    Router -->|HTTPS/8443<br/>OAuth| MLflow
-    Gateway -->|HTTP/8012<br/>mTLS STRICT<br/>Service Identity| Activator
+    %% Ingress to Services
+    Gateway -->|HTTPS| Dashboard
+    Gateway -->|HTTP/8012<br/>mTLS| Activator
+    Gateway -->|HTTPS| ModelRegistry
+    Gateway -->|HTTPS| MLflow
 
-    %% Service Mesh Internal
-    Dashboard -->|K8s API| KServe
-    Dashboard -->|K8s API| ModelRegOp
+    %% Control Plane
+    ODHOperator -->|HTTPS/6443<br/>ServiceAccount Token| K8sAPI
+    Dashboard -->|K8s API| K8sAPI
+
+    %% Dashboard flows
+    Dashboard -->|Create Notebook CR| NotebookCtrl
+    Dashboard -->|Create InferenceService CR| KServeCtrl
+    Dashboard -->|Create ModelRegistry CR| ModelRegistry
+
+    %% Development flows
+    NotebookCtrl -->|Create StatefulSet| Notebook
+    Notebook -->|POST /api/2.0/mlflow/runs/create<br/>HTTPS| MLflow
+    Notebook -->|POST /api/model_registry/v1alpha3<br/>HTTPS| ModelRegistry
+    Notebook -->|HTTPS/443<br/>AWS IAM| S3
+
+    %% Model Serving flows
+    KServeCtrl -->|Create Knative Service| Activator
     Activator -->|HTTP/8080<br/>mTLS<br/>Service Identity| Predictor
-    KServe -->|Manages| Predictor
+    Predictor -->|gRPC/9090<br/>mTLS| ModelRegistry
+    Predictor -->|HTTPS/443<br/>AWS IAM| S3
 
-    %% External Service Access
-    Notebook -->|HTTPS/443<br/>TLS 1.2+<br/>AWS IAM| S3
-    Predictor -->|HTTPS/443<br/>TLS 1.2+<br/>AWS IAM| S3
-    TrainingPods -->|HTTPS/443<br/>TLS 1.2+<br/>AWS IAM| S3
-    ModelReg -->|PostgreSQL/5432<br/>TLS 1.2+<br/>User/pass| PostgreSQL
-    MLflow -->|PostgreSQL/5432<br/>TLS 1.2+<br/>User/pass| PostgreSQL
-    Notebook -->|HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN| HuggingFace
-    TrustyAI -->|HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN| HuggingFace
-    ODHOp -->|HTTPS/6443<br/>TLS 1.2+<br/>SA Token| K8sAPI
-    KServe -->|HTTPS/6443<br/>TLS 1.2+<br/>SA Token| K8sAPI
-    TrainingOp -->|HTTPS/6443<br/>TLS 1.2+<br/>SA Token| K8sAPI
+    %% Training flows
+    TrainingOp -->|Create pods| TrainingPods
+    TrainerOp -->|Create JobSet| TrainingPods
+    TrainingPods -->|Log metrics<br/>HTTPS| MLflow
+    TrainingPods -->|Register model<br/>HTTPS| ModelRegistry
+    TrainingPods -->|Load data/save checkpoints<br/>HTTPS| S3
+    TrainingPods -->|Download LLMs<br/>HTTPS| HF
 
-    %% Istio Service Mesh Control
-    Istiod -.->|xDS config<br/>mTLS certs| Predictor
-    Istiod -.->|xDS config<br/>mTLS certs| Activator
-    Istiod -.->|xDS config<br/>mTLS certs| Notebook
+    %% Pipeline flows
+    DSPOp -->|Create Argo resources| Argo
+    Argo -->|Orchestrate| TrainingPods
+    Argo -->|Deploy via| KServeCtrl
 
-    %% Styling by trust zone
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px,color:#333
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px,color:#333
-    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px,color:#333
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px,color:#333
-    classDef controlplane fill:#cce5ff,stroke:#0066cc,stroke-width:2px,color:#333
+    %% Infrastructure dependencies
+    KServeCtrl -.->|TLS certs| CertManager
+    ModelRegistry -.->|TLS certs| CertManager
+    Dashboard -.->|TLS certs| CertManager
+    Predictor -.->|mTLS| Istio
+    Activator -.->|mTLS| Istio
+    Predictor -.->|Autoscaling| Knative
 
-    class User,APIClient external
-    class Router,Gateway ingress
-    class ODHOp,Dashboard,KServe,ModelRegOp,TrainingOp,DSPOp,Activator,Autoscaler,Notebook,ModelReg,MLflow,Feast,Predictor,TrustyAI,TrainingPods servicemesh
-    class Istiod controlplane
-    class S3,PostgreSQL,HuggingFace,ContainerReg,K8sAPI externalservice
+    %% Registry pulls
+    Notebook -.->|Pull images| Registry
+    Predictor -.->|Pull images| Registry
+    TrainingPods -.->|Pull images| Registry
+
+    %% Database connections
+    ModelRegistry -->|5432/TCP<br/>PostgreSQL/MySQL| Database
+    MLflow -->|5432/TCP<br/>PostgreSQL/MySQL| Database
+    Argo -->|5432/TCP<br/>PostgreSQL/MySQL| Database
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef controlplane fill:#cce5ff,stroke:#4a90e2,stroke-width:2px
+    classDef modelserving fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef development fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef training fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef workflows fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef externalservice fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef infrastructure fill:#d0d0d0,stroke:#666,stroke-width:2px
+
+    class Client external
+    class Gateway ingress
+    class ODHOperator,K8sAPI,Dashboard controlplane
+    class KServeCtrl,Activator,Predictor,ModelRegistry modelserving
+    class NotebookCtrl,Notebook,MLflow development
+    class TrainingOp,TrainerOp,TrainingPods training
+    class DSPOp,Argo workflows
+    class S3,HF,Registry,Database externalservice
+    class Istio,Knative,CertManager infrastructure

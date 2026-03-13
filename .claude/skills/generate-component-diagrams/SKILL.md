@@ -1,7 +1,7 @@
 ---
 name: generate-component-diagrams
-description: Generate diagrams for all component architecture files in an organized architecture directory. Processes each component sequentially, creating Mermaid, C4, and security diagrams. Skips components that already have diagrams.
-allowed-tools: Read, Glob, Bash(python scripts/generate_diagram_pngs.py *), Bash(ls *), Bash(mkdir *)
+description: Generate diagrams for all component architecture files in an organized architecture directory. Processes each component sequentially ONE AT A TIME by reading the .md file and extracting data from tables. Creates Mermaid, C4, and security diagrams. Skips components that already have diagrams by default.
+allowed-tools: Read, Write, Glob, Bash(python scripts/generate_diagram_pngs.py *), Bash(ls *), Bash(mkdir *)
 disable-model-invocation: false
 ---
 
@@ -15,16 +15,18 @@ Required:
 - `--architecture-dir=<path>` - Path to architecture directory (e.g., `architecture/odh-3.3.0/`)
 
 Optional:
-- `--skip-existing` - Skip components that already have diagrams (default: false)
+- `--force-regenerate` - Regenerate diagrams even if they already exist (default: false, skips existing)
 - `--formats=<comma-separated>` - Specific formats to generate (default: all)
+
+**Default behavior**: Skips components that already have diagrams (resumable by default).
 
 Examples:
 ```bash
-# Generate diagrams for all components
+# Generate diagrams for all components (skips components with existing diagrams)
 /generate-component-diagrams --architecture-dir=architecture/odh-3.3.0/
 
-# Skip components that already have diagrams (resumable)
-/generate-component-diagrams --architecture-dir=architecture/odh-3.3.0/ --skip-existing
+# Force regenerate all diagrams (even if they exist)
+/generate-component-diagrams --architecture-dir=architecture/odh-3.3.0/ --force-regenerate
 
 # Generate only specific formats
 /generate-component-diagrams --architecture-dir=architecture/odh-3.3.0/ --formats=mermaid,security
@@ -35,7 +37,12 @@ Examples:
 **CRITICAL**: This skill processes components SEQUENTIALLY in a single execution context.
 - DO NOT use the Task tool
 - DO NOT spawn sub-agents or background processes
+- DO NOT try to "optimize" or "streamline" the process
+- DO NOT reuse "content generated earlier" across components
 - Execute diagram generation directly for each component
+- Process each component COMPLETELY before moving to the next one
+
+**Processing principle**: Each component is independent. Read the .md file, parse it, generate diagrams, write files. Then move to the next component. No batching, no shortcuts, no optimization.
 
 ### Step 1: Find Component Architecture Files
 
@@ -70,9 +77,11 @@ Generate component architectures first:
 2. /collect-component-architectures
 ```
 
-### Step 2: Check for Existing Diagrams (if --skip-existing)
+### Step 2: Check for Existing Diagrams
 
-If `--skip-existing` flag is set, for each component file, check if diagrams already exist:
+**Default behavior**: Skip components that already have diagrams (unless `--force-regenerate` is set).
+
+For each component file, check if diagrams already exist:
 
 ```bash
 # Check if diagrams directory has files for this component
@@ -80,20 +89,32 @@ COMPONENT_NAME=$(basename "$ARCH_FILE" .md | tr '[:upper:]' '[:lower:]')
 ls {architecture-dir}/diagrams/${COMPONENT_NAME}-*.mmd 2>/dev/null
 ```
 
-If diagrams exist and `--skip-existing` is set, mark component as "skip".
+**Decision logic**:
+- If diagrams exist AND `--force-regenerate` is NOT set: Mark component as "skip"
+- If diagrams exist AND `--force-regenerate` IS set: Mark component as "regenerate"
+- If diagrams do NOT exist: Mark component as "generate"
 
 ### Step 3: Process Each Component Sequentially
+
+**IMPORTANT**: Process components ONE AT A TIME. Do not try to "streamline", "optimize", or work on multiple components in parallel. Complete the entire workflow for one component before starting the next.
 
 For each component architecture file (in alphabetical order):
 
 #### 3a. Report Progress
 
-If skipping (and --skip-existing is set):
+If skipping (default behavior when diagrams exist):
 ```
 ⏭️  Skipping {component_name} (diagrams already exist)
 ```
 
-If processing:
+If regenerating (--force-regenerate set and diagrams exist):
+```
+🔄 Regenerating diagrams for {component_name} ({current}/{total})...
+   Source: {architecture-file}
+   Output: {architecture-dir}/diagrams/
+```
+
+If generating (no existing diagrams):
 ```
 🎨 Generating diagrams for {component_name} ({current}/{total})...
    Source: {architecture-file}
@@ -110,7 +131,12 @@ If processing:
 - ❌ DO NOT create Python scripts with hardcoded component metadata
 - ❌ DO NOT generate template/placeholder diagrams
 - ❌ DO NOT skip reading the architecture .md files
-- ✅ MUST read each component's .md file and extract actual data from markdown tables
+- ❌ DO NOT try to "optimize", "streamline", or "batch process" components
+- ❌ DO NOT reuse "content generated earlier" or keep diagrams "in memory"
+- ❌ DO NOT say things like "I'll complete X efficiently then continue with Y"
+- ✅ MUST read each component's .md file fresh for EACH component
+- ✅ MUST extract actual data from markdown tables for EACH diagram
+- ✅ MUST complete one component fully before starting the next
 
 For this component's architecture file (`{architecture-dir}/{component}.md`):
 
@@ -179,6 +205,8 @@ After completing each component:
    Diagrams created in: {architecture-dir}/diagrams/
    Files: {component-name}-component.mmd/png, {component-name}-dataflow.mmd/png, ...
 ```
+
+**Then immediately move to the next component** (if any remain). Do not try to batch, optimize, or parallelize. Process one component at a time, completely.
 
 ### Step 4: Update Diagrams README
 
@@ -282,8 +310,8 @@ Next steps:
 
 # ... Ctrl-C after 5 components ...
 
-# Resume later - skip already-completed components
-/generate-component-diagrams --architecture-dir=architecture/odh-3.3.0/ --skip-existing
+# Resume later - automatically skips already-completed components (default behavior)
+/generate-component-diagrams --architecture-dir=architecture/odh-3.3.0/
 ```
 
 ## Notes
@@ -291,7 +319,8 @@ Next steps:
 ### Sequential Processing
 
 - Components are processed one-by-one (not parallel)
-- **Resumable**: Use `--skip-existing` to skip components that already have diagrams
+- **Resumable by default**: Automatically skips components that already have diagrams
+- **Force regeneration**: Use `--force-regenerate` to regenerate all diagrams (even if they exist)
 - Can be interrupted (Ctrl-C) and restarted safely
 - Progress reported after each component
 
@@ -311,9 +340,11 @@ architecture/odh-3.3.0/
 └── PLATFORM.md
 ```
 
-### Skip Detection
+### Skip Detection (Default Behavior)
 
-If `--skip-existing` is set, the skill checks for existing diagrams by looking for `{component-name}-*.mmd` files in the diagrams directory.
+By default, the skill checks for existing diagrams by looking for `{component-name}-*.mmd` files in the diagrams directory and skips those components.
+
+Use `--force-regenerate` to override this and regenerate all diagrams.
 
 ### Autonomous Operation
 
@@ -349,13 +380,14 @@ PNG files are automatically generated using `scripts/generate_diagram_pngs.py`:
 ```bash
 /generate-component-diagrams --architecture-dir=architecture/odh-3.3.0/
 # Processes all 16 components sequentially
-# Can Ctrl-C and resume later with --skip-existing
-# Automatically skips components that already have diagrams
+# Automatically skips components that already have diagrams (default)
+# Can Ctrl-C and resume later - just run the same command again
+# Use --force-regenerate to regenerate all diagrams
 ```
 
 **Key Benefits**:
 - ✅ One command vs 16
-- ✅ Resumable (Ctrl-C safe with --skip-existing)
+- ✅ Resumable by default (Ctrl-C safe, automatically skips existing)
 - ✅ Automatic component discovery
 - ✅ Progress tracking
 - ✅ Shared diagrams directory for all components
