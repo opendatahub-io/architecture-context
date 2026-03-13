@@ -1,7 +1,7 @@
 ---
 name: generate-architecture-diagrams
 description: Generate architecture diagrams (Mermaid, C4, security network diagrams) from GENERATED_ARCHITECTURE.md. Creates visual representations for different audiences - developers, architects, security teams.
-allowed-tools: Read, Write, Bash(*)
+allowed-tools: Read, Write, Bash(python scripts/generate_diagram_pngs.py *), Bash(mkdir *)
 disable-model-invocation: true
 ---
 
@@ -470,7 +470,55 @@ graph TD
 
 ---
 
-### Step 6: Generate Index/README
+### Step 6: Generate PNG Files from Mermaid Diagrams
+
+Automatically convert all `.mmd` files to high-resolution PNG images using the Python script.
+
+Use the Python script to generate PNGs from all Mermaid diagrams:
+
+```bash
+python scripts/generate_diagram_pngs.py {output-dir} --width=3000
+```
+
+**Expected output**:
+```
+Generating PNGs for 5 Mermaid diagram(s)...
+Width: 3000px, Chrome: /usr/bin/google-chrome
+
+  feast-component.mmd → feast-component.png
+  feast-dataflow.mmd → feast-dataflow.png
+  feast-security-network.mmd → feast-security-network.png
+  feast-dependencies.mmd → feast-dependencies.png
+  feast-rbac.mmd → feast-rbac.png
+
+============================================================
+✅ PNG generation complete!
+============================================================
+Successful: 5
+Failed: 0
+Width: 3000px
+```
+
+**Error handling**:
+
+If the script fails (mmdc or Chrome not available), output a warning and continue:
+```
+⚠️  PNG generation skipped (mmdc or Chrome not installed)
+   Install with: npm install -g @mermaid-js/mermaid-cli
+   Mermaid source files (.mmd) were created and can be converted manually
+```
+
+**Notes**:
+- PNG width: 3000px (height auto-adjusts to content)
+- PNGs are high-resolution for presentations and documentation
+- Script auto-detects Chrome/Chromium path
+- Graceful degradation: If unavailable, skill continues without PNGs
+- Original `.mmd` files are preserved (can be embedded in markdown)
+- Single permission grant for the script covers all PNG generation
+
+---
+
+### Step 8: Generate Index/README
 
 Create `{output-dir}/README.md` with links to all diagrams:
 
@@ -486,46 +534,50 @@ Date: {date}
 
 ## Available Diagrams
 
+All Mermaid diagrams are available in both `.mmd` (source) and `.png` (3000px width, high-resolution) formats.
+
 ### For Developers
-- [Component Structure](./{component-name}-component.mmd) - Mermaid diagram showing internal components
-- [Data Flows](./{component-name}-dataflow.mmd) - Sequence diagram of request/response flows
-- [Dependencies](./{component-name}-dependencies.mmd) - Component dependency graph
+- [Component Structure](./{component-name}-component.png) ([mmd](./{component-name}-component.mmd)) - Mermaid diagram showing internal components
+- [Data Flows](./{component-name}-dataflow.png) ([mmd](./{component-name}-dataflow.mmd)) - Sequence diagram of request/response flows
+- [Dependencies](./{component-name}-dependencies.png) ([mmd](./{component-name}-dependencies.mmd)) - Component dependency graph
 
 ### For Architects
 - [C4 Context](./{component-name}-c4-context.dsl) - System context in C4 format (Structurizr)
-- [Component Overview](./{component-name}-component.mmd) - High-level component view
+- [Component Overview](./{component-name}-component.png) ([mmd](./{component-name}-component.mmd)) - High-level component view
 
 ### For Security Teams
-- [Security Network Diagram (Mermaid)](./{component-name}-security-network.mmd) - Visual network topology diagram
+- [Security Network Diagram (PNG)](./{component-name}-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./{component-name}-security-network.mmd) - Visual network topology (editable)
 - [Security Network Diagram (ASCII)](./{component-name}-security-network.txt) - Precise text format for SAR submissions
-- [RBAC Visualization](./{component-name}-rbac.mmd) - RBAC permissions and bindings
+- [RBAC Visualization](./{component-name}-rbac.png) ([mmd](./{component-name}-rbac.mmd)) - RBAC permissions and bindings
 
 ## How to Use
 
-### Mermaid Diagrams (.mmd files)
+### PNG Files (.png files)
+**Automatically generated** at 3000px width for high-resolution presentations and documentation.
+
+- **Ready to use**: High-resolution images suitable for presentations, wikis, and documentation
+- **Width**: 3000px (height auto-adjusts to content)
+- **Use directly**: Include in PowerPoint, Google Slides, Confluence, etc.
+
+### Mermaid Source Files (.mmd files)
 - **In GitHub/GitLab**: Paste into markdown with ````mermaid` code blocks - renders automatically!
-- **Live editor**: https://mermaid.live (paste code, click "Export PNG")
+- **Live editor**: https://mermaid.live (paste code, edit, export)
+- **Editable**: Modify and regenerate if needed
 
-**Render to PNG locally (recommended)**:
+**Manual PNG regeneration** (if you edit .mmd files):
 
-1. **Install Mermaid CLI** (one-time setup):
+1. **Ensure Mermaid CLI is installed**:
    ```bash
    npm install -g @mermaid-js/mermaid-cli
    ```
 
-2. **Generate PNG** (using system Chrome for rendering):
+2. **Regenerate PNG** (3000px width):
    ```bash
-   # Basic (default resolution)
-   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i diagram.mmd -o diagram.png
-
-   # High resolution (recommended - 3x scale)
-   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i diagram.mmd -o diagram.png -s 3
-
-   # Custom width (height auto-adjusts)
-   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i diagram.mmd -o diagram.png -w 2400
+   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i diagram.mmd -o diagram.png -w 3000
    ```
 
-3. **Alternative formats**:
+3. **Alternative formats** (if needed):
    ```bash
    # SVG (vector, scales perfectly)
    PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i diagram.mmd -o diagram.svg
@@ -534,7 +586,7 @@ Date: {date}
    PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i diagram.mmd -o diagram.pdf
    ```
 
-**Note**: If `google-chrome` is not at `/usr/bin/google-chrome`, find it with `which google-chrome` or `which chromium`
+**Note**: If `google-chrome` is not found, try `chromium` or `which google-chrome` to locate it
 
 ### C4 Diagrams (.dsl files)
 - **Structurizr Lite**: `docker run -p 8080:8080 -v .:/usr/local/structurizr structurizr/lite`
@@ -555,7 +607,7 @@ To regenerate after architecture changes:
 
 ---
 
-### Step 7: Report Results
+### Step 9: Report Results
 
 Output a summary:
 
@@ -566,26 +618,35 @@ Component: {component-name} (from filename)
 Source: {architecture-file}
 Output directory: {output-dir}/
 
-Diagrams created:
-- ✅ {component-name}-component.mmd (Mermaid component diagram)
-- ✅ {component-name}-dataflow.mmd (Mermaid data flow diagram)
-- ✅ {component-name}-security-network.mmd (Mermaid security diagram - visual)
+Mermaid diagrams (source + PNG):
+- ✅ {component-name}-component.mmd + .png (Component structure)
+- ✅ {component-name}-dataflow.mmd + .png (Data flow sequences)
+- ✅ {component-name}-security-network.mmd + .png (Security network diagram - visual)
+- ✅ {component-name}-dependencies.mmd + .png (Dependency graph)
+- ✅ {component-name}-rbac.mmd + .png (RBAC visualization)
+
+Other formats:
 - ✅ {component-name}-security-network.txt (ASCII security diagram - precise/SAR)
 - ✅ {component-name}-c4-context.dsl (C4 context diagram)
-- ✅ {component-name}-dependencies.mmd (Mermaid dependency graph)
-- ✅ {component-name}-rbac.mmd (RBAC visualization)
 - ✅ README.md (Index of all diagrams)
+
+PNG files: 3000px width, high-resolution, ready for presentations
 
 Note: Filenames use base component name without version (directory is already versioned)
 
 Next steps:
 1. Review diagrams in {output-dir}/
-2. Embed Mermaid diagrams in markdown: ```mermaid ... ```
-3. Use security network diagram for SAR documentation
-4. Share C4 diagrams with Architecture Council
-5. Render to PNG/SVG for presentations:
-   - Mermaid (high-res): PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i diagram.mmd -o diagram.png -s 3
-   - C4: docker run --rm -v $(pwd):/usr/local/structurizr structurizr/cli export -workspace diagram.dsl -format png
+2. Use PNG files directly in presentations and documentation
+3. Embed Mermaid source (.mmd) in markdown: ```mermaid ... ```
+4. Use ASCII security diagram (.txt) for SAR documentation
+5. Share C4 diagrams (.dsl) with Architecture Council
+```
+
+**If mmdc was not available**, append warning:
+```
+⚠️  PNG generation skipped (mmdc not installed)
+   Install with: npm install -g @mermaid-js/mermaid-cli
+   Mermaid source files (.mmd) were created and can be converted manually
 ```
 
 ## Notes
@@ -610,35 +671,52 @@ architecture/odh-3.3.0/                # ← Directory is versioned
 ├── model-registry.md
 ├── diagrams/                          # Auto-created (shared by all components)
 │   ├── feast-component.mmd            # ← No version in filename (redundant)
+│   ├── feast-component.png            # ← Auto-generated PNG (3000px width)
 │   ├── feast-dataflow.mmd
-│   ├── feast-security-network.mmd     # Mermaid (visual)
+│   ├── feast-dataflow.png
+│   ├── feast-security-network.mmd     # Mermaid (visual, editable)
+│   ├── feast-security-network.png     # PNG (high-res)
 │   ├── feast-security-network.txt     # ASCII (precise)
 │   ├── feast-c4-context.dsl
 │   ├── feast-dependencies.mmd
+│   ├── feast-dependencies.png
 │   ├── feast-rbac.mmd
+│   ├── feast-rbac.png
 │   ├── kserve-component.mmd           # ← Simple names
+│   ├── kserve-component.png
 │   ├── kserve-dataflow.mmd
+│   ├── kserve-dataflow.png
 │   ├── kserve-security-network.mmd
+│   ├── kserve-security-network.png
 │   ├── kserve-security-network.txt
 │   ├── platform-component.mmd         # ← PLATFORM.md → platform-*.mmd
+│   ├── platform-component.png
 │   ├── platform-dataflow.mmd
+│   ├── platform-dataflow.png
 │   ├── platform-security-network.mmd
+│   ├── platform-security-network.png
 │   └── README.md
 └── PLATFORM.md                        # Aggregated platform view
 ```
 
-**Key principle**: Filenames use base component name only (no version). The directory `odh-3.3.0/` provides versioning context.
+**Key principles**:
+- Filenames use base component name only (no version). The directory `odh-3.3.0/` provides versioning context.
+- PNG files auto-generated at 3000px width for all Mermaid diagrams (.mmd files)
 
 ### General Notes
 
 - Diagrams are generated from structured markdown tables (LLM-based transpilation)
 - All technical details (ports, protocols, TLS, auth) are preserved from source
 - Multiple formats serve different audiences (developers, architects, security)
+- **Automatic PNG generation**: All Mermaid diagrams (.mmd) are automatically converted to high-resolution PNG (3000px width)
+  - Requires: `mmdc` (Mermaid CLI) and Chrome/Chromium
+  - If not available: graceful degradation, .mmd files still created
 - **Security network diagrams have dual formats**:
-  - **Mermaid**: Visual, color-coded trust zones, great for presentations
+  - **Mermaid + PNG**: Visual, color-coded trust zones, great for presentations
   - **ASCII**: Precise text format, no ambiguity, required for SAR submissions
   - Both contain the same information, just different representations
-- Mermaid diagrams can be embedded directly in markdown or rendered to PNG
+- Mermaid source files (.mmd) can be embedded directly in markdown
+- PNG files (3000px width) are ready for presentations and documentation
 - ASCII diagrams are perfect for security reviews (no ambiguity)
 - C4 diagrams provide architectural context
 - Regenerate diagrams after updating component architecture files

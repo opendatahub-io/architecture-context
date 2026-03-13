@@ -102,23 +102,74 @@ If processing:
 
 #### 3b. Execute Diagram Generation
 
-**IMPORTANT**: DO NOT use the Task tool or Skill tool. Execute the `generate-architecture-diagrams` instructions directly.
+**IMPORTANT**: DO NOT use the Task tool or Skill tool. Execute diagram generation directly by following these steps.
 
-Read the `generate-architecture-diagrams` skill instructions (from `.claude/skills/generate-architecture-diagrams/SKILL.md`) and execute them for this component:
+**CRITICAL**: Diagrams MUST be generated from the ACTUAL content in the component's .md file, NOT from templates or hardcoded metadata.
 
-**Key parameters**:
-- Architecture file: `{architecture-dir}/{component}.md`
-- Output directory: `{architecture-dir}/diagrams/` (auto-determined by skill)
-- Formats: Use `--formats` if specified, otherwise all
+**PROHIBITED**:
+- ❌ DO NOT create Python scripts with hardcoded component metadata
+- ❌ DO NOT generate template/placeholder diagrams
+- ❌ DO NOT skip reading the architecture .md files
+- ✅ MUST read each component's .md file and extract actual data from markdown tables
 
-Execute all steps from the generate-architecture-diagrams skill:
-1. Determine component name (from filename)
-2. Read architecture documentation
-3. Determine output directory (auto: `{architecture-dir}/diagrams/`)
-4. Create output directory if needed
-5. Generate diagrams (Mermaid, C4, security, etc.)
-6. Generate PNG files using `python scripts/generate_diagram_pngs.py`
-7. Generate README.md (append/update for multiple components)
+For this component's architecture file (`{architecture-dir}/{component}.md`):
+
+**Step 1: Read the component architecture file**
+
+Use the Read tool to read `{architecture-dir}/{component}.md`:
+```
+Read: {architecture-dir}/{component}.md
+```
+
+**Step 2: Extract structured data from markdown tables**
+
+Parse the architecture markdown to extract (following generate-architecture-diagrams skill):
+- **Component metadata**: From "## Metadata" section
+- **Architecture components**: From "## Architecture Components" table
+- **CRDs**: From "### Custom Resource Definitions" table
+- **HTTP/gRPC endpoints**: From "## APIs Exposed" tables
+- **Dependencies**: From "## Dependencies" tables (external and internal)
+- **Network services**: From "### Services" table in "## Network Architecture"
+- **Ingress/Egress**: From network tables
+- **RBAC**: From "## Security" → "### RBAC" tables
+- **Data flows**: From "## Data Flows" section
+- **Integration points**: From "## Integration Points" table
+
+**Step 3: Generate diagram files based on extracted data**
+
+Create diagram files in `{architecture-dir}/diagrams/` using the component name from the filename:
+
+1. **`{component-name}-component.mmd`** - Mermaid component diagram showing:
+   - Internal architecture components
+   - CRDs and their relationships
+   - External dependencies
+   - Internal integrations
+
+2. **`{component-name}-dataflow.mmd`** - Mermaid sequence diagram from "## Data Flows" section
+
+3. **`{component-name}-security-network.txt`** - ASCII security network diagram with:
+   - Exact ports, protocols, encryption from network tables
+   - Trust boundaries (external, ingress, service mesh, egress)
+   - RBAC summary from security tables
+   - Service mesh configuration
+   - Secrets from security tables
+
+4. **`{component-name}-security-network.mmd`** - Mermaid version of security network
+
+5. **`{component-name}-c4-context.dsl`** - C4 context from dependencies and integration points
+
+6. **`{component-name}-dependencies.mmd`** - Mermaid dependency graph from "## Dependencies" tables
+
+7. **`{component-name}-rbac.mmd`** - Mermaid RBAC visualization from security tables
+
+**Step 4: Generate PNG files for this component**
+
+After creating all .mmd files for this component, run the PNG generation script once for the entire diagrams directory:
+```bash
+python scripts/generate_diagram_pngs.py {architecture-dir}/diagrams/ --width=10000
+```
+
+**Note**: The script processes ALL .mmd files in the directory, which is fine - it will regenerate PNGs for previously completed components (they'll be identical) and create new PNGs for this component's diagrams. This is simpler than trying to filter for specific files.
 
 #### 3c. Report Completion
 

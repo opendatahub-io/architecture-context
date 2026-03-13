@@ -294,3 +294,80 @@ This script is called by the `/collect-component-architectures` skill:
 - Python 3.10+
 - Git (for version detection via `git describe`)
 - Platform operator repositories must be checked out
+
+## generate_diagram_pngs.py
+
+Generate high-resolution PNG files from Mermaid (.mmd) diagrams using mmdc (Mermaid CLI). Automatically detects Chrome/Chromium and processes all diagrams in a directory.
+
+### Usage
+
+```bash
+# Generate PNGs for all .mmd files in a directory
+python scripts/generate_diagram_pngs.py /path/to/diagrams --width=3000
+
+# Generate PNG for a single .mmd file
+python scripts/generate_diagram_pngs.py diagram.mmd --width=3000
+
+# Use custom Chrome path
+python scripts/generate_diagram_pngs.py /path/to/diagrams --chrome-path=/usr/bin/chromium
+```
+
+### Arguments
+
+- `path`: Path to .mmd file or directory containing .mmd files (positional, required)
+- `--width`: PNG width in pixels (default: 3000, height auto-adjusts)
+- `--chrome-path`: Path to Chrome/Chromium executable (default: auto-detect)
+
+### Requirements
+
+- **mmdc** (Mermaid CLI): `npm install -g @mermaid-js/mermaid-cli`
+- **Chrome/Chromium**: Usually pre-installed on most systems
+
+### Chrome Detection
+
+The script automatically detects Chrome/Chromium in this priority:
+1. `/usr/bin/google-chrome` (most common)
+2. `/usr/bin/chromium`
+3. `/usr/bin/chromium-browser`
+4. `which google-chrome`
+5. `which chromium`
+
+### Benefits
+
+- **Single permission grant**: Permission for the script covers all PNG generation
+- **Auto-detection**: Finds Chrome/Chromium automatically
+- **Batch processing**: Processes all .mmd files in a directory
+- **Error handling**: Clear error messages if dependencies missing
+- **High resolution**: 3000px width default for presentations
+
+### Examples
+
+```bash
+# Generate PNGs for all diagrams in architecture/odh-3.3.0/diagrams/
+$ python scripts/generate_diagram_pngs.py architecture/odh-3.3.0/diagrams/
+
+Generating PNGs for 5 Mermaid diagram(s)...
+Width: 3000px, Chrome: /usr/bin/google-chrome
+
+  feast-component.mmd → feast-component.png
+  feast-dataflow.mmd → feast-dataflow.png
+  feast-security-network.mmd → feast-security-network.png
+  feast-dependencies.mmd → feast-dependencies.png
+  feast-rbac.mmd → feast-rbac.png
+
+============================================================
+✅ PNG generation complete!
+============================================================
+Successful: 5
+Failed: 0
+Width: 3000px
+```
+
+### Integration with Skills
+
+This script is used by the `/generate-architecture-diagrams` skill to automatically convert all Mermaid diagrams to high-resolution PNG files.
+
+### Return Codes
+
+- `0`: Success (all PNGs generated)
+- `1`: Error (mmdc not found, Chrome not found, or PNG generation failed)
