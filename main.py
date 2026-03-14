@@ -11,6 +11,7 @@ import os
 import sys
 import re
 import asyncio
+import subprocess
 import argparse
 from pathlib import Path
 
@@ -179,6 +180,33 @@ def parse_args():
         "--limit",
         type=int,
         help="Limit number of platforms to process (for testing)"
+    )
+
+    # Phase 6: Generate diagrams
+    diagrams_parser = subparsers.add_parser(
+        "generate-diagrams",
+        help="Generate diagrams for architecture files that need them"
+    )
+    diagrams_parser.add_argument(
+        "--architecture-dir",
+        default="architecture",
+        help="Base architecture directory (default: architecture)"
+    )
+    diagrams_parser.add_argument(
+        "--max-concurrent",
+        type=int,
+        default=5,
+        help="Maximum number of agents to run concurrently (default: 5)"
+    )
+    diagrams_parser.add_argument(
+        "--limit",
+        type=int,
+        help="Limit number of files to process (for testing)"
+    )
+    diagrams_parser.add_argument(
+        "--force-regenerate",
+        action="store_true",
+        help="Regenerate diagrams even if they already exist"
     )
 
     # All phases
@@ -510,6 +538,217 @@ This is critical for understanding how this component is deployed in production.
     print("=" * 60)
 
 
+async def run_generate_diagrams_phase(args) -> None:
+    """Run Phase 6: Generate diagrams for architecture files."""
+    print("\n" + "=" * 60)
+    print("PHASE 6: Generating architecture diagrams")
+    print("=" * 60 + "\n")
+
+    architecture_dir = Path(args.architecture_dir)
+
+    if not architecture_dir.exists():
+        print(f"Error: Architecture directory does not exist: {architecture_dir}")
+        return
+
+    # Discover all .md files in all platform-version directories
+    diagram_jobs = []
+
+    for platform_dir in sorted(architecture_dir.iterdir()):
+        if not platform_dir.is_dir():
+            continue
+
+        # Parse directory name: <platform>-<version>
+        match = re.match(r'^(odh|rhoai)-(.+)$', platform_dir.name)
+        if not match:
+            continue
+
+        platform = match.group(1)
+        version = match.group(2)
+
+        # Find all .md files (excluding README.md)
+        md_files = [
+            f for f in platform_dir.glob("*.md")
+            if f.name != "README.md"
+        ]
+
+        for md_file in md_files:
+            component_name = md_file.stem.lower()
+            diagrams_dir = platform_dir / "diagrams"
+
+            # Check if diagrams already exist
+            has_diagrams = False
+            if diagrams_dir.exists():
+                # Look for any diagram files with this component's name
+                pattern = f"{component_name}-*.mmd"
+                existing_diagrams = list(diagrams_dir.glob(pattern))
+                has_diagrams = len(existing_diagrams) > 0
+
+            needs_generation = not has_diagrams or args.force_regenerate
+
+            diagram_jobs.append({
+                'platform': platform,
+                'version': version,
+                'md_file': md_file,
+                'component_name': component_name,
+                'diagrams_dir': diagrams_dir,
+                'has_diagrams': has_diagrams,
+                'needs_generation': needs_generation,
+            })
+
+    if not diagram_jobs:
+        print(f"No architecture files found in {architecture_dir}")
+        return
+
+    # Filter to files that need diagrams
+    needs_generation = [j for j in diagram_jobs if j['needs_generation']]
+    already_has = [j for j in diagram_jobs if j['has_diagrams'] and not args.force_regenerate]
+
+    print(f"Found {len(diagram_jobs)} architecture file(s):")
+    print(f"  Already has diagrams: {len(already_has)}")
+    print(f"  Needs diagrams: {len(needs_generation)}")
+    print()
+
+    if already_has:
+        print("Files with diagrams (skipping):")
+        for j in already_has:
+            print(f"  ✓ {j['platform']}-{j['version']}/{j['component_name']}.md")
+        print()
+
+    if not needs_generation:
+        print("All files already have diagrams!")
+        if not args.force_regenerate:
+            print("Use --force-regenerate to regenerate existing diagrams")
+        return
+
+    # Read the skill prompt template for generate-architecture-diagrams
+    skill_path = Path(".claude/skills/generate-architecture-diagrams/SKILL.md")
+    if not skill_path.exists():
+        print(f"ERROR: Skill file not found: {skill_path}")
+        return
+
+    skill_content = skill_path.read_text()
+
+    # Extract the instructions section
+    instructions_match = re.search(r'## Instructions\n\n(.+)', skill_content, re.DOTALL)
+    if not instructions_match:
+        print("ERROR: Could not extract instructions from skill file")
+        return
+
+    instructions = instructions_match.group(1).strip()
+
+    # Prepare agent jobs
+    jobs = []
+    for j in sorted(needs_generation, key=lambda x: (x['platform'], x['version'], x['component_name'])):
+        # Build prompt from skill instructions
+        prompt = f"""Generate architecture diagrams from the architecture markdown file.
+
+Architecture file: {j['md_file']}
+Component name: {j['component_name']}
+Output directory: {j['diagrams_dir']}
+
+Generate all diagram formats:
+- Mermaid diagrams (.mmd)
+- C4 diagrams (.dsl)
+- Security network diagrams (.txt and .mmd)
+- PNG files from Mermaid diagrams
+
+{instructions}
+"""
+
+        job = {
+            "name": f"{j['platform']}-{j['version']}/{j['component_name']}",
+            "cwd": str(j['md_file'].parent),
+            "prompt": prompt,
+            "component_name": j['component_name'],
+            "diagrams_dir": j['diagrams_dir'],
+        }
+        jobs.append(job)
+
+    # Apply limit if specified
+    if args.limit:
+        jobs = jobs[:args.limit]
+        print(f"Limited to first {args.limit} file(s)\n")
+
+    # Display prepared jobs
+    print(f"Prepared {len(jobs)} agent job(s):\n")
+    for i, job in enumerate(jobs, 1):
+        print(f"{i:2d}. {job['name']}")
+    print()
+
+    # Create logs directory
+    log_dir = Path("logs/generate-diagrams")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Logs will be written to: {log_dir}\n")
+
+    print(f"{'=' * 60}")
+    print(f"Ready to process {len(jobs)} file(s)")
+    print(f"Max concurrent agents: {args.max_concurrent}")
+    print(f"{'=' * 60}\n")
+
+    # Run agents with concurrency limit
+    semaphore = asyncio.Semaphore(args.max_concurrent)
+
+    async def run_agent_with_semaphore(job):
+        async with semaphore:
+            result = await run_agent(job["name"], job["cwd"], job["prompt"], log_dir)
+
+            # If successful, run PNG generation for this component's diagrams directory
+            if result.get("success") and job["diagrams_dir"].exists():
+                print(f"\n{'=' * 60}")
+                print(f"Generating PNGs for: {job['name']}")
+                print(f"{'=' * 60}")
+
+                try:
+                    subprocess.run(
+                        [
+                            "python", "scripts/generate_diagram_pngs.py",
+                            str(job["diagrams_dir"]),
+                            "--width=10000"
+                        ],
+                        check=True
+                    )
+                    print(f"✓ PNG generation complete for {job['name']}")
+                except subprocess.CalledProcessError as e:
+                    print(f"⚠ PNG generation failed for {job['name']}: {e}")
+
+            return result
+
+    print("Starting agent execution...\n")
+    results = await asyncio.gather(
+        *(run_agent_with_semaphore(job) for job in jobs),
+        return_exceptions=True
+    )
+
+    # Summary
+    successful = [r for r in results if isinstance(r, dict) and r.get("success")]
+    failed = [r for r in results if isinstance(r, dict) and not r.get("success")]
+    exceptions = [r for r in results if isinstance(r, Exception)]
+
+    print("\n" + "=" * 60)
+    print("DIAGRAM GENERATION COMPLETE")
+    print("=" * 60)
+    print(f"Total files: {len(jobs)}")
+    print(f"Successful: {len(successful)}")
+    print(f"Failed: {len(failed)}")
+    if exceptions:
+        print(f"Exceptions: {len(exceptions)}")
+
+    if failed:
+        print("\nFailed files:")
+        for r in failed:
+            print(f"  ✗ {r['name']}: {r.get('error', 'unknown error')}")
+            if r.get('log_file'):
+                print(f"    Log: {r['log_file']}")
+
+    if exceptions:
+        print("\nFiles with exceptions:")
+        for i, exc in enumerate(exceptions):
+            print(f"  ✗ Exception {i+1}: {exc}")
+
+    print(f"\nAll agent logs available in: {log_dir}")
+    print("=" * 60)
+
+
 async def run_generate_platform_architecture_phase(args) -> None:
     """Run Phase 5: Generate platform-level architecture documents."""
     print("\n" + "=" * 60)
@@ -754,6 +993,8 @@ async def main(args) -> None:
         await run_collect_architectures_phase(args)
     elif args.command == "generate-platform-architecture":
         await run_generate_platform_architecture_phase(args)
+    elif args.command == "generate-diagrams":
+        await run_generate_diagrams_phase(args)
     elif args.command == "all":
         await run_all_phases(args)
     else:
