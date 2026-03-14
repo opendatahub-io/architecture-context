@@ -1,47 +1,60 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Creates distributed training jobs for LLM fine-tuning and model training"
+        datascientist = person "Data Scientist" "Creates and manages distributed ML training jobs and LLM fine-tuning workloads"
 
-        trainer = softwareSystem "Kubeflow Trainer" "Kubernetes-native operator for distributed machine learning training and LLM fine-tuning" {
-            controller = container "trainer-controller-manager" "Manages TrainJob lifecycle, creates JobSets, progression tracking" "Go Operator"
-            webhook = container "Validating Webhook Server" "Validates TrainJob, TrainingRuntime, ClusterTrainingRuntime CRs" "Go HTTPS Service"
-            trainjobCtl = container "TrainJob Controller" "Reconciles TrainJobs, creates JobSets and PodGroups" "Go Reconciler"
-            progressTracker = container "Progression Tracker (RHOAI)" "Polls training pod metrics for real-time progress" "Go Extension"
-            netPolicyMgr = container "Network Policy Manager (RHOAI)" "Creates NetworkPolicies to isolate training pods" "Go Extension"
+        trainer = softwareSystem "Kubeflow Trainer" "Kubernetes-native operator for distributed machine learning training and LLM fine-tuning across PyTorch, JAX, TensorFlow, DeepSpeed, and MLX frameworks" {
+            controller = container "trainer-controller-manager" "Manages TrainJob lifecycle and creates training workloads" "Go Operator" {
+                trainjobController = component "TrainJob Controller" "Reconciles TrainJob resources and creates JobSets" "Go Reconciler"
+                runtimeController = component "TrainingRuntime Controller" "Watches runtime templates and notifies TrainJobs" "Go Reconciler"
+                clusterRuntimeController = component "ClusterTrainingRuntime Controller" "Watches cluster-scoped runtime templates" "Go Reconciler"
+                progressionTracker = component "Progression Tracker (RHOAI)" "Polls training pod metrics for real-time progress updates" "RHOAI Extension"
+                networkPolicyManager = component "Network Policy Manager (RHOAI)" "Creates NetworkPolicies to isolate training pods" "RHOAI Extension"
+            }
+
+            webhook = container "Validating Webhook Server" "Validates TrainJob, TrainingRuntime, and ClusterTrainingRuntime on CREATE/UPDATE" "Go Admission Controller"
         }
 
-        k8s = softwareSystem "Kubernetes API Server" "Core Kubernetes control plane" "External"
-        jobset = softwareSystem "JobSet Controller" "Creates sets of Jobs for distributed training" "External"
+        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform" "External"
+        jobset = softwareSystem "JobSet" "Creates sets of Jobs for distributed training" "External" {
+            jobsetController = container "JobSet Controller" "Manages multi-node training job patterns" "K8s Operator v0.10.1"
+        }
         volcano = softwareSystem "Volcano Scheduler" "Gang-scheduling plugin for all-or-nothing pod scheduling" "External Optional"
         coscheduling = softwareSystem "Coscheduling Plugin" "Kubernetes scheduler-plugins gang-scheduling" "External Optional"
-        kueue = softwareSystem "Kueue" "Multi-cluster job queueing system" "Internal ODH Optional"
-        servicemesh = softwareSystem "OpenShift Service Mesh" "Secure inter-pod communication with mTLS" "Internal ODH Optional"
-        prometheus = softwareSystem "OpenShift Monitoring / Prometheus" "Cluster monitoring and metrics collection" "Internal ODH"
-        s3 = softwareSystem "S3 Storage" "Model artifacts, datasets, and checkpoint storage" "External"
-        huggingface = softwareSystem "HuggingFace Hub" "Pre-trained models and datasets" "External"
+        leaderworkerset = softwareSystem "LeaderWorkerSet" "Manages leader-worker pod topologies" "External Optional"
 
-        # Relationships
-        user -> trainer "Creates TrainJob, TrainingRuntime CRs via kubectl/SDK"
-        trainer -> k8s "Watches CRDs, creates JobSets, PodGroups, NetworkPolicies" "HTTPS/6443 TLS1.3 ServiceAccount"
-        trainer -> jobset "Creates JobSet resources for multi-node training" "via Kubernetes API"
-        trainer -> volcano "Creates PodGroup for gang scheduling" "via Kubernetes API (optional)"
-        trainer -> coscheduling "Creates PodGroup for gang scheduling" "via Kubernetes API (optional)"
-        trainer -> kueue "Integrates via managedBy field for queue management" "CRD watch (optional)"
-        trainer -> prometheus "Exposes controller metrics" "HTTPS/8080 TLS PodMonitor"
+        kueue = softwareSystem "Kueue" "Queue-based job management system" "Internal ODH"
+        servicemesh = softwareSystem "OpenShift Service Mesh" "Secure inter-pod communication with mTLS" "Internal ODH"
+        monitoring = softwareSystem "OpenShift Monitoring" "Prometheus-based cluster monitoring" "Internal ODH"
 
-        jobset -> k8s "Creates Jobs and Pods from JobSet" "HTTPS/6443"
-        volcano -> k8s "Watches PodGroups, schedules pods atomically" "HTTPS/6443"
-        coscheduling -> k8s "Watches PodGroups, schedules pods atomically" "HTTPS/6443"
+        s3 = softwareSystem "S3 Storage" "Model artifact and dataset storage" "External"
+        huggingface = softwareSystem "HuggingFace Hub" "Pre-trained model and dataset repository" "External"
+        gcs = softwareSystem "Google Cloud Storage" "Cloud storage alternative for models/datasets" "External"
 
-        progressTracker -> k8s "Lists training pods to get IPs" "HTTPS/6443 ServiceAccount"
-        progressTracker -> s3 "Training pods poll metrics" "HTTP/28080 NetworkPolicy"
+        # User interactions
+        datascientist -> trainer "Creates TrainJobs for distributed training via kubectl/SDK"
 
-        k8s -> s3 "Training pods download models/datasets" "HTTPS/443 AWS IAM"
-        k8s -> huggingface "Training pods download models/datasets" "HTTPS/443 HF Token"
-        k8s -> s3 "Training pods upload checkpoints" "HTTPS/443 AWS IAM"
+        # Trainer → External dependencies
+        trainer -> kubernetes "Watches CRDs, creates JobSets and PodGroups" "gRPC/HTTPS 6443"
+        trainer -> jobset "Creates JobSets for multi-node training" "K8s API"
+        trainer -> volcano "Creates PodGroups for gang scheduling" "K8s API (optional)"
+        trainer -> coscheduling "Uses coscheduling for gang scheduling" "K8s API (optional)"
+        trainer -> leaderworkerset "Uses for leader-worker topologies" "K8s API (optional)"
 
-        servicemesh -> k8s "Optional: Provides mTLS for inter-pod communication" "mTLS sidecar injection"
-        prometheus -> trainer "Scrapes controller metrics" "HTTPS/8080 TLS"
+        # Trainer → Internal ODH dependencies
+        trainer -> kueue "Integrates via managedBy field for job queueing" "CRD watch"
+        trainer -> servicemesh "Training pods may use mesh for secure communication" "Optional"
+        trainer -> monitoring "Exposes controller metrics via PodMonitor" "HTTPS 8080"
+
+        # Training pods → External services
+        jobsetController -> s3 "Downloads model artifacts and datasets" "HTTPS/443 (AWS IAM)"
+        jobsetController -> huggingface "Downloads pre-trained models" "HTTPS/443 (HF token)"
+        jobsetController -> gcs "Downloads from GCS" "HTTPS/443 (GCP SA)"
+
+        # Trainer internal components
+        trainjobController -> kubernetes "Creates JobSets, PodGroups, NetworkPolicies" "ServiceAccount token"
+        progressionTracker -> kubernetes "Lists training pods" "ServiceAccount token"
+        progressionTracker -> jobsetController "Polls /metrics endpoint for training progress" "HTTP/28080"
+        webhook -> kubernetes "Validates TrainJob resources" "mTLS"
     }
 
     views {
@@ -51,6 +64,11 @@ workspace {
         }
 
         container trainer "Containers" {
+            include *
+            autoLayout
+        }
+
+        component controller "ControllerComponents" {
             include *
             autoLayout
         }
@@ -68,16 +86,16 @@ workspace {
                 background #7ed321
                 color #000000
             }
-            element "Internal ODH Optional" {
-                background #b8e986
-                color #000000
-            }
-            element "Software System" {
+            element "RHOAI Extension" {
                 background #4a90e2
                 color #ffffff
             }
-            element "Container" {
-                background #438dd5
+            element "Software System" {
+                shape RoundedBox
+            }
+            element "Person" {
+                shape Person
+                background #4a90e2
                 color #ffffff
             }
         }

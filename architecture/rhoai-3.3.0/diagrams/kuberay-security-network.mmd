@@ -1,103 +1,80 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
         Client[External Client]
+        Redis["External Redis<br/>6379/TCP"]
+        S3["Object Storage<br/>S3/GCS<br/>443/TCP"]
+        Registry["Container Registry<br/>443/TCP"]
     end
 
     subgraph Ingress["INGRESS (DMZ)"]
-        Gateway["Ingress/Gateway/Route<br/>443/TCP → 8000/TCP<br/>TLS 1.2+/TLS 1.3<br/>Optional Bearer Token"]
+        Gateway["Ingress/Gateway/Route<br/>443/TCP to 8000/TCP<br/>TLS 1.2+ SIMPLE/MUTUAL<br/>Optional Bearer Token"]
     end
 
-    subgraph K8sCluster["KUBERNETES CLUSTER (Trusted)"]
+    subgraph ClusterInternal["CLUSTER INTERNAL (Trusted)"]
         direction TB
 
-        subgraph NS_Operator["Namespace: (operator-namespace)"]
-            Operator["kuberay-operator<br/>SA: kuberay-operator<br/>runAsNonRoot, no privesc"]
-            MetricsService["Metrics Service<br/>8080/TCP HTTP<br/>No auth"]
-            HealthService["Health Service<br/>8081/TCP HTTP<br/>No auth"]
-            WebhookService["Webhook Service<br/>9443/TCP HTTPS TLS1.2+<br/>Kubernetes admission"]
-
-            subgraph Controllers["Controllers"]
-                RayClusterCtrl[RayCluster Controller]
-                RayJobCtrl[RayJob Controller]
-                RayServiceCtrl[RayService Controller]
-                NetPolicyCtrl[NetworkPolicy Controller]
-                AuthCtrl[Authentication Controller]
-            end
+        subgraph NS_Operator["Namespace: kuberay-system"]
+            Operator["kuberay-operator<br/>SA: kuberay-operator<br/>8080/TCP HTTP metrics<br/>9443/TCP HTTPS webhook"]
         end
 
-        K8sAPI["Kubernetes API<br/>443/TCP HTTPS TLS1.2+<br/>Bearer Token (SA)"]
+        subgraph NS_User["Namespace: user-namespace"]
+            direction TB
+            RayHead["Ray Head Pod<br/>SA: cluster-sa<br/>6379/TCP GCS Redis<br/>8265/TCP Dashboard HTTP<br/>10001/TCP Client gRPC"]
 
-        subgraph NS_User["Namespace: (user-namespace)"]
-            HeadPod["Ray Head Pod<br/>SA: (cluster)-sa<br/>SCC: run-as-ray-user (UID:1000)"]
-            HeadService["Ray Head Service<br/>ClusterIP"]
-            WorkerPods["Ray Worker Pods<br/>SA: (cluster)-sa<br/>Autoscaling<br/>SCC: run-as-ray-user"]
-            ServeService["Ray Serve Service<br/>8000/TCP HTTP/HTTPS<br/>Optional TLS<br/>Optional Bearer"]
+            RayWorker1["Ray Worker Pod 1<br/>SA: cluster-sa<br/>Dynamic Ray ports"]
+
+            RayWorker2["Ray Worker Pod N<br/>SA: cluster-sa<br/>Dynamic Ray ports"]
         end
 
-        HeadPod -->|provides| HeadService
-        HeadService -->|"GCS: 6379/TCP Redis<br/>Optional mTLS"| WorkerPods
-        HeadService -.->|"Dashboard: 8265/TCP HTTP/HTTPS<br/>Optional OAuth"| External_Dashboard
-        HeadService -.->|"Client: 10001/TCP gRPC<br/>Optional mTLS"| External_Client
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Token"]
 
-        WorkerPods <-->|"Ray Protocol<br/>Optional mTLS"| HeadPod
-    end
+        CertManager["cert-manager<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Token"]
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        CertManager["cert-manager API<br/>443/TCP HTTPS TLS1.2+<br/>Bearer Token (SA)"]
-        Redis["External Redis<br/>6379/TCP Redis<br/>Optional TLS<br/>Password auth"]
-        ContainerRegistry["Container Registry<br/>443/TCP HTTPS TLS1.2+<br/>Pull secrets"]
-        ObjectStorage["Object Storage (S3/GCS)<br/>443/TCP HTTPS TLS1.2+<br/>Cloud credentials"]
-        Prometheus["Prometheus<br/>Scrapes 8080/TCP HTTP<br/>No auth"]
+        Prometheus["Prometheus<br/>Internal"]
     end
 
     %% External flows
-    Client -->|"HTTPS/443<br/>TLS 1.3<br/>Optional Bearer Token"| Gateway
-    Gateway -->|"HTTP/8000<br/>Optional TLS<br/>Optional Bearer"| ServeService
+    Client -->|"HTTPS/443<br/>TLS 1.3<br/>Optional Bearer"| Gateway
+    Gateway -->|"HTTP/8000<br/>Optional TLS<br/>Optional Auth"| RayHead
 
     %% Operator flows
-    Operator -->|contains| Controllers
-    Operator -->|exposes| MetricsService
-    Operator -->|exposes| HealthService
-    Operator -->|exposes| WebhookService
+    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token SA"| K8sAPI
+    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token SA"| CertManager
+    Prometheus -->|"HTTP/8080<br/>No Auth"| Operator
 
-    Controllers -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (SA)"| K8sAPI
-    K8sAPI -->|"Admission Webhook<br/>HTTPS/443 → 9443<br/>TLS 1.2+"| WebhookService
+    %% Ray cluster flows
+    RayWorker1 -->|"Redis/6379<br/>Optional mTLS<br/>Optional cert"| RayHead
+    RayWorker2 -->|"Redis/6379<br/>Optional mTLS<br/>Optional cert"| RayHead
 
-    AuthCtrl -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| CertManager
+    RayHead -->|"Redis/6379<br/>Optional TLS<br/>Password"| Redis
+    RayHead -->|"HTTPS/443<br/>TLS 1.2+<br/>Cloud credentials"| S3
 
-    %% External service flows
-    HeadPod -.->|"Redis/6379<br/>Optional TLS<br/>Password"| Redis
-    Operator -->|"Image Pull<br/>HTTPS/443<br/>TLS 1.2+"| ContainerRegistry
-    HeadPod -->|"Data Access<br/>HTTPS/443<br/>TLS 1.2+<br/>Cloud creds"| ObjectStorage
-    Prometheus -->|"GET /metrics<br/>HTTP/8080<br/>No auth"| MetricsService
+    %% Registry flows
+    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>Pull secrets"| Registry
+    RayHead -->|"HTTPS/443<br/>TLS 1.2+<br/>Pull secrets"| Registry
+    RayWorker1 -->|"HTTPS/443<br/>TLS 1.2+<br/>Pull secrets"| Registry
 
-    %% Placeholders for dashboard/client (not shown in main flow)
-    External_Dashboard["External Dashboard Access"]
-    External_Client["External Client Access"]
+    %% Kubernetes API interactions
+    RayHead -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token SA"| K8sAPI
+    RayWorker1 -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token SA"| K8sAPI
 
-    style Client fill:#f9f9f9,stroke:#999,stroke-width:2px
-    style Gateway fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    style Operator fill:#4a90e2,stroke:#333,stroke-width:2px
-    style RayClusterCtrl fill:#4a90e2,stroke:#333
-    style RayJobCtrl fill:#4a90e2,stroke:#333
-    style RayServiceCtrl fill:#4a90e2,stroke:#333
-    style NetPolicyCtrl fill:#4a90e2,stroke:#333
-    style AuthCtrl fill:#4a90e2,stroke:#333
-    style K8sAPI fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    style HeadPod fill:#7ed321,stroke:#333,stroke-width:2px
-    style WorkerPods fill:#7ed321,stroke:#333
-    style ServeService fill:#7ed321,stroke:#333
-    style CertManager fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    style Redis fill:#fff2cc,stroke:#d6b656
-    style ContainerRegistry fill:#fff2cc,stroke:#d6b656
-    style ObjectStorage fill:#fff2cc,stroke:#d6b656
-    style Prometheus fill:#fff2cc,stroke:#d6b656
-    style External_Dashboard fill:#f9f9f9,stroke:#999,stroke-dasharray: 5 5
-    style External_Client fill:#f9f9f9,stroke:#999,stroke-dasharray: 5 5
+    %% Network Policy Isolation
+    subgraph NetworkPolicies["Network Policies Optional"]
+        NP1[Isolate Ray cluster traffic]
+        NP2[Allow operator to Ray pods]
+        NP3[Allow ingress to Ray Serve]
+    end
 
+    %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef operator fill:#4a90e2,stroke:#333,stroke-width:2px
-    classDef k8s fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef managed fill:#7ed321,stroke:#333,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef clusterinternal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef raypod fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef k8s fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    class Client,Redis,S3,Registry external
+    class Gateway ingress
+    class Operator operator
+    class RayHead,RayWorker1,RayWorker2 raypod
+    class K8sAPI,CertManager,Prometheus k8s

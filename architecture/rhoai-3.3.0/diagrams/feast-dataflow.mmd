@@ -1,40 +1,78 @@
 sequenceDiagram
-    participant MLApp as ML Application<br/>Inference Workload
-    participant TrainJob as Training Job<br/>Model Training
-    participant FeastCLI as Feast CLI/SDK<br/>Feature Engineer
-    participant OnlineFS as Online Feature Server<br/>6566/6567 TCP<br/>gRPC/HTTP
-    participant OfflineFS as Offline Feature Server<br/>8815/8816 TCP<br/>HTTP/HTTPS
-    participant Registry as Registry Server<br/>6570/6571 TCP gRPC<br/>6572/6573 TCP REST
-    participant Redis as Redis/PostgreSQL<br/>Online Store
-    participant S3 as S3/Object Storage<br/>Offline Store
-    participant CronJob as CronJob<br/>Materialization
+    participant ML as ML Application
+    participant Route as OpenShift Route<br/>443/TCP HTTPS TLS1.2+
+    participant Online as Online Feature Server<br/>6566/6567 HTTP/gRPC
+    participant Registry as Registry Server<br/>6570/6571 gRPC TLS1.2+
+    participant Store as Redis/PostgreSQL/SQLite<br/>6379/5432 TLS1.2+
+    participant OIDC as OIDC Provider<br/>443/TCP HTTPS
 
-    Note over MLApp,S3: Flow 1: Online Feature Retrieval (Real-time Inference)
-    MLApp->>OnlineFS: POST /get-online-features<br/>Auth: Bearer/mTLS<br/>TLS 1.2+ (optional)
-    OnlineFS->>Registry: Get feature metadata<br/>gRPC 6570/6571<br/>Auth: Bearer/mTLS
-    Registry-->>OnlineFS: Feature schema
-    OnlineFS->>Redis: Read features<br/>6379/5432 TCP<br/>TLS 1.2+ (optional)
-    Redis-->>OnlineFS: Feature values
-    OnlineFS-->>MLApp: Feature response<br/>gRPC/HTTP
+    Note over ML,OIDC: Flow 1: Online Feature Retrieval (Real-time Inference)
 
-    Note over TrainJob,S3: Flow 2: Historical Feature Retrieval (Training)
-    TrainJob->>OfflineFS: POST /get-historical-features<br/>Auth: Bearer/mTLS<br/>TLS 1.2+ (optional)
-    OfflineFS->>Registry: Get feature metadata<br/>gRPC 6570/6571<br/>Auth: Bearer/mTLS
-    Registry-->>OfflineFS: Feature schema
-    OfflineFS->>S3: Read historical data<br/>443 TCP HTTPS<br/>AWS IAM Auth
-    S3-->>OfflineFS: Historical features
-    OfflineFS-->>TrainJob: Training dataset<br/>HTTP/HTTPS
+    ML->>Route: POST /get-online-features<br/>Auth: Bearer Token
+    Route->>OIDC: Validate JWT Token
+    OIDC-->>Route: Token Valid
+    Route->>Online: Forward Request<br/>gRPC/HTTP TLS1.2+
+    Online->>OIDC: Validate Bearer Token
+    OIDC-->>Online: Token Valid
+    Online->>Registry: Get Feature Metadata<br/>gRPC 6570/6571
+    Registry-->>Online: Feature View Schema
+    Online->>Store: Query Features<br/>Redis/PostgreSQL Protocol
+    Store-->>Online: Feature Values
+    Online-->>Route: JSON Response
+    Route-->>ML: Feature Data
 
-    Note over CronJob,Redis: Flow 3: Feature Materialization (Offline to Online)
-    CronJob->>OnlineFS: POST /materialize<br/>Auth: Bearer/mTLS<br/>TLS 1.2+ (optional)
-    OnlineFS->>OfflineFS: Fetch offline features<br/>8815/8816 TCP<br/>TLS 1.2+ (optional)
-    OfflineFS-->>OnlineFS: Feature data
-    OnlineFS->>Redis: Write to online store<br/>6379/5432 TCP<br/>TLS 1.2+ (optional)
-    Redis-->>OnlineFS: Confirmation
-    OnlineFS-->>CronJob: Materialization complete
+    Note over ML,OIDC: Flow 2: Historical Feature Retrieval (Training)
 
-    Note over FeastCLI,S3: Flow 4: Feature Registry Management
-    FeastCLI->>Registry: ApplyFeatureView<br/>gRPC 6570/6571<br/>Auth: Bearer/mTLS
-    Registry->>S3: Store metadata<br/>443 TCP HTTPS<br/>AWS IAM (if S3 backend)
-    S3-->>Registry: Confirmation
-    Registry-->>FeastCLI: Success response
+    participant Train as Training Job
+    participant Offline as Offline Feature Server<br/>8815/8816 HTTP/HTTPS
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+
+    Train->>Route: POST /get-historical-features<br/>Auth: Bearer Token
+    Route->>Offline: Forward Request<br/>HTTPS TLS1.2+
+    Offline->>OIDC: Validate Bearer Token
+    OIDC-->>Offline: Token Valid
+    Offline->>Registry: Get Feature Metadata<br/>gRPC 6570/6571
+    Registry-->>Offline: Feature View Schema
+    Offline->>S3: Fetch Offline Data<br/>AWS IAM Auth
+    S3-->>Offline: Historical Features
+    Offline-->>Route: JSON Response
+    Route-->>Train: Historical Feature Data
+
+    Note over ML,OIDC: Flow 3: Feature Materialization (Offline to Online)
+
+    participant Cron as CronJob<br/>Scheduled Task
+
+    Cron->>Online: POST /materialize<br/>Bearer/mTLS
+    Online->>Offline: GET /get-historical-features<br/>HTTPS 8816
+    Offline->>S3: Fetch Latest Features<br/>AWS IAM
+    S3-->>Offline: Feature Data
+    Offline-->>Online: Feature Batch
+    Online->>Store: Write Features<br/>Redis/PostgreSQL
+    Store-->>Online: Write Confirmed
+    Online-->>Cron: Materialization Complete
+
+    Note over ML,OIDC: Flow 4: Feature Registry Management
+
+    participant CLI as feast CLI / SDK
+    participant RegREST as Registry Server REST<br/>6572/6573 HTTP/HTTPS
+
+    CLI->>RegREST: POST /registry<br/>Apply FeatureView<br/>Bearer Token
+    RegREST->>OIDC: Validate Token
+    OIDC-->>RegREST: Token Valid
+    RegREST->>Store: Persist Metadata<br/>PostgreSQL/S3
+    Store-->>RegREST: Write Confirmed
+    RegREST-->>CLI: FeatureView Applied
+
+    Note over ML,OIDC: Flow 5: Operator Reconciliation
+
+    participant Op as Feast Operator
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS TLS1.3
+
+    Op->>K8s: Watch FeatureStore CR<br/>Service Account Token
+    K8s-->>Op: CR Created/Updated
+    Op->>K8s: Create Deployments<br/>Online/Offline/Registry
+    Op->>K8s: Create Services
+    Op->>K8s: Create ConfigMaps
+    Op->>K8s: Create OpenShift Routes
+    K8s-->>Op: Resources Created
+    Op->>K8s: Update CR Status

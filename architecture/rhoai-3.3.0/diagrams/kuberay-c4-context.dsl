@@ -1,73 +1,62 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and manages Ray clusters for distributed ML/data processing workloads"
-        mlEngineer = person "ML Engineer" "Deploys Ray-based model serving and batch jobs"
+        user = person "Data Scientist / ML Engineer" "Creates and manages Ray clusters for distributed computing and ML workloads"
+        externalClient = person "External Client" "Consumes model serving endpoints via Ray Serve"
 
-        kuberay = softwareSystem "KubeRay Operator" "Kubernetes operator managing Ray cluster lifecycle, autoscaling, and fault tolerance" {
-            operator = container "kuberay-operator" "Manages Ray CRDs and reconciles cluster state" "Go Operator" {
-                rayClusterController = component "RayCluster Controller" "Manages RayCluster lifecycle and autoscaling" "Go Controller"
-                rayJobController = component "RayJob Controller" "Manages batch job execution" "Go Controller"
-                rayServiceController = component "RayService Controller" "Manages Ray Serve with HA and zero-downtime upgrades" "Go Controller"
-                networkPolicyController = component "NetworkPolicy Controller" "Manages network policies for isolation" "Go Controller"
-                authController = component "Authentication Controller" "Manages mTLS and OAuth integration" "Go Controller"
-                webhookServer = component "Webhook Server" "Validates and mutates RayCluster resources" "Go Admission Webhook"
+        kuberay = softwareSystem "KubeRay Operator" "Kubernetes operator that manages Ray cluster lifecycle, jobs, and services for distributed computing" {
+            operator = container "kuberay-operator" "Main operator deployment managing Ray CRDs" "Go Operator" {
+                rayClusterController = component "RayCluster Controller" "Manages Ray cluster lifecycle and autoscaling"
+                rayJobController = component "RayJob Controller" "Manages batch job execution"
+                rayServiceController = component "RayService Controller" "Manages Ray Serve deployments with HA"
+                networkPolicyController = component "NetworkPolicy Controller" "Creates network isolation policies"
+                authController = component "Authentication Controller" "Manages mTLS certificates and OAuth"
             }
 
-            rayCluster = container "Ray Cluster (Managed)" "Distributed computing cluster with head and worker nodes" "Ray Framework" {
-                headPod = component "Ray Head Pod" "GCS, Dashboard, Client Server" "Ray Head"
-                workerPods = component "Ray Worker Pods" "Autoscaling computation nodes" "Ray Workers"
+            webhook = container "Webhook Server" "Validates and mutates RayCluster resources" "Go Service" {
+                mutatingWebhook = component "Mutating Webhook" "Adds defaults and security configurations"
+                validatingWebhook = component "Validating Webhook" "Validates resource specifications"
+            }
+
+            rayCluster = container "Ray Cluster (Managed)" "Distributed Ray cluster for computation" "Ray Framework" {
+                rayHead = component "Ray Head Pod" "Cluster coordinator with GCS, dashboard, and client server"
+                rayWorkers = component "Ray Worker Pods" "Distributed compute workers with autoscaling"
             }
         }
 
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform" "External" {
-            k8sAPI = container "Kubernetes API" "Resource management and reconciliation" "Kubernetes"
-        }
-
-        certManager = softwareSystem "cert-manager" "TLS certificate management for mTLS" "External"
-        gatewayAPI = softwareSystem "Gateway API" "Advanced ingress and routing with authentication" "External"
+        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform" "External"
+        certManager = softwareSystem "cert-manager" "TLS certificate management" "External"
+        redis = softwareSystem "External Redis" "GCS fault tolerance storage" "External"
+        objectStorage = softwareSystem "Object Storage (S3/GCS)" "Ray working directory and data storage" "External"
         prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
-        redis = softwareSystem "External Redis" "GCS fault tolerance external storage" "External"
+        gatewayAPI = softwareSystem "Gateway API" "Advanced ingress and routing with authentication" "External"
+        openShiftRoute = softwareSystem "OpenShift Route API" "OpenShift ingress integration" "External"
 
-        odhDashboard = softwareSystem "ODH Dashboard" "Displays Ray cluster resources and status" "Internal ODH"
-        modelRegistry = softwareSystem "Model Registry" "Uses Ray for distributed model training" "Internal ODH"
-        dsPipelines = softwareSystem "Data Science Pipelines" "Executes Ray jobs in pipeline steps" "Internal ODH"
+        odhDashboard = softwareSystem "ODH Dashboard" "Display Ray cluster resources and status" "Internal ODH"
+        modelRegistry = softwareSystem "Model Registry" "Model metadata and versioning" "Internal ODH"
+        dsPipelines = softwareSystem "Data Science Pipelines" "ML pipeline orchestration" "Internal ODH"
 
-        s3Storage = softwareSystem "S3 Storage" "Object storage for Ray working directory and model artifacts" "External"
-        containerRegistry = softwareSystem "Container Registry" "Ray container images" "External"
+        # User interactions
+        user -> kuberay "Creates RayCluster, RayJob, RayService resources via kubectl/OpenShift console"
+        externalClient -> kuberay "Sends inference requests to Ray Serve endpoints" "HTTPS/443"
 
-        %% User interactions
-        dataScientist -> kuberay "Creates RayCluster CR via kubectl"
-        mlEngineer -> kuberay "Deploys RayJob/RayService via kubectl"
+        # Core operator interactions
+        kuberay -> kubernetes "Manages pods, services, ingresses, network policies" "HTTPS/443"
+        kuberay -> certManager "Provisions TLS certificates for mTLS" "HTTPS/443"
+        kuberay -> redis "Stores GCS state for fault tolerance" "Redis/6379"
+        kuberay -> objectStorage "Accesses Ray working directory and data" "HTTPS/443"
+        kuberay -> gatewayAPI "Creates HTTPRoutes with authentication" "HTTPS/443"
+        kuberay -> openShiftRoute "Creates Routes for ingress" "HTTPS/443"
 
-        %% Operator interactions
-        operator -> k8sAPI "Manages Ray resources, watches CRDs" "HTTPS/443 TLS1.2+, Bearer Token"
-        operator -> certManager "Requests TLS certificates for mTLS" "HTTPS/443 TLS1.2+, Bearer Token"
-        operator -> prometheus "Exposes metrics" "HTTP/8080"
-        k8sAPI -> webhookServer "Admission requests for RayCluster validation" "HTTPS/9443 TLS1.2+"
+        prometheus -> kuberay "Scrapes operator and Ray cluster metrics" "HTTP/8080"
 
-        %% Ray cluster interactions
-        rayCluster -> redis "GCS fault tolerance storage" "Redis/6379, Optional TLS, Password"
-        rayCluster -> s3Storage "Loads data and artifacts" "HTTPS/443 TLS1.2+, Cloud credentials"
-        operator -> containerRegistry "Pulls Ray images" "HTTPS/443 TLS1.2+, Pull secrets"
+        # Internal ODH integrations
+        odhDashboard -> kuberay "Displays Ray cluster status and resources"
+        modelRegistry -> kuberay "May use Ray for distributed model training"
+        dsPipelines -> kuberay "Executes Ray jobs in pipeline steps"
 
-        %% ODH integrations
-        odhDashboard -> kuberay "Displays cluster status" "Kubernetes API"
-        modelRegistry -> kuberay "Submits training jobs" "RayJob CR"
-        dsPipelines -> kuberay "Executes distributed pipeline steps" "RayJob CR"
-
-        %% External access
-        mlEngineer -> gatewayAPI "Accesses Ray Serve endpoints" "HTTPS/443 TLS1.3, Optional Bearer"
-        gatewayAPI -> rayCluster "Routes to Ray Serve" "HTTP/8000, Optional TLS"
-
-        %% Controller relationships
-        rayClusterController -> k8sAPI "Creates head/worker pods"
-        rayJobController -> k8sAPI "Creates batch jobs"
-        rayServiceController -> k8sAPI "Creates serving deployments"
-        networkPolicyController -> k8sAPI "Creates network policies"
-        authController -> certManager "Requests certificates"
-
-        %% Managed cluster relationships
-        headPod -> workerPods "Distributes computation" "Ray Protocol, Optional mTLS"
+        # Ray cluster interactions
+        rayCluster -> redis "Optional GCS HA storage" "Redis/6379"
+        rayCluster -> objectStorage "Loads data and saves results" "HTTPS/443"
     }
 
     views {
@@ -86,29 +75,17 @@ workspace {
             autoLayout
         }
 
+        component webhook "WebhookComponents" {
+            include *
+            autoLayout
+        }
+
         component rayCluster "RayClusterComponents" {
             include *
             autoLayout
         }
 
         styles {
-            element "Software System" {
-                background #1168bd
-                color #ffffff
-            }
-            element "Container" {
-                background #438dd5
-                color #ffffff
-            }
-            element "Component" {
-                background #85bbf0
-                color #000000
-            }
-            element "Person" {
-                shape person
-                background #08427b
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -116,6 +93,23 @@ workspace {
             element "Internal ODH" {
                 background #7ed321
                 color #000000
+            }
+            element "Software System" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Container" {
+                background #5a9fd4
+                color #ffffff
+            }
+            element "Component" {
+                background #85bbf0
+                color #000000
+            }
+            element "Person" {
+                background #08427b
+                color #ffffff
+                shape person
             }
         }
     }

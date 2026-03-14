@@ -1,49 +1,53 @@
 sequenceDiagram
-    participant User as User/SDK
+    participant User as Data Scientist
     participant API as Kubernetes API Server<br/>6443/TCP HTTPS TLS1.3
     participant Webhook as Validating Webhook<br/>9443/TCP HTTPS TLS
-    participant Controller as TrainJob Controller<br/>opendatahub namespace
-    participant JobSetCtl as JobSet Controller
-    participant Scheduler as Scheduler<br/>(Volcano/Coscheduling)
-    participant Pods as Training Pods<br/>28080/TCP HTTP
-    participant Storage as S3 Storage<br/>443/TCP HTTPS
+    participant Controller as TrainJob Controller<br/>trainer-controller-manager
+    participant JobSetCtrl as JobSet Controller<br/>v0.10.1
+    participant Scheduler as Volcano Scheduler<br/>Gang Scheduling
+    participant Pods as Training Pods<br/>GPU workloads
+    participant Storage as S3/HuggingFace<br/>443/TCP HTTPS
 
-    Note over User,Storage: Flow 1: TrainJob Creation
+    %% Flow 1: TrainJob Creation
+    rect rgb(230, 240, 255)
+        Note over User,Controller: Flow 1: TrainJob Creation
+        User->>API: kubectl apply TrainJob<br/>Auth: User credentials
+        API->>Webhook: Validate TrainJob<br/>9443/TCP HTTPS mTLS
+        Webhook-->>API: Validation response
+        API->>Controller: Watch event (CREATE)<br/>ServiceAccount token
+        Controller->>API: Create JobSet<br/>6443/TCP HTTPS TLS1.3
+        Controller->>API: Create PodGroup (gang scheduling)<br/>6443/TCP HTTPS TLS1.3
+        Controller->>API: Create NetworkPolicy (RHOAI)<br/>6443/TCP HTTPS TLS1.3
+    end
 
-    User->>API: POST TrainJob CR<br/>Auth: User credentials
-    API->>Webhook: POST /validate-trainer-*<br/>mTLS
-    Webhook-->>API: Validation response
-    API->>Controller: Watch event<br/>ServiceAccount token
-    Controller->>API: GET TrainingRuntime<br/>ServiceAccount token
-    API-->>Controller: Runtime template
-    Controller->>API: CREATE JobSet<br/>ServiceAccount token
-    Controller->>API: CREATE PodGroup<br/>ServiceAccount token (optional)
-    Controller->>API: CREATE NetworkPolicy<br/>ServiceAccount token (RHOAI)
-    API-->>Controller: Resources created
+    %% Flow 2: Training Execution
+    rect rgb(240, 255, 240)
+        Note over JobSetCtrl,Storage: Flow 2: Training Execution
+        JobSetCtrl->>Scheduler: Schedule training pods<br/>PodGroup all-or-nothing
+        Scheduler->>Pods: Create pods (node-0, node-1...)<br/>GPU allocation
+        Pods->>Storage: Download dataset/model<br/>443/TCP HTTPS TLS1.2+<br/>AWS IAM auth
+        Storage-->>Pods: Model artifacts
+        Pods->>Pods: Inter-pod communication<br/>Dynamic TCP<br/>NCCL all-reduce, MPI, gRPC
+        Note over Pods: Distributed training<br/>torchrun, DeepSpeed, MPI
+    end
 
-    Note over JobSetCtl,Scheduler: Flow 2: Gang Scheduling
+    %% Flow 3: Progression Tracking (RHOAI)
+    rect rgb(255, 245, 230)
+        Note over Controller,Pods: Flow 3: Progression Tracking (RHOAI)
+        loop Every 30s (configurable)
+            Controller->>API: List training pods<br/>6443/TCP HTTPS TLS1.3
+            API-->>Controller: Pod IPs
+            Controller->>Pods: GET /metrics<br/>28080/TCP HTTP<br/>NetworkPolicy restricted
+            Pods-->>Controller: JSON metrics<br/>{progressPercentage, loss, step}
+            Controller->>API: Update TrainJob annotation<br/>trainer.opendatahub.io/trainerStatus
+        end
+    end
 
-    JobSetCtl->>API: Watch JobSet
-    API-->>JobSetCtl: JobSet created event
-    JobSetCtl->>API: CREATE Jobs
-    Scheduler->>API: Watch PodGroup
-    Scheduler->>Scheduler: All-or-nothing scheduling decision
-    Scheduler->>Pods: Schedule all pods atomically
-
-    Note over Pods,Storage: Flow 3: Training Execution
-
-    Pods->>Storage: GET model artifacts<br/>AWS IAM auth
-    Storage-->>Pods: Model files
-    Pods->>Storage: GET dataset<br/>AWS IAM auth
-    Storage-->>Pods: Dataset files
-    Pods->>Pods: NCCL/MPI all-reduce<br/>Inter-pod TCP
-    Pods->>Storage: PUT checkpoints<br/>AWS IAM auth
-
-    Note over Controller,Pods: Flow 4: Progression Tracking (RHOAI)
-
-    Controller->>API: GET Pods (list)<br/>ServiceAccount token
-    API-->>Controller: Pod IPs
-    Controller->>Pods: GET /metrics<br/>NetworkPolicy restricted
-    Pods-->>Controller: JSON metrics<br/>{progressPercentage, currentStep, loss}
-    Controller->>API: PATCH TrainJob annotation<br/>trainerStatus update
-    API-->>Controller: Updated
+    %% Flow 4: Gang Scheduling Detail
+    rect rgb(255, 240, 255)
+        Note over Controller,Scheduler: Flow 4: Gang Scheduling (Volcano)
+        Controller->>API: Create PodGroup<br/>scheduling.volcano.sh
+        Scheduler->>API: Watch PodGroup<br/>6443/TCP HTTPS TLS1.3
+        Note over Scheduler: Wait until all pods ready<br/>All-or-nothing scheduling
+        Scheduler->>Pods: Schedule all pods simultaneously<br/>Prevent deadlock
+    end

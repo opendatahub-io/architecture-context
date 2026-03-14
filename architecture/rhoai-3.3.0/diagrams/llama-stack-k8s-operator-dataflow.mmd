@@ -1,45 +1,49 @@
 sequenceDiagram
     participant User as User/CI
     participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
-    participant Controller as Operator Controller
-    participant Kustomize as Kustomize Engine
-    participant Client as Client Application
-    participant LlamaStack as Llama Stack Service<br/>8321/TCP HTTP/HTTPS
-    participant Inference as Ollama/vLLM<br/>11434/8000 TCP
-    participant Prometheus as Prometheus
+    participant Controller as Operator Controller<br/>redhat-ods-applications
+    participant Kustomize as Kustomize Engine<br/>In-Process
+    participant LlamaStack as Llama Stack Pod<br/>8321/TCP HTTP/HTTPS
+    participant Ollama as Ollama Server<br/>11434/TCP HTTP
+    participant vLLM as vLLM Server<br/>8000/TCP HTTP/HTTPS
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS TLS1.2+
+    participant Prometheus as Prometheus<br/>ServiceMonitor
     participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS
 
-    Note over User,Kustomize: Flow 1: LlamaStackDistribution Creation
-
-    User->>K8sAPI: Create LlamaStackDistribution CR<br/>kubeconfig credentials
-    K8sAPI->>Controller: Watch notification (in-process)
-    Controller->>K8sAPI: Get LlamaStackDistribution<br/>ServiceAccount Token
+    Note over User,HF: Flow 1: LlamaStackDistribution Creation
+    User->>K8sAPI: Create LlamaStackDistribution CR<br/>Auth: kubeconfig
+    K8sAPI-->>Controller: Watch notification (in-process)
     Controller->>Kustomize: Render manifests (in-process)
-    Kustomize-->>Controller: Generated Kubernetes resources
-    Controller->>K8sAPI: Create/Update resources<br/>(Deployment, Service, HPA, etc.)<br/>ServiceAccount Token
-    K8sAPI-->>User: CR Status: Ready
+    Controller->>K8sAPI: Create Deployment, Service, PVC<br/>Auth: ServiceAccount Token
+    K8sAPI->>LlamaStack: Start Llama Stack pod
+    Controller->>K8sAPI: Update CR status<br/>Auth: ServiceAccount Token
+    K8sAPI-->>User: CR status updated
 
-    Note over Client,Inference: Flow 3: Llama Stack Inference Request
+    Note over User,HF: Flow 2: Metrics Collection
+    Prometheus->>Proxy: GET /metrics<br/>Auth: Bearer Token
+    Proxy->>K8sAPI: TokenReview<br/>6443/TCP HTTPS TLS1.2+
+    K8sAPI-->>Proxy: Token valid
+    Proxy->>Controller: Forward request<br/>8080/TCP HTTP (internal)
+    Controller-->>Proxy: Metrics response
+    Proxy-->>Prometheus: Metrics (HTTPS)
 
-    Client->>LlamaStack: POST /inference/chat<br/>Optional TLS 1.3<br/>None/Custom Auth
-    LlamaStack->>Inference: Inference request<br/>HTTP/HTTPS<br/>Optional Token
-    Inference->>Inference: GPU/CPU Processing
-    Inference-->>LlamaStack: Inference result
-    LlamaStack-->>Client: JSON Response
+    Note over User,HF: Flow 3: Llama Stack Inference Request
+    User->>LlamaStack: POST /inference/chat_completion<br/>8321/TCP HTTP/HTTPS<br/>Auth: None/Custom
+    alt Ollama distribution
+        LlamaStack->>Ollama: Forward inference request<br/>11434/TCP HTTP
+        Ollama-->>LlamaStack: Inference response
+    else vLLM distribution
+        LlamaStack->>vLLM: Forward inference request<br/>8000/TCP HTTP/HTTPS<br/>Auth: Optional Token
+        Note over vLLM,HF: First request may download model
+        vLLM->>HF: Download model artifacts<br/>443/TCP HTTPS TLS1.2+<br/>Auth: HF Token
+        HF-->>vLLM: Model files
+        vLLM-->>LlamaStack: Inference response
+    end
+    LlamaStack-->>User: JSON response
 
-    Note over Prometheus,Proxy: Flow 2: Metrics Collection
-
-    Prometheus->>Proxy: GET /metrics<br/>HTTPS TLS<br/>Bearer Token
-    Proxy->>K8sAPI: Token Review<br/>TLS 1.2+
-    K8sAPI-->>Proxy: Token Valid
-    Proxy->>Controller: Fetch metrics<br/>HTTP/8080
-    Controller-->>Proxy: Prometheus metrics
-    Proxy-->>Prometheus: Metrics response
-
-    Note over User,K8sAPI: Flow 4: ConfigMap Update and Pod Restart
-
-    User->>K8sAPI: Update ConfigMap<br/>kubeconfig credentials
-    K8sAPI->>Controller: Watch notification (in-process)
-    Controller->>K8sAPI: Update Deployment<br/>Add pod template annotation<br/>ServiceAccount Token
-    K8sAPI->>LlamaStack: Rolling restart (Kubernetes-managed)
-    LlamaStack-->>K8sAPI: New pods ready
+    Note over User,HF: Flow 4: ConfigMap Update and Pod Restart
+    User->>K8sAPI: Update ConfigMap<br/>Auth: kubeconfig
+    K8sAPI-->>Controller: Watch notification (in-process)
+    Controller->>K8sAPI: Update Deployment annotations<br/>Auth: ServiceAccount Token
+    K8sAPI->>LlamaStack: Rolling restart (new pods)
+    K8sAPI-->>Controller: Reconciliation complete

@@ -1,82 +1,115 @@
 graph TB
-    subgraph "KServe Control Plane"
-        Controller[kserve-controller-manager<br/>Kubernetes Operator]
-        Webhook[kserve-webhook-server<br/>Admission Webhook]
-        Controller -->|validates/mutates| Webhook
+    subgraph "KServe Platform"
+        Controller[kserve-controller-manager<br/>Reconciles InferenceService, ServingRuntime,<br/>InferenceGraph, LLMInferenceService CRs]
+        Webhook[kserve-webhook-server<br/>Validates and mutates resources]
+        LocalModelMgr[localmodel-manager<br/>Manages local model caching]
+        Controller -->|validates via| Webhook
     end
 
-    subgraph "User Namespace"
-        InferenceServiceCR[InferenceService CR<br/>serving.kserve.io/v1beta1]
-        ServingRuntimeCR[ServingRuntime CR<br/>serving.kserve.io/v1alpha1]
-        InferenceGraphCR[InferenceGraph CR<br/>serving.kserve.io/v1alpha1]
-        TrainedModelCR[TrainedModel CR<br/>serving.kserve.io/v1alpha1]
+    subgraph "Runtime Components"
+        StorageInit[storage-initializer<br/>Init Container - Downloads models]
+        Agent[agent<br/>Sidecar - Logging, batching, monitoring]
+        Router[router<br/>Routes InferenceGraph pipelines]
+        LLMScheduler[llm-scheduler<br/>Schedules LLM workloads]
     end
 
-    subgraph "Inference Pod Components"
-        StorageInit[storage-initializer<br/>Init Container<br/>Python]
-        PredictorContainer[Predictor Runtime<br/>sklearn/pytorch/huggingface/triton<br/>Python]
-        AgentSidecar[agent<br/>Sidecar<br/>Go]
-        StorageInit -->|downloads models| PredictorContainer
-        PredictorContainer -.->|logging/batching| AgentSidecar
+    subgraph "Serving Runtimes"
+        SklearnRuntime[sklearn-server<br/>Python]
+        XGBoostRuntime[xgboost-server<br/>Python]
+        PyTorchRuntime[pytorch-server<br/>Python]
+        HuggingFaceRuntime[huggingface-server<br/>Python]
+        TritonRuntime[triton-server<br/>C++/Python]
+        vLLMRuntime[vllm-server<br/>Python - LLM]
     end
 
-    subgraph "InferenceGraph Components"
-        Router[router<br/>Go Service]
-        Router -->|routes to| PredictorContainer
+    subgraph "Node-Level Components"
+        LocalModelAgent[localmodelnode-agent<br/>DaemonSet - Node cache management]
     end
 
-    subgraph "LLM Components"
-        LLMScheduler[llm-scheduler<br/>Go Service<br/>9003/TCP gRPC]
-        PrefillWorker[Prefill Worker<br/>LeaderWorkerSet]
-        DecodeWorker[Decode Worker<br/>LeaderWorkerSet]
-        LLMScheduler -->|schedules| PrefillWorker
-        LLMScheduler -->|schedules| DecodeWorker
+    subgraph "Custom Resources"
+        InferenceServiceCR[InferenceService CR<br/>v1beta1]
+        ServingRuntimeCR[ServingRuntime CR<br/>v1alpha1]
+        InferenceGraphCR[InferenceGraph CR<br/>v1alpha1]
+        TrainedModelCR[TrainedModel CR<br/>v1alpha1]
+        LLMInferenceServiceCR[LLMInferenceService CR<br/>v1]
+        LocalModelCacheCR[LocalModelCache CR<br/>v1alpha1]
     end
 
-    subgraph "Local Model Cache"
-        LocalModelManager[localmodel-manager<br/>Controller]
-        LocalModelNodeAgent[localmodelnode-agent<br/>DaemonSet]
-        LocalModelCache[LocalModelCache CR]
-        LocalModelManager -->|manages| LocalModelCache
-        LocalModelNodeAgent -->|syncs| LocalModelCache
-    end
+    %% User interactions
+    User[User/ODH Dashboard] -->|creates| InferenceServiceCR
+    User -->|creates| InferenceGraphCR
+    User -->|creates| LLMInferenceServiceCR
 
-    User[Data Scientist] -->|kubectl create| InferenceServiceCR
-    User -->|kubectl create| InferenceGraphCR
+    %% Controller watches CRs
     InferenceServiceCR -->|watched by| Controller
     ServingRuntimeCR -->|watched by| Controller
     InferenceGraphCR -->|watched by| Controller
     TrainedModelCR -->|watched by| Controller
+    LLMInferenceServiceCR -->|watched by| Controller
+    LocalModelCacheCR -->|watched by| LocalModelMgr
 
-    Controller -->|creates| KnativeService[Knative Service]
-    Controller -->|creates| Deployment[Deployment<br/>Predictor/Router]
-    Controller -->|creates| VirtualService[Istio VirtualService]
-    Controller -->|creates| Route[OpenShift Route]
+    %% Controller creates resources
+    Controller -->|creates| KnativeService[Knative Service<br/>Serverless mode]
+    Controller -->|creates| Deployment[Deployment<br/>Raw K8s mode]
+    Controller -->|creates| VirtualService[Istio VirtualService<br/>Traffic routing]
+    Controller -->|creates| RouterDeploy[Router Deployment<br/>For InferenceGraph]
 
-    Deployment -->|contains| StorageInit
-    Deployment -->|contains| PredictorContainer
-    Deployment -->|contains| AgentSidecar
+    %% Runtime usage
+    Deployment -->|uses init container| StorageInit
+    Deployment -->|uses sidecar| Agent
+    Deployment -->|runs| SklearnRuntime
+    Deployment -->|runs| XGBoostRuntime
+    Deployment -->|runs| PyTorchRuntime
+    Deployment -->|runs| HuggingFaceRuntime
+    Deployment -->|runs| TritonRuntime
 
-    StorageInit -->|downloads from| S3[S3/GCS/Azure Storage<br/>443/TCP HTTPS]
+    %% LLM specific
+    LLMInferenceServiceCR -->|creates| LLMScheduler
+    LLMInferenceServiceCR -->|creates| vLLMRuntime
 
-    Controller -->|depends on| Istio[Istio<br/>Traffic Management]
+    %% InferenceGraph specific
+    InferenceGraphCR -->|creates| Router
+
+    %% Local model cache
+    LocalModelMgr -->|creates| DownloadJob[Download Job<br/>Pulls models to nodes]
+    LocalModelAgent -->|manages| LocalCache[Local Disk Cache<br/>PersistentVolume]
+    DownloadJob -->|populates| LocalCache
+
+    %% External dependencies
+    Controller -->|depends on| Istio[Istio Service Mesh<br/>Traffic management, mTLS]
     Controller -->|depends on| Knative[Knative Serving<br/>Autoscaling]
-    Controller -->|depends on| CertManager[cert-manager<br/>TLS Certificates]
+    Controller -->|depends on| CertManager[cert-manager<br/>Webhook TLS certs]
+    LLMScheduler -->|depends on| LeaderWorkerSet[LeaderWorkerSet<br/>Multi-node LLM]
 
-    Controller -->|integrates| ModelRegistry[Model Registry<br/>Internal ODH]
-    Controller -->|integrates| Dashboard[ODH Dashboard<br/>UI Management]
+    %% Internal ODH integrations
+    Controller -->|integrates| Dashboard[ODH Dashboard<br/>UI management]
+    Controller -->|integrates| ServiceMesh[OSSM<br/>OpenShift Service Mesh]
+    Controller -->|integrates| ModelRegistry[Model Registry<br/>Model metadata]
 
-    ExternalClient[External Client] -->|HTTPS/443| IstioGateway[Istio IngressGateway]
-    IstioGateway -->|routes via| VirtualService
-    VirtualService -->|forwards to| PredictorContainer
+    %% Storage integrations
+    StorageInit -->|downloads from| S3[S3 Storage<br/>Model artifacts]
+    StorageInit -->|downloads from| GCS[GCS Storage<br/>Model artifacts]
+    StorageInit -->|downloads from| Azure[Azure Blob<br/>Model artifacts]
 
-    style Controller fill:#4a90e2,stroke:#333,stroke-width:2px
+    %% Styling
+    style Controller fill:#4a90e2,stroke:#333,stroke-width:3px
     style Webhook fill:#4a90e2,stroke:#333,stroke-width:2px
+    style LocalModelMgr fill:#4a90e2,stroke:#333,stroke-width:2px
+
     style InferenceServiceCR fill:#f5a623,stroke:#333,stroke-width:2px
-    style PredictorContainer fill:#7ed321,stroke:#333,stroke-width:2px
-    style Istio fill:#e8e8e8,stroke:#333,stroke-width:2px
-    style Knative fill:#e8e8e8,stroke:#333,stroke-width:2px
-    style CertManager fill:#e8e8e8,stroke:#333,stroke-width:2px
-    style ModelRegistry fill:#7ed321,stroke:#333,stroke-width:2px
+    style ServingRuntimeCR fill:#f5a623,stroke:#333,stroke-width:2px
+    style InferenceGraphCR fill:#f5a623,stroke:#333,stroke-width:2px
+    style LLMInferenceServiceCR fill:#f5a623,stroke:#333,stroke-width:2px
+
+    style Istio fill:#999,stroke:#333,stroke-width:2px
+    style Knative fill:#999,stroke:#333,stroke-width:2px
+    style CertManager fill:#999,stroke:#333,stroke-width:2px
+    style LeaderWorkerSet fill:#999,stroke:#333,stroke-width:2px
+
     style Dashboard fill:#7ed321,stroke:#333,stroke-width:2px
-    style S3 fill:#f5a623,stroke:#333,stroke-width:2px
+    style ServiceMesh fill:#7ed321,stroke:#333,stroke-width:2px
+    style ModelRegistry fill:#7ed321,stroke:#333,stroke-width:2px
+
+    style S3 fill:#e8e8e8,stroke:#333,stroke-width:2px
+    style GCS fill:#e8e8e8,stroke:#333,stroke-width:2px
+    style Azure fill:#e8e8e8,stroke:#333,stroke-width:2px

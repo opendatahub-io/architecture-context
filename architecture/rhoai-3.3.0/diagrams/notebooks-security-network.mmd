@@ -1,72 +1,87 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User[Data Scientist<br/>Browser]
+        UserBrowser[User Browser]
     end
 
     subgraph Ingress["INGRESS (DMZ)"]
-        Router["OpenShift Router<br/>443/TCP (ext) → 8443/TCP (int)<br/>TLS 1.2+ edge termination"]
+        Router["OpenShift Router<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ Edge Termination<br/>Route: {workbench}.apps.{cluster}"]
     end
 
     subgraph WorkbenchPod["WORKBENCH POD (User Namespace)"]
         direction TB
 
-        OAuthProxy["OAuth Proxy Sidecar<br/>8443/TCP HTTPS<br/>Enforces OpenShift OAuth"]
+        OAuthProxy["OAuth Proxy Sidecar<br/>8443/TCP HTTPS<br/>SA: {workbench}-sa<br/>Validates OAuth tokens"]
 
-        JupyterServer["Jupyter Server<br/>8888/TCP HTTP<br/>Auth: DISABLED<br/>User: UID 1001 (non-root)<br/>Image: odh-workbench-jupyter-*"]
+        JupyterServer["Jupyter Server Container<br/>8888/TCP HTTP<br/>Image: odh-workbench-jupyter-*<br/>User: UID 1001 (non-root)<br/>Auth: Disabled (OAuth proxy handles)<br/>PVC: /opt/app-root/src"]
 
-        Service["ClusterIP Service<br/>{workbench-name}-notebook<br/>8888/TCP"]
+        OAuthProxy -->|HTTP/8888<br/>Internal<br/>No encryption<br/>No auth| JupyterServer
+    end
 
-        OAuthProxy -->|"HTTP/8888<br/>No encryption<br/>(internal pod)"| JupyterServer
+    subgraph PlatformServices["PLATFORM SERVICES (Internal)"]
+        direction TB
+
+        subgraph NS_ODH["Namespace: redhat-ods-applications"]
+            Controller["odh-notebook-controller<br/>SA: controller-manager<br/>Creates StatefulSets"]
+            Dashboard["odh-dashboard<br/>UI for launching workbenches<br/>Reads ImageStreams"]
+            Pipelines["Kubeflow Pipelines<br/>Executes runtime images"]
+        end
+
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+"]
+
+        Controller -->|Create workbench<br/>HTTPS/6443<br/>SA token| K8sAPI
+        Dashboard -->|Read ImageStreams<br/>HTTPS/6443<br/>SA token| K8sAPI
+        Pipelines -->|Create runtime pods<br/>HTTPS/6443<br/>SA token| K8sAPI
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        OAuthServer["OpenShift OAuth Server<br/>6443/TCP HTTPS TLS1.2+<br/>Token validation"]
-
-        PyPI["pypi.org<br/>443/TCP HTTPS TLS1.2+<br/>Package downloads"]
-
-        S3["S3-compatible Storage<br/>443/TCP HTTPS TLS1.2+<br/>AWS IAM / Access Keys"]
-
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+<br/>Service Account Token<br/>RBAC: namespace-scoped"]
-
-        KubePipelines["Kubeflow Pipelines API<br/>8888/TCP HTTP<br/>Bearer Token"]
+        PyPI["pypi.org<br/>443/TCP HTTPS TLS1.2+<br/>Python packages"]
+        S3["S3 Storage<br/>443/TCP HTTPS TLS1.2+<br/>AWS IAM / Access Keys"]
+        GitRepos["Git Repositories<br/>443/TCP HTTPS TLS1.2+<br/>SSH keys / PAT"]
     end
 
-    subgraph RuntimePods["RUNTIME PODS (Elyra Pipeline)"]
-        RuntimePod["Runtime Image Pod<br/>User: UID 1001<br/>SA: pipeline-runner-sa<br/>Image: odh-pipeline-runtime-*"]
+    subgraph Build["BUILD PIPELINE"]
+        Konflux["Konflux Tekton<br/>Multi-arch builds<br/>Image scanning & signing"]
+        Quay["quay.io/opendatahub<br/>Image Registry"]
+        RedHatReg["registry.redhat.io<br/>RHOAI Registry"]
+
+        Konflux -->|Push images<br/>HTTPS/443<br/>Push secret| Quay
+        Konflux -->|Push images<br/>HTTPS/443<br/>Push secret| RedHatReg
     end
 
     %% External to Ingress
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>No auth (initial)"| Router
+    UserBrowser -->|HTTPS/443<br/>TLS 1.2+<br/>OAuth token| Router
 
-    %% Ingress to Pod
-    Router -->|"HTTPS/8443<br/>TLS 1.2+<br/>OAuth redirect if needed"| OAuthProxy
+    %% Ingress to Workbench
+    Router -->|HTTPS/8443<br/>TLS 1.2+<br/>OAuth enforcement| OAuthProxy
 
     %% OAuth validation
-    OAuthProxy -.->|"HTTPS/6443<br/>TLS 1.2+<br/>OAuth token exchange"| OAuthServer
+    OAuthProxy -.->|Validate token<br/>HTTPS/6443<br/>TLS 1.2+| K8sAPI
 
-    %% Service routing
-    Router -.->|"routes to"| Service
-    Service -.->|"targets"| OAuthProxy
+    %% Workbench to external services
+    JupyterServer -->|HTTPS/443<br/>TLS 1.2+<br/>No auth| PyPI
+    JupyterServer -->|HTTPS/443<br/>TLS 1.2+<br/>AWS credentials| S3
+    JupyterServer -->|HTTPS/443<br/>TLS 1.2+<br/>SSH/PAT| GitRepos
+    JupyterServer -->|kubectl/oc<br/>HTTPS/6443<br/>TLS 1.2+<br/>SA token| K8sAPI
 
-    %% Workbench egress
-    JupyterServer -->|"HTTPS/443<br/>TLS 1.2+<br/>No auth"| PyPI
-    JupyterServer -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS creds"| S3
-    JupyterServer -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    JupyterServer -->|"HTTP/8888<br/>No encryption<br/>Bearer Token"| KubePipelines
-
-    %% Pipeline execution
-    KubePipelines -->|"Creates pod via K8s API"| RuntimePod
-    RuntimePod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS creds from secret"| S3
+    %% Controller creates workbench
+    Controller -.->|Creates| WorkbenchPod
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef workbench fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef runtime fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef build fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
-    class User external
+    class UserBrowser external
     class Router ingress
-    class OAuthProxy,JupyterServer,Service workbench
-    class OAuthServer,PyPI,S3,K8sAPI,KubePipelines externalservice
-    class RuntimePod runtime
+    class OAuthProxy,JupyterServer workbench
+    class Controller,Dashboard,Pipelines,K8sAPI platform
+    class PyPI,S3,GitRepos externalservice
+    class Konflux,Quay,RedHatReg build
+
+    %% Additional annotations
+    linkStyle 0 stroke:#e74c3c,stroke-width:2px
+    linkStyle 1 stroke:#e67e22,stroke-width:2px
+    linkStyle 2 stroke:#27ae60,stroke-width:1px

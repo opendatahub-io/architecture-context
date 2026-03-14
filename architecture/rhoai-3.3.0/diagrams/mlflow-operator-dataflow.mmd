@@ -1,50 +1,61 @@
 sequenceDiagram
     participant User as User Browser
-    participant Gateway as data-science-gateway<br/>443/TCP HTTPS TLS1.3<br/>(openshift-ingress)
-    participant HTTPRoute as HTTPRoute<br/>(Gateway API)
-    participant MLflowSvc as MLflow Service<br/>8443/TCP HTTPS TLS1.3
-    participant MLflowPod as MLflow Server Pod<br/>8443/TCP HTTPS TLS1.3<br/>kubernetes-auth
+    participant Gateway as data-science-gateway<br/>openshift-ingress<br/>443/TCP HTTPS TLS1.3
+    participant HTTPRoute as HTTPRoute<br/>Path: /mlflow/*
+    participant MLflowSvc as MLflow Service<br/>8443/TCP HTTPS
+    participant MLflowPod as MLflow Pod<br/>8443/TCP HTTPS TLS1.3<br/>kubernetes-auth
     participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
     participant S3 as S3 Storage<br/>443/TCP HTTPS TLS1.2+
     participant PostgreSQL as PostgreSQL<br/>5432/TCP TLS1.2+
 
     Note over User,PostgreSQL: Flow 1: User Access to MLflow via Gateway
 
-    User->>Gateway: GET/POST /mlflow/*<br/>Bearer Token (K8s)
-    Gateway->>HTTPRoute: Route lookup<br/>/mlflow path prefix
-    HTTPRoute->>MLflowSvc: Forward request<br/>8443/TCP HTTPS
-    MLflowSvc->>MLflowPod: Forward to Pod<br/>Bearer Token (forwarded)
-    MLflowPod->>K8sAPI: self_subject_access_review<br/>ServiceAccount Token<br/>Validate user Bearer Token
-    K8sAPI-->>MLflowPod: Authorization result
-    MLflowPod-->>User: MLflow UI/API Response<br/>JSON/HTML
+    User->>Gateway: HTTPS Request /mlflow/api/2.0/*<br/>Bearer Token (K8s)
+    Gateway->>HTTPRoute: Route based on path prefix
+    HTTPRoute->>MLflowSvc: Forward to backend<br/>8443/TCP HTTPS
+    MLflowSvc->>MLflowPod: Forward to pod<br/>Bearer Token
+    MLflowPod->>K8sAPI: self_subject_access_review<br/>ServiceAccount Token<br/>TLS1.2+
+    K8sAPI-->>MLflowPod: Authorization Result
 
-    Note over User,PostgreSQL: Flow 2: MLflow Operator Reconciliation
+    alt Authorized
+        MLflowPod-->>User: MLflow API Response<br/>JSON
+    else Unauthorized
+        MLflowPod-->>User: 401 Unauthorized
+    end
 
-    participant OpPod as Operator Pod
-    participant Helm as Embedded Helm Chart
+    Note over User,PostgreSQL: Flow 2: MLflow Artifact Storage (S3)
 
-    OpPod->>K8sAPI: Watch MLflow CRs<br/>6443/TCP HTTPS<br/>ServiceAccount Token
-    K8sAPI-->>OpPod: MLflow CR created/updated
-    OpPod->>Helm: Render templates<br/>Local filesystem
-    Helm-->>OpPod: Kubernetes manifests
-    OpPod->>K8sAPI: Create/Update resources<br/>Deployment, Service, HTTPRoute, etc.<br/>ServiceAccount Token
-    K8sAPI-->>OpPod: Resources created
+    User->>MLflowPod: Log Artifact<br/>POST /api/2.0/mlflow/artifacts<br/>Bearer Token
+    MLflowPod->>K8sAPI: Validate Token
+    K8sAPI-->>MLflowPod: Valid
+    MLflowPod->>S3: PUT Object<br/>443/TCP HTTPS<br/>AWS IAM/Access Keys
+    S3-->>MLflowPod: Stored
+    MLflowPod-->>User: Artifact Logged
 
-    Note over User,PostgreSQL: Flow 3: MLflow Artifact Storage (Remote S3)
+    Note over User,PostgreSQL: Flow 3: MLflow Metadata Storage (PostgreSQL)
 
-    User->>MLflowPod: POST /api/2.0/mlflow/experiments/create<br/>Bearer Token
-    MLflowPod->>K8sAPI: Validate Bearer Token<br/>self_subject_access_review
-    K8sAPI-->>MLflowPod: Authorized
-    MLflowPod->>PostgreSQL: Store experiment metadata<br/>Username/Password<br/>TLS 1.2+
-    PostgreSQL-->>MLflowPod: Metadata saved
-    User->>MLflowPod: POST /api/2.0/mlflow/runs/log-artifact<br/>Bearer Token + Artifact data
-    MLflowPod->>S3: PUT s3://bucket/path/artifact<br/>AWS IAM/Access Keys<br/>HTTPS TLS 1.2+
-    S3-->>MLflowPod: Artifact stored
-    MLflowPod-->>User: Success response
+    User->>MLflowPod: Create Experiment<br/>POST /api/2.0/mlflow/experiments/create<br/>Bearer Token
+    MLflowPod->>K8sAPI: Validate Token
+    K8sAPI-->>MLflowPod: Valid
+    MLflowPod->>PostgreSQL: INSERT INTO experiments<br/>5432/TCP TLS<br/>Username/Password
+    PostgreSQL-->>MLflowPod: Inserted
+    MLflowPod-->>User: Experiment Created
 
-    Note over User,PostgreSQL: Flow 4: Prometheus Metrics Collection
+    Note over User,PostgreSQL: Flow 4: Operator Reconciliation
 
-    participant Prom as Prometheus
+    participant Operator as MLflow Operator<br/>Controller Pod
+    participant HelmChart as Embedded Helm Chart
 
-    Prom->>OpPod: GET /metrics<br/>8443/TCP HTTPS TLS1.2+<br/>Bearer Token (ServiceAccount)
-    OpPod-->>Prom: Operator metrics<br/>Prometheus format
+    K8sAPI->>Operator: Watch Event<br/>MLflow CR Created/Updated
+    Operator->>HelmChart: Render Templates<br/>Local filesystem
+    HelmChart-->>Operator: Manifests (YAML)
+    Operator->>K8sAPI: Apply Resources<br/>Deployment, Service, HTTPRoute, etc.<br/>ServiceAccount Token
+    K8sAPI-->>Operator: Resources Created
+
+    Note over User,PostgreSQL: Flow 5: Prometheus Metrics Collection
+
+    participant Prometheus as Prometheus
+    participant OpMetrics as Operator Metrics<br/>8443/TCP HTTPS
+
+    Prometheus->>OpMetrics: GET /metrics<br/>Bearer Token<br/>TLS1.2+
+    OpMetrics-->>Prometheus: Prometheus Metrics

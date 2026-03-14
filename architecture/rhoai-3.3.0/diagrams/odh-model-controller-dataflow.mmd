@@ -1,46 +1,60 @@
 sequenceDiagram
-    participant User as User/Admin
+    participant User as User/Data Scientist
     participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS1.2+
-    participant Controller as odh-model-controller<br/>Controller Manager
-    participant Webhook as Webhook Server<br/>9443/TCP HTTPS TLS1.2+
-    participant NGCAPI as NVIDIA NGC API<br/>443/TCP HTTPS TLS1.2+
+    participant Webhook as ODH Model Controller<br/>Webhook Server<br/>9443/TCP HTTPS TLS1.2+
+    participant Controller as ODH Model Controller<br/>InferenceService Controller
+    participant NGC as NVIDIA NGC API<br/>443/TCP HTTPS TLS1.2+
+    participant Route as OpenShift Route
     participant Prometheus as Prometheus<br/>9090/TCP HTTP
 
     Note over User,Prometheus: Flow 1: InferenceService Reconciliation
 
-    User->>K8sAPI: Create InferenceService CR<br/>Auth: User credentials
-    K8sAPI->>Controller: Watch notification<br/>Auth: ServiceAccount Token
-    Controller->>K8sAPI: Read InferenceService<br/>Auth: ServiceAccount Token
-    K8sAPI-->>Controller: InferenceService details
-    Controller->>K8sAPI: Create OpenShift Route<br/>Auth: ServiceAccount Token
-    Controller->>K8sAPI: Create ServiceMonitor<br/>Auth: ServiceAccount Token
-    Controller->>K8sAPI: Create NetworkPolicy<br/>Auth: ServiceAccount Token
-    Controller->>K8sAPI: Create RBAC resources<br/>Auth: ServiceAccount Token
-    Controller->>K8sAPI: Create TriggerAuthentication<br/>Auth: ServiceAccount Token
+    User->>K8sAPI: Create InferenceService CR<br/>kubectl apply -f inferenceservice.yaml<br/>Auth: User credentials
+    K8sAPI->>Webhook: Admission Request<br/>POST /mutate-serving-kserve-io-v1beta1-inferenceservice<br/>Auth: K8s API client cert (mTLS)
+    Webhook->>K8sAPI: Admission Response<br/>(Mutated InferenceService)
+    K8sAPI-->>Controller: Watch Notification<br/>InferenceService Created<br/>Auth: ServiceAccount Token
+
+    Controller->>K8sAPI: Get InferenceService Details<br/>GET /apis/serving.kserve.io/v1beta1/namespaces/{ns}/inferenceservices/{name}<br/>Auth: ServiceAccount Token
+    K8sAPI-->>Controller: InferenceService Spec
+
+    Controller->>K8sAPI: Create OpenShift Route<br/>POST /apis/route.openshift.io/v1/namespaces/{ns}/routes<br/>Auth: ServiceAccount Token
+    K8sAPI-->>Controller: Route Created
+
+    Controller->>K8sAPI: Create ServiceMonitor<br/>POST /apis/monitoring.coreos.com/v1/namespaces/{ns}/servicemonitors<br/>Auth: ServiceAccount Token
+    K8sAPI-->>Controller: ServiceMonitor Created
+
+    Controller->>K8sAPI: Create NetworkPolicy<br/>POST /apis/networking.k8s.io/v1/namespaces/{ns}/networkpolicies<br/>Auth: ServiceAccount Token
+    K8sAPI-->>Controller: NetworkPolicy Created
+
+    Controller->>K8sAPI: Create RBAC Resources<br/>POST /apis/rbac.authorization.k8s.io/v1/namespaces/{ns}/roles<br/>Auth: ServiceAccount Token
+    K8sAPI-->>Controller: RBAC Created
+
+    Controller->>K8sAPI: Update InferenceService Status<br/>PUT /apis/serving.kserve.io/v1beta1/namespaces/{ns}/inferenceservices/{name}/status<br/>Auth: ServiceAccount Token
     K8sAPI-->>User: InferenceService Ready
 
     Note over User,Prometheus: Flow 2: NIM Account Validation
 
-    User->>K8sAPI: Create Account CR<br/>Auth: User credentials
-    K8sAPI->>Webhook: Webhook validation request<br/>Auth: K8s API client cert (mTLS)
-    Webhook->>K8sAPI: Read NGC API key Secret<br/>Auth: ServiceAccount Token
-    K8sAPI-->>Webhook: Secret data
-    Webhook->>NGCAPI: Validate NGC API key<br/>Auth: NGC API Key
-    NGCAPI-->>Webhook: Validation response
-    Webhook-->>K8sAPI: Validation response (allow/deny)
-    K8sAPI->>Controller: Watch notification<br/>Auth: ServiceAccount Token
-    Controller->>K8sAPI: Update Account status<br/>Auth: ServiceAccount Token
-    Controller->>K8sAPI: Create NIM Template<br/>Auth: ServiceAccount Token
+    User->>K8sAPI: Create Account CR<br/>kubectl apply -f nimaccount.yaml<br/>Auth: User credentials
+    K8sAPI->>Webhook: Admission Request<br/>POST /validate-nim-opendatahub-io-v1-account<br/>Auth: K8s API client cert (mTLS)
+
+    Webhook->>K8sAPI: Read NGC API Key Secret<br/>GET /api/v1/namespaces/{ns}/secrets/{secret-name}<br/>Auth: ServiceAccount Token
+    K8sAPI-->>Webhook: Secret Data
+
+    Webhook->>NGC: Validate NGC API Key<br/>POST /v2/auth/token<br/>Auth: NGC API Key
+    NGC-->>Webhook: Validation Response
+
+    Webhook->>K8sAPI: Admission Response<br/>(Account Valid/Invalid)
+    K8sAPI-->>Controller: Watch Notification<br/>Account Created
+
+    Controller->>K8sAPI: Update Account Status<br/>PUT /apis/nim.opendatahub.io/v1/namespaces/{ns}/accounts/{name}/status<br/>Auth: ServiceAccount Token
+
+    Controller->>K8sAPI: Create NIM Template<br/>POST /apis/template.openshift.io/v1/namespaces/{ns}/templates<br/>Auth: ServiceAccount Token
     K8sAPI-->>User: Account Ready
 
-    Note over User,Prometheus: Flow 3: Webhook Admission Control
+    Note over User,Prometheus: Flow 3: Metrics Collection
 
-    User->>K8sAPI: Create/Update resource<br/>Auth: User credentials
-    K8sAPI->>Webhook: Admission webhook request<br/>Port: 443→9443/TCP<br/>Auth: K8s API client cert (mTLS)
-    Webhook-->>K8sAPI: Validation/Mutation response
-    K8sAPI-->>User: Resource created/updated
+    Prometheus->>K8sAPI: Discover ServiceMonitor<br/>GET /apis/monitoring.coreos.com/v1/servicemonitors<br/>Auth: ServiceAccount Token
+    K8sAPI-->>Prometheus: ServiceMonitor List
 
-    Note over User,Prometheus: Flow 4: Metrics Collection
-
-    Prometheus->>Controller: Scrape /metrics endpoint<br/>Port: 8080/TCP HTTP<br/>Auth: Bearer Token (ServiceAccount)
-    Controller-->>Prometheus: Prometheus metrics
+    Prometheus->>Controller: Scrape Metrics<br/>GET /metrics<br/>Auth: Bearer Token (ServiceAccount)
+    Controller-->>Prometheus: Prometheus Metrics Response

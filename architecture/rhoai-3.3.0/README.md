@@ -2,7 +2,7 @@
 
 Generated from: checkouts/red-hat-data-services.rhoai-3.3
 Platform version from: checkouts/red-hat-data-services.rhoai-3.3/rhods-operator
-Date: 2026-03-13
+Date: 2026-03-14
 
 ## Components
 
@@ -19,6 +19,7 @@ Date: 2026-03-13
 | notebooks | [notebooks.md](./notebooks.md) |
 | odh-dashboard | [odh-dashboard.md](./odh-dashboard.md) |
 | odh-model-controller | [odh-model-controller.md](./odh-model-controller.md) |
+| rhods-operator | [rhods-operator.md](./rhods-operator.md) |
 | trainer | [trainer.md](./trainer.md) |
 | training-operator | [training-operator.md](./training-operator.md) |
 | trustyai-service-operator | [trustyai-service-operator.md](./trustyai-service-operator.md) |
@@ -27,7 +28,7 @@ Date: 2026-03-13
 
 - **Platform**: RHOAI
 - **Version**: 3.3.0
-- **Components**: 14
+- **Components**: 15
 - **Source**: checkouts/red-hat-data-services.rhoai-3.3
 
 ## Using These Files

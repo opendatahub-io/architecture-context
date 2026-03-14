@@ -1,65 +1,73 @@
 sequenceDiagram
     participant User as User/CI
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS1.2+
-    participant MutatingWH as Mutating Webhook<br/>9443/TCP HTTPS
-    participant ValidatingWH as Validating Webhook<br/>9443/TCP HTTPS
+    participant MutatingWH as Mutating Webhook<br/>443/TCP HTTPS TLS1.2+
+    participant ValidatingWH as Validating Webhook<br/>443/TCP HTTPS TLS1.2+
     participant RayClusterCtrl as RayCluster Controller
-    participant CertMgr as cert-manager API<br/>443/TCP HTTPS
-    participant HeadPod as Ray Head Pod<br/>6379, 8265, 10001/TCP
-    participant Workers as Ray Workers
-    participant GCS as Ray GCS Server<br/>6379/TCP Redis
-    participant Client as External Client
-    participant Gateway as Ingress/Gateway<br/>443/TCP HTTPS TLS1.3
-    participant Serve as Ray Serve<br/>8000/TCP HTTP
-    participant Prometheus as Prometheus
+    participant CertMgr as cert-manager API<br/>443/TCP HTTPS TLS1.2+
+    participant RayHead as Ray Head Pod<br/>GCS:6379 Dashboard:8265 Client:10001
+    participant RayWorker as Ray Worker Pods
+    participant Redis as External Redis<br/>6379/TCP Optional mTLS
 
-    Note over User,GCS: Flow 1: RayCluster Creation
+    Note over User,Redis: Flow 1: RayCluster Creation
 
-    User->>K8sAPI: POST RayCluster CR<br/>Auth: Bearer Token
-    K8sAPI->>MutatingWH: Admission request<br/>HTTPS TLS 1.2+
-    MutatingWH-->>K8sAPI: Mutated RayCluster<br/>(defaults, security configs)
-    K8sAPI->>ValidatingWH: Validation request<br/>HTTPS TLS 1.2+
-    ValidatingWH-->>K8sAPI: Validation approved
-    K8sAPI-->>User: RayCluster created
+    User->>K8sAPI: POST RayCluster CR<br/>Auth: Bearer Token (SA)
+    K8sAPI->>MutatingWH: Admission Request<br/>HTTPS TLS1.2+<br/>Kubernetes admission
+    MutatingWH-->>K8sAPI: Mutated RayCluster<br/>Default configs + security
+    K8sAPI->>ValidatingWH: Validation Request<br/>HTTPS TLS1.2+<br/>Kubernetes admission
+    ValidatingWH-->>K8sAPI: Validation Response
+    K8sAPI-->>User: RayCluster Created
 
-    RayClusterCtrl->>K8sAPI: Watch RayCluster CR<br/>Bearer Token (SA)
-    RayClusterCtrl->>CertMgr: Request TLS certificates<br/>HTTPS TLS 1.2+
-    CertMgr-->>RayClusterCtrl: Certificates created
-    RayClusterCtrl->>K8sAPI: Create Head Pod + Service<br/>Bearer Token (SA)
-    RayClusterCtrl->>K8sAPI: Create Worker Pods<br/>Bearer Token (SA)
-    K8sAPI-->>HeadPod: Deploy Ray Head
-    K8sAPI-->>Workers: Deploy Ray Workers
+    RayClusterCtrl->>K8sAPI: Watch RayCluster<br/>Auth: Bearer Token (SA)
+    K8sAPI-->>RayClusterCtrl: RayCluster Event
+    RayClusterCtrl->>CertMgr: Create Certificate CRs<br/>Auth: Bearer Token (SA)
+    CertMgr-->>RayClusterCtrl: Certificates Created
+    RayClusterCtrl->>K8sAPI: Create Head Pod, Services<br/>Auth: Bearer Token (SA)
+    K8sAPI-->>RayHead: Pod Scheduled
+    RayClusterCtrl->>K8sAPI: Create Worker Pods<br/>Auth: Bearer Token (SA)
+    K8sAPI-->>RayWorker: Pods Scheduled
 
-    Workers->>GCS: Register with GCS<br/>Optional mTLS
-    GCS-->>Workers: Registration confirmed
+    RayWorker->>RayHead: Register with GCS<br/>6379/TCP Redis<br/>Optional mTLS
+    RayHead->>Redis: GCS Fault Tolerance<br/>6379/TCP Optional TLS<br/>Password auth
 
-    Note over User,Prometheus: Flow 2: RayJob Submission
+    Note over User,Redis: Flow 2: RayJob Submission
+
+    participant Client as Ray Client
+    participant RayJobCtrl as RayJob Controller
 
     User->>K8sAPI: POST RayJob CR<br/>Auth: Bearer Token
-    K8sAPI-->>User: RayJob created
+    K8sAPI-->>User: RayJob Created
+    RayJobCtrl->>K8sAPI: Watch RayJob<br/>Auth: Bearer Token (SA)
+    K8sAPI-->>RayJobCtrl: RayJob Event
+    RayJobCtrl->>Client: Submit Job<br/>10001/TCP gRPC<br/>Optional mTLS
+    Client->>RayHead: Job Request<br/>6379/TCP Redis<br/>Optional mTLS
+    RayHead->>RayWorker: Distribute Tasks<br/>Dynamic Ray Protocol<br/>Optional mTLS
+    RayWorker-->>RayHead: Task Results
+    RayHead-->>Client: Job Complete
+    Client-->>RayJobCtrl: Job Status
+    RayJobCtrl->>K8sAPI: Update RayJob Status<br/>Auth: Bearer Token (SA)
 
-    RayClusterCtrl->>K8sAPI: Create RayCluster for job<br/>Bearer Token (SA)
-    K8sAPI-->>HeadPod: Deploy cluster
+    Note over User,Redis: Flow 3: RayService Model Serving
 
-    RayClusterCtrl->>HeadPod: Submit job via gRPC<br/>10001/TCP Optional mTLS
-    HeadPod->>GCS: Job metadata<br/>6379/TCP Optional mTLS
-    HeadPod->>Workers: Execute job tasks<br/>Ray Protocol Optional mTLS
-    Workers-->>HeadPod: Task results
-    HeadPod-->>RayClusterCtrl: Job completed
+    participant ExtClient as External Client
+    participant Ingress as Ingress/Gateway<br/>443/TCP HTTPS TLS1.3
+    participant RayServe as Ray Serve Service<br/>8000/TCP HTTP
+    participant RayServiceCtrl as RayService Controller
 
-    Note over Client,Prometheus: Flow 3: RayService Model Serving
+    ExtClient->>Ingress: POST /predict<br/>Auth: Optional Bearer
+    Ingress->>RayServe: Forward Request<br/>8000/TCP HTTP<br/>Optional TLS
+    RayServe->>RayWorker: Execute Prediction<br/>Dynamic Ray Protocol<br/>Optional mTLS
+    RayWorker-->>RayServe: Prediction Result
+    RayServe-->>Ingress: Response
+    Ingress-->>ExtClient: JSON Response
 
-    Client->>Gateway: POST /predict<br/>HTTPS TLS 1.3<br/>Optional Bearer Token
-    Gateway->>Serve: Forward request<br/>8000/TCP HTTP<br/>Optional TLS
-    Serve->>Workers: Inference request<br/>Ray Protocol Optional mTLS
-    Workers-->>Serve: Prediction result
-    Serve-->>Gateway: HTTP response
-    Gateway-->>Client: JSON response
+    RayServiceCtrl->>K8sAPI: Monitor Service Health<br/>Auth: Bearer Token (SA)
+    K8sAPI-->>RayServiceCtrl: Service Status
 
-    RayClusterCtrl->>K8sAPI: Monitor service health<br/>Bearer Token (SA)
-    K8sAPI-->>RayClusterCtrl: Service status
+    Note over User,Redis: Flow 4: Operator Metrics Collection
 
-    Note over Prometheus,RayClusterCtrl: Flow 4: Metrics Collection
+    participant Prometheus as Prometheus
+    participant Operator as kuberay-operator<br/>8080/TCP HTTP
 
-    Prometheus->>RayClusterCtrl: GET /metrics<br/>8080/TCP HTTP<br/>No auth
-    RayClusterCtrl-->>Prometheus: Prometheus metrics<br/>(reconciliation, errors)
+    Prometheus->>Operator: GET /metrics<br/>HTTP No Auth
+    Operator-->>Prometheus: Prometheus Metrics

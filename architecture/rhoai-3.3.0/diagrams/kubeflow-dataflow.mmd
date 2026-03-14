@@ -1,64 +1,66 @@
 sequenceDiagram
-    participant User as User Browser
-    participant Gateway as Data Science Gateway<br/>443/TCP HTTPS TLS1.2+<br/>openshift-ingress
-    participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS TLS1.2+<br/>service-ca cert
+    participant User as Data Scientist Browser
+    participant Gateway as Data Science Gateway<br/>443/TCP HTTPS TLS1.2+
+    participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS TLS1.2+
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS1.2+
     participant Notebook as Jupyter Notebook<br/>8888/TCP HTTP
 
-    Note over User,Notebook: Flow 1: User Access to Notebook (with Authentication)
+    Note over User,Notebook: Flow 1: Authenticated Notebook Access
 
     User->>Gateway: GET /notebook/{ns}/{name}<br/>Auth: Bearer Token (OAuth)
-    Gateway->>Proxy: Forward request<br/>TLS 1.2+ (edge termination)
-    Proxy->>K8sAPI: SubjectAccessReview<br/>Auth: ServiceAccount Token
+    Gateway->>Proxy: Forward HTTPS Request<br/>TLS 1.2+ (service-ca cert)
+    Proxy->>K8sAPI: SubjectAccessReview<br/>Verify "get" on Notebook CR<br/>Auth: ServiceAccount Token
     K8sAPI-->>Proxy: Authorization Result
-    alt Authorized
+
+    alt User Authorized
         Proxy->>Notebook: Forward to localhost:8888<br/>HTTP (no encryption)
         Notebook-->>Proxy: Notebook UI Response
         Proxy-->>Gateway: HTTPS Response
-        Gateway-->>User: HTTPS Response
-    else Unauthorized
+        Gateway-->>User: Notebook Interface
+    else User Denied
         Proxy-->>Gateway: 403 Forbidden
-        Gateway-->>User: 403 Forbidden
+        Gateway-->>User: Access Denied
     end
 
-    Note over User,Notebook: Flow 2: User Access to Notebook (without Authentication)
+    Note over User,Notebook: Flow 2: Unauthenticated Notebook Access
 
-    User->>Gateway: GET /notebook/{ns}/{name}<br/>Auth: Bearer Token (OAuth)
-    Gateway->>Notebook: Forward directly<br/>TLS terminated at Gateway
+    User->>Gateway: GET /notebook/{ns}/{name}<br/>Auth: OpenShift OAuth
+    Gateway->>Notebook: Direct to Service<br/>80/TCP HTTP
     Notebook-->>Gateway: Notebook UI Response
-    Gateway-->>User: HTTPS Response
+    Gateway-->>User: Notebook Interface
 
-    Note over User,Notebook: Flow 3: Webhook Mutation
+    Note over User,K8sAPI: Flow 3: Webhook Mutation
 
-    participant APIServer as Kubernetes API Server<br/>443/TCP HTTPS TLS1.2+
-    participant Webhook as ODH Notebook Controller<br/>Webhook<br/>8443/TCP HTTPS mTLS
+    participant APIServer as Kubernetes API Server
+    participant Webhook as ODH Notebook Controller<br/>Webhook 8443/TCP HTTPS
 
-    APIServer->>Webhook: POST /mutate-notebook-v1<br/>Auth: mTLS client cert
-    Webhook->>Webhook: Check annotation<br/>inject-auth=true?
-    alt inject-auth=true
-        Webhook->>APIServer: Return mutated spec<br/>with kube-rbac-proxy sidecar
-    else inject-auth=false
-        Webhook->>APIServer: Return original spec
+    APIServer->>Webhook: POST /mutate-notebook-v1<br/>Notebook CREATE/UPDATE<br/>Auth: mTLS (client cert)
+    Webhook->>Webhook: Check annotation:<br/>inject-auth: "true"
+
+    alt Auth Injection Enabled
+        Webhook->>APIServer: Mutated Notebook Spec<br/>(kube-rbac-proxy sidecar added)
+    else No Auth
+        Webhook->>APIServer: Original Notebook Spec
     end
 
-    Note over User,Notebook: Flow 4: Controller Reconciliation
+    Note over User,K8sAPI: Flow 4: Controller Reconciliation
 
-    participant Controller as Notebook Controller<br/>Manager
+    participant Controller as ODH Notebook Controller
+    participant Resources as K8s Resources<br/>(HTTPRoute, Service, etc.)
 
     Controller->>K8sAPI: Watch Notebook CRs<br/>Auth: ServiceAccount Token
-    K8sAPI-->>Controller: Notebook CR Event
-    Controller->>K8sAPI: Create HTTPRoute<br/>in controller namespace
-    Controller->>K8sAPI: Create ReferenceGrant<br/>for cross-namespace access
-    Controller->>K8sAPI: Create NetworkPolicy<br/>in user namespace
-    Controller->>K8sAPI: Create Service, SA, Roles
+    K8sAPI-->>Controller: Notebook Event (create/update/delete)
+    Controller->>Controller: Reconcile Loop:<br/>- Create HTTPRoute<br/>- Create ReferenceGrant<br/>- Create NetworkPolicy<br/>- Create RBAC objects
+    Controller->>K8sAPI: Create/Update Resources<br/>Auth: ServiceAccount Token
+    K8sAPI-->>Resources: Resources Applied
 
-    Note over User,Notebook: Flow 5: Data Science Pipeline Integration
+    Note over User,K8sAPI: Flow 5: Data Science Pipeline Integration
 
-    participant DSPAAPI as DSPA API<br/>8888/TCP HTTPS TLS1.2+
+    participant DSPA as DSPA API<br/>8888/TCP HTTPS TLS1.2+
 
     Controller->>K8sAPI: Watch DSPA CRs<br/>Auth: ServiceAccount Token
-    K8sAPI-->>Controller: DSPA CR Event
-    Controller->>DSPAAPI: Get Pipeline API Token<br/>Auth: Token from Secret
-    DSPAAPI-->>Controller: API Token
-    Controller->>K8sAPI: Create Secret with Token<br/>in user namespace
-    Controller->>K8sAPI: Create RoleBinding<br/>for pipeline access
+    K8sAPI-->>Controller: DSPA Event
+    Controller->>DSPA: Get Pipeline API Token<br/>Auth: Token from Secret
+    DSPA-->>Controller: API Token
+    Controller->>K8sAPI: Create Secret<br/>{notebook-name}-{dspa-name}-token<br/>Auth: ServiceAccount Token
+    K8sAPI-->>Controller: Secret Created
