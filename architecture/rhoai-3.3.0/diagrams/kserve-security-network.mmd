@@ -1,0 +1,100 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        DataScientist[Data Scientist<br/>kubectl client]
+        ExternalClient[External Client<br/>Inference Requests]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>OAuth/Bearer Token"]
+        WebhookServer["kserve-webhook-server<br/>NS: kserve<br/>SA: kserve-controller-manager<br/>443/TCP HTTPS<br/>mTLS (API Server cert)"]
+        IstioGateway["Istio IngressGateway /<br/>OpenShift Router<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (mTLS Optional)"]
+        direction TB
+
+        subgraph NS_KServe["Namespace: kserve"]
+            Controller["kserve-controller-manager<br/>SA: kserve-controller-manager<br/>Metrics: 8443/TCP HTTPS Bearer<br/>Health: 8081/TCP HTTP"]
+        end
+
+        subgraph NS_User["Namespace: {user-namespace}"]
+            direction TB
+
+            subgraph PredictorPod["Predictor Pod"]
+                StorageInit["storage-initializer<br/>(init container)<br/>Downloads models"]
+                PredictorContainer["predictor<br/>(container)<br/>8000/TCP HTTP/HTTPS<br/>SA: {isvc-name}-sa"]
+                Agent["agent<br/>(sidecar)<br/>Logging/Batching"]
+            end
+
+            subgraph RouterPod["Router Pod (InferenceGraph)"]
+                RouterContainer["router<br/>8000/TCP HTTP/HTTPS<br/>SA: {graph-name}-sa"]
+            end
+
+            subgraph LLMPods["LLM Components"]
+                LLMScheduler["llm-scheduler<br/>9003/TCP gRPC<br/>mTLS optional"]
+                PrefillWorker["Prefill Worker<br/>LeaderWorkerSet<br/>8000/TCP"]
+                DecodeWorker["Decode Worker<br/>LeaderWorkerSet<br/>8001/TCP"]
+            end
+        end
+
+        subgraph NS_Knative["Namespace: knative-serving"]
+            EventingBroker["Knative Eventing Broker<br/>8080/TCP HTTP<br/>TLS via Istio (optional)"]
+        end
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        S3["S3 Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS TLS 1.2+<br/>AWS IAM (IRSA) / Access Keys"]
+        GCS["Google Cloud Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS TLS 1.2+<br/>Workload Identity / SA Key"]
+        Azure["Azure Blob Storage<br/>*.blob.core.windows.net<br/>443/TCP HTTPS TLS 1.2+<br/>Azure credentials"]
+        Registry["Container Registries<br/>quay.io, gcr.io<br/>443/TCP HTTPS TLS 1.2+<br/>Registry credentials"]
+        Pushgateway["Prometheus Pushgateway<br/>9091/TCP HTTP<br/>No encryption/auth"]
+    end
+
+    %% External to Ingress
+    DataScientist -->|"HTTPS/6443<br/>TLS 1.2+<br/>Bearer Token (OAuth)"| K8sAPI
+    ExternalClient -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (optional)"| IstioGateway
+
+    %% Ingress Layer
+    K8sAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>mTLS (API Server cert)"| WebhookServer
+    IstioGateway -->|"HTTP(S)/8000<br/>mTLS STRICT/PERMISSIVE<br/>Bearer Token (propagated)"| PredictorContainer
+
+    %% Controller operations
+    Controller -->|"HTTPS/6443<br/>TLS 1.2+<br/>Bearer Token (SA)"| K8sAPI
+
+    %% Storage access
+    StorageInit -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM (IRSA)"| S3
+    StorageInit -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP Workload Identity"| GCS
+    StorageInit -->|"HTTPS/443<br/>TLS 1.2+<br/>Azure credentials"| Azure
+
+    %% Pod internal flow
+    StorageInit -.->|"model files"| PredictorContainer
+    PredictorContainer -.->|"logs/metrics"| Agent
+
+    %% InferenceGraph routing
+    IstioGateway -->|"HTTP(S)/8000<br/>mTLS (optional)<br/>Bearer Token"| RouterContainer
+    RouterContainer -->|"HTTP(S)/8000<br/>mTLS (optional)<br/>Bearer Token (propagated)"| PredictorContainer
+
+    %% LLM flows
+    RouterContainer -->|"gRPC/9003<br/>mTLS (optional)"| LLMScheduler
+    LLMScheduler -->|"HTTP(S)/8000<br/>mTLS (optional)"| PrefillWorker
+    LLMScheduler -->|"HTTP(S)/8001<br/>mTLS (optional)"| DecodeWorker
+
+    %% Logging
+    PredictorContainer -->|"HTTP/8080<br/>TLS via Istio (optional)"| EventingBroker
+
+    %% External service access
+    PredictorContainer -->|"HTTPS/443<br/>TLS 1.2+"| Registry
+    PredictorContainer -->|"HTTP/9091<br/>No encryption"| Pushgateway
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef pod fill:#cce5ff,stroke:#4a90e2,stroke-width:2px
+
+    class DataScientist,ExternalClient external
+    class K8sAPI,WebhookServer,IstioGateway ingress
+    class Controller,PredictorContainer,Agent,RouterContainer,LLMScheduler,PrefillWorker,DecodeWorker,EventingBroker servicemesh
+    class StorageInit pod
+    class S3,GCS,Azure,Registry,Pushgateway externalservice

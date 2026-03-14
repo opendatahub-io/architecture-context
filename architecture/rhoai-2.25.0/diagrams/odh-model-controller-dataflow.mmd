@@ -1,0 +1,60 @@
+sequenceDiagram
+    participant User as User/Client
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS1.3
+    participant Webhook as ODH Model Controller<br/>Webhook 443/TCP HTTPS TLS1.2+
+    participant Controller as ODH Model Controller<br/>Reconcilers
+    participant KServe as KServe Controller
+    participant Route as OpenShift Route<br/>443/TCP HTTPS TLS1.3
+    participant Gateway as Istio Gateway<br/>8080/TCP HTTP
+    participant Authorino as Authorino<br/>5001/TCP gRPC mTLS
+    participant Activator as Knative Activator<br/>8012/TCP HTTP
+    participant Pod as Inference Pod<br/>8080/TCP HTTP mTLS
+    participant S3 as S3 Storage<br/>443/TCP HTTPS TLS1.2+
+    participant NGC as NVIDIA NGC API<br/>443/TCP HTTPS TLS1.3
+    participant ModelReg as Model Registry<br/>443/TCP HTTPS TLS1.2+
+    participant Prometheus as Prometheus
+
+    Note over User,ModelReg: Flow 1: InferenceService Creation
+    User->>K8sAPI: Submit InferenceService CR<br/>OIDC/Bearer Token
+    K8sAPI->>Webhook: POST /mutate-serving-kserve-io-v1beta1-inferenceservice<br/>mTLS
+    Webhook-->>K8sAPI: Mutated InferenceService
+    K8sAPI->>Webhook: POST /validate-serving-kserve-io-v1beta1-inferenceservice<br/>mTLS
+    Webhook-->>K8sAPI: Validation OK
+    K8sAPI->>Controller: Watch event: InferenceService created
+    Controller->>K8sAPI: Create Route, VirtualService, AuthConfig,<br/>ServiceMonitor, NetworkPolicy, PeerAuthentication<br/>ServiceAccount Token
+    Controller->>ModelReg: Register InferenceService metadata<br/>REST API (if MODELREGISTRY_STATE=enabled)
+    KServe->>K8sAPI: Create Knative Service or Deployment<br/>ServiceAccount Token
+
+    Note over User,ModelReg: Flow 2: Inference Request (Serverless)
+    User->>Route: POST /v1/models/model:predict<br/>HTTPS TLS1.3<br/>Bearer Token (optional)
+    Route->>Gateway: Forward to Istio Gateway<br/>HTTP (plaintext)
+    Gateway->>Authorino: Validate Auth Token<br/>gRPC mTLS (if AuthConfig enabled)
+    Authorino-->>Gateway: Auth OK
+    Gateway->>Activator: Route request<br/>HTTP (if pod scaled to zero)
+    Activator->>Pod: Forward to predictor<br/>HTTP with mTLS (if PeerAuth enabled)
+    Pod->>S3: Load model artifacts<br/>HTTPS TLS1.2+ IAM/Access Key
+    S3-->>Pod: Model data
+    Pod-->>Activator: Inference result
+    Activator-->>Gateway: Response
+    Gateway-->>Route: Response
+    Route-->>User: JSON Response<br/>HTTPS TLS1.3
+
+    Note over User,ModelReg: Flow 3: NIM Account Management
+    User->>K8sAPI: Create NIM Account CR<br/>with NGC API key secret<br/>OIDC/Bearer Token
+    K8sAPI->>Webhook: POST /validate-nim-opendatahub-io-v1-account<br/>mTLS
+    Webhook-->>K8sAPI: Validation OK
+    K8sAPI->>Controller: Watch event: Account created
+    Controller->>NGC: Validate account, fetch model list<br/>HTTPS TLS1.3 NGC API Key
+    NGC-->>Controller: Model catalog
+    Controller->>K8sAPI: Create ConfigMap (model list),<br/>Secret (pull secret),<br/>Template (ServingRuntime)<br/>ServiceAccount Token
+    loop Every 24h (default)
+        Controller->>NGC: Refresh model list<br/>HTTPS TLS1.3 NGC API Key
+        NGC-->>Controller: Updated catalog
+        Controller->>K8sAPI: Update ConfigMap<br/>ServiceAccount Token
+    end
+
+    Note over User,ModelReg: Flow 4: Metrics Collection
+    Prometheus->>Controller: GET /metrics<br/>HTTP 8080/TCP<br/>Bearer Token (via ServiceMonitor)
+    Controller-->>Prometheus: Controller metrics
+    Prometheus->>Pod: GET /metrics<br/>HTTP 8080/TCP mTLS<br/>Bearer Token (via ServiceMonitor/PodMonitor)
+    Pod-->>Prometheus: Inference metrics

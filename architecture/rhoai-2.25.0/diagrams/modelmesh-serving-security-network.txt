@@ -1,0 +1,268 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client / Data Scientist]                                      │
+│         │                                                                │
+│         │ Port: 8033/TCP (gRPC) or 8008/TCP (HTTP)                      │
+│         │ Protocol: gRPC KServe V2 / HTTP REST                          │
+│         │ Encryption: None (plaintext)                                   │
+│         │ Auth: Optional (application-level)                             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICE LAYER (Kubernetes Services)                                    │
+│                                                                          │
+│  [modelmesh-serving Service - ClusterIP/Headless]                        │
+│  - Type: ClusterIP or Headless (per runtime)                            │
+│  - Ports: 8033/TCP (gRPC), 8008/TCP (HTTP)                              │
+│  - Exposure: Internal or External via Routes/VirtualServices            │
+│         │                                                                │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE (Operator)                                               │
+│                                                                          │
+│  [modelmesh-controller Pod]                                              │
+│  - Namespace: modelmesh-serving-system (or user namespace)              │
+│  - ServiceAccount: modelmesh-controller                                  │
+│  - Image: modelmesh-controller:1.27.0                                    │
+│                                                                          │
+│  Exposed Services:                                                       │
+│  ┌────────────────────────────────────────────────────────────┐        │
+│  │ Webhook Server                                              │        │
+│  │ - Port: 9443/TCP                                            │        │
+│  │ - Protocol: HTTPS                                           │        │
+│  │ - Encryption: TLS 1.2+                                      │        │
+│  │ - Auth: K8s API Server client cert                         │        │
+│  │ - Purpose: ValidatingWebhook for ServingRuntime CRs        │        │
+│  │ - Service: modelmesh-webhook-server-service                │        │
+│  └────────────────────────────────────────────────────────────┘        │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────┐        │
+│  │ Metrics Endpoint                                            │        │
+│  │ - Port: 8443/TCP                                            │        │
+│  │ - Protocol: HTTPS                                           │        │
+│  │ - Encryption: TLS 1.2+ (kube-rbac-proxy)                   │        │
+│  │ - Auth: Bearer Token (ServiceAccount)                      │        │
+│  │ - Purpose: Prometheus metrics                              │        │
+│  │ - Service: controller-manager-metrics-service              │        │
+│  └────────────────────────────────────────────────────────────┘        │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────┐        │
+│  │ Health Probes                                               │        │
+│  │ - Port: 8081/TCP                                            │        │
+│  │ - Endpoints: /healthz (liveness), /readyz (readiness)      │        │
+│  │ - Protocol: HTTP                                            │        │
+│  │ - Encryption: None                                          │        │
+│  │ - Auth: None                                                │        │
+│  └────────────────────────────────────────────────────────────┘        │
+│                                                                          │
+│  Egress to Kubernetes API:                                               │
+│  - Destination: Kubernetes API Server                                   │
+│  - Port: 6443/TCP                                                       │
+│  - Protocol: HTTPS                                                      │
+│  - Encryption: TLS 1.2+                                                 │
+│  - Auth: ServiceAccount token (modelmesh-controller)                   │
+│  - Purpose: CRD reconciliation, resource management                    │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  DATA PLANE (Runtime Pods)                                              │
+│                                                                          │
+│  [Runtime Pod - Multi-container Architecture]                           │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: {runtime-sa}                                          │
+│  - Deployment: modelmesh-serving-{runtime-name}                          │
+│                                                                          │
+│  Container 1: ModelMesh (Java Runtime)                                   │
+│  ┌────────────────────────────────────────────────────────────┐        │
+│  │ - Image: modelmesh:latest                                   │        │
+│  │ - Port 8033/TCP: gRPC inference (external)                  │        │
+│  │ - Port 8080/TCP: gRPC internal cluster communication        │        │
+│  │ - Protocol: gRPC (KServe V2)                                │        │
+│  │ - Encryption: None (plaintext)                              │        │
+│  │ - Auth: None (optional app-level)                           │        │
+│  │                                                              │        │
+│  │ Egress to ETCD:                                             │        │
+│  │ - Port: 2379/TCP                                            │        │
+│  │ - Protocol: HTTP/gRPC                                       │        │
+│  │ - Encryption: Optional TLS                                  │        │
+│  │ - Auth: Optional mTLS                                       │        │
+│  │ - Purpose: Model metadata storage/retrieval                │        │
+│  └────────────────────────────────────────────────────────────┘        │
+│                                                                          │
+│  Container 2: REST Proxy                                                 │
+│  ┌────────────────────────────────────────────────────────────┐        │
+│  │ - Image: rest-proxy:latest                                  │        │
+│  │ - Port: 8008/TCP                                            │        │
+│  │ - Protocol: HTTP (translates to gRPC)                       │        │
+│  │ - Encryption: None                                          │        │
+│  │ - Auth: None                                                │        │
+│  │ - Purpose: KServe V2 REST API → gRPC translation           │        │
+│  │ - Forwards to: ModelMesh 8033/TCP                          │        │
+│  └────────────────────────────────────────────────────────────┘        │
+│                                                                          │
+│  Container 3: Runtime Adapter + Model Runtime                            │
+│  ┌────────────────────────────────────────────────────────────┐        │
+│  │ - Image: triton-server / mlserver / openvino / torchserve   │        │
+│  │ - Port: UDS (Unix Domain Socket) or 8001/TCP               │        │
+│  │ - Protocol: gRPC                                            │        │
+│  │ - Encryption: None                                          │        │
+│  │ - Auth: None                                                │        │
+│  │ - Purpose: Model inference execution                       │        │
+│  └────────────────────────────────────────────────────────────┘        │
+│                                                                          │
+│  Init Container: Storage Helper (Puller)                                 │
+│  ┌────────────────────────────────────────────────────────────┐        │
+│  │ - Image: storage-initializer:latest                         │        │
+│  │ - Port: 8086/TCP (gRPC - optional)                          │        │
+│  │ - Purpose: Model artifact retrieval from storage            │        │
+│  │                                                              │        │
+│  │ Egress to S3:                                               │        │
+│  │ - Port: 443/TCP                                             │        │
+│  │ - Protocol: HTTPS                                           │        │
+│  │ - Encryption: TLS 1.2+                                      │        │
+│  │ - Auth: AWS Signature V4 / IAM credentials                 │        │
+│  │ - Source: storage-config Secret                            │        │
+│  │                                                              │        │
+│  │ Access to PVC Storage:                                      │        │
+│  │ - Protocol: Filesystem (local mount)                        │        │
+│  │ - Encryption: None                                          │        │
+│  │ - Auth: Kubernetes RBAC                                     │        │
+│  └────────────────────────────────────────────────────────────┘        │
+│                                                                          │
+│  Metrics Endpoint:                                                       │
+│  ┌────────────────────────────────────────────────────────────┐        │
+│  │ - Port: 2112/TCP                                            │        │
+│  │ - Protocol: HTTP                                            │        │
+│  │ - Encryption: None                                          │        │
+│  │ - Auth: None                                                │        │
+│  │ - Purpose: Prometheus metrics (runtime pods)               │        │
+│  └────────────────────────────────────────────────────────────┘        │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [ETCD Cluster - v3.5.9]                                                 │
+│  - Purpose: Distributed model metadata and cluster state                │
+│  - Port: 2379/TCP                                                       │
+│  - Protocol: HTTP/gRPC                                                  │
+│  - Encryption: Optional TLS                                             │
+│  - Auth: Optional mTLS                                                  │
+│  - Config Source: model-serving-etcd Secret                             │
+│                                                                          │
+│  [S3-compatible Storage]                                                 │
+│  - Purpose: Model artifact storage                                      │
+│  - Port: 443/TCP                                                        │
+│  - Protocol: HTTPS                                                      │
+│  - Encryption: TLS 1.2+                                                 │
+│  - Auth: AWS Signature V4 / IAM credentials                            │
+│  - Config Source: storage-config Secret                                │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - Scrapes: controller-manager-metrics-service (8443/TCP HTTPS)        │
+│  - Scrapes: Runtime pods (2112/TCP HTTP)                               │
+│  - Auth: Bearer Token (for 8443), None (for 2112)                     │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                       │
+│  - Protocol: HTTPS                                                      │
+│  - Encryption: TLS 1.2+                                                 │
+│  - Auth: ServiceAccount tokens                                          │
+│  - Purpose: Resource reconciliation, webhook calls                     │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+═════════════════════════════════════════════════════════════════════════
+RBAC SUMMARY
+═════════════════════════════════════════════════════════════════════════
+
+ClusterRole: modelmesh-controller-role
+├─ ServiceAccount: modelmesh-controller
+├─ API Groups & Resources:
+│  ├─ "" (core)
+│  │  ├─ configmaps: create, delete, get, list, patch, update, watch
+│  │  ├─ endpoints, persistentvolumeclaims: get, list, watch
+│  │  ├─ namespaces, namespaces/finalizers: get, list, patch, update, watch
+│  │  ├─ secrets: create, delete, get, list, patch, update, watch
+│  │  └─ services, services/finalizers: create, delete, get, list, patch, update, watch
+│  ├─ apps
+│  │  └─ deployments, deployments/finalizers: create, delete, get, list, patch, update, watch
+│  ├─ monitoring.coreos.com
+│  │  └─ servicemonitors: create, delete, get, list, patch, update, watch
+│  ├─ serving.kserve.io
+│  │  ├─ inferenceservices, inferenceservices/finalizers, inferenceservices/status: CRUD + watch
+│  │  ├─ predictors, predictors/finalizers, predictors/status: CRUD + watch
+│  │  ├─ servingruntimes, servingruntimes/finalizers, servingruntimes/status: CRUD + watch
+│  │  └─ clusterservingruntimes, clusterservingruntimes/finalizers, clusterservingruntimes/status: CRUD + watch
+│  └─ autoscaling
+│     └─ horizontalpodautoscalers, horizontalpodautoscalers/status: get, list, watch, create, delete, update
+
+ClusterRole: inferenceservice-editor-role
+└─ serving.kserve.io/inferenceservices: create, delete, get, list, patch, update, watch
+
+ClusterRole: inferenceservice-viewer-role
+└─ serving.kserve.io/inferenceservices: get, list, watch
+
+═════════════════════════════════════════════════════════════════════════
+SECRETS
+═════════════════════════════════════════════════════════════════════════
+
+Secret: storage-config (Opaque)
+├─ Purpose: S3/storage credentials for model retrieval
+├─ Used by: Puller init/sidecar containers
+├─ Provisioned by: User/Admin (manual)
+├─ Auto-rotate: No
+└─ Contains: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, endpoint URLs
+
+Secret: model-serving-etcd (Opaque)
+├─ Purpose: ETCD connection configuration and credentials
+├─ Used by: ModelMesh containers
+├─ Provisioned by: User/Admin (manual)
+├─ Auto-rotate: No
+└─ Contains: ETCD endpoints, optional TLS certs, auth credentials
+
+Secret: webhook-server-cert / modelmesh-webhook-server-cert (kubernetes.io/tls)
+├─ Purpose: Webhook server TLS certificate
+├─ Used by: Webhook server (9443/TCP)
+├─ Provisioned by: cert-manager (auto) or manual
+├─ Auto-rotate: Yes (if cert-manager), No (manual)
+└─ Contains: tls.crt, tls.key
+
+═════════════════════════════════════════════════════════════════════════
+NETWORK POLICIES
+═════════════════════════════════════════════════════════════════════════
+
+Policy: modelmesh-controller
+├─ Selector: control-plane=modelmesh-controller
+├─ Ingress: Allow 8443/TCP from all (metrics)
+└─ Egress: Default allow
+
+Policy: modelmesh-webhook
+├─ Selector: control-plane=modelmesh-controller
+├─ Ingress: Allow 9443/TCP from all (K8s API)
+└─ Egress: Default allow
+
+Policy: modelmesh-runtimes
+├─ Selector: modelmesh-service=*
+├─ Ingress:
+│  ├─ Allow 8033/TCP from all (gRPC inference)
+│  ├─ Allow 8008/TCP from all (HTTP REST inference)
+│  ├─ Allow 2112/TCP from all (metrics)
+│  └─ Allow 8080/TCP from modelmesh pods (internal cluster communication)
+└─ Egress: Default allow
+
+Policy: etcd
+├─ Selector: component=model-mesh-etcd
+├─ Ingress: Allow 2379/TCP from modelmesh-enabled namespaces
+└─ Egress: Default allow
+
+═════════════════════════════════════════════════════════════════════════
+SERVICE MESH INTEGRATION (Optional)
+═════════════════════════════════════════════════════════════════════════
+
+OpenShift Service Mesh:
+├─ mTLS: Can be enabled for service-to-service communication
+├─ Traffic Management: VirtualServices for external exposure
+├─ Observability: Distributed tracing via Jaeger
+└─ AuthN/AuthZ: RequestAuthentication and AuthorizationPolicy support
+
+Note: By default, ModelMesh Serving uses plaintext communication.
+Service Mesh integration is optional and configured externally.

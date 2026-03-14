@@ -1,0 +1,55 @@
+sequenceDiagram
+    participant User as User/Admin
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+
+    participant Operator as Operator Manager<br/>ServiceAccount JWT
+    participant Kustomize as Kustomize Engine<br/>Internal
+    participant LlamaStack as Llama Stack Pod<br/>8321/TCP HTTP
+    participant InferenceProvider as Inference Provider<br/>Ollama/vLLM/TGI
+    participant Registry as Container Registry<br/>443/TCP HTTPS
+
+    Note over User,Registry: Flow 1: LlamaStackDistribution Reconciliation
+
+    User->>K8sAPI: kubectl apply -f llama-stack-distribution.yaml<br/>Auth: User credentials
+    K8sAPI->>Operator: Watch event: LlamaStackDistribution created<br/>ServiceAccount JWT
+    Operator->>Operator: Read ConfigMap (feature flags, image overrides)
+    Operator->>Kustomize: Generate manifests from templates<br/>In-process
+    Kustomize-->>Operator: Deployment, Service, PVC, NetworkPolicy, Ingress
+    Operator->>K8sAPI: Apply manifests (create resources)<br/>HTTPS/6443 TLS1.2+ ServiceAccount JWT
+    K8sAPI-->>Operator: Resources created
+    K8sAPI->>Registry: Pull Llama Stack image<br/>HTTPS/443 TLS1.2+
+    Registry-->>K8sAPI: Image pulled
+    K8sAPI->>LlamaStack: Start Llama Stack pod
+
+    Note over User,InferenceProvider: Flow 2: User Inference Request (with Ingress)
+
+    participant Client as External Client
+    participant IngressCtl as Ingress Controller<br/>443/TCP HTTPS
+
+    Client->>IngressCtl: POST /v1/inference<br/>HTTPS/443 TLS1.2+ (if configured)
+    IngressCtl->>Service: Forward request<br/>HTTP/8321
+    Service->>LlamaStack: Route to pod<br/>HTTP/8321
+    LlamaStack->>InferenceProvider: Inference request<br/>HTTP (Ollama 11434, vLLM 8000, TGI 8080)
+    InferenceProvider-->>LlamaStack: Inference result
+    LlamaStack-->>Service: Response
+    Service-->>IngressCtl: Response
+    IngressCtl-->>Client: JSON response
+
+    Note over Prometheus,Operator: Flow 3: Metrics Collection
+
+    participant Prometheus as Prometheus
+    participant RBACProxy as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
+
+    Prometheus->>RBACProxy: GET /metrics<br/>HTTPS/8443 TLS Bearer Token
+    RBACProxy->>K8sAPI: TokenReview + SubjectAccessReview<br/>HTTPS/6443 TLS1.2+
+    K8sAPI-->>RBACProxy: Token valid
+    RBACProxy->>Operator: GET /metrics<br/>HTTP/8080 localhost
+    Operator-->>RBACProxy: Prometheus metrics
+    RBACProxy-->>Prometheus: Metrics response
+
+    Note over User,LlamaStack: Flow 4: ConfigMap-driven Configuration Update
+
+    User->>K8sAPI: kubectl apply -f updated-configmap.yaml<br/>User credentials
+    K8sAPI->>Operator: Watch event: ConfigMap updated<br/>HTTPS/6443 TLS1.2+ ServiceAccount JWT
+    Operator->>Operator: Detect configuration change
+    Operator->>K8sAPI: Update Deployment (trigger rollout)<br/>HTTPS/6443 TLS1.2+ ServiceAccount JWT
+    K8sAPI->>LlamaStack: Rolling restart with new config

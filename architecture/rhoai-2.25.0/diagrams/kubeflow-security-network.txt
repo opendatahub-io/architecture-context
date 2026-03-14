@@ -1,0 +1,282 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [User / ODH Dashboard]                                                  │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: User credentials (OAuth/OIDC)                            │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                               │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP (external)                                            │
+│  - TLS Termination: TLS 1.2+                                            │
+│  - AuthN: User credentials, ServiceAccount tokens                       │
+│  - AuthZ: RBAC policies                                                 │
+│         │                                                                │
+│         │ Event: Watch Notebook CRD                                      │
+│         │ Protocol: Internal Watch API                                   │
+│         │ Auth: ServiceAccount Token (JWT)                               │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE (Trusted - Controller Namespace)                         │
+│                                                                          │
+│  [Notebook Controller]                                                   │
+│  - Namespace: {controller-namespace}                                     │
+│  - ServiceAccount: notebook-controller-service-account                   │
+│  - Image: registry.access.redhat.com/ubi9/ubi-minimal:latest            │
+│  - User: 1001 (non-root)                                                │
+│  - FIPS: strictfipsruntime enabled                                      │
+│                                                                          │
+│    ┌─────────────────────────────────────┐                              │
+│    │  Metrics Server                     │                              │
+│    │  Port: 8080/TCP                     │                              │
+│    │  Protocol: HTTP                     │                              │
+│    │  Encryption: None                   │                              │
+│    │  Auth: None (ClusterIP only)        │                              │
+│    │  Exposure: Internal                 │                              │
+│    └─────────────────────────────────────┘                              │
+│                                                                          │
+│    ┌─────────────────────────────────────┐                              │
+│    │  Health Probe                       │                              │
+│    │  Port: 8081/TCP                     │                              │
+│    │  Protocol: HTTP                     │                              │
+│    │  Encryption: None                   │                              │
+│    │  Auth: None (ClusterIP only)        │                              │
+│    │  Exposure: Internal                 │                              │
+│    └─────────────────────────────────────┘                              │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount Token (JWT)                               │
+│         │ Purpose: Create/Update StatefulSets, Services, VirtualServices │
+│         ▼                                                                │
+│  [Kubernetes API Server]                                                 │
+│         │                                                                │
+│         │ Port: 10250/TCP                                                │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: mTLS                                               │
+│         │ Purpose: Schedule Notebook Pods                                │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  DATA PLANE (User Namespace - Workload Pods)                            │
+│                                                                          │
+│  [Jupyter Notebook Pod]                                                  │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: {configured-in-notebook-spec}                         │
+│  - Image: {user-specified-notebook-image}                               │
+│  - PVC: {user-configured-persistent-volume-claims}                       │
+│                                                                          │
+│    ┌─────────────────────────────────────┐                              │
+│    │  Jupyter Server                     │                              │
+│    │  Port: 8888/TCP                     │                              │
+│    │  Protocol: HTTP                     │                              │
+│    │  Encryption: None                   │                              │
+│    │  Auth: None (via Service)           │                              │
+│    │  Exposure: Internal (ClusterIP)     │                              │
+│    └─────────────────────────────────────┘                              │
+│         ▲                                                                │
+│         │ Port: 80/TCP → 8888/TCP                                        │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None                                               │
+│         │                                                                │
+│  [ClusterIP Service: notebook-{name}]                                    │
+│  - Type: ClusterIP                                                       │
+│  - Port: 80/TCP → 8888/TCP                                              │
+│         ▲                                                                │
+│         │ Optional: Istio VirtualService                                 │
+│         │ Condition: USE_ISTIO=true                                      │
+│         │                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CULLING CONTROLLER FLOW (Idle Detection)                               │
+│                                                                          │
+│  [Culling Controller]                                                    │
+│         │                                                                │
+│         │ Port: 8888/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None                                               │
+│         │ Auth: None (SECURITY LIMITATION)                               │
+│         │ Endpoint: /api/kernels                                         │
+│         │ Purpose: Query kernel last_activity timestamps                 │
+│         ▼                                                                │
+│  [Jupyter Notebook Pod]                                                  │
+│         │                                                                │
+│         │ Response: JSON [{last_activity: timestamp}]                    │
+│         ▼                                                                │
+│  [Culling Controller]                                                    │
+│         │                                                                │
+│         │ If idle > CULL_IDLE_TIME (default: 1440 min)                  │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount Token                                     │
+│         │ Action: PATCH Notebook CR (add kubeflow-resource-stopped)     │
+│         ▼                                                                │
+│  [Kubernetes API Server]                                                 │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MONITORING (Metrics Collection)                                         │
+│                                                                          │
+│  [Prometheus]                                                            │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None                                               │
+│         │ Auth: None (ClusterIP only)                                    │
+│         │ Endpoint: /metrics                                             │
+│         ▼                                                                │
+│  [Notebook Controller Metrics Server]                                    │
+│         │                                                                │
+│         │ Response: Prometheus Metrics                                   │
+│         │ - notebook_created_total                                       │
+│         │ - notebook_failed_total                                        │
+│         │ - notebook_culled_total                                        │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OPTIONAL ISTIO INTEGRATION                                             │
+│                                                                          │
+│  [Istio Gateway] (when USE_ISTIO=true)                                  │
+│         │                                                                │
+│         │ Port: 443/TCP or 80/TCP                                        │
+│         │ Protocol: HTTPS or HTTP                                        │
+│         │ Encryption: Varies (configured)                                │
+│         │ Routing: Via VirtualService CRD                                │
+│         ▼                                                                │
+│  [Notebook Service]                                                      │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ClusterRole: notebook-controller-role
+  - API Groups: "" (core)
+    Resources: events
+    Verbs: create, get, list, patch, watch
+
+  - API Groups: "" (core)
+    Resources: pods
+    Verbs: delete, get, list, watch
+
+  - API Groups: "" (core)
+    Resources: services
+    Verbs: * (all)
+
+  - API Groups: apps
+    Resources: statefulsets
+    Verbs: * (all)
+
+  - API Groups: kubeflow.org
+    Resources: notebooks, notebooks/finalizers, notebooks/status
+    Verbs: * (all)
+
+  - API Groups: networking.istio.io
+    Resources: virtualservices
+    Verbs: * (all)
+
+ClusterRole: leader-election-role
+  - API Groups: "" (core)
+    Resources: configmaps, configmaps/status
+    Verbs: get, list, watch, create, update, patch, delete
+
+ClusterRole: kubeflow-notebooks-edit (for users)
+  - API Groups: kubeflow.org
+    Resources: notebooks, notebooks/status
+    Verbs: get, list, watch, create, delete, deletecollection, patch, update
+
+ClusterRole: kubeflow-notebooks-view (for users)
+  - API Groups: kubeflow.org
+    Resources: notebooks, notebooks/status
+    Verbs: get, list, watch
+
+ClusterRoleBinding:
+  - notebook-controller-role-binding
+    - Role: notebook-controller-role
+    - ServiceAccount: notebook-controller-service-account (all namespaces)
+
+  - leader-election-role-binding
+    - Role: leader-election-role
+    - ServiceAccount: notebook-controller-service-account (controller namespace)
+
+
+Secrets:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  - notebook-controller-webhook-cert (kubernetes.io/tls)
+    - Purpose: Optional webhook TLS certificate for CRD conversion webhooks
+    - Provisioned By: cert-manager or manual provisioning
+    - Auto-Rotate: Varies (depends on provisioner)
+    - Used For: v1beta1/v1alpha1 → v1 conversion webhook
+
+
+Network Policies (Recommended):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Controller Namespace:
+    - Allow Ingress: Prometheus scraping (:8080/TCP from monitoring namespace)
+    - Allow Ingress: Kubernetes health checks (:8081/TCP from kube-system)
+    - Allow Egress: Kubernetes API Server (6443/TCP)
+    - Allow Egress: Notebook Pods (8888/TCP for culling checks)
+
+  User Namespaces:
+    - Allow Ingress: User traffic via Service/VirtualService
+    - Allow Ingress: Culling Controller (8888/TCP for /api/kernels)
+    - Allow Egress: Per notebook requirements (internet, databases, etc.)
+
+
+Security Considerations:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ⚠️  CRITICAL LIMITATIONS:
+
+  1. Culling Feature Security:
+     - Requires UNAUTHENTICATED access to /api/kernels endpoint on notebook pods
+     - No mutual TLS or token validation for culling checks
+     - Risk: Any pod with network access can query kernel status
+     - Mitigation: Network policies, service mesh policies
+
+  2. Metrics Endpoint:
+     - Exposed over unencrypted HTTP (8080/TCP)
+     - No authentication required
+     - Mitigation: ClusterIP service (internal only), network policies
+
+  3. Health Probes:
+     - Exposed over unencrypted HTTP (8081/TCP)
+     - No authentication required
+     - Mitigation: ClusterIP service (internal only)
+
+  4. Notebook Pod Security:
+     - User-controlled pod specifications (can run as root if configured)
+     - No built-in PodSecurityPolicy enforcement by controller
+     - Mitigation: Cluster-level PodSecurityStandards, admission controllers
+
+  5. Data Persistence:
+     - No built-in backup/restore for notebook data
+     - Relies on user-configured PVCs
+     - Risk: Data loss if PVC not configured properly
+
+  ✅ SECURITY STRENGTHS:
+
+  1. ServiceAccount Token Authentication:
+     - All Kubernetes API operations use JWT tokens
+     - RBAC enforced for controller operations
+
+  2. TLS for API Communication:
+     - All controller → Kubernetes API calls use TLS 1.2+
+     - Certificate validation enabled
+
+  3. Non-root Container:
+     - Controller runs as user 1001 (non-root)
+     - FIPS compliance with strictfipsruntime
+
+  4. Least Privilege RBAC:
+     - Separate ClusterRoles for controller, leader election, user access
+     - Granular permissions for each role
+
+  5. Leader Election:
+     - Prevents split-brain in HA deployments
+     - ConfigMap-based locking

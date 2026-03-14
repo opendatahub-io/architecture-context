@@ -1,0 +1,77 @@
+sequenceDiagram
+    participant User as User<br/>kubectl
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS1.3
+    participant Webhook as kueue-webhook-service<br/>9443/TCP HTTPS TLS1.2+
+    participant Controller as kueue-controller-manager<br/>ServiceAccount Token
+    participant Cache as In-Memory Cache
+    participant Scheduler as Scheduler
+    participant Job as Batch Job / Training Job
+    participant Pod as Pod
+
+    Note over User,Pod: Flow 1: Job Submission and Admission
+
+    User->>K8sAPI: kubectl create job<br/>Bearer Token (User)
+    K8sAPI->>Webhook: POST /mutate-batch-v1-job<br/>mTLS (API Server client cert)
+    Webhook->>Webhook: Inject queue annotation<br/>Suspend job
+    Webhook-->>K8sAPI: Mutated Job spec
+    K8sAPI-->>User: Job created (suspended)
+
+    Controller->>K8sAPI: Watch Job resources<br/>Bearer Token (ServiceAccount)
+    K8sAPI-->>Controller: Job created event
+
+    Controller->>Controller: Create Workload CR<br/>from Job spec
+    Controller->>K8sAPI: Create Workload<br/>Bearer Token (ServiceAccount)
+
+    Controller->>K8sAPI: Watch Workload resources<br/>Bearer Token (ServiceAccount)
+    K8sAPI-->>Controller: Workload created event
+
+    Controller->>Cache: Update queue state
+    Cache->>Scheduler: Evaluate admission
+    Scheduler->>Scheduler: Check quota, priority, cohort
+
+    alt Workload admitted
+        Scheduler-->>Controller: Admission decision: Admit
+        Controller->>K8sAPI: Patch Job (unsuspend)<br/>Bearer Token (ServiceAccount)
+        K8sAPI->>Job: Unsuspend job
+        Job->>Pod: Create pods
+    else Workload pending
+        Scheduler-->>Controller: Admission decision: Pending
+        Controller->>Cache: Keep in queue
+    end
+
+    Note over User,Pod: Flow 2: Metrics Collection
+
+    participant Prometheus as Prometheus<br/>Metrics Scraper
+
+    Prometheus->>Controller: GET /metrics<br/>8443/TCP HTTPS<br/>Bearer Token (ServiceAccount)
+    Controller-->>Prometheus: Prometheus metrics<br/>(pending workloads, admitted workloads)
+
+    Note over User,Pod: Flow 3: Visibility API Query
+
+    User->>K8sAPI: GET /apis/visibility.kueue.x-k8s.io/v1beta1/clusterqueues/{name}/pendingworkloads<br/>Bearer Token (User)<br/>K8s RBAC
+    K8sAPI->>Controller: Aggregated API call<br/>In-process
+    Controller->>Cache: Query pending workloads<br/>In-memory
+    Cache-->>Controller: Pending workload list
+    Controller-->>K8sAPI: JSON response
+    K8sAPI-->>User: Pending workloads
+
+    Note over User,Pod: Flow 4: Multi-Cluster Job Dispatching (MultiKueue)
+
+    participant RemoteK8s as Remote K8s API Server<br/>443/TCP HTTPS TLS1.2+
+
+    Controller->>RemoteK8s: Create Job in remote cluster<br/>Kubeconfig credentials
+    RemoteK8s-->>Controller: Job created
+    Controller->>RemoteK8s: Watch remote Job<br/>Kubeconfig credentials
+    RemoteK8s-->>Controller: Job status updates
+
+    Note over User,Pod: Flow 5: Provisioning Request (Autoscaling)
+
+    participant ClusterAutoscaler as Cluster Autoscaler
+    participant CloudProvider as Cloud Provider API
+
+    Controller->>K8sAPI: Create ProvisioningRequest<br/>Bearer Token (ServiceAccount)
+    ClusterAutoscaler->>K8sAPI: Watch ProvisioningRequest<br/>Bearer Token (ServiceAccount)
+    K8sAPI-->>ClusterAutoscaler: PR created event
+    ClusterAutoscaler->>CloudProvider: Provision nodes<br/>Cloud credentials
+    CloudProvider-->>ClusterAutoscaler: Nodes created
+    ClusterAutoscaler->>K8sAPI: Update PR status

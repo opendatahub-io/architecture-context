@@ -1,0 +1,104 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User[User/Admin]
+        Prometheus[Prometheus]
+        NGCAPI["NVIDIA NGC API<br/>nvcr.io/api<br/>443/TCP HTTPS TLS1.2+"]
+        ModelRegistryAPI["Model Registry API<br/>(Optional)<br/>443/TCP HTTPS TLS1.2+"]
+    end
+
+    subgraph APIServer["KUBERNETES API SERVER (Trust Boundary)"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS1.2+<br/>Auth: RBAC"]
+    end
+
+    subgraph ControllerPlane["CONTROLLER PLANE (Trusted - OpenShift Platform)"]
+        direction TB
+
+        subgraph NS_ODH["Namespace: redhat-ods-applications"]
+            direction TB
+
+            subgraph Pod["odh-model-controller Pod<br/>SA: odh-model-controller<br/>User: UID 2000 (non-root)<br/>FIPS-enabled"]
+                ControllerMgr["Controller Manager<br/>Watches & Reconciles CRDs"]
+                WebhookSvc["Webhook Server<br/>9443/TCP HTTPS TLS1.2+<br/>Auth: K8s API mTLS"]
+                MetricsSvc["Metrics Server<br/>8080/TCP HTTP<br/>Auth: Bearer Token<br/>(TODO: migrate to HTTPS/8443)"]
+                HealthSvc["Health Server<br/>8081/TCP HTTP<br/>Auth: None<br/>/healthz, /readyz"]
+            end
+
+            MetricsService["Service:<br/>odh-model-controller-metrics-service<br/>ClusterIP 8080/TCP"]
+            WebhookService["Service:<br/>odh-model-controller-webhook-service<br/>ClusterIP 443→9443/TCP<br/>Annotation: serving-cert-secret"]
+
+            WebhookCert["Secret:<br/>odh-model-controller-webhook-cert<br/>Type: kubernetes.io/tls<br/>Auto-rotate: Yes"]
+        end
+    end
+
+    subgraph UserNamespace["USER NAMESPACE (Managed Resources)"]
+        InferenceServicePod["InferenceService Pod<br/>NetworkPolicy: Controlled"]
+        Route["OpenShift Route<br/>443/TCP HTTPS TLS1.2+"]
+        NetworkPolicy["NetworkPolicy<br/>Ingress/Egress Rules"]
+        ServiceMonitor["ServiceMonitor<br/>Prometheus Scraping"]
+        RBAC["RBAC Resources<br/>ServiceAccount, Roles"]
+        TriggerAuth["TriggerAuthentication<br/>KEDA Autoscaling"]
+        EnvoyFilter["EnvoyFilter<br/>Istio Configuration"]
+        AuthPolicy["AuthPolicy<br/>Kuadrant Auth"]
+    end
+
+    subgraph Secrets["SECRETS"]
+        NGCSecret["NGC API Key Secret<br/>Type: Opaque<br/>User-provisioned"]
+        PullSecret["Model Pull Secret<br/>Type: dockerconfigjson<br/>NIM Controller-generated"]
+    end
+
+    %% User interactions
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>User Credentials"| K8sAPI
+
+    %% API Server to Controller
+    K8sAPI -->|"Watch API<br/>TLS 1.2+<br/>ServiceAccount Token"| ControllerMgr
+    K8sAPI -->|"Webhook Request<br/>443→9443/TCP<br/>mTLS"| WebhookService
+
+    %% Webhook Service to Pod
+    WebhookService -->|"9443/TCP<br/>HTTPS TLS1.2+"| WebhookSvc
+
+    %% Controller egress
+    ControllerMgr -->|"HTTPS/443<br/>TLS 1.2+<br/>ServiceAccount Token"| K8sAPI
+    WebhookSvc -->|"HTTPS/443<br/>TLS 1.2+<br/>ServiceAccount Token"| K8sAPI
+
+    %% NIM validation flow
+    WebhookSvc -->|"Read Secret<br/>via K8s API"| NGCSecret
+    WebhookSvc -->|"HTTPS/443<br/>TLS 1.2+<br/>NGC API Key"| NGCAPI
+
+    %% Resources created
+    ControllerMgr -.->|creates| Route
+    ControllerMgr -.->|creates| NetworkPolicy
+    ControllerMgr -.->|creates| RBAC
+    ControllerMgr -.->|creates| ServiceMonitor
+    ControllerMgr -.->|creates| TriggerAuth
+    ControllerMgr -.->|creates| EnvoyFilter
+    ControllerMgr -.->|creates| AuthPolicy
+    ControllerMgr -.->|creates| PullSecret
+
+    %% Certificate provisioning
+    WebhookService -.->|"service-ca-operator<br/>provisions"| WebhookCert
+    WebhookCert -.->|mounted in| WebhookSvc
+
+    %% Metrics scraping
+    Prometheus -->|"HTTP/8080<br/>Bearer Token"| MetricsService
+    MetricsService -->|"8080/TCP"| MetricsSvc
+
+    %% Optional Model Registry
+    ControllerMgr -.->|"Optional<br/>HTTPS/443<br/>Bearer Token"| ModelRegistryAPI
+
+    %% NetworkPolicy enforcement
+    NetworkPolicy -.->|enforces| InferenceServicePod
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef apiserver fill:#ffe6cc,stroke:#d79b00,stroke-width:3px
+    classDef controller fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef usernamespace fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef secret fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
+
+    class User,Prometheus,NGCAPI,ModelRegistryAPI external
+    class K8sAPI apiserver
+    class ControllerMgr,WebhookSvc,MetricsSvc,HealthSvc,MetricsService,WebhookService,WebhookCert controller
+    class InferenceServicePod,Route,NetworkPolicy,ServiceMonitor,RBAC,TriggerAuth,EnvoyFilter,AuthPolicy usernamespace
+    class NGCSecret,PullSecret secret
+    class MetricsSvc warning

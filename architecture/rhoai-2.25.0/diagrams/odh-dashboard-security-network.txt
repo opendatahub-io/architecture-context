@@ -1,0 +1,268 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [User Browser]                                                          │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: None (initial)                                           │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                          │
+│                                                                          │
+│  [OpenShift Router]                                                      │
+│  - Type: OpenShift Route (edge TLS termination)                         │
+│  - Port: 443/TCP (external) → 8443/TCP (internal)                      │
+│  - TLS: TLS 1.2+ (edge mode - terminates and re-encrypts)              │
+│  - Host: cluster-dependent                                              │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: None (forwarded to OAuth)                                │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION POD (redhat-ods-applications / opendatahub namespace)      │
+│                                                                          │
+│  ┌───────────────────────────────────────────────────────┐             │
+│  │ [OAuth Proxy Sidecar]                                  │             │
+│  │ - Container: oauth-proxy                               │             │
+│  │ - Port: 8443/TCP (HTTPS)                               │             │
+│  │ - ServiceAccount: odh-dashboard                        │             │
+│  │ - TLS Cert: dashboard-proxy-tls (service-cert)         │             │
+│  │ - OAuth Config: dashboard-oauth-config-generated       │             │
+│  │ - OAuth Client: dashboard-oauth-client-generated       │             │
+│  │ - Skip Auth Regex: /metrics (for Prometheus)           │             │
+│  └───────────────────────────────────────────────────────┘             │
+│         │                                                                │
+│         │ [OAuth Flow - First Access]                                   │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: OAuth 2.0 Authorization Code Flow                        │
+│         ▼                                                                │
+│  [OpenShift OAuth Server]                                                │
+│  - Validates user credentials                                            │
+│  - Issues OAuth Bearer Token                                             │
+│  - Token stored in cookie (session management)                           │
+│                                                                          │
+│  ┌───────────────────────────────────────────────────────┐             │
+│  │ OAuth Proxy (continued)                                │             │
+│  └───────────────────────────────────────────────────────┘             │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (pod-local)                                   │
+│         │ Auth: Bearer Token (validated by OAuth Proxy)                  │
+│         ▼                                                                │
+│  ┌───────────────────────────────────────────────────────┐             │
+│  │ [Dashboard Backend]                                    │             │
+│  │ - Container: odh-dashboard                             │             │
+│  │ - Runtime: Node.js 20 (Fastify)                        │             │
+│  │ - Port: 8080/TCP (HTTP)                                │             │
+│  │ - ServiceAccount: odh-dashboard                        │             │
+│  │ - SA Token Mount: /var/run/secrets/kubernetes.io/...   │             │
+│  │ - User: 1001 (non-root)                                │             │
+│  │                                                         │             │
+│  │ CPU Limits: 1000m (backend), 1000m (oauth-proxy)       │             │
+│  │ Memory Limits: 2Gi (backend), 2Gi (oauth-proxy)        │             │
+│  │                                                         │             │
+│  │ Health Checks:                                          │             │
+│  │ - Liveness: TCP/8080 (30s delay, 15s timeout)          │             │
+│  │ - Readiness: HTTP GET /api/health (30s delay)          │             │
+│  └───────────────────────────────────────────────────────┘             │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount Token (mounted)                           │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE (Trusted)                                     │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: ServiceAccount Token validation                                 │
+│  - RBAC: odh-dashboard ClusterRole                                       │
+│                                                                          │
+│  ServiceAccount: odh-dashboard                                           │
+│  - Namespace: redhat-ods-applications / opendatahub                      │
+│  - Token: Auto-rotated by Kubernetes                                     │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MONITORING (Internal)                                                   │
+│                                                                          │
+│  [Prometheus/Thanos]                                                     │
+│  - Port: 9092/TCP                                                        │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: ServiceAccount Token (dashboard → prometheus)                   │
+│  - Auth: None (prometheus → dashboard /metrics endpoint)                 │
+│                                                                          │
+│  Metrics Scrape Flow:                                                    │
+│  Prometheus → OAuth Proxy (8443/TCP, /metrics, skip-auth) → Backend     │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [Model Registry Services]                                               │
+│  - Port: 443/TCP or 8080/TCP                                            │
+│  - Protocol: HTTPS/HTTP (varies by deployment)                           │
+│  - Encryption: TLS 1.2+ (optional, deployment-dependent)                 │
+│  - Auth: ServiceAccount Token                                            │
+│  - Purpose: Query model metadata and artifacts                           │
+│                                                                          │
+│  [External Documentation URLs]                                           │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: None                                                            │
+│  - Purpose: Fetch documentation content links                            │
+│                                                                          │
+│  [Segment Analytics] (Optional)                                          │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: API Key (segment-key)                                           │
+│  - Purpose: Usage analytics telemetry                                    │
+└─────────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════
+RBAC SUMMARY
+═══════════════════════════════════════════════════════════════════════════
+
+ClusterRole: odh-dashboard
+─────────────────────────────────────────────────────────────────────────
+API Group                          Resources                           Verbs
+──────────────────────────────────────────────────────────────────────────────
+storage.k8s.io                     storageclasses                      update, patch
+"" (core)                          nodes                               get, list
+machine.openshift.io               machineautoscalers, machinesets     get, list
+autoscaling.openshift.io           machineautoscalers                  get, list
+"", config.openshift.io            clusterversions                     get, watch, list
+operators.coreos.com               clusterserviceversions, subscriptions  get, list, watch
+"", image.openshift.io             imagestreams/layers                 get
+"" (core)                          configmaps, pvc, secrets            create, delete, get, list, patch, update, watch
+route.openshift.io                 routes                              get, list, watch
+console.openshift.io               consolelinks                        get, list, watch
+operator.openshift.io              consoles                            get, list, watch
+"", integreatly.org                rhmis                               get, watch, list
+user.openshift.io                  groups, users                       get, list, watch
+"" (core)                          pods, serviceaccounts, services     get, list, watch
+"" (core)                          namespaces                          patch
+rbac.authorization.k8s.io          rolebindings, clusterrolebindings, roles  list, get, create, patch, delete
+"", events.k8s.io                  events                              get, list, watch
+kubeflow.org                       notebooks                           get, list, watch, create, update, patch, delete
+datasciencecluster.opendatahub.io  datascienceclusters                 list, watch, get
+dscinitialization.opendatahub.io   dscinitializations                  list, watch, get
+serving.kserve.io                  inferenceservices                   get, list, watch
+modelregistry.opendatahub.io       modelregistries                     get, list, watch, create, update, patch, delete
+"" (core)                          endpoints                           get
+services.platform.opendatahub.io   auths                               get
+llamastack.io                      llamastackdistributions             get, list, watch
+infrastructure.opendatahub.io      hardwareprofiles                    get, list, watch
+dashboard.opendatahub.io           acceleratorprofiles                 get, list, watch
+
+ClusterRoleBindings:
+─────────────────────────────────────────────────────────────────────────
+- odh-dashboard → odh-dashboard (ClusterRole)
+- odh-dashboard-image-puller → system:image-puller (ClusterRole)
+- odh-dashboard-auth-delegator → system:auth-delegator (ClusterRole)
+- odh-dashboard-monitoring → cluster-monitoring-view (ClusterRole)
+
+ServiceAccount: odh-dashboard
+Namespace: redhat-ods-applications / opendatahub
+
+═══════════════════════════════════════════════════════════════════════════
+SECRETS
+═══════════════════════════════════════════════════════════════════════════
+
+Secret Name                          Type                          Purpose                         Rotation
+────────────────────────────────────────────────────────────────────────────────────────────────────────────
+dashboard-proxy-tls                  kubernetes.io/tls              TLS cert for OAuth proxy        Auto (service-cert, 90d)
+dashboard-oauth-config-generated     Opaque                         OAuth cookie secret             Manual (operator-managed)
+dashboard-oauth-client-generated     Opaque                         OAuth client secret             Manual (operator-managed)
+odh-dashboard SA token               kubernetes.io/service-account-token  K8s API authentication     Auto (K8s, 1 year)
+
+Certificate Management:
+- TLS certificates provisioned via service.alpha.openshift.io/serving-cert-secret-name annotation
+- CA bundles mounted from multiple sources:
+  * /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem (system CA)
+  * /var/run/secrets/kubernetes.io/serviceaccount/ca.crt (K8s CA)
+  * /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt (service CA)
+  * /etc/pki/tls/certs/odh-ca-bundle.crt (ODH platform CA)
+  * /etc/pki/tls/certs/odh-trusted-ca-bundle.crt (ODH trusted CA)
+
+═══════════════════════════════════════════════════════════════════════════
+SERVICE MESH CONFIGURATION
+═══════════════════════════════════════════════════════════════════════════
+
+Service Mesh: Optional (not required, but integrates when available)
+- Component: Istio (service-mesh)
+- Purpose: Traffic routing and mTLS for advanced networking
+- Note: Dashboard functions without service mesh using OAuth Proxy for TLS
+
+Network Policies:
+- Defined in manifests/modular-architecture/networkpolicy.yaml
+- Defined in manifests/rhoai/shared/base/networkpolicy.yaml
+- Controls pod-to-pod communication within namespace
+
+High Availability:
+- Replicas: 2 (default deployment)
+- Pod Anti-Affinity: Distributes pods across availability zones
+- Readiness Probe: /api/health ensures traffic to healthy pods only
+- Liveness Probe: TCP/8080 detects crashed processes
+
+═══════════════════════════════════════════════════════════════════════════
+AUTHENTICATION & AUTHORIZATION MATRIX
+═══════════════════════════════════════════════════════════════════════════
+
+Endpoint               Method    Auth Mechanism              Enforcement Point      Policy
+────────────────────────────────────────────────────────────────────────────────────────────
+/* (external)          ALL       OpenShift OAuth (Bearer)    OAuth Proxy Sidecar    User must have project list permission
+/metrics               GET       None (auth bypass)          OAuth Proxy Sidecar    Publicly accessible for monitoring
+/api/* (internal)      ALL       ServiceAccount Token        Kubernetes API Server  RBAC (odh-dashboard ClusterRole)
+Backend → K8s API      ALL       ServiceAccount Token        Kubernetes API Server  odh-dashboard ClusterRole permissions
+
+OAuth Flow Details:
+1. User accesses dashboard URL (443/TCP HTTPS)
+2. OpenShift Router forwards to OAuth Proxy (8443/TCP HTTPS)
+3. OAuth Proxy redirects to OpenShift OAuth Server for authentication
+4. User authenticates with OpenShift credentials
+5. OAuth Server issues Bearer Token, stored in encrypted cookie
+6. OAuth Proxy validates token on subsequent requests
+7. Validated requests forwarded to backend (8080/TCP HTTP with Bearer header)
+
+ServiceAccount Token Usage:
+- Backend container mounts SA token from /var/run/secrets/kubernetes.io/serviceaccount/token
+- All K8s API calls include SA token in Authorization header
+- RBAC policies enforced by K8s API Server based on odh-dashboard ClusterRole
+- Token auto-rotated by Kubernetes (1 year expiry, refreshed before expiry)
+
+═══════════════════════════════════════════════════════════════════════════
+DATA CLASSIFICATION
+═══════════════════════════════════════════════════════════════════════════
+
+Data Handled:
+- User authentication tokens (OAuth Bearer tokens in cookies)
+- Kubernetes resource definitions (notebooks, serving runtimes, model registries)
+- Configuration data (feature flags, dashboard settings)
+- Metrics data (Prometheus queries)
+- User and group information (OpenShift users/groups)
+- Model metadata (from model registries)
+- Pipeline run data (from data science pipelines)
+
+Sensitive Data:
+- OAuth tokens (encrypted in transit via TLS, stored in encrypted cookies)
+- ServiceAccount tokens (mounted securely, transmitted via TLS)
+- Secrets (configmaps, PVC, secrets - managed via K8s RBAC)
+
+Data Protection:
+- All external communication encrypted via TLS 1.2+
+- OAuth tokens protected by HttpOnly, Secure, SameSite cookie flags
+- Secrets managed via Kubernetes Secrets API
+- Authorization headers redacted from logs (Pino logger configuration)
+- Admin activity logged separately in /usr/src/app/logs/adminActivity.log

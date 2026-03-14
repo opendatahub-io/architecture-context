@@ -1,0 +1,92 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[User Browser]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Gateway["Data Science Gateway<br/>openshift-ingress<br/>443/TCP<br/>TLS 1.2+ Edge Termination<br/>Path: /notebook/{ns}/{name}"]
+    end
+
+    subgraph ControllerNS["CONTROLLER NAMESPACE (redhat-ods-applications)"]
+        direction TB
+
+        HTTPRoute["HTTPRoute<br/>nb-{user-ns}-{notebook-name}<br/>gateway.networking.k8s.io/v1<br/>Backend: {notebook-name}-kube-rbac-proxy"]
+
+        ReferenceGrant["ReferenceGrant<br/>gateway.networking.k8s.io/v1beta1<br/>Permits cross-namespace<br/>service references"]
+
+        Controller["ODH Notebook Controller<br/>SA: odh-notebook-controller-manager<br/>Metrics: 8080/TCP<br/>Health: 8081/TCP<br/>Webhook: 8443/TCP"]
+
+        WebhookSvc["Webhook Service<br/>odh-notebook-controller-webhook-service<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ mTLS<br/>Path: /mutate-notebook-v1"]
+    end
+
+    subgraph UserNS["USER NAMESPACE ({user-namespace})"]
+        direction TB
+
+        subgraph NotebookPod["Notebook Pod"]
+            KubeRBACProxy["kube-rbac-proxy sidecar<br/>8443/TCP HTTPS<br/>TLS 1.2+ (service-ca)<br/>SubjectAccessReview Auth"]
+            JupyterNotebook["Jupyter Notebook<br/>8888/TCP HTTP<br/>No encryption (localhost)"]
+
+            KubeRBACProxy -->|localhost:8888| JupyterNotebook
+        end
+
+        NotebookService["Notebook Service<br/>{notebook-name}<br/>80/TCP → 8888/TCP"]
+
+        ProxyService["kube-rbac-proxy Service<br/>{notebook-name}-kube-rbac-proxy<br/>8443/TCP"]
+
+        NetworkPolicy1["NetworkPolicy<br/>{notebook-name}-ctrl-np<br/>Allow controller NS → 8888/TCP"]
+
+        NetworkPolicy2["NetworkPolicy<br/>{notebook-name}-kube-rbac-proxy-np<br/>Allow controller NS → 8443/TCP"]
+
+        NotebookSA["ServiceAccount<br/>{notebook-name}<br/>Bound to {dspa-name}-dspa"]
+
+        NotebookService --> JupyterNotebook
+        ProxyService --> KubeRBACProxy
+    end
+
+    subgraph InternalODH["INTERNAL ODH SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+<br/>ServiceAccount Token Auth"]
+
+        DSPAAPI["Data Science Pipelines API<br/>8888/TCP HTTPS TLS 1.2+<br/>Bearer Token Auth"]
+    end
+
+    %% External Flow (with Auth)
+    Client -->|HTTPS/443<br/>TLS 1.2+<br/>OAuth Bearer Token| Gateway
+    Gateway -->|Routes via HTTPRoute<br/>Cross-namespace| ProxyService
+    ProxyService --> KubeRBACProxy
+
+    %% External Flow (no Auth)
+    Gateway -.->|Direct routing<br/>no auth annotation| NotebookService
+
+    %% kube-rbac-proxy Authorization
+    KubeRBACProxy -->|SubjectAccessReview<br/>HTTPS/443<br/>ServiceAccount Token| K8sAPI
+
+    %% Controller Operations
+    Controller -->|Watch, Create, Update<br/>HTTPS/443<br/>ServiceAccount Token| K8sAPI
+    Controller -->|Creates| HTTPRoute
+    Controller -->|Creates| ReferenceGrant
+    Controller -.->|Creates in user NS| NetworkPolicy1
+    Controller -.->|Creates in user NS| NetworkPolicy2
+    Controller -.->|Creates in user NS| NotebookService
+    Controller -.->|Creates in user NS| ProxyService
+    Controller -.->|Creates in user NS| NotebookSA
+
+    %% Webhook Flow
+    K8sAPI -->|POST /mutate-notebook-v1<br/>HTTPS/443<br/>mTLS client cert| WebhookSvc
+    WebhookSvc --> Controller
+
+    %% Pipeline Integration
+    NotebookSA -->|Bearer Token<br/>HTTPS/8888<br/>TLS 1.2+| DSPAAPI
+    Controller -->|Watch DSPA<br/>Create Secrets| DSPAAPI
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef controller fill:#cce5ff,stroke:#0066cc,stroke-width:2px
+    classDef user fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef internal fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    class Client external
+    class Gateway ingress
+    class HTTPRoute,ReferenceGrant,Controller,WebhookSvc controller
+    class NotebookPod,KubeRBACProxy,JupyterNotebook,NotebookService,ProxyService,NetworkPolicy1,NetworkPolicy2,NotebookSA user
+    class K8sAPI,DSPAAPI internal

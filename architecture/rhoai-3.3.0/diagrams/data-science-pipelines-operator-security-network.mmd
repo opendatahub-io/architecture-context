@@ -1,0 +1,132 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User[Data Scientist / Workbench]
+    end
+
+    subgraph Ingress["INGRESS (DMZ) - OpenShift Routes"]
+        RouteAPI["Route: ds-pipeline-{name}<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ Reencrypt"]
+        RouteMLMD["Route: ds-pipeline-md-{name}<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ Reencrypt"]
+        RouteMinio["Route: minio-{name}<br/>443/TCP → 9000/TCP<br/>TLS 1.2+ Edge<br/>(Dev/Test Only)"]
+    end
+
+    subgraph AuthLayer["AUTHENTICATION LAYER"]
+        OAuthProxy["OAuth Proxy<br/>8443/TCP HTTPS<br/>TLS: ds-pipelines-proxy-tls<br/>Auth: OpenShift OAuth"]
+        OAuthMLMD["OAuth Proxy (MLMD)<br/>8443/TCP HTTPS<br/>TLS: ds-pipelines-envoy-proxy-tls"]
+    end
+
+    subgraph AppLayer["APPLICATION LAYER (Namespace-scoped)"]
+        direction TB
+
+        subgraph NS["Namespace: {dspa-namespace}"]
+            direction TB
+
+            APIServer["DS Pipeline API Server<br/>SA: ds-pipeline-{name}<br/>8888/TCP HTTP (REST)<br/>8887/TCP gRPC<br/>Bearer Token + RBAC<br/>NetworkPolicy: ds-pipelines-{name}"]
+
+            MariaDB["MariaDB (Optional)<br/>3306/TCP MySQL<br/>TLS: ds-pipelines-mariadb-tls<br/>Auth: Username/Password<br/>NetworkPolicy: mariadb-{name}"]
+
+            Minio["Minio (Optional)<br/>9000/TCP HTTP (S3 API)<br/>80/TCP HTTP (KFP UI)<br/>Auth: Access/Secret Keys"]
+
+            MLMDgRPC["ML Metadata gRPC<br/>8080/TCP gRPC<br/>TLS: ds-pipeline-metadata-grpc-tls<br/>Auth: None (NetworkPolicy)<br/>NetworkPolicy: ds-pipeline-metadata-grpc"]
+
+            MLMDEnvoy["MLMD Envoy Proxy<br/>9090/TCP gRPC/HTTP2<br/>8443/TCP HTTPS<br/>Auth: OAuth + RBAC<br/>NetworkPolicy: ds-pipelines-envoy"]
+
+            ArgoController["Argo Workflow Controller<br/>SA: ds-pipeline-argo-{name}<br/>Namespace-scoped<br/>Watches: Workflow CRs"]
+
+            WorkflowPods["Workflow Pods<br/>SA: pipeline-runner-{name}<br/>Ephemeral (per task)"]
+
+            PersistenceAgent["Persistence Agent<br/>SA: ds-pipeline-persistenceagent-{name}<br/>Watches: Workflow CRs"]
+
+            ScheduledWorkflow["Scheduled Workflow Controller<br/>SA: ds-pipeline-scheduledworkflow-{name}<br/>Watches: ScheduledWorkflow CRs"]
+        end
+    end
+
+    subgraph OperatorLayer["OPERATOR LAYER (Cluster-scoped)"]
+        DSPO["DSPO Controller Manager<br/>NS: opendatahub/redhat-ods-applications<br/>SA: controller-manager<br/>8080/TCP (metrics)<br/>8081/TCP (health)<br/>ClusterRole: manager-role"]
+    end
+
+    subgraph K8sControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+<br/>Auth: ServiceAccount Token<br/>TokenReview/SubjectAccessReview"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES (Production)"]
+        ExternalDB["External MySQL/MariaDB<br/>3306/TCP MySQL<br/>Optional TLS<br/>Auth: Username/Password"]
+        ExternalS3["External S3 Storage<br/>443/TCP HTTPS TLS1.2+<br/>Auth: AWS IAM or Access Keys"]
+        ImageRegistry["Image Registries<br/>443/TCP HTTPS TLS1.2+<br/>Auth: Pull Secrets"]
+    end
+
+    subgraph Monitoring["MONITORING"]
+        Prometheus["OpenShift Monitoring<br/>Prometheus"]
+    end
+
+    %% External flows
+    User -->|HTTPS/443<br/>TLS 1.2+<br/>OAuth| RouteAPI
+    User -->|HTTPS/443<br/>TLS 1.2+<br/>OAuth| RouteMLMD
+    User -->|HTTPS/443<br/>TLS 1.2+<br/>Access Keys| RouteMinio
+
+    %% Ingress to Auth
+    RouteAPI -->|TLS Reencrypt<br/>8443/TCP| OAuthProxy
+    RouteMLMD -->|TLS Reencrypt<br/>8443/TCP| OAuthMLMD
+    RouteMinio -->|8443/TCP| Minio
+
+    %% Auth to App
+    OAuthProxy -->|HTTP/8888 or gRPC/8887<br/>Optional mTLS<br/>Bearer Token| APIServer
+    OAuthMLMD -->|gRPC/9090<br/>Optional mTLS| MLMDEnvoy
+
+    %% API Server flows
+    APIServer -->|MySQL/3306<br/>Optional TLS<br/>Username/Password| MariaDB
+    APIServer -->|MySQL/3306<br/>Optional TLS| ExternalDB
+    APIServer -->|HTTP/9000<br/>S3 API<br/>Access Keys| Minio
+    APIServer -->|HTTPS/443<br/>TLS 1.2+<br/>AWS IAM| ExternalS3
+    APIServer -->|HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount Token| K8sAPI
+
+    %% MLMD flows
+    MLMDEnvoy -->|gRPC/8080<br/>Optional mTLS| MLMDgRPC
+    MLMDgRPC -->|MySQL/3306| MariaDB
+
+    %% Workflow execution
+    K8sAPI -->|Create/Watch| ArgoController
+    ArgoController -->|Creates| WorkflowPods
+    WorkflowPods -->|gRPC/8887<br/>ServiceAccount Token| APIServer
+    WorkflowPods -->|HTTP/9000 or HTTPS/443<br/>S3 API| Minio
+    WorkflowPods -->|HTTPS/443<br/>TLS 1.2+<br/>AWS IAM| ExternalS3
+    WorkflowPods -->|gRPC/8080<br/>Optional mTLS| MLMDgRPC
+    WorkflowPods -->|HTTPS/443<br/>TLS 1.2+<br/>Pull Secrets| ImageRegistry
+
+    %% Persistence and scheduling
+    PersistenceAgent -->|HTTPS/6443<br/>ServiceAccount Token| K8sAPI
+    PersistenceAgent -->|gRPC/8887<br/>Bearer Token| APIServer
+    PersistenceAgent -->|MySQL/3306| MariaDB
+    ScheduledWorkflow -->|gRPC/8887<br/>Bearer Token| APIServer
+    ScheduledWorkflow -->|HTTPS/6443| K8sAPI
+
+    %% Operator flows
+    DSPO -->|HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount Token| K8sAPI
+    DSPO -->|Reconciles| APIServer
+    DSPO -->|Reconciles| ArgoController
+    DSPO -->|Reconciles| MariaDB
+    DSPO -->|Reconciles| Minio
+    DSPO -->|Reconciles| MLMDgRPC
+    DSPO -->|Reconciles| MLMDEnvoy
+
+    %% Monitoring
+    Prometheus -->|HTTP/8080<br/>ServiceAccount Token| DSPO
+    Prometheus -->|HTTP/8888<br/>ServiceAccount Token| APIServer
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef auth fill:#fff4e6,stroke:#ff9800,stroke-width:2px
+    classDef app fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:3px
+    classDef k8s fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef monitoring fill:#f8cecc,stroke:#b85450,stroke-width:2px
+
+    class User external
+    class RouteAPI,RouteMLMD,RouteMinio ingress
+    class OAuthProxy,OAuthMLMD auth
+    class APIServer,MariaDB,Minio,MLMDgRPC,MLMDEnvoy,ArgoController,WorkflowPods,PersistenceAgent,ScheduledWorkflow app
+    class DSPO operator
+    class K8sAPI k8s
+    class ExternalDB,ExternalS3,ImageRegistry externalservice
+    class Prometheus monitoring
