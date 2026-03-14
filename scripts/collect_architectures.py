@@ -146,29 +146,29 @@ def discover_platforms(checkouts_dir: Path) -> list[Platform]:
     """Discover available platform checkouts and their versions"""
     platforms = []
 
-    # Check for ODH
-    odh_dir = checkouts_dir / 'opendatahub-io'
-    if odh_dir.exists():
-        version = detect_platform_version('odh', odh_dir, 'opendatahub-operator')
-        if version:
-            platforms.append(Platform(
-                name='odh',
-                version=version,
-                checkout_dir=odh_dir,
-                operator_dir=odh_dir / 'opendatahub-operator'
-            ))
+    # Check for ODH checkouts (opendatahub-io or opendatahub-io.*)
+    for odh_dir in sorted(checkouts_dir.glob('opendatahub-io*')):
+        if odh_dir.is_dir():
+            version = detect_platform_version('odh', odh_dir, 'opendatahub-operator')
+            if version:
+                platforms.append(Platform(
+                    name='odh',
+                    version=version,
+                    checkout_dir=odh_dir,
+                    operator_dir=odh_dir / 'opendatahub-operator'
+                ))
 
-    # Check for RHOAI
-    rhoai_dir = checkouts_dir / 'red-hat-data-services'
-    if rhoai_dir.exists():
-        version = detect_platform_version('rhoai', rhoai_dir, 'rhods-operator')
-        if version:
-            platforms.append(Platform(
-                name='rhoai',
-                version=version,
-                checkout_dir=rhoai_dir,
-                operator_dir=rhoai_dir / 'rhods-operator'
-            ))
+    # Check for RHOAI checkouts (red-hat-data-services or red-hat-data-services.*)
+    for rhoai_dir in sorted(checkouts_dir.glob('red-hat-data-services*')):
+        if rhoai_dir.is_dir():
+            version = detect_platform_version('rhoai', rhoai_dir, 'rhods-operator')
+            if version:
+                platforms.append(Platform(
+                    name='rhoai',
+                    version=version,
+                    checkout_dir=rhoai_dir,
+                    operator_dir=rhoai_dir / 'rhods-operator'
+                ))
 
     return platforms
 
@@ -235,9 +235,14 @@ To generate diagrams from a component:
     print(f"  Created index: {readme_path}")
 
 
-def collect_architectures(checkouts_dir: Path, output_dir: Path) -> dict:
+def collect_architectures(checkouts_dir: Path, output_dir: Path, platform_filter: Optional[str] = None) -> dict:
     """
     Main collection function.
+
+    Args:
+        checkouts_dir: Directory containing platform checkouts
+        output_dir: Output directory for organized architectures
+        platform_filter: Optional filter for 'odh', 'rhoai', or None for all
 
     Returns summary dict with stats.
     """
@@ -249,6 +254,10 @@ def collect_architectures(checkouts_dir: Path, output_dir: Path) -> dict:
 
     # Discover platforms
     platforms = discover_platforms(checkouts_dir)
+
+    # Apply platform filter if specified
+    if platform_filter:
+        platforms = [p for p in platforms if p.name == platform_filter]
 
     if not platforms:
         print(f"\n⚠️  No platform checkout directories found in {checkouts_dir}\n")

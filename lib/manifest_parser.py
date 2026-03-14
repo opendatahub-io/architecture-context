@@ -155,11 +155,17 @@ async def process_manifest_script(
 
     content = path.read_text()
 
-    # Determine which array to parse
+    # Determine which array to parse (try platform-specific first, then fall back to generic)
+    # Newer scripts (3.3+) use ODH_COMPONENT_MANIFESTS / RHOAI_COMPONENT_MANIFESTS
+    # Older scripts (2.25) use COMPONENT_MANIFESTS
     array_name = "ODH_COMPONENT_MANIFESTS" if platform == "odh" else "RHOAI_COMPONENT_MANIFESTS"
 
     # Parse the array
     components = parse_manifest_array(content, array_name)
+
+    # Fall back to generic COMPONENT_MANIFESTS if platform-specific array not found
+    if not components:
+        components = parse_manifest_array(content, "COMPONENT_MANIFESTS")
 
     if not components:
         return {}

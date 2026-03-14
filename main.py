@@ -25,6 +25,11 @@ from lib.manifest_parser import (
     components_to_json
 )
 
+# Import collection script as module
+import sys
+sys.path.insert(0, str(Path(__file__).parent / "scripts"))
+from collect_architectures import collect_architectures, print_summary
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -130,6 +135,28 @@ def parse_args():
         "--limit",
         type=int,
         help="Limit number of components to process (for testing)"
+    )
+
+    # Phase 4: Collect architectures
+    collect_parser = subparsers.add_parser(
+        "collect-architectures",
+        help="Collect and organize GENERATED_ARCHITECTURE.md files into architecture/ directory"
+    )
+    collect_parser.add_argument(
+        "--checkouts-dir",
+        default="checkouts",
+        help="Directory containing platform checkouts (default: checkouts)"
+    )
+    collect_parser.add_argument(
+        "--output-dir",
+        default="architecture",
+        help="Output directory for organized architectures (default: architecture)"
+    )
+    collect_parser.add_argument(
+        "--platform",
+        choices=["odh", "rhoai", "all"],
+        default="all",
+        help="Which platform to collect (default: all)"
     )
 
     # All phases
@@ -461,6 +488,30 @@ This is critical for understanding how this component is deployed in production.
     print("=" * 60)
 
 
+async def run_collect_architectures_phase(args) -> None:
+    """Run Phase 4: Collect and organize architecture files."""
+    print("\n" + "=" * 60)
+    print("PHASE 4: Collecting component architectures")
+    print("=" * 60 + "\n")
+
+    checkouts_dir = Path(args.checkouts_dir)
+    output_dir = Path(args.output_dir)
+
+    # Validate checkouts directory
+    if not checkouts_dir.exists():
+        print(f"Error: Checkouts directory does not exist: {checkouts_dir}")
+        return
+
+    # Determine platform filter
+    platform_filter = None if args.platform == "all" else args.platform
+
+    # Run collection
+    summary = collect_architectures(checkouts_dir, output_dir, platform_filter)
+
+    # Print summary
+    print_summary(summary, checkouts_dir, output_dir)
+
+
 async def run_all_phases(args) -> None:
     """Run all phases in sequence."""
     # Auto-detect org if not provided
@@ -497,6 +548,8 @@ async def main(args) -> None:
         await run_manifest_phase(args)
     elif args.command == "generate-architecture":
         await run_generate_architecture_phase(args)
+    elif args.command == "collect-architectures":
+        await run_collect_architectures_phase(args)
     elif args.command == "all":
         await run_all_phases(args)
     else:
