@@ -171,6 +171,15 @@ def parse_args():
         help="Base architecture directory (default: architecture)"
     )
     platform_arch_parser.add_argument(
+        "--platform",
+        choices=["odh", "rhoai"],
+        help="Only process this platform (default: all)"
+    )
+    platform_arch_parser.add_argument(
+        "--version",
+        help="Only process this version (default: all)"
+    )
+    platform_arch_parser.add_argument(
         "--max-concurrent",
         type=int,
         default=5,
@@ -191,6 +200,15 @@ def parse_args():
         "--architecture-dir",
         default="architecture",
         help="Base architecture directory (default: architecture)"
+    )
+    diagrams_parser.add_argument(
+        "--platform",
+        choices=["odh", "rhoai"],
+        help="Only process this platform (default: all)"
+    )
+    diagrams_parser.add_argument(
+        "--version",
+        help="Only process this version (default: all)"
     )
     diagrams_parser.add_argument(
         "--max-concurrent",
@@ -413,6 +431,40 @@ async def run_generate_architecture_phase(args) -> None:
         checkouts_dir=None  # Auto-detect from script_path
     )
 
+    # Also check the operator repository itself (it's not in COMPONENT_MANIFESTS)
+    # The operator is the central component that manages all other components
+    script_path_obj = Path(script_path)
+    operator_path = script_path_obj.parent
+
+    if operator_path.exists():
+        from lib.manifest_parser import ComponentInfo
+
+        # Determine checkouts_dir from script path
+        parts = script_path_obj.parts
+        if "checkouts" in parts:
+            checkouts_idx = parts.index("checkouts")
+            checkouts_dir = Path(*parts[:checkouts_idx+2])
+        else:
+            checkouts_dir = script_path_obj.parent.parent
+
+        # Check if operator has architecture file
+        operator_arch_file = operator_path / "GENERATED_ARCHITECTURE.md"
+        has_operator_arch = operator_arch_file.exists()
+
+        # Create ComponentInfo for the operator
+        operator_component = ComponentInfo(
+            key="operator",  # Special key for the operator
+            repo_org=org,
+            repo_name=operator_name,
+            ref="N/A",  # Not from manifest
+            source_folder="config",  # Standard operator config location
+            checkout_path=operator_path,
+            has_architecture=has_operator_arch
+        )
+
+        # Add operator to components dict
+        components["operator"] = operator_component
+
     if not components:
         print("No components found with checkouts")
         return
@@ -576,12 +628,14 @@ async def run_generate_diagrams_phase(args) -> None:
             diagrams_dir = platform_dir / "diagrams"
 
             # Check if diagrams already exist
+            # Look for any diagram files (.mmd, .dsl, .txt) with this component's name
             has_diagrams = False
             if diagrams_dir.exists():
-                # Look for any diagram files with this component's name
-                pattern = f"{component_name}-*.mmd"
-                existing_diagrams = list(diagrams_dir.glob(pattern))
-                has_diagrams = len(existing_diagrams) > 0
+                # Check for any of the expected diagram file types
+                mmd_files = list(diagrams_dir.glob(f"{component_name}-*.mmd"))
+                dsl_files = list(diagrams_dir.glob(f"{component_name}-*.dsl"))
+                txt_files = list(diagrams_dir.glob(f"{component_name}-*.txt"))
+                has_diagrams = len(mmd_files) > 0 or len(dsl_files) > 0 or len(txt_files) > 0
 
             needs_generation = not has_diagrams or args.force_regenerate
 
@@ -598,6 +652,21 @@ async def run_generate_diagrams_phase(args) -> None:
     if not diagram_jobs:
         print(f"No architecture files found in {architecture_dir}")
         return
+
+    # Apply platform/version filters if specified
+    if args.platform:
+        diagram_jobs = [j for j in diagram_jobs if j['platform'] == args.platform]
+        if not diagram_jobs:
+            print(f"No files found for platform: {args.platform}")
+            return
+
+    if args.version:
+        diagram_jobs = [j for j in diagram_jobs if j['version'] == args.version]
+        if not diagram_jobs:
+            print(f"No files found for version: {args.version}")
+            if args.platform:
+                print(f"Looking for: {args.platform}-{args.version}")
+            return
 
     # Filter to files that need diagrams
     needs_generation = [j for j in diagram_jobs if j['needs_generation']]
@@ -690,28 +759,7 @@ Generate all diagram formats:
 
     async def run_agent_with_semaphore(job):
         async with semaphore:
-            result = await run_agent(job["name"], job["cwd"], job["prompt"], log_dir)
-
-            # If successful, run PNG generation for this component's diagrams directory
-            if result.get("success") and job["diagrams_dir"].exists():
-                print(f"\n{'=' * 60}")
-                print(f"Generating PNGs for: {job['name']}")
-                print(f"{'=' * 60}")
-
-                try:
-                    subprocess.run(
-                        [
-                            "python", "scripts/generate_diagram_pngs.py",
-                            str(job["diagrams_dir"]),
-                            "--width=10000"
-                        ],
-                        check=True
-                    )
-                    print(f"✓ PNG generation complete for {job['name']}")
-                except subprocess.CalledProcessError as e:
-                    print(f"⚠ PNG generation failed for {job['name']}: {e}")
-
-            return result
+            return await run_agent(job["name"], job["cwd"], job["prompt"], log_dir)
 
     print("Starting agent execution...\n")
     results = await asyncio.gather(
@@ -745,7 +793,39 @@ Generate all diagram formats:
         for i, exc in enumerate(exceptions):
             print(f"  ✗ Exception {i+1}: {exc}")
 
-    print(f"\nAll agent logs available in: {log_dir}")
+    # Generate PNGs once at the end for all successful jobs
+    if successful:
+        print("\n" + "=" * 60)
+        print("GENERATING PNG FILES")
+        print("=" * 60 + "\n")
+
+        # Get unique diagrams directories from successful jobs
+        unique_dirs = set()
+        for i, job in enumerate(jobs):
+            result = results[i]
+            if isinstance(result, dict) and result.get("success"):
+                if job["diagrams_dir"].exists():
+                    unique_dirs.add(job["diagrams_dir"])
+
+        if unique_dirs:
+            for diagrams_dir in sorted(unique_dirs):
+                print(f"Generating PNGs in: {diagrams_dir}")
+                try:
+                    subprocess.run(
+                        [
+                            "python", "scripts/generate_diagram_pngs.py",
+                            str(diagrams_dir),
+                            "--width=10000"
+                        ],
+                        check=True
+                    )
+                    print(f"✓ PNG generation complete for {diagrams_dir}\n")
+                except subprocess.CalledProcessError as e:
+                    print(f"⚠ PNG generation failed for {diagrams_dir}: {e}\n")
+        else:
+            print("No diagrams directories to process\n")
+
+    print(f"All agent logs available in: {log_dir}")
     print("=" * 60)
 
 
@@ -796,6 +876,21 @@ async def run_generate_platform_architecture_phase(args) -> None:
         print(f"No platform-version directories found in {architecture_dir}")
         print(f"Expected format: {architecture_dir}/odh-3.3.0, {architecture_dir}/rhoai-2.25.0")
         return
+
+    # Apply platform/version filters if specified
+    if args.platform:
+        platform_dirs = [p for p in platform_dirs if p['platform'] == args.platform]
+        if not platform_dirs:
+            print(f"No directories found for platform: {args.platform}")
+            return
+
+    if args.version:
+        platform_dirs = [p for p in platform_dirs if p['version'] == args.version]
+        if not platform_dirs:
+            print(f"No directories found for version: {args.version}")
+            if args.platform:
+                print(f"Looking for: {args.platform}-{args.version}")
+            return
 
     # Filter to platforms that need PLATFORM.md generation
     needs_generation = [p for p in platform_dirs if p['needs_generation']]
