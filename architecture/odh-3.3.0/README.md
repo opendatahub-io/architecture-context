@@ -2,7 +2,7 @@
 
 Generated from: checkouts/opendatahub-io
 Platform version from: checkouts/opendatahub-io/opendatahub-operator
-Date: 2026-03-12
+Date: 2026-03-13
 
 ## Components
 

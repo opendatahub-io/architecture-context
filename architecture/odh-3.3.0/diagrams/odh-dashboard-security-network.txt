@@ -1,0 +1,151 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [User Browser]                                                          │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: None (redirects to OAuth)                                │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                          │
+│                                                                          │
+│  [OpenShift Router]                                                      │
+│  - Port: 443/TCP (external) → 8443/TCP (internal)                      │
+│  - TLS Termination: No (reencrypt mode)                                 │
+│  - Route Type: Reencrypt                                                 │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: OAuth challenge                                          │
+│         ▼                                                                │
+│  [OpenShift OAuth Server]                                                │
+│  - Authentication Provider: OpenShift Identity                           │
+│  - Token Type: Bearer (cookie-based)                                     │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+ (service-serving-cert)                   │
+│         │ Auth: Bearer Token (OAuth)                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION LAYER                                                       │
+│                                                                          │
+│  [kube-rbac-proxy]                                                       │
+│  - Namespace: opendatahub                                                │
+│  - ServiceAccount: odh-dashboard                                         │
+│  - Certificate: dashboard-proxy-tls (auto-rotated)                      │
+│  - AuthN: OAuth Bearer Token validation                                 │
+│  - AuthZ: OpenShift user/group-based RBAC                               │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (localhost only)                              │
+│         │ Auth: X-Auth-Request-User header                               │
+│         ▼                                                                │
+│  [ODH Dashboard Backend - Node.js/Fastify]                               │
+│  - Namespace: opendatahub                                                │
+│  - ServiceAccount: odh-dashboard                                         │
+│  - Runtime: Node.js >= 22.0.0                                           │
+│  - Health Check: /api/health (8080/TCP, unsecured)                      │
+│         │                                                                │
+│         ├──────────────────────────────────────────────┐                │
+│         │                                              │                │
+│         │ Port: 6443/TCP                               │ Port: 9091/TCP │
+│         │ Protocol: HTTPS                              │ Protocol: HTTP │
+│         │ Encryption: TLS 1.2+                         │ Encryption: None│
+│         │ Auth: ServiceAccount Token                   │ Auth: Bearer   │
+│         ▼                                              ▼                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  BACKEND SERVICES                                                        │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Purpose: CR management (Notebook, ModelRegistry, InferenceService)   │
+│  - Resources: ConfigMaps, Secrets, PVCs, RoleBindings, Namespaces      │
+│  - Auth: ServiceAccount token (odh-dashboard)                           │
+│  - Encryption: TLS 1.2+                                                  │
+│                                                                          │
+│  [Prometheus Service]                                                    │
+│  - Namespace: openshift-monitoring                                       │
+│  - Purpose: Model serving metrics queries                                │
+│  - Auth: Bearer Token (proxied from user)                               │
+│  - Encryption: None (internal HTTP)                                      │
+│                                                                          │
+│  [Model Registry Service]                                                │
+│  - Port: 8080/TCP                                                        │
+│  - Purpose: Model metadata API proxy                                     │
+│  - Auth: Bearer Token (proxied from user)                               │
+│  - Encryption: None (internal HTTP)                                      │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: odh-dashboard
+  - API Groups: "" (core)
+    - Resources: configmaps, persistentvolumeclaims, secrets, pods, services, namespaces
+    - Verbs: create, delete, get, list, patch, update, watch
+  - API Groups: kubeflow.org
+    - Resources: notebooks
+    - Verbs: get, list, watch, create, update, patch, delete
+  - API Groups: modelregistry.opendatahub.io
+    - Resources: modelregistries
+    - Verbs: get, list, watch, create, update, patch, delete
+  - API Groups: serving.kserve.io
+    - Resources: inferenceservices
+    - Verbs: get, list, watch
+  - API Groups: rbac.authorization.k8s.io
+    - Resources: rolebindings, clusterrolebindings, roles
+    - Verbs: list, get, create, patch, delete
+  - API Groups: storage.k8s.io
+    - Resources: storageclasses
+    - Verbs: update, patch
+  - API Groups: datasciencecluster.opendatahub.io
+    - Resources: datascienceclusters
+    - Verbs: list, watch, get
+  - API Groups: feast.dev, trustyai.opendatahub.io, llamastack.io
+    - Resources: featurestores, guardrailsorchestrators, llamastackdistributions
+    - Verbs: get, list, watch
+
+- RoleBinding: odh-dashboard-cluster-monitoring-view
+  - Namespace: openshift-monitoring
+  - Role: cluster-monitoring-view
+  - ServiceAccount: odh-dashboard
+  - Purpose: Allow Prometheus metrics queries
+
+- RoleBinding: odh-dashboard-auth-delegator
+  - Namespace: kube-system
+  - Role: system:auth-delegator
+  - ServiceAccount: odh-dashboard
+  - Purpose: OAuth token validation
+
+Network Policies:
+- Policy: odh-dashboard-allow-ports
+  - Selector: deployment=odh-dashboard
+  - Ingress:
+    - Allow 8443/TCP from OpenShift ingress controllers
+    - Allow 8043/TCP, 8143/TCP, 8243/TCP, 8343/TCP, 8543/TCP, 8643/TCP (various ports)
+    - Allow from same namespace (pod-to-pod)
+  - Egress: Not restricted
+
+Secrets:
+- dashboard-proxy-tls (kubernetes.io/tls)
+  - Purpose: TLS certificate for kube-rbac-proxy HTTPS termination
+  - Provisioned by: service.beta.openshift.io/serving-cert-secret-name annotation
+  - Auto-Rotate: Yes (OpenShift service CA)
+  - Rotation Period: 90 days (default)
+
+Service Mesh Configuration:
+- Not applicable - ODH Dashboard uses OpenShift Routes, not Istio/Service Mesh
+- Authentication: OAuth via kube-rbac-proxy
+- Authorization: OpenShift RBAC (user/group-based)
+
+Authentication Flow:
+1. User requests dashboard URL (HTTPS/443)
+2. OpenShift Router redirects to OAuth Server
+3. User authenticates with OpenShift credentials
+4. OAuth Server issues Bearer Token (stored in cookie)
+5. User browser sends authenticated request to kube-rbac-proxy (HTTPS/8443)
+6. kube-rbac-proxy validates token with OAuth Server
+7. kube-rbac-proxy forwards to backend with X-Auth-Request-User header (HTTP/8080)
+8. Backend uses ServiceAccount token for Kubernetes API calls (HTTPS/6443)
