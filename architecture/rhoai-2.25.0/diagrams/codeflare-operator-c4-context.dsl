@@ -1,51 +1,53 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and manages distributed ML workloads using Ray clusters"
+        user = person "Data Scientist" "Creates and manages distributed AI/ML workloads"
+        notebookUser = person "Notebook User" "Interacts with Ray clusters from Jupyter notebooks"
 
-        codeflareOperator = softwareSystem "CodeFlare Operator" "Manages RayCluster and AppWrapper resources for distributed AI/ML workloads" {
-            manager = container "Manager Pod" "Operator controller running reconciliation loops" "Go Operator" {
-                rayController = component "RayCluster Controller" "Manages RayCluster lifecycle with OAuth, mTLS, networking" "Go Controller"
-                appController = component "AppWrapper Controller" "Manages AppWrapper resources for batch scheduling" "Go Controller"
-                mutatingWebhook = component "Mutating Webhook" "Modifies RayCluster and AppWrapper on CREATE/UPDATE" "Go Webhook"
-                validatingWebhook = component "Validating Webhook" "Validates RayCluster and AppWrapper on CREATE/UPDATE" "Go Webhook"
-                certController = component "Cert Controller" "Manages webhook TLS certificate rotation" "Go Component"
+        codeflareOperator = softwareSystem "CodeFlare Operator" "Manages distributed AI/ML workload orchestration through RayCluster and AppWrapper custom resources" {
+            manager = container "Manager Pod" "Operator controller running reconciliation loops" "Go 1.25" {
+                rayController = component "RayCluster Controller" "Watches RayCluster CRDs and creates supporting resources" "Controller"
+                appWrapperController = component "AppWrapper Controller" "Manages AppWrapper CRDs for grouped resource deployment" "Controller"
+                webhookServer = component "Webhook Server" "Validates and mutates RayCluster and AppWrapper resources" "AdmissionWebhook"
+                metricsServer = component "Metrics Server" "Exposes Prometheus metrics" "HTTP Service"
+                certController = component "Cert Controller" "Manages certificate rotation for webhook TLS" "Controller"
             }
-            metricsService = container "Metrics Service" "Exposes Prometheus metrics" "ClusterIP Service :8080"
-            webhookService = container "Webhook Service" "Serves admission webhook requests" "ClusterIP Service :443 TLS"
         }
 
-        kuberay = softwareSystem "KubeRay Operator" "Provides RayCluster CRD and base Ray cluster management" "External Required"
-        kueue = softwareSystem "Kueue" "Workload queueing and batch scheduling" "External Optional"
-        certController = softwareSystem "cert-controller" "TLS certificate management and rotation" "External Required"
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform" "External Required"
-        openshift = softwareSystem "OpenShift" "OAuth proxy integration and Route resources" "External Optional"
-
-        odhDashboard = softwareSystem "ODH Dashboard" "Web UI for creating and managing data science resources" "Internal ODH"
-        odhOperator = softwareSystem "ODH Operator" "Reads DSCInitialization for configuration" "Internal ODH"
+        kuberay = softwareSystem "KubeRay Operator" "Provides RayCluster CRD and base Ray cluster management" "External"
+        kueue = softwareSystem "Kueue" "Workload queueing and batch scheduling system" "External"
+        certManager = softwareSystem "cert-controller" "Certificate management and rotation" "External"
+        k8s = softwareSystem "Kubernetes" "Container orchestration platform" "Platform"
+        openshift = softwareSystem "OpenShift" "Enterprise Kubernetes with OAuth and Routes" "Platform"
         prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal ODH"
+        odhDashboard = softwareSystem "ODH Dashboard" "Web UI for creating and managing data science resources" "Internal ODH"
+        odhOperator = softwareSystem "ODH Operator" "Platform operator managing ODH components" "Internal ODH"
+        s3 = softwareSystem "S3 Storage" "Object storage for model artifacts and data" "External"
 
-        # User interactions
-        user -> codeflareOperator "Creates RayCluster and AppWrapper via kubectl/UI"
-        user -> odhDashboard "Manages Ray clusters via web UI"
-        odhDashboard -> codeflareOperator "Triggers RayCluster creation"
+        # User relationships
+        user -> codeflareOperator "Creates RayCluster and AppWrapper CRs via kubectl/oc"
+        notebookUser -> codeflareOperator "Connects to Ray clusters from notebooks"
+        user -> odhDashboard "Creates RayCluster instances via UI"
 
-        # External dependencies
-        codeflareOperator -> kuberay "Depends on RayCluster CRD and base cluster lifecycle"
-        codeflareOperator -> kueue "Integrates for AppWrapper batch scheduling" "HTTPS/6443 TLS1.3"
-        codeflareOperator -> certController "Uses for webhook TLS certificate rotation"
-        codeflareOperator -> kubernetes "Manages resources via API" "HTTPS/6443 TLS1.3"
-        codeflareOperator -> openshift "Creates Routes and OAuth proxies" "HTTPS/6443 TLS1.3"
+        # Operator relationships
+        codeflareOperator -> k8s "Watches resources, creates/updates objects" "HTTPS/6443"
+        codeflareOperator -> kuberay "Relies on for RayCluster CRD and base cluster management" "CRD dependency"
+        codeflareOperator -> kueue "Integrates for AppWrapper batch scheduling" "HTTPS/6443"
+        codeflareOperator -> certManager "Uses for webhook TLS certificate rotation" "In-process"
+        codeflareOperator -> openshift "Creates Routes and integrates OAuth proxy" "HTTPS/6443"
+        codeflareOperator -> odhOperator "Reads DSCInitialization for configuration" "HTTPS/6443"
 
-        # Internal ODH dependencies
-        codeflareOperator -> odhOperator "Reads DSCInitialization configuration" "HTTPS/6443 TLS1.3"
+        # Monitoring
         prometheus -> codeflareOperator "Scrapes metrics" "HTTP/8080"
 
-        # Internal component relationships
-        rayController -> kubernetes "Creates Services, Routes, NetworkPolicies, Secrets"
-        appController -> kubernetes "Creates wrapped resources"
-        mutatingWebhook -> kubernetes "Mutates admission requests"
-        validatingWebhook -> kubernetes "Validates admission requests"
-        kubernetes -> webhookService "Sends admission requests" "HTTPS/9443 TLS1.2+ mTLS"
+        # Dashboard integration
+        odhDashboard -> codeflareOperator "Triggers RayCluster creation" "Via K8s API"
+
+        # Ray cluster relationships
+        notebookUser -> openshift "Accesses Ray dashboard" "HTTPS/443 via Route"
+        notebookUser -> codeflareOperator "Connects to Ray client API" "gRPC/10001 via Route"
+
+        # External dependencies
+        codeflareOperator -> s3 "Ray clusters access for data/models" "HTTPS/443"
     }
 
     views {
@@ -65,16 +67,21 @@ workspace {
         }
 
         styles {
-            element "External Required" {
+            element "External" {
                 background #999999
                 color #ffffff
             }
-            element "External Optional" {
-                background #cccccc
-                color #333333
+            element "Platform" {
+                background #666666
+                color #ffffff
             }
             element "Internal ODH" {
                 background #7ed321
+                color #000000
+            }
+            element "Person" {
+                shape person
+                background #08427b
                 color #ffffff
             }
             element "Software System" {
@@ -87,12 +94,7 @@ workspace {
             }
             element "Component" {
                 background #85bbf0
-                color #ffffff
-            }
-            element "Person" {
-                background #08427b
-                color #ffffff
-                shape Person
+                color #000000
             }
         }
     }

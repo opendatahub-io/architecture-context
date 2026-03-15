@@ -1,70 +1,135 @@
 # Architecture Diagrams for RHOAI 2.25.0 Components
 
-This directory contains architecture diagrams for multiple RHOAI 2.25.0 components.
+Generated from architecture documentation in `architecture/rhoai-2.25.0/`
+Date: 2026-03-14
 
 **Note**: Diagram filenames use base component name without version (directory is already versioned).
+
+## Available Diagrams
 
 All Mermaid diagrams are available in both `.mmd` (source) and `.png` (3000px width, high-resolution) formats.
 
 ---
 
-## Components
+## Platform Overview (All Components)
 
-### [CodeFlare Operator](#codeflare-operator)
-Distributed AI/ML workload orchestration through RayCluster and AppWrapper
+Generated from: `architecture/rhoai-2.25.0/PLATFORM.md`
 
-### [Data Science Pipelines Operator](#data-science-pipelines-operator)
-ML pipeline orchestration and management (Kubeflow Pipelines-based)
+### For Developers
+- [Component Structure](./platform-component.png) ([mmd](./platform-component.mmd)) - Mermaid diagram showing all 15 platform components organized by functional layer
+- [Data Flows](./platform-dataflow.png) ([mmd](./platform-dataflow.mmd)) - End-to-end sequence diagram from model development to production serving
+- [Dependencies](./platform-dependencies.png) ([mmd](./platform-dependencies.mmd)) - Platform-wide dependency graph showing all component relationships
 
-### [Feast](#feast)
-Feature store for ML model serving
+### For Architects
+- [C4 Context](./platform-c4-context.dsl) - System context in C4 format (Structurizr) showing RHOAI in broader enterprise ecosystem
+- [Component Overview](./platform-component.png) ([mmd](./platform-component.mmd)) - High-level platform architecture with all 15 components
 
-### [KServe](#kserve)
-Model serving platform with serverless inference
+### For Security Teams
+- [Security Network Diagram (PNG)](./platform-security-network.png) - High-resolution network topology with trust zones
+- [Security Network Diagram (Mermaid)](./platform-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./platform-security-network.txt) - Comprehensive SAR format with RBAC, secrets, auth mechanisms, compliance posture
+- [RBAC Visualization](./platform-rbac.png) ([mmd](./platform-rbac.mmd)) - Complete RBAC permissions across all 14 operators
 
-### [Kubeflow](#kubeflow)
-ML toolkit for Kubernetes
+### Platform Overview
 
-### [KubeRay Operator](#kuberay-operator)
-Ray cluster lifecycle management for distributed computing
+Red Hat OpenShift AI (RHOAI) 2.25.0 is a comprehensive enterprise AI/ML platform with **15 integrated components**:
 
-### [Kueue](#kueue)
-Job queuing and resource management
+**User Interface Layer**:
+- ODH Dashboard (v1.21.0-18) - Primary web UI for platform management
 
-### [Llama Stack K8s Operator](#llama-stack-k8s-operator)
-Llama model deployment and serving
+**Development Environment**:
+- Kubeflow Notebook Controller (v1.27.0) - Manages Jupyter, VS Code, RStudio instances
+- Notebook Images (v2.25.2) - JupyterLab, VS Code, RStudio workbench containers
 
-### [Notebooks](#notebooks)
-Container images for JupyterLab, VS Code, and RStudio workbenches plus Kubeflow Pipelines runtime images
+**Model Serving Layer**:
+- KServe Operator (4211a5da7) - Serverless model inference with autoscaling
+- ModelMesh Serving (1.27.0) - Multi-model serving with high-density placement
+- ODH Model Controller (1.27.0) - Routes, service mesh, authentication orchestration
+- Llama Stack Operator (0.3.0) - LLM inference server deployment
 
-### [ODH Model Controller](#odh-model-controller)
-Extends KServe with OpenShift integration, service mesh, authentication, and monitoring
+**Training & Distributed Compute**:
+- Training Operator (1.9.0) - PyTorch, TensorFlow, XGBoost, MPI, JAX, PaddlePaddle
+- KubeRay Operator (f10d68b1) - Ray distributed computing clusters
+- CodeFlare Operator (1.15.0) - Distributed AI/ML workload orchestration
 
-### [TrustyAI Service Operator](#trustyai-service-operator)
-Manages TrustyAI services, LM evaluation jobs, and guardrails orchestrators for AI model explainability, evaluation, and safety
+**Pipeline Orchestration**:
+- Data Science Pipelines Operator (rhoai-2.25) - Kubeflow Pipelines with Argo Workflows
+
+**Resource Management**:
+- Kueue (7f2f72e51) - Job queueing and resource quota management
+
+**Model Lifecycle Management**:
+- Model Registry Operator (0b48221) - Model metadata storage and versioning
+- Feast Operator (0.54.0) - Feature store for ML feature management
+
+**AI Governance**:
+- TrustyAI Service Operator (d113dae) - Explainability, bias detection, LM evaluation
+
+**Key Platform Metrics**:
+- Total Components: 15
+- Operator-based: 14 (93%)
+- External Platform Dependencies: 7 (Istio, Knative, OpenShift, cert-manager, Prometheus, Volcano, Authorino)
+- Custom Resource Definitions: 30+ types
+- Service Mesh Coverage: ~40%
+- OAuth Integration: 6 components
+- Webhook Coverage: 12 of 14 operators
+
+**Security Highlights**:
+- FIPS-compliant (Go 1.25+ in RHOAI 2.25.0)
+- All containers run as non-root
+- mTLS for service mesh (STRICT mode available)
+- TLS 1.2+ for all external connections
+- 8 authentication mechanisms (OAuth, Kubernetes RBAC, Istio mTLS, AWS IAM, database auth, etc.)
+- Multi-tenant with namespace isolation
+
+**Integration Patterns**:
+- CRD Watch & Reconciliation (all operators)
+- Service Mesh Integration (KServe, ODH Model Controller, TrustyAI)
+- OpenShift Route Creation (KServe, Model Registry, DSPA, TrustyAI)
+- OAuth Authentication (Dashboard, Model Registry, DSPA, CodeFlare, Notebooks)
+- Metrics Collection (all operators expose Prometheus metrics)
+- Webhook Admission Control (12 operators)
+- Gang Scheduling (Training Operator, KubeRay, CodeFlare via Volcano)
+- Workload Queueing (Kueue manages admission for training, pipelines, Ray)
+- Model Artifact Storage (S3 API used by KServe, ModelMesh, DSPA, Training)
 
 ---
 
-## CodeFlare Operator
+## Feast (Feature Store)
 
-Generated from: `architecture/rhoai-2.25.0/codeflare-operator.md`
-Version: RHOAI 2.25.0 (CodeFlare Operator v1.15.0)
+Generated from: `architecture/rhoai-2.25.0/feast.md`
 
-### Diagrams
-- [Component Structure](./codeflare-operator-component.png) ([mmd](./codeflare-operator-component.mmd))
-- [Data Flow - RayCluster Creation with OAuth](./codeflare-operator-dataflow.png) ([mmd](./codeflare-operator-dataflow.mmd))
-- [Data Flow - AppWrapper Scheduling](./codeflare-operator-dataflow2.png) ([mmd](./codeflare-operator-dataflow2.mmd))
-- [Data Flow - Ray Client Connection](./codeflare-operator-dataflow3.png) ([mmd](./codeflare-operator-dataflow3.mmd))
-- [Dependencies](./codeflare-operator-dependencies.png) ([mmd](./codeflare-operator-dependencies.mmd))
-- [C4 Context](./codeflare-operator-c4-context.dsl)
-- [Security Network (PNG)](./codeflare-operator-security-network.png) | [Mermaid](./codeflare-operator-security-network.mmd) | [ASCII](./codeflare-operator-security-network.txt)
-- [RBAC Visualization](./codeflare-operator-rbac.png) ([mmd](./codeflare-operator-rbac.mmd))
+### For Developers
+- [Component Structure](./feast-component.png) ([mmd](./feast-component.mmd)) - Mermaid diagram showing internal components
+- [Data Flows](./feast-dataflow.png) ([mmd](./feast-dataflow.mmd)) - Sequence diagram of request/response flows
+- [Dependencies](./feast-dependencies.png) ([mmd](./feast-dependencies.mmd)) - Component dependency graph
 
-### Overview
-Manages distributed AI/ML workload orchestration with:
-- RayCluster Controller with OAuth dashboard access and mTLS
-- AppWrapper Controller for Kueue-based batch scheduling
-- Security features: OAuth, mTLS, NetworkPolicies
+### For Architects
+- [C4 Context](./feast-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./feast-component.png) ([mmd](./feast-component.mmd)) - High-level component view
+
+### For Security Teams
+- [Security Network Diagram (PNG)](./feast-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./feast-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./feast-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./feast-rbac.png) ([mmd](./feast-rbac.mmd)) - RBAC permissions and bindings
+
+### Component Overview
+
+Feast is an open-source feature store for machine learning that provides:
+- **Online Feature Store**: Low-latency feature serving for real-time inference
+- **Offline Feature Store**: Historical feature retrieval for model training
+- **Registry Server**: Centralized metadata repository for feature definitions
+- **UI Server** (Optional): Web interface for feature discovery
+- **CronJob**: Scheduled materialization tasks
+
+**Version**: 0.54.0 (aad1ebcd0)
+
+**Key Features**:
+- Multiple storage backends (Redis, PostgreSQL, SQLite, S3/GCS, Snowflake)
+- Configurable authentication (None, Kubernetes RBAC, OIDC)
+- Optional TLS encryption for all services
+- Point-in-time correct feature retrieval (prevents data leakage)
 
 ---
 
@@ -72,279 +137,333 @@ Manages distributed AI/ML workload orchestration with:
 
 Generated from: `architecture/rhoai-2.25.0/data-science-pipelines-operator.md`
 
-### Diagrams
-- [Component Structure](./data-science-pipelines-operator-component.png) ([mmd](./data-science-pipelines-operator-component.mmd))
-- [Data Flow](./data-science-pipelines-operator-dataflow.png) ([mmd](./data-science-pipelines-operator-dataflow.mmd))
-- [Dependencies](./data-science-pipelines-operator-dependencies.png) ([mmd](./data-science-pipelines-operator-dependencies.mmd))
-- [C4 Context](./data-science-pipelines-operator-c4-context.dsl)
-- [Security Network (PNG)](./data-science-pipelines-operator-security-network.png) | [Mermaid](./data-science-pipelines-operator-security-network.mmd) | [ASCII](./data-science-pipelines-operator-security-network.txt)
-- [RBAC Visualization](./data-science-pipelines-operator-rbac.png) ([mmd](./data-science-pipelines-operator-rbac.mmd))
+### For Developers
+- [Component Structure](./data-science-pipelines-operator-component.png) ([mmd](./data-science-pipelines-operator-component.mmd)) - Mermaid diagram showing internal components, CRDs, and dependencies
+- [Data Flows](./data-science-pipelines-operator-dataflow.png) ([mmd](./data-science-pipelines-operator-dataflow.mmd)) - Sequence diagram of pipeline submission, execution, artifact access, and MLMD queries
+- [Dependencies](./data-science-pipelines-operator-dependencies.png) ([mmd](./data-science-pipelines-operator-dependencies.mmd)) - Component dependency graph showing external and internal dependencies
 
-### Overview
-ML pipeline orchestration based on Kubeflow Pipelines with S3-compatible storage and MariaDB metadata store.
+### For Architects
+- [C4 Context](./data-science-pipelines-operator-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./data-science-pipelines-operator-component.png) ([mmd](./data-science-pipelines-operator-component.mmd)) - High-level component view with DSPO controller, API server, and workflow controllers
 
----
+### For Security Teams
+- [Security Network Diagram (PNG)](./data-science-pipelines-operator-security-network.png) - High-resolution network topology with trust zones
+- [Security Network Diagram (Mermaid)](./data-science-pipelines-operator-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./data-science-pipelines-operator-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./data-science-pipelines-operator-rbac.png) ([mmd](./data-science-pipelines-operator-rbac.mmd)) - RBAC permissions and bindings for operator and DSPA instances
 
-## Feast
+### Component Overview
 
-Generated from: `architecture/rhoai-2.25.0/feast.md`
+The Data Science Pipelines Operator (DSPO) manages the lifecycle of Data Science Pipeline applications based on Kubeflow Pipelines. Key components include:
 
-### Diagrams
-- [Component Structure](./feast-component.png) ([mmd](./feast-component.mmd))
-- [Data Flow](./feast-dataflow.png) ([mmd](./feast-dataflow.mmd))
-- [Dependencies](./feast-dependencies.png) ([mmd](./feast-dependencies.mmd))
-- [C4 Context](./feast-c4-context.dsl)
-- [Security Network (PNG)](./feast-security-network.png) | [Mermaid](./feast-security-network.mmd) | [ASCII](./feast-security-network.txt)
-- [RBAC Visualization](./feast-rbac.png) ([mmd](./feast-rbac.mmd))
-
-### Overview
-Feature store for ML with online/offline serving, PostgreSQL metadata, and Redis online store.
-
----
-
-## KServe
-
-Generated from: `architecture/rhoai-2.25.0/kserve.md`
-
-### Diagrams
-- [Component Structure](./kserve-component.png) ([mmd](./kserve-component.mmd))
-- [Data Flow](./kserve-dataflow.png) ([mmd](./kserve-dataflow.mmd))
-- [Dependencies](./kserve-dependencies.png) ([mmd](./kserve-dependencies.mmd))
-- [C4 Context](./kserve-c4-context.dsl)
-- [Security Network (PNG)](./kserve-security-network.png) | [Mermaid](./kserve-security-network.mmd) | [ASCII](./kserve-security-network.txt)
-- [RBAC Visualization](./kserve-rbac.png) ([mmd](./kserve-rbac.mmd))
-
-### Overview
-Serverless ML model serving with autoscaling, multi-framework support, and model versioning.
-
----
-
-## Kubeflow
-
-Generated from: `architecture/rhoai-2.25.0/kubeflow.md`
-
-### Diagrams
-- [Component Structure](./kubeflow-component.png) ([mmd](./kubeflow-component.mmd))
-- [Data Flow](./kubeflow-dataflow.png) ([mmd](./kubeflow-dataflow.mmd))
-- [Dependencies](./kubeflow-dependencies.png) ([mmd](./kubeflow-dependencies.mmd))
-- [C4 Context](./kubeflow-c4-context.dsl)
-- [Security Network (PNG)](./kubeflow-security-network.png) | [Mermaid](./kubeflow-security-network.mmd) | [ASCII](./kubeflow-security-network.txt)
-- [RBAC Visualization](./kubeflow-rbac.png) ([mmd](./kubeflow-rbac.mmd))
-
-### Overview
-ML toolkit for Kubernetes with notebook servers, pipelines, and model training.
-
----
-
-## KubeRay Operator
-
-Generated from: `architecture/rhoai-2.25.0/kuberay.md`
-Date: 2026-03-13
-
-### Diagrams
-- [Component Structure](./kuberay-component.png) ([mmd](./kuberay-component.mmd))
-- [Data Flows](./kuberay-dataflow.png) ([mmd](./kuberay-dataflow.mmd))
-- [Dependencies](./kuberay-dependencies.png) ([mmd](./kuberay-dependencies.mmd))
-- [C4 Context](./kuberay-c4-context.dsl)
-- [Security Network (PNG)](./kuberay-security-network.png) | [Mermaid](./kuberay-security-network.mmd) | [ASCII](./kuberay-security-network.txt)
-- [RBAC Visualization](./kuberay-rbac.png) ([mmd](./kuberay-rbac.mmd))
-
-### Overview
-Manages lifecycle of Ray clusters, jobs, and services for distributed computing and ML workloads:
-- **RayCluster**: Distributed compute clusters with autoscaling and fault tolerance
-- **RayJob**: Automatic cluster creation and batch job submission
-- **RayService**: ML model serving with zero-downtime upgrades and high availability
+- **DSPO Controller**: Kubernetes operator that reconciles DataSciencePipelinesApplication CRs
+- **API Server**: Main DSP API for pipeline management, execution, and artifact access (ports 8888/8887)
+- **Workflow Controller**: Namespace-scoped Argo Workflows controller for pipeline orchestration (DSP v2)
+- **Persistence Agent**: Syncs workflow execution status to database
+- **Scheduled Workflow Controller**: Manages recurring pipeline executions
+- **Optional Components**: MariaDB, Minio, ML Pipelines UI, MLMD gRPC, MLMD Envoy
 
 **Key Features**:
-- Autoscaling workers based on resource demand
-- Gang scheduling support (Volcano, YuniKorn)
-- GCS fault tolerance with external Redis
-- Ray Serve for production ML inference
-- OpenShift Route integration for external access
-- Prometheus metrics for monitoring
+- **Dual Version Support**: DSP v1 (Tekton) and v2 (Argo Workflows, recommended)
+- **Pod-to-Pod TLS**: Configurable mTLS between components (default: enabled in v2)
+- **Namespace Isolation**: Each DSPA instance is namespace-scoped with dedicated resources
+- **Integration**: KServe for model serving, Ray for distributed computing, ODH Dashboard for UI
+- **Security**: OAuth proxy authentication, network policies, RBAC, TLS encryption
 
 ---
 
-## Kueue
+## Kueue (Job Queue Management)
 
 Generated from: `architecture/rhoai-2.25.0/kueue.md`
 
-### Diagrams
-- [Component Structure](./kueue-component.png) ([mmd](./kueue-component.mmd))
-- [Data Flow](./kueue-dataflow.png) ([mmd](./kueue-dataflow.mmd))
-- [Dependencies](./kueue-dependencies.png) ([mmd](./kueue-dependencies.mmd))
-- [C4 Context](./kueue-c4-context.dsl)
-- [Security Network (PNG)](./kueue-security-network.png) | [Mermaid](./kueue-security-network.mmd) | [ASCII](./kueue-security-network.txt)
+### For Developers
+- [Component Structure](./kueue-component.png) ([mmd](./kueue-component.mmd)) - Mermaid diagram showing internal components, reconcilers, job integrations, and CRDs
+- [Data Flows](./kueue-dataflow.png) ([mmd](./kueue-dataflow.mmd)) - Sequence diagram of job submission, admission, metrics collection, visibility API, and autoscaling flows
+- [Dependencies](./kueue-dependencies.png) ([mmd](./kueue-dependencies.mmd)) - Component dependency graph showing required and optional dependencies
 
-### Overview
-Job queuing and resource management for Kubernetes with quota management and fair sharing.
+### For Architects
+- [C4 Context](./kueue-c4-context.dsl) - System context in C4 format (Structurizr) showing Kueue in the broader ecosystem
+- [Component Overview](./kueue-component.png) ([mmd](./kueue-component.mmd)) - High-level component view with reconcilers and integrations
+
+### For Security Teams
+- [Security Network Diagram (PNG)](./kueue-security-network.png) - High-resolution network topology with trust boundaries
+- [Security Network Diagram (Mermaid)](./kueue-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./kueue-security-network.txt) - Precise text format for SAR submissions with detailed RBAC, network policies, and secrets
+- [RBAC Visualization](./kueue-rbac.png) ([mmd](./kueue-rbac.mmd)) - RBAC permissions, bindings, and API resource access
+
+### Component Overview
+
+Kueue is a Kubernetes-native job management system that provides intelligent queueing and scheduling for batch workloads. It decides when jobs can be admitted (pods can be created) based on available quota in cluster queues and local queues.
+
+**Version**: rhoai-2.25 branch (7f2f72e51)
+
+**Key Features**:
+- **Job Queue Management**: Intelligent queueing and scheduling for batch workloads
+- **Resource Quotas**: ClusterQueue and LocalQueue management with ResourceFlavors
+- **Fair Sharing**: Cohorts enable resource sharing across teams with preemption policies
+- **Multi-Cluster**: MultiKueue feature for job dispatching to remote clusters
+- **Topology-Aware**: Optimized pod placement for GPU/network-intensive workloads
+- **Autoscaling Integration**: ProvisioningRequest integration with Cluster Autoscaler
+- **Job Type Support**: Batch Jobs, Kubeflow (TFJob, PyTorchJob, MPIJob), Ray, JobSet, AppWrapper
+- **Visibility API**: On-demand API for querying pending workloads without polling CRDs
+
+**Architecture Highlights**:
+- Single-replica deployment with leader election
+- Admission webhooks intercept job creation to inject queue annotations
+- Scheduler engine evaluates workload priorities and quota
+- In-memory cache for fast quota lookups
+
+**Security**:
+- FIPS-enabled UBI9 minimal runtime
+- Non-root user (65532:65532)
+- TLS 1.2+ for all communications
+- cert-manager for webhook certificate rotation
+- Comprehensive RBAC with user roles (admin, viewer, editor)
+
+**Dependencies**:
+- **Required**: Kubernetes 1.25+, cert-manager 1.17+
+- **Optional**: Kubeflow, Ray, JobSet, AppWrapper operators, Cluster Autoscaler, Prometheus
+- **No internal ODH dependencies** - standalone component
 
 ---
 
-## Llama Stack K8s Operator
+## Model Registry Operator
 
-Generated from: `architecture/rhoai-2.25.0/llama-stack-k8s-operator.md`
+Generated from: `architecture/rhoai-2.25.0/model-registry-operator.md`
 
-### Diagrams
-- [Component Structure](./llama-stack-k8s-operator-component.png) ([mmd](./llama-stack-k8s-operator-component.mmd))
-- [Data Flow](./llama-stack-k8s-operator-dataflow.png) ([mmd](./llama-stack-k8s-operator-dataflow.mmd))
-- [Dependencies](./llama-stack-k8s-operator-dependencies.png) ([mmd](./llama-stack-k8s-operator-dependencies.mmd))
-- [C4 Context](./llama-stack-k8s-operator-c4-context.dsl)
-- [Security Network (PNG)](./llama-stack-k8s-operator-security-network.png) | [Mermaid](./llama-stack-k8s-operator-security-network.mmd) | [ASCII](./llama-stack-k8s-operator-security-network.txt)
-- [RBAC Visualization](./llama-stack-k8s-operator-rbac.png) ([mmd](./llama-stack-k8s-operator-rbac.mmd))
+### For Developers
+- [Component Structure](./model-registry-operator-component.png) ([mmd](./model-registry-operator-component.mmd)) - Mermaid diagram showing internal operator components, CRDs, and deployed instances
+- [Data Flows](./model-registry-operator-dataflow.png) ([mmd](./model-registry-operator-dataflow.mmd)) - Sequence diagram of request/response flows (OAuth and non-OAuth modes)
+- [Dependencies](./model-registry-operator-dependencies.png) ([mmd](./model-registry-operator-dependencies.mmd)) - Component dependency graph showing external and internal dependencies
 
-### Overview
-Deploys and manages Llama models on Kubernetes with vLLM inference engine.
+### For Architects
+- [C4 Context](./model-registry-operator-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./model-registry-operator-component.png) ([mmd](./model-registry-operator-component.mmd)) - High-level component view
+
+### For Security Teams
+- [Security Network Diagram (PNG)](./model-registry-operator-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./model-registry-operator-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./model-registry-operator-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./model-registry-operator-rbac.png) ([mmd](./model-registry-operator-rbac.mmd)) - RBAC permissions and bindings
+
+### Component Overview
+
+The Model Registry Operator is a Kubernetes operator that deploys and manages Model Registry instances for ML metadata storage and retrieval.
+
+**Version**: 0b48221 (rhoai-2.25 branch)
+
+**Key Features**:
+- **Lifecycle Management**: Deploys and manages Model Registry instances via custom resources
+- **Dual Authentication Modes**: OAuth (external access) and non-OAuth (internal cluster access)
+- **Database Backend**: PostgreSQL or MySQL support for ML Metadata (MLMD) storage
+- **External Exposure**: Optional OpenShift Route creation for external access
+- **TLS Certificate Management**: Automatic certificate provisioning via OpenShift Service CA
+- **REST API**: `/api/model_registry/v1alpha3/*` for model metadata operations
+
+**Architecture Highlights**:
+- **Operator Deployment**: Single replica in operator namespace (e.g., redhat-ods-applications)
+- **Instance Deployments**: Per-CR deployments in user namespaces
+- **OAuth Mode**: External access via OpenShift OAuth proxy with bearer token authentication
+- **Non-OAuth Mode**: Internal cluster access via ClusterIP service (no authentication)
+- **Two API Versions**: v1alpha1 (deprecated, Istio auth support) and v1beta1 (current, OAuth only)
+- **Conversion Webhook**: Automatic migration from v1alpha1 to v1beta1
+
+**Security**:
+- OAuth proxy sidecar for user authentication
+- TLS 1.2+ encryption for external access
+- Network policies restrict ingress to OpenShift Router
+- RBAC with namespace-scoped permissions
+- Secrets for database credentials and OAuth session encryption
+- Non-root containers with seccomp=RuntimeDefault
+- restricted-v2 SCC (OpenShift)
+
+**Integration Points**:
+- **KServe**: Fetches model metadata for serving
+- **ODH Dashboard**: UI for model registry management
+- **Data Science Pipelines**: Registers models from ML workflows
+- **ODH/RHOAI Operator**: Platform integration via components.platform.opendatahub.io CRD
+
+**Dependencies**:
+- **Required**: PostgreSQL 9.6+ or MySQL 5.7+ (user-managed)
+- **Optional**: OpenShift Service CA, OAuth Server, Ingress Router
+- **Internal**: odh-model-registry service image, Prometheus for metrics
 
 ---
 
-## Notebooks
+## ODH Dashboard
 
-Generated from: `architecture/rhoai-2.25.0/notebooks.md`
-Date: 2026-03-14
+Generated from: `architecture/rhoai-2.25.0/odh-dashboard.md`
 
-### Diagrams
-- [Component Structure](./notebooks-component.png) ([mmd](./notebooks-component.mmd))
-- [Data Flow](./notebooks-dataflow.png) ([mmd](./notebooks-dataflow.mmd))
-- [Dependencies](./notebooks-dependencies.png) ([mmd](./notebooks-dependencies.mmd))
-- [C4 Context](./notebooks-c4-context.dsl)
-- [Security Network (PNG)](./notebooks-security-network.png) | [Mermaid](./notebooks-security-network.mmd) | [ASCII](./notebooks-security-network.txt)
-- [RBAC Visualization](./notebooks-rbac.png) ([mmd](./notebooks-rbac.mmd))
+### For Developers
+- [Component Structure](./odh-dashboard-component.png) ([mmd](./odh-dashboard-component.mmd)) - Mermaid diagram showing internal components
+- [Data Flows](./odh-dashboard-dataflow.png) ([mmd](./odh-dashboard-dataflow.mmd)) - Sequence diagram of request/response flows
+- [Dependencies](./odh-dashboard-dependencies.png) ([mmd](./odh-dashboard-dependencies.mmd)) - Component dependency graph
 
-### Overview
-Container image repository providing JupyterLab, VS Code, and RStudio workbench environments for data science workflows:
-- **Workbench Images**: Interactive development environments (Jupyter, Code Server, RStudio) with CPU/CUDA/ROCm support
-- **Runtime Images**: Lightweight containers for Kubeflow Pipelines task execution
-- **Multi-arch Support**: Built for x86_64, arm64, ppc64le, s390x via Konflux CI/CD
-- **ML Frameworks**: PyTorch 2.x, TensorFlow 2.x, TrustyAI, LLMCompressor
-- **Version Strategy**: YYYY.N release format (e.g., 2025.2) with weekly security patches
+### For Architects
+- [C4 Context](./odh-dashboard-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./odh-dashboard-component.png) ([mmd](./odh-dashboard-component.mmd)) - High-level component view
+
+### For Security Teams
+- [Security Network Diagram (PNG)](./odh-dashboard-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./odh-dashboard-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./odh-dashboard-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./odh-dashboard-rbac.png) ([mmd](./odh-dashboard-rbac.mmd)) - RBAC permissions and bindings
+
+### Component Overview
+
+ODH Dashboard is the web-based user interface for managing Open Data Hub and Red Hat OpenShift AI platform components. It provides:
+- **React Frontend**: Single-page application with PatternFly 6 UI components
+- **Fastify Backend**: Node.js API server proxying requests to Kubernetes API
+- **OAuth Proxy**: OpenShift OAuth integration for authentication and TLS termination
+- **Module Federation**: Dynamic plugin system for feature extensions (Gen AI, Model Registry, Feature Store, LM Eval)
+
+**Version**: v1.21.0-18-rhods-4281-g475248a55
+
+**Key Features**:
+- Unified interface for Jupyter notebooks, model serving, pipelines, and distributed workloads
+- OpenShift OAuth authentication with RBAC enforcement
+- WebSocket support for real-time resource updates
+- Modular plugin architecture for dynamic feature loading
+- Integration with all ODH/RHOAI platform components
+- Multiple deployment modes (ODH, RHOAI Addon, RHOAI On-Premise)
+
+**APIs Managed**:
+- Custom Resources: OdhApplication, OdhDashboardConfig, OdhDocument, OdhQuickStart, AcceleratorProfile, HardwareProfile
+- Kubernetes Resources: Notebooks, InferenceServices, ModelRegistries, ServingRuntimes
+- Platform Resources: DataScienceCluster, DSCInitialization, LlamaStackDistributions
+
+**Dependencies**:
+- **Required**: Node.js 20.x, React 18, OpenShift OAuth Server, Kubernetes API
+- **Optional**: Prometheus/Thanos for metrics, Segment Analytics for usage tracking
+- **Internal**: Integration with all ODH operators (KServe, Notebooks, Model Registry, Pipelines, TrustyAI, Kueue, CodeFlare)
 
 ---
 
 ## ODH Model Controller
 
 Generated from: `architecture/rhoai-2.25.0/odh-model-controller.md`
-Date: 2026-03-14
-Version: RHOAI 2.25.0 (v1.27.0-rhods-1121-g0ce874f)
 
-### Diagrams
-- [Component Structure](./odh-model-controller-component.png) ([mmd](./odh-model-controller-component.mmd))
-- [Data Flows](./odh-model-controller-dataflow.png) ([mmd](./odh-model-controller-dataflow.mmd))
-- [Dependencies](./odh-model-controller-dependencies.png) ([mmd](./odh-model-controller-dependencies.mmd))
-- [C4 Context](./odh-model-controller-c4-context.dsl)
-- [Security Network (PNG)](./odh-model-controller-security-network.png) | [Mermaid](./odh-model-controller-security-network.mmd) | [ASCII](./odh-model-controller-security-network.txt)
-- [RBAC Visualization](./odh-model-controller-rbac.png) ([mmd](./odh-model-controller-rbac.mmd))
+### For Developers
+- [Component Structure](./odh-model-controller-component.png) ([mmd](./odh-model-controller-component.mmd)) - Mermaid diagram showing internal components, reconcilers, webhooks, and managed resources
+- [Data Flows](./odh-model-controller-dataflow.png) ([mmd](./odh-model-controller-dataflow.mmd)) - Sequence diagram of InferenceService creation, inference requests, NIM account management, and metrics collection
+- [Dependencies](./odh-model-controller-dependencies.png) ([mmd](./odh-model-controller-dependencies.mmd)) - Component dependency graph showing KServe, Istio, Authorino, and ODH integrations
 
-### Overview
-Kubernetes operator that extends KServe model serving with OpenShift integration, eliminating manual infrastructure steps:
-- **Purpose**: Automates deployment of ML inference services with Routes, service mesh, auth, monitoring
-- **Controllers**: InferenceService, InferenceGraph, LLMInferenceService, NIM Account, ServingRuntime, ConfigMap, Secret, Pod reconcilers
-- **Admission Webhooks**: Mutating/validating webhooks for Pods, InferenceService, InferenceGraph, NIM Account, Knative Service
-- **Resource Management**: Automatically creates Routes, VirtualServices, Gateways, PeerAuthentication, AuthConfig, ServiceMonitor, NetworkPolicy
-- **NVIDIA NIM Integration**: Account CRD for NGC API keys, pull secrets, model catalogs, runtime templates
-- **Serving Runtimes**: vLLM (CPU/CUDA/Gaudi/ROCm/multinode), Caikit, OVMS, HuggingFace
-- **Multi-Mode Support**: KServe serverless (Knative), KServe raw (Kubernetes), ModelMesh
-- **Security**: FIPS compliant, non-root (UID 2000), mTLS service mesh, Authorino/Kuadrant auth
+### For Architects
+- [C4 Context](./odh-model-controller-c4-context.dsl) - System context in C4 format (Structurizr) showing ODH Model Controller in the broader ecosystem
+- [Component Overview](./odh-model-controller-component.png) ([mmd](./odh-model-controller-component.mmd)) - High-level component view with reconcilers and webhooks
 
-**Key Features Illustrated**:
-- **Component Diagram**: Reconcilers, webhooks, metrics server, watched/owned CRDs, created resources, external dependencies
-- **Data Flow Diagrams**: (1) InferenceService creation with validation/reconciliation, (2) Inference request flow through Route→Gateway→Authorino→Activator→Pod→S3, (3) NIM Account management with NGC API integration, (4) Metrics collection
-- **Security Network**: Trust zones (External→Ingress→Service Mesh→External Services→Control Plane), precise ports/protocols/encryption/auth, RBAC summary, Service Mesh config
-- **Dependencies**: Required (KServe, OpenShift Route/Template API, K8s API), Optional (Istio, Authorino, Prometheus, KEDA, cert-manager, NGC), Internal ODH (DSCInit, DataScienceCluster, Model Registry)
-- **RBAC**: ClusterRole permissions for 20+ API groups (KServe, Istio, OpenShift, monitoring, auth, networking, NIM, ODH)
+### For Security Teams
+- [Security Network Diagram (PNG)](./odh-model-controller-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./odh-model-controller-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./odh-model-controller-security-network.txt) - Precise text format for SAR submissions with RBAC, secrets, and network policies
+- [RBAC Visualization](./odh-model-controller-rbac.png) ([mmd](./odh-model-controller-rbac.mmd)) - RBAC permissions showing ClusterRole bindings for KServe, Istio, OpenShift, and NIM resources
 
-**Conditional Features** (environment variables):
-- `MESH_DISABLED=false`: Enable/disable Istio service mesh integration
-- `MODELREGISTRY_STATE=replace`: Enable Model Registry metadata tracking
-- `NIM_STATE=replace`: Enable NVIDIA NIM Account feature
-- `KSERVE_STATE=replace`, `MODELMESH_STATE=replace`: Control serving mode reconciliation
+### Component Overview
 
-**Migration Note**: Metrics endpoint currently HTTP on port 8080 (migration to HTTPS 8443 planned)
+**ODH Model Controller** extends KServe model serving with OpenShift integration, service mesh configuration, authentication, and automated resource management.
+
+**Version**: 1.27.0-rhods-1121-g0ce874f (rhoai-2.25 branch)
+
+**Key Features**:
+- **InferenceService Extensions**: Automatically creates OpenShift Routes, Istio VirtualServices, Authorino AuthConfigs, and monitoring resources
+- **NVIDIA NIM Integration**: Manages NGC API keys, pull secrets, and ServingRuntime templates for NVIDIA Inference Microservices
+- **Multi-Runtime Support**: vLLM (CPU, CUDA, Gaudi, ROCm, multinode), Caikit, OVMS, HuggingFace
+- **Service Mesh Integration**: Istio/Maistra PeerAuthentication, Telemetry, and Gateway configuration
+- **Security Hardened**: FIPS-compliant, runs as non-root (UID 2000), drops all capabilities
+
+**Architecture Highlights**:
+- **Controllers**: InferenceService, InferenceGraph, LLMInferenceService, NIM Account, ServingRuntime, ConfigMap, Secret, Pod
+- **Webhooks**: Pod mutation, InferenceService/InferenceGraph validation/mutation, NIM Account validation, Knative Service validation
+- **Managed Resources**: Routes, VirtualServices, Gateways, PeerAuthentication, AuthConfigs, ServiceMonitors, NetworkPolicies, RBAC
+- **Dependencies**: KServe (required), Istio/Maistra (optional), Authorino (optional), Model Registry (optional)
+- **Integration**: Coordinates with KServe Controller, creates OpenShift Routes, manages service mesh resources
+
+**Data Flows**:
+1. **InferenceService Creation**: User → K8s API → Webhook validation → Controller reconciliation → KServe creates workload
+2. **Inference Request (Serverless)**: Client → Route → Istio Gateway → Authorino → Knative Activator → Predictor Pod → S3 storage
+3. **NIM Account Management**: User creates Account → Webhook validation → Controller → NGC API validation → Creates ConfigMap, Secret, Template
+4. **Metrics Collection**: Prometheus scrapes controller and inference pod metrics
+
+**Security**:
+- **FIPS Mode**: strictfipsruntime (Konflux build)
+- **Pod Security**: runAsNonRoot=true, runAsUser=2000, allowPrivilegeEscalation=false, drop all capabilities
+- **Network Security**: OpenShift Routes (TLS 1.3), Istio mTLS (optional), Authorino auth, NetworkPolicies
+- **RBAC**: Comprehensive ClusterRole for KServe, Istio, OpenShift, monitoring, auth, and NIM resources
+- **Secrets**: webhook-server-cert (cert-manager), InferenceService SA tokens, NGC pull secrets, Ray TLS certs
+- **Webhooks**: mTLS with K8s API Server for admission control
+
+**Serving Runtime Templates**:
+- caikit-standalone, caikit-tgis (NLP models)
+- ovms-kserve, ovms-mm (TensorFlow, PyTorch, ONNX)
+- vllm-cpu, vllm-cuda, vllm-gaudi, vllm-rocm, vllm-spyre, vllm-multinode (LLMs)
+- hf-detector (HuggingFace-based content detection)
 
 ---
 
 ## TrustyAI Service Operator
 
 Generated from: `architecture/rhoai-2.25.0/trustyai-service-operator.md`
-Date: 2026-03-14
-Version: RHOAI 2.25.0 (d113dae, branch: rhoai-2.25)
 
-### Diagrams
-- [Component Structure](./trustyai-service-operator-component.png) ([mmd](./trustyai-service-operator-component.mmd))
-- [Data Flows](./trustyai-service-operator-dataflow.png) ([mmd](./trustyai-service-operator-dataflow.mmd))
-- [Dependencies](./trustyai-service-operator-dependencies.png) ([mmd](./trustyai-service-operator-dependencies.mmd))
-- [C4 Context](./trustyai-service-operator-c4-context.dsl)
-- [Security Network (PNG)](./trustyai-service-operator-security-network.png) | [Mermaid](./trustyai-service-operator-security-network.mmd) | [ASCII](./trustyai-service-operator-security-network.txt)
-- [RBAC Visualization](./trustyai-service-operator-rbac.png) ([mmd](./trustyai-service-operator-rbac.mmd))
+### For Developers
+- [Component Structure](./trustyai-service-operator-component.png) ([mmd](./trustyai-service-operator-component.mmd)) - Operator controllers, CRD conversion webhook, managed services
+- [Data Flows](./trustyai-service-operator-dataflow.png) ([mmd](./trustyai-service-operator-dataflow.mmd)) - Four main flows: model prediction monitoring, external access, LM eval jobs, guardrails processing
+- [Dependencies](./trustyai-service-operator-dependencies.png) ([mmd](./trustyai-service-operator-dependencies.mmd)) - External (K8s, Istio, Kueue, databases) and internal (KServe, ModelMesh, DSP) dependencies
 
-### Overview
-Kubernetes operator that manages three distinct AI services within the RHOAI platform:
+### For Architects
+- [C4 Context](./trustyai-service-operator-c4-context.dsl) - Three service types in RHOAI ecosystem (explainability, evaluation, guardrails)
+- [Component Overview](./trustyai-service-operator-component.png) ([mmd](./trustyai-service-operator-component.mmd)) - Operator architecture with three controllers
 
-**Three-Service Architecture**:
-1. **TrustyAI Service**: AI explainability, bias detection, and fairness metrics for ML models
-2. **LM Eval Jobs**: Language model evaluation using lm-evaluation-harness with Kueue integration
-3. **Guardrails Orchestrator**: AI safety detectors for input/output filtering and content safety
+### For Security Teams
+- [Security Network Diagram (PNG)](./trustyai-service-operator-security-network.png) - Network topology with trust zones (362K, high-resolution)
+- [Security Network Diagram (Mermaid)](./trustyai-service-operator-security-network.mmd) - Visual network diagram (editable)
+- [Security Network Diagram (ASCII)](./trustyai-service-operator-security-network.txt) - SAR format with RBAC, OAuth, TLS, secrets details
+- [RBAC Visualization](./trustyai-service-operator-rbac.png) ([mmd](./trustyai-service-operator-rbac.mmd)) - Four roles: manager, leader-election, auth-proxy, non-admin-lmeval
 
-**Purpose**: Automates deployment of AI governance, evaluation, and safety infrastructure with OAuth authentication, TLS encryption, and comprehensive observability.
+### Component Overview
 
-**Key Features Illustrated**:
-- **Component Diagram**: Operator with three controllers (TrustyAI, LMEvalJob, Guardrails), conversion webhook, managed services, OAuth proxy sidecars, platform resources
-- **Data Flow Diagrams**: (1) Model prediction monitoring, (2) OAuth-protected API access, (3) LM evaluation job execution, (4) Guardrails request processing with detector/generator coordination
-- **Security Network**: Trust zones (External→Ingress→Auth Layer→App Layer→Control Plane), OpenShift Routes with reencrypt mode, OAuth proxy layer, service-ca certificates, ClusterIP isolation
-- **Dependencies**: Platform (Kubernetes, OpenShift OAuth, Istio, service-ca, Prometheus, Kueue), External (PostgreSQL/MySQL, S3, Hugging Face), Internal ODH (KServe, ModelMesh, Data Science Pipelines)
-- **RBAC**: manager-role (full operator permissions), non-admin-lmeval-role (LMEvalJob CRUD for all users), per-service ServiceAccounts
+**Three Services Managed**:
+1. **TrustyAI Service**: AI explainability (LIME, SHAP), bias detection, fairness metrics for deployed ML models
+2. **LM Eval Jobs**: Language model evaluation using lm-evaluation-harness with Kueue workload management
+3. **Guardrails Orchestrator**: AI safety detectors for input/output filtering and content moderation
 
-**Custom Resources**:
-- TrustyAIService (v1/v1alpha1) - Declarative configuration for explainability service
-- LMEvalJob (v1alpha1) - Language model evaluation job specification
-- GuardrailsOrchestrator (v1alpha1) - Guardrails configuration for AI safety
+**Key CRDs**:
+- `TrustyAIService` (v1, v1alpha1 with conversion webhook)
+- `LMEvalJob` (v1alpha1)
+- `GuardrailsOrchestrator` (v1alpha1)
+
+**Architecture**:
+- **Operator Controller**: Go operator with three reconciliation controllers and CRD conversion webhook
+- **OAuth Proxy Sidecars**: OpenShift OAuth authentication for external access via Routes
+- **Storage Backends**: PVC (default) or PostgreSQL/MySQL database for TrustyAI Service
+- **Metrics**: Operator metrics (8443/HTTPS), service metrics (8080/HTTP) via ServiceMonitors
 
 **Integration Points**:
-- **KServe**: Monitors InferenceService predictions, patches resources for explainability tracking
-- **ModelMesh**: Injects payload processors via pod exec for model monitoring
-- **Kueue**: Workload queue management for LM evaluation jobs
-- **Prometheus**: ServiceMonitor-based metrics scraping (TrustyAI service + operator)
-- **S3 Storage**: Evaluation results storage
-- **Hugging Face Hub**: Model and dataset downloads for evaluation
-- **OpenShift OAuth**: Authentication for external access via proxy sidecars
-- **Istio Service Mesh**: VirtualServices for KServe serverless mode integration
+- **KServe**: Monitors InferenceServices for prediction payloads (ModelMesh payload processor injection)
+- **Kueue**: Workload admission and queue management for LM evaluation batch jobs
+- **OpenShift OAuth**: User authentication via SAR checks (namespace pods get permission)
+- **Istio Service Mesh**: VirtualServices and DestinationRules for KServe serverless mode
+- **Prometheus**: Metrics scraping via ServiceMonitors
+- **Hugging Face Hub**: Model and dataset downloads for LM evaluations
+- **S3 Storage**: LM evaluation result storage
 
-**Security Features**:
-- OAuth Proxy sidecars on all external endpoints
-- service-ca automatic certificate rotation (TLS 1.2+)
-- OpenShift SAR (SubjectAccessReview) for namespace-level authorization
-- Skip-auth regex for health check endpoints (`^/apis/v1beta1/healthz`)
-- Internal ClusterIP isolation with Route/VirtualService exposure
-- Database TLS support (PostgreSQL/MySQL)
-- mTLS for ModelMesh payload processor injection
+**Data Flows**:
+1. **Model Monitoring**: User → KServe → TrustyAI Service (via payload processor) → PVC/Database
+2. **External Access**: User → Route → OAuth Proxy → TrustyAI Service
+3. **LM Eval Jobs**: User creates LMEvalJob CR → Kueue admission → LMES Pod → Hugging Face/KServe/S3
+4. **Guardrails**: User → Route → OAuth Proxy → Guardrails Orchestrator → Detector/Generator InferenceServices
 
-**Storage Flexibility**:
-- PVC: Default persistent volume claims for TrustyAI data
-- Database: PostgreSQL/MySQL support with optional TLS encryption
-- S3: Evaluation results storage with AWS IAM/Access Key auth
-- Shared PVC: PVC sharing with Data Science Pipelines
+**Security**:
+- **Authentication**: OpenShift OAuth with SAR check for service endpoints; health endpoints bypass auth
+- **Authorization**: RBAC with manager-role (operator resources) and non-admin-lmeval-role (all users can create jobs)
+- **Network Security**: OpenShift Routes (reencrypt TLS 1.2+), service-ca certs (auto-rotate 90 days)
+- **Secrets**: TLS certificates (service-ca, cert-manager), database credentials (user-provided), storage credentials (AWS IAM/access keys)
+- **Encryption**: TLS 1.2+ for external services, mTLS for ModelMesh integration, service-ca for internal HTTPS
 
-**Network Services**:
-- TrustyAI Service: 80/TCP (internal HTTP), 443/TCP (internal HTTPS with service-ca), 8443/TCP (OAuth-protected external)
-- Guardrails Orchestrator: 8032-8432/TCP (HTTPS API), 8090-8490/TCP (gateway), 8034/TCP (health)
-- Operator: 8081/TCP (health checks), 8443/TCP (metrics via kube-rbac-proxy), 9443/TCP (conversion webhook)
-
-**Observability**:
-- Operator Metrics: `/metrics` on 8443/TCP HTTPS (controller-runtime, via kube-rbac-proxy)
-- TrustyAI Service Metrics: `/q/metrics` on 8080/TCP HTTP (Quarkus/Prometheus, explainability/bias metrics)
-- ServiceMonitors: Automatic Prometheus scraping for operator and TrustyAI services
-- Health Checks: `/healthz`, `/readyz` (operator), `/oauth/healthz` (OAuth proxy), `/apis/v1beta1/healthz` (guardrails)
-
-**Multi-Platform Integration**:
-- **OpenShift**: Routes with reencrypt TLS mode, OAuth authentication, service-ca certificates
-- **Istio**: VirtualServices and DestinationRules for KServe serverless mode
-- **Kueue**: Workload admission and queue management for evaluation jobs
-- **Prometheus**: ServiceMonitor-based metrics collection
-- **KServe/ModelMesh**: Dual model serving platform support
-
-**Conversion Webhook**:
-- v1alpha1 to v1 migration support for TrustyAIService CR
-- Port 9443/TCP HTTPS with cert-manager certificates
+**Deployment**:
+- **Images**: quay.io/trustyai (operator, services, LMES, guardrails, driver)
+- **Kustomize Overlays**: odh, rhoai, lmes, odh-kueue, testing
+- **Resource Requirements**: Operator (10m CPU, 64Mi mem), services (configurable)
+- **Health Checks**: /healthz (liveness), /readyz (readiness) for operator and services
 
 ---
 
@@ -358,7 +477,7 @@ Kubernetes operator that manages three distinct AI services within the RHOAI pla
 - **Use directly**: Include in PowerPoint, Google Slides, Confluence, etc.
 
 ### Mermaid Source Files (.mmd files)
-- **In GitHub/GitLab**: Paste into markdown with ` ```mermaid ` code blocks - renders automatically!
+- **In GitHub/GitLab**: Paste into markdown with \`\`\`mermaid code blocks - renders automatically!
 - **Live editor**: https://mermaid.live (paste code, edit, export)
 - **Editable**: Modify and regenerate if needed
 
@@ -396,159 +515,92 @@ Kubernetes operator that manages three distinct AI services within the RHOAI pla
 
 ---
 
-*Last updated: 2026-03-14*
-
----
-
-# Architecture Diagrams for Kueue
-
-Generated from: `architecture/rhoai-2.25.0/kueue.md`
-Date: 2026-03-13
-Version: RHOAI 2.25.0
-
-**Note**: Diagram filenames use base component name without version (directory is already versioned).
-
-## Available Diagrams
-
-All Mermaid diagrams are available in both `.mmd` (source) and `.png` (3000px width, high-resolution) formats.
-
-### For Developers
-- [Component Structure](./kueue-component.png) ([mmd](./kueue-component.mmd)) - Mermaid diagram showing internal components, controllers, and managed resources
-- [Data Flows](./kueue-dataflow.png) ([mmd](./kueue-dataflow.mmd)) - Sequence diagrams for job submission, admission, metrics, visibility API, MultiKueue, and provisioning
-- [Dependencies](./kueue-dependencies.png) ([mmd](./kueue-dependencies.mmd)) - Component dependency graph showing Kubernetes, cert-manager, and workload integrations
-
-### For Architects
-- [C4 Context](./kueue-c4-context.dsl) - System context in C4 format (Structurizr)
-- [Component Overview](./kueue-component.png) ([mmd](./kueue-component.mmd)) - High-level component view
-
-### For Security Teams
-- [Security Network Diagram (PNG)](./kueue-security-network.png) - High-resolution network topology
-- [Security Network Diagram (Mermaid)](./kueue-security-network.mmd) - Visual network topology (editable)
-- [Security Network Diagram (ASCII)](./kueue-security-network.txt) - Precise text format for SAR submissions
-- [RBAC Visualization](./kueue-rbac.png) ([mmd](./kueue-rbac.mmd)) - RBAC permissions and bindings
-
-## Component Overview
-
-**Kueue** is a Kubernetes-native job management system that provides intelligent queueing and scheduling for batch workloads. It acts as a job-level manager that decides when a job can be admitted (pods can be created) based on available quota in cluster queues and local queues.
-
-Key features:
-- **Job Queueing**: Manages when Kubernetes jobs should be admitted based on resource quotas and priorities
-- **Multi-Workload Support**: Batch Jobs, Kubeflow training (TFJob, PyTorchJob, MPIJob), Ray (RayJob, RayCluster), JobSet, AppWrapper
-- **Fair Sharing & Preemption**: Prevents resource starvation across teams
-- **Cohorts**: Resource sharing across multiple queues
-- **MultiKueue**: Multi-cluster job dispatching
-- **Topology-Aware Scheduling**: Optimized pod placement for GPU/network-intensive workloads
-- **Cluster Autoscaling**: Integration with cluster autoscaler via provisioning requests
-
-## Key Features Illustrated
+## Diagram Types Explained
 
 ### Component Diagram
-Shows the controller's internal structure:
-- kueue-controller-manager deployment
-- Webhook server for admission control
-- Metrics service for Prometheus
-- Visibility server for on-demand queue queries
-- Core reconcilers: Workload, ClusterQueue, LocalQueue
-- Job integrations for Batch, Kubeflow, Ray, JobSet, AppWrapper
-- Scheduler and cache components
+Shows the internal structure of the component, including:
+- Operator/controller components
+- Services and their interactions
+- CRDs and their relationships
+- External dependencies
+- Internal ODH integrations
 
-### Data Flow Diagrams
-Five critical flows illustrated:
-1. **Job Submission and Admission**: User creates job → Webhook mutates → Controller watches → Admission decision → Unsuspend job
-2. **Metrics Collection**: Prometheus scrapes queue and workload state
-3. **Visibility API Query**: User queries pending workloads via aggregated API
-4. **Multi-Cluster Job Dispatching (MultiKueue)**: Controller dispatches jobs to remote clusters
-5. **Provisioning Request (Autoscaling)**: Controller creates ProvisioningRequest → Cluster Autoscaler provisions nodes
+### Data Flow Diagram
+Sequence diagrams showing request/response flows:
+- Primary user flows (e.g., feature retrieval, pipeline execution)
+- Service-to-service communication
+- External API calls
+- Operator reconciliation loops
 
 ### Security Network Diagram
-Network topology showing:
-- **Trust Boundaries**: External → K8s API Server → Kueue Namespace → External Services
-- **Ports & Protocols**: 
-  - 443/TCP HTTPS (K8s API Server)
-  - 9443/TCP HTTPS TLS 1.2+ (Webhook service, mTLS)
-  - 8443/TCP HTTPS TLS 1.2+ (Metrics service, Bearer Token)
-  - 8081/TCP HTTP (Health checks, no auth)
-- **Encryption**: TLS 1.2+ for all external communications, mTLS for webhooks
-- **Authentication**: Bearer Tokens (ServiceAccount), mTLS (API Server client cert), K8s RBAC
-- **Secrets**: webhook TLS certificates (cert-manager), metrics bearer tokens
-- **RBAC Summary**: Extensive ClusterRole permissions for Kueue CRDs, batch jobs, and workload integrations
+Detailed network topology with security information:
+- **ASCII format** (.txt): Precise text format for Security Architecture Reviews
+- **Mermaid format** (.mmd + .png): Visual diagram with color-coded trust zones
+- Includes: ports, protocols, TLS versions, authentication mechanisms, trust boundaries
+
+### C4 Context Diagram
+System context showing component in broader ecosystem:
+- External actors (users, applications)
+- Component containers (operator, services)
+- Dependencies (Kubernetes, storage, ODH components)
+- Integration points
 
 ### Dependency Graph
-Shows:
-- **External Required Dependencies**: Kubernetes API Server 1.25+, cert-manager 1.17+
-- **External Optional Dependencies**: Prometheus, Kubeflow Training Operator 1.9+, Ray Operator 1.3+, JobSet 0.8+, AppWrapper 1.1+, Cluster Autoscaler
-- **Internal ODH Dependencies**: None (standalone component)
-- **Integration Points**: Webhook server, visibility API, metrics endpoint, workload CRD watches
+Shows component dependencies and integration points:
+- External dependencies (required and optional)
+- Internal ODH dependencies
+- Integration points with other components
+- Storage/infrastructure requirements
 
-### RBAC Visualization
-Complete RBAC structure:
-- ServiceAccount: `kueue-controller-manager`
-- ClusterRole: `kueue-manager-role` with permissions for:
-  - Kueue CRDs (workloads, clusterqueues, localqueues, resourceflavors, etc.)
-  - Core resources (events, pods, namespaces, nodes, secrets)
-  - Workload resources (batch jobs, kubeflow jobs, ray jobs, jobsets, appwrappers)
-  - Autoscaling (provisioningrequests)
-  - Admission webhooks (mutating/validating webhook configurations)
-- Additional roles: viewer, editor, batch-admin, batch-user, metrics-reader
-- Leader election role (namespace-scoped)
-
-## Technical Specifications Summary
-
-**Version**: 7f2f72e51 (rhoai-2.25 branch)
-**Language**: Go 1.24
-**Deployment**: Kubernetes Operator (Controller)
-
-**Key Dependencies**:
-- Kubernetes API Server 1.25+ (required)
-- cert-manager 1.17+ (required)
-- Kubeflow Training Operator 1.9+ (optional)
-- Ray Operator 1.3+ (optional)
-- JobSet 0.8+ (optional)
-- AppWrapper 1.1+ (optional)
-- Cluster Autoscaler (optional)
-
-**Custom Resources**:
-- Workload (kueue.x-k8s.io/v1beta1) - Job or group of pods with resource requirements
-- ClusterQueue (kueue.x-k8s.io/v1beta1) - Cluster-wide resource quotas
-- LocalQueue (kueue.x-k8s.io/v1beta1) - Namespace-scoped queue
-- ResourceFlavor (kueue.x-k8s.io/v1beta1) - Resource variants (GPU types, node pools)
-- WorkloadPriorityClass (kueue.x-k8s.io/v1beta1) - Priority levels
-- AdmissionCheck (kueue.x-k8s.io/v1beta1) - External/internal admission checks
-- ProvisioningRequestConfig (kueue.x-k8s.io/v1beta1) - Autoscaler configuration
-- MultiKueueConfig (kueue.x-k8s.io/v1beta1) - Multi-cluster job dispatching config
-- Cohort (kueue.x-k8s.io/v1alpha1) - ClusterQueue groups for resource sharing
-- Topology (kueue.x-k8s.io/v1alpha1) - Data center topology
-
-**Network Services**:
-- Webhook Service: 443/TCP → 9443/TCP HTTPS TLS 1.2+ (API Server, mTLS)
-- Metrics Service: 8443/TCP HTTPS TLS 1.2+ (Prometheus, Bearer Token)
-- Health Checks: 8081/TCP HTTP (healthz/readyz, no auth)
-
-**HTTP Endpoints**:
-- `/healthz` - GET 8081/TCP HTTP (liveness)
-- `/readyz` - GET 8081/TCP HTTP (readiness)
-- `/metrics` - GET 8443/TCP HTTPS (Prometheus metrics)
-- `/mutate-*` - POST 9443/TCP HTTPS (mutating webhooks)
-- `/validate-*` - POST 9443/TCP HTTPS (validating webhooks)
-- `/apis/visibility.kueue.x-k8s.io/v1beta1/clusterqueues/{name}/pendingworkloads` - GET (via K8s API aggregation)
-- `/apis/visibility.kueue.x-k8s.io/v1beta1/namespaces/{ns}/localqueues/{name}/pendingworkloads` - GET (via K8s API aggregation)
-
-**Security**:
-- FIPS-enabled runtime (`GOEXPERIMENT=strictfipsruntime`)
-- Non-root container (UID 65532)
-- TLS 1.2+ for all HTTPS communications
-- mTLS for webhook (API Server client certificate authentication)
-- Bearer Token authentication for metrics
-- K8s RBAC for visibility API
-- cert-manager for webhook certificate provisioning and rotation
-
-**Monitoring Metrics**:
-- `kueue_pending_workloads` - Workloads waiting for admission
-- `kueue_admitted_workloads_total` - Total admitted workloads
-- `kueue_admission_attempts_total` - Admission attempt counts
-- `kueue_cluster_queue_resource_usage` - Resource usage by ClusterQueue
-- `kueue_admission_wait_time_seconds` - Wait time before admission
+### RBAC Diagram
+Visualizes RBAC permissions:
+- Service accounts
+- ClusterRoles and Roles with their permissions
+- RoleBindings
+- API resources and access levels
 
 ---
 
-*Generated by Kueue architecture diagram generator - 2026-03-13*
+## File Naming Convention
+
+All diagrams follow the pattern: `{component-name}-{diagram-type}.{extension}`
+
+Examples:
+- `feast-component.mmd` / `feast-component.png`
+- `data-science-pipelines-operator-dataflow.mmd` / `data-science-pipelines-operator-dataflow.png`
+- `feast-security-network.mmd` / `feast-security-network.png` / `feast-security-network.txt`
+- `feast-c4-context.dsl`
+
+**Note**: Component names are lowercase and derived from architecture filenames. Version is not included in filenames since the directory `rhoai-2.25.0/` already provides versioning context.
+
+---
+
+## Updating Diagrams
+
+To regenerate diagrams after architecture changes, use the diagram generation workflow or manually run the generation script.
+
+---
+
+## Support
+
+For questions or issues with diagrams:
+1. Check the source architecture markdown files in `../` (parent directory)
+2. Verify Mermaid CLI installation: `mmdc --version`
+3. Test diagrams at https://mermaid.live for syntax validation
+4. Regenerate PNGs if needed (see instructions above)
+
+---
+
+## Version Information
+
+**RHOAI Version**: 2.25.0
+
+**Component Versions**:
+- Feast: 0.54.0 (aad1ebcd0)
+- Data Science Pipelines Operator: (see architecture markdown for version details)
+
+---
+
+## License
+
+These diagrams are generated from RHOAI/ODH architecture documentation. Refer to the original component repositories for licensing information.

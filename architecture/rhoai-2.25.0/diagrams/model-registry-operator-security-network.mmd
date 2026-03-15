@@ -1,90 +1,112 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User[External User<br/>Data Scientist]
+        User[External User]
     end
 
     subgraph Ingress["INGRESS (DMZ)"]
-        Router["OpenShift Router<br/>443/TCP → 8443/TCP<br/>TLS Edge Termination"]
+        Router["OpenShift Router<br/>443/TCP → 8443/TCP<br/>Edge Termination"]
+        Route["OpenShift Route: {name}-https<br/>Host: {name}.{domain}<br/>443/TCP HTTPS TLS1.2+"]
     end
 
-    subgraph ClusterInternal["CLUSTER INTERNAL (Trusted)"]
+    subgraph OperatorNamespace["OPERATOR NAMESPACE (e.g., redhat-ods-applications)"]
         direction TB
 
-        subgraph UserNamespace["Namespace: {user-namespace}"]
-            Service["model-registry Service<br/>ClusterIP<br/>8443/TCP (OAuth)<br/>8080/TCP (non-OAuth)"]
+        ControllerMgr["controller-manager Deployment<br/>SA: controller-manager<br/>Replicas: 1<br/>Security: runAsNonRoot"]
 
-            subgraph Deployment["Model Registry Deployment<br/>SA: {name}<br/>SCC: restricted-v2"]
-                direction LR
-                OAuthProxy["oauth-proxy container<br/>8443/TCP HTTPS<br/>TLS 1.2+<br/>Image: origin-oauth-proxy"]
-                RESTContainer["rest-container<br/>8080/TCP HTTP<br/>Image: model-registry"]
+        HealthProbes["Health Probes<br/>8081/TCP HTTP<br/>GET /healthz, /readyz"]
 
-                OAuthProxy -->|"HTTP/8080<br/>localhost<br/>no auth"| RESTContainer
-            end
+        MetricsService["controller-manager-metrics-service<br/>8443/TCP HTTPS TLS<br/>Auth: Bearer Token"]
 
-            NetworkPolicy["NetworkPolicy<br/>{name}-https-route<br/>Allows: ingress pods"]
+        WebhookService["webhook-service<br/>443/TCP → 9443 HTTPS TLS<br/>Auth: Webhook CA"]
+
+        ControllerMgr -.->|exposes| HealthProbes
+        ControllerMgr -.->|exposes| MetricsService
+        ControllerMgr -.->|exposes| WebhookService
+    end
+
+    subgraph UserNamespace["USER NAMESPACE (per ModelRegistry CR)"]
+        direction TB
+
+        Service["model-registry Service<br/>Type: ClusterIP<br/>8080/TCP HTTP (non-OAuth)<br/>8443/TCP HTTPS (OAuth)"]
+
+        Deployment["model-registry Deployment<br/>SA: {name}<br/>Replicas: 1<br/>SCC: restricted-v2"]
+
+        subgraph Containers["Containers"]
+            OAuthProxy["oauth-proxy Container (Optional)<br/>Image: origin-oauth-proxy<br/>8443/TCP HTTPS TLS1.2+<br/>Auth: Bearer Token<br/>Health: /oauth/healthz"]
+
+            RESTContainer["rest-container Container<br/>Image: model-registry<br/>8080/TCP HTTP<br/>API: /api/model_registry/v1alpha3/*<br/>Health: /readyz/*"]
         end
 
-        OAuthServer["OpenShift OAuth Server<br/>oauth-openshift ns<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+        Service -.->|routes to| Deployment
+        Deployment -.->|contains| Containers
+        OAuthProxy -->|forwards HTTP/8080<br/>localhost| RESTContainer
 
-        Service -->|"HTTPS/8443<br/>Bearer Token"| OAuthProxy
-        Service -->|"HTTP/8080<br/>no auth"| RESTContainer
+        NetPolicy["Network Policy: {name}-https-route<br/>Selector: app={name}<br/>Ingress From: openshift-ingress<br/>Ports: {oauth-proxy-port}/TCP"]
+    end
 
-        OAuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>Service Account"| OAuthServer
+    subgraph Secrets["Secrets"]
+        OAuthProxySecret["{name}-oauth-proxy<br/>Type: kubernetes.io/tls<br/>Auto-Rotate: Yes (Service CA)"]
+        CookieSecret["{name}-oauth-cookie-secret<br/>Type: Opaque<br/>Purpose: Session encryption"]
+        DBSecret["{db-secret-name}<br/>Type: Opaque<br/>Purpose: DB password"]
+        WebhookSecret["webhook-server-cert<br/>Type: kubernetes.io/tls<br/>Auto-Rotate: Yes"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        PostgreSQL["PostgreSQL Database<br/>{host}:5432<br/>TLS (optional)<br/>Username/Password"]
-        MySQL["MySQL Database<br/>{host}:3306<br/>TLS (optional)<br/>Username/Password"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+<br/>Auth: ServiceAccount Token"]
+
+        OAuthServer["OpenShift OAuth Server<br/>443/TCP HTTPS TLS1.2+<br/>Auth: Service Account Token"]
+
+        PostgreSQL["PostgreSQL Database<br/>5432/TCP<br/>Encryption: TLS (optional)<br/>Auth: Username/Password"]
+
+        MySQL["MySQL Database (Alternative)<br/>3306/TCP<br/>Encryption: TLS (optional)<br/>Auth: Username/Password"]
+
+        Prometheus["Prometheus<br/>Metrics Scraper"]
+
+        ServiceCA["OpenShift Service CA<br/>Auto TLS Provisioning"]
     end
 
-    subgraph OperatorNamespace["OPERATOR NAMESPACE: {operator-namespace}"]
-        direction TB
+    %% External User Flow (OAuth Mode)
+    User -->|HTTPS/443<br/>TLS1.2+| Router
+    Router -->|Edge Termination| Route
+    Route -->|HTTPS/8443<br/>TLS1.2+| Service
+    Service -->|HTTPS/8443<br/>Bearer Token| OAuthProxy
 
-        Controller["controller-manager<br/>Deployment<br/>SA: controller-manager<br/>Replicas: 1<br/>runAsNonRoot"]
+    %% OAuth Flow
+    OAuthProxy -->|Token Validation<br/>HTTPS/443 TLS1.2+<br/>SA Token| OAuthServer
 
-        WebhookService["webhook-service<br/>ClusterIP<br/>443/TCP → 9443/TCP"]
+    %% Backend Flow
+    RESTContainer -->|PostgreSQL/5432<br/>TLS Optional<br/>User/Pass| PostgreSQL
+    RESTContainer -.->|MySQL/3306<br/>TLS Optional<br/>User/Pass| MySQL
 
-        MetricsService["controller-manager-metrics-service<br/>ClusterIP<br/>8443/TCP HTTPS"]
+    %% Operator Flow
+    ControllerMgr -->|Watch/Reconcile<br/>HTTPS/6443 TLS1.2+<br/>SA Token| K8sAPI
+    K8sAPI -->|Webhook Validation<br/>HTTPS/443 TLS<br/>Client Cert| WebhookService
 
-        Controller -->|"HTTPS/443<br/>TLS<br/>Webhook Cert"| WebhookService
+    %% Metrics Flow
+    Prometheus -->|Scrape /metrics<br/>HTTPS/8443 TLS<br/>Bearer Token| MetricsService
 
-        Prometheus["Prometheus"] -->|"HTTPS/8443<br/>TLS<br/>Bearer Token"| MetricsService
-    end
+    %% Secrets Usage
+    OAuthProxySecret -.->|used by| OAuthProxy
+    CookieSecret -.->|used by| OAuthProxy
+    DBSecret -.->|used by| RESTContainer
+    WebhookSecret -.->|used by| WebhookService
+    ServiceCA -.->|provisions| OAuthProxySecret
+    ServiceCA -.->|provisions| WebhookSecret
 
-    K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+"]
-
-    %% External to Ingress
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Router
-
-    %% Ingress to Service
-    Router -->|"HTTPS/8443<br/>TLS Edge<br/>Bearer Token"| Service
-
-    %% REST to Database
-    RESTContainer -->|"PostgreSQL/5432<br/>TLS optional<br/>user/pass"| PostgreSQL
-    RESTContainer -->|"MySQL/3306<br/>TLS optional<br/>user/pass"| MySQL
-
-    %% Operator flows
-    Controller -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    K8sAPI -->|"HTTPS/443<br/>TLS<br/>Webhook Cert"| WebhookService
-
-    %% Controller creates resources
-    Controller -.->|creates| Deployment
-    Controller -.->|creates| Service
-    Controller -.->|creates| NetworkPolicy
-
-    %% Network Policy enforcement
-    NetworkPolicy -.->|"allows ingress<br/>to 8443/TCP"| Deployment
+    %% Network Policy
+    NetPolicy -.->|protects| OAuthProxy
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef clusterinternal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef operator fill:#cce5ff,stroke:#0066cc,stroke-width:2px
+    classDef usernamespace fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef secret fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class User external
-    class Router ingress
-    class Service,Deployment,OAuthProxy,RESTContainer,NetworkPolicy,OAuthServer clusterinternal
-    class Controller,WebhookService,MetricsService,Prometheus operator
-    class PostgreSQL,MySQL externalservice
-    class K8sAPI externalservice
+    class Router,Route ingress
+    class ControllerMgr,HealthProbes,MetricsService,WebhookService operator
+    class Service,Deployment,OAuthProxy,RESTContainer,NetPolicy usernamespace
+    class K8sAPI,OAuthServer,PostgreSQL,MySQL,Prometheus,ServiceCA externalservice
+    class OAuthProxySecret,CookieSecret,DBSecret,WebhookSecret secret

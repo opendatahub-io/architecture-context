@@ -1,119 +1,80 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and manages data science workloads including notebooks, model serving, and pipelines"
-        platformAdmin = person "Platform Admin" "Configures dashboard, manages users, and monitors platform health"
+        user = person "Data Scientist" "Creates and manages ML workloads via web interface"
+        admin = person "Platform Administrator" "Configures and maintains ODH/RHOAI platform"
 
-        dashboard = softwareSystem "ODH Dashboard" "Web-based user interface for managing Open Data Hub and Red Hat OpenShift AI platform components" {
-            frontend = container "Frontend SPA" "Web user interface" "React 18, PatternFly 6, Redux" {
-                description "Single-page application providing UI for dashboard functionality"
+        dashboard = softwareSystem "ODH Dashboard" "Web-based user interface for managing Open Data Hub and RHOAI platform components" {
+            frontend = container "React Frontend" "Single-page application providing web UI" "React 18, PatternFly 6" {
+                tags "Web Browser"
             }
-            backend = container "Backend API" "REST API server and K8s proxy" "Node.js 20, Fastify" {
-                description "Fastify-based REST API that proxies to Kubernetes API and provides business logic"
+            backend = container "Fastify Backend" "REST API server and Kubernetes API proxy" "Node.js 20, Fastify 4.28.1" {
+                tags "API"
             }
-            oauthProxy = container "OAuth Proxy" "Authentication and TLS termination" "OpenShift OAuth Proxy" {
-                description "Sidecar container providing OpenShift OAuth authentication and HTTPS termination"
+            oauthProxy = container "OAuth Proxy" "Authentication and TLS termination sidecar" "OpenShift OAuth Proxy" {
+                tags "Security"
             }
-            moduleFederation = container "Module Federation" "Dynamic plugin loader" "Webpack 5 Module Federation" {
-                description "Loads feature plugins dynamically (gen-ai, model-registry, etc.)"
+            plugins = container "Module Federation Plugins" "Dynamically loaded feature plugins" "Webpack Module Federation" {
+                tags "Plugin"
             }
         }
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane" "External Platform" {
-            description "Manages all Kubernetes resources and enforces RBAC"
-        }
+        k8sAPI = softwareSystem "Kubernetes API Server" "Kubernetes cluster control plane API" "External Platform"
+        oauthServer = softwareSystem "OpenShift OAuth Server" "User authentication and authorization" "External Platform"
+        prometheus = softwareSystem "Prometheus/Thanos" "Metrics and monitoring" "External Platform"
 
-        oauthServer = softwareSystem "OpenShift OAuth Server" "Authentication service" "External Platform" {
-            description "Provides OAuth 2.0 authentication for OpenShift users"
-        }
+        odhOperator = softwareSystem "OpenDataHub Operator" "Platform lifecycle management" "Internal ODH"
+        notebooks = softwareSystem "Kubeflow Notebooks" "Jupyter notebook environments" "Internal ODH"
+        kserve = softwareSystem "KServe" "Model serving platform" "Internal ODH"
+        modelRegistry = softwareSystem "Model Registry" "Model metadata and versioning" "Internal ODH"
+        pipelines = softwareSystem "Data Science Pipelines" "ML pipeline orchestration" "Internal ODH"
+        trustyai = softwareSystem "TrustyAI Service" "Model bias and trustworthiness metrics" "Internal ODH"
+        kueue = softwareSystem "Kueue" "Distributed workload queue management" "Internal ODH"
+        codeflare = softwareSystem "CodeFlare Operator" "Distributed training management" "Internal ODH"
+        llamastack = softwareSystem "LlamaStack" "LLM inference distributions" "Internal ODH"
 
-        prometheus = softwareSystem "Prometheus/Thanos" "Metrics and monitoring" "External Platform" {
-            description "Collects and stores metrics data"
-        }
+        # User interactions
+        user -> dashboard "Creates notebooks, deploys models, views metrics" "HTTPS/443"
+        admin -> dashboard "Configures platform settings, manages users" "HTTPS/443"
 
-        odhOperator = softwareSystem "ODH Operator" "Platform orchestration" "Internal ODH" {
-            description "Manages DataScienceCluster and DSCInitialization resources"
-        }
+        # Dashboard to frontend/backend
+        user -> oauthProxy "Accesses web UI" "HTTPS/443"
+        oauthProxy -> oauthServer "Authenticates user" "OAuth 2.0"
+        oauthProxy -> backend "Proxies authenticated requests" "HTTP/8080"
+        backend -> frontend "Serves static assets" "HTTP"
+        frontend -> backend "API calls for resources" "HTTP"
 
-        notebooks = softwareSystem "Kubeflow Notebooks" "Jupyter notebook management" "Internal ODH" {
-            description "Manages Jupyter notebook custom resources and workbenches"
-        }
+        # Backend to Kubernetes
+        backend -> k8sAPI "Manages Kubernetes resources" "HTTPS/6443"
+        backend -> prometheus "Queries metrics data" "HTTPS/9092"
 
-        kserve = softwareSystem "KServe" "Model serving platform" "Internal ODH" {
-            description "Serverless inference for ML models"
-        }
-
-        modelRegistry = softwareSystem "Model Registry" "Model metadata and versioning" "Internal ODH" {
-            description "Stores model metadata, versions, and artifacts"
-        }
-
-        pipelines = softwareSystem "Data Science Pipelines" "ML workflow orchestration" "Internal ODH" {
-            description "Manages pipeline runs and experiments"
-        }
-
-        codeflare = softwareSystem "CodeFlare Operator" "Distributed training" "Internal ODH" {
-            description "Manages distributed training workloads"
-        }
-
-        kueue = softwareSystem "Kueue" "Workload queue management" "Internal ODH" {
-            description "Manages distributed workload queue configurations"
-        }
-
-        s3Storage = softwareSystem "S3 Storage" "Model artifact storage" "External Service" {
-            description "Stores model artifacts and data"
-        }
-
-        segmentAnalytics = softwareSystem "Segment Analytics" "Usage analytics" "External Service" {
-            description "Optional usage analytics and telemetry"
-        }
-
-        // User interactions
-        dataScientist -> dashboard "Creates notebooks, deploys models, runs pipelines via" "HTTPS/443"
-        platformAdmin -> dashboard "Configures dashboard, manages users, monitors health via" "HTTPS/443"
-
-        // Dashboard internal relationships
-        frontend -> backend "API calls" "HTTP/8080 (proxied via OAuth)"
-        oauthProxy -> backend "Forwards authenticated requests" "HTTP/8080"
-        oauthProxy -> oauthServer "Validates user authentication" "HTTPS/6443"
-        backend -> k8sAPI "Manages Kubernetes resources" "HTTPS/6443, SA Token"
-        backend -> prometheus "Queries metrics data" "HTTPS/9092, SA Token"
-
-        // Dashboard to ODH components (via K8s API)
-        backend -> odhOperator "Reads DataScienceCluster status" "via K8s API"
-        backend -> notebooks "Creates and manages Notebook CRs" "via K8s API"
+        # Backend to ODH components
+        backend -> odhOperator "Reads DataScienceCluster config" "via K8s API"
+        backend -> notebooks "Creates and manages notebook CRs" "via K8s API"
         backend -> kserve "Reads InferenceService status" "via K8s API"
-        backend -> modelRegistry "Creates and manages ModelRegistry CRs" "via K8s API"
-        backend -> pipelines "Integrates with pipeline runs" "via K8s API"
+        backend -> modelRegistry "Manages ModelRegistry CRs and queries APIs" "HTTPS/8080, gRPC/9090"
+        backend -> pipelines "Integrates pipeline runs" "via K8s API"
+        backend -> trustyai "Displays bias metrics" "via K8s API"
+        backend -> kueue "Manages workload queues" "via K8s API"
         backend -> codeflare "Manages distributed workloads" "via K8s API"
-        backend -> kueue "Manages queue configurations" "via K8s API"
+        backend -> llamastack "Manages LLM distributions" "via K8s API"
 
-        // External services
-        backend -> segmentAnalytics "Sends usage analytics" "HTTPS/443, API Key" {
-            tags "Optional"
-        }
-
-        // Supporting services
-        prometheus -> oauthProxy "Scrapes /metrics endpoint" "HTTPS/8443, No Auth"
-        modelRegistry -> s3Storage "Stores model artifacts" "HTTPS/443"
+        # Plugin loading
+        frontend -> plugins "Dynamically loads features" "Module Federation"
+        plugins -> backend "Feature-specific API calls" "HTTP"
     }
 
     views {
-        systemContext dashboard "DashboardSystemContext" {
+        systemContext dashboard "SystemContext" {
             include *
             autoLayout lr
-            description "System context diagram for ODH Dashboard showing all external dependencies and integrations"
         }
 
-        container dashboard "DashboardContainers" {
+        container dashboard "Containers" {
             include *
             autoLayout lr
-            description "Container diagram showing internal components of ODH Dashboard"
         }
 
         styles {
-            element "Software System" {
-                background #1168bd
-                color #ffffff
-            }
             element "External Platform" {
                 background #999999
                 color #ffffff
@@ -122,28 +83,28 @@ workspace {
                 background #7ed321
                 color #000000
             }
-            element "External Service" {
+            element "Web Browser" {
+                shape WebBrowser
+                background #4a90e2
+                color #ffffff
+            }
+            element "API" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Security" {
                 background #f5a623
                 color #000000
             }
-            element "Container" {
-                background #438dd5
-                color #ffffff
+            element "Plugin" {
+                background #d3d3d3
+                color #000000
             }
             element "Person" {
-                shape person
+                shape Person
                 background #08427b
                 color #ffffff
             }
-            relationship "Optional" {
-                dashed true
-            }
         }
-
-        theme default
-    }
-
-    configuration {
-        scope softwaresystem
     }
 }

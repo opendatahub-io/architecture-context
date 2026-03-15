@@ -1,50 +1,79 @@
 sequenceDiagram
     participant Client as External Client
-    participant Gateway as Istio Gateway<br/>443/TCP HTTPS TLS1.2+
+    participant Gateway as Istio Ingress Gateway<br/>443/TCP HTTPS TLS 1.2+
     participant VS as Istio VirtualService
     participant Activator as Knative Activator<br/>80/TCP HTTP mTLS
-    participant Agent as Agent Sidecar<br/>9081/TCP HTTP
+    participant Agent as Agent Sidecar<br/>8080/TCP HTTP
     participant ModelServer as Model Server Pod<br/>8080/TCP HTTP
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
     participant EventSink as Event Sink<br/>80/443 HTTP/HTTPS
+    participant S3 as S3 Storage<br/>443/TCP HTTPS TLS 1.2+
 
-    Note over Client,EventSink: Flow 1: Model Deployment (InferenceService Creation)
+    Note over Client,S3: Flow 1: Model Deployment & Loading
 
-    Client->>Gateway: kubectl apply InferenceService<br/>Auth: Bearer Token
-    Gateway->>Gateway: Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+
-    Gateway->>Gateway: Webhook Server 9443/TCP<br/>Validate/Mutate
-    Gateway->>Gateway: Controller watches CR
-    Gateway->>Gateway: Controller creates<br/>Knative Service + Istio VS
+    Client->>Gateway: POST /v1/models/model:predict<br/>Auth: Bearer Token (optional)
+    Gateway->>VS: TLS Termination
 
-    Note over Client,EventSink: Flow 2: Model Loading (Storage Initialization)
-
-    ModelServer->>ModelServer: storage-initializer init container starts
-    ModelServer->>S3: GET model artifacts<br/>HTTPS/443 TLS1.2+<br/>Auth: AWS IAM/Secret Key
+    Note over ModelServer,S3: Init Container runs first
+    ModelServer->>S3: Download model artifacts<br/>AWS IAM/Secret Key
     S3-->>ModelServer: Model files
-    ModelServer->>ModelServer: Write to /mnt/models<br/>(shared volume)
-    ModelServer->>ModelServer: Model server container starts<br/>Load from /mnt/models
-    ModelServer->>Gateway: Update readiness probe
+    Note over ModelServer: storage-initializer copies to /mnt/models
 
-    Note over Client,EventSink: Flow 3: Inference Request (Serverless Mode)
+    Note over Client,EventSink: Flow 2: Inference Request (Serverless)
 
-    Client->>Gateway: POST /v1/models/model:predict<br/>HTTPS/443 TLS1.2+<br/>Auth: Bearer Token (optional)
+    Client->>Gateway: POST /v1/models/model:predict<br/>HTTPS TLS 1.2+<br/>Bearer Token
     Gateway->>VS: Route to InferenceService
-    VS->>Activator: HTTP/80 mTLS<br/>Service Identity
-    Activator->>Agent: Forward request<br/>HTTP/9081
-    Agent->>ModelServer: Proxy to model server<br/>HTTP/8080 (localhost)
+    VS->>Activator: Forward request<br/>HTTP mTLS<br/>Client cert
+
+    alt Pod scaled to zero
+        Activator->>ModelServer: Scale up pod
+        Note over ModelServer: Pod starts, loads model from /mnt/models
+    end
+
+    Activator->>Agent: Forward to agent sidecar<br/>HTTP localhost
+    Agent->>Agent: Batching (if enabled)
+    Agent->>ModelServer: Inference request<br/>HTTP :8080
     ModelServer->>ModelServer: Run inference
     ModelServer-->>Agent: Prediction result
     Agent-->>Activator: Response
-    Agent->>EventSink: Log request/response<br/>HTTP/HTTPS<br/>Auth: Bearer Token
     Activator-->>VS: Response
     VS-->>Gateway: Response
-    Gateway-->>Client: JSON prediction<br/>HTTPS/443
+    Gateway-->>Client: JSON Response<br/>HTTPS TLS 1.2+
 
-    Note over Client,EventSink: Flow 4: Multi-Model InferenceGraph
+    opt Request/Response Logging
+        Agent->>EventSink: Send CloudEvent<br/>HTTP/HTTPS<br/>Bearer Token
+    end
 
-    Client->>Gateway: POST /v1/infer<br/>HTTPS/443 TLS1.2+
-    Gateway->>Gateway: Router Pod<br/>80/TCP HTTP mTLS
-    Gateway->>ModelServer: Model A Service<br/>HTTP/80 mTLS
-    Gateway->>ModelServer: Model B Service<br/>HTTP/80 mTLS
-    ModelServer-->>Gateway: Combined results
-    Gateway-->>Client: Final response<br/>HTTPS/443
+    Note over Client,EventSink: Flow 3: Multi-Model InferenceGraph
+
+    Client->>Gateway: POST /v1/models/ensemble:predict<br/>HTTPS TLS 1.2+
+    Gateway->>VS: Route to InferenceGraph
+    VS->>Agent: Forward to Router Pod<br/>HTTP mTLS
+
+    par Parallel Model Calls
+        Agent->>ModelServer: Call Model A<br/>HTTP mTLS
+        ModelServer-->>Agent: Result A
+    and
+        Agent->>ModelServer: Call Model B<br/>HTTP mTLS
+        ModelServer-->>Agent: Result B
+    end
+
+    Agent->>Agent: Combine results
+    Agent-->>VS: Ensemble response
+    VS-->>Gateway: Response
+    Gateway-->>Client: JSON Response
+
+    Note over Client,S3: Flow 4: LLM Distributed Inference
+
+    Client->>Gateway: POST /v2/models/llm/infer<br/>HTTPS TLS 1.2+
+    Gateway->>ModelServer: Route to LeaderWorkerSet Leader<br/>HTTP mTLS
+
+    par Multi-Node Processing
+        ModelServer->>ModelServer: Leader Pod (vLLM)<br/>GPU processing
+    and
+        ModelServer->>ModelServer: Worker Pod 1<br/>Ray cluster<br/>6379/8265 TCP
+    and
+        ModelServer->>ModelServer: Worker Pod 2<br/>Ray cluster
+    end
+
+    ModelServer-->>Gateway: LLM response
+    Gateway-->>Client: JSON Response

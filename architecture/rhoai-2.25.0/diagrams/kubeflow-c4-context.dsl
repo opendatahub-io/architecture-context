@@ -1,49 +1,68 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and manages Jupyter notebook instances for ML experimentation"
-        dashboard = person "ODH Dashboard User" "Manages notebook instances via web interface"
+        datascientist = person "Data Scientist" "Creates and manages Jupyter notebook instances for ML experimentation"
+        admin = person "Platform Administrator" "Manages notebook controller configuration and monitors notebook resources"
 
-        notebookController = softwareSystem "Notebook Controller (Kubeflow)" "Manages lifecycle of Jupyter notebook instances in Kubernetes through Notebook CRDs" {
-            controller = container "Notebook Reconciler" "Reconciles Notebook CRDs to StatefulSets and Services" "Go Operator" {
-                reconciler = component "NotebookReconciler" "Watches Notebook CRs and creates/updates StatefulSets" "Go Controller"
-                serviceManager = component "Service Manager" "Creates and manages ClusterIP services for notebooks" "Go"
-                virtualServiceManager = component "VirtualService Manager" "Creates Istio VirtualServices when USE_ISTIO=true" "Go"
+        notebookController = softwareSystem "Notebook Controller" "Manages lifecycle of Jupyter notebook instances as Kubernetes custom resources" {
+            controller = container "Notebook Reconciler" "Reconciles Notebook CRDs to StatefulSets and Services" "Go Controller" {
+                tags "Controller"
             }
-
-            culling = container "Culling Reconciler" "Monitors notebook kernel activity and stops idle notebooks" "Go Controller" {
-                idleChecker = component "Idle Checker" "Queries /api/kernels endpoint for kernel activity" "Go"
-                annotator = component "Annotation Manager" "Adds kubeflow-resource-stopped annotation to idle notebooks" "Go"
+            culling = container "Culling Reconciler" "Monitors and stops idle notebooks" "Go Controller" {
+                tags "Controller"
             }
-
-            metrics = container "Metrics Server" "Exposes Prometheus metrics for notebook operations" "HTTP Server :8080"
-            health = container "Health Probe" "Provides liveness and readiness endpoints" "HTTP Server :8081"
+            metrics = container "Metrics Server" "Exposes Prometheus metrics" "HTTP Endpoint :8080" {
+                tags "Monitoring"
+            }
+            health = container "Health Probe" "Provides health checks" "HTTP Endpoint :8081" {
+                tags "Monitoring"
+            }
         }
 
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform" "Platform"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
-        istio = softwareSystem "Istio Service Mesh" "Traffic management and service mesh" "External"
-        odhDashboard = softwareSystem "ODH Dashboard" "Web UI for managing ODH components" "Internal ODH"
+        k8s = softwareSystem "Kubernetes API Server" "Kubernetes control plane API" "External" {
+            tags "Platform"
+        }
 
-        notebookPods = softwareSystem "Jupyter Notebook Pods" "Running Jupyter server instances" "Workload"
+        istio = softwareSystem "Istio Service Mesh" "Service mesh for traffic management and VirtualServices" "External" {
+            tags "Platform"
+        }
+
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External" {
+            tags "Monitoring"
+        }
+
+        dashboard = softwareSystem "Kubeflow Dashboard" "Web UI for managing notebooks" "Internal ODH" {
+            tags "Internal"
+        }
+
+        notebookPods = softwareSystem "Jupyter Notebook Pods" "Running Jupyter notebook instances" "Workload" {
+            tags "Workload"
+        }
 
         # User interactions
-        user -> notebookController "Creates Notebook CRs via kubectl" "kubectl/HTTPS"
-        dashboard -> notebookController "Creates and manages notebooks" "Kubernetes API/HTTPS"
+        datascientist -> dashboard "Creates/manages notebooks via UI"
+        datascientist -> k8s "Creates/manages notebooks via kubectl"
+        admin -> notebookController "Configures culling and Istio settings"
+        admin -> prometheus "Monitors notebook metrics"
 
-        # Controller dependencies
-        notebookController -> kubernetes "Creates/updates StatefulSets, Services, Pods" "HTTPS/6443 TLS1.2+"
-        notebookController -> istio "Creates VirtualService resources (optional)" "Kubernetes API/6443"
-        notebookController -> notebookPods "Queries /api/kernels for idle detection" "HTTP/8888"
+        # Dashboard interactions
+        dashboard -> k8s "Creates Notebook CRs" "HTTPS/6443"
+
+        # Controller interactions
+        controller -> k8s "Watches Notebook CRs, creates StatefulSets/Services" "HTTPS/6443"
+        controller -> istio "Creates VirtualServices when USE_ISTIO=true" "K8s API"
+        controller -> metrics "Publishes metrics"
+
+        culling -> notebookPods "Queries /api/kernels for idle detection" "HTTP/8888"
+        culling -> k8s "Adds culling annotations to Notebooks" "HTTPS/6443"
+        culling -> metrics "Publishes culling metrics"
+
+        k8s -> notebookPods "Creates/manages pods via Kubelet" "mTLS/10250"
 
         # Monitoring
-        prometheus -> notebookController "Scrapes /metrics endpoint" "HTTP/8080"
-
-        # Integration
-        odhDashboard -> notebookController "Manages notebooks via Kubernetes API" "HTTPS/6443"
-        kubernetes -> notebookPods "Schedules and manages notebook workloads" "HTTPS/10250 mTLS"
+        prometheus -> metrics "Scrapes metrics" "HTTP/8080"
 
         # Istio routing
-        istio -> notebookPods "Routes traffic to notebooks (when enabled)" "HTTP/80"
+        istio -> notebookPods "Routes traffic to notebooks" "HTTP"
     }
 
     views {
@@ -57,22 +76,12 @@ workspace {
             autoLayout
         }
 
-        component controller "NotebookReconcilerComponents" {
-            include *
-            autoLayout
-        }
-
-        component culling "CullingComponents" {
-            include *
-            autoLayout
-        }
-
         styles {
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal ODH" {
+            element "Internal" {
                 background #7ed321
                 color #000000
             }
@@ -80,21 +89,18 @@ workspace {
                 background #4a90e2
                 color #ffffff
             }
-            element "Workload" {
-                background #f5a623
+            element "Controller" {
+                background #d5e8d4
                 color #000000
             }
-            element "Person" {
-                shape person
-                background #08427b
-                color #ffffff
+            element "Monitoring" {
+                background #e1d5e7
+                color #000000
+            }
+            element "Workload" {
+                background #dae8fc
+                color #000000
             }
         }
-
-        theme default
-    }
-
-    configuration {
-        scope softwaresystem
     }
 }

@@ -2,42 +2,78 @@ sequenceDiagram
     participant User as User/System
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS1.2+
     participant Webhook as Admission Webhook<br/>9443/TCP HTTPS mTLS
-    participant Operator as KubeRay Operator<br/>Controller
-    participant RayHead as Ray Head Pod<br/>GCS:6379/Dashboard:8265
-    participant RayWorker as Ray Worker Pods
+    participant Operator as KubeRay Operator
+    participant HeadPod as Ray Head Pod<br/>6379/TCP GCS, 8265/TCP Dashboard
+    participant WorkerPod as Ray Worker Pods
     participant JobPod as Submitter Job Pod
+    participant ServePod as Ray Serve<br/>8000/TCP HTTP
+    participant Redis as External Redis<br/>6379/TCP (Optional)
     participant Prometheus as Prometheus<br/>8080/TCP HTTP
 
-    Note over User,Prometheus: Flow 1: RayCluster Creation
-    User->>K8sAPI: Create RayCluster CR<br/>Auth: Bearer Token
-    K8sAPI->>Webhook: Validate RayCluster<br/>mTLS (K8s API server cert)
-    Webhook-->>K8sAPI: Validation Response
-    K8sAPI->>Operator: RayCluster Event<br/>ServiceAccount token
-    Operator->>K8sAPI: Create Head Pod<br/>ServiceAccount token
-    Operator->>K8sAPI: Create Worker Pods<br/>ServiceAccount token
-    Operator->>K8sAPI: Create Services<br/>ServiceAccount token
-    RayWorker->>RayHead: Register to GCS<br/>6379/TCP (Optional Redis password)
-    Prometheus->>Operator: Scrape /metrics<br/>HTTP (no auth)
+    rect rgb(240, 248, 255)
+        Note over User,WorkerPod: Flow 1: RayCluster Creation
+        User->>K8sAPI: POST RayCluster CR<br/>Auth: Bearer Token
+        K8sAPI->>Webhook: Validate RayCluster<br/>mTLS (K8s API cert)
+        Webhook-->>K8sAPI: Validation Response
+        K8sAPI-->>User: CR Created
 
-    Note over User,Prometheus: Flow 2: RayJob Submission
-    User->>K8sAPI: Create RayJob CR<br/>Auth: Bearer Token
-    Operator->>K8sAPI: Create RayCluster<br/>ServiceAccount token
-    Operator->>K8sAPI: Create K8s Job (submitter)<br/>ServiceAccount token
-    JobPod->>RayHead: Submit job via Dashboard<br/>8265/TCP HTTP (Optional token)
-    JobPod->>RayHead: Poll job status<br/>8265/TCP HTTP (Optional token)
-    RayHead-->>JobPod: Job completion status
+        Operator->>K8sAPI: Watch RayCluster CRs<br/>ServiceAccount Token
+        K8sAPI->>Operator: RayCluster Event
 
-    Note over User,Prometheus: Flow 3: RayService Zero-Downtime Update
-    Operator->>K8sAPI: Create RayCluster v1<br/>ServiceAccount token
-    Operator->>RayHead: Deploy Serve apps<br/>8265/TCP HTTP (Optional token)
-    User->>RayHead: Inference requests<br/>8000/TCP HTTP (via Service)
-    Operator->>K8sAPI: Create RayCluster v2<br/>ServiceAccount token
-    Operator->>RayHead: Health check v2 Serve<br/>8000/TCP HTTP
-    Operator->>K8sAPI: Update Service selector to v2<br/>ServiceAccount token
-    Operator->>K8sAPI: Delete RayCluster v1<br/>ServiceAccount token
+        Operator->>K8sAPI: Create Ray Head Pod<br/>ServiceAccount Token
+        Operator->>K8sAPI: Create Ray Worker Pods<br/>ServiceAccount Token
+        Operator->>K8sAPI: Create Head Service<br/>ServiceAccount Token
 
-    Note over User,Prometheus: Flow 4: Autoscaling
-    RayHead->>RayHead: Autoscaler checks GCS<br/>6379/TCP
-    RayHead->>K8sAPI: List worker Pods<br/>443/TCP HTTPS (Ray SA token)
-    RayHead->>K8sAPI: Create/Delete worker Pods<br/>443/TCP HTTPS (Ray SA token)
-    RayWorker->>RayHead: New worker registers to GCS<br/>6379/TCP
+        WorkerPod->>HeadPod: Connect to GCS<br/>6379/TCP<br/>Optional Redis Password
+        HeadPod->>Redis: Store GCS State<br/>Optional for FT
+
+        Prometheus->>Operator: Scrape /metrics<br/>8080/TCP HTTP
+    end
+
+    rect rgb(255, 250, 240)
+        Note over User,JobPod: Flow 2: RayJob Submission
+        User->>K8sAPI: POST RayJob CR<br/>Auth: Bearer Token
+        K8sAPI-->>User: RayJob Created
+
+        Operator->>K8sAPI: Watch RayJob CRs
+        K8sAPI->>Operator: RayJob Event
+
+        Operator->>K8sAPI: Create RayCluster<br/>ServiceAccount Token
+        Operator->>K8sAPI: Create K8s Job (Submitter)<br/>ServiceAccount Token
+
+        JobPod->>HeadPod: Submit Ray Job<br/>8265/TCP HTTP<br/>Optional Token
+        JobPod->>HeadPod: Poll Job Status<br/>8265/TCP HTTP
+        HeadPod-->>JobPod: Job Complete
+        JobPod-->>K8sAPI: Job Success
+    end
+
+    rect rgb(240, 255, 240)
+        Note over User,ServePod: Flow 3: RayService Zero-Downtime Update
+        User->>K8sAPI: Update RayService CR<br/>New Version
+
+        Operator->>K8sAPI: Create RayCluster v2<br/>ServiceAccount Token
+        Operator->>HeadPod: Deploy Serve Apps v2<br/>8265/TCP HTTP
+
+        Operator->>ServePod: Health Check v2<br/>8000/TCP HTTP
+        ServePod-->>Operator: Healthy
+
+        Operator->>K8sAPI: Update Service Selector<br/>Point to v2
+
+        User->>ServePod: Inference Request<br/>8000/TCP HTTP
+        ServePod-->>User: Response
+
+        Operator->>K8sAPI: Delete RayCluster v1<br/>ServiceAccount Token
+    end
+
+    rect rgb(255, 245, 245)
+        Note over HeadPod,WorkerPod: Flow 4: Autoscaling Workers
+        HeadPod->>HeadPod: Monitor Resource Usage<br/>Ray Autoscaler
+        HeadPod->>K8sAPI: List Worker Pods<br/>Ray SA Token
+        HeadPod->>K8sAPI: Create New Worker Pods<br/>Ray SA Token
+
+        WorkerPod->>HeadPod: Register with GCS<br/>6379/TCP
+        HeadPod->>Redis: Update Worker State
+
+        Note over HeadPod,WorkerPod: Scale Down on Idle
+        HeadPod->>K8sAPI: Delete Idle Workers<br/>Ray SA Token
+    end

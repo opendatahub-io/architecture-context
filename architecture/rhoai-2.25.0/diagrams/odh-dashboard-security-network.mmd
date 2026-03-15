@@ -1,93 +1,82 @@
 graph TB
-    subgraph External["EXTERNAL - Untrusted"]
-        Client[User Browser]
+    subgraph External["EXTERNAL (Untrusted)"]
+        User[Data Scientist<br/>Browser]
     end
 
-    subgraph Ingress["INGRESS - DMZ"]
-        Router["OpenShift Router<br/>443/TCP → 8443/TCP<br/>HTTPS TLS 1.2+<br/>Edge Termination"]
+    subgraph Ingress["INGRESS (DMZ)"]
+        Router["OpenShift Router<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ Edge"]
     end
 
-    subgraph Pod["APPLICATION POD - redhat-ods-applications"]
+    subgraph Pod["ODH Dashboard Pod (redhat-ods-applications)"]
         direction TB
 
-        OAuthProxy["OAuth Proxy Sidecar<br/>Port: 8443/TCP HTTPS<br/>TLS Cert: dashboard-proxy-tls<br/>SA: odh-dashboard<br/>Skip Auth: /metrics"]
+        subgraph OAuthContainer["OAuth Proxy Container"]
+            OAuthProxy["OAuth Proxy<br/>8443/TCP HTTPS<br/>TLS 1.2+<br/>SA: odh-dashboard"]
+        end
 
-        Backend["Dashboard Backend<br/>Port: 8080/TCP HTTP<br/>Node.js 20 Fastify<br/>SA: odh-dashboard<br/>User: 1001<br/>CPU: 1000m, Mem: 2Gi<br/>Health: /api/health"]
+        subgraph BackendContainer["Backend Container"]
+            Backend["Dashboard Backend<br/>8080/TCP HTTP<br/>Node.js 20 Fastify<br/>SA: odh-dashboard"]
+        end
+
+        OAuthProxy -->|HTTP/8080<br/>Bearer Token<br/>Localhost| Backend
     end
 
-    subgraph ControlPlane["KUBERNETES CONTROL PLANE - Trusted"]
-        direction TB
+    subgraph ClusterServices["CLUSTER SERVICES (Internal)"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Auth"]
 
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+<br/>RBAC: odh-dashboard ClusterRole<br/>SA Token Validation"]
+        OAuthServer["OpenShift OAuth<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>OAuth 2.0"]
 
-        OAuthServer["OpenShift OAuth Server<br/>6443/TCP HTTPS TLS 1.2+<br/>OAuth 2.0 Flow<br/>Issues Bearer Tokens"]
-    end
+        Prometheus["Prometheus/Thanos<br/>9092/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Token"]
 
-    subgraph Monitoring["MONITORING - Internal"]
-        Prometheus["Prometheus/Thanos<br/>9092/TCP HTTPS TLS 1.2+<br/>SA Token Auth - dashboard to prom<br/>No Auth - prom to dashboard /metrics"]
+        ModelRegistry["Model Registry<br/>8080/443 TCP<br/>HTTP/HTTPS<br/>ServiceAccount Token"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        direction TB
+        Docs["External Docs<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Public"]
 
-        ModelReg["Model Registry Services<br/>443/TCP or 8080/TCP<br/>HTTPS/HTTP<br/>TLS 1.2+ optional<br/>SA Token Auth"]
-
-        Docs["External Documentation<br/>443/TCP HTTPS TLS 1.2+<br/>No Auth<br/>Public URLs"]
-
-        Segment["Segment Analytics<br/>443/TCP HTTPS TLS 1.2+<br/>API Key Auth<br/>Optional Telemetry"]
+        Segment["Segment Analytics<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key"]
     end
 
-    subgraph ODHComponents["INTERNAL ODH COMPONENTS"]
-        direction LR
-
-        ODHOp[opendatahub-operator<br/>DataScienceCluster]
-        Notebooks[Kubeflow Notebooks<br/>Notebook CRs]
-        KServe[KServe<br/>InferenceService]
-        MR[Model Registry Operator<br/>ModelRegistry CRs]
+    subgraph Secrets["SECRETS & CERTIFICATES"]
+        ProxyTLS["dashboard-proxy-tls<br/>kubernetes.io/tls<br/>Auto-rotate: Yes"]
+        OAuthCookie["dashboard-oauth-config<br/>Opaque<br/>Session Secret"]
+        OAuthClient["dashboard-oauth-client<br/>Opaque<br/>Client Secret"]
+        SAToken["ServiceAccount Token<br/>Auto-rotate: Yes"]
     end
 
-    %% External Flow
-    Client -->|HTTPS/443<br/>TLS 1.2+<br/>No Auth| Router
-    Router -->|HTTPS/8443<br/>TLS 1.2+| OAuthProxy
+    %% External to Ingress
+    User -->|"HTTPS/443<br/>TLS 1.2+"| Router
 
-    %% OAuth Flow
-    OAuthProxy -->|HTTPS/6443<br/>OAuth 2.0 Flow<br/>Redirect for Auth| OAuthServer
-    OAuthServer -.->|Bearer Token<br/>in Cookie| OAuthProxy
+    %% Ingress to Pod
+    Router -->|"HTTPS/8443<br/>TLS 1.2+<br/>Re-encrypted"| OAuthProxy
 
-    %% Internal Pod Communication
-    OAuthProxy -->|HTTP/8080<br/>Pod-local<br/>Bearer Token in Header| Backend
+    %% OAuth Flows
+    OAuthProxy -->|"OAuth Flow<br/>HTTPS/6443<br/>TLS 1.2+"| OAuthServer
 
-    %% Backend to K8s API
-    Backend -->|HTTPS/6443<br/>TLS 1.2+<br/>SA Token| K8sAPI
+    %% Backend to Services
+    Backend -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount Token"| K8sAPI
+    Backend -->|"HTTPS/9092<br/>TLS 1.2+<br/>ServiceAccount Token"| Prometheus
+    Backend -->|"HTTP/HTTPS<br/>ServiceAccount Token"| ModelRegistry
+    Backend -.->|"HTTPS/443<br/>TLS 1.2+"| Docs
+    Backend -.->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| Segment
 
-    %% Metrics Flow
-    Prometheus -->|HTTPS/8443<br/>GET /metrics<br/>No Auth - skip-auth-regex| OAuthProxy
-    Backend -->|HTTPS/9092<br/>TLS 1.2+<br/>SA Token| Prometheus
-
-    %% Backend to External Services
-    Backend -->|HTTPS/443 or HTTP/8080<br/>TLS 1.2+ optional<br/>SA Token| ModelReg
-    Backend -->|HTTPS/443<br/>TLS 1.2+<br/>No Auth| Docs
-    Backend -->|HTTPS/443<br/>TLS 1.2+<br/>API Key| Segment
-
-    %% Backend to ODH Components (via K8s API -)
-    Backend -.->|via K8s API -<br/>Read/Manage CRs| ODHOp
-    Backend -.->|via K8s API -<br/>Create/Manage| Notebooks
-    Backend -.->|via K8s API -<br/>Read Status| KServe
-    Backend -.->|via K8s API -<br/>Manage| MR
+    %% Secret Usage
+    OAuthProxy -.->|Uses| ProxyTLS
+    OAuthProxy -.->|Uses| OAuthCookie
+    OAuthProxy -.->|Uses| OAuthClient
+    Backend -.->|Uses| SAToken
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef pod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef monitoring fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef odhcomponent fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef clusterservice fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef secret fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
-    class Client external
+    class User external
     class Router ingress
     class OAuthProxy,Backend pod
-    class K8sAPI,OAuthServer controlplane
-    class Prometheus monitoring
-    class ModelReg,Docs,Segment externalservice
-    class ODHOp,Notebooks,KServe,MR odhcomponent
+    class K8sAPI,OAuthServer,Prometheus,ModelRegistry clusterservice
+    class Docs,Segment externalservice
+    class ProxyTLS,OAuthCookie,OAuthClient,SAToken secret

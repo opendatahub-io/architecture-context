@@ -1,183 +1,193 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and executes ML pipeline workflows for data preparation, model training, and experimentation"
+        user = person "Data Scientist" "Creates and manages ML pipeline workflows for data preparation, model training, validation, and experimentation"
 
-        dspo = softwareSystem "Data Science Pipelines Operator" "Manages lifecycle of Data Science Pipeline applications on OpenShift/Kubernetes clusters" {
-            controller = container "DSPO Controller" "Reconciles DataSciencePipelinesApplication CRs and deploys DSP components" "Go Operator" {
+        dspo = softwareSystem "Data Science Pipelines Operator" "Manages lifecycle of Data Science Pipeline applications based on Kubeflow Pipelines" {
+            controller = container "DSPO Controller" "Reconciles DataSciencePipelinesApplication CRs and manages component lifecycle" "Go Operator" {
                 tags "Operator"
             }
-            webhookServer = container "Webhook Server" "Validates and mutates PipelineVersion resources" "Go Service" {
+            webhook = container "Webhook Server" "Validates and mutates PipelineVersion resources" "Go Service" {
                 tags "Operator"
             }
-        }
-
-        dspaInstance = softwareSystem "DSPA Instance" "Namespace-scoped Data Science Pipeline stack for executing ML workflows" {
             apiServer = container "API Server" "Main DSP API for pipeline management, execution, and artifact access" "Go Service" {
-                tags "Application"
-            }
-            workflowController = container "Argo Workflow Controller" "Namespace-scoped controller for pipeline orchestration" "Go Controller" {
-                tags "Application"
+                tags "Core"
             }
             persistenceAgent = container "Persistence Agent" "Syncs workflow execution status to database" "Go Service" {
-                tags "Application"
+                tags "Core"
             }
             scheduledWorkflow = container "Scheduled Workflow Controller" "Manages scheduled/recurring pipeline executions" "Go Service" {
-                tags "Application"
+                tags "Core"
             }
-            mlmdGrpc = container "MLMD gRPC Server" "ML Metadata service for artifact lineage tracking" "Go Service" {
-                tags "Application"
+            workflowController = container "Workflow Controller" "Namespace-scoped Argo controller for pipeline orchestration" "Argo Workflows" {
+                tags "Core"
             }
-            mariadb = container "MariaDB" "Metadata database for pipeline definitions and execution history" "MariaDB 10.3+" {
-                tags "Database"
+            mlmdGrpc = container "MLMD gRPC" "ML Metadata service for artifact lineage tracking" "gRPC Service" {
+                tags "Optional"
             }
-            minio = container "Minio" "S3-compatible object storage for pipeline artifacts" "Minio" {
-                tags "Storage"
+            mlmdEnvoy = container "MLMD Envoy" "OAuth-protected proxy for MLMD service" "Envoy Proxy" {
+                tags "Optional"
             }
-            ui = container "ML Pipelines UI" "Upstream KFP UI for pipeline visualization" "React Frontend" {
-                tags "UI"
+            ui = container "ML Pipelines UI" "Web frontend for pipeline visualization" "React/TypeScript" {
+                tags "Optional"
             }
         }
 
-        k8s = softwareSystem "Kubernetes/OpenShift" "Container orchestration platform" {
-            tags "External"
+        # External Dependencies (Required)
+        kubernetes = softwareSystem "Kubernetes/OpenShift" "Container orchestration platform" "External" {
+            tags "Platform"
+        }
+        argoWorkflows = softwareSystem "Argo Workflows" "Workflow orchestration engine for DSP v2" "External" {
+            tags "External Required"
+        }
+        s3Storage = softwareSystem "S3-compatible Storage" "Pipeline artifact storage (Minio or AWS S3)" "External" {
+            tags "External Required"
+        }
+        database = softwareSystem "MySQL/MariaDB" "Metadata persistence for pipeline definitions and execution history" "External" {
+            tags "External Required"
+        }
+        oauthProxy = softwareSystem "OAuth Proxy" "OpenShift authentication for external access" "External" {
+            tags "External Required"
         }
 
-        argoWorkflows = softwareSystem "Argo Workflows" "Workflow orchestration engine for DSP v2" {
-            tags "External"
+        # Optional External Dependencies
+        tektonPipelines = softwareSystem "Tekton Pipelines" "Workflow orchestration for DSP v1 (legacy)" "External" {
+            tags "External Optional"
+        }
+        certManager = softwareSystem "cert-manager" "TLS certificate provisioning" "External" {
+            tags "External Optional"
+        }
+        serviceMesh = softwareSystem "Service Mesh (Istio)" "Optional mTLS and traffic management" "External" {
+            tags "External Optional"
         }
 
-        externalS3 = softwareSystem "External S3 Storage" "Production artifact storage (AWS S3 or compatible)" {
-            tags "External"
+        # Internal ODH Components
+        odhDashboard = softwareSystem "ODH Dashboard" "Unified web UI for Open Data Hub platform" "Internal ODH" {
+            tags "Internal"
+        }
+        kserve = softwareSystem "KServe" "Model serving platform for deploying trained models" "Internal ODH" {
+            tags "Internal"
+        }
+        ray = softwareSystem "Ray" "Distributed computing framework for ML workloads" "Internal ODH" {
+            tags "Internal"
         }
 
-        externalDB = softwareSystem "External Database" "Production metadata database (MySQL/MariaDB)" {
-            tags "External"
+        # External Services
+        containerRegistry = softwareSystem "Container Registry" "Stores pipeline step container images" "External" {
+            tags "External Service"
         }
 
-        containerRegistry = softwareSystem "Container Registry" "Source for pipeline step container images" {
-            tags "External"
-        }
+        # Relationships - User
+        user -> dspo "Creates DataSciencePipelinesApplication via kubectl/oc"
+        user -> apiServer "Submits and manages pipelines via API" "HTTPS/OAuth"
+        user -> ui "Visualizes pipelines and runs" "HTTPS/OAuth"
+        user -> odhDashboard "Accesses DSP UI integration" "HTTPS"
 
-        odhDashboard = softwareSystem "ODH Dashboard" "Open Data Hub web console for DSP UI integration" {
-            tags "Internal ODH"
-        }
+        # Relationships - DSPO Core
+        controller -> kubernetes "Watches DSPA CRs and manages resources" "HTTPS/6443"
+        controller -> apiServer "Deploys and configures"
+        controller -> persistenceAgent "Deploys and configures"
+        controller -> scheduledWorkflow "Deploys and configures"
+        controller -> workflowController "Deploys namespace-scoped instance"
+        controller -> mlmdGrpc "Optionally deploys"
+        controller -> mlmdEnvoy "Optionally deploys"
+        controller -> ui "Optionally deploys"
+        controller -> database "Optionally deploys MariaDB"
+        controller -> s3Storage "Optionally deploys Minio"
 
-        kserve = softwareSystem "KServe" "Model serving platform for ML inference" {
-            tags "Internal ODH"
-        }
+        webhook -> kubernetes "Validates/mutates Pipeline and PipelineVersion CRs" "HTTPS/8443"
 
-        ray = softwareSystem "Ray" "Distributed computing framework for ML workloads" {
-            tags "Internal ODH"
-        }
+        # Relationships - API Server
+        apiServer -> database "Stores pipeline metadata" "MySQL/3306"
+        apiServer -> s3Storage "Stores and retrieves pipeline artifacts" "S3 API"
+        apiServer -> kubernetes "Creates and manages Workflow CRs" "HTTPS/6443"
+        apiServer -> mlmdGrpc "Records artifact lineage" "gRPC/8080"
+        apiServer -> oauthProxy "Protected by OAuth authentication" "HTTP/8888"
 
-        serviceMesh = softwareSystem "Service Mesh (Istio)" "Service mesh for mTLS and traffic management" {
-            tags "Internal ODH"
-        }
+        # Relationships - Workflow Execution
+        workflowController -> kubernetes "Creates pipeline step pods" "HTTPS/6443"
+        workflowController -> argoWorkflows "Uses for workflow orchestration (v2)"
+        persistenceAgent -> kubernetes "Watches Workflow CRs" "HTTPS/6443"
+        persistenceAgent -> database "Syncs execution status" "MySQL/3306"
+        scheduledWorkflow -> kubernetes "Creates scheduled Workflow CRs" "HTTPS/6443"
 
-        prometheus = softwareSystem "Prometheus" "Monitoring and metrics collection" {
-            tags "Internal ODH"
-        }
+        # Relationships - MLMD
+        mlmdGrpc -> database "Stores artifact metadata and lineage" "MySQL/3306"
+        mlmdEnvoy -> mlmdGrpc "Proxies gRPC requests with OAuth" "gRPC/8080"
+        mlmdEnvoy -> oauthProxy "Protected by OAuth authentication"
 
-        oauthProxy = softwareSystem "OpenShift OAuth" "Authentication and authorization service" {
-            tags "External"
-        }
+        # Relationships - UI
+        ui -> apiServer "Fetches pipeline data" "HTTP/8888"
+        ui -> oauthProxy "Protected by OAuth authentication"
+        odhDashboard -> ui "Embeds DSP UI"
 
-        // User interactions
-        dataScientist -> dspaInstance "Creates and manages ML pipelines via API or UI" "HTTPS/443 OAuth"
-        dataScientist -> odhDashboard "Accesses DSP UI through ODH Dashboard" "HTTPS/443"
+        # Relationships - External Dependencies
+        dspo -> argoWorkflows "Requires for DSP v2 pipelines"
+        dspo -> tektonPipelines "Requires for DSP v1 pipelines (legacy)"
+        dspo -> oauthProxy "Uses for external authentication"
+        dspo -> certManager "Optionally uses for TLS certificates"
+        dspo -> serviceMesh "Optionally integrates for mTLS"
 
-        // DSPO to DSPA
-        controller -> k8s "Watches DataSciencePipelinesApplication CRs" "HTTPS/6443 TLS1.2+"
-        controller -> dspaInstance "Deploys and manages DSPA components" "Kubernetes API"
-        webhookServer -> k8s "Validates/mutates PipelineVersion CRs" "HTTPS/8443 TLS1.2+"
+        # Relationships - Integration Points
+        apiServer -> kserve "Deploys models via InferenceService CRs" "K8s API"
+        apiServer -> ray "Submits distributed compute jobs via Ray CRs" "K8s API"
 
-        // DSPA internal dependencies
-        apiServer -> mariadb "Stores pipeline metadata" "MySQL/3306"
-        apiServer -> minio "Stores pipeline artifacts" "HTTP/9000"
-        apiServer -> mlmdGrpc "Tracks artifact lineage (optional)" "gRPC/8080"
-        apiServer -> k8s "Creates Workflow CRs" "HTTPS/6443 TLS1.2+"
-
-        workflowController -> k8s "Watches Workflows, creates pods" "HTTPS/6443 TLS1.2+"
-        persistenceAgent -> k8s "Watches Workflow status" "HTTPS/6443 TLS1.2+"
-        persistenceAgent -> mariadb "Syncs execution status" "MySQL/3306"
-        scheduledWorkflow -> k8s "Creates scheduled Workflows" "HTTPS/6443 TLS1.2+"
-
-        mlmdGrpc -> mariadb "Stores metadata" "MySQL/3306"
-
-        // External dependencies
-        apiServer -> externalS3 "Uses for production artifact storage (optional)" "HTTPS/443 TLS1.2+"
-        apiServer -> externalDB "Uses for production metadata (optional)" "MySQL/3306 TLS1.2+"
-
-        workflowController -> argoWorkflows "Leverages Argo for workflow orchestration" "In-cluster"
-        workflowController -> containerRegistry "Pulls pipeline step images" "HTTPS/443 TLS1.2+"
-
-        // Integration points
-        odhDashboard -> apiServer "Provides DSP UI integration" "HTTPS/443 OAuth"
-        apiServer -> kserve "Deploys inference services from pipelines" "Kubernetes API"
-        apiServer -> ray "Launches distributed compute jobs" "Kubernetes API"
-
-        apiServer -> oauthProxy "Authenticates external requests" "OAuth2"
-        dspaInstance -> serviceMesh "Optional mTLS integration" "Service Mesh"
-
-        controller -> prometheus "Exposes metrics" "HTTP/8080"
-        apiServer -> prometheus "Exposes metrics" "HTTP/8080"
+        # Relationships - External Services
+        workflowController -> containerRegistry "Pulls pipeline step images" "HTTPS/443"
     }
 
     views {
         systemContext dspo "DSPOSystemContext" {
             include *
-            autoLayout lr
-        }
-
-        systemContext dspaInstance "DSPASystemContext" {
-            include *
-            autoLayout lr
+            autoLayout
+            description "System context diagram for Data Science Pipelines Operator showing external dependencies and integrations"
         }
 
         container dspo "DSPOContainers" {
             include *
-            autoLayout lr
-        }
-
-        container dspaInstance "DSPAContainers" {
-            include *
-            autoLayout lr
+            autoLayout
+            description "Container diagram showing DSPO internal components and their interactions"
         }
 
         styles {
+            element "Software System" {
+                background #1168bd
+                color #ffffff
+            }
             element "Person" {
                 shape person
                 background #08427b
                 color #ffffff
             }
-            element "External" {
-                background #999999
-                color #ffffff
-            }
-            element "Internal ODH" {
-                background #7ed321
-                color #000000
-            }
             element "Operator" {
                 background #4a90e2
                 color #ffffff
             }
-            element "Application" {
-                background #50e3c2
+            element "Core" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Optional" {
+                background #7ec8e3
                 color #000000
             }
-            element "Database" {
-                shape cylinder
-                background #e8e8e8
+            element "External Required" {
+                background #999999
+                color #ffffff
+            }
+            element "External Optional" {
+                background #cccccc
                 color #000000
             }
-            element "Storage" {
-                shape cylinder
+            element "External Service" {
                 background #f5a623
                 color #ffffff
             }
-            element "UI" {
-                background #bd10e0
+            element "Internal" {
+                background #7ed321
+                color #ffffff
+            }
+            element "Platform" {
+                background #326ce5
                 color #ffffff
             }
         }

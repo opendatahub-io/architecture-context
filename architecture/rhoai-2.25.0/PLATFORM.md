@@ -1,151 +1,132 @@
 # Platform: Red Hat OpenShift AI 2.25.0
 
 ## Metadata
-- **Distribution**: RHOAI (Red Hat OpenShift AI)
+- **Distribution**: RHOAI
 - **Version**: 2.25.0
+- **Release Date**: 2026-03
 - **Base Platform**: OpenShift Container Platform 4.11+
 - **Components Analyzed**: 15
-- **Analysis Date**: 2026-03-13
 
 ## Platform Overview
 
-Red Hat OpenShift AI (RHOAI) 2.25.0 is a comprehensive AI/ML platform built on OpenShift that provides end-to-end capabilities for the complete machine learning lifecycle—from data preparation and model training through deployment and monitoring. The platform integrates 15 core components that work together to deliver notebook-based development environments, distributed training, model serving, pipeline orchestration, model registry, and AI safety/explainability features.
+Red Hat OpenShift AI (RHOAI) 2.25.0 is a comprehensive enterprise AI/ML platform that provides an integrated environment for developing, training, serving, and monitoring machine learning models at scale. The platform extends Red Hat OpenShift with specialized components for data science workflows, including interactive development environments (Jupyter notebooks, VS Code, RStudio), distributed training frameworks (PyTorch, TensorFlow, MPI), model serving infrastructure (KServe, ModelMesh), pipeline orchestration (Data Science Pipelines), and AI governance tools (TrustyAI, Model Registry).
 
-The platform follows a cloud-native, Kubernetes-operator-based architecture where each component is deployed and managed declaratively through Custom Resource Definitions (CRDs). Components communicate via Kubernetes APIs, REST/gRPC protocols, and leverage OpenShift-specific features including Routes for external access, OAuth for authentication, and integration with service mesh (Istio/Maistra) for secure service-to-service communication. The platform supports multiple hardware accelerators (NVIDIA GPUs, AMD ROCm, Intel Gaudi) and provides both serverless (Knative) and traditional Kubernetes deployment modes for model serving.
+The platform architecture is built on cloud-native principles with Kubernetes-native operators managing the lifecycle of each component. RHOAI integrates deeply with OpenShift services including OAuth for authentication, service mesh (Istio/Maistra) for secure communication, Prometheus for observability, and Routes for external access. The platform supports both CPU and GPU accelerators (NVIDIA CUDA, AMD ROCm, Intel Gaudi) and enables multi-tenant data science environments with resource quotas, workload queueing (Kueue), and role-based access control.
 
-RHOAI is designed for multi-tenant enterprise environments with namespace-level isolation, RBAC-based access control, and integration with OpenShift's security features including SecurityContextConstraints, pod security standards, and FIPS-compliant cryptography throughout the stack.
+Key platform capabilities include: serverless model inference with auto-scaling, distributed training across multiple nodes, feature stores for ML feature management, model registries for versioning and metadata tracking, explainability and bias detection, pipeline orchestration for MLOps workflows, and integration with NVIDIA NIM for enterprise LLM deployment. All components are built with FIPS compliance, run as non-root containers, and support disconnected/air-gapped deployments.
 
 ## Component Inventory
 
 | Component | Type | Version | Purpose |
 |-----------|------|---------|---------|
-| ODH Dashboard | Frontend/Backend | v1.21.0-rhods-4281 | Web UI for platform management and user interaction |
-| Notebook Controller | Operator | v1.27.0-rhods-1295 | Manages Jupyter notebook instances lifecycle |
-| Workbench Images | Container Images | v2.25.2-55 | JupyterLab, VS Code, RStudio environments with ML frameworks |
-| Data Science Pipelines Operator | Operator | rhoai-2.25 (763811f) | Kubeflow Pipelines for workflow orchestration |
-| KServe | Operator/Runtime | 4211a5da7 | Model serving platform with serverless and raw modes |
-| ODH Model Controller | Operator | 1.27.0-rhods-1121 | Extends KServe with OpenShift integration and service mesh |
-| ModelMesh Serving | Operator/Runtime | 1.27.0-rhods-480 | Multi-model serving with high-density model placement |
-| Model Registry Operator | Operator | 0b48221 | Manages model metadata and versioning services |
-| Training Operator | Operator | 1.9.0 (3a1af789) | Distributed ML training (PyTorch, TensorFlow, XGBoost, MPI, JAX, PaddlePaddle) |
-| KubeRay Operator | Operator | f10d68b1 | Manages Ray clusters for distributed computing |
-| CodeFlare Operator | Operator | 1.15.0 | Ray cluster orchestration with OAuth and mTLS integration |
-| Kueue | Operator | 7f2f72e51 | Job queueing and resource quota management |
-| Feast Operator | Operator | 0.54.0 (aad1ebcd0) | Feature store for ML feature management |
-| TrustyAI Service Operator | Operator | d113dae | AI explainability, bias detection, LM evaluation, guardrails |
-| Llama Stack Operator | Operator | 0.3.0 | Manages Llama Stack inference servers (Ollama, vLLM, TGI) |
+| CodeFlare Operator | Operator | 1.15.0 | Distributed AI/ML workload orchestration with RayCluster and AppWrapper resources |
+| Data Science Pipelines Operator | Operator | rhoai-2.25 (763811f) | Lifecycle management of Kubeflow Pipelines for ML workflow orchestration |
+| Feast | Operator + Service | 0.54.0 | Feature store for ML feature management with online and offline serving |
+| KServe | Operator + Runtime | 4211a5da7 | Serverless model inference platform with autoscaling and traffic management |
+| Kubeflow Notebook Controller | Operator | v1.27.0-rhods-1295 | Jupyter notebook instance lifecycle management |
+| KubeRay Operator | Operator | f10d68b1 | Ray distributed computing cluster management for ML workloads |
+| Kueue | Operator | 7f2f72e51 | Job queueing and resource quota management for batch workloads |
+| Llama Stack K8s Operator | Operator | 0.3.0 | Llama Stack inference server deployment and lifecycle management |
+| ModelMesh Serving | Operator + Runtime | 1.27.0-rhods-480 | Multi-model serving with high-density model placement |
+| Model Registry Operator | Operator | 0b48221 | ML model metadata storage and versioning with ML Metadata backend |
+| Notebooks (Workbench Images) | Container Images | v2.25.2-55 | JupyterLab, VS Code, and RStudio development environments |
+| ODH Dashboard | Web Application | v1.21.0-18-rhods-4281 | Primary web UI for platform management and resource creation |
+| ODH Model Controller | Operator | 1.27.0-rhods-1121 | KServe/ModelMesh integration with OpenShift Routes, service mesh, and authentication |
+| Training Operator | Operator | 1.9.0 (3a1af789) | Distributed ML training for PyTorch, TensorFlow, XGBoost, MPI, JAX, PaddlePaddle |
+| TrustyAI Service Operator | Operator | d113dae | AI explainability, bias detection, LM evaluation, and guardrails orchestration |
 
 ## Component Relationships
 
 ### Dependency Graph
 
 ```
-User/Data Scientist
-  └─> ODH Dashboard (Web UI)
-       ├─> Notebook Controller ─> Workbench Images (Jupyter/VS Code/RStudio)
-       ├─> Data Science Pipelines Operator
-       │    ├─> Argo Workflows (pipeline execution)
-       │    ├─> Model Registry Operator (model tracking)
-       │    └─> KServe (model deployment from pipelines)
-       ├─> Model Registry Operator
-       │    ├─> PostgreSQL/MySQL (metadata storage)
-       │    └─> OpenShift OAuth (authentication)
-       ├─> KServe
-       │    ├─> Knative Serving (serverless mode)
-       │    ├─> Istio (service mesh, traffic management)
-       │    ├─> ODH Model Controller (OpenShift integration)
-       │    └─> Model Registry (model references)
-       ├─> ModelMesh Serving
-       │    ├─> ETCD (distributed state)
-       │    ├─> ODH Model Controller (OpenShift integration)
-       │    └─> S3 Storage (model artifacts)
-       ├─> Training Operator
-       │    ├─> Kueue (job queueing)
-       │    ├─> Volcano/Scheduler Plugins (gang scheduling)
-       │    └─> Model Registry (post-training model registration)
-       ├─> CodeFlare Operator
-       │    ├─> KubeRay Operator (Ray cluster management)
-       │    ├─> Kueue (AppWrapper scheduling)
-       │    └─> OpenShift OAuth (Ray dashboard auth)
-       ├─> Feast Operator
-       │    ├─> PostgreSQL/Redis (feature storage)
-       │    └─> S3/GCS (offline data)
-       ├─> TrustyAI Service Operator
-       │    ├─> KServe (model monitoring)
-       │    ├─> ModelMesh (payload processing)
-       │    └─> Kueue (LM evaluation jobs)
-       └─> Llama Stack Operator
-            └─> Ollama/vLLM/TGI (inference backends)
+ODH Dashboard → Kubeflow Notebook Controller (create Notebook CRs)
+              → KServe (create InferenceService CRs)
+              → Model Registry Operator (create ModelRegistry CRs)
+              → Data Science Pipelines Operator (create DSPA CRs)
+              → Training Operator (create PyTorchJob/TFJob CRs)
 
-ODH Model Controller (extends)
-  └─> KServe + ModelMesh
-       ├─> Creates OpenShift Routes
-       ├─> Creates Istio VirtualServices
-       ├─> Creates AuthConfigs (Authorino)
-       ├─> Creates ServiceMonitors (Prometheus)
-       └─> Creates NetworkPolicies
+KServe → Knative Serving (serverless mode)
+       → Istio (traffic routing, mTLS)
+       → ODH Model Controller (OpenShift Routes, auth, monitoring)
+       → Model Registry (model metadata)
 
-KubeRay Operator (provides base Ray clusters)
-  └─> CodeFlare Operator (adds OAuth, mTLS, networking)
+ODH Model Controller → KServe (watch InferenceService)
+                     → ModelMesh (watch ServingRuntime)
+                     → Istio (create VirtualServices, Gateways)
+                     → Authorino (create AuthConfigs)
+                     → Prometheus Operator (create ServiceMonitors)
 
-Kueue (manages admission for)
-  ├─> Training Operator jobs
-  ├─> CodeFlare AppWrappers
-  └─> TrustyAI LM Eval jobs
+Data Science Pipelines → Argo Workflows (pipeline execution in v2)
+                        → KServe (model deployment from pipelines)
+                        → Model Registry (model artifact storage)
+                        → S3-compatible storage (pipeline artifacts)
+
+Training Operator → Kueue (workload queueing)
+                  → Volcano/Scheduler Plugins (gang scheduling)
+                  → Model Registry (trained model storage)
+
+CodeFlare Operator → KubeRay (RayCluster CRD)
+                   → Kueue (AppWrapper scheduling)
+                   → OpenShift OAuth (Ray dashboard access)
+
+KubeRay → Kueue (gang scheduling)
+        → Volcano/YuniKorn (alternative schedulers)
+
+Kueue → Training Operator (job admission)
+      → CodeFlare Operator (AppWrapper admission)
+      → KubeRay (RayJob/RayCluster admission)
+      → Data Science Pipelines (pipeline scheduling)
+
+TrustyAI Service Operator → KServe (monitor InferenceService)
+                           → ModelMesh (payload processors)
+                           → Kueue (LM evaluation jobs)
+
+Feast → PostgreSQL/Redis (feature storage)
+      → S3/GCS (offline data)
+
+Model Registry Operator → PostgreSQL/MySQL (ML Metadata backend)
+                        → OpenShift OAuth (authentication)
+
+ModelMesh → ETCD (cluster coordination)
+          → S3-compatible storage (model artifacts)
+          → KServe (shared InferenceService CRD)
+
+Llama Stack Operator → Ollama/vLLM/TGI (inference backends)
+                      → OpenShift Ingress (external access)
 ```
 
 ### Central Components
 
-**Core Infrastructure (highest dependencies):**
-1. **Kubernetes API Server** - All components interact with K8s API for resource management
-2. **ODH Dashboard** - Primary user interface for all platform features
-3. **OpenShift OAuth** - Authentication for external access across components
-4. **Istio/Service Mesh** - Service-to-service communication for KServe, ModelMesh
-5. **Prometheus** - Metrics collection from all components
+**Core Infrastructure** (highest number of dependencies):
+1. **ODH Dashboard** - Primary user interface, creates resources across all components
+2. **KServe** - Model serving hub integrating with pipelines, registry, and monitoring
+3. **ODH Model Controller** - Service mesh and authentication orchestrator for inference
+4. **Kueue** - Workload admission controller for training, pipelines, and distributed workloads
 
-**Model Serving Hub:**
-1. **KServe** - Primary model serving platform
-2. **ODH Model Controller** - Extends KServe with OpenShift/mesh integration
-3. **ModelMesh Serving** - Alternative high-density serving
-4. **Model Registry** - Centralized model metadata and versioning
+**Storage & Metadata** (critical shared services):
+1. **Model Registry** - Centralized model metadata and versioning
+2. **S3-compatible storage** - Shared artifact storage for pipelines, models, and data
+3. **PostgreSQL/MySQL** - Backend for Model Registry, DSPA, Feast
 
-**Distributed Computing Hub:**
-1. **Training Operator** - Framework-specific training jobs
-2. **KubeRay/CodeFlare** - Ray-based distributed workloads
-3. **Kueue** - Resource quota and queue management across workloads
+**Compute Orchestration**:
+1. **Kubeflow Notebook Controller** - Interactive development environment management
+2. **Training Operator** - Distributed training orchestration
+3. **KubeRay** - Distributed computing for Ray workloads
 
 ### Integration Patterns
 
-**Pattern 1: CRD-Based Resource Management**
-- Components create/watch Kubernetes Custom Resources
-- Controllers reconcile desired state from CRs
-- Example: ODH Dashboard → creates Notebook CR → Notebook Controller reconciles → StatefulSet created
-
-**Pattern 2: Webhook-Based Admission Control**
-- Validating webhooks ensure resource correctness
-- Mutating webhooks inject defaults and sidecars
-- Example: Training Operator validates PyTorchJob specs before admission
-
-**Pattern 3: Operator Extension Pattern**
-- Base operator provides core functionality
-- Extension operator adds platform-specific features
-- Example: KServe (base) + ODH Model Controller (OpenShift integration)
-
-**Pattern 4: OAuth Proxy Sidecar Pattern**
-- OpenShift OAuth proxy container provides authentication
-- Backend service handles business logic without auth concerns
-- Example: Model Registry, TrustyAI Service, ODH Dashboard
-
-**Pattern 5: Service Mesh Integration**
-- Istio VirtualServices for traffic routing
-- PeerAuthentication for mTLS enforcement
-- AuthorizationPolicies for access control
-- Example: KServe InferenceServices exposed via Istio Gateway
-
-**Pattern 6: Event-Based Communication**
-- Kubernetes Watch API for resource change notifications
-- WebSocket streams for real-time updates
-- Example: ODH Dashboard watches CRD status changes
+| Pattern | Components | Mechanism | Purpose |
+|---------|------------|-----------|---------|
+| CRD Watch & Reconciliation | All operators | Kubernetes watch API | React to resource changes |
+| Service Mesh Integration | KServe, ODH Model Controller, TrustyAI | Istio VirtualServices, DestinationRules | Traffic routing, mTLS, telemetry |
+| OpenShift Route Creation | KServe, Model Registry, DSPA, TrustyAI | route.openshift.io API | External HTTPS access |
+| OAuth Authentication | Dashboard, Model Registry, DSPA, CodeFlare | OpenShift OAuth Proxy sidecar | User authentication |
+| Metrics Collection | All operators | Prometheus ServiceMonitor/PodMonitor | Observability |
+| Webhook Admission Control | KServe, Training Operator, DSPA, CodeFlare | ValidatingWebhook, MutatingWebhook | Resource validation |
+| Gang Scheduling | Training Operator, KubeRay, CodeFlare | Volcano/Scheduler Plugins PodGroups | Coordinated pod scheduling |
+| Workload Queueing | Kueue | ClusterQueue, LocalQueue | Resource quota management |
+| Model Artifact Storage | KServe, ModelMesh, DSPA, Training Operator | S3 API | Model and data persistence |
 
 ## Platform Network Architecture
 
@@ -153,172 +134,190 @@ Kueue (manages admission for)
 
 | Namespace | Purpose | Components |
 |-----------|---------|------------|
-| redhat-ods-applications | RHOAI platform services | ODH Dashboard, Notebook Controller, operators |
-| opendatahub | Alternative ODH platform namespace | Same components (ODH distribution) |
-| istio-system or openshift-servicemesh | Service mesh control plane | Istio Pilot, Ingress Gateway |
-| User namespaces (data science projects) | Tenant workloads | Notebooks, InferenceServices, training jobs, pipelines |
-| openshift-monitoring | Platform monitoring | Prometheus, Thanos, AlertManager |
+| redhat-ods-applications | Core platform services | ODH Dashboard, operators, controllers |
+| opendatahub | Alternative core namespace | Used in ODH distribution |
+| istio-system | Service mesh control plane | Istio/Maistra components |
+| knative-serving | Serverless infrastructure | Knative Serving controllers |
+| User namespaces (data science projects) | Data science workloads | Notebooks, InferenceServices, training jobs, pipelines |
 
 ### External Ingress Points
 
 | Component | Ingress Type | Hosts | Port | Protocol | Encryption | Purpose |
 |-----------|--------------|-------|------|----------|------------|---------|
-| ODH Dashboard | OpenShift Route | cluster-specific | 443/TCP | HTTPS | TLS 1.2+ (edge) | Web UI access |
-| Jupyter Notebooks | OpenShift Route | notebook-{user}-{namespace}.apps.{cluster} | 443/TCP | HTTPS | TLS 1.2+ (edge) | Notebook access via OAuth proxy |
-| KServe InferenceService | OpenShift Route or Istio VirtualService | {isvc}-{namespace}.apps.{cluster} | 443/TCP | HTTPS | TLS 1.2+ | Model inference endpoints |
-| ModelMesh Serving | OpenShift Route | modelmesh-{name}.apps.{cluster} | 443/TCP | HTTPS | TLS 1.2+ | Model inference endpoints |
-| Model Registry | OpenShift Route | {name}-{namespace}.apps.{cluster} | 443/TCP | HTTPS | TLS 1.2+ (reencrypt) | Model metadata API |
-| Data Science Pipelines | OpenShift Route | ds-pipeline-{name}.apps.{cluster} | 443/TCP | HTTPS | TLS 1.2+ (reencrypt) | Pipeline API and UI |
-| Ray Dashboard | OpenShift Route | ray-dashboard-{cluster}.{domain} | 443/TCP | HTTPS | TLS 1.2+ (edge) | Ray cluster dashboard (OAuth) |
-| TrustyAI Service | OpenShift Route | trustyai-{namespace}.apps.{cluster} | 443/TCP | HTTPS | TLS 1.2+ (reencrypt) | Explainability API |
-| Feast Feature Store | OpenShift Route | feast-{name}-{namespace}.apps.{cluster} | 443/TCP | HTTPS | TLS 1.2+ (edge/reencrypt) | Feature serving API |
+| ODH Dashboard | OpenShift Route | odh-dashboard.apps.{cluster} | 443/TCP | HTTPS | TLS 1.2+ Edge | Web UI for platform management |
+| KServe InferenceService | OpenShift Route | {isvc}-{namespace}.apps.{cluster} | 443/TCP | HTTPS | TLS 1.2+ Edge | Model inference endpoints |
+| KServe InferenceService | Istio VirtualService | {isvc}.{namespace}.{domain} | 443/TCP | HTTPS | TLS 1.2+ SIMPLE | Model inference (service mesh mode) |
+| DSPA API Server | OpenShift Route | ds-pipeline-{name}.apps.{cluster} | 443/TCP | HTTPS | TLS 1.2+ Reencrypt | Pipeline API access |
+| DSPA UI | OpenShift Route | ds-pipeline-ui-{name}.apps.{cluster} | 443/TCP | HTTPS | TLS 1.2+ Reencrypt | Pipeline web interface |
+| Model Registry | OpenShift Route | {name}-{namespace}.apps.{cluster} | 443/TCP | HTTPS | TLS 1.2+ Edge/Reencrypt | Model metadata API |
+| TrustyAI Service | OpenShift Route | trustyai-{name}.apps.{cluster} | 443/TCP | HTTPS | TLS 1.2+ Reencrypt | Explainability service API |
+| Feast Feature Store | OpenShift Route | {name}-online-{namespace}.apps.{cluster} | 443/TCP | HTTPS | TLS 1.2+ Edge | Online feature serving |
+| CodeFlare Ray Dashboard | OpenShift Route | ray-dashboard-{cluster}.{domain} | 443/TCP | HTTPS | TLS 1.2+ Edge | Ray cluster monitoring |
+| Jupyter Notebooks | OpenShift Route | notebook-{username}.apps.{cluster} | 443/TCP | HTTPS | TLS 1.2+ Edge | Interactive development |
 
 ### External Egress Dependencies
 
 | Component | Destination | Port | Protocol | Encryption | Purpose |
 |-----------|-------------|------|----------|------------|---------|
-| Multiple | S3-compatible Storage (AWS S3, MinIO, etc.) | 443/TCP | HTTPS | TLS 1.2+ | Model artifacts, pipeline artifacts, data storage |
-| Data Science Pipelines | External databases (MySQL, PostgreSQL) | 3306/5432/TCP | MySQL/PostgreSQL | TLS 1.2+ (optional) | Pipeline metadata persistence |
-| Model Registry | PostgreSQL/MySQL | 5432/3306/TCP | PostgreSQL/MySQL | TLS 1.2+ (optional) | Model metadata storage |
-| ModelMesh | ETCD | 2379/TCP | HTTP/gRPC | TLS 1.2+ (optional) | Distributed model metadata |
-| Workbench Images | PyPI, Conda, npm registries | 443/TCP | HTTPS | TLS 1.2+ | Package installation during runtime |
-| Workbench Images | quay.io, registry.redhat.io | 443/TCP | HTTPS | TLS 1.2+ | Container image pulls |
-| KServe | Storage (S3, GCS, Azure Blob, PVC) | 443/TCP or N/A | HTTPS or Filesystem | TLS 1.2+ | Model loading during initialization |
-| Feast | PostgreSQL, Redis, S3, GCS, Snowflake | varies | varies | TLS 1.2+ (optional) | Feature storage backends |
-| TrustyAI | PostgreSQL/MySQL | 5432/3306/TCP | PostgreSQL/MySQL | TLS 1.2+ (optional) | Explainability data persistence |
-| Llama Stack | NVIDIA NGC, HuggingFace Hub | 443/TCP | HTTPS | TLS 1.2+ | Model downloads |
-| Training Operator | Container Registries | 443/TCP | HTTPS | TLS 1.2+ | Training job image pulls |
-| All Operators | Kubernetes API Server | 6443/TCP | HTTPS | TLS 1.2+ | Resource management |
-| All Operators | OpenShift OAuth Server | 6443/TCP | HTTPS | TLS 1.2+ | Authentication validation |
+| KServe, ModelMesh, DSPA | s3.amazonaws.com, *.s3.amazonaws.com | 443/TCP | HTTPS | TLS 1.2+ | Model artifact storage (AWS S3) |
+| KServe, DSPA | storage.googleapis.com | 443/TCP | HTTPS | TLS 1.2+ | Model artifacts (Google Cloud Storage) |
+| KServe, DSPA | blob.core.windows.net | 443/TCP | HTTPS | TLS 1.2+ | Model artifacts (Azure Blob) |
+| Notebooks, DSPA, Training | quay.io, registry.redhat.io | 443/TCP | HTTPS | TLS 1.2+ | Container image pulls |
+| Notebooks, DSPA | pypi.org | 443/TCP | HTTPS | TLS 1.2+ | Python package installation |
+| Notebooks, Training Operator | huggingface.co | 443/TCP | HTTPS | TLS 1.2+ | Model and dataset downloads |
+| ODH Model Controller, Llama Stack | nvcr.io (NVIDIA NGC) | 443/TCP | HTTPS | TLS 1.2+ | NVIDIA NIM images and models |
+| Feast | Snowflake, Redshift, BigQuery | 443/TCP | HTTPS | TLS 1.2+ | Cloud data warehouse integration |
+| Model Registry, DSPA, Feast | PostgreSQL/MySQL hosts | 5432/3306/TCP | PostgreSQL/MySQL | TLS 1.2+ (optional) | Database backends |
+| Feast, TrustyAI | Redis hosts | 6379/TCP | Redis | TLS 1.2+ (optional) | Feature store / caching |
+| All components | Kubernetes API Server | 6443/TCP | HTTPS | TLS 1.2+ | Platform API access |
 
 ### Internal Service Mesh
 
 | Setting | Value | Components Using |
 |---------|-------|------------------|
-| mTLS Mode | STRICT (configurable) | KServe InferenceServices, ModelMesh |
-| Peer Authentication | Per-namespace PeerAuthentication resources | KServe predictor pods |
-| Service-to-Service Encryption | mTLS via Istio | KServe → transformers, KServe → predictors |
-| Traffic Management | Istio VirtualServices, DestinationRules | KServe serverless mode, InferenceGraph routing |
-| Ingress Gateway | istio-ingressgateway or knative-local-gateway | KServe external traffic |
-| Authorization | Istio AuthorizationPolicies + Authorino AuthConfigs | KServe endpoints (optional) |
+| mTLS Mode | STRICT (when enabled) | KServe predictor pods, ModelMesh pods |
+| mTLS Mode | PERMISSIVE (default) | Most platform services |
+| Peer Authentication | ISTIO_MUTUAL (when service mesh enabled) | Namespaces with KServe InferenceServices |
+| Traffic Policy | Round Robin (default) | InferenceServices, training jobs |
+| Circuit Breaking | Configurable per InferenceService | KServe predictor endpoints |
+| Timeout | 300s (default for inference) | InferenceService routes |
+| Retry | 3 attempts (default) | InferenceService traffic |
 
 ## Platform Security
 
 ### RBAC Summary
 
-**Operator Cluster Roles (aggregated permissions):**
+**Cluster-wide Permissions** (ClusterRoles):
 
-| Component | Key API Groups | Critical Resources | Notable Verbs |
-|-----------|----------------|-------------------|---------------|
-| ODH Dashboard | kubeflow.org, serving.kserve.io, datasciencecluster.opendatahub.io | notebooks, inferenceservices, datascienceclusters | create, get, list, watch, patch, delete |
-| Notebook Controller | kubeflow.org | notebooks | full CRUD + status updates |
-| Data Science Pipelines Operator | datasciencepipelinesapplications.opendatahub.io, argoproj.io | datasciencepipelinesapplications, workflows | create, delete, get, list, patch, update, watch |
-| KServe | serving.kserve.io, networking.istio.io, serving.knative.dev | inferenceservices, servingruntimes, virtualservices, services | full CRUD + finalizers |
-| ODH Model Controller | serving.kserve.io, networking.istio.io, route.openshift.io | inferenceservices, virtualservices, routes, authconfigs | get, list, patch, update, watch, create |
-| ModelMesh Serving | serving.kserve.io | inferenceservices, servingruntimes, predictors | create, delete, get, list, patch, update, watch |
-| Model Registry Operator | modelregistry.opendatahub.io, route.openshift.io | modelregistries, routes | full CRUD + status updates |
-| Training Operator | kubeflow.org (6 training CRDs), scheduling.volcano.sh | pytorchjobs, tfjobs, mpijobs, xgboostjobs, paddlejobs, jaxjobs, podgroups | full CRUD + status + finalizers |
-| KubeRay Operator | ray.io, route.openshift.io | rayclusters, rayjobs, rayservices, routes, ingresses | create, delete, get, list, patch, update, watch |
-| CodeFlare Operator | ray.io, workload.codeflare.dev, dscinitialization.opendatahub.io | rayclusters, appwrappers, dscinitializations | get, list, watch, create, patch, update |
-| Kueue | kueue.x-k8s.io, batch, kubeflow.org, ray.io | workloads, clusterqueues, localqueues, jobs, pytorchjobs, rayjobs | full CRUD + patch for suspension |
-| Feast Operator | feast.dev, route.openshift.io | featurestores, routes | create, delete, get, list, update, watch |
-| TrustyAI Operator | trustyai.opendatahub.io, serving.kserve.io, kueue.x-k8s.io | trustyaiservices, lmevaljobs, guardrailsorchestrators, inferenceservices | full CRUD + status |
-| Llama Stack Operator | llamastack.io, template.openshift.io | llamastackdistributions, templates | get, list, watch, create, update, patch, delete |
+| Component | ClusterRole | Key API Groups | Key Resources | Critical Verbs |
+|-----------|-------------|----------------|---------------|----------------|
+| KServe | kserve-manager-role | serving.kserve.io | inferenceservices, servingruntimes | create, delete, get, list, patch, update, watch |
+| KServe | kserve-manager-role | serving.knative.dev | services | create, delete, get, list, patch, update, watch |
+| ODH Model Controller | odh-model-controller-role | serving.kserve.io | inferenceservices, llminferenceservices | get, list, patch, update, watch |
+| ODH Model Controller | odh-model-controller-role | networking.istio.io | virtualservices, gateways | create, delete, get, list, patch, update, watch |
+| ODH Model Controller | odh-model-controller-role | route.openshift.io | routes | create, delete, get, list, patch, update, watch |
+| DSPA | manager-role | datasciencepipelinesapplications.opendatahub.io | datasciencepipelinesapplications | create, delete, get, list, patch, update, watch |
+| DSPA | manager-argo-role | argoproj.io | workflows, workflowtemplates | create, delete, get, list, patch, update, watch |
+| Training Operator | training-operator | kubeflow.org | pytorchjobs, tfjobs, mpijobs, xgboostjobs, paddlejobs, jaxjobs | create, delete, get, list, patch, update, watch |
+| Kueue | kueue-manager-role | kueue.x-k8s.io | workloads, clusterqueues, localqueues | create, delete, get, list, patch, update, watch |
+| CodeFlare Operator | manager-role | ray.io | rayclusters, rayjobs | create, delete, get, list, patch, update, watch |
+| KubeRay | kuberay-operator | ray.io | rayclusters, rayjobs, rayservices | create, delete, get, list, patch, update, watch |
+| Model Registry Operator | manager-role | modelregistry.opendatahub.io | modelregistries | create, delete, get, list, patch, update, watch |
+| Feast | feast-operator-manager-role | feast.dev | featurestores | create, delete, get, list, patch, update, watch |
+| TrustyAI Operator | manager-role | trustyai.opendatahub.io | trustyaiservices, lmevaljobs, guardrailsorchestrators | create, delete, get, list, patch, update, watch |
+| ODH Dashboard | odh-dashboard | kubeflow.org | notebooks | create, delete, get, list, patch, update, watch |
 
-**Cross-Cutting Permissions:**
-- All operators: `pods`, `services`, `configmaps`, `secrets`, `events` (create, get, list, watch, patch)
-- All operators: `deployments`, `statefulsets` (create, delete, get, list, patch, update, watch)
-- Most operators: `routes` (OpenShift-specific for external access)
-- Serving operators: `virtualservices`, `gateways` (Istio integration)
-- Multiple operators: `servicemonitors`, `podmonitors` (Prometheus integration)
+**Common Cross-Component Permissions**:
+- **Events**: All operators create/patch events for audit trails
+- **Secrets**: Most operators get/list/watch secrets for credentials
+- **ConfigMaps**: All operators read configuration from ConfigMaps
+- **Pods**: All operators get/list/watch pods for workload monitoring
+- **ServiceAccounts**: Most operators create ServiceAccounts for workloads
 
 ### Secrets Inventory
 
-| Component | Secret Name Pattern | Type | Purpose |
-|-----------|---------------------|------|---------|
-| ODH Dashboard | dashboard-proxy-tls | kubernetes.io/tls | OAuth proxy TLS certificate |
-| ODH Dashboard | dashboard-oauth-config-generated | Opaque | OAuth cookie secret |
-| Notebook Controller | notebook-controller-webhook-cert | kubernetes.io/tls | Webhook TLS certificate |
-| Data Science Pipelines | ds-pipelines-proxy-tls-{name} | kubernetes.io/tls | OAuth proxy TLS |
-| Data Science Pipelines | mariadb-{name} | Opaque | Database password |
-| Data Science Pipelines | mlpipeline-minio-artifact | Opaque | Minio/S3 credentials |
-| KServe | kserve-webhook-server-cert | kubernetes.io/tls | Webhook TLS certificate |
-| KServe | storage-config | Opaque | Default S3/GCS/Azure credentials |
-| ODH Model Controller | webhook-server-cert | kubernetes.io/tls | Webhook TLS |
-| ModelMesh | storage-config | Opaque | S3/storage credentials |
-| ModelMesh | model-serving-etcd | Opaque | ETCD connection config |
-| Model Registry | {name}-oauth-proxy | kubernetes.io/tls | OAuth proxy TLS |
-| Model Registry | {name}-oauth-cookie-secret | Opaque | OAuth session cookie encryption |
-| Training Operator | training-operator-webhook-cert | kubernetes.io/tls | Webhook TLS |
-| KubeRay | webhook-server-cert | kubernetes.io/tls | Webhook TLS |
-| CodeFlare | codeflare-operator-webhook-server-cert | kubernetes.io/tls | Webhook TLS |
-| CodeFlare | {cluster}-ca | Opaque | mTLS CA certificates for Ray |
-| Kueue | kueue-webhook-server-cert | kubernetes.io/tls | Webhook TLS |
-| Feast | {featurestore-name}-tls | kubernetes.io/tls | Feature server TLS |
-| Feast | {featurestore-name}-db-secret | Opaque | Database credentials |
-| TrustyAI | {service-name}-tls | kubernetes.io/tls | Service TLS |
-| TrustyAI | {service-name}-db-credentials | Opaque | Database credentials |
-| Llama Stack | hf-token-secret | Opaque | HuggingFace API token |
+| Component | Secret Name | Type | Purpose |
+|-----------|-------------|------|---------|
+| All operators | webhook-server-cert | kubernetes.io/tls | Admission webhook TLS certificates |
+| KServe, ModelMesh, DSPA | storage-config | Opaque | S3/storage credentials for model retrieval |
+| Model Registry, DSPA, Feast | {db-secret} | Opaque | PostgreSQL/MySQL database credentials |
+| ODH Dashboard, Model Registry, DSPA | {oauth-proxy-secret} | Opaque | OAuth proxy session cookies |
+| ODH Dashboard, Model Registry | {oauth-client-secret} | Opaque | OAuth client credentials |
+| CodeFlare | {cluster}-ca | Opaque | mTLS CA certificates for Ray clusters |
+| Notebooks, Training, DSPA | User-defined credentials | Opaque | Cloud provider, registry, API tokens |
+| NVIDIA NIM | {account}-nim-pull-secret | kubernetes.io/dockerconfigjson | NVIDIA NGC registry authentication |
+| All workloads | ServiceAccount tokens | kubernetes.io/service-account-token | Kubernetes API authentication |
 
 ### Authentication Mechanisms
 
-| Pattern | Components Using | Enforcement Point | User Experience |
-|---------|------------------|-------------------|-----------------|
-| OpenShift OAuth (Bearer Token) | ODH Dashboard, Notebooks, Model Registry, Data Science Pipelines UI, Ray Dashboard, TrustyAI | OAuth Proxy Sidecar | Browser redirect to OpenShift login |
-| Kubernetes ServiceAccount Token | All operators, internal service-to-service | Kubernetes API Server | Automatic pod-mounted tokens |
-| mTLS Client Certificates (Istio) | KServe (in-mesh), ModelMesh (optional) | Envoy sidecar proxies | Transparent to applications |
-| Authorino JWT Validation | KServe InferenceServices (optional) | Authorino + Istio | Bearer token in Authorization header |
-| S3 Signature v4 / AWS IAM | KServe, Data Science Pipelines, Workbenches | S3-compatible storage | Credentials from secrets or IRSA |
-| Database Authentication | Model Registry, Data Science Pipelines, TrustyAI, Feast | Database server | Username/password from secrets |
-| Webhook mTLS | All operators with webhooks | Kubernetes API Server | API server client certificate |
+| Pattern | Components Using | Enforcement Point | Technology |
+|---------|------------------|-------------------|------------|
+| OpenShift OAuth (Bearer Token JWT) | Dashboard, Model Registry, DSPA UI, TrustyAI, CodeFlare Ray Dashboard | OAuth Proxy Sidecar | OpenShift OAuth Server + TokenReview |
+| Kubernetes RBAC (ServiceAccount Token) | All operators, workloads | Kubernetes API Server | JWT ServiceAccount tokens |
+| mTLS Client Certificates | KServe predictors (service mesh mode), Istio communication | Istio sidecars | X.509 certificates via Istio CA |
+| Webhook mTLS | Admission webhooks (all operators) | Kubernetes API Server | API Server client certificate |
+| AWS IAM Credentials | KServe, DSPA, Training (S3 access) | AWS S3 endpoints | AWS Signature V4 |
+| Database Authentication | Model Registry, DSPA, Feast | PostgreSQL/MySQL servers | Username/password or client certificates |
+| Bearer Tokens (API calls) | Dashboard → K8s API, KServe inference | Application layer | JWT or OAuth2 tokens |
+| None (internal ClusterIP) | Inter-component communication within cluster | Network policies | Kubernetes network isolation |
+
+### Authorization Policies
+
+**Istio AuthorizationPolicies** (when service mesh enabled):
+- KServe InferenceServices: JWT validation with Authorino or Kuadrant AuthPolicy
+- Principal-based access: Users must have namespace access
+- Path-based authorization: Different rules for /v1/models/:predict vs. /metrics
+
+**Kubernetes RBAC Policies**:
+- Namespace admins can create all ML resources
+- Data scientists can create Notebooks, InferenceServices, training jobs
+- View-only users can list resources but not modify
+- Service accounts have least-privilege access per component
 
 ## Platform APIs
 
 ### Custom Resource Definitions
 
-| Component | API Group | Kind | Scope | Primary Use Case |
-|-----------|-----------|------|-------|------------------|
-| ODH Dashboard | dashboard.opendatahub.io | OdhApplication | Namespaced | Define dashboard tiles and applications |
-| ODH Dashboard | opendatahub.io | OdhDashboardConfig | Namespaced | Dashboard feature flags and configuration |
-| ODH Dashboard | dashboard.opendatahub.io | OdhDocument | Namespaced | Documentation links |
-| ODH Dashboard | console.openshift.io | OdhQuickStart | Namespaced | Interactive tutorials |
-| ODH Dashboard | infrastructure.opendatahub.io | HardwareProfile | Namespaced | GPU/accelerator profiles |
-| Notebook Controller | kubeflow.org | Notebook | Namespaced | Jupyter notebook instances |
-| Data Science Pipelines | datasciencepipelinesapplications.opendatahub.io | DataSciencePipelinesApplication | Namespaced | Pipeline stack deployment |
-| Data Science Pipelines | pipelines.kubeflow.org | Pipeline, PipelineVersion | Namespaced | Pipeline definitions |
-| Data Science Pipelines | argoproj.io | Workflow, WorkflowTemplate | Namespaced | Argo workflow execution |
-| KServe | serving.kserve.io | InferenceService | Namespaced | Model serving instances |
-| KServe | serving.kserve.io | ServingRuntime, ClusterServingRuntime | Namespaced/Cluster | Runtime templates |
-| KServe | serving.kserve.io | TrainedModel | Namespaced | Multi-model serving |
-| KServe | serving.kserve.io | InferenceGraph | Namespaced | Multi-model pipelines |
-| KServe | serving.kserve.io | LLMInferenceService | Namespaced | LLM-specific serving |
-| ODH Model Controller | nim.opendatahub.io | Account | Namespaced | NVIDIA NIM account management |
-| ModelMesh | serving.kserve.io | Predictor | Namespaced | ModelMesh model deployment (legacy) |
-| Model Registry | modelregistry.opendatahub.io | ModelRegistry | Namespaced | Model metadata service |
-| Training Operator | kubeflow.org | PyTorchJob, TFJob, MPIJob, XGBoostJob, PaddleJob, JAXJob | Namespaced | Distributed training jobs |
-| KubeRay | ray.io | RayCluster, RayJob, RayService | Namespaced | Ray distributed computing |
-| CodeFlare | workload.codeflare.dev | AppWrapper | Namespaced | Grouped resource scheduling |
-| Kueue | kueue.x-k8s.io | Workload, ClusterQueue, LocalQueue | Cluster/Namespaced | Job queueing and quotas |
-| Kueue | kueue.x-k8s.io | ResourceFlavor, WorkloadPriorityClass | Cluster | Resource variants and priorities |
-| Feast | feast.dev | FeatureStore | Namespaced | Feature store instances |
-| TrustyAI | trustyai.opendatahub.io | TrustyAIService, LMEvalJob, GuardrailsOrchestrator | Namespaced | Explainability, evaluation, safety |
-| Llama Stack | llamastack.io | LlamaStackDistribution | Namespaced | Llama Stack server deployment |
+| Component | API Group | Kind | Scope | Purpose |
+|-----------|-----------|------|-------|---------|
+| KServe | serving.kserve.io/v1beta1 | InferenceService | Namespaced | Model serving instances with predictor/transformer/explainer |
+| KServe | serving.kserve.io/v1alpha1 | ServingRuntime | Namespaced | Model server runtime templates |
+| KServe | serving.kserve.io/v1alpha1 | ClusterServingRuntime | Cluster | Cluster-wide runtime templates |
+| KServe | serving.kserve.io/v1alpha1 | InferenceGraph | Namespaced | Multi-model inference pipelines |
+| KServe | serving.kserve.io/v1alpha1 | LLMInferenceService | Namespaced | LLM-specific inference services |
+| DSPA | datasciencepipelinesapplications.opendatahub.io/v1 | DataSciencePipelinesApplication | Namespaced | Pipeline deployment configuration |
+| DSPA | pipelines.kubeflow.org/v1 | Pipeline | Namespaced | Pipeline definitions (kubernetes pipelineStore) |
+| DSPA | pipelines.kubeflow.org/v1 | PipelineVersion | Namespaced | Pipeline versions |
+| DSPA | argoproj.io/v1alpha1 | Workflow | Namespaced | Argo Workflow execution |
+| Training Operator | kubeflow.org/v1 | PyTorchJob | Namespaced | PyTorch distributed training |
+| Training Operator | kubeflow.org/v1 | TFJob | Namespaced | TensorFlow distributed training |
+| Training Operator | kubeflow.org/v1 | MPIJob | Namespaced | MPI-based HPC training |
+| Training Operator | kubeflow.org/v1 | XGBoostJob | Namespaced | XGBoost distributed training |
+| Training Operator | kubeflow.org/v1 | PaddleJob | Namespaced | PaddlePaddle training |
+| Training Operator | kubeflow.org/v1 | JAXJob | Namespaced | JAX distributed training |
+| KubeRay | ray.io/v1 | RayCluster | Namespaced | Ray distributed computing cluster |
+| KubeRay | ray.io/v1 | RayJob | Namespaced | Ray batch job with auto-created cluster |
+| KubeRay | ray.io/v1 | RayService | Namespaced | Ray Serve for ML model serving |
+| CodeFlare | workload.codeflare.dev/v1beta2 | AppWrapper | Namespaced | Grouped resources for Kueue batch scheduling |
+| Kueue | kueue.x-k8s.io/v1beta1 | ClusterQueue | Cluster | Cluster-wide resource quotas |
+| Kueue | kueue.x-k8s.io/v1beta1 | LocalQueue | Namespaced | Namespace-scoped queue mapping |
+| Kueue | kueue.x-k8s.io/v1beta1 | Workload | Namespaced | Job or pod group with resource requirements |
+| Kueue | kueue.x-k8s.io/v1beta1 | ResourceFlavor | Cluster | Resource variant definition (GPU types, node pools) |
+| Model Registry | modelregistry.opendatahub.io/v1beta1 | ModelRegistry | Namespaced | Model metadata repository instance |
+| Feast | feast.dev/v1alpha1 | FeatureStore | Namespaced | Feature store deployment configuration |
+| TrustyAI | trustyai.opendatahub.io/v1 | TrustyAIService | Namespaced | AI explainability service |
+| TrustyAI | trustyai.opendatahub.io/v1alpha1 | LMEvalJob | Namespaced | Language model evaluation job |
+| TrustyAI | trustyai.opendatahub.io/v1alpha1 | GuardrailsOrchestrator | Namespaced | AI safety guardrails orchestration |
+| Notebook Controller | kubeflow.org/v1 | Notebook | Namespaced | Jupyter notebook instance |
+| Llama Stack | llamastack.io/v1alpha1 | LlamaStackDistribution | Namespaced | Llama Stack server deployment |
+| ODH Dashboard | dashboard.opendatahub.io/v1 | OdhApplication | Namespaced | Dashboard application tiles |
+| ODH Dashboard | opendatahub.io/v1alpha | OdhDashboardConfig | Namespaced | Dashboard feature flags and settings |
+| ODH Dashboard | infrastructure.opendatahub.io/v1 | HardwareProfile | Namespaced | GPU/accelerator profiles |
+| ODH Model Controller | nim.opendatahub.io/v1 | Account | Namespaced | NVIDIA NIM account integration |
 
-**Total CRD Count:** 40+ Custom Resource Definitions across the platform
+### Public HTTP Endpoints
 
-### Public HTTP Endpoints (User-Facing)
+**User-Facing APIs**:
 
-| Endpoint Pattern | Component | Authentication | Purpose |
-|------------------|-----------|----------------|---------|
-| /notebook/{namespace}/{user}/* | Workbenches | OAuth | Jupyter/VS Code/RStudio access |
-| /apis/v2beta1/pipelines/* | Data Science Pipelines | OAuth | Pipeline management API |
-| /v1/models/{model}:predict | KServe | Bearer/mTLS (optional) | Model inference (V1 protocol) |
-| /v2/models/{model}/infer | KServe/ModelMesh | Bearer/mTLS (optional) | Model inference (V2 protocol) |
-| /api/model_registry/v1alpha3/* | Model Registry | OAuth | Model metadata CRUD |
-| /get-online-features | Feast | OIDC/RBAC (optional) | Real-time feature retrieval |
-| /apis/v1beta1/* | TrustyAI | OAuth | Explainability metrics |
-| / (dashboard) | ODH Dashboard | OAuth | Platform web UI |
-| :8265 | Ray Dashboard | OAuth (CodeFlare) | Ray cluster monitoring |
+| Component | Path | Method | Port | Protocol | Auth | Purpose |
+|-----------|------|--------|------|----------|------|---------|
+| KServe | /v1/models/{model}:predict | POST | 443/TCP | HTTPS | OAuth/mTLS | V1 inference protocol |
+| KServe | /v2/models/{model}/infer | POST | 443/TCP | HTTPS | OAuth/mTLS | V2 inference protocol |
+| DSPA | /apis/v2beta1/* | ALL | 443/TCP | HTTPS | OAuth | Pipeline API v2beta1 |
+| Model Registry | /api/model_registry/v1alpha3/* | ALL | 443/TCP | HTTPS | OAuth | Model metadata API |
+| TrustyAI | /* | ALL | 443/TCP | HTTPS | OAuth | Explainability service API |
+| Feast | /get-online-features | POST | 443/TCP | HTTPS | OIDC/RBAC | Online feature retrieval |
+| ODH Dashboard | /* | GET | 443/TCP | HTTPS | OAuth | Web UI and backend APIs |
+| Ray Dashboard | /* | ALL | 443/TCP | HTTPS | OAuth | Ray cluster monitoring |
+| Notebooks | /notebook/{namespace}/{username} | ALL | 443/TCP | HTTPS | OAuth | Jupyter/VS Code/RStudio |
+
+**Operator/Metrics Endpoints** (internal):
+
+| Component | Path | Port | Purpose |
+|-----------|------|------|---------|
+| All operators | /metrics | 8080 or 8443/TCP | Prometheus metrics |
+| All operators | /healthz | 8081/TCP | Liveness probes |
+| All operators | /readyz | 8081/TCP | Readiness probes |
 
 ## Data Flows
 
@@ -328,206 +327,226 @@ Kueue (manages admission for)
 
 | Step | Component | Action | Next Component |
 |------|-----------|--------|----------------|
-| 1 | User | Logs into ODH Dashboard | ODH Dashboard |
-| 2 | ODH Dashboard | Creates Notebook CR | Notebook Controller |
-| 3 | Notebook Controller | Deploys Jupyter Pod with OAuth proxy | Workbench Image |
-| 4 | User in Notebook | Trains model, saves to S3 | S3 Storage |
-| 5 | User via Dashboard | Creates InferenceService CR | KServe |
-| 6 | KServe | Creates Knative Service or Deployment | Kubernetes |
-| 7 | ODH Model Controller | Creates Route, VirtualService, AuthConfig | OpenShift/Istio |
-| 8 | KServe Pod | Downloads model from S3 during init | S3 Storage |
-| 9 | User/Application | Sends inference request via Route | KServe Pod |
-| 10 | Optional: User | Registers model metadata | Model Registry |
+| 1 | User via ODH Dashboard | Create Notebook (Jupyter/VS Code) | Notebook Controller |
+| 2 | Notebook Controller | Deploy StatefulSet with workbench image | Kubelet → Container Runtime |
+| 3 | Data Scientist in Notebook | Train model, save to S3 or Model Registry | S3 / Model Registry |
+| 4 | User via ODH Dashboard | Create InferenceService CR | KServe Controller |
+| 5 | KServe Controller | Create Knative Service or Deployment | Knative / Kubernetes |
+| 6 | ODH Model Controller | Create Route, VirtualService, AuthConfig, ServiceMonitor | OpenShift Router / Istio |
+| 7 | KServe Predictor Pod | Download model from S3 (storage-initializer) | S3 |
+| 8 | KServe Predictor Pod | Serve predictions via /v2/models/{model}/infer | External clients |
+| 9 | TrustyAI Service (optional) | Monitor predictions for bias/drift | KServe predictor |
 
-#### Workflow 2: Pipeline-Based Training and Deployment
-
-| Step | Component | Action | Next Component |
-|------|-----------|--------|----------------|
-| 1 | User | Creates DataSciencePipelinesApplication CR | Data Science Pipelines Operator |
-| 2 | DSP Operator | Deploys API Server, Argo Workflows, MariaDB, Minio | Kubernetes |
-| 3 | User via UI | Submits pipeline with training steps | DSP API Server |
-| 4 | DSP API Server | Creates Argo Workflow CR | Argo Workflows |
-| 5 | Argo Workflows | Schedules training pods (runtime images) | Kubernetes Scheduler |
-| 6 | Training Pod | Fetches data from S3, trains model | S3 Storage |
-| 7 | Training Pod | Uploads trained model to S3 | S3 Storage |
-| 8 | Pipeline Step | Creates InferenceService CR | KServe |
-| 9 | KServe | Deploys model server | Previous Workflow |
-| 10 | Pipeline Step | Registers model in Model Registry | Model Registry |
-
-#### Workflow 3: Distributed Training Job
+#### Workflow 2: Pipeline-Driven ML Workflow
 
 | Step | Component | Action | Next Component |
 |------|-----------|--------|----------------|
-| 1 | User | Creates PyTorchJob CR | Training Operator |
-| 2 | Training Operator Webhook | Validates job specification | Training Operator |
-| 3 | Training Operator | Creates PodGroup for gang scheduling | Kueue/Volcano |
-| 4 | Kueue | Evaluates quota and admits workload | Training Operator |
-| 5 | Training Operator | Creates master and worker pods | Kubernetes |
-| 6 | Training Pods | Download training data from S3 | S3 Storage |
-| 7 | Training Pods | Execute distributed training (inter-pod communication) | Training Pods |
-| 8 | Training Pods | Save model checkpoints to S3 | S3 Storage |
-| 9 | Training Operator | Updates PyTorchJob status to Succeeded | User/Dashboard |
-| 10 | User | Registers trained model | Model Registry |
+| 1 | User via ODH Dashboard | Create DataSciencePipelinesApplication | DSPA Operator |
+| 2 | DSPA Operator | Deploy API Server, Workflow Controller, Database, S3 | Kubernetes |
+| 3 | User via DSPA UI | Submit pipeline (data prep → training → evaluation → deployment) | DSPA API Server |
+| 4 | DSPA API Server | Create Argo Workflow CR | Argo Workflow Controller |
+| 5 | Workflow Controller | Create pods for each pipeline step | Kubelet |
+| 6 | Pipeline Step: Data Prep | Process data, save to S3 | S3 |
+| 7 | Pipeline Step: Training | Train model (using Training Operator PyTorchJob if distributed) | Training Operator |
+| 8 | Training Operator | Create training pods (master + workers) | Kueue → Scheduler → Kubelet |
+| 9 | Pipeline Step: Evaluation | Evaluate model metrics | DSPA API Server (record metrics) |
+| 10 | Pipeline Step: Deployment | Create InferenceService CR | KServe |
+| 11 | Pipeline Step: Registry | Register model in Model Registry | Model Registry API |
 
-#### Workflow 4: Ray Cluster for Distributed Workload
-
-| Step | Component | Action | Next Component |
-|------|-----------|--------|----------------|
-| 1 | User | Creates RayCluster CR | KubeRay Operator |
-| 2 | KubeRay | Creates head and worker pods | Kubernetes |
-| 3 | CodeFlare Operator (watches RayCluster) | Adds OAuth proxy, mTLS, NetworkPolicies | OpenShift/Istio |
-| 4 | CodeFlare Operator | Creates Route for Ray Dashboard | OpenShift Router |
-| 5 | User | Accesses Ray Dashboard via OAuth | Ray Head Pod |
-| 6 | User/Script | Submits Ray job via client | Ray Head Pod |
-| 7 | Ray Autoscaler | Scales workers based on workload | KubeRay |
-| 8 | Ray Workers | Execute distributed tasks | Ray Cluster |
-| 9 | Ray Job | Completes and stores results | S3 Storage |
-
-#### Workflow 5: Model Monitoring with TrustyAI
+#### Workflow 3: Distributed Training with Queueing
 
 | Step | Component | Action | Next Component |
 |------|-----------|--------|----------------|
-| 1 | User | Creates TrustyAIService CR | TrustyAI Operator |
-| 2 | TrustyAI Operator | Deploys TrustyAI service with OAuth proxy | Kubernetes |
-| 3 | TrustyAI Operator | Patches InferenceService to route predictions | KServe |
-| 4 | User Request | Sends inference request | KServe InferenceService |
-| 5 | KServe | Forwards request payload to TrustyAI | TrustyAI Service |
-| 6 | TrustyAI Service | Logs prediction data, computes metrics | PostgreSQL/PVC |
-| 7 | User | Queries bias/fairness metrics via API | TrustyAI Service |
-| 8 | Prometheus | Scrapes TrustyAI metrics | TrustyAI Service |
-| 9 | User/Dashboard | Views explainability dashboard | Grafana/ODH Dashboard |
+| 1 | User via ODH Dashboard | Create PyTorchJob CR | Training Operator |
+| 2 | Training Operator Webhook | Validate job spec | Kubernetes API Server |
+| 3 | Training Operator Controller | Create PodGroup for gang scheduling | Kueue |
+| 4 | Kueue Controller | Evaluate ClusterQueue quotas | LocalQueue → ClusterQueue |
+| 5 | Kueue Controller | Admit workload when quota available | Kubernetes Scheduler |
+| 6 | Scheduler (with gang scheduling) | Schedule all pods together | Volcano/Scheduler Plugins |
+| 7 | Training Pods | Distributed training with PyTorch DDP | Inter-pod communication |
+| 8 | Training Pods | Save model to S3 or Model Registry | S3 / Model Registry |
+| 9 | Training Operator | Update PyTorchJob status to Succeeded | User notification |
+
+#### Workflow 4: Feature Engineering and Model Serving
+
+| Step | Component | Action | Next Component |
+|------|-----------|--------|----------------|
+| 1 | User via Dashboard/kubectl | Create FeatureStore CR | Feast Operator |
+| 2 | Feast Operator | Deploy Online Store, Offline Store, Registry | Kubernetes |
+| 3 | Feature Engineer in Notebook | Define features, materialize to online store | Feast CLI → Feast Offline Store |
+| 4 | Feast CronJob | Scheduled materialization from offline to online store | Redis/PostgreSQL |
+| 5 | Model Training Job | Fetch historical features from offline store | Feast Offline Store → S3/Snowflake |
+| 6 | Model Serving (KServe) | Fetch online features for real-time inference | Feast Online Store → Redis |
+| 7 | Inference Request | Client → KServe → Feast Online → Model Prediction | Response to client |
+
+#### Workflow 5: Model Explainability and Monitoring
+
+| Step | Component | Action | Next Component |
+|------|-----------|--------|----------------|
+| 1 | User via Dashboard/kubectl | Create TrustyAIService CR | TrustyAI Operator |
+| 2 | TrustyAI Operator | Deploy TrustyAI Service with PVC/database | Kubernetes |
+| 3 | TrustyAI Operator | Patch KServe InferenceService for payload monitoring | KServe |
+| 4 | Client | Send inference request | KServe InferenceService |
+| 5 | KServe (with payload processor) | Log request/response to TrustyAI Service | TrustyAI Service |
+| 6 | TrustyAI Service | Store predictions in PVC/database | Storage |
+| 7 | User via TrustyAI API | Request LIME/SHAP explanations for predictions | TrustyAI Service |
+| 8 | TrustyAI Service | Compute explanations, detect bias | Response to user |
+| 9 | Prometheus | Scrape TrustyAI metrics (fairness, drift) | TrustyAI Service /q/metrics |
 
 ## Deployment Architecture
 
 ### Deployment Topology
 
-**Operator Deployments:**
-- Operators deployed in `redhat-ods-applications` namespace (single namespace for all operators)
-- Each operator runs as a Deployment with 1 replica (leader election enabled)
-- Operators watch all namespaces for their respective CRDs
+**Platform Operators** (redhat-ods-applications namespace):
+- ODH Dashboard (2 replicas with anti-affinity)
+- KServe Controller (1 replica)
+- ODH Model Controller (1 replica)
+- Data Science Pipelines Operator (1 replica)
+- Training Operator (1 replica)
+- Kubeflow Notebook Controller (1 replica)
+- KubeRay Operator (1 replica)
+- CodeFlare Operator (1 replica)
+- Kueue Controller (1 replica with leader election)
+- Model Registry Operator (1 replica)
+- Feast Operator (1 replica)
+- TrustyAI Service Operator (1 replica)
+- ModelMesh Serving Controller (1 replica)
+- Llama Stack Operator (1 replica)
 
-**User Workloads:**
-- Notebooks, InferenceServices, training jobs deployed in user-created namespaces (data science projects)
-- Namespace-level isolation with RBAC and resource quotas
-- Service mesh membership per namespace (optional)
+**User Workload Namespaces** (data science projects):
+- Jupyter Notebooks (StatefulSets, 1 pod per user)
+- InferenceService Predictors (Knative Services or Deployments, autoscaling)
+- ModelMesh Runtime Pods (Deployments, typically 2 replicas)
+- Training Job Pods (Jobs/Pods, ephemeral)
+- Pipeline Workflow Pods (Pods, ephemeral)
+- RayClusters (StatefulSets for head + workers)
+- TrustyAI Service instances (Deployments, 1 replica)
+- Model Registry instances (Deployments, 1 replica)
+- Feast Feature Stores (Deployments, scalable)
+- DSPA instances (Deployments for API Server, controllers, database, UI)
 
-**Shared Services:**
-- Service mesh control plane in `istio-system` or `openshift-servicemesh`
-- Monitoring stack in `openshift-monitoring`
-- Image registry in `openshift-image-registry`
+**Shared Infrastructure Namespaces**:
+- istio-system: Istio control plane (istiod), ingress/egress gateways
+- knative-serving: Knative controllers (activator, autoscaler, webhook)
+- openshift-monitoring: Prometheus, Thanos, Alertmanager (if cluster monitoring)
+- openshift-ingress: OpenShift Router pods
 
-### Resource Requirements (Operator Pods)
+### Resource Requirements
 
-| Operator | CPU Request | CPU Limit | Memory Request | Memory Limit |
-|----------|-------------|-----------|----------------|--------------|
-| ODH Dashboard (backend) | 500m | 1000m | 1Gi | 2Gi |
-| ODH Dashboard (oauth-proxy) | 500m | 1000m | 1Gi | 2Gi |
-| Notebook Controller | Not specified | Not specified | Not specified | Not specified |
-| Data Science Pipelines Operator | Not specified | Not specified | Not specified | Not specified |
-| KServe Controller | Not specified | Not specified | Not specified | Not specified |
-| ODH Model Controller | 10m | 500m | 64Mi | 2Gi |
-| ModelMesh Controller | Not specified | Not specified | Not specified | Not specified |
-| Model Registry Operator | 100m | Not specified | 256Mi | 512Mi |
-| Training Operator | Not specified | Not specified | Not specified | Not specified |
-| KubeRay Operator | 100m | 100m | 512Mi | 512Mi |
-| CodeFlare Operator | 1 core | 1 core | 1Gi | 1Gi |
-| Kueue | 500m | 2000m | 512Mi | 512Mi |
-| Feast Operator | Not specified | Not specified | Not specified | Not specified |
-| TrustyAI Operator | 10m | 900m | 64Mi | 700Mi |
-| Llama Stack Operator | 10m | 500m | 256Mi | 1Gi |
+**Operator Pods** (typical requests/limits):
+- CPU: 10m-500m requests, 500m-2000m limits
+- Memory: 64Mi-1Gi requests, 512Mi-2Gi limits
+- Most operators run with minimal resources; spikes during reconciliation
 
-**Note:** Many operators do not specify default resource limits, allowing cluster administrators to set them via resource quotas or LimitRanges.
+**Workload Pods** (user-configurable):
+- Notebooks: 1-8 CPU, 1-64Gi memory, 0-8 GPUs
+- Training Jobs: 1-128 CPU per pod, 1-512Gi memory, 0-16 GPUs per pod
+- InferenceService Predictors: 0.1-4 CPU, 128Mi-8Gi memory, 0-2 GPUs
+- DSPA API Server: 500m-1000m CPU, 1-2Gi memory
+- RayCluster: 1-64 CPU per node, 1-256Gi memory per node, 0-8 GPUs per node
 
 ## Version-Specific Changes (2.25.0)
 
-| Component | Key Changes in 2.25.0 |
-|-----------|----------------------|
-| All Go Components | - Upgraded to Go 1.25+ for CVE fixes (CVE-2025-61729, CVE-2025-61726)<br>- FIPS compliance with strictfipsruntime |
-| All Components | - Base images updated to UBI9 latest (security patches)<br>- Konflux CI/CD pipeline synchronization |
-| ODH Model Controller | - FIPS compliance: replaced math/rand with crypto/rand<br>- vLLM version updates across templates |
-| KServe | - Security: Path traversal vulnerability fixes in storage-initializer<br>- Multi-architecture support (ppc64le, s390x) |
-| Data Science Pipelines | - Go 1.25.5 update for CVE-2025-61729<br>- Dependency updates |
-| Training Operator | - Secrets RBAC restricted to namespace-scoped roles (security improvement)<br>- Go 1.25 upgrade |
-| Workbench Images | - Python 3.12 as primary version<br>- JupyterLab 4.4<br>- CUDA 12.6/12.8, ROCm 6.2/6.4 support |
-| Llama Stack | - NetworkPolicy improvements<br>- Llama Stack Server v0.2.22 |
+| Component | Changes |
+|-----------|---------|
+| CodeFlare Operator | - Update UBI9 go-toolset base image to 1.25<br>- Update dependencies for security patches |
+| DSPA | - Update Go to 1.25.5 to address CVE-2025-61729<br>- Update registry base images |
+| Feast | - Sync Konflux pipelineruns with konflux-central<br>- Bump urllib3 to >2.6.0 for security |
+| KServe | - Security: Reject root path and prevent directory traversal<br>- Add proxy configuration support<br>- Fix ppc64le and s390x hermetic builds |
+| Kubeflow Notebook Controller | - Bump golang version from 1.24 to 1.25<br>- Add govulncheck for vulnerability scanning |
+| KubeRay | - Update UBI9 go-toolset digest to 3cdf0d1<br>- Security patch updates |
+| Kueue | - Update OpenShift Go builder to v1.24<br>- Regular base image security patches |
+| Llama Stack Operator | - Fix NetworkPolicy to remove podSelectors<br>- Multiple UBI base image updates |
+| ModelMesh Serving | - Fix CVE-2025-61729 (crypto/x509) by upgrading to Go 1.25.7<br>- Update controller-gen to 0.17.0 |
+| Model Registry Operator | - Update to Go 1.25.7 toolchain<br>- Merge upstream stable-2.x branch |
+| Notebooks | - TrustyAI pandas issue fixed<br>- Add PyTorch LLMCompressor CUDA variant<br>- Move up-to-date ntb/ and scripts from main |
+| ODH Dashboard | - Merge upstream stable-2.x into rhoai-2.25<br>- Add rhoai-version parameter (2.25.0)<br>- Go version bump refactoring |
+| ODH Model Controller | - FIPS Compliance: replace math/rand with crypto/rand<br>- Upgrade Go to 1.25.7<br>- Fix UID mismatch in ray-tls secrets |
+| Training Operator | - Restrict secrets RBAC to namespace-scoped Role<br>- Fix CVE-2025-61726 by upgrading Go to 1.25<br>- Update go-toolset base image |
+| TrustyAI Service Operator | - Sync pipelineruns with konflux-central (multiple updates) |
+
+**Common Themes Across Components**:
+- **Security**: Go version updates to 1.25+ for CVE fixes
+- **Base Images**: Regular UBI9 (ubi-minimal, go-toolset) digest updates
+- **Build System**: Konflux pipeline synchronization across all components
+- **FIPS Compliance**: Strict FIPS runtime enforcement
+- **Multi-Architecture**: Fixes for ppc64le, s390x, arm64 builds
+- **Dependency Updates**: Automated renovate updates for security patches
 
 ## Platform Maturity
 
-- **Total Components**: 15 core components
-- **Operator-based Components**: 13 operators managing platform lifecycle
-- **Container Images**: 50+ workbench and runtime images (multi-arch support)
-- **Service Mesh Coverage**: Optional but supported for KServe, ModelMesh, TrustyAI
-- **mTLS Enforcement**: Configurable (STRICT/PERMISSIVE) for Istio-enabled services
-- **CRD API Versions**: Primarily v1 (stable), some v1alpha1/v1beta1 (evolving APIs)
-- **Authentication**: Unified OpenShift OAuth for external access
-- **Build System**: Konflux CI/CD with FIPS-compliant builds
-- **Base OS**: Red Hat UBI9 (Universal Base Image 9)
-- **Multi-Tenancy**: Namespace-level isolation with RBAC
-- **Hardware Acceleration**: NVIDIA CUDA, AMD ROCm, Intel Gaudi support
-
-## Security Posture
-
-**Strengths:**
-- FIPS-compliant cryptography across all Go components
-- Non-root container execution (UID 65532 or specific UIDs)
-- Minimal attack surface (UBI minimal base images)
-- No privileged escalation allowed
-- Network policies for pod isolation (optional, per component)
-- mTLS for service-to-service communication (Istio/service mesh)
-- OAuth integration for user authentication (OpenShift)
-- Webhook admission control for resource validation
-- ServiceAccount-based RBAC throughout
-- TLS 1.2+ for all external communication
-- Auto-rotating TLS certificates (cert-manager or service-ca)
-
-**Areas for Consideration:**
-- Some operators expose metrics on HTTP (port 8080) instead of HTTPS
-- Mixed use of OAuth and mTLS authentication patterns
-- Storage credentials managed via Secrets (rotation is manual)
-- Database connections may not enforce TLS (optional per component)
-- Some components allow disabling authentication for development
+- **Total Components**: 15
+- **Operator-based Components**: 14 (93%)
+- **Container Image-Only Components**: 1 (Notebooks/Workbenches)
+- **Service Mesh Coverage**: ~40% (KServe serverless mode, ModelMesh, TrustyAI)
+- **mTLS Enforcement**: PERMISSIVE by default, STRICT in service mesh mode (configurable)
+- **CRD API Versions**: v1beta1 (KServe, Kueue), v1 (most others), v1alpha1 (experimental features)
+- **Webhook Coverage**: 12 of 14 operators have admission webhooks
+- **Metrics Coverage**: 100% (all operators expose Prometheus metrics)
+- **OAuth Integration**: Dashboard, Model Registry, DSPA UI, TrustyAI, CodeFlare Ray Dashboard
+- **Multi-Tenancy Support**: Full (namespace isolation, quotas, RBAC, workload queueing)
+- **GPU Support**: NVIDIA CUDA, AMD ROCm, Intel Gaudi across notebooks, training, inference
+- **Storage Backends**: S3 (AWS, Minio, compatible), GCS, Azure Blob, PostgreSQL, MySQL, Redis, PVCs
+- **AI/ML Frameworks**: PyTorch, TensorFlow, XGBoost, JAX, PaddlePaddle, Scikit-Learn, Caikit, vLLM, HuggingFace
+- **Inference Protocols**: KServe V1, KServe V2 (REST and gRPC), ModelMesh gRPC
+- **Pipeline Orchestrators**: Argo Workflows (DSP v2), Tekton (DSP v1 legacy)
+- **Distributed Computing**: Ray, MPI, Horovod, PyTorch DDP, TensorFlow Parameter Server
+- **Model Serving Modes**: Serverless (Knative), Raw Kubernetes, Multi-model (ModelMesh)
+- **LLM Support**: vLLM (CPU, CUDA, Gaudi, ROCm, multinode), NVIDIA NIM, Llama Stack, Caikit-TGIS
+- **Explainability**: TrustyAI (LIME, SHAP, bias detection, drift monitoring)
+- **Feature Engineering**: Feast (online/offline stores, materialization, time-travel)
+- **Job Queueing**: Kueue (ClusterQueue, LocalQueue, fair sharing, preemption, cohorts)
+- **Gang Scheduling**: Volcano, Scheduler Plugins integration
+- **High Availability**: Leader election for operators, multi-replica for services, autoscaling for inference
+- **Security Posture**: FIPS-compliant, non-root containers, RBAC, mTLS, OAuth, network policies, admission webhooks
 
 ## Next Steps for Documentation
 
-1. **Generate Architecture Diagrams**: Use this platform architecture to create visual diagrams showing:
-   - Component dependency graph
-   - Network flows for key workflows
-   - Multi-tenancy isolation boundaries
-   - Service mesh traffic patterns
+1. **Generate Architecture Diagrams**:
+   - Component dependency graph (directed acyclic graph showing CRD watches and API calls)
+   - Network flow diagram (ingress → service mesh → workloads → egress)
+   - Data flow sequence diagrams for key workflows
+   - Deployment topology diagram (namespaces, pods, services)
 
-2. **Update ADRs (Architecture Decision Records)**: Document key decisions:
-   - Why both KServe and ModelMesh for model serving
-   - OAuth vs. mTLS authentication strategy
-   - Namespace-level vs. cluster-level isolation model
-   - Choice of Argo Workflows vs. Tekton for pipelines
+2. **Update ADRs (Architecture Decision Records)**:
+   - ADR: Why Knative Serving for serverless inference
+   - ADR: Choice of Argo Workflows over Tekton for DSPA v2
+   - ADR: Multi-mode serving (serverless vs raw vs ModelMesh)
+   - ADR: Kueue integration for workload management
+   - ADR: OAuth proxy pattern for authentication
+   - ADR: Service mesh integration strategy
 
-3. **Create User-Facing Architecture Documentation**: Translate technical details into user guides:
-   - "Getting Started with Model Serving"
-   - "Distributed Training Guide"
-   - "Pipeline Development Best Practices"
-   - "Multi-Tenancy Setup for Administrators"
+3. **Create User-Facing Documentation**:
+   - Getting Started Guide (notebook → training → serving)
+   - Advanced Topics: Distributed training, multi-model pipelines, custom runtimes
+   - Operations Guide: Monitoring, troubleshooting, scaling
+   - Security Guide: RBAC setup, network policies, secret management
+   - Integration Guide: Connecting external storage, databases, identity providers
 
-4. **Generate Security Architecture Review (SAR) Documentation**: For compliance and security teams:
-   - Network security diagrams (ingress/egress flows)
-   - RBAC permission matrix
+4. **Generate Security Architecture Review (SAR) Documentation**:
+   - Network security diagram (zones, trust boundaries, encryption)
+   - Authentication/authorization flow diagrams
    - Secret management and rotation policies
-   - Compliance mapping (FIPS, SOC2, etc.)
+   - Compliance matrix (FIPS, PCI-DSS, HIPAA considerations)
+   - Threat model and mitigations
 
-5. **Performance and Scaling Guides**: Based on component resource patterns:
-   - Cluster sizing recommendations
-   - Resource quota templates for namespaces
-   - Autoscaling configurations
-   - High availability setup for production
+5. **Platform Governance**:
+   - Resource quota recommendations by workload type
+   - Multi-tenancy best practices
+   - Backup and disaster recovery procedures
+   - Upgrade and rollback strategies
+   - SLA definitions for platform components
 
-6. **Integration Guides**: For platform extensions:
-   - Custom serving runtime development
-   - Pipeline step development
-   - Dashboard plugin creation
-   - Custom workbench image building
+6. **Performance and Scaling Guidance**:
+   - Sizing guide for different deployment scales (small/medium/large/enterprise)
+   - GPU allocation strategies
+   - Inference autoscaling tuning
+   - Database performance tuning for Model Registry and DSPA
+   - Network bandwidth planning for distributed training
 
----
-
-**Document Generated**: 2026-03-13
-**Source Components**: 15 component architecture files in architecture/rhoai-2.25.0/
-**Distribution**: RHOAI 2.25.0
-**Aggregation Tool**: /aggregate-platform-architecture skill
+7. **Integration Examples**:
+   - CI/CD integration with OpenShift Pipelines/GitOps
+   - MLOps workflow examples (end-to-end)
+   - External data source integration (databases, data lakes, streaming)
+   - Model registry migration strategies
+   - Custom runtime creation guides

@@ -1,93 +1,101 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User[User/System]
         Client[External Client]
+        User[User/System]
     end
 
     subgraph Ingress["INGRESS (DMZ)"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token Auth"]
-        Route["OpenShift Route/Ingress<br/>8265/8000 HTTP/HTTPS<br/>Optional TLS<br/>Edge/Passthrough"]
+        Route["OpenShift Route / Ingress<br/>Ray Dashboard: 8265/TCP HTTP/HTTPS<br/>Ray Serve: 8000/TCP HTTP/HTTPS<br/>TLS: Edge/Passthrough"]
     end
 
-    subgraph OperatorNS["OPERATOR NAMESPACE: opendatahub"]
+    subgraph ControlPlane["CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Bearer Token"]
+        WebhookSvc["Admission Webhook Service<br/>443/TCP → 9443/TCP<br/>HTTPS TLS 1.2+<br/>mTLS (K8s API cert)"]
+
+        K8sAPI -->|mTLS| WebhookSvc
+    end
+
+    subgraph OperatorNS["OPERATOR NAMESPACE (opendatahub)"]
         direction TB
-        Operator["KubeRay Operator Pod<br/>SA: kuberay-operator<br/>Image: UBI9 minimal"]
-        Webhook["Admission Webhook<br/>9443/TCP HTTPS<br/>mTLS (K8s API cert)<br/>Cert: webhook-server-cert"]
-        MetricsEndpoint["Metrics Endpoint<br/>8080/TCP HTTP<br/>No auth"]
+
+        Operator["KubeRay Operator Pod<br/>SA: kuberay-operator<br/>Image: odh-kuberay-operator-controller"]
+
+        subgraph OpComponents["Operator Components"]
+            RayClusterCtrl[RayCluster Controller]
+            RayJobCtrl[RayJob Controller]
+            RayServiceCtrl[RayService Controller]
+            Webhook["Webhook<br/>9443/TCP HTTPS"]
+            Metrics["Metrics<br/>8080/TCP HTTP"]
+        end
+
+        Operator --> OpComponents
     end
 
-    subgraph UserNS["USER NAMESPACES: {user-namespace}"]
+    subgraph UserNS["USER NAMESPACE ({user-namespace})"]
         direction TB
 
         subgraph RayCluster["Ray Cluster"]
-            RayHead["Ray Head Pod<br/>SA: {cluster}-sa<br/>GCS: 6379/TCP (optional password)<br/>Dashboard: 8265/TCP HTTP (optional token)<br/>Client: 10001/TCP<br/>Serve: 8000/TCP HTTP"]
-            RayWorker["Ray Worker Pods<br/>SA: {cluster}-sa<br/>Auto-scaling"]
-            HeadSvc["Head Service<br/>ClusterIP<br/>6379/8265/10001"]
-            ServeSvc["Serve Service<br/>ClusterIP<br/>8000/TCP"]
+            HeadPod["Ray Head Pod<br/>SA: {cluster}-ray-head<br/>━━━━━━━━━━━━━━━━<br/>GCS: 6379/TCP TCP<br/>Dashboard: 8265/TCP HTTP<br/>Client: 10001/TCP TCP<br/>Metrics: 8080/TCP HTTP<br/>Agent: 52365/TCP HTTP"]
+
+            WorkerPods["Ray Worker Pods<br/>SA: {cluster}-ray-worker<br/>Auto-scaled<br/>Connect to GCS: 6379/TCP"]
+
+            JobPod["Submitter Job Pod<br/>(RayJob only)<br/>Submit: 8265/TCP HTTP"]
+
+            ServeSvc["Ray Serve Service<br/>(RayService only)<br/>8000/TCP HTTP<br/>ClusterIP"]
         end
 
-        JobPod["Submitter Job Pod<br/>Created by RayJob<br/>Submits to Dashboard"]
+        WorkerPods -->|TCP/6379<br/>Optional Password| HeadPod
+        JobPod -->|HTTP/8265<br/>Optional Token| HeadPod
+        ServeSvc -->|Route to| HeadPod
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        direction TB
-        Redis["External Redis<br/>6379/TCP<br/>Optional TLS<br/>Redis password<br/>GCS Fault Tolerance"]
-        Registry["Container Registry<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Pull secrets"]
-        Storage["Ray Package Index<br/>Git/S3/GCS<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Configurable auth"]
+        Redis["External Redis<br/>6379/TCP TCP<br/>Optional TLS<br/>Auth: Redis Password"]
+        Registry["Container Registry<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Pull Secrets"]
+        Storage["Ray Package / Git / S3<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Configurable Auth"]
+        Prometheus["Prometheus<br/>8080/TCP HTTP<br/>No Auth"]
     end
 
-    subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>Scrapes /metrics"]
-    end
-
-    subgraph SchedulingIntegration["SCHEDULING INTEGRATION"]
-        Volcano["Volcano Scheduler<br/>Gang scheduling<br/>Pod annotations"]
-        Kueue["Kueue<br/>Job queuing<br/>Pod labels/annotations"]
-    end
-
-    %% Flows
+    %% External to Ingress
+    Client -->|HTTPS/443<br/>TLS 1.2+<br/>Optional Auth| Route
     User -->|HTTPS/443<br/>TLS 1.2+<br/>Bearer Token| K8sAPI
-    Client -->|HTTP/HTTPS<br/>Optional TLS| Route
 
-    K8sAPI -->|HTTPS/9443<br/>mTLS<br/>K8s API cert| Webhook
-    K8sAPI <-->|HTTPS/443<br/>TLS 1.2+<br/>SA token| Operator
+    %% Ingress to Services
+    Route -->|HTTP/8265| HeadPod
+    Route -->|HTTP/8000| ServeSvc
 
-    Operator -->|Creates/Manages| RayHead
-    Operator -->|Creates/Manages| RayWorker
-    Operator -->|Creates/Manages| HeadSvc
-    Operator -->|Creates/Manages| ServeSvc
-    Operator -->|Creates Job| JobPod
+    %% Control Plane Flows
+    K8sAPI -->|Validates| WebhookSvc
+    WebhookSvc -.->|Webhook Response| K8sAPI
 
-    RayWorker -->|TCP/6379<br/>Optional password| RayHead
-    JobPod -->|HTTP/8265<br/>Optional token| RayHead
+    %% Operator Flows
+    Operator -->|HTTPS/443<br/>ServiceAccount Token| K8sAPI
+    Operator -->|Manages| HeadPod
+    Operator -->|Manages| WorkerPods
+    Operator -->|Manages| JobPod
+    Operator -->|Manages| ServeSvc
 
-    Route -->|Routes to| HeadSvc
-    Route -->|Routes to| ServeSvc
+    %% Ray Head Autoscaler
+    HeadPod -->|HTTPS/443<br/>Ray SA Token<br/>Create/Delete Pods| K8sAPI
 
-    RayHead -.->|TCP/6379<br/>Optional TLS<br/>Redis password| Redis
-    RayHead -->|Autoscale API<br/>HTTPS/443<br/>SA token| K8sAPI
-
-    Operator -->|Pull images<br/>HTTPS/443<br/>TLS 1.2+| Registry
-    RayHead -->|Fetch code/data<br/>HTTPS/443<br/>TLS 1.2+| Storage
-
-    Prometheus -->|HTTP/8080<br/>No auth| MetricsEndpoint
-
-    RayWorker -.->|Pod annotations| Volcano
-    RayWorker -.->|Pod labels| Kueue
+    %% External Dependencies
+    HeadPod -.->|TCP/6379<br/>Optional TLS<br/>Redis Password| Redis
+    HeadPod -->|HTTPS/443<br/>TLS 1.2+<br/>Pull Secrets| Registry
+    HeadPod -->|HTTPS/443<br/>TLS 1.2+<br/>Configurable| Storage
+    Prometheus -->|HTTP/8080<br/>Scrape| Operator
+    Prometheus -->|HTTP/8080<br/>Scrape| HeadPod
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef operatorns fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef userns fill:#cce5ff,stroke:#0066cc,stroke-width:2px
+    classDef controlplane fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef userworkload fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef scheduling fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
-    class User,Client external
-    class K8sAPI,Route ingress
-    class Operator,Webhook,MetricsEndpoint operatorns
-    class RayHead,RayWorker,HeadSvc,ServeSvc,JobPod userns
-    class Redis,Registry,Storage externalservice
-    class Prometheus monitoring
-    class Volcano,Kueue scheduling
+    class Client,User external
+    class Route ingress
+    class K8sAPI,WebhookSvc controlplane
+    class Operator,OpComponents,RayClusterCtrl,RayJobCtrl,RayServiceCtrl,Webhook,Metrics operator
+    class HeadPod,WorkerPods,JobPod,ServeSvc,RayCluster userworkload
+    class Redis,Registry,Storage,Prometheus externalservice

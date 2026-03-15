@@ -2,7 +2,7 @@
 
 Generated from: checkouts/red-hat-data-services.rhoai-2.25
 Platform version from: checkouts/red-hat-data-services.rhoai-2.25/rhods-operator
-Date: 2026-03-13
+Date: 2026-03-14
 
 ## Components
 

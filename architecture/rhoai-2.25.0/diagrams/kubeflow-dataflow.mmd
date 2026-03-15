@@ -1,40 +1,29 @@
 sequenceDiagram
     participant User as User/Dashboard
     participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+
-    participant Controller as Notebook Controller<br/>ServiceAccount Auth
+    participant NotebookCtrl as Notebook Controller<br/>Watch & Reconcile
     participant Kubelet as Kubelet<br/>10250/TCP HTTPS mTLS
-    participant NotebookPod as Jupyter Notebook Pod<br/>8888/TCP HTTP
-    participant Culling as Culling Controller<br/>Idle Detection
+    participant NotebookPod as Notebook Pod<br/>8888/TCP HTTP
+    participant CullingCtrl as Culling Controller<br/>Idle Detection
     participant Prometheus as Prometheus<br/>Metrics Scraper
 
-    rect rgb(230, 240, 255)
-        Note over User,Kubelet: Flow 1: Notebook Creation
-        User->>K8sAPI: POST Notebook CR<br/>Auth: User credentials<br/>HTTPS/TLS 1.2+
-        K8sAPI->>Controller: Watch Event<br/>Notebook Created<br/>ServiceAccount Token
-        Controller->>K8sAPI: POST StatefulSet<br/>POST Service<br/>POST VirtualService (if Istio)<br/>Auth: ServiceAccount Token
-        K8sAPI->>Kubelet: Create Pod<br/>HTTPS/10250 mTLS
-        Kubelet-->>K8sAPI: Pod Running
-        K8sAPI-->>Controller: Watch Event<br/>StatefulSet Ready
-        Controller->>K8sAPI: PATCH Notebook Status<br/>Ready Replicas Update
-    end
+    Note over User,NotebookPod: Flow 1: Notebook Creation
+    User->>K8sAPI: POST Notebook CR<br/>HTTPS/6443<br/>TLS 1.2+<br/>User Auth
+    K8sAPI->>NotebookCtrl: Watch Event<br/>Notebook Created<br/>ServiceAccount Token
+    NotebookCtrl->>K8sAPI: Create StatefulSet & Service<br/>HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount Token
+    K8sAPI->>Kubelet: Schedule Pod<br/>HTTPS/10250<br/>mTLS
+    Kubelet-->>NotebookPod: Start Jupyter Server
+    NotebookPod-->>NotebookCtrl: Pod Ready
+    NotebookCtrl->>K8sAPI: Update Notebook Status<br/>HTTPS/6443<br/>ServiceAccount Token
 
-    rect rgb(255, 240, 230)
-        Note over Culling,K8sAPI: Flow 2: Notebook Culling (Idle Detection)
-        loop Every IDLENESS_CHECK_PERIOD (default: 1 min)
-            Culling->>NotebookPod: GET /api/kernels<br/>HTTP/8888 No Auth
-            NotebookPod-->>Culling: JSON: [{last_activity: timestamp}]
-            alt Idle > CULL_IDLE_TIME (default: 1440 min)
-                Culling->>K8sAPI: PATCH Notebook CR<br/>Add: kubeflow-resource-stopped annotation<br/>Auth: ServiceAccount Token
-                K8sAPI->>Controller: Watch Event<br/>Notebook Annotated
-                Controller->>K8sAPI: PATCH StatefulSet<br/>Set replicas: 0<br/>Auth: ServiceAccount Token
-            end
-        end
-    end
+    Note over CullingCtrl,NotebookPod: Flow 2: Notebook Culling (Idle Detection)
+    CullingCtrl->>NotebookPod: GET /api/kernels<br/>HTTP/8888<br/>No Auth
+    NotebookPod-->>CullingCtrl: Kernel Activity JSON<br/>last_activity timestamp
+    CullingCtrl->>CullingCtrl: Check if idle > CULL_IDLE_TIME
+    CullingCtrl->>K8sAPI: Add kubeflow-resource-stopped annotation<br/>HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount Token
+    K8sAPI->>NotebookCtrl: Watch Event<br/>Annotation Changed
+    NotebookCtrl->>K8sAPI: Scale StatefulSet to 0<br/>HTTPS/6443<br/>ServiceAccount Token
 
-    rect rgb(240, 255, 240)
-        Note over Prometheus,Controller: Flow 3: Metrics Collection
-        loop Every scrape_interval
-            Prometheus->>Controller: GET /metrics<br/>HTTP/8080 No Auth
-            Controller-->>Prometheus: Prometheus Metrics<br/>notebook_created_total<br/>notebook_failed_total<br/>notebook_culled_total
-        end
-    end
+    Note over Prometheus,NotebookCtrl: Flow 3: Metrics Collection
+    Prometheus->>NotebookCtrl: GET /metrics<br/>HTTP/8080<br/>No Auth
+    NotebookCtrl-->>Prometheus: Prometheus Metrics<br/>notebook_creation_total<br/>notebook_culling_total

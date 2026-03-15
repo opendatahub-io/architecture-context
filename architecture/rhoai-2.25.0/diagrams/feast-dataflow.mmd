@@ -1,40 +1,65 @@
 sequenceDiagram
     participant MLApp as ML Application
     participant Route as OpenShift Route<br/>443/TCP HTTPS TLS1.2+
-    participant OnlineSvc as Online Store Service<br/>80/443/TCP HTTP/HTTPS<br/>OIDC/RBAC (optional)
-    participant Redis as Redis<br/>6379/TCP<br/>TLS1.2+ (optional)
-    participant Registry as Registry Server<br/>6570-6571/TCP gRPC/HTTP<br/>TLS1.2+ (optional)
-    participant Offline as Offline Store<br/>8815-8816/TCP HTTP/HTTPS
-    participant S3 as S3 Storage<br/>443/TCP HTTPS TLS1.2+
-    participant CronJob as Materialization CronJob
+    participant Online as Online Feature Store<br/>80/443 HTTP/HTTPS
+    participant Redis as Redis<br/>6379/TCP TLS1.2+ (optional)
+    participant Registry as Registry Server<br/>80/443 HTTP/gRPC
 
     Note over MLApp,Registry: Flow 1: Online Feature Retrieval (Real-time Inference)
 
-    MLApp->>Route: POST /get-online-features<br/>Auth: Bearer Token (OIDC)
-    Route->>OnlineSvc: Forward Request<br/>TLS Termination
-    OnlineSvc->>Registry: Query Feature Metadata<br/>gRPC/HTTP
-    Registry-->>OnlineSvc: Feature Schema
-    OnlineSvc->>Redis: Fetch Pre-computed Features<br/>Password Auth (optional)
-    Redis-->>OnlineSvc: Feature Values
-    OnlineSvc-->>Route: JSON Response
-    Route-->>MLApp: Feature Vector
+    MLApp->>Route: POST /get-online-features<br/>HTTPS/443 TLS1.2+<br/>Auth: None/OIDC Bearer Token
+    Route->>Online: Forward request<br/>HTTP/80 or HTTPS/443<br/>TLS1.2+ (optional)
+    Online->>Registry: Query feature metadata<br/>HTTP/gRPC<br/>TLS1.2+ (optional)
+    Registry-->>Online: Feature schema & config
+    Online->>Redis: Retrieve pre-computed features<br/>Redis Protocol/6379<br/>Password auth (optional)
+    Redis-->>Online: Feature values
+    Online-->>Route: JSON response with features
+    Route-->>MLApp: HTTPS response
 
-    Note over MLApp,S3: Flow 2: Historical Feature Retrieval (Model Training)
+    Note over MLApp,Registry: ---
 
-    MLApp->>Offline: POST /get-historical-features<br/>HTTP/HTTPS
-    Offline->>Registry: Query Feature Definitions<br/>gRPC/HTTP
-    Registry-->>Offline: Feature Metadata
-    Offline->>S3: Read Historical Parquet Data<br/>AWS IAM Auth
-    S3-->>Offline: Historical Features
-    Offline-->>MLApp: Historical Feature Dataset
+    participant TrainingJob as Training Job
+    participant Offline as Offline Feature Store<br/>80/443 HTTP/HTTPS
+    participant S3 as S3/GCS Storage<br/>443/TCP HTTPS TLS1.2+
 
-    Note over CronJob,Redis: Flow 3: Feature Materialization (Scheduled)
+    Note over TrainingJob,S3: Flow 2: Historical Feature Retrieval (Model Training)
 
-    CronJob->>Offline: Fetch Latest Feature Data<br/>Service Account Token
-    Offline->>S3: Query Offline Store<br/>HTTPS/AWS IAM
-    S3-->>Offline: Raw Feature Data
-    Offline-->>CronJob: Computed Features
-    CronJob->>OnlineSvc: Write Materialized Features<br/>HTTP/HTTPS
-    OnlineSvc->>Redis: Store Features<br/>Redis Protocol
-    Redis-->>OnlineSvc: ACK
-    OnlineSvc-->>CronJob: Success
+    TrainingJob->>Offline: POST /get-historical-features<br/>HTTP/HTTPS<br/>Auth: None/OIDC/RBAC
+    Offline->>Registry: Query feature definitions<br/>HTTP/gRPC<br/>TLS1.2+ (optional)
+    Registry-->>Offline: Feature metadata
+    Offline->>S3: Read Parquet files<br/>HTTPS/443 TLS1.2+<br/>AWS IAM/Service Account
+    S3-->>Offline: Historical feature data
+    Offline-->>TrainingJob: Processed features (DataFrame)
+
+    Note over TrainingJob,S3: ---
+
+    participant CronJob as CronJob Pod
+    participant PG as PostgreSQL<br/>5432/TCP TLS1.2+ (optional)
+
+    Note over CronJob,PG: Flow 3: Feature Materialization (Scheduled)
+
+    CronJob->>Offline: Fetch latest feature values<br/>HTTP/HTTPS<br/>Service Account Token
+    Offline->>S3: Read source data<br/>HTTPS/443
+    S3-->>Offline: Raw feature data
+    Offline-->>CronJob: Computed features
+    CronJob->>Online: Write materialized features<br/>HTTP/HTTPS
+    Online->>Redis: Persist to online store<br/>Redis Protocol/6379
+    Redis-->>Online: ACK
+    Online-->>CronJob: Success
+
+    Note over CronJob,PG: ---
+
+    participant Operator as Feast Operator
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
+    participant Prom as Prometheus<br/>8443/TCP HTTPS TLS1.2+
+
+    Note over Operator,Prom: Flow 4: Operator Reconciliation
+
+    Operator->>K8sAPI: Watch FeatureStore CR<br/>HTTPS/6443 TLS1.2+<br/>Service Account Token
+    K8sAPI-->>Operator: CR change event
+    Operator->>K8sAPI: Create/Update Deployment<br/>HTTPS/6443
+    K8sAPI-->>Operator: ACK
+    Operator->>K8sAPI: Create/Update Service<br/>HTTPS/6443
+    K8sAPI-->>Operator: ACK
+    Prom->>Operator: GET /metrics<br/>HTTPS/8443 TLS1.2+<br/>Bearer Token
+    Operator-->>Prom: Prometheus metrics

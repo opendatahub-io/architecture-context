@@ -1,87 +1,75 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User / ODH Dashboard"]
+        User[User/Dashboard]
+        ExternalUsers[External Users<br/>via Browser]
     end
 
     subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
         K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>RBAC AuthZ"]
     end
 
-    subgraph ControllerNS["CONTROL PLANE (Controller Namespace)"]
-        direction TB
-
-        Controller["Notebook Controller<br/>SA: notebook-controller-service-account<br/>User: 1001 (non-root)<br/>FIPS: strictfipsruntime"]
-
-        Metrics["Metrics Server<br/>8080/TCP HTTP<br/>No Auth<br/>ClusterIP Only"]
-
-        Health["Health Probe<br/>8081/TCP HTTP<br/>No Auth<br/>ClusterIP Only"]
-
-        CullingCtrl["Culling Controller<br/>Idle Detection"]
+    subgraph NotebookCtrlNS["Namespace: odh-notebook-controller"]
+        NotebookController["Notebook Controller<br/>SA: notebook-controller-service-account<br/>Metrics: 8080/TCP HTTP<br/>Health: 8081/TCP HTTP"]
+        CullingController["Culling Reconciler<br/>Part of Controller"]
     end
 
-    subgraph UserNS["DATA PLANE (User Namespace)"]
-        direction TB
-
-        StatefulSet["StatefulSet<br/>Managed by Controller"]
-
-        NotebookPod["Jupyter Notebook Pod<br/>8888/TCP HTTP<br/>No Auth<br/>User-specified image"]
-
-        NotebookSvc["Service: notebook-{name}<br/>ClusterIP<br/>80/TCP → 8888/TCP"]
-
-        StatefulSet -->|manages| NotebookPod
-        NotebookSvc -->|routes to| NotebookPod
+    subgraph UserNS["Namespace: {user-namespace}"]
+        NotebookPod["Notebook Pod (StatefulSet)<br/>SA: default<br/>Jupyter Server<br/>8888/TCP HTTP<br/>/api/kernels"]
+        NotebookService["ClusterIP Service<br/>notebook-{name}<br/>80/TCP → 8888/TCP"]
     end
 
-    subgraph IstioOptional["OPTIONAL ISTIO INTEGRATION"]
-        VirtualService["VirtualService<br/>networking.istio.io<br/>Condition: USE_ISTIO=true"]
-        IstioGateway["Istio Gateway<br/>443/TCP or 80/TCP<br/>Varies Encryption"]
+    subgraph Istio["INGRESS (Optional - Istio)"]
+        VirtualService["Istio VirtualService<br/>notebook-{name}-vs<br/>Host: {ISTIO_HOST}"]
+        IstioGateway["Istio Gateway<br/>80/443 HTTP/HTTPS<br/>TLS varies"]
     end
 
-    subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>Metrics Scraper"]
+    subgraph Monitoring["MONITORING (Cluster-Internal)"]
+        Prometheus["Prometheus<br/>Scrape :8080/TCP"]
     end
 
-    %% User creates Notebook
-    User -->|"HTTPS/6443<br/>TLS 1.2+<br/>User credentials<br/>POST Notebook CR"| K8sAPI
+    subgraph K8sInfra["KUBERNETES INFRASTRUCTURE"]
+        Kubelet["Kubelet<br/>10250/TCP HTTPS<br/>mTLS"]
+    end
 
-    %% API Server notifies controller
-    K8sAPI -->|"Watch Event<br/>Notebook Created<br/>ServiceAccount Token"| Controller
+    %% External to Control Plane
+    User -->|HTTPS/6443<br/>TLS 1.2+<br/>User Auth| K8sAPI
 
-    %% Controller creates resources
-    Controller -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount Token<br/>POST StatefulSet/Service"| K8sAPI
+    %% Control Plane to Controller
+    K8sAPI -->|Watch API<br/>ServiceAccount Token| NotebookController
+    NotebookController -->|HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount Token<br/>Create/Update Resources| K8sAPI
 
-    %% API Server schedules pods
-    K8sAPI -->|"HTTPS/10250<br/>mTLS<br/>Schedule Pod"| StatefulSet
+    %% Controller to Workloads
+    K8sAPI -->|Schedule Pod<br/>HTTPS/10250<br/>mTLS| Kubelet
+    Kubelet -->|Manages| NotebookPod
 
-    %% Culling flow
-    CullingCtrl -->|"HTTP/8888<br/>⚠️ NO AUTH<br/>GET /api/kernels"| NotebookPod
-    CullingCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount Token<br/>PATCH Notebook (if idle)"| K8sAPI
+    %% Culling Flow
+    CullingController -->|HTTP/8888<br/>No Auth<br/>GET /api/kernels| NotebookPod
+    CullingController -->|Add Annotation<br/>HTTPS/6443<br/>ServiceAccount Token| K8sAPI
 
-    %% Metrics flow
-    Prometheus -->|"HTTP/8080<br/>No Auth<br/>GET /metrics"| Metrics
+    %% Service Routing
+    NotebookPod -->|Exposed by| NotebookService
 
-    %% Istio integration
-    Controller -.->|"HTTPS/6443<br/>TLS 1.2+<br/>POST VirtualService<br/>(if USE_ISTIO=true)"| K8sAPI
-    K8sAPI -.->|"creates"| VirtualService
-    VirtualService -.->|"routes via"| IstioGateway
-    IstioGateway -.->|"to"| NotebookSvc
+    %% Istio Routing (Conditional)
+    NotebookService -.->|USE_ISTIO=true<br/>HTTP/80| VirtualService
+    VirtualService -.->|Routes to| IstioGateway
+    IstioGateway -.->|HTTP/HTTPS| ExternalUsers
 
-    %% Health probes
-    K8sAPI -->|"HTTP/8081<br/>Health Checks"| Health
+    %% Monitoring
+    Prometheus -->|HTTP/8080<br/>No Auth| NotebookController
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef controlplane fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef controller fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef dataplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef optional fill:#f8cecc,stroke:#b85450,stroke-width:2px,stroke-dasharray: 5 5
-    classDef monitoring fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef warning fill:#ffcccc,stroke:#cc0000,stroke-width:3px
+    classDef workload fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef istio fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef infra fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
-    class User external
+    class User,ExternalUsers external
     class K8sAPI controlplane
-    class Controller,Metrics,Health,CullingCtrl controller
-    class StatefulSet,NotebookPod,NotebookSvc dataplane
-    class VirtualService,IstioGateway optional
+    class NotebookController,CullingController controller
+    class NotebookPod,NotebookService workload
+    class VirtualService,IstioGateway istio
     class Prometheus monitoring
-    class CullingCtrl warning
+    class Kubelet infra

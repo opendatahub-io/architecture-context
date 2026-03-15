@@ -2,64 +2,58 @@ sequenceDiagram
     participant User as Data Scientist
     participant Route as OpenShift Route<br/>443/TCP HTTPS TLS1.2+
     participant OAuth as OAuth Proxy<br/>8443/TCP HTTPS
-    participant API as API Server<br/>8888/TCP HTTP
-    participant K8s as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
-    participant WFC as Workflow Controller
+    participant APIServer as API Server<br/>8888/TCP HTTP
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
+    participant WFCtrl as Workflow Controller<br/>Argo
     participant MariaDB as MariaDB<br/>3306/TCP MySQL
-    participant MLMD as MLMD gRPC<br/>8080/TCP gRPC
-    participant S3 as S3/Minio<br/>9000/TCP HTTP
-    participant Pod as Pipeline Step Pod
-    participant PA as Persistence Agent
+    participant MLMD as MLMD gRPC<br/>8080/TCP gRPC TLS1.2+
+    participant S3 as S3/Minio Storage<br/>9000/443 HTTPS
+    participant PersistAgent as Persistence Agent
+    participant PodStep as Pipeline Step Pod
 
-    rect rgb(220, 240, 255)
-        Note over User,API: Flow 1: Pipeline Submission
-        User->>Route: POST /apis/v2beta1/pipelines<br/>HTTPS/443 TLS1.2+<br/>Auth: OAuth Bearer
-        Route->>OAuth: Forward<br/>HTTPS/8443<br/>Service Cert
-        OAuth->>API: Forward<br/>HTTP/8888<br/>Bearer Token
-        API->>MariaDB: Store pipeline metadata<br/>MySQL/3306<br/>DB Credentials
-        API->>K8s: Create Workflow CR<br/>HTTPS/6443 TLS1.2+<br/>Service Account
-        API->>MLMD: Log metadata (optional)<br/>gRPC/8080<br/>mTLS if podToPodTLS
-        API-->>User: Pipeline created<br/>Response via Route
-    end
+    Note over User,S3: Flow 1: Pipeline Submission via API
 
-    rect rgb(255, 240, 220)
-        Note over WFC,Pod: Flow 2: Pipeline Execution
-        WFC->>K8s: Watch Workflow CRs<br/>HTTPS/6443 TLS1.2+<br/>Service Account
-        K8s-->>WFC: Workflow event
-        WFC->>K8s: Create Pipeline Step Pod<br/>HTTPS/6443<br/>Service Account
-        K8s->>Pod: Start container
-        Pod->>S3: Download input artifacts<br/>HTTP/9000 or HTTPS/443<br/>S3 Credentials
-        S3-->>Pod: Artifacts
-        Pod->>Pod: Execute step logic
-        Pod->>S3: Upload output artifacts<br/>HTTP/9000 or HTTPS/443<br/>S3 Credentials
-        Pod->>MLMD: Log execution metadata<br/>gRPC/8080<br/>mTLS if podToPodTLS
-        Pod->>K8s: Update Workflow status<br/>HTTPS/6443<br/>Service Account
-    end
+    User->>Route: POST /apis/v2beta1/pipelines<br/>Auth: OAuth Token
+    Route->>OAuth: Forward (TLS 1.2+)<br/>Service Cert
+    OAuth->>APIServer: HTTP Request<br/>Bearer Token
+    APIServer->>MariaDB: Store pipeline definition<br/>MySQL Auth
+    APIServer->>K8sAPI: Create Workflow CR<br/>Service Account
+    APIServer-->>OAuth: Pipeline Created Response
+    OAuth-->>Route: Response
+    Route-->>User: JSON Response
 
-    rect rgb(220, 255, 220)
-        Note over PA,MariaDB: Flow 3: Status Persistence
-        PA->>K8s: Watch Workflow CRs<br/>HTTPS/6443 TLS1.2+<br/>Service Account
-        K8s-->>PA: Workflow status change
-        PA->>MariaDB: Sync execution status<br/>MySQL/3306<br/>DB Credentials
-    end
+    Note over User,S3: Flow 2: Pipeline Execution (Workflow)
 
-    rect rgb(255, 220, 255)
-        Note over User,S3: Flow 4: Artifact Access
-        User->>Route: GET /apis/v2beta1/artifacts/{id}<br/>HTTPS/443<br/>OAuth Bearer
-        Route->>OAuth: Forward<br/>HTTPS/8443
-        OAuth->>API: Forward<br/>HTTP/8888<br/>Bearer Token
-        API->>S3: Generate signed URL<br/>HTTP/9000 or HTTPS/443<br/>S3 Credentials
-        API-->>User: Signed URL (60s TTL)<br/>Response via Route
-        User->>S3: Direct download<br/>HTTP/9000 or HTTPS/443<br/>Signed URL
-        S3-->>User: Artifact data
-    end
+    K8sAPI->>WFCtrl: Watch Workflow CR created
+    WFCtrl->>K8sAPI: Create Pipeline Step Pod<br/>Service Account
+    K8sAPI->>PodStep: Schedule Pod
+    PodStep->>S3: Download artifacts<br/>S3 Credentials
+    S3-->>PodStep: Artifacts
+    PodStep->>MLMD: Record metadata<br/>mTLS (if podToPodTLS)
+    MLMD->>MariaDB: Store lineage<br/>DB Credentials
+    PodStep->>S3: Upload results<br/>S3 Credentials
+    PodStep->>K8sAPI: Update Workflow status<br/>Service Account
+    K8sAPI->>PersistAgent: Watch Workflow events
+    PersistAgent->>MariaDB: Sync execution status<br/>DB Credentials
 
-    rect rgb(240, 240, 240)
-        Note over User,MariaDB: Flow 5: MLMD Metadata Query
-        User->>Route: gRPC call to MLMD Envoy<br/>HTTPS/443<br/>OAuth Bearer
-        Route->>OAuth: Forward to MLMD Envoy<br/>HTTPS/8443
-        OAuth->>MLMD: Forward<br/>gRPC/8080<br/>mTLS if podToPodTLS
-        MLMD->>MariaDB: Query metadata<br/>MySQL/3306<br/>DB Credentials
-        MariaDB-->>MLMD: Metadata results
-        MLMD-->>User: gRPC response<br/>via Route
-    end
+    Note over User,S3: Flow 3: Artifact Access
+
+    User->>Route: GET /apis/v2beta1/artifacts/{id}<br/>Auth: OAuth Token
+    Route->>OAuth: Forward (TLS 1.2+)
+    OAuth->>APIServer: HTTP Request<br/>Bearer Token
+    APIServer->>S3: Generate signed URL (60s TTL)<br/>S3 Credentials
+    S3-->>APIServer: Signed URL
+    APIServer-->>OAuth: Redirect to signed URL
+    OAuth-->>Route: Redirect Response
+    Route-->>User: Signed URL (direct S3 access)
+
+    Note over User,S3: Flow 4: MLMD Metadata Query
+
+    User->>Route: MLMD Query<br/>443/TCP HTTPS
+    Route->>OAuth: Forward to MLMD Envoy<br/>8443/TCP HTTPS
+    OAuth->>MLMD: gRPC Request<br/>9090/TCP HTTP2
+    MLMD->>MariaDB: Query metadata<br/>3306/TCP MySQL
+    MariaDB-->>MLMD: Metadata results
+    MLMD-->>OAuth: gRPC Response
+    OAuth-->>Route: Response
+    Route-->>User: JSON Response

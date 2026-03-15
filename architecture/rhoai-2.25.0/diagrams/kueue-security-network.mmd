@@ -1,91 +1,92 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User kubectl"]
+        User[User/kubectl]
     end
 
-    subgraph K8sAPIBoundary["KUBERNETES API SERVER (Trust Boundary)"]
-        K8sAPI["Kubernetes API Server<br/>Port: 443/TCP<br/>K8s RBAC enforcement"]
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS1.3<br/>Bearer Token + RBAC"]
     end
 
     subgraph KueueNamespace["KUEUE NAMESPACE (opendatahub)"]
         direction TB
 
-        WebhookService["kueue-webhook-service<br/>Service: ClusterIP<br/>Port: 443 to 9443<br/>TLS 1.2+ mTLS"]
+        WebhookSvc["kueue-webhook-service<br/>ClusterIP<br/>443/TCP → 9443/TCP<br/>TLS cert: cert-manager"]
 
-        Controller["kueue-controller-manager<br/>Deployment: 1 replica<br/>SA: kueue-controller-manager<br/>Non-root user 65532"]
+        MetricsSvc["kueue-metrics-service<br/>ClusterIP<br/>8443/TCP → https-metrics<br/>TLS 1.2+"]
 
-        MetricsService["kueue-metrics-service<br/>Service: ClusterIP<br/>Port: 8443/TCP<br/>TLS 1.2+ Bearer Token"]
+        Controller["kueue-controller-manager<br/>Deployment (1 replica)<br/>SA: kueue-controller-manager<br/>User: 65532:65532<br/>FIPS: Enabled"]
 
-        VisibilityServer["kueue-visibility-server<br/>In-process HTTP<br/>Aggregated API<br/>K8s RBAC"]
-
-        HealthChecks["Health Checks<br/>Port: 8081/TCP HTTP<br/>healthz and readyz<br/>No auth"]
+        WebhookSvc --> Controller
+        MetricsSvc --> Controller
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        CertManager["cert-manager<br/>Port: 443/TCP HTTPS<br/>TLS certificate provisioning"]
-        RemoteK8s["Remote K8s API Servers<br/>Port: 443/TCP HTTPS<br/>MultiKueue feature"]
-        ClusterAutoscaler["Cluster Autoscaler<br/>Port: 443/TCP HTTPS<br/>Watch ProvisioningRequest"]
-        Prometheus["Prometheus<br/>Metrics Scraper<br/>Port: 8443/TCP HTTPS"]
+    subgraph Monitoring["MONITORING (Internal)"]
+        Prometheus["Prometheus<br/>openshift-monitoring<br/>SA: prometheus-k8s"]
     end
 
-    subgraph WorkloadResources["WORKLOAD RESOURCES"]
-        BatchJob["Batch Jobs<br/>batch/v1"]
-        KubeflowJobs["Kubeflow Jobs<br/>TFJob PyTorchJob MPIJob"]
-        RayJobs["Ray Jobs<br/>RayJob RayCluster"]
-        JobSet["JobSet<br/>jobset.x-k8s.io"]
-        AppWrapper["AppWrapper<br/>workload.codeflare.dev"]
+    subgraph CertManagement["CERTIFICATE MANAGEMENT"]
+        CertManager["cert-manager<br/>TLS Certificate Issuer<br/>90-day rotation"]
     end
 
-    subgraph KueueCRs["KUEUE CUSTOM RESOURCES"]
-        Workload["Workload<br/>kueue.x-k8s.io/v1beta1"]
-        ClusterQueue["ClusterQueue<br/>kueue.x-k8s.io/v1beta1"]
-        LocalQueue["LocalQueue<br/>kueue.x-k8s.io/v1beta1"]
-        ResourceFlavor["ResourceFlavor<br/>kueue.x-k8s.io/v1beta1"]
-        ProvisioningRequestCR["ProvisioningRequest<br/>autoscaling.x-k8s.io/v1beta1"]
+    subgraph ExternalServices["EXTERNAL SERVICES (Optional)"]
+        RemoteCluster["Remote K8s API Servers<br/>443/TCP HTTPS TLS1.2+<br/>Auth: Kubeconfig<br/>(MultiKueue)"]
     end
 
-    %% Flows
-    User -->|HTTPS 443/TCP<br/>TLS 1.3<br/>Bearer Token| K8sAPI
+    subgraph Autoscaling["CLUSTER AUTOSCALING (Internal)"]
+        ClusterAutoscaler["Cluster Autoscaler<br/>openshift-machine-api<br/>Watches ProvisioningRequests"]
+    end
 
-    K8sAPI -->|HTTPS 9443/TCP<br/>TLS 1.2+ mTLS<br/>POST mutate validate| WebhookService
+    subgraph ManagedResources["MANAGED RESOURCES"]
+        Jobs["Batch Jobs<br/>Kubeflow Jobs<br/>Ray Jobs<br/>JobSets<br/>AppWrappers"]
+        CRDs["Kueue CRDs<br/>Workloads<br/>ClusterQueues<br/>LocalQueues"]
+    end
 
-    K8sAPI -->|In-process HTTP<br/>Aggregated API<br/>K8s RBAC| VisibilityServer
+    %% User flows
+    User -->|HTTPS/443<br/>TLS 1.3<br/>Bearer Token| K8sAPI
 
-    Controller -->|HTTPS 443/TCP<br/>TLS 1.2+<br/>ServiceAccount Token| K8sAPI
+    %% Webhook flows
+    K8sAPI -->|HTTPS/9443<br/>TLS 1.2+<br/>mTLS<br/>API Server Client Cert| WebhookSvc
 
-    Controller -->|HTTPS 443/TCP<br/>Request certs| CertManager
+    %% Controller to API Server
+    Controller -->|HTTPS/443<br/>TLS 1.2+<br/>Bearer Token<br/>Watch/Patch Resources| K8sAPI
 
-    Controller -->|HTTPS 443/TCP<br/>TLS 1.2+<br/>Kubeconfig| RemoteK8s
+    %% API Server to managed resources
+    K8sAPI -.->|manages| Jobs
+    K8sAPI -.->|manages| CRDs
 
-    Prometheus -->|HTTPS 8443/TCP<br/>TLS 1.2+<br/>Bearer Token| MetricsService
+    %% Controller watches managed resources
+    Controller -.->|watches via API| Jobs
+    Controller -.->|watches via API| CRDs
 
-    Controller -->|HTTPS 443/TCP<br/>Watch Patch<br/>Bearer Token| BatchJob
-    Controller -->|HTTPS 443/TCP<br/>Watch Patch<br/>Bearer Token| KubeflowJobs
-    Controller -->|HTTPS 443/TCP<br/>Watch Patch<br/>Bearer Token| RayJobs
-    Controller -->|HTTPS 443/TCP<br/>Watch Patch<br/>Bearer Token| JobSet
-    Controller -->|HTTPS 443/TCP<br/>Watch Patch<br/>Bearer Token| AppWrapper
+    %% Metrics flow
+    Prometheus -->|HTTPS/8443<br/>TLS 1.2+<br/>Bearer Token<br/>ServiceAccount| MetricsSvc
 
-    Controller -->|HTTPS 443/TCP<br/>Watch Reconcile| Workload
-    Controller -->|HTTPS 443/TCP<br/>Watch Reconcile| ClusterQueue
-    Controller -->|HTTPS 443/TCP<br/>Watch Reconcile| LocalQueue
-    Controller -->|HTTPS 443/TCP<br/>Watch Reconcile| ResourceFlavor
+    %% Certificate management
+    Controller -->|HTTPS/443<br/>TLS 1.2+<br/>Bearer Token<br/>Request Certs| CertManager
+    CertManager -.->|provisions| WebhookSvc
 
-    Controller -->|HTTPS 443/TCP<br/>Create Update<br/>Bearer Token| ProvisioningRequestCR
-    ClusterAutoscaler -->|HTTPS 443/TCP<br/>Watch<br/>Bearer Token| ProvisioningRequestCR
+    %% MultiKueue (optional)
+    Controller -->|HTTPS/443<br/>TLS 1.2+<br/>Kubeconfig| RemoteCluster
 
-    User -->|HTTPS 443/TCP<br/>GET pendingworkloads<br/>Bearer Token| K8sAPI
+    %% Autoscaling integration
+    Controller -->|HTTPS/443<br/>TLS 1.2+<br/>Bearer Token<br/>Create ProvisioningRequest| K8sAPI
+    ClusterAutoscaler -->|HTTPS/443<br/>TLS 1.2+<br/>Bearer Token<br/>Watch ProvisioningRequest| K8sAPI
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef k8sapi fill:#ffe6cc,stroke:#d79b00,stroke-width:3px
-    classDef kueuens fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef workload fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef cr fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef controlplane fill:#d5e8d4,stroke:#82b366,stroke-width:3px
+    classDef kueuens fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef monitoring fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef certmgmt fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef externalservice fill:#f9f9f9,stroke:#999,stroke-width:2px,stroke-dasharray: 5 5
+    classDef autoscaling fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef resources fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
 
     class User external
-    class K8sAPI k8sapi
-    class WebhookService,Controller,MetricsService,VisibilityServer,HealthChecks kueuens
-    class CertManager,RemoteK8s,ClusterAutoscaler,Prometheus externalservice
-    class BatchJob,KubeflowJobs,RayJobs,JobSet,AppWrapper workload
-    class Workload,ClusterQueue,LocalQueue,ResourceFlavor,ProvisioningRequestCR cr
+    class K8sAPI controlplane
+    class WebhookSvc,MetricsSvc,Controller kueuens
+    class Prometheus monitoring
+    class CertManager certmgmt
+    class RemoteCluster externalservice
+    class ClusterAutoscaler autoscaling
+    class Jobs,CRDs resources

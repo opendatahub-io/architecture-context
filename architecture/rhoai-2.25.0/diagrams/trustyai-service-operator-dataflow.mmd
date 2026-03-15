@@ -3,70 +3,60 @@ sequenceDiagram
     participant Route as OpenShift Route<br/>443/TCP HTTPS TLS1.2+
     participant OAuth as OAuth Proxy<br/>8443/TCP HTTPS
     participant TrustyAI as TrustyAI Service<br/>8080/TCP HTTP
+    participant Storage as PVC/Database<br/>Filesystem or 5432/3306/TCP
     participant KServe as KServe InferenceService<br/>443/TCP HTTPS
-    participant Storage as PVC/Database<br/>5432/3306/TCP
-    participant Prometheus as Prometheus<br/>Metrics Scraper
+    participant Prometheus as Prometheus<br/>ServiceMonitor
 
-    Note over User,Prometheus: Flow 1: Model Prediction Monitoring
+    Note over User,Prometheus: Flow 1: TrustyAI Service Model Prediction Monitoring
 
-    User->>KServe: POST /v1/models/model:predict<br/>HTTPS/443 Bearer Token TLS1.2+
-    KServe->>TrustyAI: Forward Prediction (Payload Processor)<br/>HTTP/HTTPS 80-443
-    TrustyAI->>Storage: Store Prediction Data<br/>Filesystem or DB (TLS conditional)
-    TrustyAI-->>KServe: ACK
-    KServe-->>User: Prediction Response<br/>JSON HTTPS
+    User->>KServe: POST /v1/models/model:predict<br/>HTTPS/443 TLS1.2+<br/>Auth: Bearer Token
+    KServe->>TrustyAI: Payload to ModelMesh Processor<br/>HTTP/HTTPS 80-443<br/>Auth: None
+    TrustyAI->>Storage: Store prediction data<br/>Filesystem or DB protocol<br/>Auth: Filesystem or DB Credentials
 
-    Prometheus->>TrustyAI: GET /q/metrics<br/>HTTP/8080 (Internal)
-    TrustyAI-->>Prometheus: Metrics (Explainability, Bias)
+    Prometheus->>TrustyAI: Scrape /q/metrics<br/>HTTP/8080<br/>Auth: None
 
-    Note over User,Prometheus: Flow 2: OAuth-Protected Access
+    Note over User,Prometheus: Flow 2: External User Access to TrustyAI Service
 
-    User->>Route: GET /api/endpoint<br/>HTTPS/443 TLS1.2+
-    Route->>OAuth: Forward Request<br/>HTTPS/8443 TLS1.2+
-    OAuth->>OAuth: Validate OAuth Token<br/>OpenShift SAR
-    OAuth->>TrustyAI: Forward Authenticated Request<br/>HTTP/8080
-    TrustyAI-->>OAuth: Response
-    OAuth-->>Route: Response
+    User->>Route: GET /api/explainability<br/>HTTPS/443 TLS1.2+<br/>Auth: OAuth Redirect
+    Route->>OAuth: Forward request<br/>HTTPS/8443 TLS (service-ca)<br/>Auth: Bearer Token
+    OAuth->>TrustyAI: Forward authenticated request<br/>HTTP/8080<br/>Forwarded Bearer
+    TrustyAI->>Storage: Retrieve data<br/>Filesystem or DB protocol
+    Storage-->>TrustyAI: Data response
+    TrustyAI-->>OAuth: JSON Response
+    OAuth-->>Route: Encrypted response
     Route-->>User: HTTPS Response
 
-    participant LMUser as Data Scientist
+    Note over User,Prometheus: Flow 3: LM Evaluation Job Execution
+
     participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.3
-    participant LMCtrl as LMEvalJob Controller
     participant Kueue as Kueue<br/>6443/TCP HTTPS
-    participant LMPod as LMES Pod
+    participant LMESPod as LMES Pod
     participant HF as Hugging Face Hub<br/>443/TCP HTTPS
     participant S3 as S3 Storage<br/>443/TCP HTTPS
 
-    Note over LMUser,S3: Flow 3: LM Evaluation Job
+    User->>K8sAPI: Create LMEvalJob CR<br/>HTTPS/6443 TLS1.3<br/>Auth: Bearer Token
+    K8sAPI->>Kueue: Workload admission<br/>HTTPS/6443 TLS1.3<br/>Auth: Service Account
+    Kueue->>K8sAPI: Schedule job<br/>HTTPS/6443 TLS1.3
+    K8sAPI->>LMESPod: Start evaluation pod
+    LMESPod->>HF: Download model/dataset<br/>HTTPS/443 TLS1.2+<br/>Auth: API Token (optional)
+    LMESPod->>KServe: Inference requests<br/>HTTPS/443 TLS1.2+<br/>Auth: Bearer Token
+    LMESPod->>S3: Store results<br/>HTTPS/443 TLS1.2+<br/>Auth: AWS IAM/Access Key
 
-    LMUser->>K8sAPI: kubectl create -f lmevaljob.yaml<br/>HTTPS/6443 Bearer Token TLS1.3
-    K8sAPI->>LMCtrl: Watch Event: LMEvalJob Created
-    LMCtrl->>Kueue: Create Workload<br/>HTTPS/6443 SA Token TLS1.3
-    Kueue->>K8sAPI: Admit Workload<br/>HTTPS/6443 SA Token
-    K8sAPI->>LMPod: Schedule Pod<br/>lm-evaluation-harness
-    LMPod->>HF: Download Model/Dataset<br/>HTTPS/443 API Token TLS1.2+
-    LMPod->>KServe: Evaluate Model<br/>HTTPS/443 Bearer Token TLS1.2+
-    KServe-->>LMPod: Inference Results
-    LMPod->>S3: Store Evaluation Results<br/>HTTPS/443 AWS IAM TLS1.2+
-    LMPod-->>K8sAPI: Job Complete
+    Note over User,Prometheus: Flow 4: Guardrails Orchestrator Request
 
-    participant Client as External Client
-    participant GWRoute as OpenShift Route<br/>443/TCP HTTPS
-    participant GWOAuth as OAuth Proxy<br/>8443/TCP HTTPS
-    participant Guardrails as Guardrails Orchestrator<br/>8032/TCP HTTPS
+    participant GRoute as OpenShift Route<br/>443/TCP HTTPS
+    participant GOAuth as OAuth Proxy<br/>8443/TCP HTTPS
+    participant GOrch as Guardrails Orchestrator<br/>8032/TCP HTTPS
     participant Detector as Detector InferenceService<br/>443/TCP HTTPS
     participant Generator as Generator InferenceService<br/>443/TCP HTTPS
 
-    Note over Client,Generator: Flow 4: Guardrails Request Processing
-
-    Client->>GWRoute: POST /generate<br/>HTTPS/443 TLS1.2+
-    GWRoute->>GWOAuth: OAuth Redirect<br/>HTTPS/8443 Bearer Token
-    GWOAuth->>Guardrails: Authenticated Request<br/>HTTPS/8032 TLS (service-ca)
-    Guardrails->>Detector: Check Input Safety<br/>HTTPS/443 Bearer Token TLS1.2+
-    Detector-->>Guardrails: Safety Score
-    Guardrails->>Generator: Generate Response<br/>HTTPS/443 Bearer Token TLS1.2+
-    Generator-->>Guardrails: Generated Text
-    Guardrails->>Detector: Check Output Safety<br/>HTTPS/443 Bearer Token TLS1.2+
-    Detector-->>Guardrails: Safety Score
-    Guardrails-->>GWOAuth: Filtered Response
-    GWOAuth-->>GWRoute: Response
-    GWRoute-->>Client: HTTPS Response
+    User->>GRoute: POST /v1/guardrails<br/>HTTPS/443 TLS1.2+<br/>Auth: OAuth Redirect
+    GRoute->>GOAuth: Forward request<br/>HTTPS/8443 TLS (service-ca)<br/>Auth: Bearer Token
+    GOAuth->>GOrch: Authenticated request<br/>HTTPS/8032 TLS (service-ca)<br/>Forwarded Bearer
+    GOrch->>Detector: Check input safety<br/>HTTPS/443 TLS1.2+<br/>Auth: Bearer Token
+    Detector-->>GOrch: Detection result
+    GOrch->>Generator: Generate response<br/>HTTPS/443 TLS1.2+<br/>Auth: Bearer Token
+    Generator-->>GOrch: Generated content
+    GOrch-->>GOAuth: Filtered response
+    GOAuth-->>GRoute: Encrypted response
+    GRoute-->>User: HTTPS Response

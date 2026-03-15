@@ -4,72 +4,76 @@ graph TB
     end
 
     subgraph Ingress["INGRESS (DMZ)"]
-        IngressCtl["Ingress Controller<br/>{instance-name}-ingress<br/>443/TCP or 80/TCP<br/>TLS 1.2+ - optional<br/>App-level auth - optional"]
+        IngressCtrl["Ingress Controller<br/>443/TCP → 80/443/TCP<br/>TLS 1.2+ (cluster-configured)<br/>Optional app-level auth"]
     end
 
-    subgraph InternalCluster["INTERNAL CLUSTER NETWORK"]
+    subgraph ClusterNetwork["CLUSTER NETWORK"]
         direction TB
 
         subgraph NS_User["Namespace: {user-namespace}"]
-            LLService["Service: {instance-name}-service<br/>ClusterIP<br/>8321/TCP"]
-            LLPod["Llama Stack Pod<br/>SA: {instance-name}-sa<br/>Image: llamastack/distribution-{type}<br/>SCC: anyuid<br/>PVC: /opt/app-root/src/.llama"]
-            InferenceProvider["Inference Provider<br/>Ollama 11434, vLLM 8000, TGI 8080<br/>HTTP/gRPC"]
+            Service["Llama Stack Service<br/>{instance-name}-service<br/>ClusterIP 8321/TCP"]
+            Pod["Llama Stack Pod<br/>SA: {instance-name}-sa<br/>Image: {distribution}<br/>SCC: anyuid<br/>8321/TCP HTTP"]
         end
 
         subgraph NS_Operator["Namespace: llama-stack-k8s-operator-system"]
-            OperatorMgr["Operator Controller Manager<br/>SA: controller-manager<br/>Leader election"]
-            RBACProxy["kube-rbac-proxy sidecar<br/>8443/TCP HTTPS TLS<br/>TokenReview + SubjectAccessReview"]
-            MetricsService["Service: controller-manager-metrics-service<br/>ClusterIP<br/>8443/TCP"]
+            Operator["Operator Controller Manager<br/>SA: controller-manager<br/>Leader Election"]
+            MetricsUnsecured["Metrics: 8080/TCP HTTP<br/>Unsecured, localhost"]
+            MetricsSecured["Metrics: 8443/TCP HTTPS TLS<br/>via kube-rbac-proxy<br/>Bearer Token Auth"]
+            Health["Health: 8081/TCP HTTP<br/>/healthz, /readyz"]
+        end
+
+        subgraph NS_Monitoring["OpenShift Monitoring"]
+            Prometheus["Prometheus<br/>ServiceMonitor CRD<br/>Scrapes 8443/TCP"]
         end
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+<br/>ServiceAccount JWT"]
-        Registry["Container Registry<br/>docker.io, quay.io<br/>443/TCP HTTPS TLS 1.2+<br/>Image pull secrets"]
-        HuggingFace["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS 1.2+<br/>HF Token"]
-        Prometheus["Prometheus<br/>ServiceMonitor<br/>8443/TCP HTTPS TLS<br/>Bearer Token"]
+    subgraph ControlPlane["CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount JWT"]
     end
 
-    %% External to Ingress
-    Client -->|HTTPS/443 or HTTP/80<br/>TLS 1.2+ - optional<br/>App-level auth - optional| IngressCtl
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        Registry["Container Registry<br/>docker.io, quay.io<br/>443/TCP HTTPS TLS 1.2+<br/>Image Pull Secrets"]
 
-    %% Ingress to Service
-    IngressCtl -->|HTTP/8321<br/>No encryption<br/>No auth| LLService
+        Ollama["Ollama Server<br/>11434/TCP HTTP<br/>No encryption"]
+        vLLM["vLLM Server<br/>8000/TCP HTTP<br/>No encryption"]
+        TGI["TGI Server<br/>8080/TCP HTTP<br/>No encryption"]
 
-    %% Service to Pod
-    LLService -->|HTTP/8321<br/>Internal cluster| LLPod
+        HuggingFace["HuggingFace Hub<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: HF Token"]
+    end
 
-    %% Pod to Inference Provider
-    LLPod -->|HTTP/gRPC<br/>Varies by provider| InferenceProvider
+    %% Flows
+    Client -->|HTTPS/443<br/>TLS 1.2+<br/>Optional Auth| IngressCtrl
+    IngressCtrl -->|HTTP/8321<br/>Internal Cluster| Service
+    Service -->|HTTP/8321<br/>No Encryption| Pod
 
-    %% Operator flows
-    OperatorMgr -->|HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount JWT| K8sAPI
-    LLPod -->|HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount JWT| K8sAPI
+    Pod -->|HTTP/11434<br/>No Encryption| Ollama
+    Pod -->|HTTP/8000<br/>No Encryption| vLLM
+    Pod -->|HTTP/8080<br/>No Encryption| TGI
+    Pod -->|HTTPS/443<br/>TLS 1.2+<br/>HF Token| HuggingFace
+    Pod -->|HTTPS/443<br/>TLS 1.2+<br/>Pull Secrets| Registry
 
-    %% External service connections
-    LLPod -->|HTTPS/443<br/>TLS 1.2+<br/>Image pull secrets| Registry
-    LLPod -->|HTTPS/443<br/>TLS 1.2+<br/>HF Token| HuggingFace
+    Operator -->|HTTPS/6443<br/>TLS 1.2+<br/>SA JWT| K8sAPI
+    Operator -.->|Creates/Manages| Pod
+    Operator -.->|Creates/Manages| Service
+    Operator -.->|Watches| K8sAPI
 
-    %% Metrics flow
-    Prometheus -->|HTTPS/8443<br/>TLS<br/>Bearer Token| RBACProxy
-    RBACProxy -->|HTTP/8080<br/>localhost| OperatorMgr
-    RBACProxy -->|HTTPS/6443<br/>TLS 1.2+| K8sAPI
-
-    %% Network Policy (optional)
-    NetworkPolicy["NetworkPolicy - optional<br/>When enableNetworkPolicy: true<br/>Allows from:<br/>- Same namespace part-of=llama-stack<br/>- Operator namespace<br/>- spec.network.allowedFrom"]
-    NetworkPolicy -.->|restricts ingress to| LLPod
+    Prometheus -->|HTTPS/8443<br/>TLS<br/>Bearer Token| MetricsSecured
+    MetricsSecured -->|HTTP/8080<br/>Localhost| MetricsUnsecured
+    MetricsUnsecured -.->|Exposes| Operator
+    Health -.->|Health Checks| Operator
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef networkpolicy fill:#f8cecc,stroke:#b85450,stroke-width:2px,stroke-dasharray: 5 5
+    classDef operator fill:#4a90e2,stroke:#333,stroke-width:2px
 
     class Client external
-    class IngressCtl ingress
-    class LLService,LLPod,InferenceProvider internal
-    class OperatorMgr,RBACProxy,MetricsService operator
-    class K8sAPI,Registry,HuggingFace,Prometheus externalservice
-    class NetworkPolicy networkpolicy
+    class IngressCtrl ingress
+    class Service,Pod,MetricsUnsecured,MetricsSecured,Health cluster
+    class Operator operator
+    class Prometheus cluster
+    class K8sAPI controlplane
+    class Registry,Ollama,vLLM,TGI,HuggingFace externalservice
