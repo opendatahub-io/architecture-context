@@ -1,0 +1,44 @@
+sequenceDiagram
+    participant User as User/Dashboard
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+
+    participant Controller as Notebook Controller<br/>ServiceAccount Token
+    participant Kubelet as Kubelet<br/>10250/TCP HTTPS mTLS
+    participant NotebookPod as Notebook Pod<br/>8888/TCP HTTP
+    participant CullingCtrl as Culling Controller
+    participant Prometheus as Prometheus
+
+    Note over User,Prometheus: Flow 1: Notebook Creation
+
+    User->>K8sAPI: POST Notebook CR<br/>Auth: User credentials<br/>HTTPS/6443 TLS1.2+
+    K8sAPI->>Controller: Watch event<br/>Notebook CR created
+    Controller->>K8sAPI: CREATE StatefulSet<br/>Auth: ServiceAccount Token<br/>HTTPS/6443 TLS1.2+
+    Controller->>K8sAPI: CREATE Service (ClusterIP)<br/>Auth: ServiceAccount Token<br/>HTTPS/6443 TLS1.2+
+
+    alt USE_ISTIO=true
+        Controller->>K8sAPI: CREATE VirtualService<br/>Auth: ServiceAccount Token<br/>HTTPS/6443 TLS1.2+
+    end
+
+    K8sAPI->>Kubelet: Schedule Pod<br/>mTLS/10250 TLS1.2+
+    Kubelet-->>NotebookPod: Start container
+    NotebookPod-->>Controller: Update status
+    Controller->>K8sAPI: UPDATE Notebook status<br/>Ready replicas
+
+    Note over CullingCtrl,NotebookPod: Flow 2: Notebook Culling (Idle Detection)
+
+    loop Every IDLENESS_CHECK_PERIOD (default: 1 min)
+        CullingCtrl->>NotebookPod: GET /api/kernels<br/>HTTP/8888<br/>No encryption<br/>No auth
+        NotebookPod-->>CullingCtrl: JSON response<br/>last_activity timestamps
+
+        alt Idle > CULL_IDLE_TIME (default: 1440 min)
+            CullingCtrl->>K8sAPI: PATCH Notebook CR<br/>Add: kubeflow-resource-stopped<br/>Auth: ServiceAccount Token<br/>HTTPS/6443 TLS1.2+
+            K8sAPI->>Controller: Watch event<br/>Notebook updated
+            Controller->>K8sAPI: PATCH StatefulSet<br/>replicas: 0<br/>HTTPS/6443 TLS1.2+
+        end
+    end
+
+    Note over Prometheus,Controller: Flow 3: Metrics Collection
+
+    loop Every scrape_interval
+        Prometheus->>Controller: GET /metrics<br/>HTTP/8080<br/>No encryption<br/>No auth
+        Controller-->>Prometheus: Prometheus metrics<br/>notebook_creation_total<br/>notebook_culling_total
+    end

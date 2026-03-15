@@ -1,0 +1,113 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[Data Scientist<br/>Browser/CLI]
+    end
+
+    subgraph Ingress["INGRESS (DMZ) - TLS Termination"]
+        direction TB
+
+        subgraph OSRoutes["OpenShift Routes"]
+            Dashboard_Route["odh-dashboard<br/>443/TCP → 8080/TCP<br/>OAuth Proxy<br/>TLS 1.2+ edge"]
+            Registry_Route["model-registry<br/>443/TCP → 8080/TCP<br/>OAuth Proxy<br/>TLS 1.2+ edge"]
+            Pipeline_Route["ds-pipeline-ui<br/>443/TCP → 3000/TCP<br/>OAuth Proxy<br/>TLS 1.2+ reencrypt"]
+            Ray_Route["ray-dashboard<br/>443/TCP → 8265/TCP<br/>OAuth Proxy<br/>TLS 1.2+ edge"]
+            Feast_Route["feast-online<br/>443/TCP → 8080/TCP<br/>OAuth Proxy<br/>TLS 1.2+ edge"]
+        end
+
+        subgraph IstioGW["Istio Gateway (optional)"]
+            Gateway["knative-ingress-gateway<br/>443/TCP<br/>TLS 1.3<br/>RequestAuthentication JWT"]
+        end
+
+        subgraph ModelRoutes["InferenceService Routes"]
+            ISVC_Route["{isvc}-{ns}.apps.{cluster}<br/>443/TCP → 8080/TCP<br/>TLS 1.2+ edge<br/>Optional Auth"]
+        end
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (mTLS PERMISSIVE/STRICT)"]
+        direction TB
+
+        subgraph NS_KnativeServing["Namespace: knative-serving"]
+            Activator["Knative Activator<br/>SA: activator<br/>Port: 8012/TCP<br/>mTLS: PERMISSIVE"]
+        end
+
+        subgraph NS_UserWorkspace["Namespace: {user-namespace}"]
+            Predictor["Predictor Pod<br/>SA: {isvc}-sa<br/>Port: 8080/TCP<br/>Istio Sidecar: envoy<br/>GPU: nvidia.com/gpu"]
+            NotebookPod["Notebook Pod<br/>SA: {notebook}-sa<br/>Port: 8888/TCP<br/>OAuth Proxy Sidecar"]
+            TrainingJob["Training Job Pod<br/>SA: default<br/>Distributed PyTorch/TF"]
+        end
+
+        subgraph NS_Platform["Namespace: redhat-ods-applications"]
+            KServeCtl["KServe Controller<br/>SA: kserve-controller-manager<br/>Webhook: 8443/TCP mTLS"]
+            ModelCtl["Model Controller<br/>SA: odh-model-controller<br/>Webhook: 8443/TCP mTLS"]
+            TrainingCtl["Training Operator<br/>SA: training-operator<br/>Webhook: 8443/TCP mTLS"]
+            DashboardPod["Dashboard Pod<br/>SA: dashboard<br/>Port: 8080/TCP"]
+            RegistryPod["Model Registry<br/>SA: {registry}-sa<br/>Port: 8080/TCP"]
+        end
+
+        K8sAPI["Kubernetes API Server<br/>Port: 6443/TCP<br/>TLS 1.2+<br/>RBAC + Admission Webhooks"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        direction TB
+        S3["S3 Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM or Access Keys"]
+        ContainerReg["Container Registries<br/>quay.io, registry.redhat.io<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Pull Secrets"]
+        NGC["NVIDIA NGC API<br/>api.ngc.nvidia.com<br/>443/TCP HTTPS<br/>TLS 1.3<br/>NGC API Key"]
+        HuggingFace["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>HF Token"]
+        OAuth["OpenShift OAuth<br/>oauth-openshift<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>User Credentials"]
+        PostgreSQL["PostgreSQL/MySQL<br/>5432/3306 TCP<br/>TLS 1.2+ optional<br/>Username/Password"]
+        Redis["Redis<br/>6379/TCP<br/>TLS 1.2+ optional<br/>Password Auth"]
+    end
+
+    %% Client flows
+    Client -->|HTTPS/443<br/>OAuth Bearer Token| Dashboard_Route
+    Client -->|HTTPS/443<br/>OAuth Bearer Token| Registry_Route
+    Client -->|HTTPS/443<br/>OAuth Bearer Token| Pipeline_Route
+    Client -->|HTTPS/443<br/>OAuth Bearer Token| Ray_Route
+    Client -->|HTTPS/443<br/>OAuth Bearer Token| Feast_Route
+    Client -->|HTTPS/443<br/>Bearer Token optional| ISVC_Route
+
+    %% OAuth routes to pods
+    Dashboard_Route -->|HTTP/8080<br/>Internal| DashboardPod
+    Registry_Route -->|HTTP/8080<br/>Internal| RegistryPod
+    Ray_Route -->|HTTP/8265<br/>Internal| NS_UserWorkspace
+
+    %% Istio gateway flow
+    Gateway -->|HTTP/8012<br/>mTLS STRICT| Activator
+    ISVC_Route -->|HTTP/8080<br/>mTLS optional| Predictor
+
+    %% Service mesh internal
+    Activator -->|HTTP/8080<br/>mTLS| Predictor
+    KServeCtl -->|HTTPS/8443<br/>mTLS cert| K8sAPI
+    ModelCtl -->|HTTPS/8443<br/>mTLS cert| K8sAPI
+    TrainingCtl -->|HTTPS/8443<br/>mTLS cert| K8sAPI
+    DashboardPod -->|HTTPS/6443<br/>SA Token| K8sAPI
+    KServeCtl -->|Watch Events| Predictor
+    ModelCtl -->|Creates Routes/VS| Gateway
+    TrainingCtl -->|Creates Pods| TrainingJob
+
+    %% Egress flows
+    Predictor -->|HTTPS/443<br/>TLS 1.2+<br/>AWS IAM IRSA| S3
+    TrainingJob -->|HTTPS/443<br/>TLS 1.2+<br/>AWS IAM| S3
+    NotebookPod -->|HTTPS/443<br/>TLS 1.2+<br/>AWS IAM| S3
+    NS_Platform -->|HTTPS/443<br/>TLS 1.2+<br/>Pull Secrets| ContainerReg
+    ModelCtl -->|HTTPS/443<br/>TLS 1.3<br/>API Key| NGC
+    TrainingJob -->|HTTPS/443<br/>TLS 1.2+<br/>HF Token| HuggingFace
+    DashboardPod -->|HTTPS/6443<br/>TLS 1.2+| OAuth
+    RegistryPod -->|PostgreSQL/5432<br/>TLS optional<br/>User/Pass| PostgreSQL
+    Feast_Route -->|Redis/6379<br/>TLS optional<br/>Password| Redis
+
+    %% Styling
+    classDef external fill:#fff5f5,stroke:#e53e3e,stroke-width:2px,stroke-dasharray: 5 5
+    classDef ingress fill:#fffaf0,stroke:#dd6b20,stroke-width:2px
+    classDef servicemesh fill:#f0fff4,stroke:#38a169,stroke-width:2px
+    classDef externalservice fill:#fffff0,stroke:#d69e2e,stroke-width:2px
+    classDef gateway fill:#faf5ff,stroke:#805ad5,stroke-width:2px
+    classDef controller fill:#ebf8ff,stroke:#3182ce,stroke-width:2px
+
+    class Client external
+    class Dashboard_Route,Registry_Route,Pipeline_Route,Ray_Route,Feast_Route,ISVC_Route ingress
+    class Gateway,Activator gateway
+    class Predictor,NotebookPod,TrainingJob,DashboardPod,RegistryPod servicemesh
+    class KServeCtl,ModelCtl,TrainingCtl controller
+    class K8sAPI controller
+    class S3,ContainerReg,NGC,HuggingFace,OAuth,PostgreSQL,Redis externalservice

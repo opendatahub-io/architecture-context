@@ -1,0 +1,63 @@
+sequenceDiagram
+    participant User as User<br/>(kubectl/API)
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS1.3
+    participant Webhook as kueue-webhook-service<br/>9443/TCP HTTPS TLS1.2+<br/>mTLS
+    participant Controller as kueue-controller-manager<br/>ServiceAccount Token
+    participant Scheduler as Kueue Scheduler<br/>(in-process)
+    participant Cache as In-Memory Cache<br/>(in-process)
+    participant ClusterAutoscaler as Cluster Autoscaler<br/>443/TCP HTTPS
+
+    Note over User,ClusterAutoscaler: Flow 1: Job Submission and Admission
+
+    User->>K8sAPI: POST /apis/batch/v1/jobs<br/>Auth: Bearer Token (User)<br/>Job: suspend=false
+    K8sAPI->>Webhook: POST /mutate-batch-v1-job<br/>mTLS (API Server client cert)
+    Webhook-->>K8sAPI: Mutate: suspend=true, labels
+    K8sAPI-->>User: Job created (suspended)
+
+    Controller->>K8sAPI: Watch Jobs, Workloads<br/>Bearer Token (SA)
+    K8sAPI-->>Controller: Job created event
+
+    Controller->>Controller: Create Workload CR
+    Controller->>K8sAPI: POST Workload CR<br/>Bearer Token (SA)
+
+    Controller->>Scheduler: Evaluate admission
+    Scheduler->>Cache: Check ClusterQueue quota
+    Cache-->>Scheduler: Available quota
+
+    alt Quota available
+        Scheduler->>Controller: Admit workload
+        Controller->>K8sAPI: PATCH Job: suspend=false<br/>Add node selectors, tolerations
+        K8sAPI-->>User: Job starts (Pods created)
+    else Quota exhausted
+        Scheduler->>Controller: Queue workload
+        Controller->>K8sAPI: Create ProvisioningRequest<br/>Request node scaling
+        K8sAPI->>ClusterAutoscaler: Watch ProvisioningRequest
+        ClusterAutoscaler->>ClusterAutoscaler: Provision nodes
+        ClusterAutoscaler->>K8sAPI: Update ProvisioningRequest status
+        K8sAPI-->>Controller: ProvisioningRequest ready
+        Controller->>Scheduler: Re-evaluate admission
+        Scheduler->>Controller: Admit workload
+        Controller->>K8sAPI: PATCH Job: suspend=false
+    end
+
+    Note over User,ClusterAutoscaler: Flow 2: Metrics Collection
+
+    Prometheus->>MetricsSvc: GET /metrics<br/>Bearer Token (SA)<br/>HTTPS 8443/TCP TLS1.2+
+    MetricsSvc-->>Prometheus: kueue_pending_workloads<br/>kueue_admitted_workloads_total<br/>kueue_cluster_queue_resource_usage
+
+    Note over User,ClusterAutoscaler: Flow 3: Visibility API Query
+
+    User->>K8sAPI: GET /apis/visibility.kueue.x-k8s.io/v1beta1/<br/>clusterqueues/team-queue/pendingworkloads<br/>Bearer Token (User)
+    K8sAPI->>VisibilityAPI: Forward request (in-process)
+    VisibilityAPI->>Cache: Query pending workloads
+    Cache-->>VisibilityAPI: Workload list
+    VisibilityAPI-->>K8sAPI: JSON response
+    K8sAPI-->>User: Pending workloads
+
+    Note over User,ClusterAutoscaler: Flow 4: Multi-Cluster Dispatching (MultiKueue)
+
+    Controller->>RemoteK8s: POST /apis/batch/v1/jobs<br/>HTTPS 443/TCP TLS1.2+<br/>Kubeconfig credentials
+    RemoteK8s-->>Controller: Job created on remote cluster
+    Controller->>RemoteK8s: Watch job status<br/>HTTPS 443/TCP
+    RemoteK8s-->>Controller: Job completed
+    Controller->>K8sAPI: Update local Workload status

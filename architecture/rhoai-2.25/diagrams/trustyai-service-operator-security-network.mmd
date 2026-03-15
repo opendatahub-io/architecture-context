@@ -1,0 +1,111 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[External Client]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        direction TB
+        RouteTA["OpenShift Route<br/>TrustyAI Service<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ Reencrypt"]
+        RouteGO["OpenShift Route<br/>Guardrails Orchestrator<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ Reencrypt"]
+    end
+
+    subgraph AuthLayer["AUTHENTICATION LAYER"]
+        direction TB
+        OAuthTA["OAuth Proxy (TrustyAI)<br/>8443/TCP HTTPS<br/>service-ca cert<br/>OpenShift SAR: namespace pods get"]
+        OAuthGO["OAuth Proxy (Guardrails)<br/>8443/TCP HTTPS<br/>service-ca cert<br/>Skip Auth: ^/apis/v1beta1/healthz"]
+    end
+
+    subgraph AppLayer["APPLICATION LAYER (Trusted)"]
+        direction TB
+
+        subgraph NS_User["Namespace: {user-namespace}"]
+            direction TB
+            TrustyAI["TrustyAI Service<br/>SA: {trustyai-service-name}<br/>8080/TCP HTTP (metrics)<br/>80/TCP HTTP, 443/TCP HTTPS (API)<br/>4443/TCP HTTPS (TLS service)"]
+
+            Guardrails["Guardrails Orchestrator<br/>SA: {orchestrator-name}<br/>8032-8432/TCP HTTPS<br/>8090-8490/TCP HTTP/HTTPS<br/>8034/TCP HTTP (metrics)"]
+
+            LMEvalPod["LM Eval Job Pod<br/>SA: {lmevaljob-name}-sa<br/>Ephemeral Job"]
+        end
+
+        subgraph NS_Operator["Namespace: redhat-ods-applications"]
+            direction TB
+            Operator["Operator Controller<br/>SA: controller-manager<br/>8081/TCP HTTP (health)<br/>CPU: 10m-900m<br/>Memory: 64Mi-700Mi"]
+            Webhook["Conversion Webhook<br/>9443/TCP HTTPS<br/>cert-manager cert"]
+            RBACProxy["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>Bearer Token Auth<br/>/metrics"]
+        end
+    end
+
+    subgraph InternalServices["INTERNAL SERVICES"]
+        direction TB
+        KServe["KServe InferenceService<br/>443/TCP HTTPS<br/>TLS 1.2+ or mTLS<br/>Bearer Token (optional)"]
+        ModelMesh["ModelMesh Serving<br/>8033/TCP gRPC<br/>mTLS<br/>Payload Processor"]
+        Prometheus["Prometheus<br/>80/TCP, 8080/TCP HTTP<br/>ServiceMonitor"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.3<br/>Service Account Token"]
+    end
+
+    subgraph Storage["STORAGE LAYER"]
+        PVC["PersistentVolumeClaim<br/>Filesystem<br/>ReadWriteOnce"]
+        Database["PostgreSQL/MySQL<br/>5432/3306 TCP<br/>TLS 1.2+ (conditional)<br/>Username/Password<br/>Secret: db-credentials"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        S3["S3 Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM/Access Key"]
+        HuggingFace["Hugging Face Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Token (optional)"]
+        Kueue["Kueue API<br/>6443/TCP HTTPS<br/>TLS 1.3<br/>Service Account Token"]
+    end
+
+    %% External to Ingress
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth Redirect"| RouteTA
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth Redirect"| RouteGO
+
+    %% Ingress to Auth
+    RouteTA -->|"HTTPS/8443<br/>TLS Reencrypt<br/>service-ca cert"| OAuthTA
+    RouteGO -->|"HTTPS/8443<br/>TLS Reencrypt<br/>service-ca cert"| OAuthGO
+
+    %% Auth to Application
+    OAuthTA -->|"HTTP/8080 or HTTPS/4443<br/>TLS (service-ca)<br/>Forwarded Auth"| TrustyAI
+    OAuthGO -->|"HTTPS/8032<br/>TLS (service-ca)<br/>Forwarded Bearer"| Guardrails
+
+    %% Application to Internal Services
+    TrustyAI -->|"HTTP/HTTPS 80-443<br/>TLS (conditional)<br/>Payload Monitoring"| KServe
+    TrustyAI -->|"gRPC/8033<br/>mTLS<br/>Pod Exec Config"| ModelMesh
+    TrustyAI -->|"Filesystem or<br/>PostgreSQL/MySQL 5432/3306<br/>TLS 1.2+ (conditional)"| PVC
+    TrustyAI -->|"Filesystem or<br/>PostgreSQL/MySQL 5432/3306<br/>TLS 1.2+ (conditional)"| Database
+
+    Guardrails -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token<br/>Detector/Generator"| KServe
+
+    LMEvalPod -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token<br/>Inference"| KServe
+    LMEvalPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM/Access Key<br/>Result Storage"| S3
+    LMEvalPod -->|"HTTPS/443<br/>TLS 1.2+<br/>API Token (optional)<br/>Model/Dataset Download"| HuggingFace
+
+    %% Operator Flows
+    Operator -->|"HTTPS/6443<br/>TLS 1.3<br/>Service Account Token<br/>Watch CRs"| K8sAPI
+    Operator -->|"HTTPS/6443<br/>TLS 1.3<br/>Service Account Token<br/>Create Resources"| K8sAPI
+    Operator -->|"Watch/Patch<br/>HTTPS/6443<br/>TLS 1.3"| KServe
+
+    %% Monitoring
+    Prometheus -->|"HTTP/8080<br/>No Auth<br/>/q/metrics"| TrustyAI
+    Prometheus -->|"HTTPS/8443<br/>Bearer Token<br/>/metrics"| RBACProxy
+    RBACProxy -->|"Internal<br/>HTTP/8080"| Operator
+
+    %% Kueue Integration
+    Operator -->|"HTTPS/6443<br/>TLS 1.3<br/>Service Account Token<br/>Workload CRD"| Kueue
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef auth fill:#fff4e6,stroke:#e0a800,stroke-width:2px
+    classDef app fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef internal fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef storage fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef operator fill:#b3d9ff,stroke:#3399ff,stroke-width:3px
+
+    class Client external
+    class RouteTA,RouteGO ingress
+    class OAuthTA,OAuthGO auth
+    class TrustyAI,Guardrails,LMEvalPod app
+    class Operator,Webhook,RBACProxy operator
+    class KServe,ModelMesh,Prometheus,K8sAPI internal
+    class PVC,Database storage
+    class S3,HuggingFace,Kueue externalservice
