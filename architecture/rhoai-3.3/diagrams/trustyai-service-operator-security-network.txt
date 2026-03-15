@@ -1,0 +1,201 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: OpenShift Route (TLS reencrypt)                          │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift)                                                    │
+│                                                                          │
+│  [OpenShift Route - {trustyai-name}]                                     │
+│  - Port: 443/TCP (external) → 443/TCP (internal)                       │
+│  - TLS Mode: Reencrypt                                                  │
+│  - External TLS Termination + Re-encryption to backend                  │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (service-serving cert)                         │
+│         │ Auth: Service mesh (mTLS)                                      │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Trusted - Istio mTLS)                                    │
+│                                                                          │
+│  [TrustyAI Service]                                                      │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: {trustyai-name}-sa                                   │
+│  - Image: quay.io/trustyai/trustyai-service:latest                      │
+│  - Services:                                                             │
+│    • {trustyai-name} (ClusterIP 80/TCP → 8080)                          │
+│    • {trustyai-name} (ClusterIP 443/TCP → 4443)                         │
+│    • {trustyai-name}-tls (ClusterIP 443/TCP → 8443)                     │
+│         │                                                                │
+│         │ Monitoring Data Flow                                           │
+│         ├─ Port: 80/TCP or 443/TCP                                       │
+│         │  Protocol: HTTP/HTTPS                                          │
+│         │  Encryption: mTLS (Istio)                                      │
+│         │  Auth: Service mesh identity                                   │
+│         │  ▼                                                              │
+│         [KServe InferenceService]                                        │
+│         - Inference data sent to TrustyAI for monitoring                │
+│         - VirtualService/DestinationRule for traffic routing             │
+│                                                                          │
+│  [Guardrails Orchestrator]                                               │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: {orchestrator-name}-sa                               │
+│         │                                                                │
+│         │ Port: 80/TCP or 443/TCP                                        │
+│         │ Protocol: HTTP/HTTPS                                           │
+│         │ Encryption: mTLS (Istio)                                       │
+│         │ Auth: Service mesh identity                                    │
+│         ▼                                                                │
+│  [Detector InferenceServices + LLM InferenceService]                    │
+│  - Guardrails route requests through detector chain                     │
+│                                                                          │
+│  [LMEvalJob Pod]                                                         │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: {lmevaljob-name}-sa                                  │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: API Token (optional)                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [HuggingFace Hub - huggingface.co]                                      │
+│  - Purpose: Download models and datasets for LM evaluation              │
+│  - Auth: HuggingFace API Token (optional)                               │
+│  - Encryption: TLS 1.2+                                                  │
+│                                                                          │
+│  [Database - PostgreSQL/MySQL]                                           │
+│  - Purpose: TrustyAI service storage backend                            │
+│  - Port: Varies (PostgreSQL: 5432, MySQL: 3306)                         │
+│  - Protocol: JDBC                                                        │
+│  - Encryption: TLS (optional with verify-ca)                            │
+│  - Auth: Username/Password from {trustyai-name}-db-credentials          │
+│  - CA Cert: {trustyai-name}-db-ca (optional)                            │
+└─────────────────────────────────────────────────────────────────────────┘
+
+CONTROL PLANE COMMUNICATION:
+┌─────────────────────────────────────────────────────────────────────────┐
+│  [TrustyAI Operator Controller]                                          │
+│  - Namespace: trustyai-operator-system                                   │
+│  - ServiceAccount: controller-manager                                    │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount Token                                     │
+│         ▼                                                                │
+│  [Kubernetes API Server]                                                 │
+│  - Resources: TrustyAIService, LMEvalJob, GuardrailsOrchestrator,       │
+│               NemoGuardrails, InferenceServices, Deployments, Services,  │
+│               Routes, VirtualServices, DestinationRules, ServiceMonitors │
+│                                                                          │
+│  [Operator Metrics Endpoint]                                             │
+│  - Service: controller-manager-metrics-service                           │
+│  - Port: 8443/TCP                                                        │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: kube-rbac-proxy (TokenReview + SubjectAccessReview)            │
+│         ▲                                                                │
+│         │ Bearer Token (K8s ServiceAccount)                              │
+│         │                                                                │
+│  [Prometheus]                                                            │
+│  - Scrapes metrics via ServiceMonitor                                    │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ClusterRole: manager-role (bound to controller-manager SA)
+  • Core Resources:
+    - configmaps, persistentvolumeclaims, pods, secrets, serviceaccounts,
+      services → create, delete, get, list, patch, update, watch
+    - events → create, patch, update, watch
+    - persistentvolumes → get, list, watch
+    - pods/exec → create, delete, get, list, watch
+
+  • Apps:
+    - deployments → create, delete, get, list, patch, update, watch
+    - deployments/finalizers → update
+    - deployments/status → get, patch, update
+
+  • KServe:
+    - inferenceservices → get, list, patch, update, watch
+    - inferenceservices/finalizers → delete, get, list, patch, update, watch
+    - servingruntimes → get, list, watch
+
+  • Istio:
+    - destinationrules, virtualservices → create, delete, get, list, patch,
+      update, watch
+
+  • OpenShift:
+    - routes → create, delete, get, list, patch, update, watch
+
+  • Monitoring:
+    - servicemonitors → create, list, watch
+
+  • Kueue:
+    - workloads → create, delete, get, list, patch, update, watch
+    - workloads/finalizers → update
+    - workloads/status → get, patch, update
+    - resourceflavors, workloadpriorityclasses → get, list, watch
+
+  • TrustyAI CRDs:
+    - guardrailsorchestrators, lmevaljobs, nemoguardrails, trustyaiservices
+      → create, delete, get, list, patch, update, watch
+    - */finalizers → update
+    - */status → get, patch, update
+
+  • RBAC:
+    - clusterrolebindings → create, delete, get, list, update, watch
+
+  • Leader Election:
+    - leases → create, get, update
+
+ClusterRole: proxy-role (bound to controller-manager SA)
+  • authentication.k8s.io/tokenreviews → create
+  • authorization.k8s.io/subjectaccessreviews → create
+
+Role: leader-election-role (bound to controller-manager SA)
+  • configmaps → get, list, watch, create, update, patch, delete
+  • leases → get, list, watch, create, update, patch, delete
+  • events → create, patch
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Service Mesh Configuration:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  • Istio mTLS: Enabled for service-to-service communication
+  • VirtualService: Created by operator for TrustyAI service routing
+  • DestinationRule: Created by operator for traffic policies
+  • Service Identity: Based on ServiceAccount in namespace
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Secrets:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  • {trustyai-name}-internal (kubernetes.io/tls)
+    - Purpose: TLS certificate for internal service communication
+    - Provisioned By: OpenShift service-serving cert controller
+    - Auto-Rotate: Yes (OpenShift managed)
+
+  • {trustyai-name}-tls (kubernetes.io/tls)
+    - Purpose: TLS certificate for kube-rbac-proxy metrics endpoint
+    - Provisioned By: OpenShift service-serving cert controller
+    - Auto-Rotate: Yes (OpenShift managed)
+
+  • {trustyai-name}-db-credentials (Opaque)
+    - Purpose: Database connection credentials
+    - Contents: username, password, host, port, dbname
+    - Provisioned By: User (manual)
+    - Auto-Rotate: No
+
+  • {trustyai-name}-db-ca (Opaque)
+    - Purpose: Database CA certificate for TLS verification
+    - Provisioned By: User (manual)
+    - Auto-Rotate: No
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

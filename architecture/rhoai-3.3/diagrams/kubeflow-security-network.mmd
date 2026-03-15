@@ -1,0 +1,118 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User[Data Scientist Browser]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Gateway["Gateway<br/>openshift-ingress<br/>443/TCP HTTPS TLS1.2+<br/>Edge Termination<br/>Path: /notebook/{ns}/{name}"]
+    end
+
+    subgraph UserNamespace["USER NAMESPACE ({user-namespace})"]
+        direction TB
+
+        subgraph NotebookPodAuth["Notebook Pod (WITH Authentication)"]
+            RBACProxy["kube-rbac-proxy Sidecar<br/>Port: 8443/TCP HTTPS<br/>TLS: service-ca cert<br/>SA: {notebook-name}"]
+            NotebookAuth["Jupyter Notebook Container<br/>Port: 8888/TCP HTTP<br/>Image: {notebook-image}"]
+        end
+
+        subgraph NotebookPodNoAuth["Notebook Pod (WITHOUT Authentication)"]
+            NotebookNoAuth["Jupyter Notebook Container<br/>Port: 8888/TCP HTTP<br/>Direct Access"]
+        end
+
+        SvcAuth["Service: {notebook-name}-kube-rbac-proxy<br/>ClusterIP 8443/TCP"]
+        SvcNoAuth["Service: {notebook-name}<br/>ClusterIP 80/TCP"]
+        SA["ServiceAccount: {notebook-name}"]
+        NetPol1["NetworkPolicy: {notebook-name}-ctrl-np<br/>Allow from controller namespace<br/>Port: 8888/TCP"]
+        NetPol2["NetworkPolicy: {notebook-name}-kube-rbac-proxy-np<br/>Allow from controller namespace<br/>Ports: 8443/TCP, 8444/TCP"]
+        RefGrant["ReferenceGrant<br/>Allow Gateway → Service"]
+    end
+
+    subgraph ControllerNamespace["CONTROLLER NAMESPACE (redhat-ods-applications)"]
+        direction TB
+
+        Controller["ODH Notebook Controller<br/>SA: odh-notebook-controller-manager"]
+        Webhook["Mutating Webhook<br/>Port: 8443/TCP HTTPS mTLS<br/>Path: /mutate-notebook-v1"]
+        HTTPRoute["HTTPRoute: nb-{user-ns}-{notebook-name}<br/>Parent: data-science-gateway<br/>Backend: {notebook-name}-kube-rbac-proxy<br/>OR {notebook-name}"]
+        WebhookSvc["Service: webhook-service<br/>443/TCP → 8443/TCP"]
+        WebhookCert["Secret: webhook-cert<br/>TLS (service-ca)<br/>Auto-rotate: 30d"]
+    end
+
+    subgraph K8sCluster["KUBERNETES CLUSTER"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS1.2+"]
+        OAuth["OpenShift OAuth"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        ImageRegistry["Image Registry<br/>443/TCP HTTPS TLS1.2+<br/>Auth: Pull Secrets"]
+        Proxy["OpenShift Proxy (Optional)<br/>443/TCP HTTPS TLS1.2+"]
+    end
+
+    subgraph DSPipelines["DATA SCIENCE PIPELINES (Optional)"]
+        DSPA["DSPA API<br/>8888/TCP HTTPS TLS1.2+<br/>Auth: Bearer Token"]
+        DSPASecret["Secret: {notebook-name}-{dspa-name}-token"]
+    end
+
+    %% External to Ingress
+    User -->|HTTPS/443<br/>TLS 1.2+<br/>OAuth Bearer Token| Gateway
+
+    %% Ingress to User Namespace (WITH Auth)
+    Gateway -->|HTTPS/8443<br/>TLS 1.2+ service-ca<br/>Bearer passthrough| SvcAuth
+    SvcAuth --> RBACProxy
+    RBACProxy -->|HTTP/8888<br/>localhost| NotebookAuth
+
+    %% Ingress to User Namespace (WITHOUT Auth)
+    Gateway -.->|HTTP/80<br/>No auth| SvcNoAuth
+    SvcNoAuth -.-> NotebookNoAuth
+
+    %% RBAC Proxy Authorization
+    RBACProxy -->|SubjectAccessReview<br/>HTTPS/443<br/>ServiceAccount Token<br/>Check: get on Notebook CR| K8sAPI
+
+    %% Controller Operations
+    Controller -->|Watch/Create/Update<br/>HTTPS/443<br/>ServiceAccount Token| K8sAPI
+    Controller -->|Creates| HTTPRoute
+    Controller -->|Creates| RefGrant
+    Controller -->|Creates| NetPol1
+    Controller -->|Creates| NetPol2
+    Controller -->|Creates| SA
+    Controller -->|Creates| SvcAuth
+
+    %% Webhook Operations
+    K8sAPI -->|Admission Request<br/>HTTPS/443 mTLS<br/>POST /mutate-notebook-v1| WebhookSvc
+    WebhookSvc --> Webhook
+    Webhook -->|Inject kube-rbac-proxy<br/>if inject-auth=true| K8sAPI
+
+    %% HTTPRoute Routing
+    HTTPRoute -->|Routes via| Gateway
+    HTTPRoute -->|References| SvcAuth
+    RefGrant -->|Permits| HTTPRoute
+
+    %% OAuth Integration
+    Gateway -->|Validate Token| OAuth
+    OAuth -->|Token Valid| Gateway
+
+    %% Pipeline Integration
+    Controller -->|Watch DSPA<br/>Get metadata<br/>HTTPS/8888<br/>Bearer Token| DSPA
+    Controller -->|Creates| DSPASecret
+    NotebookAuth -->|Access pipelines<br/>Token from secret| DSPA
+
+    %% External Services
+    NotebookAuth -->|Pull images<br/>HTTPS/443<br/>Pull Secrets| ImageRegistry
+    NotebookNoAuth -->|Pull images<br/>HTTPS/443<br/>Pull Secrets| ImageRegistry
+    Controller -->|Proxy config<br/>HTTPS/443| Proxy
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef usernamespace fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controllernamespace fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef k8s fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef pipeline fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+
+    class User external
+    class Gateway ingress
+    class RBACProxy,NotebookAuth,NotebookNoAuth,SvcAuth,SvcNoAuth,SA,NetPol1,NetPol2,RefGrant usernamespace
+    class Controller,Webhook,HTTPRoute,WebhookSvc,WebhookCert controllernamespace
+    class K8sAPI,OAuth k8s
+    class ImageRegistry,Proxy externalservice
+    class DSPA,DSPASecret pipeline

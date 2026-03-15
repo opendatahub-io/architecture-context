@@ -1,0 +1,138 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[Data Scientist<br/>External Client]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Route["OpenShift Route<br/>ds-pipeline-{'{name}'}<br/>443/TCP HTTPS<br/>TLS 1.2+ Reencrypt<br/>OAuth Proxy"]
+        RouteMLMD["OpenShift Route<br/>ds-pipeline-md-{'{name}'}<br/>443/TCP HTTPS<br/>TLS 1.2+ Reencrypt<br/>OAuth Proxy (Optional)"]
+    end
+
+    subgraph ApplicationLayer["APPLICATION LAYER (Namespace: per DSPA instance)"]
+        direction TB
+
+        subgraph AuthGateway["Authentication Gateway"]
+            OAuthProxy["OAuth Proxy<br/>8443/TCP HTTPS<br/>TLS service-cert<br/>OpenShift OAuth"]
+            RBACProxy["Kube RBAC Proxy<br/>TokenReview/SubjectAccessReview"]
+        end
+
+        subgraph CoreComponents["Core DSP Components"]
+            APIServer["DS Pipeline API Server<br/>ServiceAccount: ds-pipeline-{'{name}'}<br/>8888/TCP HTTP<br/>8887/TCP gRPC<br/>Optional mTLS"]
+            PersistAgent["Persistence Agent<br/>ServiceAccount: ds-pipeline-persistenceagent-{'{name}'}<br/>Watches Workflows"]
+            ScheduledWF["Scheduled Workflow Controller<br/>ServiceAccount: ds-pipeline-scheduledworkflow-{'{name}'}"]
+            ArgoController["Argo Workflow Controller<br/>ServiceAccount: ds-pipeline-argo-{'{name}'}<br/>Namespace-scoped"]
+        end
+
+        subgraph OptionalComponents["Optional Components"]
+            MariaDB["MariaDB<br/>3306/TCP MySQL<br/>Optional TLS<br/>Username/Password Auth<br/>NetworkPolicy Enforced"]
+            Minio["Minio<br/>9000/TCP HTTP<br/>S3 Access/Secret Keys<br/>Dev/Test Only"]
+            MLMD["ML Metadata gRPC<br/>8080/TCP gRPC<br/>Optional mTLS<br/>NetworkPolicy Enforced"]
+            MLMDEnvoy["MLMD Envoy Proxy<br/>9090/TCP gRPC/HTTP2<br/>8443/TCP HTTPS<br/>OAuth Proxy"]
+        end
+
+        WorkflowPods["Workflow Task Pods<br/>ServiceAccount: pipeline-runner-{'{name}'}<br/>Ephemeral (per task)<br/>NetworkPolicy: v2_components"]
+    end
+
+    subgraph OperatorLayer["OPERATOR LAYER (Namespace: operator namespace)"]
+        Controller["DSPO Controller Manager<br/>ServiceAccount: controller-manager<br/>ClusterRole: manager-role<br/>8080/TCP metrics<br/>8081/TCP health"]
+    end
+
+    subgraph Platform["PLATFORM SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Token Auth"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        ExternalS3["External S3 Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM/Access Keys"]
+        ExternalDB["External MySQL/MariaDB<br/>3306/TCP MySQL<br/>Optional TLS<br/>Username/Password"]
+        ImageRegistry["Image Registries<br/>quay.io, registry.redhat.io<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Pull Secrets"]
+    end
+
+    subgraph Integrations["INTEGRATION POINTS"]
+        Dashboard["ODH Dashboard<br/>Pipeline Management UI"]
+        Workbench["Workbenches/Notebooks<br/>KFP SDK Client"]
+        Monitoring["OpenShift Monitoring<br/>Prometheus"]
+    end
+
+    %% External Access Flow
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth Token"| Route
+    Client -.->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth Token (Optional)"| RouteMLMD
+    Route -->|"HTTPS/8443<br/>TLS service-cert"| OAuthProxy
+    RouteMLMD -.->|"HTTPS/8443<br/>TLS service-cert"| MLMDEnvoy
+
+    %% Authentication Flow
+    OAuthProxy -->|"Validated<br/>Bearer Token"| RBACProxy
+    RBACProxy -->|"HTTP/8888<br/>gRPC/8887<br/>Optional mTLS"| APIServer
+
+    %% API Server Connections
+    APIServer -->|"MySQL/3306<br/>Optional TLS<br/>Username/Password"| MariaDB
+    APIServer -->|"HTTP/9000<br/>S3 API<br/>Access/Secret Keys"| Minio
+    APIServer -.->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM/Keys"| ExternalS3
+    APIServer -.->|"MySQL/3306<br/>Optional TLS<br/>Username/Password"| ExternalDB
+    APIServer -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount Token"| K8sAPI
+
+    %% Argo Workflow Flow
+    K8sAPI -->|"Internal<br/>CR Watch"| ArgoController
+    ArgoController -->|"HTTPS/6443<br/>Create Pods<br/>ServiceAccount Token"| K8sAPI
+    K8sAPI -->|"Pod Creation"| WorkflowPods
+
+    %% Workflow Pod Connections
+    WorkflowPods -->|"gRPC/8887<br/>Optional mTLS<br/>ServiceAccount Token"| APIServer
+    WorkflowPods -->|"HTTP/9000<br/>S3 API<br/>Access/Secret Keys"| Minio
+    WorkflowPods -.->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM/Keys"| ExternalS3
+    WorkflowPods -->|"gRPC/8080<br/>Optional mTLS<br/>NetworkPolicy"| MLMD
+
+    %% MLMD Connections
+    MLMD -->|"MySQL/3306<br/>Optional TLS<br/>Username/Password"| MariaDB
+    MLMDEnvoy -->|"gRPC/8080<br/>Optional mTLS"| MLMD
+
+    %% Persistence Agent Flow
+    PersistAgent -->|"HTTPS/6443<br/>Watch Workflows<br/>ServiceAccount Token"| K8sAPI
+    PersistAgent -->|"gRPC/8887<br/>Optional mTLS<br/>Bearer Token"| APIServer
+    PersistAgent -->|"MySQL/3306<br/>Optional TLS<br/>Username/Password"| MariaDB
+
+    %% Scheduled Workflow Controller
+    ScheduledWF -->|"gRPC/8887<br/>Optional mTLS<br/>Bearer Token"| APIServer
+    ScheduledWF -->|"HTTPS/6443<br/>Create Workflows<br/>ServiceAccount Token"| K8sAPI
+
+    %% Operator Flow
+    Controller -->|"HTTPS/6443<br/>TLS 1.2+<br/>Reconcile DSPA CRs<br/>ServiceAccount Token"| K8sAPI
+
+    %% Integration Points
+    Dashboard -->|"HTTPS/8443<br/>TLS + OAuth<br/>Via Route"| Route
+    Workbench -->|"HTTPS/8443<br/>TLS + OAuth<br/>KFP SDK<br/>Via Route"| Route
+    Monitoring -->|"HTTP/8080<br/>ServiceAccount Token<br/>/metrics"| Controller
+    Monitoring -.->|"HTTP/8888<br/>ServiceAccount Token<br/>/metrics"| APIServer
+
+    %% Image Pulls
+    WorkflowPods -.->|"HTTPS/443<br/>TLS 1.2+<br/>Pull Secrets"| ImageRegistry
+    K8sAPI -.->|"Container Images"| ImageRegistry
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px,color:#000
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px,color:#000
+    classDef auth fill:#fff2cc,stroke:#d6b656,stroke-width:2px,color:#000
+    classDef core fill:#d5e8d4,stroke:#82b366,stroke-width:2px,color:#000
+    classDef optional fill:#e1d5e7,stroke:#9673a6,stroke-width:2px,color:#000
+    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px,color:#000
+    classDef platform fill:#f8cecc,stroke:#b85450,stroke-width:2px,color:#000
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px,color:#000
+    classDef integration fill:#d5e8d4,stroke:#82b366,stroke-width:2px,color:#000
+
+    class Client external
+    class Route,RouteMLMD ingress
+    class OAuthProxy,RBACProxy auth
+    class APIServer,PersistAgent,ScheduledWF,ArgoController,WorkflowPods core
+    class MariaDB,Minio,MLMD,MLMDEnvoy optional
+    class Controller operator
+    class K8sAPI platform
+    class ExternalS3,ExternalDB,ImageRegistry externalservice
+    class Dashboard,Workbench,Monitoring integration
+
+    %% Trust boundary annotations
+    style External fill:#ffebee,stroke:#c62828,stroke-width:3px
+    style Ingress fill:#fff3e0,stroke:#e65100,stroke-width:3px
+    style ApplicationLayer fill:#e8f5e9,stroke:#2e7d32,stroke-width:3px
+    style OperatorLayer fill:#e3f2fd,stroke:#1565c0,stroke-width:3px
+    style Platform fill:#fce4ec,stroke:#ad1457,stroke-width:3px
+    style ExternalServices fill:#fff9c4,stroke:#f57f17,stroke-width:3px
+    style Integrations fill:#e0f2f1,stroke:#00695c,stroke-width:2px

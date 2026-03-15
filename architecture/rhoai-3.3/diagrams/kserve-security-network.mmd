@@ -1,0 +1,125 @@
+graph TB
+    subgraph External["EXTERNAL - Untrusted"]
+        Client[External Client]
+    end
+
+    subgraph Ingress["INGRESS - DMZ"]
+        Gateway["Istio IngressGateway<br/>OpenShift Router<br/>443/TCP → 8000/TCP<br/>TLS 1.2+<br/>Bearer Token validation opt"]
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (mTLS opt)"]
+        direction TB
+
+        subgraph Routing["Routing Layer"]
+            KnativeRouting["Knative/Istio Routing<br/>VirtualService<br/>Auto-scaling"]
+        end
+
+        subgraph UserNamespace["Namespace: user-namespace"]
+            direction TB
+
+            PredictorPod["Predictor Pod<br/>SA: default or custom"]
+
+            subgraph PodContainers["Pod Containers"]
+                StorageInit["Init: storage-initializer<br/>Model download"]
+                PredictorContainer["Main: predictor<br/>Framework runtime"]
+                AgentSidecar["Sidecar: agent<br/>Logging/batching opt"]
+            end
+
+            PredictorPod -.contains.-> StorageInit
+            PredictorPod -.contains.-> PredictorContainer
+            PredictorPod -.contains.-> AgentSidecar
+        end
+
+        subgraph GraphNamespace["InferenceGraph Components"]
+            Router["Router Service<br/>8000/TCP<br/>Multi-model pipeline"]
+            Step1["Preprocessor<br/>InferenceService"]
+            Step2["Predictor<br/>InferenceService"]
+            Step3["Postprocessor<br/>InferenceService"]
+
+            Router -->|mTLS optional<br/>Bearer Token| Step1
+            Router -->|mTLS optional<br/>Bearer Token| Step2
+            Router -->|mTLS optional<br/>Bearer Token| Step3
+        end
+
+        subgraph LLMComponents["LLM Disaggregated Architecture"]
+            LLMRouter["LLM Router<br/>8000/TCP HTTP/HTTPS"]
+            LLMScheduler["LLM Scheduler<br/>9003/TCP gRPC<br/>mTLS optional"]
+            PrefillWorker["Prefill Worker<br/>LeaderWorkerSet<br/>8000/TCP"]
+            DecodeWorker["Decode Worker<br/>LeaderWorkerSet<br/>8001/TCP"]
+
+            LLMRouter -->|gRPC/HTTP2<br/>mTLS optional| LLMScheduler
+            LLMScheduler -->|HTTP/gRPC<br/>mTLS optional| PrefillWorker
+            LLMScheduler -->|HTTP/gRPC<br/>mTLS optional| DecodeWorker
+        end
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        S3["S3 Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM / Access Keys"]
+        GCS["Google Cloud Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>GCP SA / Workload Identity"]
+        Azure["Azure Blob Storage<br/>blob.core.windows.net<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Azure credentials"]
+    end
+
+    subgraph ControlPlane["CONTROL PLANE - kserve namespace"]
+        direction TB
+
+        Controller["kserve-controller-manager<br/>SA: kserve-controller-manager<br/>Watches: InferenceService, etc."]
+        WebhookServer["kserve-webhook-server<br/>443/TCP → 9443/TCP<br/>HTTPS TLS 1.2+<br/>cert-manager"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+"]
+
+        Controller -->|Bearer Token<br/>ServiceAccount| K8sAPI
+        K8sAPI -->|mTLS<br/>API Server client cert| WebhookServer
+        Controller -->|Creates/Updates| Resources["Deployments<br/>Services<br/>VirtualServices<br/>Routes"]
+    end
+
+    subgraph LocalCache["Local Model Cache opt"]
+        LocalModelMgr["localmodel-manager<br/>Controller"]
+        LocalNodeAgent["localmodelnode-agent<br/>DaemonSet"]
+        LocalDisk["Node PersistentVolume<br/>Local disk cache"]
+
+        LocalModelMgr -->|Creates| DownloadJob["Kubernetes Job<br/>storage-initializer"]
+        DownloadJob -->|Writes to| LocalDisk
+        LocalNodeAgent -->|Manages| LocalDisk
+    end
+
+    subgraph Observability["Observability"]
+        MetricsEndpoint["Controller Metrics<br/>8443/TCP HTTPS<br/>OAuth Proxy"]
+        EventBroker["Knative Eventing Broker<br/>8080/TCP HTTP<br/>Request/Response logs"]
+    end
+
+    %% Main flow
+    Client -->|HTTPS/443<br/>TLS 1.2+<br/>Bearer Token opt| Gateway
+    Gateway -->|HTTP/8000<br/>mTLS opt<br/>Bearer Token| KnativeRouting
+    KnativeRouting -->|HTTP/HTTPS 8000<br/>TLS via Istio opt<br/>Bearer Token opt| PredictorPod
+
+    %% Storage download
+    StorageInit -->|HTTPS/443<br/>TLS 1.2+<br/>AWS IAM or GCP SA or Azure| S3
+    StorageInit -->|HTTPS/443<br/>TLS 1.2+<br/>GCP SA or Workload Identity| GCS
+    StorageInit -->|HTTPS/443<br/>TLS 1.2+<br/>Azure credentials| Azure
+
+    %% InferenceGraph flow
+    Gateway -->|HTTP/8000<br/>mTLS opt| Router
+
+    %% LLM flow
+    Gateway -->|HTTP/8000<br/>mTLS opt| LLMRouter
+
+    %% Logging
+    PredictorContainer -.->|HTTP/8080<br/>TLS via Istio opt| EventBroker
+
+    %% Local cache
+    DownloadJob -->|HTTPS/443| S3
+    PredictorPod -.->|Direct mount| LocalDisk
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef observability fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+
+    class Client external
+    class Gateway ingress
+    class KnativeRouting,PredictorPod,Router,LLMRouter,LLMScheduler,PrefillWorker,DecodeWorker servicemesh
+    class S3,GCS,Azure externalservice
+    class Controller,WebhookServer,K8sAPI,Resources controlplane
+    class MetricsEndpoint,EventBroker observability

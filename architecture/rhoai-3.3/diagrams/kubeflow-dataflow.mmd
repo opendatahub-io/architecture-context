@@ -1,0 +1,54 @@
+sequenceDiagram
+    participant User as Data Scientist Browser
+    participant Gateway as Gateway<br/>openshift-ingress<br/>443/TCP HTTPS TLS1.2+
+    participant OAuth as OpenShift OAuth
+    participant RBACProxy as kube-rbac-proxy<br/>8443/TCP HTTPS TLS1.2+<br/>(service-ca cert)
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS1.2+
+    participant Notebook as Jupyter Notebook<br/>8888/TCP HTTP
+    participant Controller as ODH Notebook Controller
+    participant Webhook as Mutating Webhook<br/>8443/TCP HTTPS mTLS
+    participant DSPA as DSPA API<br/>8888/TCP HTTPS TLS1.2+
+
+    Note over User,Notebook: Flow 1: User Access to Notebook (WITH Authentication)
+    User->>Gateway: GET /notebook/{ns}/{name}<br/>Auth: OpenShift OAuth
+    Gateway->>OAuth: Validate OAuth Token
+    OAuth-->>Gateway: Token Valid
+    Gateway->>RBACProxy: Forward Request<br/>Bearer Token<br/>TLS 1.2+ (service-ca)
+    RBACProxy->>K8sAPI: SubjectAccessReview<br/>Check "get" on Notebook CR<br/>ServiceAccount Token
+    K8sAPI-->>RBACProxy: Authorization Result
+    RBACProxy->>Notebook: Proxy Request<br/>HTTP (localhost)
+    Notebook-->>RBACProxy: Jupyter Response
+    RBACProxy-->>Gateway: HTTPS Response
+    Gateway-->>User: HTTPS Response
+
+    Note over User,Notebook: Flow 2: User Access to Notebook (WITHOUT Authentication)
+    User->>Gateway: GET /notebook/{ns}/{name}<br/>Auth: OpenShift OAuth
+    Gateway->>Notebook: Direct HTTP<br/>80/TCP
+    Notebook-->>Gateway: Jupyter Response
+    Gateway-->>User: HTTPS Response
+
+    Note over Controller,Webhook: Flow 3: Webhook Mutation (Inject kube-rbac-proxy)
+    User->>K8sAPI: Create Notebook CR<br/>annotation: inject-auth=true
+    K8sAPI->>Webhook: POST /mutate-notebook-v1<br/>443/TCP HTTPS mTLS<br/>(client cert validation)
+    Webhook->>Webhook: Inject kube-rbac-proxy sidecar<br/>Generate config
+    Webhook->>K8sAPI: Return Mutated Notebook
+    K8sAPI-->>User: Notebook Created
+
+    Note over Controller,K8sAPI: Flow 4: Controller Reconciliation
+    Controller->>K8sAPI: Watch Notebook CRs<br/>443/TCP HTTPS TLS1.2+<br/>ServiceAccount Token
+    K8sAPI-->>Controller: Notebook Event
+    Controller->>K8sAPI: Create HTTPRoute<br/>(in controller namespace)
+    Controller->>K8sAPI: Create ReferenceGrant<br/>(allow cross-namespace)
+    Controller->>K8sAPI: Create NetworkPolicy
+    Controller->>K8sAPI: Create ServiceAccount
+    Controller->>K8sAPI: Create RoleBinding
+    K8sAPI-->>Controller: Resources Created
+
+    Note over Controller,DSPA: Flow 5: Data Science Pipeline Integration
+    Controller->>K8sAPI: Watch DSPA CRs<br/>443/TCP HTTPS TLS1.2+<br/>ServiceAccount Token
+    K8sAPI-->>Controller: DSPA Event
+    Controller->>DSPA: Get Pipeline Info<br/>8888/TCP HTTPS TLS1.2+<br/>Token from Secret
+    DSPA-->>Controller: Pipeline Details
+    Controller->>K8sAPI: Create Pipeline Secret<br/>for Notebook
+    Controller->>K8sAPI: Create RBAC for Pipeline Access
+    K8sAPI-->>Controller: Resources Created

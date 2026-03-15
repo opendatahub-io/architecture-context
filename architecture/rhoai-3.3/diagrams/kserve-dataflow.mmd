@@ -1,0 +1,74 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Istio IngressGateway<br/>443/TCP HTTPS TLS1.2+
+    participant VS as VirtualService<br/>Routing
+    participant Knative as Knative/Istio Routing<br/>mTLS optional
+    participant Predictor as Predictor Pod<br/>8000/TCP HTTP/HTTPS
+    participant Storage as S3/GCS/Azure Storage<br/>443/TCP HTTPS TLS1.2+
+    participant EventBroker as Knative Eventing Broker<br/>8080/TCP HTTP
+
+    Note over Client,EventBroker: Flow 1: Model Deployment and Inference Request
+
+    Client->>Gateway: POST /v1/models/model:predict<br/>Auth: Bearer Token (optional)
+    Gateway->>VS: Forward HTTPS<br/>TLS 1.2+
+    VS->>Knative: Route via VirtualService<br/>mTLS (optional via Istio)
+
+    Note over Predictor: On first request, pod may scale from zero
+
+    Note over Predictor,Storage: Init Container: storage-initializer
+    Predictor->>Storage: Download Model Artifacts<br/>AWS IAM/GCP SA/Azure creds
+    Storage-->>Predictor: Model Files
+
+    Knative->>Predictor: Inference Request<br/>HTTP/HTTPS, Bearer Token (optional)
+    Predictor->>Predictor: Run Inference
+    Predictor-->>Knative: Prediction Result<br/>JSON Response
+    Knative-->>Gateway: Response
+    Gateway-->>Client: HTTPS Response<br/>TLS 1.2+
+
+    opt Logging Enabled
+        Predictor->>EventBroker: Send Request/Response Logs<br/>HTTP, TLS via Istio (optional)
+    end
+
+    Note over Client,EventBroker: Flow 2: InferenceGraph Multi-Model Pipeline
+
+    participant Router as InferenceGraph Router<br/>8000/TCP HTTP/HTTPS
+    participant Step1 as Preprocessor Service<br/>8000/TCP
+    participant Step2 as Predictor Service<br/>8000/TCP
+    participant Step3 as Postprocessor Service<br/>8000/TCP
+
+    Client->>Gateway: POST /v1/models/pipeline:predict<br/>Bearer Token (optional)
+    Gateway->>Router: Forward via VirtualService<br/>mTLS (optional via Istio)
+
+    Router->>Step1: Step 1: Preprocess<br/>mTLS (optional), Bearer Token (propagated)
+    Step1-->>Router: Preprocessed Data
+
+    Router->>Step2: Step 2: Predict<br/>mTLS (optional), Bearer Token (propagated)
+    Step2-->>Router: Prediction
+
+    Router->>Step3: Step 3: Postprocess<br/>mTLS (optional), Bearer Token (propagated)
+    Step3-->>Router: Final Result
+
+    Router-->>Gateway: Response
+    Gateway-->>Client: HTTPS Response
+
+    Note over Client,EventBroker: Flow 3: LLM Disaggregated Inference
+
+    participant LLMRouter as LLM Router<br/>8000/TCP
+    participant Scheduler as LLM Scheduler<br/>9003/TCP gRPC
+    participant Prefill as Prefill Worker<br/>LeaderWorkerSet
+    participant Decode as Decode Worker<br/>LeaderWorkerSet
+
+    Client->>Gateway: POST /openai/v1/chat/completions<br/>Bearer Token (optional)
+    Gateway->>LLMRouter: Forward via VirtualService<br/>mTLS (optional)
+
+    LLMRouter->>Scheduler: Schedule Request<br/>gRPC/HTTP2, mTLS (optional)
+
+    Scheduler->>Prefill: Prefill Phase<br/>HTTP/gRPC, mTLS (optional)
+    Prefill-->>Scheduler: KV Cache
+
+    Scheduler->>Decode: Decode Phase<br/>HTTP/gRPC, mTLS (optional)
+    Decode-->>Scheduler: Token Stream
+
+    Scheduler-->>LLMRouter: Streaming Response
+    LLMRouter-->>Gateway: Streaming Response
+    Gateway-->>Client: HTTPS Streaming Response
