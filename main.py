@@ -630,14 +630,38 @@ async def run_generate_diagrams_phase(args) -> None:
             # Check if diagrams already exist
             # Look for any diagram files (.mmd, .dsl, .txt) with this component's name
             has_diagrams = False
+            all_diagram_files = []
             if diagrams_dir.exists():
                 # Check for any of the expected diagram file types
                 mmd_files = list(diagrams_dir.glob(f"{component_name}-*.mmd"))
                 dsl_files = list(diagrams_dir.glob(f"{component_name}-*.dsl"))
                 txt_files = list(diagrams_dir.glob(f"{component_name}-*.txt"))
+                png_files = list(diagrams_dir.glob(f"{component_name}-*.png"))
+                all_diagram_files = mmd_files + dsl_files + txt_files + png_files
                 has_diagrams = len(mmd_files) > 0 or len(dsl_files) > 0 or len(txt_files) > 0
 
-            needs_generation = not has_diagrams or args.force_regenerate
+            needs_generation = False
+            if not has_diagrams:
+                needs_generation = True
+            elif args.force_regenerate:
+                # Force regeneration - delete existing diagrams
+                print(f"  Deleting existing diagrams for {component_name} (--force-regenerate)")
+                for diagram_file in all_diagram_files:
+                    diagram_file.unlink()
+                needs_generation = True
+                has_diagrams = False
+            elif has_diagrams:
+                # Check if source .md file is newer than diagrams
+                md_mtime = md_file.stat().st_mtime
+                # Check oldest diagram file
+                oldest_diagram_mtime = min(f.stat().st_mtime for f in all_diagram_files)
+                if md_mtime > oldest_diagram_mtime:
+                    # Source is newer - delete stale diagrams
+                    print(f"  Deleting stale diagrams for {component_name} (source file updated)")
+                    for diagram_file in all_diagram_files:
+                        diagram_file.unlink()
+                    needs_generation = True
+                    has_diagrams = False
 
             diagram_jobs.append({
                 'platform': platform,
@@ -863,13 +887,29 @@ async def run_generate_platform_architecture_phase(args) -> None:
                     if f.name not in ["README.md", "PLATFORM.md"]
                 ]
 
+                # Check if any component files are newer than PLATFORM.md
+                needs_generation = False
+                if not has_platform_md and len(component_files) > 0:
+                    needs_generation = True
+                elif has_platform_md and len(component_files) > 0:
+                    # Check if any component file is newer than PLATFORM.md
+                    platform_mtime = platform_md.stat().st_mtime
+                    for comp_file in component_files:
+                        if comp_file.stat().st_mtime > platform_mtime:
+                            needs_generation = True
+                            # Delete stale PLATFORM.md (agents are bad at editing)
+                            print(f"  Deleting stale PLATFORM.md for {platform}-{version} (component files updated)")
+                            platform_md.unlink()
+                            has_platform_md = False
+                            break
+
                 platform_dirs.append({
                     'platform': platform,
                     'version': version,
                     'path': item,
                     'has_platform_md': has_platform_md,
                     'component_count': len(component_files),
-                    'needs_generation': not has_platform_md and len(component_files) > 0
+                    'needs_generation': needs_generation
                 })
 
     if not platform_dirs:
@@ -1050,30 +1090,91 @@ async def run_collect_architectures_phase(args) -> None:
 
 async def run_all_phases(args) -> None:
     """Run all phases in sequence."""
+    from argparse import Namespace
+
     # Auto-detect org if not provided
     org = args.org
     if not org:
         org = "opendatahub-io" if args.platform == "odh" else "red-hat-data-services"
 
-    # Create a namespace-like object for each phase
-    class FetchArgs:
-        org = org
-        checkouts_dir = "checkouts"
-        branch = getattr(args, 'branch', None)
+    print("\n" + "=" * 80)
+    print("RUNNING ALL PHASES")
+    print(f"Platform: {args.platform}")
+    print(f"Organization: {org}")
+    if args.branch:
+        print(f"Branch: {args.branch}")
+    print("=" * 80 + "\n")
 
-    class ManifestArgs:
-        platform = args.platform
-        org = org
-        branch = getattr(args, 'branch', None)
-        checkouts_dir = "checkouts"
-        script_path = None
+    # Phase 1: Fetch repositories
+    fetch_args = Namespace(
+        org=org,
+        checkouts_dir="checkouts",
+        branch=getattr(args, 'branch', None)
+    )
+    await run_fetch_phase(fetch_args)
 
-    await run_fetch_phase(FetchArgs())
-    await run_manifest_phase(ManifestArgs())
+    # Phase 2: Parse manifests (not needed for display, but validates checkouts)
+    manifest_args = Namespace(
+        platform=args.platform,
+        org=org,
+        branch=getattr(args, 'branch', None),
+        checkouts_dir="checkouts",
+        script_path=None,
+        format="summary"
+    )
+    await run_manifest_phase(manifest_args)
 
-    print("\n" + "=" * 60)
-    print("All phases completed successfully!")
-    print("=" * 60 + "\n")
+    # Phase 3: Generate component architectures
+    generate_arch_args = Namespace(
+        platform=args.platform,
+        org=org,
+        branch=getattr(args, 'branch', None),
+        checkouts_dir="checkouts",
+        script_path=None,
+        max_concurrent=5,
+        limit=None
+    )
+    await run_generate_architecture_phase(generate_arch_args)
+
+    # Phase 4: Collect architectures into organized structure
+    collect_args = Namespace(
+        checkouts_dir="checkouts",
+        output_dir="architecture",
+        platform=args.platform  # Filter to only this platform
+    )
+    await run_collect_architectures_phase(collect_args)
+
+    # Phase 5: Generate platform-level architecture
+    # Note: version is auto-detected from architecture directories, no need to pass it
+    platform_arch_args = Namespace(
+        architecture_dir="architecture",
+        platform=args.platform,
+        version=None,  # Auto-detect all versions for this platform
+        max_concurrent=5,
+        limit=None
+    )
+    await run_generate_platform_architecture_phase(platform_arch_args)
+
+    # Phase 6: Generate diagrams
+    diagrams_args = Namespace(
+        architecture_dir="architecture",
+        platform=args.platform,
+        version=None,  # Auto-detect all versions for this platform
+        max_concurrent=5,
+        limit=None,
+        force_regenerate=False
+    )
+    await run_generate_diagrams_phase(diagrams_args)
+
+    print("\n" + "=" * 80)
+    print("ALL PHASES COMPLETED SUCCESSFULLY!")
+    print("=" * 80)
+    print(f"\nResults:")
+    print(f"  - Component architectures: checkouts/{org}.{args.branch if args.branch else ''}/*/GENERATED_ARCHITECTURE.md")
+    print(f"  - Organized architectures: architecture/{args.platform}-*/")
+    print(f"  - Platform documents: architecture/{args.platform}-*/PLATFORM.md")
+    print(f"  - Diagrams: architecture/{args.platform}-*/diagrams/")
+    print("=" * 80 + "\n")
 
 
 async def main(args) -> None:

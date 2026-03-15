@@ -96,11 +96,13 @@ def detect_platform_version(platform_name: str, checkout_dir: Path, operator_nam
     """
     Detect platform version from operator repository.
 
-    Priority:
-    1. Makefile VERSION
-    2. VERSION file
-    3. git describe
-    4. "unknown"
+    For RHOAI (red-hat-data-services):
+      - Branch name is authoritative (e.g., rhoai-2.7 → version 2.7)
+      - Extract from directory name: red-hat-data-services.rhoai-X.Y → X.Y
+
+    For ODH (opendatahub-io):
+      - Makefile VERSION is authoritative
+      - Fallback to VERSION file or git describe
     """
     operator_dir = checkout_dir / operator_name
 
@@ -110,6 +112,19 @@ def detect_platform_version(platform_name: str, checkout_dir: Path, operator_nam
 
     print(f"Detecting {platform_name.upper()} version from {operator_dir}")
 
+    # SPECIAL CASE: For RHOAI, branch name is authoritative
+    # Extract version from checkout directory name
+    if platform_name == 'rhoai':
+        # Directory name format: red-hat-data-services.rhoai-X.Y
+        match = re.search(r'\.rhoai-([0-9.]+)', checkout_dir.name)
+        if match:
+            version = match.group(1)
+            print(f"  ✓ Found version from branch name: {version}")
+            return version
+        # If no branch suffix, might be plain "red-hat-data-services"
+        # Fall through to Makefile detection
+
+    # For ODH (or RHOAI without branch suffix), use Makefile
     # Try Makefile first (primary source)
     makefile_path = operator_dir / 'Makefile'
     print(f"  Checking Makefile: {makefile_path}")
