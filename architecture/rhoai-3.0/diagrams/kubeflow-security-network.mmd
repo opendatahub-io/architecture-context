@@ -1,0 +1,84 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User[User/Data Scientist]
+        JupyterWebApp[jupyter-web-app UI]
+    end
+
+    subgraph Ingress["INGRESS (Optional - USE_ISTIO=true)"]
+        IstioGateway["Istio Gateway<br/>Host: ${ISTIO_HOST}<br/>Gateway: ${ISTIO_GATEWAY}"]
+        VirtualService["Istio VirtualService<br/>Match: /notebook/{ns}/{name}/*<br/>Rewrite: URI prefix strip"]
+    end
+
+    subgraph ServiceMesh["SERVICE MESH / INTERNAL CLUSTER (Trusted)"]
+        direction TB
+
+        subgraph NS_ODH["Namespace: opendatahub"]
+            Controller["Notebook Controller Pod<br/>SA: notebook-controller-service-account<br/>Image: rhoai/odh-kf-notebook-controller"]
+
+            subgraph ControllerComponents["Controller Components"]
+                NotebookReconciler["NotebookReconciler<br/>Main Controller"]
+                CullingReconciler["CullingReconciler<br/>Optional (ENABLE_CULLING=true)"]
+                Metrics["Metrics Endpoint<br/>8080/TCP HTTP"]
+                Health["Health/Readiness<br/>8081/TCP HTTP"]
+            end
+        end
+
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+<br/>Auth: ServiceAccount Token"]
+
+        subgraph NS_User["Namespace: {user-namespace}"]
+            StatefulSet["Notebook StatefulSet<br/>Replicas: 1 (or 0 when culled)"]
+            NotebookPod["Notebook Pod<br/>Port: 8888/TCP HTTP<br/>fsGroup: 100<br/>Env: NB_PREFIX"]
+            NotebookSvc["ClusterIP Service<br/>{notebook-name}-{hash}<br/>80/TCP → 8888/TCP"]
+        end
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        Prometheus["Prometheus<br/>8080/TCP HTTP (or 8443 via proxy)<br/>Auth: None (or TokenReview)"]
+        IstioCP["Istio Control Plane<br/>6443/TCP HTTPS TLS1.2+<br/>Auth: ServiceAccount Token"]
+    end
+
+    %% External flows
+    User -->|HTTPS/443<br/>TLS1.2+<br/>Bearer Token| JupyterWebApp
+    JupyterWebApp -->|Create Notebook CR<br/>HTTPS/6443<br/>Bearer Token| K8sAPI
+
+    %% Ingress flows (when USE_ISTIO=true)
+    User -.->|HTTP/80<br/>Optional| IstioGateway
+    IstioGateway -.->|HTTP<br/>URI rewrite| VirtualService
+    VirtualService -.->|HTTP/80| NotebookSvc
+
+    %% Controller to API Server
+    NotebookReconciler -->|CRUD Operations<br/>HTTPS/6443<br/>TLS1.2+<br/>ServiceAccount Token| K8sAPI
+    CullingReconciler -->|CRUD Operations<br/>HTTPS/6443<br/>TLS1.2+<br/>ServiceAccount Token| K8sAPI
+
+    %% API Server to resources
+    K8sAPI -->|Create/Update| StatefulSet
+    StatefulSet -->|Manages| NotebookPod
+    K8sAPI -->|Create| NotebookSvc
+
+    %% Culling flow
+    CullingReconciler -->|GET /api/kernels<br/>HTTP/8888<br/>Bearer Token or AuthzPolicy| NotebookPod
+
+    %% Service routing
+    NotebookSvc -->|Routes to<br/>Selector: notebook-name| NotebookPod
+
+    %% Metrics collection
+    Prometheus -->|GET /metrics<br/>HTTP/8080<br/>No Auth| Metrics
+
+    %% Istio integration
+    NotebookReconciler -.->|Create VirtualService<br/>when USE_ISTIO=true| IstioCP
+
+    %% Health checks
+    K8sAPI -->|GET /healthz /readyz<br/>HTTP/8081| Health
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef controller fill:#4a90e2,stroke:#333,stroke-width:2px
+
+    class User,JupyterWebApp external
+    class IstioGateway,VirtualService ingress
+    class Controller,NotebookReconciler,CullingReconciler,Metrics,Health,K8sAPI,StatefulSet,NotebookPod,NotebookSvc servicemesh
+    class Prometheus,IstioCP externalservice
+    class NotebookReconciler,CullingReconciler controller

@@ -1,0 +1,112 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[External Client<br/>Data Scientist]
+    end
+
+    subgraph Ingress["INGRESS (DMZ - OpenShift Router)"]
+        RouteTrustyAI["Route: {trustyai-name}<br/>443/TCP HTTPS<br/>TLS Edge Termination"]
+        RouteGORCH["Route: {gorch-name}-https<br/>443/TCP → 8432/TCP<br/>TLS Reencrypt"]
+        RouteGateway["Route: {gorch-name}-gateway<br/>443/TCP → 8090/TCP<br/>TLS Reencrypt"]
+    end
+
+    subgraph OperatorNamespace["OPERATOR NAMESPACE (System Components)"]
+        direction TB
+        Operator["TrustyAI Service Operator<br/>SA: controller-manager<br/>Image: trustyai-service-operator:latest"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+"]
+        OperatorMetrics["Controller Metrics Service<br/>8443/TCP HTTPS<br/>Auth: Bearer via RBAC Proxy"]
+    end
+
+    subgraph UserNamespace["USER NAMESPACE (Application Components)"]
+        direction TB
+
+        subgraph TASDeployment["TrustyAI Service Deployment"]
+            TAS["TrustyAI Service<br/>8080/TCP HTTP<br/>4443/TCP HTTPS TLS1.2+"]
+            TASRBACProxy["kube-rbac-proxy<br/>8443/TCP HTTPS TLS1.2+<br/>Auth: Bearer + SAR"]
+        end
+
+        subgraph GORCHDeployment["Guardrails Orchestrator Deployment"]
+            GORCH["Guardrails Orchestrator<br/>8032/TCP HTTPS TLS1.2+<br/>8034/TCP HTTP Health<br/>8090/TCP HTTP Gateway"]
+            GORCHRBACProxy["kube-rbac-proxy<br/>8432/TCP HTTPS (OAuth)<br/>8490/TCP HTTP (OAuth)"]
+            Detector["Built-in Detector Sidecar<br/>8080/TCP HTTP Metrics"]
+            Gateway["Gateway Sidecar<br/>Request Router"]
+        end
+
+        subgraph LMESJob["LM Evaluation Job (Batch)"]
+            LMESDriver["LMES Driver<br/>Job Lifecycle Manager"]
+            LMESJobPod["LMES Job Pod<br/>Evaluation Executor"]
+        end
+
+        Storage["PVC: {trustyai-name}-pvc<br/>CSV Files<br/>OR<br/>External Database<br/>PostgreSQL/MySQL"]
+
+        InferenceService["KServe InferenceService<br/>443/TCP HTTPS/gRPC<br/>mTLS (Istio)"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        ModelRegistry["Model Registry<br/>443/TCP HTTPS TLS1.2+<br/>Auth: Token/Credentials"]
+        DatasetRepos["Dataset Repositories<br/>443/TCP HTTPS TLS1.2+<br/>Auth: API Key"]
+        OTLPCollector["OTLP Collector<br/>Configurable gRPC/HTTP<br/>TLS1.2+"]
+        ExternalDB["External Database<br/>PostgreSQL/MySQL<br/>JDBC TLS1.2+<br/>Auth: Username/Password"]
+    end
+
+    subgraph Monitoring["MONITORING (Trusted)"]
+        Prometheus["Prometheus<br/>ServiceMonitor Scraping"]
+    end
+
+    %% External to Ingress
+    Client -->|HTTPS/443<br/>TLS1.2+<br/>Bearer Token Optional| RouteTrustyAI
+    Client -->|HTTPS/443<br/>TLS1.2+<br/>OAuth Bearer| RouteGORCH
+    Client -->|HTTPS/443<br/>TLS1.2+| RouteGateway
+
+    %% Ingress to Services
+    RouteTrustyAI -->|HTTPS/443<br/>Edge Terminated| TAS
+    RouteGORCH -->|HTTPS/8432<br/>Reencrypt<br/>Bearer Token| GORCHRBACProxy
+    RouteGateway -->|HTTP/8090<br/>Reencrypt| Gateway
+
+    %% RBAC Proxy Flows
+    TASRBACProxy -->|HTTP/8080<br/>Localhost| TAS
+    GORCHRBACProxy -->|HTTPS/8032<br/>TLS1.2+| GORCH
+
+    %% Operator Control Plane
+    Operator -->|HTTPS/6443<br/>TLS1.2+<br/>SA Token| K8sAPI
+    K8sAPI -->|Watch Events| Operator
+    Operator -->|Create/Patch<br/>Deployments, Services<br/>Routes, Secrets| K8sAPI
+
+    %% TrustyAI Service Flows
+    TAS -->|Store Data<br/>Filesystem/JDBC| Storage
+    Storage -->|Database Mode<br/>JDBC TLS1.2+<br/>Credentials| ExternalDB
+
+    %% Guardrails Flows
+    Gateway -->|HTTP/8032<br/>HTTPS TLS1.2+| GORCH
+    GORCH -->|HTTPS/443<br/>mTLS<br/>SA Token| InferenceService
+    GORCH -->|gRPC<br/>TLS1.2+| OTLPCollector
+
+    %% LMES Job Flows
+    LMESDriver -->|HTTPS/443<br/>TLS1.2+<br/>Token/Creds| ModelRegistry
+    LMESDriver -->|HTTPS/443<br/>TLS1.2+<br/>API Key| DatasetRepos
+    LMESJobPod -->|HTTPS/443<br/>mTLS<br/>SA Token| InferenceService
+    LMESDriver -->|Create Secret<br/>HTTPS/6443<br/>SA Token| K8sAPI
+
+    %% InferenceService Modification
+    Operator -->|Watch/Patch<br/>InferenceServices<br/>HTTPS/6443<br/>SA Token| K8sAPI
+    K8sAPI -.->|Modified Config| InferenceService
+    InferenceService -->|Routed via Gateway<br/>HTTP/8090| Gateway
+
+    %% Monitoring
+    Prometheus -->|Scrape /q/metrics<br/>HTTP/80| TAS
+    Prometheus -->|Scrape /metrics<br/>HTTP/8080| Detector
+    Prometheus -->|Scrape /metrics<br/>HTTPS/8443<br/>Bearer Token| OperatorMetrics
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef usernamespace fill:#cce5ff,stroke:#0066cc,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+
+    class Client external
+    class RouteTrustyAI,RouteGORCH,RouteGateway ingress
+    class Operator,K8sAPI,OperatorMetrics operator
+    class TAS,TASRBACProxy,GORCH,GORCHRBACProxy,Detector,Gateway,LMESDriver,LMESJobPod,Storage,InferenceService usernamespace
+    class ModelRegistry,DatasetRepos,OTLPCollector,ExternalDB externalservice
+    class Prometheus monitoring
