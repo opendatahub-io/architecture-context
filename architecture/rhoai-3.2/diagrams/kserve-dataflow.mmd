@@ -1,0 +1,74 @@
+sequenceDiagram
+    participant User as User/CI
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
+    participant Webhook as KServe Webhook<br/>9443/TCP HTTPS mTLS
+    participant Controller as KServe Controller<br/>ServiceAccount Token
+    participant KnativeAPI as Knative Serving API<br/>6443/TCP HTTPS TLS1.2+
+    participant Storage as S3/GCS Storage<br/>443/TCP HTTPS TLS1.2+
+    participant Client as External Client
+    participant Gateway as Istio Gateway<br/>443/TCP HTTPS TLS1.2+
+    participant Activator as Knative Activator<br/>8012/TCP HTTP mTLS
+    participant Predictor as Predictor Pod<br/>8080/TCP HTTP
+    participant Transformer as Transformer Service<br/>8080/TCP HTTP mTLS
+
+    Note over User,Storage: Flow 1: Model Deployment via InferenceService
+
+    User->>K8sAPI: kubectl apply InferenceService<br/>Auth: Bearer Token
+    K8sAPI->>Webhook: POST /validate-serving-kserve-io-v1beta1-inferenceservice<br/>TLS 1.2+ mTLS
+    Webhook-->>K8sAPI: Validation Result
+    K8sAPI->>Webhook: POST /mutate-serving-kserve-io-v1beta1-inferenceservice<br/>TLS 1.2+ mTLS
+    Webhook-->>K8sAPI: Mutated InferenceService (defaults injected)
+    K8sAPI-->>User: InferenceService created
+
+    Note over Controller: Controller watches InferenceService CR
+    Controller->>K8sAPI: GET InferenceService<br/>ServiceAccount Token
+    K8sAPI-->>Controller: InferenceService spec
+    Controller->>KnativeAPI: Create Knative Service<br/>ServiceAccount Token TLS1.2+
+    KnativeAPI-->>Controller: Knative Service created
+    Controller->>K8sAPI: Create Istio VirtualService<br/>ServiceAccount Token
+    K8sAPI-->>Controller: VirtualService created
+
+    Note over Storage,Predictor: storage-initializer downloads model
+    Predictor->>Storage: GET /models/model-v1<br/>AWS IAM / GCP Service Account TLS1.2+
+    Storage-->>Predictor: Model artifacts downloaded
+
+    Note over Client,Transformer: Flow 2: Inference Request (Serverless Mode)
+
+    Client->>Gateway: POST /v1/models/model:predict<br/>HTTPS TLS1.2+ Bearer Token (optional)
+    Gateway->>Activator: Forward request HTTP mTLS<br/>Service Identity validation
+
+    alt Transformer configured
+        Activator->>Transformer: Pre-process request<br/>8080/TCP HTTP mTLS
+        Transformer->>Predictor: Forward to predictor<br/>8080/TCP HTTP mTLS
+        Predictor-->>Transformer: Prediction result
+        Transformer->>Transformer: Post-process response
+        Transformer-->>Activator: Final response
+    else No transformer
+        Activator->>Predictor: Inference request<br/>8080/TCP HTTP mTLS
+        Predictor-->>Activator: Prediction result
+    end
+
+    Activator-->>Gateway: Response HTTP mTLS
+    Gateway-->>Client: JSON Response HTTPS TLS1.2+
+
+    Note over Client,Predictor: Flow 3: InferenceGraph Multi-Step Routing
+
+    participant Router as Router Service<br/>8080/TCP HTTP mTLS
+    participant Step1 as Step 1 InferenceService<br/>8080/TCP HTTP mTLS
+    participant Step2 as Step 2 InferenceService<br/>8080/TCP HTTP mTLS
+
+    Client->>Router: POST /v1/graph/predict<br/>Bearer Token mTLS
+    Router->>Step1: Step 1 request<br/>Propagated Headers mTLS
+    Step1-->>Router: Step 1 response
+    Router->>Step2: Step 2 request<br/>Propagated Headers mTLS
+    Step2-->>Router: Step 2 response
+    Router-->>Client: Final aggregated response
+
+    Note over Controller,Predictor: Flow 4: Metrics Collection
+
+    participant Prometheus as Prometheus<br/>ServiceMonitor
+
+    Prometheus->>Controller: GET /metrics 8080/TCP HTTP<br/>None (NetworkPolicy restricted)
+    Controller-->>Prometheus: Controller metrics
+    Prometheus->>Predictor: GET /metrics 8080/TCP or 9090/TCP HTTP<br/>ServiceMonitor scraping
+    Predictor-->>Prometheus: Inference metrics

@@ -1,0 +1,264 @@
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                               │
+│                                                                                      │
+│  [Data Scientist / External User]                                                   │
+│         │                                                                            │
+│         │ Protocol: HTTPS                                                            │
+│         │ Port: 443/TCP (varies by Istio configuration)                             │
+│         │ Encryption: TLS 1.2+                                                       │
+│         │ Auth: Bearer Token / OAuth2 (varies by deployment)                        │
+│         ▼                                                                            │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                                       │
+│                                                                                      │
+│  [Istio Gateway] (when USE_ISTIO=true)                                              │
+│  - Gateway: kubeflow/kubeflow-gateway (configurable via ISTIO_GATEWAY)              │
+│  - Host: * (configurable via ISTIO_HOST)                                            │
+│  - TLS Termination: TLS 1.2+                                                        │
+│         │                                                                            │
+│         │ Port: 80/TCP                                                               │
+│         │ Protocol: HTTP                                                             │
+│         │ Encryption: mTLS (if Istio enabled)                                        │
+│         │ Auth: Istio AuthorizationPolicy (optional)                                 │
+│         ▼                                                                            │
+│  [Istio VirtualService: notebook-{name}-vs]                                         │
+│  - Routes to: notebook-{name} Service                                               │
+│         │                                                                            │
+│         ▼                                                                            │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Internal - Namespace Isolation)                                      │
+│                                                                                      │
+│  [Service: notebook-{name}]                                                         │
+│  - Type: ClusterIP                                                                  │
+│  - Namespace: {user-namespace}                                                      │
+│  - Port: 80/TCP → Target: 8888/TCP                                                  │
+│  - Protocol: HTTP                                                                   │
+│  - Encryption: None (plaintext) or Istio mTLS                                       │
+│         │                                                                            │
+│         │ Port: 8888/TCP                                                             │
+│         │ Protocol: HTTP                                                             │
+│         │ Encryption: None (plaintext)                                               │
+│         │ Auth: None (relies on namespace isolation)                                 │
+│         ▼                                                                            │
+│  [Notebook Pod - Jupyter Server]                                                    │
+│  - Namespace: {user-namespace}                                                      │
+│  - ServiceAccount: default (or user-specified)                                      │
+│  - Image: {user-specified-notebook-image}                                           │
+│  - Security Context:                                                                │
+│    - runAsUser: {image-defined}                                                     │
+│    - fsGroup: 100 (when ADD_FSGROUP=true)                                           │
+│  - Ports:                                                                           │
+│    - 8888/TCP: Jupyter server (HTTP, plaintext)                                     │
+│                                                                                      │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  CONTROLLER NAMESPACE (e.g., odh-notebook-controller)                               │
+│                                                                                      │
+│  [Notebook Controller Deployment]                                                   │
+│  - ServiceAccount: service-account                                                  │
+│  - Containers:                                                                      │
+│                                                                                      │
+│    [manager - Notebook Controller]                                                  │
+│    - Image: rhoai/odh-kf-notebook-controller-rhel9                                  │
+│    - User: 1001:0 (non-root)                                                        │
+│    - FIPS: Enabled (GOEXPERIMENT=strictfipsruntime)                                 │
+│    - Ports:                                                                         │
+│      - 8080/TCP: /metrics (HTTP, localhost only)                                    │
+│      - 8081/TCP: /healthz, /readyz (HTTP, localhost only)                           │
+│         │                                                                            │
+│         │ Port: 443/TCP                                                              │
+│         │ Protocol: HTTPS                                                            │
+│         │ Encryption: TLS 1.2+                                                       │
+│         │ Auth: ServiceAccount JWT Token                                             │
+│         ▼                                                                            │
+│    [Kubernetes API Server]                                                          │
+│    - Watches: Notebook CRs (kubeflow.org/v1, v1beta1, v1alpha1)                     │
+│    - Manages: StatefulSets, Services, VirtualServices, Events, Pods                 │
+│    - RBAC: ClusterRole 'role' with broad permissions                                │
+│         │                                                                            │
+│         │ Port: 8888/TCP (culling only)                                              │
+│         │ Protocol: HTTP                                                             │
+│         │ Encryption: None (plaintext) or Istio mTLS                                 │
+│         │ Auth: None (or Istio AuthorizationPolicy)                                  │
+│         ▼                                                                            │
+│    [Notebook Pod /api/kernels]                                                      │
+│    - CullingReconciler queries kernel activity                                      │
+│    - Frequency: IDLENESS_CHECK_PERIOD (default: 1 minute)                           │
+│    - Idle threshold: CULL_IDLE_TIME (default: 1440 minutes)                         │
+│                                                                                      │
+│    [kube-rbac-proxy - Optional Sidecar]                                             │
+│    - Image: quay.io/brancz/kube-rbac-proxy:v0.4.0                                   │
+│    - Port: 8443/TCP (HTTPS, TLS 1.2+)                                               │
+│    - Purpose: Proxies /metrics with RBAC enforcement                                │
+│         │                                                                            │
+│         │ Port: 8443/TCP                                                             │
+│         │ Protocol: HTTPS                                                            │
+│         │ Encryption: TLS 1.2+                                                       │
+│         │ Auth: RBAC SubjectAccessReview                                             │
+│         ▼                                                                            │
+│  [Service: controller-manager-metrics-service]                                      │
+│  - Type: ClusterIP                                                                  │
+│  - Port: 8443/TCP → Target: https (8443)                                            │
+│  - Exposure: Internal only                                                          │
+│         │                                                                            │
+│         │ Port: 8443/TCP                                                             │
+│         │ Protocol: HTTPS                                                            │
+│         │ Encryption: TLS 1.2+                                                       │
+│         │ Auth: RBAC SubjectAccessReview                                             │
+│         ▼                                                                            │
+│  [Prometheus] (external to namespace)                                               │
+│  - Scrapes metrics from controller                                                  │
+│                                                                                      │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  INTEGRATION POINTS                                                                  │
+│                                                                                      │
+│  [jupyter-web-app] (Kubeflow component)                                             │
+│  - Namespace: {kubeflow-namespace}                                                  │
+│  - Role: Creates Notebook CRs via Kubernetes API                                    │
+│         │                                                                            │
+│         │ Port: 443/TCP                                                              │
+│         │ Protocol: HTTPS                                                            │
+│         │ Encryption: TLS 1.2+                                                       │
+│         │ Auth: User credentials / ServiceAccount token                              │
+│         ▼                                                                            │
+│  [Kubernetes API Server]                                                            │
+│  - Creates: Notebook CRs in user namespaces                                         │
+│                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════════════════
+RBAC SUMMARY
+═══════════════════════════════════════════════════════════════════════════════════════
+
+ClusterRole: role
+├─ API Group: "" (core)
+│  ├─ events: create, get, list, patch, watch
+│  ├─ pods: delete, get, list, watch
+│  └─ services: * (all verbs)
+├─ API Group: apps
+│  └─ statefulsets: * (all verbs)
+├─ API Group: kubeflow.org
+│  └─ notebooks, notebooks/finalizers, notebooks/status: * (all verbs)
+└─ API Group: networking.istio.io
+   └─ virtualservices: * (all verbs)
+
+ClusterRole: auth-proxy-role
+├─ API Group: authorization.k8s.io
+│  └─ subjectaccessreviews: create
+└─ API Group: authentication.k8s.io
+   └─ tokenreviews: create
+
+Role: leader-election-role (namespace-scoped)
+├─ API Group: "" (core)
+│  ├─ configmaps: get, list, watch, create, update, patch, delete
+│  ├─ configmaps/status: get, update, patch
+│  └─ events: create
+
+ClusterRoleBindings:
+├─ role-binding: binds 'service-account' → ClusterRole 'role' (cluster-wide)
+└─ auth-proxy-role-binding: binds 'service-account' → ClusterRole 'auth-proxy-role'
+
+RoleBinding (namespace-scoped):
+└─ leader-election-role-binding: binds 'service-account' → Role 'leader-election-role'
+
+═══════════════════════════════════════════════════════════════════════════════════════
+SERVICE MESH CONFIGURATION (when Istio enabled)
+═══════════════════════════════════════════════════════════════════════════════════════
+
+VirtualService: notebook-{name}-vs
+├─ Gateway: {ISTIO_GATEWAY} (default: kubeflow/kubeflow-gateway)
+├─ Hosts: {ISTIO_HOST} (default: *)
+└─ Routing: HTTP traffic to notebook-{name} Service (port 80)
+
+AuthorizationPolicy (optional - for culling security):
+├─ Name: (user-defined, see hack/dev_culling_authorization_policy.yaml)
+├─ Namespace: {user-namespace}
+├─ Target: Notebook pods
+├─ Allows: CullingReconciler ServiceAccount
+└─ Actions: GET /api/kernels
+
+PeerAuthentication: (inherited from namespace/mesh settings)
+└─ Default: mTLS mode determined by mesh configuration
+
+═══════════════════════════════════════════════════════════════════════════════════════
+SECRETS
+═══════════════════════════════════════════════════════════════════════════════════════
+
+None - Controller does not directly manage secrets.
+
+Note: Notebook pods may mount secrets for:
+- User credentials (PVC access, S3, git, etc.) - specified in Notebook CR template
+- ServiceAccount tokens (automatic Kubernetes injection)
+
+═══════════════════════════════════════════════════════════════════════════════════════
+SECURITY CONSIDERATIONS
+═══════════════════════════════════════════════════════════════════════════════════════
+
+1. FIPS Compliance:
+   - Built with FIPS-enabled Go toolchain (GOEXPERIMENT=strictfipsruntime)
+   - Uses Red Hat UBI9 minimal base images with FIPS-validated cryptography
+
+2. Non-root Execution:
+   - Controller runs as UID 1001 (non-root user 'rhods')
+   - Compatible with OpenShift restricted SCC
+
+3. Service Account Permissions:
+   - Requires cluster-wide permissions for managing StatefulSets, Services, Notebooks
+   - Optional Istio VirtualService creation requires networking.istio.io API access
+
+4. Notebook Isolation:
+   - Each notebook runs in its own StatefulSet with namespace-level isolation
+   - No built-in multi-tenancy controls (relies on Kubernetes namespace isolation)
+
+5. Culling Security Risk:
+   - CullingReconciler accesses notebook /api/kernels endpoint without authentication
+   - RECOMMENDATION: Deploy Istio AuthorizationPolicy in production (see docs)
+
+6. Network Policies:
+   - Not defined by controller (user responsibility)
+   - Culling requires HTTP access to notebook pods on port 8888
+
+═══════════════════════════════════════════════════════════════════════════════════════
+KEY NETWORK FLOWS
+═══════════════════════════════════════════════════════════════════════════════════════
+
+1. User → Notebook Access:
+   External User → Istio Gateway (443/HTTPS TLS1.2+) → VirtualService →
+   Notebook Service (80/HTTP) → Notebook Pod (8888/HTTP plaintext)
+
+2. Controller → API Server:
+   Notebook Controller (manager) → Kubernetes API (443/HTTPS TLS1.2+, SA token) →
+   Watch/Manage: Notebooks, StatefulSets, Services, VirtualServices
+
+3. Culling → Notebook:
+   CullingReconciler → Notebook Service (8888/HTTP plaintext, no auth) →
+   GET /api/kernels → Update Notebook CR with STOP_ANNOTATION
+
+4. Metrics Collection:
+   Prometheus → kube-rbac-proxy (8443/HTTPS TLS1.2+, RBAC) →
+   Manager /metrics (8080/HTTP localhost) → Metrics response
+
+5. Notebook Creation:
+   jupyter-web-app → Kubernetes API (443/HTTPS TLS1.2+) → Create Notebook CR →
+   NotebookReconciler watches → Create StatefulSet, Service, VirtualService
+
+═══════════════════════════════════════════════════════════════════════════════════════
+CONFIGURATION VARIABLES (Security-Relevant)
+═══════════════════════════════════════════════════════════════════════════════════════
+
+USE_ISTIO (default: true on kubeflow, false on openshift)
+├─ Controls: VirtualService creation
+└─ Security Impact: Affects external exposure and mTLS enforcement
+
+ENABLE_CULLING (default: false)
+├─ Controls: CullingReconciler activation
+└─ Security Impact: Enables unauthenticated HTTP access to notebook pods (8888/TCP)
+
+ADD_FSGROUP (default: true)
+├─ Controls: Automatic fsGroup:100 injection to pod security context
+└─ Security Impact: Affects file permission behavior in notebook pods
+
+DEV (default: false)
+├─ Controls: Developer mode (uses kubectl proxy for local testing)
+└─ Security Impact: DO NOT enable in production (bypasses network isolation)
+
+═══════════════════════════════════════════════════════════════════════════════════════

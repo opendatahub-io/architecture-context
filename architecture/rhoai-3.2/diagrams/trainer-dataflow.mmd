@@ -1,0 +1,66 @@
+sequenceDiagram
+    participant User as User/Data Scientist
+    participant Dashboard as RHOAI Dashboard
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant Webhook as Webhook Server<br/>9443/TCP HTTPS TLS 1.2+ mTLS
+    participant TrainJobCtrl as TrainJob Controller<br/>ServiceAccount Token
+    participant JobSetCtrl as JobSet Controller<br/>jobset.x-k8s.io
+    participant Scheduler as Kubernetes Scheduler
+    participant TrainingPods as Training Pods<br/>Distributed ML Workload
+    participant S3 as S3 Storage<br/>443/TCP HTTPS TLS 1.2+
+    participant Prometheus as Prometheus<br/>8443/TCP HTTPS TLS 1.2+
+
+    %% Flow 1: TrainJob Submission
+    User->>K8sAPI: kubectl apply -f trainjob.yaml<br/>HTTPS/6443 Bearer Token
+    activate K8sAPI
+    K8sAPI->>Webhook: POST /validate-trainer-kubeflow-org-v1alpha1-trainjob<br/>mTLS (API server client cert)
+    activate Webhook
+    Webhook->>Webhook: Validate TrainJob spec<br/>(runtime ref, dataset, params)
+    Webhook-->>K8sAPI: 200 OK (validation passed)
+    deactivate Webhook
+    K8sAPI-->>User: TrainJob created
+    deactivate K8sAPI
+
+    %% Flow 2: Controller Reconciliation
+    TrainJobCtrl->>K8sAPI: WATCH TrainJob resources<br/>ServiceAccount Token
+    activate TrainJobCtrl
+    K8sAPI-->>TrainJobCtrl: TrainJob event (Created)
+    TrainJobCtrl->>K8sAPI: GET TrainingRuntime/ClusterTrainingRuntime<br/>Resolve runtime reference
+    K8sAPI-->>TrainJobCtrl: Runtime template spec
+    TrainJobCtrl->>TrainJobCtrl: Merge TrainJob + Runtime<br/>Build JobSet manifest
+    TrainJobCtrl->>K8sAPI: CREATE JobSet resource<br/>ServiceAccount Token
+    K8sAPI-->>TrainJobCtrl: JobSet created
+    deactivate TrainJobCtrl
+
+    %% Flow 3: JobSet to Pods
+    JobSetCtrl->>K8sAPI: WATCH JobSet resources
+    activate JobSetCtrl
+    K8sAPI-->>JobSetCtrl: JobSet event (Created)
+    JobSetCtrl->>K8sAPI: CREATE Jobs (master + workers)<br/>ServiceAccount Token
+    K8sAPI-->>JobSetCtrl: Jobs created
+    JobSetCtrl->>K8sAPI: CREATE Pods per Job
+    deactivate JobSetCtrl
+    Scheduler->>K8sAPI: Schedule Pods to nodes
+    K8sAPI-->>Scheduler: Pods assigned
+
+    %% Flow 4: Training Execution
+    activate TrainingPods
+    TrainingPods->>S3: GET /datasets/training-data<br/>HTTPS/443 AWS IAM/S3 Credentials
+    S3-->>TrainingPods: Dataset files
+    TrainingPods->>TrainingPods: Distributed Training<br/>PyTorch/JAX/TensorFlow<br/>Pod-to-Pod TCP/29500 (NCCL)
+    TrainingPods->>S3: PUT /checkpoints/model.pt<br/>HTTPS/443 S3 Credentials
+    S3-->>TrainingPods: Checkpoint saved
+    TrainingPods->>K8sAPI: Update Job status (Completed)
+    deactivate TrainingPods
+
+    %% Flow 5: Status Updates
+    TrainJobCtrl->>K8sAPI: WATCH JobSet status
+    K8sAPI-->>TrainJobCtrl: JobSet Completed
+    TrainJobCtrl->>K8sAPI: UPDATE TrainJob status<br/>Conditions: Completed=True
+    K8sAPI-->>User: TrainJob status updated
+
+    %% Flow 6: Metrics Collection
+    Prometheus->>TrainJobCtrl: GET /metrics<br/>HTTPS/8443 Bearer Token
+    activate Prometheus
+    TrainJobCtrl-->>Prometheus: Prometheus metrics<br/>(reconcile_total, errors, duration)
+    deactivate Prometheus

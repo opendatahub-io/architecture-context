@@ -1,0 +1,55 @@
+sequenceDiagram
+    participant User as User/Client
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
+    participant Operator as MLflow Operator<br/>Controller Manager
+    participant ServiceCA as service-ca-operator<br/>OpenShift
+    participant Gateway as Gateway<br/>HTTPRoute<br/>443/TCP HTTPS TLS1.3
+    participant MLflow as MLflow Pod<br/>8443/TCP HTTPS TLS1.3
+    participant PostgreSQL as PostgreSQL<br/>5432/TCP TLS1.2+
+    participant S3 as S3 Storage<br/>443/TCP HTTPS TLS1.2+
+
+    Note over User,S3: Flow 1: MLflow Instance Creation
+
+    User->>K8sAPI: kubectl apply -f mlflow.yaml<br/>HTTPS/6443 Bearer Token
+    K8sAPI->>Operator: Watch event: MLflow CR created
+    Operator->>K8sAPI: Create ServiceAccount, Role, RoleBinding<br/>HTTPS/6443 ServiceAccount Token
+    Operator->>K8sAPI: Create Deployment, Service, PVC<br/>HTTPS/6443 ServiceAccount Token
+    Operator->>K8sAPI: Annotate Service (service.beta.openshift.io/serving-cert-secret-name)<br/>HTTPS/6443 ServiceAccount Token
+    ServiceCA->>K8sAPI: Create mlflow-tls Secret<br/>TLS Certificate Provisioned
+    Operator->>K8sAPI: Create HTTPRoute (Gateway API)<br/>HTTPS/6443 ServiceAccount Token
+    Operator->>K8sAPI: Create ConsoleLink (OpenShift)<br/>HTTPS/6443 ServiceAccount Token
+    K8sAPI->>MLflow: Start MLflow Pod<br/>Mount TLS Secret, PVC
+    MLflow->>K8sAPI: List Namespaces (workspaces)<br/>HTTPS/6443 ServiceAccount Token
+
+    Note over User,S3: Flow 2: MLflow API Request (Authenticated)
+
+    User->>Gateway: POST /mlflow/api/2.0/mlflow/experiments/create<br/>HTTPS/443 Bearer Token
+    Gateway->>MLflow: Forward Request<br/>HTTPS/8443 Bearer Token
+    MLflow->>K8sAPI: self_subject_access_review<br/>HTTPS/6443 Client Bearer Token
+    K8sAPI-->>MLflow: Token Valid ✓
+    MLflow->>PostgreSQL: INSERT experiment metadata<br/>5432/TCP DB Credentials
+    PostgreSQL-->>MLflow: Success
+    MLflow-->>Gateway: Response: experiment_id
+    Gateway-->>User: JSON Response
+
+    Note over User,S3: Flow 3: MLflow Artifact Upload
+
+    User->>Gateway: POST /mlflow/api/2.0/mlflow/runs/log-artifact<br/>HTTPS/443 Bearer Token
+    Gateway->>MLflow: Forward Request<br/>HTTPS/8443 Bearer Token
+    MLflow->>K8sAPI: self_subject_access_review<br/>HTTPS/6443 Client Bearer Token
+    K8sAPI-->>MLflow: Token Valid ✓
+    MLflow->>S3: PUT /bucket/artifacts/model.pkl<br/>HTTPS/443 AWS Signature v4
+    S3-->>MLflow: 200 OK
+    MLflow->>PostgreSQL: UPDATE artifact path in run metadata<br/>5432/TCP
+    PostgreSQL-->>MLflow: Success
+    MLflow-->>Gateway: Response: artifact_uri
+    Gateway-->>User: JSON Response
+
+    Note over User,S3: Flow 4: Prometheus Metrics Collection
+
+    User->>K8sAPI: Deploy ServiceMonitor<br/>HTTPS/6443 Bearer Token
+    K8sAPI->>Operator: ServiceMonitor watches /metrics endpoint
+    loop Every scrape_interval
+        K8sAPI->>Operator: GET /metrics<br/>HTTPS/8443 ServiceAccount Token
+        Operator-->>K8sAPI: Prometheus metrics (reconciliation stats)
+    end

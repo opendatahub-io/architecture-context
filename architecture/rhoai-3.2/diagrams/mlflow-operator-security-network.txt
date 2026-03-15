@@ -1,0 +1,246 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [User/Client]                                                           │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.3                                            │
+│         │ Auth: Bearer Token (Kubernetes ServiceAccount)                 │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway)                                                      │
+│                                                                          │
+│  [Gateway - HTTPRoute]                                                   │
+│  - Port: 443/TCP (external) → 8443/TCP (internal)                      │
+│  - HTTPRoute: gateway-host/mlflow                                       │
+│  - TLS Mode: Passthrough (TLS 1.3)                                      │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.3 (passthrough)                             │
+│         │ Auth: Bearer Token (forwarded)                                 │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICE LAYER (redhat-ods-applications / opendatahub)                  │
+│                                                                          │
+│  [MLflow Service - ClusterIP]                                            │
+│  - Port: 8443/TCP → 8443/TCP                                            │
+│  - Type: ClusterIP                                                       │
+│  - TLS Certificate: mlflow-tls (service-ca-operator)                    │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.3 (uvicorn)                                 │
+│         │ Auth: Bearer Token (forwarded to k8s-auth)                     │
+│         ▼                                                                │
+│  [MLflow Pod]                                                            │
+│  - Namespace: redhat-ods-applications (RHOAI) / opendatahub (ODH)      │
+│  - ServiceAccount: mlflow-sa                                             │
+│  - Image: quay.io/opendatahub/mlflow:latest                             │
+│  - Container: MLflow Server (Python/uvicorn)                            │
+│  - Auth Mode: MLFLOW_K8S_AUTH_AUTHORIZATION_MODE=self_subject_access_review │
+│         │                                                                │
+│         ├─── Port: 6443/TCP ──────────────────────────────────┐        │
+│         │    Protocol: HTTPS                                    │        │
+│         │    Encryption: TLS 1.2+                              │        │
+│         │    Auth: Client Bearer Token (self_subject_access_review)     │
+│         │    Purpose: Authenticate user requests               │        │
+│         │                                                       ▼        │
+│         │                                            [Kubernetes API]   │
+│         │                                            - Validates token  │
+│         │                                            - Returns SubjectAccessReview │
+│         │                                                       │        │
+│         ├─── Port: 6443/TCP ──────────────────────────────────┘        │
+│         │    Protocol: HTTPS                                             │
+│         │    Encryption: TLS 1.2+                                       │
+│         │    Auth: ServiceAccount Token (mlflow-sa-token)              │
+│         │    Purpose: List namespaces for workspaces                    │
+│         │                                                                │
+│         ├─── Port: 5432/TCP (optional) ────────────────────┐           │
+│         │    Protocol: PostgreSQL                            │           │
+│         │    Encryption: TLS 1.2+ (optional)                │           │
+│         │    Auth: DB Credentials (from secret)             │           │
+│         │    Purpose: Backend/registry store                │           │
+│         │                                                     ▼           │
+│         │                                          [PostgreSQL Server]  │
+│         │                                          - External/Internal  │
+│         │                                                     │           │
+│         └─── Port: 443/TCP (optional) ──────────────────────┘           │
+│              Protocol: HTTPS                                             │
+│              Encryption: TLS 1.2+                                       │
+│              Auth: AWS Signature v4 (from secret)                       │
+│              Purpose: Artifact storage                                  │
+│                                                     ▼                    │
+│                                          [S3 Storage - s3.amazonaws.com / Minio] │
+│                                          - Artifact store for models/files │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE (Operator Namespace)                                     │
+│                                                                          │
+│  [mlflow-operator-manager Pod]                                          │
+│  - Namespace: redhat-ods-applications (RHOAI) / opendatahub (ODH)      │
+│  - ServiceAccount: controller-manager                                   │
+│  - Image: quay.io/rhoai/odh-mlflow-operator-rhel9                      │
+│         │                                                                │
+│         ├─── Port: 6443/TCP ────────────────────────────────┐          │
+│         │    Protocol: HTTPS                                  │          │
+│         │    Encryption: TLS 1.2+                            │          │
+│         │    Auth: ServiceAccount Token (controller-manager-token)      │
+│         │    Purpose: CRD/resource management, RBAC operations │        │
+│         │                                                       ▼        │
+│         │                                            [Kubernetes API]   │
+│         │                                            - Watch MLflow CRs │
+│         │                                            - Create/Update resources │
+│         │                                                       │        │
+│         │                                                                │
+│         └─── Port: 8443/TCP (exposed) ─────────────────────┐           │
+│              Protocol: HTTPS                                 │           │
+│              Encryption: TLS 1.2+                           │           │
+│              Auth: Bearer Token (ServiceAccount)            │           │
+│              Purpose: Prometheus metrics                    │           │
+│                                                              ▼           │
+│                                                   [Prometheus]          │
+│                                                   - ServiceMonitor      │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+═══════════════════════════════════════════════════════════════════════════
+
+Operator RBAC:
+- ClusterRole: manager-role
+  - API Groups: mlflow.opendatahub.io
+  - Resources: mlflows, mlflows/status, mlflows/finalizers
+  - Verbs: get, list, watch, create, update, patch, delete
+
+  - API Groups: "" (core)
+  - Resources: namespaces
+  - Verbs: get, list, watch
+
+  - API Groups: rbac.authorization.k8s.io
+  - Resources: clusterroles, clusterrolebindings
+  - Verbs: get, list, watch, create, update, patch, delete
+
+  - API Groups: console.openshift.io
+  - Resources: consolelinks
+  - Verbs: get, list, watch, create, update, patch, delete
+
+  - API Groups: gateway.networking.k8s.io
+  - Resources: httproutes
+  - Verbs: get, list, watch, create, update, patch, delete
+
+- Namespace Role: manager-role (redhat-ods-applications / opendatahub)
+  - API Groups: "" (core)
+  - Resources: serviceaccounts, services, secrets, persistentvolumeclaims
+  - Verbs: get, list, watch, create, update, patch, delete
+
+  - API Groups: apps
+  - Resources: deployments
+  - Verbs: get, list, watch, create, update, patch, delete
+
+  - API Groups: networking.k8s.io
+  - Resources: networkpolicies
+  - Verbs: get, list, watch, create, update, patch, delete
+
+MLflow Instance RBAC:
+- ClusterRole: mlflow
+  - API Groups: "" (core)
+  - Resources: namespaces
+  - Verbs: get, list, watch
+  - Purpose: Workspaces feature (namespace enumeration)
+
+- ClusterRoleBinding: mlflow
+  - ServiceAccount: mlflow-sa (instance namespace)
+  - Role: mlflow (ClusterRole)
+
+Network Policies:
+═══════════════════════════════════════════════════════════════════════════
+
+MLflow NetworkPolicy:
+- Name: mlflow
+- Namespace: redhat-ods-applications (RHOAI) / opendatahub (ODH)
+- Pod Selector: app=mlflow
+- Ingress Rules:
+  - Port: 8443/TCP
+  - From: All (no restrictions)
+- Egress Rules:
+  - To: All (unrestricted for DB/S3/K8s API access)
+
+Secrets:
+═══════════════════════════════════════════════════════════════════════════
+
+Operator Secrets:
+- controller-manager-token (kubernetes.io/service-account-token)
+  - Purpose: Operator ServiceAccount token
+  - Provisioned By: Kubernetes
+  - Auto-Rotate: Yes
+
+MLflow Instance Secrets:
+- mlflow-tls (kubernetes.io/tls)
+  - Purpose: TLS certificate and key for HTTPS (uvicorn)
+  - Provisioned By: service-ca-operator (OpenShift) or manual
+  - Auto-Rotate: Yes (OpenShift) / No (manual)
+  - Rotation Period: 90 days (OpenShift default)
+
+- mlflow-sa-token (kubernetes.io/service-account-token)
+  - Purpose: MLflow ServiceAccount token for k8s API access
+  - Provisioned By: Kubernetes
+  - Auto-Rotate: Yes
+
+- mlflow-db-credentials (Opaque) [optional]
+  - Purpose: Database connection URIs with credentials
+  - Keys: MLFLOW_BACKEND_STORE_URI, MLFLOW_REGISTRY_STORE_URI
+  - Provisioned By: User/External
+  - Auto-Rotate: No
+
+- aws-credentials (Opaque) [optional]
+  - Purpose: S3 access credentials
+  - Keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION
+  - Provisioned By: User/External
+  - Auto-Rotate: No
+
+Pod Security:
+═══════════════════════════════════════════════════════════════════════════
+
+Operator Pod Security:
+- runAsNonRoot: true
+- seccompProfile: RuntimeDefault
+- readOnlyRootFilesystem: true
+- allowPrivilegeEscalation: false
+- capabilities: DROP ALL
+
+MLflow Instance Pod Security:
+- runAsNonRoot: true
+- seccompProfile: RuntimeDefault
+- readOnlyRootFilesystem: false (SQLite writes to /mlflow when using PVC)
+- allowPrivilegeEscalation: false
+
+Authentication Flows:
+═══════════════════════════════════════════════════════════════════════════
+
+MLflow API Authentication (kubernetes-auth):
+1. Client sends request with Bearer Token (Kubernetes ServiceAccount token)
+2. MLflow receives request at /api/* or / endpoints
+3. MLflow extracts Bearer token from Authorization header
+4. MLflow sends self_subject_access_review to Kubernetes API (6443/TCP HTTPS)
+   - Uses client's Bearer token (not MLflow's ServiceAccount token)
+5. Kubernetes validates token and returns SubjectAccessReview result
+6. MLflow authorizes request if token is valid (no special RBAC required)
+7. MLflow processes request and returns response
+
+Operator API Authentication:
+1. Prometheus sends request with Bearer Token (ServiceAccount)
+2. kube-rbac-proxy or ServiceMonitor validates token
+3. Token must have metrics-reader role
+4. Operator returns Prometheus metrics
+
+TLS Certificate Provisioning (OpenShift):
+1. Operator annotates MLflow Service with:
+   service.beta.openshift.io/serving-cert-secret-name: mlflow-tls
+2. service-ca-operator watches Service annotation
+3. service-ca-operator generates TLS certificate and private key
+4. service-ca-operator creates mlflow-tls Secret with cert/key
+5. MLflow Deployment mounts mlflow-tls Secret as volume
+6. MLflow uvicorn server uses cert/key for TLS 1.3 termination
+7. service-ca-operator auto-rotates certificate every 90 days

@@ -1,0 +1,47 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant JupyterWebApp as jupyter-web-app<br/>UI Frontend
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS1.2+
+    participant NotebookReconciler as NotebookReconciler<br/>Controller
+    participant StatefulSet as StatefulSet<br/>Notebook Instance
+    participant NotebookPod as Notebook Pod<br/>8888/TCP HTTP
+    participant CullingReconciler as CullingReconciler<br/>Optional Controller
+    participant Prometheus as Prometheus<br/>Metrics Collector
+    participant RBACProxy as kube-rbac-proxy<br/>8443/TCP HTTPS
+
+    rect rgb(230, 240, 255)
+        Note over User,StatefulSet: Flow 1: Notebook Creation
+        User->>JupyterWebApp: Request notebook creation
+        JupyterWebApp->>K8sAPI: POST Notebook CR<br/>Auth: User credentials/SA token
+        K8sAPI-->>NotebookReconciler: Watch event (new Notebook CR)<br/>HTTPS TLS1.2+<br/>Auth: ServiceAccount token
+        NotebookReconciler->>K8sAPI: Create StatefulSet<br/>443/TCP HTTPS TLS1.2+<br/>Auth: ServiceAccount token
+        NotebookReconciler->>K8sAPI: Create Service<br/>443/TCP HTTPS TLS1.2+
+        NotebookReconciler->>K8sAPI: Create VirtualService (if USE_ISTIO=true)<br/>443/TCP HTTPS TLS1.2+
+        K8sAPI->>StatefulSet: Schedule StatefulSet
+        StatefulSet->>NotebookPod: Launch Jupyter server
+        NotebookPod-->>User: Notebook ready (via Istio VirtualService)
+    end
+
+    rect rgb(255, 240, 230)
+        Note over CullingReconciler,NotebookReconciler: Flow 2: Notebook Culling (ENABLE_CULLING=true)
+        CullingReconciler->>NotebookPod: GET /api/kernels<br/>8888/TCP HTTP<br/>Auth: None (or Istio mTLS)
+        NotebookPod-->>CullingReconciler: Kernel activity response
+        CullingReconciler->>CullingReconciler: Check idle time > CULL_IDLE_TIME
+        CullingReconciler->>K8sAPI: Update Notebook CR<br/>Add STOP_ANNOTATION<br/>443/TCP HTTPS TLS1.2+<br/>Auth: ServiceAccount token
+        K8sAPI-->>NotebookReconciler: Watch event (Notebook updated)
+        NotebookReconciler->>K8sAPI: Update StatefulSet (replicas=0)<br/>443/TCP HTTPS TLS1.2+<br/>Auth: ServiceAccount token
+        K8sAPI->>StatefulSet: Scale down to 0
+        StatefulSet->>NotebookPod: Terminate pod
+    end
+
+    rect rgb(240, 255, 240)
+        Note over Prometheus,NotebookReconciler: Flow 3: Metrics Collection
+        Prometheus->>RBACProxy: GET /metrics<br/>8443/TCP HTTPS TLS1.2+<br/>Auth: RBAC SubjectAccessReview
+        RBACProxy->>RBACProxy: Verify permissions
+        RBACProxy->>NotebookReconciler: Proxy to /metrics<br/>8080/TCP HTTP localhost
+        NotebookReconciler->>K8sAPI: List StatefulSets<br/>443/TCP HTTPS TLS1.2+<br/>Auth: ServiceAccount token
+        K8sAPI-->>NotebookReconciler: StatefulSet list
+        NotebookReconciler->>NotebookReconciler: Calculate metrics<br/>(notebook_running, notebook_create_total, etc.)
+        NotebookReconciler-->>RBACProxy: Metrics response
+        RBACProxy-->>Prometheus: Metrics (Prometheus format)
+    end
