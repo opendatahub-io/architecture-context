@@ -1,0 +1,97 @@
+# Architecture Diagrams for ModelMesh Serving
+
+Generated from: `architecture/rhoai-2.7/modelmesh-serving.md`
+Date: 2026-03-15
+
+**Note**: Diagram filenames use base component name without version (directory is already versioned).
+
+## Available Diagrams
+
+All Mermaid diagrams are available in both `.mmd` (source) and `.png` (3000px width, high-resolution) formats.
+
+### For Developers
+- [Component Structure](./modelmesh-serving-component.png) ([mmd](./modelmesh-serving-component.mmd)) - Mermaid diagram showing internal components
+- [Data Flows](./modelmesh-serving-dataflow.png) ([mmd](./modelmesh-serving-dataflow.mmd)) - Sequence diagram of request/response flows
+- [Dependencies](./modelmesh-serving-dependencies.png) ([mmd](./modelmesh-serving-dependencies.mmd)) - Component dependency graph
+
+### For Architects
+- [C4 Context](./modelmesh-serving-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./modelmesh-serving-component.png) ([mmd](./modelmesh-serving-component.mmd)) - High-level component view
+
+### For Security Teams
+- [Security Network Diagram (PNG)](./modelmesh-serving-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./modelmesh-serving-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./modelmesh-serving-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./modelmesh-serving-rbac.png) ([mmd](./modelmesh-serving-rbac.mmd)) - RBAC permissions and bindings
+
+## How to Use
+
+### PNG Files (.png files)
+**Automatically generated** at 3000px width for high-resolution presentations and documentation.
+
+- **Ready to use**: High-resolution images suitable for presentations, wikis, and documentation
+- **Width**: 3000px (height auto-adjusts to content)
+- **Use directly**: Include in PowerPoint, Google Slides, Confluence, etc.
+
+### Mermaid Source Files (.mmd files)
+- **In GitHub/GitLab**: Paste into markdown with ````mermaid` code blocks - renders automatically!
+- **Live editor**: https://mermaid.live (paste code, edit, export)
+- **Editable**: Modify and regenerate if needed
+
+**Manual PNG regeneration** (if you edit .mmd files):
+
+1. **Ensure Mermaid CLI is installed**:
+   ```bash
+   npm install -g @mermaid-js/mermaid-cli
+   ```
+
+2. **Regenerate PNG** (3000px width):
+   ```bash
+   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i diagram.mmd -o diagram.png -w 3000
+   ```
+
+3. **Alternative formats** (if needed):
+   ```bash
+   # SVG (vector, scales perfectly)
+   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i diagram.mmd -o diagram.svg
+
+   # PDF
+   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i diagram.mmd -o diagram.pdf
+   ```
+
+**Note**: If `google-chrome` is not found, try `chromium` or `which google-chrome` to locate it
+
+### C4 Diagrams (.dsl files)
+- **Structurizr Lite**: `docker run -p 8080:8080 -v .:/usr/local/structurizr structurizr/lite`
+- **CLI export**: `structurizr-cli export -workspace diagram.dsl -format png`
+
+### ASCII Diagrams (.txt files)
+- View in any text editor
+- Include in documentation as-is
+- Perfect for security reviews (precise technical details)
+
+## Updating Diagrams
+
+To regenerate after architecture changes:
+```bash
+cd /home/jtanner/workspace/github/jctanner.redhat/2026_03_12_arch_diagrams/kahowell.rhoai-architecture-diagrams
+python scripts/generate_diagram_pngs.py architecture/rhoai-2.7/diagrams --width=3000
+```
+
+## Component Overview
+
+**ModelMesh Serving** is a Kubernetes operator that provides intelligent model placement, routing, and lifecycle management for serving machine learning models. It acts as a controller for the ModelMesh framework, which orchestrates multiple model server runtimes (Triton, MLServer, OpenVINO, TorchServe) within shared pods to maximize resource utilization.
+
+### Key Features
+- Multi-model serving with intelligent placement
+- Support for multiple model server runtimes
+- Distributed metadata store using etcd
+- REST and gRPC inference protocols
+- Horizontal scaling and high availability
+- Integration with ODH/RHOAI platform
+
+### Architecture Highlights
+- **Controller**: Reconciles InferenceService, ServingRuntime, and Predictor CRDs
+- **Runtime Pods**: Multi-container pods with ModelMesh, runtime adapters, model servers, and optional REST proxy
+- **etcd**: Distributed key-value store for model metadata and placement decisions
+- **Storage**: S3-compatible object storage for model artifacts

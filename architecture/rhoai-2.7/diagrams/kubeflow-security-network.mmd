@@ -1,0 +1,97 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User[User/Data Scientist Browser]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Router["OpenShift Router<br/>Route: {notebook-name}<br/>443/TCP → 8443/TCP<br/>TLS Edge (TLS 1.2+)<br/>Redirect HTTP → HTTPS"]
+    end
+
+    subgraph NotebookPod["NOTEBOOK POD (User Namespace)"]
+        direction TB
+
+        subgraph OAuthContainer["OAuth Proxy Sidecar Container"]
+            OAuthProxy["OAuth Proxy<br/>ose-oauth-proxy<br/>8443/TCP HTTPS TLS 1.2+<br/>Cookie: 24h expiration<br/>SA: {notebook-name}-sa"]
+        end
+
+        subgraph NotebookApp["Notebook Container"]
+            Notebook["JupyterLab<br/>8888/TCP HTTP<br/>Localhost only"]
+        end
+
+        OAuthProxy -->|localhost:8888<br/>HTTP<br/>No encryption| Notebook
+    end
+
+    subgraph AuthServices["AUTHENTICATION SERVICES"]
+        OAuthServer["OpenShift OAuth Server<br/>443/TCP HTTPS mTLS<br/>SSO Authentication"]
+        K8sAPISAR["Kubernetes API Server<br/>Subject Access Review<br/>6443/TCP HTTPS TLS 1.2+<br/>User Bearer Token"]
+    end
+
+    subgraph ControlPlane["CONTROL PLANE"]
+        direction TB
+
+        subgraph ControllerNS["Namespace: {controller-namespace}"]
+            Controller["ODH Notebook Controller<br/>SA: manager<br/>Replicas: 1"]
+            WebhookSvc["Webhook Service<br/>443/TCP → 8443/TCP<br/>HTTPS TLS 1.2+"]
+            Webhook["Notebook Webhook<br/>/mutate-notebook-v1<br/>Cert: Service CA"]
+        end
+
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+<br/>ServiceAccount Token Auth"]
+        ServiceCA["OpenShift Service CA<br/>Auto-provision TLS certs<br/>Auto-rotation enabled"]
+    end
+
+    subgraph NetworkPolicies["NETWORK POLICIES"]
+        NP1["{notebook}-ctrl-np<br/>Port: 8888/TCP<br/>From: controller-namespace"]
+        NP2["{notebook}-oauth-np<br/>Port: 8443/TCP<br/>From: any"]
+    end
+
+    subgraph Secrets["SECRETS"]
+        WebhookCert["odh-notebook-controller-webhook-cert<br/>Type: kubernetes.io/tls<br/>Auto-rotate: Yes"]
+        OAuthConfig["{notebook}-oauth-config<br/>Type: Opaque<br/>32-byte cookie secret"]
+        OAuthCert["{notebook}-tls<br/>Type: kubernetes.io/tls<br/>Auto-rotate: Yes"]
+    end
+
+    %% User flow
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Initial: No auth"| Router
+    Router -->|"HTTPS/8443<br/>TLS 1.2+<br/>If no cookie: OAuth redirect"| OAuthProxy
+
+    %% OAuth authentication flow
+    OAuthProxy -.->|"HTTPS/443<br/>mTLS<br/>OAuth flow"| OAuthServer
+    OAuthServer -.->|"OAuth token + cookie"| OAuthProxy
+
+    %% Authorization flow
+    OAuthProxy -->|"HTTPS/6443<br/>TLS 1.2+<br/>SAR: GET notebooks/{name}"| K8sAPISAR
+    K8sAPISAR -.->|"Authorized/Denied"| OAuthProxy
+
+    %% Controller operations
+    Controller -->|"Watch notebooks<br/>Create resources<br/>HTTPS/6443<br/>SA Token"| K8sAPI
+    K8sAPI -->|"Admission webhook<br/>HTTPS/8443<br/>API mTLS"| WebhookSvc
+    WebhookSvc --> Webhook
+    Webhook -.->|"Inject OAuth proxy<br/>Add annotations"| K8sAPI
+
+    %% Certificate provisioning
+    ServiceCA -->|"Provisions cert"| WebhookCert
+    ServiceCA -->|"Provisions cert"| OAuthCert
+    WebhookCert -.->|"Mounted to"| Webhook
+    OAuthConfig -.->|"Mounted to"| OAuthProxy
+    OAuthCert -.->|"Mounted to"| OAuthProxy
+
+    %% Network policies
+    NP1 -.->|"Controls traffic"| Notebook
+    NP2 -.->|"Controls traffic"| OAuthProxy
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef notebook fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef auth fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef control fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef policy fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef secret fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+
+    class User external
+    class Router ingress
+    class OAuthProxy,Notebook notebook
+    class OAuthServer,K8sAPISAR auth
+    class Controller,K8sAPI,ServiceCA,Webhook,WebhookSvc control
+    class NP1,NP2 policy
+    class WebhookCert,OAuthConfig,OAuthCert secret

@@ -1,0 +1,242 @@
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                           │
+│                                                                                  │
+│  [User Browser]                                                                  │
+│         │                                                                        │
+│         │ Port: 443/TCP                                                          │
+│         │ Protocol: HTTPS                                                        │
+│         │ Encryption: TLS 1.2+ (edge termination)                                │
+│         │ Auth: None (redirects to OAuth if enabled)                             │
+│         ▼                                                                        │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                                  │
+│                                                                                  │
+│  [OpenShift Router]                                                              │
+│  - Port: 443/TCP (external) → 443/TCP (internal)                               │
+│  - TLS Mode: Edge (no OAuth) / Re-encrypt (with OAuth)                          │
+│  - Routes: Auto-assigned hostname by OpenShift                                   │
+│         │                                                                        │
+│         │ Port: 443/TCP                                                          │
+│         │ Protocol: HTTPS                                                        │
+│         │ Encryption: TLS 1.2+ (re-encrypt mode)                                 │
+│         │ Auth: None (handled by downstream OAuth proxy)                         │
+│         ▼                                                                        │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Trusted - Internal Network)                                      │
+│                                                                                  │
+│  [Service: {notebook-name}-tls]                                                  │
+│  - Type: ClusterIP                                                               │
+│  - Namespace: {user-namespace}                                                   │
+│  - Port: 443/TCP → 8443/TCP                                                     │
+│         │                                                                        │
+│         │ Port: 8443/TCP                                                         │
+│         │ Protocol: HTTPS                                                        │
+│         │ Encryption: TLS 1.2+ (service-ca certificate)                          │
+│         │ Auth: None                                                             │
+│         ▼                                                                        │
+│  [OAuth Proxy Sidecar Container]                                                 │
+│  - Image: registry.redhat.io/openshift4/ose-oauth-proxy                         │
+│  - ServiceAccount: {notebook-name}-sa                                            │
+│  - Purpose: Authentication and Authorization                                     │
+│         │                                                                        │
+│         ├─────────────────────────────────────────────────────────────┐         │
+│         │ Port: 443/TCP                                                │         │
+│         │ Protocol: HTTPS                                              │         │
+│         │ Encryption: TLS 1.2+                                         │         │
+│         │ Auth: Service Account Token                                 │         │
+│         ▼                                                              │         │
+│  [OpenShift OAuth Server]                                              │         │
+│  - Purpose: User authentication                                        │         │
+│  - Returns: OAuth token                                                │         │
+│                                                                         │         │
+│         │ Port: 6443/TCP                                               │         │
+│         │ Protocol: HTTPS                                              │         │
+│         │ Encryption: TLS 1.2+                                         │         │
+│         │ Auth: User OAuth Token                                       │         │
+│         ▼                                                              │         │
+│  [Kubernetes API Server - SubjectAccessReview]                        │         │
+│  - Purpose: Authorization (check GET permission on Notebook CR)       │         │
+│  - Returns: Allow/Deny decision                                        │         │
+│                                                                         │         │
+│         │ Port: 8888/TCP                                               │         │
+│         │ Protocol: HTTP                                               │         │
+│         │ Encryption: None (localhost communication)                   │         │
+│         │ Auth: None (trusted sidecar)                                 │         │
+│         ▼                                                              │         │
+│  [Notebook Container]                                                  │         │
+│  - Pod: {notebook-name}-0 (StatefulSet)                               │         │
+│  - Namespace: {user-namespace}                                         │         │
+│  - Image: Jupyter notebook image                                       │         │
+│  - NetworkPolicies:                                                     │         │
+│    * {notebook-name}-ctrl-np: Allow TCP/8888 from controller namespace │         │
+│    * {notebook-name}-oauth-np: Allow TCP/8443 from all                 │         │
+│                                                                         │         │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  CONTROLLER NAMESPACE (redhat-ods-applications)                                  │
+│                                                                                  │
+│  [ODH Notebook Controller]                                                       │
+│  - ServiceAccount: manager                                                       │
+│  - Replicas: 1                                                                   │
+│  - Security Context: runAsNonRoot, no privilegeEscalation                        │
+│         │                                                                        │
+│         │ Port: N/A (Watch API)                                                  │
+│         │ Protocol: HTTP/2                                                       │
+│         │ Encryption: TLS 1.2+                                                   │
+│         │ Auth: Service Account Token                                            │
+│         ▼                                                                        │
+│  [Kubernetes API Server]                                                         │
+│  - Purpose: Watch Notebook CRs, create Routes/Services/Secrets/NetworkPolicies   │
+│  - Port: 6443/TCP HTTPS TLS 1.2+                                                │
+│                                                                                  │
+│  [Webhook Server]                                                                │
+│  - Port: 8443/TCP (internal: odh-notebook-controller-webhook-service)           │
+│  - Purpose: Mutate Notebook CRs (inject OAuth proxy sidecar)                    │
+│  - TLS: service-ca certificate                                                   │
+│         ▲                                                                        │
+│         │ Port: 443/TCP → 8443/TCP                                               │
+│         │ Protocol: HTTPS                                                        │
+│         │ Encryption: TLS 1.2+ (service-ca cert)                                 │
+│         │ Auth: mTLS (Kubernetes API server client certificate)                  │
+│         │                                                                        │
+│  [Kubernetes API Server]                                                         │
+│  - Purpose: Send mutating webhook requests                                       │
+│                                                                                  │
+│  [Metrics Server]                                                                │
+│  - Port: 8080/TCP HTTP                                                          │
+│  - Purpose: Prometheus metrics                                                   │
+│  - Exposure: Internal only (ClusterIP)                                           │
+│                                                                                  │
+│  [Health Probes]                                                                 │
+│  - Port: 8081/TCP HTTP                                                          │
+│  - Endpoints: /healthz (liveness), /readyz (readiness)                          │
+│  - Exposure: Internal only                                                       │
+│                                                                                  │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                               │
+│                                                                                  │
+│  [Kubeflow Notebook Controller]                                                  │
+│  - Purpose: Creates StatefulSets for notebook pods                               │
+│  - Integration: ODH controller watches Notebook CRs created by upstream          │
+│                                                                                  │
+│  [OpenShift Service CA Operator]                                                 │
+│  - Purpose: Automatic TLS certificate provisioning                               │
+│  - Trigger: service.beta.openshift.io/serving-cert-secret-name annotation       │
+│  - Rotation: 90 days automatic                                                   │
+│                                                                                  │
+│  [Cluster-wide Proxy] (optional)                                                 │
+│  - Purpose: Proxy egress traffic from notebooks                                  │
+│  - Configuration: Injected via webhook reading config.openshift.io/v1/Proxy CR   │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+──────────────
+
+ClusterRole: manager-role
+  - API Groups: kubeflow.org
+    Resources: notebooks, notebooks/status, notebooks/finalizers
+    Verbs: get, list, watch, patch, update
+
+  - API Groups: route.openshift.io
+    Resources: routes
+    Verbs: get, list, watch, create, update, patch
+
+  - API Groups: "" (core)
+    Resources: services, serviceaccounts, secrets, configmaps
+    Verbs: get, list, watch, create, update, patch
+
+  - API Groups: config.openshift.io
+    Resources: proxies
+    Verbs: get, list, watch
+
+  - API Groups: networking.k8s.io
+    Resources: networkpolicies
+    Verbs: get, list, watch, create, update, patch
+
+ClusterRole: leader-election-role (controller namespace only)
+  - API Groups: "" (core)
+    Resources: configmaps, events
+    Verbs: get, list, watch, create, update, patch, delete
+
+  - API Groups: coordination.k8s.io
+    Resources: leases
+    Verbs: get, list, watch, create, update, patch, delete
+
+ClusterRole: notebooks-edit (user-facing)
+  - API Groups: kubeflow.org
+    Resources: notebooks, notebooks/status
+    Verbs: get, list, watch, create, delete, deletecollection, patch, update
+
+ClusterRole: notebooks-view (user-facing)
+  - API Groups: kubeflow.org
+    Resources: notebooks, notebooks/status
+    Verbs: get, list, watch
+
+Service Account Bindings:
+  - manager (controller namespace) → manager-role (ClusterRoleBinding)
+  - manager (controller namespace) → leader-election-role (RoleBinding)
+
+NetworkPolicy Configuration:
+─────────────────────────────
+
+{notebook-name}-ctrl-np:
+  - Purpose: Allow controller namespace to access notebook container
+  - Pod Selector: notebook-name={notebook-name}
+  - Ingress: Allow TCP/8888 from namespace kubernetes.io/metadata.name={controller-namespace}
+  - Default: redhat-ods-applications namespace
+
+{notebook-name}-oauth-np:
+  - Purpose: Allow all traffic to OAuth proxy port
+  - Pod Selector: notebook-name={notebook-name}
+  - Ingress: Allow TCP/8443 from all sources
+
+Secrets:
+────────
+
+{notebook-name}-oauth-config (Opaque):
+  - Purpose: OAuth proxy cookie secret
+  - Contents: Random base64-encoded secret
+  - Provisioned By: ODH Notebook Controller
+  - Rotation: Manual (no auto-rotate)
+
+{notebook-name}-tls (kubernetes.io/tls):
+  - Purpose: TLS certificate for OAuth service
+  - Provisioned By: OpenShift Service CA Operator
+  - Rotation: Automatic (90 days)
+  - Trigger: service.beta.openshift.io/serving-cert-secret-name annotation
+
+odh-notebook-controller-webhook-cert (kubernetes.io/tls):
+  - Purpose: TLS certificate for webhook server
+  - Provisioned By: OpenShift Service CA Operator
+  - Rotation: Automatic (90 days)
+  - Trigger: service.beta.openshift.io/serving-cert-secret-name annotation
+
+trusted-ca (ConfigMap):
+  - Purpose: Cluster-wide trusted CA bundle
+  - Provisioned By: OpenShift Network Operator
+  - Rotation: Automatic
+  - Trigger: config.openshift.io/inject-trusted-cabundle annotation
+
+Authentication & Authorization Flows:
+──────────────────────────────────────
+
+Webhook Endpoint (/mutate-notebook-v1):
+  - Auth: mTLS (Kubernetes API server client certificate)
+  - Enforcement: Kubernetes API server validates client cert
+  - Policy: Only API server can call webhook
+
+Notebook Access (with OAuth annotation):
+  - Auth: OpenShift OAuth (redirects to OAuth server)
+  - Authorization: SubjectAccessReview (user must have GET permission on Notebook CR)
+  - Enforcement: OAuth Proxy Sidecar
+  - Session: Cookie-based (secret in {notebook-name}-oauth-config)
+
+Notebook Access (without OAuth annotation):
+  - Auth: None
+  - Exposure: Publicly accessible via Route (edge TLS termination)
+  - Risk: No authentication - use for public demos only
+
+Metrics Endpoint (/metrics):
+  - Auth: None
+  - Exposure: Internal only (ClusterIP service, no Route)
+  - Access: Prometheus scraping from cluster network

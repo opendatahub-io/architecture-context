@@ -1,0 +1,157 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Users["Data Scientists<br/>ML Engineers"]
+        ExternalS3["S3 Storage<br/>s3.amazonaws.com<br/>storage.googleapis.com<br/>blob.core.windows.net"]
+        PyPI["Package Repos<br/>pypi.org<br/>cran.rstudio.com<br/>github.com"]
+        Registries["Container Registries<br/>quay.io<br/>registry.redhat.io"]
+        CloudAPIs["Cloud Provider APIs<br/>AWS/GCP/Azure"]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Router["OpenShift Router<br/>443/TCP HTTPS<br/>Multiple termination modes:<br/>• Edge (Dashboard, Notebooks)<br/>• Reencrypt (DSP API)<br/>• Passthrough (KServe, TrustyAI)"]
+        IstioGW["Istio Gateway<br/>istio-ingressgateway<br/>443/TCP HTTPS"]
+    end
+
+    subgraph Platform["PLATFORM NAMESPACES (RBAC + NetworkPolicies)"]
+        direction TB
+
+        subgraph Operator["redhat-ods-operator"]
+            RHOAIOp["RHOAI Operator<br/>SA: rhods-operator<br/>Metrics: 8080/TCP<br/>Webhook: 9443/TCP HTTPS"]
+        end
+
+        subgraph Apps["redhat-ods-applications"]
+            Dashboard["ODH Dashboard<br/>8080/TCP HTTP<br/>Route: TLS Edge<br/>Auth: OAuth Bearer"]
+            NBController["Notebook Controller<br/>SA: odh-notebook-controller-manager<br/>Webhook: 9443/TCP HTTPS"]
+            DSPOp["DSP Operator<br/>SA: dsp-operator-controller-manager<br/>Metrics: 8080/TCP"]
+            ModelCtl["ODH Model Controller<br/>HA: 3 replicas<br/>SA: odh-model-controller<br/>Creates: Routes, NetworkPolicies, PeerAuth"]
+        end
+
+        subgraph OpenshiftOps["openshift-operators"]
+            KServe["KServe Controller<br/>SA: kserve-controller-manager<br/>Webhook: 9443/TCP HTTPS"]
+            ModelMesh["ModelMesh Controller<br/>SA: modelmesh-controller<br/>Uses: etcd"]
+            CodeFlare["CodeFlare Operator<br/>SA: codeflare-operator-cm<br/>Manages: MCAD, InstaScale"]
+            KubeRay["KubeRay Operator<br/>SA: kuberay-operator<br/>API: ray.io"]
+            TrustyAIOp["TrustyAI Operator<br/>SA: trustyai-operator-cm<br/>(Optional in 2.7)"]
+        end
+
+        subgraph IstioNS["istio-system"]
+            Istiod["Istio Control Plane<br/>istiod: 15012/TCP gRPC<br/>Mesh: Maistra 2.x<br/>mTLS: STRICT (predictors)<br/>PERMISSIVE (metrics)"]
+        end
+
+        subgraph Monitoring["redhat-ods-monitoring"]
+            Prom["Prometheus<br/>Scrapes: All ServiceMonitors"]
+            Alert["Alertmanager<br/>Alert routing"]
+            Grafana["Grafana<br/>Visualization"]
+        end
+    end
+
+    subgraph UserNS["USER NAMESPACES (Multi-tenant)"]
+        direction TB
+
+        subgraph NSUser["{user-namespace}"]
+            direction TB
+
+            Notebook["Notebook Pod (StatefulSet)<br/>Image: JupyterLab v1.1.1-366<br/>SA: {notebook-name}<br/>Jupyter: 8888/TCP HTTP<br/>OAuth Proxy: 8443/TCP HTTPS<br/>Route: TLS Edge<br/>Secret: oauth-config"]
+
+            ISvc["InferenceService<br/>SA: {isvc}-sa<br/>Predictor: 8080/TCP HTTP<br/>istio-proxy sidecar (mTLS)<br/>Route: TLS Passthrough<br/>Secret: storage-config<br/>NetworkPolicies: 3x<br/>PeerAuthentication: STRICT"]
+
+            MMRuntime["ModelMesh Runtime<br/>Deployment: 2+ replicas<br/>REST: 8008/TCP HTTP<br/>gRPC: 8033/TCP<br/>HTTPS: 8443/TCP"]
+
+            DSPInstance["DSP Instance<br/>API: 8888/TCP (int), 8443/TCP (ext)<br/>MariaDB: 3306/TCP<br/>Minio: 9000/TCP<br/>Route: TLS Reencrypt<br/>Secrets: db, minio, proxy-tls"]
+
+            RayCluster["Ray Cluster<br/>Head: 8265/TCP (dashboard)<br/>GCS: 6379/TCP<br/>Client: 10001/TCP<br/>Serve: 8000/TCP HTTP<br/>Optional Route: TLS Edge"]
+
+            TrustyAI["TrustyAI Service<br/>Service: 8080/TCP HTTP<br/>OAuth Proxy: 8443/TCP HTTPS<br/>Route: TLS Passthrough<br/>Metrics: /q/metrics<br/>Auth: OAuth SAR"]
+        end
+    end
+
+    subgraph Auth["Authentication & Authorization"]
+        OAuth["OpenShift OAuth<br/>Issues: Bearer Tokens (JWT)<br/>Validates: SubjectAccessReview"]
+        K8sAPI["Kubernetes API Server<br/>RBAC Enforcement"]
+    end
+
+    %% External to Ingress
+    Users -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Router
+    Users -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| IstioGW
+
+    %% Ingress to Platform
+    Router -->|"HTTP/8080<br/>HTTPS/8443"| Dashboard
+    Router -->|"HTTPS/8443<br/>OAuth Proxy"| Notebook
+    Router -->|"HTTPS/8443<br/>Reencrypt"| DSPInstance
+    Router -.->|"HTTPS/443<br/>Passthrough"| ISvc
+    Router -.->|"HTTPS/443<br/>Passthrough"| TrustyAI
+
+    IstioGW -->|"HTTP/8080<br/>mTLS STRICT"| ISvc
+
+    %% Platform components
+    RHOAIOp -->|"Orchestrates"| Dashboard
+    RHOAIOp -->|"Orchestrates"| NBController
+    RHOAIOp -->|"Orchestrates"| DSPOp
+    RHOAIOp -->|"Orchestrates"| ModelCtl
+    RHOAIOp -->|"Configures"| Istiod
+
+    NBController -->|"Creates"| Notebook
+    DSPOp -->|"Creates"| DSPInstance
+    KServe -->|"Creates"| ISvc
+    ModelMesh -->|"Creates"| MMRuntime
+    KubeRay -->|"Creates"| RayCluster
+    TrustyAIOp -->|"Creates"| TrustyAI
+
+    ModelCtl -->|"Watches"| ISvc
+    ModelCtl -->|"Creates Routes"| Router
+    ModelCtl -->|"Creates NetworkPolicies"| NSUser
+    ModelCtl -->|"Creates PeerAuth"| Istiod
+
+    %% Service Mesh
+    Istiod -->|"xDS API<br/>15012/TCP gRPC"| ISvc
+    ISvc -->|"Service Mesh<br/>mTLS STRICT"| ISvc
+
+    %% Monitoring
+    Prom -->|"Scrape /metrics"| RHOAIOp
+    Prom -->|"Scrape /metrics"| NBController
+    Prom -->|"Scrape /metrics"| DSPOp
+    Prom -->|"Scrape /metrics"| KServe
+    Prom -->|"Scrape /metrics"| ModelMesh
+    Prom -->|"Scrape /metrics"| ModelCtl
+    Prom -->|"Scrape /metrics"| CodeFlare
+    Prom -->|"Scrape /metrics"| KubeRay
+    Prom -->|"Scrape /metrics"| TrustyAIOp
+    Prom -->|"Scrape /q/metrics"| TrustyAI
+
+    %% Authentication
+    Users -->|"Login"| OAuth
+    OAuth -->|"Issues JWT"| Users
+    Dashboard -->|"Validate token<br/>SAR"| K8sAPI
+    Notebook -->|"Validate token<br/>SAR"| K8sAPI
+    DSPInstance -->|"Validate token<br/>SAR"| K8sAPI
+    TrustyAI -->|"Validate token<br/>SAR"| K8sAPI
+
+    %% External egress
+    Notebook -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| ExternalS3
+    Notebook -->|"HTTPS/443<br/>TLS 1.2+"| PyPI
+    ISvc -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM/IRSA"| ExternalS3
+    MMRuntime -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| ExternalS3
+    DSPInstance -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| ExternalS3
+    RHOAIOp -->|"HTTPS/443<br/>TLS 1.2+"| Registries
+    CodeFlare -->|"HTTPS/443<br/>TLS 1.2+"| CloudAPIs
+
+    %% Integrations
+    TrustyAI -.->|"Inference logging"| ISvc
+    TrustyAI -.->|"Inference logging"| MMRuntime
+    DSPInstance -.->|"Deploy models"| KServe
+    CodeFlare -->|"Creates RayClusters"| KubeRay
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef userWorkload fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef auth fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+
+    class Users,ExternalS3,PyPI,Registries,CloudAPIs external
+    class Router,IstioGW ingress
+    class RHOAIOp,Dashboard,NBController,DSPOp,ModelCtl,KServe,ModelMesh,CodeFlare,KubeRay,TrustyAIOp,Istiod platform
+    class Notebook,ISvc,MMRuntime,DSPInstance,RayCluster,TrustyAI userWorkload
+    class OAuth,K8sAPI auth
+    class Prom,Alert,Grafana monitoring

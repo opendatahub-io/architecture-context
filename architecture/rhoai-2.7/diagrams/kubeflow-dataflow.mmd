@@ -1,0 +1,55 @@
+sequenceDiagram
+    participant User as User/Data Scientist
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
+    participant Webhook as ODH Notebook Webhook<br/>8443/TCP HTTPS TLS1.2+
+    participant Controller as ODH Notebook Controller<br/>ServiceAccount Token Auth
+    participant Router as OpenShift Router<br/>443/TCP HTTPS TLS1.2+
+    participant OAuthProxy as OAuth Proxy Sidecar<br/>8443/TCP HTTPS TLS1.2+
+    participant OAuthServer as OpenShift OAuth<br/>443/TCP HTTPS mTLS
+    participant Notebook as Notebook Container<br/>8888/TCP HTTP Localhost
+
+    Note over User,Notebook: Flow 1: Notebook Creation with OAuth
+
+    User->>K8sAPI: kubectl apply -f notebook.yaml<br/>Annotation: inject-oauth=true
+    K8sAPI->>Webhook: POST /mutate-notebook-v1<br/>API mTLS
+    Webhook->>Webhook: Inject OAuth proxy sidecar<br/>Add reconciliation lock annotation
+    Webhook-->>K8sAPI: Mutated Notebook CR
+    K8sAPI-->>User: Notebook created
+
+    K8sAPI->>Controller: Watch event: Notebook created
+    Controller->>K8sAPI: Create ServiceAccount<br/>ServiceAccount Token Auth
+    Controller->>K8sAPI: Create Secret (OAuth config)<br/>32-byte random cookie secret
+    Controller->>K8sAPI: Create ConfigMap (Proxy config)
+    Controller->>K8sAPI: Create NetworkPolicy (2x)<br/>Port 8888 + 8443 rules
+    Controller->>K8sAPI: Create Route (TLS Edge)<br/>Auto-assigned host
+
+    Note over User,Notebook: Flow 2: User Access to Notebook (OAuth Enabled)
+
+    User->>Router: GET https://{notebook-route}<br/>TLS 1.2+
+    Router->>OAuthProxy: Forward request<br/>TLS Edge termination
+    OAuthProxy->>OAuthProxy: Check cookie/token
+
+    alt No valid token
+        OAuthProxy->>OAuthServer: Redirect to OAuth login<br/>443/TCP HTTPS mTLS
+        OAuthServer-->>User: OpenShift login page
+        User->>OAuthServer: Authenticate<br/>Username/Password
+        OAuthServer-->>OAuthProxy: OAuth token + cookie
+    end
+
+    OAuthProxy->>K8sAPI: Subject Access Review (SAR)<br/>6443/TCP HTTPS<br/>Check: GET notebooks/{name}
+    K8sAPI-->>OAuthProxy: Authorization result
+
+    alt Authorized
+        OAuthProxy->>Notebook: Forward request<br/>8888/TCP HTTP localhost
+        Notebook-->>OAuthProxy: JupyterLab response
+        OAuthProxy-->>Router: HTTPS response
+        Router-->>User: Notebook UI
+    else Unauthorized
+        OAuthProxy-->>Router: 403 Forbidden
+        Router-->>User: Access denied
+    end
+
+    Note over User,Notebook: Flow 3: Network Policy Enforcement
+
+    Note over Controller,Notebook: NetworkPolicy 1: {notebook}-ctrl-np<br/>Ingress port 8888 from controller namespace
+    Note over OAuthProxy,Notebook: NetworkPolicy 2: {notebook}-oauth-np<br/>Ingress port 8443 from any source

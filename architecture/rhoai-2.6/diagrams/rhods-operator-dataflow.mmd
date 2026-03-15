@@ -1,0 +1,66 @@
+sequenceDiagram
+    participant Admin as Platform Admin
+    participant KubeAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
+    participant Webhook as Webhook Server<br/>9443/TCP HTTPS mTLS
+    participant DSCCtrl as DataScienceCluster<br/>Controller
+    participant DSCICtrl as DSCInitialization<br/>Controller
+    participant SecretGen as SecretGenerator<br/>Controller
+    participant OAuth as OpenShift OAuth<br/>443/TCP HTTPS
+    participant Prom as Prometheus<br/>9090/TCP HTTP
+    participant Components as Component Pods
+
+    Note over Admin,Components: Flow 1: DataScienceCluster Creation & Component Deployment
+
+    Admin->>KubeAPI: kubectl apply -f dsc.yaml<br/>Auth: kubeconfig credentials
+    KubeAPI->>Webhook: POST /validate-datasciencecluster<br/>mTLS (K8s API client cert)
+    Webhook-->>KubeAPI: Validation response<br/>(ensure single DSC, valid config)
+    KubeAPI-->>Admin: CR created
+
+    KubeAPI->>DSCCtrl: Watch event: DSC created
+    DSCCtrl->>DSCCtrl: Begin reconciliation loop
+
+    loop For each enabled component
+        DSCCtrl->>KubeAPI: Apply kustomize manifests<br/>/opt/manifests/{component}/<br/>Auth: Service Account Token
+        KubeAPI-->>DSCCtrl: Resources created
+        DSCCtrl->>KubeAPI: Create Deployments, Services,<br/>Routes, ConfigMaps, RBAC, CRDs<br/>Auth: Service Account Token
+    end
+
+    Note over Admin,Components: Flow 2: DSCInitialization - Platform Bootstrap
+
+    DSCICtrl->>KubeAPI: Check for DSCInitialization CR<br/>Auth: Service Account Token
+    KubeAPI-->>DSCICtrl: CR found/not found
+
+    DSCICtrl->>KubeAPI: Create platform namespaces<br/>redhat-ods-applications, redhat-ods-monitoring
+
+    alt Service Mesh Managed
+        DSCICtrl->>KubeAPI: Create ServiceMeshControlPlane,<br/>ServiceMeshMember CRs
+    end
+
+    alt Monitoring Managed
+        DSCICtrl->>KubeAPI: Deploy Prometheus, Alertmanager,<br/>Blackbox Exporter to monitoring namespace
+    end
+
+    DSCICtrl->>KubeAPI: Apply NetworkPolicies<br/>to operator, monitoring, applications namespaces
+
+    Note over Admin,Components: Flow 3: Secret Generation - OAuth Client Provisioning
+
+    DSCCtrl->>KubeAPI: Apply component manifest<br/>with secret-generator annotation
+    KubeAPI->>SecretGen: Watch event: Secret created
+    SecretGen->>SecretGen: Generate random credentials
+    SecretGen->>OAuth: Create OAuth client<br/>HTTPS/443 TLS1.2+
+    OAuth-->>SecretGen: Client ID/Secret
+    SecretGen->>KubeAPI: Create target secret<br/>with generated values
+
+    Note over Admin,Components: Flow 4: Monitoring - Metrics Collection
+
+    loop Metrics scraping
+        Prom->>DSCCtrl: GET /metrics (8080/TCP HTTP)<br/>Auth: None (internal)
+        DSCCtrl-->>Prom: Controller metrics
+        Prom->>Components: GET /metrics (varies)<br/>Auth: Service Account Token
+        Components-->>Prom: Component metrics
+    end
+
+    Admin->>OAuth: Access Prometheus Route<br/>HTTPS/443 TLS1.2+<br/>Auth: User credentials
+    OAuth-->>Admin: Session cookie
+    Admin->>Prom: GET /graph<br/>HTTP/9090 (via oauth-proxy)<br/>Auth: Session cookie
+    Prom-->>Admin: Prometheus UI

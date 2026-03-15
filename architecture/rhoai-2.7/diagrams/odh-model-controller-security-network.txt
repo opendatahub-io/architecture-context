@@ -1,0 +1,272 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token (optional, per ISVC config)                 │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                          │
+│                                                                          │
+│  [OpenShift Router]                                                      │
+│  - Port: 443/TCP (external) → 443/TCP (internal)                       │
+│  - TLS Mode: Passthrough                                                │
+│  - AuthN: Per-route configuration (varies by ISVC)                      │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+ (passthrough)                             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Istio - mTLS STRICT for predictor)                      │
+│                                                                          │
+│  [Istio Ingress Gateway]                                                 │
+│  - Namespace: istio-system                                               │
+│  - ServiceAccount: istio-ingressgateway-service-account                 │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: mTLS (STRICT - Istio sidecar)                     │
+│         │ Auth: mTLS client certificate (Service Identity)              │
+│         ▼                                                                │
+│  [Predictor Pod]                                                         │
+│  - Namespace: {isvc-namespace}                                           │
+│  - ServiceAccount: {varies per ISVC}                                    │
+│  - Istio sidecar: Enforces mTLS STRICT                                  │
+│  - PeerAuthentication: STRICT (except ports 8086, 3000 = PERMISSIVE)   │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (localhost)                                   │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+│  [Model Container]                                                       │
+│  - Inference server (varies: Triton, vLLM, Caikit, TGIS, etc.)         │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MONITORING (Internal)                                                   │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - Namespace: {monitoring-namespace} (e.g., openshift-user-workload-monitoring) │
+│  - ServiceAccount: prometheus-custom                                     │
+│         │                                                                │
+│         │ Port: 8080/TCP (controller metrics)                            │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None                                               │
+│         │ Auth: ServiceAccount Token                                     │
+│         │ NetworkPolicy: allow-from-openshift-monitoring-ns              │
+│         ▼                                                                │
+│  [ODH Model Controller Metrics Service]                                 │
+│  - Namespace: {controller-namespace}                                     │
+│  - Service: odh-model-controller-metrics-service                         │
+│         │                                                                │
+│  [Prometheus]                                                            │
+│         │                                                                │
+│         │ Port: 8086/TCP (Caikit metrics)                                │
+│         │ Port: 3000/TCP (TGIS metrics)                                  │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None                                               │
+│         │ Auth: ServiceAccount Token                                     │
+│         │ PeerAuthentication: PERMISSIVE (allows plaintext metrics)      │
+│         │ NetworkPolicy: allow-from-openshift-monitoring-ns              │
+│         ▼                                                                │
+│  [Predictor Pod Metrics]                                                 │
+│  - Exposed via ServiceMonitor/PodMonitor                                 │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE                                                           │
+│                                                                          │
+│  [ODH Model Controller]                                                  │
+│  - Namespace: {controller-namespace}                                     │
+│  - ServiceAccount: odh-model-controller                                  │
+│  - Replicas: 3 (leader election enabled)                                │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount Token                                     │
+│         ▼                                                                │
+│  [Kubernetes API Server]                                                 │
+│  - Manages: Routes, NetworkPolicies, ServiceMonitors, etc.              │
+│         │                                                                │
+│         │ Port: 15017/TCP (if mesh enabled)                              │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: mTLS                                               │
+│         │ Auth: ServiceAccount Token                                     │
+│         ▼                                                                │
+│  [Istio Control Plane API]                                              │
+│  - Manages: VirtualServices, PeerAuthentications, Telemetries           │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+════════════════════════════════════════════════════════════════════════════
+NETWORK POLICIES (Created in {isvc-namespace})
+════════════════════════════════════════════════════════════════════════════
+
+1. allow-from-openshift-monitoring-ns
+   - Selector: All pods in namespace
+   - Ingress From: Namespace with label network.openshift.io/policy-group=monitoring
+   - Ports: All
+   - Purpose: Allow Prometheus to scrape metrics from pods
+
+2. allow-openshift-ingress
+   - Selector: All pods in namespace
+   - Ingress From: Namespace with label network.openshift.io/policy-group=ingress
+   - Ports: All
+   - Purpose: Allow OpenShift Router to forward traffic
+
+3. allow-from-opendatahub-ns
+   - Selector: All pods in namespace
+   - Ingress From: Namespaces with labels:
+       * opendatahub.io/dashboard=true
+       * kubernetes.io/metadata.name=kserve
+       * opendatahub.io/generated-namespace=true
+   - Ports: All
+   - Purpose: Allow traffic from ODH Dashboard and data science project namespaces
+
+════════════════════════════════════════════════════════════════════════════
+RBAC SUMMARY
+════════════════════════════════════════════════════════════════════════════
+
+ClusterRole: odh-model-controller-role
+  Bound to: ServiceAccount odh-model-controller@{controller-namespace}
+
+  Permissions:
+  - serving.kserve.io (inferenceservices, servingruntimes):
+      get, list, watch, create, update, patch, delete
+  - route.openshift.io (routes):
+      get, list, watch, create, update, patch, delete, custom-host
+  - security.istio.io (peerauthentications):
+      get, list, watch, create, update, patch, delete
+  - telemetry.istio.io (telemetries):
+      get, list, watch, create, update, patch, delete
+  - networking.istio.io (virtualservices):
+      get, list, watch, create, update, patch, delete
+  - maistra.io (servicemeshmembers, servicemeshmemberrolls, servicemeshcontrolplanes):
+      get, list, watch, create, update, patch, delete, use
+  - networking.k8s.io (networkpolicies):
+      get, list, watch, create, update, patch, delete
+  - monitoring.coreos.com (servicemonitors, podmonitors):
+      get, list, watch, create, update, patch, delete
+  - rbac.authorization.k8s.io (clusterrolebindings, rolebindings):
+      get, list, watch, create, update, patch, delete
+  - core (configmaps, namespaces, pods, services, serviceaccounts, secrets, endpoints):
+      get, list, watch, create, update, patch
+  - apps (deployments, statefulsets):
+      get, list, delete
+  - project.openshift.io (projects):
+      get
+
+ClusterRole: odh-model-controller-leader-election-role
+  Bound to: ServiceAccount odh-model-controller@{controller-namespace}
+
+  Permissions:
+  - coordination.k8s.io (leases):
+      get, list, watch, create, update, patch, delete
+  - core (configmaps, events):
+      get, list, watch, create, update, patch, delete
+
+Role: prometheus-ns-access (created per ISVC namespace)
+  Bound to: ServiceAccount prometheus-custom@{monitoring-namespace}
+
+  Permissions:
+  - core (endpoints, pods, services):
+      get, list, watch
+
+════════════════════════════════════════════════════════════════════════════
+SERVICE MESH CONFIGURATION
+════════════════════════════════════════════════════════════════════════════
+
+PeerAuthentication "default" (created in {isvc-namespace}):
+  - Mode: STRICT (enforce mTLS for all traffic)
+  - Port-level overrides:
+      * Port 8086 (Caikit metrics): PERMISSIVE (allow plaintext for Prometheus)
+      * Port 3000 (TGIS metrics): PERMISSIVE (allow plaintext for Prometheus)
+  - Selector: Predictor pods (modelmesh-service=modelmesh-serving or serving.kserve.io/inferenceservice)
+
+Telemetry (created in {isvc-namespace}):
+  - Purpose: Enable Istio observability (tracing, metrics, access logs)
+  - Configuration: Default telemetry config
+
+ServiceMeshMember (created in {isvc-namespace}):
+  - Purpose: Integrate namespace into OpenShift Service Mesh
+  - ControlPlaneRef: {mesh-namespace}/data-science-smcp (typical)
+
+VirtualService (created in {isvc-namespace}):
+  - Purpose: Istio routing configuration for InferenceService
+  - Hosts: {isvc-name}.{isvc-namespace}.svc.cluster.local
+  - Gateways: knative-serving/knative-ingress-gateway, knative-serving/knative-local-gateway
+
+════════════════════════════════════════════════════════════════════════════
+SECRETS
+════════════════════════════════════════════════════════════════════════════
+
+Storage Secrets (managed by user/external system):
+  - Type: Opaque
+  - Purpose: S3/Azure/GCS credentials for model artifact storage
+  - Fields: Varies by storage backend
+      * S3: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_ENDPOINT
+      * Azure: AZURE_STORAGE_ACCOUNT, AZURE_STORAGE_KEY
+      * GCS: gcs-credentials.json
+  - Provisioned By: User or external secret management system
+  - Auto-Rotate: No (user responsibility)
+  - Used By: Predictor pods (mounted as env vars or volumes)
+
+Note: Controller does not manage TLS certificates - relies on:
+  - OpenShift Router for external TLS termination
+  - Istio for mTLS between services
+  - cert-manager or manual cert provisioning for custom domains
+
+════════════════════════════════════════════════════════════════════════════
+TRUST BOUNDARIES
+════════════════════════════════════════════════════════════════════════════
+
+1. External → Ingress (DMZ)
+   - Trust Level: Untrusted → Semi-trusted
+   - Enforcement: OpenShift Router (TLS termination or passthrough)
+   - AuthN: Optional Bearer Token (per ISVC configuration)
+
+2. Ingress → Service Mesh
+   - Trust Level: Semi-trusted → Trusted
+   - Enforcement: Istio Ingress Gateway + PeerAuthentication (mTLS STRICT)
+   - AuthN: mTLS client certificates (service identity)
+
+3. Service Mesh → Model Container
+   - Trust Level: Trusted → Trusted
+   - Enforcement: Localhost (same pod)
+   - AuthN: None (implicit trust within pod)
+
+4. Monitoring → Service Mesh
+   - Trust Level: Trusted → Trusted
+   - Enforcement: NetworkPolicy + RBAC
+   - AuthN: ServiceAccount Token
+
+5. Controller → Kubernetes API
+   - Trust Level: Trusted → Trusted
+   - Enforcement: Kubernetes RBAC + ServiceAccount Token
+   - AuthN: ServiceAccount Token
+
+════════════════════════════════════════════════════════════════════════════
+DEPLOYMENT SECURITY
+════════════════════════════════════════════════════════════════════════════
+
+ODH Model Controller Pod Security:
+  - Security Context:
+      * runAsNonRoot: true (enforced)
+      * allowPrivilegeEscalation: false
+      * readOnlyRootFilesystem: false (requires writable /tmp)
+      * capabilities: DROP ALL
+  - Resource Limits:
+      * CPU: 500m
+      * Memory: 2Gi
+  - Resource Requests:
+      * CPU: 10m
+      * Memory: 64Mi
+  - Anti-Affinity: Prefer spreading across nodes
+  - Health Checks:
+      * Liveness: /healthz on port 8081 (15s initial, 20s period)
+      * Readiness: /readyz on port 8081 (5s initial, 10s period)
+  - Leader Election: Enabled (3 replicas, only 1 active reconciler)

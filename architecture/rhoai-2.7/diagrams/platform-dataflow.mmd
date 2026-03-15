@@ -1,0 +1,71 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant OAuth as OpenShift OAuth<br/>Authentication
+    participant Dashboard as ODH Dashboard<br/>443/TCP HTTPS
+    participant NBController as Notebook Controller<br/>8080/TCP HTTP
+    participant Notebook as Notebook Pod<br/>8888/TCP HTTP
+    participant S3 as S3 Storage<br/>443/TCP HTTPS TLS1.2+
+    participant KServe as KServe Controller<br/>8080/TCP HTTP
+    participant ModelCtl as ODH Model Controller<br/>8080/TCP HTTP
+    participant Router as OpenShift Router<br/>443/TCP HTTPS
+    participant Istio as Istio Gateway<br/>443/TCP HTTPS
+    participant Predictor as Predictor Pod<br/>8080/TCP HTTP
+
+    Note over User,Predictor: Workflow: Model Training to Deployment
+
+    User->>OAuth: Login to OpenShift
+    OAuth-->>User: Bearer Token (JWT)
+
+    User->>Dashboard: Access dashboard<br/>Auth: Bearer Token
+    Dashboard->>Dashboard: Validate token via SAR
+    Dashboard-->>User: Project management UI
+
+    User->>Dashboard: Create data science project
+    Dashboard->>KServe: Create namespace + RBAC
+
+    User->>Dashboard: Launch Jupyter notebook
+    Dashboard->>NBController: Create Notebook CR
+    NBController->>NBController: Inject OAuth proxy sidecar
+    NBController->>Notebook: Spawn StatefulSet
+    NBController->>Router: Create OpenShift Route<br/>TLS Edge termination
+    Router-->>User: Notebook URL (HTTPS)
+
+    User->>Router: Access notebook<br/>443/TCP HTTPS
+    Router->>Notebook: Forward to OAuth proxy<br/>8443/TCP
+    Notebook->>OAuth: Validate token
+    OAuth-->>Notebook: Token valid
+    Notebook-->>User: JupyterLab interface
+
+    User->>Notebook: Train ML model
+    Notebook->>Notebook: Execute training code
+    Notebook->>S3: Upload trained model<br/>HTTPS, AWS IAM Auth
+    S3-->>Notebook: Model saved
+
+    User->>Dashboard: Deploy model (InferenceService)
+    Dashboard->>KServe: Create InferenceService CR<br/>storageUri: s3://bucket/model
+
+    KServe->>KServe: Validate InferenceService
+    KServe->>Predictor: Create Knative Service or Deployment
+
+    ModelCtl->>KServe: Watch InferenceService CR
+    ModelCtl->>Router: Create OpenShift Route<br/>TLS Passthrough
+    ModelCtl->>Istio: Create PeerAuthentication<br/>mTLS STRICT
+    ModelCtl->>ModelCtl: Create NetworkPolicies (3x)
+    ModelCtl->>Istio: Add namespace to ServiceMeshMemberRoll
+
+    Predictor->>Predictor: storage-initializer init container
+    Predictor->>S3: Download model artifacts<br/>HTTPS/443 AWS IAM
+    S3-->>Predictor: Model artifacts
+
+    Predictor->>Predictor: Load model into memory
+    Predictor->>Predictor: Ready for inference
+
+    Note over User,Predictor: Inference Request Flow
+
+    User->>Router: POST /v1/models/model:predict<br/>443/TCP HTTPS<br/>Body: inference payload
+    Router->>Istio: Forward via VirtualService<br/>TLS Passthrough
+    Istio->>Predictor: mTLS (STRICT)<br/>8080/TCP HTTP
+    Predictor->>Predictor: Execute inference
+    Predictor-->>Istio: Prediction result (JSON)
+    Istio-->>Router: Response
+    Router-->>User: HTTPS response<br/>200 OK

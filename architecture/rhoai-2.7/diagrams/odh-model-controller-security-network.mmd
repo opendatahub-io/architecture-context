@@ -1,0 +1,89 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[External Client]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Router["OpenShift Router<br/>443/TCP → 443/TCP<br/>TLS Passthrough<br/>Auth: Per-ISVC config"]
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (Istio - mTLS STRICT)"]
+        direction TB
+
+        subgraph NS_Istio["Namespace: istio-system"]
+            Gateway["Istio Ingress Gateway<br/>SA: istio-ingressgateway-service-account"]
+        end
+
+        subgraph NS_ISVC["Namespace: {isvc-namespace}"]
+            Predictor["Predictor Pod<br/>SA: {varies per ISVC}<br/>Istio sidecar: mTLS STRICT<br/>PeerAuth: STRICT (8086,3000=PERMISSIVE)"]
+            Container["Model Container<br/>Inference server<br/>(Triton, vLLM, Caikit, TGIS)"]
+        end
+    end
+
+    subgraph Monitoring["MONITORING (Internal)"]
+        direction TB
+
+        subgraph NS_Mon["Namespace: {monitoring-namespace}"]
+            Prometheus["Prometheus<br/>SA: prometheus-custom"]
+        end
+
+        subgraph NS_Ctrl["Namespace: {controller-namespace}"]
+            CtrlMetrics["Controller Metrics Service<br/>odh-model-controller-metrics-service<br/>8080/TCP HTTP"]
+        end
+    end
+
+    subgraph ControlPlane["CONTROL PLANE"]
+        direction TB
+
+        subgraph NS_Controller["Namespace: {controller-namespace}"]
+            Controller["ODH Model Controller<br/>SA: odh-model-controller<br/>Replicas: 3 (leader election)"]
+        end
+
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+<br/>Auth: ServiceAccount Token"]
+        IstioAPI["Istio Control Plane API<br/>15017/TCP HTTPS mTLS<br/>Auth: ServiceAccount Token"]
+    end
+
+    %% Main data flow
+    Client -->|HTTPS/443<br/>TLS 1.2+<br/>Bearer Token opt| Router
+    Router -->|HTTPS/443<br/>TLS Passthrough| Gateway
+    Gateway -->|HTTP/8080<br/>mTLS STRICT<br/>Service Identity| Predictor
+    Predictor -->|HTTP/8080<br/>Localhost<br/>No encryption| Container
+
+    %% Monitoring flows
+    Prometheus -->|HTTP/8080<br/>ServiceAccount Token<br/>NP: allow-from-monitoring| CtrlMetrics
+    Prometheus -->|HTTP/8086,3000<br/>ServiceAccount Token<br/>NP: allow-from-monitoring<br/>PeerAuth: PERMISSIVE| Predictor
+
+    %% Controller flows
+    Controller -->|HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount Token| K8sAPI
+    Controller -->|HTTPS/15017<br/>mTLS<br/>ServiceAccount Token| IstioAPI
+
+    %% Network Policies
+    NP1["NetworkPolicy:<br/>allow-from-openshift-monitoring-ns<br/>Allows: monitoring namespace → all pods"]
+    NP2["NetworkPolicy:<br/>allow-openshift-ingress<br/>Allows: ingress namespace → all pods"]
+    NP3["NetworkPolicy:<br/>allow-from-opendatahub-ns<br/>Allows: ODH/dashboard namespaces → all pods"]
+
+    NP1 -.->|governs| Predictor
+    NP2 -.->|governs| Predictor
+    NP3 -.->|governs| Predictor
+
+    %% RBAC
+    RBAC1["ClusterRole:<br/>odh-model-controller-role<br/>Permissions: ISVC, Routes, Istio, etc."]
+    RBAC2["Role (per ISVC NS):<br/>prometheus-ns-access<br/>Permissions: endpoints, pods, services"]
+
+    RBAC1 -.->|bound to| Controller
+    RBAC2 -.->|bound to| Prometheus
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef monitoring fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef controlplane fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef policy fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+
+    class Client external
+    class Router ingress
+    class Gateway,Predictor,Container servicemesh
+    class Prometheus,CtrlMetrics monitoring
+    class Controller,K8sAPI,IstioAPI controlplane
+    class NP1,NP2,NP3,RBAC1,RBAC2 policy

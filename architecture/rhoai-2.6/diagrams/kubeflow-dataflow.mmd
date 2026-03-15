@@ -1,0 +1,50 @@
+sequenceDiagram
+    participant User as User Browser
+    participant Router as OpenShift Router<br/>443/TCP HTTPS TLS1.2+
+    participant Route as Route (edge/re-encrypt)
+    participant Service as notebook-name-tls Service<br/>443/TCP ClusterIP
+    participant OAuth as OAuth Proxy Sidecar<br/>8443/TCP HTTPS
+    participant OAuthServer as OpenShift OAuth Server<br/>443/TCP HTTPS
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS
+    participant Notebook as Notebook Container<br/>8888/TCP HTTP
+
+    Note over User,Notebook: Flow 1: Notebook Access with OAuth
+
+    User->>Router: GET /notebook-path<br/>HTTPS/443 TLS1.2+ (edge)
+    Router->>Service: Forward request<br/>HTTPS/443 TLS1.2+ (re-encrypt)
+    Service->>OAuth: Forward to sidecar<br/>HTTPS/8443 (service-ca cert)
+
+    alt User not authenticated
+        OAuth->>OAuthServer: Redirect for authentication<br/>HTTPS/443 TLS1.2+<br/>Service Account Token
+        OAuthServer-->>OAuth: OAuth token
+    end
+
+    OAuth->>K8sAPI: SubjectAccessReview<br/>HTTPS/6443 TLS1.2+<br/>User Token
+    K8sAPI-->>OAuth: Authorization decision<br/>(GET permission on Notebook CR)
+
+    alt Authorized
+        OAuth->>Notebook: Forward request<br/>HTTP/8888 (localhost)
+        Notebook-->>OAuth: Response
+        OAuth-->>Service: HTTPS response
+        Service-->>Router: HTTPS response
+        Router-->>User: HTTPS/443 response
+    else Unauthorized
+        OAuth-->>User: 403 Forbidden
+    end
+
+    Note over User,Notebook: Flow 2: Notebook CR Reconciliation
+
+    participant Controller as ODH Notebook Controller
+
+    K8sAPI->>Controller: Watch notification<br/>Notebook CR changed<br/>HTTP/2 TLS1.2+
+    Controller->>K8sAPI: Create/Update resources<br/>HTTPS/6443 TLS1.2+<br/>Service Account Token
+    K8sAPI-->>Controller: Resources created<br/>(Route, Service, Secret, NetworkPolicy)
+
+    Note over User,Notebook: Flow 3: Webhook Injection
+
+    participant WebhookServer as Webhook Server<br/>8443/TCP HTTPS
+
+    K8sAPI->>WebhookServer: POST /mutate-notebook-v1<br/>HTTPS/443 TLS1.2+<br/>mTLS (client cert)
+    WebhookServer->>K8sAPI: Read Proxy CR<br/>HTTPS/6443 TLS1.2+<br/>Service Account Token
+    K8sAPI-->>WebhookServer: Proxy configuration
+    WebhookServer-->>K8sAPI: Mutated Notebook CR<br/>(OAuth proxy injected)
