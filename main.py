@@ -1097,12 +1097,24 @@ async def run_all_phases(args) -> None:
     if not org:
         org = "opendatahub-io" if args.platform == "odh" else "red-hat-data-services"
 
+    # Extract version from branch name for filtering later phases
+    # For RHOAI: branch name is authoritative (e.g., rhoai-2.25 → version 2.25)
+    # For ODH: no version in branch name, use None to auto-detect
+    target_version = None
+    if args.platform == "rhoai" and args.branch:
+        # Extract version from branch name pattern: rhoai-X.Y
+        version_match = re.search(r'rhoai-([0-9.]+)', args.branch)
+        if version_match:
+            target_version = version_match.group(1)
+
     print("\n" + "=" * 80)
     print("RUNNING ALL PHASES")
     print(f"Platform: {args.platform}")
     print(f"Organization: {org}")
     if args.branch:
         print(f"Branch: {args.branch}")
+    if target_version:
+        print(f"Target Version: {target_version}")
     print("=" * 80 + "\n")
 
     # Phase 1: Fetch repositories
@@ -1136,6 +1148,43 @@ async def run_all_phases(args) -> None:
     )
     await run_generate_architecture_phase(generate_arch_args)
 
+    # Pre-create architecture directory structure before collect phase
+    # This ensures the directory exists even if collect hasn't run yet
+    if target_version:
+        arch_dir = Path("architecture") / f"{args.platform}-{target_version}"
+        arch_dir.mkdir(parents=True, exist_ok=True)
+        print(f"\nPre-created architecture directory: {arch_dir}\n")
+    else:
+        # For ODH or when no specific version, try to detect from operator Makefile
+        operator_name = "opendatahub-operator" if args.platform == "odh" else "rhods-operator"
+        if args.branch:
+            org_dir = f"{org}.{args.branch}"
+        else:
+            org_dir = org
+
+        operator_dir = Path("checkouts") / org_dir / operator_name
+        if operator_dir.exists():
+            makefile_path = operator_dir / "Makefile"
+            if makefile_path.exists():
+                import subprocess
+                try:
+                    result = subprocess.run(
+                        ['grep', '^VERSION', str(makefile_path)],
+                        capture_output=True,
+                        text=True,
+                        check=False
+                    )
+                    if result.returncode == 0:
+                        for line in result.stdout.strip().split('\n'):
+                            if line.startswith('VERSION'):
+                                version = line.split('=')[1].strip().strip('?').strip()
+                                arch_dir = Path("architecture") / f"{args.platform}-{version}"
+                                arch_dir.mkdir(parents=True, exist_ok=True)
+                                print(f"\nPre-created architecture directory: {arch_dir}\n")
+                                break
+                except Exception as e:
+                    print(f"Note: Could not pre-create directory: {e}")
+
     # Phase 4: Collect architectures into organized structure
     collect_args = Namespace(
         checkouts_dir="checkouts",
@@ -1145,21 +1194,22 @@ async def run_all_phases(args) -> None:
     await run_collect_architectures_phase(collect_args)
 
     # Phase 5: Generate platform-level architecture
-    # Note: version is auto-detected from architecture directories, no need to pass it
+    # Use target_version to filter to specific version if branch was provided
     platform_arch_args = Namespace(
         architecture_dir="architecture",
         platform=args.platform,
-        version=None,  # Auto-detect all versions for this platform
+        version=target_version,  # Filter to specific version from branch
         max_concurrent=5,
         limit=None
     )
     await run_generate_platform_architecture_phase(platform_arch_args)
 
     # Phase 6: Generate diagrams
+    # Use target_version to filter to specific version if branch was provided
     diagrams_args = Namespace(
         architecture_dir="architecture",
         platform=args.platform,
-        version=None,  # Auto-detect all versions for this platform
+        version=target_version,  # Filter to specific version from branch
         max_concurrent=5,
         limit=None,
         force_regenerate=False
