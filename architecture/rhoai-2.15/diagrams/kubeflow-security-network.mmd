@@ -1,0 +1,81 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User[User Browser]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Router["OpenShift Router<br/>443/TCP → 8443/8888<br/>TLS 1.3<br/>Edge/Reencrypt"]
+    end
+
+    subgraph NotebookNS["NOTEBOOK NAMESPACE: {user-namespace} (Trusted - User Workloads)"]
+        direction TB
+
+        Service["Service: {notebook-name}-tls<br/>ClusterIP 443→8443<br/>Service CA Cert"]
+
+        subgraph NotebookPod["Notebook Pod"]
+            direction TB
+            OAuthProxy["OAuth Proxy Sidecar<br/>8443/TCP HTTPS<br/>TLS 1.2+ (Service CA)<br/>Bearer Token Auth<br/>Cookie: 24h expiry"]
+            NotebookContainer["Jupyter Notebook<br/>8888/TCP HTTP<br/>CA Bundle Mounted<br/>Env: PIP_CERT, REQUESTS_CA_BUNDLE"]
+
+            OAuthProxy -->|"8888/TCP<br/>HTTP<br/>localhost"| NotebookContainer
+        end
+
+        NetPol1["NetworkPolicy:<br/>{notebook-name}-oauth-np<br/>Allow all on 8443"]
+        NetPol2["NetworkPolicy:<br/>{notebook-name}-ctrl-np<br/>Controller NS only on 8888"]
+
+        Service --> OAuthProxy
+    end
+
+    subgraph Platform["OPENSHIFT PLATFORM (Trusted - Control Plane)"]
+        direction TB
+
+        OAuthServer["OpenShift OAuth Server<br/>443/TCP HTTPS TLS1.2+<br/>OAuth 2.0 Flow<br/>SubjectAccessReview (SAR):<br/>get notebooks/{name}"]
+
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS1.2+<br/>ServiceAccount Token Auth"]
+    end
+
+    subgraph ControllerNS["CONTROLLER NAMESPACE: redhat-ods-applications (Trusted - ODH Control Plane)"]
+        direction TB
+
+        subgraph ControllerDeploy["ODH Notebook Controller Deployment"]
+            Controller["Controller Container<br/>8080/TCP metrics (internal)<br/>8081/TCP health (internal)<br/>SA: odh-notebook-controller-manager<br/>Non-root UID 1001"]
+        end
+
+        subgraph WebhookSvc["Webhook Service"]
+            Webhook["Webhook Server<br/>8443/TCP HTTPS<br/>TLS 1.2+ (Service CA)<br/>mTLS Auth<br/>/mutate-notebook-v1<br/>Failure Policy: Fail"]
+        end
+
+        ImageStreamAPI["ImageStream API<br/>443/TCP HTTPS TLS1.2+"]
+    end
+
+    %% External Flow
+    User -->|"HTTPS/443<br/>TLS 1.3<br/>No Auth (initial)"| Router
+    Router -->|"HTTPS/8443<br/>TLS 1.2+ (Reencrypt)<br/>Forwarded Auth"| Service
+
+    %% OAuth Flow
+    OAuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth Token"| OAuthServer
+    OAuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>ServiceAccount Token<br/>SAR Request"| K8sAPI
+
+    %% Controller Flow
+    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>ServiceAccount Token<br/>Watch/Create Resources"| K8sAPI
+    K8sAPI -->|"HTTPS/8443<br/>mTLS (Service CA)<br/>Mutating Webhook"| Webhook
+    Webhook -->|"HTTPS/443<br/>TLS 1.2+<br/>ServiceAccount Token<br/>Resolve Images"| ImageStreamAPI
+
+    %% Network Policy Enforcement
+    NetPol1 -.->|"Enforces"| OAuthProxy
+    NetPol2 -.->|"Enforces"| NotebookContainer
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:3px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:3px
+    classDef userworkload fill:#d5e8d4,stroke:#82b366,stroke-width:3px
+    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:3px
+    classDef controller fill:#e1d5e7,stroke:#9673a6,stroke-width:3px
+    classDef netpol fill:#fff2cc,stroke:#d6b656,stroke-width:2px,stroke-dasharray: 5 5
+
+    class User external
+    class Router ingress
+    class Service,NotebookPod,OAuthProxy,NotebookContainer userworkload
+    class OAuthServer,K8sAPI platform
+    class Controller,Webhook,ImageStreamAPI controller
+    class NetPol1,NetPol2 netpol

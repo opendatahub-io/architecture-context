@@ -1,0 +1,128 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[User/Client]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Router["OpenShift Router<br/>443/TCP HTTPS"]
+        RouteAPI["ds-pipeline Route<br/>TLS 1.2+ Reencrypt"]
+        RouteMLMD["ds-pipeline-md Route<br/>TLS 1.2+ Reencrypt"]
+    end
+
+    subgraph AppTier["APPLICATION TIER (Namespace Isolated)"]
+        direction TB
+
+        subgraph APIService["API Server Service"]
+            OAuthProxy["OAuth2 Proxy<br/>8443/TCP TLS<br/>Bearer Token Validation"]
+            APIServer["API Server Pod<br/>8888/TCP HTTP/HTTPS<br/>8887/TCP gRPC<br/>SA: ds-pipeline-{name}"]
+        end
+
+        subgraph WorkflowExecution["Workflow Execution"]
+            WFController["Workflow Controller<br/>Argo v3.4.17<br/>8080/TCP<br/>SA: ds-pipeline-workflow-controller-{name}"]
+            WFPod["Workflow Pod<br/>Pipeline Task<br/>SA: pipeline-runner-{name}<br/>Label: pipelines.kubeflow.org/v2_component=true"]
+        end
+
+        subgraph DataLayer["Data & Storage Layer"]
+            MariaDB["MariaDB StatefulSet<br/>3306/TCP MySQL<br/>TLS or None<br/>NetworkPolicy: Restricted"]
+            Minio["Minio Deployment<br/>9000/TCP HTTP<br/>S3 Access Keys<br/>Dev/Test Only"]
+        end
+
+        subgraph MLMetadata["ML Metadata Service"]
+            MLMDEnvoy["MLMD Envoy Proxy<br/>8443/TCP OAuth2<br/>9090/TCP gRPC"]
+            MLMDgRPC["MLMD gRPC Server<br/>8080/TCP gRPC<br/>TLS 1.3 or None<br/>NetworkPolicy: Restricted"]
+        end
+
+        PAgent["Persistence Agent<br/>SA: ds-pipeline-persistenceagent-{name}"]
+        ScheduledWF["Scheduled Workflow Controller<br/>SA: ds-pipeline-scheduledworkflow-{name}"]
+    end
+
+    subgraph OperatorTier["OPERATOR TIER (System Namespace)"]
+        DSPO["DSPO Controller Manager<br/>SA: controller-manager<br/>8081/TCP health<br/>8080/TCP metrics"]
+    end
+
+    subgraph K8sServices["KUBERNETES SERVICES"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
+        OAuthService["OpenShift OAuth<br/>443/TCP HTTPS<br/>Bearer Token"]
+        ServiceCA["OpenShift service-ca<br/>Auto-provision TLS certs"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES (Production)"]
+        ExternalS3["External S3<br/>s3.amazonaws.com<br/>443/TCP HTTPS TLS 1.2+<br/>AWS IAM or Access Keys"]
+        ExternalDB["External MySQL<br/>mysql.prod.example.com<br/>3306/TCP<br/>TLS or None<br/>Username/Password"]
+        Registry["Container Registry<br/>443/TCP HTTPS<br/>Pull Secrets"]
+    end
+
+    subgraph ODHIntegration["ODH/RHOAI INTEGRATION"]
+        Dashboard["ODH Dashboard<br/>UI Integration"]
+        DSC["DataScienceCluster CR<br/>Operator Installation"]
+    end
+
+    %% External flows
+    Client -->|HTTPS/443<br/>TLS 1.2+| Router
+    Router -->|Route| RouteAPI
+    Router -->|Route| RouteMLMD
+
+    %% API flow
+    RouteAPI -->|8443/TCP<br/>TLS service cert| OAuthProxy
+    OAuthProxy -->|Validate| OAuthService
+    OAuthProxy -->|8888/TCP<br/>TLS 1.3 or None| APIServer
+
+    %% MLMD flow
+    RouteMLMD -->|8443/TCP<br/>TLS service cert| MLMDEnvoy
+    MLMDEnvoy -->|Validate| OAuthService
+    MLMDEnvoy -->|8080/TCP gRPC<br/>TLS 1.3 or None| MLMDgRPC
+
+    %% API Server connections
+    APIServer -->|3306/TCP MySQL<br/>TLS or None<br/>User/Pass<br/>NetworkPolicy: Allowed| MariaDB
+    APIServer -->|9000/TCP HTTP<br/>S3 Keys| Minio
+    APIServer -->|8080/TCP HTTP<br/>SA Token| WFController
+    APIServer -.->|Production| ExternalS3
+    APIServer -.->|Production| ExternalDB
+
+    %% Workflow execution
+    WFController -->|6443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token| K8sAPI
+    K8sAPI -->|Create| WFPod
+    WFPod -->|8080/TCP gRPC<br/>TLS 1.3 or None<br/>NetworkPolicy: Label-based| MLMDgRPC
+    WFPod -->|9000/TCP or 443/TCP<br/>S3 Keys| Minio
+    WFPod -.->|Production<br/>443/TCP HTTPS<br/>AWS IAM| ExternalS3
+    WFPod -->|Pull images<br/>443/TCP HTTPS| Registry
+
+    %% Metadata persistence
+    MLMDgRPC -->|3306/TCP MySQL<br/>TLS or None<br/>User/Pass<br/>NetworkPolicy: Allowed| MariaDB
+    PAgent -->|3306/TCP MySQL<br/>NetworkPolicy: Allowed| MariaDB
+    PAgent -->|6443/TCP HTTPS<br/>SA Token| K8sAPI
+
+    %% Operator management
+    DSPO -->|6443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token<br/>ClusterRole: manager-role| K8sAPI
+    DSPO -->|Reconciles DSPA CRs| APIServer
+    DSPO -->|Reconciles| WFController
+    DSPO -->|Reconciles| MariaDB
+    DSPO -->|Reconciles| Minio
+    DSPO -->|Reconciles| MLMDgRPC
+
+    %% Service CA provisioning
+    ServiceCA -.->|Auto-provision<br/>Auto-rotate| OAuthProxy
+    ServiceCA -.->|Auto-provision<br/>Auto-rotate| MLMDEnvoy
+    ServiceCA -.->|Auto-provision<br/>Auto-rotate| MariaDB
+
+    %% ODH Integration
+    Dashboard -->|Manages DSPA CRs| K8sAPI
+    Dashboard -->|Embeds UI| APIServer
+    DSC -->|Installs| DSPO
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef apptier fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef k8s fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef odh fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+
+    class Client external
+    class Router,RouteAPI,RouteMLMD ingress
+    class OAuthProxy,APIServer,WFController,WFPod,MariaDB,Minio,MLMDEnvoy,MLMDgRPC,PAgent,ScheduledWF apptier
+    class DSPO operator
+    class K8sAPI,OAuthService,ServiceCA k8s
+    class ExternalS3,ExternalDB,Registry externalservice
+    class Dashboard,DSC odh

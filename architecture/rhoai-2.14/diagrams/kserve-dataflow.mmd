@@ -1,0 +1,73 @@
+sequenceDiagram
+    participant User as Data Scientist<br/>kubectl
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.3
+    participant Webhook as kserve-webhook-server<br/>9443/TCP HTTPS mTLS
+    participant Controller as kserve-controller-manager<br/>Watch API
+    participant Storage as S3/GCS/Azure<br/>443/TCP HTTPS TLS1.2+
+    participant Client as External Client
+    participant Gateway as Istio Ingress Gateway<br/>443/TCP HTTPS TLS1.3
+    participant Activator as Knative Activator<br/>8012/TCP HTTP
+    participant Agent as kserve-agent<br/>8012/TCP HTTP
+    participant ModelServer as Model Server<br/>8080/TCP HTTP
+    participant Broker as CloudEvents Broker<br/>80/TCP HTTP
+
+    rect rgb(240, 248, 255)
+        Note over User,Controller: Flow 1: InferenceService Creation
+        User->>K8sAPI: kubectl apply -f inferenceservice.yaml<br/>kubeconfig credentials
+        K8sAPI->>Webhook: POST /mutate-serving-kserve-io-v1beta1-inferenceservice<br/>mTLS
+        Webhook-->>K8sAPI: Mutated InferenceService<br/>(injects storage-initializer, agent)
+        K8sAPI->>Webhook: POST /validate-serving-kserve-io-v1beta1-inferenceservice<br/>mTLS
+        Webhook-->>K8sAPI: Validation passed
+        K8sAPI->>Controller: Watch event: InferenceService created<br/>ServiceAccount token
+        Controller->>K8sAPI: Create Knative Service/Deployment<br/>HTTPS/6443 TLS1.3
+        Controller->>K8sAPI: Create Istio VirtualService<br/>HTTPS/6443 TLS1.3
+        K8sAPI-->>Controller: Resources created
+    end
+
+    rect rgb(255, 250, 240)
+        Note over Storage,ModelServer: Flow 2: Model Download (Init Container)
+        Note right of Storage: Pod starts with<br/>storage-initializer<br/>InitContainer
+        Storage->>Storage: storage-initializer pulls model<br/>AWS IAM/Service Account/Access Keys
+        Storage-->>ModelServer: Model artifacts written to<br/>shared emptyDir volume
+    end
+
+    rect rgb(240, 255, 240)
+        Note over Client,Broker: Flow 3: Model Inference (Serverless Mode)
+        Client->>Gateway: POST /v2/models/mymodel/infer<br/>Bearer Token (optional)
+        Gateway->>Gateway: Istio AuthorizationPolicy check
+        Gateway->>Activator: Forward request<br/>HTTP/8012<br/>mTLS (optional)
+        Note right of Activator: If pod scaled to zero,<br/>Activator triggers<br/>scale-up
+        Activator->>Agent: HTTP/8012<br/>Inference request
+        Agent->>ModelServer: POST /v2/models/mymodel/infer<br/>HTTP/8080
+        ModelServer-->>Agent: Inference response<br/>JSON
+        Agent->>Broker: Log request/response<br/>CloudEvents/HTTP/80
+        Agent-->>Activator: Response
+        Activator-->>Gateway: Response
+        Gateway-->>Client: JSON prediction result
+    end
+
+    rect rgb(255, 245, 245)
+        Note over User,Agent: Flow 4: Dynamic Model Loading (TrainedModel)
+        User->>K8sAPI: kubectl apply -f trainedmodel.yaml
+        K8sAPI->>Controller: Watch event: TrainedModel created
+        Controller->>Agent: HTTP/9081<br/>Load new model command
+        Agent->>Storage: Download model<br/>HTTPS/443<br/>IAM Role/Service Account
+        Storage-->>Agent: Model artifacts
+        Agent->>ModelServer: Load model via Unix socket<br/>or HTTP
+        ModelServer-->>Agent: Model loaded successfully
+        Agent-->>Controller: Model ready
+    end
+
+    rect rgb(245, 240, 255)
+        Note over Client,ModelServer: Flow 5: InferenceGraph Pipeline
+        Client->>Gateway: POST /v1/models/pipeline:predict
+        Gateway->>Router: Forward to kserve-router<br/>HTTP/8080
+        Router->>InferenceService1: Step 1 prediction<br/>HTTP/80<br/>Header propagation
+        InferenceService1-->>Router: Step 1 result
+        Router->>InferenceService2: Step 2 prediction<br/>HTTP/80<br/>Header propagation
+        InferenceService2-->>Router: Step 2 result
+        Router-->>Gateway: Final result
+        Gateway-->>Client: JSON response
+    end
+
+    Note over User,Broker: All flows use TLS for external connections<br/>mTLS optional within service mesh

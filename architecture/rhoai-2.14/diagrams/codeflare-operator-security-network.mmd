@@ -1,0 +1,113 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[User Browser]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Router["OpenShift Router<br/>443/TCP HTTPS<br/>TLS Edge Termination"]
+        Route["{raycluster}-oauth Route<br/>443/TCP → 8443/TCP<br/>TLS Edge"]
+    end
+
+    subgraph Internal["INTERNAL SERVICES (Trusted)"]
+        direction TB
+
+        subgraph UserNamespace["Namespace: {user-namespace}"]
+            direction TB
+            OAuthProxy["OAuth Proxy Sidecar<br/>8443/TCP HTTPS<br/>SA: {raycluster}-oauth-proxy"]
+            RayDashboard["Ray Dashboard<br/>8265/TCP HTTP<br/>localhost only"]
+            RayHead["Ray Head Pod<br/>8265/TCP (dashboard)<br/>10001/TCP (client, gRPC)<br/>8080/TCP (metrics)<br/>SA: {raycluster}-sa"]
+            RayWorker["Ray Worker Pods<br/>SA: {raycluster}-sa"]
+        end
+
+        subgraph OSNamespace["Namespace: openshift-authentication"]
+            OAuthServer["OpenShift OAuth Server<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+        end
+
+        subgraph MonitoringNamespace["Namespace: openshift-monitoring"]
+            Prometheus["Prometheus<br/>8080/TCP HTTP"]
+        end
+    end
+
+    subgraph Operator["OPERATOR (System Namespace: {operator-namespace})"]
+        direction TB
+        OpManager["CodeFlare Operator Manager<br/>SA: codeflare-operator-controller-manager<br/>Replicas: 1"]
+        Webhook["Webhook Server<br/>9443/TCP HTTPS TLS 1.2+<br/>mTLS"]
+        MetricsSvc["Metrics Service<br/>8080/TCP HTTP"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+"]
+    end
+
+    subgraph ExternalIntegrations["EXTERNAL INTEGRATIONS"]
+        direction LR
+        KubeRay["KubeRay Operator<br/>v1.1.0<br/>Creates Ray Pods"]
+        Kueue["Kueue v0.8.1<br/>Workload Quota Mgmt<br/>(Optional)"]
+        CertController["cert-controller<br/>Webhook Cert Rotation"]
+    end
+
+    %% External to Ingress
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>No Auth"| Router
+
+    %% Ingress to Internal
+    Router -->|"HTTPS/443<br/>TLS Edge"| Route
+    Route -->|"HTTPS/8443<br/>TLS 1.2+<br/>OAuth Token (cookie)"| OAuthProxy
+
+    %% OAuth flow
+    OAuthProxy -.->|"HTTPS/443<br/>TLS 1.2+<br/>Client credentials"| OAuthServer
+    OAuthProxy -->|"HTTP/8265<br/>No encryption<br/>localhost only"| RayDashboard
+
+    %% Ray internal
+    RayDashboard -.->|"runs in"| RayHead
+    RayHead -->|"gRPC/10001<br/>mTLS (optional)<br/>Client cert auth"| RayWorker
+
+    %% Metrics
+    Prometheus -->|"HTTP/8080<br/>Bearer Token"| MetricsSvc
+    Prometheus -.->|"HTTP/8080<br/>No auth<br/>NetworkPolicy"| RayHead
+
+    %% Operator interactions
+    OpManager -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Bearer Token"| K8sAPI
+    K8sAPI -->|"HTTPS/9443<br/>TLS 1.2+<br/>mTLS"| Webhook
+
+    %% Operator creates resources
+    OpManager -.->|creates| OAuthProxy
+    OpManager -.->|creates| Route
+    OpManager -.->|creates| RayHead
+
+    %% External integrations via API
+    KubeRay -.->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Bearer Token"| K8sAPI
+    Kueue -.->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Bearer Token"| K8sAPI
+    CertController -.->|"Mounts cert secret"| Webhook
+
+    %% Network Policies
+    NPHead["NetworkPolicy: {raycluster}-head<br/>• Allow all from cluster pods<br/>• Allow 10001,8265/TCP from namespace<br/>• Allow 8080/TCP from openshift-monitoring"]
+    NPWorker["NetworkPolicy: {raycluster}-workers<br/>• Allow all from cluster pods only"]
+
+    NPHead -.->|protects| RayHead
+    NPWorker -.->|protects| RayWorker
+
+    %% Secrets
+    SecretWebhook["Secret: webhook-server-cert<br/>Type: kubernetes.io/tls<br/>Auto-rotate: Yes"]
+    SecretCA["Secret: {raycluster}-ca-secret<br/>Type: Opaque<br/>mTLS CA certs<br/>Auto-rotate: No"]
+    SecretOAuth["Secret: {raycluster}-oauth-config<br/>Type: Opaque<br/>OAuth config"]
+    SecretTLS["Secret: {raycluster}-tls<br/>Type: kubernetes.io/tls<br/>Route TLS cert"]
+
+    SecretWebhook -.->|used by| Webhook
+    SecretCA -.->|used by| RayHead
+    SecretCA -.->|used by| RayWorker
+    SecretOAuth -.->|used by| OAuthProxy
+    SecretTLS -.->|used by| Route
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalInt fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef networkpolicy fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef secret fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+
+    class Client external
+    class Router,Route ingress
+    class OAuthProxy,RayDashboard,RayHead,RayWorker,OAuthServer,Prometheus internal
+    class OpManager,Webhook,MetricsSvc,K8sAPI operator
+    class KubeRay,Kueue,CertController externalInt
+    class NPHead,NPWorker networkpolicy
+    class SecretWebhook,SecretCA,SecretOAuth,SecretTLS secret

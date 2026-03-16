@@ -1,0 +1,333 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [User/System]                                                           │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token (User credentials)                          │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES API (Trust Boundary)                                        │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                        │
+│  - TLS Termination: TLS 1.2+                                            │
+│  - AuthN: Bearer token validation, RBAC                                 │
+│         │                                                                │
+│         │ Port: 9443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: mTLS (client cert validation)                      │
+│         │ Auth: API Server client certificate                            │
+│         ▼                                                                │
+│  [Validation Webhook]                                                    │
+│  - Namespace: modelmesh-serving (or controller namespace)               │
+│  - ServiceAccount: modelmesh-controller                                  │
+│  - Secret: webhook-server-cert (kubernetes.io/tls)                      │
+│  - Certificate: cert-manager (90d rotation) or manual                   │
+│  - Validates: ServingRuntime, ClusterServingRuntime CRs                 │
+│         ▼                                                                │
+│  [Kubernetes API Server]                                                 │
+│         │                                                                │
+│         │ Watch/List (CRD events)                                        │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount Token                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CONTROLLER PLANE (Trusted - modelmesh-controller namespace)            │
+│                                                                          │
+│  [modelmesh-controller]                                                  │
+│  - Namespace: modelmesh-serving (or designated controller namespace)    │
+│  - ServiceAccount: modelmesh-controller                                  │
+│  - Image: odh-modelmesh-serving-controller-rhel8                        │
+│  - Resources: 50m-1 CPU / 96Mi-512Mi RAM                                │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount Token                                     │
+│         │ (Creates Deployments, Services, ConfigMaps)                    │
+│         ▼                                                                │
+│  [Kubernetes API Server]                                                 │
+│         │                                                                │
+│         │ Port: 2379/TCP                                                 │
+│         │ Protocol: HTTP/HTTPS                                           │
+│         │ Encryption: TLS (optional)                                     │
+│         │ Auth: Client Certificate (optional)                            │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  DATA PLANE (Trusted - user namespaces)                                 │
+│                                                                          │
+│  [ModelMesh Runtime Pod]                                                 │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: modelmesh-serving-sa                                  │
+│  - Replicas: 2 (configurable via podsPerRuntime)                        │
+│  - Containers:                                                           │
+│    • modelmesh (kserve/modelmesh)                                       │
+│      - Resources: 300m-3 CPU / 448Mi RAM                                │
+│      - Ports: 8085/TCP (management), 2112/TCP (metrics)                 │
+│    • runtime-adapter (modelmesh-runtime-adapter)                        │
+│      - Ports: 8001/TCP (runtime mgmt)                                   │
+│    • runtime-server (tritonserver/mlserver/ovms/torchserve)            │
+│      - Resources: 500m-5 CPU / 1Gi RAM                                  │
+│      - Ports: 8001/TCP (gRPC), 8000/TCP (HTTP health)                   │
+│    • rest-proxy (kserve/rest-proxy - optional)                          │
+│      - Resources: 50m-1 CPU / 96Mi-512Mi RAM                            │
+│      - Port: 8008/TCP                                                   │
+│                                                                          │
+│  [Service: modelmesh-serving]                                            │
+│  - Type: ClusterIP or Headless                                           │
+│  - Ports: 8033/TCP (gRPC inference), 8008/TCP (REST inference)          │
+│  - Selector: modelmesh-service=modelmesh-serving                        │
+│         │                                                                │
+│         │ Inference Traffic                                              │
+│         │ Port: 8033/TCP or 8008/TCP                                     │
+│         │ Protocol: gRPC or HTTP/HTTPS                                   │
+│         │ Encryption: mTLS/TLS (optional via Service Mesh)               │
+│         │ Auth: None (default), Token (optional via Istio)               │
+│         ▼                                                                │
+│  [Inference Client]                                                      │
+│  - Location: Internal cluster or external (via Ingress/Service Mesh)   │
+│         │                                                                │
+│         │ Internal Communication (within pod)                            │
+│         │ Port: 8085/TCP (ModelMesh mgmt)                                │
+│         │ Port: 8001/TCP (Runtime adapter ↔ Model Server)               │
+│         │ Protocol: gRPC                                                 │
+│         │ Encryption: None (localhost)                                   │
+│         │ Auth: None                                                     │
+│         │                                                                │
+│         │ Storage Access                                                 │
+│         │ Port: 443/TCP or 9000/TCP                                      │
+│         │ Protocol: HTTPS/HTTP                                           │
+│         │ Encryption: TLS (configurable)                                 │
+│         │ Auth: AWS SigV4 or Access Keys                                 │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [etcd Cluster]                                                          │
+│  - Purpose: Model metadata, routing tables, cluster coordination        │
+│  - Port: 2379/TCP                                                        │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Encryption: TLS (optional)                                            │
+│  - Auth: Client certificate (optional)                                   │
+│  - Secret: model-serving-etcd (Opaque)                                  │
+│    • Keys: etcd_endpoints, root_prefix, tls_cert, tls_key, ca_cert     │
+│                                                                          │
+│  [S3/MinIO Object Storage]                                               │
+│  - Purpose: Model artifact storage                                       │
+│  - Endpoint: s3.amazonaws.com or custom MinIO endpoint                  │
+│  - Port: 443/TCP (S3) or 9000/TCP (MinIO)                               │
+│  - Protocol: HTTPS/HTTP                                                  │
+│  - Encryption: TLS (configurable)                                        │
+│  - Auth: AWS SigV4 or Access Keys                                       │
+│  - Secret: storage-config (Opaque)                                      │
+│    • Keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, endpoint, bucket  │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - Purpose: Metrics collection and monitoring                            │
+│  - Scrape endpoints:                                                     │
+│    • Controller: 8443/TCP HTTPS (kube-rbac-proxy protected)            │
+│    • ModelMesh: 2112/TCP HTTP (metrics)                                 │
+│  - Auth: ServiceAccount Token (for 8443), None (for 2112)              │
+│  - ServiceMonitor: Enables auto-discovery by Prometheus Operator        │
+└─────────────────────────────────────────────────────────────────────────┘
+
+OPTIONAL INTEGRATION:
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  SERVICE MESH (Istio - Optional mTLS)                                   │
+│                                                                          │
+│  [Istio Envoy Sidecars]                                                  │
+│  - Injected into: Runtime pods (optional)                                │
+│  - PeerAuthentication: STRICT (namespace-scoped)                        │
+│  - mTLS: Automatic mutual TLS for inference traffic                     │
+│  - AuthorizationPolicy: Can restrict access to specific ServiceAccounts │
+│  - Traffic encryption: 8033/TCP and 8008/TCP can use mTLS              │
+└─────────────────────────────────────────────────────────────────────────┘
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+RBAC SUMMARY:
+
+ClusterRole: modelmesh-controller-role
+├── API Group: serving.kserve.io
+│   ├── Resources: inferenceservices, predictors, servingruntimes, clusterservingruntimes
+│   ├── Verbs: get, list, watch, create, update, patch, delete
+│   └── Status/Finalizers: get, patch, update
+├── API Group: "" (core)
+│   ├── Resources: configmaps, secrets, services
+│   ├── Verbs: create, delete, get, list, patch, update, watch
+│   ├── Resources: namespaces, endpoints, persistentvolumeclaims
+│   └── Verbs: get, list, watch
+├── API Group: apps
+│   ├── Resources: deployments
+│   └── Verbs: create, delete, get, list, patch, update, watch
+├── API Group: monitoring.coreos.com
+│   ├── Resources: servicemonitors
+│   └── Verbs: create, delete, get, list, patch, update, watch
+└── API Group: autoscaling
+    ├── Resources: horizontalpodautoscalers
+    └── Verbs: get, list, watch, create, delete, update
+
+ClusterRole: leader-election-role
+└── API Groups: "", coordination.k8s.io
+    ├── Resources: configmaps, leases
+    └── Verbs: get, list, watch, create, update, patch, delete
+
+ClusterRole: auth-proxy-role
+└── API Groups: authentication.k8s.io, authorization.k8s.io
+    ├── Resources: tokenreviews, subjectaccessreviews
+    └── Verbs: create
+
+ServiceAccount: modelmesh-controller
+└── Bound to: modelmesh-controller-rolebinding (ClusterRoleBinding)
+
+ServiceAccount: modelmesh-serving-sa
+└── Used by: Runtime pods for storage access and Kubernetes API interaction
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+NETWORK POLICIES:
+
+Policy: modelmesh-controller
+├── Pod Selector: control-plane=modelmesh-controller
+├── Ingress: Allow 8443/TCP (metrics) from Prometheus
+└── Egress: Allow all (implicit)
+
+Policy: modelmesh-runtimes
+├── Pod Selector: modelmesh-service=modelmesh-serving
+├── Ingress: Allow 8033/TCP, 8008/TCP, 2112/TCP from cluster
+└── Egress: Allow all (implicit) - for etcd, S3, K8s API
+
+Policy: modelmesh-webhook
+├── Pod Selector: control-plane=modelmesh-controller
+├── Ingress: Allow 9443/TCP from Kubernetes API Server
+└── Egress: Allow all (implicit)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SECRETS:
+
+Secret: model-serving-etcd (Opaque)
+├── Purpose: etcd connection configuration
+├── Keys: etcd_endpoints, root_prefix, tls_cert, tls_key, ca_cert
+├── Provisioned by: Admin/Operator
+└── Rotation: Manual (no auto-rotate)
+
+Secret: storage-config (Opaque)
+├── Purpose: Object storage credentials
+├── Keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, endpoint, bucket
+├── Provisioned by: User/Admin
+└── Rotation: Manual (no auto-rotate)
+
+Secret: webhook-server-cert (kubernetes.io/tls)
+├── Purpose: TLS certificate for validation webhook
+├── Keys: tls.crt, tls.key
+├── Provisioned by: cert-manager or manual
+└── Rotation: Auto (cert-manager, 90 days) or manual
+
+Secret: modelmesh-serving-tls (kubernetes.io/tls)
+├── Purpose: Optional TLS for inference endpoints
+├── Keys: tls.crt, tls.key
+├── Provisioned by: cert-manager or manual
+└── Rotation: Auto (cert-manager, 90 days) or manual
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SERVICE MESH CONFIGURATION (Optional):
+
+PeerAuthentication: modelmesh-serving-peer-auth
+├── Namespace: {user-namespace}
+├── Mode: STRICT
+├── Applies to: Pods with modelmesh-service=modelmesh-serving
+└── Effect: Enforces mTLS for all inference traffic (8033/8008)
+
+AuthorizationPolicy: modelmesh-controller-access
+├── Namespace: {user-namespace}
+├── Selector: modelmesh-service=modelmesh-serving
+├── Rules:
+│   ├── Allow from: cluster.local/ns/{namespace}/sa/modelmesh-controller
+│   └── Methods: GET, POST (for management operations)
+└── Effect: Restricts control plane access to controller ServiceAccount
+
+AuthorizationPolicy: inference-access (example)
+├── Namespace: {user-namespace}
+├── Selector: modelmesh-service=modelmesh-serving
+├── Rules:
+│   ├── Allow from: cluster.local/ns/*/sa/* (all authenticated)
+│   └── Paths: /v2/models/*/infer, /v2/models/*/ready
+└── Effect: Allows inference requests from any authenticated service
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TRUST BOUNDARIES:
+
+1. EXTERNAL → KUBERNETES API
+   - TLS 1.2+ encryption
+   - Bearer token authentication
+   - RBAC authorization
+
+2. KUBERNETES API → CONTROLLER
+   - ServiceAccount token authentication
+   - TLS 1.2+ encryption
+   - RBAC controls resource access
+
+3. CONTROLLER → DATA PLANE
+   - Creates resources via Kubernetes API
+   - No direct network connection
+   - RBAC enforces least privilege
+
+4. INFERENCE CLIENT → RUNTIME PODS
+   - Optional mTLS via Service Mesh
+   - Optional token-based auth via Istio
+   - Network Policies restrict ingress
+
+5. RUNTIME PODS → EXTERNAL SERVICES
+   - etcd: Optional TLS + client certificates
+   - S3: TLS + AWS SigV4 or access keys
+   - All egress controlled by Network Policies
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SECURITY NOTES:
+
+1. Webhook Security:
+   - Uses mTLS client certificate validation
+   - Kubernetes API Server validates webhook cert
+   - cert-manager automates certificate rotation (90 days)
+
+2. Metrics Security:
+   - Controller metrics (8443) protected by kube-rbac-proxy
+   - Requires tokenreviews/subjectaccessreviews RBAC permissions
+   - ModelMesh metrics (2112) are unprotected (internal only)
+
+3. Inference Security:
+   - Default: No authentication/encryption
+   - Optional: mTLS via Service Mesh (PeerAuthentication STRICT)
+   - Optional: Token-based auth via Istio AuthorizationPolicy
+   - Optional: TLS termination via modelmesh-serving-tls secret
+
+4. Storage Security:
+   - S3: AWS SigV4 or access key authentication
+   - TLS encryption configurable (recommended for production)
+   - Credentials stored in storage-config secret
+
+5. etcd Security:
+   - Optional TLS encryption
+   - Optional client certificate authentication
+   - Connection config in model-serving-etcd secret
+   - Recommended: TLS + client certs for production
+
+6. Controller High Availability:
+   - Leader election via ConfigMaps or Leases
+   - Multiple replicas supported (set replicas > 1)
+   - Leader election prevents split-brain scenarios
+
+7. Network Isolation:
+   - Network Policies restrict ingress to required ports
+   - Service Mesh provides additional layer of mTLS encryption
+   - Runtime pods isolated per namespace

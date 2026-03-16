@@ -1,0 +1,95 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User["Data Scientist<br/>Browser"]
+    end
+
+    subgraph Ingress["INGRESS (DMZ - TLS Termination)"]
+        Router["OpenShift Router<br/>443/TCP → 8888/TCP<br/>TLS 1.2+ Termination<br/>Route: /notebook/{ns}/{user}/"]
+        OAuth["OAuth Proxy<br/>Token Validation<br/>Policy: User owns notebook"]
+    end
+
+    subgraph ClusterInternal["CLUSTER INTERNAL (Trusted)"]
+        direction TB
+
+        subgraph UserNamespace["Namespace: {user-namespace}"]
+            Service["notebook Service<br/>ClusterIP<br/>8888/TCP → 8888/TCP<br/>Created by: ODH Controller"]
+
+            subgraph WorkbenchPod["Workbench Pod<br/>SA: {workbench-name}-sa<br/>UID: 1001, GID: 0<br/>Restricted SCC"]
+                Jupyter["Jupyter Container<br/>8888/TCP HTTP<br/>/start-notebook.sh<br/>API: /notebook/{ns}/{user}/api"]
+                CodeServer["code-server Container<br/>8080/TCP HTTP<br/>/run-code-server.sh<br/>NGINX + VS Code"]
+                RStudio["RStudio Container<br/>8787/TCP HTTP<br/>RStudio Server"]
+            end
+
+            PVC["PVC: {workbench-name}<br/>Mount: /opt/app-root/src<br/>User data persistence"]
+            Secrets["Secrets (Injected)<br/>- Storage credentials<br/>- OAuth tokens<br/>- Git credentials"]
+        end
+
+        subgraph PipelineNamespace["Namespace: {pipeline-namespace}"]
+            subgraph RuntimePod["Runtime Image Pod<br/>SA: {pipeline-sa}<br/>UID: 1001, GID: 0"]
+                Runtime["Runtime Container<br/>bootstrapper.py<br/>Elyra execution"]
+            end
+        end
+    end
+
+    subgraph EgressPackages["EGRESS - Package Repositories"]
+        PyPI["PyPI / Conda<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: None"]
+    end
+
+    subgraph EgressRegistry["EGRESS - Container Registry"]
+        Registry["quay.io<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Token (pull secret)"]
+    end
+
+    subgraph EgressStorage["EGRESS - Object Storage"]
+        S3["S3 / Minio<br/>443/TCP or 9000/TCP<br/>HTTPS or HTTP<br/>Auth: AWS IAM or Static"]
+    end
+
+    subgraph PlatformServices["Platform Services"]
+        Controller["ODH Notebook Controller<br/>Creates workbench pods<br/>Manages lifecycle"]
+        KFP["Kubeflow Pipelines<br/>Executes runtime pods"]
+    end
+
+    %% User flows
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth Token"| Router
+    Router -->|"HTTP (internal)<br/>Token forwarded"| OAuth
+    OAuth -->|"HTTP/8888<br/>Authenticated"| Service
+    Service -->|"HTTP/8888<br/>Optional token"| Jupyter
+    Service -.->|"Alternative"| CodeServer
+    Service -.->|"Alternative"| RStudio
+
+    %% Pod dependencies
+    WorkbenchPod -->|"Mounted"| PVC
+    WorkbenchPod -->|"Env vars/files"| Secrets
+
+    %% Egress flows
+    Jupyter -->|"pip install<br/>HTTPS/443<br/>TLS 1.2+"| PyPI
+    CodeServer -->|"npm install<br/>HTTPS/443<br/>TLS 1.2+"| PyPI
+
+    %% Pipeline flows
+    KFP -->|"Create pod"| RuntimePod
+    Runtime -->|"GET/PUT artifacts<br/>443/TCP or 9000/TCP<br/>TLS or plaintext<br/>AWS IAM/Static"| S3
+
+    %% Platform flows
+    Controller -->|"Create/manage"| WorkbenchPod
+    Controller -->|"Image reference"| Registry
+    WorkbenchPod -->|"Pull image<br/>HTTPS/443"| Registry
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+
+    class User external
+    class Router,OAuth ingress
+    class Service,Jupyter,CodeServer,RStudio,WorkbenchPod,RuntimePod,PVC,Secrets,Runtime internal
+    class PyPI,Registry,S3 egress
+    class Controller,KFP platform
+
+    %% Notes
+    classDef note fill:#fff,stroke:#999,stroke-dasharray: 5 5
+
+    SecurityNote1["Security Features:<br/>✓ Non-root (UID 1001)<br/>✓ Restricted SCC<br/>✓ No privileged ops<br/>✓ TLS at ingress<br/>✓ OAuth auth<br/>✓ Namespace isolation"]
+    SecurityNote2["RBAC managed by<br/>ODH Notebook Controller:<br/>- ServiceAccount per workbench<br/>- RoleBinding for PVC access<br/>- OAuth proxy validation"]
+
+    class SecurityNote1,SecurityNote2 note

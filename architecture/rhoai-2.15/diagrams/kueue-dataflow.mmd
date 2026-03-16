@@ -1,0 +1,58 @@
+sequenceDiagram
+    participant User as User/Controller
+    participant APIServer as Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+
+    participant Webhook as Kueue Webhook<br/>9443/TCP HTTPS TLS
+    participant Controller as Kueue Controller<br/>ServiceAccount Token
+    participant Cache as Kueue Cache<br/>In-Process
+    participant Scheduler as Kueue Scheduler<br/>In-Process
+    participant Queue as Queue Manager<br/>In-Process
+    participant AdmCheck as Admission Check Controller<br/>In-Process
+    participant Autoscaler as Cluster Autoscaler<br/>Varies HTTPS TLS1.2+
+
+    Note over User,Autoscaler: Flow 1: Job Submission and Admission
+    User->>APIServer: POST Job (Batch/PyTorch/TF/MPI/Ray/JobSet)<br/>Auth: ServiceAccount Token or Kubeconfig
+    APIServer->>Webhook: POST /mutate-*<br/>mTLS (API Server)
+    Webhook-->>APIServer: Mutated Job (queue.name label)
+    APIServer-->>User: Job Created
+
+    Controller->>APIServer: Watch Job/Workload CRDs<br/>Auth: ServiceAccount Token
+    APIServer-->>Controller: Job Event
+    Controller->>Controller: Create Workload CR
+    Controller->>Cache: Update Queue State<br/>In-Process
+    Cache-->>Controller: State Updated
+
+    Controller->>Scheduler: Check Admission<br/>In-Process
+    Scheduler->>Cache: Get ClusterQueue State<br/>In-Process
+    Cache-->>Scheduler: Available Quota
+    Scheduler-->>Controller: Admission Decision
+
+    alt Quota Available
+        Controller->>APIServer: Admit Workload (Update Status)<br/>Auth: ServiceAccount Token
+        APIServer-->>Controller: Workload Admitted
+        Controller->>APIServer: Unsuspend Job (Remove suspend=true)<br/>Auth: ServiceAccount Token
+        APIServer-->>User: Job Running (Pods Created)
+    else No Quota - Provisioning Check Required
+        Controller->>AdmCheck: Trigger ProvisioningACC<br/>In-Process
+        AdmCheck->>APIServer: Create ProvisioningRequest<br/>Auth: ServiceAccount Token
+        APIServer->>Autoscaler: Provision Nodes<br/>Auth: ServiceAccount Token
+        Autoscaler-->>APIServer: Nodes Provisioning
+        APIServer-->>AdmCheck: ProvisioningRequest Accepted
+        AdmCheck-->>Controller: Admission Check Passed
+        Controller->>APIServer: Admit Workload<br/>Auth: ServiceAccount Token
+    else No Quota - Queued
+        Controller->>Queue: Enqueue Workload<br/>In-Process (StrictFIFO/BestEffortFIFO)
+        Queue-->>Controller: Workload Queued
+    end
+
+    Note over User,Autoscaler: Flow 2: Workload Status Query (Visibility API)
+    User->>APIServer: GET /apis/visibility.kueue.x-k8s.io/v1alpha1/pendingworkloads<br/>Auth: Bearer Token
+    APIServer->>APIServer: RBAC Check
+    APIServer->>Webhook: Proxy Request to Visibility Server<br/>8082/TCP HTTPS TLS
+    Webhook->>Queue: Query Pending Workloads<br/>In-Process
+    Queue-->>Webhook: Pending Workloads List
+    Webhook-->>APIServer: JSON Response
+    APIServer-->>User: Pending Workloads Data
+
+    Note over User,Autoscaler: Flow 3: Metrics Collection
+    Autoscaler->>Controller: GET /metrics<br/>8080/TCP HTTP
+    Controller-->>Autoscaler: Prometheus Metrics<br/>(queue depth, admission rates, resource usage)

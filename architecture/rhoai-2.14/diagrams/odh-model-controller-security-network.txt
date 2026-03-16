@@ -1,0 +1,327 @@
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                                    │
+│                                                                                          │
+│  [External Client - Data Scientists/Applications]                                        │
+│         │                                                                                │
+│         │ Port: 443/TCP                                                                  │
+│         │ Protocol: HTTPS                                                                │
+│         │ Encryption: TLS 1.2+ (Edge Termination)                                        │
+│         │ Auth: Bearer Token (optional, validated by Authorino)                          │
+│         ▼                                                                                │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ - OpenShift Router)                                                       │
+│                                                                                          │
+│  [OpenShift Router]                                                                      │
+│  - Port: 443/TCP (external) → 8080/TCP (internal)                                       │
+│  - TLS Termination: TLS 1.2+ Edge                                                       │
+│  - Managed by: Route CRD (route.openshift.io/v1)                                         │
+│         │                                                                                │
+│         │ Port: 8080/TCP                                                                 │
+│         │ Protocol: HTTP                                                                 │
+│         │ Encryption: None (internal OpenShift network)                                  │
+│         │ Auth: None (delegated to Istio/Authorino)                                      │
+│         ▼                                                                                │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH INGRESS (Istio Gateway)                                                   │
+│                                                                                          │
+│  [Istio Gateway]                                                                         │
+│  - Namespace: istio-system or service mesh control plane namespace                       │
+│  - Managed by: Gateway CRD (networking.istio.io/v1beta1)                                 │
+│  - TLS Mode: SIMPLE (443/TCP external) or PASSTHROUGH                                    │
+│         │                                                                                │
+│         │ Port: 5001/TCP (sidecar communication)                                         │
+│         │ Protocol: HTTP                                                                 │
+│         │ Encryption: None (local sidecar)                                               │
+│         │ Auth: Request validation                                                       │
+│         ▼                                                                                │
+│  [Authorino Sidecar]                                                                     │
+│  - Validates: Bearer Tokens (JWT)                                                        │
+│  - Configured by: AuthConfig CRD (authorino.kuadrant.io/v1beta2)                         │
+│  - Policy: Per-InferenceService authorization                                            │
+│         │                                                                                │
+│         │ Port: 8080/TCP                                                                 │
+│         │ Protocol: HTTP                                                                 │
+│         │ Encryption: mTLS (STRICT - enforced by PeerAuthentication)                     │
+│         │ Auth: Service Identity (Istio client certificates)                             │
+│         ▼                                                                                │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (mTLS STRICT - Trust Zone)                                                │
+│                                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────────────────────┐ │
+│  │ Namespace: {user-namespace} (enrolled via ServiceMeshMember)                       │ │
+│  │                                                                                     │ │
+│  │ [Inference Service Pod]                                                             │ │
+│  │ - ServiceAccount: {infer-service-name}-sa                                           │ │
+│  │ - Image: {runtime-image}:{tag}                                                      │ │
+│  │   Examples: ovms, tgis, caikit-tgis, vllm                                           │ │
+│  │ - Ports:                                                                            │ │
+│  │   - 8080/TCP (HTTP - KServe/OpenVINO)                                               │ │
+│  │   - 8081/TCP (gRPC - OVMS)                                                          │ │
+│  │   - 8033/TCP (gRPC - TGIS)                                                          │ │
+│  │   - 8085/TCP (gRPC - Caikit/ModelMesh)                                              │ │
+│  │ - Security: mTLS sidecar enforced by PeerAuthentication (STRICT)                    │ │
+│  │ - Secrets Mounted:                                                                  │ │
+│  │   - storage-config (S3 credentials)                                                 │ │
+│  │   - kserve-custom-ca-bundle (custom CA certs)                                       │ │
+│  │         │                                                                            │ │
+│  │         │ Port: 443/TCP                                                              │ │
+│  │         │ Protocol: HTTPS                                                            │ │
+│  │         │ Encryption: TLS 1.2+                                                       │ │
+│  │         │ Auth: AWS Signature v4 (from storage-config secret)                        │ │
+│  │         ▼                                                                            │ │
+│  └────────────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────────────────────┐ │
+│  │ Namespace: redhat-ods-applications or opendatahub (Controller)                      │ │
+│  │                                                                                     │ │
+│  │ [odh-model-controller Pod]                                                          │ │
+│  │ - ServiceAccount: odh-model-controller                                              │ │
+│  │ - Replicas: 1 (leader election enabled)                                             │ │
+│  │ - Services:                                                                         │ │
+│  │   - odh-model-controller-webhook-service (ClusterIP)                                │ │
+│  │     Port: 443/TCP → 9443/TCP HTTPS TLS 1.2+                                         │ │
+│  │     Purpose: ValidatingWebhook for Knative Services                                 │ │
+│  │     Auth: K8s API Server (webhook authentication)                                   │ │
+│  │     TLS Cert: odh-model-controller-webhook-cert (Service CA)                        │ │
+│  │   - odh-model-controller-metrics-service (ClusterIP)                                │ │
+│  │     Port: 8443/TCP → 8080/TCP HTTP                                                  │ │
+│  │     Purpose: Prometheus metrics scraping                                            │ │
+│  │     Auth: ServiceAccount Bearer Token (kube-rbac-proxy)                             │ │
+│  │ - Health Probes:                                                                    │ │
+│  │   - /healthz (liveness) - 8081/TCP HTTP                                             │ │
+│  │   - /readyz (readiness) - 8081/TCP HTTP                                             │ │
+│  │         │                                                                            │ │
+│  │         │ Port: 6443/TCP                                                             │ │
+│  │         │ Protocol: HTTPS                                                            │ │
+│  │         │ Encryption: TLS 1.2+                                                       │ │
+│  │         │ Auth: ServiceAccount Token (odh-model-controller SA)                       │ │
+│  │         ▼                                                                            │ │
+│  └────────────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────────────────────┐ │
+│  │ Namespace: openshift-monitoring                                                     │ │
+│  │                                                                                     │ │
+│  │ [Prometheus]                                                                        │ │
+│  │ - ServiceAccount: prometheus-k8s                                                    │ │
+│  │ - Configured by: ServiceMonitor/PodMonitor CRDs                                     │ │
+│  │         │                                                                            │ │
+│  │         │ Port: 8080/TCP (controller) or 8080/TCP (inference pods)                  │ │
+│  │         │ Protocol: HTTP                                                             │ │
+│  │         │ Encryption: None (controller) or mTLS (inference pods)                     │ │
+│  │         │ Auth: ServiceAccount Token                                                 │ │
+│  │         ▼                                                                            │ │
+│  └────────────────────────────────────────────────────────────────────────────────────┘ │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER CONTROL PLANE                                                                  │
+│                                                                                          │
+│  [Kubernetes API Server]                                                                 │
+│  - Port: 6443/TCP                                                                        │
+│  - Protocol: HTTPS                                                                       │
+│  - Encryption: TLS 1.2+                                                                  │
+│  - Auth: ServiceAccount Tokens, User credentials                                         │
+│  - Purpose: Resource management, CRD watch/create/update                                 │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                                       │
+│                                                                                          │
+│  [S3 Storage - s3.amazonaws.com or compatible]                                           │
+│  - Port: 443/TCP                                                                         │
+│  - Protocol: HTTPS                                                                       │
+│  - Encryption: TLS 1.2+                                                                  │
+│  - Auth: AWS Signature v4 (credentials in storage-config secret)                         │
+│  - Purpose: Model artifact storage and retrieval                                         │
+│  - Access Pattern: Inference pods read model artifacts on startup                        │
+│                                                                                          │
+│  [Model Registry - Optional]                                                             │
+│  - Port: 8080/TCP                                                                        │
+│  - Protocol: HTTP                                                                        │
+│  - Encryption: None (internal cluster service)                                           │
+│  - Auth: None (service-to-service trust)                                                 │
+│  - Purpose: Model metadata and versioning                                                │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+
+══════════════════════════════════════════════════════════════════════════════════════════
+RBAC SUMMARY
+══════════════════════════════════════════════════════════════════════════════════════════
+
+ClusterRole: odh-model-controller-role (ClusterRoleBinding to odh-model-controller SA)
+  - serving.kserve.io: inferenceservices, servingruntimes
+    Verbs: get, list, watch, update
+  - networking.istio.io: gateways, virtualservices
+    Verbs: get, list, watch, create, update, patch, delete
+  - security.istio.io: peerauthentications, authorizationpolicies
+    Verbs: get, list, watch, create, update, patch, delete
+  - telemetry.istio.io: telemetries
+    Verbs: get, list, watch, create, update, patch, delete
+  - maistra.io: servicemeshmembers, servicemeshmemberrolls
+    Verbs: get, list, watch, create, update, patch, delete
+  - route.openshift.io: routes, routes/custom-host
+    Verbs: get, list, watch, create, update, patch, delete
+  - networking.k8s.io: networkpolicies, ingresses
+    Verbs: get, list, watch, create, update, patch, delete
+  - monitoring.coreos.com: servicemonitors, podmonitors
+    Verbs: get, list, watch, create, update, patch, delete
+  - authorino.kuadrant.io: authconfigs
+    Verbs: get, list, watch, create, update, patch, delete
+  - core: services, secrets, configmaps, serviceaccounts
+    Verbs: get, list, watch, create, update, patch, delete
+  - core: namespaces, pods, endpoints
+    Verbs: get, list, watch, create, update, patch
+  - rbac.authorization.k8s.io: clusterrolebindings, rolebindings
+    Verbs: get, list, watch, create, update, patch, delete
+  - datasciencecluster.opendatahub.io: datascienceclusters
+    Verbs: get, list, watch
+  - dscinitialization.opendatahub.io: dscinitializations
+    Verbs: get, list, watch
+
+ClusterRole: kserve-prometheus-k8s (RoleBinding to prometheus-k8s SA)
+  - core: services, endpoints, pods
+    Verbs: get, list, watch
+
+Role: odh-model-controller-leader-election-role (RoleBinding to odh-model-controller SA)
+  - core: configmaps
+    Verbs: get, list, watch, create, update, patch, delete
+  - coordination.k8s.io: leases
+    Verbs: get, list, watch, create, update, patch, delete
+
+══════════════════════════════════════════════════════════════════════════════════════════
+SERVICE MESH CONFIGURATION
+══════════════════════════════════════════════════════════════════════════════════════════
+
+PeerAuthentication: {namespace-specific}
+  - Mode: STRICT (mTLS required for all pod-to-pod communication)
+  - Selector: Applies to inference service pods
+  - Created by: odh-model-controller
+
+AuthorizationPolicy: {per-inference-service}
+  - Allows: Service mesh-authenticated clients
+  - Enforced on: Inference service pods
+  - Source: Service identities within mesh
+
+Telemetry: {namespace-specific}
+  - Metrics: Enabled for inference requests
+  - Tracing: Delegated to Istio
+  - Created by: odh-model-controller
+
+ServiceMeshMember: {namespace}
+  - Control Plane: Configured via service-mesh-refs ConfigMap
+  - Purpose: Enrolls user namespaces in service mesh
+  - Effect: Enables automatic sidecar injection and mTLS
+
+══════════════════════════════════════════════════════════════════════════════════════════
+SECRETS AND CERTIFICATES
+══════════════════════════════════════════════════════════════════════════════════════════
+
+Secret: odh-model-controller-webhook-cert
+  - Type: kubernetes.io/tls
+  - Purpose: TLS certificate for ValidatingWebhook server (9443/TCP)
+  - Provisioned By: OpenShift Service CA Operator
+  - Auto-Rotate: Yes (Service CA managed)
+  - Rotation Period: 90 days (default Service CA)
+  - Mounted to: odh-model-controller pod
+
+Secret: storage-config
+  - Type: Opaque
+  - Purpose: Aggregated S3 storage credentials for model loading
+  - Contents: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, endpoint URLs
+  - Provisioned By: StorageSecret Controller (aggregates data connection secrets)
+  - Auto-Rotate: On data connection secret change
+  - Mounted to: Inference service pods
+
+Secret: kserve-custom-ca-cert
+  - Type: Opaque
+  - Purpose: Custom CA certificates for external S3/services
+  - Provisioned By: KServeCustomCACert Controller
+  - Source: User-provided ConfigMap with CA bundle
+  - Auto-Rotate: On source ConfigMap change
+  - Mounted to: Inference service pods
+
+ConfigMap: auth-refs (Controller Namespace)
+  - Keys: AUTH_AUDIENCE, AUTHORINO_LABEL
+  - Provisioned By: opendatahub-operator
+  - Purpose: Configure Authorino integration
+
+ConfigMap: service-mesh-refs (Controller Namespace)
+  - Keys: CONTROL_PLANE_NAME, MESH_NAMESPACE
+  - Provisioned By: opendatahub-operator
+  - Purpose: Service mesh enrollment configuration
+
+══════════════════════════════════════════════════════════════════════════════════════════
+NETWORKPOLICIES
+══════════════════════════════════════════════════════════════════════════════════════════
+
+NetworkPolicy: allow-from-openshift-monitoring-ns (Inference Namespaces)
+  - Purpose: Allow Prometheus metrics scraping
+  - Ingress From: Namespaces with label: name=openshift-monitoring
+  - Ports: All (Prometheus scrapes various ports)
+
+NetworkPolicy: allow-openshift-ingress (Inference Namespaces)
+  - Purpose: Allow OpenShift Router traffic
+  - Ingress From: Namespaces with label: network.openshift.io/policy-group=ingress
+  - Ports: All
+
+NetworkPolicy: allow-from-opendatahub-ns (Inference Namespaces)
+  - Purpose: Allow ODH component traffic (Model Registry, etc.)
+  - Ingress From: Namespaces with label: opendatahub.io/generated-namespace=true
+  - Ports: All
+
+NetworkPolicy: odh-model-controller (Controller Namespace)
+  - Purpose: Protect webhook server
+  - Ingress: Only 9443/TCP for ValidatingWebhook from K8s API Server
+  - Egress: Allow to K8s API and DNS
+
+══════════════════════════════════════════════════════════════════════════════════════════
+DEPLOYMENT MODES SUPPORTED
+══════════════════════════════════════════════════════════════════════════════════════════
+
+1. KServe Serverless (Knative)
+   - Resources Created: Knative Service, Route, Gateway, VirtualService
+   - Auto-scaling: Yes (Knative Serving)
+   - Scale to Zero: Yes
+   - Dependencies: Knative Serving v0.39.3, Istio v1.19.4
+
+2. KServe RawDeployment
+   - Resources Created: Deployment, Service, Route, Gateway, VirtualService
+   - Auto-scaling: HPA (optional)
+   - Scale to Zero: No
+   - Dependencies: Istio v1.19.4 (optional)
+
+3. ModelMesh
+   - Resources Created: Deployment, Service, Route, ClusterRoleBinding
+   - Multi-model Serving: Yes
+   - Dependencies: ModelMesh Serving
+
+══════════════════════════════════════════════════════════════════════════════════════════
+SERVING RUNTIME TEMPLATES
+══════════════════════════════════════════════════════════════════════════════════════════
+
+Template: ovms-kserve-template
+  - Framework: OpenVINO Model Server
+  - Protocols: gRPC (8081/TCP), HTTP (8080/TCP)
+  - Use Case: Intel-optimized inference for computer vision models
+
+Template: ovms-mm-template
+  - Framework: OpenVINO Model Server (ModelMesh variant)
+  - Protocol: gRPC (8085/TCP)
+  - Use Case: Multi-model CV serving
+
+Template: tgis-template
+  - Framework: Text Generation Inference Server
+  - Protocol: gRPC (8033/TCP)
+  - Use Case: Large language model serving
+
+Template: caikit-tgis-template
+  - Framework: Caikit + TGIS
+  - Protocol: gRPC (8085/TCP)
+  - Use Case: IBM Caikit with TGIS backend
+
+Template: caikit-standalone-template
+  - Framework: Caikit Standalone
+  - Protocol: gRPC (8085/TCP)
+  - Use Case: IBM Caikit standalone runtime
+
+Template: vllm-template
+  - Framework: vLLM
+  - Protocol: HTTP (8080/TCP)
+  - Use Case: High-throughput LLM inference
+
+══════════════════════════════════════════════════════════════════════════════════════════

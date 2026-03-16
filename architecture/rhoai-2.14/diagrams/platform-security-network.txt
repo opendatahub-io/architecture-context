@@ -1,0 +1,377 @@
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                               │
+│                                                                                      │
+│  [Data Scientists / External Clients]                                               │
+│         │                                                                            │
+│         │ Port: 443/TCP                                                              │
+│         │ Protocol: HTTPS                                                            │
+│         │ Encryption: TLS 1.2+                                                       │
+│         │ Auth: OpenShift OAuth (browser), Bearer Token (API)                        │
+│         ▼                                                                            │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS LAYER (DMZ)                                                                 │
+│                                                                                      │
+│  [OpenShift Router / Istio Gateway]                                                  │
+│  - TLS Termination: TLS 1.2+ (edge/reencrypt/passthrough)                          │
+│  - Routes: odh-dashboard, notebooks, Ray dashboards, InferenceServices              │
+│  - AuthN: RequestAuthentication (validates JWT if present)                          │
+│  - Istio Gateway: 443/TCP (external) → 8080/TCP (internal)                         │
+│         │                                                                            │
+│         │ Multiple connection patterns (see flows below)                             │
+│         ▼                                                                            │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM CONTROL PLANE - redhat-ods-operator & redhat-ods-applications             │
+│                                                                                      │
+│  Namespace: redhat-ods-operator                                                      │
+│  ┌────────────────────────────────────┐                                             │
+│  │ [rhods-operator]                   │                                             │
+│  │ - Port: 8080/TCP (metrics)         │                                             │
+│  │ - Port: 8081/TCP (health)          │                                             │
+│  │ - Port: 9443/TCP (webhook HTTPS)   │                                             │
+│  │ - ServiceAccount: controller-manager│                                            │
+│  │ - Encryption: TLS (webhooks)       │                                             │
+│  └────────────────────────────────────┘                                             │
+│                                                                                      │
+│  Namespace: redhat-ods-applications                                                  │
+│  ┌────────────────────────────────────┐                                             │
+│  │ [odh-dashboard]                    │                                             │
+│  │ - Port: 8443/TCP (HTTPS)           │                                             │
+│  │ - Port: 8080/TCP (metrics)         │                                             │
+│  │ - ServiceAccount: odh-dashboard    │                                             │
+│  │ - Auth: OAuth proxy sidecar        │                                             │
+│  │ - Encryption: TLS 1.2+ (reencrypt) │                                             │
+│  └────────────────────────────────────┘                                             │
+│         │                                                                            │
+│         │ Port: 6443/TCP (Kubernetes API)                                            │
+│         │ Protocol: HTTPS                                                            │
+│         │ Encryption: TLS 1.2+                                                       │
+│         │ Auth: ServiceAccount tokens (JWT)                                          │
+│         ▼                                                                            │
+│  [Kubernetes API Server]                                                             │
+│         │                                                                            │
+│  ┌──────┴────────────────────────────────────────────────────────────────────┐     │
+│  │  All platform operators authenticate via ServiceAccount tokens            │     │
+│  │  - notebook-controller, kserve-controller, modelmesh-controller           │     │
+│  │  - data-science-pipelines-operator, model-registry-operator               │     │
+│  │  - training-operator, kueue, codeflare-operator, kuberay-operator         │     │
+│  │  - trustyai-service-operator, odh-model-controller                        │     │
+│  └───────────────────────────────────────────────────────────────────────────┘     │
+│                                                                                      │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  USER WORKLOAD NAMESPACES - {user-namespace}                                        │
+│                                                                                      │
+│  ┌────────────────────────────────────────────────────────────────────────┐         │
+│  │ Jupyter/code-server Notebooks (StatefulSets)                           │         │
+│  │ - Port: 8888/TCP (Jupyter) → 8443/TCP (OAuth Proxy)                   │         │
+│  │ - Protocol: HTTP → HTTPS                                               │         │
+│  │ - Encryption: TLS (OAuth proxy terminates, edge Route)                 │         │
+│  │ - Auth: OpenShift OAuth (session cookies)                              │         │
+│  │ - ServiceAccount: {notebook-name}-sa                                   │         │
+│  │ - NetworkPolicy: Allow from controller namespace, openshift-ingress    │         │
+│  └────────────────────────────────────────────────────────────────────────┘         │
+│         │                                                                            │
+│         │ Port: 443/TCP (S3), 443/TCP (PyPI/Conda/Git)                              │
+│         │ Protocol: HTTPS                                                            │
+│         │ Encryption: TLS 1.2+                                                       │
+│         │ Auth: AWS IAM (IRSA), none (public repos)                                  │
+│         ▼                                                                            │
+│                                                                                      │
+│  ┌────────────────────────────────────────────────────────────────────────┐         │
+│  │ InferenceService Pods (KServe/ModelMesh)                               │         │
+│  │ - Port: 8080/TCP (predictor HTTP)                                      │         │
+│  │ - Port: 8081/TCP (gRPC inference)                                      │         │
+│  │ - Port: 8033/TCP (ModelMesh gRPC)                                      │         │
+│  │ - Protocol: HTTP/gRPC                                                  │         │
+│  │ - Encryption: mTLS (Istio sidecar, ISTIO_MUTUAL)                       │         │
+│  │ - Auth: Service Identity (via mTLS certs)                              │         │
+│  │ - ServiceAccount: {infer-service-name}-sa                              │         │
+│  │ - Istio Sidecar: Injected for mTLS                                     │         │
+│  └────────────────────────────────────────────────────────────────────────┘         │
+│         │                                                                            │
+│         │ Port: 443/TCP (S3/GCS/Azure)                                               │
+│         │ Protocol: HTTPS                                                            │
+│         │ Encryption: TLS 1.2+                                                       │
+│         │ Auth: AWS IAM / GCS Service Account / Azure credentials                    │
+│         ▼                                                                            │
+│                                                                                      │
+│  ┌────────────────────────────────────────────────────────────────────────┐         │
+│  │ DSP API Server + Argo Workflows                                        │         │
+│  │ - Port: 8443/TCP (DSP API HTTPS)                                       │         │
+│  │ - Port: 8888/TCP (Argo UI HTTP)                                        │         │
+│  │ - Protocol: HTTPS/HTTP                                                 │         │
+│  │ - Encryption: TLS (DSP), None (Argo internal)                          │         │
+│  │ - Auth: Bearer Token (DSP), OAuth (Argo UI)                            │         │
+│  │ - ServiceAccount: ds-pipeline-{name}                                   │         │
+│  └────────────────────────────────────────────────────────────────────────┘         │
+│         │                     │                                                      │
+│         │                     │ Port: 3306/TCP (MariaDB)                             │
+│         │                     │ Protocol: MySQL over TLS                             │
+│         │                     │ Encryption: TLS 1.2+ (configurable)                  │
+│         │                     │ Auth: Username/password                              │
+│         │                     ▼                                                      │
+│         │            [MariaDB/MySQL Pod]                                             │
+│         │                                                                            │
+│         │ Port: 443/TCP or 9000/TCP (S3/MinIO)                                       │
+│         │ Protocol: HTTPS/HTTP                                                       │
+│         │ Encryption: TLS 1.2+ or None                                               │
+│         │ Auth: AWS IAM / MinIO credentials                                          │
+│         ▼                                                                            │
+│                                                                                      │
+│  ┌────────────────────────────────────────────────────────────────────────┐         │
+│  │ Training Job Pods (PyTorch/TensorFlow/MPI)                             │         │
+│  │ - Port: Dynamic (torchrun/horovod)                                     │         │
+│  │ - Protocol: TCP (framework-specific)                                   │         │
+│  │ - Encryption: None (pod-to-pod in same namespace)                      │         │
+│  │ - Auth: None (same Job identity)                                       │         │
+│  │ - ServiceAccount: default or custom                                    │         │
+│  │ - Managed by: training-operator, kueue                                 │         │
+│  └────────────────────────────────────────────────────────────────────────┘         │
+│         │                                                                            │
+│         │ Port: 443/TCP (S3 for checkpoints)                                         │
+│         │ Protocol: HTTPS                                                            │
+│         │ Encryption: TLS 1.2+                                                       │
+│         │ Auth: AWS IAM / S3 credentials                                             │
+│         ▼                                                                            │
+│                                                                                      │
+│  ┌────────────────────────────────────────────────────────────────────────┐         │
+│  │ Ray Clusters (head + workers)                                          │         │
+│  │ - Port: 8265/TCP (Ray dashboard)                                       │         │
+│  │ - Port: 6379/TCP (Ray GCS)                                             │         │
+│  │ - Port: 10001/TCP (Ray client server)                                 │         │
+│  │ - Protocol: HTTP (dashboard), Ray Protocol (GCS/client)                │         │
+│  │ - Encryption: mTLS (optional, self-signed CA per cluster)              │         │
+│  │ - Auth: OAuth proxy (dashboard), mTLS certs (client)                   │         │
+│  │ - ServiceAccount: {raycluster}-sa                                      │         │
+│  │ - NetworkPolicy: Allow within namespace                                │         │
+│  └────────────────────────────────────────────────────────────────────────┘         │
+│                                                                                      │
+│  ┌────────────────────────────────────────────────────────────────────────┐         │
+│  │ TrustyAI Service                                                       │         │
+│  │ - Port: 8443/TCP (API HTTPS)                                           │         │
+│  │ - Port: 8080/TCP (metrics HTTP)                                        │         │
+│  │ - Protocol: HTTPS/HTTP                                                 │         │
+│  │ - Encryption: TLS 1.2+ (reencrypt Route)                               │         │
+│  │ - Auth: OAuth proxy                                                    │         │
+│  │ - ServiceAccount: trustyai-service-{name}                              │         │
+│  └────────────────────────────────────────────────────────────────────────┘         │
+│         │                                                                            │
+│         │ Port: 5432/TCP (PostgreSQL) or 3306/TCP (MySQL)                            │
+│         │ Protocol: PostgreSQL/MySQL                                                 │
+│         │ Encryption: TLS (configurable)                                             │
+│         │ Auth: Username/password                                                    │
+│         ▼                                                                            │
+│                                                                                      │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH - istio-system (mTLS ISTIO_MUTUAL)                                    │
+│                                                                                      │
+│  [Istio Control Plane]                                                               │
+│  - PeerAuthentication: PERMISSIVE (namespace-level)                                  │
+│  - mTLS Mode: ISTIO_MUTUAL (default for mesh services)                              │
+│  - VirtualService: Routes traffic to InferenceServices, Model Registry              │
+│  - Gateway: External ingress for inference endpoints                                │
+│  - AuthorizationPolicy: Authorino external provider integration                     │
+│  - Sidecar Injection: Selective (annotation-based)                                  │
+│                                                                                      │
+│  Mesh-enabled components:                                                            │
+│  - KServe InferenceServices (predictor pods)                                         │
+│  - ModelMesh serving pods                                                            │
+│  - Model Registry pods                                                               │
+│  - odh-model-controller (creates mesh resources)                                    │
+│                                                                                      │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  MONITORING - redhat-ods-monitoring                                                  │
+│                                                                                      │
+│  [Prometheus]                                                                        │
+│  - Scrapes metrics from all components on /metrics endpoints                        │
+│  - Ports: 8080/TCP, 8443/TCP (varies by component)                                  │
+│  - Protocol: HTTP/HTTPS                                                              │
+│  - Auth: ServiceAccount tokens (via ServiceMonitor)                                 │
+│                                                                                      │
+│  NetworkPolicy: Allow ingress from openshift-monitoring and                          │
+│                 openshift-user-workload-monitoring namespaces                        │
+│                                                                                      │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                                   │
+│                                                                                      │
+│  [S3 / MinIO / GCS / Azure Blob Storage]                                             │
+│  - Purpose: Model artifacts, pipeline artifacts, training checkpoints               │
+│  - Ports: 443/TCP (HTTPS) or 9000/TCP (HTTP MinIO)                                  │
+│  - Auth: AWS IAM (IRSA), GCS Service Account, Azure credentials                     │
+│  - Encryption: TLS 1.2+                                                              │
+│                                                                                      │
+│  [External PostgreSQL / MySQL / MariaDB]                                             │
+│  - Purpose: DSP metadata, Model Registry metadata, TrustyAI metrics                 │
+│  - Ports: 5432/TCP (PostgreSQL), 3306/TCP (MySQL/MariaDB)                           │
+│  - Auth: Username/password                                                           │
+│  - Encryption: TLS (configurable)                                                    │
+│                                                                                      │
+│  [Container Registries]                                                              │
+│  - Purpose: Platform operator images, workbench images, runtime images              │
+│  - Port: 443/TCP                                                                     │
+│  - Protocol: HTTPS                                                                   │
+│  - Auth: Pull secrets, registry credentials                                         │
+│  - Encryption: TLS 1.2+                                                              │
+│                                                                                      │
+│  [PyPI / Conda / Git Repositories]                                                   │
+│  - Purpose: Python packages, code repositories                                       │
+│  - Port: 443/TCP                                                                     │
+│  - Protocol: HTTPS                                                                   │
+│  - Auth: None (public), credentials (private)                                       │
+│  - Encryption: TLS 1.2+                                                              │
+│                                                                                      │
+│  [github.com]                                                                        │
+│  - Purpose: Component manifest downloads (rhods-operator)                            │
+│  - Port: 443/TCP                                                                     │
+│  - Protocol: HTTPS                                                                   │
+│  - Encryption: TLS 1.2+                                                              │
+│                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────┘
+
+════════════════════════════════════════════════════════════════════════════════════════
+RBAC SUMMARY
+════════════════════════════════════════════════════════════════════════════════════════
+
+ClusterRoles (High-Privilege):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- rhods-operator/controller-manager-role
+  • API Groups: *, apps, rbac.authorization.k8s.io
+  • Resources: namespaces, configmaps, secrets, deployments, clusterroles, clusterrolebindings, CRDs
+  • Verbs: create, delete, get, list, patch, update, watch
+
+- kserve-controller/kserve-manager-role
+  • API Groups: serving.kserve.io, serving.knative.dev, networking.istio.io
+  • Resources: inferenceservices, servingruntimes, knative services, virtualservices
+  • Verbs: create, delete, get, list, patch, update, watch
+
+- odh-model-controller/odh-model-controller-role
+  • API Groups: serving.kserve.io, networking.istio.io, security.istio.io, authorino.kuadrant.io
+  • Resources: inferenceservices, gateways, virtualservices, authorizationpolicies, authconfigs
+  • Verbs: create, delete, get, list, patch, update, watch
+
+- codeflare-operator/codeflare-operator-manager-role
+  • API Groups: ray.io, workload.codeflare.dev, kueue.x-k8s.io
+  • Resources: rayclusters, appwrappers, workloads
+  • Verbs: create, delete, get, list, patch, update, watch
+
+- kueue/manager-role
+  • API Groups: kueue.x-k8s.io, kubeflow.org, ray.io, batch
+  • Resources: clusterqueues, localqueues, workloads, pytorchjobs, rayjobs, jobs
+  • Verbs: create, delete, get, list, patch, update, watch
+
+- training-operator/kubeflow-training-operator
+  • API Groups: kubeflow.org, scheduling.volcano.sh
+  • Resources: pytorchjobs, tfjobs, mpijobs, podgroups
+  • Verbs: create, delete, get, list, patch, update, watch
+
+User-Facing Roles (Aggregated):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- notebooks-admin, notebooks-edit, notebooks-view
+- kubeflow-training-edit, kubeflow-training-view
+- kserve-editor, kserve-viewer
+- modelregistry-editor, modelregistry-viewer
+
+════════════════════════════════════════════════════════════════════════════════════════
+SECRETS INVENTORY
+════════════════════════════════════════════════════════════════════════════════════════
+
+Webhook Certificates (kubernetes.io/tls):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- redhat-ods-operator-controller-webhook-cert (rhods-operator)
+- kserve-webhook-server-cert (kserve)
+- Rotation: Auto-managed by cert-manager or service-ca
+
+OAuth Proxy Secrets (Opaque):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- dashboard-oauth-config-generated (odh-dashboard)
+- {notebook}-oauth-config (per notebook)
+- {raycluster}-oauth-config (per Ray cluster)
+- Purpose: Cookie encryption, OAuth client credentials
+- Rotation: Manual
+
+Storage Credentials (Opaque):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- storage-config (KServe/ModelMesh)
+  • Contains: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, S3 endpoint
+- ds-pipeline-s3-{name} (DSP)
+  • Contains: S3 credentials for pipeline artifacts
+
+Database Credentials (Opaque):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- ds-pipeline-db-{name} (DSP MariaDB)
+- {registry}-db (Model Registry PostgreSQL/MySQL)
+- {instance}-db-credentials (TrustyAI)
+- model-serving-etcd (ModelMesh etcd)
+- Purpose: Database connection passwords
+- Rotation: Manual
+
+TLS Certificates (kubernetes.io/tls):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- dashboard-proxy-tls (odh-dashboard)
+- {notebook}-tls (per notebook)
+- {raycluster}-ca-secret (Ray mTLS CA)
+- {instance}-tls (TrustyAI service)
+- modelregistry-sample-rest-credential (Model Registry Gateway)
+- Rotation: Auto-managed by service-ca (90 days) or manual
+
+════════════════════════════════════════════════════════════════════════════════════════
+SERVICE MESH CONFIGURATION
+════════════════════════════════════════════════════════════════════════════════════════
+
+PeerAuthentication:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Mode: PERMISSIVE (namespace-level, allows both mTLS and plaintext)
+- mTLS Mode: ISTIO_MUTUAL (default for service-to-service communication)
+- Scope: Inference service namespaces
+- Reason: Backwards compatibility with non-mesh workloads
+
+Traffic Management:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- VirtualService: Routes for KServe InferenceServices, ModelMesh, Model Registry
+- Gateway: External ingress (443/TCP → 8080/TCP internal)
+- Created by: odh-model-controller
+
+Authorization:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Provider: Authorino (external authorization)
+- AuthConfig: Created by odh-model-controller for InferenceServices
+- Enforcement: Bearer token validation (Kubernetes ServiceAccount JWT)
+- Optional: Can be disabled for unauthenticated inference
+
+Sidecar Injection:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Method: Selective (annotation-based)
+- Components using mesh: KServe InferenceServices, ModelMesh, Model Registry
+- Components NOT using mesh: Notebooks, DSP, Training jobs, Ray clusters
+
+════════════════════════════════════════════════════════════════════════════════════════
+NETWORK POLICIES
+════════════════════════════════════════════════════════════════════════════════════════
+
+Common Patterns:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Allow ingress from openshift-monitoring namespace (Prometheus scraping)
+- Allow ingress from openshift-user-workload-monitoring namespace (metrics)
+- Allow ingress from openshift-ingress namespace (Route traffic)
+- Allow ingress from namespaces with label opendatahub.io/generated-namespace=true
+- Deny all other ingress by default
+
+Component-Specific Policies:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Notebooks: Allow 8888/TCP from controller namespace, 8443/TCP for OAuth proxy
+- Ray Clusters: Allow 8265/TCP (dashboard), 10001/TCP (client) from same namespace
+- ModelMesh: Allow 8033/TCP (gRPC), 8008/TCP (REST) from all, 2112/TCP (metrics)
+- KServe: Managed by odh-model-controller based on deployment mode
+
+════════════════════════════════════════════════════════════════════════════════════════
+SECURITY POSTURE
+════════════════════════════════════════════════════════════════════════════════════════
+
+✅ Non-root containers across all components
+✅ RBAC enforced for all API operations
+✅ TLS for external ingress (OpenShift Routes, Istio Gateways)
+✅ Optional mTLS for service-to-service (Istio Service Mesh)
+✅ OpenShift SCC compliance (restricted)
+✅ NetworkPolicies created for traffic isolation
+⚠️  Secrets rotation varies (auto for service-ca, manual for user secrets)
+⚠️  mTLS enforcement: PERMISSIVE mode (not STRICT) for backwards compatibility
+⚠️  Some external connections may use plaintext (MinIO HTTP, etcd)

@@ -1,0 +1,602 @@
+# Architecture Diagrams for RHOAI 2.14 Components
+
+Generated from: `architecture/rhoai-2.14/*.md`
+Date: 2026-03-15
+
+**Note**: Diagram filenames use base component name without version (directory is already versioned).
+
+## Components
+
+This directory contains architecture diagrams for the following RHOAI 2.14 components:
+
+1. **[Platform (RHOAI 2.14)](#platform-rhoai-214)** - Complete platform architecture overview
+2. **[CodeFlare Operator](#codeflare-operator)** - Distributed ML training and batch scheduling
+3. **[Data Science Pipelines Operator](#data-science-pipelines-operator)** - ML workflow orchestration (Kubeflow Pipelines)
+4. **[KServe](#kserve)** - Model serving platform
+5. **[Kubeflow (ODH Notebook Controller)](#kubeflow-odh-notebook-controller)** - Jupyter notebook management
+6. **[KubeRay](#kuberay)** - Ray cluster management for distributed computing
+7. **[ModelMesh Serving](#modelmesh-serving)** - Model serving management and routing layer
+8. **[Model Registry Operator](#model-registry-operator)** - ML model registry deployment and management
+9. **[Notebooks](#notebooks)** - Pre-built workbench container images (Jupyter, code-server, RStudio)
+10. **[ODH Model Controller](#odh-model-controller)** - KServe InferenceService extension with OpenShift integration, service mesh, and authorization
+
+---
+
+## Platform (RHOAI 2.14)
+
+### Available Diagrams
+
+All Mermaid diagrams are available in both `.mmd` (source) and `.png` (3000px width, high-resolution) formats.
+
+#### For Developers
+- [Component Structure](./platform-component.png) ([mmd](./platform-component.mmd)) - Complete platform component hierarchy showing all 14 operators and their relationships
+- [Data Flows](./platform-dataflow.png) ([mmd](./platform-dataflow.mmd)) - Key platform workflows: notebook development, model deployment, pipeline execution, distributed training
+- [Dependencies](./platform-dependencies.png) ([mmd](./platform-dependencies.mmd)) - Platform component dependencies including all external OpenShift and service dependencies
+
+#### For Architects
+- [C4 Context](./platform-c4-context.dsl) - System context in C4 format (Structurizr) showing complete platform ecosystem
+- [Component Overview](./platform-component.png) ([mmd](./platform-component.mmd)) - High-level platform architecture view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./platform-security-network.png) - High-resolution network topology with all trust boundaries
+- [Security Network Diagram (Mermaid)](./platform-security-network.mmd) - Visual network topology (editable, color-coded)
+- [Security Network Diagram (ASCII)](./platform-security-network.txt) - Precise text format for SAR submissions with complete RBAC, secrets inventory, service mesh configuration, and network policies
+- [RBAC Visualization](./platform-rbac.png) ([mmd](./platform-rbac.mmd)) - Platform-wide RBAC permissions and API resource access
+
+### Platform Overview
+
+Red Hat OpenShift AI (RHOAI) 2.14 is a comprehensive enterprise platform for developing, training, serving, and monitoring machine learning models on OpenShift.
+
+**Platform Components (14 Core Components)**:
+- **Platform Orchestration**: rhods-operator (v1.6.0-826)
+- **User Interface**: odh-dashboard (v1.21.0-18)
+- **Development**: notebook-controller (v1.27.0-663), odh-notebook-controller (v1.27.0-663)
+- **Workbench Images**: Pre-built Jupyter, code-server, RStudio environments (2024b/2024a)
+- **Model Serving**: kserve (1fdf877e7), modelmesh-serving (v1.27.0-261), odh-model-controller (v1.27.0-483)
+- **Model Registry**: model-registry-operator (v-2160)
+- **ML Workflows**: data-science-pipelines-operator (6b7b774)
+- **Distributed Computing**: codeflare-operator (v1.9.0), kuberay (d490ea60), training-operator (4b4e3bb4), kueue (v0.8.1)
+- **Monitoring & Governance**: trustyai-service-operator (1.17.0)
+
+**Key Platform Capabilities**:
+- End-to-end ML lifecycle management from development to production
+- Multi-deployment modes: serverless (Knative), always-on (raw), multi-model (ModelMesh)
+- Distributed training with job queueing and gang scheduling
+- Service mesh integration with mTLS and authorization
+- OpenShift-native authentication and networking
+- Comprehensive monitoring and observability
+
+**Platform Architecture**:
+- **Multi-Namespace Design**: Separate namespaces for operators, applications, monitoring, and user workloads
+- **Operator-Based**: 100% operator-based component management
+- **Service Mesh Coverage**: ~60% of platform traffic flows through Istio with optional mTLS
+- **CRD API Versions**: Mix of v1 (stable) and v1alpha1/v1beta1 (maturing) APIs
+
+**External Dependencies**:
+- **OpenShift Core**: Kubernetes API, OAuth, Routes, Service CA
+- **Service Mesh**: Istio 1.20+, Knative Serving 1.12+, Authorino (optional)
+- **Monitoring**: Prometheus, Alertmanager, Grafana
+- **Storage**: S3/MinIO/GCS/Azure Blob for artifacts and models
+- **Databases**: PostgreSQL/MySQL/MariaDB for metadata
+- **Infrastructure**: Container registries, PyPI/Conda, Git repositories
+
+**Platform Maturity**:
+- ✅ **Production Ready**: Notebook management, basic model serving (KServe), pipeline execution (DSP)
+- ✅ **Stable**: Distributed training (Training Operator), job queueing (Kueue), Ray clusters
+- ⚠️ **Maturing**: Model Registry (v1alpha1), ModelMesh serving, InferenceGraph (v1alpha1)
+- ⚠️ **Emerging**: TrustyAI monitoring, multi-model serving with TrainedModel API
+
+**Security Posture**:
+- ✅ Non-root containers across all components
+- ✅ RBAC enforced for all API operations
+- ✅ TLS 1.2+ for external ingress
+- ✅ Optional mTLS for service-to-service (Istio)
+- ✅ OpenShift SCC compliance (restricted)
+- ✅ NetworkPolicies for traffic isolation
+- ⚠️ Secrets rotation varies (auto for service-ca, manual for user secrets)
+- ⚠️ mTLS enforcement: PERMISSIVE mode (not STRICT) for backwards compatibility
+
+---
+
+## Data Science Pipelines Operator
+
+### Available Diagrams
+
+All Mermaid diagrams are available in both `.mmd` (source) and `.png` (3000px width, high-resolution) formats.
+
+#### For Developers
+- [Component Structure](./data-science-pipelines-operator-component.png) ([mmd](./data-science-pipelines-operator-component.mmd)) - Internal components, API server, workflow controller
+- [Data Flows](./data-science-pipelines-operator-dataflow.png) ([mmd](./data-science-pipelines-operator-dataflow.mmd)) - Pipeline submission, workflow execution, state persistence flows
+- [Dependencies](./data-science-pipelines-operator-dependencies.png) ([mmd](./data-science-pipelines-operator-dependencies.mmd)) - Dependencies on Argo Workflows, OpenShift, ODH components
+
+#### For Architects
+- [C4 Context](./data-science-pipelines-operator-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./data-science-pipelines-operator-component.png) ([mmd](./data-science-pipelines-operator-component.mmd)) - High-level DSPO and DSPA architecture
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./data-science-pipelines-operator-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./data-science-pipelines-operator-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./data-science-pipelines-operator-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./data-science-pipelines-operator-rbac.png) ([mmd](./data-science-pipelines-operator-rbac.mmd)) - Operator and DSPA instance RBAC permissions
+
+### Component Overview
+The Data Science Pipelines Operator (DSPO) manages namespace-scoped ML pipeline stacks based on Kubeflow Pipelines. Key features:
+- **DSP v2 (Argo-based)**: Current production workflow engine
+- **Pod-to-Pod TLS**: OpenShift service-ca integration for MariaDB and ML Metadata
+- **OAuth Proxy**: Authenticated access to API server and UI
+- **NetworkPolicy Isolation**: Restricted database and MLMD access
+- **Optional Components**: MariaDB, Minio, ML Metadata, UI
+
+---
+
+## CodeFlare Operator
+
+### Available Diagrams
+
+All Mermaid diagrams are available in both `.mmd` (source) and `.png` (3000px width, high-resolution) formats.
+
+#### For Developers
+- [Component Structure](./codeflare-operator-component.png) ([mmd](./codeflare-operator-component.mmd)) - Operator controllers, webhooks, managed CRDs
+- [Data Flows](./codeflare-operator-dataflow.png) ([mmd](./codeflare-operator-dataflow.mmd)) - Ray dashboard access, RayCluster creation, AppWrapper scheduling, metrics collection
+- [Dependencies](./codeflare-operator-dependencies.png) ([mmd](./codeflare-operator-dependencies.mmd)) - KubeRay, Kueue, and ODH integration dependencies
+
+#### For Architects
+- [C4 Context](./codeflare-operator-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./codeflare-operator-component.png) ([mmd](./codeflare-operator-component.mmd)) - High-level operator architecture
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./codeflare-operator-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./codeflare-operator-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./codeflare-operator-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./codeflare-operator-rbac.png) ([mmd](./codeflare-operator-rbac.mmd)) - Operator and OAuth proxy RBAC permissions
+
+### Component Overview
+The **CodeFlare Operator** (v1.9.0) manages distributed AI/ML workloads by extending KubeRay with enterprise security features:
+- **OAuth Authentication**: OpenShift OAuth proxy for Ray dashboard access
+- **mTLS Encryption**: Optional mutual TLS for Ray client connections
+- **Network Isolation**: NetworkPolicies restrict Ray cluster communication
+- **AppWrapper Controller**: Batch scheduling with Kueue integration (optional)
+- **Auto-provisioned Security**: Automatic creation of Routes, OAuth resources, mTLS certificates per RayCluster
+
+---
+
+## KServe
+
+### Available Diagrams
+- [Component Structure](./kserve-component.png) ([mmd](./kserve-component.mmd))
+- [Data Flows](./kserve-dataflow.png) ([mmd](./kserve-dataflow.mmd))
+- [Dependencies](./kserve-dependencies.png) ([mmd](./kserve-dependencies.mmd))
+- [Security Network](./kserve-security-network.png) ([mmd](./kserve-security-network.mmd))
+
+---
+
+## Kubeflow (ODH Notebook Controller)
+
+### Available Diagrams
+- [Component Structure](./kubeflow-component.png) ([mmd](./kubeflow-component.mmd)) - Controllers, webhooks, OAuth injection
+- [Data Flows](./kubeflow-dataflow.png) ([mmd](./kubeflow-dataflow.mmd)) - Notebook creation and user access flows
+- [Dependencies](./kubeflow-dependencies.png) ([mmd](./kubeflow-dependencies.mmd)) - OpenShift and Kubeflow dependencies
+- [C4 Context](./kubeflow-c4-context.dsl) - System context (Structurizr)
+- [Security Network](./kubeflow-security-network.png) ([mmd](./kubeflow-security-network.mmd) | [txt](./kubeflow-security-network.txt))
+- [RBAC Visualization](./kubeflow-rbac.png) ([mmd](./kubeflow-rbac.mmd))
+
+### Component Overview
+The **ODH Notebook Controller** extends Kubeflow Notebook Controller with OpenShift-specific capabilities:
+- **Route-based Ingress**: Auto-creates OpenShift Routes with TLS
+- **OAuth Proxy Injection**: Mutating webhook injects OAuth sidecar for authentication
+- **Network Policy Management**: Controls ingress to notebook pods
+- **Service CA Integration**: Auto-provisions TLS certificates
+
+---
+
+## KubeRay
+
+### Available Diagrams
+- [Component Structure](./kuberay-component.png) ([mmd](./kuberay-component.mmd))
+- [Data Flows](./kuberay-dataflow.png) ([mmd](./kuberay-dataflow.mmd))
+- [Dependencies](./kuberay-dependencies.png) ([mmd](./kuberay-dependencies.mmd))
+- [Security Network](./kuberay-security-network.png) ([mmd](./kuberay-security-network.mmd))
+- [RBAC Visualization](./kuberay-rbac.png) ([mmd](./kuberay-rbac.mmd))
+
+---
+
+## ModelMesh Serving
+
+### Available Diagrams
+
+All Mermaid diagrams are available in both `.mmd` (source) and `.png` (3000px width, high-resolution) formats.
+
+#### For Developers
+- [Component Structure](./modelmesh-serving-component.png) ([mmd](./modelmesh-serving-component.mmd)) - Controller, runtime pods, adapters, etcd coordination
+- [Data Flows](./modelmesh-serving-dataflow.png) ([mmd](./modelmesh-serving-dataflow.mmd)) - gRPC/REST inference, model loading, controller reconciliation flows
+- [Dependencies](./modelmesh-serving-dependencies.png) ([mmd](./modelmesh-serving-dependencies.mmd)) - Dependencies on etcd, S3, KServe, runtime backends
+
+#### For Architects
+- [C4 Context](./modelmesh-serving-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./modelmesh-serving-component.png) ([mmd](./modelmesh-serving-component.mmd)) - High-level ModelMesh architecture
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./modelmesh-serving-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./modelmesh-serving-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./modelmesh-serving-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./modelmesh-serving-rbac.png) ([mmd](./modelmesh-serving-rbac.mmd)) - Controller and runtime RBAC permissions
+
+### Component Overview
+
+**ModelMesh Serving** is a Kubernetes operator that orchestrates the deployment and lifecycle management of machine learning model inference workloads. It manages the ModelMesh framework which provides intelligent model placement, routing, and auto-scaling across a pool of inference runtime containers.
+
+#### Key Components:
+- **modelmesh-controller**: Main controller that reconciles CRs and manages ModelMesh deployments
+- **modelmesh**: Model serving orchestration layer in runtime pods
+- **modelmesh-runtime-adapter**: Adapter between ModelMesh and model server containers
+- **rest-proxy**: KServe V2 REST to gRPC translation proxy
+- **storage-helper (puller)**: Downloads models from storage before loading
+- **etcd**: Distributed coordination and metadata storage
+- **webhook-server**: Validating webhook for ServingRuntime CRs
+
+#### Supported Runtimes:
+- **MLServer 1.x**: sklearn, xgboost, lightgbm
+- **Triton 2.x**: tensorflow, pytorch, onnx, tensorrt
+- **OpenVINO Model Server 1.x**: openvino_ir, onnx
+- **TorchServe 0.x**: pytorch-mar
+
+#### Custom Resources:
+- **Predictor** (serving.kserve.io/v1alpha1): Defines a model to be served
+- **ServingRuntime** (serving.kserve.io/v1alpha1): Defines a model serving runtime configuration
+- **ClusterServingRuntime** (serving.kserve.io/v1alpha1): Cluster-scoped ServingRuntime
+- **InferenceService** (serving.kserve.io/v1beta1): KServe InferenceService support
+
+#### Network Architecture:
+- **Inference APIs**:
+  - gRPC: 8033/TCP (KServe V2 protocol)
+  - REST: 8008/TCP (KServe V2 REST API)
+- **Controller Metrics**: 8443/TCP (HTTPS, secured by kube-rbac-proxy)
+- **Webhook**: 9443/TCP (HTTPS, TLS 1.2+)
+- **etcd**: 2379/TCP (HTTP, Basic Auth)
+- **Prometheus Metrics**: 2112/TCP (HTTP)
+
+#### External Dependencies:
+- **etcd v3.5+** (Required): Distributed coordination and model registry
+- **S3-compatible storage** (Required*): Model artifact storage
+- **PersistentVolume** (Required*): Alternative model storage
+- **cert-manager v1.0+** (Optional): Certificate management
+- **Prometheus Operator v0.55+** (Optional): Metrics collection
+
+*Note: Either S3 storage or PersistentVolume is required
+
+#### Integration Points:
+- **KServe**: Imports ServingRuntime and InferenceService CRD definitions
+- **ODH Dashboard**: Provides user interface for model serving management
+- **ODH Operator**: Manages ModelMesh Serving installation and configuration
+- **Istio**: Traffic routing and service mesh capabilities
+- **Prometheus**: Metrics collection and monitoring
+
+---
+
+
+## Model Registry Operator
+
+### Available Diagrams
+
+All Mermaid diagrams are available in both `.mmd` (source) and `.png` (3000px width, high-resolution) formats.
+
+#### For Developers
+- [Component Structure](./model-registry-operator-component.png) ([mmd](./model-registry-operator-component.mmd)) - Operator controller, model registry service (REST + gRPC containers), Kubernetes resources, Istio integration
+- [Data Flows](./model-registry-operator-dataflow.png) ([mmd](./model-registry-operator-dataflow.mmd)) - External API access with Istio + Authorino, internal service access, operator reconciliation flows
+- [Dependencies](./model-registry-operator-dependencies.png) ([mmd](./model-registry-operator-dependencies.mmd)) - Required dependencies (PostgreSQL/MySQL) and optional dependencies (Istio, Authorino, OpenShift)
+
+#### For Architects
+- [C4 Context](./model-registry-operator-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./model-registry-operator-component.png) ([mmd](./model-registry-operator-component.mmd)) - High-level operator and model registry architecture
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./model-registry-operator-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./model-registry-operator-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./model-registry-operator-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./model-registry-operator-rbac.png) ([mmd](./model-registry-operator-rbac.mmd)) - Operator and per-instance RBAC permissions
+
+### Component Overview
+
+**Model Registry Operator** is a Kubernetes controller that reconciles `ModelRegistry` custom resources to create and manage Model Registry service deployments. It provides a unified API for deploying model registry instances with REST and gRPC endpoints for registering and tracking ML models and metadata.
+
+#### Key Components:
+- **Operator Controller**: Reconciles ModelRegistry CRs and manages model registry deployments
+- **REST Container**: Provides REST API on port 8080 for model registry operations (`/api/model_registry/v1alpha3/*`)
+- **gRPC Container**: Provides ML Metadata gRPC API on port 9090 for metadata operations
+- **Istio Gateway** (optional): External gateway for REST and gRPC traffic with TLS and authentication
+- **Authorino** (optional): External authorization provider for Kubernetes token validation
+
+#### Custom Resources:
+- **ModelRegistry** (modelregistry.opendatahub.io/v1alpha1): Defines desired state for a Model Registry instance including database config, REST/gRPC settings, and Istio integration
+
+#### Network Architecture:
+- **Internal Access**: ClusterIP service exposing REST (8080/TCP) and gRPC (9090/TCP) without encryption or auth
+- **External Access (Istio)**: Istio Gateway with TLS 1.2+, Bearer token authentication via Authorino
+  - REST: `{name}-rest.{domain}:443` → Service:8080
+  - gRPC: `{name}-grpc.{domain}:443` → Service:9090
+- **External Access (OpenShift)**: OpenShift Route with edge or passthrough TLS termination
+- **Operator**: Health (8081/TCP HTTP), Metrics (8443/TCP HTTPS with OpenShift serving cert)
+- **Inter-container**: REST container → gRPC container via localhost:9090 (no encryption)
+
+#### External Dependencies:
+- **PostgreSQL 9.6+** (Required*): Persistent storage for ML metadata
+- **MySQL 5.7+** (Required*): Alternative persistent storage for ML metadata
+- **Istio 1.20+** (Optional): Service mesh for mTLS, traffic management, and security
+- **Authorino 0.17+** (Optional): External authorization provider for API authentication
+- **OpenShift Service Mesh 2.x** (Optional): OpenShift-specific Istio distribution
+- **cert-manager** (Optional): Certificate management for TLS (recommended for production)
+
+*Note: Either PostgreSQL or MySQL is required
+
+#### Security Model:
+- **Internal**: No authentication or encryption within cluster
+- **External (Istio)**: Bearer token (Kubernetes SA token) validated by Authorino
+  - AuthorizationPolicy delegates to Authorino external provider (CUSTOM action)
+  - Authorino performs KubernetesTokenReview + SubjectAccessReview
+  - Users must have GET permission on service resource
+- **Per-Instance RBAC**: Each registry gets a Role granting GET on its service resource
+- **OpenShift Groups**: Optional `{name}-users` groups for simplified access management
+- **Service Mesh**: Configurable mTLS with ISTIO_MUTUAL mode via DestinationRule
+
+#### Integration Points:
+- **ODH Operator**: Provides auth configuration via ConfigMap
+- **Kubernetes API**: CR management, resource creation, RBAC checks
+- **Istio Control Plane**: Service mesh configuration and certificate management
+- **Prometheus**: Metrics collection from operator (8443/TCP HTTPS)
+
+#### Container Images:
+- **Operator**: `quay.io/opendatahub/model-registry-operator:latest`
+- **REST Service**: `quay.io/opendatahub/model-registry:latest`
+- **gRPC Service**: `quay.io/opendatahub/mlmd-grpc-server:latest`
+
+#### Notes:
+- **No HA Support**: Model Registry deployments currently run with 1 replica
+- **Database Required**: Every ModelRegistry instance requires an external PostgreSQL or MySQL database
+- **Istio Optional**: Supports both plain Kubernetes and Istio-enabled deployments
+- **OpenShift Integration**: Automatic Route creation and domain detection in OpenShift clusters
+- **Webhooks**: Admission webhooks disabled by default (enable via ENABLE_WEBHOOKS env var)
+
+---
+## Notebooks
+
+### Available Diagrams
+
+All Mermaid diagrams are available in both `.mmd` (source) and `.png` (3000px width, high-resolution) formats.
+
+#### For Developers
+- [Component Structure](./notebooks-component.png) ([mmd](./notebooks-component.mmd)) - Image variants, base images, workbench types
+- [Data Flows](./notebooks-dataflow.png) ([mmd](./notebooks-dataflow.mmd)) - User access to Jupyter/code-server, pipeline execution flows
+- [Dependencies](./notebooks-dependencies.png) ([mmd](./notebooks-dependencies.mmd)) - JupyterLab, code-server, Python, ODH Controller dependencies
+
+#### For Architects
+- [C4 Context](./notebooks-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./notebooks-component.png) ([mmd](./notebooks-component.mmd)) - High-level workbench image architecture
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./notebooks-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./notebooks-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./notebooks-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./notebooks-rbac.png) ([mmd](./notebooks-rbac.mmd)) - RBAC permissions managed by ODH Notebook Controller
+
+### Component Overview
+
+The **Notebooks** component provides pre-built container images for data science workbenches within the Red Hat OpenShift AI (RHOAI) and OpenDataHub (ODH) ecosystems. Key features:
+
+- **Interactive Workbenches**: JupyterLab, VS Code (code-server), and RStudio environments
+- **Hardware Accelerators**: Support for NVIDIA CUDA, AMD ROCm, Intel GPU, and Habana Gaudi
+- **ML Frameworks**: Specialized images for PyTorch, TensorFlow, and TrustyAI
+- **Pipeline Runtime**: Lightweight images for Elyra/KFP pipeline execution
+- **Security**: All images run as non-root (UID 1001), compatible with OpenShift restricted SCC
+- **Lifecycle Management**: Managed by ODH Notebook Controller
+
+#### Image Variants:
+- **Jupyter Workbenches**: minimal, datascience, pytorch, tensorflow, trustyai
+- **Hardware Accelerator Images**: Intel GPU, AMD ROCm, Habana Gaudi
+- **Alternative Workbenches**: code-server (VS Code), RStudio
+- **Runtime Images**: Minimal, datascience, pytorch, tensorflow for pipeline execution
+- **Base Images**: UBI9/C9S with Python 3.9/3.11
+
+#### Network Architecture:
+- **External Access**: HTTPS/443 via OpenShift Router with OAuth authentication
+- **Internal Communication**: HTTP/8888 for Jupyter, HTTP/8080 for code-server
+- **Pipeline Execution**: Runtime images connect to S3/Minio (HTTPS/443 or HTTP/9000)
+- **Package Installation**: PyPI/Conda via HTTPS/443
+
+#### Security Posture:
+- Non-root execution (UID 1001, GID 0)
+- OpenShift restricted SCC compatible
+- OAuth-based authentication via proxy
+- TLS termination at ingress (TLS 1.2+)
+- No privileged operations required
+- Namespace isolation enforced
+
+#### Dependencies:
+- **Internal ODH**: Notebook Controller, Dashboard, ImageStreams, KFP, Object Storage
+- **External**: JupyterLab, code-server, RStudio, Python, NGINX, Elyra, Papermill
+- **Optional Hardware**: CUDA, ROCm, Intel oneAPI, Habana SDK
+
+---
+
+## ODH Model Controller
+
+### Available Diagrams
+
+All Mermaid diagrams are available in both `.mmd` (source) and `.png` (3000px width, high-resolution) formats.
+
+#### For Developers
+- [Component Structure](./odh-model-controller-component.png) ([mmd](./odh-model-controller-component.mmd)) - Internal controllers, webhooks, and resource management
+- [Data Flows](./odh-model-controller-dataflow.png) ([mmd](./odh-model-controller-dataflow.mmd)) - InferenceService creation, inference requests, metrics collection, storage configuration flows
+- [Dependencies](./odh-model-controller-dependencies.png) ([mmd](./odh-model-controller-dependencies.mmd)) - Dependencies on KServe, Istio, Authorino, Knative, and ODH components
+
+#### For Architects
+- [C4 Context](./odh-model-controller-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./odh-model-controller-component.png) ([mmd](./odh-model-controller-component.mmd)) - High-level controller architecture
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./odh-model-controller-security-network.png) - High-resolution network topology with trust zones
+- [Security Network Diagram (Mermaid)](./odh-model-controller-security-network.mmd) - Visual network topology (editable, color-coded)
+- [Security Network Diagram (ASCII)](./odh-model-controller-security-network.txt) - Precise text format for SAR submissions with complete RBAC, Service Mesh, NetworkPolicy, and Secrets details
+- [RBAC Visualization](./odh-model-controller-rbac.png) ([mmd](./odh-model-controller-rbac.mmd)) - ClusterRole permissions, bindings, and API resource access
+
+### Component Overview
+
+The **odh-model-controller** is a Kubernetes operator that extends KServe InferenceService functionality with OpenShift integration, service mesh, authorization, and monitoring capabilities. It supports multiple deployment modes:
+
+- **KServe Serverless (Knative)**: Auto-scaling inference with scale-to-zero
+- **KServe RawDeployment**: Always-on inference deployments
+- **ModelMesh**: Multi-model serving with model routing and caching
+
+#### Key Features:
+- **OpenShift Integration**: Creates Routes for external access with TLS termination
+- **Service Mesh (Istio)**: Automatic Gateway, VirtualService, PeerAuthentication creation for mTLS
+- **Authorization**: Authorino AuthConfig integration for JWT-based authentication
+- **Monitoring**: Prometheus ServiceMonitor and PodMonitor creation
+- **Network Isolation**: NetworkPolicy management for ingress control
+- **Storage Configuration**: Aggregates S3 data connection secrets into unified storage-config
+- **Serving Runtimes**: Multiple templates (OVMS, TGIS, Caikit, vLLM) for different ML frameworks
+
+#### Controllers:
+- **InferenceService Controller**: Reconciles KServe InferenceServices, creates Routes, Gateways, VirtualServices, PeerAuthentications, AuthConfigs, and NetworkPolicies
+- **StorageSecret Controller**: Aggregates data connection secrets into unified storage-config
+- **KServeCustomCACert Controller**: Propagates custom CA certificates to inference deployments
+- **Monitoring Controller**: Creates ServiceMonitors and PodMonitors for Prometheus
+- **ModelRegistry Controller**: Integrates with Model Registry for model metadata (optional)
+
+#### Network Architecture:
+```
+External Client (HTTPS/443 TLS 1.2+)
+  ↓
+OpenShift Router (Edge Termination)
+  ↓
+Istio Gateway (HTTP/8080 internal)
+  ↓
+Authorino (JWT validation, HTTP/5001)
+  ↓
+Inference Service Pod (mTLS STRICT, HTTP/8080)
+  ↓
+S3 Storage (HTTPS/443, AWS Signature v4)
+```
+
+#### Dependencies:
+- **Required**: KServe v0.12.1, OpenShift Routes 3.9.0+, cert-manager or OCP Service CA
+- **Conditional**: Knative Serving v0.39.3, Istio/Service Mesh v1.19.4, Authorino v0.15.0, Prometheus Operator v0.64.1
+- **Internal ODH**: opendatahub-operator (DataScienceCluster/DSCInitialization), Model Registry (optional), Service Mesh Control Plane
+
+#### Deployment Modes:
+
+**1. KServe Serverless (Knative)**
+- Resources: Knative Service, Route, Gateway, VirtualService
+- Auto-scaling: Knative Serving with scale-to-zero
+- Dependencies: Knative Serving v0.39.3, Istio v1.19.4
+
+**2. KServe RawDeployment**
+- Resources: Deployment, Service, Route, Gateway, VirtualService
+- Auto-scaling: HPA (optional)
+- Dependencies: Istio v1.19.4 (optional for service mesh)
+
+**3. ModelMesh**
+- Resources: Deployment, Service, Route, ClusterRoleBinding
+- Multi-model: Yes, model routing and caching
+- Dependencies: ModelMesh Serving
+
+#### Serving Runtime Templates:
+
+| Template | Framework | Protocols | Ports | Use Case |
+|----------|-----------|-----------|-------|----------|
+| ovms-kserve-template | OpenVINO Model Server | gRPC, HTTP | 8080, 8081 | Intel-optimized CV inference |
+| ovms-mm-template | OpenVINO Model Server | gRPC | 8085 | ModelMesh CV serving |
+| tgis-template | Text Generation Inference Server | gRPC | 8033 | LLM serving |
+| caikit-tgis-template | Caikit + TGIS | gRPC | 8085 | IBM Caikit with TGIS backend |
+| caikit-standalone-template | Caikit Standalone | gRPC | 8085 | IBM Caikit standalone |
+| vllm-template | vLLM | HTTP | 8080 | High-throughput LLM inference |
+
+#### Data Flows:
+
+1. **InferenceService Creation**: User creates InferenceService → odh-model-controller watches → creates Route, Gateway, VirtualService, PeerAuthentication, AuthConfig, ServiceMonitor, NetworkPolicy
+2. **Model Inference Request**: External Client → OpenShift Router (HTTPS/443 Edge) → Istio Gateway → Authorino (JWT validation) → Inference Pod (mTLS) → S3 Storage
+3. **Metrics Collection**: Prometheus scrapes odh-model-controller metrics (HTTP/8080) and inference pod metrics (HTTP/8080 mTLS)
+4. **Storage Configuration**: User creates data connection secret → odh-model-controller aggregates into storage-config → KServe mounts to inference pod
+
+#### Security Details:
+
+**RBAC**: ClusterRole with full CRUD permissions on:
+- KServe: InferenceService, ServingRuntime
+- Istio: Gateway, VirtualService, PeerAuthentication, AuthorizationPolicy, Telemetry
+- Service Mesh: ServiceMeshMember
+- OpenShift: Route, NetworkPolicy
+- Monitoring: ServiceMonitor, PodMonitor
+- Auth: AuthConfig
+- Core: Services, Secrets, ConfigMaps, ServiceAccounts
+
+**NetworkPolicies**:
+- `allow-from-openshift-monitoring-ns`: Allow Prometheus scraping
+- `allow-openshift-ingress`: Allow OpenShift Router traffic
+- `allow-from-opendatahub-ns`: Allow ODH component traffic
+- `odh-model-controller`: Protect webhook server (9443/TCP only)
+
+**Service Mesh**:
+- PeerAuthentication: STRICT mTLS for all inference pod communication
+- AuthorizationPolicy: Service mesh-authenticated clients only
+- Telemetry: Metrics and tracing enabled via Istio
+
+**Secrets**:
+- `odh-model-controller-webhook-cert` (kubernetes.io/tls): Webhook TLS cert, Service CA managed, 90-day rotation
+- `storage-config` (Opaque): Aggregated S3 credentials, auto-rotates on data connection change
+- `kserve-custom-ca-cert` (Opaque): Custom CA certificates for external services
+
+---
+
+## How to Use
+
+### PNG Files (.png files)
+**Automatically generated** at 3000px width for high-resolution presentations and documentation.
+
+- **Ready to use**: High-resolution images suitable for presentations, wikis, and documentation
+- **Width**: 3000px (height auto-adjusts to content)
+- **Use directly**: Include in PowerPoint, Google Slides, Confluence, etc.
+
+### Mermaid Source Files (.mmd files)
+- **In GitHub/GitLab**: Paste into markdown with ` ```mermaid ` code blocks - renders automatically!
+- **Live editor**: https://mermaid.live (paste code, edit, export)
+- **Editable**: Modify and regenerate if needed
+
+**Manual PNG regeneration** (if you edit .mmd files):
+
+1. **Ensure Mermaid CLI is installed**:
+   ```bash
+   npm install -g @mermaid-js/mermaid-cli
+   ```
+
+2. **Regenerate PNG** (3000px width):
+   ```bash
+   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i diagram.mmd -o diagram.png -w 3000
+   ```
+
+3. **Alternative formats** (if needed):
+   ```bash
+   # SVG (vector, scales perfectly)
+   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i diagram.mmd -o diagram.svg
+
+   # PDF
+   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i diagram.mmd -o diagram.pdf
+   ```
+
+**Note**: If `google-chrome` is not found, try `chromium` or `which google-chrome` to locate it
+
+### C4 Diagrams (.dsl files)
+- **Structurizr Lite**: `docker run -p 8080:8080 -v .:/usr/local/structurizr structurizr/lite`
+- **CLI export**: `structurizr-cli export -workspace diagram.dsl -format png`
+
+### ASCII Diagrams (.txt files)
+- View in any text editor
+- Include in documentation as-is
+- Perfect for security reviews (precise technical details)
+
+## Updating Diagrams
+
+To regenerate diagrams after architecture changes:
+```bash
+cd /path/to/kahowell.rhoai-architecture-diagrams
+# Regenerate PNG files from Mermaid source
+python scripts/generate_diagram_pngs.py architecture/rhoai-2.14/diagrams/ --width=3000
+```

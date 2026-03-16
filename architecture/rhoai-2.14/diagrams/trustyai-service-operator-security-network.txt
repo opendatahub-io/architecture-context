@@ -1,0 +1,228 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External User/Client]                                                  │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: None (unauthenticated at edge)                           │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                          │
+│                                                                          │
+│  [OpenShift Router]                                                      │
+│  - Port: 443/TCP (external) → 8443/TCP (internal)                      │
+│  - TLS Termination: TLS 1.2+ (edge + re-encrypt)                       │
+│  - Route: {instance-name}                                               │
+│  - Insecure Policy: Redirect (HTTP → HTTPS)                            │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+ (re-encrypted)                            │
+│         │ Auth: OAuth Session Cookie / Bearer Token                      │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  AUTHENTICATION LAYER                                                   │
+│                                                                          │
+│  [OAuth Proxy Sidecar]                                                   │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: {instance-name}-sa                                    │
+│  - Image: registry.redhat.io/openshift4/ose-oauth-proxy:latest          │
+│  - Port: 8443/TCP (external) → 8080/TCP (internal)                     │
+│  - TLS Certificate: {instance-name}-tls (auto-provisioned)              │
+│  - Upstream: http://localhost:8080                                       │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (localhost sidecar)                           │
+│         │ Auth: None (trusted sidecar)                                   │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION LAYER (Trusted)                                            │
+│                                                                          │
+│  [TrustyAI Service Pod]                                                  │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: {instance-name}-sa                                    │
+│  - Image: quay.io/trustyai/trustyai-service:latest                      │
+│  - Deployment: {instance-name}                                           │
+│                                                                          │
+│  Internal Services:                                                      │
+│  ┌─────────────────────────────────────────────┐                        │
+│  │ Service: {instance-name}                    │                        │
+│  │ - Port 80/TCP → 8080 (HTTP, internal)      │                        │
+│  │ - Port 443/TCP → 4443 (HTTPS, mTLS)        │                        │
+│  └─────────────────────────────────────────────┘                        │
+│  ┌─────────────────────────────────────────────┐                        │
+│  │ Service: {instance-name}-tls                │                        │
+│  │ - Port 443/TCP → 8443 (HTTPS, OAuth)       │                        │
+│  └─────────────────────────────────────────────┘                        │
+│                                                                          │
+│  Storage:                                                                │
+│  - PVC: {instance-name} (ReadWriteOnce, optional)                       │
+│  - Volume Mount: /inputs (configurable)                                 │
+│         │                                                                │
+│         │ External Database Connection (DATABASE mode)                  │
+│         │ Port: Varies/TCP                                               │
+│         │ Protocol: JDBC                                                 │
+│         │ Encryption: TLS 1.2+ (optional, sslMode=verify-ca)            │
+│         │ Auth: Username/Password from secret                            │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MONITORING & OBSERVABILITY                                             │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - ServiceMonitor: {instance-name}                                       │
+│  - Scrape Path: /q/metrics                                               │
+│  - Port: 80/TCP                                                          │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: None                                                      │
+│  - Auth: Bearer Token (ServiceAccount)                                   │
+│  - Interval: 4s                                                          │
+│  - Metrics: trustyai_spd, trustyai_dir, custom fairness metrics         │
+│                                                                          │
+│  [Operator Metrics]                                                      │
+│  - Service: controller-manager-metrics-service                           │
+│  - Port: 8443/TCP                                                        │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS                                                       │
+│  - Auth: Bearer Token                                                    │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INTEGRATION POINTS                                                     │
+│                                                                          │
+│  [TrustyAI Operator Controller]                                          │
+│  ┌────────────────────────────────────────────┐                         │
+│  │ Watches & Patches:                         │                         │
+│  │ - KServe InferenceServices                 │                         │
+│  │ - ModelMesh Deployments                    │                         │
+│  │ - Port: 6443/TCP (K8s API)                │                         │
+│  │ - Protocol: HTTPS                          │                         │
+│  │ - Encryption: TLS 1.2+                     │                         │
+│  │ - Auth: ServiceAccount Token               │                         │
+│  └────────────────────────────────────────────┘                         │
+│         │                                                                │
+│         │ Payload Processing                                             │
+│         │ Port: 80/TCP                                                   │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None                                               │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+│  [ModelMesh Pods]                                                        │
+│  - Env: MM_PAYLOAD_PROCESSORS=http://{instance-name}.{ns}.svc:80       │
+│  - Sends inference payloads to TrustyAI for bias detection             │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [External Database - Optional]                                          │
+│  - Purpose: Persistent storage backend (DATABASE mode)                   │
+│  - Port: Varies/TCP (from secret)                                        │
+│  - Protocol: JDBC (PostgreSQL, MySQL, etc.)                              │
+│  - Encryption: TLS 1.2+ (optional, via sslMode=verify-ca)               │
+│  - Auth: Username/Password from secret                                   │
+│  - TLS Cert: {instance-name}-db-tls (optional)                          │
+│  - CA Bundle: odh-trusted-ca-bundle ConfigMap (injected)                │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: ServiceAccount Token (operator)                                 │
+│  - Purpose: Operator control plane operations                            │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+┌─────────────────────────────────────────────────────────────────────────┐
+│ ClusterRole: manager-role                                               │
+│ - API Groups: "" (core)                                                 │
+│   - Resources: configmaps, events, pods, secrets, serviceaccounts,      │
+│                services, persistentvolumeclaims, persistentvolumes       │
+│   - Verbs: create, delete, get, list, patch, update, watch              │
+│ - API Groups: apps                                                       │
+│   - Resources: deployments, deployments/finalizers,                     │
+│                deployments/status                                        │
+│   - Verbs: create, delete, get, list, patch, update, watch              │
+│ - API Groups: coordination.k8s.io                                       │
+│   - Resources: leases                                                    │
+│   - Verbs: create, get, update                                          │
+│ - API Groups: monitoring.coreos.com                                     │
+│   - Resources: servicemonitors                                           │
+│   - Verbs: create, list, watch                                          │
+│ - API Groups: rbac.authorization.k8s.io                                 │
+│   - Resources: clusterrolebindings                                       │
+│   - Verbs: create, delete, get, list, update, watch                     │
+│ - API Groups: route.openshift.io                                        │
+│   - Resources: routes                                                    │
+│   - Verbs: create, delete, get, list, patch, update, watch              │
+│ - API Groups: serving.kserve.io                                         │
+│   - Resources: inferenceservices, inferenceservices/finalizers,         │
+│                servingruntimes, servingruntimes/status                   │
+│   - Verbs: create, delete, get, list, patch, update, watch              │
+│ - API Groups: trustyai.opendatahub.io                                   │
+│   - Resources: trustyaiservices, trustyaiservices/finalizers,           │
+│                trustyaiservices/status                                   │
+│   - Verbs: create, delete, get, list, patch, update, watch              │
+│                                                                          │
+│ ClusterRole: leader-election-role                                       │
+│ - API Groups: coordination.k8s.io                                       │
+│   - Resources: leases                                                    │
+│   - Verbs: get, list, watch, create, update, patch                      │
+│ - API Groups: "" (core)                                                 │
+│   - Resources: configmaps, events                                        │
+│   - Verbs: get, list, watch, create, update, patch                      │
+│                                                                          │
+│ Service Accounts:                                                        │
+│ - controller-manager (operator namespace)                                │
+│   - Bound to: manager-role (ClusterRoleBinding)                         │
+│ - {instance-name}-sa (user namespace, per TrustyAIService)              │
+│   - Purpose: TrustyAI service pod identity                               │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Secrets:
+┌─────────────────────────────────────────────────────────────────────────┐
+│ Name: {instance-name}-internal                                          │
+│ - Type: kubernetes.io/tls                                               │
+│ - Purpose: TLS certificate for internal service (port 4443)             │
+│ - Provisioned By: service.beta.openshift.io/serving-cert-secret-name    │
+│ - Auto-Rotate: Yes (OpenShift service CA)                               │
+│                                                                          │
+│ Name: {instance-name}-tls                                               │
+│ - Type: kubernetes.io/tls                                               │
+│ - Purpose: TLS certificate for OAuth proxy service (port 8443)          │
+│ - Provisioned By: service.beta.openshift.io/serving-cert-secret-name    │
+│ - Auto-Rotate: Yes (OpenShift service CA)                               │
+│                                                                          │
+│ Name: {instance-name}-db-credentials                                    │
+│ - Type: Opaque                                                           │
+│ - Purpose: Database connection credentials                               │
+│ - Keys: databaseKind, databaseUsername, databasePassword,               │
+│         databaseService, databasePort, databaseName,                     │
+│         databaseGeneration                                               │
+│ - Provisioned By: User/External System                                   │
+│ - Auto-Rotate: No                                                        │
+│                                                                          │
+│ Name: {instance-name}-db-tls                                            │
+│ - Type: kubernetes.io/tls                                               │
+│ - Purpose: Database TLS certificates for secure connections             │
+│ - Provisioned By: User/External System                                   │
+│ - Auto-Rotate: No                                                        │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Security Context:
+┌─────────────────────────────────────────────────────────────────────────┐
+│ Operator Deployment:                                                    │
+│ - runAsNonRoot: true                                                     │
+│ - allowPrivilegeEscalation: false                                        │
+│ - capabilities: All dropped                                              │
+│ - seccompProfile: RuntimeDefault                                         │
+│                                                                          │
+│ TrustyAI Service Deployment:                                             │
+│ - Security context inherited from operator-managed deployment            │
+│ - Rolling update strategy: maxUnavailable=1, maxSurge=0                 │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Network Policies (if configured):
+- ClusterIP services ({instance-name}, {instance-name}-tls) are internal only
+- External access only via OpenShift Route with OAuth authentication
+- Operator watches all namespaces (cluster-scoped)
+- TrustyAI services are namespace-scoped (created per CR instance)

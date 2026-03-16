@@ -1,0 +1,59 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Router as OpenShift Router<br/>443/TCP HTTPS TLS1.2+
+    participant Gateway as Istio Ingress Gateway<br/>443/TCP HTTPS TLS1.2+
+    participant Authorino as Authorino<br/>50051/TCP gRPC mTLS
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Envoy as Istio Envoy Sidecar<br/>mTLS (ISTIO_MUTUAL)
+    participant REST as REST Container<br/>8080/TCP HTTP
+    participant GRPC as gRPC Container<br/>9090/TCP gRPC
+    participant DB as PostgreSQL/MySQL<br/>5432/3306 TCP
+
+    Note over Client,DB: Flow 1: External Client → Model Registry REST API (with Istio)
+
+    Client->>Router: POST /api/model_registry/v1alpha3/registered_models<br/>Authorization: Bearer {token}
+    Router->>Gateway: Forward HTTPS Request<br/>TLS 1.2+
+    Gateway->>Authorino: ext-authz gRPC<br/>Bearer Token (forwarded)
+    Authorino->>K8sAPI: TokenReview API<br/>Validate JWT token
+    K8sAPI-->>Authorino: Token Valid
+    Authorino->>K8sAPI: SubjectAccessReview<br/>Check GET on service/{registry-name}
+    K8sAPI-->>Authorino: Authorized
+    Authorino-->>Gateway: Authorization Approved
+    Gateway->>Envoy: HTTP Request<br/>mTLS (ISTIO_MUTUAL)
+    Envoy->>REST: HTTP/8080<br/>Plaintext (localhost)
+    REST->>GRPC: gRPC/9090<br/>MLMD API Call
+    GRPC->>DB: SQL Query<br/>TLS (optional sslmode)
+    DB-->>GRPC: Model Metadata
+    GRPC-->>REST: MLMD Response
+    REST-->>Envoy: JSON Response
+    Envoy-->>Gateway: mTLS Response
+    Gateway-->>Router: HTTPS Response
+    Router-->>Client: 200 OK
+
+    Note over Client,DB: Flow 2: Operator Reconciliation Loop
+
+    participant Operator as Controller Manager<br/>Service Account Token
+
+    Operator->>K8sAPI: Watch ModelRegistry CRs<br/>443/TCP HTTPS TLS1.2+
+    K8sAPI-->>Operator: ModelRegistry Created/Updated
+    Operator->>K8sAPI: Create Deployment<br/>HTTPS TLS1.2+
+    Operator->>K8sAPI: Create Service<br/>8080, 9090
+    Operator->>K8sAPI: Create ServiceAccount
+    Operator->>K8sAPI: Create RBAC Role/Binding
+
+    alt Istio Enabled
+        Operator->>K8sAPI: Create Istio Gateway
+        Operator->>K8sAPI: Create VirtualService
+        Operator->>K8sAPI: Create DestinationRule<br/>TLS: ISTIO_MUTUAL
+        Operator->>K8sAPI: Create AuthorizationPolicy
+        Operator->>K8sAPI: Create Authorino AuthConfig
+    end
+
+    Note over Client,DB: Flow 3: Admission Webhook Validation
+
+    participant APIServer as Kubernetes API Server
+    participant Webhook as Webhook Server<br/>9443/TCP HTTPS
+
+    APIServer->>Webhook: AdmissionReview<br/>443/TCP HTTPS TLS1.2+<br/>mTLS (API server client cert)
+    Webhook->>Webhook: Validate ModelRegistry Spec<br/>Check unique name
+    Webhook-->>APIServer: AdmissionReview Response<br/>Allowed: true/false

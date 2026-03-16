@@ -1,0 +1,58 @@
+sequenceDiagram
+    participant User as User/Dashboard
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS1.3
+    participant Webhook as ODH Notebook Webhook<br/>8443/TCP HTTPS mTLS
+    participant ImageAPI as ImageStream API<br/>443/TCP HTTPS TLS1.2+
+    participant Controller as ODH Notebook Controller<br/>Watch Loop
+    participant Router as OpenShift Router<br/>443/TCP HTTPS TLS1.3
+    participant OAuthProxy as OAuth Proxy Sidecar<br/>8443/TCP HTTPS TLS1.2+
+    participant OAuthServer as OpenShift OAuth Server<br/>443/TCP HTTPS TLS1.2+
+    participant Notebook as Jupyter Notebook<br/>8888/TCP HTTP
+
+    Note over User,Notebook: Flow 1: Notebook Creation with OAuth Injection
+
+    User->>K8sAPI: POST Notebook CR<br/>Auth: Bearer Token
+    K8sAPI->>Webhook: Mutating Webhook<br/>mTLS (Service CA)
+    Webhook->>ImageAPI: Resolve ImageStream<br/>ServiceAccount Token
+    ImageAPI-->>Webhook: Image Reference
+    Webhook->>Webhook: Inject OAuth Proxy Sidecar<br/>Mount CA Bundle
+    Webhook-->>K8sAPI: Mutated Notebook Spec
+    K8sAPI-->>User: Notebook Created
+
+    K8sAPI->>Controller: Watch Event<br/>Notebook Created
+    Controller->>K8sAPI: Create ServiceAccount<br/>ServiceAccount Token
+    Controller->>K8sAPI: Create Service<br/>ServiceAccount Token
+    Controller->>K8sAPI: Create Secret (OAuth Config)<br/>ServiceAccount Token
+    Controller->>K8sAPI: Create Route (TLS Reencrypt)<br/>ServiceAccount Token
+    Controller->>K8sAPI: Create NetworkPolicies<br/>ServiceAccount Token
+    Controller->>K8sAPI: Create CA Bundle ConfigMap<br/>ServiceAccount Token
+
+    Note over User,Notebook: Flow 2: User Accessing OAuth-Protected Notebook
+
+    User->>Router: HTTPS Request<br/>443/TCP TLS 1.3
+    Router->>OAuthProxy: Forward Request<br/>8443/TCP TLS 1.2+ (Reencrypt)
+
+    alt User Not Authenticated
+        OAuthProxy->>OAuthServer: OAuth Flow Redirect<br/>443/TCP HTTPS
+        OAuthServer-->>User: Login Page
+        User->>OAuthServer: Credentials
+        OAuthServer-->>OAuthProxy: OAuth Token
+    end
+
+    OAuthProxy->>K8sAPI: SubjectAccessReview (SAR)<br/>Verify: get notebooks/{name}<br/>ServiceAccount Token
+    K8sAPI-->>OAuthProxy: Authorized: true
+
+    OAuthProxy->>Notebook: Forward Request<br/>8888/TCP HTTP (localhost)
+    Notebook-->>OAuthProxy: Jupyter Response
+    OAuthProxy-->>Router: HTTPS Response<br/>8443/TCP TLS 1.2+
+    Router-->>User: HTTPS Response<br/>443/TCP TLS 1.3
+
+    Note over User,Notebook: Flow 3: CA Certificate Bundle Management
+
+    Controller->>K8sAPI: Watch ConfigMap<br/>odh-trusted-ca-bundle
+    K8sAPI-->>Controller: ConfigMap Updated
+    Controller->>K8sAPI: Get kube-root-ca.crt<br/>ServiceAccount Token
+    Controller->>Controller: Merge CA Certificates
+    Controller->>K8sAPI: Create/Update<br/>workbench-trusted-ca-bundle<br/>ServiceAccount Token
+    Controller->>K8sAPI: Patch Notebook<br/>Add VolumeMount & Env Vars
+    K8sAPI->>Notebook: Mount CA Bundle<br/>Set PIP_CERT, REQUESTS_CA_BUNDLE, etc.

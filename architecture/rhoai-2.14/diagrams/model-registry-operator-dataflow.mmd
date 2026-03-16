@@ -1,0 +1,62 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Istio Ingress Gateway<br/>443/TCP HTTPS TLS1.2+
+    participant AuthzPolicy as AuthorizationPolicy<br/>CUSTOM Action
+    participant Authorino as Authorino Service<br/>50051/TCP gRPC mTLS
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant VS as VirtualService
+    participant Service as Model Registry Service<br/>8080/9090 TCP
+    participant REST as REST Container<br/>8080/TCP HTTP
+    participant gRPC as gRPC Container<br/>9090/TCP gRPC
+    participant DB as Database<br/>5432/3306 TCP TLS
+
+    Note over Client,DB: Flow 1: External REST API Access (with Istio + Authorino)
+
+    Client->>Gateway: POST /api/model_registry/v1alpha3/...<br/>Authorization: Bearer {k8s-token}<br/>HTTPS/443 TLS 1.2+
+    Gateway->>AuthzPolicy: Policy Check
+    AuthzPolicy->>Authorino: External Auth Request<br/>gRPC/50051 mTLS<br/>Request Metadata
+    Authorino->>K8sAPI: TokenReview API<br/>HTTPS/6443 TLS 1.2+<br/>Validate Token
+    K8sAPI-->>Authorino: Token Valid: {user/SA}
+    Authorino->>K8sAPI: SubjectAccessReview API<br/>Check GET permission on service
+    K8sAPI-->>Authorino: Allowed: true/false
+    Authorino-->>AuthzPolicy: Decision: ALLOW/DENY
+
+    alt Authorization Success
+        AuthzPolicy->>VS: Forward Request
+        VS->>Service: HTTP/8080<br/>mTLS (if ISTIO_MUTUAL)
+        Service->>REST: HTTP/8080
+        REST->>gRPC: gRPC/9090 localhost
+        gRPC->>DB: SQL Query<br/>PostgreSQL/MySQL<br/>TLS (if configured)
+        DB-->>gRPC: Query Result
+        gRPC-->>REST: Metadata Response
+        REST-->>Service: HTTP Response
+        Service-->>VS: Response
+        VS-->>Gateway: Response
+        Gateway-->>Client: JSON Response<br/>HTTPS/443
+    else Authorization Failure
+        AuthzPolicy-->>Gateway: 403 Forbidden
+        Gateway-->>Client: 403 Forbidden
+    end
+
+    Note over Client,DB: Flow 2: Internal Service Access (without Istio)
+
+    participant InternalClient as Internal Pod
+
+    InternalClient->>Service: HTTP/8080 or gRPC/9090<br/>No encryption<br/>No auth
+    Service->>REST: HTTP/8080
+    REST->>gRPC: gRPC/9090 localhost
+    gRPC->>DB: SQL Query<br/>TLS (if configured)
+    DB-->>gRPC: Query Result
+    gRPC-->>REST: Response
+    REST-->>Service: Response
+    Service-->>InternalClient: Response
+
+    Note over Client,DB: Flow 3: Operator Reconciliation
+
+    participant Operator as Operator Controller
+
+    Operator->>K8sAPI: Watch ModelRegistry CRs<br/>HTTPS/6443 TLS 1.2+<br/>SA Token
+    K8sAPI-->>Operator: CR Created/Updated
+    Operator->>K8sAPI: Create Deployment<br/>Create Service<br/>Create ServiceAccount
+    Operator->>K8sAPI: Create Istio Resources<br/>(Gateway, VS, DR, AuthzPolicy)
+    Operator->>K8sAPI: Create AuthConfig<br/>Create Role/RoleBinding

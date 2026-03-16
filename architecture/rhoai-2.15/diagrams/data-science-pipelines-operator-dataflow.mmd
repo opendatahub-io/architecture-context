@@ -1,0 +1,54 @@
+sequenceDiagram
+    participant User as User/Client
+    participant Router as OpenShift Router<br/>443/TCP HTTPS
+    participant Route as ds-pipeline Route<br/>TLS 1.2+
+    participant OAuth as OAuth2 Proxy<br/>8443/TCP TLS
+    participant APIServer as API Server<br/>8888/TCP HTTP/HTTPS
+    participant WFController as Workflow Controller<br/>Argo v3.4.17
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant WFPod as Workflow Pod<br/>Pipeline Task
+    participant MLMD as MLMD gRPC<br/>8080/TCP gRPC
+    participant MariaDB as MariaDB<br/>3306/TCP MySQL
+    participant S3 as Minio/S3<br/>9000/443 HTTP/HTTPS
+    participant PAgent as Persistence Agent
+
+    Note over User,S3: Flow 1: Pipeline Submission
+
+    User->>Router: POST /apis/v2beta1/pipelines<br/>HTTPS/443 TLS 1.2+
+    Router->>Route: Forward to Route<br/>TLS passthrough
+    Route->>OAuth: Forward to Service<br/>8443/TCP TLS
+    OAuth->>OAuth: Validate Bearer Token<br/>OpenShift OAuth
+    OAuth->>APIServer: Forward authenticated request<br/>8888/TCP TLS 1.3 or plaintext
+    APIServer->>MariaDB: Store pipeline metadata<br/>3306/TCP MySQL, TLS or None
+    APIServer->>S3: Upload pipeline definition<br/>9000/443 S3 API, TLS or None
+    APIServer-->>User: 200 OK - Pipeline created
+
+    Note over User,S3: Flow 2: Workflow Execution (v2)
+
+    User->>OAuth: POST /apis/v2beta1/runs<br/>Bearer Token
+    OAuth->>APIServer: Create run request
+    APIServer->>WFController: Create Workflow CR<br/>8080/TCP HTTP
+    WFController->>K8sAPI: Create Workflow pods<br/>6443/TCP HTTPS TLS 1.2+<br/>Service Account Token
+    K8sAPI-->>WFPod: Pod created
+
+    WFPod->>S3: Download input artifacts<br/>S3 Access Keys
+    S3-->>WFPod: Artifacts
+    WFPod->>WFPod: Execute task<br/>(train model, process data)
+    WFPod->>MLMD: Log metadata/lineage<br/>8080/TCP gRPC TLS 1.3 or None
+    MLMD->>MariaDB: Store metadata<br/>3306/TCP MySQL
+    WFPod->>S3: Upload output artifacts<br/>S3 Access Keys
+
+    PAgent->>K8sAPI: Watch Workflow status<br/>6443/TCP HTTPS
+    PAgent->>MariaDB: Sync workflow state<br/>3306/TCP MySQL
+
+    APIServer-->>User: Run status update
+
+    Note over User,S3: Flow 3: ML Metadata Access
+
+    User->>Router: GET /ml_metadata/*<br/>443/TCP HTTPS
+    Router->>Route: Forward to MLMD Route
+    Route->>OAuth: 8443/TCP TLS<br/>OAuth validation
+    OAuth->>MLMD: Forward to MLMD gRPC<br/>8080/TCP gRPC
+    MLMD->>MariaDB: Query metadata<br/>3306/TCP MySQL
+    MariaDB-->>MLMD: Metadata results
+    MLMD-->>User: gRPC response (lineage data)

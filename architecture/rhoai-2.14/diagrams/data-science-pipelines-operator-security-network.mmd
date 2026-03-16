@@ -1,0 +1,94 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User[Data Scientist<br/>Jupyter Notebook]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Route["OpenShift Route<br/>ds-pipeline-NAME<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ Reencrypt"]
+    end
+
+    subgraph DSPA_NS["APPLICATION LAYER (DSPA Namespace: dspa-namespace)"]
+        direction TB
+
+        subgraph API_Pod["API Server Pod"]
+            OAuth[OAuth Proxy<br/>8443/TCP HTTPS]
+            APIServer[API Server<br/>8888/TCP HTTP+TLS<br/>8887/TCP gRPC+TLS<br/>SA: ds-pipeline-NAME]
+        end
+
+        subgraph Data_Layer["Data Layer"]
+            MariaDB["MariaDB<br/>3306/TCP MySQL<br/>TLS (podToPodTLS)<br/>NetworkPolicy: Restricted"]
+            Minio["Minio<br/>9000/TCP HTTP<br/>S3 API<br/>Optional Dev/Test"]
+        end
+
+        subgraph Workflow_Layer["Workflow Layer"]
+            WFC["Workflow Controller<br/>Argo<br/>SA: ds-pipeline-NAME"]
+            SWF["Scheduled Workflow<br/>Controller<br/>SA: ds-pipeline-scheduledworkflow-NAME"]
+            PA["Persistence Agent<br/>SA: ds-pipeline-persistenceagent-NAME"]
+            WorkflowPod["Workflow Pods<br/>SA: pipeline-runner-NAME<br/>Label: pipelines.kubeflow.org/v2_component=true"]
+        end
+
+        subgraph MLMD_Layer["ML Metadata Layer"]
+            MLMD_gRPC["MLMD gRPC Server<br/>8080/TCP gRPC<br/>TLS (podToPodTLS)<br/>NetworkPolicy: Workflow Pods Only"]
+            MLMD_Envoy["MLMD Envoy Proxy<br/>9090/TCP HTTP<br/>8443/TCP HTTPS"]
+        end
+    end
+
+    subgraph Operator_NS["OPERATOR NAMESPACE (opendatahub/redhat-ods-applications)"]
+        DSPO["DSPO Controller<br/>8080/TCP metrics<br/>8081/TCP health<br/>SA: controller-manager<br/>ClusterRole: manager-role"]
+    end
+
+    subgraph External_Services["EXTERNAL SERVICES"]
+        S3[External S3 Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM or AccessKey]
+        ExtDB[External Database<br/>MySQL/PostgreSQL<br/>3306/5432 TCP<br/>TLS configurable<br/>Password Auth]
+        Registry[Image Registry<br/>Quay.io/registry.redhat.io<br/>443/TCP HTTPS<br/>Pull Secret]
+        K8sAPI[Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Tokens]
+    end
+
+    %% Flows
+    User -->|HTTPS/443<br/>Bearer Token<br/>TLS 1.2+| Route
+    Route -->|HTTPS/8443<br/>TLS| OAuth
+    OAuth -->|HTTP/8888<br/>Internal TLS<br/>Bearer Token| APIServer
+
+    APIServer -->|MySQL/3306<br/>TLS when podToPodTLS<br/>Password| MariaDB
+    APIServer -->|HTTP/9000<br/>S3 API<br/>AccessKey/SecretKey| Minio
+    APIServer -.->|MySQL/3306<br/>TLS configurable<br/>Password| ExtDB
+    APIServer -.->|HTTPS/443<br/>TLS 1.2+<br/>AWS IAM| S3
+
+    SWF -->|Creates Workflows| WFC
+    WFC -->|HTTPS/6443<br/>SA Token| K8sAPI
+    K8sAPI -->|Creates| WorkflowPod
+
+    WorkflowPod -->|HTTP/9000<br/>S3 API<br/>AccessKey/SecretKey| Minio
+    WorkflowPod -.->|HTTPS/443<br/>TLS 1.2+<br/>AWS IAM| S3
+    WorkflowPod -->|gRPC/8080<br/>mTLS when podToPodTLS| MLMD_gRPC
+
+    PA -->|HTTPS/6443<br/>SA Token<br/>Watch Workflows| K8sAPI
+    PA -->|HTTP/8888<br/>Internal TLS<br/>SA Token| APIServer
+
+    MLMD_Envoy -->|gRPC/8080<br/>Internal| MLMD_gRPC
+
+    DSPO -->|HTTPS/6443<br/>SA Token<br/>Manage Resources| K8sAPI
+    DSPO -->|Watches DSPA CRs| K8sAPI
+    DSPO -->|Deploys| APIServer
+    DSPO -->|Deploys| MariaDB
+    DSPO -->|Deploys| Minio
+    DSPO -->|Deploys| WFC
+    DSPO -->|Deploys| MLMD_gRPC
+
+    WFC -.->|HTTPS/443<br/>Pull Images| Registry
+    APIServer -.->|HTTPS/443<br/>Pull Images| Registry
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef app fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef secure fill:#f8cecc,stroke:#b85450,stroke-width:2px
+
+    class User external
+    class Route ingress
+    class OAuth,APIServer,WFC,SWF,PA,WorkflowPod app
+    class MariaDB,Minio,MLMD_gRPC,MLMD_Envoy secure
+    class DSPO operator
+    class S3,ExtDB,Registry,K8sAPI externalservice

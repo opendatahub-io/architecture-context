@@ -1,0 +1,113 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User["User Browser<br/>Data Scientist"]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Router["OpenShift Router<br/>443/TCP HTTPS<br/>TLS Mode: Edge/Reencrypt"]
+    end
+
+    subgraph Services["CLUSTER SERVICES"]
+        OAuthService["{notebook}-tls Service<br/>ClusterIP<br/>443/TCP → 8443/TCP<br/>Annotation: serving-cert-secret-name"]
+        RegularService["{notebook} Service<br/>ClusterIP<br/>80/TCP → 8888/TCP<br/>(non-OAuth notebooks)"]
+    end
+
+    subgraph NotebookPod["NOTEBOOK POD (User Namespace)"]
+        direction TB
+
+        subgraph OAuthSidecar["OAuth Proxy Sidecar"]
+            OAuthProxy["OAuth Proxy Container<br/>Port: 8443/TCP HTTPS<br/>Image: ose-oauth-proxy<br/>CPU: 100m, Mem: 64Mi"]
+        end
+
+        subgraph NotebookMain["Notebook Container"]
+            Notebook["JupyterLab/RStudio<br/>Port: 8888/TCP HTTP<br/>Auth: None (localhost)"]
+        end
+
+        OAuthProxy -->|"HTTP/8888<br/>localhost<br/>No encryption"| Notebook
+    end
+
+    subgraph ControlPlane["CONTROL PLANE (Controller Namespace)"]
+        direction TB
+
+        subgraph Manager["Manager Deployment<br/>SA: manager<br/>CPU: 500m, Mem: 256Mi-4Gi"]
+            Controller["OpenshiftNotebook<br/>Reconciler"]
+            Webhook["NotebookWebhook<br/>8443/TCP HTTPS<br/>TLS 1.2+"]
+            Metrics["Metrics/Health<br/>8080/TCP (metrics)<br/>8081/TCP (health)"]
+        end
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        direction TB
+        OAuthServer["OpenShift OAuth Server<br/>oauth-openshift.openshift-authentication<br/>443/TCP HTTPS TLS1.2+"]
+        K8sAPI["Kubernetes API Server<br/>kubernetes.default.svc<br/>443/TCP HTTPS TLS1.2+"]
+        ServiceCA["Service CA Operator<br/>Auto-provisions TLS certs"]
+    end
+
+    subgraph Secrets["SECRETS"]
+        WebhookCert["webhook-cert<br/>(kubernetes.io/tls)<br/>Service CA"]
+        OAuthConfig["{notebook}-oauth-config<br/>(Opaque)<br/>Cookie secret"]
+        NotebookTLS["{notebook}-tls<br/>(kubernetes.io/tls)<br/>Service CA"]
+    end
+
+    subgraph NetworkPolicies["NETWORK POLICIES"]
+        CtrlNP["{notebook}-ctrl-np<br/>Ingress: controller-ns<br/>Port: 8888/TCP"]
+        OAuthNP["{notebook}-oauth-np<br/>Ingress: Any<br/>Port: 8443/TCP"]
+    end
+
+    %% User flows
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>No auth initially"| Router
+    Router -->|"HTTPS/443 (OAuth)<br/>Reencrypt"| OAuthService
+    Router -->|"HTTP/80 (non-OAuth)<br/>Edge TLS"| RegularService
+
+    OAuthService -->|"HTTPS/8443<br/>TLS 1.2+<br/>Service CA cert"| OAuthProxy
+    RegularService -->|"HTTP/8888<br/>No auth"| Notebook
+
+    %% OAuth authentication flow
+    OAuthProxy <-->|"HTTPS/443<br/>OAuth 2.0 flow<br/>TLS 1.2+"| OAuthServer
+    OAuthProxy -->|"HTTPS/443<br/>SubjectAccessReview<br/>SA Token auth"| K8sAPI
+
+    %% Controller operations
+    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>CRUD operations"| K8sAPI
+    K8sAPI -->|"HTTPS/8443<br/>mTLS<br/>Mutating webhook call"| Webhook
+
+    Controller -.->|"creates/updates"| OAuthService
+    Controller -.->|"creates/updates"| RegularService
+    Controller -.->|"creates"| OAuthConfig
+    Controller -.->|"creates"| CtrlNP
+    Controller -.->|"creates"| OAuthNP
+
+    %% Service CA
+    OAuthService -.->|"annotation triggers"| ServiceCA
+    ServiceCA -.->|"provisions"| NotebookTLS
+    ServiceCA -.->|"provisions"| WebhookCert
+
+    %% Secret usage
+    OAuthProxy -.->|"mounts"| OAuthConfig
+    OAuthProxy -.->|"mounts"| NotebookTLS
+    Webhook -.->|"mounts"| WebhookCert
+
+    %% Network policies
+    CtrlNP -.->|"allows"| NotebookPod
+    OAuthNP -.->|"allows"| NotebookPod
+
+    %% Monitoring
+    Metrics -.->|"scraped by"| Prometheus["Prometheus<br/>HTTP/8080"]
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef services fill:#e1f5ff,stroke:#0077b6,stroke-width:2px
+    classDef pod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef control fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef extsvc fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef secrets fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef netpol fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+
+    class User external
+    class Router ingress
+    class OAuthService,RegularService services
+    class NotebookPod,OAuthProxy,Notebook pod
+    class ControlPlane,Manager,Controller,Webhook,Metrics control
+    class OAuthServer,K8sAPI,ServiceCA,Prometheus extsvc
+    class WebhookCert,OAuthConfig,NotebookTLS secrets
+    class CtrlNP,OAuthNP netpol

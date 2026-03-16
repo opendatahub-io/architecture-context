@@ -1,0 +1,70 @@
+sequenceDiagram
+    participant User as User/Data Scientist
+    participant Dashboard as ODH Dashboard
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS1.2+
+    participant Webhook as NotebookWebhook<br/>8443/TCP HTTPS mTLS
+    participant KubeflowCtrl as Kubeflow Controller<br/>Creates StatefulSet
+    participant ODHCtrl as ODH Controller<br/>Reconciles Resources
+    participant Router as OpenShift Router<br/>443/TCP HTTPS
+    participant OAuthSvc as {notebook}-tls Service<br/>443/TCP HTTPS
+    participant OAuthProxy as OAuth Proxy<br/>8443/TCP HTTPS TLS1.2+
+    participant OAuthServer as OpenShift OAuth<br/>443/TCP HTTPS
+    participant NotebookPod as Notebook Container<br/>8888/TCP HTTP
+
+    Note over User,NotebookPod: Flow 1: Notebook Creation with OAuth Injection
+
+    User->>K8sAPI: POST Notebook CR<br/>Auth: Bearer Token
+    K8sAPI->>Webhook: Mutating Webhook Call<br/>8443/TCP HTTPS (mTLS)
+    Webhook->>Webhook: Check annotation<br/>inject-oauth=true
+    Webhook->>Webhook: Inject OAuth Proxy Sidecar<br/>Add culling stop annotation
+    Webhook-->>K8sAPI: Return Mutated Spec
+
+    K8sAPI->>KubeflowCtrl: Notebook CR Created
+    KubeflowCtrl->>KubeflowCtrl: Create StatefulSet<br/>with OAuth sidecar
+
+    K8sAPI->>ODHCtrl: Watch Event: Notebook Created
+    ODHCtrl->>K8sAPI: Create Route<br/>443/TCP HTTPS Reencrypt
+    ODHCtrl->>K8sAPI: Create Service ({notebook}-tls)<br/>443/TCP → oauth-proxy
+    ODHCtrl->>K8sAPI: Create ServiceAccount<br/>with OAuth redirect annotation
+    ODHCtrl->>K8sAPI: Create Secret (oauth-config)<br/>Cookie secret (random base64)
+    ODHCtrl->>K8sAPI: Create Secret ({notebook}-tls)<br/>Service CA triggers cert creation
+    ODHCtrl->>K8sAPI: Create NetworkPolicy<br/>Allow 8443/TCP from anywhere
+    ODHCtrl->>K8sAPI: Remove culling stop annotation<br/>Unlock notebook start
+
+    Note over User,NotebookPod: Flow 2: User Accesses OAuth-Enabled Notebook
+
+    User->>Router: HTTPS GET /notebook-url<br/>443/TCP TLS1.2+ (no auth yet)
+    Router->>OAuthSvc: Forward (Reencrypt)<br/>443/TCP HTTPS
+    OAuthSvc->>OAuthProxy: Route to Pod<br/>8443/TCP HTTPS
+
+    OAuthProxy->>OAuthProxy: Check for valid cookie
+    OAuthProxy-->>User: HTTP 302 Redirect to OAuth
+
+    User->>OAuthServer: OAuth Login Flow<br/>443/TCP HTTPS
+    OAuthServer-->>User: OAuth Token
+
+    User->>Router: HTTPS GET with OAuth Token<br/>443/TCP
+    Router->>OAuthSvc: Forward<br/>443/TCP HTTPS
+    OAuthSvc->>OAuthProxy: Request with Token<br/>8443/TCP HTTPS
+
+    OAuthProxy->>OAuthServer: Validate Token<br/>443/TCP HTTPS
+    OAuthServer-->>OAuthProxy: Token Valid
+
+    OAuthProxy->>K8sAPI: SubjectAccessReview<br/>verb=get, resource=notebooks<br/>Auth: ServiceAccount Token
+    K8sAPI-->>OAuthProxy: Authorized: true
+
+    OAuthProxy->>OAuthProxy: Set encrypted cookie<br/>Expiry: 24h
+    OAuthProxy->>NotebookPod: HTTP GET /<br/>8888/TCP (localhost)
+    NotebookPod-->>OAuthProxy: JupyterLab UI
+    OAuthProxy-->>OAuthSvc: HTTPS Response
+    OAuthSvc-->>Router: HTTPS Response
+    Router-->>User: Notebook UI (authenticated)
+
+    Note over User,NotebookPod: Flow 3: Controller Reconciles Notebook (Manual Route Change)
+
+    User->>K8sAPI: kubectl patch Route<br/>Manual modification
+    K8sAPI->>ODHCtrl: Watch Event: Route Updated
+    ODHCtrl->>K8sAPI: GET Route current spec<br/>Auth: ServiceAccount Token
+    ODHCtrl->>ODHCtrl: Compare with desired state
+    ODHCtrl->>K8sAPI: PATCH Route (restore spec)<br/>Retry with exponential backoff
+    K8sAPI-->>ODHCtrl: Route reconciled

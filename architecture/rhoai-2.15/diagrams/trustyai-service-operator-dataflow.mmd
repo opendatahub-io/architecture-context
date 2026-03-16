@@ -1,0 +1,63 @@
+sequenceDiagram
+    participant User as User Browser
+    participant Router as OpenShift Router<br/>443/TCP HTTPS TLS1.2+
+    participant Route as Route<br/>{name}
+    participant TLSSvc as Service: {name}-tls<br/>443/TCP HTTPS
+    participant OAuth as OAuth Proxy<br/>8443/TCP HTTPS TLS1.2+
+    participant TrustyAI as TrustyAI Service<br/>8080/TCP HTTP
+    participant InfSvc as InferenceService<br/>(patched)
+    participant Storage as PVC or Database
+
+    Note over User,Storage: Flow 1: User Access to TrustyAI Service
+
+    User->>Router: HTTPS Request<br/>TLS 1.2+
+    Router->>Route: Route to {name}
+    Route->>TLSSvc: Forward to {name}-tls:443<br/>Reencrypt TLS
+    TLSSvc->>OAuth: Forward to oauth-proxy:8443<br/>TLS 1.2+
+
+    OAuth->>OAuth: Validate OpenShift OAuth<br/>Subject Access Review<br/>(namespace:{ns}, resource:pods, verb:get)
+
+    alt Authenticated
+        OAuth->>TrustyAI: Proxy to localhost:8080<br/>HTTP (plaintext)
+        TrustyAI-->>OAuth: Response
+        OAuth-->>TLSSvc: HTTPS Response
+        TLSSvc-->>Route: HTTPS Response
+        Route-->>Router: HTTPS Response
+        Router-->>User: HTTPS Response
+    else Not Authenticated
+        OAuth-->>User: 401 Unauthorized / OAuth Redirect
+    end
+
+    Note over User,Storage: Flow 2: Prometheus Metrics Collection
+
+    participant Prom as Prometheus
+    participant Svc as Service: {name}<br/>80/TCP HTTP
+    participant SM as ServiceMonitor
+
+    Prom->>SM: Discover ServiceMonitor<br/>Interval: 4s
+    SM->>Svc: Target: {name}:80/q/metrics
+    Prom->>Svc: GET /q/metrics<br/>Bearer Token (ServiceAccount)
+    Svc->>TrustyAI: Forward to :8080/q/metrics
+    TrustyAI-->>Prom: Metrics<br/>(trustyai_spd, trustyai_dir)
+
+    Note over User,Storage: Flow 3: InferenceService to TrustyAI (Model Monitoring)
+
+    InfSvc->>InfSvc: Patched with<br/>MM_PAYLOAD_PROCESSORS config
+    InfSvc->>TrustyAI: Send inference payload<br/>HTTP/HTTPS (80/443)<br/>mTLS if in mesh
+    TrustyAI->>Storage: Store inference data<br/>PVC (CSV) or Database (JDBC)
+    TrustyAI->>TrustyAI: Compute fairness metrics<br/>SPD, DIR
+
+    Note over User,Storage: Flow 4: Operator Reconciliation
+
+    participant Op as TrustyAI Operator
+    participant API as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
+
+    Op->>API: Watch TrustyAIService CRDs<br/>ServiceAccount Token
+    API-->>Op: TrustyAIService events
+    Op->>API: Create/Update Managed Resources<br/>(Deployment, Service, Route, etc.)
+    API-->>Op: Resource status
+
+    Note over User,Storage: Flow 5: Database Storage (DATABASE Mode)
+
+    TrustyAI->>Storage: JDBC Connection<br/>5432/TCP (PostgreSQL) or 3306/TCP (MariaDB)<br/>TLS 1.2+ (if configured)<br/>Username/Password + CA Cert
+    Storage-->>TrustyAI: Query results

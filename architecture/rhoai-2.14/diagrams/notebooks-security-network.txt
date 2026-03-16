@@ -1,0 +1,192 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Data Scientist - Browser]                                              │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: OAuth Token (required)                                   │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ - TLS Termination)                                        │
+│                                                                          │
+│  [OpenShift Router]                                                      │
+│  - Port: 443/TCP (external) → 8888/TCP (internal)                      │
+│  - TLS Termination: TLS 1.2+                                            │
+│  - Route: /notebook/{namespace}/{username}/                             │
+│         │                                                                │
+│         │ Port: varies by proxy                                          │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (internal cluster)                            │
+│         │ Auth: OAuth Proxy (validates token)                            │
+│         ▼                                                                │
+│  [OAuth Proxy]                                                           │
+│  - Policy: User must own notebook instance                              │
+│  - Token Validation: External OAuth provider                            │
+│         │                                                                │
+│         │ Port: 8888/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (internal cluster)                            │
+│         │ Auth: Forwarded token (optional validation)                    │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (Trusted - No mTLS)                                   │
+│                                                                          │
+│  [notebook Service]                                                      │
+│  - Type: ClusterIP                                                       │
+│  - Port: 8888/TCP → 8888/TCP (target)                                   │
+│  - Namespace: {user-namespace}                                           │
+│  - Created by: ODH Notebook Controller                                   │
+│         │                                                                │
+│         │ Port: 8888/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (internal pod)                                │
+│         │ Auth: Optional token (configurable)                            │
+│         ▼                                                                │
+│  [Jupyter/code-server/RStudio Workbench Pod]                            │
+│  - Image: quay.io/opendatahub/workbench-images:{variant}-{version}     │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: {workbench-name}-sa (default)                        │
+│  - SecurityContext:                                                      │
+│    - runAsUser: 1001 (non-root)                                         │
+│    - runAsGroup: 0 (root group for file permissions)                    │
+│    - fsGroup: 0                                                          │
+│    - Capabilities: None (restricted SCC compatible)                     │
+│  - Volumes:                                                              │
+│    - PVC: {workbench-name} mounted at /opt/app-root/src                │
+│    - Secrets: Injected by ODH Notebook Controller (env vars/files)     │
+│                                                                          │
+│  [Jupyter Container - Port 8888/TCP]                                    │
+│  - Entrypoint: /opt/app-root/bin/start-notebook.sh                     │
+│  - Process: JupyterLab server                                           │
+│  - API Endpoint: /notebook/{namespace}/{username}/api (health)         │
+│                                                                          │
+│  OR                                                                      │
+│                                                                          │
+│  [code-server Container - Port 8080/TCP]                                │
+│  - Entrypoint: /opt/app-root/bin/run-code-server.sh                    │
+│  - Process: supervisord manages:                                        │
+│    - NGINX on port 8080 (reverse proxy, health endpoints)              │
+│    - code-server on localhost:8080 (VS Code)                           │
+│  - Health Endpoint: /healthz                                            │
+│                                                                          │
+│  Note: Pod configuration (service account, env vars, secrets)           │
+│        managed by ODH Notebook Controller, not by this component        │
+│         │                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS - Package Repositories                                          │
+│                                                                          │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+│  [PyPI / Conda Repositories]                                            │
+│  - Purpose: Install Python/R packages at runtime                        │
+│  - Initiated by: User or startup scripts                                │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS - Container Registry                                            │
+│                                                                          │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Token (OpenShift pull secret)                            │
+│         ▼                                                                │
+│  [Container Registry - quay.io]                                         │
+│  - Purpose: Pull workbench images during pod creation                   │
+│  - Initiated by: Kubelet via ImageStream reference                      │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  PIPELINE EXECUTION FLOW (Runtime Images)                               │
+│                                                                          │
+│  [Kubeflow Pipelines Operator]                                          │
+│         │                                                                │
+│         │ Creates Pod                                                    │
+│         ▼                                                                │
+│  [Runtime Image Pod]                                                     │
+│  - Image: quay.io/opendatahub/workbench-images:runtime-{variant}       │
+│  - Namespace: {pipeline-namespace}                                       │
+│  - ServiceAccount: {pipeline-sa}                                         │
+│  - SecurityContext: UID 1001, GID 0                                     │
+│  - Entrypoint: bootstrapper.py or user-defined                          │
+│         │                                                                │
+│         │ Port: 443/TCP or 9000/TCP                                      │
+│         │ Protocol: HTTPS or HTTP                                        │
+│         │ Encryption: TLS 1.2+ or None (depends on S3 config)           │
+│         │ Auth: AWS IAM (IRSA) or Static Credentials                     │
+│         ▼                                                                │
+│  [Object Storage - S3/Minio]                                            │
+│  - Endpoint: s3.amazonaws.com or {minio-endpoint}                       │
+│  - Operations:                                                           │
+│    1. GET dependencies.tar.gz (download pipeline dependencies)          │
+│    2. GET input artifacts (retrieve input data)                         │
+│    3. PUT output artifacts (upload results)                             │
+│    4. PUT HTML reports (upload visualization)                           │
+│    5. PUT KFP metadata (upload pipeline metadata)                       │
+│  - Credentials: Mounted as secret or IRSA                               │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+No ClusterRoles or RoleBindings defined by this component.
+
+RBAC is managed by the ODH Notebook Controller, which creates:
+- ServiceAccount for each workbench instance
+- RoleBinding granting workbench SA permissions to access PVC
+- RoleBinding for OAuth proxy to validate user identity
+
+Policy Enforcement:
+- OAuth Proxy ensures user owns the notebook instance (namespace + username match)
+- OpenShift RBAC controls which users can create/delete notebook instances
+- Jupyter token validation is optional (disabled by default in ODH deployments)
+
+Secrets Management:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+No secrets are created or managed by this component.
+
+Secrets are injected by ODH Notebook Controller:
+- Object storage credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+- OAuth tokens for external service integration
+- Git credentials for repository access
+- Custom environment variables from ConfigMaps/Secrets
+
+Secrets are mounted as:
+- Environment variables: Injected into pod spec
+- Files: Mounted from secret volumes (e.g., /opt/app-root/src/.aws/credentials)
+
+Network Policies:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Not defined by this component. Cluster administrators may apply:
+- Allow ingress from OpenShift Router
+- Allow ingress from OAuth proxy
+- Allow egress to PyPI/Conda (443/TCP HTTPS)
+- Allow egress to Object Storage (443/TCP or 9000/TCP)
+- Allow egress to Container Registry (443/TCP HTTPS)
+- Deny all other ingress/egress
+
+Security Features:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓ Non-root containers (UID 1001, GID 0)
+✓ OpenShift restricted SCC compatible
+✓ No privileged operations required
+✓ No host path mounts
+✓ No host network access
+✓ TLS termination at ingress (edge/re-encrypt routes)
+✓ OAuth-based user authentication
+✓ Namespace isolation (one workbench per user namespace)
+✓ Read-only container filesystem (except /opt/app-root/src from PVC)
+✓ Arbitrary UID support for OpenShift (root group GID 0)
+
+Image Variants by Security Posture:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+All images share the same security posture:
+- Base: Red Hat Universal Base Image 9 (UBI9) or CentOS Stream 9 (C9S)
+- Security updates: Automated via GitHub Actions (digest updater)
+- CVE scanning: Quay.io security scanner
+- Minimal attack surface: Only necessary tools installed
+- Hardware accelerator images: Include vendor drivers but maintain non-root execution
