@@ -1,0 +1,100 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[External Client<br/>Data Scientist]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Gateway["Istio Ingress Gateway<br/>443/TCP → 80/TCP<br/>TLS 1.2+ (SIMPLE)<br/>Host: {isvc}.{namespace}.{domain}"]
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (mTLS via Istio)"]
+        direction TB
+
+        subgraph NS_Knative["Namespace: knative-serving"]
+            Activator["Knative Activator<br/>SA: activator<br/>Scale-to-zero & buffering"]
+        end
+
+        subgraph NS_User["Namespace: {user-namespace}"]
+            direction TB
+            PredictorSvc["Service: {isvc}-predictor<br/>ClusterIP<br/>80/TCP → 8080/TCP"]
+
+            subgraph PredictorPod["InferenceService Predictor Pod<br/>SA: {isvc}-sa"]
+                direction LR
+                StorageInit["Init: Storage Initializer<br/>Downloads models"]
+                ModelServer["Container: Model Server<br/>TorchServe/TFServing/Triton<br/>Ports: 8080/HTTP, 8081/gRPC"]
+                Agent["Sidecar: Agent<br/>(optional)<br/>Dynamic model loading"]
+                QueueProxy["Sidecar: Queue Proxy<br/>Knative<br/>Request queuing"]
+                IstioSidecar["Sidecar: Istio Envoy<br/>mTLS enforcement"]
+            end
+
+            PredictorSvc --> PredictorPod
+        end
+
+        subgraph NS_Transformer["Namespace: {user-namespace}"]
+            TransformerSvc["Service: {isvc}-transformer<br/>ClusterIP<br/>80/TCP → 8080/TCP"]
+        end
+
+        subgraph NS_Router["Namespace: {user-namespace}"]
+            RouterSvc["InferenceGraph Router<br/>ClusterIP<br/>80/TCP → 8080/TCP"]
+        end
+    end
+
+    subgraph ControlPlane["CONTROL PLANE (Namespace: kserve)"]
+        direction TB
+        Controller["KServe Controller Manager<br/>SA: kserve-controller-manager<br/>Service: ClusterIP 8443/TCP<br/>Metrics: 8080/TCP<br/>Resources: 100m CPU/200Mi mem"]
+        Webhook["KServe Webhook Server<br/>Service: ClusterIP 443→9443/TCP<br/>TLS 1.2+ mTLS<br/>Cert: kserve-webhook-server-cert"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        S3["S3 Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: AWS IAM/Access Keys"]
+        GCS["GCS Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Service Account"]
+        Registry["Container Registries<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Registry creds"]
+    end
+
+    subgraph K8s["KUBERNETES PLATFORM"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+        CertManager["cert-manager<br/>TLS certificate management"]
+    end
+
+    %% External to Ingress
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (optional)"| Gateway
+
+    %% Ingress to Service Mesh
+    Gateway -->|"HTTP/80<br/>mTLS (Istio)<br/>Service Identity"| Activator
+    Gateway -->|"HTTP/80<br/>mTLS (Istio)"| RouterSvc
+
+    %% Within Service Mesh
+    Activator -->|"HTTP/8080<br/>mTLS (Istio)<br/>Service Identity"| PredictorSvc
+    RouterSvc -->|"HTTP/8080<br/>mTLS (Istio)"| TransformerSvc
+    RouterSvc -->|"HTTP/8080<br/>mTLS (Istio)"| PredictorSvc
+
+    %% Pod to External Services
+    StorageInit -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM/GCP SA"| S3
+    StorageInit -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP SA"| GCS
+    Agent -->|"HTTPS/443<br/>TLS 1.2+"| S3
+    Agent -->|"HTTPS/443<br/>TLS 1.2+"| GCS
+
+    %% Control Plane
+    Client -->|"kubectl apply<br/>HTTPS/443<br/>Bearer Token"| K8sAPI
+    K8sAPI -->|"Validate/Mutate<br/>HTTPS/443<br/>mTLS"| Webhook
+    K8sAPI -->|"Watch/Update<br/>HTTPS/443<br/>SA Token"| Controller
+    Controller -->|"Create Resources<br/>HTTPS/443<br/>SA Token"| K8sAPI
+    CertManager -->|"Provision TLS certs"| Webhook
+
+    %% Container Registry
+    K8sAPI -->|"Pull images<br/>HTTPS/443"| Registry
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef k8s fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+
+    class Client external
+    class Gateway ingress
+    class Activator,PredictorSvc,PredictorPod,StorageInit,ModelServer,Agent,QueueProxy,IstioSidecar,TransformerSvc,RouterSvc servicemesh
+    class Controller,Webhook controlplane
+    class S3,GCS,Registry externalservice
+    class K8sAPI,CertManager k8s

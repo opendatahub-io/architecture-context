@@ -1,0 +1,276 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [User Browser / API Client]                                            │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.3                                            │
+│         │ Auth: None (pre-OAuth)                                         │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift Router - DMZ)                                       │
+│                                                                          │
+│  [OpenShift Router]                                                      │
+│  - Port: 443/TCP (external)                                             │
+│  - TLS: TLS 1.3                                                         │
+│  - Mode: Passthrough (TLS handled downstream)                           │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+ (passthrough)                             │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+│  [Route: {instance-name}]                                               │
+│  - Type: OpenShift Route                                                 │
+│  - TLS Termination: Passthrough                                         │
+│  - Backend: {instance-name}-tls service                                 │
+│         │                                                                │
+│         │ Port: 443/TCP → 8443/TCP                                       │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  AUTHENTICATION LAYER (OAuth Proxy)                                     │
+│                                                                          │
+│  [Service: {instance-name}-tls]                                         │
+│  - Type: ClusterIP                                                       │
+│  - Port: 443/TCP → 8443/TCP                                             │
+│  - Namespace: {user-namespace}                                           │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: OpenShift OAuth (OAuth2)                                 │
+│         ▼                                                                │
+│  [OAuth Proxy Sidecar Container]                                        │
+│  - Image: registry.redhat.io/openshift4/ose-oauth-proxy:latest         │
+│  - ServiceAccount: {instance-name}-proxy                                │
+│  - TLS Secret: {instance-name}-tls (kubernetes.io/tls)                 │
+│  - Health: /oauth/healthz (8443/TCP HTTPS)                             │
+│  - Auth Policy: SAR check (namespace/{ns}, resource/pods, verb/get)    │
+│  - Skip Auth Regex: ^/apis/v1beta1/healthz                             │
+│         │                                                                │
+│         │ OAuth Validation Flow:                                         │
+│         ├──────────────────────────────────────────────────┐            │
+│         │ Port: 6443/TCP                                    │            │
+│         │ Protocol: HTTPS                                   │            │
+│         │ Encryption: TLS 1.2+                              │            │
+│         │ Purpose: Token validation                         │            │
+│         ▼                                                    ▼            │
+│  [OpenShift OAuth Server]  ←──→  [Kubernetes API: TokenReview]          │
+│  - Provider: OpenShift                                                   │
+│  - Auth Type: Bearer Token                                               │
+│  - Cookie Secret: Auto-generated per instance                           │
+│                                                                          │
+│         │ After successful OAuth validation:                             │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (localhost)                                   │
+│         │ Auth: Token validated by OAuth proxy                           │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INTERNAL SERVICES (Trusted - Cluster Network)                          │
+│                                                                          │
+│  [TrustyAI Service Container]                                           │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: default                                               │
+│  - Image: quay.io/trustyai/trustyai-service:latest                     │
+│  - Ports:                                                                │
+│    * 8080/TCP - HTTP API (internal)                                     │
+│  - Security Context:                                                     │
+│    * runAsNonRoot: true                                                  │
+│    * runAsUser: 65532                                                    │
+│    * seccompProfile: RuntimeDefault                                      │
+│    * allowPrivilegeEscalation: false                                     │
+│    * capabilities: drop ALL                                              │
+│  - Volumes:                                                              │
+│    * PVC: {instance-name} (ReadWriteOnce)                               │
+│    * Custom CA Bundle: odh-trusted-ca-bundle (optional)                 │
+│  - Endpoints:                                                            │
+│    * GET /q/metrics - Prometheus metrics (port 8080/TCP)                │
+│    * POST /consumer/kserve/v2 - KServe payload processor (port 80/TCP) │
+│    * GET /apis/v1beta1/healthz - Health check                           │
+│         │                                                                │
+│         │ Internal Service Access (HTTP):                                │
+│         ▼                                                                │
+│  [Service: {instance-name}]                                             │
+│  - Type: ClusterIP                                                       │
+│  - Port: 80/TCP → 8080/TCP                                              │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: None (internal cluster)                                  │
+│  - Auth: None (internal access)                                         │
+│         │                                                                │
+│         ├──────────────────────────────────────────────────┐            │
+│         │ Ingress (from internal clients):                 │            │
+│         │                                                   │            │
+│         ▼                                                   ▼            │
+│  [KServe InferenceService Pods]    [ModelMesh Pods]                     │
+│  - POST inference payloads          - POST /consumer/kserve/v2          │
+│  - Port: 80/TCP HTTP                - Port: 80/TCP HTTP                 │
+│  - Auth: None                        - Auth: None                        │
+│  - Encryption: None                  - Encryption: None                  │
+│         │                                   │                            │
+│         └───────────────┬───────────────────┘                            │
+│                         ▼                                                │
+│  [PersistentVolumeClaim: {instance-name}]                               │
+│  - Size: User-specified (e.g., 1Gi)                                     │
+│  - Access Mode: ReadWriteOnce                                            │
+│  - Purpose: Store inference data and metrics                            │
+│  - Auth: Pod UID filesystem permissions                                 │
+│                                                                          │
+│         ▲ Metrics Scraping (Internal):                                  │
+│         │ Port: 80/TCP → 8080/TCP                                        │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None                                               │
+│         │ Auth: ServiceAccount Token (optional)                          │
+│         │                                                                │
+│  [Prometheus]                                                            │
+│  - Discovers via ServiceMonitor CRD                                      │
+│  - Scrape interval: 4s                                                   │
+│  - Metrics: trustyai_spd, trustyai_dir, etc.                            │
+│  - Metric relabeling: Keep only trustyai_.* metrics                     │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE (Operator)                                               │
+│                                                                          │
+│  [TrustyAI Service Operator]                                            │
+│  - Namespace: {operator-namespace}                                       │
+│  - ServiceAccount: controller-manager                                    │
+│  - Image: quay.io/trustyai/trustyai-service-operator:latest            │
+│  - Ports:                                                                │
+│    * 8080/TCP - Prometheus metrics (HTTP)                               │
+│    * 8081/TCP - Health probes (HTTP)                                    │
+│  - Security Context: Same as TrustyAI service                           │
+│         │                                                                │
+│         │ All API interactions:                                          │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount Token                                     │
+│         ▼                                                                │
+│  [Kubernetes API Server]                                                │
+│  - Reconciles: TrustyAIService CR                                       │
+│  - Watches: InferenceService, ServingRuntime CRs                        │
+│  - Creates: Deployments, Services, Routes, ServiceMonitors, etc.        │
+│  - Patches: InferenceService (inference logger config)                  │
+│  - Patches: ModelMesh Deployments (MM_PAYLOAD_PROCESSORS env)          │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ClusterRole: manager-role (operator)
+  - API Groups: trustyai.opendatahub.io
+    Resources: trustyaiservices, trustyaiservices/status, trustyaiservices/finalizers
+    Verbs: get, list, watch, create, update, patch, delete
+
+  - API Groups: apps
+    Resources: deployments, deployments/status, deployments/finalizers
+    Verbs: get, list, watch, create, update, patch, delete
+
+  - API Groups: "" (core)
+    Resources: services, pods, configmaps, secrets, persistentvolumeclaims, serviceaccounts, events
+    Verbs: get, list, watch, create, update, patch, delete
+
+  - API Groups: "" (core)
+    Resources: persistentvolumes
+    Verbs: get, list, watch
+
+  - API Groups: monitoring.coreos.com
+    Resources: servicemonitors
+    Verbs: create, list, watch
+
+  - API Groups: route.openshift.io
+    Resources: routes
+    Verbs: get, list, watch, create, update, patch, delete
+
+  - API Groups: serving.kserve.io
+    Resources: inferenceservices, inferenceservices/finalizers, servingruntimes, servingruntimes/status
+    Verbs: get, list, watch, update, patch, delete, create
+
+  - API Groups: rbac.authorization.k8s.io
+    Resources: clusterrolebindings
+    Verbs: get, list, watch, create, update, delete
+
+ClusterRole: proxy-role (OAuth proxy service accounts)
+  - API Groups: authentication.k8s.io
+    Resources: tokenreviews
+    Verbs: create
+
+  - API Groups: authorization.k8s.io
+    Resources: subjectaccessreviews
+    Verbs: create
+
+Role: leader-election-role (operator namespace)
+  - API Groups: "" (core)
+    Resources: configmaps
+    Verbs: get, list, watch, create, update, patch, delete
+
+  - API Groups: coordination.k8s.io
+    Resources: leases
+    Verbs: get, list, watch, create, update, patch, delete
+
+  - API Groups: "" (core)
+    Resources: events
+    Verbs: create, patch
+
+Service Mesh Configuration:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- No explicit NetworkPolicies defined
+- Relies on OpenShift/Kubernetes default network policies
+- Internal communication: HTTP (no mTLS by default)
+- External communication: HTTPS via OAuth proxy with TLS 1.2+
+
+Secrets:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Name: {instance-name}-tls
+  Type: kubernetes.io/tls
+  Purpose: TLS certificate for OAuth proxy
+  Provisioned By: OpenShift service cert signer or custom CA
+  Auto-Rotate: Yes (OpenShift service certs)
+
+- Name: {instance-name}-proxy-token
+  Type: kubernetes.io/service-account-token
+  Purpose: OAuth proxy service account token
+  Provisioned By: Kubernetes
+  Auto-Rotate: Yes
+
+OAuth Proxy Configuration:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Provider: OpenShift
+- Cookie Secret: Auto-generated per instance
+- HTTPS Address: :8443
+- Upstream: http://localhost:8080 (TrustyAI service)
+- Skip Auth Regex: ^/apis/v1beta1/healthz (health checks bypass OAuth)
+- Subject Access Review: pods.get in deployment namespace
+- TLS Certificate: Service CA issued (auto-rotated)
+
+Network Flow Summary:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. External Access (HTTPS):
+   User → Router (443/TLS1.3) → Route (passthrough) → Service-TLS (443→8443)
+   → OAuth Proxy (8443/TLS1.2+/OAuth) → TrustyAI Service (8080/HTTP)
+
+2. Internal Access (HTTP):
+   KServe/ModelMesh → Service (80→8080/HTTP) → TrustyAI Service (8080/HTTP)
+
+3. Metrics Scraping (HTTP):
+   Prometheus → Service (80→8080/HTTP) → TrustyAI Service /q/metrics (8080/HTTP)
+
+4. Operator Control (HTTPS):
+   Operator → Kubernetes API (6443/HTTPS/TLS1.2+/SA Token) → Resources
+
+Security Posture:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓ External traffic encrypted (TLS 1.2+ via OAuth proxy)
+✓ Authentication enforced for external access (OpenShift OAuth)
+✓ Non-root containers (UID 65532)
+✓ Seccomp profile: RuntimeDefault
+✓ Capabilities: ALL dropped
+✓ Privilege escalation: false
+✓ Auto-rotating TLS certificates
+✗ Internal traffic unencrypted (HTTP) - service mesh recommended for mTLS
+✗ No NetworkPolicies defined - relies on platform defaults
+⚠ Cluster-wide RBAC permissions required for cross-namespace InferenceService management

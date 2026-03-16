@@ -1,0 +1,49 @@
+sequenceDiagram
+    participant User as User/JupyterHub
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
+    participant Controller as Notebook Controller
+    participant Registry as Container Registry<br/>443/TCP HTTPS
+    participant StatefulSet as StatefulSet
+    participant NotebookPod as Notebook Pod<br/>8888/TCP HTTP
+    participant Culler as Culling Controller<br/>(Timer-based)
+    participant Prometheus as Prometheus<br/>8080/TCP HTTP
+
+    %% Flow 1: Notebook Creation
+    rect rgb(230, 240, 255)
+        Note over User,StatefulSet: Flow 1: Notebook Creation
+        User->>K8sAPI: Create Notebook CR<br/>Auth: User credentials
+        K8sAPI-->>Controller: Watch event<br/>Auth: ServiceAccount Token
+        Controller->>K8sAPI: Create StatefulSet<br/>6443/TCP HTTPS TLS1.2+<br/>Auth: ServiceAccount Token
+        Controller->>K8sAPI: Create Service (ClusterIP)<br/>6443/TCP HTTPS TLS1.2+<br/>Auth: ServiceAccount Token
+        alt USE_ISTIO=true
+            Controller->>K8sAPI: Create VirtualService<br/>6443/TCP HTTPS TLS1.2+<br/>Auth: ServiceAccount Token
+        end
+        StatefulSet->>Registry: Pull notebook image<br/>443/TCP HTTPS TLS1.2+<br/>Auth: ImagePullSecrets
+        Registry-->>StatefulSet: Container image
+        StatefulSet->>NotebookPod: Start pod
+    end
+
+    %% Flow 2: Idle Notebook Culling
+    rect rgb(255, 240, 230)
+        Note over Culler,NotebookPod: Flow 2: Idle Notebook Culling (IDLENESS_CHECK_PERIOD=1m)
+        loop Every IDLENESS_CHECK_PERIOD
+            Culler->>NotebookPod: GET /notebook/{ns}/{name}/api/kernels<br/>8888/TCP HTTP plaintext<br/>Auth: None
+            NotebookPod-->>Culler: Kernel activity status
+            Culler->>NotebookPod: GET /notebook/{ns}/{name}/api/terminals<br/>8888/TCP HTTP plaintext<br/>Auth: None
+            NotebookPod-->>Culler: Terminal activity status
+            alt Idle > CULL_IDLE_TIME (default 1440m)
+                Culler->>K8sAPI: Update Notebook CR<br/>Add kubeflow-resource-stopped annotation<br/>6443/TCP HTTPS TLS1.2+<br/>Auth: ServiceAccount Token
+                K8sAPI-->>Controller: Watch event
+                Controller->>K8sAPI: Scale StatefulSet to 0<br/>6443/TCP HTTPS TLS1.2+<br/>Auth: ServiceAccount Token
+            end
+        end
+    end
+
+    %% Flow 3: Metrics Collection
+    rect rgb(240, 255, 240)
+        Note over Prometheus,Controller: Flow 3: Metrics Collection
+        loop Every scrape interval
+            Prometheus->>Controller: GET /metrics<br/>8080/TCP HTTP plaintext<br/>Auth: None
+            Controller-->>Prometheus: Prometheus metrics<br/>notebook_running, notebook_create_total, etc.
+        end
+    end

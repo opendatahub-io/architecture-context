@@ -1,0 +1,237 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [User Browser]                                                          │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: OpenShift OAuth (session cookie)                         │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift Router - HAProxy)                                   │
+│                                                                          │
+│  [OpenShift Route: odh-dashboard]                                        │
+│  - Host: {cluster-specific-hostname}                                     │
+│  - Port: 443/TCP (external) → 8443/TCP (internal)                      │
+│  - TLS Mode: Reencrypt                                                   │
+│  - Edge Termination: TLS 1.2+                                            │
+│  - Backend Re-encryption: TLS 1.2+                                       │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+ (service cert)                            │
+│         │ Service: odh-dashboard (ClusterIP)                             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION POD (Namespace: redhat-ods-applications)                   │
+│                                                                          │
+│  ┌───────────────────────────────────────────────────────────┐          │
+│  │ Pod: odh-dashboard-{hash}                                 │          │
+│  │ ServiceAccount: odh-dashboard                             │          │
+│  │                                                            │          │
+│  │  [OAuth Proxy Container]                                  │          │
+│  │  - Port: 8443/TCP (HTTPS - listens externally)           │          │
+│  │  - TLS Cert: dashboard-proxy-tls (service-ca-operator)    │          │
+│  │  - Cookie Secret: dashboard-oauth-config-generated        │          │
+│  │  - Client Secret: dashboard-oauth-client-generated        │          │
+│  │  - Auth: OpenShift OAuth validation                       │          │
+│  │  - RBAC Check: user must have 'get' on dashboard service  │          │
+│  │         │                                                  │          │
+│  │         │ Port: 8080/TCP                                   │          │
+│  │         │ Protocol: HTTP                                   │          │
+│  │         │ Encryption: None (localhost/pod-internal)        │          │
+│  │         │ Header: x-forwarded-access-token (Bearer)        │          │
+│  │         ▼                                                  │          │
+│  │  [Dashboard Backend Container]                            │          │
+│  │  - Port: 8080/TCP (HTTP - localhost only)                │          │
+│  │  - Runtime: Node.js 18 / Fastify                          │          │
+│  │  - ServiceAccount Token: /var/run/secrets/...             │          │
+│  │  - Image: odh-dashboard (UBI8 nodejs-18)                  │          │
+│  │         │                                                  │          │
+│  └─────────┼──────────────────────────────────────────────────┘          │
+│            │                                                              │
+├────────────┼──────────────────────────────────────────────────────────────┤
+│  EGRESS    │                                                              │
+│            │                                                              │
+│            │ Port: 6443/TCP                                               │
+│            │ Protocol: HTTPS                                              │
+│            │ Encryption: TLS 1.2+                                         │
+│            │ Auth: Service Account Token (odh-dashboard)                  │
+│            ▼                                                              │
+│  [Kubernetes API Server]                                                 │
+│  - Namespace: default                                                    │
+│  - Auth: Bearer token from SA                                            │
+│  - Resources: CRDs, namespaces, secrets, configmaps, etc.                │
+│            │                                                              │
+│            │ Port: 443/TCP                                                │
+│            │ Protocol: HTTPS                                              │
+│            │ Encryption: TLS 1.2+                                         │
+│            │ Auth: OAuth client credentials                               │
+│            ▼                                                              │
+│  [OpenShift OAuth Server]                                                │
+│  - Namespace: openshift-authentication                                   │
+│  - Purpose: User authentication and token validation                     │
+│  - Client: dashboard-oauth-client-generated                              │
+│            │                                                              │
+│            │ Port: 9092/TCP                                               │
+│            │ Protocol: HTTPS                                              │
+│            │ Encryption: TLS 1.2+                                         │
+│            │ Auth: User Bearer Token (forwarded)                          │
+│            ▼                                                              │
+│  [Thanos Querier]                                                        │
+│  - Namespace: openshift-monitoring                                       │
+│  - Purpose: Query Prometheus metrics                                     │
+│  - ServiceAccount: Required cluster-monitoring-view role                 │
+│            │                                                              │
+│            │ Port: 443/TCP                                                │
+│            │ Protocol: HTTPS                                              │
+│            │ Encryption: TLS 1.2+                                         │
+│            │ Auth: Service Account Token                                  │
+│            ▼                                                              │
+│  [OpenShift Image Registry]                                              │
+│  - Namespace: openshift-image-registry                                   │
+│  - Purpose: Pull notebook image metadata                                 │
+│  - Auth: Service Account with image-puller role                          │
+│            │                                                              │
+│            │ Port: 8443/TCP                                               │
+│            │ Protocol: HTTPS                                              │
+│            │ Encryption: TLS 1.2+                                         │
+│            │ Auth: Bearer Token                                           │
+│            ▼                                                              │
+│  [Data Science Pipelines API]                                            │
+│  - Namespace: {user-namespace}                                           │
+│  - Purpose: Retrieve pipeline runs and logs                              │
+│  - Auth: User bearer token or service account                            │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ClusterRole: odh-dashboard
+  - API Groups: "" (core)
+    - Resources: nodes, configmaps, persistentvolumeclaims, secrets, pods,
+                 serviceaccounts, services, namespaces, events
+    - Verbs: get, list, watch, create, update, patch, delete (varies by resource)
+
+  - API Groups: config.openshift.io
+    - Resources: clusterversions
+    - Verbs: get, watch, list
+
+  - API Groups: operators.coreos.com
+    - Resources: clusterserviceversions, subscriptions
+    - Verbs: get, list, watch
+
+  - API Groups: image.openshift.io
+    - Resources: imagestreams/layers
+    - Verbs: get
+
+  - API Groups: route.openshift.io
+    - Resources: routes
+    - Verbs: get, list, watch
+
+  - API Groups: rbac.authorization.k8s.io
+    - Resources: rolebindings, clusterrolebindings, roles
+    - Verbs: get, list, watch, create, update, patch, delete
+
+  - API Groups: kubeflow.org
+    - Resources: notebooks
+    - Verbs: get, list, watch, create, update, patch, delete
+
+  - API Groups: datasciencecluster.opendatahub.io
+    - Resources: datascienceclusters
+    - Verbs: list, watch, get
+
+  - API Groups: dscinitialization.opendatahub.io
+    - Resources: dscinitializations
+    - Verbs: list, watch, get
+
+Namespaced Role: odh-dashboard (in dashboard namespace)
+  - API Groups: dashboard.opendatahub.io
+    - Resources: acceleratorprofiles, odhapplications, odhdocuments
+    - Verbs: create, get, list, update, patch, delete (acceleratorprofiles)
+             get, list (odhapplications, odhdocuments)
+
+  - API Groups: serving.kserve.io
+    - Resources: servingruntimes
+    - Verbs: * (all)
+
+  - API Groups: template.openshift.io
+    - Resources: templates
+    - Verbs: * (all)
+
+  - API Groups: opendatahub.io
+    - Resources: odhdashboardconfigs
+    - Verbs: get, list, watch, create, update, patch, delete
+
+RoleBindings:
+  - odh-dashboard (namespace: dashboard) → ClusterRole: odh-dashboard
+  - odh-dashboard-auth-delegator (namespace: kube-system) → ClusterRole: system:auth-delegator
+  - odh-dashboard-cluster-monitoring (namespace: openshift-monitoring) → ClusterRole: cluster-monitoring-view
+  - image-puller (namespace: dashboard) → ClusterRole: system:image-puller
+
+Secrets:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. dashboard-proxy-tls
+   - Type: kubernetes.io/tls
+   - Purpose: TLS certificate for OAuth proxy HTTPS endpoint (8443/TCP)
+   - Provisioned By: service-ca-operator (OpenShift)
+   - Auto-Rotate: Yes (service-ca controller)
+   - Rotation Period: ~26 months (service-ca default)
+
+2. dashboard-oauth-config-generated
+   - Type: Opaque
+   - Purpose: Cookie secret for OAuth proxy session management
+   - Keys: cookie_secret (base64)
+   - Provisioned By: Kustomize/Operator
+   - Auto-Rotate: No (manual rotation required)
+
+3. dashboard-oauth-client-generated
+   - Type: Opaque
+   - Purpose: OAuth client secret for authentication with OpenShift
+   - Keys: client_id, client_secret
+   - Provisioned By: Kustomize/Operator
+   - Auto-Rotate: No (manual rotation required)
+
+Authentication Flow:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. User → OpenShift Route (HTTPS/443, TLS 1.2+)
+2. Route → OAuth Proxy (HTTPS/8443, TLS reencrypt, service cert)
+3. OAuth Proxy → OpenShift OAuth (validates session/token)
+4. OAuth Proxy → RBAC Check (user must have 'get' on odh-dashboard service)
+5. OAuth Proxy → Backend (HTTP/8080 localhost, x-forwarded-access-token header)
+6. Backend → Kubernetes API (HTTPS/6443, Service Account Token for dashboard ops)
+7. Backend → Thanos/Other Services (HTTPS, User Bearer Token forwarded for user-scoped queries)
+
+Public Endpoints (No Auth):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- /oauth/healthz (HTTPS/8443) - OAuth proxy health check
+- /metrics (HTTPS/8443) - Prometheus metrics scraping (skip-auth via regex)
+
+Network Policies:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+None defined - Dashboard relies on OpenShift SDN/OVN default behavior.
+No Istio service mesh integration.
+
+Security Considerations:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. OAuth Token Forwarding: User access tokens forwarded to backend via
+   x-forwarded-access-token header for Kubernetes API calls with user context
+
+2. Service Account Permissions: Dashboard SA has broad cluster-level read
+   permissions and namespace-level write permissions for managing resources
+
+3. Secret Management: OAuth secrets (cookie_secret, client_secret) are NOT
+   auto-rotated - manual rotation required
+
+4. TLS Termination: Route uses TLS reencrypt mode - backend must present
+   valid service-ca TLS cert
+
+5. RBAC Delegation: OAuth proxy validates user has 'get' permission on
+   odh-dashboard service in dashboard namespace before allowing access

@@ -1,0 +1,61 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as ODH Dashboard<br/>8443/TCP HTTPS<br/>OAuth
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+
+    participant Operator as Component Operator<br/>Reconcile Loop
+    participant Workload as Workload Pod<br/>Service Mesh mTLS
+    participant Storage as S3 Storage<br/>443/TCP HTTPS<br/>TLS 1.2+
+    participant OAuth as OpenShift OAuth<br/>443/TCP HTTPS<br/>Bearer Token
+    participant Prometheus as Prometheus<br/>9092/TCP HTTPS<br/>Metrics
+
+    Note over User,Prometheus: Workflow 1: Notebook Workbench Creation
+    User->>Dashboard: 1. Select notebook image/resources<br/>Web UI
+    Dashboard->>OAuth: Authenticate user<br/>Bearer Token
+    OAuth-->>Dashboard: Token validated
+    Dashboard->>K8sAPI: 2. Create Notebook CR<br/>POST /apis/kubeflow.org/v1/namespaces/{ns}/notebooks
+    K8sAPI->>Operator: 3. Watch event trigger
+    Operator->>K8sAPI: 4. Create StatefulSet, Service, VirtualService<br/>OAuth proxy sidecar
+    K8sAPI->>Workload: 5. Pull image, create pod<br/>Container Registry HTTPS/443
+    User->>Workload: 6. Access via Route<br/>HTTPS/443 → OAuth Proxy → JupyterLab/8888
+    Workload->>Storage: 7. Save models/data<br/>AWS IAM Auth
+
+    Note over User,Prometheus: Workflow 2: Model Deployment (KServe)
+    User->>K8sAPI: 1. Create InferenceService CR<br/>kubectl apply -f isvc.yaml
+    K8sAPI->>Operator: 2. KServe Controller triggered
+    Operator->>K8sAPI: 3. Create Knative Service<br/>storage-initializer container
+    Workload->>Storage: 4. Download model artifacts<br/>HTTPS/443 S3 API
+    Operator->>K8sAPI: ODH Model Controller creates Route, VirtualService
+    User->>Workload: 5. Inference request<br/>POST /v2/models/{model}/infer<br/>Route:443 → Istio GW → mTLS → Pod:8080
+    Workload-->>User: Prediction response<br/>JSON payload
+    Workload->>Prometheus: Expose metrics<br/>ServiceMonitor scrape :8080/metrics
+
+    Note over User,Prometheus: Workflow 3: ML Pipeline Execution
+    User->>Dashboard: 1. Upload pipeline YAML<br/>Dashboard UI
+    Dashboard->>K8sAPI: Create DataSciencePipelinesApplication CR
+    K8sAPI->>Operator: DSP Operator triggered
+    Operator->>K8sAPI: Deploy API Server, MariaDB, MinIO, Workflow Controller
+    User->>Workload: 2. Submit pipeline run<br/>POST /apis/v1beta1/pipelines
+    Workload->>K8sAPI: Create Argo Workflow / Tekton PipelineRun
+    K8sAPI->>Workload: Launch pipeline step pods
+    Workload->>Storage: Read/write data<br/>S3 API HTTPS/443
+    Workload->>Prometheus: Pipeline metrics<br/>step duration, artifact size
+
+    Note over User,Prometheus: Workflow 4: Distributed Training (Ray + Kueue)
+    User->>K8sAPI: 1. Create RayCluster CR<br/>with Kueue LocalQueue annotation
+    K8sAPI->>Operator: Kueue creates Workload CR
+    Operator->>Operator: Suspend until resources available
+    Operator->>K8sAPI: Admit workload<br/>KubeRay creates head/worker pods
+    Operator->>Workload: CodeFlare injects OAuth, mTLS, NetworkPolicies
+    User->>Workload: Submit training job<br/>Ray Dashboard (OAuth Route)
+    Workload->>Workload: Distribute computation<br/>Ray mTLS cluster communication
+    Workload->>Storage: Save checkpoints<br/>S3 HTTPS/443
+    Workload->>Prometheus: Ray metrics<br/>worker utilization, task progress
+
+    Note over User,Prometheus: Workflow 5: Model Monitoring (TrustyAI)
+    User->>K8sAPI: 1. Create TrustyAIService CR
+    K8sAPI->>Operator: TrustyAI Operator triggered
+    Operator->>K8sAPI: Deploy TrustyAI pod, PVC, OAuth proxy
+    Operator->>Workload: Patch InferenceService<br/>enable payload logging
+    Workload->>Workload: Send requests/responses<br/>to TrustyAI consumer endpoint
+    Workload->>Prometheus: Fairness metrics<br/>SPD, DIR via ServiceMonitor
+    User->>Prometheus: View metrics<br/>Grafana dashboard

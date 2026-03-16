@@ -1,0 +1,67 @@
+sequenceDiagram
+    participant User as User/Dashboard
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.3
+    participant Webhook as NotebookWebhook<br/>8443/TCP HTTPS TLS1.2+
+    participant Controller as OpenshiftNotebookReconciler<br/>Controller
+    participant KFController as Kubeflow Notebook Controller
+    participant Browser as User Browser
+    participant Router as OpenShift Router<br/>443/TCP HTTPS TLS1.3
+    participant OAuthProxy as OAuth Proxy Sidecar<br/>8443/TCP HTTPS TLS1.2+
+    participant OAuthServer as OpenShift OAuth Server<br/>6443/TCP HTTPS TLS1.3
+    participant Notebook as Notebook Container<br/>8888/TCP HTTP
+
+    %% Flow 1: Notebook Creation with OAuth
+    Note over User,Notebook: Flow 1: Notebook Creation with OAuth
+
+    User->>K8sAPI: POST Notebook CR<br/>Auth: Bearer Token
+    K8sAPI->>Webhook: AdmissionReview<br/>Auth: mTLS (API server cert)
+    Webhook->>Webhook: Inject OAuth sidecar config<br/>Add reconciliation lock annotation
+    Webhook->>K8sAPI: Return mutated CR<br/>Auth: mTLS
+    K8sAPI->>Controller: Notify: Notebook created/updated<br/>Auth: Service Account Token
+
+    Controller->>K8sAPI: Create ServiceAccount<br/>with OAuth redirect ref<br/>Auth: Service Account Token
+    Controller->>K8sAPI: Create Secret<br/>(OAuth config, cookie secret)<br/>Auth: Service Account Token
+    Controller->>K8sAPI: Create Service (OAuth)<br/>443→8443 HTTPS<br/>Auth: Service Account Token
+    Controller->>K8sAPI: Create Service (Base)<br/>80→8888 HTTP<br/>Auth: Service Account Token
+    Controller->>K8sAPI: Create Route<br/>Edge TLS termination<br/>Auth: Service Account Token
+    Controller->>K8sAPI: Create NetworkPolicies<br/>Auth: Service Account Token
+    Controller->>K8sAPI: Create ConfigMap<br/>(Trusted CA bundle)<br/>Auth: Service Account Token
+    Controller->>K8sAPI: Patch Notebook CR<br/>(remove lock annotation)<br/>Auth: Service Account Token
+
+    K8sAPI->>KFController: Notify: Notebook updated
+    KFController->>K8sAPI: Create StatefulSet<br/>with injected OAuth sidecar<br/>Auth: Service Account Token
+    K8sAPI-->>User: Notebook CR created
+
+    %% Flow 2: Notebook Access (OAuth Enabled)
+    Note over Browser,Notebook: Flow 2: Notebook Access (OAuth Enabled)
+
+    Browser->>Router: GET https://{route-url}<br/>No auth
+    Router->>OAuthProxy: Forward request<br/>8443/TCP HTTPS TLS1.2+
+
+    alt User not authenticated
+        OAuthProxy->>Browser: Redirect to OAuth login
+        Browser->>OAuthServer: OAuth authentication flow<br/>6443/TCP HTTPS TLS1.3
+        OAuthServer-->>Browser: OAuth token
+        Browser->>Router: Request with OAuth cookie
+        Router->>OAuthProxy: Forward with cookie
+    end
+
+    OAuthProxy->>K8sAPI: SubjectAccessReview<br/>Check GET permission on Notebook CR<br/>Auth: User OAuth token
+    K8sAPI-->>OAuthProxy: Authorization result
+
+    alt User authorized
+        OAuthProxy->>Notebook: Proxy request<br/>8888/TCP HTTP (plaintext)
+        Notebook-->>OAuthProxy: Response
+        OAuthProxy-->>Router: HTTPS response
+        Router-->>Browser: HTTPS response<br/>TLS1.3
+    else User not authorized
+        OAuthProxy-->>Browser: 403 Forbidden
+    end
+
+    %% Flow 3: Controller Reconciliation
+    Note over Controller,K8sAPI: Flow 3: Controller Reconciliation (Watch Loop)
+
+    Controller->>K8sAPI: Watch Notebook CRs<br/>Auth: Service Account Token
+    K8sAPI->>Controller: Notebook event<br/>(create/update/delete)
+    Controller->>K8sAPI: Reconcile resources<br/>(Route, Service, Secret, etc.)<br/>Auth: Service Account Token
+    Controller->>K8sAPI: Update Notebook status<br/>Auth: Service Account Token

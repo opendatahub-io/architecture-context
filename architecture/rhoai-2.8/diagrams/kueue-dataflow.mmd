@@ -1,0 +1,81 @@
+sequenceDiagram
+    participant User as User/kubectl
+    participant APIServer as Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+
+    participant Webhook as Webhook Server<br/>9443/TCP HTTPS mTLS
+    participant ClusterQueue as ClusterQueue Controller
+    participant AdmissionCheck as AdmissionCheck Controller
+    participant Workload as Workload Controller
+    participant JobController as Job Controller
+    participant Pods as Pods
+
+    Note over User,Pods: Flow 1: Job Submission and Queueing
+
+    User->>APIServer: POST /apis/batch/v1/jobs<br/>Auth: Bearer Token
+    APIServer->>Webhook: POST /mutate-batch-job<br/>mTLS (API Server Client Cert)
+    Webhook->>APIServer: Response: Add queue name, suspend=true<br/>Service Account Token
+    APIServer-->>User: Job Created (suspended)
+
+    Workload->>APIServer: Watch Jobs<br/>Service Account Token
+    APIServer-->>Workload: Job Event (suspended)
+    Workload->>APIServer: POST /apis/kueue.x-k8s.io/v1beta1/workloads<br/>Service Account Token
+    APIServer-->>Workload: Workload Created
+
+    Note over ClusterQueue,AdmissionCheck: Flow 2: Workload Admission
+
+    ClusterQueue->>APIServer: Watch Pending Workloads<br/>Service Account Token
+    APIServer-->>ClusterQueue: Workload Event
+    ClusterQueue->>ClusterQueue: Evaluate Quota & Priority
+    ClusterQueue->>APIServer: Check Admission Checks<br/>Service Account Token
+
+    AdmissionCheck->>APIServer: Watch Workloads<br/>Service Account Token
+    APIServer-->>AdmissionCheck: Workload Event
+    AdmissionCheck->>AdmissionCheck: Validate Requirements
+    AdmissionCheck->>APIServer: Update AdmissionCheck Status<br/>Service Account Token
+
+    ClusterQueue->>APIServer: Update Workload Status: Admitted<br/>Service Account Token
+    APIServer-->>Workload: Workload Admitted Event
+
+    Workload->>APIServer: PATCH /apis/batch/v1/jobs/{name}<br/>Set suspend=false
+    APIServer-->>JobController: Job Unsuspended Event
+
+    JobController->>APIServer: Create Pods<br/>Service Account Token
+    APIServer-->>Pods: Pods Running
+
+    Note over User,APIServer: Flow 3: Visibility API Query
+
+    User->>APIServer: GET /apis/visibility.kueue.x-k8s.io/v1alpha1/pendingworkloads<br/>Auth: Bearer Token
+    APIServer->>Webhook: Forward to Visibility Server<br/>8082/TCP HTTPS<br/>Bearer Token (proxied)
+    Webhook->>APIServer: Query Workload CRDs<br/>Service Account Token
+    APIServer-->>Webhook: Workload List
+    Webhook-->>APIServer: Formatted Response
+    APIServer-->>User: Pending Workloads Summary
+
+    Note over User,Workload: Flow 4: Metrics Collection
+
+    User->>APIServer: Create ServiceMonitor<br/>Bearer Token
+    APIServer->>Webhook: Configure Prometheus<br/>Service Account Token
+
+    loop Every 30s
+        Webhook->>Webhook: Scrape /metrics (8443/TCP HTTPS)<br/>Bearer Token
+        Webhook->>APIServer: TokenReview API<br/>Service Account Token
+        APIServer-->>Webhook: Token Valid
+        Webhook->>Workload: GET /metrics (8080/TCP HTTP)<br/>Local Sidecar
+        Workload-->>Webhook: Metrics Data
+        Webhook-->>Webhook: Store Metrics
+    end
+
+    Note over Workload,Pods: Flow 5: Multi-Cluster Distribution
+
+    Workload->>APIServer: Watch Admitted Workloads<br/>Service Account Token
+    APIServer-->>Workload: Workload Admitted Event
+    Workload->>APIServer: Read MultiKueueConfig & Secrets<br/>Service Account Token
+    APIServer-->>Workload: Remote Cluster Kubeconfig
+
+    Workload->>Pods: POST /apis/kueue.x-k8s.io/v1beta1/workloads<br/>6443/TCP HTTPS TLS1.2+<br/>Kubeconfig Credentials
+    Pods-->>Workload: Workload Created (Remote)
+
+    loop Status Sync
+        Pods->>Workload: GET /apis/kueue.x-k8s.io/v1beta1/workloads/{name}/status<br/>Kubeconfig Credentials
+        Workload-->>Pods: Remote Workload Status
+        Pods->>APIServer: Update Local Workload Status<br/>Service Account Token
+    end

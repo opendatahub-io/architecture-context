@@ -1,0 +1,166 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User[External Users<br/>Data Scientists, ML Engineers]
+    end
+
+    subgraph Ingress["INGRESS (DMZ) - OpenShift Router"]
+        Router["OpenShift Routes<br/>443/TCP HTTPS TLS 1.2+<br/>TLS Termination<br/>service-ca certs (90d rotation)"]
+    end
+
+    subgraph ControlPlane["CONTROL PLANE (Cluster-scoped Operators) - Trusted"]
+        direction TB
+
+        subgraph NS_RHODSOperator["redhat-ods-operator"]
+            RHODSOp["RHODS Operator<br/>SA: rhods-operator-controller-manager<br/>ClusterRole: controller-manager-role"]
+        end
+
+        subgraph NS_KServe["kserve"]
+            KServeOp["KServe Controller<br/>SA: kserve-controller-manager<br/>Webhook: 9443/TCP mTLS"]
+        end
+
+        subgraph NS_ModelMesh["modelmesh-serving"]
+            ModelMeshOp["ModelMesh Controller<br/>SA: modelmesh-controller<br/>Webhook: 9443/TCP mTLS"]
+        end
+
+        subgraph NS_OpenDataHub["opendatahub"]
+            CodeFlareOp["CodeFlare Operator<br/>SA: codeflare-operator-controller-manager"]
+        end
+
+        subgraph NS_Kueue["kueue-system"]
+            KueueOp["Kueue Controller<br/>SA: kueue-controller-manager<br/>Leader Election"]
+        end
+    end
+
+    subgraph PlatformServices["PLATFORM SERVICES (Application Tier) - Trusted"]
+        direction TB
+
+        subgraph NS_RHODSApps["redhat-ods-applications"]
+            Dashboard["ODH Dashboard<br/>2 replicas (HA)<br/>OAuth: 8443/TCP<br/>TLS: dashboard-proxy-tls"]
+            NotebookCtrl["Notebook Controller<br/>1 replica<br/>Creates Routes + NetworkPolicies"]
+            ModelCtrl["Model Controller<br/>3 replicas (leader election)<br/>Aggregates storage-config"]
+        end
+    end
+
+    subgraph Monitoring["MONITORING - redhat-ods-monitoring"]
+        Prometheus["Prometheus<br/>9091/TCP HTTPS<br/>ServiceMonitor scraping"]
+    end
+
+    subgraph UserWorkloads["USER WORKLOADS (Multi-tenant, Namespace-isolated)"]
+        direction TB
+
+        subgraph UserNamespace["user-namespace-1, user-namespace-2, ..."]
+            Notebooks["Notebook StatefulSets<br/>OAuth Proxy: 8443/TCP<br/>NetworkPolicy: Isolated<br/>Secrets: s3, git, db credentials"]
+
+            InferenceSvc["KServe InferenceService<br/>Predictor: 8080/TCP<br/>mTLS: PERMISSIVE<br/>Knative autoscaling"]
+
+            ModelMeshRuntime["ModelMesh Runtime<br/>modelmesh: 8033/TCP gRPC<br/>adapter: 8085/TCP<br/>etcd: 2379/TCP"]
+
+            DSP["Data Science Pipelines<br/>API: 8888/TCP, OAuth: 8443/TCP<br/>MariaDB: 3306/TCP TLS<br/>Minio: 9000/TCP S3 API"]
+
+            RayCluster["Ray Cluster<br/>Head: 6379/TCP Redis, 8265/TCP Dashboard<br/>Workers connect via GCS"]
+
+            TrustyAI["TrustyAI Service<br/>OAuth: 8443/TCP<br/>Metrics: /q/metrics<br/>PVC storage"]
+        end
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (Istio) - PERMISSIVE Mode"]
+        IstioGateway["Istio Ingress Gateway<br/>8080/TCP HTTP, 8443/TCP HTTPS<br/>VirtualServices per InferenceService<br/>PeerAuthentication: PERMISSIVE"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+<br/>Auth: ServiceAccount JWT"]
+
+        OAuthServer["OpenShift OAuth<br/>6443/TCP HTTPS<br/>OAuth 2.0 code flow"]
+
+        S3Storage["S3-Compatible Storage<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS IAM or access keys"]
+
+        Registries["Container Registries<br/>quay.io, registry.redhat.io<br/>443/TCP HTTPS TLS 1.2+"]
+
+        PyPI["PyPI / Git / Databases<br/>443/TCP HTTPS<br/>22/TCP SSH<br/>5432/3306/27017 TCP"]
+
+        MachineAPI["OpenShift Machine API<br/>6443/TCP HTTPS<br/>CodeFlare InstaScale autoscaling"]
+    end
+
+    %% Ingress Flow
+    User -->|HTTPS/443<br/>TLS 1.2+<br/>OAuth Bearer Token| Router
+    Router -->|8443/TCP<br/>OAuth Proxy| Dashboard
+    Router -->|8443/TCP<br/>OAuth Proxy| Notebooks
+    Router -->|via Istio<br/>8080/TCP| InferenceSvc
+    Router -->|8443/TCP<br/>OAuth Proxy| DSP
+    Router -->|8443/TCP<br/>OAuth Proxy| TrustyAI
+
+    %% Service Mesh Integration
+    Router <-->|VirtualService| IstioGateway
+    IstioGateway -->|mTLS PERMISSIVE<br/>8080/TCP| InferenceSvc
+
+    %% Control Plane API Access
+    RHODSOp -->|HTTPS/6443<br/>JWT Token| K8sAPI
+    KServeOp -->|HTTPS/6443<br/>JWT Token| K8sAPI
+    ModelMeshOp -->|HTTPS/6443<br/>JWT Token| K8sAPI
+    CodeFlareOp -->|HTTPS/6443<br/>JWT Token| K8sAPI
+    KueueOp -->|HTTPS/6443<br/>JWT Token| K8sAPI
+
+    %% Platform Services API Access
+    Dashboard -->|HTTPS/6443<br/>JWT Token| K8sAPI
+    NotebookCtrl -->|HTTPS/6443<br/>JWT Token| K8sAPI
+    ModelCtrl -->|HTTPS/6443<br/>JWT Token| K8sAPI
+
+    %% OAuth Integration
+    Dashboard -->|HTTPS/6443<br/>OAuth 2.0| OAuthServer
+    Notebooks -->|HTTPS/6443<br/>OAuth 2.0| OAuthServer
+    DSP -->|HTTPS/6443<br/>OAuth 2.0| OAuthServer
+    TrustyAI -->|HTTPS/6443<br/>OAuth 2.0| OAuthServer
+
+    %% Prometheus Monitoring
+    Prometheus -->|Scrape<br/>ServiceMonitors| Dashboard
+    Prometheus -->|Scrape| InferenceSvc
+    Prometheus -->|Scrape| ModelMeshRuntime
+    Prometheus -->|Scrape| TrustyAI
+    Dashboard -->|Query<br/>9091/TCP HTTPS| Prometheus
+
+    %% Storage Access
+    Notebooks -->|HTTPS/443<br/>TLS 1.2+<br/>AWS IAM/Keys| S3Storage
+    InferenceSvc -->|HTTPS/443<br/>TLS 1.2+<br/>AWS IAM/Keys| S3Storage
+    ModelMeshRuntime -->|HTTPS/443<br/>TLS 1.2+<br/>AWS IAM/Keys| S3Storage
+    DSP -->|HTTPS/443<br/>TLS 1.2+<br/>AWS IAM/Keys| S3Storage
+
+    %% Container Registry Access
+    RHODSOp -->|HTTPS/443<br/>Pull Secrets| Registries
+    Notebooks -->|HTTPS/443<br/>Pull Secrets| Registries
+    InferenceSvc -->|HTTPS/443<br/>Pull Secrets| Registries
+
+    %% Development Tools
+    Notebooks -->|HTTPS/443<br/>SSH/22| PyPI
+
+    %% Machine Autoscaling
+    CodeFlareOp -->|HTTPS/6443<br/>JWT Token| MachineAPI
+
+    %% Model Controller Actions
+    ModelCtrl -->|Configure| IstioGateway
+    ModelCtrl -.->|Create ServiceMonitor| Prometheus
+
+    %% Operator Deployments
+    RHODSOp -.->|Deploy| Dashboard
+    RHODSOp -.->|Deploy| NotebookCtrl
+    RHODSOp -.->|Deploy| ModelCtrl
+    KServeOp -.->|Create| InferenceSvc
+    ModelMeshOp -.->|Create| ModelMeshRuntime
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:3px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:3px
+    classDef controlplane fill:#cce5ff,stroke:#0066cc,stroke-width:3px
+    classDef platformsvc fill:#d5e8d4,stroke:#82b366,stroke-width:3px
+    classDef monitoring fill:#fff2cc,stroke:#d6b656,stroke-width:3px
+    classDef userworkload fill:#e1d5e7,stroke:#9673a6,stroke-width:3px
+    classDef servicemesh fill:#dae8fc,stroke:#6c8ebf,stroke-width:3px
+    classDef externalsvc fill:#f8cecc,stroke:#b85450,stroke-width:3px
+
+    class User external
+    class Router ingress
+    class RHODSOp,KServeOp,ModelMeshOp,CodeFlareOp,KueueOp controlplane
+    class Dashboard,NotebookCtrl,ModelCtrl platformsvc
+    class Prometheus monitoring
+    class Notebooks,InferenceSvc,ModelMeshRuntime,DSP,RayCluster,TrustyAI userworkload
+    class IstioGateway servicemesh
+    class K8sAPI,OAuthServer,S3Storage,Registries,PyPI,MachineAPI externalsvc

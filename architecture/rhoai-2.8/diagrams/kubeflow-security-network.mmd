@@ -1,0 +1,98 @@
+graph TB
+    subgraph External["EXTERNAL - Untrusted"]
+        Browser[User Browser]
+    end
+
+    subgraph Ingress["INGRESS - DMZ"]
+        Router["OpenShift Router<br/>443/TCP to 8443/TCP<br/>Edge TLS 1.3<br/>Redirects HTTP to HTTPS"]
+    end
+
+    subgraph NotebookPods["APPLICATION PODS - Notebook Namespace"]
+        direction TB
+
+        subgraph NotebookPod["Notebook Pod<br/>Namespace: user-namespace<br/>SA: notebook-name-sa"]
+            direction LR
+            OAuthProxy["OAuth Proxy Sidecar<br/>Port: 8443/TCP HTTPS<br/>TLS 1.2+ service-serving cert<br/>Image: ose-oauth-proxy"]
+            NotebookContainer["Notebook Container<br/>Port: 8888/TCP HTTP<br/>notebook-image"]
+        end
+    end
+
+    subgraph ControllerNamespace["CONTROLLER NAMESPACE<br/>opendatahub or redhat-ods-applications"]
+        direction TB
+
+        Controller["ODH Notebook Controller<br/>SA: odh-notebook-controller-manager"]
+        WebhookSvc["Webhook Service<br/>443 to 8443/TCP HTTPS<br/>TLS 1.2+ service-serving cert"]
+        MetricsSvc["Metrics Service<br/>8080/TCP HTTP"]
+
+        Controller -.->|serves| WebhookSvc
+        Controller -.->|serves| MetricsSvc
+    end
+
+    subgraph K8sServices["KUBERNETES SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.3"]
+        OAuthServer["OpenShift OAuth Server<br/>6443/TCP HTTPS TLS 1.3"]
+        Prometheus["Prometheus"]
+        ServiceCA["Service CA Operator"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        Registry["Container Registries<br/>quay.io, registry.redhat.io<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Pull secrets"]
+    end
+
+    %% User flow
+    Browser -->|"HTTPS/443<br/>TLS 1.3<br/>Auth: None or OAuth cookie"| Router
+    Router -->|"HTTPS/8443<br/>TLS 1.2+"| OAuthProxy
+
+    %% OAuth authentication flow
+    OAuthProxy -->|"OAuth 2.0 flow<br/>HTTPS/6443<br/>TLS 1.3"| OAuthServer
+    OAuthServer -.->|"OAuth token"| OAuthProxy
+
+    %% OAuth authorization flow (SAR)
+    OAuthProxy -->|"SubjectAccessReview<br/>HTTPS/6443 TLS 1.3<br/>Auth: User OAuth token<br/>Check: GET notebooks"| K8sAPI
+    K8sAPI -.->|"Allowed or Denied"| OAuthProxy
+
+    %% Proxy to notebook
+    OAuthProxy -->|"HTTP/8888<br/>Plaintext localhost<br/>Auth: None"| NotebookContainer
+
+    %% Webhook flow
+    K8sAPI -->|"AdmissionReview<br/>HTTPS/443<br/>mTLS API server cert"| WebhookSvc
+    WebhookSvc -->|"Mutate CR<br/>Inject OAuth sidecar"| Controller
+    Controller -.->|"Mutated CR"| K8sAPI
+
+    %% Controller reconciliation
+    Controller -->|"Watch and Reconcile<br/>HTTPS/6443 TLS 1.3<br/>Auth: SA token<br/>Create: Route, Service,<br/>Secret, NetworkPolicy"| K8sAPI
+
+    %% Metrics
+    Prometheus -->|"Scrape /metrics<br/>HTTP/8080"| MetricsSvc
+
+    %% Certificate provisioning
+    ServiceCA -.->|"Provision TLS certs<br/>via annotation"| WebhookSvc
+    ServiceCA -.->|"Provision TLS certs<br/>via annotation"| OAuthProxy
+
+    %% Image pull
+    NotebookPod -.->|"Pull images<br/>HTTPS/443 TLS 1.2+"| Registry
+    Controller -.->|"Pull images<br/>HTTPS/443 TLS 1.2+"| Registry
+
+    %% Network Policies
+    NPCtrl["NetworkPolicy<br/>notebook-name-ctrl-np<br/>Allow TCP/8888 from controller NS"]
+    NPOAuth["NetworkPolicy<br/>notebook-name-oauth-np<br/>Allow TCP/8443 from all"]
+
+    NPCtrl -.->|enforces| NotebookPod
+    NPOAuth -.->|enforces| NotebookPod
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controller fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef k8s fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef networkpolicy fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+
+    class Browser external
+    class Router ingress
+    class OAuthProxy,NotebookContainer,NotebookPod application
+    class Controller,WebhookSvc,MetricsSvc controller
+    class K8sAPI,OAuthServer,Prometheus,ServiceCA k8s
+    class Registry externalservice
+    class NPCtrl,NPOAuth networkpolicy

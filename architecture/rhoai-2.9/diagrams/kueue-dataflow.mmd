@@ -1,0 +1,59 @@
+sequenceDiagram
+    participant User as User/CI
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+
+    participant Webhook as Kueue Webhook Server<br/>9443/TCP HTTPS mTLS
+    participant Controller as Kueue Controller Manager
+    participant CQ as ClusterQueue
+    participant Workload as Workload CRD
+    participant Job as Kubernetes Job
+    participant Autoscaler as cluster-autoscaler
+
+    Note over User,Autoscaler: Flow 1: Job Submission and Queueing
+
+    User->>K8sAPI: POST /apis/batch/v1/namespaces/{ns}/jobs<br/>Auth: User credentials
+    K8sAPI->>Webhook: POST /mutate-batch-v1-job<br/>mTLS (API Server identity)
+    Webhook->>Webhook: Inject Kueue labels<br/>Set suspend=true
+    Webhook-->>K8sAPI: Modified Job spec
+    K8sAPI-->>User: Job created (suspended)
+
+    Controller->>K8sAPI: WATCH /apis/batch/v1/jobs<br/>ServiceAccount Token
+    Controller->>Controller: Detect new Job
+    Controller->>K8sAPI: POST /apis/kueue.x-k8s.io/v1beta1/workloads<br/>ServiceAccount Token
+    Note over Controller,Workload: Create Workload resource for Job
+
+    Note over User,Autoscaler: Flow 2: Workload Admission
+
+    Controller->>K8sAPI: WATCH /apis/kueue.x-k8s.io/v1beta1/clusterqueues<br/>ServiceAccount Token
+    Controller->>Controller: Check resource quotas<br/>Evaluate priorities and queueing policy
+    Controller->>CQ: Check available quota<br/>Apply StrictFIFO/BestEffortFIFO
+    CQ-->>Controller: Quota available
+
+    Controller->>K8sAPI: PATCH /apis/kueue.x-k8s.io/v1beta1/workloads/{name}<br/>ServiceAccount Token
+    Note over Controller,Workload: Admit Workload (assign quota)
+
+    Controller->>K8sAPI: PATCH /apis/batch/v1/jobs/{name}<br/>ServiceAccount Token
+    Note over Controller,Job: Set suspend=false (unsuspend Job)
+
+    K8sAPI->>Webhook: POST /validate-batch-v1-job<br/>mTLS
+    Webhook-->>K8sAPI: Validation passed
+
+    K8sAPI-->>Controller: Job updated
+    K8sAPI->>Job: Schedule pods
+
+    Note over User,Autoscaler: Flow 3: Metrics Collection
+
+    Prometheus->>Controller: GET /metrics (8080/TCP)<br/>HTTP plaintext
+    Controller-->>Prometheus: kueue_pending_workloads<br/>kueue_admitted_workloads_total<br/>kueue_cluster_queue_resource_usage
+
+    Note over User,Autoscaler: Flow 4: Provisioning Request (Autoscaling)
+
+    Controller->>Controller: Detect insufficient resources<br/>for pending Workload
+    Controller->>K8sAPI: POST /apis/autoscaling.x-k8s.io/v1beta1/provisioningrequests<br/>ServiceAccount Token
+    Note over Controller,Autoscaler: Request node provisioning
+
+    Autoscaler->>K8sAPI: WATCH /apis/autoscaling.x-k8s.io/v1beta1/provisioningrequests<br/>ServiceAccount Token
+    Autoscaler->>Autoscaler: Provision new nodes
+    Autoscaler->>K8sAPI: PATCH /apis/autoscaling.x-k8s.io/v1beta1/provisioningrequests/{name}<br/>Update status
+
+    Controller->>K8sAPI: WATCH ProvisioningRequest status<br/>ServiceAccount Token
+    Controller->>Controller: Retry admission when nodes ready

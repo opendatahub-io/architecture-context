@@ -1,0 +1,103 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[External Client / User]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Gateway["Istio Ingress Gateway<br/>Namespace: istio-system<br/>443/TCP → 8080/TCP<br/>TLS 1.2+ → mTLS<br/>RequestAuthentication"]
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (mTLS STRICT)"]
+        direction TB
+
+        subgraph NS_KnativeServing["Namespace: knative-serving"]
+            Activator["Knative Activator<br/>SA: activator<br/>8012/TCP HTTP<br/>mTLS STRICT"]
+        end
+
+        subgraph NS_UserNamespace["Namespace: {user-namespace}"]
+            direction TB
+
+            subgraph InferencePod["InferenceService Pod<br/>SA: {isvc-name}-sa"]
+                direction LR
+                StorageInit["Init Container<br/>storage-initializer<br/>Model downloader"]
+                Agent["Sidecar<br/>kserve-agent<br/>8080/TCP localhost<br/>Logger/Batcher"]
+                Runtime["Container<br/>kserve-container<br/>8080/TCP (HTTP)<br/>8081/TCP (gRPC)<br/>Serving runtime"]
+                Volume["/mnt/models<br/>EmptyDir volume"]
+
+                StorageInit -->|writes| Volume
+                Volume -->|reads| Runtime
+                Agent <-->|localhost| Runtime
+            end
+
+            Service1["{isvc-name}-predictor<br/>ClusterIP 80/TCP<br/>mTLS"]
+            Service2["{isvc-name}-predictor-private<br/>ClusterIP 80/TCP<br/>mTLS (K8s probes)"]
+
+            Service1 --> Agent
+            Service2 --> Agent
+        end
+
+        subgraph NS_KServe["Namespace: kserve"]
+            Controller["kserve-controller-manager<br/>SA: kserve-controller-manager<br/>8443/TCP HTTPS mTLS<br/>8080/TCP HTTP metrics"]
+            Webhook["kserve-webhook-server<br/>SA: kserve-controller-manager<br/>443/TCP → 9443/TCP HTTPS<br/>TLS 1.2+"]
+            WebhookSecret["Secret<br/>kserve-webhook-server-cert<br/>kubernetes.io/tls<br/>cert-manager managed"]
+
+            Webhook -.->|uses cert| WebhookSecret
+        end
+    end
+
+    subgraph ControlPlane["CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer tokens / mTLS certs"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        S3["S3 Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS SigV4"]
+        GCS["Google Cloud Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>GCP Service Account"]
+        Azure["Azure Blob Storage<br/>blob.core.windows.net<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Azure credentials"]
+        KnativeEventing["Knative Eventing Broker<br/>80/TCP HTTP<br/>mTLS<br/>CloudEvents"]
+        Prometheus["Prometheus<br/>8080/TCP HTTP<br/>mTLS<br/>/metrics scraping"]
+    end
+
+    %% External to Ingress
+    Client -->|HTTPS/443<br/>TLS 1.2+<br/>OAuth2/OIDC optional| Gateway
+
+    %% Ingress to Service Mesh
+    Gateway -->|HTTP/8012<br/>mTLS STRICT<br/>Service Identity| Activator
+
+    %% Service Mesh Internal
+    Activator -->|HTTP/8080<br/>mTLS<br/>Service Identity| Service1
+
+    %% Pod initialization
+    StorageInit -->|HTTPS/443<br/>TLS 1.2+<br/>AWS SigV4/GCP SA| S3
+    StorageInit -->|HTTPS/443<br/>TLS 1.2+<br/>GCP SA JSON| GCS
+    StorageInit -->|HTTPS/443<br/>TLS 1.2+<br/>Azure creds| Azure
+
+    %% Control plane interactions
+    K8sAPI <-->|HTTPS/6443<br/>TLS 1.2+<br/>SA token| Controller
+    K8sAPI -->|HTTPS/443<br/>TLS 1.2+<br/>mTLS cert| Webhook
+
+    %% Observability
+    Agent -->|HTTP/80<br/>mTLS| KnativeEventing
+    Runtime -.->|HTTP/8080<br/>mTLS<br/>/metrics| Prometheus
+    Controller -.->|HTTP/8080<br/>mTLS<br/>/metrics| Prometheus
+
+    %% Controller creates resources
+    Controller -.->|creates/manages| Service1
+    Controller -.->|creates/manages| InferencePod
+
+    %% VirtualService
+    Gateway -.->|VirtualService<br/>routing| Service1
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#d32f2f,stroke-width:3px,color:#000
+    classDef ingress fill:#fff3e0,stroke:#f57c00,stroke-width:3px,color:#000
+    classDef servicemesh fill:#e8f5e9,stroke:#388e3c,stroke-width:2px,color:#000
+    classDef controlplane fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
+    classDef externalservice fill:#fff9c4,stroke:#f9a825,stroke-width:2px,color:#000
+    classDef secret fill:#fce4ec,stroke:#c2185b,stroke-width:2px,color:#000
+
+    class Client external
+    class Gateway ingress
+    class Activator,InferencePod,Agent,Runtime,StorageInit,Volume,Service1,Service2,Controller,Webhook servicemesh
+    class K8sAPI controlplane
+    class S3,GCS,Azure,KnativeEventing,Prometheus externalservice
+    class WebhookSecret secret

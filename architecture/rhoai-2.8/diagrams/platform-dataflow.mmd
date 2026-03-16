@@ -1,0 +1,102 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as ODH Dashboard<br/>443/TCP HTTPS
+    participant NotebookCtrl as Notebook Controller
+    participant Notebook as Jupyter Notebook<br/>443/TCP HTTPS OAuth
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant DSP as Data Science Pipelines<br/>443/TCP HTTPS
+    participant Tekton as Tekton Pipeline<br/>Kubernetes API
+    participant KServeCtrl as KServe Controller
+    participant ModelCtrl as Model Controller
+    participant Knative as Knative Serving
+    participant Istio as Istio Gateway<br/>443/TCP HTTPS
+    participant Predictor as Predictor Pod<br/>8080/TCP mTLS
+    participant Prometheus as Prometheus<br/>9091/TCP HTTPS
+
+    Note over User,Prometheus: Workflow 1: Model Development to Deployment
+
+    User->>Dashboard: 1. Create notebook workspace<br/>OAuth authentication
+    Dashboard->>NotebookCtrl: 2. Create Notebook CR<br/>Kubernetes API
+    NotebookCtrl->>Notebook: 3. Provision pod + OAuth proxy<br/>OpenShift Route
+    Notebook-->>User: 4. JupyterLab UI ready
+
+    User->>Notebook: 5. Develop model, train, save
+    Notebook->>S3: 6. Upload model artifacts<br/>AWS S3 API, IAM auth
+    S3-->>Notebook: 7. Model saved
+
+    User->>Notebook: 8. Create pipeline (Elyra)
+    Notebook->>DSP: 9. Submit pipeline<br/>KFP API
+    DSP->>Tekton: 10. Create PipelineRun CR<br/>Tekton API
+    Tekton->>S3: 11. Store artifacts
+    Tekton-->>DSP: 12. Pipeline complete
+
+    User->>Dashboard: 13. Create InferenceService CR
+    Dashboard->>KServeCtrl: 14. InferenceService created<br/>serving.kserve.io API
+    KServeCtrl->>Knative: 15. Create Knative Service<br/>Serverless autoscaling
+
+    par Model Controller Actions
+        Dashboard->>ModelCtrl: InferenceService created
+        ModelCtrl->>Istio: 16a. Create VirtualService<br/>Traffic routing
+        ModelCtrl->>Istio: 16b. Create PeerAuthentication<br/>mTLS PERMISSIVE
+        ModelCtrl->>Prometheus: 16c. Create ServiceMonitor<br/>Metrics collection
+    end
+
+    Knative->>Predictor: 17. Create predictor pod<br/>Storage initializer
+    Predictor->>S3: 18. Download model artifacts<br/>HTTPS, AWS IAM
+    S3-->>Predictor: 19. Model loaded
+    Predictor-->>User: 20. Inference endpoint ready
+
+    Note over User,Prometheus: Workflow 2: Inference Request Flow
+
+    User->>Istio: POST /v1/models/model:predict<br/>443/TCP HTTPS TLS 1.2+
+    Istio->>Knative: Route to Knative Service<br/>mTLS
+
+    alt Pod scaled to zero
+        Knative->>Predictor: Scale up pod (Activator)
+    end
+
+    Knative->>Predictor: Forward request<br/>8080/TCP mTLS
+    Predictor->>Predictor: Run inference
+    Predictor-->>Knative: Prediction result<br/>JSON response
+    Knative-->>Istio: Response
+    Istio-->>User: 200 OK, prediction
+
+    par Monitoring
+        Predictor->>Prometheus: Push metrics<br/>inference_requests_total
+        Prometheus->>Dashboard: Query metrics<br/>Prometheus API
+        Dashboard-->>User: Display model performance
+    end
+
+    Note over User,Prometheus: Workflow 3: Distributed Training with Ray
+
+    User->>Notebook: Submit RayCluster CR
+    Notebook->>KubeRayOp as KubeRay Operator: Create RayCluster<br/>ray.io API
+
+    opt CodeFlare Queueing
+        KubeRayOp->>CodeFlareOp as CodeFlare: Wrap in AppWrapper
+        CodeFlareOp->>KueueCtrl as Kueue: Admit workload
+        KueueCtrl-->>CodeFlareOp: Resources available
+    end
+
+    KubeRayOp->>RayHead as Ray Head Pod: Create head node
+    KubeRayOp->>RayWorkers as Ray Worker Pods: Create worker nodes
+    RayWorkers->>RayHead: Connect via Redis GCS<br/>6379/TCP
+
+    User->>RayHead: Submit Ray job<br/>Ray client API
+    RayHead->>RayWorkers: Distribute tasks
+    RayWorkers->>S3: Store checkpoints<br/>HTTPS
+    RayWorkers-->>User: Training complete
+
+    Note over User,Prometheus: Workflow 4: AI Explainability with TrustyAI
+
+    User->>Dashboard: Create TrustyAIService CR
+    Dashboard->>TrustyAIOp as TrustyAI Operator: Deploy TrustyAI
+    TrustyAIOp->>TrustyAISvc as TrustyAI Service: Create deployment + Route
+    TrustyAIOp->>KServeCtrl: Patch InferenceService<br/>Add inference logger
+
+    User->>Predictor: Inference request
+    Predictor->>TrustyAISvc: Send payload copy<br/>Inference logger
+    TrustyAISvc->>TrustyAISvc: Compute fairness metrics<br/>SPD, DIR
+    TrustyAISvc->>Prometheus: Expose metrics<br/>ServiceMonitor
+    Prometheus->>Dashboard: Query fairness metrics
+    Dashboard-->>User: Display bias analysis

@@ -1,0 +1,294 @@
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                           │
+│                                                                                  │
+│  [User / Data Scientist]                                                         │
+│  [JupyterHub / ODH Dashboard]                                                    │
+│         │                                                                         │
+│         │ Port: 6443/TCP                                                          │
+│         │ Protocol: HTTPS                                                         │
+│         │ Encryption: TLS 1.2+                                                    │
+│         │ Auth: User credentials (JWT/OIDC)                                       │
+│         ▼                                                                         │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE                                                                   │
+│                                                                                  │
+│  [Kubernetes API Server]                                                         │
+│  - Port: 6443/TCP                                                                │
+│  - TLS: 1.2+                                                                     │
+│  - Auth: RBAC (ClusterRole + ClusterRoleBinding)                                │
+│         │                                                                         │
+│         │ Watch Events (Notebook CRs)                                            │
+│         │ Encryption: TLS 1.2+                                                    │
+│         │ Auth: ServiceAccount Token (JWT)                                       │
+│         ▼                                                                         │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  CONTROLLER NAMESPACE (kubeflow - configurable)                                  │
+│                                                                                  │
+│  [Notebook Controller Pod]                                                       │
+│  - Namespace: kubeflow                                                           │
+│  - ServiceAccount: notebook-controller-service-account                          │
+│  - Image: odh-kf-notebook-controller                                             │
+│                                                                                  │
+│    ┌─────────────────────────────────────┐                                      │
+│    │  [NotebookReconciler]                │                                      │
+│    │  - Watches: notebooks.kubeflow.org   │                                      │
+│    │  - Creates: StatefulSets, Services   │                                      │
+│    └─────────────────────────────────────┘                                      │
+│         │                                                                         │
+│         │ Port: 6443/TCP                                                          │
+│         │ Protocol: HTTPS                                                         │
+│         │ Encryption: TLS 1.2+                                                    │
+│         │ Auth: ServiceAccount Token                                             │
+│         ▼                                                                         │
+│    [Kubernetes API Server]                                                       │
+│         │                                                                         │
+│         │ Creates StatefulSets, Services, VirtualServices                        │
+│         ▼                                                                         │
+│                                                                                  │
+│    ┌─────────────────────────────────────┐                                      │
+│    │  [CullingReconciler]                 │                                      │
+│    │  - Timer: IDLENESS_CHECK_PERIOD=1m   │                                      │
+│    │  - Timeout: CULL_IDLE_TIME=1440m     │                                      │
+│    └─────────────────────────────────────┘                                      │
+│         │                                                                         │
+│         │ Port: 8888/TCP                                                          │
+│         │ Protocol: HTTP                                                          │
+│         │ Encryption: None (plaintext) ⚠️                                         │
+│         │ Auth: None ⚠️                                                           │
+│         │ Target: {notebook-name}.{namespace}.svc.cluster.local                  │
+│         │ Endpoints: /notebook/{ns}/{name}/api/kernels                           │
+│         │            /notebook/{ns}/{name}/api/terminals                         │
+│         ▼                                                                         │
+│                                                                                  │
+│    ┌─────────────────────────────────────┐                                      │
+│    │  [Metrics Collector]                 │                                      │
+│    │  - Port: 8080/TCP                    │                                      │
+│    │  - Protocol: HTTP                    │                                      │
+│    │  - Encryption: None ⚠️               │                                      │
+│    │  - Auth: None ⚠️                     │                                      │
+│    └─────────────────────────────────────┘                                      │
+│         ▲                                                                         │
+│         │ Port: 8080/TCP                                                          │
+│         │ Protocol: HTTP                                                          │
+│         │ Encryption: None                                                        │
+│         │ Auth: None                                                              │
+│         │                                                                         │
+│    [Prometheus]                                                                  │
+│                                                                                  │
+│    ┌─────────────────────────────────────┐                                      │
+│    │  [Health Probes]                     │                                      │
+│    │  - Port: 8081/TCP                    │                                      │
+│    │  - Endpoints: /healthz, /readyz      │                                      │
+│    │  - Protocol: HTTP                    │                                      │
+│    │  - Encryption: None                  │                                      │
+│    │  - Auth: None                        │                                      │
+│    └─────────────────────────────────────┘                                      │
+│         ▲                                                                         │
+│         │ Kubelet probes                                                         │
+│                                                                                  │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  USER NAMESPACES ({user-namespace})                                             │
+│                                                                                  │
+│  [StatefulSet: {notebook-name}]                                                  │
+│  - Replicas: 1 (0 if kubeflow-resource-stopped set)                            │
+│  - ServiceName: {notebook-name}                                                  │
+│  - SecurityContext: fsGroup=100 (if ADD_FSGROUP!=false)                         │
+│                                                                                  │
+│    [Notebook Pod]                                                                │
+│    - Port: 8888/TCP (container port)                                            │
+│    - Protocol: HTTP                                                              │
+│    - Image: {notebook-image} (e.g., jupyter/tensorflow-notebook)               │
+│         │                                                                         │
+│         │ Exposed via Service                                                    │
+│         ▼                                                                         │
+│    [Service: {notebook-name}]                                                    │
+│    - Type: ClusterIP                                                             │
+│    - Port: 80/TCP → 8888/TCP                                                     │
+│    - Protocol: HTTP                                                              │
+│    - Encryption: None                                                            │
+│    - Auth: None (application-level)                                             │
+│                                                                                  │
+│    [VirtualService: {notebook-name}] (if USE_ISTIO=true)                        │
+│    - Gateway: {ISTIO_GATEWAY}                                                    │
+│    - Routes to: {notebook-name}.{namespace}.svc.cluster.local:80                │
+│         │                                                                         │
+│         │ Port: 443/TCP (external) → 80/TCP (internal)                          │
+│         │ Protocol: HTTPS (external) → HTTP (internal)                          │
+│         │ Encryption: TLS at gateway, plaintext to service                      │
+│         ▼                                                                         │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ) - Optional Istio Integration                                     │
+│                                                                                  │
+│  [Istio Gateway]                                                                 │
+│  - Port: 443/TCP (external)                                                      │
+│  - TLS Termination: TLS 1.3                                                      │
+│  - Routes to: VirtualService → Service                                          │
+│         │                                                                         │
+│         │ Port: 443/TCP                                                          │
+│         │ Protocol: HTTPS                                                         │
+│         │ Encryption: TLS 1.3                                                     │
+│         │ Auth: Optional (depends on Gateway config)                             │
+│         ▼                                                                         │
+│  [External Users]                                                                │
+│                                                                                  │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                               │
+│                                                                                  │
+│  [Container Registry - quay.io, registry.redhat.io]                             │
+│  - Purpose: Notebook image storage                                              │
+│  - Auth: ImagePullSecrets                                                       │
+│  - Encryption: TLS 1.2+                                                          │
+│         ▲                                                                         │
+│         │ Port: 443/TCP                                                          │
+│         │ Protocol: HTTPS                                                         │
+│         │ Encryption: TLS 1.2+                                                    │
+│         │ Auth: ImagePullSecrets / registry credentials                         │
+│         │                                                                         │
+│  [StatefulSet pulls images]                                                      │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════════════
+RBAC Summary
+═══════════════════════════════════════════════════════════════════════════════════
+
+ClusterRole: notebook-controller-role
+  API Groups: apps
+    Resources: statefulsets
+    Verbs: * (all)
+
+  API Groups: "" (core)
+    Resources: events
+    Verbs: create, get, list, patch, watch
+    Resources: pods
+    Verbs: delete, get, list, watch
+    Resources: services
+    Verbs: * (all)
+
+  API Groups: kubeflow.org
+    Resources: notebooks, notebooks/finalizers, notebooks/status
+    Verbs: * (all)
+
+  API Groups: networking.istio.io
+    Resources: virtualservices
+    Verbs: * (all)
+
+ClusterRole: leader-election-role
+  API Groups: "" (core)
+    Resources: configmaps, configmaps/status
+    Verbs: get, list, watch, create, update, patch, delete
+    Resources: events
+    Verbs: create
+
+ClusterRole: kubeflow-notebooks-edit
+  API Groups: kubeflow.org
+    Resources: notebooks, notebooks/status
+    Verbs: get, list, watch, create, delete, deletecollection, patch, update
+
+ClusterRole: kubeflow-notebooks-view
+  API Groups: kubeflow.org
+    Resources: notebooks, notebooks/status
+    Verbs: get, list, watch
+
+ClusterRoleBinding: notebook-controller-role-binding
+  Namespace: kubeflow (configurable)
+  ClusterRole: notebook-controller-role
+  ServiceAccount: notebook-controller-service-account
+
+ClusterRoleBinding: leader-election-role-binding
+  Namespace: kubeflow (configurable)
+  ClusterRole: leader-election-role
+  ServiceAccount: notebook-controller-service-account
+
+═══════════════════════════════════════════════════════════════════════════════════
+Service Mesh Configuration
+═══════════════════════════════════════════════════════════════════════════════════
+
+⚠️  NO SERVICE MESH ENFORCEMENT
+
+- No PeerAuthentication resources defined
+- No AuthorizationPolicy resources defined
+- Internal traffic is plaintext HTTP (no mTLS)
+- Optional Istio VirtualService for external routing only
+- Culling controller makes unauthenticated HTTP calls to notebook pods
+
+═══════════════════════════════════════════════════════════════════════════════════
+Secrets
+═══════════════════════════════════════════════════════════════════════════════════
+
+Secret: webhook-server-cert (optional, currently disabled)
+  Type: kubernetes.io/tls
+  Purpose: TLS certificate for CRD conversion webhook
+  Provisioned by: cert-manager
+  Auto-rotate: Yes (cert-manager managed)
+  Status: UNUSED (webhook disabled in code)
+
+ImagePullSecrets (user-provided)
+  Type: kubernetes.io/dockerconfigjson
+  Purpose: Authenticate to private container registries
+  Provisioned by: User/Admin
+  Auto-rotate: No
+
+═══════════════════════════════════════════════════════════════════════════════════
+Security Concerns & Recommendations
+═══════════════════════════════════════════════════════════════════════════════════
+
+⚠️  HIGH PRIORITY:
+1. Culling HTTP Security: Culling controller communicates with notebook pods over
+   unencrypted HTTP (8888/TCP) without authentication. This exposes:
+   - Kernel execution state
+   - Terminal activity logs
+   - Potential for spoofing/MITM attacks
+   Recommendation: Implement mTLS or token-based authentication
+
+2. Metrics Unprotected: /metrics endpoint (8080/TCP) exposed without authentication
+   - Leaks notebook creation patterns and usage statistics
+   Recommendation: Enable Prometheus auth or restrict via NetworkPolicy
+
+3. RBAC Scope: ClusterRole grants broad permissions (* verbs) on StatefulSets,
+   Services, and VirtualServices across ALL namespaces
+   Recommendation: Consider namespace-scoped Roles where possible
+
+⚠️  MEDIUM PRIORITY:
+4. No mTLS: Internal service-to-service communication does not use mutual TLS
+   Recommendation: Enable Istio PeerAuthentication STRICT mode
+
+5. No NetworkPolicy: No NetworkPolicy resources defined - relies on cluster defaults
+   Recommendation: Define explicit egress/ingress policies
+
+6. Webhook Disabled: Conversion webhook implemented but disabled in production
+   Status: Low risk if not needed, but document reasoning
+
+═══════════════════════════════════════════════════════════════════════════════════
+Network Flow Summary
+═══════════════════════════════════════════════════════════════════════════════════
+
+INBOUND (Controller):
+  - Kubernetes API → Controller (Watch events, TLS 1.2+, ServiceAccount Token)
+  - Prometheus → Controller:8080 (HTTP, no auth) ⚠️
+  - Kubelet → Controller:8081 (HTTP health probes, no auth)
+
+OUTBOUND (Controller):
+  - Controller → Kubernetes API:6443 (HTTPS, TLS 1.2+, ServiceAccount Token)
+  - Controller → Notebook Pod:8888 (HTTP, no auth) ⚠️
+
+INBOUND (Notebook Pod):
+  - Culler → Notebook:8888 (HTTP, no auth) ⚠️
+  - External Users → Istio Gateway:443 → VirtualService → Service:80 → Pod:8888
+    (TLS terminates at gateway, plaintext internally)
+
+OUTBOUND (Notebook Pod):
+  - Pod → Container Registry:443 (HTTPS, TLS 1.2+, ImagePullSecrets)
+
+═══════════════════════════════════════════════════════════════════════════════════
+Compliance Considerations
+═══════════════════════════════════════════════════════════════════════════════════
+
+For Security Architecture Review (SAR):
+- Plaintext HTTP for internal communication (culler → notebooks)
+- Unauthenticated metrics endpoint
+- Broad RBAC permissions
+- No service mesh enforcement
+- No NetworkPolicy restrictions
+
+Mitigation strategies required before production deployment in regulated environments.

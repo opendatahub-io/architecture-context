@@ -1,0 +1,324 @@
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                                   │
+│                                                                                          │
+│  [External Client]                                                                       │
+│         │                                                                                │
+│         │ Port: 443/TCP                                                                  │
+│         │ Protocol: HTTPS                                                                │
+│         │ Encryption: TLS 1.3                                                            │
+│         │ Auth: Bearer Token (JWT) - optional, per InferenceService                     │
+│         ▼                                                                                │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                                          │
+│                                                                                          │
+│  [OpenShift Router]                                                                      │
+│  - Port: 443/TCP (external) → varies (internal to Istio Gateway)                       │
+│  - TLS Termination: TLS 1.3 (Edge termination)                                         │
+│  - Route: Dynamically created per InferenceService                                      │
+│         │                                                                                │
+│         │ Protocol: HTTP/HTTPS                                                           │
+│         │ Encryption: TLS (mesh)                                                         │
+│         │ Routing: Via VirtualService (Istio)                                           │
+│         ▼                                                                                │
+│  [Istio Ingress Gateway]                                                                 │
+│  - Port: varies                                                                          │
+│  - Namespace: istio-system                                                               │
+│         │                                                                                │
+│         ├─────────────────────────────────────────────────────────────┐                 │
+│         │                                                              │                 │
+│         │ Port: 50051/TCP                                              │                 │
+│         │ Protocol: gRPC                                               │                 │
+│         │ Encryption: mTLS (STRICT)                                    │                 │
+│         │ Auth: Service Mesh certificate                               │                 │
+│         │ Condition: If auth enabled via AuthConfig                    │                 │
+│         ▼                                                              │                 │
+│  [Authorino Service]                                                  │                 │
+│  - Namespace: redhat-ods-applications-auth-provider                   │                 │
+│  - Purpose: JWT validation                                            │                 │
+│  - Policy: AuthConfig (per InferenceService)                          │                 │
+│         │                                                              │                 │
+│         │ Auth decision returned                                       │                 │
+│         └──────────────────────────────────────────────────────────────┘                 │
+│                                                                        │                 │
+│         │ Port: varies                                                 │                 │
+│         │ Protocol: HTTP/gRPC                                          │                 │
+│         │ Encryption: mTLS (STRICT via PeerAuthentication)             │                 │
+│         │ Auth: Service Identity (Istio certificates)                  │                 │
+│         ▼                                                              │                 │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Trusted - mTLS STRICT)                                                   │
+│                                                                                          │
+│  [InferenceService Pod]                                                                  │
+│  - Namespace: {user-namespace}                                                           │
+│  - ServiceAccount: default-editor                                                        │
+│  - Sidecar: Istio proxy (enforces mTLS)                                                  │
+│  - Network Policy: Controller-managed pod isolation                                      │
+│  - Image: {runtime-image} (from ServingRuntime)                                          │
+│         │                                                                                │
+│         │ Port: 443/TCP (S3) or local filesystem                                        │
+│         │ Protocol: HTTPS (S3) or local                                                  │
+│         │ Encryption: TLS 1.2+ (S3) or None (PVC)                                       │
+│         │ Auth: AWS IAM / Storage Secret credentials                                     │
+│         ▼                                                                                │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                                       │
+│                                                                                          │
+│  [Model Storage - S3 / PVC]                                                              │
+│  - Purpose: Model artifact storage                                                       │
+│  - Auth: Storage credentials from Secret                                                 │
+│  - Encryption: TLS 1.2+ (S3) or local filesystem                                        │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│  CONTROL PLANE (ODH Model Controller)                                                   │
+│                                                                                          │
+│  [ODH Model Controller Pod]                                                              │
+│  - Namespace: redhat-ods-applications                                                    │
+│  - ServiceAccount: odh-model-controller                                                  │
+│  - Replicas: 3 (HA with leader election)                                                │
+│  - User: 65532 (non-root)                                                                │
+│  - Security: runAsNonRoot, no privilege escalation                                       │
+│                                                                                          │
+│  Exposed Endpoints:                                                                      │
+│  - /metrics (8080/TCP HTTP) - Prometheus metrics, no auth                               │
+│  - /healthz (8081/TCP HTTP) - Liveness probe, no auth                                   │
+│  - /readyz (8081/TCP HTTP) - Readiness probe, no auth                                   │
+│  - /validate-serving-knative-dev-v1-service (9443/TCP HTTPS) - Webhook, mTLS from API   │
+│         │                                                                                │
+│         │ Port: 6443/TCP                                                                 │
+│         │ Protocol: HTTPS                                                                │
+│         │ Encryption: TLS 1.3                                                            │
+│         │ Auth: ServiceAccount Token (odh-model-controller)                              │
+│         │ Purpose: Watch CRDs, manage resources                                          │
+│         ▼                                                                                │
+│  [Kubernetes API Server]                                                                 │
+│  - Resources watched: InferenceService, ServingRuntime, DataScienceCluster              │
+│  - Resources created: Routes, AuthConfigs, NetworkPolicies, VirtualServices,            │
+│                       PeerAuthentication, Telemetry, ServiceMonitors, etc.              │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│  MONITORING (Prometheus)                                                                 │
+│                                                                                          │
+│  [Prometheus Pod]                                                                        │
+│  - Namespace: {monitoring-namespace}                                                     │
+│  - ServiceAccount: prometheus-custom                                                     │
+│         │                                                                                │
+│         │ Port: varies                                                                   │
+│         │ Protocol: HTTP/HTTPS                                                           │
+│         │ Encryption: TLS (mesh)                                                         │
+│         │ Auth: ServiceAccount Token + RoleBinding (prometheus-ns-access)               │
+│         │ Scrape: Via ServiceMonitor/PodMonitor                                          │
+│         ▼                                                                                │
+│  [InferenceService Pods + Controller]                                                    │
+│  - Metrics scraped from inference pods and controller                                    │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+
+═════════════════════════════════════════════════════════════════════════════════════════
+RBAC Summary
+═════════════════════════════════════════════════════════════════════════════════════════
+
+ClusterRole: odh-model-controller-role
+├── API Group: serving.kserve.io
+│   ├── Resources: inferenceservices, inferenceservices/finalizers
+│   └── Verbs: get, list, watch, update
+├── API Group: serving.kserve.io
+│   ├── Resources: servingruntimes, servingruntimes/finalizers
+│   └── Verbs: get, list, watch, create, update, patch, delete
+├── API Group: networking.istio.io
+│   ├── Resources: virtualservices, virtualservices/finalizers
+│   └── Verbs: get, list, watch, create, update, patch, delete
+├── API Group: security.istio.io
+│   ├── Resources: peerauthentications
+│   └── Verbs: get, list, watch, create, update, patch, delete
+├── API Group: security.istio.io
+│   ├── Resources: authorizationpolicies
+│   └── Verbs: get, list
+├── API Group: telemetry.istio.io
+│   ├── Resources: telemetries
+│   └── Verbs: get, list, watch, create, update, patch, delete
+├── API Group: maistra.io
+│   ├── Resources: servicemeshmembers, servicemeshmembers/finalizers
+│   └── Verbs: get, list, watch, create, update, patch, delete
+├── API Group: maistra.io
+│   ├── Resources: servicemeshmemberrolls
+│   └── Verbs: get, list, watch, create, update, patch, delete
+├── API Group: route.openshift.io
+│   ├── Resources: routes, routes/custom-host
+│   └── Verbs: get, list, watch, create, update, patch, delete
+├── API Group: networking.k8s.io
+│   ├── Resources: networkpolicies
+│   └── Verbs: get, list, watch, create, update, patch, delete
+├── API Group: monitoring.coreos.com
+│   ├── Resources: servicemonitors, podmonitors
+│   └── Verbs: get, list, watch, create, update, patch, delete
+├── API Group: authorino.kuadrant.io
+│   ├── Resources: authconfigs
+│   └── Verbs: get, list, watch, create, update, patch, delete
+├── API Group: "" (core)
+│   ├── Resources: namespaces, pods, services, endpoints, secrets, configmaps, serviceaccounts
+│   └── Verbs: get, list, watch, create, update, patch, delete
+├── API Group: datasciencecluster.opendatahub.io
+│   ├── Resources: datascienceclusters
+│   └── Verbs: get, list, watch
+└── API Group: dscinitialization.opendatahub.io
+    ├── Resources: dscinitializations
+    └── Verbs: get, list, watch
+
+ClusterRole: prometheus-ns-access (per InferenceService namespace)
+├── API Group: "" (core)
+│   ├── Resources: services, endpoints, pods
+│   └── Verbs: get, list, watch
+
+ClusterRoleBinding:
+├── odh-model-controller-rolebinding-{mesh-namespace}
+│   ├── ClusterRole: odh-model-controller-role
+│   └── ServiceAccount: odh-model-controller (redhat-ods-applications)
+
+RoleBinding (per InferenceService namespace):
+├── prometheus-ns-access
+│   ├── ClusterRole: prometheus-ns-access
+│   └── ServiceAccount: prometheus-custom ({monitoring-namespace})
+
+═════════════════════════════════════════════════════════════════════════════════════════
+Service Mesh Configuration
+═════════════════════════════════════════════════════════════════════════════════════════
+
+PeerAuthentication (per InferenceService namespace):
+- Name: {InferenceService-name}-predictor
+- Mode: STRICT (enforces mTLS for all traffic)
+- Scope: Namespace-scoped (applies to all pods in ISVC namespace)
+
+VirtualService (per InferenceService):
+- Name: {InferenceService-name}
+- Hosts: Route hostname
+- Gateway: Istio ingress gateway
+- Route: To InferenceService predictor/transformer
+
+Telemetry (per InferenceService namespace):
+- Name: {InferenceService-name}-predictor
+- Metrics: Istio telemetry configuration
+- Tracing: Distributed tracing config
+
+ServiceMeshMemberRoll:
+- Namespace: istio-system
+- Members: All namespaces with InferenceServices (added by controller)
+
+AuthConfig (per InferenceService, when auth enabled):
+- Name: {InferenceService-name}
+- Authentication: JWT validation
+- Audience: From AUTH_AUDIENCE ConfigMap
+- Selector: Authorino label from AUTHORINO_LABEL ConfigMap
+
+═════════════════════════════════════════════════════════════════════════════════════════
+Secrets
+═════════════════════════════════════════════════════════════════════════════════════════
+
+odh-model-controller-webhook-cert (kubernetes.io/tls)
+- Purpose: TLS certificate for validating webhook server (9443/TCP)
+- Provisioned By: OpenShift service serving certificate annotation
+- Auto-Rotate: Yes (OpenShift service CA)
+- Location: /tmp/k8s-webhook-server/serving-certs
+- Used For: Knative Service validation webhook
+
+auth-refs (ConfigMap - not a Secret, but security-relevant)
+- Purpose: Stores AUTH_AUDIENCE and AUTHORINO_LABEL for authorization
+- Provisioned By: Platform administrator
+- Auto-Rotate: No
+- Values:
+  - AUTH_AUDIENCE: JWT audience for token validation
+  - AUTHORINO_LABEL: Label selector for Authorino instance
+
+Storage Secrets (per InferenceService, user-managed):
+- Type: Opaque
+- Purpose: S3/storage credentials for model artifacts
+- Provisioned By: User (referenced in InferenceService spec)
+- Auto-Rotate: No (user responsibility)
+- Contains: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, etc.
+
+═════════════════════════════════════════════════════════════════════════════════════════
+Network Policies
+═════════════════════════════════════════════════════════════════════════════════════════
+
+Controller-managed NetworkPolicy (per InferenceService):
+- Name: {InferenceService-name}-predictor
+- Purpose: Pod-level network isolation
+- Ingress Rules:
+  - Allow from Istio ingress gateway
+  - Allow from Knative activator
+  - Allow from same namespace (for transformers)
+- Egress Rules:
+  - Allow to Kubernetes DNS
+  - Allow to external storage (S3, etc.)
+  - Allow to service mesh control plane
+
+═════════════════════════════════════════════════════════════════════════════════════════
+Authentication & Authorization Summary
+═════════════════════════════════════════════════════════════════════════════════════════
+
+Webhook Endpoint (/validate-serving-knative-dev-v1-service):
+- Method: POST
+- Port: 9443/TCP
+- Protocol: HTTPS
+- Encryption: TLS 1.2+
+- Auth: mTLS client certificate from Kubernetes API Server
+- Enforcement: ValidatingWebhookConfiguration (Kubernetes API validates webhook)
+- Purpose: Validate Knative Service resources when KServe Serverless enabled
+
+InferenceService HTTP/HTTPS (via Route):
+- Methods: ALL (GET, POST, etc.)
+- Port: 443/TCP (external)
+- Protocol: HTTPS
+- Encryption: TLS 1.3 (edge termination at Router)
+- Auth: Bearer Token (JWT) - optional, controlled by annotation
+- Enforcement: Authorino (when annotation security.opendatahub.io/enable-auth: "true")
+- Policy: AuthConfig resource per InferenceService
+- Anonymous Access: Allowed when auth annotation not set
+
+InferenceService Internal (Service Mesh):
+- Methods: ALL
+- Port: varies
+- Protocol: HTTP/gRPC
+- Encryption: mTLS (STRICT mode)
+- Auth: Service Mesh certificate (Istio)
+- Enforcement: PeerAuthentication resource
+- Policy: STRICT mTLS enforced for all pod-to-pod communication in mesh
+
+Controller Metrics (/metrics):
+- Method: GET
+- Port: 8080/TCP
+- Protocol: HTTP
+- Encryption: None
+- Auth: None
+- Exposure: Internal only (ClusterIP)
+- Purpose: Prometheus scraping
+
+═════════════════════════════════════════════════════════════════════════════════════════
+Notes
+═════════════════════════════════════════════════════════════════════════════════════════
+
+Deployment Modes:
+The controller supports three InferenceService deployment modes:
+1. ModelMesh: Multi-model serving with shared runtime pools
+2. KServe Serverless: Knative-based autoscaling (scale-to-zero)
+3. KServe RawDeployment: Direct Kubernetes Deployments (no Knative)
+
+Each mode has different networking and security configurations.
+
+Service Mesh Integration:
+- Controlled by DataScienceCluster CR and MESH_DISABLED env var
+- When enabled: Creates PeerAuthentication, VirtualServices, Telemetry
+- Authorization (Authorino) is optional and detected via capability check
+
+OpenShift-Specific Features:
+- Routes (not Ingress) for external access
+- Service serving certificates for webhook TLS
+- Red Hat Service Mesh (Maistra) integration
+
+Security Posture:
+- Controller runs as non-root (UID 65532)
+- SecurityContext prevents privilege escalation
+- mTLS enforced in service mesh (STRICT mode)
+- Optional JWT authentication via Authorino
+- Network policies for pod isolation
+- RBAC scoped to specific resources and verbs

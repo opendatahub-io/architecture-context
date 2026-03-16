@@ -1,0 +1,212 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [User/Data Scientist]                                                   │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: OpenShift OAuth (redirected)                             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                          │
+│                                                                          │
+│  [OpenShift Router / Kubernetes Ingress Controller]                      │
+│  - Route: ray-dashboard-{cluster}                                        │
+│  - Port: 443/TCP → 8443/TCP                                             │
+│  - TLS Mode: Re-encrypt (OpenShift) / TLS (Kubernetes)                  │
+│  - Authentication: OpenShift OAuth                                       │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+ (service-serving-cert)                    │
+│         │ Auth: OAuth Token (validated)                                  │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  WORKLOAD PODS (Namespace: user-namespace)                              │
+│                                                                          │
+│  [OAuth Proxy Sidecar] (in Ray Head Pod)                                │
+│  - Port: 8443/TCP (external) → 8265/TCP (localhost)                    │
+│  - ServiceAccount: {cluster}-oauth-proxy                                 │
+│  - TLS Secret: {cluster}-proxy-tls-secret                               │
+│         │                                                                │
+│         │ Port: 8265/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (localhost)                                   │
+│         │ Auth: None (localhost trust)                                   │
+│         ▼                                                                │
+│  [Ray Dashboard] (in Ray Head Pod)                                       │
+│  - Port: 8265/TCP                                                        │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: default                                               │
+│         │                                                                │
+│         │ Port: 10001/TCP                                                │
+│         │ Protocol: gRPC/TCP                                             │
+│         │ Encryption: mTLS (Ray cluster CA)                              │
+│         │ Auth: mTLS client certificates                                 │
+│         ▼                                                                │
+│  [Ray Worker Pods]                                                       │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: default                                               │
+│  - CA Secret: ca-secret-{cluster}                                       │
+│         │                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR (Namespace: redhat-ods-applications)                          │
+│                                                                          │
+│  [CodeFlare Operator Manager]                                            │
+│  - ServiceAccount: controller-manager                                    │
+│  - Metrics: 8080/TCP HTTP (internal)                                    │
+│  - Health: 8081/TCP HTTP (internal)                                     │
+│  - Webhook: 9443/TCP HTTPS TLS1.2+                                      │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Service Account Token                                    │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│         │                                                                │
+│         │ Port: 9443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: K8s API Server mTLS                                      │
+│         ▼                                                                │
+│  [CodeFlare Webhook Service]                                             │
+│  - Service: codeflare-operator-webhook-service                           │
+│  - Port: 443/TCP → 9443/TCP                                             │
+│  - TLS Secret: codeflare-operator-webhook-server-cert                   │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL DEPENDENCIES                                                   │
+│                                                                          │
+│  [KubeRay Operator]                                                      │
+│  - Namespace: opendatahub / redhat-ods-applications                     │
+│  - Purpose: Manages RayCluster lifecycle                                │
+│  - Communication: NetworkPolicy allows 8265/TCP, 10001/TCP              │
+│                                                                          │
+│  [OpenShift OAuth Server]                                                │
+│  - Purpose: User authentication for Ray Dashboard                        │
+│  - Auth: OpenShift RBAC (delegate to pod get verb)                      │
+│                                                                          │
+│  [cert-controller]                                                       │
+│  - Purpose: Webhook certificate rotation                                 │
+│  - Rotation: Automatic (Yes)                                             │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - Namespace: openshift-monitoring                                       │
+│  - Port: 8080/TCP HTTPS                                                 │
+│  - Auth: Bearer token (ServiceMonitor)                                  │
+└─────────────────────────────────────────────────────────────────────────┘
+
+NetworkPolicy Configuration:
+
+  1. NetworkPolicy: {cluster}-head (per RayCluster)
+     Pod Selector: ray.io/cluster={cluster}, ray.io/node-type=head
+     Ingress Rules:
+       - From same Ray cluster pods: All ports, all protocols
+       - From any pod in same namespace: 10001/TCP (RayClient), 8265/TCP (Dashboard)
+       - From KubeRay operator (app.kubernetes.io/component=kuberay-operator):
+         Ports 8265/TCP, 10001/TCP
+         Namespaces: opendatahub, redhat-ods-applications, or DSCInitialization.spec.applicationsNamespace
+       - From OpenShift monitoring (namespace: openshift-monitoring): Port 8080/TCP
+       - OAuth/mTLS secured: 8443/TCP (OAuth), 10001/TCP (mTLS)
+
+  2. NetworkPolicy: {cluster}-workers (per RayCluster)
+     Pod Selector: ray.io/cluster={cluster}, ray.io/node-type=worker
+     Ingress Rules:
+       - From same Ray cluster pods (ray.io/cluster={cluster}): All ports, all protocols
+
+RBAC Summary:
+
+  ClusterRole: manager-role
+    API Groups: ""
+      Resources: secrets, services, serviceaccounts
+      Verbs: get, list, watch, create, update, patch, delete
+    API Groups: admissionregistration.k8s.io
+      Resources: mutatingwebhookconfigurations, validatingwebhookconfigurations
+      Verbs: get, list, watch, update
+    API Groups: ray.io
+      Resources: rayclusters, rayclusters/status, rayclusters/finalizers
+      Verbs: get, list, watch, create, update, patch, delete
+    API Groups: networking.k8s.io
+      Resources: ingresses, networkpolicies
+      Verbs: get, create, update, patch, delete
+    API Groups: route.openshift.io
+      Resources: routes, routes/custom-host
+      Verbs: get, create, update, patch, delete
+    API Groups: rbac.authorization.k8s.io
+      Resources: clusterrolebindings
+      Verbs: get, create, update, patch, delete
+    API Groups: config.openshift.io
+      Resources: ingresses
+      Verbs: get
+    API Groups: dscinitialization.opendatahub.io
+      Resources: dscinitializations
+      Verbs: get, list, watch
+
+  ClusterRoleBinding: manager-rolebinding
+    ServiceAccount: controller-manager (operator namespace)
+    ClusterRole: manager-role
+
+  ClusterRoleBinding: {cluster}-{namespace}-auth (per RayCluster)
+    ServiceAccount: {cluster}-oauth-proxy ({user-namespace})
+    ClusterRole: system:auth-delegator
+
+Secrets:
+
+  1. codeflare-operator-webhook-server-cert (kubernetes.io/tls)
+     - Purpose: Webhook server TLS certificate
+     - Provisioned By: cert-controller
+     - Auto-Rotate: Yes
+     - Rotation Period: Managed by cert-controller
+
+  2. {cluster}-oauth-config (Opaque) - per RayCluster
+     - Purpose: OAuth proxy cookie secret
+     - Provisioned By: CodeFlare operator
+     - Auto-Rotate: No
+
+  3. {cluster}-proxy-tls-secret (kubernetes.io/tls) - per RayCluster
+     - Purpose: OAuth proxy service TLS certificate
+     - Provisioned By: OpenShift service-serving-cert controller
+     - Auto-Rotate: Yes (OpenShift)
+
+  4. ca-secret-{cluster} (Opaque) - per RayCluster
+     - Purpose: Ray cluster CA private key and certificate for mTLS
+     - Contents: ca.key, ca.crt
+     - Provisioned By: CodeFlare operator
+     - Auto-Rotate: No
+
+Service Mesh Configuration: Not applicable (no service mesh integration)
+
+Authentication Methods:
+
+  1. Webhook Endpoints (/mutate-ray-io-v1-raycluster, /validate-ray-io-v1-raycluster)
+     - Method: K8s API Server mTLS
+     - Enforcement: Kubernetes API Server
+     - Policy: K8s RBAC
+
+  2. Ray Dashboard (via OAuth proxy)
+     - Method: OpenShift OAuth
+     - Enforcement: OAuth proxy sidecar
+     - Policy: OpenShift RBAC (delegate to pod get verb)
+
+  3. RayClient (mTLS)
+     - Method: mTLS client certificates
+     - Enforcement: Ray head node
+     - Policy: Ray cluster CA certificate validation
+
+  4. Metrics Endpoint (/metrics)
+     - Method: Bearer token (when ServiceMonitor enabled)
+     - Enforcement: ServiceMonitor configuration
+     - Policy: OpenShift monitoring RBAC
+
+  5. Health Endpoints (/healthz, /readyz)
+     - Method: None (open for kubelet probes)
+     - Enforcement: None
+     - Policy: None

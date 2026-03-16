@@ -1,0 +1,68 @@
+sequenceDiagram
+    participant User as User/CI Pipeline
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+
+    participant Webhook as kserve-webhook-server<br/>443/TCP HTTPS TLS1.2+
+    participant Controller as kserve-controller-manager
+    participant KnativeAPI as Knative Serving API<br/>6443/TCP HTTPS TLS1.2+
+    participant Storage as S3/GCS/Azure<br/>443/TCP HTTPS TLS1.2+
+    participant StorageInit as storage-initializer<br/>Init Container
+    participant LocalVolume as /mnt/models<br/>Filesystem
+    participant Gateway as Istio Ingress Gateway<br/>443/TCP HTTPS TLS1.2+
+    participant Activator as Knative Activator<br/>8012/TCP HTTP mTLS
+    participant Agent as kserve-agent<br/>Sidecar
+    participant Runtime as Serving Runtime<br/>8080/TCP HTTP mTLS
+    participant Client as External Client
+
+    rect rgb(240, 248, 255)
+        Note over User,LocalVolume: Flow 1: Model Deployment via InferenceService
+        User->>K8sAPI: kubectl apply -f inferenceservice.yaml<br/>HTTPS/6443 TLS1.2+ K8s token
+        K8sAPI->>Webhook: POST /mutate-serving-kserve-io-v1beta1-inferenceservice<br/>HTTPS/443 TLS1.2+ API Server cert
+        Webhook-->>K8sAPI: Mutated InferenceService
+        K8sAPI->>Webhook: POST /validate-serving-kserve-io-v1beta1-inferenceservice<br/>HTTPS/443 TLS1.2+ API Server cert
+        Webhook-->>K8sAPI: Validation OK
+        K8sAPI-->>User: InferenceService created
+
+        Controller->>K8sAPI: Watch InferenceService CRs<br/>HTTPS/6443 TLS1.2+ SA token
+        K8sAPI-->>Controller: InferenceService event
+        Controller->>KnativeAPI: Create Knative Service<br/>HTTPS/6443 TLS1.2+ SA token
+        KnativeAPI-->>Controller: Service created
+
+        Note over StorageInit,LocalVolume: Pod initialization phase
+        StorageInit->>Storage: Download model artifacts<br/>HTTPS/443 TLS1.2+ AWS SigV4/GCP SA
+        Storage-->>StorageInit: Model files
+        StorageInit->>LocalVolume: Write model files<br/>Filesystem
+    end
+
+    rect rgb(255, 250, 240)
+        Note over Client,Runtime: Flow 2: Inference Request (Serverless Mode)
+        Client->>Gateway: POST /v1/models/model:predict<br/>HTTPS/443 TLS1.2+ OAuth2 token (optional)
+        Gateway->>Activator: Forward request<br/>HTTP/8012 mTLS Service mesh
+        Activator->>Agent: Inference request<br/>HTTP/8080 mTLS
+        Agent->>Runtime: Forward to runtime<br/>HTTP/8080 localhost
+        Runtime->>LocalVolume: Read model files<br/>Filesystem
+        LocalVolume-->>Runtime: Model data
+        Runtime->>Runtime: Execute inference
+        Runtime-->>Agent: Prediction result<br/>HTTP/8080 localhost
+        Agent-->>Activator: Response<br/>HTTP/8080 mTLS
+        Activator-->>Gateway: Response<br/>HTTP/8012 mTLS
+        Gateway-->>Client: JSON response<br/>HTTPS/443 TLS1.2+
+    end
+
+    rect rgb(240, 255, 240)
+        Note over Client,Runtime: Flow 3: Multi-Model InferenceGraph Request
+        Client->>Gateway: POST /v1/models/graph:predict<br/>HTTPS/443 TLS1.2+ OAuth2 token (optional)
+        Gateway->>Router: Route to InferenceGraph<br/>HTTP/8080 mTLS
+        Router->>InferenceServiceA: Call Model A<br/>HTTP/80 mTLS
+        InferenceServiceA-->>Router: Model A result
+        Router->>InferenceServiceB: Call Model B with A's output<br/>HTTP/80 mTLS
+        InferenceServiceB-->>Router: Model B result
+        Router-->>Gateway: Final result<br/>HTTP/80 mTLS
+        Gateway-->>Client: JSON response<br/>HTTPS/443 TLS1.2+
+    end
+
+    rect rgb(255, 245, 240)
+        Note over Agent,Controller: Flow 4: Logging and Monitoring
+        Agent->>KnativeEventing: Send CloudEvents<br/>HTTP/80 mTLS
+        Runtime->>Prometheus: Expose metrics<br/>HTTP/8080 mTLS /metrics
+        Controller->>K8sAPI: Create events<br/>HTTPS/6443 TLS1.2+ SA token
+    end
