@@ -1,0 +1,74 @@
+sequenceDiagram
+    participant User as User/Data Scientist
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+
+    participant Webhook as Kueue Webhook<br/>9443/TCP HTTPS TLS1.2+
+    participant Manager as Kueue Manager<br/>Controller
+    participant Queue as Queue Manager<br/>In-Memory Cache
+    participant Scheduler as Scheduler Engine
+    participant Job as Batch Job / ML Training Job
+
+    %% Flow 1: Job Submission and Admission
+    rect rgb(230, 240, 255)
+        Note over User,Job: Flow 1: Job Submission and Admission
+        User->>K8sAPI: POST Job (kubectl create)<br/>Auth: Bearer Token
+        K8sAPI->>Webhook: Mutate Job Request<br/>mTLS (API Server identity)
+        Webhook-->>K8sAPI: Inject LocalQueue annotation<br/>Set Job suspend=true
+        K8sAPI-->>User: Job created (suspended)
+
+        Manager->>K8sAPI: Watch Job resources<br/>ServiceAccount Token
+        K8sAPI-->>Manager: Job created event
+
+        Manager->>Manager: Create Workload CR<br/>from Job resource requests
+        Manager->>K8sAPI: Create Workload CR<br/>ServiceAccount Token
+        K8sAPI-->>Manager: Workload created
+
+        Manager->>Queue: Add Workload to LocalQueue<br/>In-Process
+        Queue->>Scheduler: Evaluate admission<br/>In-Process
+
+        alt Resources available
+            Scheduler-->>Queue: Admit workload
+            Queue-->>Manager: Workload admitted
+            Manager->>K8sAPI: Update Workload status=Admitted<br/>Update Job suspend=false
+            K8sAPI-->>Job: Job unsuspended (pods created)
+            Job-->>K8sAPI: Job running
+        else Insufficient resources
+            Scheduler-->>Queue: Queue workload
+            Queue-->>Manager: Workload pending
+            Manager->>K8sAPI: Update Workload status=Pending
+            Note over Job: Job remains suspended
+        end
+    end
+
+    %% Flow 2: Visibility API Query
+    rect rgb(240, 255, 240)
+        Note over User,Manager: Flow 2: Visibility API Query
+        User->>K8sAPI: GET /apis/visibility.kueue.x-k8s.io/v1alpha1/<br/>clusterqueues/{name}/pendingworkloads<br/>Auth: Bearer Token
+        K8sAPI->>Manager: Proxied API request<br/>8082/TCP HTTPS (internal cert)<br/>API Aggregation
+        Manager->>Queue: Query pending workloads<br/>In-Process (cache query)
+        Queue-->>Manager: Pending workload summaries<br/>(position, priority, resources)
+        Manager-->>K8sAPI: JSON response
+        K8sAPI-->>User: Pending workload list
+    end
+
+    %% Flow 3: Metrics Collection
+    rect rgb(255, 245, 230)
+        Note over Manager,K8sAPI: Flow 3: Metrics Collection
+        K8sAPI->>Manager: Prometheus scrapes /metrics<br/>8080/TCP HTTP (no auth)
+        Manager-->>K8sAPI: Metrics (admitted_workloads_total,<br/>pending_workloads, queue_usage)
+    end
+
+    %% Flow 4: Multi-Cluster Distribution
+    rect rgb(255, 240, 245)
+        Note over Manager,K8sAPI: Flow 4: Multi-Cluster Workload Distribution (MultiKueue)
+        Note over Manager: Manager cluster evaluates<br/>remote cluster capacity
+        Manager->>K8sAPI: Connect to remote cluster API<br/>6443/TCP HTTPS TLS1.2+<br/>Auth: KubeConfig credentials
+        Manager->>K8sAPI: Create Workload on remote cluster<br/>HTTPS (KubeConfig auth)
+        K8sAPI-->>Manager: Workload created on remote
+
+        loop Monitor remote workload
+            Manager->>K8sAPI: Watch remote workload status<br/>HTTPS (KubeConfig auth)
+            K8sAPI-->>Manager: Status update
+        end
+
+        Manager->>Manager: Update local workload status<br/>with remote results
+    end

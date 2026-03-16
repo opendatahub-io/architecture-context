@@ -1,0 +1,108 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User[User Browser /<br/>Data Scientist]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Router["OpenShift Router<br/>443/TCP HTTPS TLS1.3<br/>Edge/Reencrypt Termination<br/>HTTP→HTTPS Redirect"]
+    end
+
+    subgraph ControllerNamespace["CONTROLLER NAMESPACE (redhat-ods-applications)"]
+        direction TB
+
+        subgraph ControllerPod["ODH Notebook Controller Pod"]
+            Controller["Controller Manager<br/>SA: odh-notebook-controller-manager"]
+        end
+
+        WebhookSvc["Webhook Service<br/>odh-notebook-controller-webhook-service<br/>443:8443/TCP HTTPS TLS1.2+ mTLS"]
+        MetricsSvc["Metrics Service<br/>8080/TCP HTTP<br/>(Internal Only)"]
+    end
+
+    subgraph UserNamespace["USER NAMESPACE (user notebooks)"]
+        direction TB
+
+        subgraph NotebookPodOAuth["Notebook Pod (OAuth Enabled)<br/>SA: {notebook-name}-sa"]
+            direction LR
+            OAuthProxy["OAuth Proxy Sidecar<br/>Port: 8443/TCP<br/>HTTPS TLS1.2+<br/>Cert: {notebook-name}-tls"]
+            NotebookContainer["Notebook Container<br/>Port: 8888/TCP<br/>HTTP (localhost)"]
+        end
+
+        subgraph NotebookPodNoAuth["Notebook Pod (Non-OAuth)<br/>Direct Access"]
+            NotebookDirect["Notebook Container<br/>Port: 8888/TCP<br/>HTTP (no auth)"]
+        end
+
+        NotebookSvc["Service: {notebook-name}-tls<br/>ClusterIP 443:8443/TCP<br/>Cert via Service CA"]
+        NotebookRoute["Route: {notebook-name}<br/>443/TCP HTTPS<br/>Reencrypt (OAuth)<br/>Edge (Non-OAuth)"]
+
+        NP1["NetworkPolicy<br/>{notebook-name}-ctrl-np<br/>Allow: controller ns<br/>Port: 8888/TCP"]
+        NP2["NetworkPolicy<br/>{notebook-name}-oauth-np<br/>Allow: all<br/>Port: 8443/TCP"]
+
+        CA["ConfigMaps<br/>• odh-trusted-ca-bundle<br/>• kube-root-ca.crt<br/>• workbench-trusted-ca-bundle"]
+    end
+
+    subgraph K8sCluster["KUBERNETES CLUSTER"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+<br/>Auth: ServiceAccount Tokens"]
+        ImageAPI["ImageStream API<br/>OpenShift<br/>6443/TCP HTTPS TLS1.2+"]
+        OAuthServer["OpenShift OAuth Server<br/>443/TCP HTTPS TLS1.2+<br/>OAuth 2.0"]
+        ServiceCA["Service CA<br/>Auto-provision TLS Certs<br/>via Annotation"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        Registry["Container Registries<br/>registry.redhat.io<br/>quay.io<br/>443/TCP HTTPS TLS1.2+<br/>Auth: Pull Secrets"]
+    end
+
+    %% External to Ingress
+    User -->|"HTTPS/443<br/>TLS1.3<br/>Auth: None (initial)"| Router
+
+    %% Ingress to Notebooks
+    Router -->|"OAuth Mode:<br/>HTTPS/8443 TLS1.2+<br/>Reencrypt"| NotebookSvc
+    Router -->|"Non-OAuth Mode:<br/>HTTP/8888<br/>Edge TLS"| NotebookDirect
+
+    NotebookSvc --> OAuthProxy
+
+    %% OAuth Flow
+    OAuthProxy -->|"HTTP/8888<br/>localhost"| NotebookContainer
+    OAuthProxy -->|"OAuth 2.0<br/>HTTPS/443 TLS1.2+<br/>User Token"| OAuthServer
+    OAuthProxy -->|"SAR Check<br/>HTTPS/6443 TLS1.2+<br/>User Bearer Token"| K8sAPI
+
+    %% Controller to K8s API
+    Controller -->|"HTTPS/6443 TLS1.2+<br/>Auth: SA Token<br/>Watch/Create Resources"| K8sAPI
+    Controller -->|"HTTPS/6443 TLS1.2+<br/>Query ImageStreams"| ImageAPI
+
+    %% Webhook
+    K8sAPI -->|"POST /mutate-notebook-v1<br/>HTTPS/443 mTLS<br/>K8s API Client Cert"| WebhookSvc
+    WebhookSvc --> Controller
+    Controller -->|"Resolve Images<br/>HTTPS/6443 TLS1.2+"| ImageAPI
+
+    %% Service CA
+    NotebookSvc -.->|"Annotation:<br/>serving-cert-secret-name"| ServiceCA
+    WebhookSvc -.->|"Annotation:<br/>serving-cert-secret-name"| ServiceCA
+    ServiceCA -.->|"Auto-provision<br/>TLS Cert"| NotebookSvc
+    ServiceCA -.->|"Auto-provision<br/>TLS Cert"| WebhookSvc
+
+    %% ConfigMaps
+    Controller -->|"Watch & Merge"| CA
+    CA -.->|"Mounted to<br/>/etc/pki/tls/custom-certs"| NotebookContainer
+
+    %% Network Policies
+    NP1 -.->|"Enforces"| NotebookPodOAuth
+    NP2 -.->|"Enforces"| NotebookPodOAuth
+
+    %% External Registry
+    Controller -->|"Pull Images<br/>HTTPS/443 TLS1.2+<br/>Pull Secrets"| Registry
+    NotebookPodOAuth -->|"Pull Images<br/>via SA"| Registry
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:3px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:3px
+    classDef controllerNs fill:#cce5ff,stroke:#0066cc,stroke-width:2px
+    classDef userNs fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef cluster fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef externalSvc fill:#f9f9f9,stroke:#999,stroke-width:2px
+
+    class User external
+    class Router ingress
+    class Controller,ControllerPod,WebhookSvc,MetricsSvc controllerNs
+    class OAuthProxy,NotebookContainer,NotebookPodOAuth,NotebookDirect,NotebookPodNoAuth,NotebookSvc,NotebookRoute,NP1,NP2,CA userNs
+    class K8sAPI,ImageAPI,OAuthServer,ServiceCA cluster
+    class Registry externalSvc

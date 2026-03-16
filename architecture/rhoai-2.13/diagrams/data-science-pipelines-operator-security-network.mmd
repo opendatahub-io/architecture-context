@@ -1,0 +1,100 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User[Data Scientist /<br/>External Client]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Route["OpenShift Route<br/>ds-pipeline-{name}<br/>443/TCP HTTPS → 8443/TCP<br/>TLS 1.2+ Reencrypt"]
+        OAuth["OAuth Proxy<br/>8443/TCP HTTPS<br/>JWT Token Validation<br/>Secret: ds-pipelines-proxy-tls-{name}"]
+    end
+
+    subgraph AppTier["APPLICATION TIER (Namespace: {user-namespace})"]
+        direction TB
+
+        subgraph APIServerPod["API Server Pod"]
+            APIServer["API Server<br/>SA: ds-pipeline-{name}<br/>8888/TCP HTTP<br/>8887/TCP gRPC (TLS opt)"]
+        end
+
+        subgraph DataTier["Data Storage"]
+            MariaDB["MariaDB StatefulSet<br/>3306/TCP MySQL<br/>TLS optional<br/>Secret: {db-secret-name}"]
+            Minio["Minio Deployment<br/>9000/TCP HTTP<br/>No TLS (dev only)<br/>Secret: {storage-secret-name}"]
+        end
+
+        subgraph WorkflowPods["Workflow Management"]
+            PA["Persistence Agent<br/>SA: ds-pipeline-{name}<br/>Watches Workflows"]
+            SW["Scheduled Workflow<br/>SA: ds-pipeline-{name}<br/>Creates Runs"]
+        end
+
+        subgraph PipelineExec["Pipeline Execution"]
+            K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
+            ArgoController["Argo Workflow Controller<br/>(v2 only)"]
+            TektonController["Tekton Controller<br/>(v1 only)"]
+            PipelinePods["Pipeline Component Pods<br/>SA: pipeline-runner-{name}"]
+        end
+
+        subgraph MLMetadata["ML Metadata (optional)"]
+            MLMDEnvoy["Envoy Proxy<br/>9090/TCP gRPC<br/>8443/TCP HTTPS OAuth<br/>Secret: ds-pipelines-envoy-proxy-tls-{name}"]
+            MLMDgRPC["ML Metadata gRPC<br/>8080/TCP gRPC<br/>TLS optional<br/>NetworkPolicy: Restricted"]
+        end
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        ExternalS3["External S3<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM / Access Keys"]
+        ExternalDB["External Database<br/>3306/5432 TCP<br/>TLS 1.2+ optional<br/>Username/Password"]
+        Registry["Container Registries<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Token/Basic Auth"]
+    end
+
+    %% External to Ingress
+    User -->|HTTPS/443<br/>TLS 1.2+<br/>OAuth Bearer Token| Route
+    Route -->|HTTPS/8443<br/>TLS 1.2+<br/>JWT Validation| OAuth
+
+    %% Ingress to Application
+    OAuth -->|HTTP/8888<br/>No TLS<br/>ServiceAccount Token| APIServer
+
+    %% API Server connections
+    APIServer -->|MySQL/3306<br/>TLS optional<br/>Username/Password| MariaDB
+    APIServer -->|HTTP/9000<br/>No TLS<br/>Access Key/Secret| Minio
+    APIServer -->|HTTPS/6443<br/>TLS 1.2+<br/>SA Token| K8sAPI
+    APIServer -.->|MySQL/3306<br/>TLS 1.2+ opt<br/>Username/Password| ExternalDB
+    APIServer -.->|HTTPS/443<br/>TLS 1.2+<br/>AWS IAM/Keys| ExternalS3
+
+    %% Workflow management
+    PA -->|HTTPS/6443<br/>Watch Workflows<br/>SA Token| K8sAPI
+    PA -->|MySQL/3306<br/>TLS optional| MariaDB
+    PA -->|HTTP/9000 or HTTPS/443<br/>Fetch logs| Minio
+    SW -->|HTTPS/6443<br/>SA Token| K8sAPI
+    SW -->|MySQL/3306<br/>Query schedules| MariaDB
+    SW -->|HTTP/8888<br/>Create runs| APIServer
+
+    %% Workflow execution
+    K8sAPI -->|Creates/Watches| ArgoController
+    K8sAPI -->|Creates/Watches| TektonController
+    ArgoController -->|HTTPS/6443<br/>Create Pods<br/>SA Token| K8sAPI
+    TektonController -->|HTTPS/6443<br/>Create Pods<br/>SA Token| K8sAPI
+    K8sAPI -->|Schedules| PipelinePods
+
+    %% Pipeline pod connections
+    PipelinePods -->|HTTP/9000 or HTTPS/443<br/>Upload artifacts<br/>Access Key| Minio
+    PipelinePods -->|gRPC/8080<br/>TLS optional<br/>No auth| MLMDgRPC
+    PipelinePods -.->|HTTPS/443<br/>TLS 1.2+<br/>AWS IAM/Keys| ExternalS3
+
+    %% ML Metadata
+    MLMDEnvoy -->|gRPC/8080<br/>No TLS<br/>Proxy| MLMDgRPC
+    MLMDgRPC -->|MySQL/3306<br/>TLS optional| MariaDB
+    User -->|HTTPS/443<br/>OAuth via Route<br/>Bearer Token| MLMDEnvoy
+
+    %% Image pulls
+    PipelinePods -.->|HTTPS/443<br/>TLS 1.2+<br/>Token/Basic| Registry
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef app fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef data fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    class User external
+    class Route,OAuth ingress
+    class APIServer,PA,SW,K8sAPI,ArgoController,TektonController,PipelinePods,MLMDEnvoy,MLMDgRPC app
+    class MariaDB,Minio data
+    class ExternalS3,ExternalDB,Registry externalservice

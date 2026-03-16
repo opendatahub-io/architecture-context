@@ -1,0 +1,70 @@
+sequenceDiagram
+    participant User as User/Data Scientist
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
+    participant Webhook as ODH Notebook Webhook<br/>8443/TCP HTTPS mTLS
+    participant Controller as ODH Notebook Controller<br/>Reconciler
+    participant ImageAPI as ImageStream API<br/>6443/TCP HTTPS TLS1.2+
+    participant Router as OpenShift Router<br/>443/TCP HTTPS TLS1.3
+    participant OAuth as OpenShift OAuth<br/>443/TCP HTTPS TLS1.2+
+    participant Proxy as OAuth Proxy Sidecar<br/>8443/TCP HTTPS TLS1.2+
+    participant Notebook as Notebook Container<br/>8888/TCP HTTP
+
+    rect rgb(220, 240, 255)
+        Note over User,ImageAPI: Flow 1: Notebook Creation (OAuth Enabled)
+        User->>K8sAPI: Create Notebook CR<br/>kubectl apply<br/>Auth: User Credentials
+        K8sAPI->>Webhook: POST /mutate-notebook-v1<br/>mTLS<br/>Auth: K8s API Client Cert
+        Webhook->>ImageAPI: Resolve ImageStream<br/>Auth: ServiceAccount Token
+        ImageAPI-->>Webhook: Docker Image Digest
+        Webhook->>Webhook: Inject OAuth Proxy Sidecar<br/>Add Reconciliation Lock<br/>Mount CA Bundle
+        Webhook-->>K8sAPI: Mutated Notebook Spec
+        K8sAPI->>Controller: Watch Event: Notebook Created
+        Controller->>K8sAPI: Create ServiceAccount<br/>Auth: ServiceAccount Token
+        Controller->>K8sAPI: Create Service ({notebook-name}-tls)<br/>Port: 443:8443/TCP
+        Controller->>K8sAPI: Create Secret (oauth-config)<br/>Random Cookie Secret
+        Controller->>K8sAPI: Create Secret (tls cert)<br/>via service.beta annotation
+        Controller->>K8sAPI: Create Route<br/>Reencrypt TLS Mode
+        Controller->>K8sAPI: Create NetworkPolicies<br/>ctrl-np + oauth-np
+        Controller->>K8sAPI: Verify ServiceAccount ImagePullSecrets
+        Controller->>K8sAPI: Remove Reconciliation Lock
+        Note over Controller: Notebook pod now starts
+    end
+
+    rect rgb(240, 255, 240)
+        Note over User,Notebook: Flow 2: Notebook Access (OAuth Enabled)
+        User->>Router: HTTPS GET https://{route-host}/<br/>Auth: None (initial)
+        Router->>Proxy: Forward to OAuth Proxy<br/>Reencrypt TLS
+        Proxy->>Proxy: Check OAuth Cookie
+        Proxy->>OAuth: Redirect to OAuth Login<br/>OAuth 2.0 Flow
+        OAuth-->>User: Login Page
+        User->>OAuth: Authenticate<br/>OpenShift Credentials
+        OAuth-->>Proxy: OAuth Callback + Token
+        Proxy->>K8sAPI: SubjectAccessReview (SAR)<br/>Resource: notebooks.kubeflow.org/{name}<br/>Verb: get<br/>Auth: User Token
+        K8sAPI-->>Proxy: Allowed/Denied
+        alt Authorized
+            Proxy->>Proxy: Set OAuth Cookie
+            Proxy->>Notebook: Forward Request<br/>HTTP/8888 (localhost)
+            Notebook-->>Proxy: Jupyter UI Response
+            Proxy-->>Router: HTTPS Response
+            Router-->>User: Jupyter Notebook Interface
+        else Denied
+            Proxy-->>Router: 403 Forbidden
+            Router-->>User: Access Denied
+        end
+    end
+
+    rect rgb(255, 240, 240)
+        Note over User,Notebook: Flow 3: Notebook Access (Non-OAuth)
+        User->>Router: HTTPS GET https://{route-host}/<br/>Auth: None
+        Router->>Notebook: Forward to Notebook<br/>HTTP/8888<br/>Edge TLS (terminated)
+        Notebook-->>Router: Jupyter UI Response
+        Router-->>User: Jupyter Notebook Interface
+    end
+
+    rect rgb(255, 255, 220)
+        Note over K8sAPI,ImageAPI: Flow 4: Webhook Admission
+        K8sAPI->>Webhook: POST /mutate-notebook-v1<br/>Notebook Create/Update<br/>mTLS Auth
+        Webhook->>ImageAPI: GET ImageStream (optional)<br/>Namespaces: opendatahub, redhat-ods-applications<br/>Auth: ServiceAccount Token
+        ImageAPI-->>Webhook: Image Digest Reference
+        Webhook->>Webhook: Inject OAuth Proxy (if annotated)<br/>Mount CA ConfigMaps<br/>Set ENV vars
+        Webhook-->>K8sAPI: AdmissionReview Response<br/>Patched Notebook Spec
+    end

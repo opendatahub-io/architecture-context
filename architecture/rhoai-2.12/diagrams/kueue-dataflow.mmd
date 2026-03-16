@@ -1,0 +1,63 @@
+sequenceDiagram
+    participant User as User/Application
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+
+    participant Webhook as Kueue Webhook<br/>9443/TCP HTTPS TLS
+    participant Controller as Kueue Controller<br/>Manager
+    participant Workload as Workload CRD
+    participant ClusterQueue as ClusterQueue CRD
+    participant Pods as Job Pods
+
+    Note over User,Pods: Flow 1: Job Submission and Admission
+
+    User->>K8sAPI: POST /apis/batch/v1/jobs<br/>Auth: Bearer Token/Client Cert
+    K8sAPI->>Webhook: Mutating webhook call<br/>mTLS
+    Webhook->>Webhook: Create Workload CRD from Job spec
+    Webhook-->>K8sAPI: Return mutated Job (suspended)
+    K8sAPI-->>User: Job created (suspended)
+
+    Webhook->>K8sAPI: Create Workload CRD<br/>ServiceAccount Token
+    K8sAPI-->>Webhook: Workload created
+
+    Controller->>K8sAPI: Watch Workload CRDs<br/>ServiceAccount Token
+    K8sAPI-->>Controller: New Workload event
+
+    Controller->>Controller: Evaluate quota in ClusterQueue
+
+    alt Resources Available
+        Controller->>K8sAPI: Update Workload.status=Admitted<br/>ServiceAccount Token
+        Controller->>K8sAPI: Update Job (unsuspend)<br/>ServiceAccount Token
+        K8sAPI->>Pods: Create Job Pods
+        Pods-->>User: Job starts executing
+    else No Resources
+        Controller->>Workload: Update status=Pending<br/>Queue position
+        Note over Controller,Workload: Job remains in queue<br/>until resources available
+    end
+
+    Note over User,Pods: Flow 2: Metrics Collection
+
+    participant Prom as Prometheus
+    participant MetricsSvc as kueue-metrics-service<br/>8080/TCP HTTP
+
+    Prom->>MetricsSvc: GET /metrics<br/>No auth
+    MetricsSvc-->>Prom: Queue metrics<br/>(pending workloads, quotas, usage)
+
+    Note over User,Pods: Flow 3: Visibility API Query
+
+    participant CLI as User/CLI
+    participant VisSvc as Visibility Server<br/>8082/TCP HTTPS TLS
+
+    CLI->>K8sAPI: GET /apis/visibility.kueue.x-k8s.io/v1alpha1/<br/>clusterqueues/{name}/pendingworkloads<br/>Auth: Bearer Token
+    K8sAPI->>VisSvc: Proxy request<br/>ServiceAccount delegation
+    VisSvc-->>K8sAPI: Pending workload list<br/>(positions, priorities)
+    K8sAPI-->>CLI: JSON response
+
+    Note over User,Pods: Flow 4: Cluster Autoscaler Integration
+
+    participant AutoscaleAPI as autoscaling.x-k8s.io API
+    participant Autoscaler as Cluster Autoscaler
+
+    Controller->>Controller: AdmissionCheck requires provisioning
+    Controller->>AutoscaleAPI: Create ProvisioningRequest<br/>ServiceAccount Token
+    AutoscaleAPI->>Autoscaler: Trigger node provisioning
+    Autoscaler-->>Controller: New nodes available
+    Controller->>K8sAPI: Admit workload (resources now available)

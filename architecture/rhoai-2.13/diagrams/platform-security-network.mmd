@@ -1,0 +1,167 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Users[Data Scientists<br/>ML Engineers]
+        Clients[External ML Clients]
+    end
+
+    subgraph Ingress["INGRESS LAYER (OpenShift Router)"]
+        Router["OpenShift Router / HAProxy<br/>443/TCP HTTPS TLS 1.2+<br/>Routes: edge/passthrough/re-encrypt"]
+    end
+
+    subgraph PlatformControlPlane["PLATFORM CONTROL PLANE"]
+        subgraph NS_Operator["Namespace: redhat-ods-operator"]
+            RHODS["RHODS Operator<br/>SA: rhods-operator-controller-manager<br/>ClusterRole: controller-manager-role"]
+        end
+
+        subgraph NS_Applications["Namespace: redhat-ods-applications"]
+            Dashboard["ODH Dashboard<br/>8443/TCP HTTPS TLS 1.2+<br/>SA: odh-dashboard<br/>Auth: OpenShift OAuth"]
+        end
+
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>mTLS + ServiceAccount JWT"]
+    end
+
+    subgraph ComponentOperators["COMPONENT OPERATORS (opendatahub namespace)"]
+        KServeCtrl["KServe Controller<br/>SA: kserve-controller-manager"]
+        ODHModelCtrl["ODH Model Controller<br/>SA: odh-model-controller"]
+        NotebookCtrl["Notebook Controller<br/>SA: notebook-controller"]
+        TrainingOp["Training Operator<br/>SA: training-operator"]
+        CodeFlare["CodeFlare Operator<br/>SA: codeflare-operator"]
+        KubeRay["KubeRay Operator<br/>SA: kuberay-operator"]
+        Kueue["Kueue Controller<br/>SA: kueue-controller"]
+        DSPOp["DSP Operator<br/>SA: dsp-operator"]
+    end
+
+    subgraph UserWorkloads["USER WORKLOADS (user namespaces)"]
+        direction TB
+
+        subgraph NotebookPods["Notebook Pods"]
+            Jupyter["Jupyter Notebook<br/>8888/TCP HTTP<br/>OAuth Proxy: 8443/TCP<br/>PVC: notebook-{name}-pv"]
+        end
+
+        subgraph InferenceServicePods["InferenceService Pods"]
+            Predictor["KServe Predictor<br/>8080/TCP HTTP (mTLS STRICT)<br/>9090/TCP Metrics<br/>Storage Initializer (init)"]
+        end
+
+        subgraph TrainingJobPods["Training Job Pods"]
+            PyTorchJob["PyTorchJob Pods<br/>Master + Workers<br/>29500/TCP PyTorch Distributed<br/>Queued by Kueue"]
+        end
+
+        subgraph RayClusterPods["Ray Clusters"]
+            RayCluster["Ray Head + Workers<br/>6379/TCP GCS (mTLS optional)<br/>8265/TCP Dashboard (OAuth Proxy)<br/>10001/TCP Client"]
+        end
+
+        subgraph PipelinePods["Pipeline Workloads"]
+            DSP["DSP API Server<br/>8888/TCP HTTPS<br/>MariaDB: 3306/TCP<br/>Minio: 9000/TCP"]
+        end
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (Istio - Conditional)"]
+        direction TB
+        IstioControlPlane["Istio Control Plane<br/>Namespace: istio-system<br/>Istiod: 15012/TCP xDS<br/>Ingress Gateway: 8080/8443/TCP"]
+
+        ServiceMeshConfig["ServiceMesh Config<br/>SMCP: data-science-smcp<br/>PeerAuthentication: STRICT<br/>AuthorizationPolicy: Namespace isolation<br/>mTLS cert rotation: 24h"]
+    end
+
+    subgraph Knative["SERVERLESS (Knative Serving - Conditional)"]
+        KnativeActivator["Knative Activator<br/>8012/TCP HTTP<br/>Autoscaler: 8080/TCP<br/>Scale: 0→N based on requests"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        S3["S3 Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS IAM / API Keys"]
+
+        Registries["Container Registries<br/>quay.io, registry.redhat.io<br/>443/TCP HTTPS<br/>Auth: Pull Secrets"]
+
+        PackageRepos["Package Repositories<br/>pypi.org, cran.rstudio.com<br/>443/TCP HTTPS"]
+
+        Git["Git Repositories<br/>github.com, gitlab.com<br/>443/TCP HTTPS or 22/TCP SSH<br/>Auth: PAT or SSH Keys"]
+    end
+
+    subgraph Monitoring["MONITORING (redhat-ods-monitoring)"]
+        Prometheus["Prometheus<br/>9090/TCP HTTP<br/>Scrapes: ServiceMonitors<br/>Retention: 15d"]
+    end
+
+    %% External to Ingress
+    Users -->|HTTPS/443<br/>TLS 1.2+<br/>OAuth Token| Router
+    Clients -->|HTTPS/443<br/>TLS 1.2+<br/>API Key/Bearer Token| Router
+
+    %% Ingress to Platform
+    Router -->|re-encrypt<br/>TLS 1.2+| Dashboard
+    Router -->|edge<br/>TLS termination| Jupyter
+    Router -->|edge + Istio<br/>TLS termination| Predictor
+    Router -->|re-encrypt| DSP
+    Router -->|passthrough + OAuth| RayCluster
+
+    %% Platform Control Plane
+    RHODS -->|mTLS<br/>ServiceAccount JWT| K8sAPI
+    Dashboard -->|mTLS<br/>ServiceAccount JWT| K8sAPI
+    Dashboard -->|OAuth 2.0<br/>HTTPS/443| Users
+
+    %% Operators to K8s API
+    KServeCtrl -->|mTLS<br/>SA JWT| K8sAPI
+    ODHModelCtrl -->|mTLS<br/>SA JWT| K8sAPI
+    NotebookCtrl -->|mTLS<br/>SA JWT| K8sAPI
+    TrainingOp -->|mTLS<br/>SA JWT| K8sAPI
+    CodeFlare -->|mTLS<br/>SA JWT| K8sAPI
+    KubeRay -->|mTLS<br/>SA JWT| K8sAPI
+    Kueue -->|mTLS<br/>SA JWT| K8sAPI
+    DSPOp -->|mTLS<br/>SA JWT| K8sAPI
+
+    %% Operators create workloads
+    NotebookCtrl -->|creates| Jupyter
+    KServeCtrl -->|creates| Predictor
+    ODHModelCtrl -->|creates Routes/<br/>VirtualServices for| Predictor
+    TrainingOp -->|creates| PyTorchJob
+    KubeRay -->|creates| RayCluster
+    DSPOp -->|creates| DSP
+
+    %% CodeFlare augments Ray
+    CodeFlare -->|injects OAuth/mTLS| RayCluster
+
+    %% Kueue queues workloads
+    Kueue -->|queues| PyTorchJob
+    Kueue -->|queues via AppWrapper| RayCluster
+
+    %% Service Mesh integration
+    IstioControlPlane -->|injects sidecars<br/>mTLS certs| Predictor
+    ServiceMeshConfig -->|enforces STRICT mTLS| Predictor
+    KnativeActivator -->|forwards to| Predictor
+
+    %% Workloads to External Services
+    Jupyter -->|HTTPS/443<br/>TLS 1.2+<br/>S3 API Keys| S3
+    Predictor -->|HTTPS/443<br/>TLS 1.2+<br/>AWS IAM/IRSA| S3
+    PyTorchJob -->|HTTPS/443<br/>TLS 1.2+<br/>S3 API Keys| S3
+    RayCluster -->|HTTPS/443<br/>TLS 1.2+<br/>S3 API Keys| S3
+    DSP -->|HTTPS/443<br/>TLS 1.2+<br/>S3 API Keys| S3
+
+    Jupyter -->|HTTPS/443<br/>TLS 1.2+| PackageRepos
+    Jupyter -->|HTTPS/443 or SSH/22<br/>PAT or SSH Keys| Git
+
+    %% Image pulls
+    RHODS -->|HTTPS/443<br/>Pull Secrets| Registries
+    Jupyter -->|HTTPS/443<br/>Pull Secrets| Registries
+    Predictor -->|HTTPS/443<br/>Pull Secrets| Registries
+
+    %% Monitoring
+    Predictor -->|HTTP/9090<br/>Metrics| Prometheus
+    PyTorchJob -->|HTTP/9090<br/>Metrics| Prometheus
+    RayCluster -->|HTTP/9090<br/>Metrics| Prometheus
+    DSP -->|HTTP/9090<br/>Metrics| Prometheus
+
+    %% Styling
+    classDef external fill:#ffcccc,stroke:#cc0000,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#ff8000,stroke-width:2px
+    classDef platform fill:#cce5ff,stroke:#0066cc,stroke-width:3px
+    classDef operators fill:#d9f2d9,stroke:#2d862d,stroke-width:2px
+    classDef workloads fill:#fff2cc,stroke:#e6b800,stroke-width:2px
+    classDef mesh fill:#e6ccff,stroke:#7700cc,stroke-width:2px
+    classDef externalservice fill:#f2f2f2,stroke:#666666,stroke-width:2px
+    classDef monitoring fill:#ffcce6,stroke:#cc0066,stroke-width:2px
+
+    class Users,Clients external
+    class Router ingress
+    class RHODS,Dashboard,K8sAPI platform
+    class KServeCtrl,ODHModelCtrl,NotebookCtrl,TrainingOp,CodeFlare,KubeRay,Kueue,DSPOp operators
+    class Jupyter,Predictor,PyTorchJob,RayCluster,DSP workloads
+    class IstioControlPlane,ServiceMeshConfig,KnativeActivator mesh
+    class S3,Registries,PackageRepos,Git externalservice
+    class Prometheus monitoring

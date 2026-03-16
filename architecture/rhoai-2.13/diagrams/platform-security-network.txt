@@ -1,0 +1,379 @@
+┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                                       │
+│                                                                                              │
+│  [Data Scientist / ML Engineer]                                                             │
+│  [External ML Clients]                                                                      │
+│         │                                                                                    │
+│         │ Port: 443/TCP                                                                      │
+│         │ Protocol: HTTPS                                                                    │
+│         │ Encryption: TLS 1.2+                                                               │
+│         │ Auth: OpenShift OAuth (Bearer Token)                                               │
+│         ▼                                                                                    │
+├─────────────────────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS LAYER (OpenShift Router)                                                          │
+│                                                                                              │
+│  [OpenShift Router / HAProxy]                                                               │
+│  - TLS Termination: TLS 1.2+ (edge/passthrough/re-encrypt)                                 │
+│  - Routes:                                                                                  │
+│    • odh-dashboard-*.apps.{cluster} → ODH Dashboard (re-encrypt)                           │
+│    • notebook-{name}-*.apps.{cluster} → Notebook Pods (edge)                               │
+│    • {isvc}-*.apps.{cluster} → InferenceServices (edge + Istio)                            │
+│    • ds-pipeline-*.apps.{cluster} → DSP API/UI (re-encrypt)                                │
+│    • {raycluster}.apps.{cluster} → Ray Dashboard (passthrough + OAuth proxy)               │
+│         │                                                                                    │
+├─────────────────────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM CONTROL PLANE (redhat-ods-operator, redhat-ods-applications)                     │
+│                                                                                              │
+│  [RHODS Operator]                                                                           │
+│  - Namespace: redhat-ods-operator                                                           │
+│  - ServiceAccount: rhods-operator-controller-manager                                        │
+│  - ClusterRole: controller-manager-role (full platform access)                              │
+│  - Manages: All component operators, DataScienceCluster, DSCInitialization CRs              │
+│         │                                                                                    │
+│         │ Port: 6443/TCP                                                                     │
+│         │ Protocol: HTTPS                                                                    │
+│         │ Encryption: mTLS (ServiceAccount token + client cert)                             │
+│         │ Auth: ServiceAccount JWT + RBAC                                                    │
+│         ▼                                                                                    │
+│  [Kubernetes API Server]                                                                    │
+│  - Port: 6443/TCP (internal)                                                                │
+│  - Auth: mTLS + ServiceAccount JWT validation                                               │
+│  - RBAC: All operators authenticate via ServiceAccount                                      │
+│         ▲                                                                                    │
+│         │ mTLS (all operators)                                                               │
+│         │                                                                                    │
+│  [ODH Dashboard]                                                                            │
+│  - Namespace: redhat-ods-applications                                                       │
+│  - ServiceAccount: odh-dashboard                                                            │
+│  - Port: 8443/TCP (internal), 443/TCP (external via Route)                                 │
+│  - Encryption: TLS 1.2+ (re-encrypt Route)                                                  │
+│  - Auth: OpenShift OAuth (external), ServiceAccount JWT (K8s API)                           │
+│         │                                                                                    │
+├─────────────────────────────────────────────────────────────────────────────────────────────┤
+│  COMPONENT OPERATORS (opendatahub namespace)                                                │
+│                                                                                              │
+│  [KServe Controller]                [ODH Model Controller]                                  │
+│  - SA: kserve-controller-manager    - SA: odh-model-controller-manager                      │
+│  - ClusterRole: kserve-manager-role - ClusterRole: odh-model-controller-role                │
+│  - Watches: InferenceService CRs    - Watches: InferenceService CRs                         │
+│  - Creates: Knative Services        - Creates: Routes, VirtualServices, ServiceMonitors     │
+│         │                                     │                                              │
+│         │ mTLS to K8s API                     │ mTLS to K8s API                              │
+│         ▼                                     ▼                                              │
+│  [Notebook Controller]              [Training Operator]         [CodeFlare Operator]        │
+│  - SA: notebook-controller          - SA: training-operator     - SA: codeflare-operator    │
+│  - ClusterRole: notebook-ctrl-role  - ClusterRole: training-op  - ClusterRole: manager-role │
+│  - Creates: StatefulSets, Routes    - Creates: Training Jobs    - Creates: AppWrappers     │
+│         │                                     │                          │                   │
+│         │                                     │                          │                   │
+│  [Data Science Pipelines Operator]  [KubeRay Operator]          [Kueue]                     │
+│  - SA: data-science-pipelines-op    - SA: kuberay-operator      - SA: kueue-controller      │
+│  - ClusterRole: manager-role        - ClusterRole: kuberay-op   - ClusterRole: kueue-mgr    │
+│  - Creates: Argo/Tekton Workflows   - Creates: RayCluster Pods  - Queues: All workloads     │
+│         │                                     │                          │                   │
+├─────────────────────────────────────────────────────────────────────────────────────────────┤
+│  USER WORKLOADS (user namespaces)                                                          │
+│                                                                                              │
+│  [Notebook Pods - StatefulSet]                                                              │
+│  - Namespace: {user-namespace}                                                              │
+│  - ServiceAccount: {notebook-name}                                                          │
+│  - Image: {workbench-image}:tag (Jupyter/VS Code/RStudio)                                   │
+│  - Ports:                                                                                    │
+│    • 8888/TCP (Jupyter) - HTTP - OAuth Proxy intercepts on 8443/TCP                         │
+│    • 8080/TCP (Code Server) - HTTP - OAuth Proxy intercepts on 8443/TCP                     │
+│  - Volumes: PVC (notebook-{name}-pv), Shared Storage                                        │
+│  - Network: Istio sidecar injection (conditional), OAuth proxy sidecar (always)             │
+│         │                                                                                    │
+│         │ Port: 443/TCP                                                                      │
+│         │ Protocol: HTTPS                                                                    │
+│         │ Encryption: TLS 1.2+ (to external services)                                        │
+│         │ Auth: AWS IAM / S3 API Keys (Data Connections)                                     │
+│         ▼                                                                                    │
+│                                                                                              │
+│  [InferenceService Pods - KServe/ModelMesh]                                                 │
+│  - Namespace: {user-namespace}                                                              │
+│  - ServiceAccount: {isvc-name}-sa                                                           │
+│  - Containers:                                                                               │
+│    • storage-initializer: Downloads model from S3 (init container)                          │
+│    • kserve-container: Runs model server (SKLearn/PyTorch/TensorFlow/ONNX/etc.)            │
+│  - Ports:                                                                                    │
+│    • 8080/TCP (HTTP) - mTLS STRICT (if ServiceMesh enabled)                                 │
+│    • 8443/TCP (HTTPS) - TLS 1.2+ (if plaintext)                                             │
+│    • 9090/TCP (Metrics) - HTTP - scraped by Prometheus                                      │
+│  - Network:                                                                                  │
+│    • PeerAuthentication: STRICT (namespace-scoped, requires mTLS)                           │
+│    • AuthorizationPolicy: Allow only authenticated mesh clients                             │
+│    • VirtualService: Istio Gateway → Predictor Pod                                          │
+│         │                                                                                    │
+│         │ Port: 443/TCP                                                                      │
+│         │ Protocol: HTTPS                                                                    │
+│         │ Encryption: TLS 1.2+                                                               │
+│         │ Auth: AWS IAM Role (IRSA) / S3 Access Keys                                         │
+│         ▼                                                                                    │
+│                                                                                              │
+│  [Training Job Pods - PyTorchJob/TFJob/MPIJob]                                              │
+│  - Namespace: {user-namespace}                                                              │
+│  - ServiceAccount: {job-name}                                                               │
+│  - Pods: Master + Workers (framework-specific)                                              │
+│  - Ports:                                                                                    │
+│    • 29500/TCP (PyTorch Distributed) - Plaintext (pod-to-pod)                               │
+│    • 23456/TCP (TensorFlow Parameter Server) - Plaintext (pod-to-pod)                       │
+│    • 22/TCP (MPI SSH) - SSH keys (for MPI jobs)                                             │
+│  - Queued by: Kueue (via ClusterQueue/LocalQueue)                                           │
+│         │                                                                                    │
+│         │ Port: 443/TCP                                                                      │
+│         │ Protocol: HTTPS                                                                    │
+│         │ Auth: S3 API Keys / AWS IAM                                                        │
+│         ▼                                                                                    │
+│                                                                                              │
+│  [Ray Clusters - KubeRay + CodeFlare]                                                       │
+│  - Namespace: {user-namespace}                                                              │
+│  - ServiceAccount: {raycluster-name}                                                        │
+│  - Pods: Head (1) + Workers (N)                                                             │
+│  - Ports:                                                                                    │
+│    • 6379/TCP (Ray GCS) - Plaintext or mTLS (CodeFlare configures)                          │
+│    • 8265/TCP (Ray Dashboard) - HTTP - OAuth Proxy on 8443/TCP                              │
+│    • 10001/TCP (Ray Client) - Plaintext or mTLS                                             │
+│  - Security:                                                                                 │
+│    • OAuth Proxy injected by CodeFlare (dashboard auth)                                     │
+│    • mTLS optional (CodeFlare configures TLS certs)                                         │
+│    • PeerAuthentication: PERMISSIVE (allows plaintext + mTLS)                               │
+│  - Queued by: Kueue via AppWrapper                                                          │
+│         │                                                                                    │
+│         │ Port: 443/TCP                                                                      │
+│         │ Protocol: HTTPS                                                                    │
+│         │ Auth: S3 API Keys                                                                  │
+│         ▼                                                                                    │
+│                                                                                              │
+│  [Data Science Pipelines - Argo/Tekton Workflows]                                           │
+│  - Namespace: {user-namespace}                                                              │
+│  - ServiceAccount: pipeline-runner                                                          │
+│  - Components:                                                                               │
+│    • DSP API Server: 8888/TCP (HTTPS re-encrypt), 8887/TCP (HTTP internal)                 │
+│    • DSP UI: 3000/TCP (HTTPS re-encrypt)                                                    │
+│    • MariaDB: 3306/TCP (MySQL protocol, plaintext - cluster-internal only)                  │
+│    • Minio (if used): 9000/TCP (HTTP - internal artifact storage)                           │
+│  - Pipeline Steps: Execute as pods, each with own ServiceAccount                            │
+│         │                                                                                    │
+├─────────────────────────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Istio - conditional, namespace-scoped)                                       │
+│                                                                                              │
+│  [Istio Control Plane - istio-system namespace]                                             │
+│  - Istiod: 15012/TCP (xDS API), 15017/TCP (webhook), 443/TCP (injection webhook)           │
+│  - Ingress Gateway: 8080/TCP (HTTP), 8443/TCP (HTTPS), 15021/TCP (health)                  │
+│                                                                                              │
+│  [ServiceMesh Configuration]                                                                │
+│  - ServiceMeshControlPlane: data-science-smcp                                               │
+│  - ServiceMeshMemberRoll: Includes user namespaces with InferenceServices                   │
+│  - PeerAuthentication: STRICT (mTLS required for predictor pods)                            │
+│  - AuthorizationPolicy: Namespace-scoped (only allow authenticated clients)                 │
+│  - VirtualService: Routes external traffic → Istio Gateway → Predictor                      │
+│                                                                                              │
+│  mTLS Enforcement:                                                                           │
+│  - Istio sidecar (envoy) injected into predictor pods                                       │
+│  - All pod-to-pod traffic encrypted via mTLS                                                │
+│  - Certificates auto-issued by Istio CA (citadel)                                           │
+│  - Certificate rotation: 24 hours                                                            │
+│                                                                                              │
+├─────────────────────────────────────────────────────────────────────────────────────────────┤
+│  SERVERLESS AUTOSCALING (Knative Serving - conditional)                                     │
+│                                                                                              │
+│  [Knative Serving - knative-serving namespace]                                              │
+│  - Activator: 8012/TCP (HTTP - forwards to predictor), 9090/TCP (metrics)                  │
+│  - Autoscaler: 8080/TCP (metrics aggregation)                                               │
+│  - Controller: Watches KnativeService CRs                                                   │
+│  - Webhook: 443/TCP (validates KnativeService CRs)                                          │
+│                                                                                              │
+│  Traffic Flow (KServe Serverless Mode):                                                     │
+│  External → Route → Istio Gateway → Knative Activator → Predictor Pod                      │
+│  - Activator scales predictors from 0 → N based on request queue                            │
+│  - PodAutoscaler: Knative PA (concurrent requests) or HPA (CPU/memory)                      │
+│                                                                                              │
+├─────────────────────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                                          │
+│                                                                                              │
+│  [S3-Compatible Storage - s3.amazonaws.com / s3.{region}.amazonaws.com]                     │
+│  - Port: 443/TCP                                                                             │
+│  - Protocol: HTTPS                                                                           │
+│  - Encryption: TLS 1.2+                                                                      │
+│  - Auth: AWS IAM credentials (access key + secret key) or IRSA (pod identity)               │
+│  - Purpose:                                                                                  │
+│    • Model artifact storage (KServe/ModelMesh)                                              │
+│    • Dataset storage (notebooks, training jobs)                                             │
+│    • Pipeline artifact storage (DSP)                                                         │
+│  - Secrets: Data Connection secrets (Opaque) in user namespaces                             │
+│    • AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_ENDPOINT, AWS_S3_BUCKET              │
+│                                                                                              │
+│  [Container Registries - quay.io, registry.redhat.io]                                       │
+│  - Port: 443/TCP                                                                             │
+│  - Protocol: HTTPS                                                                           │
+│  - Encryption: TLS 1.2+                                                                      │
+│  - Auth: Pull secrets (kubernetes.io/dockerconfigjson)                                       │
+│  - Purpose: Pull workbench images, operator images, model server images                     │
+│                                                                                              │
+│  [Package Repositories - pypi.org, cran.rstudio.com]                                         │
+│  - Port: 443/TCP                                                                             │
+│  - Protocol: HTTPS                                                                           │
+│  - Encryption: TLS 1.2+                                                                      │
+│  - Purpose: Install Python/R packages in notebooks and training jobs                        │
+│                                                                                              │
+│  [Git Repositories - github.com, gitlab.com]                                                 │
+│  - Port: 443/TCP (HTTPS) or 22/TCP (SSH)                                                    │
+│  - Protocol: HTTPS or SSH                                                                    │
+│  - Auth: Personal Access Tokens (HTTPS) or SSH keys                                          │
+│  - Purpose: Clone repos via JupyterLab Git extension                                         │
+│                                                                                              │
+└─────────────────────────────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+RBAC SUMMARY
+═══════════════════════════════════════════════════════════════════════════════════════════════
+
+Platform Operators (ClusterRole bindings):
+──────────────────────────────────────────
+• rhods-operator-controller-manager
+  └─ ClusterRole: controller-manager-role
+     ├─ API Groups: datascienceclusters, operators.coreos.com, serving.kserve.io, *
+     ├─ Resources: datascienceclusters, dscinitializations, subscriptions, all CRDs
+     └─ Verbs: * (full admin access)
+
+• kserve-controller-manager
+  └─ ClusterRole: kserve-manager-role
+     ├─ API Groups: serving.kserve.io, serving.knative.dev, networking.istio.io
+     ├─ Resources: inferenceservices, knative services, virtualservices, secrets
+     └─ Verbs: create, delete, get, list, patch, update, watch
+
+• odh-model-controller-manager
+  └─ ClusterRole: odh-model-controller-role
+     ├─ API Groups: serving.kserve.io, route.openshift.io, networking.istio.io, security.istio.io
+     ├─ Resources: inferenceservices, routes, virtualservices, peerauthentications, servicemonitors
+     └─ Verbs: create, delete, get, list, patch, update, watch
+
+• notebook-controller-manager
+  └─ ClusterRole: notebook-controller-role
+     ├─ API Groups: kubeflow.org, apps, networking.istio.io
+     ├─ Resources: notebooks, statefulsets, services, routes, virtualservices
+     └─ Verbs: * (all verbs)
+
+• training-operator
+  └─ ClusterRole: training-operator
+     ├─ API Groups: kubeflow.org (6 training job types)
+     ├─ Resources: pytorchjobs, tfjobs, mpijobs, xgboostjobs, mxjobs, paddlejobs
+     └─ Verbs: * (all verbs)
+
+• kueue-controller-manager
+  └─ ClusterRole: kueue-manager-role
+     ├─ API Groups: kueue.x-k8s.io, kubeflow.org, ray.io, batch
+     ├─ Resources: clusterqueues, localqueues, workloads, resourceflavors, all training jobs
+     └─ Verbs: create, delete, get, list, patch, update, watch
+
+User-Facing Roles:
+──────────────────
+• edit (namespace-scoped)
+  └─ Grants: Create/manage notebooks, inferenceservices, pipelines, training jobs
+
+• view (namespace-scoped)
+  └─ Grants: Read-only access to workloads
+
+• admin (namespace-scoped)
+  └─ Grants: Full namespace admin (including RBAC management)
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+SERVICE MESH CONFIGURATION
+═══════════════════════════════════════════════════════════════════════════════════════════════
+
+ServiceMeshControlPlane: data-science-smcp (istio-system namespace)
+────────────────────────────────────────────────────────────────────
+• Version: v2.5+ (OpenShift Service Mesh)
+• Mode: STRICT mTLS for InferenceService predictor pods
+• CA: Istio CA (citadel) - auto-issues mTLS certs to sidecars
+• Certificate Rotation: 24 hours
+• Telemetry: Prometheus metrics, distributed tracing (Jaeger)
+
+PeerAuthentication (namespace-scoped):
+──────────────────────────────────────
+• Resource: PeerAuthentication/{namespace}
+• mtls.mode: STRICT (predictor pods require mTLS)
+• Applied to: InferenceService predictor pods
+• Enforced by: Istio Envoy sidecars
+
+AuthorizationPolicy (namespace-scoped):
+───────────────────────────────────────
+• Resource: AuthorizationPolicy/kserve-{isvc}
+• Action: ALLOW
+• Rules:
+  - Source: cluster.local/ns/{namespace}/sa/{authorized-sas}
+  - Methods: GET, POST
+  - Paths: /v1/models/*, /v2/models/*
+
+VirtualService Routing:
+───────────────────────
+• Resource: VirtualService/{isvc}
+• Gateways: knative-serving/knative-ingress-gateway
+• Hosts: {isvc}.{namespace}.svc.cluster.local, {isvc}-{namespace}.apps.{cluster}
+• Routes: → {isvc}-predictor-default.{namespace}.svc.cluster.local:80
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+SECRETS & CREDENTIALS
+═══════════════════════════════════════════════════════════════════════════════════════════════
+
+Platform Secrets (redhat-ods-applications namespace):
+─────────────────────────────────────────────────────
+• odh-dashboard-serving-cert (kubernetes.io/tls)
+  └─ TLS certificate for Dashboard Route (90-day rotation, auto-renewed by cert-manager)
+
+• oauth-client-secret (Opaque)
+  └─ OAuth client credentials for Dashboard auth (OAuth provider integration)
+
+User Secrets (user namespaces):
+───────────────────────────────
+• {name}-data-connection (Opaque) - S3 credentials
+  ├─ AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+  ├─ AWS_S3_ENDPOINT, AWS_S3_BUCKET, AWS_DEFAULT_REGION
+  └─ Mounted into notebook pods, training jobs, inference pods
+
+• storage-config (Opaque) - Aggregated by ODH Model Controller
+  └─ Unified S3 config for KServe/ModelMesh (auto-generated from Data Connections)
+
+• pipeline-runner-token (kubernetes.io/service-account-token)
+  └─ ServiceAccount token for DSP API authentication
+
+• {notebook-name}-oauth-config (Opaque)
+  └─ OAuth proxy configuration for notebook authentication
+
+KServe/ModelMesh Secrets:
+─────────────────────────
+• {isvc}-sa-token (kubernetes.io/service-account-token)
+  └─ ServiceAccount token for predictor pod authentication
+
+• {isvc}-istio-mtls-certs (istio.io/key-and-cert)
+  └─ mTLS certificates issued by Istio CA (24-hour rotation)
+
+Operator Secrets:
+─────────────────
+• webhook-server-cert (kubernetes.io/tls)
+  └─ TLS cert for operator admission webhooks (90-day rotation, cert-manager)
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+TRUST BOUNDARIES
+═══════════════════════════════════════════════════════════════════════════════════════════════
+
+1. External → Ingress
+   • Trust: UNTRUSTED → DMZ
+   • Enforcement: OpenShift OAuth, TLS 1.2+ termination, Route policies
+
+2. Ingress → Platform Control Plane
+   • Trust: DMZ → TRUSTED (platform operators)
+   • Enforcement: mTLS ServiceAccount authentication, RBAC
+
+3. Platform Control Plane → User Workloads
+   • Trust: TRUSTED (operators) → SEMI-TRUSTED (user pods)
+   • Enforcement: RBAC (operators can manage user resources), Pod Security Standards
+
+4. User Workloads → External Services
+   • Trust: SEMI-TRUSTED → UNTRUSTED
+   • Enforcement: Network Policies (optional), Secret-based auth (S3 keys, OAuth tokens)
+
+5. Service Mesh Internal
+   • Trust: TRUSTED (mTLS authenticated pods)
+   • Enforcement: PeerAuthentication STRICT, AuthorizationPolicy, mTLS cert validation

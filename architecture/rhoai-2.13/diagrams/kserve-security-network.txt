@@ -1,0 +1,322 @@
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                               │
+│                                                                                      │
+│  [External Client / Data Scientist]                                                 │
+│         │                                                                            │
+│         │ Port: 443/TCP                                                              │
+│         │ Protocol: HTTPS                                                            │
+│         │ Encryption: TLS 1.2+                                                       │
+│         │ Auth: Bearer Token (optional, validated by Istio RequestAuthentication)   │
+│         ▼                                                                            │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                                       │
+│                                                                                      │
+│  [OpenShift Router → Istio Gateway]                                                 │
+│  - Port: 443/TCP (external) → 8080/TCP (internal)                                  │
+│  - TLS Termination: TLS 1.2+                                                        │
+│  - AuthN: RequestAuthentication (validates JWT if present)                          │
+│  - Hosts: {isvc-name}.{namespace}.{domain}                                          │
+│         │                                                                            │
+│         │ Port: 443/TCP                                                              │
+│         │ Protocol: HTTP                                                             │
+│         │ Encryption: mTLS (STRICT mode via Istio)                                  │
+│         │ Auth: Service Identity (Istio mutual TLS)                                  │
+│         ▼                                                                            │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Trusted - Istio mTLS STRICT)                                         │
+│                                                                                      │
+│  ┌────────────────────────────────────────────────────────────────────────────┐    │
+│  │  Namespace: knative-serving                                                │    │
+│  │                                                                              │    │
+│  │  [Knative Activator]                                                        │    │
+│  │  - ServiceAccount: activator                                                │    │
+│  │  - Port: 8012/TCP (HTTP)                                                    │    │
+│  │  - Encryption: mTLS via Envoy sidecar                                       │    │
+│  │  - AuthZ: Istio AuthorizationPolicy                                         │    │
+│  │         │                                                                    │    │
+│  │         │ Port: 8012/TCP                                                     │    │
+│  │         │ Protocol: HTTP                                                     │    │
+│  │         │ Encryption: mTLS (Istio ServiceMesh)                              │    │
+│  │         │ Auth: Service Identity                                             │    │
+│  │         ▼                                                                    │    │
+│  └────────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                      │
+│  ┌────────────────────────────────────────────────────────────────────────────┐    │
+│  │  Namespace: {user-namespace}                                               │    │
+│  │                                                                              │    │
+│  │  [InferenceService Pod: {isvc-name}-predictor-xxxx]                        │    │
+│  │  - ServiceAccount: {isvc-name}-sa                                           │    │
+│  │                                                                              │    │
+│  │  ┌──────────────────────────────────────────────────────────────────┐      │    │
+│  │  │  Init Container: storage-initializer                              │      │    │
+│  │  │  - Purpose: Download model artifacts                              │      │    │
+│  │  │  - Runtime: Runs once before main containers                      │      │    │
+│  │  │         │                                                           │      │    │
+│  │  │         │ Port: 443/TCP                                            │      │    │
+│  │  │         │ Protocol: HTTPS                                          │      │    │
+│  │  │         │ Encryption: TLS 1.2+                                     │      │    │
+│  │  │         │ Auth: AWS Signature v4 / GCP IAM                         │      │    │
+│  │  │         │ Destination: S3/GCS external storage                     │      │    │
+│  │  │         ▼                                                           │      │    │
+│  │  │  [EmptyDir Volume: /mnt/models]                                   │      │    │
+│  │  └──────────────────────────────────────────────────────────────────┘      │    │
+│  │                                                                              │    │
+│  │  ┌──────────────────────────────────────────────────────────────────┐      │    │
+│  │  │  Sidecar: kserve-agent                                            │      │    │
+│  │  │  - Port: 9081/TCP (proxy endpoint)                                │      │    │
+│  │  │  - Auth: Optional Bearer Token                                    │      │    │
+│  │  │  - Purpose: Request batching, logging, metrics                    │      │    │
+│  │  │         │                                                           │      │    │
+│  │  │         │ Port: 8080/TCP                                           │      │    │
+│  │  │         │ Protocol: HTTP                                           │      │    │
+│  │  │         │ Encryption: None (localhost communication)               │      │    │
+│  │  │         │ Auth: None (same pod)                                    │      │    │
+│  │  │         ▼                                                           │      │    │
+│  │  │  [Main Container: Model Server]                                   │      │    │
+│  │  │  - Port: 8080/TCP (inference endpoint)                            │      │    │
+│  │  │  - Image: TensorFlow/PyTorch/SKLearn/etc                          │      │    │
+│  │  │  - Protocols: KServe v1 (REST), v2 (REST/gRPC)                    │      │    │
+│  │  │  - Model Path: /mnt/models (from EmptyDir)                        │      │    │
+│  │  └──────────────────────────────────────────────────────────────────┘      │    │
+│  │                                                                              │    │
+│  │  ┌──────────────────────────────────────────────────────────────────┐      │    │
+│  │  │  Sidecar: Envoy Proxy (Istio)                                     │      │    │
+│  │  │  - Port: 15006/TCP (inbound mTLS interception)                    │      │    │
+│  │  │  - Port: 15001/TCP (outbound mTLS interception)                   │      │    │
+│  │  │  - Certificates: Istio CA via SDS (auto-rotated)                  │      │    │
+│  │  │  - PeerAuthentication: STRICT (namespace-scoped)                  │      │    │
+│  │  └──────────────────────────────────────────────────────────────────┘      │    │
+│  │                                                                              │    │
+│  │  Optional: [kserve-agent → CloudEvents Sink]                               │    │
+│  │         │                                                                    │    │
+│  │         │ Port: 80/TCP or 443/TCP                                           │    │
+│  │         │ Protocol: HTTP/HTTPS                                              │    │
+│  │         │ Encryption: TLS 1.2+ (if HTTPS)                                   │    │
+│  │         │ Auth: Bearer Token (optional)                                     │    │
+│  │         │ Purpose: Send request/response logs                               │    │
+│  │         ▼                                                                    │    │
+│  └────────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                      │
+│  ┌────────────────────────────────────────────────────────────────────────────┐    │
+│  │  Namespace: {user-namespace}                                               │    │
+│  │                                                                              │    │
+│  │  [InferenceGraph Router Pod: {ig-name}-router-xxxx]                        │    │
+│  │  - ServiceAccount: {ig-name}-router-sa                                      │    │
+│  │  - Port: 8080/TCP (HTTP)                                                    │    │
+│  │  - Encryption: mTLS via Envoy sidecar                                       │    │
+│  │  - Purpose: Multi-step inference orchestration                              │    │
+│  │         │                                                                    │    │
+│  │         │ Routes to Step N InferenceServices                                │    │
+│  │         │ Port: 80/TCP (Service ClusterIP)                                  │    │
+│  │         │ Protocol: HTTP                                                     │    │
+│  │         │ Encryption: mTLS                                                   │    │
+│  │         ▼                                                                    │    │
+│  └────────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                      │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE (Namespace: kserve)                                                  │
+│                                                                                      │
+│  [kserve-controller-manager Deployment]                                             │
+│  - ServiceAccount: kserve-controller-manager                                        │
+│  - Replicas: 1 (leader election via ConfigMap)                                      │
+│         │                                                                            │
+│         │ Port: 6443/TCP                                                             │
+│         │ Protocol: HTTPS                                                            │
+│         │ Encryption: TLS 1.2+                                                       │
+│         │ Auth: Bearer Token (Service Account)                                       │
+│         │ Purpose: Watch CRDs, create/update resources                               │
+│         ▼                                                                            │
+│  [Kubernetes API Server]                                                            │
+│         │                                                                            │
+│         │ Port: 9443/TCP                                                             │
+│         │ Protocol: HTTPS                                                            │
+│         │ Encryption: TLS 1.2+ (mTLS)                                               │
+│         │ Auth: Kubernetes API Server validates webhook cert                        │
+│         │ Purpose: Admission webhook callbacks                                       │
+│         ▼                                                                            │
+│  [kserve-webhook-server Service]                                                    │
+│  - Port: 443/TCP → 9443/TCP (webhook-server container port)                        │
+│  - Certificate: kserve-webhook-server-cert (provisioned by cert-manager)           │
+│  - Endpoints: /mutate-*, /validate-*                                                │
+│                                                                                      │
+│  [Controller Metrics]                                                               │
+│  - Port: 8080/TCP (HTTP)                                                            │
+│  - Encryption: None                                                                  │
+│  - Auth: None (internal, protected by NetworkPolicy)                                │
+│  - Purpose: Prometheus scraping                                                     │
+│                                                                                      │
+│  [Controller Health]                                                                │
+│  - Port: 8081/TCP (HTTP)                                                            │
+│  - Endpoints: /healthz (liveness), /readyz (readiness)                              │
+│  - Encryption: None                                                                  │
+│  - Auth: None (Kubernetes probes)                                                   │
+│                                                                                      │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                                   │
+│                                                                                      │
+│  [S3 Compatible Storage - s3.amazonaws.com or Minio]                                │
+│  - Purpose: Model artifact storage                                                   │
+│  - Auth: AWS Signature v4 (from storage-config Secret)                              │
+│  - Encryption: TLS 1.2+                                                              │
+│  - Port: 443/TCP (HTTPS)                                                             │
+│                                                                                      │
+│  [Google Cloud Storage - storage.googleapis.com]                                    │
+│  - Purpose: Model artifact storage                                                   │
+│  - Auth: GCP Service Account (from storage-config Secret)                           │
+│  - Encryption: TLS 1.2+                                                              │
+│  - Port: 443/TCP (HTTPS)                                                             │
+│                                                                                      │
+│  [CloudEvents Sink - External Logging Service]                                      │
+│  - Purpose: Inference request/response logging                                       │
+│  - Auth: Bearer Token (optional)                                                     │
+│  - Encryption: TLS 1.2+ (HTTPS) or None (HTTP)                                      │
+│  - Port: 80/TCP (HTTP) or 443/TCP (HTTPS)                                           │
+│                                                                                      │
+│  [Prometheus - metrics.monitoring.svc.cluster.local]                                │
+│  - Purpose: Metrics collection                                                       │
+│  - Auth: None (internal cluster)                                                     │
+│  - Encryption: None (HTTP)                                                           │
+│  - Port: 8080/TCP (scrapes /metrics endpoints)                                      │
+│                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────┘
+
+═════════════════════════════════════════════════════════════════════════════════════
+RBAC SUMMARY
+═════════════════════════════════════════════════════════════════════════════════════
+
+ClusterRole: kserve-manager-role
+├─ serving.kserve.io
+│  ├─ inferenceservices, inferenceservices/finalizers, inferenceservices/status
+│  │  └─ Verbs: create, delete, get, list, patch, update, watch
+│  ├─ inferencegraphs, inferencegraphs/finalizers, inferencegraphs/status
+│  │  └─ Verbs: create, delete, get, list, patch, update, watch
+│  ├─ trainedmodels, trainedmodels/status
+│  │  └─ Verbs: create, delete, get, list, patch, update, watch
+│  ├─ clusterservingruntimes, clusterservingruntimes/finalizers, clusterservingruntimes/status
+│  │  └─ Verbs: create, delete, get, list, patch, update, watch
+│  ├─ servingruntimes, servingruntimes/finalizers, servingruntimes/status
+│  │  └─ Verbs: create, delete, get, list, patch, update, watch
+│  └─ clusterstoragecontainers
+│     └─ Verbs: create, delete, get, list, patch, update, watch
+├─ serving.knative.dev
+│  └─ services, services/finalizers, services/status
+│     └─ Verbs: create, delete, get, list, patch, update, watch
+├─ networking.istio.io
+│  └─ virtualservices, virtualservices/finalizers, virtualservices/status
+│     └─ Verbs: create, delete, get, list, patch, update, watch
+├─ core
+│  ├─ services, secrets, configmaps, events
+│  │  └─ Verbs: create, delete, get, list, patch, update, watch
+│  └─ namespaces, pods, serviceaccounts
+│     └─ Verbs: get, list, watch
+├─ apps
+│  └─ deployments
+│     └─ Verbs: create, delete, get, list, patch, update, watch
+├─ autoscaling
+│  └─ horizontalpodautoscalers
+│     └─ Verbs: create, delete, get, list, patch, update, watch
+├─ networking.k8s.io
+│  └─ ingresses
+│     └─ Verbs: create, delete, get, list, patch, update, watch
+└─ admissionregistration.k8s.io
+   └─ mutatingwebhookconfigurations, validatingwebhookconfigurations
+      └─ Verbs: create, delete, get, list, patch, update, watch
+
+ClusterRoleBinding: kserve-manager-rolebinding
+└─ ServiceAccount: kserve-controller-manager (namespace: kserve)
+   └─ Grants: kserve-manager-role (cluster-wide)
+
+ClusterRole: kserve-leader-election-role
+└─ core
+   └─ configmaps
+      └─ Verbs: get, create, update
+
+RoleBinding: kserve-leader-election-rolebinding
+└─ ServiceAccount: kserve-controller-manager (namespace: kserve)
+   └─ Grants: kserve-leader-election-role (namespace: kserve)
+
+═════════════════════════════════════════════════════════════════════════════════════
+SERVICE MESH CONFIGURATION (Istio/OSSM)
+═════════════════════════════════════════════════════════════════════════════════════
+
+PeerAuthentication: default (namespace-scoped)
+├─ Mode: STRICT (all workloads require mTLS)
+├─ Scope: Applied to all pods in user namespaces
+└─ Certificates: Issued by Istio CA, auto-rotated every 24 hours
+
+AuthorizationPolicy: kserve-predictor-access
+├─ Action: ALLOW
+├─ Source: Principals: cluster.local/ns/knative-serving/sa/activator
+├─ Target: {isvc-name}-predictor service
+└─ Operations: All methods (GET, POST, etc.)
+
+AuthorizationPolicy: kserve-router-access
+├─ Action: ALLOW
+├─ Source: Principals: cluster.local/ns/{user-namespace}/sa/{ig-name}-router-sa
+├─ Target: InferenceService predictor services
+└─ Operations: POST (inference requests)
+
+RequestAuthentication: kserve-jwt (optional)
+├─ JwtRules:
+│  ├─ Issuer: https://{openshift-oauth-server}
+│  ├─ JwksUri: https://{openshift-oauth-server}/.well-known/jwks.json
+│  └─ Audiences: kserve-inference
+└─ Apply to: Istio Gateway ingress
+
+═════════════════════════════════════════════════════════════════════════════════════
+SECRETS
+═════════════════════════════════════════════════════════════════════════════════════
+
+kserve-webhook-server-cert (kubernetes.io/tls)
+├─ Purpose: TLS certificate for admission webhooks
+├─ Provisioned by: cert-manager (Certificate CR)
+├─ Rotation: Automatic (90 days)
+├─ Used by: kserve-webhook-server-service
+└─ Mounted at: /tmp/k8s-webhook-server/serving-certs
+
+storage-config (Opaque)
+├─ Purpose: S3/GCS credentials for storage-initializer
+├─ Provisioned by: User/Admin (manual or External Secrets Operator)
+├─ Rotation: Manual (no auto-rotation)
+├─ Keys:
+│  ├─ AWS_ACCESS_KEY_ID (S3)
+│  ├─ AWS_SECRET_ACCESS_KEY (S3)
+│  └─ GOOGLE_APPLICATION_CREDENTIALS (GCS)
+└─ Mounted at: /var/secrets in storage-initializer init container
+
+{isvc-name}-sa-token (kubernetes.io/service-account-token)
+├─ Purpose: Service account token for inference pods
+├─ Provisioned by: Kubernetes (automatic)
+├─ Rotation: Automatic (enabled via BoundServiceAccountTokenVolume)
+└─ Mounted at: /var/run/secrets/kubernetes.io/serviceaccount
+
+═════════════════════════════════════════════════════════════════════════════════════
+NETWORK POLICIES (Recommended)
+═════════════════════════════════════════════════════════════════════════════════════
+
+Allow Controller → Kubernetes API Server
+├─ From: kserve-controller-manager pods
+├─ To: Kubernetes API Server (6443/TCP)
+└─ Protocol: HTTPS/TLS 1.2+
+
+Allow Kubernetes API Server → Webhook Server
+├─ From: Kubernetes API Server
+├─ To: kserve-webhook-server-service (9443/TCP)
+└─ Protocol: HTTPS/TLS 1.2+ (mTLS)
+
+Allow Prometheus → Metrics Endpoints
+├─ From: Prometheus pods
+├─ To: Controller (8080/TCP), Model Servers (8080/TCP)
+└─ Protocol: HTTP
+
+Allow storage-initializer → External Storage
+├─ From: storage-initializer init containers
+├─ To: S3/GCS (443/TCP)
+└─ Protocol: HTTPS/TLS 1.2+
+
+Deny all other ingress to control plane
+├─ From: All (except allowed sources)
+├─ To: kserve namespace
+└─ Action: DROP
+
+═════════════════════════════════════════════════════════════════════════════════════

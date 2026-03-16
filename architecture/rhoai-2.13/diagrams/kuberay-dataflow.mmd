@@ -1,0 +1,69 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+
+    participant Webhook as Validating Webhook<br/>9443/TCP HTTPS<br/>TLS 1.2+ mTLS
+    participant Operator as KubeRay Operator<br/>ServiceAccount Token
+    participant HeadPod as Ray Head Pod<br/>GCS + Dashboard
+    participant Workers as Ray Worker Pods
+    participant Autoscaler as Autoscaler Sidecar
+    participant ServeSvc as Ray Serve Service<br/>8000/TCP HTTP
+    participant Prometheus as Prometheus<br/>8080/TCP HTTP
+    participant S3 as S3 Storage<br/>443/TCP HTTPS<br/>TLS 1.2+
+
+    Note over User,S3: Flow 1: RayCluster Creation and Management
+
+    User->>K8sAPI: Create RayCluster CR<br/>kubectl apply -f raycluster.yaml<br/>Auth: Bearer Token
+    K8sAPI->>Webhook: POST /validate-ray-io-v1-raycluster<br/>mTLS
+    Webhook-->>K8sAPI: Validation Result
+    K8sAPI-->>User: RayCluster Created
+
+    Operator->>K8sAPI: Watch RayCluster CR<br/>ServiceAccount Token
+    K8sAPI-->>Operator: RayCluster Event
+
+    Operator->>K8sAPI: Create Head Pod<br/>HTTPS/6443
+    Operator->>K8sAPI: Create Head Services<br/>HTTPS/6443
+    Operator->>K8sAPI: Create Worker Pods<br/>HTTPS/6443
+
+    Workers->>HeadPod: Connect to GCS<br/>6379/TCP TCP<br/>Optional TLS<br/>Optional Password
+
+    Note over User,S3: Flow 2: Ray Job Submission
+
+    User->>K8sAPI: Create RayJob CR<br/>kubectl apply -f rayjob.yaml<br/>Auth: Bearer Token
+    Operator->>K8sAPI: Create Job Submitter Pod<br/>HTTPS/6443
+    Operator->>HeadPod: Submit Job via Ray Client<br/>10001/TCP TCP<br/>Optional TLS + mTLS
+
+    HeadPod->>Workers: Distribute Tasks<br/>6379/TCP TCP<br/>Optional TLS
+    HeadPod->>S3: Load Data/Models<br/>443/TCP HTTPS<br/>AWS IAM/Keys
+    S3-->>HeadPod: Model Artifacts
+    Workers->>S3: Load Data<br/>443/TCP HTTPS
+    S3-->>Workers: Data Chunks
+    Workers-->>HeadPod: Task Results
+    HeadPod-->>User: Job Status via Dashboard<br/>8265/TCP HTTP
+
+    Note over User,S3: Flow 3: Ray Serve Inference
+
+    User->>ServeSvc: POST /predict<br/>8000/TCP HTTP<br/>Optional TLS<br/>Optional Bearer Token
+    ServeSvc->>HeadPod: Coordination Request<br/>6379/TCP TCP<br/>Optional TLS
+    HeadPod->>Workers: Execute Inference<br/>Internal Ray Protocol
+    Workers->>S3: Load Model (if needed)<br/>443/TCP HTTPS
+    S3-->>Workers: Model Artifacts
+    Workers-->>HeadPod: Inference Result
+    HeadPod-->>ServeSvc: Response
+    ServeSvc-->>User: JSON Response
+
+    Note over User,S3: Flow 4: Autoscaling
+
+    Autoscaler->>HeadPod: Query Cluster State<br/>8265/TCP HTTP<br/>No Auth
+    HeadPod-->>Autoscaler: Pending Tasks
+    Autoscaler->>K8sAPI: Scale Worker Pods<br/>6443/TCP HTTPS<br/>ServiceAccount Token
+    K8sAPI-->>Operator: Worker Pod Events
+    Operator->>K8sAPI: Create/Delete Workers<br/>HTTPS/6443
+
+    Note over User,S3: Flow 5: Metrics Collection
+
+    Prometheus->>Operator: Scrape Metrics<br/>8080/TCP HTTP
+    Operator-->>Prometheus: Operator Metrics
+    Prometheus->>HeadPod: Scrape Metrics<br/>8080/TCP HTTP
+    HeadPod-->>Prometheus: Ray Cluster Metrics
+    Prometheus->>Workers: Scrape Metrics<br/>8080/TCP HTTP
+    Workers-->>Prometheus: Worker Metrics

@@ -1,0 +1,73 @@
+sequenceDiagram
+    participant User as User/Data Scientist
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+
+    participant Webhook as KServe Webhook<br/>9443/TCP HTTPS mTLS
+    participant Controller as KServe Controller<br/>Leader Election
+    participant Init as storage-initializer<br/>Init Container
+    participant S3 as S3/GCS Storage<br/>443/TCP HTTPS TLS1.2+
+    participant Gateway as Istio Gateway<br/>443/TCP HTTPS TLS1.2+
+    participant Activator as Knative Activator<br/>8012/TCP HTTP mTLS
+    participant Agent as kserve-agent<br/>9081/TCP HTTP
+    participant Model as Model Server<br/>8080/TCP HTTP
+    participant CloudEvents as CloudEvents Sink<br/>443/TCP HTTPS (optional)
+    participant Router as InferenceGraph Router<br/>8080/TCP HTTP mTLS
+
+    %% Flow 1: InferenceService Creation
+    Note over User,Controller: Flow 1: InferenceService Creation and Deployment
+    User->>K8sAPI: POST InferenceService CR<br/>Auth: Bearer Token (user SA)
+    K8sAPI->>Webhook: POST /mutate-serving-kserve-io-v1beta1-inferenceservice<br/>mTLS
+    Webhook->>Webhook: Apply defaults<br/>(runtime, resources)
+    Webhook-->>K8sAPI: Mutated InferenceService
+    K8sAPI->>Webhook: POST /validate-serving-kserve-io-v1beta1-inferenceservice<br/>mTLS
+    Webhook->>Webhook: Validate spec<br/>(storage URI, runtime)
+    Webhook-->>K8sAPI: Validation response
+    K8sAPI-->>User: InferenceService created
+
+    Controller->>K8sAPI: Watch InferenceService CR<br/>Auth: Bearer Token (SA)
+    K8sAPI-->>Controller: InferenceService event
+    Controller->>K8sAPI: Create Knative Service<br/>or Deployment
+    Controller->>K8sAPI: Create Istio VirtualService
+    Controller->>K8sAPI: Create Service
+
+    %% Flow 2: Model Initialization
+    Note over Init,Model: Flow 2: Model Initialization and Serving
+    Init->>S3: GET model artifacts<br/>Auth: AWS SigV4 / GCP IAM
+    S3-->>Init: Model files (.pb, .pth, etc)
+    Init->>Init: Write to EmptyDir volume<br/>/mnt/models
+    Init-->>Model: Init complete
+
+    Model->>Model: Load model from<br/>/mnt/models
+    Model->>Agent: Readiness probe<br/>localhost:8080
+    Agent-->>Model: Ready
+    Agent->>K8sAPI: Update Pod status<br/>Ready
+
+    %% Flow 3: Inference Request
+    Note over User,CloudEvents: Flow 3: Inference Request (via Istio/Knative)
+    User->>Gateway: POST /v1/models/{model}:predict<br/>HTTPS 443 TLS1.2+<br/>Auth: Bearer Token (optional)
+    Gateway->>Gateway: TLS Termination<br/>RequestAuthentication
+    Gateway->>Activator: Forward request<br/>HTTP mTLS (Istio)
+    Activator->>Activator: Scale from zero<br/>if needed
+    Activator->>Agent: HTTP/8012 mTLS<br/>via queue-proxy
+    Agent->>Agent: Request batching<br/>(optional)
+    Agent->>Model: POST /v1/models/{model}:predict<br/>HTTP 8080 localhost
+    Model->>Model: Run inference<br/>(TensorFlow/PyTorch)
+    Model-->>Agent: Prediction JSON
+    Agent->>CloudEvents: POST request/response log<br/>HTTPS TLS1.2+<br/>Auth: Bearer Token
+    Agent-->>Activator: Prediction result
+    Activator-->>Gateway: Response
+    Gateway-->>User: JSON response
+
+    %% Flow 4: InferenceGraph
+    Note over User,Router: Flow 4: InferenceGraph Router Workflow
+    User->>Router: POST /v2/models/graph/infer<br/>HTTP mTLS (Istio)
+    Router->>Router: Parse routing logic<br/>(sequence/switch/ensemble)
+    Router->>Agent: Step 1: Preprocessing<br/>HTTP 80 mTLS
+    Agent->>Model: Forward to model<br/>HTTP 8080 localhost
+    Model-->>Agent: Preprocessed data
+    Agent-->>Router: Step 1 result
+    Router->>Agent: Step 2: Prediction<br/>HTTP 80 mTLS
+    Agent->>Model: Forward to model<br/>HTTP 8080 localhost
+    Model-->>Agent: Prediction
+    Agent-->>Router: Step 2 result
+    Router->>Router: Aggregate results<br/>(if ensemble)
+    Router-->>User: Final response

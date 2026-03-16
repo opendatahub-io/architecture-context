@@ -1,0 +1,58 @@
+sequenceDiagram
+    participant User as User/Dashboard
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
+    participant KServeCtrl as KServe Controller
+    participant ODHCtrl as ODH Model Controller
+    participant KnativeSvc as Knative Serving
+    participant Router as OpenShift Router<br/>443/TCP HTTPS
+    participant IstioGW as Istio Gateway<br/>443/TCP HTTPS mTLS
+    participant Activator as Knative Activator<br/>8080/TCP mTLS
+    participant Predictor as Predictor Pod<br/>8080/TCP mTLS
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+
+    Note over User,S3: Flow 1: InferenceService Creation (KServe Serverless Mode)
+
+    User->>K8sAPI: Create InferenceService CR<br/>Bearer Token
+    K8sAPI-->>KServeCtrl: Watch event
+    KServeCtrl->>K8sAPI: Create Knative Service<br/>ServiceAccount Token
+    K8sAPI-->>ODHCtrl: Watch InferenceService event<br/>ServiceAccount Token
+
+    ODHCtrl->>K8sAPI: Create OpenShift Route<br/>ServiceAccount Token
+    ODHCtrl->>K8sAPI: Create Istio VirtualService<br/>ServiceAccount Token
+    ODHCtrl->>K8sAPI: Create Istio Gateway<br/>ServiceAccount Token
+    ODHCtrl->>K8sAPI: Create PeerAuthentication (STRICT mTLS)<br/>ServiceAccount Token
+    ODHCtrl->>K8sAPI: Create ServiceMeshMember<br/>ServiceAccount Token
+    ODHCtrl->>K8sAPI: Create AuthConfig (if auth enabled)<br/>ServiceAccount Token
+    ODHCtrl->>K8sAPI: Create ServiceMonitor<br/>ServiceAccount Token
+
+    Note over User,S3: Inference Request Flow
+
+    User->>Router: POST /v1/models/model:predict<br/>HTTPS TLS1.2+ edge termination<br/>Bearer Token (optional)
+    Router->>IstioGW: Forward request<br/>mTLS
+    IstioGW->>Activator: Route via VirtualService<br/>mTLS (mesh internal)
+    Activator->>Predictor: Inference request<br/>HTTP mTLS
+    Predictor->>S3: Load model artifacts<br/>HTTPS AWS Access Key
+    S3-->>Predictor: Model data
+    Predictor-->>Activator: Prediction result
+    Activator-->>IstioGW: Response
+    IstioGW-->>Router: Response mTLS
+    Router-->>User: JSON response HTTPS
+
+    Note over User,S3: Flow 2: Storage Configuration Reconciliation
+
+    User->>K8sAPI: Create data connection Secret<br/>opendatahub.io/dashboard=true
+    K8sAPI-->>ODHCtrl: Watch Secret event (StorageSecretReconciler)
+    ODHCtrl->>K8sAPI: List all data connection Secrets<br/>ServiceAccount Token
+    K8sAPI-->>ODHCtrl: Return Secrets list
+    ODHCtrl->>K8sAPI: Create/Update storage-config Secret<br/>Aggregated credentials (JSON)
+    K8sAPI-->>Predictor: Mount storage-config Secret
+    Predictor->>S3: Access model storage<br/>Credentials from storage-config
+
+    Note over User,S3: Flow 3: Monitoring Configuration
+
+    ODHCtrl->>K8sAPI: Create RoleBinding (prometheus-ns-access)<br/>ServiceAccount Token
+    ODHCtrl->>K8sAPI: Create ServiceMonitor<br/>ServiceAccount Token
+    K8sAPI-->>K8sAPI: Prometheus Operator watches ServiceMonitors
+    K8sAPI-->>K8sAPI: Update Prometheus config
+    K8sAPI->>ODHCtrl: Scrape /metrics endpoint<br/>8080/TCP HTTPS Bearer Token
+    K8sAPI->>Predictor: Scrape model metrics<br/>HTTPS Bearer Token

@@ -1,0 +1,126 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[External Client<br/>Data Scientist]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        OSRouter["OpenShift Router<br/>443/TCP HTTPS"]
+        Gateway["Istio Gateway<br/>443/TCP → 8080/TCP<br/>TLS 1.2+ Termination<br/>RequestAuthentication"]
+        OSRouter -->|forwards to| Gateway
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (Istio mTLS STRICT)"]
+        direction TB
+
+        subgraph NS_Knative["Namespace: knative-serving"]
+            Activator["Knative Activator<br/>SA: activator<br/>8012/TCP HTTP<br/>+ Envoy mTLS sidecar"]
+        end
+
+        subgraph NS_User["Namespace: {user-namespace}"]
+            direction TB
+
+            subgraph Pod_Predictor["InferenceService Pod: {isvc-name}-predictor"]
+                direction LR
+                StorageInit["Init Container<br/>storage-initializer<br/>Downloads models"]
+                Agent["Sidecar: kserve-agent<br/>9081/TCP HTTP<br/>Batching, logging"]
+                ModelServer["Model Server<br/>8080/TCP HTTP<br/>TensorFlow/PyTorch"]
+                EnvoyPod["Sidecar: Envoy<br/>15006/TCP mTLS in<br/>15001/TCP mTLS out"]
+
+                StorageInit -.->|model files| EmptyDir[EmptyDir Volume<br/>/mnt/models]
+                EmptyDir -.->|loaded by| ModelServer
+                Agent -->|localhost:8080<br/>No encryption| ModelServer
+                EnvoyPod -.->|wraps| Agent
+            end
+
+            subgraph Pod_Router["InferenceGraph Router Pod: {ig-name}-router"]
+                Router["kserve-router<br/>SA: {ig-name}-router-sa<br/>8080/TCP HTTP"]
+                EnvoyRouter["Sidecar: Envoy<br/>mTLS"]
+                EnvoyRouter -.->|wraps| Router
+            end
+
+            Service_Predictor["Service<br/>{isvc-name}-predictor<br/>ClusterIP 80/TCP"]
+            Service_Router["Service<br/>{ig-name}-router<br/>ClusterIP 8080/TCP"]
+
+            Service_Predictor -->|routes to| Agent
+            Service_Router -->|routes to| Router
+        end
+    end
+
+    subgraph ControlPlane["CONTROL PLANE (Namespace: kserve)"]
+        direction TB
+
+        Controller["kserve-controller-manager<br/>SA: kserve-controller-manager<br/>Leader Election"]
+        Webhook["kserve-webhook-server<br/>9443/TCP HTTPS mTLS<br/>Cert: kserve-webhook-server-cert"]
+        MetricsCtrl["Controller Metrics<br/>8080/TCP HTTP"]
+        HealthCtrl["Controller Health<br/>8081/TCP HTTP<br/>/healthz, /readyz"]
+
+        Controller -.->|serves| Webhook
+        Controller -.->|exposes| MetricsCtrl
+        Controller -.->|exposes| HealthCtrl
+    end
+
+    subgraph K8s["Kubernetes Control Plane"]
+        APIServer["Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        direction TB
+        S3["S3/Minio Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS TLS1.2+<br/>Auth: AWS SigV4"]
+        GCS["Google Cloud Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS TLS1.2+<br/>Auth: GCP IAM"]
+        CloudEvents["CloudEvents Sink<br/>80/443 HTTP/HTTPS<br/>Auth: Bearer Token"]
+        Prometheus["Prometheus<br/>8080/TCP HTTP<br/>Metrics scraping"]
+    end
+
+    subgraph Secrets["SECRETS"]
+        direction TB
+        WebhookCert["kserve-webhook-server-cert<br/>Type: kubernetes.io/tls<br/>Provisioned: cert-manager<br/>Rotation: 90d"]
+        StorageSecret["storage-config<br/>Type: Opaque<br/>AWS_ACCESS_KEY_ID<br/>AWS_SECRET_ACCESS_KEY"]
+        SAToken["{isvc-name}-sa-token<br/>Type: kubernetes.io/service-account-token<br/>Auto-rotated"]
+    end
+
+    %% External to Ingress
+    Client -->|HTTPS/443<br/>TLS 1.2+<br/>Bearer Token optional| OSRouter
+
+    %% Ingress to Service Mesh
+    Gateway -->|HTTP/8012<br/>mTLS STRICT<br/>Service Identity| Activator
+
+    %% Service Mesh flows
+    Activator -->|HTTP/8012<br/>mTLS<br/>via queue-proxy| Agent
+    Router -->|HTTP/80<br/>mTLS| Service_Predictor
+
+    %% Agent flows
+    Agent -.->|HTTPS/443<br/>TLS 1.2+<br/>Bearer Token| CloudEvents
+
+    %% Control Plane flows
+    Controller -->|Watch CRDs<br/>HTTPS/6443<br/>Bearer Token SA| APIServer
+    APIServer -->|Webhook callbacks<br/>HTTPS/9443<br/>mTLS| Webhook
+    Client -.->|kubectl apply<br/>HTTPS/6443<br/>Bearer Token| APIServer
+
+    %% Storage initialization
+    StorageInit -->|HTTPS/443<br/>TLS 1.2+<br/>AWS SigV4| S3
+    StorageInit -->|HTTPS/443<br/>TLS 1.2+<br/>GCP IAM| GCS
+
+    %% Monitoring
+    Prometheus -.->|HTTP/8080<br/>GET /metrics| MetricsCtrl
+    Prometheus -.->|HTTP/8080<br/>GET /metrics| ModelServer
+
+    %% Secret usage
+    Webhook -.->|uses| WebhookCert
+    StorageInit -.->|uses| StorageSecret
+    Controller -.->|uses| SAToken
+
+    %% Styling - Trust Zones
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:3px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:3px
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:3px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:3px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef secrets fill:#f8cecc,stroke:#b85450,stroke-width:2px
+
+    class Client external
+    class OSRouter,Gateway ingress
+    class Activator,Agent,ModelServer,Router,Service_Predictor,Service_Router,EnvoyPod,EnvoyRouter servicemesh
+    class Controller,Webhook,MetricsCtrl,HealthCtrl controlplane
+    class APIServer controlplane
+    class S3,GCS,CloudEvents,Prometheus externalservice
+    class WebhookCert,StorageSecret,SAToken secrets

@@ -1,0 +1,338 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                              │
+│  [User/Data Scientist]                                                       │
+│  [KServe Controller]                                                         │
+│         │                                                                    │
+│         │ Port: 6443/TCP                                                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: OIDC/ServiceAccount Token                                    │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                    │
+│                                                                              │
+│  [Kubernetes API Server]                                                     │
+│  - Port: 6443/TCP (external)                                                │
+│  - TLS 1.2+ with client certificate or bearer token auth                   │
+│  - RBAC enforcement point                                                   │
+│         │                                                                    │
+│         │ Port: N/A (controller watch/event)                                │
+│         │ Protocol: Kubernetes Event Stream                                 │
+│         │ Encryption: Internal (controller cache)                           │
+│         │ Auth: ServiceAccount (odh-model-controller)                       │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CONTROLLER NAMESPACE (opendatahub / redhat-ods-applications)               │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────┐        │
+│  │ [ODH Model Controller - Pod]                                   │        │
+│  │ - Replicas: 3 (leader-elected, 1 active)                       │        │
+│  │ - ServiceAccount: odh-model-controller                          │        │
+│  │ - User: 65532:65532 (non-root)                                 │        │
+│  │ - Security: runAsNonRoot=true, allowPrivilegeEscalation=false  │        │
+│  │                                                                 │        │
+│  │   Metrics Endpoint:                                             │        │
+│  │   ├─ Port: 8080/TCP (HTTP)                                     │        │
+│  │   ├─ Path: /metrics                                            │        │
+│  │   ├─ Encryption: None (internal)                               │        │
+│  │   └─ Auth: ServiceAccount Token (Prometheus)                   │        │
+│  │                                                                 │        │
+│  │   Health Probes:                                                │        │
+│  │   ├─ Port: 8081/TCP (HTTP)                                     │        │
+│  │   ├─ Paths: /healthz, /readyz                                  │        │
+│  │   ├─ Encryption: None                                          │        │
+│  │   └─ Auth: None (kubelet access)                               │        │
+│  │                                                                 │        │
+│  │   Webhook Server:                                               │        │
+│  │   ├─ Port: 9443/TCP (HTTPS)                                    │        │
+│  │   ├─ Path: /validate-serving-knative-dev-v1-service            │        │
+│  │   ├─ Encryption: TLS (service-ca certificate)                  │        │
+│  │   └─ Auth: Kubernetes API Server (webhook call)                │        │
+│  └────────────────────────────────────────────────────────────────┘        │
+│         │                                                                    │
+│         │ EGRESS CONNECTIONS:                                               │
+│         │                                                                    │
+│         ├──► [Kubernetes API Server]                                       │
+│         │    Port: 6443/TCP                                                 │
+│         │    Protocol: HTTPS                                                │
+│         │    Encryption: TLS 1.2+                                           │
+│         │    Auth: ServiceAccount Token (odh-model-controller)             │
+│         │    Purpose: CRUD operations on managed resources                 │
+│         │                                                                    │
+│         ├──► [Istio Control Plane]                                         │
+│         │    Port: 15012/TCP                                                │
+│         │    Protocol: gRPC                                                 │
+│         │    Encryption: mTLS                                               │
+│         │    Auth: ServiceAccount (mesh identity)                          │
+│         │    Purpose: Service mesh configuration                           │
+│         │                                                                    │
+│         └──► [Model Registry] (optional, flag-enabled)                     │
+│              Port: 8080/TCP                                                 │
+│              Protocol: HTTP                                                 │
+│              Encryption: None                                               │
+│              Auth: ServiceAccount Token                                     │
+│              Purpose: Model metadata integration                           │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────┐        │
+│  │ [Service: odh-model-controller-metrics-service]                │        │
+│  │ - Type: ClusterIP                                              │        │
+│  │ - Port: 8080/TCP → 8080 (metrics)                             │        │
+│  │ - Protocol: HTTP                                               │        │
+│  │ - Auth: ServiceAccount Token                                   │        │
+│  │ - Exposure: Internal only                                      │        │
+│  └────────────────────────────────────────────────────────────────┘        │
+│         ▲                                                                    │
+│         │ Port: 8080/TCP                                                    │
+│         │ Protocol: HTTPS (internal CA)                                     │
+│         │ Encryption: TLS (Prometheus internal CA)                         │
+│         │ Auth: Bearer Token (ServiceAccount)                              │
+│         │                                                                    │
+│  ┌────────────────────────────────────────────────────────────────┐        │
+│  │ [Service: odh-model-controller-webhook-service]                │        │
+│  │ - Type: ClusterIP                                              │        │
+│  │ - Port: 443/TCP → 9443 (webhook-server)                       │        │
+│  │ - Protocol: HTTPS                                              │        │
+│  │ - Encryption: TLS (service-ca certificate)                     │        │
+│  │ - Auth: Kubernetes API Server                                  │        │
+│  │ - Exposure: Internal (API server calls)                        │        │
+│  └────────────────────────────────────────────────────────────────┘        │
+│         ▲                                                                    │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS (service-ca)                                      │
+│         │ Auth: Kubernetes API authentication                              │
+│         │                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  MONITORING NAMESPACE (optional, if configured)                             │
+│                                                                              │
+│  [Prometheus Operator]                                                       │
+│         │                                                                    │
+│         │ Reads: ServiceMonitor CRD                                         │
+│         │ Configures: Prometheus to scrape controller                      │
+│         ▼                                                                    │
+│  [Prometheus]                                                                │
+│  - Scrapes controller metrics via ServiceMonitor                            │
+│  - Port: 8080/TCP (HTTPS, internal CA)                                     │
+│  - Auth: Bearer Token (ServiceAccount)                                     │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════════
+RESOURCES CREATED/MANAGED BY ODH MODEL CONTROLLER (per InferenceService):
+═══════════════════════════════════════════════════════════════════════════════
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  USER NAMESPACE (where InferenceService is created)                         │
+│                                                                              │
+│  [InferenceService CR]                                                       │
+│  - Group: serving.kserve.io/v1beta1                                         │
+│  - Watched by: odh-model-controller                                         │
+│         │                                                                    │
+│         ▼ (controller creates resources below)                              │
+│                                                                              │
+│  [OpenShift Route]                                                           │
+│  - Port: 443/TCP (external) → 8080/TCP (internal)                          │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS passthrough/edge termination                             │
+│  - Purpose: External access to inference endpoint                           │
+│                                                                              │
+│  [Istio VirtualService]                                                      │
+│  - Ports: 8080/TCP (HTTP), 8443/TCP (HTTPS)                                │
+│  - Protocol: HTTP/HTTPS                                                     │
+│  - Encryption: mTLS (service mesh)                                          │
+│  - Purpose: Service mesh routing rules                                      │
+│                                                                              │
+│  [Istio PeerAuthentication]                                                  │
+│  - Policy: STRICT mTLS (or PERMISSIVE)                                     │
+│  - Scope: Namespace or workload-specific                                    │
+│  - Purpose: Enforce mTLS for inference service                             │
+│                                                                              │
+│  [Istio Telemetry]                                                           │
+│  - Metrics collection configuration                                         │
+│  - Purpose: Enable Istio metrics for inference service                     │
+│                                                                              │
+│  [Authorino AuthConfig]                                                      │
+│  - Group: authorino.kuadrant.io/v1beta2                                     │
+│  - Purpose: Authentication/authorization for inference endpoint             │
+│  - Auth mechanisms: API keys, OIDC, Kubernetes tokens                      │
+│                                                                              │
+│  [NetworkPolicy]                                                             │
+│  - Ingress: Allow specific ports for inference traffic                     │
+│  - Egress: Not restricted (default allow)                                  │
+│  - Purpose: Network segmentation for inference pods                        │
+│                                                                              │
+│  [ServiceMeshMember]                                                         │
+│  - Group: maistra.io/v1                                                     │
+│  - Purpose: Add namespace to service mesh                                   │
+│                                                                              │
+│  [ServiceMonitor / PodMonitor]                                               │
+│  - Group: monitoring.coreos.com/v1                                          │
+│  - Purpose: Enable Prometheus monitoring for inference service              │
+│  - Scrape Port: Varies by runtime                                           │
+│  - Auth: ServiceAccount Token                                               │
+│                                                                              │
+│  [Storage Secrets]                                                           │
+│  - Type: Opaque                                                             │
+│  - Contents: S3/PVC credentials for model loading                           │
+│  - Mounted to: InferenceService pods                                        │
+│                                                                              │
+│  [Custom CA Certificate Bundle]                                              │
+│  - Type: ConfigMap                                                          │
+│  - Purpose: Trust custom CA for model storage access                        │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════════
+RBAC SUMMARY:
+═══════════════════════════════════════════════════════════════════════════════
+
+ClusterRole: odh-model-controller-role
+├─ API Group: "" (core)
+│  ├─ Resources: configmaps, secrets, serviceaccounts, services
+│  └─ Verbs: create, delete, get, list, patch, update, watch
+├─ API Group: serving.kserve.io
+│  ├─ Resources: inferenceservices, servingruntimes (+ finalizers)
+│  └─ Verbs: get, list, update, watch, create
+├─ API Group: networking.istio.io
+│  ├─ Resources: virtualservices, gateways
+│  └─ Verbs: create, delete, get, list, patch, update, watch
+├─ API Group: security.istio.io
+│  ├─ Resources: peerauthentications, authorizationpolicies
+│  └─ Verbs: create, delete, get, list, patch, update, watch (authzpolicies: get, list only)
+├─ API Group: telemetry.istio.io
+│  ├─ Resources: telemetries
+│  └─ Verbs: create, delete, get, list, patch, update, watch
+├─ API Group: maistra.io
+│  ├─ Resources: servicemeshmembers, servicemeshmemberrolls, servicemeshcontrolplanes
+│  └─ Verbs: create, delete, get, list, patch, update, watch (+ use for SMCP)
+├─ API Group: route.openshift.io
+│  ├─ Resources: routes, routes/custom-host
+│  └─ Verbs: create, delete, get, list, patch, update, watch
+├─ API Group: networking.k8s.io
+│  ├─ Resources: networkpolicies, ingresses
+│  └─ Verbs: create, delete, get, list, patch, update, watch
+├─ API Group: monitoring.coreos.com
+│  ├─ Resources: servicemonitors, podmonitors
+│  └─ Verbs: create, delete, get, list, patch, update, watch
+├─ API Group: authorino.kuadrant.io
+│  ├─ Resources: authconfigs
+│  └─ Verbs: create, delete, get, list, patch, update, watch
+├─ API Group: datasciencecluster.opendatahub.io
+│  ├─ Resources: datascienceclusters
+│  └─ Verbs: get, list, watch
+└─ API Group: dscinitialization.opendatahub.io
+   ├─ Resources: dscinitializations
+   └─ Verbs: get, list, watch
+
+ClusterRole: auth-proxy-role
+├─ API Group: authentication.k8s.io
+│  ├─ Resources: tokenreviews
+│  └─ Verbs: create
+└─ API Group: authorization.k8s.io
+   ├─ Resources: subjectaccessreviews
+   └─ Verbs: create
+
+ServiceAccount: odh-model-controller
+├─ Namespace: opendatahub / redhat-ods-applications
+├─ Bound to: odh-model-controller-role (ClusterRole)
+├─ Bound to: auth-proxy-role (ClusterRole)
+└─ Bound to: leader-election-role (Role, controller namespace)
+
+═══════════════════════════════════════════════════════════════════════════════
+SERVICE MESH CONFIGURATION:
+═══════════════════════════════════════════════════════════════════════════════
+
+PeerAuthentication:
+├─ Mode: STRICT or PERMISSIVE (per InferenceService configuration)
+├─ Scope: Namespace or workload-specific
+└─ Purpose: Enforce mTLS between inference services and mesh components
+
+AuthorizationPolicy: (read-only, not created by controller)
+├─ Allows: Controlled by existing Istio policies
+└─ Purpose: Fine-grained access control (if configured)
+
+ServiceMeshMember:
+├─ Namespace: Added to ServiceMeshMemberRoll
+├─ Control Plane: References ServiceMeshControlPlane
+└─ Purpose: Enable Istio sidecar injection and mesh features
+
+Telemetry:
+├─ Metrics: Enabled for inference services
+├─ Tracing: Configurable per mesh settings
+└─ Logging: Configurable per mesh settings
+
+═══════════════════════════════════════════════════════════════════════════════
+SECRETS:
+═══════════════════════════════════════════════════════════════════════════════
+
+1. odh-model-controller-webhook-cert (kubernetes.io/tls)
+   - Certificate: TLS cert for webhook server
+   - Provisioned by: service-ca-operator
+   - Auto-rotate: Yes (service-ca manages rotation)
+   - Purpose: Secure webhook communication
+
+2. Storage Secrets (per InferenceService, Opaque)
+   - Contents: S3 credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+   - Contents: PVC configuration
+   - Provisioned by: User or external secret management
+   - Auto-rotate: No (user-managed)
+   - Purpose: Model artifact storage access
+
+3. ConfigMap: auth-refs (optional)
+   - Contents: AUTH_AUDIENCE, AUTHORINO_LABEL
+   - Provisioned by: ODH Operator
+   - Purpose: Authorino configuration references
+
+4. ConfigMap: service-mesh-refs (optional)
+   - Contents: CONTROL_PLANE_NAME, MESH_NAMESPACE
+   - Provisioned by: ODH Operator
+   - Purpose: Service mesh configuration references
+
+═══════════════════════════════════════════════════════════════════════════════
+NETWORK POLICIES:
+═══════════════════════════════════════════════════════════════════════════════
+
+Policy: odh-model-controller
+├─ Selectors: app=odh-model-controller, control-plane=odh-model-controller
+├─ Ingress:
+│  └─ Allow: 9443/TCP (webhook) from any (Kubernetes API Server)
+└─ Egress: Not restricted (default allow)
+
+Policies for InferenceServices (created by controller):
+├─ Selectors: Per InferenceService labels
+├─ Ingress:
+│  ├─ Allow: Inference traffic ports (8080/TCP, 8443/TCP, model-specific)
+│  └─ Allow: Istio mesh traffic (mTLS, sidecar communication)
+└─ Egress: Not restricted (model loading, external APIs)
+
+═══════════════════════════════════════════════════════════════════════════════
+DEPLOYMENT CONFIGURATION:
+═══════════════════════════════════════════════════════════════════════════════
+
+Replicas: 3
+Leader Election: Enabled (only 1 active controller at a time)
+Anti-Affinity: Preferred (distribute across nodes for HA)
+
+Resource Limits:
+├─ CPU: 10m (request) → 500m (limit)
+└─ Memory: 64Mi (request) → 2Gi (limit)
+
+Pod Security:
+├─ runAsNonRoot: true
+├─ allowPrivilegeEscalation: false
+├─ User: 65532:65532
+└─ securityContext: restricted
+
+Environment Variables:
+├─ POD_NAMESPACE: Current pod namespace (fieldRef)
+├─ AUTH_AUDIENCE: Authorino audience (from auth-refs ConfigMap)
+├─ AUTHORINO_LABEL: Authorino label selector (from auth-refs ConfigMap)
+├─ CONTROL_PLANE_NAME: Service mesh control plane name (from service-mesh-refs ConfigMap)
+├─ MESH_NAMESPACE: Service mesh namespace (from service-mesh-refs ConfigMap)
+└─ MESH_DISABLED: Disable mesh integration (default: false)
+
+Command Flags:
+├─ --metrics-bind-address=:8080
+├─ --health-probe-bind-address=:8081
+├─ --leader-elect
+├─ --monitoring-namespace="" (optional, enables ServiceMonitor creation)
+└─ --model-registry-inference-reconcile=false (optional, enables model registry integration)

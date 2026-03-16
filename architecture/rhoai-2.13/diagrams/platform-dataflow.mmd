@@ -1,0 +1,80 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant Browser as Web Browser
+    participant Dashboard as ODH Dashboard<br/>HTTPS/443 TLS1.2+
+    participant OAuth as OpenShift OAuth<br/>HTTPS/443
+    participant K8sAPI as Kubernetes API<br/>HTTPS/6443 TLS1.2+
+    participant NotebookCtrl as Notebook Controller
+    participant Notebook as Notebook Pod<br/>StatefulSet
+    participant KServe as KServe Controller
+    participant ODHModel as ODH Model Controller
+    participant InferenceService as InferenceService Pod<br/>Model Server
+    participant S3 as S3 Storage<br/>HTTPS/443 TLS1.2+
+    participant Prometheus as Prometheus<br/>Metrics Collection
+
+    %% Workflow 1: Launch Notebook
+    rect rgb(220, 240, 255)
+        note over User,Notebook: Workflow 1: Launch Jupyter Notebook
+        User->>Browser: Access ODH Dashboard
+        Browser->>OAuth: Authenticate (OAuth 2.0)
+        OAuth-->>Browser: OAuth Token
+        Browser->>Dashboard: GET / (Bearer Token)
+        Dashboard-->>Browser: Display Notebook Images
+        User->>Browser: Select Image + Configure Resources
+        Browser->>Dashboard: POST /api/notebooks<br/>Auth: Bearer Token
+        Dashboard->>K8sAPI: Create Namespace (if needed)<br/>mTLS Client Cert
+        Dashboard->>K8sAPI: Create Notebook CR<br/>mTLS Client Cert
+        K8sAPI-->>NotebookCtrl: Watch Event: Notebook Created
+        NotebookCtrl->>K8sAPI: Create StatefulSet<br/>mTLS Client Cert
+        K8sAPI->>Notebook: Schedule Pod
+        Notebook->>S3: Pull Workbench Image<br/>HTTPS/443 TLS1.2+
+        NotebookCtrl->>K8sAPI: Create Service + Route<br/>mTLS Client Cert
+        User->>Browser: Access notebook-{name}.apps.{cluster}
+        Browser->>Notebook: HTTPS/443<br/>OAuth Proxy Auth
+        Notebook-->>Browser: Jupyter Interface
+    end
+
+    %% Workflow 2: Model Training to Deployment
+    rect rgb(240, 255, 220)
+        note over User,S3: Workflow 2: Model Training to Deployment
+        User->>Notebook: Train Model Locally
+        Notebook->>S3: Save Model Artifacts<br/>HTTPS/443 AWS IAM/S3 API
+        User->>Browser: Create InferenceService
+        Browser->>Dashboard: POST /api/inferenceservices<br/>Auth: Bearer Token
+        Dashboard->>K8sAPI: Create InferenceService CR<br/>mTLS Client Cert
+        K8sAPI-->>KServe: Watch Event: InferenceService Created
+        K8sAPI-->>ODHModel: Watch Event: InferenceService Created
+        KServe->>K8sAPI: Create Knative Service/Deployment<br/>mTLS Client Cert
+        ODHModel->>K8sAPI: Create OpenShift Route<br/>mTLS Client Cert
+        ODHModel->>K8sAPI: Create Istio VirtualService<br/>mTLS Client Cert
+        ODHModel->>K8sAPI: Create ServiceMonitor<br/>mTLS Client Cert
+        K8sAPI->>InferenceService: Schedule Predictor Pod
+        InferenceService->>S3: Download Model Artifacts<br/>HTTPS/443 TLS1.2+ (Storage Initializer)
+        S3-->>InferenceService: Model Files
+        InferenceService->>InferenceService: Load Model into Memory
+        User->>Browser: POST /v1/models/model:predict<br/>to {isvc}.apps.{cluster}
+        Browser->>InferenceService: HTTPS/443 TLS1.2+<br/>via Route/Istio
+        InferenceService-->>Browser: Prediction Result (JSON)
+        InferenceService->>Prometheus: Expose /metrics<br/>HTTP/9090
+        Prometheus->>InferenceService: Scrape Metrics<br/>HTTP (ServiceMonitor)
+    end
+
+    %% Workflow 3: Distributed Training with Kueue
+    rect rgb(255, 240, 220)
+        note over User,Prometheus: Workflow 3: Distributed Training with Job Queueing
+        User->>Notebook: Submit PyTorchJob CR
+        Notebook->>K8sAPI: Create PyTorchJob<br/>mTLS Client Cert
+        K8sAPI-->>Kueue: Watch Event: PyTorchJob Created
+        Kueue->>Kueue: Evaluate Queue + Quota
+        Kueue->>K8sAPI: Admit Workload<br/>mTLS Client Cert
+        K8sAPI->>TrainingOp: Unsuspend PyTorchJob
+        TrainingOp->>K8sAPI: Create Master/Worker Pods<br/>mTLS Client Cert
+        K8sAPI->>TrainingPods: Schedule Pods
+        TrainingPods->>TrainingPods: Distributed Training<br/>Framework Protocol (TCP/29500)
+        TrainingPods->>S3: Save Model Artifacts<br/>HTTPS/443 TLS1.2+
+        TrainingPods->>Prometheus: Expose Training Metrics
+    end
+
+    participant Kueue as Kueue Controller
+    participant TrainingOp as Training Operator
+    participant TrainingPods as Training Pods<br/>Master + Workers

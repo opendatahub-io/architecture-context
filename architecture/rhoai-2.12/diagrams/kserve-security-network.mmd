@@ -1,0 +1,123 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[External Client]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Gateway["Istio Ingress Gateway<br/>knative-ingress-gateway<br/>443/TCP → 8080/TCP<br/>HTTPS TLS 1.2+ (SIMPLE)<br/>Bearer Token optional"]
+        LocalGateway["Istio Local Gateway<br/>knative-local-gateway<br/>80/TCP HTTP<br/>*.svc.cluster.local<br/>Internal Only"]
+    end
+
+    subgraph ControlPlane["CONTROL PLANE (Namespace: kserve)"]
+        direction TB
+
+        Controller["kserve-controller-manager<br/>SA: kserve-controller-manager<br/>ClusterRole: kserve-manager-role<br/>8081/TCP HTTP (probes)<br/>8443/TCP HTTPS TLS"]
+
+        Webhook["kserve-webhook-server<br/>SA: kserve-controller-manager<br/>9443/TCP HTTPS TLS1.2+ mTLS<br/>Cert: kserve-webhook-server-cert"]
+
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+<br/>ServiceAccount Token"]
+    end
+
+    subgraph DataPlane["DATA PLANE (Namespace: {user-namespace})"]
+        direction TB
+
+        subgraph Pod["InferenceService Pod: {isvc-name}-predictor-xxx"]
+            direction LR
+
+            StorageInit["storage-initializer<br/>(InitContainer)<br/>UID: 1000 (non-root)<br/>Downloads from S3/GCS/Azure"]
+
+            ModelServer["model-server<br/>(Main Container)<br/>SA: {isvc-name}-sa<br/>UID: 1000 (non-root)<br/>8080/TCP HTTP<br/>9000/TCP gRPC (TensorFlow)"]
+
+            Agent["kserve-agent<br/>(Sidecar - optional)<br/>Logging/Batching<br/>localhost HTTP"]
+        end
+
+        Service["Service: {isvc-name}-predictor<br/>Type: ClusterIP<br/>8080/TCP HTTP, 9000/TCP gRPC"]
+
+        VirtualService["Istio VirtualService<br/>{isvc-name}-virtualservice<br/>Host: {isvc-name}.{namespace}.example.com"]
+    end
+
+    subgraph Router["ROUTER (InferenceGraph - optional)"]
+        KServeRouter["kserve-router<br/>8080/TCP HTTP<br/>mTLS (via Istio)<br/>ServiceAccount Token<br/>Routes: Transformer → Predictor"]
+    end
+
+    subgraph ExternalDeps["EXTERNAL DEPENDENCIES"]
+        direction TB
+
+        Knative["Knative Serving 0.39.x<br/>API: serving.knative.dev/v1<br/>6443/TCP HTTPS TLS1.2+<br/>ServiceAccount Token"]
+
+        Istio["Istio Service Mesh 1.19.x<br/>API: networking.istio.io/v1beta1<br/>6443/TCP HTTPS TLS1.2+<br/>mTLS: Optional (PERMISSIVE/STRICT)"]
+
+        CertManager["cert-manager (latest)<br/>API: cert-manager.io/v1<br/>TLS Cert Provisioning<br/>Auto-rotation: 90 days"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        direction TB
+
+        S3["S3 Storage<br/>*.amazonaws.com<br/>443/TCP HTTPS TLS1.2+<br/>Auth: AWS IAM<br/>AWS_ACCESS_KEY_ID<br/>AWS_SECRET_ACCESS_KEY"]
+
+        GCS["GCS Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS TLS1.2+<br/>Auth: GCP Service Account JSON"]
+
+        Azure["Azure Blob Storage<br/>*.blob.core.windows.net<br/>443/TCP HTTPS TLS1.2+<br/>Auth: SAS Token/Access Keys"]
+
+        Prometheus["Prometheus<br/>Scrapes /metrics<br/>8080/TCP HTTP<br/>Auth: None"]
+    end
+
+    subgraph InternalODH["INTERNAL ODH/RHOAI"]
+        Dashboard["ODH Dashboard<br/>UI Integration"]
+        ModelRegistry["Model Registry<br/>Metadata API"]
+    end
+
+    %% External Client Flow
+    Client -->|HTTPS/443<br/>TLS 1.2+<br/>Bearer Token optional| Gateway
+    Gateway -->|HTTP/8080<br/>mTLS optional<br/>Istio AuthZ| VirtualService
+    VirtualService --> Service
+    Service --> ModelServer
+
+    %% Deployment Flow
+    User[User/CI] -->|kubectl apply<br/>6443/TCP HTTPS TLS1.2+<br/>Bearer Token| K8sAPI
+    K8sAPI -->|Webhook Call<br/>443/TCP HTTPS TLS1.2+<br/>mTLS| Webhook
+    K8sAPI -.->|Watch Events| Controller
+    Controller -->|Create Resources<br/>6443/TCP HTTPS TLS1.2+<br/>ServiceAccount Token| K8sAPI
+    Controller -->|Create Knative Service<br/>ServiceAccount Token| Knative
+    Controller -->|Create VirtualService<br/>ServiceAccount Token| Istio
+
+    %% Storage Initialization
+    StorageInit -->|Download Models<br/>443/TCP HTTPS TLS1.2+<br/>AWS IAM| S3
+    StorageInit -->|Download Models<br/>443/TCP HTTPS TLS1.2+<br/>GCP SA| GCS
+    StorageInit -->|Download Models<br/>443/TCP HTTPS TLS1.2+<br/>Azure SAS| Azure
+    StorageInit -.->|Shared Volume /mnt/models| ModelServer
+
+    %% InferenceGraph Router
+    Gateway -->|HTTP/8080<br/>mTLS| KServeRouter
+    KServeRouter -->|mTLS<br/>ServiceAccount Token| ModelServer
+
+    %% Observability
+    ModelServer -->|localhost HTTP| Agent
+    Agent -->|CloudEvents<br/>8080/TCP HTTP<br/>TLS optional| CloudEvents[CloudEvents Broker]
+    Prometheus -->|Scrape /metrics<br/>8080/TCP HTTP| ModelServer
+
+    %% Certificate Management
+    CertManager -.->|Provision TLS Cert<br/>Auto-rotate 90d| Webhook
+
+    %% Integration
+    Controller -.->|UI Integration| Dashboard
+    Controller -.->|Metadata API| ModelRegistry
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef controlplane fill:#e1f5ff,stroke:#0288d1,stroke-width:2px
+    classDef dataplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef router fill:#f5d5ff,stroke:#9c27b0,stroke-width:2px
+    classDef externaldeps fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    classDef externalservices fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef internalodh fill:#c8e6c9,stroke:#388e3c,stroke-width:2px
+
+    class Client external
+    class Gateway,LocalGateway ingress
+    class Controller,Webhook,K8sAPI controlplane
+    class StorageInit,ModelServer,Agent,Service,VirtualService,Pod dataplane
+    class KServeRouter router
+    class Knative,Istio,CertManager externaldeps
+    class S3,GCS,Azure,Prometheus externalservices
+    class Dashboard,ModelRegistry internalodh

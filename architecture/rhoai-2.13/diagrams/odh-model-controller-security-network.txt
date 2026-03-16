@@ -1,0 +1,348 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token (optional - if AuthConfig enabled)          │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                          │
+│                                                                          │
+│  [OpenShift Router]                                                      │
+│  - Port: 443/TCP (external) → varies (internal)                        │
+│  - TLS Termination: Edge mode (TLS 1.2+)                                │
+│  - Route: [isvc-name]-[namespace].[cluster-domain]                     │
+│  - AuthN: Passthrough to backend (optional)                             │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: mTLS (STRICT)                                      │
+│         │ Auth: Service Identity (Istio certificates)                    │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH INGRESS (Trusted - mTLS STRICT)                           │
+│                                                                          │
+│  [Istio Ingress Gateway - kserve-local-gateway]                         │
+│  - Namespace: istio-system (or MESH_NAMESPACE)                          │
+│  - Port: 443/TCP                                                         │
+│  - TLS Mode: SIMPLE                                                      │
+│  - VirtualService: Routes based on Host header                          │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: mTLS (ServiceMesh sidecar-to-sidecar)             │
+│         │ Auth: Service Identity + AuthorizationPolicy                   │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Trusted - mTLS STRICT)                                   │
+│                                                                          │
+│  [Knative Activator] (KServe Serverless mode)                           │
+│  - Namespace: knative-serving                                            │
+│  - ServiceAccount: activator                                             │
+│  - PeerAuthentication: STRICT mTLS enforced                             │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: mTLS (STRICT - enforced by PeerAuthentication)    │
+│         │ Auth: Service Identity (Istio)                                 │
+│         ▼                                                                │
+│  [Predictor Pod - InferenceService Runtime]                             │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: {isvc-name}-sa                                       │
+│  - Image: {serving-runtime-image}:tag                                   │
+│  - Istio Sidecar: Envoy proxy (injected)                                │
+│  - PeerAuthentication: STRICT mTLS enforced                             │
+│  - Secrets Mounted:                                                      │
+│    • storage-config (aggregated S3 credentials)                         │
+│    • odh-kserve-custom-ca-bundle (custom CA certs)                      │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: AWS IAM Access Key (from storage-config)                 │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [S3-Compatible Storage - s3.amazonaws.com or custom endpoint]          │
+│  - Purpose: Model artifact storage                                       │
+│  - Auth: AWS Access Key ID + Secret Access Key                          │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Custom CA: odh-trusted-ca-bundle (if using custom endpoint)          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CONTROL PLANE COMMUNICATIONS                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+
+[ODH Model Controller Deployment]
+  - Namespace: {system-namespace} (e.g., redhat-ods-applications)
+  - ServiceAccount: odh-model-controller
+  - Replicas: 3 (HA with leader election)
+  - Resource Limits: CPU 500m, Memory 2Gi
+        │
+        │ Port: 6443/TCP
+        │ Protocol: HTTPS
+        │ Encryption: TLS 1.2+
+        │ Auth: ServiceAccount Token (JWT)
+        │ Purpose: Watch/Update CRDs
+        ▼
+[Kubernetes API Server]
+  - Resources Watched:
+    • InferenceService (serving.kserve.io/v1beta1)
+    • Knative Service (serving.knative.dev/v1) - via webhook
+    • Secrets (opendatahub.io/dashboard=true)
+    • ServingRuntime (serving.kserve.io/v1alpha1)
+    • DataScienceCluster (datasciencecluster.opendatahub.io/v1)
+  - Resources Created/Updated:
+    • Route (route.openshift.io)
+    • VirtualService (networking.istio.io)
+    • Gateway (networking.istio.io)
+    • PeerAuthentication (security.istio.io)
+    • AuthConfig (authorino.kuadrant.io)
+    • ServiceMonitor (monitoring.coreos.com)
+    • PodMonitor (monitoring.coreos.com)
+    • ServiceMeshMember (maistra.io)
+    • NetworkPolicy (networking.k8s.io)
+    • RoleBinding (rbac.authorization.k8s.io)
+
+[ODH Model Controller - Webhook Server]
+        ▲
+        │ Port: 9443/TCP
+        │ Protocol: HTTPS
+        │ Encryption: TLS 1.2+ (cert from service-ca-operator)
+        │ Auth: K8s API Server client cert
+        │ Purpose: Validate Knative Service resources
+        │
+[Kubernetes API Server]
+  - ValidatingWebhookConfiguration: validates Knative Service CRs
+  - Webhook invoked on CREATE/UPDATE of Knative Services
+
+[Prometheus]
+        │
+        │ Port: 8080/TCP
+        │ Protocol: HTTPS (Service CA)
+        │ Encryption: TLS (certificate from service-ca-operator)
+        │ Auth: Bearer Token (prometheus-custom ServiceAccount)
+        │ Endpoint: /metrics
+        ▼
+[ODH Model Controller Metrics Service]
+  - Namespace: {system-namespace}
+  - Service: odh-model-controller-metrics-service
+  - Metrics: Controller-runtime metrics, workqueue, client-go, Go runtime
+
+[Prometheus]
+        │
+        │ Port: varies/TCP
+        │ Protocol: HTTP/HTTPS
+        │ Encryption: TLS (conditional)
+        │ Auth: Bearer Token
+        │ Endpoint: /metrics
+        ▼
+[InferenceService Predictor Pods]
+  - ServiceMonitor: Created per InferenceService
+  - Metrics: Model server metrics (varies by runtime)
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  RBAC SUMMARY                                                            │
+└─────────────────────────────────────────────────────────────────────────┘
+
+ClusterRole: odh-model-controller-role
+  API Groups & Resources:
+  - serving.kserve.io: inferenceservices (get, list, watch, update)
+  - serving.kserve.io: servingruntimes (get, list, watch, create, update, patch, delete)
+  - networking.istio.io: virtualservices, gateways (get, list, watch, create, update, patch, delete)
+  - security.istio.io: peerauthentications (get, list, watch, create, update, patch, delete)
+  - security.istio.io: authorizationpolicies (get, list)
+  - telemetry.istio.io: telemetries (get, list, watch, create, update, patch, delete)
+  - route.openshift.io: routes, routes/custom-host (get, list, watch, create, update, patch, delete)
+  - core: services, secrets, configmaps, serviceaccounts (get, list, watch, create, update, patch, delete)
+  - core: namespaces, pods, endpoints (get, list, watch, create, update, patch)
+  - networking.k8s.io: networkpolicies, ingresses (get, list, watch, create, update, patch, delete)
+  - monitoring.coreos.com: servicemonitors, podmonitors (get, list, watch, create, update, patch, delete)
+  - authorino.kuadrant.io: authconfigs (get, list, watch, create, update, patch, delete)
+  - maistra.io: servicemeshmembers, servicemeshmemberrolls, servicemeshcontrolplanes (get, list, watch, create, update, patch, delete, use)
+  - rbac.authorization.k8s.io: clusterrolebindings, rolebindings (get, list, watch, create, update, patch, delete)
+  - datasciencecluster.opendatahub.io: datascienceclusters (get, list, watch)
+  - dscinitialization.opendatahub.io: dscinitializations (get, list, watch)
+
+ClusterRole: odh-model-controller-leader-election-role
+  API Groups & Resources:
+  - core: configmaps (get, list, watch, create, update, patch, delete)
+  - coordination.k8s.io: leases (get, list, watch, create, update, patch, delete)
+  - core: events (create, patch)
+
+ClusterRole: prometheus-ns-access
+  API Groups & Resources:
+  - core: services, endpoints, pods (get, list, watch)
+
+ClusterRoleBinding: odh-model-controller-role-binding
+  - Role: odh-model-controller-role (ClusterRole)
+  - ServiceAccount: odh-model-controller ({system-namespace})
+
+RoleBinding: odh-model-controller-leader-election-binding
+  - Namespace: {system-namespace}
+  - Role: odh-model-controller-leader-election-role (Role)
+  - ServiceAccount: odh-model-controller ({system-namespace})
+
+RoleBinding: prometheus-ns-access (created per InferenceService namespace)
+  - Namespace: {user-namespace}
+  - Role: prometheus-ns-access (ClusterRole)
+  - ServiceAccount: prometheus-custom (openshift-monitoring namespace)
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  SERVICE MESH CONFIGURATION (KServe Serverless Mode)                    │
+└─────────────────────────────────────────────────────────────────────────┘
+
+PeerAuthentication: {isvc-name}-predictor
+  - Namespace: {user-namespace}
+  - Selector: serving.kserve.io/inferenceservice={isvc-name}
+  - mTLS Mode: STRICT (enforces mutual TLS for all connections)
+
+ServiceMeshMember: {namespace}-member
+  - Namespace: {user-namespace}
+  - Control Plane: data-science-smcp (or CONTROL_PLANE_NAME)
+  - Control Plane Namespace: istio-system (or MESH_NAMESPACE)
+
+VirtualService: {isvc-name}
+  - Namespace: {user-namespace}
+  - Hosts: {isvc-name}.{namespace}.svc.cluster.local, {isvc-name}-{namespace}.{cluster-domain}
+  - Gateways: kserve-local-gateway, mesh
+  - HTTP Routes: Match host, route to predictor Service
+
+Gateway: kserve-local-gateway
+  - Namespace: istio-system (or MESH_NAMESPACE)
+  - Selector: istio=ingressgateway
+  - Servers:
+    • Port: 443/TCP (HTTPS)
+    • TLS Mode: SIMPLE
+    • Hosts: *.{cluster-domain}
+
+AuthConfig: {isvc-name}-{namespace} (if authentication enabled)
+  - Namespace: {system-namespace}
+  - Selector: security.opendatahub.io/enable-auth=true
+  - Authorino Label: {AUTHORINO_LABEL}
+  - Audience: {AUTH_AUDIENCE}
+
+Telemetry: {isvc-name}-telemetry
+  - Namespace: {user-namespace}
+  - Selector: serving.kserve.io/inferenceservice={isvc-name}
+  - Metrics: Prometheus, request/response metrics
+
+NetworkPolicy: odh-model-controller
+  - Namespace: {system-namespace}
+  - Pod Selector: app=odh-model-controller
+  - Ingress: Allow TCP/9443 from any (webhook access from API server)
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  SECRETS                                                                 │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Secret: odh-model-controller-webhook-cert
+  - Type: kubernetes.io/tls
+  - Purpose: TLS certificate for validating webhook server
+  - Provisioned By: OpenShift service-ca-operator (serving cert annotation)
+  - Auto-Rotate: Yes (30 days)
+  - Contents:
+    • tls.crt: TLS certificate
+    • tls.key: TLS private key
+
+Secret: storage-config
+  - Type: Opaque
+  - Namespace: {user-namespace} (created per namespace with InferenceServices)
+  - Purpose: Aggregated S3 storage credentials for model access
+  - Provisioned By: StorageSecretReconciler (aggregates data connection secrets)
+  - Auto-Rotate: No (manual update required)
+  - Contents:
+    • credentials: JSON-encoded map of storage configurations
+      Format: {"default": {"type": "s3", "access_key_id": "...", "secret_access_key": "...", "endpoint": "...", "bucket": "...", "region": "..."}}
+    • ca-bundle.crt: Custom CA certificates (if odh-trusted-ca-bundle exists)
+
+Secret: {data-connection-name} (source for storage-config)
+  - Type: Opaque
+  - Namespace: {user-namespace}
+  - Purpose: Individual S3 storage credentials
+  - Provisioned By: ODH Dashboard (user-created)
+  - Auto-Rotate: No
+  - Labels:
+    • opendatahub.io/dashboard=true
+    • opendatahub.io/managed=true
+  - Contents:
+    • AWS_ACCESS_KEY_ID: S3 access key
+    • AWS_SECRET_ACCESS_KEY: S3 secret key
+    • AWS_S3_ENDPOINT: S3 endpoint URL
+    • AWS_S3_BUCKET: S3 bucket name
+    • AWS_DEFAULT_REGION: AWS region (optional)
+
+ConfigMap: odh-trusted-ca-bundle
+  - Namespace: {user-namespace}
+  - Purpose: Custom CA certificates for storage endpoints (e.g., self-signed S3)
+  - Provisioned By: Cluster admin
+  - Auto-Rotate: No
+  - Contents:
+    • ca-bundle.crt: PEM-encoded CA certificates
+
+ConfigMap: odh-kserve-custom-ca-bundle
+  - Namespace: {user-namespace}
+  - Purpose: Custom CA bundle propagated to InferenceService pods
+  - Provisioned By: KServeCustomCACertReconciler
+  - Contents:
+    • ca-bundle.crt: Copy of odh-trusted-ca-bundle
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  DEPLOYMENT MODES                                                        │
+└─────────────────────────────────────────────────────────────────────────┘
+
+1. ModelMesh Mode:
+   - No service mesh integration
+   - OpenShift Route → Service → ModelMesh Pods
+   - ServiceAccount + ClusterRoleBinding for storage access
+   - Minimal networking resources
+
+2. KServe Serverless Mode (Knative):
+   - Full service mesh integration (Istio)
+   - OpenShift Route → Istio Gateway → VirtualService → Knative Service → Predictor Pod
+   - STRICT mTLS enforced (PeerAuthentication)
+   - Autoscaling via Knative Serving
+   - Optional authentication (Authorino AuthConfig)
+   - Comprehensive monitoring (ServiceMonitor, PodMonitor, Grafana dashboards)
+
+3. KServe Raw Mode (Kubernetes Deployment):
+   - OpenShift Route → Service → Deployment → Predictor Pod
+   - No service mesh integration
+   - Minimal additional resources
+   - Standard Kubernetes networking
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  TRUST BOUNDARIES                                                        │
+└─────────────────────────────────────────────────────────────────────────┘
+
+1. External → DMZ (OpenShift Router)
+   - TLS 1.2+ edge termination
+   - Optional Bearer Token authentication (if AuthConfig enabled)
+   - Rate limiting (OpenShift Router capabilities)
+
+2. DMZ → Service Mesh Ingress (Istio Gateway)
+   - mTLS STRICT (service-to-service)
+   - Service identity verification
+   - VirtualService routing policies
+
+3. Service Mesh Internal (Trusted)
+   - mTLS STRICT enforced by PeerAuthentication
+   - Service identity propagation
+   - AuthorizationPolicy enforcement (optional)
+   - Telemetry collection
+
+4. Service Mesh → External Services (S3)
+   - TLS 1.2+
+   - AWS IAM credentials
+   - Custom CA bundle support
+
+5. Control Plane (Controller → API Server)
+   - TLS 1.2+
+   - ServiceAccount Token authentication
+   - RBAC enforcement
+   - Webhook mutual TLS (API server → webhook server)

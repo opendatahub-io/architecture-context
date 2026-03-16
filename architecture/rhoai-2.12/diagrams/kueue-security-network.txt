@@ -1,0 +1,185 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (User Access)                                                  │
+│                                                                          │
+│  [User/Application]                                                      │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token / Client Certificate                        │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                               │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP (external)                                            │
+│  - Purpose: API gateway for all cluster operations                       │
+│         │                                                                │
+│         │ Port: 9443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS                                                │
+│         │ Auth: mTLS (API Server client cert)                            │
+│         │ Trigger: Admission webhook on Job/TFJob/PyTorchJob/RayJob     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUEUE NAMESPACE (opendatahub)                                          │
+│                                                                          │
+│  [kueue-webhook-service]                                                 │
+│  - Type: ClusterIP                                                       │
+│  - Port: 443/TCP → 9443/TCP (target)                                    │
+│  - ServiceAccount: kueue-controller-manager                              │
+│  - Purpose: Mutating/validating webhooks                                 │
+│  - TLS: cert from kueue-webhook-server-cert secret                      │
+│         │                                                                │
+│         ▼                                                                │
+│  [kueue-controller-manager]                                              │
+│  - Deployment (1 replica)                                                │
+│  - User: 65532:65532 (non-root)                                          │
+│  - Image: UBI9-based                                                     │
+│  - Resources: 500m CPU, 512Mi Memory                                     │
+│         │                                                                │
+│         ├─── Port: 8081/TCP (healthz, readyz)                           │
+│         │    Protocol: HTTP                                              │
+│         │    Auth: None (internal probes)                                │
+│         │                                                                │
+│         ├─── Port: 8080/TCP (metrics - unauthenticated)                 │
+│         │    Protocol: HTTP                                              │
+│         │    Auth: None                                                  │
+│         │    Service: kueue-metrics-service                              │
+│         │         │                                                      │
+│         │         │ Scraped by Prometheus                                │
+│         │         ▼                                                      │
+│         │    [Prometheus]                                                │
+│         │                                                                │
+│         ├─── Port: 8443/TCP (metrics - authenticated)                   │
+│         │    Protocol: HTTPS                                             │
+│         │    Encryption: TLS 1.2+                                        │
+│         │    Auth: Bearer Token (OAuth via kube-rbac-proxy)              │
+│         │    RBAC: kueue-metrics-reader role                             │
+│         │    Service: kueue-controller-manager-metrics-service           │
+│         │                                                                │
+│         ├─── Port: 8082/TCP (visibility API)                            │
+│         │    Protocol: HTTPS                                             │
+│         │    Encryption: TLS                                             │
+│         │    Auth: RBAC (ServiceAccount token)                           │
+│         │    Service: kueue-visibility-server                            │
+│         │    TLS: cert from kueue-visibility-server-cert secret          │
+│         │    API: visibility.kueue.x-k8s.io/v1alpha1                     │
+│         │         │                                                      │
+│         │         │ Queries from users/CLI                               │
+│         │         ▼                                                      │
+│         │    [User/CLI] ← via K8s API proxy                              │
+│         │                                                                │
+│         └─── Outbound to Kubernetes API Server                          │
+│              Port: 6443/TCP                                              │
+│              Protocol: HTTPS                                             │
+│              Encryption: TLS 1.2+                                        │
+│              Auth: ServiceAccount Token                                  │
+│              Purpose:                                                    │
+│              - Watch/List: Jobs, Pods, Workloads, ClusterQueues          │
+│              - Create/Update: Workloads, Job status                      │
+│              - Create: ProvisioningRequests (autoscaling.x-k8s.io)       │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL DEPENDENCIES                                                   │
+│                                                                          │
+│  [cert-manager or internal-cert]                                         │
+│  - Purpose: TLS certificate provisioning                                 │
+│  - Certificates: kueue-webhook-server-cert, kueue-visibility-server-cert│
+│  - Rotation: Auto (cert-manager)                                         │
+│                                                                          │
+│  [Cluster Autoscaler]                                                    │
+│  - API: autoscaling.x-k8s.io                                             │
+│  - Auth: ServiceAccount Token                                            │
+│  - Triggered by: ProvisioningRequest CRD creation                        │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INTEGRATED WORKLOAD TYPES (via webhooks)                               │
+│                                                                          │
+│  [Kubernetes Jobs] (batch/v1)                                            │
+│  [TFJob, PyTorchJob, MPIJob, XGBoostJob] (kubeflow.org)                 │
+│  [RayJob, RayCluster] (ray.io)                                           │
+│  [JobSet] (jobset.x-k8s.io)                                              │
+│                                                                          │
+│  All intercepted by kueue-webhook-service on creation                    │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+NETWORK POLICIES:
+- Policy: kueue-webhook-server
+  Selector: app.kubernetes.io/name=kueue
+  Ingress: Allow TCP/9443 from all (for API Server webhook calls)
+  Egress: Not restricted
+
+RBAC SUMMARY:
+
+ClusterRole: kueue-manager-role
+  API Groups:
+    - "" (core): events, limitranges, namespaces, pods, pods/finalizers,
+                 pods/status, podtemplates, secrets
+    - admissionregistration.k8s.io: mutatingwebhookconfigurations,
+                                     validatingwebhookconfigurations
+    - autoscaling.x-k8s.io: provisioningrequests, provisioningrequests/status
+    - batch: jobs, jobs/status, jobs/finalizers
+    - jobset.x-k8s.io: jobsets, jobsets/status, jobsets/finalizers
+    - kubeflow.org: mpijobs, pytorchjobs, tfjobs, xgboostjobs, mxjobs,
+                    paddlejobs (all with /status, /finalizers)
+    - ray.io: rayjobs, rayclusters (all with /status, /finalizers)
+    - kueue.x-k8s.io: admissionchecks, clusterqueues, localqueues, workloads,
+                      resourceflavors, workloadpriorityclasses,
+                      provisioningrequestconfigs, multikueueclusters,
+                      multikueueconfigs (all with /status, /finalizers)
+  Verbs: create, delete, get, list, patch, update, watch
+
+ClusterRoleBinding: kueue-manager-rolebinding
+  ServiceAccount: opendatahub/kueue-controller-manager
+  ClusterRole: kueue-manager-role
+
+Additional Roles (viewer/editor):
+  - kueue-batch-admin-role (aggregated)
+  - kueue-batch-user-role (limited to localqueues, workloads)
+  - kueue-clusterqueue-viewer-role / kueue-clusterqueue-editor-role
+  - kueue-localqueue-viewer-role / kueue-localqueue-editor-role
+  - kueue-workload-viewer-role / kueue-workload-editor-role
+  - kueue-resourceflavor-viewer-role / kueue-resourceflavor-editor-role
+
+SECRETS:
+
+1. kueue-webhook-server-cert
+   Type: kubernetes.io/tls
+   Purpose: TLS certificate for webhook server (port 9443)
+   Provisioned By: cert-manager or internal-cert
+   Auto-Rotate: Yes
+   Used By: kueue-webhook-service
+
+2. kueue-visibility-server-cert
+   Type: kubernetes.io/tls
+   Purpose: TLS certificate for visibility API server (port 8082)
+   Provisioned By: cert-manager or internal-cert
+   Auto-Rotate: Yes
+   Used By: kueue-visibility-server
+
+AUTHENTICATION & AUTHORIZATION MATRIX:
+
+Endpoint                  | Port      | Auth Mechanism           | Enforcement
+--------------------------|-----------|--------------------------|---------------------------
+/mutate-*, /validate-*   | 9443/TCP  | mTLS (client cert)       | K8s API Server CA bundle
+/metrics (authenticated) | 8443/TCP  | Bearer Token (OAuth)     | kube-rbac-proxy + RBAC
+/metrics (unauthenticated)| 8080/TCP | None                     | Cluster-internal only
+Visibility API           | 8082/TCP  | Bearer Token (SA)        | RBAC on visibility.kueue.x-k8s.io
+/healthz, /readyz        | 8081/TCP  | None                     | Internal health checks
+
+CONTAINER SECURITY:
+- Run as non-root: Yes (UID 65532:65532)
+- Allow privilege escalation: No
+- Image: UBI9-based (Red Hat Universal Base Image)
+- Resource limits: 500m CPU, 512Mi Memory
+- Capabilities: None (dropped all)
+
+MONITORING:
+- PodMonitor: Scrapes metrics from kueue-metrics-service
+- PrometheusRule: Deployed in openshift-monitoring namespace
+- Key metrics: kueue_cluster_queue_resource_usage, kueue_pending_workloads,
+               kueue_admitted_workloads_total, kueue_evicted_workloads_total
+- Alerts: KueuePodDown (Critical), LowClusterQueueResourceUsage (Info),
+          ResourceReservationExceedsQuota (Info), PendingWorkloadPods (Info)
