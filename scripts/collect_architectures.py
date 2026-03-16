@@ -116,7 +116,7 @@ def detect_platform_version(platform_name: str, checkout_dir: Path, operator_nam
     # Extract version from checkout directory name
     if platform_name == 'rhoai':
         # Directory name format: red-hat-data-services.rhoai-X.Y
-        match = re.search(r'\.rhoai-([0-9.]+)', checkout_dir.name)
+        match = re.search(r'\.rhoai-([0-9][0-9a-zA-Z._-]*)', checkout_dir.name)
         if match:
             version = match.group(1)
             print(f"  ✓ Found version from branch name: {version}")

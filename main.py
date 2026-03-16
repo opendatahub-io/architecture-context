@@ -27,12 +27,42 @@ from lib.manifest_parser import (
 )
 
 # Import collection script as module
-import sys
 sys.path.insert(0, str(Path(__file__).parent / "scripts"))
 from collect_architectures import collect_architectures, print_summary
 
 # Load environment variables from .env file
 load_dotenv()
+
+
+def resolve_script_path(platform: str, org: str = None, branch: str = None,
+                        checkouts_dir: str = "checkouts", script_path: str = None) -> str:
+    """
+    Resolve the path to get_all_manifests.sh.
+
+    Args:
+        platform: Platform type (odh or rhoai)
+        org: GitHub org (auto-detected if None)
+        branch: Branch name (optional)
+        checkouts_dir: Base checkouts directory
+        script_path: Explicit override path (returned as-is if provided)
+
+    Returns:
+        Path string to get_all_manifests.sh
+    """
+    if script_path:
+        return script_path
+
+    if not org:
+        org = "opendatahub-io" if platform == "odh" else "red-hat-data-services"
+
+    operator_name = "opendatahub-operator" if platform == "odh" else "rhods-operator"
+
+    if branch:
+        org_dir = f"{org}.{branch}"
+    else:
+        org_dir = org
+
+    return f"{checkouts_dir}/{org_dir}/{operator_name}/get_all_manifests.sh"
 
 
 def parse_args():
@@ -277,6 +307,12 @@ def parse_args():
         "--branch",
         help="Specific branch to clone (e.g., rhoai-2.14 for RHOAI versions)"
     )
+    all_parser.add_argument(
+        "--model",
+        choices=["sonnet", "opus", "haiku"],
+        default="sonnet",
+        help="Claude model to use for all agent tasks (default: sonnet)"
+    )
 
     return parser.parse_args()
 
@@ -304,28 +340,17 @@ async def run_manifest_phase(args) -> None:
         print("PHASE 2: Parsing component manifests")
         print("=" * 60 + "\n")
 
-    # Auto-detect org if not provided
-    org = args.org
-    if not org:
-        org = "opendatahub-io" if args.platform == "odh" else "red-hat-data-services"
-
-    # Auto-detect operator name
-    operator_name = "opendatahub-operator" if args.platform == "odh" else "rhods-operator"
-
-    # Determine script path
-    if args.script_path:
-        script_path = args.script_path
-    else:
-        # Construct path based on org and branch
-        if args.branch:
-            org_dir = f"{org}.{args.branch}"
-        else:
-            org_dir = org
-
-        script_path = f"{args.checkouts_dir}/{org_dir}/{operator_name}/get_all_manifests.sh"
+    # Resolve script path
+    script_path = resolve_script_path(
+        platform=args.platform,
+        org=args.org,
+        branch=args.branch,
+        checkouts_dir=args.checkouts_dir,
+        script_path=args.script_path,
+    )
 
     # Process manifests (silent - returns structured data)
-    components = await process_manifest_script(
+    components = process_manifest_script(
         script_path,
         platform=args.platform,
         checkouts_dir=None  # Auto-detect from script_path
@@ -337,7 +362,6 @@ async def run_manifest_phase(args) -> None:
         print(components_to_json(components))
     else:
         # Display human-readable output
-        from pathlib import Path
         script_path_obj = Path(script_path)
         parts = script_path_obj.parts
         if "checkouts" in parts:
@@ -358,6 +382,44 @@ async def run_manifest_phase(args) -> None:
         print(f"{'=' * 60}")
 
 
+def get_model_display_name(model_shorthand: str) -> str:
+    """
+    Convert model shorthand to human-readable display name for generated files.
+
+    Args:
+        model_shorthand: Short name (sonnet, opus, haiku)
+
+    Returns:
+        Human-readable model name
+    """
+    display_names = {
+        "sonnet": "Claude Sonnet 4.5",
+        "opus": "Claude Opus 4.6",
+        "haiku": "Claude Haiku 3.5",
+    }
+    return display_names.get(model_shorthand, model_shorthand)
+
+
+def get_model_id(model_shorthand: str) -> str:
+    """
+    Convert model shorthand to full model ID.
+
+    Args:
+        model_shorthand: Short name (sonnet, opus, haiku)
+
+    Returns:
+        Full model ID string
+    """
+    # Model IDs without date suffixes — the SDK resolves to the latest version
+    model_mapping = {
+        "sonnet": "claude-sonnet-4-5",
+        "opus": "claude-opus-4-6",
+        "haiku": "claude-haiku-3-5",
+    }
+
+    return model_mapping.get(model_shorthand, model_shorthand)
+
+
 async def run_agent(name: str, cwd: str, prompt: str, log_dir: Path, model: str = "sonnet") -> dict:
     """
     Launch one independent Claude agent session to generate architecture.
@@ -375,11 +437,14 @@ async def run_agent(name: str, cwd: str, prompt: str, log_dir: Path, model: str 
     # Create log file for this agent
     log_file = log_dir / f"{name.replace('/', '_')}.log"
 
+    # Convert shorthand to full model ID
+    model_id = get_model_id(model)
+
     options = ClaudeAgentOptions(
         cwd=cwd,
         allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
         permission_mode="bypassPermissions",
-        model=model,
+        model=model_id,
         # No max_turns - let agent run as long as needed for thorough analysis
     )
 
@@ -390,19 +455,19 @@ async def run_agent(name: str, cwd: str, prompt: str, log_dir: Path, model: str 
     print(f"Log file: {log_file}")
     print(f"{'=' * 60}")
 
-    try:
-        with open(log_file, 'w') as log:
-            # Write header
-            log.write(f"Agent: {name}\n")
-            log.write(f"Model: {model}\n")
-            log.write(f"Working directory: {cwd}\n")
-            log.write(f"{'=' * 60}\n\n")
-            log.write("PROMPT:\n")
-            log.write(prompt)
-            log.write(f"\n\n{'=' * 60}\n")
-            log.write("AGENT OUTPUT:\n\n")
-            log.flush()
+    # Write log header before try block so error handler always has context
+    with open(log_file, 'w') as log:
+        log.write(f"Agent: {name}\n")
+        log.write(f"Model: {model}\n")
+        log.write(f"Working directory: {cwd}\n")
+        log.write(f"{'=' * 60}\n\n")
+        log.write("PROMPT:\n")
+        log.write(prompt)
+        log.write(f"\n\n{'=' * 60}\n")
+        log.write("AGENT OUTPUT:\n\n")
 
+    try:
+        with open(log_file, 'a') as log:
             async with ClaudeSDKClient(options=options) as client:
                 await client.query(prompt)
 
@@ -425,7 +490,7 @@ async def run_agent(name: str, cwd: str, prompt: str, log_dir: Path, model: str 
         print(f"Error: {e}")
         print(f"{'=' * 60}")
 
-        # Log the error
+        # Log the error (header already written, so context is preserved)
         with open(log_file, 'a') as log:
             log.write(f"\n\n{'=' * 60}\n")
             log.write(f"ERROR: {e}\n")
@@ -447,20 +512,17 @@ async def run_generate_architecture_phase(args) -> None:
     # Auto-detect operator name
     operator_name = "opendatahub-operator" if args.platform == "odh" else "rhods-operator"
 
-    # Determine script path
-    if args.script_path:
-        script_path = args.script_path
-    else:
-        # Construct path based on org and branch
-        if args.branch:
-            org_dir = f"{org}.{args.branch}"
-        else:
-            org_dir = org
-
-        script_path = f"{args.checkouts_dir}/{org_dir}/{operator_name}/get_all_manifests.sh"
+    # Resolve script path
+    script_path = resolve_script_path(
+        platform=args.platform,
+        org=org,
+        branch=args.branch,
+        checkouts_dir=args.checkouts_dir,
+        script_path=args.script_path,
+    )
 
     # Process manifests to get component info
-    components = await process_manifest_script(
+    components = process_manifest_script(
         script_path,
         platform=args.platform,
         checkouts_dir=None  # Auto-detect from script_path
@@ -505,7 +567,7 @@ async def run_generate_architecture_phase(args) -> None:
         return
 
     # Apply component filter if specified
-    if hasattr(args, 'component') and args.component:
+    if args.component:
         # Create alias mapping for operator
         component_aliases = {
             'rhods-operator': 'operator',
@@ -527,7 +589,7 @@ async def run_generate_architecture_phase(args) -> None:
             return
 
     # Handle --force: delete existing GENERATED_ARCHITECTURE.md files
-    if hasattr(args, 'force') and args.force:
+    if args.force:
         print("Force mode: Deleting existing GENERATED_ARCHITECTURE.md files...\n")
         for component in components.values():
             arch_file = component.checkout_path / "GENERATED_ARCHITECTURE.md"
@@ -573,6 +635,7 @@ async def run_generate_architecture_phase(args) -> None:
         distribution = args.platform  # "odh" or "rhoai"
 
         # Build prompt from skill instructions
+        model_display = get_model_display_name(args.model)
         prompt = f"""Generate a comprehensive architecture summary for this component repository.
 
 Distribution: {distribution}
@@ -581,6 +644,8 @@ Manifests folder: {component.source_folder}
 
 IMPORTANT: The manifests folder location shows where kustomize deployment manifests are located.
 This is critical for understanding how this component is deployed in production.
+
+IMPORTANT: For the "Generated By" metadata field, use exactly: {model_display}
 
 {instructions}
 """
@@ -802,6 +867,7 @@ async def run_generate_diagrams_phase(args) -> None:
     jobs = []
     for j in sorted(needs_generation, key=lambda x: (x['platform'], x['version'], x['component_name'])):
         # Build prompt from skill instructions
+        model_display = get_model_display_name(args.model)
         prompt = f"""Generate architecture diagrams from the architecture markdown file.
 
 Architecture file: {j['md_file']}
@@ -813,6 +879,8 @@ Generate all diagram formats:
 - C4 diagrams (.dsl)
 - Security network diagrams (.txt and .mmd)
 - PNG files from Mermaid diagrams
+
+IMPORTANT: For any "Generated by" fields in output files, use exactly: {model_display}
 
 {instructions}
 """
@@ -895,8 +963,7 @@ Generate all diagram formats:
 
         # Get unique diagrams directories from successful jobs
         unique_dirs = set()
-        for i, job in enumerate(jobs):
-            result = results[i]
+        for job, result in zip(jobs, results):
             if isinstance(result, dict) and result.get("success"):
                 if job["diagrams_dir"].exists():
                     unique_dirs.add(job["diagrams_dir"])
@@ -1049,6 +1116,7 @@ async def run_generate_platform_architecture_phase(args) -> None:
     jobs = []
     for p in sorted(needs_generation, key=lambda x: (x['platform'], x['version'])):
         # Build prompt from skill instructions
+        model_display = get_model_display_name(args.model)
         prompt = f"""Aggregate component architecture summaries into a platform-level architecture document.
 
 Distribution: {p['platform']}
@@ -1057,6 +1125,8 @@ Architecture directory: {p['path']}
 
 This directory contains {p['component_count']} component architecture file(s).
 Generate a comprehensive PLATFORM.md file by aggregating all component summaries.
+
+IMPORTANT: For the "Generated By" metadata field, use exactly: {model_display}
 
 {instructions}
 """
@@ -1177,7 +1247,7 @@ async def run_all_phases(args) -> None:
     target_version = None
     if args.platform == "rhoai" and args.branch:
         # Extract version from branch name pattern: rhoai-X.Y
-        version_match = re.search(r'rhoai-([0-9.]+)', args.branch)
+        version_match = re.search(r'rhoai-([0-9][0-9a-zA-Z._-]*)', args.branch)
         if version_match:
             target_version = version_match.group(1)
 
@@ -1189,6 +1259,7 @@ async def run_all_phases(args) -> None:
         print(f"Branch: {args.branch}")
     if target_version:
         print(f"Target Version: {target_version}")
+    print(f"Model: {getattr(args, 'model', 'sonnet')}")
     print("=" * 80 + "\n")
 
     # Phase 1: Fetch repositories
@@ -1218,7 +1289,10 @@ async def run_all_phases(args) -> None:
         checkouts_dir="checkouts",
         script_path=None,
         max_concurrent=5,
-        limit=None
+        limit=None,
+        component=None,
+        force=False,
+        model=getattr(args, 'model', 'sonnet')
     )
     await run_generate_architecture_phase(generate_arch_args)
 
@@ -1230,6 +1304,7 @@ async def run_all_phases(args) -> None:
         print(f"\nPre-created architecture directory: {arch_dir}\n")
     else:
         # For ODH or when no specific version, try to detect from operator Makefile
+        from collect_architectures import get_version_from_makefile
         operator_name = "opendatahub-operator" if args.platform == "odh" else "rhods-operator"
         if args.branch:
             org_dir = f"{org}.{args.branch}"
@@ -1239,25 +1314,11 @@ async def run_all_phases(args) -> None:
         operator_dir = Path("checkouts") / org_dir / operator_name
         if operator_dir.exists():
             makefile_path = operator_dir / "Makefile"
-            if makefile_path.exists():
-                import subprocess
-                try:
-                    result = subprocess.run(
-                        ['grep', '^VERSION', str(makefile_path)],
-                        capture_output=True,
-                        text=True,
-                        check=False
-                    )
-                    if result.returncode == 0:
-                        for line in result.stdout.strip().split('\n'):
-                            if line.startswith('VERSION'):
-                                version = line.split('=')[1].strip().strip('?').strip()
-                                arch_dir = Path("architecture") / f"{args.platform}-{version}"
-                                arch_dir.mkdir(parents=True, exist_ok=True)
-                                print(f"\nPre-created architecture directory: {arch_dir}\n")
-                                break
-                except Exception as e:
-                    print(f"Note: Could not pre-create directory: {e}")
+            version = get_version_from_makefile(makefile_path)
+            if version:
+                arch_dir = Path("architecture") / f"{args.platform}-{version}"
+                arch_dir.mkdir(parents=True, exist_ok=True)
+                print(f"\nPre-created architecture directory: {arch_dir}\n")
 
     # Phase 4: Collect architectures into organized structure
     # Filter to specific version if branch was provided
@@ -1276,7 +1337,8 @@ async def run_all_phases(args) -> None:
         platform=args.platform,
         version=target_version,  # Filter to specific version from branch
         max_concurrent=5,
-        limit=None
+        limit=None,
+        model=getattr(args, 'model', 'sonnet')
     )
     await run_generate_platform_architecture_phase(platform_arch_args)
 
@@ -1288,7 +1350,8 @@ async def run_all_phases(args) -> None:
         version=target_version,  # Filter to specific version from branch
         max_concurrent=5,
         limit=None,
-        force_regenerate=False
+        force_regenerate=False,
+        model=getattr(args, 'model', 'sonnet')
     )
     await run_generate_diagrams_phase(diagrams_args)
 

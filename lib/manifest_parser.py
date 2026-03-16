@@ -105,7 +105,7 @@ def find_component_checkouts(
     return found_components
 
 
-async def process_manifest_script(
+def process_manifest_script(
     script_path: str,
     platform: str = "odh",
     checkouts_dir: Optional[str] = None
