@@ -1,0 +1,103 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[External Client/CI<br/>Port: 443/TCP<br/>Auth: Bearer Token]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        direction TB
+        Gateway["Istio Gateway / OpenShift Route<br/>443/TCP → 80/TCP<br/>TLS 1.2+ Termination<br/>RequestAuthentication"]
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (mTLS STRICT - Serverless Mode)"]
+        direction TB
+
+        subgraph NS_Knative["Namespace: knative-serving"]
+            Activator["Knative Activator<br/>SA: activator<br/>8012/TCP"]
+        end
+
+        subgraph NS_User["Namespace: {user-namespace}"]
+            direction TB
+
+            subgraph PredictorPod["Predictor Pod"]
+                StorageInit["Storage Initializer<br/>Init Container<br/>Downloads from S3/GCS/Azure<br/>Auth: AWS SigV4/GCP SA"]
+                ModelServer["Model Server<br/>8080/TCP HTTP<br/>KServe V1/V2 API<br/>Metrics: /metrics"]
+                Agent["KServe Agent<br/>Lifecycle Mgmt"]
+                IstioProxy["istio-proxy<br/>mTLS Sidecar"]
+            end
+
+            TransformerPod["Transformer Pod<br/>SA: {isvc-name}-sa<br/>8080/TCP HTTP<br/>mTLS"]
+
+            RouterPod["InferenceGraph Router<br/>8080/TCP HTTP<br/>Multi-Model Pipeline"]
+
+            PredictorService["Predictor Service<br/>ClusterIP<br/>80/TCP → 8080/TCP"]
+        end
+
+        subgraph NS_KServe["Namespace: kserve"]
+            direction TB
+
+            subgraph ControllerPod["KServe Controller Manager Pod"]
+                Controller["Controller Manager<br/>SA: kserve-controller-manager<br/>ClusterRole: kserve-manager-role"]
+                RBACProxy["kube-rbac-proxy<br/>Metrics Auth<br/>8443/TCP HTTPS"]
+            end
+
+            Webhook["Webhook Server<br/>9443/TCP HTTPS<br/>TLS Cert: cert-manager<br/>Rotation: 90 days"]
+
+            WebhookService["kserve-webhook-server-service<br/>ClusterIP 443/TCP → 9443/TCP"]
+        end
+
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+<br/>Auth: ServiceAccount Token"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        direction TB
+        S3["S3 Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS SigV4"]
+        GCS["GCS Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: GCP Service Account"]
+        Azure["Azure Blob<br/>blob.core.windows.net<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Azure Storage Key"]
+        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: HF Token"]
+    end
+
+    %% External flows
+    Client -->|HTTPS/443<br/>TLS 1.2+<br/>Bearer Token| Gateway
+
+    %% Ingress to service mesh
+    Gateway -->|HTTP/8012<br/>mTLS STRICT| Activator
+    Gateway -->|HTTP/8080<br/>mTLS or TLS| PredictorService
+
+    %% Serverless flow
+    Activator -->|HTTP/8080<br/>mTLS<br/>Service Identity| ModelServer
+
+    %% InferenceGraph flow
+    Gateway -->|HTTP/8080<br/>mTLS| RouterPod
+    RouterPod -->|HTTP/80<br/>mTLS| TransformerPod
+    TransformerPod -->|HTTP/80<br/>mTLS| PredictorService
+    PredictorService --> ModelServer
+
+    %% Storage initialization
+    StorageInit -->|HTTPS/443<br/>TLS 1.2+<br/>AWS SigV4| S3
+    StorageInit -->|HTTPS/443<br/>TLS 1.2+<br/>GCP SA| GCS
+    StorageInit -->|HTTPS/443<br/>TLS 1.2+<br/>Azure Key| Azure
+    StorageInit -->|HTTPS/443<br/>TLS 1.2+<br/>HF Token| HFHub
+    StorageInit -.->|emptyDir/PVC| ModelServer
+
+    %% Control plane
+    Client -->|HTTPS/6443<br/>TLS 1.2+<br/>Bearer Token| K8sAPI
+    K8sAPI -->|HTTPS/9443<br/>mTLS<br/>API Server Auth| Webhook
+    Controller -->|HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount Token| K8sAPI
+    K8sAPI -.->|Watch Events| Controller
+
+    %% Webhook routing
+    K8sAPI --> WebhookService
+    WebhookService --> Webhook
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    class Client external
+    class Gateway ingress
+    class Activator,ModelServer,TransformerPod,RouterPod,PredictorService,Agent,IstioProxy servicemesh
+    class Controller,Webhook,WebhookService,RBACProxy controlplane
+    class S3,GCS,Azure,HFHub,K8sAPI externalservice

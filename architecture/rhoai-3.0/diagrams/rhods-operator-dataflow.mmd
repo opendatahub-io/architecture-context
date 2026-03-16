@@ -1,0 +1,84 @@
+sequenceDiagram
+    participant User as User/GitOps
+    participant API as Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+
+    participant Webhook as RHODS Webhook<br/>9443/TCP HTTPS TLS1.2+
+    participant DSCCtrl as DataScienceCluster Controller
+    participant GatewayCtrl as Gateway Controller
+    participant IngressCtrl as OpenShift Ingress Controller
+    participant CompCtrl as Component Controllers
+    participant Registry as Container Registries<br/>443/TCP HTTPS TLS1.2+
+
+    Note over User,Registry: Flow 1: Component Enablement (DataScienceCluster Creation)
+
+    User->>API: kubectl apply DSC CR<br/>Auth: kubectl token
+    API->>Webhook: Validate DSC<br/>HTTPS/9443 TLS1.2+<br/>Webhook cert
+    Webhook->>API: Validation response
+    API->>DSCCtrl: Watch event: DSC created
+    DSCCtrl->>API: Create Component CRs<br/>Auth: ServiceAccount token
+    DSCCtrl->>CompCtrl: Reconcile components
+    CompCtrl->>API: Create Deployments, Services<br/>Auth: ServiceAccount token
+    CompCtrl->>Registry: Pull images<br/>HTTPS/443 TLS1.2+<br/>Pull secret
+    Registry-->>CompCtrl: Container images
+    CompCtrl-->>API: Component deployed
+
+    Note over User,Registry: Flow 2: Gateway Deployment (Platform Ingress Setup)
+
+    DSCCtrl->>GatewayCtrl: Initialize gateway
+    GatewayCtrl->>API: Create GatewayClass<br/>Auth: ServiceAccount token
+    GatewayCtrl->>API: Create Gateway (openshift-ingress ns)<br/>Auth: ServiceAccount token
+    GatewayCtrl->>IngressCtrl: Provision gateway endpoint<br/>via Kubernetes API
+    IngressCtrl-->>GatewayCtrl: Gateway ready
+    GatewayCtrl->>API: Create EnvoyFilter (ext_authz)<br/>Auth: ServiceAccount token
+    GatewayCtrl->>API: Create kube-auth-proxy Deployment<br/>Auth: ServiceAccount token
+    GatewayCtrl->>API: Create OAuthClient<br/>Auth: ServiceAccount token
+
+    Note over User,Registry: Flow 3: External User Request (RHOAI 3.x with Authentication)
+
+    participant ExtUser as External User
+    participant Router as OpenShift Router<br/>443/TCP HTTPS TLS1.3
+    participant Gateway as Gateway<br/>data-science-gateway<br/>443/TCP HTTPS TLS1.3
+    participant EnvoyFilter as EnvoyFilter<br/>ext_authz
+    participant AuthProxy as kube-auth-proxy<br/>8443/TCP HTTPS TLS1.3
+    participant OAuthSvc as OpenShift OAuth/OIDC<br/>443/TCP HTTPS TLS1.2+
+    participant Backend as Backend Service<br/>via HTTPRoute
+    participant RBACProxy as kube-rbac-proxy sidecar<br/>8443/TCP HTTPS TLS1.3
+    participant AppContainer as Application Container<br/>8080/TCP HTTP
+
+    ExtUser->>Router: HTTPS request<br/>443/TCP TLS1.3
+    Router->>Gateway: Route to gateway<br/>443/TCP HTTPS
+    Gateway->>EnvoyFilter: ext_authz check
+    EnvoyFilter->>AuthProxy: Validate session<br/>HTTPS/8443 TLS1.3
+    alt No valid session
+        AuthProxy-->>EnvoyFilter: 401 Unauthorized
+        EnvoyFilter-->>ExtUser: Redirect to login
+        ExtUser->>OAuthSvc: OAuth/OIDC login<br/>HTTPS/443 TLS1.2+<br/>Client credentials
+        OAuthSvc-->>ExtUser: OAuth code/OIDC tokens
+        ExtUser->>AuthProxy: Callback with code<br/>via oauth-callback-route
+        AuthProxy-->>ExtUser: Set session cookie<br/>httpOnly, secure
+    end
+    alt Valid session
+        AuthProxy-->>EnvoyFilter: 200 OK (authorized)
+        EnvoyFilter->>Backend: Forward request via HTTPRoute<br/>OAuth/OIDC headers
+        Backend->>RBACProxy: Request to workload<br/>HTTPS/8443 TLS1.3<br/>Bearer token
+        RBACProxy->>API: SubjectAccessReview<br/>HTTPS/6443 TLS1.2+
+        API-->>RBACProxy: RBAC decision
+        RBACProxy->>AppContainer: Proxy to app<br/>HTTP/8080 (localhost)
+        AppContainer-->>RBACProxy: Response
+        RBACProxy-->>Backend: Response
+        Backend-->>Gateway: Response
+        Gateway-->>Router: Response
+        Router-->>ExtUser: HTTPS response
+    end
+
+    Note over User,Registry: Flow 4: Monitoring and Metrics
+
+    participant PromRHOAI as Prometheus (RHOAI)<br/>9090/TCP HTTPS TLS1.3
+    participant CompMetrics as Component ServiceMonitors
+    participant ClusterMon as OpenShift Cluster Monitoring<br/>9091/TCP HTTPS TLS1.3
+    participant Alertmanager as Alertmanager<br/>9093/TCP HTTPS TLS1.3
+
+    PromRHOAI->>DSCCtrl: Scrape metrics<br/>HTTP/8080 (no auth)
+    PromRHOAI->>CompMetrics: Scrape component metrics<br/>HTTP/HTTPS<br/>Bearer token/mTLS
+    PromRHOAI->>ClusterMon: Federate metrics<br/>HTTPS/9091 TLS1.3<br/>Bearer token
+    PromRHOAI->>Alertmanager: Fire alerts<br/>HTTPS/9093 TLS1.3
+    Alertmanager->>OAuthSvc: Send notifications<br/>HTTPS/443 TLS1.2+<br/>Webhook secrets

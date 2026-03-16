@@ -1,0 +1,49 @@
+sequenceDiagram
+    participant User as User/jupyter-web-app
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
+    participant NotebookCtrl as Notebook Controller<br/>ServiceAccount Token
+    participant StatefulSet as StatefulSet<br/>Managed Resource
+    participant Service as Service<br/>ClusterIP 80→8888
+    participant VirtualService as Istio VirtualService<br/>(if USE_ISTIO=true)
+    participant NotebookPod as Notebook Pod<br/>Jupyter Server :8888
+    participant Prometheus as Prometheus<br/>Metrics Scraper
+
+    Note over User,NotebookPod: Flow 1: Notebook Creation
+    User->>K8sAPI: POST Notebook CR<br/>HTTPS/6443 TLS1.2+<br/>User Bearer Token
+    K8sAPI-->>NotebookCtrl: Watch Event (Notebook Created)<br/>ServiceAccount Token
+    NotebookCtrl->>K8sAPI: CREATE StatefulSet<br/>HTTPS/6443 TLS1.2+<br/>ServiceAccount Token
+    NotebookCtrl->>K8sAPI: CREATE Service<br/>HTTPS/6443 TLS1.2+<br/>ServiceAccount Token
+    alt USE_ISTIO=true
+        NotebookCtrl->>K8sAPI: CREATE VirtualService<br/>HTTPS/6443 TLS1.2+<br/>ServiceAccount Token
+    end
+    K8sAPI->>StatefulSet: Create Resource
+    StatefulSet->>NotebookPod: Launch Pod
+    NotebookPod-->>Service: Ready on port 8888
+    NotebookCtrl->>K8sAPI: UPDATE Notebook Status<br/>HTTPS/6443 TLS1.2+<br/>Conditions: Ready
+    K8sAPI-->>User: Notebook Ready
+
+    Note over NotebookCtrl,NotebookPod: Flow 2: Idle Notebook Culling
+    NotebookCtrl->>NotebookPod: GET /api/kernels<br/>HTTP/8888<br/>Bearer Token/AuthorizationPolicy
+    NotebookPod-->>NotebookCtrl: JSON Response<br/>Kernel states + last_activity
+    alt Idle Time > CULL_IDLE_TIME (1440m)
+        NotebookCtrl->>K8sAPI: PATCH Notebook<br/>Add annotation: kubeflow-resource-stopped<br/>HTTPS/6443 ServiceAccount Token
+        K8sAPI-->>NotebookCtrl: Watch Event (Annotation Added)
+        NotebookCtrl->>K8sAPI: PATCH StatefulSet<br/>Set replicas=0<br/>HTTPS/6443 ServiceAccount Token
+        StatefulSet->>NotebookPod: Terminate Pod
+    end
+
+    Note over Prometheus,NotebookCtrl: Flow 3: Metrics Collection
+    Prometheus->>NotebookCtrl: GET /metrics<br/>HTTP/8080<br/>None or TokenReview
+    NotebookCtrl->>K8sAPI: LIST StatefulSets<br/>HTTPS/6443 ServiceAccount Token
+    K8sAPI-->>NotebookCtrl: StatefulSet List
+    NotebookCtrl-->>Prometheus: Prometheus Metrics<br/>notebook_running, notebook_create_total, etc.
+
+    Note over User,NotebookPod: Flow 4: Notebook Restart on ConfigMap Update
+    User->>K8sAPI: UPDATE ConfigMap<br/>HTTPS/6443 Bearer Token
+    User->>K8sAPI: PATCH Notebook<br/>Add annotation: notebooks.opendatahub.io/notebook-restart=true<br/>HTTPS/6443 Bearer Token
+    K8sAPI-->>NotebookCtrl: Watch Event (Annotation Added)
+    NotebookCtrl->>K8sAPI: DELETE Pod<br/>HTTPS/6443 ServiceAccount Token
+    K8sAPI->>StatefulSet: Pod Deleted Event
+    StatefulSet->>NotebookPod: Recreate Pod (new ConfigMap)
+    NotebookPod-->>Service: Ready on port 8888
+    NotebookCtrl->>K8sAPI: PATCH Notebook<br/>Remove restart annotation<br/>HTTPS/6443 ServiceAccount Token

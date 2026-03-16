@@ -1,0 +1,86 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User[External User<br/>jupyter-web-app]
+        ExternalBrowser[External Browser<br/>Notebook UI Access]
+    end
+
+    subgraph ControlPlane["CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+<br/>Bearer Token Auth<br/>RBAC AuthZ"]
+    end
+
+    subgraph ServiceLayer["SERVICE LAYER (Namespace: opendatahub)"]
+        direction TB
+
+        subgraph NotebookController["Notebook Controller Deployment"]
+            NotebookReconciler["NotebookReconciler<br/>SA: notebook-controller-service-account<br/>RBAC: ClusterRole notebook-controller-role"]
+            CullingReconciler["CullingReconciler<br/>Idle Check: 1m<br/>Idle Threshold: 1440m"]
+        end
+
+        MetricsService["Service: metrics-service<br/>8443/TCP HTTPS TLS1.2+<br/>Auth: TokenReview/SubjectAccessReview<br/>Proxy: kube-rbac-proxy"]
+
+        HealthProbes["Health/Readiness Probes<br/>8081/TCP HTTP<br/>Auth: None<br/>/healthz, /readyz"]
+
+        Prometheus["Prometheus<br/>Metrics Scraper"]
+    end
+
+    subgraph WorkloadLayer["WORKLOAD LAYER (User Namespaces)"]
+        direction TB
+
+        StatefulSet["StatefulSet: &lt;notebook-name&gt;<br/>Replicas: 1 (or 0 if culled)<br/>SecurityContext: fsGroup=100"]
+
+        NotebookPod["Notebook Pod<br/>Container: Jupyter Server<br/>Port: 8888/TCP<br/>Env: NB_PREFIX"]
+
+        NotebookService["Service: &lt;notebook-name&gt;-&lt;hash&gt;<br/>ClusterIP<br/>80/TCP → 8888/TCP<br/>HTTP (no encryption)<br/>Internal Only"]
+    end
+
+    subgraph IngressLayer["INGRESS (Optional - USE_ISTIO=true)"]
+        IstioVS["Istio VirtualService<br/>&lt;notebook-name&gt;-vs<br/>Gateway: kubeflow-gateway<br/>Host: *<br/>Match: /notebook/&lt;ns&gt;/&lt;name&gt;/*"]
+        IstioGateway["Istio Gateway<br/>80/443 TCP<br/>TLS Config: Gateway-dependent"]
+    end
+
+    %% External to API
+    User -->|"HTTPS/6443<br/>TLS 1.2+<br/>User Bearer Token<br/>(Create Notebook CR)"| K8sAPI
+
+    %% API to Controller
+    K8sAPI -.->|"Watch Events<br/>Internal<br/>ServiceAccount Token"| NotebookReconciler
+
+    %% Controller to API
+    NotebookReconciler -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount Token<br/>(CRUD: StatefulSet/Service/VS)"| K8sAPI
+
+    %% API to Workloads
+    K8sAPI -->|"Manages Resources"| StatefulSet
+    StatefulSet -->|"Creates"| NotebookPod
+    NotebookService -->|"Routes to"| NotebookPod
+
+    %% Culling Flow
+    CullingReconciler -->|"HTTP/8888<br/>No TLS<br/>Bearer Token or AuthZ Policy<br/>(GET /api/kernels)"| NotebookPod
+    CullingReconciler -->|"HTTPS/6443<br/>ServiceAccount Token<br/>(Add STOP_ANNOTATION)"| K8sAPI
+
+    %% Metrics Flow
+    Prometheus -->|"HTTPS/8443<br/>TLS 1.2+<br/>TokenReview RBAC"| MetricsService
+    MetricsService -.->|"Proxies to"| NotebookReconciler
+
+    %% Health Checks
+    K8sAPI -.->|"HTTP/8081<br/>No Auth<br/>(Liveness/Readiness)"| HealthProbes
+    HealthProbes -.->|"Checks"| NotebookReconciler
+
+    %% Istio Ingress (optional)
+    ExternalBrowser -->|"HTTP/HTTPS<br/>80/443<br/>Gateway TLS Config<br/>RequestAuthentication"| IstioGateway
+    IstioGateway -->|"Routes via"| IstioVS
+    IstioVS -->|"HTTP/80<br/>No TLS<br/>Internal"| NotebookService
+
+    %% Istio VirtualService Creation
+    NotebookReconciler -.->|"Creates (if USE_ISTIO=true)"| IstioVS
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef controlplane fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef servicelayer fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef workloadlayer fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef ingresslayer fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    class User,ExternalBrowser external
+    class K8sAPI controlplane
+    class NotebookReconciler,CullingReconciler,MetricsService,HealthProbes,Prometheus servicelayer
+    class StatefulSet,NotebookPod,NotebookService workloadlayer
+    class IstioVS,IstioGateway ingresslayer

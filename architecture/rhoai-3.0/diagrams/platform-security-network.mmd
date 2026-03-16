@@ -1,0 +1,165 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Users[External Users<br/>Data Scientists, ML Engineers]
+        S3Ext[S3 Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS TLS1.2+<br/>AWS IAM Auth]
+        OIDC[OIDC Provider<br/>OpenShift OAuth / External IdP<br/>443/TCP HTTPS TLS1.2+]
+        Registry[Container Registries<br/>quay.io, registry.redhat.io<br/>443/TCP HTTPS TLS1.2+]
+        HF[HuggingFace Hub<br/>443/TCP HTTPS TLS1.2+]
+        NGC[NVIDIA NGC API<br/>443/TCP HTTPS TLS1.2+<br/>API Key Auth]
+    end
+
+    subgraph Ingress["INGRESS - Gateway Infrastructure (openshift-ingress)"]
+        Gateway[data-science-gateway<br/>Gateway API v1<br/>443/TCP HTTPS TLS1.3<br/>*.apps.cluster-domain]
+        EnvoyFilter[EnvoyFilter authn-filter<br/>ext_authz integration]
+        AuthProxy[kube-auth-proxy<br/>8443/TCP HTTPS<br/>2 replicas HA<br/>OAuth2/OIDC validation]
+
+        Gateway -->|ext_authz| EnvoyFilter
+        EnvoyFilter -->|check auth| AuthProxy
+    end
+
+    subgraph PlatformCore["PLATFORM CORE (redhat-ods-operator)"]
+        RHODS[RHODS Operator<br/>Controller Manager<br/>1 replica + leader election<br/>ClusterRole: platform orchestration]
+    end
+
+    subgraph AppLayer["APPLICATION LAYER (redhat-ods-applications)"]
+        Dashboard[ODH Dashboard<br/>8443/TCP HTTPS<br/>kube-rbac-proxy<br/>2 replicas HA]
+        NotebookCtrl[Notebook Controller<br/>8080/TCP metrics<br/>1 replica]
+        DSPOp[DSP Operator<br/>8080/TCP metrics<br/>1 replica]
+        KServeCtrl[KServe Controller<br/>8080/TCP metrics<br/>1 replica]
+        ModelCtrl[ODH Model Controller<br/>8080/TCP metrics<br/>1 replica]
+        ModelRegOp[Model Registry Operator<br/>8080/TCP metrics<br/>1 replica]
+        TrainingOp[Training Operator<br/>8080/TCP metrics<br/>1 replica]
+    end
+
+    subgraph K8sAPI["KUBERNETES API SERVER"]
+        APIServer[kube-apiserver<br/>6443/TCP HTTPS TLS1.2+<br/>ServiceAccount tokens<br/>RBAC authorization]
+    end
+
+    subgraph UserWorkloads["USER WORKLOAD LAYER (user namespaces - multi-tenant)"]
+        direction TB
+
+        subgraph Notebooks["Notebooks"]
+            JupyterLab[JupyterLab/RStudio/CodeServer<br/>StatefulSet<br/>HTTPRoute → Gateway<br/>8888/TCP HTTP + kube-rbac-proxy<br/>PVC storage]
+        end
+
+        subgraph Serving["Model Serving"]
+            ISVC[KServe InferenceService<br/>Deployment raw or Knative<br/>HTTPRoute → Gateway<br/>8080/TCP HTTP<br/>Storage Initializer<br/>mTLS optional ServiceMesh]
+        end
+
+        subgraph Training["Training"]
+            TrainingJobs[PyTorchJob/TFJob/MPIJob<br/>Batch pods master+workers<br/>Gang scheduling<br/>S3 access for datasets]
+        end
+
+        subgraph Registry["Model Registry"]
+            ModelReg[Model Registry<br/>REST: 8443/TCP HTTPS kube-rbac-proxy<br/>gRPC: 9090/TCP<br/>PostgreSQL/MySQL backend]
+            DB1[(PostgreSQL/MySQL<br/>5432/3306 TCP<br/>TLS1.2+ optional)]
+        end
+
+        subgraph Pipelines["Pipelines"]
+            DSP[DSP Instance<br/>HTTPRoute → Gateway<br/>8888/TCP HTTP<br/>Argo Workflows<br/>MLMD gRPC 9090/TCP]
+            DB2[(MariaDB/PostgreSQL<br/>3306/5432 TCP<br/>TLS1.2+ pod-to-pod)]
+        end
+
+        subgraph AI["AI Safety"]
+            TrustyAI[TrustyAI Service<br/>Route/HTTPRoute<br/>80/TCP HTTP metrics<br/>GuardrailsOrchestrator 8090/TCP]
+        end
+
+        subgraph Features["Feature Store"]
+            Feast[Feast Feature Store<br/>Online: 6566/TCP HTTP<br/>Offline: 8815/TCP HTTP<br/>Registry: gRPC<br/>OIDC/K8s auth]
+        end
+    end
+
+    subgraph Monitoring["MONITORING LAYER (redhat-ods-monitoring)"]
+        Prometheus[Prometheus<br/>9090/TCP HTTP<br/>2 replicas<br/>Federation to cluster monitoring]
+        Alertmanager[Alertmanager<br/>9093/TCP HTTP<br/>3 replicas HA]
+    end
+
+    %% External to Ingress
+    Users -->|HTTPS/443<br/>TLS1.3<br/>OAuth session cookie| Gateway
+    AuthProxy -->|OAuth2/OIDC<br/>redirect| OIDC
+
+    %% Ingress to Applications
+    Gateway -->|HTTPRoute<br/>TLS terminated| Dashboard
+    Gateway -->|HTTPRoute<br/>TLS terminated| JupyterLab
+    Gateway -->|HTTPRoute<br/>TLS terminated| ISVC
+    Gateway -->|HTTPRoute<br/>TLS terminated| DSP
+    Gateway -->|HTTPRoute<br/>TLS terminated| ModelReg
+
+    %% Platform Core
+    RHODS -->|deploys| Gateway
+    RHODS -->|deploys| Dashboard
+    RHODS -->|deploys| NotebookCtrl
+    RHODS -->|deploys| DSPOp
+    RHODS -->|deploys| KServeCtrl
+    RHODS -->|deploys| ModelCtrl
+    RHODS -->|manages| APIServer
+
+    %% Operators to API Server
+    RHODS -->|HTTPS/6443<br/>ServiceAccount token<br/>ClusterRole| APIServer
+    Dashboard -->|HTTPS/6443<br/>ServiceAccount token| APIServer
+    NotebookCtrl -->|HTTPS/6443<br/>ServiceAccount token| APIServer
+    DSPOp -->|HTTPS/6443<br/>ServiceAccount token| APIServer
+    KServeCtrl -->|HTTPS/6443<br/>ServiceAccount token| APIServer
+    ModelCtrl -->|HTTPS/6443<br/>ServiceAccount token| APIServer
+    ModelRegOp -->|HTTPS/6443<br/>ServiceAccount token| APIServer
+    TrainingOp -->|HTTPS/6443<br/>ServiceAccount token| APIServer
+
+    %% API Server to Workloads
+    APIServer -->|watches/creates| JupyterLab
+    APIServer -->|watches/creates| ISVC
+    APIServer -->|watches/creates| TrainingJobs
+    APIServer -->|watches/creates| ModelReg
+    APIServer -->|watches/creates| DSP
+    APIServer -->|watches/creates| TrustyAI
+    APIServer -->|watches/creates| Feast
+
+    %% Workload to External
+    ISVC -->|HTTPS/443<br/>TLS1.2+<br/>AWS IAM| S3Ext
+    TrainingJobs -->|HTTPS/443<br/>TLS1.2+<br/>AWS SigV4| S3Ext
+    JupyterLab -->|HTTPS/443<br/>TLS1.2+<br/>S3 creds| S3Ext
+    DSP -->|HTTPS/443<br/>TLS1.2+<br/>S3 creds| S3Ext
+    ISVC -->|HTTPS/443<br/>TLS1.2+| HF
+    ModelCtrl -->|HTTPS/443<br/>TLS1.2+<br/>API key| NGC
+    RHODS -->|HTTPS/443<br/>TLS1.2+<br/>Pull secrets| Registry
+    Feast -->|HTTPS/443<br/>TLS1.2+| S3Ext
+
+    %% Database connections
+    ModelReg -->|PostgreSQL/MySQL<br/>5432/3306 TCP<br/>TLS1.2+ optional<br/>password auth| DB1
+    DSP -->|MariaDB/PostgreSQL<br/>3306/5432 TCP<br/>TLS1.2+ pod-to-pod<br/>password auth| DB2
+
+    %% Workload integrations
+    DSP -->|creates| ISVC
+    DSP -->|registers| ModelReg
+    TrainingJobs -->|registers| ModelReg
+    ISVC -->|queries| ModelReg
+    ISVC -->|queries| Feast
+    TrustyAI -->|monitors| ISVC
+    JupyterLab -->|submits| TrainingJobs
+    JupyterLab -->|submits| DSP
+
+    %% Monitoring
+    Prometheus -->|scrapes /metrics<br/>ServiceMonitors| Dashboard
+    Prometheus -->|scrapes /metrics| NotebookCtrl
+    Prometheus -->|scrapes /metrics| KServeCtrl
+    Prometheus -->|scrapes /metrics| ISVC
+    Prometheus -->|scrapes /metrics| TrustyAI
+    Prometheus -->|alerts| Alertmanager
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:3px
+    classDef platformcore fill:#4a90e2,stroke:#2e5c8a,stroke-width:3px,color:#fff
+    classDef applayer fill:#7ed321,stroke:#6bb91c,stroke-width:2px,color:#fff
+    classDef k8sapi fill:#e74c3c,stroke:#c0392b,stroke-width:3px,color:#fff
+    classDef userworkload fill:#9b59b6,stroke:#8e44ad,stroke-width:2px,color:#fff
+    classDef monitoring fill:#e67e22,stroke:#d35400,stroke-width:2px,color:#fff
+    classDef database fill:#3498db,stroke:#2980b9,stroke-width:2px,color:#fff
+
+    class Users,S3Ext,OIDC,Registry,HF,NGC external
+    class Gateway,EnvoyFilter,AuthProxy ingress
+    class RHODS platformcore
+    class Dashboard,NotebookCtrl,DSPOp,KServeCtrl,ModelCtrl,ModelRegOp,TrainingOp applayer
+    class APIServer k8sapi
+    class JupyterLab,ISVC,TrainingJobs,ModelReg,DSP,TrustyAI,Feast userworkload
+    class Prometheus,Alertmanager monitoring
+    class DB1,DB2 database

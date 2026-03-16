@@ -1,0 +1,105 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        ExtUser[External User]
+    end
+
+    subgraph IngressDMZ["INGRESS LAYER (DMZ - openshift-ingress namespace)"]
+        direction TB
+        Router["OpenShift Router<br/>443/TCP HTTPS TLS1.3"]
+        Gateway["Gateway<br/>data-science-gateway<br/>443/TCP HTTPS TLS1.3<br/>GatewayClass: data-science-gateway-class"]
+        EnvoyFilter["EnvoyFilter<br/>authn-filter<br/>ext_authz check"]
+        AuthProxy["kube-auth-proxy Service<br/>4180/TCP HTTP, 8443/TCP HTTPS TLS1.3<br/>9000/TCP metrics<br/>OAuth2/OIDC session validation"]
+        OAuthCallbackRoute["HTTPRoute<br/>oauth-callback-route<br/>OAuth callback handler"]
+    end
+
+    subgraph AuthProviders["AUTHENTICATION PROVIDERS"]
+        direction LR
+        OAuthServer["OpenShift OAuth Server<br/>443/TCP HTTPS TLS1.2+<br/>IntegratedOAuth mode"]
+        OIDCProvider["External OIDC Provider<br/>443/TCP HTTPS TLS1.2+<br/>ROSA/OIDC mode<br/>(Keycloak, etc.)"]
+    end
+
+    subgraph AppLayer["APPLICATION LAYER (redhat-ods-applications namespace)"]
+        direction TB
+        HTTPRoute["HTTPRoute CRs<br/>per workload<br/>ParentRef: data-science-gateway"]
+        BackendSvc["Backend Service<br/>ClusterIP<br/>Target: kube-rbac-proxy sidecar"]
+        RBACProxy["kube-rbac-proxy sidecar<br/>8443/TCP HTTPS TLS1.3<br/>SubjectAccessReview RBAC"]
+        AppContainer["Application Container<br/>8080/TCP HTTP (localhost)<br/>Jupyter, Dashboard, Pipelines"]
+    end
+
+    subgraph OperatorCP["OPERATOR CONTROL PLANE (redhat-ods-operator namespace)"]
+        direction TB
+        Operator["RHODS Operator Manager<br/>SA: redhat-ods-operator-controller-manager<br/>8080/TCP metrics HTTP<br/>8081/TCP health HTTP<br/>9443/TCP webhooks HTTPS TLS1.2+"]
+    end
+
+    subgraph MonitoringLayer["MONITORING LAYER (redhat-ods-monitoring namespace)"]
+        direction TB
+        Prometheus["Prometheus (RHOAI)<br/>9090/TCP HTTPS TLS1.3 mTLS<br/>Scrapes operator & components"]
+        Alertmanager["Alertmanager<br/>9093/TCP HTTPS TLS1.3<br/>Alert notifications"]
+        BlackboxExporter["Blackbox Exporter<br/>9115/TCP HTTP<br/>Endpoint probes"]
+    end
+
+    subgraph K8sInfra["KUBERNETES INFRASTRUCTURE"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+<br/>RBAC: ClusterRole rhods-operator-role"]
+        IngressController["OpenShift Ingress Controller<br/>Gateway provisioning"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        Registries["Container Registries<br/>quay.io, registry.redhat.io<br/>443/TCP HTTPS TLS1.2+<br/>Pull secrets"]
+        ClusterMon["OpenShift Cluster Monitoring<br/>9091/TCP HTTPS TLS1.3<br/>Prometheus Federation"]
+    end
+
+    %% External User Flow
+    ExtUser -->|HTTPS/443<br/>TLS1.3<br/>No initial auth| Router
+    Router -->|HTTPS/443<br/>TLS1.3| Gateway
+    Gateway -->|ext_authz check<br/>All requests| EnvoyFilter
+    EnvoyFilter -->|HTTPS/8443<br/>TLS1.3<br/>Session validation| AuthProxy
+
+    %% Authentication Flow
+    AuthProxy -.->|No session:<br/>Redirect to login<br/>HTTPS/443 TLS1.2+| OAuthServer
+    AuthProxy -.->|No session:<br/>Redirect to login<br/>HTTPS/443 TLS1.2+| OIDCProvider
+    OAuthServer -.->|OAuth code| OAuthCallbackRoute
+    OIDCProvider -.->|OIDC tokens| OAuthCallbackRoute
+    OAuthCallbackRoute -->|Process callback| AuthProxy
+    AuthProxy -.->|Set httpOnly,<br/>secure cookie| ExtUser
+
+    %% Authorized Request Flow
+    EnvoyFilter -->|Valid session:<br/>Forward request<br/>OAuth/OIDC headers| HTTPRoute
+    HTTPRoute -->|Route to backend| BackendSvc
+    BackendSvc -->|HTTPS/8443<br/>TLS1.3<br/>Bearer token| RBACProxy
+    RBACProxy -->|SubjectAccessReview<br/>HTTPS/6443 TLS1.2+<br/>SA token| K8sAPI
+    RBACProxy -->|Authorized:<br/>HTTP/8080<br/>localhost only| AppContainer
+
+    %% Operator Control Plane
+    Operator -->|Create/Update/Delete<br/>HTTPS/6443 TLS1.2+<br/>SA token<br/>ClusterRole: rhods-operator-role| K8sAPI
+    Operator -->|Webhook validation<br/>HTTPS/9443 TLS1.2+<br/>Webhook cert| K8sAPI
+    Operator -->|Pull images<br/>HTTPS/443 TLS1.2+<br/>Pull secrets| Registries
+
+    %% Gateway Deployment
+    Operator -->|Create GatewayClass,<br/>Gateway, EnvoyFilter,<br/>kube-auth-proxy| K8sAPI
+    Operator -->|Provision gateway| IngressController
+
+    %% Monitoring
+    Prometheus -->|Scrape metrics<br/>HTTP/8080<br/>No auth| Operator
+    Prometheus -->|Scrape components<br/>HTTP/HTTPS<br/>Bearer/mTLS| AppContainer
+    Prometheus -->|Federate metrics<br/>HTTPS/9091 TLS1.3<br/>Bearer token| ClusterMon
+    Prometheus -->|Fire alerts| Alertmanager
+    BlackboxExporter -->|Probe endpoints<br/>HTTPS/443| Gateway
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef auth fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef app fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef infra fill:#f5f5f5,stroke:#666,stroke-width:2px
+    classDef extsvc fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    class ExtUser external
+    class Router,Gateway,EnvoyFilter,AuthProxy,OAuthCallbackRoute ingress
+    class OAuthServer,OIDCProvider auth
+    class HTTPRoute,BackendSvc,RBACProxy,AppContainer app
+    class Operator operator
+    class Prometheus,Alertmanager,BlackboxExporter monitoring
+    class K8sAPI,IngressController infra
+    class Registries,ClusterMon extsvc

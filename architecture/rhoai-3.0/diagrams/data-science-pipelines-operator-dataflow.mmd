@@ -1,0 +1,61 @@
+sequenceDiagram
+    participant User as User Browser
+    participant Route as OpenShift Route<br/>443/TCP HTTPS TLS1.2+
+    participant OAuth as OAuth Proxy<br/>8443/TCP HTTPS
+    participant API as DSP API Server<br/>8888/TCP HTTP<br/>8887/TCP gRPC<br/>TLS pod-to-pod
+    participant MariaDB as MariaDB<br/>3306/TCP MySQL<br/>TLS pod-to-pod
+    participant WFC as Workflow Controller<br/>8001/TCP HTTP<br/>TLS pod-to-pod
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
+    participant PipelinePod as Pipeline Pod<br/>Executor
+    participant S3 as S3 Storage<br/>443/TCP HTTPS TLS1.2+
+    participant MLMD as ML Metadata gRPC<br/>8080/TCP gRPC<br/>TLS pod-to-pod
+    participant PA as Persistence Agent
+
+    Note over User,S3: Flow 1: Pipeline Submission via Dashboard
+
+    User->>Route: POST /apis/v2beta1/pipelines<br/>Auth: OAuth Token
+    Route->>OAuth: HTTPS TLS 1.2+ (Reencrypt)
+    OAuth->>OAuth: Validate OAuth Token
+    OAuth->>API: HTTP/8888<br/>Bearer Token
+    API->>MariaDB: MySQL/3306<br/>Store pipeline metadata<br/>DB Password + TLS
+    API->>WFC: HTTP/8001<br/>Create Workflow CR<br/>ServiceAccount Token
+    WFC->>K8s: HTTPS/6443<br/>Create Workflow<br/>ServiceAccount Token
+    K8s-->>API: Pipeline Created
+    API-->>User: 200 OK
+
+    Note over User,S3: Flow 2: Pipeline Execution
+
+    WFC->>K8s: HTTPS/6443<br/>Create Pipeline Pod<br/>ServiceAccount Token
+    K8s->>PipelinePod: Pod Started
+    PipelinePod->>API: HTTP/8888<br/>Get pipeline params<br/>ServiceAccount Token
+    API-->>PipelinePod: Pipeline config
+    PipelinePod->>S3: HTTPS/443<br/>Download input artifacts<br/>S3 Credentials (IAM/Access Key)
+    S3-->>PipelinePod: Artifacts
+    PipelinePod->>PipelinePod: Execute task
+    PipelinePod->>MLMD: gRPC/8080<br/>Record artifact lineage<br/>mTLS
+    MLMD->>MariaDB: MySQL/3306<br/>Store metadata<br/>DB Password + TLS
+    PipelinePod->>S3: HTTPS/443<br/>Upload output artifacts<br/>S3 Credentials
+    PipelinePod->>API: HTTP/8888<br/>Report task completion<br/>ServiceAccount Token
+    PA->>API: gRPC/8887<br/>Query workflow status<br/>ServiceAccount Token
+    PA->>MariaDB: MySQL/3306<br/>Sync workflow state<br/>DB Password + TLS
+
+    Note over User,S3: Flow 3: Artifact Lineage Tracking
+
+    PipelinePod->>MLMD: gRPC/8080<br/>Log execution context<br/>mTLS
+    MLMD->>MariaDB: MySQL/3306<br/>Store artifact relationships<br/>DB Password + TLS
+    User->>Route: GET /apis/v2beta1/artifacts/{id}<br/>OAuth Token
+    Route->>OAuth: HTTPS (Reencrypt)
+    OAuth->>API: HTTP/8888<br/>Bearer Token
+    API->>MariaDB: MySQL/3306<br/>Query artifact lineage<br/>DB Password + TLS
+    MariaDB-->>API: Lineage data
+    API-->>User: Artifact graph
+
+    Note over User,S3: Flow 4: Scheduled Pipeline Execution
+
+    activate WFC
+    WFC->>WFC: Cron trigger activated
+    WFC->>API: gRPC/8887<br/>Create pipeline run<br/>ServiceAccount Token
+    API->>MariaDB: MySQL/3306<br/>Store run metadata<br/>DB Password + TLS
+    API->>WFC: HTTP/8001<br/>Submit workflow<br/>ServiceAccount Token
+    WFC->>K8s: HTTPS/6443<br/>Create workflow pods<br/>ServiceAccount Token
+    deactivate WFC

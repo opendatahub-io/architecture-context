@@ -1,0 +1,84 @@
+sequenceDiagram
+    participant User as Data Scientist<br/>Browser
+    participant Gateway as Gateway<br/>data-science-gateway<br/>443/TCP HTTPS TLS1.3
+    participant AuthProxy as kube-auth-proxy<br/>8443/TCP HTTPS<br/>OAuth2/OIDC
+    participant Dashboard as ODH Dashboard<br/>8443/TCP HTTPS<br/>kube-rbac-proxy
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant NotebookCtrl as Notebook Controller<br/>8080/TCP HTTP
+    participant Notebook as JupyterLab Pod<br/>8888/TCP HTTP<br/>mTLS optional
+    participant TrainingOp as Training Operator<br/>8080/TCP HTTP
+    participant TrainingJob as PyTorchJob Pods<br/>Distributed Training
+    participant S3 as S3 Storage<br/>443/TCP HTTPS<br/>AWS IAM Auth
+    participant ModelReg as Model Registry<br/>8443/TCP HTTPS<br/>REST + gRPC
+    participant KServe as KServe Controller<br/>8080/TCP HTTP
+    participant ModelCtrl as ODH Model Controller<br/>8080/TCP HTTP
+    participant Predictor as Predictor Pod<br/>8080/TCP HTTP<br/>mTLS optional
+    participant Client as External Client<br/>Inference API
+
+    rect rgb(240, 248, 255)
+        Note over User,Dashboard: Workflow 1: User Authentication (RHOAI 3.x)
+        User->>Gateway: 1. GET /dashboard<br/>No session cookie
+        Gateway->>AuthProxy: 2. EnvoyFilter ext_authz check<br/>HTTPS request
+        AuthProxy-->>Gateway: 3. Unauthorized (no cookie)
+        Gateway-->>User: 4. Redirect to OIDC Provider<br/>Login page
+        User->>AuthProxy: 5. OAuth callback with code<br/>POST /oauth/callback
+        AuthProxy->>K8sAPI: 6. Validate user permissions<br/>SubjectAccessReview
+        K8sAPI-->>AuthProxy: 7. User authorized
+        AuthProxy-->>User: 8. Set session cookie<br/>Redirect to /dashboard
+        User->>Gateway: 9. GET /dashboard (with cookie)
+        Gateway->>AuthProxy: 10. EnvoyFilter ext_authz check
+        AuthProxy-->>Gateway: 11. Authorized
+        Gateway->>Dashboard: 12. Forward request<br/>kube-rbac-proxy validates
+        Dashboard-->>User: 13. Dashboard UI (React SPA)
+    end
+
+    rect rgb(255, 250, 240)
+        Note over User,Notebook: Workflow 2: Launch Jupyter Workbench
+        User->>Dashboard: 14. POST /api/notebooks<br/>Create workbench
+        Dashboard->>K8sAPI: 15. Create Notebook CR<br/>Bearer token auth
+        K8sAPI->>NotebookCtrl: 16. Watch event: Notebook created
+        NotebookCtrl->>K8sAPI: 17. Create StatefulSet + Service<br/>+ HTTPRoute
+        K8sAPI->>Notebook: 18. Pod scheduled and started
+        Notebook->>K8sAPI: 19. Readiness probe success
+        User->>Gateway: 20. GET /notebook-name/lab<br/>Via HTTPRoute
+        Gateway->>Notebook: 21. Forward to JupyterLab<br/>kube-rbac-proxy auth
+        Notebook-->>User: 22. JupyterLab interface
+    end
+
+    rect rgb(240, 255, 240)
+        Note over Notebook,S3: Workflow 3: Distributed Model Training
+        Notebook->>K8sAPI: 23. Submit PyTorchJob CR<br/>kubectl apply
+        K8sAPI->>TrainingOp: 24. Watch event: PyTorchJob created
+        TrainingOp->>K8sAPI: 25. Create master + worker pods
+        K8sAPI->>TrainingJob: 26. Pods start (gang scheduling)
+        TrainingJob->>S3: 27. Download training dataset<br/>HTTPS (AWS SigV4)
+        S3-->>TrainingJob: 28. Dataset artifacts
+        TrainingJob->>TrainingJob: 29. Distributed training<br/>PyTorch DDP
+        TrainingJob->>S3: 30. Upload model checkpoints<br/>HTTPS
+        TrainingJob->>ModelReg: 31. POST /api/model_registry/v1alpha3/registered_models<br/>Register trained model
+        ModelReg-->>TrainingJob: 32. Model metadata stored
+        TrainingJob-->>K8sAPI: 33. PyTorchJob status: Succeeded
+    end
+
+    rect rgb(255, 245, 240)
+        Note over User,Client: Workflow 4: Model Deployment and Inference
+        User->>Dashboard: 34. POST /api/serving<br/>Deploy InferenceService
+        Dashboard->>K8sAPI: 35. Create InferenceService CR
+        K8sAPI->>KServe: 36. Watch: InferenceService created
+        KServe->>K8sAPI: 37. Create Deployment + Service<br/>(raw mode default)
+        KServe->>S3: 38. Storage Initializer downloads model<br/>HTTPS
+        S3-->>KServe: 39. Model artifacts
+        K8sAPI->>ModelCtrl: 40. Watch: InferenceService created
+        ModelCtrl->>K8sAPI: 41. Create Route + ServiceMonitor<br/>+ NetworkPolicy
+        K8sAPI->>Predictor: 42. Predictor pod started<br/>Model loaded
+        Predictor-->>K8sAPI: 43. Readiness probe: /v1/models/ready
+        Client->>Gateway: 44. POST /v1/models/model:predict<br/>HTTPS (Bearer token optional)
+        Gateway->>Predictor: 45. Forward to predictor<br/>Via HTTPRoute
+        Predictor->>Predictor: 46. Model inference
+        Predictor-->>Client: 47. JSON prediction response
+    end
+
+    rect rgb(250, 240, 255)
+        Note over Client,ModelReg: Workflow 5: ML Pipeline Orchestration (via DSP)
+        Note right of User: Pipeline submitted via Dashboard<br/>creates Argo Workflow which:<br/>1) Trains model (TrainingJob)<br/>2) Registers in Model Registry<br/>3) Deploys to KServe<br/>4) Runs validation tests<br/>See DSP component for details
+    end

@@ -1,0 +1,85 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant SDK as Python SDK<br/>kubeflow-training
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
+    participant Webhook as Validation Webhook<br/>9443/TCP HTTPS mTLS
+    participant Controller as Training Operator<br/>Controller
+    participant Scheduler as Scheduler<br/>(optional: Volcano)
+    participant Registry as Container Registry<br/>443/TCP HTTPS
+    participant MasterPod as Master Pod<br/>23456/TCP
+    participant WorkerPod as Worker Pod<br/>23456/TCP
+    participant Storage as S3/Object Storage<br/>443/TCP HTTPS
+
+    Note over User,Storage: Flow 1: Training Job Creation and Execution
+
+    User->>K8sAPI: kubectl apply -f pytorchjob.yaml<br/>Auth: User credentials
+    activate K8sAPI
+
+    K8sAPI->>Webhook: POST /validate-kubeflow-org-v1-pytorchjob<br/>mTLS client cert
+    activate Webhook
+    Webhook->>Webhook: Validate replica counts,<br/>resource requests, spec
+    Webhook-->>K8sAPI: Validation response (Allow/Deny)
+    deactivate Webhook
+
+    K8sAPI-->>User: PyTorchJob created
+    deactivate K8sAPI
+
+    Controller->>K8sAPI: Watch PyTorchJob CRD<br/>ServiceAccount Token
+    activate Controller
+    K8sAPI-->>Controller: PyTorchJob event
+
+    alt Gang Scheduling Enabled
+        Controller->>K8sAPI: Create PodGroup<br/>ServiceAccount Token
+        Scheduler->>K8sAPI: Watch PodGroups
+        K8sAPI-->>Scheduler: PodGroup event
+    end
+
+    Controller->>K8sAPI: Create Pods (Master + Workers)<br/>ServiceAccount Token
+    Controller->>K8sAPI: Create ClusterIP Services<br/>ServiceAccount Token
+
+    MasterPod->>Registry: Pull training image<br/>Image Pull Secret
+    Registry-->>MasterPod: Container image
+
+    WorkerPod->>Registry: Pull training image<br/>Image Pull Secret
+    Registry-->>WorkerPod: Container image
+
+    WorkerPod->>Storage: Download dataset<br/>S3 credentials
+    Storage-->>WorkerPod: Training data
+
+    WorkerPod->>MasterPod: TCP connection 23456<br/>Framework coordination
+    activate MasterPod
+    MasterPod->>WorkerPod: Distribute training params
+
+    loop Training Iterations
+        WorkerPod->>WorkerPod: Compute gradients
+        WorkerPod->>MasterPod: Send gradients
+        MasterPod->>MasterPod: Aggregate gradients
+        MasterPod->>WorkerPod: Send updated weights
+    end
+
+    MasterPod->>Storage: Save model checkpoint<br/>S3 credentials
+    Storage-->>MasterPod: Checkpoint saved
+    deactivate MasterPod
+
+    Controller->>K8sAPI: Update PyTorchJob status<br/>ServiceAccount Token
+    Controller-->>Controller: Job marked Succeeded
+    deactivate Controller
+
+    Note over User,Storage: Flow 2: Monitoring and Observability
+
+    participant Prometheus as Prometheus
+
+    Prometheus->>Controller: GET /metrics<br/>Port 8080/TCP HTTP
+    Controller-->>Prometheus: Operator metrics<br/>(reconciliation time, errors)
+
+    User->>K8sAPI: kubectl get pytorchjob<br/>User credentials
+    K8sAPI-->>User: Job status (Running/Succeeded/Failed)
+
+    Note over User,Storage: Flow 3: Elastic Training (PyTorch)
+
+    Controller->>K8sAPI: Create HorizontalPodAutoscaler<br/>ServiceAccount Token
+    K8sAPI->>K8sAPI: Monitor worker CPU/memory
+    K8sAPI->>Controller: Scale workers (2→4)
+    Controller->>K8sAPI: Create additional worker pods
+    WorkerPod->>MasterPod: New workers join training
+    MasterPod->>WorkerPod: Redistribute workload
