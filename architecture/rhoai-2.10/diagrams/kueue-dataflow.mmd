@@ -1,0 +1,63 @@
+sequenceDiagram
+    participant User as User/Application
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+
+    participant Webhook as Kueue Webhook<br/>443/TCP (9443) HTTPS TLS1.2+
+    participant Controller as Kueue Controller<br/>ServiceAccount Token
+    participant Scheduler as Queue Scheduler<br/>(Controller Component)
+    participant Autoscaler as Cluster Autoscaler<br/>Optional
+
+    rect rgb(240, 248, 255)
+    Note over User,Controller: Flow 1: Job Submission and Admission
+    User->>K8sAPI: POST /apis/batch/v1/jobs<br/>Create Job<br/>Auth: User credentials
+    K8sAPI->>Webhook: POST /mutate-batch-v1-job<br/>HTTPS/9443<br/>Auth: API Server cert
+    Webhook->>Webhook: Inject queue name<br/>Suspend Job
+    Webhook->>K8sAPI: Create Workload CR<br/>HTTPS/6443<br/>Auth: ServiceAccount Token
+    Webhook-->>K8sAPI: Return mutated Job
+    K8sAPI-->>User: Job created (suspended)
+    end
+
+    rect rgb(255, 250, 240)
+    Note over Controller,Scheduler: Flow 3: Workload Queueing
+    Controller->>K8sAPI: Watch Workload events<br/>HTTPS/6443<br/>ServiceAccount Token
+    K8sAPI-->>Controller: Workload created event
+    Controller->>Scheduler: Evaluate admission
+    Scheduler->>Scheduler: Check ClusterQueue quota<br/>Check priorities<br/>Apply queueing strategy
+    alt Quota Available
+        Scheduler->>Controller: Admit workload
+        Controller->>K8sAPI: Update Workload status<br/>admitted=true<br/>HTTPS/6443
+        Controller->>K8sAPI: Unsuspend Job<br/>PATCH job/status<br/>HTTPS/6443
+        K8sAPI->>K8sAPI: Create Pods
+    else Quota Exceeded
+        Scheduler->>Controller: Queue workload
+        Controller->>K8sAPI: Update Workload status<br/>admitted=false<br/>HTTPS/6443
+    end
+    end
+
+    rect rgb(255, 240, 245)
+    Note over Controller,Autoscaler: Flow 4: Autoscaler Integration (Optional)
+    Controller->>K8sAPI: Create ProvisioningRequest<br/>POST /apis/autoscaling.x-k8s.io<br/>HTTPS/6443<br/>ServiceAccount Token
+    K8sAPI->>Autoscaler: ProvisioningRequest event
+    Autoscaler->>Autoscaler: Provision nodes
+    Autoscaler->>K8sAPI: Update ProvisioningRequest<br/>status=Provisioned
+    K8sAPI-->>Controller: ProvisioningRequest ready
+    Controller->>K8sAPI: Admit workload<br/>HTTPS/6443
+    end
+
+    rect rgb(240, 255, 240)
+    Note over Controller,K8sAPI: Flow 3: Preemption (if quota exceeded)
+    Controller->>Scheduler: Higher priority workload
+    Scheduler->>Scheduler: Evaluate preemption
+    Scheduler->>Controller: Evict lower priority workload
+    Controller->>K8sAPI: Update Workload<br/>admitted=false<br/>HTTPS/6443
+    Controller->>K8sAPI: Suspend Job<br/>Delete Pods<br/>HTTPS/6443
+    Controller->>K8sAPI: Admit higher priority workload<br/>HTTPS/6443
+    end
+
+    rect rgb(248, 248, 255)
+    Note over K8sAPI,Controller: Flow 2: Metrics Collection
+    participant Prometheus as Prometheus
+    Prometheus->>Controller: GET /metrics<br/>HTTP/8080<br/>No auth
+    Controller-->>Prometheus: Queue metrics<br/>Admission rates<br/>Workload stats
+    Prometheus->>Controller: GET /metrics<br/>HTTPS/8443<br/>Bearer Token (ServiceAccount)
+    Controller-->>Prometheus: Authenticated metrics
+    end

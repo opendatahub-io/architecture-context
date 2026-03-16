@@ -1,0 +1,81 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[External Client<br/>Data Scientist]
+    end
+
+    subgraph ControlPlane["CONTROL PLANE (Cluster Management)"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+<br/>Auth: Bearer Token"]
+    end
+
+    subgraph KServeControl["KSERVE CONTROL PLANE (Namespace: kserve)"]
+        direction TB
+        Webhook["kserve-webhook-server<br/>SA: kserve-controller-manager<br/>9443/TCP HTTPS TLS1.2+<br/>mTLS client certs<br/>Endpoints:<br/>- /mutate-serving-kserve-io-v1beta1-inferenceservice<br/>- /validate-serving-kserve-io-v1beta1-inferenceservice<br/>- /mutate-pods<br/>- /validate-*-trainedmodel/inferencegraph/servingruntime"]
+
+        Controller["kserve-controller-manager<br/>SA: kserve-controller-manager<br/>Ports:<br/>- 8081/TCP HTTP (healthz/readyz)<br/>- 8080/TCP HTTP (metrics)<br/>- 8443/TCP HTTPS TLS1.2+"]
+    end
+
+    subgraph Ingress["DATA PLANE - INGRESS (DMZ)"]
+        Gateway["Istio Gateway<br/>Namespace: istio-system<br/>443/TCP HTTPS TLS1.2+<br/>TLS Termination<br/>RequestAuthentication (JWT)"]
+    end
+
+    subgraph ServiceMesh["DATA PLANE - SERVICE MESH (mTLS STRICT)"]
+        direction TB
+
+        subgraph NS_User["Namespace: {user-namespace}"]
+            direction TB
+            KnativeService["Knative Service<br/>{isvc-name}<br/>SA: default/custom<br/>ClusterIP 80/TCP → 8080/TCP<br/>HTTP wrapped in mTLS"]
+
+            PredictorPod["InferenceService Predictor Pod<br/>SA: {custom}-sa<br/>Init: storage-initializer<br/>Main: Model Server (sklearn/xgboost/lgb)<br/>Ports:<br/>- 8080/TCP HTTP (inference endpoints)<br/>  * POST /v1/models/{model}:predict<br/>  * POST /v1/models/{model}:explain<br/>  * GET /v1/models/{model}<br/>  * POST /v2/models/{model}/infer<br/>  * GET /v2/models/{model}/ready<br/>  * GET /v2/health/live<br/>- 8081/TCP gRPC (GRPCInferenceService)<br/>Sidecars:<br/>- kserve-agent (optional)<br/>- Istio envoy (mTLS)"]
+        end
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        direction TB
+        S3["S3 Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS TLS1.2+<br/>Auth: AWS IAM/Access Keys"]
+
+        GCS["GCS Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS TLS1.2+<br/>Auth: GCP Service Account"]
+
+        Azure["Azure Blob Storage<br/>blob.core.windows.net<br/>443/TCP HTTPS TLS1.2+<br/>Auth: Azure credentials"]
+
+        ModelRegistry["Model Registry<br/>HTTP API<br/>443/TCP HTTPS TLS1.2+<br/>Auth: API tokens"]
+
+        Prometheus["Prometheus<br/>Metrics Collector<br/>8080/TCP HTTP<br/>No encryption, no auth"]
+    end
+
+    %% Flow 1: InferenceService Creation
+    Client -->|"1. kubectl apply InferenceService<br/>6443/TCP HTTPS TLS1.2+<br/>Bearer Token (kubeconfig)"| K8sAPI
+    K8sAPI -->|"2. POST /mutate & /validate<br/>443/TCP HTTPS TLS1.2+<br/>mTLS client cert"| Webhook
+    Webhook -.->|"Validation/Mutation result"| K8sAPI
+
+    %% Flow 2: Controller Watches
+    Controller -->|"3. Watch InferenceService events<br/>6443/TCP HTTPS TLS1.2+<br/>Service Account Token"| K8sAPI
+    Controller -.->|"Creates Knative Service,<br/>Istio VirtualService"| KnativeService
+
+    %% Flow 3: Inference Request
+    Client -->|"4. POST /v1/models/model:predict<br/>443/TCP HTTPS TLS1.2+<br/>Bearer Token/mTLS"| Gateway
+    Gateway -->|"5. Forward<br/>80/TCP HTTP<br/>mTLS (ISTIO_MUTUAL)"| KnativeService
+    KnativeService -->|"6. Forward<br/>8080/TCP HTTP<br/>mTLS via Istio sidecar"| PredictorPod
+
+    %% Flow 4: Storage Initialization
+    PredictorPod -->|"7. Download model artifacts<br/>443/TCP HTTPS TLS1.2+<br/>AWS IAM/IRSA"| S3
+    PredictorPod -.->|"GCP Service Account"| GCS
+    PredictorPod -.->|"Azure credentials"| Azure
+
+    %% Flow 5: Model Registry & Monitoring
+    Controller -.->|"8. Reference model metadata<br/>443/TCP HTTPS TLS1.2+<br/>API token"| ModelRegistry
+    PredictorPod -->|"9. Expose /metrics<br/>8080/TCP HTTP<br/>No auth"| Prometheus
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:3px,color:#000
+    classDef controlplane fill:#e1f5ff,stroke:#0288d1,stroke-width:3px,color:#000
+    classDef kservecontrol fill:#fff3e0,stroke:#f57c00,stroke-width:3px,color:#000
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:3px,color:#000
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:3px,color:#000
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px,color:#000
+
+    class Client external
+    class K8sAPI controlplane
+    class Webhook,Controller kservecontrol
+    class Gateway ingress
+    class KnativeService,PredictorPod servicemesh
+    class S3,GCS,Azure,ModelRegistry,Prometheus externalservice

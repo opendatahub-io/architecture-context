@@ -1,0 +1,128 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[External Client<br/>User/Data Scientist]
+    end
+
+    subgraph Ingress["INGRESS (DMZ - OpenShift Routes)"]
+        RouteAPI["ds-pipeline-{name} Route<br/>443/TCP → 8443/TCP<br/>HTTPS TLS 1.3<br/>Reencrypt"]
+        RouteUI["ds-pipeline-ui-{name} Route<br/>443/TCP → 8443/TCP<br/>HTTPS TLS 1.3<br/>Reencrypt"]
+        RouteEnvoy["ds-pipeline-metadata-envoy Route<br/>443/TCP → 8443/TCP<br/>HTTPS TLS 1.3<br/>Reencrypt (optional)"]
+    end
+
+    subgraph AppTier["APPLICATION TIER (User Namespace)"]
+        direction TB
+
+        subgraph APIServices["API & Authentication"]
+            OAuthAPI["OAuth Proxy Sidecar<br/>Bearer Token Validation"]
+            APIServer["DS Pipelines API Server<br/>8888/TCP HTTP<br/>8887/TCP gRPC<br/>8443/TCP HTTPS<br/>SA: ds-pipeline-{name}"]
+        end
+
+        subgraph UIServices["User Interface"]
+            OAuthUI["OAuth Proxy Sidecar<br/>Bearer Token Validation"]
+            UI["ML Pipelines UI<br/>8443/TCP HTTPS"]
+        end
+
+        subgraph MLMDServices["ML Metadata"]
+            MLMDEnvoy["MLMD Envoy Proxy<br/>9090/TCP gRPC<br/>9901/TCP Admin<br/>SA: ds-pipeline-metadata-envoy-{name}<br/>NetworkPolicy: mlmd-envoy-dashboard-access"]
+            MLMD["ML Metadata gRPC<br/>8080/TCP gRPC<br/>SA: ds-pipeline-metadata-grpc-{name}"]
+        end
+
+        subgraph Orchestration["Workflow Orchestration"]
+            ScheduledWF["Scheduled Workflow Controller<br/>SA: ds-pipeline-scheduledworkflow-{name}"]
+            ArgoController["Argo Workflow Controller<br/>8001/TCP HTTP"]
+            WorkflowPod["Workflow Pod<br/>Pipeline Execution<br/>SA: pipeline-runner-{name}"]
+        end
+
+        subgraph Storage["Storage (Optional Deployed)"]
+            MariaDB["MariaDB Database<br/>3306/TCP MySQL<br/>TLS optional<br/>NetworkPolicy: mariadb-{name}<br/>Secret: ds-pipeline-db-{name}"]
+            Minio["Minio S3 Storage<br/>9000/TCP HTTP<br/>80/TCP HTTP<br/>S3 Signature Auth<br/>Secret: ds-pipeline-s3-{name}"]
+        end
+
+        subgraph Persistence["State Persistence"]
+            PersistenceAgent["Persistence Agent<br/>SA: ds-pipeline-persistenceagent-{name}"]
+        end
+    end
+
+    subgraph OperatorTier["OPERATOR TIER (Operator Namespace)"]
+        Controller["DSPO Controller Manager<br/>8080/TCP Metrics<br/>8081/TCP Health/Readiness<br/>SA: controller-manager"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        ExternalS3["External S3 Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS TLS 1.2+<br/>AWS Signature v4<br/>Secret: {custom-storage-secret}"]
+        ExternalDB["External MySQL/MariaDB<br/>3306/TCP<br/>TLS optional<br/>MySQL Auth<br/>Secret: {custom-db-secret}"]
+        Registry["Container Registry<br/>quay.io, registry.redhat.io<br/>443/TCP HTTPS TLS 1.2+<br/>Bearer Token"]
+        Prometheus["Prometheus<br/>8080/TCP HTTP<br/>ServiceMonitor"]
+    end
+
+    %% External to Ingress
+    Client -->|HTTPS/443<br/>TLS 1.3<br/>Bearer Token OAuth| RouteAPI
+    Client -->|HTTPS/443<br/>TLS 1.3<br/>Bearer Token OAuth| RouteUI
+    Client -->|HTTPS/443<br/>TLS 1.3<br/>Bearer Token OAuth| RouteEnvoy
+
+    %% Ingress to App Tier
+    RouteAPI -->|HTTPS/8443<br/>TLS 1.2+<br/>Reencrypt| OAuthAPI
+    RouteUI -->|HTTPS/8443<br/>TLS 1.2+<br/>Reencrypt| OAuthUI
+    RouteEnvoy -->|HTTPS/8443<br/>TLS 1.2+<br/>Reencrypt| MLMDEnvoy
+
+    %% OAuth to Services
+    OAuthAPI -->|HTTP/8888<br/>Bearer Token<br/>SA Token| APIServer
+    OAuthUI -->|HTTP/8443<br/>Bearer Token| UI
+
+    %% API Server flows
+    APIServer -->|TCP/3306<br/>MySQL Auth<br/>TLS optional| MariaDB
+    APIServer -->|HTTP/9000<br/>S3 Signature| Minio
+    APIServer -->|HTTP/8001<br/>SA Token| ArgoController
+    APIServer -->|gRPC/9090| MLMDEnvoy
+    APIServer -->|HTTPS/443<br/>TLS 1.2+<br/>AWS Signature v4| ExternalS3
+    APIServer -->|TCP/3306<br/>MySQL Auth<br/>TLS optional| ExternalDB
+
+    %% Scheduled Workflow
+    ScheduledWF -->|HTTP/8888<br/>Bearer Token| APIServer
+
+    %% Workflow execution
+    ArgoController -->|Kubernetes API<br/>Creates Workflow CR| WorkflowPod
+    WorkflowPod -->|HTTP/9000<br/>S3 Signature| Minio
+    WorkflowPod -->|gRPC/8080| MLMD
+    WorkflowPod -->|HTTPS/443<br/>AWS Signature v4| ExternalS3
+
+    %% MLMD flows
+    MLMDEnvoy -->|gRPC/8080| MLMD
+    MLMD -->|TCP/3306<br/>MySQL Auth| MariaDB
+    MLMD -->|TCP/3306<br/>MySQL Auth| ExternalDB
+
+    %% UI flows
+    UI -->|HTTP/8888<br/>Bearer Token| APIServer
+    UI -->|HTTP/80<br/>S3 Signature| Minio
+    UI -->|gRPC/9090| MLMDEnvoy
+
+    %% Persistence Agent
+    PersistenceAgent -->|TCP/3306<br/>MySQL Auth| MariaDB
+    PersistenceAgent -->|TCP/3306<br/>MySQL Auth| ExternalDB
+
+    %% Operator flows
+    Controller -->|Kubernetes API<br/>Deploys components| APIServer
+    Controller -->|Kubernetes API<br/>Manages| MariaDB
+    Controller -->|Kubernetes API<br/>Manages| Minio
+
+    %% External monitoring
+    Prometheus -->|HTTP/8080<br/>Scrape /metrics| Controller
+
+    %% Container image pulls
+    Controller -.->|HTTPS/443<br/>Pull images<br/>Bearer Token| Registry
+    APIServer -.->|HTTPS/443<br/>Pull images| Registry
+    WorkflowPod -.->|HTTPS/443<br/>Pull images| Registry
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef apptier fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef storage fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+
+    class Client external
+    class RouteAPI,RouteUI,RouteEnvoy ingress
+    class OAuthAPI,OAuthUI,APIServer,UI,MLMDEnvoy,MLMD,ScheduledWF,ArgoController,WorkflowPod,PersistenceAgent apptier
+    class MariaDB,Minio storage
+    class Controller operator
+    class ExternalS3,ExternalDB,Registry,Prometheus externalservice

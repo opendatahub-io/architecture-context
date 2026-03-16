@@ -1,0 +1,254 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Data Scientist / External Client]                                     │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token (K8s credentials)                           │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES API SERVER (Control Plane)                                  │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP (external)                                            │
+│  - TLS Termination: TLS 1.2+                                            │
+│  - AuthN: Bearer Token validation                                       │
+│  - AuthZ: RBAC policies                                                 │
+│         │                                                                │
+│         │ Port: 9443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: K8s API Server Token                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE (Trusted - Controller Namespace)                         │
+│                                                                          │
+│  [Webhook Server]                                                        │
+│  - Namespace: modelmesh-serving                                          │
+│  - ServiceAccount: modelmesh-controller                                  │
+│  - Service: modelmesh-webhook-server-service                            │
+│  - Port: 9443/TCP                                                        │
+│  - Encryption: TLS 1.2+ (cert from cert-manager or manual)              │
+│  - Auth: K8s API Server Token                                           │
+│  - Purpose: Validate ServingRuntime/ClusterServingRuntime CRs           │
+│         │                                                                │
+│  [ModelMesh Controller]                                                  │
+│  - Namespace: modelmesh-serving                                          │
+│  - ServiceAccount: modelmesh-controller                                  │
+│  - Deployment: modelmesh-controller                                      │
+│  - Resources: 50m/96Mi requests, 1 CPU/512Mi limits                     │
+│  - Leader Election: ConfigMap-based                                      │
+│  - Health Probes: /healthz, /readyz on 8081/TCP                         │
+│  - Metrics: 8080/TCP (HTTP plaintext, internal only)                    │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount Token                                     │
+│         │ (Watches CRDs: InferenceService, Predictor, ServingRuntime)   │
+│         ▼                                                                │
+│  [Kubernetes API Server]                                                 │
+│         │                                                                │
+│         │ Creates Deployment                                             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  DATA PLANE (Per-Namespace ModelMesh Runtime)                           │
+│                                                                          │
+│  [ModelMesh Runtime Deployment]                                          │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: modelmesh-serving                                     │
+│  - Deployment: modelmesh-serving-{runtime-name}                         │
+│  - Service: modelmesh-serving                                            │
+│                                                                          │
+│  Containers:                                                             │
+│    1. ModelMesh Container (Java routing layer)                           │
+│       - Port: 8085/TCP (gRPC internal - model management)               │
+│       - Port: 8033/TCP (gRPC external - inference)                      │
+│       - Protocol: gRPC plaintext (optional mTLS via Service Mesh)       │
+│       - Auth: None (internal) / mTLS Service Identity (if Istio)        │
+│                                                                          │
+│    2. Model Server Container (Triton/MLServer/OpenVINO/TorchServe)      │
+│       - Port: 8001/TCP (gRPC inference)                                 │
+│       - Protocol: gRPC plaintext                                         │
+│       - Auth: None (internal container-to-container)                    │
+│                                                                          │
+│    3. Runtime Adapter Container                                          │
+│       - Purpose: Model pulling and runtime integration                   │
+│       - Communication: Shared emptyDir volume                            │
+│         │                                                                │
+│         │ Port: 2379/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (plaintext)                                   │
+│         │ Auth: None                                                     │
+│         │ Purpose: Model registry and state coordination                 │
+│         ▼                                                                │
+│  [etcd StatefulSet]                                                      │
+│  - Namespace: modelmesh-serving or shared namespace                      │
+│  - Service: etcd                                                         │
+│  - Port: 2379/TCP                                                        │
+│  - Encryption: None (internal plaintext)                                 │
+│  - Auth: None (trusted internal network)                                │
+│  - HA: Clustered (3 or 5 nodes recommended)                             │
+│         │                                                                │
+│         │ Port: 443/TCP or 9000/TCP                                      │
+│         │ Protocol: HTTPS or HTTP                                        │
+│         │ Encryption: TLS 1.2+ (S3) or None (MinIO internal)            │
+│         │ Auth: AWS IAM Role or Access Keys                              │
+│         │ Purpose: Model artifact storage and retrieval                  │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [S3 Storage - s3.amazonaws.com or MinIO]                                │
+│  - Purpose: Model artifact storage                                       │
+│  - Auth: AWS IAM credentials or MinIO Access Keys                        │
+│  - Encryption: TLS 1.2+ (external S3) or None (internal MinIO)          │
+│  - Configuration: storage-config Secret                                  │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  OPTIONAL SERVICE MESH INTEGRATION (Istio)                              │
+│                                                                          │
+│  [ModelMesh Service 8033/TCP]                                            │
+│         │                                                                │
+│         │ Port: 8033/TCP                                                 │
+│         │ Protocol: HTTP/gRPC                                            │
+│         │ Encryption: mTLS (STRICT via Envoy sidecar)                    │
+│         │ Auth: Service Identity (mTLS certificate)                      │
+│         │ PeerAuthentication: STRICT (namespace-scoped)                  │
+│         ▼                                                                │
+│  [Inference Client in Service Mesh]                                      │
+│  - mTLS enforced by Istio sidecars                                       │
+│  - Service Identity validation                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ClusterRole: modelmesh-controller-role
+  ServiceAccount: modelmesh-controller
+
+  Core Resources:
+    - configmaps, secrets: create, delete, get, list, patch, update, watch
+    - services, services/finalizers: create, delete, get, list, patch, update, watch
+    - namespaces, namespaces/finalizers: get, list, patch, update, watch
+    - endpoints, persistentvolumeclaims: get, list, watch
+
+  Apps:
+    - deployments, deployments/finalizers: create, delete, get, list, patch, update, watch
+
+  KServe CRDs (serving.kserve.io):
+    - inferenceservices, inferenceservices/finalizers, inferenceservices/status
+    - predictors, predictors/finalizers, predictors/status
+    - servingruntimes, servingruntimes/finalizers, servingruntimes/status
+    - clusterservingruntimes, clusterservingruntimes/finalizers, clusterservingruntimes/status
+    - Verbs: create, delete, get, list, patch, update, watch
+
+  Autoscaling:
+    - horizontalpodautoscalers, horizontalpodautoscalers/status: create, delete, get, list, watch, update
+
+  Monitoring:
+    - servicemonitors (monitoring.coreos.com): create, delete, get, list, patch, update, watch
+
+ClusterRole: leader-election-role
+  ServiceAccount: modelmesh-controller
+
+  Resources:
+    - configmaps (core): get, list, watch, create, update, patch, delete
+    - leases (coordination.k8s.io): get, list, watch, create, update, patch, delete
+
+ClusterRole: restricted-scc-role
+  ServiceAccount: modelmesh-serving
+
+  Purpose: Runtime pod security constraints (OpenShift)
+
+Service Mesh Configuration (Optional):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PeerAuthentication: STRICT (namespace-scoped)
+  - Enforces mTLS for all pods in namespace
+  - Applied to modelmesh-serving pods
+
+AuthorizationPolicy: modelmesh-controller-access
+  - Allows: cluster.local/ns/modelmesh-serving/sa/modelmesh-controller
+  - Target: ModelMesh runtime pods
+  - Methods: gRPC (model management operations)
+
+NetworkPolicy:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Policy: modelmesh-controller
+  - Pod Selector: control-plane=modelmesh-controller
+  - Ingress: Allow 8443/TCP (metrics from Prometheus)
+  - Egress: Allow all (requires K8s API, etcd, ModelMesh access)
+
+Policy: modelmesh-runtimes
+  - Pod Selector: modelmesh-service=modelmesh-serving
+  - Ingress: Allow all from same namespace (inference requests)
+  - Egress: Allow all (requires etcd, S3, model servers)
+
+Secrets:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. modelmesh-webhook-server-cert (kubernetes.io/tls)
+   - Purpose: Webhook server TLS certificate
+   - Provisioned By: cert-manager or manual
+   - Auto-Rotate: Yes (cert-manager with 90d default)
+   - Keys: tls.crt, tls.key, ca.crt
+
+2. storage-config (Opaque)
+   - Purpose: S3/MinIO credentials and endpoint configuration
+   - Provisioned By: Manual/Operator
+   - Auto-Rotate: No (manual secret rotation required)
+   - Keys:
+     - AWS_ACCESS_KEY_ID
+     - AWS_SECRET_ACCESS_KEY
+     - AWS_S3_ENDPOINT (optional)
+     - AWS_S3_BUCKET
+
+3. model-serving-etcd (Opaque)
+   - Purpose: etcd connection configuration
+   - Provisioned By: Manual/Operator
+   - Auto-Rotate: No
+   - Keys:
+     - etcd_connection (JSON with endpoints array)
+     - root_prefix (etcd key prefix)
+
+Security Considerations:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚠️  Plaintext Communications:
+  - ModelMesh ↔ etcd (2379/TCP HTTP plaintext)
+  - ModelMesh ↔ Model Servers (8001/TCP gRPC plaintext)
+  - Internal ModelMesh gRPC (8085/TCP plaintext)
+  - Mitigation: Network segmentation, NetworkPolicies, optional Service Mesh
+
+⚠️  No Authentication on Internal Services:
+  - etcd has no authentication (relies on network isolation)
+  - ModelMesh internal gRPC has no auth
+  - Model servers have no auth
+  - Mitigation: NetworkPolicies, namespace isolation, Service Mesh mTLS
+
+✅  Encrypted External Communications:
+  - K8s API: TLS 1.2+ with ServiceAccount tokens
+  - S3: TLS 1.2+ with AWS IAM or access keys
+  - Webhook: TLS 1.2+ with K8s API server authentication
+
+✅  Optional Service Mesh (Istio):
+  - Provides mTLS for all inference traffic
+  - Service identity validation
+  - Traffic encryption and authorization
+
+Recommended Security Enhancements:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Enable Service Mesh (Istio) for mTLS encryption
+2. Implement strict NetworkPolicies to isolate etcd
+3. Use AWS IAM Roles for ServiceAccounts (IRSA) for S3 access
+4. Enable etcd authentication and TLS
+5. Rotate storage-config Secret credentials regularly
+6. Implement PodSecurityPolicies/PodSecurityStandards
+7. Enable audit logging for CRD operations
+8. Use private S3 endpoints (VPC endpoint or PrivateLink)

@@ -1,0 +1,309 @@
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                                   │
+│                                                                                          │
+│  [Data Scientist]                                                                        │
+│         │                                                                                │
+│         │ Creates RayCluster/AppWrapper via kubectl                                     │
+│         ▼                                                                                │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (External Access - Conditional)                                                │
+│                                                                                          │
+│  [Ray Dashboard Ingress]                                                                 │
+│  - OpenShift: Route (edge TLS termination)                                              │
+│  - Kubernetes: Ingress                                                                   │
+│  - Port: 443/TCP (external) → 8265/TCP (internal)                                       │
+│  - Protocol: HTTPS → HTTP                                                                │
+│  - Encryption: TLS 1.2+ (edge termination)                                              │
+│  - Auth: OAuth Proxy (OpenShift) / NetworkPolicy (Kubernetes)                           │
+│  - Hostname: {cluster}-{namespace}.{domain}                                             │
+│         │                                                                                │
+│         │ Port: 8265/TCP                                                                 │
+│         │ Protocol: HTTP                                                                 │
+│         │ Auth: OAuth (OpenShift) / NetworkPolicy restricted                            │
+│         ▼                                                                                │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE (codeflare-operator-system)                                         │
+│                                                                                          │
+│  [CodeFlare Operator Manager Deployment]                                                │
+│  - Namespace: codeflare-operator-system                                                 │
+│  - ServiceAccount: controller-manager                                                   │
+│  - Security: runAsNonRoot=true, runAsUser=65532, capabilities.drop=ALL                  │
+│                                                                                          │
+│  Components:                                                                             │
+│    ┌─ [Webhook Server]                                                                  │
+│    │  - Port: 9443/TCP                                                                  │
+│    │  - Protocol: HTTPS                                                                 │
+│    │  - Encryption: TLS 1.2+                                                            │
+│    │  - Auth: mTLS (API server client certificate)                                      │
+│    │  - Certificate: codeflare-operator-webhook-server-cert (auto-rotated)             │
+│    │                                                                                     │
+│    ├─ [Metrics Server]                                                                  │
+│    │  - Port: 8080/TCP                                                                  │
+│    │  - Protocol: HTTP                                                                  │
+│    │  - Encryption: None                                                                │
+│    │  - Auth: Bearer Token (ServiceAccount)                                             │
+│    │                                                                                     │
+│    ├─ [Health Probes]                                                                   │
+│    │  - Port: 8081/TCP                                                                  │
+│    │  - Protocol: HTTP                                                                  │
+│    │  - Encryption: None                                                                │
+│    │  - Auth: None                                                                      │
+│    │                                                                                     │
+│    ├─ [RayCluster Controller]                                                           │
+│    │  - Watches: ray.io/v1/RayCluster                                                   │
+│    │  - Creates: NetworkPolicies, Routes/Ingress, Services, Secrets (CA/TLS)           │
+│    │                                                                                     │
+│    └─ [AppWrapper Controller]                                                           │
+│       - Watches: workload.codeflare.dev/v1beta2/AppWrapper                              │
+│       - Creates: kueue.x-k8s.io/v1beta1/Workload                                        │
+│                                                                                          │
+│  Services:                                                                               │
+│    [codeflare-operator-webhook-service]                                                 │
+│    - Type: ClusterIP                                                                     │
+│    - Port: 443/TCP → 9443/TCP                                                           │
+│    - Encryption: TLS 1.2+, mTLS                                                         │
+│                                                                                          │
+│    [codeflare-operator-manager-metrics]                                                 │
+│    - Type: ClusterIP                                                                     │
+│    - Port: 8080/TCP → 8080/TCP                                                          │
+│    - Encryption: None                                                                    │
+│    - Auth: Bearer Token                                                                  │
+│                                                                                          │
+│         │ Port: 443/TCP                                                                  │
+│         │ Protocol: HTTPS                                                                │
+│         │ Encryption: TLS 1.2+                                                           │
+│         │ Auth: ServiceAccount Token                                                     │
+│         ▼                                                                                │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE (Trusted)                                                     │
+│                                                                                          │
+│  [Kubernetes API Server]                                                                 │
+│  - Port: 443/TCP                                                                         │
+│  - Protocol: HTTPS                                                                       │
+│  - Encryption: TLS 1.2+                                                                  │
+│  - Auth: ServiceAccount Token / mTLS (webhooks)                                         │
+│                                                                                          │
+│  Webhook Calls (from API Server to Operator):                                           │
+│    POST /mutate-workload-codeflare-dev-v1beta2-appwrapper   (443→9443/TCP, mTLS)       │
+│    POST /validate-workload-codeflare-dev-v1beta2-appwrapper (443→9443/TCP, mTLS)       │
+│    POST /mutate-ray-io-v1-raycluster                         (443→9443/TCP, mTLS)       │
+│    POST /validate-ray-io-v1-raycluster                       (443→9443/TCP, mTLS)       │
+│                                                                                          │
+│         │ Port: 443/TCP                                                                  │
+│         │ Protocol: HTTPS                                                                │
+│         │ Encryption: TLS 1.2+                                                           │
+│         │ Auth: ServiceAccount Token                                                     │
+│         ▼                                                                                │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│  USER NAMESPACES (Ray Cluster Workloads)                                                │
+│                                                                                          │
+│  [RayCluster Pods]                                                                       │
+│  - Namespace: {user-namespace}                                                           │
+│  - ServiceAccount: {raycluster}-sa                                                      │
+│                                                                                          │
+│    [Ray Head Pod]                                                                        │
+│    - Port: 8265/TCP (Dashboard) - HTTP, OAuth/NetworkPolicy protected                   │
+│    - Port: 10001/TCP (Client Server) - HTTP or HTTPS (mTLS if enabled)                  │
+│    - Port: 8443/TCP (mTLS Server) - HTTPS, mTLS (optional, if mTLS enabled)            │
+│                                                                                          │
+│    [Ray Worker Pods]                                                                     │
+│    - Port: 8443/TCP (mTLS) - HTTPS, mTLS (optional, if mTLS enabled)                   │
+│    - Intra-cluster communication (all ports, TCP)                                       │
+│                                                                                          │
+│  [NetworkPolicy - Ray Head]                                                              │
+│  - Ingress from: Same RayCluster Pods (all ports)                                       │
+│  - Ingress from: Same Namespace Pods (10001/TCP, 8265/TCP)                              │
+│  - Ingress from: Same Namespace Pods (8443/TCP, 10001/TCP if mTLS enabled)              │
+│  - Ingress from: KubeRay Operator Namespaces (8265/TCP, 10001/TCP)                      │
+│  - Ingress from: Prometheus Namespaces (8080/TCP)                                       │
+│                                                                                          │
+│  [NetworkPolicy - Ray Workers]                                                           │
+│  - Ingress from: Same RayCluster Pods (all ports)                                       │
+│                                                                                          │
+│  [Secrets]                                                                               │
+│  - {raycluster}-ca (Opaque): CA certificate and key for mTLS, no auto-rotate            │
+│  - {raycluster}-tls (kubernetes.io/tls): TLS certs, generated by init container         │
+│                                                                                          │
+│         │ Ray Worker ↔ Ray Head                                                          │
+│         │ Port: 8443/TCP (if mTLS enabled)                                               │
+│         │ Protocol: HTTPS                                                                │
+│         │ Encryption: mTLS (TLS 1.2+)                                                    │
+│         │ Auth: Client Certificate (signed by {raycluster}-ca)                           │
+│         │                                                                                │
+│         │ Ray Client → Ray Head                                                          │
+│         │ Port: 10001/TCP                                                                │
+│         │ Protocol: HTTP or HTTPS (if mTLS enabled)                                      │
+│         │ Encryption: mTLS if enabled (TLS 1.2+)                                         │
+│         │ Auth: Client Certificate (if mTLS enabled)                                     │
+│         ▼                                                                                │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL DEPENDENCIES                                                                   │
+│                                                                                          │
+│  [KubeRay Operator v1.1.0]                                                               │
+│  - Namespace: kuberay-operator-system (typical)                                          │
+│  - Purpose: Manages RayCluster CRD and base Ray cluster lifecycle                       │
+│  - Communication: Kubernetes API Server (HTTPS/443, TLS 1.2+, ServiceAccount Token)     │
+│                                                                                          │
+│  [Kueue v0.6.2]                                                                          │
+│  - Namespace: kueue-system (typical)                                                     │
+│  - Purpose: Workload scheduling and resource quota management                           │
+│  - Communication: Kubernetes API Server (HTTPS/443, TLS 1.2+, ServiceAccount Token)     │
+│                                                                                          │
+│  [cert-controller v0.10.1]                                                               │
+│  - Purpose: Webhook certificate rotation and management                                 │
+│  - Manages: codeflare-operator-webhook-server-cert (auto-rotation)                      │
+│                                                                                          │
+│  [OpenShift OAuth Proxy] (OpenShift only)                                                │
+│  - Injected as sidecar in Ray Head Pods                                                 │
+│  - Port: 443/TCP (external) → 8265/TCP (Ray dashboard)                                  │
+│  - Encryption: TLS 1.2+                                                                  │
+│  - Auth: OpenShift OAuth with RBAC                                                       │
+│                                                                                          │
+│  [Prometheus]                                                                            │
+│  - Namespace: openshift-monitoring or prometheus-system (typical)                       │
+│  - Scrapes: codeflare-operator-manager-metrics:8080/metrics                             │
+│  - Protocol: HTTP/8080                                                                   │
+│  - Auth: Bearer Token (ServiceAccount)                                                   │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+
+═════════════════════════════════════════════════════════════════════════════════════════
+RBAC SUMMARY
+═════════════════════════════════════════════════════════════════════════════════════════
+
+ClusterRole: manager-role (bound to controller-manager ServiceAccount)
+  API Group: ""
+    - events: create, patch, update, watch
+    - pods, services: create, delete, get, list, patch, update, watch
+    - secrets: get, list, update, watch, create, delete, patch
+    - serviceaccounts: create, delete, get, patch, update
+  API Group: admissionregistration.k8s.io
+    - mutatingwebhookconfigurations, validatingwebhookconfigurations: get, list, update, watch
+  API Group: apiextensions.k8s.io
+    - customresourcedefinitions: get, list, watch
+  API Group: apps
+    - deployments, statefulsets: create, delete, get, list, patch, update, watch
+  API Group: authentication.k8s.io
+    - tokenreviews: create
+  API Group: authorization.k8s.io
+    - subjectaccessreviews: create
+  API Group: batch
+    - jobs: create, delete, get, list, patch, update, watch
+  API Group: ray.io
+    - rayclusters: create, delete, get, list, patch, update, watch
+    - rayclusters/status: get, patch, update
+    - rayclusters/finalizers: update
+  API Group: workload.codeflare.dev
+    - appwrappers: create, delete, get, list, patch, update, watch
+    - appwrappers/status: get, patch, update
+    - appwrappers/finalizers: update
+  API Group: kueue.x-k8s.io
+    - workloads: create, delete, get, list, patch, update, watch
+    - workloads/status: get, patch, update
+    - workloads/finalizers: update
+    - resourceflavors, workloadpriorityclasses: get, list, watch
+  API Group: networking.k8s.io
+    - ingresses, networkpolicies: create, delete, get, patch, update
+  API Group: route.openshift.io
+    - routes, routes/custom-host: create, delete, get, patch, update
+  API Group: rbac.authorization.k8s.io
+    - clusterrolebindings: create, delete, get, patch, update
+  API Group: config.openshift.io
+    - ingresses: get
+  API Group: dscinitialization.opendatahub.io
+    - dscinitializations: get, list, watch
+  API Group: kubeflow.org
+    - pytorchjobs: create, delete, get, list, patch, update, watch
+  API Group: scheduling.k8s.io
+    - priorityclasses: get, list, watch
+  API Group: scheduling.sigs.k8s.io
+    - podgroups: create, delete, get, list, patch, update, watch
+  API Group: scheduling.x-k8s.io
+    - podgroups: create, delete, get, list, patch, update, watch
+
+Role: leader-election-role (bound to controller-manager ServiceAccount, namespace-scoped)
+  API Group: ""
+    - configmaps: get, list, watch, create, update, patch
+    - events: create, patch
+  API Group: coordination.k8s.io
+    - leases: get, list, watch, create, update, patch
+
+═════════════════════════════════════════════════════════════════════════════════════════
+SECRETS
+═════════════════════════════════════════════════════════════════════════════════════════
+
+1. codeflare-operator-webhook-server-cert (kubernetes.io/tls)
+   - Purpose: Webhook server TLS certificate
+   - Provisioned By: cert-controller
+   - Auto-Rotate: Yes
+   - Used By: Webhook Server (9443/TCP)
+   - Validated By: Kubernetes API Server (mTLS client cert validation)
+
+2. {raycluster}-ca (Opaque)
+   - Purpose: Ray cluster CA certificate and private key for mTLS
+   - Provisioned By: RayCluster Controller
+   - Auto-Rotate: No
+   - Contains: ca.crt, ca.key
+   - Used By: Ray init container (generates node certificates)
+
+3. {raycluster}-tls (kubernetes.io/tls)
+   - Purpose: Ray cluster node TLS certificates
+   - Provisioned By: Ray init container (using {raycluster}-ca)
+   - Auto-Rotate: Yes (regenerated on pod restart)
+   - Contains: tls.crt, tls.key
+   - Used By: Ray Head and Worker Pods (8443/TCP, 10001/TCP mTLS)
+
+═════════════════════════════════════════════════════════════════════════════════════════
+CONFIGURATION
+═════════════════════════════════════════════════════════════════════════════════════════
+
+ConfigMap: codeflare-operator-config
+  - kuberay.rayDashboardOAuthEnabled: true (OAuth proxy for Ray dashboard on OpenShift)
+  - kuberay.mTLSEnabled: true (Enable mTLS for Ray cluster communication)
+  - kuberay.ingressDomain: auto-detected (Domain for Route/Ingress creation)
+  - kuberay.certGeneratorImage: registry.redhat.io/ubi9@sha256:770cf... (Cert gen image)
+  - appwrapper.enabled: false (Enable embedded AppWrapper controller)
+  - clientConnection.qps: 50 (Kubernetes API client QPS limit)
+  - clientConnection.burst: 100 (Kubernetes API client burst limit)
+  - metrics.bindAddress: :8080 (Metrics server bind address)
+  - health.bindAddress: :8081 (Health probe bind address)
+
+Container Security:
+  - runAsNonRoot: true
+  - runAsUser: 65532
+  - allowPrivilegeEscalation: false
+  - capabilities.drop: ALL
+  - securityContext: Restricted (Pod security standard compliance)
+
+Resource Requirements:
+  - manager: CPU 1 core / Memory 1Gi (request=limit)
+
+═════════════════════════════════════════════════════════════════════════════════════════
+TRUST BOUNDARIES
+═════════════════════════════════════════════════════════════════════════════════════════
+
+1. EXTERNAL → INGRESS
+   - Trust Level: Untrusted
+   - Entry Point: Ray Dashboard Route/Ingress (443/TCP HTTPS)
+   - Auth: OAuth Proxy (OpenShift) or NetworkPolicy (Kubernetes)
+
+2. INGRESS → OPERATOR NAMESPACE
+   - Trust Level: Semi-Trusted
+   - Controls: Webhook mTLS validation, ServiceAccount RBAC
+
+3. OPERATOR NAMESPACE → KUBERNETES API
+   - Trust Level: Trusted
+   - Controls: ServiceAccount Token, TLS 1.2+, RBAC policies
+
+4. OPERATOR NAMESPACE → USER NAMESPACES
+   - Trust Level: Trusted (operator manages resources)
+   - Controls: ServiceAccount RBAC, NetworkPolicies
+
+5. USER NAMESPACE PODS (Ray Cluster)
+   - Trust Level: User-Scoped Trusted
+   - Controls: NetworkPolicies (restrict traffic), mTLS (optional, intra-cluster)
+   - Isolation: Namespace-based, NetworkPolicy-enforced
+
+6. EXTERNAL DEPENDENCIES
+   - Trust Level: Platform-Trusted
+   - Components: KubeRay Operator, Kueue, cert-controller
+   - Communication: All via Kubernetes API Server (HTTPS, ServiceAccount Token)

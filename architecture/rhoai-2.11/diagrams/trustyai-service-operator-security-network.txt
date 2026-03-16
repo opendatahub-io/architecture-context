@@ -1,0 +1,263 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External User/Data Scientist]                                          │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: None (pre-authentication)                                │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                          │
+│                                                                          │
+│  [OpenShift Route: {instance-name}]                                      │
+│  - Port: 443/TCP (external)                                             │
+│  - TLS Termination: Reencrypt (edge TLS → internal TLS)                │
+│  - TLS Version: TLS 1.2+                                                │
+│  - Auto-generated hostname                                               │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+ (reencrypt)                               │
+│         │ Auth: None (forwarded)                                         │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICE LAYER (Cluster Internal)                                       │
+│                                                                          │
+│  [ClusterIP Service: {instance-name}-tls]                               │
+│  - Type: ClusterIP                                                       │
+│  - Port: 443/TCP → 8443/TCP (OAuth Proxy)                              │
+│  - Encryption: TLS (service-ca certificate)                             │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+ (service-ca cert)                        │
+│         │ Auth: OAuth Token (enforced)                                   │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION POD (Trusted)                                              │
+│                                                                          │
+│  [TrustyAI Service Deployment]                                           │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: {instance-name}-proxy                                 │
+│  - Replicas: Configurable (default: 1)                                   │
+│                                                                          │
+│    ┌─────────────────────────────────────────────────────────┐        │
+│    │  Container: oauth-proxy                                  │        │
+│    │  - Image: registry.redhat.io/openshift4/ose-oauth-proxy │        │
+│    │  - Port: 8443/TCP (HTTPS - external facing)             │        │
+│    │  - Auth: OpenShift OAuth + SAR                          │        │
+│    │  - Skip Auth Regex: /apis/v1beta1/healthz               │        │
+│    │                                                          │        │
+│    │         │ Port: 8080/TCP                                 │        │
+│    │         │ Protocol: HTTP                                 │        │
+│    │         │ Encryption: None (internal pod)                │        │
+│    │         │ Auth: Proxy headers                            │        │
+│    │         ▼                                                 │        │
+│    │                                                          │        │
+│    │  Container: trustyai-service                            │        │
+│    │  - Image: quay.io/trustyai/trustyai-service:latest     │        │
+│    │  - Port: 8080/TCP (HTTP - internal)                    │        │
+│    │  - Metrics: /q/metrics (8080/TCP)                      │        │
+│    │  - Health: /apis/v1beta1/healthz (8080/TCP)            │        │
+│    │  - Volume: PVC mounted at {storage.folder}             │        │
+│    └─────────────────────────────────────────────────────────┘        │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: OAuth Flow (redirect)                                    │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  AUTHENTICATION SERVICES                                                 │
+│                                                                          │
+│  [OpenShift OAuth Server]                                                │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Purpose: User authentication via OAuth 2.0 flow                      │
+│  - SAR Check: Requires user to have pod 'get' permission in namespace  │
+│                                                                          │
+│  [OpenShift Service CA]                                                  │
+│  - Port: 6443/TCP (Kubernetes API)                                      │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Purpose: Automatic TLS certificate provisioning and rotation         │
+│  - Certificates:                                                         │
+│    • {instance-name}-tls (external OAuth proxy)                        │
+│    • {instance-name}-internal (internal service communication)         │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR LAYER (System)                                                │
+│                                                                          │
+│  [TrustyAI Service Operator]                                             │
+│  - Namespace: opendatahub / redhat-ods-applications                     │
+│  - ServiceAccount: controller-manager                                    │
+│  - Replicas: 1 (leader election)                                         │
+│                                                                          │
+│  Endpoints:                                                              │
+│  - /metrics: 8080/TCP HTTP (internal, no auth)                         │
+│  - /healthz: 8081/TCP HTTP (liveness)                                  │
+│  - /readyz: 8081/TCP HTTP (readiness)                                  │
+│                                                                          │
+│  Egress Connections:                                                     │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount Token                                     │
+│         ▼                                                                │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - API Groups: trustyai.opendatahub.io, serving.kserve.io,             │
+│                apps, core, route.openshift.io, monitoring.coreos.com    │
+│  - Resources: TrustyAIService CRs, InferenceServices, Deployments,     │
+│               Services, Routes, PVCs, ServiceMonitors, Secrets, etc.    │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MONITORING & INTEGRATION                                               │
+│                                                                          │
+│  [Prometheus]                                                            │
+│         ▲                                                                │
+│         │ Port: 80/TCP                                                   │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None                                               │
+│         │ Auth: ServiceAccount Token                                     │
+│         │                                                                │
+│  [ServiceMonitor: {instance-name}]                                      │
+│  - Scrapes: TrustyAI Service /q/metrics endpoint                        │
+│  - Scrapes: Operator /metrics endpoint (8443/TCP HTTPS)                │
+│                                                                          │
+│  [KServe InferenceServices]                                              │
+│  - Integration: Operator patches InferenceService CRs                   │
+│  - Environment: MM_PAYLOAD_PROCESSORS={trustyai-endpoint}               │
+│  - Data Flow: InferenceService → TrustyAI Service (80/TCP HTTP)        │
+│  - Purpose: Real-time inference data collection for bias detection      │
+│                                                                          │
+│  [ModelMesh Serving]                                                     │
+│  - Integration: Operator configures environment variables               │
+│  - Payload Processor: Forwards inference payloads to TrustyAI          │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ClusterRole: manager-role
+- API Groups: "" (core)
+  - Resources: configmaps, events, pods, secrets, serviceaccounts, services,
+               persistentvolumeclaims, persistentvolumes
+  - Verbs: create, delete, get, list, patch, update, watch
+
+- API Groups: apps
+  - Resources: deployments, deployments/status, deployments/finalizers
+  - Verbs: create, delete, get, list, patch, update, watch
+
+- API Groups: trustyai.opendatahub.io
+  - Resources: trustyaiservices, trustyaiservices/status, trustyaiservices/finalizers
+  - Verbs: create, delete, get, list, patch, update, watch
+
+- API Groups: serving.kserve.io
+  - Resources: inferenceservices, inferenceservices/finalizers,
+               servingruntimes, servingruntimes/status
+  - Verbs: get, list, patch, update, watch, create, delete
+
+- API Groups: route.openshift.io
+  - Resources: routes
+  - Verbs: create, delete, get, list, patch, update, watch
+
+- API Groups: monitoring.coreos.com
+  - Resources: servicemonitors
+  - Verbs: create, list, watch
+
+- API Groups: rbac.authorization.k8s.io
+  - Resources: clusterrolebindings
+  - Verbs: create, delete, get, list, update, watch
+
+- API Groups: coordination.k8s.io
+  - Resources: leases
+  - Verbs: create, get, update
+
+ClusterRole: trustyaiservice-editor-role
+- API Groups: trustyai.opendatahub.io
+  - Resources: trustyaiservices
+  - Verbs: create, delete, get, list, patch, update, watch
+
+ClusterRole: trustyaiservice-viewer-role
+- API Groups: trustyai.opendatahub.io
+  - Resources: trustyaiservices
+  - Verbs: get, list, watch
+
+ServiceAccount Permissions:
+- controller-manager (operator namespace)
+  - Bound to: manager-role (ClusterRole)
+  - Purpose: Operator reconciliation and resource management
+
+- {instance-name}-proxy (user namespace, created per instance)
+  - Bound to: cluster-admin (ClusterRoleBinding)
+  - Purpose: OAuth proxy SubjectAccessReview (SAR) checks
+  - Required: User must have 'get' permission on 'pods' in namespace
+
+Secrets:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- {instance-name}-tls (kubernetes.io/tls)
+  - Purpose: TLS certificate for OAuth proxy external access
+  - Provisioned By: OpenShift Service CA
+  - Auto-Rotate: Yes (service-ca controller)
+  - Mounted: OAuth proxy container
+
+- {instance-name}-internal (kubernetes.io/tls)
+  - Purpose: TLS certificate for internal service communication
+  - Provisioned By: OpenShift Service CA
+  - Auto-Rotate: Yes (service-ca controller)
+  - Mounted: TrustyAI service container
+
+- oauth-cookie-secret (Opaque)
+  - Purpose: OAuth proxy session cookie encryption
+  - Provisioned By: TrustyAI Service Operator
+  - Auto-Rotate: No (manual rotation required)
+  - Contains: Random session secret
+
+Authentication Flow:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. User → OpenShift Route (443/TCP HTTPS)
+2. Route → Service → OAuth Proxy (8443/TCP HTTPS)
+3. OAuth Proxy → Checks for valid session cookie
+4. If no valid cookie → Redirect to OpenShift OAuth Server (443/TCP HTTPS)
+5. User authenticates → OAuth Server issues token
+6. OAuth Proxy validates token → Performs SAR check (user must have pod get permission)
+7. If authorized → OAuth Proxy forwards to TrustyAI Service (8080/TCP HTTP)
+8. TrustyAI Service processes request → Returns response
+
+Health Check Bypass:
+- Path: /apis/v1beta1/healthz
+- Auth: None (skip-auth-regex in OAuth proxy configuration)
+- Purpose: Kubernetes liveness/readiness probes without authentication
+
+Network Policies (Recommended):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- Allow ingress to TrustyAI pods:
+  • From: OpenShift Router (for Route traffic)
+  • From: Prometheus (for metrics scraping)
+  • From: InferenceService pods (for payload data)
+
+- Allow egress from TrustyAI pods:
+  • To: Kubernetes API (for CR status updates)
+
+- Allow egress from Operator:
+  • To: Kubernetes API (for resource management)
+
+Storage Security:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- PersistentVolumeClaim: Created per TrustyAI instance
+- Size: Configurable (e.g., 1Gi)
+- Access Mode: ReadWriteOnce
+- Storage Class: Default cluster storage class
+- Mount Path: Configurable (storage.folder parameter)
+- Data Format: CSV (configurable via data.format parameter)
+- Security: Data at rest encryption depends on storage class configuration

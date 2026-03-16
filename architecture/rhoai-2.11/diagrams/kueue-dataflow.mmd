@@ -1,0 +1,74 @@
+sequenceDiagram
+    participant User as User/Pipeline
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
+    participant Webhook as Kueue Webhook<br/>9443/TCP HTTPS mTLS
+    participant Controller as Kueue Controller<br/>ServiceAccount token
+    participant ClusterQueue as ClusterQueue<br/>Resource Quotas
+    participant Job as Batch Job/JobSet<br/>Suspended State
+    participant Autoscaler as Cluster Autoscaler<br/>443/TCP HTTPS
+    participant Prometheus as Prometheus<br/>8080/8443 HTTP/HTTPS
+
+    %% Flow 1: Job Submission and Admission
+    rect rgb(230, 240, 255)
+        Note over User,Job: Flow 1: Job Submission and Admission
+        User->>K8sAPI: POST /apis/batch/v1/namespaces/{ns}/jobs<br/>Auth: Bearer Token (user credentials)<br/>Job spec with suspend=true
+        K8sAPI->>Webhook: POST /mutate-batch-v1-job<br/>Encryption: mTLS<br/>Validate and inject queue metadata
+        Webhook-->>K8sAPI: AdmissionReview response<br/>Mutated Job spec
+        K8sAPI-->>User: Job created (suspended state)
+
+        Controller->>K8sAPI: WATCH /apis/batch/v1/jobs<br/>Auth: ServiceAccount token<br/>TLS 1.2+
+        K8sAPI-->>Controller: Job event notification
+
+        Controller->>Controller: Create Workload CR<br/>Map Job to Workload<br/>Extract resource requests
+        Controller->>K8sAPI: POST /apis/kueue.x-k8s.io/v1beta1/workloads<br/>Auth: ServiceAccount token
+
+        Controller->>ClusterQueue: Evaluate admission<br/>Check resource quotas<br/>Apply queueing strategy (FIFO/Priority)
+        ClusterQueue-->>Controller: Admission decision<br/>Resource assignment
+
+        alt Workload Admitted
+            Controller->>K8sAPI: PATCH /apis/kueue.x-k8s.io/v1beta1/workloads/{name}/status<br/>Set admitted=true, resource assignment
+            Controller->>K8sAPI: PATCH /apis/batch/v1/jobs/{name}<br/>Set suspend=false<br/>Inject node selectors/tolerations
+            K8sAPI-->>Job: Unsuspend job<br/>Pods created
+        else Workload Queued
+            Controller->>K8sAPI: PATCH workload status<br/>Set admitted=false, queue position
+        end
+    end
+
+    %% Flow 2: Cluster Autoscaler Integration
+    rect rgb(255, 245, 230)
+        Note over Controller,Autoscaler: Flow 2: Cluster Autoscaler Integration (Optional)
+        Controller->>K8sAPI: POST /apis/autoscaling.x-k8s.io/v1/provisioningrequests<br/>Auth: ServiceAccount token<br/>Request node provisioning
+        Autoscaler->>K8sAPI: WATCH /apis/autoscaling.x-k8s.io/v1/provisioningrequests<br/>Auth: ServiceAccount token
+        K8sAPI-->>Autoscaler: ProvisioningRequest event
+        Autoscaler->>Autoscaler: Evaluate capacity needs<br/>Provision new nodes
+        Note over Autoscaler: Triggers cloud provider API<br/>to scale cluster
+    end
+
+    %% Flow 3: Workload Reconciliation
+    rect rgb(240, 255, 240)
+        Note over Controller,Job: Flow 3: Workload Reconciliation
+        Controller->>K8sAPI: WATCH /apis/kueue.x-k8s.io/v1beta1/workloads<br/>Auth: ServiceAccount token
+        Controller->>K8sAPI: GET /api/v1/namespaces/{ns}/pods<br/>Monitor job pod status
+
+        alt Pod Completes
+            Controller->>ClusterQueue: Reclaim resources<br/>Update quota usage
+            Controller->>K8sAPI: PATCH /apis/kueue.x-k8s.io/v1beta1/workloads/{name}/status<br/>Mark workload finished
+        end
+
+        alt Preemption Needed
+            Controller->>K8sAPI: PATCH /apis/batch/v1/jobs/{name}<br/>Set suspend=true (preempt job)
+            Controller->>ClusterQueue: Release resources
+            Controller->>K8sAPI: PATCH workload status<br/>admitted=false
+        end
+    end
+
+    %% Flow 4: Metrics Collection
+    rect rgb(255, 240, 255)
+        Note over Prometheus,Controller: Flow 4: Metrics Collection
+        Prometheus->>Controller: GET /metrics<br/>Port: 8080/TCP HTTP<br/>Auth: None (internal)
+        Controller-->>Prometheus: Queue depths<br/>Admission rates<br/>Resource utilization
+
+        Note over Prometheus: Alternative: Authenticated endpoint
+        Prometheus->>Controller: GET /metrics<br/>Port: 8443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer Token (via kube-rbac-proxy)
+        Controller-->>Prometheus: Same metrics (authenticated)
+    end

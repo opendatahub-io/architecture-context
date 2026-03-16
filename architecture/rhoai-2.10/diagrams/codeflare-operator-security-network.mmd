@@ -1,0 +1,98 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        DataScientist[Data Scientist<br/>kubectl apply]
+    end
+
+    subgraph Ingress["INGRESS (DMZ - Conditional)"]
+        RayDashboardRoute["Ray Dashboard Route/Ingress<br/>443/TCP HTTPS<br/>TLS 1.2+ (edge termination)<br/>OAuth (OpenShift) / NetworkPolicy (K8s)"]
+    end
+
+    subgraph OperatorNamespace["OPERATOR NAMESPACE: codeflare-operator-system"]
+        direction TB
+
+        subgraph OperatorPod["Operator Manager Pod<br/>SA: controller-manager"]
+            WebhookSvc["Webhook Server<br/>9443/TCP HTTPS<br/>TLS 1.2+ mTLS<br/>cert: auto-rotated"]
+            MetricsSvc["Metrics Server<br/>8080/TCP HTTP<br/>Bearer Token"]
+            HealthSvc["Health Probes<br/>8081/TCP HTTP<br/>No Auth"]
+            RayCtrl["RayCluster Controller"]
+            AppWrapperCtrl["AppWrapper Controller"]
+        end
+
+        CertController["cert-controller v0.10.1<br/>manages webhook cert"]
+    end
+
+    subgraph K8sControlPlane["KUBERNETES CONTROL PLANE (Trusted)"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Token / mTLS"]
+    end
+
+    subgraph UserNamespace["USER NAMESPACE: {user-namespace}"]
+        direction TB
+
+        subgraph RayClusterPods["RayCluster Pods"]
+            RayHead["Ray Head Pod<br/>SA: {raycluster}-sa<br/>8265/TCP (Dashboard) HTTP<br/>10001/TCP (Client) HTTP/HTTPS<br/>8443/TCP (mTLS) HTTPS"]
+            RayWorker["Ray Worker Pods<br/>8443/TCP HTTPS mTLS<br/>Intra-cluster: all/TCP"]
+        end
+
+        NetworkPolicyHead["NetworkPolicy: Ray Head<br/>Ingress from same cluster (all)<br/>Ingress from namespace (10001, 8265)<br/>Ingress from namespace (8443 if mTLS)<br/>Ingress from KubeRay NS (8265, 10001)<br/>Ingress from Prometheus (8080)"]
+
+        NetworkPolicyWorker["NetworkPolicy: Ray Workers<br/>Ingress from same cluster (all)"]
+
+        SecretsRay["Secrets:<br/>{raycluster}-ca (Opaque, CA cert/key)<br/>{raycluster}-tls (k8s.io/tls, node certs)"]
+    end
+
+    subgraph ExternalDeps["EXTERNAL DEPENDENCIES"]
+        KubeRay["KubeRay Operator v1.1.0<br/>NS: kuberay-operator-system<br/>Manages RayCluster CRD"]
+        Kueue["Kueue v0.6.2<br/>NS: kueue-system<br/>Workload scheduling"]
+        CertControllerExt["cert-controller v0.10.1<br/>Certificate rotation"]
+        OAuthProxy["OAuth Proxy<br/>OpenShift only<br/>Sidecar in Ray Head<br/>443/TCP HTTPS → 8265"]
+        Prometheus["Prometheus<br/>NS: openshift-monitoring<br/>Scrapes metrics"]
+    end
+
+    %% Data Flows
+    DataScientist -->|"kubectl apply<br/>RayCluster/AppWrapper"| K8sAPI
+
+    K8sAPI -->|"POST /mutate-*, /validate-*<br/>443→9443/TCP HTTPS<br/>mTLS (API client cert)"| WebhookSvc
+    WebhookSvc -->|"GET/PATCH resources<br/>443/TCP HTTPS TLS1.2+<br/>ServiceAccount Token"| K8sAPI
+
+    RayCtrl -->|"API calls: create NetworkPolicy,<br/>Service, Route/Ingress, Secrets<br/>443/TCP HTTPS TLS1.2+<br/>ServiceAccount Token"| K8sAPI
+
+    AppWrapperCtrl -->|"API calls: create Kueue Workload,<br/>deploy wrapped resources<br/>443/TCP HTTPS TLS1.2+<br/>ServiceAccount Token"| K8sAPI
+
+    K8sAPI -->|"GET /healthz, /readyz<br/>8081/TCP HTTP<br/>No Auth"| HealthSvc
+
+    Prometheus -->|"GET /metrics<br/>8080/TCP HTTP<br/>Bearer Token"| MetricsSvc
+
+    CertController -->|"manages cert<br/>webhook-server-cert"| WebhookSvc
+
+    K8sAPI -->|"RayCluster reconciliation<br/>443/TCP HTTPS TLS1.2+"| KubeRay
+    KubeRay -->|"Deploy Ray Pods<br/>443/TCP HTTPS TLS1.2+"| K8sAPI
+
+    K8sAPI -->|"Workload admission<br/>443/TCP HTTPS TLS1.2+"| Kueue
+
+    RayDashboardRoute -->|"443→8265/TCP<br/>HTTP<br/>OAuth (OpenShift)"| RayHead
+    OAuthProxy -.->|"sidecar in Ray Head<br/>OpenShift only"| RayHead
+
+    RayWorker -->|"Ray cluster comm<br/>8443/TCP HTTPS<br/>mTLS (client cert)"| RayHead
+
+    DataScientist -->|"Ray client access<br/>10001/TCP HTTP/HTTPS<br/>mTLS if enabled"| RayHead
+
+    NetworkPolicyHead -.->|enforces ingress| RayHead
+    NetworkPolicyWorker -.->|enforces ingress| RayWorker
+
+    SecretsRay -.->|mTLS certs| RayHead
+    SecretsRay -.->|mTLS certs| RayWorker
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:3px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:3px
+    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:3px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:3px
+    classDef usernamespace fill:#fff2cc,stroke:#d6b656,stroke-width:3px
+    classDef externaldeps fill:#e1d5e7,stroke:#9673a6,stroke-width:3px
+
+    class DataScientist external
+    class RayDashboardRoute ingress
+    class OperatorPod,WebhookSvc,MetricsSvc,HealthSvc,RayCtrl,AppWrapperCtrl,CertController operator
+    class K8sAPI controlplane
+    class RayClusterPods,RayHead,RayWorker,NetworkPolicyHead,NetworkPolicyWorker,SecretsRay usernamespace
+    class KubeRay,Kueue,CertControllerExt,OAuthProxy,Prometheus externaldeps

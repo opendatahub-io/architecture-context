@@ -1,0 +1,165 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client1[Data Scientist]
+        Client2[Model Consumer]
+    end
+
+    subgraph Ingress["INGRESS (DMZ - OpenShift Router)"]
+        Routes["OpenShift Routes<br/>443/TCP HTTPS<br/>TLS 1.2+ Reencrypt<br/>OAuth Enforcement"]
+
+        subgraph RouteDetails["Route Endpoints"]
+            DashRoute[dashboard]
+            NBRoute[notebook routes]
+            ISRoute[inferenceservice routes]
+            MMRoute[modelmesh routes]
+            DSPRoute[pipeline routes]
+            RayRoute[ray dashboard routes]
+            TARoute[trustyai routes]
+            PromRoute[prometheus route]
+        end
+    end
+
+    subgraph IstioGW["ISTIO GATEWAY (Service Mesh Entry)"]
+        Gateway["Istio Gateway<br/>8080/TCP → predictors<br/>mTLS Management"]
+        Knative["Knative Activator<br/>8012/TCP mTLS<br/>SA: activator"]
+    end
+
+    subgraph ControlPlane["CONTROL PLANE (redhat-ods-operator)"]
+        RHODS["RHODS Operator<br/>1 replica, leader election<br/>SA: rhods-operator<br/>Webhooks: 9443/TCP mTLS"]
+    end
+
+    subgraph Applications["APPLICATIONS (redhat-ods-applications)"]
+        Dashboard["ODH Dashboard<br/>2 replicas HA<br/>8080/TCP HTTP<br/>SA: odh-dashboard"]
+
+        NBController["Notebook Controller<br/>1 replica<br/>8080/TCP, 9443/TCP<br/>SA: odh-notebook-controller"]
+
+        KServe["KServe Controller<br/>1 replica<br/>8080/TCP, 9443/TCP<br/>SA: kserve-controller-manager"]
+
+        ModelCtrl["Model Controller<br/>3 replicas HA<br/>8080/TCP, 8443/TCP<br/>SA: odh-model-controller"]
+
+        ModelMesh["ModelMesh Controller<br/>1-3 replicas<br/>8080/TCP, 9443/TCP<br/>SA: modelmesh-controller"]
+
+        OtherOps["Other Operators:<br/>DSPO, Training, KubeRay,<br/>CodeFlare, Kueue, TrustyAI<br/>1 replica each<br/>8080/TCP, 9443/TCP"]
+    end
+
+    subgraph Monitoring["MONITORING (redhat-ods-monitoring)"]
+        Prometheus["Prometheus<br/>1 replica<br/>9090/TCP internal<br/>9091/TCP OAuth proxy<br/>SA: prometheus"]
+
+        Alertmanager["Alertmanager<br/>1 replica<br/>9093/TCP<br/>SA: alertmanager"]
+    end
+
+    subgraph UserNS["USER NAMESPACES (Workloads)"]
+        subgraph Notebooks["Notebooks"]
+            NBPod["Notebook Pod<br/>oauth-proxy:8443 HTTPS<br/>→ JupyterLab:8888 HTTP<br/>SA: {notebook}-sa<br/>Secrets: oauth-config, tls"]
+        end
+
+        subgraph InferenceServices["InferenceServices"]
+            Predictor["Predictor Pod<br/>storage-init + predictor<br/>+ queue-proxy + istio-proxy<br/>8080/TCP mTLS STRICT<br/>SA: {is}-sa<br/>Secrets: storage-config"]
+        end
+
+        subgraph Training["Training Jobs"]
+            TrainPod["PyTorchJob Pods<br/>Master: 23456/TCP plaintext<br/>Workers → Master<br/>SA: default<br/>Egress: S3, Registry"]
+        end
+
+        subgraph Ray["Ray Clusters"]
+            RayPod["RayCluster Pods<br/>Head: 6379, 8265, 10001/TCP<br/>OAuth proxy: 8443/TCP<br/>SA: {raycluster}-sa<br/>Secrets: ca-secret, oauth"]
+        end
+
+        subgraph TrustyAISvc["TrustyAI"]
+            TAPod["TrustyAI Service<br/>8080/TCP internal<br/>8443/TCP OAuth proxy<br/>SA: {trustyai}-sa<br/>Storage: PVC"]
+        end
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        S3["S3 / MinIO / ODF<br/>443/TCP HTTPS<br/>or 9000/TCP HTTP<br/>TLS 1.2+<br/>Auth: AWS IAM / S3 keys"]
+
+        Registry["Container Registries<br/>Quay.io, Red Hat<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Pull secrets"]
+
+        Git["Git Repos<br/>GitHub, GitLab<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: SSH/PAT"]
+
+        PyPI["PyPI / Conda<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+
+        K8sAPI["OpenShift API<br/>6443/TCP HTTPS<br/>TLS 1.2+ / mTLS webhooks<br/>Auth: SA tokens"]
+    end
+
+    %% External to Ingress
+    Client1 -->|HTTPS/443<br/>TLS 1.2+<br/>OAuth Bearer| Routes
+    Client2 -->|HTTPS/443<br/>TLS 1.2+<br/>Bearer/mTLS| Routes
+
+    %% Routes to Services
+    Routes --> Dashboard
+    Routes --> NBPod
+    Routes --> Gateway
+    Routes --> ModelMesh
+    Routes --> RayPod
+    Routes --> TAPod
+    Routes --> Prometheus
+
+    %% Istio Gateway flow
+    Gateway -->|mTLS STRICT| Knative
+    Knative -->|mTLS<br/>Service Identity| Predictor
+
+    %% Control Plane
+    RHODS -->|deploys| Dashboard
+    RHODS -->|deploys| NBController
+    RHODS -->|deploys| KServe
+    RHODS -->|deploys| ModelCtrl
+    RHODS -->|deploys| ModelMesh
+    RHODS -->|deploys| OtherOps
+    RHODS -->|mTLS webhooks<br/>9443/TCP| K8sAPI
+
+    %% Dashboard interactions
+    Dashboard -->|HTTP/8080<br/>API calls| NBController
+    Dashboard -->|HTTP/8080<br/>API calls| KServe
+    Dashboard -->|HTTP/9090<br/>Queries| Prometheus
+    Dashboard -->|HTTPS/6443<br/>SA token| K8sAPI
+
+    %% Operator interactions
+    NBController -->|creates| NBPod
+    KServe -->|creates| Predictor
+    ModelCtrl -->|watches| Predictor
+    ModelCtrl -->|creates VirtualServices| Gateway
+
+    %% Monitoring
+    Prometheus -->|scrapes 8080/TCP<br/>ServiceMonitors| Dashboard
+    Prometheus -->|scrapes 8080/TCP| NBController
+    Prometheus -->|scrapes 8080/TCP| KServe
+    Prometheus -->|scrapes 8080/TCP| TAPod
+    TAPod -->|monitors<br/>payload processor| Predictor
+
+    %% External service access
+    Predictor -->|HTTPS/443<br/>TLS 1.2+<br/>AWS IAM| S3
+    NBPod -->|HTTPS/443<br/>S3 keys| S3
+    NBPod -->|HTTPS/443<br/>TLS 1.2+| PyPI
+    NBPod -->|HTTPS/443<br/>SSH/PAT| Git
+    TrainPod -->|HTTPS/443<br/>S3 keys| S3
+    TrainPod -->|HTTPS/443<br/>Pull secrets| Registry
+
+    %% All operators to K8s API
+    NBController -->|HTTPS/6443<br/>SA token| K8sAPI
+    KServe -->|HTTPS/6443<br/>SA token| K8sAPI
+    ModelCtrl -->|HTTPS/6443<br/>SA token| K8sAPI
+    OtherOps -->|HTTPS/6443<br/>SA token| K8sAPI
+
+    %% Image pulls
+    NBPod -->|HTTPS/443<br/>Pull secrets| Registry
+    Predictor -->|HTTPS/443<br/>Pull secrets| Registry
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef istio fill:#fff4e6,stroke:#e67e22,stroke-width:2px
+    classDef controlplane fill:#ffebee,stroke:#c62828,stroke-width:3px
+    classDef applications fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+    classDef monitoring fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef workloads fill:#e8f5e9,stroke:#388e3c,stroke-width:2px
+    classDef externalservice fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+
+    class Client1,Client2 external
+    class Routes,DashRoute,NBRoute,ISRoute,MMRoute,DSPRoute,RayRoute,TARoute,PromRoute ingress
+    class Gateway,Knative istio
+    class RHODS controlplane
+    class Dashboard,NBController,KServe,ModelCtrl,ModelMesh,OtherOps applications
+    class Prometheus,Alertmanager monitoring
+    class NBPod,Predictor,TrainPod,RayPod,TAPod workloads
+    class S3,Registry,Git,PyPI,K8sAPI externalservice

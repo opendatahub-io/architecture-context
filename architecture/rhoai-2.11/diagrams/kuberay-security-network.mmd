@@ -1,0 +1,94 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[External Client]
+        UserCI[User/CI Pipeline]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Route["OpenShift Route<br/>443/TCP → 8265/8000/10001/TCP<br/>TLS: Edge/Passthrough"]
+        K8sIngress["Kubernetes Ingress<br/>443/TCP → 8265/8000/TCP<br/>TLS: SIMPLE"]
+    end
+
+    subgraph Cluster["INTERNAL (Cluster Network)"]
+        direction TB
+
+        subgraph NS_ODH["Namespace: opendatahub (RHOAI)"]
+            direction TB
+            Operator["kuberay-operator<br/>SA: kuberay-operator<br/>SCC: run-as-ray-user (UID 1000)<br/>Replicas: 1<br/>Port: 8080/TCP HTTP"]
+        end
+
+        subgraph NS_User["Namespace: {user-namespace}"]
+            direction TB
+
+            HeadPod["Ray Head Pod<br/>SA: {raycluster-name}-sa<br/>SecurityContext: UID 1000, runAsNonRoot<br/>──────────────<br/>6379/TCP Redis (GCS) - None/None<br/>8265/TCP HTTP/HTTPS - Optional TLS/Optional<br/>10001/TCP Ray Protocol - Optional TLS/Optional<br/>8000/TCP HTTP/HTTPS - Optional TLS/App-defined"]
+
+            WorkerPods["Ray Worker Pods<br/>SA: {raycluster-name}-sa<br/>SecurityContext: UID 1000, runAsNonRoot<br/>Autoscaled: min/max replicas"]
+
+            Autoscaler["Ray Autoscaler<br/>Sidecar Container<br/>in Head Pod"]
+
+            HeadSvc["Service: {raycluster-name}-head-svc<br/>ClusterIP<br/>6379, 8265, 10001, 8000/TCP"]
+
+            ServeSvc["Service: {rayservice-name}-serve-svc<br/>ClusterIP<br/>8000/TCP"]
+        end
+
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+<br/>Auth: ServiceAccount JWT, User creds"]
+    end
+
+    subgraph Egress["EGRESS (External Services)"]
+        Registry["Container Registry<br/>443/TCP HTTPS TLS1.2+<br/>Auth: Pull Secret"]
+        ExternalRedis["External Redis (Optional)<br/>6379/TCP Redis<br/>Encryption: Optional TLS<br/>Auth: Optional Password"]
+        PyPI["PyPI/Conda<br/>443/TCP HTTPS TLS1.2+<br/>Auth: None"]
+        S3["Cloud Storage (S3/GCS/Azure)<br/>443/TCP HTTPS TLS1.2+<br/>Auth: Cloud IAM"]
+        Prometheus["Prometheus<br/>Scrapes: 8080/TCP HTTP<br/>Auth: None"]
+    end
+
+    %% External to Ingress
+    Client -->|HTTPS/443<br/>TLS 1.3<br/>App-defined Auth| Route
+    Client -->|HTTPS/443<br/>TLS 1.3<br/>App-defined Auth| K8sIngress
+    UserCI -->|kubectl/oc<br/>HTTPS/6443<br/>TLS 1.2+<br/>User Credentials| K8sAPI
+
+    %% Ingress to Services
+    Route -->|HTTP/HTTPS<br/>8265,8000,10001/TCP<br/>Optional TLS<br/>Optional Auth| HeadSvc
+    K8sIngress -->|HTTP/HTTPS<br/>8265,8000/TCP<br/>Optional TLS<br/>Optional Auth| HeadSvc
+    Route -->|HTTP/HTTPS<br/>8000/TCP<br/>Optional TLS<br/>App Auth| ServeSvc
+
+    %% Services to Pods
+    HeadSvc -->|Routes to| HeadPod
+    ServeSvc -->|Routes to| HeadPod
+
+    %% Operator interactions
+    Operator -->|Watch CRDs, Manage Resources<br/>HTTPS/6443<br/>TLS 1.2+<br/>SA Token| K8sAPI
+    Operator -->|Create/Manage| HeadPod
+    Operator -->|Create/Manage| WorkerPods
+    Operator -->|Create/Manage| HeadSvc
+    Operator -->|Create/Manage| ServeSvc
+    Operator -->|Create/Manage| Route
+    Operator -->|Create/Manage| K8sIngress
+
+    %% Ray cluster internal
+    WorkerPods -->|Register & Coordinate<br/>Redis/6379<br/>None/None| HeadPod
+    Autoscaler -->|Query Cluster State<br/>Redis/6379<br/>None/None| HeadPod
+    Autoscaler -->|Scale Pods<br/>HTTPS/6443<br/>TLS 1.2+<br/>SA Token| K8sAPI
+
+    %% Egress connections
+    K8sAPI -->|Pull Images<br/>HTTPS/443<br/>TLS 1.2+<br/>Pull Secret| Registry
+    HeadPod -.->|GCS Fault Tolerance<br/>Redis/6379<br/>Optional TLS<br/>Optional Password| ExternalRedis
+    WorkerPods -.->|User Workloads<br/>HTTPS/443<br/>TLS 1.2+<br/>None| PyPI
+    WorkerPods -.->|User Workloads<br/>HTTPS/443<br/>TLS 1.2+<br/>Cloud IAM| S3
+    Prometheus -->|Scrape Metrics<br/>HTTP/8080<br/>None/None| Operator
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef operator fill:#4a90e2,stroke:#333,stroke-width:2px
+    classDef pod fill:#7ed321,stroke:#333,stroke-width:2px
+    classDef warning fill:#ffcccc,stroke:#cc0000,stroke-width:2px
+
+    class Client,UserCI external
+    class Route,K8sIngress ingress
+    class Operator operator
+    class HeadPod,WorkerPods,Autoscaler pod
+    class HeadSvc,ServeSvc,K8sAPI internal
+    class Registry,ExternalRedis,PyPI,S3,Prometheus egress

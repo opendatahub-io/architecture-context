@@ -1,0 +1,82 @@
+sequenceDiagram
+    participant User as User/Client
+    participant Route as OpenShift Route<br/>8443/TCP HTTPS TLS1.3
+    participant OAuth as OAuth Proxy<br/>Bearer Token Auth
+    participant API as DS Pipelines API Server<br/>8888/TCP HTTP<br/>8887/TCP gRPC
+    participant Argo as Argo Workflow Controller<br/>8001/TCP HTTP
+    participant Workflow as Workflow Pod<br/>Pipeline Execution
+    participant Minio as Minio S3<br/>9000/TCP HTTP<br/>S3 Signature
+    participant MLMD as ML Metadata gRPC<br/>8080/TCP gRPC
+    participant DB as MariaDB<br/>3306/TCP MySQL Auth
+    participant Envoy as MLMD Envoy Proxy<br/>9090/TCP gRPC
+
+    %% Flow 1: Pipeline Submission
+    Note over User,DB: Flow 1: Pipeline Submission via API
+    User->>Route: POST /apis/v1/pipelines<br/>HTTPS, Bearer Token (OAuth)
+    Route->>OAuth: Forward request<br/>TLS 1.3
+    OAuth->>OAuth: Validate OAuth token
+    OAuth->>API: Forward to API Server<br/>8888/TCP HTTP
+    API->>DB: Store pipeline metadata<br/>3306/TCP, MySQL Auth
+    DB-->>API: Confirmation
+    API->>Minio: Upload pipeline YAML<br/>9000/TCP HTTP, S3 Signature
+    Minio-->>API: Artifact stored
+    API-->>OAuth: Pipeline created (JSON)
+    OAuth-->>Route: Response
+    Route-->>User: Pipeline ID
+
+    %% Flow 2: Pipeline Execution
+    Note over User,DB: Flow 2: Pipeline Execution (Scheduled or Manual)
+    User->>Route: POST /apis/v1/runs<br/>HTTPS, Bearer Token
+    Route->>OAuth: Forward request
+    OAuth->>API: Create run<br/>8888/TCP HTTP
+    API->>DB: Store run metadata<br/>3306/TCP
+    DB-->>API: Run ID
+    API->>Argo: Submit workflow<br/>8001/TCP HTTP, SA Token
+    Argo-->>API: Workflow accepted
+    API-->>OAuth: Run created
+    OAuth-->>Route: Response
+    Route-->>User: Run ID
+
+    %% Flow 3: Workflow Execution
+    Note over Argo,MLMD: Flow 3: Workflow Pod Execution
+    Argo->>Workflow: Create workflow pod<br/>Kubernetes API
+    Workflow->>Minio: Download input artifacts<br/>9000/TCP HTTP, S3 Signature
+    Minio-->>Workflow: Artifacts
+    Workflow->>Workflow: Execute pipeline step
+    Workflow->>MLMD: Track artifact metadata<br/>8080/TCP gRPC
+    MLMD->>DB: Store metadata<br/>3306/TCP
+    DB-->>MLMD: Confirmation
+    MLMD-->>Workflow: Metadata recorded
+    Workflow->>Minio: Upload output artifacts<br/>9000/TCP HTTP
+    Minio-->>Workflow: Upload complete
+    Workflow-->>Argo: Step complete
+
+    %% Flow 4: State Persistence
+    Note over Argo,DB: Flow 4: Persistence Agent Sync
+    Argo->>Argo: Workflow state change
+    activate Argo
+    Argo-->>API: Workflow event
+    API->>DB: Update run status<br/>3306/TCP, MySQL Auth
+    DB-->>API: Confirmed
+    deactivate Argo
+
+    %% Flow 5: Artifact Retrieval via UI
+    Note over User,Envoy: Flow 5: Artifact Retrieval via UI
+    User->>Route: GET /<br/>HTTPS, Bearer Token
+    Route->>OAuth: UI request
+    OAuth->>UI: Forward to UI Pod<br/>8443/TCP
+    UI->>API: GET /apis/v1/runs/{id}<br/>8888/TCP HTTP, Bearer Token
+    API->>DB: Query run metadata<br/>3306/TCP
+    DB-->>API: Run details
+    API-->>UI: Run metadata (JSON)
+    UI->>Envoy: GET artifacts lineage<br/>9090/TCP gRPC
+    Envoy->>MLMD: Query metadata<br/>8080/TCP gRPC
+    MLMD->>DB: Get artifact metadata<br/>3306/TCP
+    DB-->>MLMD: Metadata
+    MLMD-->>Envoy: gRPC response
+    Envoy-->>UI: Lineage data
+    UI->>Minio: Download artifact<br/>80/TCP HTTP, S3 Signature
+    Minio-->>UI: Artifact content
+    UI-->>OAuth: Rendered UI
+    OAuth-->>Route: Response
+    Route-->>User: UI with artifacts

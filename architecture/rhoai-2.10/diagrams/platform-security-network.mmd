@@ -1,0 +1,146 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Users[Data Scientists<br/>ML Engineers<br/>External Clients]
+    end
+
+    subgraph Ingress["INGRESS (OpenShift Routes)"]
+        Router["OpenShift Router<br/>443/TCP → Internal Ports<br/>TLS 1.2+ Edge/Reencrypt<br/>OAuth Cookie + Bearer Token"]
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (Optional - mTLS PERMISSIVE/STRICT)"]
+        direction TB
+
+        subgraph IstioSystem["Namespace: istio-system"]
+            IstioGW["Istio Gateway<br/>knative-ingress-gateway<br/>443/TCP → 8080/TCP<br/>TLS SIMPLE/mTLS<br/>Authorino JWT"]
+            Istiod["Istio Control Plane<br/>istiod<br/>15012/TCP XDS gRPC<br/>Issues mTLS certs"]
+        end
+
+        subgraph KnativeNS["Namespace: knative-serving"]
+            Activator["Knative Activator<br/>SA: controller<br/>8012/TCP webhook<br/>8080/TCP traffic<br/>mTLS if enabled"]
+        end
+    end
+
+    subgraph AppTier["APPLICATION TIER"]
+        direction TB
+
+        subgraph OdsApps["Namespace: redhat-ods-applications"]
+            Dashboard["ODH Dashboard<br/>SA: odh-dashboard<br/>8080/TCP backend<br/>8443/TCP OAuth proxy<br/>Secrets: oauth-config, proxy-tls"]
+        end
+
+        subgraph UserNS["Namespace: {user-namespace}"]
+            direction LR
+
+            Notebook["Jupyter Notebook<br/>SA: {notebook}-sa<br/>8888/TCP notebook<br/>8443/TCP OAuth proxy<br/>OAuth Sidecar"]
+
+            KServePod["KServe Predictor<br/>SA: {isvc}-sa<br/>8080/TCP HTTP<br/>8081/TCP gRPC<br/>Storage Init Container<br/>Secrets: storage-config"]
+
+            ModelMeshPod["ModelMesh Serving<br/>SA: modelmesh-sa<br/>8033/TCP gRPC<br/>8008/TCP REST<br/>2112/TCP metrics<br/>etcd: 2379/TCP<br/>Network Policy: 8033,8008,2112"]
+
+            TrainingPod["Training Job Pod<br/>PyTorchJob/TFJob<br/>SA: {job}-sa<br/>Worker ports (23456/TCP)<br/>Gang Scheduling<br/>Kueue Admission"]
+
+            RayCluster["Ray Cluster<br/>SA: {ray}-head/worker-sa<br/>Head: 6379,8265,10001/TCP<br/>Workers: Dynamic<br/>OAuth Proxy<br/>Network Policy: Head←Workers+Prom<br/>Secrets: {ray}-ca"]
+
+            Pipelines["Data Science Pipelines<br/>SA: ds-pipeline-{name}<br/>API: 8888/TCP HTTP, 8887/TCP gRPC<br/>MariaDB: 3306/TCP<br/>Minio: 9000/TCP<br/>Network Policy: MariaDB restricted<br/>Secrets: db-creds, s3-keys"]
+        end
+    end
+
+    subgraph ControlPlane["CONTROL PLANE (Platform Operators)"]
+        direction TB
+
+        subgraph OpenshiftOps["Namespace: openshift-operators"]
+            RHODSOp["RHODS Operator<br/>SA: rhods-operator<br/>8080/TCP metrics<br/>8081/TCP health<br/>ClusterRole: Full platform"]
+        end
+
+        subgraph OdhNS["Namespace: opendatahub"]
+            ComponentOps["Component Operators<br/>Notebook, Model, Training<br/>KubeRay, CodeFlare, Kueue<br/>SA: {component}-controller<br/>9443/TCP webhook HTTPS mTLS<br/>Network Policy: API server only"]
+        end
+
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+ Client Certs<br/>Auth: SA Tokens, OAuth"]
+    end
+
+    subgraph InfraServices["INFRASTRUCTURE SERVICES"]
+        direction TB
+
+        subgraph AuthProvider["Namespace: redhat-ods-applications-auth-provider"]
+            Authorino["Authorino<br/>50051/TCP gRPC AuthZ<br/>8080/TCP metrics<br/>JWT validation<br/>Istio AuthorizationPolicy"]
+        end
+
+        subgraph Monitoring["Namespace: redhat-ods-monitoring"]
+            Prometheus["Prometheus<br/>9090/TCP HTTP<br/>ServiceMonitor/PodMonitor<br/>SA Token scraping"]
+        end
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        S3["S3 Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS Signature v4<br/>Access Key or IRSA"]
+
+        ExternalDB["External MySQL/MariaDB<br/>3306/TCP<br/>MySQL Protocol<br/>TLS optional<br/>Username/Password"]
+
+        Repos["PyPI, Conda, Git<br/>GitHub, GitLab<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+
+        Registries["Container Registries<br/>Quay, Docker Hub, GHCR<br/>443/TCP HTTPS<br/>Registry tokens"]
+    end
+
+    %% External to Ingress
+    Users -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth Cookie/Bearer"| Router
+
+    %% Ingress to Service Mesh
+    Router -->|"Internal routing"| IstioGW
+    Router -->|"Direct (non-mesh)"| Dashboard
+    Router -->|"Direct (non-mesh)"| Notebook
+    Router -->|"Direct (non-mesh)"| Pipelines
+
+    %% Service Mesh flows
+    IstioGW -->|"HTTP/8080<br/>mTLS PERMISSIVE/STRICT<br/>Service Identity"| Activator
+    Activator -->|"HTTP/8080<br/>mTLS if enabled"| KServePod
+    IstioGW -.->|"AuthZ check<br/>gRPC/50051"| Authorino
+    Istiod -.->|"Config XDS<br/>gRPC/15012"| IstioGW
+    Istiod -.->|"mTLS certs"| KServePod
+
+    %% Application to Storage
+    Notebook -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    KServePod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS Signature v4"| S3
+    ModelMeshPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    TrainingPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    Pipelines -->|"HTTPS/443<br/>TLS 1.2+<br/>S3 API"| S3
+    Pipelines -.->|"TCP/3306<br/>TLS optional<br/>Credentials"| ExternalDB
+
+    %% Application to External Services
+    Notebook -->|"HTTPS/443<br/>TLS 1.2+"| Repos
+    TrainingPod -->|"HTTPS/443<br/>TLS 1.2+"| Registries
+
+    %% Control Plane
+    RHODSOp -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token JWT"| K8sAPI
+    ComponentOps -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token JWT"| K8sAPI
+    K8sAPI -->|"HTTPS/9443<br/>mTLS<br/>Webhook"| ComponentOps
+
+    %% Monitoring
+    Prometheus -.->|"HTTP/8080<br/>Scrape /metrics<br/>SA Token"| Dashboard
+    Prometheus -.->|"HTTP/8080<br/>Scrape /metrics"| KServePod
+    Prometheus -.->|"HTTP/2112<br/>Scrape /metrics"| ModelMeshPod
+    Prometheus -.->|"HTTP/8080<br/>Scrape /metrics"| RayCluster
+    Prometheus -.->|"HTTP/8080<br/>Scrape /metrics"| ComponentOps
+
+    %% Dashboard interactions
+    Dashboard -->|"HTTPS/6443<br/>Bearer Token"| K8sAPI
+    Dashboard -.->|"HTTP/9090<br/>Metrics queries"| Prometheus
+
+    %% Model Controller integration
+    ComponentOps -.->|"Creates VirtualService<br/>PeerAuthentication"| Istiod
+    ComponentOps -.->|"Creates AuthConfig"| Authorino
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef servicemesh fill:#e1f5ff,stroke:#0277bd,stroke-width:2px
+    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controlplane fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef infrastructure fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef externalservice fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+
+    class Users external
+    class Router ingress
+    class IstioGW,Activator,Istiod,IstioSystem,KnativeNS servicemesh
+    class Dashboard,Notebook,KServePod,ModelMeshPod,TrainingPod,RayCluster,Pipelines,OdsApps,UserNS application
+    class RHODSOp,ComponentOps,K8sAPI,OpenshiftOps,OdhNS controlplane
+    class Authorino,Prometheus,AuthProvider,Monitoring infrastructure
+    class S3,ExternalDB,Repos,Registries externalservice

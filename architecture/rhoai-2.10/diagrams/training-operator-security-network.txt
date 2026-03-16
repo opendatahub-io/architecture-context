@@ -1,0 +1,264 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (User Workstations)                                           │
+│                                                                          │
+│  [Data Scientist]                                                        │
+│  - Tool: kubectl / Python SDK                                            │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: kubeconfig credentials (mTLS client cert or Bearer)      │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER CONTROL PLANE                                                  │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                        │
+│  - AuthN: Client certificates, Bearer tokens, OIDC                       │
+│  - AuthZ: RBAC                                                           │
+│         │                                                                │
+│         ├─────────────► [Admission Webhook]                              │
+│         │               - Service: training-operator-webhook             │
+│         │               - Port: 9443/TCP                                 │
+│         │               - Protocol: HTTPS                                │
+│         │               - Encryption: TLS (cert-manager or manual)       │
+│         │               - Auth: Kubernetes API authentication            │
+│         │               - Purpose: Validate/default training job CRDs    │
+│         │                                                                │
+│         │ Watch: PyTorchJob, TFJob, MPIJob, XGBoostJob, MXJob,          │
+│         │        PaddleJob, PodGroup CRDs                                │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token (JWT)                               │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE (opendatahub)                                       │
+│                                                                          │
+│  [Training Operator Controller]                                          │
+│  - Namespace: opendatahub                                                │
+│  - ServiceAccount: training-operator                                     │
+│  - SecurityContext: runAsUser: 65532, runAsNonRoot: true                 │
+│  - Sidecar Injection: Disabled (sidecar.istio.io/inject: false)         │
+│                                                                          │
+│  Exposed Ports:                                                          │
+│  - 8080/TCP: Prometheus metrics (HTTP, no encryption, no auth)           │
+│  - 8081/TCP: Health probes (HTTP, no encryption, no auth)                │
+│  - 9443/TCP: Admission webhook (HTTPS, TLS, K8s API auth)               │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token (training-operator)                 │
+│         │ Purpose: Create/manage pods, services, PodGroups               │
+│         ▼                                                                │
+│  [Kubernetes API Server] ──► RBAC Check                                 │
+│         │                                                                │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  USER NAMESPACES (training job workloads)                               │
+│                                                                          │
+│  [Training Worker Pods]                                                  │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: default (or user-specified)                           │
+│  - Managed by: Training Operator                                         │
+│  - Labels: training.kubeflow.org/job-name={job-name}                    │
+│           training.kubeflow.org/job-role={master|worker}                │
+│                                                                          │
+│  Framework-specific communication:                                       │
+│  ┌────────────────────────────────────────────────────────┐             │
+│  │ [PyTorch Workers]                                       │             │
+│  │ - Port: Dynamic (torchrun assigns)                      │             │
+│  │ - Protocol: TCP                                         │             │
+│  │ - Encryption: None (Pod-to-Pod, may use service mesh)   │             │
+│  │ - Auth: None (trust within job)                         │             │
+│  │ - Env: MASTER_ADDR, MASTER_PORT, RANK, WORLD_SIZE      │             │
+│  └────────────────────────────────────────────────────────┘             │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────┐             │
+│  │ [TensorFlow Workers]                                    │             │
+│  │ - Port: 2222/TCP (TF_CONFIG)                            │             │
+│  │ - Protocol: gRPC                                        │             │
+│  │ - Encryption: None (may use service mesh mTLS)          │             │
+│  │ - Roles: ps (parameter server), worker, chief, evaluator│             │
+│  └────────────────────────────────────────────────────────┘             │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────┐             │
+│  │ [MPI Job]                                               │             │
+│  │ - Launcher Pod: Runs mpirun                             │             │
+│  │ - Worker Pods: SSH server (port 2222/TCP)              │             │
+│  │ - Protocol: SSH + MPI                                   │             │
+│  │ - Encryption: SSH keys (generated per job)              │             │
+│  │ - Init: kubectl-delivery copies kubectl to workers      │             │
+│  └────────────────────────────────────────────────────────┘             │
+│         │                                                                │
+│         │ Optional: Service Mesh                                         │
+│         │ If enabled: Pod-to-Pod mTLS via Istio/Linkerd                 │
+│         │                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MONITORING (opendatahub or openshift-monitoring)                       │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - ServiceMonitor/PodMonitor: training-operator                          │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None                                               │
+│         │ Auth: None (ClusterIP service, internal only)                  │
+│         ▼                                                                │
+│  [Training Operator - /metrics endpoint]                                 │
+│  - Metrics: controller_runtime_*, workqueue_*, rest_client_*             │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  GANG SCHEDULERS (Optional - Cluster-scoped)                            │
+│                                                                          │
+│  [scheduler-plugins] (Default)                                           │
+│  - Version: v0.25.7+                                                     │
+│  - CRD: scheduling.x-k8s.io/v1alpha1/PodGroup                           │
+│  - Purpose: Gang scheduling (all-or-nothing pod scheduling)              │
+│         │                                                                │
+│         │ Port: 6443/TCP (via K8s API)                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token                                     │
+│         ▼                                                                │
+│  [Kubernetes Scheduler]                                                  │
+│                                                                          │
+│  OR                                                                      │
+│                                                                          │
+│  [Volcano Scheduler] (Optional)                                          │
+│  - CRD: scheduling.volcano.sh/v1beta1/PodGroup                          │
+│  - Alternative gang scheduler                                            │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [Container Registry]                                                    │
+│  - Examples: quay.io, docker.io, registry.redhat.io                      │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Image pull secrets (registry credentials)                       │
+│  - Purpose: Pull operator image and training workload images             │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+════════════════════════════════════════════════════════════════════════════
+RBAC SUMMARY
+════════════════════════════════════════════════════════════════════════════
+
+ClusterRole: training-operator
+  Bound to: ServiceAccount training-operator (namespace: opendatahub)
+
+  Core Resources:
+    - configmaps: create, list, update, watch
+    - events: create, delete, get, list, patch, update, watch
+    - pods: create, delete, get, list, patch, update, watch
+    - pods/exec: create
+    - serviceaccounts: create, get, list, watch
+    - services: create, delete, get, list, watch
+
+  Autoscaling:
+    - horizontalpodautoscalers: create, delete, get, list, patch, update, watch
+
+  Training Job CRDs (kubeflow.org/v1):
+    - pytorchjobs, pytorchjobs/status, pytorchjobs/finalizers: *
+    - tfjobs, tfjobs/status, tfjobs/finalizers: *
+    - mpijobs, mpijobs/status, mpijobs/finalizers: *
+    - xgboostjobs, xgboostjobs/status, xgboostjobs/finalizers: *
+    - mxjobs, mxjobs/status, mxjobs/finalizers: *
+    - paddlejobs, paddlejobs/status, paddlejobs/finalizers: *
+
+    (* = create, delete, get, list, patch, update, watch)
+
+  Gang Scheduling:
+    - podgroups (scheduling.volcano.sh): *
+    - podgroups (scheduling.x-k8s.io): *
+
+  RBAC Management:
+    - roles, rolebindings: create, list, update, watch
+
+ClusterRole: training-edit
+  Purpose: Allow users to create/manage training jobs
+  Resources: All training job CRDs (kubeflow.org)
+  Verbs: create, delete, get, list, patch, update, watch
+
+ClusterRole: training-view
+  Purpose: Allow users to view training jobs
+  Resources: All training job CRDs (kubeflow.org)
+  Verbs: get, list, watch
+
+════════════════════════════════════════════════════════════════════════════
+SERVICE MESH CONFIGURATION
+════════════════════════════════════════════════════════════════════════════
+
+Operator Pods:
+  - Annotation: sidecar.istio.io/inject: "false"
+  - Rationale: Operator must communicate with K8s API without mesh interference
+  - No Envoy sidecar injected
+
+Training Worker Pods:
+  - Mesh injection: User-configurable (depends on namespace labels)
+  - If enabled: Pod-to-Pod mTLS via Istio/Linkerd
+  - Benefits: Encrypted inter-worker communication, observability
+  - Considerations: May add latency to training communication
+
+════════════════════════════════════════════════════════════════════════════
+SECRETS
+════════════════════════════════════════════════════════════════════════════
+
+1. webhook-server-cert
+   - Type: kubernetes.io/tls
+   - Purpose: TLS certificate for admission webhook server (port 9443)
+   - Provisioned by: cert-manager or manual creation
+   - Auto-rotation: Depends on provisioner (cert-manager: yes)
+   - Mounted to: /tmp/k8s-webhook-server/serving-certs/
+
+2. Image Pull Secrets (user-provided)
+   - Type: kubernetes.io/dockerconfigjson
+   - Purpose: Authenticate to private container registries
+   - Scope: Per namespace
+   - Referenced by: Training job pods (spec.template.spec.imagePullSecrets)
+
+3. MPI Job SSH Keys (auto-generated per job)
+   - Type: Opaque
+   - Purpose: SSH authentication for MPI launcher to workers
+   - Lifecycle: Created on job start, deleted on job completion
+   - Keys: ssh-privatekey, ssh-publickey
+
+════════════════════════════════════════════════════════════════════════════
+SECURITY CONSIDERATIONS
+════════════════════════════════════════════════════════════════════════════
+
+1. Pod Security:
+   - Operator runs as non-root (UID: 65532, GID: 65532)
+   - securityContext.allowPrivilegeEscalation: false
+   - No privileged containers
+
+2. Network Policies:
+   - Operator needs egress to Kubernetes API (6443/TCP)
+   - Training pods need ingress from other pods in same job
+   - Prometheus needs ingress to operator (8080/TCP)
+
+3. FIPS Compliance:
+   - RHOAI builds use '-tags strictfipsruntime' for FIPS mode
+   - TLS 1.2+ enforced for all external communication
+
+4. Authentication:
+   - Kubernetes API: ServiceAccount token (JWT)
+   - Webhook: Kubernetes API authentication
+   - Metrics: No auth (ClusterIP service, internal only)
+   - Health probes: No auth (liveness/readiness only)
+
+5. Authorization:
+   - RBAC enforced via ClusterRole/ClusterRoleBinding
+   - Principle of least privilege (fine-grained permissions)
+   - training-edit/training-view roles for user access control
+
+6. Audit Logging:
+   - All API operations logged by Kubernetes API server
+   - Operator generates Kubernetes Events for job lifecycle
+
+7. Multi-tenancy:
+   - Namespace isolation for training jobs
+   - Gang scheduler prevents resource contention
+   - Optional: Per-namespace operator instances for stronger isolation

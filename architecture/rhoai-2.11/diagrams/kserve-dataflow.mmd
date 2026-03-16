@@ -1,0 +1,59 @@
+sequenceDiagram
+    participant User as Data Scientist/Client
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+
+    participant Webhook as kserve-webhook-server<br/>443/TCP HTTPS TLS1.2+ mTLS
+    participant Controller as kserve-controller-manager<br/>8081/healthz, 8080/metrics
+    participant Storage as S3/GCS/Azure Storage<br/>443/TCP HTTPS TLS1.2+
+    participant Gateway as Istio Gateway<br/>443/TCP HTTPS TLS1.2+
+    participant Knative as Knative Service<br/>80/TCP HTTP mTLS
+    participant Predictor as Predictor Pod<br/>8080/TCP HTTP/HTTPS
+    participant Prom as Prometheus<br/>Metrics Scraper
+
+    Note over User,Prom: Flow 1: InferenceService Creation & Model Serving
+
+    User->>K8sAPI: kubectl apply InferenceService<br/>Auth: Bearer Token (kubeconfig)
+    K8sAPI->>Webhook: POST /mutate-serving-kserve-io-v1beta1-inferenceservice<br/>mTLS client cert
+    Webhook-->>K8sAPI: Mutated InferenceService<br/>(defaults, sidecar injection)
+    K8sAPI->>Webhook: POST /validate-serving-kserve-io-v1beta1-inferenceservice<br/>mTLS client cert
+    Webhook-->>K8sAPI: Validation result (accept/reject)
+    K8sAPI-->>User: InferenceService created
+
+    Controller->>K8sAPI: Watch InferenceService events<br/>GET /apis/serving.kserve.io/v1beta1/inferenceservices<br/>SA Token
+    K8sAPI-->>Controller: InferenceService created event
+
+    Controller->>K8sAPI: Create Knative Service<br/>POST /apis/serving.knative.dev/v1/services<br/>SA Token
+    Controller->>K8sAPI: Create Istio VirtualService<br/>POST /apis/networking.istio.io/v1beta1/virtualservices<br/>SA Token
+
+    Note over Storage,Predictor: Storage Initialization (init container)
+
+    Predictor->>Storage: Download model artifacts<br/>HTTPS/443 TLS1.2+<br/>Auth: AWS IAM/GCP SA/Azure creds
+    Storage-->>Predictor: Model files (tar.gz/pickle/onnx)
+
+    Note over Predictor: storage-initializer extracts to /mnt/models<br/>Model server starts reading from shared volume
+
+    Note over Gateway,Predictor: Inference Request Flow
+
+    User->>Gateway: POST /v1/models/mymodel:predict<br/>HTTPS/443 TLS1.2+<br/>Auth: Bearer Token/mTLS
+    Gateway->>Knative: Forward request<br/>HTTP/80 mTLS (Istio sidecar)
+    Knative->>Predictor: Inference request<br/>HTTP/8080<br/>mTLS via Istio
+    Predictor-->>Knative: Prediction result (JSON)
+    Knative-->>Gateway: Response
+    Gateway-->>User: Prediction result<br/>HTTPS/443
+
+    Predictor->>Prom: Expose metrics /metrics<br/>HTTP/8080<br/>No auth
+    Prom->>Predictor: Scrape metrics<br/>GET /metrics
+
+    Note over User,Prom: Flow 2: InferenceGraph Request Routing
+
+    participant Router as kserve-router<br/>8080/TCP HTTP
+    participant Transformer as Transformer Service<br/>80/TCP HTTP mTLS
+    participant Predictor2 as Predictor Service<br/>80/TCP HTTP mTLS
+
+    User->>Gateway: POST /v2/models/graph:infer<br/>HTTPS/443 TLS1.2+<br/>Bearer Token
+    Gateway->>Router: Forward to InferenceGraph router<br/>HTTP/8080 mTLS
+    Router->>Transformer: Step 1: Transform input<br/>HTTP/80 mTLS
+    Transformer-->>Router: Transformed data
+    Router->>Predictor2: Step 2: Predict<br/>HTTP/80 mTLS
+    Predictor2-->>Router: Prediction
+    Router-->>Gateway: Final result
+    Gateway-->>User: HTTPS/443 Response

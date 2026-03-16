@@ -1,0 +1,88 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User[User Browser]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Router["OpenShift Router<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ Edge Termination<br/>Route: {notebook-name}.{cluster}"]
+    end
+
+    subgraph NotebookPod["NOTEBOOK POD (User Namespace: {user-namespace})"]
+        direction TB
+
+        subgraph PodSA["ServiceAccount: {notebook-name}-sa"]
+            direction LR
+            OAuthProxy["OAuth Proxy Sidecar<br/>Port: 8443/TCP HTTPS<br/>Auth: OAuth2 Bearer Token<br/>Policy: User must own notebook"]
+            NotebookContainer["Notebook Container<br/>Port: 8888/TCP HTTP<br/>Image: quay.io/.../workbench-images<br/>Process: JupyterLab/RStudio/Code Server"]
+        end
+
+        PVC["PersistentVolumeClaim<br/>/opt/app-root/src<br/>ReadWriteOnce<br/>User data storage"]
+        Secrets["Mounted Secrets:<br/>- {notebook-name}-oauth-config<br/>- {user-git-credentials}<br/>- {data-connection}"]
+    end
+
+    subgraph K8sInternal["KUBERNETES INTERNAL"]
+        direction TB
+
+        NotebookController["ODH Notebook Controller<br/>Namespace: opendatahub<br/>SA: odh-notebook-controller-manager"]
+        Dashboard["ODH Dashboard<br/>Namespace: opendatahub<br/>SA: odh-dashboard"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS mTLS"]
+        ImageStreams["ImageStreams<br/>Workbench image metadata"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        direction TB
+
+        Quay["Quay.io Registry<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Registry Token"]
+        PyPI["PyPI Repository<br/>pypi.org<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: None"]
+        GitHub["GitHub<br/>github.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: SSH Key / PAT"]
+        S3["S3 / Object Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS IAM Credentials"]
+        Conda["Conda Repositories<br/>repo.anaconda.com<br/>443/TCP HTTPS TLS 1.2+"]
+    end
+
+    subgraph NetworkService["NETWORK SERVICE"]
+        Service["Service: {notebook-name}<br/>Type: ClusterIP<br/>Port: 8888/TCP HTTP<br/>Exposure: Internal"]
+    end
+
+    %% User Flow
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>OpenShift Session Cookie"| Router
+    Router -->|"HTTPS/8443<br/>TLS 1.2+<br/>OAuth2 Bearer Token"| OAuthProxy
+    OAuthProxy -->|"HTTP/8888<br/>None (same pod)<br/>Authenticated by proxy"| NotebookContainer
+
+    %% Pod Internal
+    NotebookContainer -.->|mounts| PVC
+    NotebookContainer -.->|mounts| Secrets
+    OAuthProxy -.->|reads config from| Secrets
+
+    %% Service
+    Service -.->|routes to| NotebookContainer
+    Router -.->|forwards to| Service
+
+    %% Egress from Notebook
+    NotebookContainer -->|"pip install<br/>HTTPS/443 TLS 1.2+"| PyPI
+    NotebookContainer -->|"git clone/push<br/>HTTPS/443 TLS 1.2+<br/>SSH Key from secret"| GitHub
+    NotebookContainer -->|"s3.get_object()<br/>HTTPS/443 TLS 1.2+<br/>AWS creds from secret"| S3
+    NotebookContainer -->|"conda install<br/>HTTPS/443 TLS 1.2+"| Conda
+
+    %% Kubernetes Internal
+    NotebookController -->|"HTTPS/6443 mTLS<br/>SA Token<br/>Create/manage pods"| K8sAPI
+    Dashboard -->|"HTTPS/6443 mTLS<br/>SA Token<br/>Create Notebook CR"| K8sAPI
+    NotebookController -.->|watches| ImageStreams
+    Dashboard -.->|reads annotations| ImageStreams
+
+    %% Image Pull (Kubelet, not from notebook pod)
+    K8sAPI -.->|"Kubelet pulls<br/>HTTPS/443 TLS 1.2+<br/>Registry auth"| Quay
+
+    %% Styling by trust zone
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:3px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:3px
+    classDef notebookpod fill:#d5e8d4,stroke:#82b366,stroke-width:3px
+    classDef k8sinternal fill:#dae8fc,stroke:#6c8ebf,stroke-width:3px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:3px
+    classDef networksvc fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+
+    class User external
+    class Router ingress
+    class OAuthProxy,NotebookContainer,PVC,Secrets notebookpod
+    class NotebookController,Dashboard,K8sAPI,ImageStreams k8sinternal
+    class Quay,PyPI,GitHub,S3,Conda externalservice
+    class Service networksvc

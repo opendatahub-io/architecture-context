@@ -1,0 +1,84 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[User Browser]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Router["OpenShift Router<br/>443/TCP → 8888 (Edge) or 8443 (Reencrypt)<br/>TLS 1.2+ Termination"]
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (Kubernetes Internal)"]
+        direction TB
+
+        subgraph NS_Controller["Namespace: redhat-ods-applications"]
+            direction TB
+            Controller["ODH Notebook Controller<br/>SA: manager<br/>Replicas: 1"]
+
+            subgraph Controller_Ports["Controller Ports"]
+                Webhook["Webhook: 8443/TCP<br/>HTTPS TLS 1.2+ mTLS<br/>Cert: webhook-cert (30d)"]
+                Metrics["Metrics: 8080/TCP<br/>HTTP (Prometheus)"]
+                Health["Health: 8081/TCP<br/>HTTP (/healthz, /readyz)"]
+            end
+
+            Controller --> Webhook
+            Controller --> Metrics
+            Controller --> Health
+        end
+
+        subgraph NS_User["Namespace: {user-namespace}"]
+            direction TB
+
+            subgraph NotebookPod["Notebook Pod<br/>SA: {notebook-name}-sa<br/>Label: notebook-name={notebook-name}"]
+                direction LR
+                NotebookContainer["Notebook Container<br/>8888/TCP HTTP<br/>localhost (OAuth) or 0.0.0.0"]
+                OAuthProxy["OAuth Proxy Sidecar<br/>8443/TCP HTTPS TLS1.2+<br/>Cert: {notebook-name}-tls (30d)<br/>Secret: oauth-config (32B)<br/>Session: 24h"]
+
+                OAuthProxy -.->|"proxy to<br/>localhost:8888"| NotebookContainer
+            end
+
+            ServiceNonOAuth["{notebook-name} Service<br/>ClusterIP 80→8888/TCP<br/>HTTP"]
+            ServiceOAuth["{notebook-name}-tls Service<br/>ClusterIP 443→8443/TCP<br/>HTTPS"]
+            NetPol["NetworkPolicy<br/>Selector: notebook-name={notebook-name}<br/>Ingress: controller NS (8888/TCP)<br/>Ingress: router (8443 or 8888/TCP)"]
+
+            ServiceNonOAuth --> NotebookContainer
+            ServiceOAuth --> OAuthProxy
+        end
+
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS1.2+<br/>Auth: SA Tokens, mTLS (webhooks)"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        OAuthServer["OpenShift OAuth Server<br/>https://oauth-openshift.apps.{cluster}<br/>443/TCP HTTPS TLS1.2+<br/>Auth: SA Token + User Creds<br/>AuthZ: SAR (GET notebooks.kubeflow.org)"]
+        ServiceCA["Service CA Operator<br/>Annotation: serving-cert-secret-name<br/>Auto-rotate: 30 days"]
+    end
+
+    %% Flows - Non-OAuth Mode
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>No Auth"| Router
+    Router -->|"HTTP/8888<br/>Edge TLS<br/>(TLS terminated)"| ServiceNonOAuth
+
+    %% Flows - OAuth Mode
+    Router -->|"HTTPS/8443<br/>Reencrypt TLS 1.2+<br/>OAuth required"| ServiceOAuth
+    OAuthProxy -->|"OAuth flow<br/>443/TCP HTTPS<br/>SA Token"| OAuthServer
+    OAuthServer -->|"SubjectAccessReview<br/>443/TCP HTTPS<br/>User Token"| K8sAPI
+
+    %% Controller flows
+    K8sAPI -->|"Webhook call<br/>8443/TCP HTTPS<br/>mTLS"| Webhook
+    Controller -->|"Watch CRDs<br/>Manage resources<br/>443/TCP HTTPS<br/>SA Token"| K8sAPI
+
+    %% Service CA
+    ServiceCA -.->|"Provision certs<br/>webhook-cert<br/>{notebook-name}-tls"| Controller
+    ServiceCA -.->|"Provision certs"| OAuthProxy
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef controller fill:#4a90e2,stroke:#333,stroke-width:2px
+    classDef notebook fill:#e1bee7,stroke:#8e24aa,stroke-width:2px
+
+    class Client external
+    class Router ingress
+    class Controller,Webhook,Metrics,Health,K8sAPI servicemesh
+    class NotebookPod,NotebookContainer,OAuthProxy,ServiceNonOAuth,ServiceOAuth,NetPol notebook
+    class OAuthServer,ServiceCA externalservice

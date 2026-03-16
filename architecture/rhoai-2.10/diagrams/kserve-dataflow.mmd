@@ -1,0 +1,87 @@
+sequenceDiagram
+    participant User as User/CI
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
+    participant Webhook as kserve-webhook-server<br/>9443/TCP HTTPS TLS1.2+ mTLS
+    participant Controller as kserve-controller-manager<br/>ServiceAccount Token
+    participant KnativeAPI as Knative API<br/>6443/TCP HTTPS TLS1.2+
+    participant IstioAPI as Istio API<br/>6443/TCP HTTPS TLS1.2+
+    participant Client as External Client
+    participant Gateway as Istio Ingress Gateway<br/>443/TCP HTTPS TLS1.2+
+    participant Activator as Knative Activator<br/>8012/TCP mTLS
+    participant StorageInit as storage-initializer<br/>Init Container
+    participant S3 as S3/GCS Storage<br/>443/TCP HTTPS TLS1.2+
+    participant Predictor as Predictor Pod<br/>8080/TCP HTTP
+    participant Agent as kserve-agent<br/>Sidecar (localhost)
+    participant ModelServer as Model Server<br/>8080/TCP (localhost)
+
+    rect rgb(240, 248, 255)
+        Note over User,IstioAPI: Flow 1: InferenceService Creation and Deployment
+        User->>K8sAPI: Create InferenceService<br/>Auth: Bearer Token (kubeconfig)
+        K8sAPI->>Webhook: Admission Request<br/>POST /mutate-serving-kserve-io-v1beta1-inferenceservice<br/>mTLS (CA bundle)
+        Webhook->>K8sAPI: Mutated InferenceService<br/>Response
+        K8sAPI->>Webhook: Validation Request<br/>POST /validate-serving-kserve-io-v1beta1-inferenceservice
+        Webhook->>K8sAPI: Validation Result
+        K8sAPI->>Controller: InferenceService Created<br/>Watch Event
+        Controller->>KnativeAPI: Create Knative Service<br/>Auth: ServiceAccount Token
+        Controller->>IstioAPI: Create VirtualService<br/>Auth: ServiceAccount Token
+    end
+
+    rect rgb(255, 250, 240)
+        Note over Client,ModelServer: Flow 2: Model Inference Request (Serverless Mode)
+        Client->>Gateway: POST /v2/models/model:infer<br/>HTTPS/443 TLS1.2+<br/>Auth: Bearer Token (optional)
+        Gateway->>Activator: Forward Request<br/>HTTP/8012 mTLS (Istio)
+        Note over Activator: Scale from zero if needed
+        Activator->>Predictor: Inference Request<br/>HTTP/8080 mTLS (Istio)
+
+        Note over StorageInit,S3: Init Container Model Download (one-time)
+        StorageInit->>S3: Download Model Artifacts<br/>HTTPS/443 TLS1.2+<br/>Auth: AWS IAM/GCS SA
+        S3-->>StorageInit: Model Files
+        Note over StorageInit,Predictor: Mount model volume
+
+        Predictor->>Agent: Forward Request<br/>HTTP localhost (no encryption)
+        Agent->>ModelServer: Inference Request<br/>HTTP localhost
+        ModelServer-->>Agent: Prediction Result
+        Agent-->>Predictor: Response
+        Predictor-->>Activator: Response
+        Activator-->>Gateway: Response
+        Gateway-->>Client: JSON Response<br/>HTTPS/443
+    end
+
+    rect rgb(240, 255, 240)
+        Note over Client,Controller: Flow 3: InferenceGraph Multi-Model Pipeline
+        participant Router as kserve-router<br/>8080/TCP HTTP mTLS
+        participant Preprocess as Preprocessing IS<br/>80/TCP HTTP mTLS
+        participant MainModel as Main Model IS<br/>80/TCP HTTP mTLS
+        participant Postprocess as Postprocessing IS<br/>80/TCP HTTP mTLS
+
+        Client->>Gateway: POST /v2/models/pipeline:infer<br/>HTTPS/443 TLS1.2+
+        Gateway->>Router: Forward Request<br/>HTTP/8080 mTLS (Istio)
+        Router->>Preprocess: Step 1: Preprocess<br/>HTTP/80 mTLS (Istio)
+        Preprocess-->>Router: Preprocessed Data
+        Router->>MainModel: Step 2: Inference<br/>HTTP/80 mTLS (Istio)
+        MainModel-->>Router: Model Prediction
+        Router->>Postprocess: Step 3: Postprocess<br/>HTTP/80 mTLS (Istio)
+        Postprocess-->>Router: Final Result
+        Router-->>Gateway: Response
+        Gateway-->>Client: JSON Response
+    end
+
+    rect rgb(255, 240, 245)
+        Note over User,Predictor: Flow 4: Model Update with Canary Rollout
+        participant PredictorV1 as Predictor v1<br/>90% traffic
+        participant PredictorV2 as Predictor v2<br/>10% traffic
+
+        User->>K8sAPI: Update InferenceService<br/>New model version<br/>Auth: Bearer Token
+        K8sAPI->>Controller: Update Event
+        Controller->>KnativeAPI: Create New Revision<br/>Auth: ServiceAccount Token
+        Controller->>IstioAPI: Update VirtualService<br/>Traffic Split: 90/10<br/>Auth: ServiceAccount Token
+        Client->>Gateway: Inference Request
+        alt 90% traffic
+            Gateway->>PredictorV1: Route to v1<br/>mTLS
+            PredictorV1-->>Gateway: Response
+        else 10% traffic
+            Gateway->>PredictorV2: Route to v2<br/>mTLS
+            PredictorV2-->>Gateway: Response
+        end
+        Gateway-->>Client: Response
+    end

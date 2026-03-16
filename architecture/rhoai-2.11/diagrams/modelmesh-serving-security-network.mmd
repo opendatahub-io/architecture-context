@@ -1,0 +1,100 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User[Data Scientist /<br/>External Client]
+    end
+
+    subgraph ControlPlane["KUBERNETES API SERVER"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token Auth"]
+    end
+
+    subgraph ControllerNamespace["CONTROL PLANE (modelmesh-serving namespace)"]
+        direction TB
+
+        Webhook["Webhook Server<br/>9443/TCP HTTPS TLS 1.2+<br/>SA: modelmesh-controller<br/>Validates ServingRuntime CRs"]
+
+        Controller["ModelMesh Controller<br/>SA: modelmesh-controller<br/>Metrics: 8080/TCP HTTP<br/>Health: 8081/TCP HTTP<br/>Leader Election: ConfigMap"]
+    end
+
+    subgraph DataPlane["DATA PLANE (user namespace)"]
+        direction TB
+
+        subgraph MMDeployment["ModelMesh Runtime Deployment"]
+            direction LR
+            MMContainer["ModelMesh Container<br/>8085/TCP gRPC plaintext (internal)<br/>8033/TCP gRPC plaintext/mTLS (inference)<br/>SA: modelmesh-serving"]
+
+            ServerContainer["Model Server<br/>8001/TCP gRPC plaintext<br/>Triton/MLServer/OpenVINO/TorchServe"]
+
+            AdapterContainer["Runtime Adapter<br/>Model Puller<br/>Shared emptyDir volume"]
+
+            MMContainer -->|internal gRPC| ServerContainer
+        end
+
+        MMService["Service: modelmesh-serving<br/>8033/TCP ClusterIP"]
+    end
+
+    subgraph StateStore["STATE STORAGE"]
+        etcd["etcd StatefulSet<br/>2379/TCP HTTP plaintext<br/>No Auth<br/>HA: 3-5 nodes recommended"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        S3["S3 / MinIO<br/>443/TCP HTTPS (S3) TLS 1.2+<br/>9000/TCP HTTP (MinIO)<br/>AWS IAM or Access Keys"]
+    end
+
+    subgraph OptionalServiceMesh["OPTIONAL SERVICE MESH (Istio)"]
+        direction TB
+        Envoy["Envoy Sidecar<br/>mTLS STRICT<br/>Service Identity<br/>PeerAuthentication"]
+
+        AuthzPolicy["AuthorizationPolicy<br/>Allow: modelmesh-controller"]
+    end
+
+    %% User flows
+    User -->|HTTPS/6443<br/>TLS 1.2+<br/>Bearer Token| K8sAPI
+
+    %% Webhook validation
+    K8sAPI -->|HTTPS/9443<br/>TLS 1.2+<br/>K8s API Token| Webhook
+    Webhook -->|HTTPS/6443<br/>ServiceAccount Token| K8sAPI
+
+    %% Controller operations
+    Controller -->|HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount Token<br/>Watch CRDs| K8sAPI
+    K8sAPI -->|Creates| MMDeployment
+
+    %% ModelMesh data plane
+    MMContainer -->|HTTP/2379<br/>plaintext<br/>No Auth| etcd
+    AdapterContainer -->|HTTPS/443 or HTTP/9000<br/>TLS 1.2+ or plaintext<br/>AWS IAM / Access Keys| S3
+
+    %% Inference flow
+    Client[Inference Client] -->|gRPC/8033<br/>plaintext or mTLS| MMService
+    MMService -->|routes to| MMContainer
+
+    %% Optional Service Mesh
+    MMService -.->|if enabled| Envoy
+    Envoy -.->|mTLS STRICT<br/>Service Identity| MMContainer
+    AuthzPolicy -.->|enforces| Envoy
+
+    %% Secrets
+    WebhookSecret["Secret: modelmesh-webhook-server-cert<br/>kubernetes.io/tls<br/>cert-manager (90d rotation)"]
+    StorageSecret["Secret: storage-config<br/>Opaque<br/>AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY"]
+    EtcdSecret["Secret: model-serving-etcd<br/>Opaque<br/>etcd endpoints, root_prefix"]
+
+    Webhook -.->|uses| WebhookSecret
+    AdapterContainer -.->|uses| StorageSecret
+    MMContainer -.->|uses| EtcdSecret
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef controller fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef dataplane fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef externalservice fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef statestore fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef servicemesh fill:#e1d5e7,stroke:#9673a6,stroke-width:2px,stroke-dasharray: 5 5
+    classDef secret fill:#fce4ec,stroke:#c2185b,stroke-width:1px,stroke-dasharray: 3 3
+
+    class User external
+    class K8sAPI controlplane
+    class Webhook,Controller controller
+    class MMContainer,ServerContainer,AdapterContainer,MMService dataplane
+    class S3 externalservice
+    class etcd statestore
+    class Envoy,AuthzPolicy servicemesh
+    class WebhookSecret,StorageSecret,EtcdSecret secret

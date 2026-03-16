@@ -1,0 +1,94 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[Inference Client<br/>Optional - No default ingress]
+    end
+
+    subgraph ClusterInternal["CLUSTER INTERNAL (Trusted)"]
+        direction TB
+
+        subgraph ControllerNS["Controller Namespace"]
+            direction TB
+            Controller["modelmesh-controller<br/>SA: modelmesh-controller<br/>Replicas: 1-3 HA<br/>CPU: 50m-1, Mem: 96Mi-512Mi"]
+            Webhook["Validating Webhook<br/>9443/TCP HTTPS TLS1.2+<br/>K8s API auth"]
+            ControllerMetrics["Metrics Endpoint<br/>8443/TCP HTTPS TLS1.2+<br/>mTLS via kube-rbac-proxy"]
+            ControllerHealth["Health Probes<br/>8081/TCP HTTP"]
+
+            Controller --- Webhook
+            Controller --- ControllerMetrics
+            Controller --- ControllerHealth
+        end
+
+        subgraph RuntimeNS["Runtime Namespace: {user-namespace}"]
+            direction TB
+
+            RuntimeService["Runtime Service<br/>{runtime-name}-{namespace}<br/>ClusterIP/Headless<br/>8033/TCP gRPC, 8008/TCP HTTP<br/>No encryption, No auth default"]
+
+            subgraph RuntimePod["Runtime Pod Multi-container<br/>SA: modelmesh-serving-sa<br/>Replicas: 2 default<br/>SCC: restricted, Capabilities: DROP ALL"]
+                direction LR
+
+                MMContainer["ModelMesh mm<br/>8033/TCP gRPC inference<br/>8080/TCP gRPC internal<br/>8089/TCP HTTP readiness<br/>CPU: 300m-3, Mem: 448Mi+"]
+
+                RESTProxyContainer["REST Proxy<br/>8008/TCP HTTP<br/>KServe V2 REST API<br/>No encryption<br/>CPU: 50m-1, Mem: 96Mi-512Mi"]
+
+                StoragePullerContainer["Storage Puller<br/>8086/TCP gRPC internal<br/>CPU: 50m-2, Mem: 96Mi-512Mi"]
+
+                RuntimeAdapterContainer["Runtime Adapter<br/>8001/TCP gRPC management<br/>Internal to pod"]
+
+                ModelServerContainer["Model Server Runtime<br/>Triton/MLServer/OVMS/TorchServe<br/>8085/TCP gRPC inference<br/>8001/TCP gRPC management<br/>Internal to pod"]
+
+                MetricsPort["Metrics<br/>2112/TCP HTTP<br/>No encryption"]
+
+                RESTProxyContainer -->|converts to gRPC| MMContainer
+                MMContainer -->|routes| RuntimeAdapterContainer
+                RuntimeAdapterContainer -->|loads models| ModelServerContainer
+            end
+
+            RuntimeService -->|routes to| RESTProxyContainer
+            RuntimeService -->|routes to| MMContainer
+        end
+
+        subgraph SharedInfra["Shared Infrastructure"]
+            etcd["etcd<br/>Namespace: {controller-namespace}<br/>2379/TCP HTTP<br/>No encryption<br/>Basic auth optional<br/>HA: 3+ replicas recommended"]
+        end
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        direction TB
+        S3["S3-compatible Storage<br/>s3.amazonaws.com/MinIO/Ceph<br/>443/TCP HTTPS TLS1.2+<br/>AWS IAM or access keys"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS TLS1.3<br/>ServiceAccount tokens"]
+        Prometheus["Prometheus<br/>Scrapes metrics<br/>ServiceMonitor"]
+    end
+
+    %% External to Internal flows
+    Client -.->|Optional user-defined<br/>Route/Ingress| RuntimeService
+
+    %% Controller flows
+    Controller -->|Watches CRDs<br/>HTTPS/6443 TLS1.3<br/>SA token| K8sAPI
+    Controller -->|Creates resources<br/>HTTPS/6443 TLS1.3<br/>SA token| K8sAPI
+    K8sAPI -->|Validates CRs<br/>HTTPS/9443 TLS1.2+<br/>K8s API auth| Webhook
+
+    %% Runtime flows
+    MMContainer -->|Model metadata<br/>HTTP/2379<br/>Basic auth optional| etcd
+    StoragePullerContainer -->|Download models<br/>HTTPS/443 TLS1.2+<br/>AWS credentials| S3
+
+    %% Monitoring flows
+    Prometheus -->|Scrape<br/>HTTP/2112<br/>No auth| MetricsPort
+    Prometheus -->|Scrape<br/>HTTPS/8443 TLS1.2+<br/>mTLS SA token| ControllerMetrics
+
+    %% Pod-to-pod internal routing
+    MMContainer -.->|Internal routing<br/>gRPC/8080<br/>No encryption| MMContainer
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef controller fill:#d5e8f7,stroke:#4a90e2,stroke-width:2px
+    classDef runtime fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef infrastructure fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef externalservice fill:#ffe6e6,stroke:#cc0000,stroke-width:2px
+    classDef container fill:#e1f5d1,stroke:#6c9c4d,stroke-width:2px
+
+    class Client external
+    class Controller,Webhook,ControllerMetrics,ControllerHealth controller
+    class RuntimeService,RuntimePod runtime
+    class MMContainer,RESTProxyContainer,StoragePullerContainer,RuntimeAdapterContainer,ModelServerContainer,MetricsPort container
+    class etcd infrastructure
+    class S3,K8sAPI,Prometheus externalservice
