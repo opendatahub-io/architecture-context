@@ -23,7 +23,10 @@ from lib.fetch import fetch_repositories
 from lib.manifest_parser import (
     process_manifest_script,
     display_component_summary,
-    components_to_json
+    components_to_json,
+    discover_adjacent_components,
+    get_build_info,
+    format_build_info_context,
 )
 
 # Import collection script as module
@@ -218,6 +221,11 @@ def parse_args():
         "--architecture-dir",
         default="architecture",
         help="Base architecture directory (default: architecture)"
+    )
+    platform_arch_parser.add_argument(
+        "--checkouts-dir",
+        default="checkouts",
+        help="Base directory containing cloned repositories (default: checkouts)"
     )
     platform_arch_parser.add_argument(
         "--platform",
@@ -533,16 +541,16 @@ async def run_generate_architecture_phase(args) -> None:
     script_path_obj = Path(script_path)
     operator_path = script_path_obj.parent
 
+    # Determine checkouts_dir from script path (needed for operator + adjacent discovery)
+    parts = script_path_obj.parts
+    if "checkouts" in parts:
+        checkouts_idx = parts.index("checkouts")
+        checkouts_dir = Path(*parts[:checkouts_idx+2])
+    else:
+        checkouts_dir = script_path_obj.parent.parent
+
     if operator_path.exists():
         from lib.manifest_parser import ComponentInfo
-
-        # Determine checkouts_dir from script path
-        parts = script_path_obj.parts
-        if "checkouts" in parts:
-            checkouts_idx = parts.index("checkouts")
-            checkouts_dir = Path(*parts[:checkouts_idx+2])
-        else:
-            checkouts_dir = script_path_obj.parent.parent
 
         # Check if operator has architecture file
         operator_arch_file = operator_path / "GENERATED_ARCHITECTURE.md"
@@ -561,6 +569,22 @@ async def run_generate_architecture_phase(args) -> None:
 
         # Add operator to components dict
         components["operator"] = operator_component
+
+    # Discover adjacent components from the checkout directory
+    # Only for RHOAI (red-hat-data-services) with a branch specified,
+    # since opendatahub-io has too many irrelevant repos
+    if args.platform == "rhoai" and args.branch:
+        adjacent = discover_adjacent_components(checkouts_dir, components, org)
+        if adjacent:
+            print(f"Discovered {len(adjacent)} adjacent component(s) beyond manifests")
+            components.update(adjacent)
+
+    # Extract build metadata from RHOAI-Build-Config (RHOAI only)
+    build_info = get_build_info(checkouts_dir)
+    if build_info:
+        info = format_build_info_context(build_info)
+        if info:
+            print(info)
 
     if not components:
         print("No components found with checkouts")
@@ -636,12 +660,16 @@ async def run_generate_architecture_phase(args) -> None:
 
         # Build prompt from skill instructions
         model_display = get_model_display_name(args.model)
+        build_context = ""
+        if build_info:
+            build_context = format_build_info_context(build_info) + "\n"
+
         prompt = f"""Generate a comprehensive architecture summary for this component repository.
 
 Distribution: {distribution}
 Repository: {component.repo_org}/{component.repo_name}
 Manifests folder: {component.source_folder}
-
+{build_context}
 IMPORTANT: The manifests folder location shows where kustomize deployment manifests are located.
 This is critical for understanding how this component is deployed in production.
 
@@ -1113,8 +1141,18 @@ async def run_generate_platform_architecture_phase(args) -> None:
     instructions = instructions_match.group(1).strip()
 
     # Prepare agent jobs
+    checkouts_base = Path(getattr(args, 'checkouts_dir', 'checkouts'))
     jobs = []
     for p in sorted(needs_generation, key=lambda x: (x['platform'], x['version'])):
+        # Look up supported OCP versions from build-config in checkouts
+        build_context = ""
+        if p['platform'] == 'rhoai':
+            org = "red-hat-data-services"
+            org_dir = checkouts_base / f"{org}.rhoai-{p['version']}"
+            platform_build_info = get_build_info(org_dir)
+            if platform_build_info:
+                build_context = format_build_info_context(platform_build_info) + "\n"
+
         # Build prompt from skill instructions
         model_display = get_model_display_name(args.model)
         prompt = f"""Aggregate component architecture summaries into a platform-level architecture document.
@@ -1122,9 +1160,14 @@ async def run_generate_platform_architecture_phase(args) -> None:
 Distribution: {p['platform']}
 Version: {p['version']}
 Architecture directory: {p['path']}
-
+{build_context}
 This directory contains {p['component_count']} component architecture file(s).
 Generate a comprehensive PLATFORM.md file by aggregating all component summaries.
+
+IMPORTANT: The supported OCP versions dictate which OpenShift/Kubernetes APIs and platform
+features are available to or required by this release. The total shipped container image count
+reflects the full scope of the product deployment via OLM relatedImages.
+Factor this into the architecture analysis.
 
 IMPORTANT: For the "Generated By" metadata field, use exactly: {model_display}
 
@@ -1334,6 +1377,7 @@ async def run_all_phases(args) -> None:
     # Use target_version to filter to specific version if branch was provided
     platform_arch_args = Namespace(
         architecture_dir="architecture",
+        checkouts_dir="checkouts",
         platform=args.platform,
         version=target_version,  # Filter to specific version from branch
         max_concurrent=5,
