@@ -287,6 +287,26 @@ Source: `architecture/rhoai-3.4-ea.2/llama-stack-provider-ragas.md`
 
 ---
 
+### Llama Stack Provider TrustyAI Garak
+Source: `architecture/rhoai-3.4-ea.2/llama-stack-provider-trustyai-garak.md`
+
+#### For Developers
+- [Component Structure](./llama-stack-provider-trustyai-garak-component.png) ([mmd](./llama-stack-provider-trustyai-garak-component.mmd)) - Mermaid diagram showing internal components
+- [Data Flows](./llama-stack-provider-trustyai-garak-dataflow.png) ([mmd](./llama-stack-provider-trustyai-garak-dataflow.mmd)) - Sequence diagram of request/response flows
+- [Dependencies](./llama-stack-provider-trustyai-garak-dependencies.png) ([mmd](./llama-stack-provider-trustyai-garak-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./llama-stack-provider-trustyai-garak-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./llama-stack-provider-trustyai-garak-component.png) ([mmd](./llama-stack-provider-trustyai-garak-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./llama-stack-provider-trustyai-garak-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./llama-stack-provider-trustyai-garak-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./llama-stack-provider-trustyai-garak-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./llama-stack-provider-trustyai-garak-rbac.png) ([mmd](./llama-stack-provider-trustyai-garak-rbac.mmd)) - RBAC permissions and bindings
+
+---
+
 ### llm-d KV-Cache
 Source: `architecture/rhoai-3.4-ea.2/llm-d-kv-cache.md`
 
@@ -504,6 +524,186 @@ Source: `architecture/rhoai-3.4-ea.2/openvino_model_server.md`
 - [Security Network Diagram (Mermaid)](./openvino_model_server-security-network.mmd) - Visual network topology (editable)
 - [Security Network Diagram (ASCII)](./openvino_model_server-security-network.txt) - Precise text format for SAR submissions
 - [RBAC Visualization](./openvino_model_server-rbac.png) ([mmd](./openvino_model_server-rbac.mmd)) - RBAC permissions and bindings
+
+---
+
+### RHOAI Platform (Aggregated View)
+Source: `architecture/rhoai-3.4-ea.2/PLATFORM.md`
+
+#### For Developers
+- [Component Structure](./platform-component.png) ([mmd](./platform-component.mmd)) - Mermaid diagram showing full platform tiered architecture (45 components)
+- [Data Flows](./platform-dataflow.png) ([mmd](./platform-dataflow.mmd)) - Sequence diagrams of authentication, inference, guardrails, pipeline, and training flows
+- [Dependencies](./platform-dependencies.png) ([mmd](./platform-dependencies.mmd)) - Complete platform dependency graph
+
+#### For Architects
+- [C4 Context](./platform-c4-context.dsl) - Full system context in C4 format (Structurizr) with all containers and external systems
+- [Component Overview](./platform-component.png) ([mmd](./platform-component.mmd)) - High-level platform component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./platform-security-network.png) - High-resolution network topology with trust zones
+- [Security Network Diagram (Mermaid)](./platform-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./platform-security-network.txt) - Precise text format for SAR submissions (includes RBAC, TLS, secrets, network policies)
+- [RBAC Visualization](./platform-rbac.png) ([mmd](./platform-rbac.mmd)) - RBAC permissions and bindings for all platform operators
+
+---
+
+### RHOAI Operator (rhods-operator)
+Source: `architecture/rhoai-3.4-ea.2/rhods-operator.md`
+
+#### For Developers
+- [Component Structure](./rhods-operator-component.png) ([mmd](./rhods-operator-component.mmd)) - Mermaid diagram showing internal components
+- [Data Flows](./rhods-operator-dataflow.png) ([mmd](./rhods-operator-dataflow.mmd)) - Sequence diagram of request/response flows
+- [Dependencies](./rhods-operator-dependencies.png) ([mmd](./rhods-operator-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./rhods-operator-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./rhods-operator-component.png) ([mmd](./rhods-operator-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./rhods-operator-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./rhods-operator-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./rhods-operator-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./rhods-operator-rbac.png) ([mmd](./rhods-operator-rbac.mmd)) - RBAC permissions and bindings
+
+---
+
+### RHOAI Build Config
+Source: `architecture/rhoai-3.4-ea.2/RHOAI-Build-Config.md`
+
+#### For Developers
+- [Component Structure](./rhoai-build-config-component.png) ([mmd](./rhoai-build-config-component.mmd)) - Mermaid diagram showing internal components
+- [Data Flows](./rhoai-build-config-dataflow.png) ([mmd](./rhoai-build-config-dataflow.mmd)) - Sequence diagram of request/response flows
+- [Dependencies](./rhoai-build-config-dependencies.png) ([mmd](./rhoai-build-config-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./rhoai-build-config-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./rhoai-build-config-component.png) ([mmd](./rhoai-build-config-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./rhoai-build-config-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./rhoai-build-config-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./rhoai-build-config-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./rhoai-build-config-rbac.png) ([mmd](./rhoai-build-config-rbac.mmd)) - RBAC permissions and bindings
+
+---
+
+### TrustyAI Explainability
+Source: `architecture/rhoai-3.4-ea.2/trustyai-explainability.md`
+
+#### For Developers
+- [Component Structure](./trustyai-explainability-component.png) ([mmd](./trustyai-explainability-component.mmd)) - Mermaid diagram showing internal components
+- [Data Flows](./trustyai-explainability-dataflow.png) ([mmd](./trustyai-explainability-dataflow.mmd)) - Sequence diagram of request/response flows
+- [Dependencies](./trustyai-explainability-dependencies.png) ([mmd](./trustyai-explainability-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./trustyai-explainability-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./trustyai-explainability-component.png) ([mmd](./trustyai-explainability-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./trustyai-explainability-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./trustyai-explainability-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./trustyai-explainability-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./trustyai-explainability-rbac.png) ([mmd](./trustyai-explainability-rbac.mmd)) - RBAC permissions and bindings
+
+---
+
+### TrustyAI Service Operator
+Source: `architecture/rhoai-3.4-ea.2/trustyai-service-operator.md`
+
+#### For Developers
+- [Component Structure](./trustyai-service-operator-component.png) ([mmd](./trustyai-service-operator-component.mmd)) - Mermaid diagram showing internal components
+- [Data Flows](./trustyai-service-operator-dataflow.png) ([mmd](./trustyai-service-operator-dataflow.mmd)) - Sequence diagram of request/response flows
+- [Dependencies](./trustyai-service-operator-dependencies.png) ([mmd](./trustyai-service-operator-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./trustyai-service-operator-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./trustyai-service-operator-component.png) ([mmd](./trustyai-service-operator-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./trustyai-service-operator-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./trustyai-service-operator-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./trustyai-service-operator-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./trustyai-service-operator-rbac.png) ([mmd](./trustyai-service-operator-rbac.mmd)) - RBAC permissions and bindings
+
+---
+
+### Training Operator (Kubeflow Training Operator)
+Source: `architecture/rhoai-3.4-ea.2/training-operator.md`
+
+#### For Developers
+- [Component Structure](./training-operator-component.png) ([mmd](./training-operator-component.mmd)) - Mermaid diagram showing internal components
+- [Data Flows](./training-operator-dataflow.png) ([mmd](./training-operator-dataflow.mmd)) - Sequence diagram of request/response flows
+- [Dependencies](./training-operator-dependencies.png) ([mmd](./training-operator-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./training-operator-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./training-operator-component.png) ([mmd](./training-operator-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./training-operator-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./training-operator-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./training-operator-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./training-operator-rbac.png) ([mmd](./training-operator-rbac.mmd)) - RBAC permissions and bindings
+
+---
+
+### Kubeflow Trainer
+Source: `architecture/rhoai-3.4-ea.2/trainer.md`
+
+#### For Developers
+- [Component Structure](./trainer-component.png) ([mmd](./trainer-component.mmd)) - Mermaid diagram showing internal components
+- [Data Flows](./trainer-dataflow.png) ([mmd](./trainer-dataflow.mmd)) - Sequence diagram of request/response flows
+- [Dependencies](./trainer-dependencies.png) ([mmd](./trainer-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./trainer-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./trainer-component.png) ([mmd](./trainer-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./trainer-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./trainer-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./trainer-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./trainer-rbac.png) ([mmd](./trainer-rbac.mmd)) - RBAC permissions and bindings
+
+---
+
+### vLLM Gaudi (Intel Gaudi Hardware Plugin)
+Source: `architecture/rhoai-3.4-ea.2/vllm-gaudi.md`
+
+#### For Developers
+- [Component Structure](./vllm-gaudi-component.png) ([mmd](./vllm-gaudi-component.mmd)) - Mermaid diagram showing internal components
+- [Data Flows](./vllm-gaudi-dataflow.png) ([mmd](./vllm-gaudi-dataflow.mmd)) - Sequence diagram of request/response flows
+- [Dependencies](./vllm-gaudi-dependencies.png) ([mmd](./vllm-gaudi-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./vllm-gaudi-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./vllm-gaudi-component.png) ([mmd](./vllm-gaudi-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./vllm-gaudi-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./vllm-gaudi-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./vllm-gaudi-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./vllm-gaudi-rbac.png) ([mmd](./vllm-gaudi-rbac.mmd)) - RBAC permissions and bindings
+
+---
+
+### vLLM CPU
+Source: `architecture/rhoai-3.4-ea.2/vllm-cpu.md`
+
+#### For Developers
+- [Component Structure](./vllm-cpu-component.png) ([mmd](./vllm-cpu-component.mmd)) - Mermaid diagram showing internal components
+- [Data Flows](./vllm-cpu-dataflow.png) ([mmd](./vllm-cpu-dataflow.mmd)) - Sequence diagram of request/response flows
+- [Dependencies](./vllm-cpu-dependencies.png) ([mmd](./vllm-cpu-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./vllm-cpu-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./vllm-cpu-component.png) ([mmd](./vllm-cpu-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./vllm-cpu-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./vllm-cpu-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./vllm-cpu-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./vllm-cpu-rbac.png) ([mmd](./vllm-cpu-rbac.mmd)) - RBAC permissions and bindings
 
 ---
 
