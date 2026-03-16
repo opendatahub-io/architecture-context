@@ -137,6 +137,21 @@ def parse_args():
         type=int,
         help="Limit number of components to process (for testing)"
     )
+    generate_arch_parser.add_argument(
+        "--component",
+        help="Only process this specific component (e.g., 'operator', 'kserve', 'mlflow')"
+    )
+    generate_arch_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Delete existing GENERATED_ARCHITECTURE.md and regenerate"
+    )
+    generate_arch_parser.add_argument(
+        "--model",
+        choices=["sonnet", "opus", "haiku"],
+        default="sonnet",
+        help="Claude model to use (default: sonnet)"
+    )
 
     # Phase 4: Collect architectures
     collect_parser = subparsers.add_parser(
@@ -194,6 +209,12 @@ def parse_args():
         type=int,
         help="Limit number of platforms to process (for testing)"
     )
+    platform_arch_parser.add_argument(
+        "--model",
+        choices=["sonnet", "opus", "haiku"],
+        default="sonnet",
+        help="Claude model to use (default: sonnet)"
+    )
 
     # Phase 6: Generate diagrams
     diagrams_parser = subparsers.add_parser(
@@ -229,6 +250,12 @@ def parse_args():
         "--force-regenerate",
         action="store_true",
         help="Regenerate diagrams even if they already exist"
+    )
+    diagrams_parser.add_argument(
+        "--model",
+        choices=["sonnet", "opus", "haiku"],
+        default="sonnet",
+        help="Claude model to use (default: sonnet)"
     )
 
     # All phases
@@ -331,7 +358,7 @@ async def run_manifest_phase(args) -> None:
         print(f"{'=' * 60}")
 
 
-async def run_agent(name: str, cwd: str, prompt: str, log_dir: Path) -> dict:
+async def run_agent(name: str, cwd: str, prompt: str, log_dir: Path, model: str = "sonnet") -> dict:
     """
     Launch one independent Claude agent session to generate architecture.
 
@@ -340,6 +367,7 @@ async def run_agent(name: str, cwd: str, prompt: str, log_dir: Path) -> dict:
         cwd: Working directory for the agent
         prompt: Prompt to send to the agent
         log_dir: Directory to write log files
+        model: Claude model to use (sonnet, opus, or haiku)
 
     Returns:
         dict with 'name', 'success', 'log_file', and optional 'error' keys
@@ -351,11 +379,13 @@ async def run_agent(name: str, cwd: str, prompt: str, log_dir: Path) -> dict:
         cwd=cwd,
         allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
         permission_mode="bypassPermissions",
+        model=model,
         # No max_turns - let agent run as long as needed for thorough analysis
     )
 
     print(f"\n{'=' * 60}")
     print(f"Starting agent: {name}")
+    print(f"Model: {model}")
     print(f"Working directory: {cwd}")
     print(f"Log file: {log_file}")
     print(f"{'=' * 60}")
@@ -364,6 +394,7 @@ async def run_agent(name: str, cwd: str, prompt: str, log_dir: Path) -> dict:
         with open(log_file, 'w') as log:
             # Write header
             log.write(f"Agent: {name}\n")
+            log.write(f"Model: {model}\n")
             log.write(f"Working directory: {cwd}\n")
             log.write(f"{'=' * 60}\n\n")
             log.write("PROMPT:\n")
@@ -473,7 +504,40 @@ async def run_generate_architecture_phase(args) -> None:
         print("No components found with checkouts")
         return
 
-    # Filter to components missing architecture
+    # Apply component filter if specified
+    if hasattr(args, 'component') and args.component:
+        # Create alias mapping for operator
+        component_aliases = {
+            'rhods-operator': 'operator',
+            'opendatahub-operator': 'operator',
+        }
+
+        # Resolve alias to actual key
+        target_key = component_aliases.get(args.component, args.component)
+
+        if target_key in components:
+            components = {target_key: components[target_key]}
+            if target_key != args.component:
+                print(f"Using alias: {args.component} → {target_key}")
+            print(f"Filtered to single component: {target_key}\n")
+        else:
+            print(f"ERROR: Component '{args.component}' not found")
+            print(f"Available components: {', '.join(sorted(components.keys()))}")
+            print(f"Available aliases: {', '.join(sorted(component_aliases.keys()))}")
+            return
+
+    # Handle --force: delete existing GENERATED_ARCHITECTURE.md files
+    if hasattr(args, 'force') and args.force:
+        print("Force mode: Deleting existing GENERATED_ARCHITECTURE.md files...\n")
+        for component in components.values():
+            arch_file = component.checkout_path / "GENERATED_ARCHITECTURE.md"
+            if arch_file.exists():
+                arch_file.unlink()
+                print(f"  Deleted: {component.key}/GENERATED_ARCHITECTURE.md")
+                component.has_architecture = False  # Update status
+        print()
+
+    # Filter to components missing architecture (unless --force, which already deleted them)
     missing_arch = [c for c in components.values() if not c.has_architecture]
     has_arch = [c for c in components.values() if c.has_architecture]
 
@@ -549,6 +613,7 @@ This is critical for understanding how this component is deployed in production.
     print(f"{'=' * 60}")
     print(f"Ready to process {len(jobs)} component(s)")
     print(f"Max concurrent agents: {args.max_concurrent}")
+    print(f"Model: {args.model}")
     print(f"{'=' * 60}\n")
 
     # Run agents with concurrency limit
@@ -556,7 +621,7 @@ This is critical for understanding how this component is deployed in production.
 
     async def run_agent_with_semaphore(job):
         async with semaphore:
-            return await run_agent(job["name"], job["cwd"], job["prompt"], log_dir)
+            return await run_agent(job["name"], job["cwd"], job["prompt"], log_dir, args.model)
 
     print("Starting agent execution...\n")
     results = await asyncio.gather(
@@ -780,6 +845,7 @@ Generate all diagram formats:
     print(f"{'=' * 60}")
     print(f"Ready to process {len(jobs)} file(s)")
     print(f"Max concurrent agents: {args.max_concurrent}")
+    print(f"Model: {args.model}")
     print(f"{'=' * 60}\n")
 
     # Run agents with concurrency limit
@@ -787,7 +853,7 @@ Generate all diagram formats:
 
     async def run_agent_with_semaphore(job):
         async with semaphore:
-            return await run_agent(job["name"], job["cwd"], job["prompt"], log_dir)
+            return await run_agent(job["name"], job["cwd"], job["prompt"], log_dir, args.model)
 
     print("Starting agent execution...\n")
     results = await asyncio.gather(
@@ -1023,6 +1089,7 @@ Generate a comprehensive PLATFORM.md file by aggregating all component summaries
     print(f"{'=' * 60}")
     print(f"Ready to process {len(jobs)} platform(s)")
     print(f"Max concurrent agents: {args.max_concurrent}")
+    print(f"Model: {args.model}")
     print(f"{'=' * 60}\n")
 
     # Run agents with concurrency limit
@@ -1030,7 +1097,7 @@ Generate a comprehensive PLATFORM.md file by aggregating all component summaries
 
     async def run_agent_with_semaphore(job):
         async with semaphore:
-            return await run_agent(job["name"], job["cwd"], job["prompt"], log_dir)
+            return await run_agent(job["name"], job["cwd"], job["prompt"], log_dir, args.model)
 
     print("Starting agent execution...\n")
     results = await asyncio.gather(
