@@ -159,6 +159,10 @@ def parse_args():
         default="all",
         help="Which platform to collect (default: all)"
     )
+    collect_parser.add_argument(
+        "--version",
+        help="Only collect this specific version (default: all versions)"
+    )
 
     # Phase 5: Generate platform architectures
     platform_arch_parser = subparsers.add_parser(
@@ -1081,8 +1085,11 @@ async def run_collect_architectures_phase(args) -> None:
     # Determine platform filter
     platform_filter = None if args.platform == "all" else args.platform
 
+    # Determine version filter
+    version_filter = getattr(args, 'version', None)
+
     # Run collection
-    summary = collect_architectures(checkouts_dir, output_dir, platform_filter)
+    summary = collect_architectures(checkouts_dir, output_dir, platform_filter, version_filter)
 
     # Print summary
     print_summary(summary, checkouts_dir, output_dir)
@@ -1186,10 +1193,12 @@ async def run_all_phases(args) -> None:
                     print(f"Note: Could not pre-create directory: {e}")
 
     # Phase 4: Collect architectures into organized structure
+    # Filter to specific version if branch was provided
     collect_args = Namespace(
         checkouts_dir="checkouts",
         output_dir="architecture",
-        platform=args.platform  # Filter to only this platform
+        platform=args.platform,  # Filter to only this platform
+        version=target_version  # Filter to specific version from branch
     )
     await run_collect_architectures_phase(collect_args)
 

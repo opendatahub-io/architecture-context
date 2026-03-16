@@ -250,7 +250,7 @@ To generate diagrams from a component:
     print(f"  Created index: {readme_path}")
 
 
-def collect_architectures(checkouts_dir: Path, output_dir: Path, platform_filter: Optional[str] = None) -> dict:
+def collect_architectures(checkouts_dir: Path, output_dir: Path, platform_filter: Optional[str] = None, version_filter: Optional[str] = None) -> dict:
     """
     Main collection function.
 
@@ -258,6 +258,7 @@ def collect_architectures(checkouts_dir: Path, output_dir: Path, platform_filter
         checkouts_dir: Directory containing platform checkouts
         output_dir: Output directory for organized architectures
         platform_filter: Optional filter for 'odh', 'rhoai', or None for all
+        version_filter: Optional version filter (e.g., '2.25', '3.3.0'), or None for all
 
     Returns summary dict with stats.
     """
@@ -273,6 +274,10 @@ def collect_architectures(checkouts_dir: Path, output_dir: Path, platform_filter
     # Apply platform filter if specified
     if platform_filter:
         platforms = [p for p in platforms if p.name == platform_filter]
+
+    # Apply version filter if specified
+    if version_filter:
+        platforms = [p for p in platforms if p.version == version_filter]
 
     if not platforms:
         print(f"\n⚠️  No platform checkout directories found in {checkouts_dir}\n")
