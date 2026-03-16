@@ -1,0 +1,288 @@
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                                   │
+│                                                                                          │
+│  [User/Admin]                                      [Client Application]                 │
+│         │                                                   │                            │
+│         │ Port: 6443/TCP                                    │ Port: 8033/8008/TCP       │
+│         │ Protocol: HTTPS                                   │ Protocol: gRPC/HTTP       │
+│         │ Encryption: TLS 1.2+                              │ Encryption: None          │
+│         │ Auth: kubeconfig credentials                      │ Auth: None (default)      │
+│         ▼                                                   ▼                            │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│  API GATEWAY / INGRESS                                                                  │
+│                                                                                          │
+│  [Kubernetes API Server]                          [Optional: OpenShift Route/Ingress]   │
+│  - Port: 6443/TCP                                 - Port: 443/TCP → 8033/8008/TCP      │
+│  - Validation webhook callout to 9443/TCP         - TLS termination (optional)          │
+│         │                                                   │                            │
+│         │ Port: 9443/TCP (webhook)                          │ Port: 8033/8008/TCP       │
+│         │ Protocol: HTTPS                                   │ Protocol: gRPC/HTTP       │
+│         │ Encryption: TLS 1.2+                              │ Encryption: None/mTLS     │
+│         │ Auth: Webhook TLS cert                            │ Auth: None/Istio          │
+│         ▼                                                   ▼                            │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE (Namespace: redhat-ods-applications / odh-model-controller)             │
+│                                                                                          │
+│  [modelmesh-controller Deployment]                [Webhook Server]                      │
+│  - Namespace: redhat-ods-applications             - Port: 9443/TCP (HTTPS)             │
+│  - ServiceAccount: modelmesh-controller           - TLS cert: modelmesh-webhook-cert   │
+│  - Replicas: 1 (HA: 3 with leader election)       - Validates: ServingRuntime CRDs     │
+│  - Container: odh-modelmesh-serving-controller                                          │
+│                                                                                          │
+│  Ports:                                                                                  │
+│  - 8081/TCP: /readyz, /healthz (HTTP, no auth)                                         │
+│  - 8443/TCP: /metrics (HTTPS, kube-rbac-proxy)                                         │
+│  - 9443/TCP: /validate (HTTPS, webhook cert)                                           │
+│         │                                                                                │
+│         │ Port: 6443/TCP                                                                 │
+│         │ Protocol: HTTPS                                                                │
+│         │ Encryption: TLS 1.2+                                                           │
+│         │ Auth: Service Account token (modelmesh-controller)                            │
+│         ▼                                                                                │
+│  [Kubernetes API Server]                                                                │
+│  - Creates/manages: Deployments, Services, ConfigMaps, Secrets                          │
+│  - Watches: InferenceService, Predictor, ServingRuntime, ClusterServingRuntime CRDs    │
+│         │                                                                                │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│  DATA PLANE (Namespace: {user-namespace})                                              │
+│                                                                                          │
+│  [ModelMesh Runtime Deployment]                                                         │
+│  - Namespace: {user-namespace}                                                          │
+│  - ServiceAccount: modelmesh-serving-sa                                                 │
+│  - Replicas: 2+ (configurable via podsPerRuntime)                                       │
+│  - Labels: modelmesh-service={runtime-name}, app.kubernetes.io/managed-by=modelmesh    │
+│                                                                                          │
+│  Multi-container Pod:                                                                   │
+│  ┌────────────────────────────────────────────────────────────────────────────────────┐│
+│  │ [ModelMesh Router] (Java container - kserve/modelmesh)                             ││
+│  │ - Ports: 8033/TCP (gRPC inference), 8080/TCP (internal litelinks), 2112/TCP (HTTP) ││
+│  │ - Purpose: Model routing, placement, lifecycle management                          ││
+│  │                                                                                      ││
+│  │ [Runtime Adapter] (Go container - kserve/modelmesh-runtime-adapter)                ││
+│  │ - Port: 8085/TCP (gRPC)                                                             ││
+│  │ - Purpose: Protocol adaptation between ModelMesh and model server                  ││
+│  │                                                                                      ││
+│  │ [REST Proxy] (Go container - kserve/rest-proxy)                                    ││
+│  │ - Port: 8008/TCP (HTTP)                                                             ││
+│  │ - Purpose: KServe V2 REST API to gRPC translation                                  ││
+│  │                                                                                      ││
+│  │ [Model Server] (Triton/MLServer/OVMS/TorchServe)                                   ││
+│  │ - Port: 8001/TCP (gRPC)                                                             ││
+│  │ - Purpose: Model inference execution                                               ││
+│  │                                                                                      ││
+│  │ [Storage Helper] (Init container - runtime-adapter/storage-initializer)            ││
+│  │ - Purpose: Download model artifacts from S3 before pod starts                      ││
+│  └────────────────────────────────────────────────────────────────────────────────────┘│
+│                                                                                          │
+│  Internal container communication (localhost):                                          │
+│  - Client (8008/8033) → REST Proxy/ModelMesh Router (8033/8008)                        │
+│  - ModelMesh Router (8033) → Runtime Adapter (8085) → Model Server (8001)              │
+│                                                                                          │
+│  Services exposing runtime pods:                                                        │
+│  - modelmesh-serving (ClusterIP): 8033/TCP (gRPC), 8008/TCP (HTTP)                     │
+│         │                     │                                                          │
+│         │                     │ Port: 2379/TCP                                           │
+│         │                     │ Protocol: HTTP                                           │
+│         │                     │ Encryption: None                                         │
+│         │                     │ Auth: None                                               │
+│         │                     ▼                                                          │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│  STATE MANAGEMENT (Namespace: redhat-ods-applications)                                 │
+│                                                                                          │
+│  [etcd StatefulSet]                                                                     │
+│  - Namespace: redhat-ods-applications                                                   │
+│  - Replicas: 3 (recommended for HA)                                                     │
+│  - Service: etcd (ClusterIP)                                                            │
+│  - Port: 2379/TCP (HTTP)                                                                │
+│  - Encryption: None                                                                      │
+│  - Auth: None (network isolation via NetworkPolicy)                                     │
+│  - Purpose: Distributed coordination for ModelMesh cluster membership, model assignments│
+│         │                                                                                │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                                       │
+│                                                                                          │
+│  [S3-compatible Storage - s3.amazonaws.com / minio / IBM COS]                           │
+│         ▲                                                                                │
+│         │ Port: 443/TCP                                                                  │
+│         │ Protocol: HTTPS                                                                │
+│         │ Encryption: TLS 1.2+                                                           │
+│         │ Auth: AWS Signature v4 / S3 API keys                                           │
+│         │ Secret: storage-config (Opaque)                                                │
+│         │                                                                                │
+│  [Storage Helper Init Container] (downloads models before pod starts)                   │
+│                                                                                          │
+│  [Prometheus - OpenShift Monitoring]                                                    │
+│         │                                                                                │
+│         │ Port: 8443/TCP (controller), 2112/TCP (runtime)                               │
+│         │ Protocol: HTTPS (controller), HTTP (runtime)                                  │
+│         │ Encryption: TLS (controller via kube-rbac-proxy), None (runtime)              │
+│         │ Auth: Bearer token (controller), None (runtime)                               │
+│         │                                                                                │
+│  [Istio/Service Mesh] (Optional)                                                        │
+│  - Envoy sidecar injection for mTLS                                                     │
+│  - AuthorizationPolicy for access control                                               │
+│  - PeerAuthentication: STRICT mode                                                      │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════════════════════
+RBAC SUMMARY
+═══════════════════════════════════════════════════════════════════════════════════════════
+
+ClusterRole: modelmesh-controller-role
+├─ API Group: "" (core)
+│  ├─ Resources: configmaps, secrets, services, services/finalizers, namespaces, endpoints
+│  └─ Verbs: create, delete, get, list, patch, update, watch
+├─ API Group: apps
+│  ├─ Resources: deployments, deployments/finalizers
+│  └─ Verbs: create, delete, get, list, patch, update, watch
+├─ API Group: serving.kserve.io
+│  ├─ Resources: inferenceservices, predictors, servingruntimes, clusterservingruntimes
+│  ├─ Resources: {resource}/status, {resource}/finalizers
+│  └─ Verbs: create, delete, get, list, patch, update, watch
+├─ API Group: autoscaling
+│  ├─ Resources: horizontalpodautoscalers, horizontalpodautoscalers/status
+│  └─ Verbs: create, delete, get, list, update, watch
+└─ API Group: monitoring.coreos.com
+   ├─ Resources: servicemonitors
+   └─ Verbs: create, delete, get, list, patch, update, watch
+
+ClusterRole: leader-election-role (namespace-scoped)
+├─ API Group: "" (core)
+│  ├─ Resources: configmaps
+│  └─ Verbs: get, list, watch, create, update, patch
+└─ API Group: coordination.k8s.io
+   ├─ Resources: leases
+   └─ Verbs: get, list, watch, create, update, patch
+
+ClusterRole: auth-proxy-client-clusterrole
+├─ API Group: authentication.k8s.io
+│  ├─ Resources: tokenreviews
+│  └─ Verbs: create
+└─ API Group: authorization.k8s.io
+   ├─ Resources: subjectaccessreviews
+   └─ Verbs: create
+
+ClusterRoleBinding: modelmesh-controller-role-binding
+├─ ClusterRole: modelmesh-controller-role
+└─ ServiceAccount: modelmesh-controller (namespace: redhat-ods-applications)
+
+RoleBinding: modelmesh-controller-role-binding (per-namespace)
+├─ Role: modelmesh-controller-role
+└─ ServiceAccount: modelmesh-controller (namespace: redhat-ods-applications)
+
+RoleBinding: restricted-scc-role-binding (per-namespace)
+├─ Role: restricted-scc-role
+└─ ServiceAccount: modelmesh-serving-sa (namespace: {user-namespace})
+
+═══════════════════════════════════════════════════════════════════════════════════════════
+SERVICE MESH CONFIGURATION (Optional - when Istio is enabled)
+═══════════════════════════════════════════════════════════════════════════════════════════
+
+PeerAuthentication: {namespace}-modelmesh-peer-authn
+├─ Namespace: {user-namespace}
+├─ Mode: STRICT
+├─ Selector: modelmesh-service={runtime-name}
+└─ Purpose: Enforce mTLS for all traffic to ModelMesh runtime pods
+
+AuthorizationPolicy: modelmesh-controller-access
+├─ Namespace: {user-namespace}
+├─ Selector: modelmesh-service={runtime-name}
+├─ Rules:
+│  ├─ Allow from: cluster.local/ns/redhat-ods-applications/sa/modelmesh-controller
+│  ├─ Allow from: cluster.local/ns/{user-namespace}/sa/*
+│  └─ Methods: GET, POST (inference)
+└─ Purpose: Control access to ModelMesh inference endpoints
+
+NetworkPolicy: modelmesh-controller
+├─ Namespace: redhat-ods-applications
+├─ Pod Selector: control-plane=modelmesh-controller
+├─ Ingress:
+│  └─ Allow from: Any (for metrics scraping on 8443/TCP, webhook on 9443/TCP)
+└─ Ports: 8443/TCP, 9443/TCP
+
+NetworkPolicy: modelmesh-webhook
+├─ Namespace: redhat-ods-applications
+├─ Pod Selector: control-plane=modelmesh-controller
+├─ Ingress:
+│  └─ Allow from: Any (Kubernetes API server)
+└─ Ports: 9443/TCP
+
+NetworkPolicy: modelmesh-runtimes
+├─ Namespace: {user-namespace}
+├─ Pod Selector: modelmesh-service (label exists)
+├─ Ingress:
+│  ├─ Rule 1: Allow from app.kubernetes.io/managed-by=modelmesh-controller
+│  │  └─ Ports: 8033/TCP, 8080/TCP (internal communication)
+│  └─ Rule 2: Allow from any
+│     └─ Ports: 8033/TCP, 8008/TCP, 2112/TCP (inference + metrics)
+└─ Purpose: Allow internal ModelMesh communication and external inference requests
+
+═══════════════════════════════════════════════════════════════════════════════════════════
+SECRETS
+═══════════════════════════════════════════════════════════════════════════════════════════
+
+Secret: storage-config
+├─ Type: Opaque
+├─ Namespace: {user-namespace}
+├─ Keys: access_key_id, secret_access_key, endpoint_url, region
+├─ Purpose: S3-compatible storage credentials for model downloads
+├─ Provisioned By: User/Admin (manually created)
+├─ Auto-Rotate: No
+└─ Usage: Mounted in Storage Helper init container
+
+Secret: model-serving-etcd
+├─ Type: Opaque
+├─ Namespace: redhat-ods-applications
+├─ Keys: etcd_connection (connection string), etcd_root_prefix (key prefix)
+├─ Purpose: etcd connection configuration for ModelMesh state management
+├─ Provisioned By: Operator/Admin
+├─ Auto-Rotate: No
+└─ Usage: Environment variables in ModelMesh runtime pods
+
+Secret: modelmesh-webhook-server-cert
+├─ Type: kubernetes.io/tls
+├─ Namespace: redhat-ods-applications
+├─ Keys: tls.crt, tls.key, ca.crt
+├─ Purpose: TLS certificate for validating webhook (port 9443)
+├─ Provisioned By: cert-manager (auto) or manual injection
+├─ Auto-Rotate: Depends on provisioner (cert-manager: 90d default)
+└─ Usage: Mounted in controller container, referenced by ValidatingWebhookConfiguration
+
+═══════════════════════════════════════════════════════════════════════════════════════════
+TRUST BOUNDARIES
+═══════════════════════════════════════════════════════════════════════════════════════════
+
+1. EXTERNAL → INGRESS
+   - Encryption: TLS 1.2+ (HTTPS for API, optional for inference)
+   - Auth: kubeconfig credentials (admin), optional for inference (Istio, external auth)
+   - Trust: Zero trust - validate all inputs
+
+2. INGRESS → CONTROL PLANE
+   - Encryption: TLS 1.2+ (webhook), TLS (metrics via kube-rbac-proxy)
+   - Auth: Webhook TLS cert, Bearer token (metrics)
+   - Trust: Kubernetes API server is trusted; webhook validates before admission
+
+3. CONTROL PLANE → DATA PLANE
+   - Encryption: Service Account token over TLS (to K8s API)
+   - Auth: Service Account RBAC
+   - Trust: Controller is trusted to manage resources in user namespaces
+
+4. DATA PLANE (Internal Pod Communication)
+   - Encryption: None (localhost communication)
+   - Auth: None (same pod)
+   - Trust: Containers in same pod trust each other
+
+5. DATA PLANE → STATE MANAGEMENT (etcd)
+   - Encryption: None (HTTP)
+   - Auth: None (network isolation via NetworkPolicy)
+   - Trust: etcd is internal, isolated by network policies
+
+6. DATA PLANE → EXTERNAL SERVICES (S3)
+   - Encryption: TLS 1.2+ (HTTPS)
+   - Auth: AWS Signature v4 / S3 API keys
+   - Trust: S3 is external - use encrypted connections and IAM/bucket policies
+
+7. OPTIONAL: SERVICE MESH (Istio)
+   - Encryption: mTLS STRICT (all service-to-service)
+   - Auth: Service Identity via mTLS certificates
+   - Trust: Istio enforces zero-trust networking within mesh

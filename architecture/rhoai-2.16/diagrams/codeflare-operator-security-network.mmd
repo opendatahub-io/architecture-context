@@ -1,0 +1,107 @@
+graph TB
+    subgraph External["EXTERNAL - Untrusted"]
+        User[User/Data Scientist<br/>kubectl/browser]
+        ExternalClient[Ray Client<br/>External]
+    end
+
+    subgraph Ingress["INGRESS LAYER"]
+        OSRouter["OpenShift Router<br/>443/TCP HTTPS TLS 1.3<br/>Edge/Passthrough TLS"]
+        K8sIngress["Kubernetes Ingress Controller<br/>80/443/TCP HTTP/HTTPS<br/>⚠️ NO AUTH"]
+    end
+
+    subgraph K8sAPI["KUBERNETES API SERVER - Trusted Control Plane"]
+        APIServer["Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+"]
+    end
+
+    subgraph OperatorNS["OPERATOR NAMESPACE opendatahub - Trusted"]
+        direction TB
+
+        subgraph OperatorPod["CodeFlare Operator Pod<br/>SA: codeflare-operator-controller-manager<br/>SecurityContext: UID 65532, No Privs, Caps Dropped"]
+            Webhook["Webhook Server<br/>9443/TCP HTTPS TLS 1.2+<br/>mTLS from API Server"]
+            Metrics["Metrics Server<br/>8080/TCP HTTP<br/>SA Token Auth"]
+            Health["Health Server<br/>8081/TCP HTTP<br/>No Auth"]
+        end
+    end
+
+    subgraph UserNS["USER WORKLOAD NAMESPACE user-ns - Isolated"]
+        direction TB
+
+        subgraph RayHead["Ray Head Pod<br/>NetworkPolicy: head-node-policy"]
+            RayDashboard["Ray Dashboard<br/>8265/TCP HTTP<br/>⚠️ No encryption"]
+            RayClient["Ray Client Port<br/>10001/TCP<br/>mTLS if enabled"]
+            RayMetrics["Ray Metrics<br/>8080/TCP HTTP"]
+            OAuthProxy["OAuth Proxy Sidecar<br/>8443/TCP HTTPS TLS 1.2+<br/>SA: {cluster}-oauth-proxy<br/>OpenShift only"]
+        end
+
+        subgraph RayWorkers["Ray Worker Pods N replicas<br/>NetworkPolicy: worker-node-policy<br/>⚠️ ISOLATED - Same cluster only"]
+            Worker[Worker Containers]
+        end
+
+        Services["Services:<br/>{cluster}-head-svc: 8265, 10001<br/>{cluster}-oauth-proxy: 443→8443"]
+    end
+
+    subgraph ExternalDeps["EXTERNAL DEPENDENCIES"]
+        direction TB
+        OSAuth["OpenShift OAuth Server<br/>443/TCP HTTPS TLS 1.2+<br/>OAuth2 Protocol"]
+        KubeRay["KubeRay Operator<br/>Namespace: opendatahub<br/>Via K8s API 6443/TCP"]
+        Kueue["Kueue<br/>v0.8.3 conditional<br/>Via K8s API 6443/TCP"]
+    end
+
+    subgraph Monitoring["MONITORING - openshift-monitoring"]
+        Prometheus["Prometheus<br/>Scrapes 8080/TCP HTTP<br/>NetworkPolicy: Allow"]
+    end
+
+    %% User flows
+    User -->|HTTPS/6443<br/>TLS 1.2+<br/>kubeconfig| APIServer
+    User -->|HTTPS/443<br/>TLS 1.3<br/>Browser| OSRouter
+    ExternalClient -->|mTLS/10001<br/>Client Cert| OSRouter
+
+    %% API Server flows
+    APIServer -->|HTTPS/9443<br/>mTLS<br/>Admission Webhook| Webhook
+    Webhook -->|HTTPS/6443<br/>SA Token| APIServer
+    OperatorPod -->|HTTPS/6443<br/>SA Token<br/>Watch CRDs| APIServer
+
+    %% Ingress routing
+    OSRouter -->|HTTPS/8443<br/>TLS 1.2+<br/>Edge TLS| OAuthProxy
+    OSRouter -->|mTLS/10001<br/>Passthrough| RayClient
+    K8sIngress -->|HTTP/8265<br/>⚠️ NO AUTH| RayDashboard
+    K8sIngress -->|mTLS/10001<br/>Passthrough| RayClient
+
+    %% OAuth flow
+    OAuthProxy -->|HTTPS/443<br/>OAuth2| OSAuth
+    OAuthProxy -->|HTTP/8265<br/>⚠️ No encryption<br/>Proxied session| RayDashboard
+
+    %% Internal Ray cluster communication
+    RayHead -->|All ports/protocols<br/>mTLS if enabled| Worker
+    Worker -->|All ports/protocols<br/>mTLS if enabled| RayHead
+
+    %% External dependencies
+    OperatorPod -->|HTTPS/6443<br/>SA Token<br/>Coordinate| KubeRay
+    OperatorPod -->|HTTPS/6443<br/>SA Token<br/>Create Workloads| Kueue
+
+    %% Monitoring
+    Prometheus -->|HTTP/8080<br/>SA Token<br/>NetworkPolicy: Allow| Metrics
+    Prometheus -->|HTTP/8080<br/>NetworkPolicy: Allow| RayMetrics
+
+    %% NetworkPolicy enforcement indicators
+    KubeRay -.->|NetworkPolicy: Allow<br/>8265, 10001/TCP| RayHead
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef k8sapi fill:#d5e8d4,stroke:#82b366,stroke-width:3px
+    classDef operator fill:#cfe2f3,stroke:#6fa8dc,stroke-width:2px
+    classDef userworkload fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef isolated fill:#f4cccc,stroke:#cc4125,stroke-width:3px
+    classDef externaldep fill:#d9d9d9,stroke:#666,stroke-width:2px
+    classDef monitoring fill:#d9ead3,stroke:#93c47d,stroke-width:2px
+    classDef warning fill:#f4cccc,stroke:#a61c00,stroke-width:2px,stroke-dasharray: 5 5
+
+    class User,ExternalClient external
+    class OSRouter,K8sIngress ingress
+    class APIServer k8sapi
+    class OperatorPod,Webhook,Metrics,Health operator
+    class Services,RayHead,OAuthProxy,RayDashboard,RayClient,RayMetrics userworkload
+    class RayWorkers,Worker isolated
+    class OSAuth,KubeRay,Kueue externaldep
+    class Prometheus monitoring

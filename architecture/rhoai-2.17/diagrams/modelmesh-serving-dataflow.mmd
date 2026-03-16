@@ -1,0 +1,72 @@
+sequenceDiagram
+    participant User as User/Admin
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
+    participant Webhook as Webhook Server<br/>9443/TCP HTTPS TLS1.2+
+    participant Controller as modelmesh-controller<br/>Service Account Token
+    participant etcd as etcd<br/>2379/TCP HTTP
+    participant S3 as S3 Storage<br/>443/TCP HTTPS TLS1.2+
+    participant ModelMesh as ModelMesh Router<br/>8033/8080/TCP
+    participant Adapter as Runtime Adapter<br/>8085/TCP gRPC
+    participant ModelServer as Model Server<br/>8001/TCP gRPC
+    participant RESTProxy as REST Proxy<br/>8008/TCP HTTP
+    participant Client as Client App
+    participant Prometheus as Prometheus
+
+    %% Model Deployment Flow
+    rect rgb(220, 240, 255)
+        Note over User,ModelServer: Flow 1: Model Deployment
+        User->>K8sAPI: kubectl apply Predictor/InferenceService<br/>Auth: kubeconfig
+        K8sAPI->>Webhook: POST /validate<br/>TLS cert auth
+        Webhook-->>K8sAPI: Validation response
+        K8sAPI->>Controller: Watch notification<br/>Service Account token
+        Controller->>K8sAPI: Create Deployment/Service<br/>Service Account token
+        Controller->>etcd: Update model assignments<br/>HTTP unencrypted
+        Note over S3,ModelServer: Storage Helper init container runs
+        ModelServer->>S3: GET model artifacts<br/>S3 credentials (AWS Signature v4)
+        S3-->>ModelServer: Model files
+        Adapter->>ModelServer: Load model<br/>gRPC unencrypted
+        ModelServer-->>Adapter: Model loaded
+    end
+
+    %% gRPC Inference Flow
+    rect rgb(255, 240, 220)
+        Note over Client,ModelServer: Flow 2: gRPC Inference Request
+        Client->>ModelMesh: POST inference.GRPCInferenceService<br/>8033/TCP gRPC<br/>No auth (optional: mTLS via Istio)
+        ModelMesh->>etcd: Get model location<br/>HTTP unencrypted
+        etcd-->>ModelMesh: Model replica info
+        ModelMesh->>Adapter: Forward inference request<br/>8085/TCP gRPC unencrypted
+        Adapter->>ModelServer: Inference request<br/>8001/TCP gRPC unencrypted
+        ModelServer-->>Adapter: Inference result
+        Adapter-->>ModelMesh: Result
+        ModelMesh-->>Client: gRPC response
+    end
+
+    %% REST Inference Flow
+    rect rgb(240, 255, 240)
+        Note over Client,ModelServer: Flow 3: REST Inference Request
+        Client->>RESTProxy: POST /v2/models/{model}/infer<br/>8008/TCP HTTP<br/>No auth (optional: Istio)
+        RESTProxy->>ModelMesh: Convert to gRPC<br/>8033/TCP gRPC unencrypted
+        ModelMesh->>Adapter: Route to model<br/>8085/TCP gRPC
+        Adapter->>ModelServer: Inference<br/>8001/TCP gRPC
+        ModelServer-->>Adapter: Result
+        Adapter-->>ModelMesh: Result
+        ModelMesh-->>RESTProxy: gRPC response
+        RESTProxy-->>Client: JSON HTTP response
+    end
+
+    %% Metrics Collection Flow
+    rect rgb(255, 240, 255)
+        Note over Prometheus,ModelMesh: Flow 4: Metrics Collection
+        Prometheus->>Controller: GET /metrics<br/>8443/TCP HTTPS<br/>Bearer token (kube-rbac-proxy)
+        Controller-->>Prometheus: Controller metrics
+        Prometheus->>ModelMesh: GET /metrics<br/>2112/TCP HTTP<br/>No auth
+        ModelMesh-->>Prometheus: Runtime metrics
+    end
+
+    %% State Synchronization
+    rect rgb(255, 255, 220)
+        Note over ModelMesh,etcd: Flow 5: State Synchronization
+        ModelMesh->>etcd: Leader election<br/>2379/TCP HTTP
+        ModelMesh->>etcd: Update model placement<br/>HTTP unencrypted
+        etcd-->>ModelMesh: Cluster state
+    end

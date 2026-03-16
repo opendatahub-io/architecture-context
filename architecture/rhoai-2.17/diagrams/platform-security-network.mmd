@@ -1,0 +1,113 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[Data Scientists /<br/>External Clients]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        direction TB
+        OSRouter["OpenShift Routes<br/>443/TCP HTTPS TLS 1.2+<br/>Edge/Reencrypt termination"]
+        IstioGW["Istio Gateway<br/>443/TCP HTTPS TLS 1.3<br/>Authorino AuthN"]
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (mTLS STRICT)"]
+        direction TB
+
+        subgraph NS_ODS_Apps["Namespace: redhat-ods-applications"]
+            direction TB
+            Dashboard["ODH Dashboard<br/>SA: odh-dashboard<br/>8443/TCP HTTPS<br/>OAuth Proxy"]
+            KServeCtl["KServe Controller<br/>SA: kserve-controller-manager<br/>ClusterRole: kserve-manager-role"]
+            ModelCtl["Model Controller<br/>SA: odh-model-controller-sa<br/>Creates Routes/Gateways/AuthConfigs"]
+        end
+
+        subgraph NS_Knative["Namespace: knative-serving"]
+            Activator["Knative Activator<br/>SA: activator<br/>8012/TCP HTTP<br/>mTLS STRICT"]
+        end
+
+        subgraph NS_User["Namespace: {user-data-science-project}"]
+            direction TB
+
+            Notebook["Jupyter Notebook Pod<br/>SA: {notebook-name}-sa<br/>8888/TCP HTTP<br/>OAuth Proxy 8443/TCP<br/>NetworkPolicy: Deny cross-ns"]
+
+            Predictor["KServe Predictor Pod<br/>SA: {inferenceservice-name}-sa<br/>8080/TCP HTTP<br/>Istio Sidecar mTLS STRICT<br/>AuthorizationPolicy: CUSTOM→Authorino"]
+
+            RayHead["RayCluster Head Pod<br/>SA: {raycluster-name}-sa<br/>8265/TCP (dashboard)<br/>10001/TCP (client API)<br/>Ray mTLS + OAuth Proxy"]
+
+            RayWorker["RayCluster Worker Pods<br/>SA: {raycluster-name}-sa<br/>10002/TCP (object store)<br/>Ray mTLS"]
+
+            TrustyAI["TrustyAI Service Pod<br/>SA: {trustyai-name}-sa<br/>8080/TCP HTTP<br/>8443/TCP OAuth Proxy"]
+
+            DSP["Data Science Pipelines<br/>SA: ds-pipeline-{name}<br/>8443/TCP HTTPS<br/>Argo Workflows backend"]
+        end
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
+        direction TB
+        S3["S3 Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS Signature v4<br/>Credentials: storage-config"]
+
+        DB["PostgreSQL/MySQL<br/>5432/3306 TCP<br/>TLS 1.2+ (optional)<br/>Auth: Username/Password<br/>Credentials: {db}-password-secret"]
+
+        etcd["etcd (ModelMesh)<br/>2379/TCP HTTP<br/>Cluster-local<br/>No encryption"]
+
+        Registry["Container Registries<br/>registry.redhat.io<br/>443/TCP HTTPS TLS 1.2+"]
+
+        NGC["NVIDIA NGC API<br/>api.ngc.nvidia.com<br/>443/TCP HTTPS<br/>Auth: API Keys"]
+
+        PyPI["PyPI/Conda Repos<br/>pypi.org<br/>443/TCP HTTPS"]
+    end
+
+    %% External to Ingress
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| OSRouter
+    Client -->|"HTTPS/443<br/>TLS 1.3<br/>Bearer Token"| IstioGW
+
+    %% OpenShift Routes to Services
+    OSRouter -->|"HTTP/8443<br/>OAuth Token"| Dashboard
+    OSRouter -->|"HTTP/8888<br/>OAuth Token"| Notebook
+    OSRouter -->|"HTTP/8265<br/>OAuth Token"| RayHead
+    OSRouter -->|"HTTP/8080<br/>OAuth Token"| TrustyAI
+    OSRouter -->|"HTTP/8443<br/>OAuth Token"| DSP
+
+    %% Istio Gateway to Service Mesh
+    IstioGW -->|"HTTP/8012<br/>mTLS STRICT<br/>Service Identity"| Activator
+    IstioGW -->|"HTTP/8080<br/>mTLS STRICT<br/>Service Identity"| Predictor
+
+    %% Within Service Mesh
+    Dashboard -->|"K8s API calls<br/>ServiceAccount JWT"| KServeCtl
+    KServeCtl -->|"Creates InferenceService"| Predictor
+    KServeCtl -->|"Notifies"| ModelCtl
+    ModelCtl -->|"Creates Gateway<br/>VirtualService<br/>AuthConfig"| IstioGW
+    Activator -->|"HTTP/8080<br/>mTLS<br/>Service Identity"| Predictor
+
+    %% Ray cluster
+    RayHead -->|"Ray protocol<br/>mTLS<br/>Client certs"| RayWorker
+
+    %% TrustyAI monitoring
+    Predictor -.->|"Payload logging"| TrustyAI
+
+    %% External service connections
+    Notebook -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    Predictor -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    RayWorker -->|"HTTPS/443<br/>AWS IAM"| S3
+    DSP -->|"HTTPS/443<br/>AWS IAM"| S3
+
+    DSP -->|"PostgreSQL/3306<br/>TLS 1.2+<br/>User/Pass"| DB
+    TrustyAI -->|"JDBC<br/>TLS 1.2+<br/>User/Pass"| DB
+
+    ModelCtl -->|"HTTPS/443<br/>API Key"| NGC
+
+    Notebook -->|"HTTPS/443<br/>TLS 1.2+"| PyPI
+
+    KServeCtl -.->|"Pull images"| Registry
+    Dashboard -.->|"Pull images"| Registry
+
+    %% Styling by trust zone
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:3px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:3px
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef controller fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+
+    class Client external
+    class OSRouter,IstioGW ingress
+    class Dashboard,KServeCtl,ModelCtl,Activator,Notebook,Predictor,RayHead,RayWorker,TrustyAI,DSP servicemesh
+    class KServeCtl,ModelCtl,Dashboard controller
+    class S3,DB,etcd,Registry,NGC,PyPI externalservice

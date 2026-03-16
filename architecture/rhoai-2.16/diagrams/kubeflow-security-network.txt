@@ -1,0 +1,245 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [User Browser]                                                          │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.3                                            │
+│         │ Auth: OAuth2/OIDC (user session)                               │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                          │
+│                                                                          │
+│  [Istio Ingress Gateway]                                                 │
+│  - Port: 443/TCP (external) → 80/TCP (internal)                        │
+│  - TLS Termination: TLS 1.3                                             │
+│  - AuthN: User session validation (OAuth2/OIDC)                         │
+│         │                                                                │
+│         │ Port: 80/TCP                                                   │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: mTLS (STRICT)                                      │
+│         │ Auth: Service Identity (Istio)                                 │
+│         ▼                                                                │
+│  [Istio VirtualService]                                                  │
+│  - API Version: networking.istio.io/v1alpha3                            │
+│  - Gateway: kubeflow/kubeflow-gateway (default)                         │
+│  - Routing: /notebook/{namespace}/{name}                                │
+│         │                                                                │
+│         │ Port: 80/TCP                                                   │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: mTLS (ServiceMesh sidecar)                         │
+│         │ Auth: Service Identity                                         │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Trusted - mTLS STRICT)                                   │
+│                                                                          │
+│  [Notebook Service]                                                      │
+│  - Type: ClusterIP                                                       │
+│  - Name: {notebook-name} (generated per Notebook CR)                    │
+│  - Port: 80/TCP → 8888/TCP                                              │
+│  - Namespace: {user-namespace}                                           │
+│         │                                                                │
+│         │ Port: 8888/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (plaintext within pod)                        │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+│  [Notebook Pod]                                                          │
+│  - Managed by: StatefulSet                                               │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: (user-specified in PodSpec)                          │
+│  - Image: {notebook-image}:tag (user-specified)                         │
+│  - Container Port: 8888/TCP (Jupyter server)                            │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────┐              │
+│  │  NOTEBOOK CONTROLLER                                  │              │
+│  │  Namespace: notebook-controller-system                │              │
+│  │                                                        │              │
+│  │  [NotebookReconciler]                                 │              │
+│  │  - ServiceAccount: notebook-controller-service-account │              │
+│  │  - Watches: Notebook CRs (all namespaces)             │              │
+│  │         │                                              │              │
+│  │         │ Port: 6443/TCP                               │              │
+│  │         │ Protocol: HTTPS                              │              │
+│  │         │ Encryption: TLS 1.2+                         │              │
+│  │         │ Auth: ServiceAccount JWT token               │              │
+│  │         ▼                                              │              │
+│  └─────────────────────────────────────────────────────┬─┘              │
+│                                                         │                │
+│  [CullingReconciler]                                    │                │
+│  - ServiceAccount: notebook-controller-service-account  │                │
+│  - Purpose: Monitor idle notebooks                      │                │
+│         │                                                │                │
+│         │ Port: 80/TCP (to notebook service)            │                │
+│         │ Protocol: HTTP                                 │                │
+│         │ Encryption: mTLS (if service mesh enabled)     │                │
+│         │ Auth: Service mesh mTLS client cert            │                │
+│         │ API Endpoint: GET /api/kernels                 │                │
+│         ▼                                                │                │
+│  [Notebook Pod] (activity check)                        │                │
+│         │                                                │                │
+│         │ Port: 6443/TCP                                 │                │
+│         │ Protocol: HTTPS                                │                │
+│         │ Encryption: TLS 1.2+                           │                │
+│         │ Auth: ServiceAccount JWT token                 │                │
+│         ▼                                                │                │
+├─────────────────────────────────────────────────────────┴───────────────┤
+│  KUBERNETES CONTROL PLANE                                               │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: ServiceAccount JWT tokens, User OIDC/certs                     │
+│  - Resources watched: Notebook, StatefulSet, Service, Pod, Event        │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  MONITORING & OBSERVABILITY                                             │
+│                                                                          │
+│  [Prometheus]                                                            │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None                                               │
+│         │ Auth: None (open endpoint)                                     │
+│         ▼                                                                │
+│  [notebook-controller-service]                                           │
+│  - Service Type: ClusterIP                                               │
+│  - Port: 8080/TCP → 8080/TCP                                            │
+│  - Endpoint: GET /metrics                                                │
+│  - Metrics: notebook_running, notebook_create_total,                    │
+│             notebook_culling_total                                       │
+└─────────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════
+RBAC SUMMARY
+═══════════════════════════════════════════════════════════════════════════
+
+ClusterRole: notebook-controller-role
+  API Groups & Resources:
+    - "" (core): events (create, get, list, patch, watch)
+    - "" (core): pods (delete, get, list, watch)
+    - "" (core): services (* all verbs)
+    - apps: statefulsets (* all verbs)
+    - kubeflow.org: notebooks, notebooks/finalizers, notebooks/status (* all verbs)
+    - networking.istio.io: virtualservices (* all verbs)
+
+ClusterRole: notebook-controller-leader-election-role
+  API Groups & Resources:
+    - "" (core): configmaps, configmaps/status (get, list, watch, create, update, patch, delete)
+    - "" (core): events (create)
+
+ClusterRoleBinding: notebook-controller-role-binding
+  - ServiceAccount: notebook-controller-service-account
+  - ClusterRole: notebook-controller-role
+
+RoleBinding: notebook-controller-leader-election-role-binding
+  - Namespace: notebook-controller-system
+  - ServiceAccount: notebook-controller-service-account
+  - Role: notebook-controller-leader-election-role
+
+User-facing Roles (aggregated):
+  - kubeflow-notebooks-edit: create, delete, update notebooks
+  - kubeflow-notebooks-view: get, list, watch notebooks
+  - kubeflow-notebooks-admin: (aggregates edit role)
+
+═══════════════════════════════════════════════════════════════════════════
+SERVICE MESH CONFIGURATION
+═══════════════════════════════════════════════════════════════════════════
+
+Istio VirtualService (per Notebook CR):
+  - Name: notebook-{namespace}-{name}
+  - API Version: networking.istio.io/v1alpha3
+  - Gateway: kubeflow/kubeflow-gateway (configurable via ISTIO_GATEWAY)
+  - Host: * (configurable via ISTIO_HOST)
+  - HTTP Routes:
+      * Match: /notebook/{namespace}/{name}
+      * Destination: {notebook-name}.{namespace}.svc.cluster.local
+      * Port: 80
+  - Header manipulation: Via notebooks.kubeflow.org/http-headers-request-set annotation
+  - Path rewrite: Via notebooks.kubeflow.org/http-rewrite-uri annotation
+
+mTLS Configuration:
+  - Mode: STRICT (enforced by service mesh)
+  - Applied to: All notebook services in service mesh
+  - Client certs: Issued by Istio CA
+  - Rotation: Automatic (Istio-managed)
+
+AuthorizationPolicy (for culling):
+  - Allows: notebook-controller-service-account
+  - To: Notebook pods
+  - Methods: GET
+  - Path: /api/kernels
+
+═══════════════════════════════════════════════════════════════════════════
+SECRETS & CREDENTIALS
+═══════════════════════════════════════════════════════════════════════════
+
+Secret: notebook-controller-webhook-cert
+  - Type: kubernetes.io/tls
+  - Purpose: TLS certificate for webhook server (when enabled)
+  - Provisioned by: cert-manager
+  - Rotation: Automatic (cert-manager)
+  - Validity: 90 days (default)
+
+Notebook Pod Secrets:
+  - Type: Opaque (user-specified)
+  - Purpose: Pulled from user namespace based on PodSpec template
+  - Provisioned by: User/Admin
+  - Rotation: Manual (user-managed)
+  - Examples: Git credentials, registry pull secrets, cloud credentials
+
+ServiceAccount Tokens:
+  - Type: kubernetes.io/service-account-token
+  - Purpose: Authentication to Kubernetes API
+  - Provisioned by: Kubernetes
+  - Rotation: Automatic
+  - Validity: 1 hour (default, auto-renewed)
+
+═══════════════════════════════════════════════════════════════════════════
+CONFIGURATION SOURCES
+═══════════════════════════════════════════════════════════════════════════
+
+ConfigMap: config
+  - Namespace: notebook-controller-system
+  - Keys:
+      * USE_ISTIO: "false" (default) / "true"
+      * ISTIO_GATEWAY: "kubeflow/kubeflow-gateway" (default)
+      * ISTIO_HOST: "*" (default)
+      * ADD_FSGROUP: "true" (default), "false" for OpenShift
+
+ConfigMap: notebook-controller-culler-config
+  - Namespace: notebook-controller-system
+  - Keys:
+      * ENABLE_CULLING: "false" (default) / "true"
+      * CULL_IDLE_TIME: "1440" (minutes, default = 1 day)
+      * IDLENESS_CHECK_PERIOD: "1" (minute, default)
+
+ConfigMap: ossm.env (for service-mesh overlay)
+  - Namespace: notebook-controller-system
+  - Purpose: Load Istio configuration for RHOAI service mesh integration
+
+═══════════════════════════════════════════════════════════════════════════
+DEPLOYMENT VARIANTS
+═══════════════════════════════════════════════════════════════════════════
+
+OpenShift Overlay:
+  - Path: config/overlays/openshift
+  - Settings: ADD_FSGROUP=false, USE_ISTIO=false
+  - Labels: app.kubernetes.io/part-of=odh-notebook-controller
+  - Resource Limits: CPU=500m, Memory=256Mi-4Gi
+
+Service Mesh Overlay:
+  - Path: config/overlays/service-mesh
+  - Extends: OpenShift overlay
+  - ConfigMap: ossm.env (Istio configuration)
+
+Kubeflow Overlay:
+  - Path: config/overlays/kubeflow
+  - Purpose: Vanilla Kubeflow deployment
+
+Standalone Overlay:
+  - Path: config/overlays/standalone
+  - Purpose: Minimal standalone deployment

@@ -1,0 +1,56 @@
+sequenceDiagram
+    participant User as User/Admin
+    participant API as Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+
+    participant Controller as NotebookReconciler<br/>ServiceAccount Token
+    participant Culler as CullingReconciler<br/>Activity Monitor
+    participant Browser as User Browser
+    participant Gateway as Istio Ingress Gateway<br/>443/TCP HTTPS TLS1.3
+    participant VirtualSvc as VirtualService<br/>Routing Config
+    participant NotebookSvc as Notebook Service<br/>80/TCP HTTP mTLS
+    participant Pod as Notebook Pod<br/>8888/TCP HTTP Jupyter
+    participant Prom as Prometheus<br/>Metrics Collector
+
+    Note over User,Pod: Flow 1: Notebook Creation
+
+    User->>API: kubectl create notebook<br/>OIDC/cert auth
+    API->>Controller: Watch event<br/>Notebook CR created
+    Controller->>API: Create StatefulSet<br/>ServiceAccount token
+    API-->>Controller: StatefulSet created
+    Controller->>API: Create Service<br/>Port 80→8888
+    API-->>Controller: Service created
+    Controller->>API: Create VirtualService<br/>(if USE_ISTIO=true)
+    API-->>Controller: VirtualService created
+    Controller->>API: Update Notebook status<br/>conditions: Running
+    API->>Pod: Start Jupyter server<br/>via StatefulSet
+
+    Note over Culler,Pod: Flow 2: Idle Notebook Culling
+
+    Culler->>API: List all Notebooks<br/>HTTPS TLS1.2+
+    API-->>Culler: Notebook list
+    Culler->>NotebookSvc: GET /api/kernels<br/>HTTP (mTLS if mesh)
+    NotebookSvc->>Pod: Forward request<br/>HTTP 8888/TCP
+    Pod-->>NotebookSvc: Kernel status JSON
+    NotebookSvc-->>Culler: Activity data
+
+    alt Notebook is idle > CULL_IDLE_TIME
+        Culler->>API: Update Notebook annotation<br/>kubeflow-resource-stopped
+        API->>Pod: Stop notebook pod
+    end
+
+    Note over Prom,Pod: Flow 3: Metrics Scraping
+
+    Prom->>Controller: GET /metrics<br/>8080/TCP HTTP
+    Controller->>API: List StatefulSets<br/>HTTPS TLS1.2+
+    API-->>Controller: StatefulSet data
+    Controller-->>Prom: Prometheus metrics<br/>notebook_running, notebook_create_total
+
+    Note over Browser,Pod: Flow 4: External User Access
+
+    Browser->>Gateway: HTTPS /notebook/{ns}/{name}<br/>443/TCP TLS1.3 OAuth2/OIDC
+    Gateway->>VirtualSvc: Route via config<br/>mTLS
+    VirtualSvc->>NotebookSvc: Forward to notebook<br/>80/TCP HTTP mTLS
+    NotebookSvc->>Pod: Forward to Jupyter<br/>8888/TCP HTTP
+    Pod-->>NotebookSvc: Jupyter UI response
+    NotebookSvc-->>VirtualSvc: HTTP response
+    VirtualSvc-->>Gateway: mTLS response
+    Gateway-->>Browser: HTTPS response

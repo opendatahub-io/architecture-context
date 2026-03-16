@@ -1,0 +1,101 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[External Client /<br/>Data Scientist]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Gateway["Istio Gateway / OpenShift Route<br/>443/TCP → 8033/8008<br/>TLS 1.3 → Optional TLS/mTLS<br/>RequestAuthentication"]
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (Optional mTLS)"]
+        direction TB
+
+        subgraph ControllerNS["Namespace: {controller-namespace}<br/>(e.g., redhat-ods-applications)"]
+            direction TB
+
+            Controller["modelmesh-controller Pod<br/>SA: modelmesh-controller"]
+            ControllerMetrics["controller-manager-metrics-service<br/>ClusterIP 8443/TCP HTTPS<br/>OAuth Protected"]
+            WebhookService["modelmesh-webhook-server-service<br/>ClusterIP 9443/TCP HTTPS<br/>TLS 1.2+"]
+
+            Controller --> ControllerMetrics
+            Controller --> WebhookService
+        end
+
+        subgraph UserNS["Namespace: {user-namespace}<br/>(e.g., data-science-project)"]
+            direction TB
+
+            subgraph ServingPod["Serving Runtime Pod<br/>SA: {predictor-name}-sa<br/>Labels: modelmesh-service={predictor-name}"]
+                direction LR
+
+                ModelMesh["Container: modelmesh<br/>Image: kserve/modelmesh<br/>Ports: 8033 (gRPC), 8089 (health), 2112 (metrics)"]
+                RESTProxy["Container: rest-proxy<br/>Image: kserve/rest-proxy<br/>Port: 8008 (HTTP/HTTPS)"]
+                RuntimeAdapter["Container: runtime-adapter<br/>Image: kserve/modelmesh-runtime-adapter<br/>Port: 8080 (gRPC adapter)"]
+                MLFramework["Container: triton/mlserver/<br/>openvino/torchserve<br/>Purpose: ML inference"]
+
+                RESTProxy -->|8033/TCP gRPC<br/>Optional mTLS| ModelMesh
+                ModelMesh -->|UDS/8080 gRPC<br/>No encryption| RuntimeAdapter
+                RuntimeAdapter -->|UDS/framework<br/>No encryption| MLFramework
+            end
+
+            GRPCService["modelmesh-serving Service (gRPC)<br/>ClusterIP 8033/TCP<br/>Optional mTLS"]
+            RESTService["modelmesh-serving Service (REST)<br/>ClusterIP 8008/TCP<br/>Optional TLS"]
+
+            GRPCService --> ModelMesh
+            RESTService --> RESTProxy
+        end
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        direction TB
+
+        etcdNS["Namespace: {etcd-namespace}"]
+        etcd["etcd Cluster<br/>2379/TCP TCP<br/>Optional TLS<br/>Optional mTLS<br/>NetworkPolicy: Allow from modelmesh namespaces"]
+
+        K8sAPI["Kubernetes API Server<br/>kubernetes.default.svc:6443<br/>HTTPS TLS 1.2+<br/>Auth: ServiceAccount Token"]
+
+        S3["S3-Compatible Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS Signature V4"]
+
+        PrometheusService["Prometheus Monitoring"]
+
+        etcdNS --> etcd
+    end
+
+    %% External to Ingress
+    Client -->|HTTPS/443 TLS 1.3<br/>gRPC or REST<br/>Optional Bearer Token| Gateway
+
+    %% Ingress to Service Mesh
+    Gateway -->|gRPC 8033/TCP<br/>Optional mTLS<br/>Service Identity| GRPCService
+    Gateway -->|HTTP 8008/TCP<br/>Optional TLS<br/>Optional Bearer| RESTService
+
+    %% Controller interactions
+    Controller -->|HTTPS/6443 TLS 1.2+<br/>ServiceAccount Token<br/>CR reconciliation| K8sAPI
+    Controller -->|TCP/2379<br/>Optional TLS<br/>Optional mTLS<br/>Model registration| etcd
+
+    %% Runtime pod interactions
+    ModelMesh -->|TCP/2379<br/>Optional TLS<br/>Coordination| etcd
+    RuntimeAdapter -->|HTTPS/443 TLS 1.2+<br/>AWS Signature V4<br/>Model download| S3
+
+    %% Metrics collection
+    PrometheusService -->|HTTPS/8443 TLS 1.2+<br/>OAuth TokenReview| ControllerMetrics
+    PrometheusService -->|HTTP/2112<br/>No auth<br/>NetworkPolicy restricted| ModelMesh
+
+    %% Webhook validation
+    K8sAPI -->|HTTPS/9443 TLS 1.2+<br/>Webhook validation| WebhookService
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:3px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:3px
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controller fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    classDef runtime fill:#7ed321,stroke:#333,stroke-width:2px
+    classDef service fill:#bd10e0,stroke:#333,stroke-width:2px,color:#fff
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef secrets fill:#f5a623,stroke:#333,stroke-width:2px
+
+    class Client external
+    class Gateway ingress
+    class ControllerNS,UserNS servicemesh
+    class Controller,ControllerMetrics,WebhookService controller
+    class ServingPod,ModelMesh,RESTProxy,RuntimeAdapter,MLFramework runtime
+    class GRPCService,RESTService service
+    class etcd,K8sAPI,S3,PrometheusService externalservice

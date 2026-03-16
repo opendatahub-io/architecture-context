@@ -1,0 +1,94 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User[User/Admin]
+        Client[Client Application]
+    end
+
+    subgraph APIGateway["API GATEWAY / INGRESS"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+<br/>Auth: kubeconfig"]
+        Route["Optional: Route/Ingress<br/>443/TCP → 8033/8008<br/>TLS termination"]
+    end
+
+    subgraph ControlPlane["CONTROL PLANE<br/>Namespace: redhat-ods-applications"]
+        direction TB
+        Controller["modelmesh-controller<br/>SA: modelmesh-controller<br/>Replicas: 1 (HA: 3)"]
+        Webhook["Webhook Server<br/>9443/TCP HTTPS<br/>TLS cert: modelmesh-webhook-cert"]
+        ControllerMetrics["Controller Metrics<br/>8443/TCP HTTPS<br/>Auth: kube-rbac-proxy"]
+        ControllerHealth["Health Endpoints<br/>8081/TCP HTTP<br/>/readyz /healthz"]
+
+        Controller --- Webhook
+        Controller --- ControllerMetrics
+        Controller --- ControllerHealth
+    end
+
+    subgraph DataPlane["DATA PLANE<br/>Namespace: {user-namespace}"]
+        direction TB
+
+        subgraph RuntimePod["ModelMesh Runtime Pod (Multi-container)"]
+            direction LR
+            ModelMesh["ModelMesh Router<br/>8033/TCP gRPC<br/>8080/TCP gRPC internal<br/>2112/TCP HTTP metrics"]
+            Adapter["Runtime Adapter<br/>8085/TCP gRPC"]
+            RESTProxy["REST Proxy<br/>8008/TCP HTTP"]
+            ModelServer["Model Server<br/>8001/TCP gRPC<br/>Triton/MLServer/OVMS"]
+            StorageHelper["Storage Helper<br/>Init Container"]
+
+            RESTProxy -->|"localhost<br/>convert to gRPC"| ModelMesh
+            ModelMesh -->|"localhost<br/>route"| Adapter
+            Adapter -->|"localhost<br/>protocol adapt"| ModelServer
+            StorageHelper -.->|"downloads models"| ModelServer
+        end
+
+        Service["modelmesh-serving Service<br/>ClusterIP<br/>8033/TCP, 8008/TCP"]
+        Service -.->|"routes to"| RuntimePod
+    end
+
+    subgraph StateManagement["STATE MANAGEMENT<br/>Namespace: redhat-ods-applications"]
+        etcd["etcd StatefulSet<br/>Replicas: 3<br/>2379/TCP HTTP<br/>No encryption, no auth"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        S3["S3-compatible Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS TLS1.2+<br/>Auth: AWS Signature v4"]
+        Prometheus["Prometheus<br/>OpenShift Monitoring"]
+        Istio["Istio/Service Mesh<br/>Optional mTLS"]
+    end
+
+    %% External to Gateway
+    User -->|"kubectl apply<br/>6443/TCP HTTPS<br/>kubeconfig"| K8sAPI
+    Client -->|"inference requests<br/>8033/8008 gRPC/HTTP<br/>no auth (default)"| Route
+
+    %% Gateway to Control Plane
+    K8sAPI -->|"webhook validation<br/>9443/TCP HTTPS<br/>TLS cert"| Webhook
+    K8sAPI -->|"watch/reconcile<br/>6443/TCP HTTPS<br/>SA token"| Controller
+
+    %% Control Plane to Data Plane
+    Controller -->|"create/manage<br/>6443/TCP HTTPS<br/>SA token"| K8sAPI
+    Controller -.->|"manages deployments"| RuntimePod
+
+    %% Gateway to Data Plane
+    Route -->|"route traffic<br/>8033/8008"| Service
+
+    %% Data Plane to State Management
+    ModelMesh -->|"state sync<br/>2379/TCP HTTP<br/>no encryption"| etcd
+
+    %% Data Plane to External Services
+    StorageHelper -->|"download models<br/>443/TCP HTTPS<br/>S3 credentials"| S3
+
+    %% External Services to Control/Data Plane
+    Prometheus -->|"scrape metrics<br/>8443/TCP HTTPS<br/>Bearer token"| ControllerMetrics
+    Prometheus -->|"scrape metrics<br/>2112/TCP HTTP<br/>no auth"| ModelMesh
+    Istio -.->|"optional mTLS<br/>sidecar injection"| RuntimePod
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:3px
+    classDef gateway fill:#ffe6cc,stroke:#d79b00,stroke-width:3px
+    classDef controlplane fill:#cce5ff,stroke:#0066cc,stroke-width:3px
+    classDef dataplane fill:#d5e8d4,stroke:#82b366,stroke-width:3px
+    classDef statemgmt fill:#e1d5e7,stroke:#9673a6,stroke-width:3px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:3px
+
+    class User,Client external
+    class K8sAPI,Route gateway
+    class Controller,Webhook,ControllerMetrics,ControllerHealth controlplane
+    class RuntimePod,ModelMesh,Adapter,RESTProxy,ModelServer,StorageHelper,Service dataplane
+    class etcd statemgmt
+    class S3,Prometheus,Istio externalservice

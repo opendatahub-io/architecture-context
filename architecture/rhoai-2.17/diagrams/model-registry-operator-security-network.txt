@@ -1,0 +1,251 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client - REST/gRPC]                                           │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS (REST) / HTTPS HTTP/2 (gRPC)                   │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token (Authorization header/metadata)             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ) - Istio Service Mesh                                     │
+│                                                                          │
+│  [Istio Ingress Gateway]                                                 │
+│  - Hosts: {registry-name}-rest.{domain}, {registry-name}-grpc.{domain} │
+│  - Port: 443/TCP (external) → 8080/9090 (internal)                     │
+│  - TLS Termination: TLS 1.2+                                            │
+│  - TLS Modes: SIMPLE, MUTUAL, ISTIO_MUTUAL, OPTIONAL_MUTUAL            │
+│  - Secrets: {registry-name}-rest-credential, {registry-name}-grpc-credential │
+│         │                                                                │
+│         │ [VirtualService Routing]                                       │
+│         │                                                                │
+│         │ [AuthorizationPolicy - CUSTOM action]                          │
+│         │ Delegates to Authorino External Authorization                  │
+│         ▼                                                                │
+│  [Authorino - AuthZ Provider]                                            │
+│  - Port: N/A (gRPC)                                                      │
+│  - Encryption: mTLS                                                      │
+│  - AuthConfig: kubernetes-tokenreview + rbac                            │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token (Authorino SA)                      │
+│         ▼                                                                │
+│  [Kubernetes API Server]                                                 │
+│  - TokenReview: Validate bearer token                                    │
+│  - SubjectAccessReview: Check GET permission on service/{registry-name} │
+│         │                                                                │
+│         │ (Authorization approved)                                       │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Trusted - mTLS ISTIO_MUTUAL)                             │
+│                                                                          │
+│  Namespace: {user-specified-namespace}                                   │
+│                                                                          │
+│  [Model Registry Service]                                                │
+│  - Type: ClusterIP                                                       │
+│  - Ports: 8080/TCP (REST), 9090/TCP (gRPC)                              │
+│         │                                                                │
+│         │ Port: 8080/TCP (REST) or 9090/TCP (gRPC)                       │
+│         │ Protocol: HTTP / gRPC                                          │
+│         │ Encryption: mTLS (ISTIO_MUTUAL via DestinationRule)            │
+│         │ Auth: Validated identity in headers (from Authorino)           │
+│         ▼                                                                │
+│  [Model Registry Pod]                                                    │
+│  - ServiceAccount: {registry-name}-sa                                    │
+│  - Containers:                                                           │
+│    ├─ [Envoy Sidecar] - Istio injected proxy (mTLS termination)         │
+│    ├─ [REST Proxy Container]                                             │
+│    │  - Port: 8080/TCP                                                   │
+│    │  - Image: quay.io/opendatahub/model-registry:latest                │
+│    └─ [gRPC Server Container]                                            │
+│       - Port: 9090/TCP                                                   │
+│       - Image: quay.io/opendatahub/mlmd-grpc-server:latest              │
+│                                                                          │
+│  REST Proxy → gRPC Server (localhost communication)                      │
+│         │                                                                │
+│         │ Port: 9090/TCP                                                 │
+│         │ Protocol: gRPC                                                 │
+│         │ Encryption: None (localhost, same pod)                         │
+│         │ Auth: None (same pod)                                          │
+│         ▼                                                                │
+│  [gRPC Server Container]                                                 │
+│         │                                                                │
+│         │ Port: 5432/TCP (PostgreSQL) or 3306/TCP (MySQL)                │
+│         │ Protocol: PostgreSQL Wire / MySQL Wire                         │
+│         │ Encryption: TLS (configurable - sslmode/SSL certs)             │
+│         │ Auth: Username/Password                                        │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [PostgreSQL Database] OR [MySQL Database]                               │
+│  - PostgreSQL: 5432/TCP (default), TLS via sslmode parameter            │
+│  - MySQL: 3306/TCP (default), TLS via SSL certs                         │
+│  - Auth: Username/Password from secrets                                  │
+│  - Purpose: ML Metadata persistence (MLMD backend)                       │
+│  - Secrets: {database}-password-secret, {database}-ssl-cert,            │
+│             {database}-ssl-key, {database}-ssl-rootcert                 │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  OPERATOR CONTROL PLANE                                                  │
+│                                                                          │
+│  Namespace: model-registry-operator-system (or opendatahub)              │
+│                                                                          │
+│  [Operator Manager Pod]                                                  │
+│  - ServiceAccount: controller-manager                                    │
+│  - Containers:                                                           │
+│    ├─ [Manager Container]                                                │
+│    │  - Binary: /manager (Go)                                            │
+│    │  - Watches: ModelRegistry CRs                                       │
+│    │  - Health: 8081/TCP (HTTP, /healthz, /readyz)                      │
+│    └─ [Kube-RBAC Proxy]                                                  │
+│       - Port: 8443/TCP (HTTPS)                                           │
+│       - Proxies to: manager:8080/metrics (localhost)                     │
+│       - TLS: TLS 1.2+                                                    │
+│       - Auth: Bearer Token via TokenReview + SubjectAccessReview        │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token (controller-manager SA)             │
+│         ▼                                                                │
+│  [Kubernetes API Server]                                                 │
+│  - Reconcile ModelRegistry CRs                                           │
+│  - Create/Update: Deployments, Services, ServiceAccounts                 │
+│  - Create/Update (if Istio): Gateways, VirtualServices,                 │
+│                               DestinationRules, AuthorizationPolicies   │
+│  - Create/Update (if Authorino): AuthConfigs                            │
+│  - Create/Update (RBAC): Roles, RoleBindings                            │
+│  - Create/Update (OpenShift): Routes, Groups                            │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  MONITORING                                                              │
+│                                                                          │
+│  [Prometheus]                                                            │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token (Prometheus ServiceAccount)                 │
+│         ▼                                                                │
+│  [controller-manager-metrics-service]                                    │
+│  - Type: ClusterIP                                                       │
+│  - Port: 8443/TCP → kube-rbac-proxy                                     │
+└─────────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════
+RBAC SUMMARY
+═══════════════════════════════════════════════════════════════════════════
+
+ClusterRole: manager-role (bound to controller-manager ServiceAccount)
+─────────────────────────────────────────────────────────────────────────
+API Groups                          Resources                    Verbs
+───────────────────────────────────────────────────────────────────────────
+apps                                deployments                  create, delete, get, list, patch, update, watch
+""                                  services, serviceaccounts    create, delete, get, list, patch, update, watch
+""                                  endpoints, pods, pods/log    get, list, watch
+""                                  events                       create, patch
+modelregistry.opendatahub.io        modelregistries              create, delete, get, list, patch, update, watch
+modelregistry.opendatahub.io        modelregistries/status       get, patch, update
+modelregistry.opendatahub.io        modelregistries/finalizers   update
+networking.istio.io                 gateways, virtualservices,   create, delete, get, list, patch, update, watch
+                                    destinationrules
+security.istio.io                   authorizationpolicies        create, delete, get, list, patch, update, watch
+authorino.kuadrant.io               authconfigs                  create, delete, get, list, patch, update, watch
+rbac.authorization.k8s.io           roles, rolebindings          create, delete, get, list, patch, update, watch
+route.openshift.io                  routes, routes/custom-host   create, delete, get, list, patch, update, watch
+user.openshift.io                   groups                       create, delete, get, list, patch, update, watch
+config.openshift.io                 ingresses                    get, list, watch
+
+ClusterRole: auth-proxy-client-clusterrole
+─────────────────────────────────────────────────────────────────────────
+API Groups                          Resources                    Verbs
+───────────────────────────────────────────────────────────────────────────
+authentication.k8s.io               tokenreviews                 create
+authorization.k8s.io                subjectaccessreviews         create
+
+Role (per Model Registry instance): registry-user-{registry-name}
+─────────────────────────────────────────────────────────────────────────
+API Groups                          Resources                    Verbs
+───────────────────────────────────────────────────────────────────────────
+""                                  services                     get
+
+Purpose: Users/ServiceAccounts with GET permission on service/{registry-name}
+         can access the Model Registry API (enforced via Authorino RBAC check)
+
+═══════════════════════════════════════════════════════════════════════════
+SERVICE MESH CONFIGURATION (when spec.istio is configured)
+═══════════════════════════════════════════════════════════════════════════
+
+DestinationRule: {registry-name}
+─────────────────────────────────────────────────────────────────────────
+TLS Mode: ISTIO_MUTUAL (default)
+Purpose: Automatic mTLS between services in mesh
+
+Gateway: {registry-name}
+─────────────────────────────────────────────────────────────────────────
+Hosts: {registry-name}-rest.{domain}, {registry-name}-grpc.{domain}
+Port: 443/TCP (configurable via spec.istio.gateway.rest.port/grpc.port)
+TLS Modes: SIMPLE (server TLS), MUTUAL (client certs),
+           ISTIO_MUTUAL (auto mTLS), OPTIONAL_MUTUAL
+Certificates: {registry-name}-rest-credential, {registry-name}-grpc-credential
+
+VirtualService: {registry-name}-rest, {registry-name}-grpc
+─────────────────────────────────────────────────────────────────────────
+Routing: Maps gateway hosts to model registry service ports (8080, 9090)
+
+AuthorizationPolicy: {registry-name}
+─────────────────────────────────────────────────────────────────────────
+Action: CUSTOM (delegates to Authorino external authorization provider)
+Provider: Configured via spec.istio.authProvider (or operator DEFAULT_AUTH_PROVIDER)
+
+AuthConfig (Authorino): {registry-name}
+─────────────────────────────────────────────────────────────────────────
+Authentication: kubernetes-tokenreview (validates bearer token via TokenReview API)
+Authorization: kubernetes-rbac (checks SubjectAccessReview for GET on service/{registry-name})
+Purpose: Kubernetes-native AuthN/AuthZ using bearer tokens and RBAC
+
+═══════════════════════════════════════════════════════════════════════════
+SECRETS
+═══════════════════════════════════════════════════════════════════════════
+
+Name                                Type                  Purpose                          Auto-Rotate
+──────────────────────────────────────────────────────────────────────────────────────────────────────
+{database}-password-secret          Opaque                Database password                No
+{database}-ssl-cert                 Opaque                Client SSL cert (DB connection)  No
+{database}-ssl-key                  Opaque                Client SSL key (DB connection)   No
+{database}-ssl-rootcert             Opaque                Database CA certificate(s)       No
+{registry-name}-rest-credential     kubernetes.io/tls     TLS cert for REST gateway        No
+{registry-name}-grpc-credential     kubernetes.io/tls     TLS cert for gRPC gateway        No
+
+═══════════════════════════════════════════════════════════════════════════
+NETWORK FLOWS
+═══════════════════════════════════════════════════════════════════════════
+
+WITHOUT ISTIO (Cluster-Internal Only):
+─────────────────────────────────────────────────────────────────────────
+Client → Model Registry Service:8080 (HTTP) or :9090 (gRPC)
+  - Encryption: None
+  - Auth: None (unprotected cluster-internal access)
+  - Exposure: ClusterIP only (no external access)
+
+WITH ISTIO (External + Internal Access):
+─────────────────────────────────────────────────────────────────────────
+External Client → Istio Gateway:443 (HTTPS) → VirtualService →
+  → Authorino (TokenReview + RBAC check) →
+  → Envoy Sidecar (mTLS) → Model Registry Container:8080/9090 →
+  → Database:5432/3306 (TLS optional)
+
+WITH OPENSHIFT ROUTES (Alternative External Access):
+─────────────────────────────────────────────────────────────────────────
+External Client → OpenShift Router:443 (HTTPS edge termination) →
+  → Model Registry Service:8080/9090 (HTTP) →
+  → Model Registry Container → Database (TLS optional)
+
+Note: OpenShift Routes provide TLS edge termination but no built-in
+      authentication (unlike Istio+Authorino integration)

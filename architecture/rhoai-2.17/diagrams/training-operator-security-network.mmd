@@ -1,0 +1,121 @@
+graph TB
+    subgraph External["EXTERNAL (User Access)"]
+        User[Data Scientist]
+        SDK[Python SDK Client]
+    end
+
+    subgraph ControlPlane["KUBERNETES API SERVER (Control Plane)"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS1.2+<br/>RBAC Enforcement"]
+    end
+
+    subgraph OperatorNS["OPERATOR NAMESPACE (opendatahub)"]
+        direction TB
+
+        OpPod["Training Operator Manager Pod<br/>SA: training-operator<br/>UID: 65532 (non-root)<br/>Istio Sidecar: DISABLED"]
+
+        subgraph Controllers["Controllers"]
+            PyTorchCtrl[PyTorchJob Controller]
+            TFCtrl[TFJob Controller]
+            MPICtrl[MPIJob Controller]
+            OtherCtrl[XGBoost/MX/Paddle Controllers]
+        end
+
+        Webhook["Webhook Server<br/>9443/TCP HTTPS<br/>mTLS (cert-manager)"]
+        Metrics["Metrics Server<br/>8080/TCP HTTP<br/>No Auth"]
+        Health["Health Probes<br/>8081/TCP HTTP<br/>No Auth"]
+
+        OpPod -->|manages| Controllers
+        OpPod -->|serves| Webhook
+        OpPod -->|exposes| Metrics
+        OpPod -->|exposes| Health
+
+        Service["ClusterIP Service<br/>training-operator<br/>8080/TCP"]
+        Service -->|routes to| Metrics
+    end
+
+    subgraph UserNS["USER NAMESPACES (Training Jobs)"]
+        direction TB
+
+        CRDs["Training Job CRDs<br/>PyTorchJob/TFJob/MPIJob<br/>kubeflow.org/v1"]
+
+        subgraph TrainingPods["Training Job Pods"]
+            Master["Master Pod<br/>{job-name}-master-0<br/>SA: {job-name}-sa"]
+            Workers["Worker Pods<br/>{job-name}-worker-N<br/>User-specified image"]
+        end
+
+        PodGroup["PodGroup CR<br/>Gang Scheduling<br/>(Optional)"]
+        HPA["HorizontalPodAutoscaler<br/>PyTorch Elastic<br/>(Optional)"]
+
+        TrainingServices["Pod Services<br/>DNS: {job-name}-master-0.{job-name}"]
+        ConfigMaps["ConfigMaps<br/>Training config"]
+
+        Master <-->|Framework protocol<br/>Plaintext in-cluster| Workers
+        TrainingServices -->|service discovery| Master
+        TrainingServices -->|service discovery| Workers
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        direction TB
+        Registry["Container Registry<br/>quay.io, registry.redhat.io<br/>443/TCP HTTPS TLS1.2+"]
+        Volcano["Volcano API<br/>scheduling.volcano.sh<br/>443/TCP HTTPS<br/>(Optional)"]
+        SchedulerPlugins["Scheduler-Plugins API<br/>scheduling.x-k8s.io<br/>443/TCP HTTPS<br/>(Optional)"]
+    end
+
+    subgraph Monitoring["MONITORING (Internal)"]
+        direction TB
+        Prometheus["Prometheus<br/>PodMonitor"]
+        Kubelet["Kubelet<br/>Health Probes"]
+    end
+
+    subgraph CertMgmt["CERTIFICATE MANAGEMENT"]
+        CertManager["cert-manager<br/>Auto-rotation"]
+        WebhookCert["Secret: webhook-server-cert<br/>kubernetes.io/tls"]
+    end
+
+    %% User flows
+    User -->|HTTPS/443<br/>Bearer Token| K8sAPI
+    SDK -->|HTTPS/443<br/>Bearer Token| K8sAPI
+
+    %% Webhook validation
+    K8sAPI -->|HTTPS/9443<br/>mTLS API Server cert| Webhook
+    Webhook -.->|validates/mutates| CRDs
+
+    %% Operator reconciliation
+    Controllers -->|HTTPS/443<br/>ServiceAccount JWT| K8sAPI
+    K8sAPI -->|watch events| Controllers
+    Controllers -->|creates/updates| CRDs
+    Controllers -->|creates/updates| TrainingPods
+    Controllers -->|creates| TrainingServices
+    Controllers -->|creates| ConfigMaps
+    Controllers -->|creates| PodGroup
+    Controllers -->|creates| HPA
+
+    %% External dependencies
+    Controllers -.->|HTTPS/443<br/>ServiceAccount JWT| Volcano
+    Controllers -.->|HTTPS/443<br/>ServiceAccount JWT| SchedulerPlugins
+    TrainingPods -->|HTTPS/443<br/>Pull secrets| Registry
+
+    %% Monitoring
+    Prometheus -->|HTTP/8080<br/>No Auth| Metrics
+    Kubelet -->|HTTP/8081<br/>No Auth| Health
+
+    %% Certificate management
+    CertManager -->|provisions| WebhookCert
+    WebhookCert -->|mounted to| Webhook
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef controlplane fill:#fff4e6,stroke:#ff9800,stroke-width:2px
+    classDef operator fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
+    classDef userns fill:#f3e5f5,stroke:#9c27b0,stroke-width:2px
+    classDef externalservice fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    classDef monitoring fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
+    classDef cert fill:#fce4ec,stroke:#e91e63,stroke-width:2px
+
+    class User,SDK external
+    class K8sAPI controlplane
+    class OpPod,Controllers,Webhook,Metrics,Health,Service operator
+    class CRDs,TrainingPods,Master,Workers,PodGroup,HPA,TrainingServices,ConfigMaps userns
+    class Registry,Volcano,SchedulerPlugins externalservice
+    class Prometheus,Kubelet monitoring
+    class CertManager,WebhookCert cert

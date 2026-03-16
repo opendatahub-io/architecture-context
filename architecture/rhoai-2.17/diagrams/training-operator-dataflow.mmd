@@ -1,0 +1,69 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant SDK as Python SDK<br/>(Optional)
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS1.2+
+    participant Webhook as Training Operator Webhook<br/>9443/TCP HTTPS mTLS
+    participant Controller as Training Operator Controller<br/>PyTorch/TF/MPI/etc
+    participant GangScheduler as Gang Scheduler<br/>Volcano/Scheduler-Plugins<br/>(Optional)
+    participant K8sScheduler as Kubernetes Scheduler
+    participant TrainingPod as Training Pod<br/>Distributed workers
+    participant Prometheus as Prometheus<br/>Metrics Collection
+
+    Note over User,TrainingPod: Flow 1: Training Job Creation
+
+    User->>SDK: Create PyTorchJob<br/>job.create()
+    SDK->>K8sAPI: POST /apis/kubeflow.org/v1/namespaces/{ns}/pytorchjobs<br/>Auth: Bearer Token (user creds)
+    K8sAPI->>Webhook: POST /validate/pytorchjob<br/>HTTPS mTLS (API Server client cert)
+    Webhook-->>K8sAPI: Validation Result<br/>(accept/reject)
+    K8sAPI->>Webhook: POST /mutate/pytorchjob<br/>HTTPS mTLS
+    Webhook-->>K8sAPI: Mutated PyTorchJob<br/>(defaults, labels)
+    K8sAPI-->>SDK: PyTorchJob Created<br/>Status: Pending
+    SDK-->>User: Job submitted successfully
+
+    Controller->>K8sAPI: Watch PyTorchJob CRD<br/>HTTPS ServiceAccount token
+    K8sAPI-->>Controller: PyTorchJob Created Event
+
+    Note over Controller: Reconciliation Loop
+
+    Controller->>K8sAPI: Create ConfigMap<br/>(Training config)
+    Controller->>K8sAPI: Create Services<br/>(Pod discovery)
+    Controller->>K8sAPI: Create ServiceAccount<br/>(Optional)
+    Controller->>K8sAPI: Create RoleBinding<br/>(Optional)
+
+    alt Gang Scheduling Enabled
+        Note over Controller,GangScheduler: Flow 2: Gang Scheduling
+        Controller->>K8sAPI: Create PodGroup<br/>scheduling.volcano.sh or scheduling.x-k8s.io
+        K8sAPI-->>GangScheduler: PodGroup Created Event
+        Controller->>K8sAPI: Create Pods<br/>(master + worker replicas)
+        GangScheduler->>K8sScheduler: Schedule all pods atomically<br/>(all-or-nothing)
+        K8sScheduler-->>GangScheduler: All pods scheduled
+    else Standard Scheduling
+        Controller->>K8sAPI: Create Pods<br/>(master + worker replicas)
+        K8sAPI->>K8sScheduler: Schedule pods individually
+    end
+
+    K8sScheduler-->>TrainingPod: Pods started on nodes
+
+    Note over TrainingPod: Distributed training execution<br/>PyTorch DDP, TensorFlow PS, MPI AllReduce
+
+    TrainingPod->>TrainingPod: Service discovery via DNS<br/>{job-name}-master-0.{job-name}
+    TrainingPod->>TrainingPod: Inter-pod communication<br/>Framework-specific protocols
+
+    alt PyTorch Elastic Training
+        Controller->>K8sAPI: Create HorizontalPodAutoscaler<br/>(Dynamic scaling)
+        K8sAPI-->>Controller: HPA monitors metrics
+        Note over TrainingPod: Workers scale up/down<br/>Training adapts dynamically
+    end
+
+    TrainingPod-->>Controller: Pod status updates<br/>(via API Server watch)
+    Controller->>K8sAPI: Update PyTorchJob Status<br/>(Running → Succeeded/Failed)
+    K8sAPI-->>User: Job Status: Succeeded
+
+    Note over Prometheus,Controller: Flow 3: Metrics Collection
+
+    loop Every scrape interval
+        Prometheus->>Controller: GET /metrics:8080<br/>HTTP (no auth)
+        Controller-->>Prometheus: Prometheus metrics<br/>reconciliation, queue, job stats
+    end
+
+    Note over User: Training complete<br/>Model artifacts persisted to storage

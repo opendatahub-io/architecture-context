@@ -1,0 +1,68 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Istio Gateway<br/>443/TCP HTTPS TLS1.2+
+    participant VirtualService as VirtualService<br/>Routing Rules
+    participant Authorino as Authorino<br/>External AuthZ
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant EnvoyProxy as Envoy Sidecar<br/>mTLS ISTIO_MUTUAL
+    participant REST as REST Proxy<br/>8080/TCP HTTP
+    participant GRPC as gRPC Server<br/>9090/TCP gRPC
+    participant DB as PostgreSQL/MySQL<br/>5432/3306 TCP
+
+    Note over Client,DB: Flow 1: REST API Call (with Istio)
+
+    Client->>Gateway: POST /api/model_registry/v1alpha3/models<br/>Authorization: Bearer {token}<br/>TLS 1.2+
+    Gateway->>VirtualService: Route to model registry service
+    VirtualService->>Authorino: Validate request<br/>AuthorizationPolicy CUSTOM action
+
+    Authorino->>K8sAPI: TokenReview<br/>HTTPS 6443/TCP
+    K8sAPI-->>Authorino: Token valid (user identity)
+
+    Authorino->>K8sAPI: SubjectAccessReview<br/>Check GET permission on service/{registry-name}
+    K8sAPI-->>Authorino: Authorized
+
+    Authorino-->>VirtualService: Allow (identity in headers)
+    VirtualService->>EnvoyProxy: Forward request<br/>mTLS ISTIO_MUTUAL
+    EnvoyProxy->>REST: HTTP 8080/TCP<br/>Validated identity
+
+    REST->>GRPC: Forward to gRPC backend<br/>localhost:9090 gRPC<br/>No encryption (same pod)
+    GRPC->>DB: ML Metadata Query<br/>PostgreSQL/MySQL Protocol<br/>TLS optional (5432/3306)
+    DB-->>GRPC: Query results
+    GRPC-->>REST: gRPC response
+    REST-->>EnvoyProxy: HTTP response
+    EnvoyProxy-->>VirtualService: mTLS response
+    VirtualService-->>Gateway: Response
+    Gateway-->>Client: JSON response<br/>HTTPS TLS 1.2+
+
+    Note over Client,DB: Flow 2: gRPC API Call (with Istio)
+
+    Client->>Gateway: gRPC Call<br/>Metadata: authorization={token}<br/>443/TCP HTTPS (HTTP/2)
+    Gateway->>VirtualService: Route to gRPC service
+    VirtualService->>Authorino: Validate request
+
+    Authorino->>K8sAPI: TokenReview + SubjectAccessReview
+    K8sAPI-->>Authorino: Authorized
+
+    Authorino-->>VirtualService: Allow
+    VirtualService->>EnvoyProxy: Forward gRPC<br/>mTLS ISTIO_MUTUAL
+    EnvoyProxy->>GRPC: gRPC 9090/TCP
+    GRPC->>DB: ML Metadata Operation<br/>TLS optional
+    DB-->>GRPC: Result
+    GRPC-->>EnvoyProxy: gRPC response
+    EnvoyProxy-->>Gateway: mTLS response
+    Gateway-->>Client: gRPC response
+
+    Note over Authorino,K8sAPI: Flow 3: Metrics Collection
+
+    participant Prometheus as Prometheus
+    participant RBACProxy as Kube-RBAC Proxy<br/>8443/TCP HTTPS
+    participant OpMetrics as Operator Manager<br/>/metrics endpoint
+
+    Prometheus->>RBACProxy: GET /metrics<br/>Authorization: Bearer {SA-token}<br/>8443/TCP HTTPS TLS 1.2+
+    RBACProxy->>K8sAPI: TokenReview<br/>Validate ServiceAccount token
+    K8sAPI-->>RBACProxy: Valid token
+    RBACProxy->>K8sAPI: SubjectAccessReview<br/>Check metrics access
+    K8sAPI-->>RBACProxy: Authorized
+    RBACProxy->>OpMetrics: GET /metrics<br/>8080/TCP HTTP (localhost)
+    OpMetrics-->>RBACProxy: Prometheus metrics
+    RBACProxy-->>Prometheus: HTTPS response

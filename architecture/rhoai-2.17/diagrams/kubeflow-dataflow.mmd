@@ -1,0 +1,69 @@
+sequenceDiagram
+    participant User as User/Data Scientist
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS1.2+
+    participant Webhook as ODH Notebook Webhook<br/>8443/TCP HTTPS mTLS
+    participant Controller as ODH Notebook Controller<br/>ServiceAccount Token
+    participant ServiceCA as OpenShift Service CA<br/>Auto Cert Provisioning
+    participant KubeflowCtrl as Kubeflow Notebook Controller<br/>Creates StatefulSets
+    participant Router as OpenShift Router<br/>443/TCP HTTPS Edge TLS
+    participant OAuthProxy as OAuth Proxy Sidecar<br/>8443/TCP HTTPS
+    participant OAuthServer as OpenShift OAuth Server<br/>443/TCP HTTPS
+    participant Notebook as Jupyter Notebook Container<br/>8888/TCP HTTP
+
+    rect rgb(240, 248, 255)
+        Note over User,KubeflowCtrl: Flow 1: OAuth Proxy Injection (Notebook Creation)
+        User->>K8sAPI: Create Notebook CR<br/>annotation: inject-oauth=true<br/>HTTPS/443, ServiceAccount Token
+        K8sAPI->>Webhook: AdmissionReview POST /mutate-notebook-v1<br/>HTTPS/8443, mTLS (API Server Client Cert)
+        Webhook->>K8sAPI: Return modified spec<br/>OAuth proxy sidecar injected<br/>HTTPS/443, ServiceAccount Token
+        Controller->>K8sAPI: Create ServiceAccount<br/>{notebook-name}<br/>HTTPS/443, ServiceAccount Token
+        Controller->>K8sAPI: Create Service<br/>{notebook-name}-tls:443→8443<br/>serving-cert annotation<br/>HTTPS/443, ServiceAccount Token
+        ServiceCA->>K8sAPI: Create Secret<br/>{notebook-name}-tls (TLS cert)<br/>HTTPS/443, ServiceAccount Token
+        Controller->>K8sAPI: Create Secret<br/>{notebook-name}-oauth-config<br/>HTTPS/443, ServiceAccount Token
+        Controller->>K8sAPI: Create Route (Edge TLS)<br/>External access<br/>HTTPS/443, ServiceAccount Token
+        Controller->>K8sAPI: Create NetworkPolicies<br/>ctrl-np, oauth-np<br/>HTTPS/443, ServiceAccount Token
+        Controller->>K8sAPI: Create RoleBinding<br/>elyra-pipelines if DSPA exists<br/>HTTPS/443, ServiceAccount Token
+        KubeflowCtrl->>K8sAPI: Create StatefulSet<br/>with injected OAuth sidecar<br/>HTTPS/443, ServiceAccount Token
+    end
+
+    rect rgb(255, 250, 240)
+        Note over User,Notebook: Flow 2: User Access via OAuth (Runtime)
+        User->>Router: HTTPS GET notebook URL<br/>HTTPS/443, TLS1.2+ (Edge), No Auth
+        Router->>OAuthProxy: Forward to Service<br/>HTTPS/8443, TLS1.2+
+        OAuthProxy->>OAuthServer: Redirect if no session<br/>HTTPS/443, TLS1.2+
+        User->>OAuthServer: Authenticate<br/>HTTPS/443, User Credentials
+        OAuthServer->>OAuthProxy: OAuth Token<br/>HTTPS/443, TLS1.2+
+        OAuthProxy->>K8sAPI: SubjectAccessReview<br/>Can user GET notebook?<br/>HTTPS/443, OAuth Token
+        K8sAPI->>OAuthProxy: SAR Result (allowed/denied)<br/>HTTPS/443
+        alt Authorized
+            OAuthProxy->>Notebook: Proxy request<br/>HTTP/8888, No Encryption
+            Notebook->>OAuthProxy: Response<br/>HTTP/8888
+            OAuthProxy->>Router: Response<br/>HTTPS/8443
+            Router->>User: Response via Edge TLS<br/>HTTPS/443, Session Cookie
+        else Unauthorized
+            OAuthProxy->>User: 403 Forbidden
+        end
+    end
+
+    rect rgb(240, 255, 240)
+        Note over User,Notebook: Flow 3: Notebook Without OAuth (Direct Access)
+        User->>K8sAPI: Create Notebook CR<br/>no OAuth annotation<br/>HTTPS/443, ServiceAccount Token
+        Controller->>K8sAPI: Create Route → notebook Service<br/>HTTPS/443, ServiceAccount Token
+        Controller->>K8sAPI: Create NetworkPolicy<br/>ctrl-np only<br/>HTTPS/443, ServiceAccount Token
+        User->>Router: Access via Route<br/>HTTPS/443, No Auth
+        Router->>Notebook: Forward to notebook Service<br/>HTTP/8888
+        Notebook->>Router: Response<br/>HTTP/8888
+        Router->>User: Response via Edge TLS<br/>HTTPS/443
+    end
+
+    rect rgb(255, 245, 245)
+        Note over K8sAPI,Controller: Flow 4: Controller Reconciliation Loop
+        K8sAPI->>Controller: Watch event (Notebook)<br/>create/update/delete<br/>HTTPS/443
+        Controller->>K8sAPI: GET Notebook details<br/>HTTPS/443, ServiceAccount Token
+        Controller->>K8sAPI: GET Route (check exists)<br/>HTTPS/443, ServiceAccount Token
+        Controller->>K8sAPI: Create/Update Route<br/>HTTPS/443, ServiceAccount Token
+        Controller->>K8sAPI: Check OAuth annotation<br/>HTTPS/443, ServiceAccount Token
+        alt inject-oauth=true
+            Controller->>K8sAPI: Create/Update OAuth resources<br/>ServiceAccount, Service, Secrets,<br/>NetworkPolicies, RoleBindings<br/>HTTPS/443, ServiceAccount Token
+        end
+        Controller->>K8sAPI: Update Notebook status/finalizers<br/>HTTPS/443, ServiceAccount Token
+    end

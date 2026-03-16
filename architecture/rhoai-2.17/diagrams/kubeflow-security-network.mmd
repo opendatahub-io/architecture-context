@@ -1,0 +1,113 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User["User/Data Scientist"]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Router["OpenShift Router<br/>Route: notebook-name<br/>443/TCP → 8443/8888<br/>TLS Edge Termination<br/>Redirect HTTP→HTTPS"]
+    end
+
+    subgraph AppTier["APPLICATION TIER (User Namespaces)"]
+        direction TB
+
+        subgraph NotebookPod["Notebook StatefulSet<br/>Namespace: user-namespace<br/>SA: notebook-name"]
+            OAuthProxy["OAuth Proxy Sidecar<br/>(if inject-oauth=true)<br/>Port: 8443/TCP HTTPS<br/>TLS Cert: notebook-name-tls<br/>Cookie: notebook-name-oauth-config<br/>SAR: GET notebook permission"]
+            JupyterContainer["Jupyter Notebook Container<br/>Port: 8888/TCP HTTP<br/>No Encryption (localhost)<br/>Various ML images"]
+        end
+
+        NP1["NetworkPolicy: notebook-name-ctrl-np<br/>Allow TCP/8888 from controller namespace"]
+        NP2["NetworkPolicy: notebook-name-oauth-np<br/>Allow TCP/8443 from anywhere<br/>(if OAuth & no service mesh)"]
+    end
+
+    subgraph ControlPlane["CONTROL PLANE (System Namespace: redhat-ods-applications)"]
+        direction TB
+
+        subgraph ControllerPod["ODH Notebook Controller<br/>SA: odh-notebook-controller-manager"]
+            Reconciler["OpenshiftNotebookReconciler<br/>Watches: Notebook CRs (cluster-wide)<br/>Creates: Routes, Services, Secrets,<br/>NetworkPolicies, RBAC<br/>Metrics: 8080/TCP HTTP<br/>Health: 8081/TCP HTTP"]
+            Webhook["NotebookWebhook<br/>Port: 8443/TCP HTTPS<br/>TLS: odh-notebook-controller-webhook-cert<br/>Endpoint: /mutate-notebook-v1<br/>Auth: mTLS (API Server client cert)"]
+        end
+    end
+
+    subgraph K8sControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: ServiceAccount Tokens,<br/>OAuth Tokens (SAR), mTLS"]
+    end
+
+    subgraph OSPlatform["OPENSHIFT PLATFORM SERVICES"]
+        direction TB
+        OAuthServer["OpenShift OAuth Server<br/>443/TCP HTTPS TLS 1.2+<br/>User Auth: htpasswd/LDAP/SAML<br/>Issues OAuth tokens"]
+        ServiceCA["OpenShift Service CA Operator<br/>Auto-provision TLS certs<br/>Annotation: serving-cert-secret-name<br/>Auto-rotation"]
+        ConfigAPI["OpenShift Config API<br/>config.openshift.io/v1<br/>Resource: Proxy<br/>HTTP_PROXY/HTTPS_PROXY"]
+    end
+
+    subgraph OptionalIntegrations["OPTIONAL INTEGRATIONS"]
+        DSPA["Data Science Pipelines (DSPA)<br/>Optional RBAC integration<br/>RoleBinding: elyra-pipelines-notebook-name<br/>Role: ds-pipeline-user-access-dspa"]
+        ServiceMesh["Service Mesh (Istio)<br/>Annotation: service-mesh=true<br/>mTLS managed by Istio<br/>Skips OAuth NetworkPolicy"]
+    end
+
+    subgraph ExternalDeps["EXTERNAL DEPENDENCIES"]
+        KubeflowCtrl["Kubeflow Notebook Controller<br/>Primary controller<br/>Creates StatefulSets"]
+    end
+
+    %% External to Ingress
+    User -->|HTTPS/443<br/>TLS 1.2+<br/>No Auth initially| Router
+
+    %% Ingress to Application
+    Router -->|HTTPS/8443 OAuth<br/>OR HTTP/8888 direct<br/>TLS 1.2+ or None| OAuthProxy
+    Router -.->|HTTP/8888 no OAuth<br/>No Encryption| JupyterContainer
+
+    %% OAuth Flow
+    OAuthProxy -->|OAuth Flow<br/>HTTPS/443 TLS 1.2+<br/>User Credentials| OAuthServer
+    OAuthServer -->|OAuth Token<br/>HTTPS/443 TLS 1.2+| OAuthProxy
+    OAuthProxy -->|SubjectAccessReview<br/>HTTPS/443 TLS 1.2+<br/>OAuth Token| K8sAPI
+    K8sAPI -->|SAR Result<br/>allowed/denied| OAuthProxy
+
+    %% OAuth to Notebook
+    OAuthProxy -->|HTTP/8888<br/>No Encryption<br/>Localhost| JupyterContainer
+
+    %% Response flow
+    JupyterContainer -->|Response| OAuthProxy
+    OAuthProxy -->|Response<br/>Session Cookie| Router
+    Router -->|HTTPS/443<br/>TLS Edge| User
+
+    %% Controller flows
+    K8sAPI -->|Watch events<br/>Notebook CRs<br/>HTTPS/443| Reconciler
+    Reconciler -->|CRUD Operations<br/>HTTPS/443 TLS 1.2+<br/>ServiceAccount Token| K8sAPI
+    K8sAPI -->|Webhook Callback<br/>HTTPS/8443 mTLS<br/>API Server Client Cert| Webhook
+    Webhook -->|Modified Spec<br/>OAuth sidecar injected| K8sAPI
+
+    %% Service CA integration
+    ServiceCA -.->|Provision TLS Certs<br/>webhook-cert,<br/>notebook-name-tls| ControllerPod
+    ServiceCA -.->|Provision TLS Cert<br/>notebook-name-tls| OAuthProxy
+
+    %% Config API
+    Reconciler -->|GET Proxy config<br/>HTTPS/443| ConfigAPI
+
+    %% Optional integrations
+    Reconciler -.->|Create RoleBinding<br/>if DSPA Role exists| DSPA
+    Reconciler -.->|Detect annotation<br/>Skip oauth-np| ServiceMesh
+
+    %% External dependencies
+    KubeflowCtrl -->|Creates StatefulSet<br/>with injected sidecar| NotebookPod
+
+    %% Network Policies
+    NP1 -.->|Restricts| JupyterContainer
+    NP2 -.->|Allows| OAuthProxy
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef k8s fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef optional fill:#f8cecc,stroke:#b85450,stroke-width:1px,stroke-dasharray: 5 5
+    classDef externaldep fill:#e8e8e8,stroke:#999,stroke-width:1px
+
+    class User external
+    class Router ingress
+    class OAuthProxy,JupyterContainer,NotebookPod,NP1,NP2 application
+    class Reconciler,Webhook,ControllerPod controlplane
+    class K8sAPI k8s
+    class OAuthServer,ServiceCA,ConfigAPI platform
+    class DSPA,ServiceMesh optional
+    class KubeflowCtrl externaldep

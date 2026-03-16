@@ -1,0 +1,124 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User["Data Scientist<br/>Browser/KFP SDK"]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Route["OpenShift Route<br/>ds-pipeline-{name}<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ Reencrypt"]
+        RouteMLMD["OpenShift Route<br/>ds-pipeline-md-{name}<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ Reencrypt"]
+    end
+
+    subgraph PodNetwork["SERVICE MESH / POD NETWORK (TLS 1.3 pod-to-pod)"]
+        direction TB
+
+        subgraph NS_User["Namespace: {user-namespace}"]
+            direction TB
+
+            subgraph APIStack["API & Control Plane"]
+                OAuth["OAuth2 Proxy<br/>8443/TCP HTTPS<br/>TLS: ds-pipelines-proxy-tls-{name}"]
+                API["DS Pipeline API Server<br/>SA: ds-pipeline-{name}<br/>8888/TCP HTTP<br/>8887/TCP gRPC<br/>TLS 1.3 pod-to-pod<br/>NetworkPolicy: ds-pipelines-{name}"]
+                PA["Persistence Agent<br/>SA: ds-pipeline-persistenceagent-{name}"]
+                SWF["Scheduled Workflow Controller<br/>SA: ds-pipeline-scheduledworkflow-{name}"]
+            end
+
+            subgraph MLMDStack["ML Metadata Stack"]
+                OAuthMLMD["OAuth2 Proxy<br/>8443/TCP HTTPS<br/>TLS: ds-pipelines-envoy-proxy-tls-{name}"]
+                Envoy["MLMD Envoy Proxy<br/>9090/TCP gRPC/HTTP2<br/>8443/TCP HTTPS<br/>TLS 1.3<br/>NetworkPolicy: ds-pipelines-envoy-{name}"]
+                MLMD["MLMD gRPC Server<br/>Configurable/TCP gRPC<br/>TLS 1.3 optional mTLS<br/>TLS: ds-pipeline-metadata-grpc-tls-certs-{name}<br/>NetworkPolicy: metadata-grpc-{name}"]
+            end
+
+            subgraph WorkflowExec["Workflow Execution"]
+                WFC["Workflow Controller<br/>SA: argo<br/>9090/TCP Metrics<br/>TLS 1.3"]
+                PipelinePod["Pipeline Pod<br/>SA: pipeline-runner-{name}<br/>User ML code execution"]
+            end
+
+            subgraph Storage["Storage Layer"]
+                MariaDB["MariaDB<br/>3306/TCP MySQL<br/>TLS 1.2+ optional<br/>TLS: ds-pipelines-mariadb-tls-{name}<br/>Auth: mariadb-{name} secret<br/>NetworkPolicy: mariadb-{name}<br/>PVC: metadata, runs, ML metadata"]
+                Minio["Minio<br/>9000/TCP HTTP<br/>Plaintext (internal only)<br/>Auth: S3 keys ({s3-secret-name})<br/>PVC: artifacts, logs"]
+            end
+        end
+
+        subgraph NS_Operator["Namespace: datasciencepipelinesapplications-controller"]
+            Controller["DSPO Controller Manager<br/>SA: controller-manager<br/>ClusterRole: manager-role<br/>8080/TCP Metrics<br/>8081/TCP Health"]
+        end
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        S3["External S3<br/>AWS/GCS/Azure<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: AWS IAM"]
+        ExtDB["External Database<br/>RDS/CloudSQL<br/>3306/5432 TCP<br/>TLS 1.2+<br/>Auth: {db-password-secret}"]
+        Registry["Container Registry<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Pull Secrets"]
+        Git["Git Repositories<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Git Credentials"]
+    end
+
+    subgraph Platform["KUBERNETES PLATFORM"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: ServiceAccount Tokens"]
+        Monitoring["Prometheus<br/>User Workload Monitoring<br/>Scrapes metrics"]
+    end
+
+    %% External to Ingress
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth2 Token"| Route
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth2 Token"| RouteMLMD
+
+    %% Ingress to OAuth Proxies
+    Route -->|"HTTPS/8443<br/>TLS 1.3"| OAuth
+    RouteMLMD -->|"HTTPS/8443<br/>TLS 1.3"| OAuthMLMD
+
+    %% OAuth to Services
+    OAuth -->|"HTTP/8888<br/>TLS 1.3 pod-to-pod<br/>OAuth validated"| API
+    OAuthMLMD -->|"gRPC/9090<br/>TLS 1.3 pod-to-pod<br/>OAuth validated"| Envoy
+
+    %% API Server flows
+    API -->|"MySQL/3306<br/>TLS 1.2+ optional<br/>DB password"| MariaDB
+    API -->|"gRPC/HTTP2/9090<br/>TLS 1.3<br/>None (trusted)"| Envoy
+    API -->|"Internal<br/>gRPC/HTTP<br/>TLS 1.3<br/>ServiceAccount"| WFC
+    API -->|"HTTP/9000<br/>Plaintext<br/>S3 keys"| Minio
+
+    %% MLMD flows
+    Envoy -->|"gRPC/Configurable<br/>TLS 1.3 optional mTLS"| MLMD
+    MLMD -->|"MySQL/3306<br/>TLS 1.2+ optional<br/>DB password"| MariaDB
+
+    %% Workflow execution
+    WFC -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount token"| K8sAPI
+    WFC -.->|"Spawns"| PipelinePod
+    PipelinePod -->|"HTTP/9000 or HTTPS/443<br/>S3 keys"| Minio
+    PipelinePod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    PipelinePod -->|"gRPC/8887<br/>TLS 1.3<br/>ServiceAccount"| API
+
+    %% Persistence Agent
+    PA -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount"| K8sAPI
+    PA -->|"gRPC/8887<br/>TLS 1.3<br/>ServiceAccount"| API
+
+    %% Scheduled Workflow
+    SWF -->|"gRPC/8887<br/>TLS 1.3<br/>ServiceAccount"| API
+
+    %% Operator
+    Controller -->|"HTTPS/6443<br/>TLS 1.2+<br/>ClusterRole privileges"| K8sAPI
+
+    %% External services (alternative paths)
+    API -.->|"Alternative storage<br/>HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    API -.->|"Alternative DB<br/>MySQL/PostgreSQL<br/>TLS 1.2+<br/>DB credentials"| ExtDB
+    MLMD -.->|"Alternative DB"| ExtDB
+    PipelinePod -.->|"Pull images<br/>HTTPS/443<br/>TLS 1.2+"| Registry
+    PipelinePod -.->|"Fetch code<br/>HTTPS/443<br/>TLS 1.2+"| Git
+
+    %% Monitoring
+    Monitoring -.->|"HTTP scrape<br/>metrics"| Controller
+    Monitoring -.->|"HTTP scrape<br/>metrics"| WFC
+    Monitoring -.->|"HTTP scrape<br/>metrics"| API
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef podnetwork fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef storage fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef platform fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef operator fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+
+    class User external
+    class Route,RouteMLMD ingress
+    class OAuth,API,PA,SWF,OAuthMLMD,Envoy,MLMD,WFC,PipelinePod podnetwork
+    class MariaDB,Minio storage
+    class S3,ExtDB,Registry,Git externalservice
+    class K8sAPI,Monitoring platform
+    class Controller operator

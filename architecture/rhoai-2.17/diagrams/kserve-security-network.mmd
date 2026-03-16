@@ -1,0 +1,98 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client[External Client /<br/>Data Scientist]
+    end
+
+    subgraph Ingress["INGRESS (DMZ)"]
+        Gateway["Istio Gateway<br/>443/TCP → 80/TCP<br/>TLS 1.3<br/>Optional JWT Auth"]
+        VirtualService["Istio VirtualService<br/>Traffic Routing<br/>Canary Deployments<br/>AuthorizationPolicy"]
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (mTLS STRICT)"]
+        direction TB
+
+        subgraph NS_Knative["Namespace: knative-serving"]
+            Activator["Knative Activator<br/>SA: controller<br/>8012/TCP mTLS"]
+        end
+
+        subgraph NS_User["Namespace: {user-namespace}"]
+            direction LR
+            Agent["kserve-agent<br/>Queue Proxy Sidecar<br/>SA: {isvc-name}-sa"]
+            Predictor["Model Server<br/>8080/TCP HTTP<br/>V1/V2/OpenAI Protocol<br/>Image: {runtime}"]
+        end
+
+        subgraph NS_Router["InferenceGraph Router"]
+            Router["kserve-router<br/>8080/TCP HTTP mTLS<br/>Multi-Model Routing"]
+        end
+    end
+
+    subgraph ControlPlane["CONTROL PLANE (Namespace: kserve)"]
+        Controller["kserve-controller-manager<br/>SA: kserve-controller-manager<br/>ClusterRole: kserve-manager-role"]
+        Webhook["Webhook Server<br/>443/TCP → 9443/TCP<br/>TLS 1.2+ mTLS<br/>Cert: kserve-webhook-server-cert"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+<br/>ServiceAccount Token Auth"]
+    end
+
+    subgraph Egress["EXTERNAL SERVICES"]
+        S3["S3-compatible Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS TLS1.2+<br/>AWS IAM / Access Keys"]
+        GCS["Google Cloud Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS TLS1.2+<br/>GCP Service Account"]
+        Azure["Azure Blob Storage<br/>*.blob.core.windows.net<br/>443/TCP HTTPS TLS1.2+<br/>Azure Credentials"]
+        IstioPilot["Istio Pilot<br/>istiod.istio-system<br/>15010/TCP gRPC mTLS"]
+        ModelRegistry["ODH Model Registry<br/>8080/TCP HTTP/HTTPS<br/>Optional Bearer Token"]
+    end
+
+    subgraph Secrets["SECRETS"]
+        WebhookCert["kserve-webhook-server-cert<br/>Type: kubernetes.io/tls<br/>Rotation: 90d (cert-manager)"]
+        StorageConfig["storage-config<br/>Type: Opaque<br/>AWS/GCP/Azure credentials"]
+        SAToken["{isvc-name}-sa token<br/>Type: service-account-token<br/>Auto-rotation"]
+    end
+
+    %% External to Ingress
+    Client -->|HTTPS/443<br/>TLS 1.3<br/>Optional Bearer Token| Gateway
+
+    %% Ingress to Service Mesh
+    Gateway -->|HTTP/80<br/>mTLS STRICT<br/>Peer Auth| VirtualService
+    VirtualService -->|HTTP/8012<br/>mTLS STRICT<br/>Service Identity| Activator
+
+    %% Service Mesh Internal
+    Activator -->|HTTP/8012<br/>mTLS STRICT| Agent
+    Agent -->|HTTP/8080<br/>Localhost<br/>No Encryption| Predictor
+
+    %% InferenceGraph routing
+    VirtualService -->|HTTP/8080<br/>mTLS STRICT| Router
+    Router -->|HTTP/80<br/>mTLS STRICT| Predictor
+
+    %% Control Plane
+    Client -.->|kubectl apply<br/>6443/TCP HTTPS| K8sAPI
+    K8sAPI -->|Webhook call<br/>443/TCP HTTPS mTLS| Webhook
+    Webhook -.->|Validate/Mutate| Controller
+    Controller -->|Watch CRDs<br/>Create Resources<br/>6443/TCP HTTPS<br/>ServiceAccount Token| K8sAPI
+
+    %% Egress from Predictor Pod
+    StorageInit["storage-initializer<br/>(init container)"]
+    StorageInit -->|Download Models<br/>443/TCP HTTPS TLS1.2+<br/>IAM/Access Keys| S3
+    StorageInit -->|Download Models<br/>443/TCP HTTPS TLS1.2+| GCS
+    StorageInit -->|Download Models<br/>443/TCP HTTPS TLS1.2+| Azure
+
+    %% Service Mesh integration
+    Predictor -.->|Service Discovery<br/>15010/TCP gRPC mTLS| IstioPilot
+    Controller -.->|Model Metadata<br/>8080/TCP HTTP| ModelRegistry
+
+    %% Secrets usage
+    Webhook -.->|Uses| WebhookCert
+    StorageInit -.->|Uses| StorageConfig
+    Predictor -.->|Uses| SAToken
+
+    %% Styling by trust zone
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:3px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:3px
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef secrets fill:#f8cecc,stroke:#b85450,stroke-width:2px
+
+    class Client external
+    class Gateway,VirtualService ingress
+    class Activator,Agent,Predictor,Router,StorageInit servicemesh
+    class Controller,Webhook,K8sAPI controlplane
+    class S3,GCS,Azure,IstioPilot,ModelRegistry egress
+    class WebhookCert,StorageConfig,SAToken secrets
