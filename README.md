@@ -1,209 +1,167 @@
 # RHOAI Architecture Diagrams
 
-Repository processing and analysis tool for Red Hat OpenShift AI (RHOAI) components.
+Automated pipeline that clones ODH/RHOAI component repositories, generates per-component architecture summaries using Claude agents, aggregates them into platform-level documents, and produces Mermaid/C4 diagrams. All driven by `main.py`.
 
-## Overview
+## How it works
 
-This tool helps automate the process of:
-1. Cloning repositories from GitHub organizations (with optional branch filtering)
-2. Parsing component manifests to understand dependencies
+The pipeline has 6 phases, each runnable independently or together via `main.py all`.
 
-## Project Structure
+### Phase 1: Fetch (`fetch`)
+
+Uses `gh-org-clone` to clone all repositories from a GitHub org. For RHOAI, the `--branch` flag filters to repos that have that branch and creates a versioned checkout directory:
 
 ```
-.
-├── main.py                 # Main CLI entry point
-├── lib/                    # Modular library components
-│   ├── fetch.py           # Phase 1: Repository fetching
-│   └── manifest_parser.py # Phase 2: Manifest parsing
-└── checkouts/             # Cloned repositories (gitignored)
+checkouts/red-hat-data-services.rhoai-3.4-ea.1/
+  rhods-operator/
+  kserve/
+  odh-dashboard/
+  notebooks/
+  ...  (~49 repos)
 ```
 
-## Installation
+### Phase 2: Parse manifests (`parse-manifests`)
 
-1. Install dependencies:
-```bash
-uv sync
+Parses the operator's `get_all_manifests.sh` script to extract the `COMPONENT_MANIFESTS` bash associative arrays. This identifies ~17 components that the operator directly manages via kustomize manifests.
+
+### Phase 3: Generate component architecture (`generate-architecture`)
+
+For each component repo that lacks a `GENERATED_ARCHITECTURE.md`, spawns a Claude agent (via `claude-agent-sdk`) that reads the repo's source code and writes a structured architecture summary. Agents run concurrently (default 5 at a time).
+
+**Component discovery** works in three layers:
+1. **Manifest components** (~17) — parsed from `get_all_manifests.sh`
+2. **Operator** (+1) — the operator itself, added explicitly
+3. **Adjacent components** (+~31, RHOAI only) — all other repos in the checkout directory that aren't already covered by manifests, minus an exclusion list of utility repos
+
+**Build metadata** from `RHOAI-Build-Config` is injected into each agent's prompt:
+- Product version, supported OCP versions, CPU architectures (amd64, arm64, ppc64le, s390x)
+- Operator feature flags (FIPS compliance, disconnected support, etc.)
+- Container image count and the image-to-source-repo mapping from Konflux snapshot files
+
+### Phase 4: Collect architectures (`collect-architectures`)
+
+Copies `GENERATED_ARCHITECTURE.md` files from checkouts into an organized `architecture/` directory:
+
+```
+architecture/
+  rhoai-3.4-ea.1/
+    kserve.md
+    odh-dashboard.md
+    notebooks.md
+    PLATFORM.md
+    diagrams/
+      kserve-component.mmd
+      kserve-component.png
+      ...
+  rhoai-3.4-ea.2/
+    ...
 ```
 
-2. Set up environment variables (copy `.env.example` to `.env`):
-```bash
-cp .env.example .env
-# Edit .env with your configuration
+### Phase 5: Generate platform architecture (`generate-platform-architecture`)
+
+Spawns a Claude agent that reads all component `.md` files in an architecture version directory and produces a `PLATFORM.md` — an aggregated platform-level architecture document. Build metadata (OCP versions, shipped image topology) is included in the prompt.
+
+### Phase 6: Generate diagrams (`generate-diagrams`)
+
+Spawns Claude agents that read each component and platform `.md` file and produce:
+- Mermaid diagrams (`.mmd`): component, dataflow, dependencies, RBAC, security/network
+- C4 context diagrams (`.dsl`)
+- PNG renders via `scripts/generate_diagram_pngs.py`
+
+## Project structure
+
+```
+main.py                          # CLI entry point, all 6 phases
+lib/
+  fetch.py                       # Phase 1: gh-org-clone wrapper
+  manifest_parser.py             # Phase 2: manifest parsing, adjacent discovery,
+                                 #          build-config/bundle metadata extraction
+scripts/
+  collect_architectures.py       # Phase 4: file collection logic
+  generate_diagram_pngs.py       # Mermaid→PNG rendering
+.claude/skills/                  # Claude agent prompt templates
+  repo-to-architecture-summary/  # Phase 3 skill
+  aggregate-platform-architecture/# Phase 5 skill
+  generate-component-diagrams/   # Phase 6 skill
+architecture/                    # Output: organized architecture docs + diagrams
+checkouts/                       # Cloned repositories (gitignored)
+logs/                            # Agent execution logs per phase
 ```
 
 ## Usage
 
-The tool provides subcommands for each processing phase.
-
-### Quick Start Examples
-
-For OpenDataHub (ODH):
-```bash
-# Fetch all ODH repos
-python main.py fetch opendatahub-io
-
-# Parse manifests
-python main.py parse-manifests --platform odh
-
-# Or run all phases
-python main.py all --platform odh
-```
-
-For Red Hat OpenShift AI (RHOAI) with versioning:
-```bash
-# Fetch RHOAI 2.14 repos
-python main.py fetch red-hat-data-services --branch rhoai-2.14
-
-# Parse manifests for RHOAI 2.14
-python main.py parse-manifests --platform rhoai --branch rhoai-2.14
-
-# Or run all phases
-python main.py all --platform rhoai --branch rhoai-2.14
-```
-
-### Detailed Command Reference
-
-### Phase 1: Fetch Repositories
-
-Clone all repositories from a GitHub organization:
+### Full pipeline
 
 ```bash
-python main.py fetch <org-name>
+# RHOAI (specific version)
+python main.py all --platform=rhoai --branch=rhoai-3.4-ea.1 --model=opus
 
-# Example:
-python main.py fetch red-hat-data-services
-
-# With custom checkout directory:
-python main.py fetch red-hat-data-services --checkouts-dir my-checkouts
-
-# Clone only repos with a specific branch:
-python main.py fetch red-hat-data-services --branch main
-
-# Clone versioned checkouts for different releases:
-# Note: --branch automatically creates <org>.<branch>/ directories
-python main.py fetch red-hat-data-services --branch rhoai-2.13
-python main.py fetch red-hat-data-services --branch rhoai-2.14
-python main.py fetch red-hat-data-services --branch rhoai-2.15
-
-# This creates:
-#   checkouts/red-hat-data-services.rhoai-2.13/
-#   checkouts/red-hat-data-services.rhoai-2.14/
-#   checkouts/red-hat-data-services.rhoai-2.15/
+# ODH
+python main.py all --platform=odh --model=sonnet
 ```
 
-### Phase 2: Parse Component Manifests
-
-Extract component information from `get_all_manifests.sh`:
+### Individual phases
 
 ```bash
-# For ODH (human-readable summary):
-python main.py parse-manifests --platform odh
+# Fetch repos
+python main.py fetch red-hat-data-services --branch rhoai-3.4-ea.1
 
-# For RHOAI with specific version:
-python main.py parse-manifests --platform rhoai --branch rhoai-2.14
+# Parse manifests (see what components are discovered)
+python main.py parse-manifests --platform=rhoai --branch=rhoai-3.4-ea.1
 
-# Get structured JSON output for programmatic use:
-python main.py parse-manifests --platform odh --format json
+# Generate architecture for a single component
+python main.py generate-architecture --platform=rhoai --branch=rhoai-3.4-ea.1 \
+  --component=kube-auth-proxy --model=sonnet
 
-# With custom organization override:
-python main.py parse-manifests --platform odh --org my-custom-org
+# Regenerate a specific component
+python main.py generate-architecture --platform=rhoai --branch=rhoai-3.4-ea.1 \
+  --component=kserve --force --model=opus
 
-# With custom script path override:
-python main.py parse-manifests --platform odh --script-path path/to/get_all_manifests.sh
+# Collect into architecture/ directory
+python main.py collect-architectures --platform=rhoai
+
+# Generate platform-level doc
+python main.py generate-platform-architecture --platform=rhoai --version=3.4-ea.1
+
+# Generate diagrams
+python main.py generate-diagrams --platform=rhoai --version=3.4-ea.1
 ```
 
-The parser extracts component information from bash associative arrays in the script:
-- `ODH_COMPONENT_MANIFESTS` for ODH platform
-- `RHOAI_COMPONENT_MANIFESTS` for RHOAI platform
+### Useful flags
 
-Each component includes:
-- Repository organization and name
-- Git reference (branch/tag/commit)
-- Source folder within the repo
-- Checkout path (if repo is cloned)
-- Whether GENERATED_ARCHITECTURE.md exists
+| Flag | Phase | Description |
+|------|-------|-------------|
+| `--model` | 3, 5, 6 | Claude model: `sonnet` (default), `opus`, `haiku` |
+| `--max-concurrent` | 3, 5, 6 | Parallel agent count (default: 5) |
+| `--component` | 3 | Process a single component by key name |
+| `--force` | 3 | Delete existing architecture and regenerate |
+| `--force-regenerate` | 6 | Regenerate diagrams even if they exist |
+| `--limit` | 3, 5, 6 | Cap number of items to process |
 
-#### Output Formats
+## Build metadata extraction
 
-**Summary format** (default, `--format summary`):
-- Human-readable output with status indicators
-- Shows analyzed vs. missing components
-- Displays full component details
+For RHOAI, the pipeline reads three files from `RHOAI-Build-Config/`:
 
-**JSON format** (`--format json`):
-- Structured data suitable for piping to other tools
-- Can be used programmatically in scripts
-- See `examples/use_manifest_data.py` for usage examples
+| File | What it provides |
+|------|------------------|
+| `config/build-config.yaml` | Supported OCP versions (e.g. v4.19, v4.20, v4.21) |
+| `bundle/csv-patch.yaml` | CPU architectures, min kube version, OLM feature flags |
+| `bundle/bundle-patch.yaml` | Product version, all RELATED_IMAGE entries (84 images for 3.4-ea.1) |
+| `release/*/stage/*/snapshot-components/*.yaml` | Konflux snapshot: container image → source repo + commit mapping |
 
-### Run All Phases
-
-Execute all phases in sequence:
-
-```bash
-# For ODH (default):
-python main.py all --platform odh
-
-# For RHOAI with specific version:
-python main.py all --platform rhoai --branch rhoai-2.14
-```
-
-## Programmatic Usage
-
-The manifest parser can be used programmatically in your own Python scripts:
-
-```python
-from lib.manifest_parser import process_manifest_script, components_to_json
-
-# Get structured component data (silent - no output)
-components = await process_manifest_script(
-    script_path="checkouts/opendatahub-io/opendatahub-operator/get_all_manifests.sh",
-    platform="odh"
-)
-
-# Filter components needing analysis
-needs_analysis = {
-    key: comp
-    for key, comp in components.items()
-    if not comp.has_architecture
-}
-
-# Export to JSON
-json_output = components_to_json(components, indent=2)
-
-# Access component data
-for key, component in components.items():
-    print(f"{key}: {component.repo_org}/{component.repo_name}")
-    print(f"  Checkout: {component.checkout_path}")
-    print(f"  Ref: {component.ref}")
-```
-
-See `examples/use_manifest_data.py` for complete examples.
-
-## Development
-
-### Adding New Phases
-
-1. Create a new module in `lib/`
-2. Add the phase logic as async functions
-3. Update `main.py` to add a new subcommand
-4. Import and call the phase function
-
-### Code Structure
-
-All phase modules follow this pattern:
-- Async functions for main operations
-- Clear function signatures with type hints
-- Dataclasses for structured data
-- Proper error handling
-- **Separation of concerns**: Data processing functions are silent and return structured data, display functions handle output
+This metadata is injected into agent prompts so they can factor in platform constraints (e.g., which k8s APIs are available given the OCP version range, multi-arch requirements, FIPS compliance).
 
 ## Requirements
 
-- Python 3.11+
-- `gh-org-clone` CLI tool (for Phase 1)
-- Git
+- Python 3.13+
+- `gh-org-clone` CLI tool
+- `claude-agent-sdk` (installed via `uv sync`)
+- `pyyaml`
+- `ANTHROPIC_API_KEY` or Vertex AI credentials (see `.env.example`)
 
-## Environment Variables
+## Setup
 
-See `.env.example` for required environment variables, particularly for Vertex AI integration.
+```bash
+uv sync
+cp .env.example .env
+# Edit .env with API credentials
+```
