@@ -334,6 +334,12 @@ def parse_args():
         help="Specific branch to clone (e.g., rhoai-2.14 for RHOAI versions)"
     )
     all_parser.add_argument(
+        "--max-concurrent",
+        type=int,
+        default=5,
+        help="Maximum number of agents to run concurrently (default: 5)"
+    )
+    all_parser.add_argument(
         "--model",
         choices=["sonnet", "opus", "haiku"],
         default="sonnet",
@@ -1386,13 +1392,14 @@ async def run_all_phases(args) -> None:
     await run_manifest_phase(manifest_args)
 
     # Phase 3: Generate component architectures
+    max_concurrent = getattr(args, 'max_concurrent', 5)
     generate_arch_args = Namespace(
         platform=args.platform,
         org=org,
         branch=getattr(args, 'branch', None),
         checkouts_dir="checkouts",
         script_path=None,
-        max_concurrent=5,
+        max_concurrent=max_concurrent,
         limit=None,
         component=None,
         force=False,
@@ -1441,7 +1448,7 @@ async def run_all_phases(args) -> None:
         checkouts_dir="checkouts",
         platform=args.platform,
         version=target_version,  # Filter to specific version from branch
-        max_concurrent=5,
+        max_concurrent=max_concurrent,
         limit=None,
         model=getattr(args, 'model', 'sonnet')
     )
@@ -1453,7 +1460,7 @@ async def run_all_phases(args) -> None:
         architecture_dir="architecture",
         platform=args.platform,
         version=target_version,  # Filter to specific version from branch
-        max_concurrent=5,
+        max_concurrent=max_concurrent,
         limit=None,
         force_regenerate=False,
         model=getattr(args, 'model', 'sonnet')
