@@ -34,7 +34,22 @@ sys.path.insert(0, str(Path(__file__).parent / "scripts"))
 from collect_architectures import collect_architectures, print_summary
 
 # Load environment variables from .env file
-load_dotenv()
+env_path = Path(__file__).parent / ".env"
+if not env_path.exists():
+    print(
+        "Error: .env file not found\n"
+        "\n"
+        f"Expected location: {env_path}\n"
+        "\n"
+        "Create a .env file with at minimum:\n"
+        "\n"
+        "  ANTHROPIC_API_KEY=sk-ant-...\n"
+        "\n"
+        "The Claude Agent SDK requires a valid API key to spawn agents.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+load_dotenv(dotenv_path=env_path)
 
 
 def resolve_script_path(platform: str, org: str = None, branch: str = None,
