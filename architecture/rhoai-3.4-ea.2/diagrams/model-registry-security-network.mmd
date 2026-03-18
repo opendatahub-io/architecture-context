@@ -4,65 +4,56 @@
 
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client / Browser"]
+        Client["External Client<br/>(Dashboard / CLI)"]
     end
 
     subgraph Ingress["INGRESS (DMZ)"]
-        IstioGW["Istio Ingress Gateway<br/>443/TCP -> 8080/TCP<br/>TLS 1.2+<br/>Bearer Token"]
+        Gateway["Istio Ingress Gateway<br/>kubeflow-gateway<br/>443/TCP → 8080/TCP<br/>TLS Mode: ISTIO_MUTUAL"]
     end
 
-    subgraph ServiceMesh["SERVICE MESH (mTLS - Istio)"]
+    subgraph ServiceMesh["SERVICE MESH (Istio mTLS)"]
         direction TB
 
-        subgraph NS_MR["Model Registry Services"]
-            MRService["model-registry-service<br/>ClusterIP 8080/TCP<br/>HTTP (mTLS sidecar)<br/>AuthzPolicy: ALLOW all"]
-            CatalogService["model-catalog<br/>ClusterIP 8080/TCP<br/>HTTP (mTLS sidecar)<br/>AuthzPolicy: mesh-level"]
-            UIService["model-registry-ui-service<br/>ClusterIP 8080/TCP<br/>HTTP<br/>Auth: internal/user_token"]
+        subgraph NS_Kubeflow["Namespace: kubeflow"]
+            Proxy["model-registry proxy<br/>ClusterIP: 8080/TCP<br/>AuthzPolicy: ALLOW ALL<br/>DestRule: ISTIO_MUTUAL"]
+            CatalogSvr["model-registry catalog<br/>ClusterIP: 8080/TCP<br/>mTLS (Istio sidecar)"]
+            UI["Model Registry UI<br/>ClusterIP: 8080/TCP<br/>plaintext"]
         end
 
-        subgraph NS_Controller["Controller"]
-            ControllerMgr["model-registry-controller<br/>SA: controller-manager<br/>Watches: InferenceService CRs"]
-            MetricsSvc["controller-metrics<br/>ClusterIP 8443/TCP<br/>HTTPS (self-signed)<br/>Auth: Bearer Token (SA)"]
+        subgraph NS_System["Namespace: system"]
+            Controller["InferenceService Controller<br/>Metrics: 8443/TCP HTTPS<br/>Auth: Bearer Token (SA)"]
         end
 
-        subgraph NS_CSI["Storage Initializer"]
-            StorageInit["mr-storage-initializer<br/>Init Container<br/>model-registry:// URIs"]
-        end
+        CSI["CSI Storage Initializer<br/>(KServe init container)"]
+    end
 
-        subgraph NS_DB["Databases"]
-            MySQL["MySQL 5.7+<br/>model-registry-db<br/>ClusterIP 3306/TCP<br/>Auth: mysql-secret"]
-            PostgreSQL["PostgreSQL 14+<br/>model-catalog-postgres<br/>ClusterIP 5432/TCP<br/>Auth: model-catalog-postgres secret"]
-        end
+    subgraph Databases["DATABASE TIER"]
+        MySQL["MySQL<br/>3306/TCP<br/>TLS 1.2+<br/>Auth: mysql-secret"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>Auth: model-catalog-postgres secret"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        HuggingFace["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: API Key (optional)"]
-        ModelStorage["Model Storage (S3/OCI)<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Storage Credentials"]
-        K8sAPI["Kubernetes API<br/>443/TCP HTTPS TLS<br/>Auth: ServiceAccount Token"]
+        HuggingFace["HuggingFace Hub API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: HF_API_KEY"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>Auth: SA Token"]
+        ArtifactStore["Model Artifact Store<br/>(S3/OCI)<br/>Varies"]
     end
 
-    %% External to Ingress
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| IstioGW
+    %% Flows with security details
+    Client -->|"HTTPS/443<br/>TLS<br/>Auth: Varies"| Gateway
+    Gateway -->|"HTTP/8080<br/>mTLS ISTIO_MUTUAL<br/>AuthzPolicy: ALLOW ALL"| Proxy
 
-    %% Ingress to Services
-    IstioGW -->|"HTTP/8080<br/>mTLS (ISTIO_MUTUAL)<br/>VirtualService"| MRService
-    IstioGW -->|"HTTP/8080<br/>mTLS (ISTIO_MUTUAL)<br/>VirtualService"| CatalogService
+    Proxy -->|"MySQL protocol/3306<br/>TLS 1.2+<br/>Username/Password"| MySQL
+    CatalogSvr -->|"PostgreSQL/5432<br/>Configurable<br/>PGUSER/PGPASSWORD"| PostgreSQL
 
-    %% Internal Service-to-Service
-    UIService -->|"HTTP/8080<br/>mTLS (Istio)<br/>SA Token"| MRService
-    UIService -->|"HTTP/8080<br/>mTLS (Istio)<br/>SA Token"| CatalogService
-    UIService -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
-    ControllerMgr -->|"HTTP/8080<br/>Optional TLS<br/>Bearer Token"| MRService
-    ControllerMgr -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
-    StorageInit -->|"HTTP/8080<br/>plaintext"| MRService
+    Controller -->|"HTTP/8080<br/>plaintext/mTLS<br/>Bearer Token (optional)"| Proxy
+    Controller -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
 
-    %% Service to Database
-    MRService -->|"MySQL/3306<br/>Optional TLS<br/>username/password"| MySQL
-    CatalogService -->|"PostgreSQL/5432<br/>Optional TLS<br/>username/password"| PostgreSQL
+    CSI -->|"HTTP/8080<br/>plaintext<br/>No auth"| Proxy
+    CSI -->|"HTTP/S3/OCI<br/>Varies"| ArtifactStore
 
-    %% Service to External
-    CatalogService -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| HuggingFace
-    StorageInit -->|"HTTPS/443<br/>TLS 1.2+<br/>Storage Creds"| ModelStorage
+    CatalogSvr -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_API_KEY"| HuggingFace
+
+    UI -->|"HTTP/8080<br/>REST API"| Proxy
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
@@ -72,7 +63,7 @@ graph TB
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class Client external
-    class IstioGW ingress
-    class MRService,CatalogService,UIService,ControllerMgr,MetricsSvc,StorageInit servicemesh
+    class Gateway ingress
+    class Proxy,CatalogSvr,Controller,CSI,UI servicemesh
     class MySQL,PostgreSQL database
-    class HuggingFace,ModelStorage,K8sAPI externalservice
+    class HuggingFace,K8sAPI,ArtifactStore externalservice

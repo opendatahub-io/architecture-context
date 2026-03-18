@@ -3,91 +3,81 @@
 
 workspace {
     model {
-        // Users
-        admin = person "Cluster Admin" "Installs and configures RHOAI platform via DSC/DSCI CRs"
-        datascientist = person "Data Scientist" "Uses AI/ML platform services (notebooks, model serving, pipelines)"
+        admin = person "Platform Admin" "Configures RHOAI platform via DSC and DSCI Custom Resources"
+        datascientist = person "Data Scientist" "Uses RHOAI Dashboard, Workbenches, Model Serving, Pipelines"
 
-        // Primary System
-        rhodsOperator = softwareSystem "RHOAI Operator (rhods-operator)" "Central orchestrator for Red Hat OpenShift AI platform - manages component lifecycle, gateway, auth, and monitoring" {
-            operatorManager = container "Operator Manager" "Main operator binary with leader election (3 replicas), health/readiness probes, metrics" "Go Binary (controller-runtime)"
-            webhookServer = container "Webhook Server" "Validates and converts DSC, DSCI, Auth, Monitoring CRDs" "Go (controller-runtime), port 9443"
-            dsciController = container "DSCInitialization Controller" "Initializes platform: creates Auth, Monitoring, Gateway services; manages TrustedCABundle, HardwareProfiles" "Go Controller"
-            dscController = container "DataScienceCluster Controller" "Orchestrates component lifecycle: creates/manages 16 component CRs" "Go Controller"
-            gatewayController = container "Gateway Controller" "Deploys Gateway API infrastructure: GatewayClass, Gateway, kube-auth-proxy, EnvoyFilter, NetworkPolicy" "Go Controller"
-            authController = container "Auth Controller" "Manages platform RBAC: ClusterRoles, ClusterRoleBindings for admin/allowed groups" "Go Controller"
-            monitoringController = container "Monitoring Controller" "Deploys observability stack: MonitoringStack, ThanosQuerier, Tempo, OpenTelemetry, Perses" "Go Controller"
-            componentControllers = container "Component Controllers (16)" "Per-component reconcilers: Dashboard, Workbenches, Kserve, Ray, Kueue, ModelRegistry, DSP, TrustyAI, Feast, LlamaStack, MLflow, Spark, TrainingOp, Trainer, MaaS, ModelController" "Go Controllers"
+        rhoaiOperator = softwareSystem "RHOAI Operator (rhods-operator)" "Central control plane for Red Hat OpenShift AI - manages lifecycle of all AI/ML platform components" {
+            dsciController = container "DSCInitialization Controller" "Platform initialization: namespace, monitoring, service mesh, CA bundles, auth, gateway config" "Go Controller (controller-runtime)"
+            dscController = container "DataScienceCluster Controller" "Manages component lifecycle via component CRs" "Go Controller (controller-runtime)"
+            gatewayController = container "Gateway Controller" "Deploys Gateway API infrastructure: GatewayClass, Gateway, kube-auth-proxy, EnvoyFilter, DestinationRule" "Go Controller (controller-runtime)"
+            authController = container "Auth Controller" "Manages RBAC: ClusterRoles, ClusterRoleBindings for admin/allowed groups" "Go Controller (controller-runtime)"
+            monitoringController = container "Monitoring Controller" "Deploys MonitoringStack, Prometheus rules, Tempo, OpenTelemetry" "Go Controller (controller-runtime)"
+            certController = container "CertConfigMapGenerator" "Generates and distributes TLS certificates and CA configmaps" "Go Controller (controller-runtime)"
+            componentControllers = container "Component Controllers (16)" "Individual controllers for Dashboard, Workbenches, KServe, DSP, ModelRegistry, TrustyAI, Ray, Kueue, etc." "Go Controllers (controller-runtime)"
+            webhookServer = container "Webhook Server" "Validating/defaulting webhooks for DSC, DSCI, Auth, Monitoring CRDs" "Admission Webhooks (9443/TCP)"
+            kubeAuthProxy = container "kube-auth-proxy" "OAuth2/OIDC authentication proxy for Gateway API ingress" "Deployment (HPA 2-10 replicas)"
+            dashboardRedirect = container "dashboard-redirect" "Nginx-based 301 redirect from legacy URLs to Gateway API hostname" "nginx Deployment"
         }
 
-        // External Dependencies
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for CRD management and resource reconciliation" "External"
-        gatewayAPIController = softwareSystem "OpenShift Gateway API Controller" "Processes Gateway/GatewayClass CRs, provisions Envoy proxy" "External"
-        istio = softwareSystem "Istio / OpenShift Service Mesh" "Traffic management and mTLS enforcement via EnvoyFilter and DestinationRule" "External"
-        oauthServer = softwareSystem "OpenShift OAuth Server" "Integrated OAuth authentication for kube-auth-proxy" "External"
-        certManager = softwareSystem "cert-manager" "Optional TLS certificate lifecycle management" "External"
-        ocpMonitoring = softwareSystem "OpenShift Monitoring" "Platform metrics collection via ServiceMonitor and PrometheusRule" "External"
-        ocpIngressController = softwareSystem "OpenShift Ingress Controller" "External HTTP access via Route CRs (OcpRoute mode)" "External"
-        imageRegistry = softwareSystem "Container Image Registry" "Component image storage (disconnected-capable)" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster control plane" "External"
+        istio = softwareSystem "Istio / Service Mesh" "EnvoyFilter, DestinationRule for gateway auth integration" "External"
+        openshiftGW = softwareSystem "OpenShift Gateway Controller" "Implements Gateway API (openshift.io/gateway-controller/v1)" "External"
+        oauthProvider = softwareSystem "OAuth/OIDC Provider" "OpenShift OAuth Server or External OIDC (ROSA/ARO)" "External"
+        olm = softwareSystem "OLM (Operator Lifecycle Manager)" "Operator installation and upgrade management" "External"
+        certManager = softwareSystem "cert-manager" "TLS certificate provisioning (optional)" "External"
 
-        // Internal ODH Dependencies
-        monitoringOperator = softwareSystem "Observability Operator (RHOBS)" "Deploys dedicated Prometheus instance for RHOAI via MonitoringStack" "Internal RHOAI"
-        tempoOperator = softwareSystem "Tempo Operator" "Distributed tracing storage backend via TempoMonolithic/TempoStack" "Internal RHOAI"
-        otelOperator = softwareSystem "OpenTelemetry Operator" "Trace collection pipeline via OpenTelemetryCollector" "Internal RHOAI"
-        persesOperator = softwareSystem "Perses Operator" "Observability dashboards for metrics and traces" "Internal RHOAI"
-        kserve = softwareSystem "KServe" "Model serving infrastructure - InferenceService, ServingRuntime" "Internal RHOAI"
-        kuadrant = softwareSystem "Kuadrant" "API gateway policies: AuthPolicy, RateLimitPolicy for Models-as-a-Service" "Internal RHOAI"
-        keda = softwareSystem "KEDA" "InferenceService autoscaling via KedaController, TriggerAuthentication" "Internal RHOAI"
-        kueue = softwareSystem "Kueue" "Job scheduling and quota management via ClusterQueue, LocalQueue" "Internal RHOAI"
-        trainingOp = softwareSystem "Kubeflow Training Operator" "Distributed training jobs" "Internal RHOAI"
-        feastOp = softwareSystem "Feast Operator" "Feature store management" "Internal RHOAI"
+        // Internal ODH Components (managed by operator)
+        dashboard = softwareSystem "ODH Dashboard" "Dashboard UI" "Internal ODH"
+        notebookController = softwareSystem "Notebook Controller" "Workbench/Notebook management" "Internal ODH"
+        kserve = softwareSystem "KServe" "Model serving infrastructure" "Internal ODH"
+        dsp = softwareSystem "Data Science Pipelines" "Pipeline orchestration" "Internal ODH"
+        modelRegistry = softwareSystem "Model Registry" "Model metadata registry" "Internal ODH"
+        trustyai = softwareSystem "TrustyAI" "AI explainability" "Internal ODH"
+        kuberay = softwareSystem "KubeRay" "Distributed computing (Ray)" "Internal ODH"
+        kueue = softwareSystem "Kueue" "Job scheduling" "Internal ODH"
+        trainingOperator = softwareSystem "Training Operator" "Training workloads" "Internal ODH"
+        modelController = softwareSystem "ODH Model Controller" "Model routing" "Internal ODH"
+        monitoring = softwareSystem "Prometheus / MonitoringStack" "Monitoring, alerting, observability" "External"
 
-        // Relationships - Admin
-        admin -> rhodsOperator "Creates DSCInitialization and DataScienceCluster CRs via kubectl" "HTTPS/6443"
-        datascientist -> rhodsOperator "Accesses AI/ML services via data-science-gateway" "HTTPS/443"
+        // Relationships
+        admin -> rhoaiOperator "Creates DSCInitialization and DataScienceCluster CRs via kubectl"
+        datascientist -> rhoaiOperator "Accesses platform via Gateway API (rh-ai.{domain})"
 
-        // Relationships - Operator to External
-        rhodsOperator -> k8sAPI "Manages CRDs, watches resources, deploys manifests" "HTTPS/6443"
-        rhodsOperator -> gatewayAPIController "Creates Gateway/GatewayClass CRs for platform ingress" "Gateway API"
-        rhodsOperator -> istio "Creates EnvoyFilter and DestinationRule for auth enforcement" "Istio API"
-        rhodsOperator -> oauthServer "OAuth client registration and token validation" "HTTPS/443"
-        rhodsOperator -> certManager "Creates Certificate/Issuer CRs for TLS" "cert-manager API"
-        rhodsOperator -> ocpMonitoring "Creates ServiceMonitor and PrometheusRule" "Prometheus Operator API"
-        rhodsOperator -> ocpIngressController "Creates Route CRs for OcpRoute ingress mode" "Route API"
-        rhodsOperator -> imageRegistry "Pulls component container images" "HTTPS/443"
+        rhoaiOperator -> kubernetesAPI "CR management, resource CRUD, status updates" "HTTPS/6443"
+        rhoaiOperator -> istio "Creates EnvoyFilter and DestinationRule" ""
+        rhoaiOperator -> openshiftGW "Creates GatewayClass and Gateway resources" ""
+        rhoaiOperator -> oauthProvider "kube-auth-proxy authenticates users" "HTTPS/443"
+        olm -> rhoaiOperator "Installs and upgrades operator via CSV/Subscription" ""
+        rhoaiOperator -> certManager "Optional TLS certificate provisioning" ""
 
-        // Relationships - Operator to Internal
-        rhodsOperator -> monitoringOperator "Creates MonitoringStack CR" "monitoring.rhobs API"
-        rhodsOperator -> tempoOperator "Creates TempoMonolithic CR for tracing" "tempo.grafana.com API"
-        rhodsOperator -> otelOperator "Creates OpenTelemetryCollector CR" "opentelemetry.io API"
-        rhodsOperator -> persesOperator "Creates Perses/PersesDashboard CRs" "perses.dev API"
-        rhodsOperator -> kserve "Manages KServe component lifecycle" "components API"
-        rhodsOperator -> kuadrant "Creates AuthPolicy, RateLimitPolicy for MaaS" "Kuadrant API"
-        rhodsOperator -> keda "Creates KedaController for autoscaling" "KEDA API"
-        rhodsOperator -> kueue "Manages Kueue component lifecycle" "kueue API"
-        rhodsOperator -> trainingOp "Manages Training Operator lifecycle" "components API"
-        rhodsOperator -> feastOp "Manages Feast Operator lifecycle" "components API"
+        rhoaiOperator -> dashboard "Deploys via Kustomize manifests" ""
+        rhoaiOperator -> notebookController "Deploys via Kustomize manifests" ""
+        rhoaiOperator -> kserve "Deploys via Kustomize manifests" ""
+        rhoaiOperator -> dsp "Deploys via Kustomize manifests" ""
+        rhoaiOperator -> modelRegistry "Deploys via Kustomize manifests" ""
+        rhoaiOperator -> trustyai "Deploys via Kustomize manifests" ""
+        rhoaiOperator -> kuberay "Deploys via Kustomize manifests" ""
+        rhoaiOperator -> kueue "Deploys via Kustomize manifests" ""
+        rhoaiOperator -> trainingOperator "Deploys via Kustomize manifests" ""
+        rhoaiOperator -> modelController "Deploys via Kustomize manifests" ""
+        rhoaiOperator -> monitoring "Deploys MonitoringStack, Prometheus rules" ""
 
-        // Internal container relationships
-        operatorManager -> dsciController "Runs"
-        operatorManager -> dscController "Runs"
-        operatorManager -> gatewayController "Runs"
-        operatorManager -> authController "Runs"
-        operatorManager -> monitoringController "Runs"
-        operatorManager -> componentControllers "Runs"
-        operatorManager -> webhookServer "Runs"
+        // Container relationships
         dsciController -> gatewayController "Creates GatewayConfig CR"
         dsciController -> authController "Creates Auth CR"
         dsciController -> monitoringController "Creates Monitoring CR"
-        dscController -> componentControllers "Creates Component CRs"
+        dscController -> componentControllers "Creates component CRs"
+        gatewayController -> kubeAuthProxy "Deploys and configures"
+        gatewayController -> dashboardRedirect "Deploys redirect infrastructure"
     }
 
     views {
-        systemContext rhodsOperator "SystemContext" {
+        systemContext rhoaiOperator "SystemContext" {
             include *
             autoLayout
         }
 
-        container rhodsOperator "Containers" {
+        container rhoaiOperator "Containers" {
             include *
             autoLayout
         }
@@ -97,21 +87,21 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal ODH" {
                 background #7ed321
                 color #ffffff
             }
             element "Person" {
-                background #08427b
-                color #ffffff
                 shape Person
+                background #4a90e2
+                color #ffffff
             }
             element "Software System" {
-                background #1168bd
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {
-                background #438dd5
+                background #5ba3f5
                 color #ffffff
             }
         }

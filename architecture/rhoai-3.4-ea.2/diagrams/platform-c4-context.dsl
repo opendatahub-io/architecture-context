@@ -4,181 +4,181 @@
  * Source: architecture/rhoai-3.4-ea.2/PLATFORM.md
  */
 
-workspace {
+workspace "RHOAI Platform" "Red Hat OpenShift AI (RHOAI) 3.4-ea.2 Platform Architecture" {
+
     model {
-        // Users / Actors
+        /* Actors */
         dataScientist = person "Data Scientist" "Creates notebooks, trains models, deploys inference services"
         mlEngineer = person "ML Engineer" "Builds pipelines, manages model lifecycle, configures serving"
-        platformAdmin = person "Platform Admin" "Manages RHOAI installation, monitoring, RBAC"
-        apiConsumer = person "API Consumer" "Sends inference requests to deployed models"
+        platformAdmin = person "Platform Admin" "Manages RHOAI installation, configures DSC/DSCI, monitors platform"
 
-        // Primary System
-        rhoai = softwareSystem "Red Hat OpenShift AI" "Comprehensive AI/ML platform for the complete machine learning lifecycle" {
-            // Tier 1: Platform Operator
-            rhodsOperator = container "rhods-operator" "Central platform orchestrator managing all component lifecycles via DataScienceCluster CR" "Go 1.25, OLM Operator"
-            gatewayController = container "Gateway Controller" "Manages data-science-gateway, kube-auth-proxy, EnvoyFilter for platform ingress" "Go"
-            authController = container "Auth Controller" "Manages ClusterRoles, ClusterRoleBindings for platform RBAC" "Go"
-            monitoringController = container "Monitoring Controller" "Deploys MonitoringStack, Tempo, OTel, Perses for observability" "Go"
+        /* RHOAI Platform */
+        rhoai = softwareSystem "Red Hat OpenShift AI" "Enterprise AI/ML platform on OpenShift (45 components, 92 container images)" {
 
-            // Gateway Infrastructure
-            gateway = container "data-science-gateway" "Main platform ingress with TLS termination on port 443" "Envoy (Gateway API)"
-            kubeAuthProxy = container "kube-auth-proxy" "Centralized OAuth2/OIDC authentication at gateway level" "Go"
+            /* Control Plane */
+            rhodsOperator = container "rhods-operator" "Platform operator managing all RHOAI components via DSC/DSCI CRDs" "Go 1.25.7, 3 replicas"
+            gatewayController = container "Gateway Controller" "Manages data-science-gateway (Gateway API) and kube-auth-proxy" "Go (part of rhods-operator)"
+            kubeAuthProxy = container "kube-auth-proxy" "OAuth2/OIDC authentication proxy for Gateway API ingress" "Go (FIPS), HPA 2-10 replicas"
 
-            // Dashboard
-            dashboard = container "ODH Dashboard" "Primary management UI with Module Federation architecture (7 federated modules)" "TypeScript, React"
+            /* Dashboard & UI */
+            dashboard = container "odh-dashboard" "Platform management UI with Module Federation plugins" "TypeScript, React 18, Fastify 4"
 
-            // Model Serving
-            kserveController = container "KServe Controller" "Model serving platform managing InferenceService, LLMInferenceService, ServingRuntime CRDs" "Go, controller-runtime"
-            odhModelController = container "ODH Model Controller" "Creates Routes, monitoring, RBAC, NetworkPolicies, Kuadrant AuthPolicies for inference services" "Go"
-            servingRuntimes = container "Serving Runtimes" "vLLM (CPU/Gaudi), OpenVINO Model Server, MLServer for model inference" "Python/C++"
-            llmdScheduler = container "llm-d Inference Scheduler" "Disaggregated prefill/decode routing for high-throughput LLM serving" "Go"
-            batchGateway = container "Batch Gateway" "OpenAI Batch API gateway for asynchronous inference" "Go"
+            /* Model Serving */
+            kserveController = container "KServe Controller" "Manages InferenceService and LLMInferenceService lifecycle" "Go 1.25.7"
+            odhModelController = container "odh-model-controller" "Routes, AuthPolicy, NIM integration for inference services" "Go 1.25.7"
+            inferenceRuntimes = container "Inference Runtimes" "vLLM (CPU/Gaudi), OpenVINO Model Server, MLServer" "Python/C++"
 
-            // Data Science
-            dspOperator = container "DSP Operator" "Deploys complete Kubeflow Pipelines stack" "Go"
-            dspServices = container "Data Science Pipelines" "KFP v2 API server, UI, persistence, scheduling with Argo Workflows" "Go/Python"
-            mlflow = container "MLflow Server" "Experiment tracking, model registry, AI gateway" "Python, Flask/FastAPI"
-            modelRegistry = container "Model Registry" "Model metadata registry with REST API, catalog, CSI, and UI" "Go/Python/TypeScript"
-            notebooks = container "Notebooks / Workbenches" "JupyterLab, VS Code, RStudio workbench environments (18 ImageStream variants)" "Dockerfile"
-            notebookController = container "Notebook Controller" "Manages Notebook CR lifecycle, HTTPRoute creation, kube-rbac-proxy injection" "Go"
+            /* Inference Optimization */
+            llmdScheduler = container "llm-d-inference-scheduler" "KV-cache-aware routing via Gateway API ext-proc" "Go 1.24"
+            llmdKVCache = container "llm-d-kv-cache" "KV-cache indexer for P/D disaggregation" "Go + Python"
+            wva = container "workload-variant-autoscaler" "Saturation-based autoscaler for LLM inference" "Go 1.24"
+            batchGateway = container "batch-gateway" "OpenAI Batch API gateway" "Go 1.24"
 
-            // Training
-            trainingOperator = container "Training Operator" "Distributed training job lifecycle (PyTorchJob, TFJob, etc.)" "Go, v1.9.0"
-            trainer = container "Trainer" "Next-gen training with JobSet, ClusterTrainingRuntime, progression tracking" "Go, v2.1.0"
-            kuberay = container "KubeRay Operator" "Ray cluster management with auth/mTLS/NetworkPolicy" "Go, v1.3.0"
-            sparkOperator = container "Spark Operator" "Apache Spark application lifecycle on Kubernetes" "Go"
+            /* Pipelines */
+            dspOperator = container "DSP Operator" "Manages DataSciencePipelinesApplication lifecycle" "Go 1.25.7"
+            dspApiServer = container "DSP API Server" "Kubeflow Pipelines v2 REST/gRPC API" "Go 1.25.7"
+            argoWorkflows = container "Argo Workflows" "Workflow execution engine for pipeline steps" "Go"
+            mlMetadata = container "ml-metadata" "ML artifact lineage tracking (gRPC)" "C++"
 
-            // AI Safety
-            trustyaiOperator = container "TrustyAI Operator" "Multi-controller for AI trustworthiness services" "Go"
-            nemoGuardrails = container "NeMo Guardrails" "NVIDIA guardrails toolkit with Colang DSL" "Python"
-            fmsOrchestrator = container "FMS Guardrails Orchestrator" "Middleware for LLM guardrails orchestration with detectors" "Rust"
-            evalHub = container "EvalHub" "Centralized LLM evaluation orchestration" "Go"
-            trustyaiService = container "TrustyAI Service" "AI fairness metrics, drift detection, explainability" "Java, Quarkus"
+            /* Model Registry */
+            modelRegistryOp = container "Model Registry Operator" "Manages ModelRegistry instances" "Go 1.25.7"
+            modelRegistry = container "model-registry" "ML model metadata REST/gRPC API" "Go 1.22"
 
-            // Other
-            feast = container "Feast Operator" "Feature store operator for Feast on Kubernetes" "Go"
-            llamaStack = container "Llama Stack Operator" "Llama Stack distribution lifecycle management" "Go"
-            mlflowOperator = container "MLflow Operator" "Deploys MLflow via Helm chart rendering" "Go"
-            maas = container "Models-as-a-Service" "MaaS API with Kuadrant auth/rate-limiting for inference Gateway endpoints" "Go"
-            wva = container "Workload Variant Autoscaler" "Intelligent autoscaling for LLM inference based on saturation metrics" "Go"
+            /* Training */
+            trainingOperator = container "training-operator" "Distributed training (PyTorch, TF, MPI, JAX)" "Go 1.25"
+            trainer = container "trainer" "TrainJob/TrainingRuntime abstraction" "Go 1.24"
+
+            /* AI Safety */
+            trustyaiOp = container "TrustyAI Operator" "Manages TrustyAI, LMEval, Guardrails, EvalHub CRDs" "Go 1.23"
+            trustyai = container "trustyai-explainability" "Fairness metrics, drift detection, explainability" "Java 17, Quarkus 3.8.5"
+            guardrailsOrch = container "fms-guardrails-orchestrator" "Content safety detection orchestration" "Rust 1.85"
+            guardrailsDetectors = container "guardrails-detectors" "Content safety detector microservices" "Python 3.12"
+            nemoGuardrails = container "NeMo-Guardrails" "OpenAI-compatible guardrails proxy" "Python 3.12"
+            evalHub = container "eval-hub" "LLM evaluation orchestration" "Go 1.24"
+
+            /* Experiment Tracking */
+            mlflowOp = container "mlflow-operator" "Helm-based MLflow deployment" "Go 1.24"
+            mlflow = container "mlflow" "Experiment/run tracking, AI Gateway" "Python 3.12"
+
+            /* Feature Store */
+            feast = container "feast" "FeatureStore CRD operator, online/offline serving" "Go 1.24"
+
+            /* AI Application Framework */
+            llamaStackOp = container "llama-stack-k8s-operator" "Manages LlamaStackDistribution instances" "Go 1.24"
+            llamaStack = container "llama-stack-distribution" "Multi-provider AI gateway server" "Python 3.12"
+
+            /* Notebooks */
+            notebookController = container "kubeflow notebook-controller" "Notebook pod lifecycle management" "Go 1.25.7"
+            notebooks = container "Workbench Images" "Jupyter, Code Server, RStudio notebook containers" "Python"
+
+            /* Distributed Computing */
+            kuberay = container "kuberay" "Ray cluster operator" "Go 1.24"
+            sparkOperator = container "spark-operator" "Spark application operator" "Go 1.24.10"
+
+            /* Models as a Service */
+            maas = container "models-as-a-service" "API key management, Kuadrant AuthPolicy integration" "Go 1.24"
         }
 
-        // External Systems - Platform
+        /* External Dependencies */
         ocp = softwareSystem "OpenShift Container Platform" "Kubernetes platform (v4.19-v4.21)" "External"
-        olm = softwareSystem "OLM" "Operator Lifecycle Manager for operator installation" "External"
-        istio = softwareSystem "Istio Service Mesh" "mTLS, EnvoyFilter, VirtualService, DestinationRule" "External"
-        kuadrant = softwareSystem "Kuadrant" "Authorino + Limitador for authentication and rate limiting" "External"
-        certManager = softwareSystem "cert-manager" "Optional TLS certificate management" "External"
-        keda = softwareSystem "KEDA" "Event-driven autoscaling" "External"
-        kueue = softwareSystem "Kueue" "Job scheduling and resource management" "External"
-        jobsetAPI = softwareSystem "JobSet API" "Multi-job workload API for distributed training" "External"
+        istio = softwareSystem "Istio / Service Mesh" "Service mesh for traffic management, mTLS, EnvoyFilter" "External"
+        olm = softwareSystem "Operator Lifecycle Manager" "Operator installation and upgrade management" "External"
+        certManager = softwareSystem "cert-manager" "Certificate management (optional)" "External"
+        kuadrant = softwareSystem "Kuadrant" "API management (AuthPolicy, TokenRateLimitPolicy)" "External"
 
-        // External Systems - Data
-        postgresql = softwareSystem "PostgreSQL" "Metadata storage for MLflow, Model Registry catalog, EvalHub, TrustyAI" "External"
-        mysql = softwareSystem "MySQL / MariaDB" "Metadata storage for Model Registry proxy, DSP, TrustyAI" "External"
-        s3 = softwareSystem "S3-compatible Storage" "Object storage for artifacts, models, pipeline outputs" "External"
-        redis = softwareSystem "Redis" "State/queue backend for Batch Gateway, NeMo Guardrails" "External"
+        /* External Services */
+        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for models, artifacts, pipeline data" "External Service"
+        containerRegistry = softwareSystem "Container Registry" "registry.redhat.io, quay.io (92 images)" "External Service"
+        database = softwareSystem "Database (MariaDB/PostgreSQL)" "Pipeline metadata, model registry, experiment tracking" "External Service"
+        huggingface = softwareSystem "HuggingFace Hub" "Model downloads and evaluation datasets" "External Service"
+        oauthProvider = softwareSystem "OAuth/OIDC Provider" "External identity provider" "External Service"
+        nvidiaAPI = softwareSystem "NVIDIA NIM API" "NGC model catalog API" "External Service"
 
-        // External Systems - AI
-        huggingface = softwareSystem "HuggingFace Hub" "Model downloads and catalog metadata" "External"
-        nvidiaNGC = softwareSystem "NVIDIA NGC API" "NIM model catalog and API key validation" "External"
+        /* Relationships - Users */
+        dataScientist -> rhoai "Creates notebooks, trains models, deploys services" "HTTPS/443"
+        mlEngineer -> rhoai "Builds pipelines, manages models" "HTTPS/443"
+        platformAdmin -> rhoai "Configures DSC/DSCI, monitors platform" "HTTPS/443"
 
-        // External Systems - Observability
-        prometheusStack = softwareSystem "OpenShift Monitoring" "Prometheus, AlertManager for metrics and alerting" "External"
-        tempo = softwareSystem "Tempo" "Distributed tracing storage backend" "External"
+        /* Relationships - Internal */
+        rhodsOperator -> kserveController "Manages" "DSC Controller"
+        rhodsOperator -> dspOperator "Manages" "DSC Controller"
+        rhodsOperator -> modelRegistryOp "Manages" "DSC Controller"
+        rhodsOperator -> trustyaiOp "Manages" "DSC Controller"
+        rhodsOperator -> trainingOperator "Manages" "DSC Controller"
+        rhodsOperator -> trainer "Manages" "DSC Controller"
+        rhodsOperator -> feast "Manages" "DSC Controller"
+        rhodsOperator -> llamaStackOp "Manages" "DSC Controller"
+        rhodsOperator -> mlflowOp "Manages" "DSC Controller"
+        rhodsOperator -> kuberay "Manages" "DSC Controller"
+        rhodsOperator -> sparkOperator "Manages" "DSC Controller"
+        rhodsOperator -> dashboard "Manages" "DSC Controller"
+        rhodsOperator -> kubeAuthProxy "Creates" "DSCI Gateway Controller"
+        gatewayController -> kubeAuthProxy "Creates and configures"
 
-        // Relationships - Users
-        dataScientist -> rhoai "Creates notebooks, trains models, registers models"
-        mlEngineer -> rhoai "Builds pipelines, deploys models, configures serving"
-        platformAdmin -> rhoai "Manages platform via DataScienceCluster CR"
-        apiConsumer -> rhoai "Sends inference requests via HTTPS/443"
+        kserveController -> inferenceRuntimes "Creates pods" "InferenceService reconciliation"
+        kserveController -> llmdScheduler "Configures" "LLMInferenceService"
+        odhModelController -> modelRegistry "Fetches metadata" "REST/8080"
+        dspOperator -> dspApiServer "Creates" "DSPA reconciliation"
+        dspOperator -> argoWorkflows "Creates" "DSPA reconciliation"
+        dspOperator -> mlMetadata "Creates" "DSPA reconciliation"
+        modelRegistryOp -> modelRegistry "Creates" "ModelRegistry reconciliation"
+        trustyaiOp -> trustyai "Creates" "TrustyAIService reconciliation"
+        trustyaiOp -> guardrailsOrch "Creates" "GuardrailsOrchestrator reconciliation"
+        trustyaiOp -> evalHub "Creates" "EvalHub reconciliation"
+        guardrailsOrch -> guardrailsDetectors "Sends detection requests" "HTTP/8080"
+        guardrailsOrch -> inferenceRuntimes "LLM generation" "HTTP/8000"
+        llamaStackOp -> llamaStack "Creates" "LlamaStackDistribution reconciliation"
+        mlflowOp -> mlflow "Creates" "Helm-based deployment"
+        notebookController -> notebooks "Manages lifecycle"
 
-        // Relationships - Internal
-        rhodsOperator -> gatewayController "manages"
-        rhodsOperator -> authController "manages"
-        rhodsOperator -> monitoringController "manages"
-        gatewayController -> gateway "creates/configures"
-        gatewayController -> kubeAuthProxy "deploys"
-        rhodsOperator -> kserveController "reconciles via DSC"
-        rhodsOperator -> odhModelController "reconciles via DSC"
-        rhodsOperator -> dspOperator "reconciles via DSC"
-        rhodsOperator -> trainingOperator "reconciles via DSC"
-        rhodsOperator -> trainer "reconciles via DSC"
-        rhodsOperator -> kuberay "reconciles via DSC"
-        rhodsOperator -> sparkOperator "reconciles via DSC"
-        rhodsOperator -> trustyaiOperator "reconciles via DSC"
-        rhodsOperator -> feast "reconciles via DSC"
-        rhodsOperator -> llamaStack "reconciles via DSC"
-        rhodsOperator -> mlflowOperator "reconciles via DSC"
+        /* Relationships - External Dependencies */
+        rhoai -> ocp "Deployed on" "Kubernetes API/6443"
+        rhoai -> istio "Uses for traffic routing, mTLS" "EnvoyFilter, VirtualService"
+        rhoai -> olm "Installed via" "ClusterServiceVersion"
+        rhoai -> certManager "Optional TLS certificates" "Certificate CRDs"
+        maas -> kuadrant "API management" "AuthPolicy, TokenRateLimitPolicy"
 
-        kserveController -> servingRuntimes "deploys predictor pods"
-        odhModelController -> servingRuntimes "creates Routes, monitoring, RBAC"
-        dspOperator -> dspServices "deploys pipelines stack"
-        mlflowOperator -> mlflow "deploys via Helm"
-        trustyaiOperator -> nemoGuardrails "deploys"
-        trustyaiOperator -> fmsOrchestrator "deploys"
-        trustyaiOperator -> evalHub "deploys"
-        trustyaiOperator -> trustyaiService "deploys"
-        notebookController -> notebooks "manages lifecycle"
-
-        gateway -> dashboard "HTTPRoute, 8443/HTTPS"
-        gateway -> notebooks "HTTPRoute, per-notebook"
-        gateway -> servingRuntimes "HTTPRoute, per-ISVC"
-        gateway -> mlflow "HTTPRoute"
-        gateway -> dspServices "HTTPRoute"
-        gateway -> maas "HTTPRoute"
-        kubeAuthProxy -> ocp "OAuth token validation, 443/HTTPS"
-
-        // Relationships - External
-        rhoai -> ocp "Runs on OCP v4.19-v4.21"
-        rhodsOperator -> olm "Installed via OLM subscription"
-        modelRegistry -> istio "mTLS via Istio sidecar"
-        maas -> kuadrant "AuthPolicy for auth/rate-limiting"
-        trainer -> jobsetAPI "Creates JobSet for distributed training"
-        wva -> keda "KEDA TriggerAuthentication"
-
-        mlflow -> postgresql "Metadata storage, 5432/TCP"
-        mlflow -> s3 "Artifact storage, HTTPS/443"
-        modelRegistry -> mysql "Proxy storage, 3306/TCP"
-        modelRegistry -> postgresql "Catalog storage, 5432/TCP"
-        modelRegistry -> huggingface "Model catalog, HTTPS/443"
-        dspServices -> mysql "Pipeline metadata, 3306/TCP"
-        servingRuntimes -> s3 "Model weights, HTTPS/443"
-        batchGateway -> redis "Job queue, 6379/TCP"
-        nemoGuardrails -> redis "State management, 6379/TCP"
-        odhModelController -> nvidiaNGC "NIM integration, HTTPS/443"
-        monitoringController -> prometheusStack "Configures monitoring"
-        monitoringController -> tempo "Configures tracing"
+        /* Relationships - External Services */
+        rhoai -> s3Storage "Model artifacts, pipeline data" "HTTPS/443"
+        rhoai -> containerRegistry "Image pulls (92 images)" "HTTPS/443"
+        rhoai -> database "Pipeline metadata, model registry" "MySQL/3306, PostgreSQL/5432"
+        rhoai -> huggingface "Model downloads" "HTTPS/443"
+        kubeAuthProxy -> oauthProvider "OAuth2/OIDC authentication" "HTTPS/443"
+        odhModelController -> nvidiaAPI "NIM model catalog" "HTTPS/443"
     }
 
     views {
-        systemContext rhoai "SystemContext" {
+        systemContext rhoai "SystemContext" "RHOAI Platform System Context" {
             include *
             autoLayout
         }
 
-        container rhoai "Containers" {
+        container rhoai "Containers" "RHOAI Platform Containers" {
             include *
             autoLayout
         }
 
         styles {
             element "Person" {
-                shape Person
-                background #08427b
+                shape person
+                background #4a90e2
                 color #ffffff
             }
             element "Software System" {
-                background #1168bd
+                background #438dd5
                 color #ffffff
             }
             element "External" {
                 background #999999
                 color #ffffff
             }
+            element "External Service" {
+                background #f5a623
+                color #000000
+            }
             element "Container" {
-                background #438dd5
-                color #ffffff
+                background #85bbf0
+                color #000000
             }
         }
     }

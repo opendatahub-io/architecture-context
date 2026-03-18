@@ -4,92 +4,90 @@
 
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User Browser / ODH Dashboard"]
+        User["User Browser"]
     end
 
-    subgraph Ingress["INGRESS (Gateway API)"]
-        Gateway["data-science-gateway (Envoy)<br/>Namespace: openshift-ingress<br/>443/TCP<br/>TLS 1.2+ Termination"]
+    subgraph Ingress["INGRESS (DMZ) - openshift-ingress"]
+        Gateway["data-science-gateway<br/>Gateway API<br/>443/TCP<br/>TLS 1.2+ Termination"]
     end
 
-    subgraph ControllerNS["CONTROLLER NAMESPACE (opendatahub)"]
+    subgraph ControllerPlane["CONTROLLER PLANE - Namespace: opendatahub"]
         direction TB
-        Controller["ODH Notebook Controller<br/>SA: manager"]
+        Controller["ODH Notebook Controller Manager<br/>SA: odh-notebook-controller-manager<br/>UID: 1001 (non-root)<br/>Image: odh-notebook-controller:v1.10.0-10"]
 
-        subgraph ControllerPorts["Controller Endpoints"]
-            WebhookSvc["Webhook Service<br/>443/TCP -> 8443<br/>HTTPS (service-ca)<br/>failurePolicy: Fail"]
-            MetricsSvc["Metrics Service<br/>8080/TCP HTTP"]
-            HealthProbe["Health Probes<br/>8081/TCP HTTP<br/>/healthz /readyz"]
-        end
+        WebhookSvc["Webhook Service<br/>443/TCP -> 8443/TCP<br/>TLS (service-ca)<br/>Path: /mutate-notebook-v1"]
 
-        HTTPRouteRes["HTTPRoute<br/>nb-{ns}-{notebook}<br/>PathPrefix: /notebook/{ns}/{name}"]
+        MetricsSvc["Metrics Service<br/>8080/TCP HTTP<br/>Path: /metrics"]
+
+        HealthProbes["Health Probes<br/>8081/TCP HTTP<br/>/healthz, /readyz"]
     end
 
-    subgraph UserNS["USER NAMESPACE (per notebook)"]
+    subgraph UserNS["USER NAMESPACE ({user-namespace})"]
         direction TB
 
         subgraph NotebookPod["Notebook Pod"]
-            KRBP["kube-rbac-proxy Sidecar<br/>8443/TCP HTTPS<br/>TLS (service-ca)<br/>TokenReview + SAR"]
-            NotebookContainer["Notebook Container<br/>8888/TCP HTTP"]
+            KRBP["kube-rbac-proxy sidecar<br/>8443/TCP HTTPS<br/>TLS (service-ca)<br/>Auth: TokenReview + SAR"]
+            NotebookContainer["Notebook Container<br/>8888/TCP HTTP<br/>(loopback only)"]
         end
 
-        RefGrant["ReferenceGrant<br/>notebook-httproute-access"]
+        KRBPSvc["{name}-kube-rbac-proxy Service<br/>ClusterIP 8443/TCP<br/>TLS (service-ca)"]
 
-        subgraph NetPolicies["Network Policies"]
-            CtrlNP["{notebook}-ctrl-np<br/>8888/TCP from controller NS"]
-            KRBPnp["{notebook}-kube-rbac-proxy-np<br/>8443/TCP from all"]
-        end
+        NetPol1["{name}-ctrl-np<br/>Allow TCP/8888<br/>from controller NS"]
+        NetPol2["{name}-kube-rbac-proxy-np<br/>Allow TCP/8443<br/>from any"]
+
+        RefGrant["ReferenceGrant<br/>Allow HTTPRoute cross-NS refs"]
     end
 
-    subgraph ClusterServices["CLUSTER SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+<br/>ServiceAccount Token"]
-        OSAPI["OpenShift API Server<br/>443/TCP HTTPS TLS 1.2+<br/>ImageStream, Proxy Config"]
-        ServiceCA["OpenShift service-ca<br/>TLS cert provisioning"]
-        KFController["Kubeflow Notebook Controller<br/>(upstream)<br/>StatefulSet lifecycle"]
+    subgraph CentralNS["CENTRAL NAMESPACE (opendatahub)"]
+        HTTPRoute["HTTPRoute<br/>nb-{ns}-{notebook}<br/>Parent: data-science-gateway"]
     end
 
-    %% External to Ingress
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Gateway
+    subgraph K8sCluster["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+    end
 
-    %% Ingress to User NS (Auth Mode)
-    Gateway -->|"HTTPS/8443<br/>TLS (service-ca)<br/>Bearer Token forwarded<br/>(Auth Mode)"| KRBP
+    %% External flow
+    User -->|"HTTPS/443<br/>TLS 1.2+"| Gateway
 
-    %% Ingress to User NS (Non-Auth Mode)
-    Gateway -.->|"HTTP/8888<br/>No encryption<br/>No auth<br/>(Non-Auth Mode)"| NotebookContainer
+    %% Gateway to notebook (with auth)
+    Gateway -->|"HTTPS/8443<br/>TLS (service-ca)<br/>Bearer token fwd"| KRBPSvc
+    KRBPSvc --> KRBP
 
-    %% kube-rbac-proxy to Notebook
-    KRBP -->|"HTTP/8888<br/>plaintext (loopback)<br/>X-Auth-Request headers"| NotebookContainer
+    %% kube-rbac-proxy auth flow
+    KRBP -->|"HTTPS/443<br/>TokenReview<br/>SA token"| K8sAPI
+    KRBP -->|"HTTPS/443<br/>SubjectAccessReview<br/>SA token"| K8sAPI
 
-    %% kube-rbac-proxy to K8s API
-    KRBP -->|"HTTPS/443<br/>TLS 1.2+<br/>TokenReview + SAR"| K8sAPI
+    %% kube-rbac-proxy to notebook
+    KRBP -->|"HTTP/8888<br/>loopback<br/>X-Auth-Request headers"| NotebookContainer
 
-    %% Controller to K8s API
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>CRUD resources"| K8sAPI
-
-    %% Controller to OpenShift API
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| OSAPI
-
-    %% K8s API to Webhook
-    K8sAPI -->|"HTTPS/8443<br/>TLS (service-ca)<br/>Webhook auth"| WebhookSvc
+    %% Controller flows
+    Controller -->|"HTTPS/443<br/>TLS<br/>SA token<br/>Watch Notebooks"| K8sAPI
+    Controller -->|"creates"| HTTPRoute
+    Controller -->|"creates"| RefGrant
+    Controller -->|"creates"| NetPol1
+    Controller -->|"creates"| NetPol2
+    Controller -->|"creates"| KRBPSvc
 
     %% HTTPRoute references
-    HTTPRouteRes -.->|"parent ref"| Gateway
-    RefGrant -.->|"allows cross-ns<br/>backend ref"| HTTPRouteRes
+    HTTPRoute -.->|"parent ref"| Gateway
+    HTTPRoute -.->|"backend ref<br/>(cross-NS via ReferenceGrant)"| KRBPSvc
 
-    %% service-ca provisions certs
-    ServiceCA -.->|"provisions TLS certs"| WebhookSvc
-    ServiceCA -.->|"provisions TLS certs"| KRBP
+    %% Webhook flow
+    K8sAPI -->|"HTTPS/443<br/>TLS (service-ca)<br/>API server auth"| WebhookSvc
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef controller fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef userns fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef cluster fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef k8s fill:#fff2cc,stroke:#d6b656,stroke-width:2px
     classDef netpol fill:#f8cecc,stroke:#b85450,stroke-width:1px
+    classDef route fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
 
     class User external
     class Gateway ingress
-    class Controller,WebhookSvc,MetricsSvc,HealthProbe,HTTPRouteRes controller
-    class KRBP,NotebookContainer,RefGrant userns
-    class K8sAPI,OSAPI,ServiceCA,KFController cluster
-    class CtrlNP,KRBPnp netpol
+    class Controller,WebhookSvc,MetricsSvc,HealthProbes controller
+    class KRBP,NotebookContainer,KRBPSvc,RefGrant userns
+    class K8sAPI k8s
+    class NetPol1,NetPol2 netpol
+    class HTTPRoute route

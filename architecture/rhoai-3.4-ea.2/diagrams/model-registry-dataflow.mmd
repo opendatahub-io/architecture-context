@@ -3,55 +3,44 @@
 %% Source: architecture/rhoai-3.4-ea.2/model-registry.md
 
 sequenceDiagram
-    participant Client as Client<br/>(Dashboard/Pipeline/SDK)
-    participant IstioGW as Istio Ingress Gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant MRService as model-registry-service<br/>8080/TCP HTTP mTLS
-    participant MySQL as MySQL<br/>3306/TCP
+    participant Client as Client<br/>(Dashboard/CLI)
+    participant Gateway as Istio Ingress Gateway<br/>443/TCP HTTPS TLS
+    participant Proxy as model-registry proxy<br/>8080/TCP HTTP mTLS
+    participant MySQL as MySQL Database<br/>3306/TCP TLS 1.2+
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant Controller as model-registry-controller
-    participant CSI as mr-storage-initializer
-    participant ModelStore as Model Storage<br/>(S3/OCI) 443/TCP
-    participant CatalogSvc as model-catalog<br/>8080/TCP HTTP mTLS
+    participant Controller as InferenceService Controller
+    participant KServe as KServe (init container)
+    participant CSI as CSI Storage Initializer
+    participant ArtifactStore as Model Artifact Store
+    participant CatalogSvr as Catalog Server<br/>8080/TCP
     participant PG as PostgreSQL<br/>5432/TCP
-    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant Browser as Browser
-    participant BFF as model-registry-ui BFF<br/>8080/TCP HTTP
+    participant HF as HuggingFace API<br/>443/TCP HTTPS
 
-    Note over Client,MySQL: Flow 1: Model Registration via REST API
-    Client->>IstioGW: POST /api/model_registry/v1alpha3/registered_models<br/>Auth: Bearer Token
-    IstioGW->>MRService: Forward (mTLS)<br/>Istio AuthorizationPolicy
-    MRService->>MySQL: INSERT model metadata<br/>Auth: username/password
-    MySQL-->>MRService: OK
-    MRService-->>IstioGW: 201 Created
-    IstioGW-->>Client: JSON Response
+    Note over Client, MySQL: Flow 1: Model Registration via REST API
+    Client->>Gateway: POST /api/model_registry/v1alpha3/registered_models<br/>HTTPS TLS
+    Gateway->>Proxy: Forward request<br/>HTTP mTLS (Istio)
+    Proxy->>MySQL: INSERT model metadata<br/>TLS 1.2+ Username/Password
+    MySQL-->>Proxy: Result
+    Proxy-->>Gateway: 201 Created
+    Gateway-->>Client: JSON Response
 
-    Note over K8sAPI,MRService: Flow 2: InferenceService Sync (Controller)
-    K8sAPI->>Controller: Watch InferenceService CRs<br/>Auth: ServiceAccount Token
-    Controller->>MRService: PUT /api/model_registry/v1alpha3/inference_services<br/>Auth: Bearer Token (optional)
-    MRService-->>Controller: 200 OK
-    Controller->>K8sAPI: Update InferenceService status<br/>Auth: ServiceAccount Token
+    Note over K8sAPI, Proxy: Flow 2: InferenceService Sync (Controller)
+    K8sAPI->>Controller: Watch InferenceService events<br/>TLS SA Token
+    Controller->>Proxy: POST/PATCH inference service state<br/>HTTP Bearer Token (optional)
+    Proxy->>MySQL: Persist state
+    MySQL-->>Proxy: Result
+    Proxy-->>Controller: 200 OK
+    Controller->>K8sAPI: Update ISVC labels<br/>HTTPS TLS SA Token
 
-    Note over CSI,ModelStore: Flow 3: Model Download via CSI Storage Initializer
-    Note right of CSI: KServe triggers init container
-    CSI->>MRService: GET model artifact URI<br/>model-registry:// resolution
-    MRService-->>CSI: Artifact location (S3/OCI URL)
-    CSI->>ModelStore: Download model artifacts<br/>Auth: Storage credentials, TLS 1.2+
-    ModelStore-->>CSI: Model files
+    Note over KServe, ArtifactStore: Flow 3: CSI Model Download
+    KServe->>CSI: Init container invocation<br/>model-registry:// URI
+    CSI->>Proxy: GET model artifact location<br/>HTTP plaintext
+    Proxy-->>CSI: Artifact URI
+    CSI->>ArtifactStore: Download model<br/>HTTP/S3/OCI (varies)
+    ArtifactStore-->>CSI: Model artifacts
 
-    Note over CatalogSvc,HF: Flow 4: Catalog Model Browsing
-    Client->>CatalogSvc: GET /api/model_catalog/v1alpha1/models<br/>mTLS (Istio)
-    CatalogSvc->>PG: Query catalog metadata<br/>Auth: username/password
-    PG-->>CatalogSvc: Catalog results
-    CatalogSvc->>HF: GET model metadata (leader only)<br/>Auth: API Key (optional)
-    HF-->>CatalogSvc: Model metadata
-    CatalogSvc-->>Client: JSON catalog response
-
-    Note over Browser,BFF: Flow 5: UI Model Management
-    Browser->>BFF: HTTP request<br/>Auth: user_token/internal
-    BFF->>MRService: Proxy API call<br/>mTLS (Istio), SA Token
-    MRService-->>BFF: API response
-    BFF->>CatalogSvc: Proxy catalog call<br/>mTLS (Istio), SA Token
-    CatalogSvc-->>BFF: Catalog response
-    BFF->>K8sAPI: Kubernetes API call<br/>HTTPS, SA Token
-    K8sAPI-->>BFF: K8s response
-    BFF-->>Browser: HTML/JSON response
+    Note over CatalogSvr, HF: Flow 4: Catalog Source Sync
+    CatalogSvr->>HF: Fetch model catalog<br/>HTTPS TLS 1.2+ HF_API_KEY
+    HF-->>CatalogSvr: Model metadata
+    CatalogSvr->>PG: Store catalog data<br/>PostgreSQL PGUSER/PGPASSWORD
+    PG-->>CatalogSvr: Result

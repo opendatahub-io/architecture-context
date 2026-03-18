@@ -6,88 +6,94 @@
 
 workspace {
     model {
-        datascientist = person "Data Scientist" "Deploys ML models and sends inference requests"
-        sre = person "SRE / Platform Admin" "Monitors inference server health and metrics"
+        user = person "Data Scientist / ML Engineer" "Deploys and queries ML models for inference"
 
-        mlserver = softwareSystem "MLServer" "Open-source Python inference server implementing V2 Inference Protocol for REST and gRPC" {
+        mlserver = softwareSystem "MLServer" "Python-based inference server implementing V2 Inference Protocol (KServe Data Plane) for serving ML models over REST and gRPC" {
             restServer = container "REST Server" "Serves V2 Inference Protocol REST endpoints" "FastAPI/Uvicorn, Port 8080/TCP"
-            grpcServer = container "gRPC Server" "Serves V2 Inference Protocol gRPC endpoints" "gRPC AsyncIO, Port 8081/TCP"
-            metricsServer = container "Metrics Server" "Serves Prometheus metrics" "FastAPI, Port 8082/TCP"
-            dataPlane = container "DataPlane Handler" "Business logic for inference, model metadata, health checks" "Python Module"
-            modelRepo = container "Model Repository" "Loads/unloads models from disk" "Python Module"
-            multiModelRegistry = container "Multi-Model Registry" "Manages multiple models within a single server" "Python Module"
-            inferencePool = container "Inference Pool" "Parallel inference workers for vertical scaling" "Python Multiprocessing"
-            sklearnRuntime = container "sklearn Runtime" "Scikit-Learn model inference" "mlserver-sklearn"
-            xgboostRuntime = container "XGBoost Runtime" "XGBoost model inference" "mlserver-xgboost"
-            lightgbmRuntime = container "LightGBM Runtime" "LightGBM model inference" "mlserver-lightgbm"
-            onnxRuntime = container "ONNX Runtime" "ONNX model inference" "mlserver-onnx"
+            grpcServer = container "gRPC Server" "Serves V2 Inference Protocol gRPC endpoints" "grpcio, Port 8081/TCP"
+            metricsServer = container "Metrics Server" "Exposes Prometheus metrics endpoint" "FastAPI/Uvicorn, Port 8082/TCP"
+            kafkaServer = container "Kafka Server" "Optional event-driven inference consumer/producer" "aiokafka, Port 9092/TCP"
+            dataPlane = container "DataPlane" "Core inference handler implementing V2 protocol operations" "Python"
+            modelRegistry = container "MultiModelRegistry" "Manages lifecycle of loaded models (load/unload/reload)" "Python"
+            adaptiveBatcher = container "AdaptiveBatcher" "Groups incoming inference requests into batches" "Python"
+            responseCache = container "ResponseCache" "Caches model prediction responses" "Python"
+            inferencePool = container "InferencePoolRegistry" "Manages parallel inference worker processes" "Python/gevent"
+            sklearnRuntime = container "mlserver-sklearn" "Scikit-learn model serving runtime" "Python Plugin"
+            xgboostRuntime = container "mlserver-xgboost" "XGBoost model serving runtime" "Python Plugin"
+            lightgbmRuntime = container "mlserver-lightgbm" "LightGBM model serving runtime" "Python Plugin"
+            onnxRuntime = container "mlserver-onnx" "ONNX model serving runtime" "Python Plugin"
         }
 
-        kserve = softwareSystem "KServe" "Manages InferenceService lifecycle and ingress" "Internal RHOAI"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal"
-        otel = softwareSystem "OpenTelemetry Collector" "Distributed tracing collection" "Internal"
-        kafka = softwareSystem "Kafka" "Message broker for async inference pipelines" "External"
-        modelStorage = softwareSystem "Model Storage" "PVC or S3-backed model artifact storage" "External"
-        aipccBase = softwareSystem "AIPCC Base Image" "Python runtime base container image" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Manages InferenceService lifecycle; MLServer runs as inference container" "Internal RHOAI"
+        rhoaiModelServing = softwareSystem "RHOAI Model Serving" "Platform model serving stack; MLServer is a supported ServingRuntime" "Internal RHOAI"
+        platformGateway = softwareSystem "Platform Gateway (Envoy)" "Handles external traffic routing, TLS termination" "External"
+        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Sidecar for Kubernetes RBAC authorization" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing collection" "External"
+        kafkaBroker = softwareSystem "Kafka Broker" "Event streaming platform for event-driven inference" "External"
+        modelStorage = softwareSystem "Model Storage" "PVC or injected storage providing model artifacts at /mnt/models" "External"
 
-        # Relationships - External
-        datascientist -> kserve "Sends inference requests via" "HTTPS/443"
-        sre -> prometheus "Monitors MLServer via"
-        kserve -> mlserver "Routes inference requests to" "HTTP/8080, gRPC/8081"
+        # User interactions
+        user -> platformGateway "Sends inference requests" "HTTPS/443, TLS 1.2+"
+        platformGateway -> kubeRbacProxy "Forwards REST requests" "HTTPS/8443"
+        kubeRbacProxy -> mlserver "Authorized REST requests" "HTTP/8080"
+        platformGateway -> mlserver "Forwards gRPC requests" "gRPC/8081"
 
-        # Relationships - Internal containers
-        restServer -> dataPlane "Routes requests to"
-        grpcServer -> dataPlane "Routes requests to"
-        dataPlane -> multiModelRegistry "Dispatches to"
-        multiModelRegistry -> modelRepo "Manages"
-        dataPlane -> inferencePool "Delegates execution to"
-        inferencePool -> sklearnRuntime "Executes"
-        inferencePool -> xgboostRuntime "Executes"
-        inferencePool -> lightgbmRuntime "Executes"
-        inferencePool -> onnxRuntime "Executes"
+        # Platform relationships
+        kserve -> mlserver "Manages container lifecycle"
+        rhoaiModelServing -> kserve "Configures ServingRuntime"
 
-        # Relationships - External systems
+        # MLServer outbound
+        mlserver -> modelStorage "Loads model artifacts" "File I/O, /mnt/models"
+        mlserver -> otelCollector "Exports distributed traces" "gRPC OTLP, plaintext"
+        mlserver -> kafkaBroker "Event-driven inference (optional)" "Kafka/9092"
         prometheus -> mlserver "Scrapes metrics" "HTTP/8082"
-        mlserver -> otel "Exports traces" "gRPC/OTLP"
-        mlserver -> kafka "Produces/consumes messages" "TCP/9092"
-        mlserver -> modelStorage "Loads model artifacts from" "Filesystem /mnt/models"
+
+        # Internal container relationships
+        restServer -> dataPlane "Inference requests"
+        grpcServer -> dataPlane "Inference requests"
+        kafkaServer -> dataPlane "Inference requests"
+        dataPlane -> adaptiveBatcher "Batch requests"
+        dataPlane -> responseCache "Cache lookups"
+        dataPlane -> modelRegistry "Model lifecycle"
+        modelRegistry -> inferencePool "Manage workers"
+        modelRegistry -> sklearnRuntime "Load sklearn models"
+        modelRegistry -> xgboostRuntime "Load xgboost models"
+        modelRegistry -> lightgbmRuntime "Load lightgbm models"
+        modelRegistry -> onnxRuntime "Load onnx models"
     }
 
     views {
-        systemContext mlserver "SystemContext" "MLServer in the RHOAI ecosystem" {
+        systemContext mlserver "SystemContext" {
             include *
             autoLayout
         }
 
-        container mlserver "Containers" "Internal structure of MLServer" {
+        container mlserver "Containers" {
             include *
             autoLayout
         }
 
         styles {
             element "Software System" {
-                background #438dd5
+                background #438DD5
+                color #ffffff
+            }
+            element "External" {
+                background #999999
                 color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal" {
-                background #999999
-                color #ffffff
-            }
-            element "External" {
-                background #f5a623
-                color #ffffff
-            }
             element "Person" {
-                shape Person
-                background #08427b
+                shape person
+                background #08427B
                 color #ffffff
             }
             element "Container" {
-                background #438dd5
+                background #438DD5
                 color #ffffff
             }
         }

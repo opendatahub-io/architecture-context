@@ -3,58 +3,43 @@
 
 sequenceDiagram
     participant User as User Browser
-    participant Route as OpenShift Route / LB<br/>443/TCP HTTPS TLS 1.2+
-    participant Envoy as data-science-gateway<br/>(Envoy Proxy)<br/>443/TCP HTTPS
-    participant Filter as EnvoyFilter<br/>(data-science-authn-filter)
-    participant AuthProxy as kube-auth-proxy<br/>8443/TCP HTTPS mTLS
-    participant OAuth as OpenShift OAuth Server<br/>443/TCP HTTPS TLS 1.2+
+    participant Router as OpenShift Router<br/>443/TCP HTTPS
+    participant Envoy as Gateway (Envoy)<br/>443/TCP TLS Terminate
+    participant KAP as kube-auth-proxy<br/>8443/TCP HTTPS
+    participant OAuth as OAuth/OIDC Provider<br/>443/TCP HTTPS
     participant Backend as Backend Service<br/>(via HTTPRoute)
 
-    Note over User,Backend: Flow 1: User Authentication via Gateway (OAuth Mode)
+    Note over User,Backend: Flow 1: User Access to RHOAI Dashboard (Gateway API Mode)
 
-    User->>Route: GET /dashboard<br/>HTTPS/443, No Auth
-    Route->>Envoy: Forward request<br/>TLS terminate
-    Envoy->>Filter: Intercept for auth
-    Filter->>AuthProxy: External auth check<br/>HTTPS/8443, mTLS (Istio)
-    AuthProxy->>OAuth: Validate token<br/>HTTPS/443, OAuthClient creds
-    OAuth-->>AuthProxy: Token valid / redirect to login
-    AuthProxy-->>Filter: Auth result (allow/deny)
-    Filter-->>Envoy: Continue or 403
-    Envoy->>Backend: Forward with auth headers<br/>HTTP/HTTPS
-
+    User->>Router: HTTPS/443<br/>TLS 1.2+
+    Router->>Envoy: HTTPS/443<br/>TLS Terminate
+    Envoy->>KAP: ext_authz check<br/>HTTPS/8443 (service-CA TLS)<br/>Cookie/Bearer token
+    KAP->>OAuth: Validate credentials<br/>HTTPS/443 TLS 1.2+<br/>Client credentials
+    OAuth-->>KAP: Auth response
+    KAP-->>Envoy: Auth decision + identity
+    Note over Envoy: Lua filter strips OAuth cookies,<br/>sets Bearer authorization header
+    Envoy->>Backend: Forward request<br/>HTTPS (SIMPLE via DestinationRule)<br/>Bearer token forwarded
     Backend-->>Envoy: Response
-    Envoy-->>Route: Response
-    Route-->>User: HTML/JSON Response
+    Envoy-->>Router: Response
+    Router-->>User: HTTPS Response
 
-    Note over User,Backend: Flow 2: Component Deployment via DSC
+    Note over User,Backend: Flow 2: Legacy Dashboard URL Redirect
 
-    participant Admin as Cluster Admin
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
-    participant Webhook as Operator Webhook<br/>9443/TCP HTTPS
-    participant DSCCtrl as DSC Controller
-    participant CompCtrl as Component Controllers
+    participant LegacyRouter as OpenShift Router<br/>(legacy Route)
+    participant Nginx as dashboard-redirect<br/>nginx 8080/TCP
 
-    Admin->>K8sAPI: Create DataScienceCluster CR<br/>HTTPS/6443, Bearer Token
-    K8sAPI->>Webhook: Validate CR<br/>HTTPS/9443, API server client cert
-    Webhook-->>K8sAPI: Admission allowed
-    K8sAPI-->>Admin: CR created
+    User->>LegacyRouter: HTTPS/443<br/>TLS (edge)
+    LegacyRouter->>Nginx: HTTP/8080
+    Nginx-->>User: 301 Redirect to<br/>https://rh-ai.{domain}
 
-    K8sAPI->>DSCCtrl: Watch event: DSC created
-    DSCCtrl->>K8sAPI: Create Component CRs<br/>(Dashboard, Kserve, Ray, etc.)<br/>HTTPS/6443, SA token
+    Note over User,Backend: Flow 3: Operator Reconciliation
 
-    K8sAPI->>CompCtrl: Watch event: Component CR created
-    CompCtrl->>K8sAPI: Deploy kustomize/helm manifests<br/>HTTPS/6443, SA token
+    participant Operator as rhods-operator
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Manifests as Component Manifests<br/>(embedded /opt/manifests)
 
-    Note over User,Backend: Flow 3: Monitoring Stack Metrics Collection
-
-    participant Prom as MonitoringStack<br/>(Prometheus)
-    participant Targets as Component Targets<br/>(ServiceMonitor)
-    participant Thanos as ThanosQuerier<br/>9090/TCP HTTP
-    participant OTel as OpenTelemetry Collector
-    participant Tempo as Tempo<br/>4317/TCP gRPC
-    participant Perses as Perses Dashboards
-
-    Prom->>Targets: Scrape metrics<br/>HTTP/HTTPS, SA token
-    Thanos->>Prom: Query metrics<br/>HTTP/9090
-    OTel->>Tempo: Send traces (OTLP)<br/>gRPC/4317, optional TLS
-    Perses->>Prom: Query datasource<br/>HTTP/9090
+    Operator->>K8sAPI: Watch CRDs (DSC, DSCI)<br/>HTTPS/6443 TLS 1.2+<br/>ServiceAccount token
+    K8sAPI-->>Operator: CR change event
+    Operator->>Manifests: Load component manifests<br/>(filesystem)
+    Operator->>K8sAPI: Create/Update resources<br/>HTTPS/6443 TLS 1.2+<br/>ServiceAccount token (RBAC)
+    K8sAPI-->>Operator: Resource status

@@ -3,99 +3,91 @@
 
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["User Browser / API Client"]
+        User["User Browser"]
     end
 
-    subgraph Ingress["INGRESS (DMZ) - Namespace: openshift-ingress"]
-        direction TB
-        Route["OpenShift Route / LoadBalancer<br/>443/TCP<br/>TLS 1.2+ Terminate"]
-        Gateway["data-science-gateway (Envoy)<br/>GatewayClass: data-science-gateway-class<br/>443/TCP → 8443/TCP<br/>TLS Terminate"]
-        Filter["EnvoyFilter: data-science-authn-filter<br/>Intercepts all gateway traffic"]
-        AuthProxy["kube-auth-proxy<br/>8443/TCP (auth) | 9000/TCP (metrics)<br/>TLS: service-CA cert<br/>Auth: OAuth2/OIDC + K8s TokenReview<br/>NetworkPolicy: gateway pods + monitoring only"]
-
-        Route --> Gateway
-        Gateway --> Filter
-        Filter --> AuthProxy
+    subgraph Ingress["INGRESS (DMZ)"]
+        Router["OpenShift Router / LB<br/>443/TCP HTTPS"]
+        Gateway["data-science-gateway (Envoy)<br/>Namespace: openshift-ingress<br/>443/TCP TLS Terminate (TLS 1.2+)<br/>GatewayClass: data-science-gateway-class"]
     end
 
-    subgraph OAuthZone["AUTHENTICATION PROVIDERS"]
-        OAuthServer["OpenShift OAuth Server<br/>443/TCP HTTPS TLS 1.2+<br/>IntegratedOAuth mode"]
-        OIDCProvider["External OIDC Provider<br/>443/TCP HTTPS TLS 1.2+<br/>OIDC mode"]
+    subgraph AuthLayer["AUTHENTICATION LAYER"]
+        KAP["kube-auth-proxy<br/>Namespace: openshift-ingress<br/>SA: kube-auth-proxy<br/>8443/TCP HTTPS (service-CA TLS)<br/>9000/TCP HTTP (metrics)<br/>HPA: 2-10 replicas"]
+        EnvoyFilter["EnvoyFilter<br/>data-science-authn-filter<br/>ext_authz + Lua token forwarding"]
     end
 
-    subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-applications)"]
-        direction TB
-        OperatorMgr["Operator Manager<br/>SA: controller-manager<br/>3 replicas, leader election<br/>Health: 8081/TCP HTTP<br/>Metrics: 8080/TCP HTTP"]
-        WebhookSrv["Webhook Server<br/>9443/TCP HTTPS<br/>TLS: service serving certs<br/>Auth: API server client cert"]
-
-        subgraph PlatformCtrl["Platform Controllers"]
-            DSCICtrl["DSCI Controller"]
-            DSCCtrl["DSC Controller"]
-            GWCtrl["Gateway Controller"]
-            AuthCtrlr["Auth Controller"]
-            MonCtrl["Monitoring Controller"]
-        end
-
-        subgraph CompCtrl["Component Controllers (16)"]
-            CompList["Dashboard | Workbenches | Kserve<br/>ModelController | ModelRegistry | MaaS<br/>DSP | Ray | Kueue | TrainingOp<br/>Trainer | TrustyAI | Feast<br/>LlamaStack | MLflow | Spark"]
-        end
+    subgraph OAuthZone["IDENTITY PROVIDER"]
+        OAuth["OAuth/OIDC Provider<br/>443/TCP HTTPS TLS 1.2+<br/>OpenShift OAuth or External OIDC"]
     end
 
-    subgraph K8sControl["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+<br/>Auth: ServiceAccount token"]
+    subgraph BackendServices["BACKEND SERVICES (via HTTPRoute)"]
+        direction LR
+        Dashboard["Dashboard"]
+        KServe["KServe"]
+        ModelReg["Model Registry"]
+        DSP["DS Pipelines"]
+        OtherSvc["Other Components..."]
     end
 
-    subgraph Monitoring["MONITORING STACK"]
-        MonStack["MonitoringStack<br/>(Prometheus)"]
-        Thanos["ThanosQuerier<br/>9090/TCP HTTP"]
-        OTel["OpenTelemetry Collector"]
-        TempoSvc["Tempo<br/>4317/TCP gRPC"]
-        Perses["Perses Dashboards"]
+    subgraph RedirectInfra["LEGACY REDIRECT"]
+        DashRedirect["dashboard-redirect (nginx)<br/>Namespace: redhat-ods-applications<br/>8080/TCP HTTP<br/>301 redirect to rh-ai domain"]
     end
 
-    subgraph ExtServices["EXTERNAL SERVICES"]
-        Registry["Container Image Registry<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Pull secret"]
+    subgraph OperatorPlane["OPERATOR CONTROL PLANE"]
+        Operator["rhods-operator<br/>Namespace: redhat-ods-operator<br/>SA: controller-manager<br/>8080/TCP metrics | 8081/TCP health<br/>9443/TCP HTTPS webhooks"]
     end
 
-    %% External flows
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>No Auth (initial)"| Route
+    subgraph ClusterServices["CLUSTER SERVICES"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+"]
+        IstioSM["Istio / Service Mesh<br/>EnvoyFilter + DestinationRule"]
+        Monitoring["MonitoringStack<br/>Prometheus / Tempo / OTel"]
+    end
 
-    %% Auth flows
-    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuthClient creds"| OAuthServer
-    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>OIDC client creds"| OIDCProvider
+    %% External → Ingress
+    User -->|"HTTPS/443<br/>TLS 1.2+"| Router
+    Router -->|"HTTPS/443<br/>TLS Terminate"| Gateway
 
-    %% Gateway to backend
-    Gateway -->|"HTTP/HTTPS<br/>Auth headers proxied"| CompList
+    %% Gateway → Auth
+    Gateway -->|"ext_authz<br/>HTTPS/8443<br/>service-CA TLS"| KAP
+    EnvoyFilter -.->|configures| Gateway
 
-    %% Operator to K8s API
-    OperatorMgr -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    K8sAPI -->|"HTTPS/9443<br/>TLS<br/>Client cert"| WebhookSrv
+    %% Auth → OAuth
+    KAP -->|"HTTPS/443<br/>TLS 1.2+<br/>Client credentials"| OAuth
 
-    %% Operator to external
-    OperatorMgr -->|"HTTPS/443<br/>TLS 1.2+<br/>Pull secret"| Registry
+    %% Gateway → Backends (post-auth)
+    Gateway -->|"HTTPS (SIMPLE TLS)<br/>Bearer token forwarded<br/>via DestinationRule"| Dashboard
+    Gateway -->|"HTTPS"| KServe
+    Gateway -->|"HTTPS"| ModelReg
+    Gateway -->|"HTTPS"| DSP
+    Gateway -->|"HTTPS"| OtherSvc
 
-    %% Monitoring flows
-    MonStack -->|"HTTP/HTTPS<br/>SA token"| CompList
-    Thanos -->|"HTTP/9090"| MonStack
-    OTel -->|"gRPC/4317<br/>Optional TLS"| TempoSvc
-    Perses -->|"HTTP/9090"| MonStack
+    %% Legacy redirect
+    User -.->|"HTTPS/443<br/>TLS (edge)<br/>legacy URL"| DashRedirect
+    DashRedirect -.->|"301 redirect to<br/>rh-ai.domain"| User
 
-    %% Monitoring scrapes kube-auth-proxy metrics
-    MonStack -->|"HTTP/9000<br/>NetworkPolicy allowed"| AuthProxy
+    %% Operator flows
+    Operator -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token (RBAC)"| K8sAPI
+    Operator -->|deploys| Gateway
+    Operator -->|deploys| KAP
+    Operator -->|configures| IstioSM
+    Operator -->|deploys| Monitoring
 
-    %% Styles
+    %% Network Policy annotation
+    KAP -.->|"NetworkPolicy:<br/>ingress from gateway (8443)<br/>ingress from monitoring (9000)"| KAP
+
+    %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef k8s fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef monitoring fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef extservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
     classDef auth fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef backend fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef cluster fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef redirect fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
-    class Client external
-    class Route,Gateway,Filter,AuthProxy ingress
-    class OperatorMgr,WebhookSrv,DSCICtrl,DSCCtrl,GWCtrl,AuthCtrlr,MonCtrl,CompList operator
-    class K8sAPI k8s
-    class MonStack,Thanos,OTel,TempoSvc,Perses monitoring
-    class Registry extservice
-    class OAuthServer,OIDCProvider auth
+    class User external
+    class Router,Gateway ingress
+    class KAP,EnvoyFilter,OAuth auth
+    class Dashboard,KServe,ModelReg,DSP,OtherSvc backend
+    class Operator operator
+    class K8sAPI,IstioSM,Monitoring cluster
+    class DashRedirect redirect

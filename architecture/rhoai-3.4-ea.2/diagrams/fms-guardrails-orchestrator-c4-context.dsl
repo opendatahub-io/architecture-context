@@ -7,39 +7,45 @@
 workspace {
     model {
         client = person "Client Application" "Sends text generation and detection requests"
+        operator = person "Platform Operator" "Configures and deploys the orchestrator"
 
-        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "REST API orchestrator coordinating AI text generation with content safety guardrails" {
-            guardrailsServer = container "Guardrails Server" "Serves guardrails detection and generation APIs" "Rust (axum/hyper) - Port 8033/TCP"
-            healthServer = container "Health Server" "Serves health and info endpoints" "Rust (axum) - Port 8034/TCP"
-            orchestratorCore = container "Orchestrator Core" "Coordinates request flow between generation, detection, and chunking" "Rust"
-            tlsModule = container "TLS Module" "Configures TLS/mTLS for server and client connections" "rustls/ring - FIPS-compatible"
-            otelIntegration = container "OpenTelemetry Integration" "Exports traces and metrics via OTLP" "OpenTelemetry SDK 0.31.0"
+        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "REST API orchestrator coordinating AI text generation with safety guardrails by invoking content detectors on LLM input and output" {
+            guardrailsServer = container "Guardrails Server" "Serves guardrails detection and generation API endpoints" "Rust (axum/hyper), Port 8033/TCP"
+            healthServer = container "Health Server" "Serves health and info endpoints" "Rust (axum), Port 8034/TCP"
+            generationClient = container "GenerationClient" "Connects to TGIS or caikit-nlp generation backends" "Rust (tonic), gRPC"
+            openaiClient = container "OpenAiClient" "Connects to OpenAI-compatible generation backends" "Rust (reqwest), HTTP"
+            detectorClient = container "DetectorClient" "Connects to content detector services" "Rust (reqwest), HTTP"
+            chunkerClient = container "ChunkerClient" "Connects to text chunker services" "Rust (tonic), gRPC"
+            tlsModule = container "TLS Module" "Handles TLS/mTLS configuration for server and client connections" "rustls/ring"
+            otelExporter = container "OpenTelemetry Exporter" "Exports traces and metrics via OTLP" "opentelemetry-otlp"
         }
 
-        tgis = softwareSystem "TGIS" "Text Generation Inference Server for text generation via gRPC" "Internal RHOAI"
-        caikitNlp = softwareSystem "Caikit NLP" "Alternative text generation backend via gRPC" "Internal RHOAI"
-        vllm = softwareSystem "OpenAI-compatible LLM (vLLM)" "Chat and text completions generation" "Internal RHOAI"
-        detectors = softwareSystem "Detector Services" "Content safety detection (HAP, PII, etc.)" "Internal RHOAI"
-        chunkers = softwareSystem "Chunker Services" "Text segmentation via Caikit ChunkersService" "Internal RHOAI"
-        otlpCollector = softwareSystem "OTLP Collector" "OpenTelemetry trace and metrics collection" "External"
-        certManager = softwareSystem "cert-manager" "TLS certificate provisioning" "External"
+        tgis = softwareSystem "TGIS" "Text Generation Inference Server - gRPC generation backend" "Internal"
+        caikitNlp = softwareSystem "caikit-nlp" "Text generation backend via NlpService" "Internal"
+        vllm = softwareSystem "vLLM / OpenAI-compatible Server" "Chat/text completions generation backend" "Internal"
+        detectors = softwareSystem "Content Detector Services" "Safety detection on text content (HAP, harmful patterns)" "Internal"
+        chunkers = softwareSystem "Chunker Services (caikit)" "Text chunking/tokenization for detector pipelines" "Internal"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Trace and metric collection" "External"
 
         # Relationships - External
-        client -> orchestrator "Sends generation/detection requests" "HTTP/HTTPS 8033/TCP, Optional TLS 1.2+"
+        client -> orchestrator "Sends generation/detection requests" "HTTP/HTTPS 8033/TCP, TLS 1.2+"
+        operator -> orchestrator "Configures via YAML and env vars"
 
         # Relationships - Internal containers
-        guardrailsServer -> orchestratorCore "Routes API requests"
-        orchestratorCore -> tlsModule "Uses for TLS configuration"
-        guardrailsServer -> otelIntegration "Emits traces and metrics"
+        guardrailsServer -> generationClient "Routes generation requests"
+        guardrailsServer -> openaiClient "Routes OpenAI-compatible requests"
+        guardrailsServer -> detectorClient "Routes detection requests"
+        guardrailsServer -> chunkerClient "Routes chunking requests"
+        guardrailsServer -> tlsModule "TLS/mTLS handshake"
+        guardrailsServer -> otelExporter "Emits traces and metrics"
 
-        # Relationships - Backend services
-        orchestrator -> tgis "Text generation (Generate, GenerateStream, Tokenize)" "gRPC/HTTP2 8033/TCP, Optional mTLS"
-        orchestrator -> caikitNlp "NLP generation" "gRPC/HTTP2, Optional mTLS"
-        orchestrator -> vllm "Chat/text completions" "HTTP/HTTPS 8080/TCP, Bearer Token"
-        orchestrator -> detectors "Content safety detection" "HTTP/HTTPS 8080/TCP, Optional mTLS"
-        orchestrator -> chunkers "Text chunking/tokenization" "gRPC/HTTP2 8085/TCP, Optional mTLS"
-        orchestrator -> otlpCollector "Exports traces and metrics" "OTLP gRPC/4317 or HTTP/4318"
-        certManager -> orchestrator "Provisions TLS certificates" "kubernetes.io/tls"
+        # Relationships - Backend systems
+        orchestrator -> tgis "Text generation (Generate, GenerateStream, Tokenize)" "gRPC (HTTP/2), TLS/mTLS"
+        orchestrator -> caikitNlp "Text generation (TextGenerationTaskPredict)" "gRPC (HTTP/2), TLS/mTLS"
+        orchestrator -> vllm "Chat/text completions, tokenization" "HTTP/HTTPS, TLS/mTLS, API Token"
+        orchestrator -> detectors "Content safety detection" "HTTP/HTTPS, TLS/mTLS"
+        orchestrator -> chunkers "Text chunking/tokenization" "gRPC (HTTP/2), TLS/mTLS"
+        orchestrator -> otelCollector "Exports traces and metrics" "OTLP gRPC 4317/TCP or HTTP 4318/TCP"
     }
 
     views {
@@ -58,7 +64,7 @@ workspace {
                 background #438dd5
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal" {
                 background #7ed321
                 color #ffffff
             }
@@ -67,9 +73,9 @@ workspace {
                 color #ffffff
             }
             element "Person" {
-                shape person
                 background #08427b
                 color #ffffff
+                shape person
             }
             element "Container" {
                 background #438dd5

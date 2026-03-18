@@ -3,50 +3,58 @@
 %% Source: architecture/rhoai-3.4-ea.2/guardrails-detectors.md
 
 graph TB
-    subgraph External["EXTERNAL (Untrusted)"]
-        VLLMServer["vLLM Inference Server<br/>Configurable URL<br/>HTTP/HTTPS<br/>No Auth (default)"]
+    subgraph InternalCaller["INTERNAL CALLER (Service Mesh)"]
+        Orchestrator["FMS Guardrails Orchestrator<br/>Calls detectors for content analysis"]
     end
 
-    subgraph Internal["INTERNAL CLUSTER (Trusted)"]
+    subgraph ServiceMesh["SERVICE MESH (mTLS via Istio Sidecar)"]
         direction TB
 
-        subgraph OrchestratorNS["Namespace: guardrails"]
-            Orchestrator["FMS Guardrails Orchestrator<br/>Invokes detector APIs"]
+        subgraph NS_BuiltIn["Built-in Detector"]
+            BuiltIn["Built-in Detector<br/>ClusterIP :8080/TCP<br/>Image: odh-built-in-detector-rhel9<br/>UBI9-minimal<br/>sidecar.istio.io/inject: true"]
         end
 
-        subgraph DetectorNS["Namespace: detector-namespace"]
-            BuiltIn["Built-in Detector<br/>Port: 8080/TCP<br/>Protocol: HTTP (plaintext)<br/>Auth: None<br/>Base: ubi9/ubi-minimal"]
-            HFDetector["HuggingFace Detector<br/>Port: 8000/TCP<br/>Protocol: HTTP (plaintext)<br/>Auth: None<br/>Base: ubi9/ubi-minimal<br/>GPU/CUDA support"]
-            JudgeDetector["LLM Judge Detector<br/>Port: 8000/TCP<br/>Protocol: HTTP (plaintext)<br/>Auth: None"]
+        subgraph NS_HF["HuggingFace Detector"]
+            HF["HuggingFace Detector<br/>ClusterIP :8000/TCP (via KServe)<br/>Image: odh-guardrails-detector-<br/>huggingface-runtime-rhel9<br/>UBI9-minimal | GPU/CPU"]
         end
 
-        subgraph MonitoringNS["Namespace: monitoring"]
-            Prometheus["Prometheus<br/>Metrics Scraper"]
-        end
-
-        subgraph KServeNS["KServe Platform"]
-            KServe["KServe<br/>Manages HF Detector<br/>as InferenceService"]
+        subgraph NS_Judge["LLM Judge Detector"]
+            Judge["LLM Judge Detector<br/>ClusterIP :8000/TCP (via KServe)<br/>vllm-judge library"]
         end
     end
 
-    %% Flows
-    Orchestrator -->|"HTTP/8080<br/>Plaintext<br/>No Auth<br/>POST /api/v1/text/contents"| BuiltIn
-    Orchestrator -->|"HTTP/8000<br/>Plaintext<br/>No Auth<br/>POST /api/v1/text/contents"| HFDetector
-    Orchestrator -->|"HTTP/8000<br/>Plaintext<br/>No Auth<br/>POST /api/v1/text/contents"| JudgeDetector
-    JudgeDetector -->|"HTTP or HTTPS<br/>Configurable Port<br/>No Auth (default)<br/>OpenAI-compatible API"| VLLMServer
-    Prometheus -->|"HTTP/8080<br/>Plaintext<br/>GET /metrics"| BuiltIn
-    Prometheus -->|"HTTP/8000<br/>Plaintext<br/>GET /metrics"| HFDetector
-    KServe -.->|"Deploys as<br/>InferenceService"| HFDetector
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        S3["S3/MinIO Storage<br/>9000/TCP HTTP<br/>Auth: AWS key/secret<br/>Encryption: None (internal)"]
+        vLLM["External vLLM Server<br/>8080/TCP HTTP (configurable)<br/>OpenAI-compatible API<br/>Auth: Configurable"]
+        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: HF token (optional)<br/>(dev/example only)"]
+    end
+
+    subgraph Monitoring["MONITORING"]
+        Prometheus["Prometheus<br/>Scrapes /metrics"]
+    end
+
+    %% Inbound flows
+    Orchestrator -->|"POST /api/v1/text/contents<br/>HTTP/8080 | mTLS (Istio)<br/>PeerAuthentication"| BuiltIn
+    Orchestrator -->|"POST /api/v1/text/contents<br/>HTTP/8000 | mTLS (Istio)<br/>PeerAuthentication"| HF
+    Orchestrator -->|"POST /api/v1/text/contents<br/>HTTP/8000 | mTLS (Istio)<br/>PeerAuthentication"| Judge
+
+    %% Egress flows
+    HF -->|"HTTP/9000<br/>No encryption (internal)<br/>AWS credentials"| S3
+    Judge -->|"HTTP/8080 (configurable)<br/>Configurable encryption<br/>Configurable auth"| vLLM
+    HF -.->|"HTTPS/443<br/>TLS 1.2+<br/>HF token (dev only)"| HFHub
+
+    %% Monitoring
+    Prometheus -->|"HTTP/8080<br/>No auth"| BuiltIn
+    Prometheus -->|"HTTP/8000<br/>No auth"| HF
+    Prometheus -->|"HTTP/8000<br/>No auth"| Judge
 
     %% Styling
+    classDef caller fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef detector fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef external fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef orchestrator fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef detector fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef monitoring fill:#f5f5f5,stroke:#999,stroke-width:1px
 
-    class VLLMServer external
-    class Orchestrator orchestrator
-    class BuiltIn,HFDetector,JudgeDetector detector
+    class Orchestrator caller
+    class BuiltIn,HF,Judge detector
+    class S3,vLLM,HFHub external
     class Prometheus monitoring
-    class KServe platform

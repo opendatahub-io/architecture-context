@@ -4,59 +4,58 @@
 
 workspace {
     model {
-        user = person "Data Scientist" "Creates and uses notebook workbenches for ML development"
-        admin = person "Platform Admin" "Manages RHOAI platform and notebook configurations"
+        dataScientist = person "Data Scientist" "Creates and uses notebook workbenches for ML development"
 
-        odhNotebookController = softwareSystem "ODH Notebook Controller" "Manages OpenShift-specific notebook workbench lifecycle including Gateway API ingress, kube-rbac-proxy authentication, network policies, and pipeline integration" {
-            reconciler = container "OpenshiftNotebookReconciler" "Watches Notebook CRs; creates HTTPRoute, ReferenceGrant, NetworkPolicy, ServiceAccount, Service, ConfigMap, ClusterRoleBinding, RoleBinding, and Secret resources" "Go Controller (controller-runtime)"
-            webhook = container "NotebookWebhook" "Intercepts Notebook create/update to inject kube-rbac-proxy sidecar, mount CA bundles, resolve ImageStream images, mount pipeline runtimes, mount Elyra secrets, mount Feast config" "Mutating Admission Webhook"
-            httpRouteManager = container "HTTPRoute Manager" "Creates/reconciles HTTPRoute CRs in central namespace referencing data-science-gateway" "Controller Sub-component"
-            refGrantManager = container "ReferenceGrant Manager" "Creates ReferenceGrant CRs in user namespaces for cross-namespace HTTPRoute backend references" "Controller Sub-component"
-            netPolManager = container "NetworkPolicy Manager" "Creates per-notebook NetworkPolicy resources controlling ingress on ports 8888/TCP and 8443/TCP" "Controller Sub-component"
-            caCertManager = container "CA Certificate Manager" "Aggregates CA certificates into workbench-trusted-ca-bundle ConfigMap" "Controller Sub-component"
-            pipelineSync = container "Pipeline Runtime Sync" "Syncs pipeline-runtime-images ConfigMap from ImageStreams" "Controller/Webhook Sub-component"
-            elyraSync = container "Elyra/DSPA Secret Sync" "Creates ds-pipeline-config Secret from DSPA CR" "Controller/Webhook Sub-component"
+        odhNotebookController = softwareSystem "ODH Notebook Controller" "Extends Kubeflow Notebook Controller with OpenShift-specific features: Gateway API ingress, kube-rbac-proxy auth, certificates, network policies, Elyra integration" {
+            reconciler = container "OpenshiftNotebookReconciler" "Watches Notebook CRs, reconciles HTTPRoutes, ReferenceGrants, NetworkPolicies, ConfigMaps, RBAC, Elyra secrets" "Go Controller (controller-runtime)"
+            webhook = container "NotebookWebhook" "Mutating webhook: injects kube-rbac-proxy sidecars, CA certs, runtime image volumes, Elyra config, Feast config" "Go Mutating Admission Webhook"
+            httpRouteManager = container "HTTPRoute Manager" "Creates/updates/deletes HTTPRoute CRs in central namespace per notebook" "Controller sub-component"
+            refGrantManager = container "ReferenceGrant Manager" "Creates ReferenceGrant CRs for cross-namespace HTTPRoute backend references" "Controller sub-component"
+            krbpInjector = container "kube-rbac-proxy Injector" "Injects kube-rbac-proxy sidecar, creates Service/ConfigMap/ClusterRoleBinding" "Webhook + Controller sub-component"
+            netPolManager = container "Network Policy Manager" "Creates per-notebook NetworkPolicies for ports 8888 and 8443" "Controller sub-component"
+            certManager = container "Certificate Manager" "Creates workbench-trusted-ca-bundle ConfigMap" "Controller sub-component"
         }
 
-        kubeflowController = softwareSystem "Kubeflow Notebook Controller" "Upstream notebook controller managing Notebook CRD, StatefulSet, and idle culling lifecycle" "External"
-        k8sApi = softwareSystem "Kubernetes API Server" "Container orchestration platform API" "External"
-        ocpApi = softwareSystem "OpenShift API Server" "OpenShift-specific APIs (ImageStream, Route, OAuth, Proxy)" "External"
-        dataScienceGateway = softwareSystem "data-science-gateway" "Gateway API Gateway in openshift-ingress namespace providing external ingress" "Internal RHOAI"
-        rhodsOperator = softwareSystem "rhods-operator" "Deploys data-science-gateway and platform infrastructure" "Internal RHOAI"
-        odhOperator = softwareSystem "opendatahub-operator" "Provides CA certificate bundles and platform configuration" "Internal RHOAI"
-        dspa = softwareSystem "Data Science Pipelines Application" "ML pipeline execution platform" "Internal RHOAI"
-        odhDashboard = softwareSystem "ODH Dashboard" "Web UI for managing notebooks and ML workflows" "Internal RHOAI"
-        imageStreams = softwareSystem "OpenShift ImageStreams" "Container image management and resolution" "External"
-        serviceCa = softwareSystem "OpenShift service-ca" "Automatic TLS certificate provisioning" "External"
-        feastStore = softwareSystem "Feast Feature Store" "Feature store for ML feature management" "Internal RHOAI"
-        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "RBAC-based authentication proxy sidecar for notebook pods" "External"
-
-        // User interactions
-        user -> odhDashboard "Creates notebook workbenches via UI"
-        user -> odhNotebookController "Accesses notebooks via Gateway" "HTTPS/443"
-        admin -> odhNotebookController "Configures controller settings"
-
-        // ODH Dashboard creates Notebook CRs
-        odhDashboard -> k8sApi "Creates Notebook CRs" "HTTPS/443"
-
-        // Controller interactions
-        odhNotebookController -> k8sApi "CRUD on Notebook, HTTPRoute, ReferenceGrant, NetworkPolicy, Secret, ConfigMap, ServiceAccount, ClusterRoleBinding, RoleBinding" "HTTPS/443"
-        odhNotebookController -> ocpApi "Reads ImageStreams, Proxy config, OAuthClients" "HTTPS/443"
-        odhNotebookController -> dataScienceGateway "Creates HTTPRoutes referencing as parent Gateway" "Gateway API"
-        odhNotebookController -> dspa "Reads DSPA CR for Elyra pipeline config" "HTTPS/443"
-        odhNotebookController -> imageStreams "Resolves notebook images and pipeline runtime metadata" "HTTPS/443"
-
         // External dependencies
-        kubeflowController -> k8sApi "Watches same Notebook CRs, manages StatefulSet lifecycle" "HTTPS/443"
-        serviceCa -> odhNotebookController "Provisions TLS certificates for webhook and kube-rbac-proxy" "Annotation-triggered"
-        rhodsOperator -> dataScienceGateway "Deploys Gateway in openshift-ingress"
-        odhOperator -> odhNotebookController "Provides odh-trusted-ca-bundle ConfigMap"
+        kubernetes = softwareSystem "Kubernetes / OpenShift" "Container orchestration platform (v4.19-v4.21)" "External"
+        gatewayAPI = softwareSystem "Gateway API" "HTTPRoute, ReferenceGrant, Gateway CRDs (v1.2.1)" "External"
+        kubeflowNotebook = softwareSystem "Kubeflow Notebook Controller" "Provides Notebook CRD and base controller" "External"
+        openshiftServiceCA = softwareSystem "OpenShift service-ca" "Provisions TLS certificates for services" "External"
 
-        // Runtime
-        kubeRbacProxy -> k8sApi "TokenReview and SubjectAccessReview for notebook auth" "HTTPS/443"
+        // Internal ODH dependencies
+        rhodsOperator = softwareSystem "rhods-operator" "Deploys data-science-gateway Gateway in openshift-ingress" "Internal ODH"
+        dspOperator = softwareSystem "Data Science Pipelines Operator" "Provides DataSciencePipelinesApplication CRD" "Internal ODH"
+        odhDashboard = softwareSystem "ODH Dashboard" "Creates Notebook CRs with image selection annotations" "Internal ODH"
+        odhKubeAuthProxy = softwareSystem "odh-kube-auth-proxy" "kube-rbac-proxy sidecar image injected into notebook pods" "Internal ODH"
 
-        // Feast integration
-        odhNotebookController -> feastStore "Mounts Feast config ConfigMap into notebooks" "ConfigMap mount"
+        // Infrastructure
+        dataScienceGateway = softwareSystem "data-science-gateway" "Platform ingress gateway for notebook traffic (openshift-ingress)" "Infrastructure"
+
+        // Relationships - User
+        dataScientist -> odhDashboard "Creates notebooks via UI"
+        dataScientist -> dataScienceGateway "Accesses notebooks via HTTPS/443"
+
+        // Relationships - Internal
+        odhDashboard -> odhNotebookController "Creates Notebook CRs" "Kubernetes API"
+        odhNotebookController -> kubernetes "Watches/creates/manages resources" "HTTPS/443"
+        odhNotebookController -> gatewayAPI "Creates HTTPRoutes, ReferenceGrants" "Kubernetes API"
+        odhNotebookController -> kubeflowNotebook "Watches Notebook CRs (kubeflow.org/v1)" "Kubernetes API"
+        odhNotebookController -> dspOperator "Reads DSPA CRs for Elyra config" "Kubernetes API"
+        odhNotebookController -> openshiftServiceCA "TLS cert provisioning for webhook and sidecars" "Annotation-driven"
+        odhNotebookController -> odhKubeAuthProxy "Injects as sidecar into notebook pods" "Container image"
+
+        // Relationships - Infrastructure
+        rhodsOperator -> dataScienceGateway "Deploys and manages"
+        odhNotebookController -> dataScienceGateway "References as HTTPRoute parent" "Gateway API"
+        dataScienceGateway -> odhKubeAuthProxy "Routes traffic to kube-rbac-proxy" "HTTPS/8443"
+
+        // Internal container relationships
+        reconciler -> httpRouteManager "Delegates HTTPRoute management"
+        reconciler -> refGrantManager "Delegates ReferenceGrant management"
+        reconciler -> krbpInjector "Delegates kube-rbac-proxy resource creation"
+        reconciler -> netPolManager "Delegates NetworkPolicy creation"
+        reconciler -> certManager "Delegates CA bundle management"
+        webhook -> krbpInjector "Injects sidecar containers"
     }
 
     views {
@@ -71,22 +70,26 @@ workspace {
         }
 
         styles {
+            element "Person" {
+                shape Person
+                background #08427b
+                color #ffffff
+            }
             element "Software System" {
-                background #438dd5
+                background #1168bd
                 color #ffffff
             }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal ODH" {
                 background #7ed321
                 color #ffffff
             }
-            element "Person" {
-                background #08427b
+            element "Infrastructure" {
+                background #f5a623
                 color #ffffff
-                shape person
             }
             element "Container" {
                 background #438dd5

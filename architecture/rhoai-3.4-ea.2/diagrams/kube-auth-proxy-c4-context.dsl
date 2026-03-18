@@ -6,55 +6,45 @@
 
 workspace {
     model {
-        user = person "User / Data Scientist" "Accesses RHOAI components via browser"
-        k8sClient = person "K8s Client / Service" "Accesses RHOAI components via ServiceAccount token"
+        user = person "User" "Authenticates via browser to access RHOAI components"
+        apiClient = person "API Client" "Service or tool accessing RHOAI components via API"
+        serviceAccount = person "Service Account" "Kubernetes workload authenticating via SA token"
 
-        kubeAuthProxy = softwareSystem "kube-auth-proxy" "FIPS-compliant authentication reverse proxy for RHOAI/ODH supporting OIDC and OpenShift OAuth" {
-            entrypoint = container "entrypoint" "Container entrypoint that selects between auth and rbac proxy modes" "Go Binary"
-            authProxy = container "kube-auth-proxy" "Authentication proxy supporting OIDC and OpenShift OAuth providers, port 4180/TCP" "Go Binary (Reverse Proxy)"
-            rbacProxy = container "kube-rbac-proxy" "RBAC authorization proxy using SubjectAccessReview, port 8443/TCP HTTPS" "Go Binary (v0.19.1)"
-            oidcProvider = container "OIDC Provider" "Standard OIDC authentication flow with ID token verification" "Go Package"
-            openshiftProvider = container "OpenShift Provider" "OpenShift OAuth authentication with SA auto-detection" "Go Package"
-            tokenValidator = container "K8s TokenReview Validator" "Kubernetes SA token validation via TokenReview API" "Go Package"
-            sessionStore = container "Session Store" "Cookie-based or Redis-backed session management" "Go Package"
-            upstreamProxy = container "Upstream Proxy" "Reverse proxy to upstream application services" "Go Package"
+        kubeAuthProxy = softwareSystem "kube-auth-proxy" "FIPS-compliant dual-mode authentication and RBAC proxy for RHOAI. Drop-in replacement for oauth-proxy sidecars." {
+            entrypoint = container "entrypoint" "Dispatcher binary that selects proxy mode based on PROXY_MODE env var" "Go Binary"
+            authProxy = container "kube-auth-proxy" "Authentication reverse proxy supporting OIDC and OpenShift OAuth. Ports: 4180/TCP (HTTP), 443/TCP (HTTPS)" "Go Application"
+            rbacProxy = container "kube-rbac-proxy" "RBAC authorization proxy using SubjectAccessReview. Port: 8443/TCP (HTTPS)" "Go Application"
+            sessionStore = container "Session Store" "Cookie-based or Redis-backed session storage" "In-Memory / Redis"
         }
 
-        openshiftOAuth = softwareSystem "OpenShift OAuth Server" "OpenShift internal OAuth service" "External"
-        oidcExternal = softwareSystem "External OIDC Provider" "External identity provider (e.g., Keycloak, Azure AD)" "External"
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API for TokenReview and SubjectAccessReview" "External"
-        openshiftUserAPI = softwareSystem "OpenShift User API" "OpenShift user info endpoint" "External"
-        redis = softwareSystem "Redis" "Distributed session storage (optional)" "External"
-        upstreamApp = softwareSystem "Upstream Application" "Target service behind the auth proxy" "Internal RHOAI"
-        envoyGateway = softwareSystem "Envoy Gateway" "Gateway API implementation for ext_authz" "Internal RHOAI"
-        prometheus = softwareSystem "Prometheus" "Metrics collection platform" "Internal RHOAI"
+        k8sAPI = softwareSystem "Kubernetes API Server" "TokenReview and SubjectAccessReview APIs for authentication and authorization" "External"
+        openshiftOAuth = softwareSystem "OpenShift OAuth Server" "OpenShift built-in OAuth service for cluster-native authentication" "External"
+        oidcProvider = softwareSystem "External OIDC Provider" "Standards-compliant OpenID Connect identity provider" "External"
+        upstreamApp = softwareSystem "Upstream Application" "Backend application receiving authenticated/authorized requests" "Internal RHOAI"
+        redis = softwareSystem "Redis" "Optional session state storage for authenticated sessions" "External"
+        envoyGateway = softwareSystem "Envoy Gateway" "Gateway API ingress with ext_authz integration" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus" "Monitoring system that scrapes metrics" "Internal RHOAI"
 
-        # User interactions
-        user -> kubeAuthProxy "Authenticates via browser (OIDC/OpenShift OAuth)" "HTTPS/443"
-        k8sClient -> kubeAuthProxy "Authenticates via Bearer Token" "HTTPS/443"
+        # User flows
+        user -> kubeAuthProxy "Authenticates via OIDC/OpenShift OAuth" "HTTPS/443 or HTTP/4180"
+        serviceAccount -> kubeAuthProxy "Authenticates via SA token" "HTTP/4180 or HTTPS/443"
+        apiClient -> kubeAuthProxy "Authenticates via Bearer token or X.509 cert" "HTTPS/8443"
 
         # Internal container relationships
-        entrypoint -> authProxy "Selects auth mode" "PROXY_MODE=auth"
-        entrypoint -> rbacProxy "Selects rbac mode (default)" "PROXY_MODE=rbac"
-        authProxy -> oidcProvider "Uses for OIDC auth"
-        authProxy -> openshiftProvider "Uses for OpenShift auth"
-        authProxy -> tokenValidator "Uses for SA token validation"
-        authProxy -> sessionStore "Manages sessions"
-        authProxy -> upstreamProxy "Forwards authenticated requests"
+        entrypoint -> authProxy "Dispatches when PROXY_MODE=auth"
+        entrypoint -> rbacProxy "Dispatches when PROXY_MODE=rbac (default)"
+        authProxy -> sessionStore "Stores/retrieves sessions"
 
-        # External dependencies
-        authProxy -> openshiftOAuth "OAuth authorization and token exchange" "HTTPS/443 TLS 1.2+"
-        authProxy -> oidcExternal "OIDC discovery, token exchange, verification" "HTTPS/443 TLS 1.2+"
-        tokenValidator -> k8sAPI "TokenReview API" "HTTPS/443 TLS 1.2+"
-        rbacProxy -> k8sAPI "SubjectAccessReview API" "HTTPS/443 TLS 1.2+"
-        authProxy -> openshiftUserAPI "User info retrieval" "HTTPS/443 TLS 1.2+"
-        sessionStore -> redis "Distributed session storage" "Redis/6379 Optional TLS"
-        upstreamProxy -> upstreamApp "Proxied authenticated requests" "HTTP plaintext"
-        rbacProxy -> upstreamApp "Proxied authorized requests" "HTTP plaintext"
+        # Egress flows
+        kubeAuthProxy -> k8sAPI "TokenReview, SubjectAccessReview" "HTTPS/443"
+        kubeAuthProxy -> openshiftOAuth "OAuth2 authentication flow" "HTTPS/443"
+        kubeAuthProxy -> oidcProvider "OIDC authentication flow" "HTTPS/443"
+        kubeAuthProxy -> upstreamApp "Forwards authenticated requests with identity headers" "HTTP/HTTPS"
+        kubeAuthProxy -> redis "Session storage (optional)" "TCP/6379"
 
-        # Integration points
-        envoyGateway -> authProxy "ext_authz decisions (200/401)" "HTTP/4180"
-        prometheus -> authProxy "Scrapes metrics" "HTTP(S)/configurable"
+        # Integration
+        envoyGateway -> kubeAuthProxy "ext_authz authorization check" "HTTP/4180"
+        prometheus -> kubeAuthProxy "Scrapes metrics" "HTTP/HTTPS"
     }
 
     views {
@@ -69,13 +59,8 @@ workspace {
         }
 
         styles {
-            element "Person" {
-                shape Person
-                background #08427b
-                color #ffffff
-            }
             element "Software System" {
-                background #1168bd
+                background #438dd5
                 color #ffffff
             }
             element "External" {
@@ -85,6 +70,11 @@ workspace {
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
+            }
+            element "Person" {
+                background #08427b
+                color #ffffff
+                shape person
             }
             element "Container" {
                 background #438dd5

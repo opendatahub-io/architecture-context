@@ -4,42 +4,54 @@
 
 sequenceDiagram
     participant Client as External Client
-    participant Gateway as KServe Gateway<br/>(data-science-gateway)<br/>443/TCP HTTPS TLS 1.2+
-    participant RBAC as kube-rbac-proxy<br/>(RHOAI 3.x)
-    participant REST as MLServer REST Server<br/>8080/TCP HTTP
-    participant GRPC as MLServer gRPC Server<br/>8081/TCP gRPC/HTTP2
-    participant DP as DataPlane Handler
-    participant Runtime as Model Runtime<br/>(sklearn/xgboost/lightgbm/onnx)
-    participant Metrics as Metrics Server<br/>8082/TCP HTTP
+    participant Gateway as Platform Gateway<br/>(Envoy)<br/>443/TCP HTTPS TLS 1.2+
+    participant RBAC as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant REST as MLServer REST<br/>8080/TCP HTTP
+    participant gRPC as MLServer gRPC<br/>8081/TCP gRPC/HTTP2
+    participant DataPlane as DataPlane<br/>(V2 Protocol Handler)
+    participant Batcher as AdaptiveBatcher
+    participant Runtime as Inference Runtime<br/>(sklearn/xgboost/lightgbm/onnx)
+    participant Models as Model Storage<br/>/mnt/models
+    participant Metrics as MetricsServer<br/>8082/TCP HTTP
     participant Prom as Prometheus
-    participant OTel as OpenTelemetry Collector<br/>(optional)
+    participant OTEL as OpenTelemetry<br/>Collector
+    participant Kafka as Kafka Broker<br/>9092/TCP
 
-    Note over Client,Runtime: Flow 1: REST Inference Request
-    Client->>Gateway: POST /v2/models/{model}/infer<br/>HTTPS/443, TLS 1.2+
-    Gateway->>RBAC: Auth check<br/>kube-rbac-proxy
-    RBAC->>REST: HTTP/8080<br/>plaintext (in-pod)
-    REST->>DP: Python call<br/>in-process
-    DP->>Runtime: predict()<br/>in-process
-    Runtime-->>DP: Prediction result
-    DP-->>REST: InferenceResponse
-    REST-->>Gateway: HTTP 200<br/>JSON Response
+    Note over Client,Gateway: Flow 1: REST Model Inference
+    Client->>Gateway: POST /v2/models/{name}/infer<br/>HTTPS/443 | Bearer Token / mTLS
+    Gateway->>RBAC: Forward request<br/>HTTPS/8443 | TLS
+    RBAC->>REST: After RBAC check<br/>HTTP/8080 | plaintext (pod-local)
+    REST->>DataPlane: Inference request
+    DataPlane->>Batcher: Queue for batching
+    Batcher->>Runtime: Batched inference
+    Runtime->>Models: Load model artifacts<br/>File I/O
+    Models-->>Runtime: Model data
+    Runtime-->>Batcher: Prediction result
+    Batcher-->>DataPlane: Batched response
+    DataPlane-->>REST: V2 InferenceResponse
+    REST-->>RBAC: JSON Response
+    RBAC-->>Gateway: Forward response
     Gateway-->>Client: HTTPS Response
 
-    Note over Client,Runtime: Flow 2: gRPC Inference Request
-    Client->>Gateway: ModelInfer RPC<br/>HTTPS/443, TLS 1.2+
-    Gateway->>RBAC: Auth check
-    RBAC->>GRPC: gRPC/HTTP2/8081<br/>plaintext (in-pod)
-    GRPC->>DP: Python call<br/>in-process
-    DP->>Runtime: predict()<br/>in-process
-    Runtime-->>DP: Prediction result
-    DP-->>GRPC: ModelInferResponse
-    GRPC-->>Gateway: gRPC Response
-    Gateway-->>Client: gRPC Response
+    Note over Client,gRPC: Flow 2: gRPC Model Inference
+    Client->>Gateway: ModelInfer RPC<br/>gRPC/HTTPS/443 | TLS 1.2+
+    Gateway->>gRPC: Forward<br/>gRPC/HTTP2/8081 | plaintext (pod-local)
+    gRPC->>DataPlane: Inference request
+    DataPlane->>Runtime: Model inference
+    Runtime-->>DataPlane: Prediction result
+    DataPlane-->>gRPC: InferenceResponse
+    gRPC-->>Gateway: gRPC Response
+    Gateway-->>Client: gRPC/HTTPS Response
 
-    Note over Prom,Metrics: Flow 3: Prometheus Metrics Scrape
-    Prom->>Metrics: GET /metrics<br/>HTTP/8082 plaintext
+    Note over Kafka,Runtime: Flow 3: Kafka Event-Driven (Optional)
+    Kafka->>DataPlane: Consume inference event<br/>Kafka/9092 | Configurable
+    DataPlane->>Runtime: Model inference
+    Runtime-->>DataPlane: Prediction result
+    DataPlane->>Kafka: Produce result event<br/>Kafka/9092 | Configurable
+
+    Note over Prom,Metrics: Flow 4: Metrics Collection
+    Prom->>Metrics: GET /metrics<br/>HTTP/8082 | plaintext
     Metrics-->>Prom: Prometheus metrics
 
-    Note over REST,OTel: Flow 4: OpenTelemetry Tracing (Optional)
-    REST->>OTel: OTLP traces<br/>gRPC (insecure)
-    GRPC->>OTel: OTLP traces<br/>gRPC (insecure)
+    Note over DataPlane,OTEL: Flow 5: Distributed Tracing
+    DataPlane->>OTEL: Export traces<br/>gRPC/HTTP2 | plaintext | OTLP

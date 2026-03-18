@@ -3,54 +3,64 @@
 %% Source: architecture/rhoai-3.4-ea.2/mlflow.md
 
 sequenceDiagram
-    participant Client as ML Client (SDK)
+    participant Client as External Client
     participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
     participant MLflow as MLflow Server<br/>5000/TCP HTTP
-    participant K8sAuth as kubernetes-auth Plugin
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
-    participant PG as PostgreSQL<br/>5432/TCP TLS 1.2+
-    participant S3 as S3 Storage<br/>443/TCP HTTPS TLS 1.2+
-    participant LLM as LLM Provider API<br/>443/TCP HTTPS TLS 1.2+
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant PG as PostgreSQL<br/>5432/TCP TLS
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
 
-    Note over Client,S3: Flow 1: Experiment Tracking (Create Run)
-    Client->>Proxy: POST /api/2.0/mlflow/runs/create<br/>Auth: Bearer Token (K8s SA)
-    Proxy->>MLflow: Forward (HTTP/5000)<br/>x-remote-user, x-remote-groups headers
-    MLflow->>K8sAuth: Authorize request
-    K8sAuth->>K8sAPI: SubjectAccessReview<br/>resource: experiments<br/>verb: create
-    K8sAPI-->>K8sAuth: Allowed
-    MLflow->>PG: INSERT run record<br/>Auth: Username/Password
-    PG-->>MLflow: Run created
-    MLflow->>S3: PUT artifact<br/>Auth: AWS credentials
-    S3-->>MLflow: Upload complete
-    MLflow-->>Proxy: 200 OK (run_id)
+    Note over Client,S3: Flow 1: User API Request with Kubernetes RBAC
+
+    Client->>Proxy: HTTPS/8443<br/>Bearer Token (SA/OIDC)
+    Proxy->>MLflow: HTTP/5000 (pod-local)<br/>x-remote-user + x-remote-groups headers
+    MLflow->>K8sAPI: SubjectAccessReview<br/>HTTPS/443, SA Token
+    K8sAPI-->>MLflow: allowed: true/false
+    MLflow->>PG: SQL Query<br/>TCP/5432 TLS 1.2+<br/>Username/Password
+    PG-->>MLflow: Query Results
+    MLflow->>S3: GET/PUT Artifact<br/>HTTPS/443<br/>AWS Credentials
+    S3-->>MLflow: Artifact Data
+    MLflow-->>Proxy: JSON Response
     Proxy-->>Client: HTTPS Response
 
-    Note over Client,S3: Flow 2: Workspace Resolution
-    Client->>MLflow: GET /api/3.0/mlflow/workspaces<br/>X-MLFLOW-WORKSPACE header
-    MLflow->>K8sAPI: List namespaces (cached watch)<br/>Auth: SA Token
-    K8sAPI-->>MLflow: Namespace list
-    MLflow->>K8sAPI: Watch MLflowConfig CRDs (cached)<br/>Auth: SA Token
-    K8sAPI-->>MLflow: MLflowConfig resources
-    MLflow->>K8sAPI: GET Secret mlflow-artifact-connection<br/>Auth: SA Token
-    K8sAPI-->>MLflow: Artifact root override
-    MLflow-->>Client: Workspace details
+    Note over Client,S3: Flow 2: AI Gateway LLM Proxy
 
-    Note over Client,LLM: Flow 3: AI Gateway LLM Invocation
-    Client->>MLflow: POST /gateway/{endpoint}/mlflow/invocations<br/>Auth: Bearer Token (K8s SA)
-    MLflow->>K8sAuth: Authorize request
-    K8sAuth->>K8sAPI: SelfSubjectAccessReview<br/>resource: gatewayendpoints/use
-    K8sAPI-->>K8sAuth: Allowed
-    MLflow->>PG: Load endpoint + model definition<br/>Auth: Username/Password
-    PG-->>MLflow: Config + encrypted API key
-    MLflow->>LLM: POST /v1/chat/completions<br/>Auth: API Key (decrypted)
-    LLM-->>MLflow: LLM Response
-    MLflow-->>Client: Gateway Response
+    participant LLM as LLM Provider<br/>443/TCP HTTPS
 
-    Note over Client,PG: Flow 4: OTLP Trace Ingestion
-    Client->>MLflow: POST /v1/traces<br/>Auth: Bearer Token (K8s SA)
-    MLflow->>K8sAuth: Authorize (experiments permission)
-    K8sAuth->>K8sAPI: SelfSubjectAccessReview
-    K8sAPI-->>K8sAuth: Allowed
-    MLflow->>PG: INSERT trace spans<br/>Auth: Username/Password
-    PG-->>MLflow: Stored
-    MLflow-->>Client: 200 OK
+    Client->>Proxy: POST /gateway/openai/v1/chat/completions<br/>HTTPS/8443, Bearer Token
+    Proxy->>MLflow: HTTP/5000<br/>x-remote-user headers
+    MLflow->>K8sAPI: SubjectAccessReview<br/>(gatewayendpoints/use)
+    K8sAPI-->>MLflow: allowed: true
+    MLflow->>LLM: POST /v1/chat/completions<br/>HTTPS/443 TLS 1.2+<br/>API Key (from DB)
+    LLM-->>MLflow: Streaming Response
+    MLflow-->>Proxy: Streaming Response
+    Proxy-->>Client: HTTPS Streaming Response
+
+    Note over Client,S3: Flow 3: Module Federation UI Embedding
+
+    participant Dashboard as OpenShift AI Dashboard
+    participant Browser as User Browser
+
+    Browser->>Dashboard: Load Dashboard Page
+    Dashboard-->>Browser: HTML with Federation Config
+    Browser->>Proxy: GET /static-files/federated/remoteEntry.js<br/>HTTPS/443
+    Proxy->>MLflow: HTTP/5000
+    MLflow-->>Proxy: remoteEntry.js
+    Proxy-->>Browser: JS Module
+    Browser->>Proxy: AJAX API calls<br/>HTTPS/443, Bearer Token
+    Proxy->>MLflow: HTTP/5000<br/>x-remote-user headers
+    MLflow-->>Proxy: JSON Data
+    Proxy-->>Browser: HTTPS Response
+
+    Note over Client,S3: Flow 4: OTLP Trace Ingestion
+
+    participant SDK as ML Workload (SDK)
+
+    SDK->>Proxy: POST /v1/traces<br/>HTTPS/8443, Bearer Token
+    Proxy->>MLflow: HTTP/5000<br/>x-remote-user headers
+    MLflow->>K8sAPI: SubjectAccessReview<br/>(experiments update)
+    K8sAPI-->>MLflow: allowed: true
+    MLflow->>PG: Store Trace/Spans<br/>TCP/5432 TLS 1.2+
+    PG-->>MLflow: OK
+    MLflow-->>Proxy: 200 OK
+    Proxy-->>SDK: HTTPS 200 OK

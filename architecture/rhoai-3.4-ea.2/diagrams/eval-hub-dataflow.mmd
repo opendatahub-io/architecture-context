@@ -5,49 +5,50 @@
 sequenceDiagram
     participant Client as Client / Dashboard
     participant EvalHub as EvalHub API<br/>8080/TCP HTTP/HTTPS
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
-    participant MLflow as MLflow Server<br/>5000/TCP HTTP/HTTPS
-    participant AdapterJob as Adapter Job Pod
-    participant ModelEP as Model Inference<br/>Endpoint HTTPS
-    participant S3 as AWS S3<br/>443/TCP HTTPS TLS 1.2+
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant MLflow as MLflow Tracking<br/>5000/TCP HTTP/HTTPS
+    participant PostgreSQL as PostgreSQL<br/>5432/TCP
+    participant EvalJob as Evaluation Job Pod
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant Model as Model Inference<br/>Endpoint (KServe/vLLM)
 
-    Note over Client,S3: Flow 1: Evaluation Job Creation and Execution
+    Note over Client,Model: Flow 1: Evaluation Job Submission and Execution
 
-    Client->>EvalHub: POST /api/v1/evaluations/jobs<br/>Auth: Bearer Token (K8s TokenReview)
-    EvalHub->>K8sAPI: TokenReview + SAR validation<br/>Auth: SA Token
-    K8sAPI-->>EvalHub: Auth confirmed
+    Client->>EvalHub: POST /api/v1/evaluations/jobs<br/>Auth: Bearer Token (K8s SA)<br/>TLS 1.2+ (when configured)
+    EvalHub->>K8sAPI: TokenReview<br/>Auth: ServiceAccount Token<br/>TLS 1.2+
+    K8sAPI-->>EvalHub: Authentication result
+    EvalHub->>K8sAPI: SubjectAccessReview<br/>(namespace from X-Tenant header)<br/>TLS 1.2+
+    K8sAPI-->>EvalHub: Authorization result
 
-    EvalHub->>MLflow: Create experiment / run<br/>Auth: Projected SA Token
+    EvalHub->>PostgreSQL: Persist evaluation job<br/>TLS (configurable)<br/>Auth: Connection string
+    EvalHub->>MLflow: Create experiment<br/>TLS 1.2+ (custom CA)<br/>Auth: SA Token
     MLflow-->>EvalHub: Experiment ID
 
-    EvalHub->>K8sAPI: Create ConfigMap<br/>(job configuration)<br/>Auth: SA Token
-    K8sAPI-->>EvalHub: ConfigMap created
-
-    EvalHub->>K8sAPI: Create batch/v1 Job<br/>(adapter container)<br/>Auth: SA Token
+    EvalHub->>K8sAPI: Create ConfigMap + Job<br/>Auth: ServiceAccount Token<br/>TLS 1.2+
     K8sAPI-->>EvalHub: Job created
 
     EvalHub-->>Client: 201 Created (Job ID)
 
-    Note over AdapterJob,S3: Flow 2: Test Data Initialization
+    Note over EvalJob,S3: Init Container: Download test data
+    K8sAPI->>EvalJob: Schedule Pod
+    EvalJob->>S3: Download test data<br/>Auth: AWS IAM credentials<br/>TLS 1.2+
+    S3-->>EvalJob: Test data artifacts
 
-    rect rgb(240, 248, 255)
-        Note right of AdapterJob: Init Container Phase
-        AdapterJob->>S3: Download test data<br/>Auth: AWS credentials (secret mount)
-        S3-->>AdapterJob: Test datasets
-    end
+    Note over EvalJob,Model: Adapter: Run evaluation benchmarks
+    EvalJob->>Model: Inference requests<br/>Auth: Bearer Token (from model auth secret)<br/>TLS 1.2+
+    Model-->>EvalJob: Inference responses
 
-    Note over AdapterJob,ModelEP: Adapter Job Execution
+    EvalJob->>EvalHub: POST /api/v1/evaluations/jobs/{id}/events<br/>Auth: Bearer Token (K8s SA)<br/>Status updates
+    EvalJob->>MLflow: Log run results<br/>Auth: SA Token (projected volume)<br/>TLS 1.2+ (service CA)
+    MLflow-->>EvalJob: Run logged
 
-    AdapterJob->>ModelEP: Inference requests<br/>Auth: API Key / Token (secret)
-    ModelEP-->>AdapterJob: Model responses
+    Note over Client,Model: Flow 2: Multi-Tenant Authorization
 
-    AdapterJob->>EvalHub: POST /api/v1/evaluations/jobs/{id}/events<br/>Auth: Bearer Token<br/>(status callback)
-    EvalHub-->>AdapterJob: 200 OK
-
-    AdapterJob->>MLflow: Log results<br/>Auth: Projected SA Token
-    MLflow-->>AdapterJob: Results stored
-
-    Note over Client,EvalHub: Status Polling
-
-    Client->>EvalHub: GET /api/v1/evaluations/jobs/{id}<br/>Auth: Bearer Token
-    EvalHub-->>Client: Job status + results
+    Client->>EvalHub: GET /api/v1/evaluations/jobs<br/>Auth: Bearer Token + X-Tenant header
+    EvalHub->>K8sAPI: TokenReview (2min cache TTL)<br/>TLS 1.2+
+    K8sAPI-->>EvalHub: User identity
+    EvalHub->>K8sAPI: SubjectAccessReview<br/>(5min allow / 30s deny cache)<br/>namespace = X-Tenant value
+    K8sAPI-->>EvalHub: Authorized (namespace-scoped)
+    EvalHub->>PostgreSQL: Query jobs for tenant
+    PostgreSQL-->>EvalHub: Tenant-scoped results
+    EvalHub-->>Client: 200 OK (filtered results)

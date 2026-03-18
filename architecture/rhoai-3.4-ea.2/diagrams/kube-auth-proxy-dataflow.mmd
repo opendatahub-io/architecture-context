@@ -3,73 +3,59 @@
 %% Source: architecture/rhoai-3.4-ea.2/kube-auth-proxy.md
 
 sequenceDiagram
-    participant Browser as User Browser
-    participant Gateway as TLS Gateway<br/>443/TCP HTTPS
-    participant KAP as kube-auth-proxy<br/>4180/TCP HTTP
-    participant OIDC as External OIDC Provider<br/>443/TCP HTTPS
-    participant OSOAUTH as OpenShift OAuth Server<br/>443/TCP HTTPS
-    participant OSAPI as OpenShift User API<br/>443/TCP HTTPS
-    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS
-    participant Redis as Redis (optional)<br/>6379/TCP
-    participant Upstream as Upstream Application<br/>HTTP plaintext
+    participant User as User Browser
+    participant KAP as kube-auth-proxy<br/>4180/TCP HTTP or 443/TCP HTTPS
+    participant OIDC as OIDC Provider<br/>443/TCP HTTPS TLS 1.2+
+    participant OSAuth as OpenShift OAuth<br/>443/TCP HTTPS TLS 1.2+
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
+    participant Upstream as Upstream App<br/>configurable HTTP/HTTPS
 
-    Note over Browser,Upstream: Flow 1: OIDC Authentication (Browser)
-
-    Browser->>Gateway: GET /oauth2/start<br/>HTTPS TLS 1.2+
-    Gateway->>KAP: Forward (internal)<br/>HTTP/4180
-    KAP->>Browser: 302 Redirect to OIDC Provider
-    Browser->>OIDC: GET /authorize<br/>HTTPS TLS 1.2+<br/>Client ID
-    OIDC->>Browser: Login Page
-    Browser->>OIDC: POST credentials<br/>HTTPS TLS 1.2+
-    OIDC->>Browser: 302 Redirect with Auth Code
-    Browser->>Gateway: GET /oauth2/callback?code=...<br/>HTTPS TLS 1.2+
-    Gateway->>KAP: Forward (internal)<br/>HTTP/4180
-    KAP->>OIDC: POST /token<br/>HTTPS TLS 1.2+<br/>Client ID + Secret + Code
+    Note over User,Upstream: Flow 1: OIDC Authentication (auth mode)
+    User->>KAP: GET /protected-resource<br/>No session cookie
+    KAP->>User: 302 Redirect to /oauth2/start
+    User->>KAP: GET /oauth2/start
+    KAP->>User: 302 Redirect to OIDC Provider
+    User->>OIDC: Login with credentials<br/>HTTPS/443 TLS 1.2+
+    OIDC->>User: 302 Redirect with auth code
+    User->>KAP: GET /oauth2/callback?code=xxx<br/>OAuth2 Authorization Code
+    KAP->>OIDC: POST /token (Client Credentials + Auth Code)<br/>HTTPS/443 TLS 1.2+
     OIDC-->>KAP: ID Token + Access Token
-    KAP->>Redis: Store Session (optional)<br/>Redis/6379
-    KAP-->>Browser: Set-Cookie + 302 Redirect
-    Browser->>Gateway: GET /app<br/>Cookie Session
-    Gateway->>KAP: Forward<br/>HTTP/4180
-    KAP->>Upstream: Proxied Request<br/>HTTP plaintext<br/>Authenticated Headers
+    KAP->>KAP: Validate ID Token, Create Session
+    KAP->>Upstream: Forward Request<br/>X-Forwarded-User, X-Forwarded-Email
     Upstream-->>KAP: Response
-    KAP-->>Browser: Response
+    KAP-->>User: Response + Set-Cookie (session)
 
-    Note over Browser,Upstream: Flow 2: OpenShift OAuth Authentication (Browser)
-
-    Browser->>Gateway: GET /oauth2/start<br/>HTTPS TLS 1.2+
-    Gateway->>KAP: Forward<br/>HTTP/4180
-    KAP->>OSOAUTH: GET /.well-known/oauth-authorization-server<br/>HTTPS TLS 1.2+
-    OSOAUTH-->>KAP: OAuth Metadata
-    KAP->>Browser: 302 Redirect to OpenShift OAuth
-    Browser->>OSOAUTH: Login + Authorize<br/>HTTPS TLS 1.2+
-    OSOAUTH->>Browser: 302 Redirect with Auth Code
-    Browser->>Gateway: GET /oauth2/callback?code=...<br/>HTTPS TLS 1.2+
-    Gateway->>KAP: Forward<br/>HTTP/4180
-    KAP->>OSOAUTH: POST /token<br/>HTTPS TLS 1.2+<br/>Client Credentials + Code
-    OSOAUTH-->>KAP: Access Token
-    KAP->>OSAPI: GET /apis/user.openshift.io/v1/users/~<br/>HTTPS TLS 1.2+<br/>Bearer Token
-    OSAPI-->>KAP: User Info
-    KAP->>Upstream: Proxied Request<br/>HTTP plaintext<br/>Authenticated Headers
+    Note over User,Upstream: Flow 2: OpenShift OAuth (auth mode)
+    User->>KAP: GET /protected-resource
+    KAP->>User: 302 Redirect to OpenShift OAuth
+    User->>OSAuth: Login with OpenShift credentials<br/>HTTPS/443 TLS 1.2+
+    OSAuth->>User: 302 Redirect with auth code
+    User->>KAP: GET /oauth2/callback?code=xxx
+    KAP->>OSAuth: POST /token<br/>Client ID + Secret + Auth Code
+    OSAuth-->>KAP: Access Token
+    KAP->>OSAuth: GET /apis/user.openshift.io/v1/users/~<br/>Bearer Token
+    OSAuth-->>KAP: User Info
+    KAP->>Upstream: Forward Request<br/>X-Forwarded-User, X-Forwarded-Email
     Upstream-->>KAP: Response
-    KAP-->>Browser: Response
+    KAP-->>User: Response + Set-Cookie
 
-    Note over Browser,Upstream: Flow 3: K8s ServiceAccount Token Validation
+    Note over User,Upstream: Flow 3: RBAC Proxy (rbac mode, port 8443)
+    participant Client as API Client
+    participant KRP as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
+    Client->>KRP: Request with Bearer Token or X.509 cert<br/>HTTPS/8443 TLS 1.2+
+    KRP->>K8sAPI: TokenReview (authenticate)<br/>HTTPS/443 SA Token
+    K8sAPI-->>KRP: User Identity
+    KRP->>K8sAPI: SubjectAccessReview (authorize)<br/>HTTPS/443 SA Token
+    K8sAPI-->>KRP: Allowed/Denied
+    KRP->>Upstream: Forward Request<br/>x-remote-user, x-remote-groups
+    Upstream-->>KRP: Response
+    KRP-->>Client: Response
 
-    participant K8sClient as K8s Client
-    K8sClient->>Gateway: Request<br/>Bearer Token (SA Token)
-    Gateway->>KAP: Forward<br/>HTTP/4180
-    KAP->>K8sAPI: POST TokenReview<br/>HTTPS TLS 1.2+<br/>ServiceAccount Token
-    K8sAPI-->>KAP: TokenReview Result
-    KAP->>Upstream: Proxied Request<br/>HTTP plaintext<br/>Authenticated Headers
+    Note over User,Upstream: Flow 4: K8s SA Token Validation (auth mode)
+    participant SA as Service Account Client
+    SA->>KAP: Request with Bearer SA Token<br/>4180/TCP or 443/TCP
+    KAP->>K8sAPI: TokenReview API<br/>HTTPS/443 TLS 1.2+
+    K8sAPI-->>KAP: Token Valid + User Info
+    KAP->>Upstream: Forward Request<br/>X-Forwarded-User
     Upstream-->>KAP: Response
-    KAP-->>K8sClient: Response
-
-    Note over Browser,Upstream: Flow 4: kube-rbac-proxy Authorization
-
-    participant KRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS
-    K8sClient->>KRBAC: Request<br/>HTTPS TLS 1.2+<br/>Bearer Token (SA)
-    KRBAC->>K8sAPI: POST SubjectAccessReview<br/>HTTPS TLS 1.2+<br/>ServiceAccount Token
-    K8sAPI-->>KRBAC: Authorization Result
-    KRBAC->>Upstream: Proxied Request<br/>HTTP plaintext
-    Upstream-->>KRBAC: Response
-    KRBAC-->>K8sClient: Response
+    KAP-->>SA: Response

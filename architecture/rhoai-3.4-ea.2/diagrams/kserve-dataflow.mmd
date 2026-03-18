@@ -4,55 +4,36 @@
 
 sequenceDiagram
     participant Client as External Client
-    participant GW as Istio/OpenShift Gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant KRBP as kube-rbac-proxy Sidecar<br/>8443/TCP HTTPS TLS 1.2+
-    participant Predictor as Predictor Container<br/>8080/TCP HTTP
-    participant StorageInit as Storage Initializer<br/>(init container)
-    participant S3 as Model Storage<br/>(S3/GCS/Azure)<br/>443/TCP HTTPS
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant IstioGW as Istio IngressGateway<br/>443/TCP HTTPS TLS 1.2+
+    participant Predictor as Predictor Service<br/>80/TCP or 8012/TCP HTTP
+    participant Storage as S3/GCS/Azure<br/>443/TCP HTTPS TLS 1.2+
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS
 
-    Note over Client,Predictor: Flow 1: InferenceService Prediction (RawDeployment with Auth)
+    Note over Client,Storage: Flow 1: InferenceService Model Serving (RawDeployment)
 
-    Client->>GW: POST /v1/models/{model}:predict<br/>HTTPS/443, TLS 1.2+
-    GW->>GW: HTTPRoute / VirtualService routing<br/>by hostname
-    GW->>KRBP: Forward request<br/>HTTPS/8443, TLS 1.2+
-    KRBP->>K8sAPI: SubjectAccessReview<br/>Bearer Token validation
-    K8sAPI-->>KRBP: Auth decision
-    KRBP->>Predictor: Proxy to model server<br/>HTTP/8080 (pod-local)
-    Predictor-->>KRBP: Prediction response
-    KRBP-->>GW: HTTPS response
-    GW-->>Client: JSON prediction result
+    Client->>IstioGW: HTTPS/443<br/>Auth: None or Bearer Token
+    IstioGW->>Predictor: HTTP (mesh internal)<br/>via VirtualService/HTTPRoute
+    Note over Predictor: Init Container runs first
+    Predictor->>Storage: HTTPS/443 TLS 1.2+<br/>Auth: Storage credentials (S3/GCS/Azure)
+    Storage-->>Predictor: Model Artifacts
+    Predictor-->>IstioGW: Prediction Response
+    IstioGW-->>Client: JSON Response
 
-    Note over Client,S3: Flow 2: LLMInferenceService Request (with InferencePool)
+    Note over Client,Storage: Flow 2: LLMInferenceService with Scheduler (llm-d)
 
-    participant Scheduler as Scheduler (EPP)<br/>9002/TCP HTTPS
-    participant vLLM as vLLM Workload<br/>8080/TCP HTTPS
+    participant Gateway as Gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant EPP as Scheduler EPP Service<br/>9002/TCP gRPC TLS (self-signed)
+    participant Workload as Workload Pods<br/>8000/TCP HTTPS TLS (self-signed)
 
-    Client->>GW: POST inference request<br/>HTTPS/443, TLS 1.2+
-    GW->>Scheduler: HTTPRoute -> InferencePool<br/>HTTPS/9002, TLS (self-signed)<br/>DestinationRule TLS SIMPLE
-    Scheduler->>vLLM: Route to optimal pod<br/>HTTPS/8080, TLS (service-ca)<br/>DestinationRule TLS SIMPLE w/ CA
-    vLLM-->>Scheduler: LLM response
-    Scheduler-->>GW: Response
-    GW-->>Client: JSON response
+    Client->>Gateway: HTTPS/443<br/>Auth: Bearer Token
+    Gateway->>EPP: gRPC/9002 TLS (self-signed)<br/>via Istio DestinationRule (SIMPLE)
+    EPP->>Workload: HTTPS/8000 TLS (self-signed)<br/>KV-cache-aware routing
+    Note over EPP,Workload: Scheduler scrapes KV-cache metrics<br/>from workload pods (8000/TCP)
+    Workload-->>EPP: Inference Result
+    EPP-->>Gateway: Routed Response
+    Gateway-->>Client: JSON Response
 
-    Note over StorageInit,S3: Flow 3: Model Download (Storage Initializer)
+    Note over K8sAPI,Predictor: Flow 3: Webhook Admission
 
-    StorageInit->>S3: Download model artifacts<br/>HTTPS/443, TLS 1.2+<br/>AWS IAM / GCS SA / Azure MSI
-    S3-->>StorageInit: Model artifacts
-    StorageInit->>StorageInit: Write to shared volume<br/>(emptyDir/PVC)
-    Note right of StorageInit: Predictor reads model<br/>from shared volume
-
-    Note over Client,Predictor: Flow 4: InferenceGraph Routing
-
-    participant Router as kserve-router<br/>8080/TCP HTTP
-    participant ISvcA as InferenceService A<br/>80/TCP HTTP
-    participant ISvcB as InferenceService B<br/>80/TCP HTTP
-
-    Client->>GW: POST graph request<br/>HTTPS/443, Edge TLS
-    GW->>Router: Forward to router<br/>HTTP/8080
-    Router->>ISvcA: Step 1 inference<br/>HTTP/80 (in-mesh mTLS)
-    ISvcA-->>Router: Intermediate result
-    Router->>ISvcB: Step 2 inference<br/>HTTP/80 (in-mesh mTLS)
-    ISvcB-->>Router: Final result
-    Router-->>GW: Aggregated response
-    GW-->>Client: JSON response
+    K8sAPI->>IstioGW: POST /mutate-serving-kserve-io-*<br/>443/TCP HTTPS TLS (service-ca)<br/>Auth: API server cert
+    Note over K8sAPI: Validates/Defaults:<br/>InferenceService, TrainedModel,<br/>InferenceGraph, ServingRuntime,<br/>Pod mutation (storage init injection)

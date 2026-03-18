@@ -4,84 +4,77 @@
 
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["ML Client / Data Scientist"]
-    end
-
-    subgraph Ingress["INGRESS (Platform Gateway)"]
-        PlatformGW["Platform Gateway<br/>(data-science-gateway)<br/>443/TCP<br/>TLS 1.2+ SIMPLE<br/>Managed by: rhods-operator"]
+        Client["External Client /<br/>Data Scientist"]
     end
 
     subgraph AuthProxy["AUTHENTICATION PROXY"]
-        KubeRBACProxy["kube-rbac-proxy (sidecar)<br/>8443/TCP → 5000/TCP<br/>TLS 1.2+ termination<br/>Validates Bearer Token<br/>Injects: x-remote-user,<br/>x-remote-groups headers"]
+        KubeRBACProxy["kube-rbac-proxy<br/>8443/TCP → 5000/TCP<br/>TLS 1.2+ Termination<br/>Bearer Token Validation"]
     end
 
-    subgraph Application["APPLICATION (MLflow Server Pod)"]
+    subgraph Ingress["INGRESS (Operator-Managed)"]
+        Route["OpenShift Route / HTTPRoute<br/>443/TCP<br/>TLS 1.2+ SIMPLE"]
+    end
+
+    subgraph Application["APPLICATION (MLflow Server)"]
         direction TB
 
-        subgraph Middleware["Security Middleware"]
-            HostVal["HostValidation"]
-            CORSBlock["CORSBlocking"]
-            SecHeaders["SecurityHeaders"]
+        subgraph Protected["Protected Endpoints (kubernetes-auth)"]
+            RESTAPI["/api/2.0|3.0/mlflow/*<br/>5000/TCP HTTP"]
+            AJAXAPI["/ajax-api/2.0|3.0/mlflow/*<br/>5000/TCP HTTP"]
+            GraphQL["/graphql<br/>5000/TCP HTTP"]
+            Gateway["/gateway/*<br/>5000/TCP HTTP"]
+            Traces["/v1/traces<br/>5000/TCP HTTP"]
         end
 
-        MLflow["MLflow Tracking Server<br/>5000/TCP HTTP<br/>Flask + FastAPI<br/>Auth: kubernetes-auth plugin<br/>Workspace: kubernetes://"]
-
-        subgraph AuthEndpoints["Authenticated Endpoints"]
-            RESTAPI["/api/2.0/mlflow/*<br/>/api/3.0/mlflow/*<br/>Bearer Token / proxy headers"]
-            GatewayEP["/gateway/*/invocations<br/>Bearer Token"]
-            OTLPEndpoint["/v1/traces<br/>Bearer Token"]
-            GraphQLEP["/ajax-api/2.0/mlflow/graphql<br/>Bearer Token"]
+        subgraph Unprotected["Unprotected Endpoints"]
+            Health["/health, /version<br/>/metrics, /static-files/*"]
         end
 
-        subgraph UnauthEndpoints["Unauthenticated Endpoints"]
-            Health["/health, /version"]
-            Static["/static-files/*, /"]
-            Metrics["/metrics"]
-        end
+        AuthPlugin["kubernetes-auth Plugin<br/>SubjectAccessReview<br/>mlflow.kubeflow.org"]
     end
 
-    subgraph EgressServices["EGRESS DESTINATIONS"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: SA Token<br/>Purpose: Namespaces, RBAC,<br/>Secrets, MLflowConfig"]
-
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS 1.2+ (configurable)<br/>Auth: Username/Password<br/>Purpose: Metadata store"]
-
-        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: AWS credentials<br/>Purpose: Artifact storage"]
-
-        LLMProviders["LLM Providers<br/>(OpenAI, Anthropic, Google, Mistral)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: API Key (encrypted)"]
+    subgraph BackendServices["BACKEND SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
+        PostgreSQL["PostgreSQL Database<br/>5432/TCP<br/>TLS 1.2+ (configurable)<br/>Username/Password"]
     end
 
-    subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>HTTP scrape"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        S3["S3-Compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS Credentials"]
+        LLMProviders["LLM Providers<br/>(OpenAI, Anthropic, Gemini, Mistral)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key"]
     end
 
-    %% External flows
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| PlatformGW
-    PlatformGW -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer Token"| KubeRBACProxy
-    KubeRBACProxy -->|"HTTP/5000<br/>plaintext (pod-internal)<br/>x-remote-user headers"| MLflow
+    subgraph InternalODH["INTERNAL ODH"]
+        Dashboard["OpenShift AI Dashboard<br/>Module Federation<br/>443/TCP HTTPS"]
+    end
 
-    %% Direct client access (in-cluster)
-    Client -.->|"HTTP/5000 (in-cluster)<br/>Bearer Token (K8s SA)"| MLflow
+    %% Flows
+    Client -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer Token (SA/OIDC)"| KubeRBACProxy
+    Client -->|"HTTPS/443<br/>TLS 1.2+"| Route
+    Route -->|"HTTP/8443<br/>TLS"| KubeRBACProxy
+    KubeRBACProxy -->|"HTTP/5000<br/>plaintext (pod-local)<br/>x-remote-user headers"| RESTAPI
+    KubeRBACProxy -->|"HTTP/5000<br/>plaintext (pod-local)"| Health
 
-    %% Egress flows
-    MLflow -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>SelfSubjectAccessReview<br/>SubjectAccessReview"| K8sAPI
-    MLflow -->|"PostgreSQL/5432<br/>TLS 1.2+<br/>Username/Password"| PostgreSQL
-    MLflow -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS credentials"| S3
-    MLflow -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| LLMProviders
-
-    %% Monitoring
-    Prometheus -->|"HTTP/5000<br/>GET /metrics<br/>No auth"| Metrics
+    AuthPlugin -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    RESTAPI -->|"TCP/5432<br/>TLS 1.2+<br/>User/Password"| PostgreSQL
+    RESTAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS Creds"| S3
+    Gateway -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| LLMProviders
+    Dashboard -.->|"Module Federation<br/>remoteEntry.js"| KubeRBACProxy
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef authproxy fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef authproxy fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef egress fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef application fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef backend fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef security fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef internalodh fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
     class Client external
-    class PlatformGW ingress
     class KubeRBACProxy authproxy
-    class MLflow,HostVal,CORSBlock,SecHeaders,RESTAPI,GatewayEP,OTLPEndpoint,GraphQLEP,Health,Static,Metrics application
-    class K8sAPI,PostgreSQL,S3,LLMProviders egress
-    class Prometheus monitoring
+    class Route ingress
+    class RESTAPI,AJAXAPI,GraphQL,Gateway,Traces,Health application
+    class AuthPlugin security
+    class K8sAPI,PostgreSQL backend
+    class S3,LLMProviders externalservice
+    class Dashboard internalodh
