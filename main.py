@@ -28,6 +28,8 @@ from lib.manifest_parser import (
     discover_adjacent_components,
     get_build_info,
     format_build_info_context,
+    get_component_kustomize_context,
+    format_kustomize_context,
 )
 
 # Import collection script as module
@@ -700,12 +702,23 @@ async def run_generate_architecture_phase(args) -> None:
         if build_info:
             build_context = format_build_info_context(build_info) + "\n"
 
+        # Get RHOAI kustomize overlay context for this component
+        kustomize_context_str = ""
+        kustomize_ctx = get_component_kustomize_context(
+            component.key, operator_path
+        )
+        if kustomize_ctx:
+            kustomize_context_str = format_kustomize_context(
+                kustomize_ctx, component.source_folder
+            ) + "\n"
+
         prompt = f"""Generate a comprehensive architecture summary for this component repository.
 
 Distribution: {distribution}
 Repository: {component.repo_org}/{component.repo_name}
 Manifests folder: {component.source_folder}
 {build_context}
+{kustomize_context_str}
 IMPORTANT: The manifests folder location shows where kustomize deployment manifests are located.
 This is critical for understanding how this component is deployed in production.
 

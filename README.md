@@ -37,6 +37,12 @@ For each component repo that lacks a `GENERATED_ARCHITECTURE.md`, spawns a Claud
 - Operator feature flags (FIPS compliance, disconnected support, etc.)
 - Container image count and the image-to-source-repo mapping from Konflux snapshot files
 
+**Kustomize overlay context** is extracted from the operator's Go source and injected into each component agent's prompt so it knows exactly which kustomize overlay the rhods-operator applies for RHOAI:
+- The `*_support.go` files in `internal/controller/components/{component}/` define per-platform overlay paths (e.g., `rhoai/onprem` for dashboard, `overlays/rhoai` for datasciencepipelines, `overlays/odh` for kserve)
+- Image parameter mappings (`imageParamMap` / `imagesMap`) showing which `RELATED_IMAGE_*` env vars override params.env placeholders at deploy time
+- The actual `params.env` values from `prefetched-manifests/{component}/{overlay}/params.env`, giving the agent concrete image references and configuration defaults
+- This ensures agents analyze the correct overlay kustomization.yaml rather than the base, and understand what parameters the operator injects
+
 ### Phase 4: Collect architectures (`collect-architectures`)
 
 Copies `GENERATED_ARCHITECTURE.md` files from checkouts into an organized `architecture/` directory:
@@ -74,7 +80,8 @@ main.py                          # CLI entry point, all 6 phases
 lib/
   fetch.py                       # Phase 1: gh-org-clone wrapper
   manifest_parser.py             # Phase 2: manifest parsing, adjacent discovery,
-                                 #          build-config/bundle metadata extraction
+                                 #          build-config/bundle metadata extraction,
+                                 #          kustomize overlay context extraction
 scripts/
   collect_architectures.py       # Phase 4: file collection logic
   generate_diagram_pngs.py       # Mermaid→PNG rendering
@@ -149,6 +156,23 @@ For RHOAI, the pipeline reads three files from `RHOAI-Build-Config/`:
 | `release/*/stage/*/snapshot-components/*.yaml` | Konflux snapshot: container image → source repo + commit mapping |
 
 This metadata is injected into agent prompts so they can factor in platform constraints (e.g., which k8s APIs are available given the OCP version range, multi-arch requirements, FIPS compliance).
+
+## Kustomize overlay context
+
+For each RHOAI component, the pipeline parses the operator's Go source to extract deployment context:
+
+| Source | What it provides |
+|--------|------------------|
+| `internal/controller/components/{dir}/*_support.go` | Per-platform overlay paths (e.g., `rhoai/onprem`, `overlays/rhoai`) and image parameter mappings (`imageParamMap` / `imagesMap`) |
+| `internal/controller/components/{dir}/*.go` | Named const source paths (e.g., `kserveManifestSourcePath = "overlays/odh"`) and computed kustomize variables (e.g., `sectionTitle`) |
+| `prefetched-manifests/{key}/{overlay}/params.env` | Default image references and configuration values injected by the operator at deploy time |
+
+The manifest key maps 1:1 to the operator component directory for most components. Special cases:
+- `maas` → `modelsasservice/` directory
+- `workbenches/*` (sub-keys like `workbenches/kf-notebook-controller`) → `workbenches/` directory
+- `operator` → skipped (no kustomize overlay context for the operator itself)
+
+This context is injected into Phase 3 agent prompts so they start analysis from the correct overlay `kustomization.yaml` rather than the base, and understand which image parameters and config values the operator substitutes.
 
 ## Requirements
 
