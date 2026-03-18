@@ -28,6 +28,14 @@ Examples:
 
 Generate a comprehensive architecture summary following these steps:
 
+**CRITICAL - SOURCE REFERENCE TRACKING**:
+You MUST maintain a running log of EVERY file you read or grep during analysis. For each file, record:
+- The **relative file path** from the repository root
+- The **specific line numbers** referenced (e.g., lines 15-42, or line 88)
+- Which **output section(s)** the information informed (e.g., "CRDs", "Network Architecture", "RBAC")
+
+Track this from the very first file you open. This data is written into the final `## Source References` section of the output. Every claim in the architecture document must be traceable to a specific file and line range. This is non-negotiable — the source references are as important as the architecture content itself.
+
 **IMPORTANT FOR OPERATORS**: Don't just read manifests - read the controller code!
 - Operators deploy infrastructure dynamically through controller reconcile logic
 - Check `internal/controller/`, `controllers/`, `pkg/controller/` directories
@@ -133,6 +141,8 @@ Search for and analyze:
 - Extract: Watched CRDs, reconciliation logic
 - **CRITICAL**: Read controller code to see what resources are created dynamically (not just manifests!)
 - Check `internal/controller/`, `controllers/`, `components/*/controllers/` for all controller code
+- **READ EVERY `.go` FILE** in controller directories — not just files matching known patterns. Controller logic is often split across helper files, action files, and feature-specific files (e.g., `dashboard_redirects.go`, `ocp_routes.go`, `gateway_support.go`). Skipping any `.go` file risks missing dynamically-created resources.
+- **READ EVERY TEMPLATE FILE** in `resources/` subdirectories under controller directories (e.g., `*.tmpl.yaml`, `*.yaml`). These templates define the exact Kubernetes resources the controller creates at runtime. List the directory first, then read each template file.
 - Look for gateway/ingress controllers that manage Gateway API, HTTPRoute, Istio Gateway, Routes, etc.
 - Example: `internal/controller/services/gateway/` indicates operator manages ingress infrastructure
 - Document controller-managed ingress/egress in Network Architecture section
@@ -140,30 +150,39 @@ Search for and analyze:
 **RHOAI 3.x Migration Patterns** (CRITICAL TO UNDERSTAND):
 Controllers in RHOAI 3.x create different resources than 2.x. Read controller code to identify current behavior:
 
-**OLD Pattern (RHOAI 2.x, being phased out)**:
-- Creates OpenShift `Route` CRs
-- Uses `oauth-proxy` sidecars for authentication
-- Look for: `routev1.Route`, `oauth-proxy` container
-
-**NEW Pattern (RHOAI 3.x, current)**:
-- Creates `HTTPRoute` CRs (Gateway API)
+**Primary ingress pattern (RHOAI 3.x)**:
+- Creates `HTTPRoute` CRs (Gateway API) for main service traffic
 - Uses `kube-rbac-proxy` sidecars for authentication
 - Look for: `gateway.networking.k8s.io/v1beta1` or `v1`, `HTTPRoute`, `kube-rbac-proxy` container
 
+**Legacy pattern (RHOAI 2.x, being phased out)**:
+- Creates OpenShift `Route` CRs for main service traffic
+- Uses `oauth-proxy` sidecars for authentication
+- Look for: `routev1.Route`, `oauth-proxy` container
+
+**IMPORTANT — Routes still appear in 3.x code**:
+RHOAI 3.x controllers may ALSO create OpenShift Route CRs intentionally for:
+- **Redirect routes**: Routes pointing at nginx/redirect services to redirect old URLs to new Gateway API URLs (e.g., `dashboard_redirects.go` creates Route CRs for legacy dashboard and gateway hostnames that 301-redirect to the new hostname)
+- **OAuth callback routes**: Routes needed for OAuth flows that must use the legacy Route mechanism
+- **OcpRoute ingress mode**: An alternative ingress mode using Routes instead of Gateway API
+- Do NOT skip or dismiss Route-creating code just because it's in a 3.x controller. Document ALL resources the controller creates, regardless of whether they use "old" or "new" patterns. The distinction is what traffic the resource handles, not whether it's legacy.
+
 **How to identify in controller code**:
 ```go
-// Search for these patterns in *_controller.go files:
+// Search for ALL of these patterns across ALL .go files in controller directories:
 HTTPRoute                    // Creating Gateway API HTTPRoutes
 gateway.networking.k8s.io    // Gateway API imports
-kube-rbac-proxy             // New auth sidecar
-routev1.Route               // OLD: OpenShift Routes (legacy)
-oauth-proxy                 // OLD: OAuth proxy (legacy)
+kube-rbac-proxy             // Auth sidecar (3.x primary)
+routev1.Route               // OpenShift Routes (may be redirects, OAuth callbacks, or OcpRoute mode)
+oauth-proxy                 // OAuth proxy (2.x pattern)
+Route                       // Any Route creation (check purpose: redirect vs primary ingress)
 ```
 
 **Examples**:
 - `kubeflow/components/odh-notebook-controller/controllers/`: Creates HTTPRoutes + kube-rbac-proxy sidecars per notebook
 - `rhods-operator/internal/controller/services/gateway/`: Deploys platform Gateway for HTTPRoutes to reference
-- Document what controller CREATES (HTTPRoute), not legacy patterns (Route)
+- `rhods-operator/internal/controller/services/gateway/dashboard_redirects.go`: Creates nginx Deployment + Service + OpenShift Route CRs that redirect legacy dashboard/gateway URLs to the new Gateway API hostname
+- Document ALL resources the controller creates — both HTTPRoutes AND Routes, noting the purpose of each
 
 **Gateway API / Ingress Controllers**:
 - Search for: `gateway.networking.k8s.io`, `Gateway`, `HTTPRoute`, `GRPCRoute`, `TLSRoute`
@@ -378,6 +397,34 @@ Create a file with this structure (use **precise technical details** in tables):
 | Version | Date | Changes |
 |---------|------|---------|
 | [version] | [date] | - Change 1<br>- Change 2 |
+
+## Source References
+
+Every file read during analysis, with the specific lines referenced and which sections they informed.
+
+### Files Analyzed
+
+| File | Lines | Sections Informed |
+|------|-------|-------------------|
+| [relative/path/to/file] | [1-45] | [Metadata, Architecture Components] |
+| [go.mod] | [1-30] | [Dependencies] |
+| [internal/controller/foo_controller.go] | [15-89, 120-145] | [Architecture Components, Network Architecture, Ingress] |
+| [config/crd/bases/foo_crd.yaml] | [1-120] | [CRDs] |
+| [config/rbac/role.yaml] | [1-65] | [RBAC - Cluster Roles] |
+| [deploy/service.yaml] | [1-30] | [Network Architecture - Services] |
+
+### Grep/Search Results Used
+
+| Search Pattern | Files Matched | Sections Informed |
+|----------------|---------------|-------------------|
+| [gateway.networking.k8s.io] | [internal/controller/gateway/*.go] | [Network Architecture - Ingress] |
+| [sigs.k8s.io/controller-runtime] | [go.mod, main.go, controllers/*.go] | [Architecture Components] |
+
+### Summary
+
+- **Total files read**: [N]
+- **Total lines referenced**: [N]
+- **Coverage**: [List of sections with source backing vs. sections based on inference]
 ```
 
 ### Critical Requirements - Security Diagram Precision
@@ -399,6 +446,14 @@ Create `GENERATED_ARCHITECTURE.md` in the repository root.
 - Include your model name (e.g., "Claude Sonnet 4.5", "Claude Opus 4.6", "Claude Haiku 3.5")
 - Example: `**Generated By**: Claude Sonnet 4.5 on 2026-03-13`
 
+**CRITICAL**: The `## Source References` section MUST be populated from your tracking log before writing.
+- Every file you read during Steps 1-5 must appear in the "Files Analyzed" table
+- Every grep/search you ran must appear in the "Grep/Search Results Used" table
+- Line numbers must be specific ranges (e.g., `12-45`), not vague (e.g., "various")
+- The "Sections Informed" column must map to actual section headings in the document
+- If a section has no source file backing it (e.g., inferred from naming conventions), note it in the Coverage summary as "inferred"
+- Do NOT fabricate file paths or line numbers — only include files you actually read
+
 ### Step 8: Report Results
 
 After creating the file, output:
@@ -418,11 +473,18 @@ Summary:
 - [N] RBAC rules documented
 - [N] Data flows mapped
 
+Source References:
+- [N] files analyzed
+- [N] total lines referenced
+- [N] grep/search patterns used
+- [List any sections marked as "inferred" with no direct file backing]
+
 Next steps:
 1. Review GENERATED_ARCHITECTURE.md for accuracy (especially network/security tables)
-2. Edit markdown if corrections needed (it's human-editable!)
-3. Commit: git add GENERATED_ARCHITECTURE.md && git commit -m "Add architecture summary"
-4. Use /aggregate-platform-architecture to combine with other components
+2. Audit Source References section — verify file:line mappings are correct
+3. Edit markdown if corrections needed (it's human-editable!)
+4. Commit: git add GENERATED_ARCHITECTURE.md && git commit -m "Add architecture summary"
+5. Use /aggregate-platform-architecture to combine with other components
 ```
 
 ## Notes
@@ -432,3 +494,7 @@ Next steps:
 - Precision in security configuration is critical (RBAC, secrets, TLS, auth)
 - Markdown tables are machine-parseable by LLMs for diagram generation
 - Accuracy > speed - this is a source of truth document
+- **Source References are mandatory** — every architecture claim must trace back to file:line
+- The Source References section enables auditing, accuracy validation, and iterative improvement
+- If you cannot find a source file for a claim, mark it as "inferred" in the Coverage summary rather than omitting it
+- Source references also serve as a reading guide for reviewers who want to verify specific claims
