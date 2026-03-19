@@ -6,60 +6,60 @@ workspace {
     model {
         // Users
         dataScientist = person "Data Scientist" "Creates notebooks, deploys models, manages pipelines"
-        platformAdmin = person "Platform Admin" "Configures cluster settings, manages hardware profiles"
+        admin = person "Platform Administrator" "Configures platform settings, manages accelerators and hardware profiles"
 
         // Main system
-        odhDashboard = softwareSystem "ODH Dashboard" "Primary web UI for Red Hat OpenShift AI - unified management console for data science workflows" {
-            kubeRbacProxy = container "kube-rbac-proxy" "Authentication/authorization sidecar - validates user tokens via TokenReview/SubjectAccessReview" "Go Sidecar" "Auth"
-            fastifyBFF = container "odh-dashboard (Fastify)" "Core BFF - serves React frontend, proxies K8s API calls with user impersonation" "Node.js/Fastify"
-            modelRegistryUI = container "model-registry-ui" "Federated UI module for Model Registry management" "Go BFF + React" "Federated"
-            genAIUI = container "gen-ai-ui" "Federated UI module for Gen AI / Fine-Tuning" "Go BFF + React" "Federated"
-            maasUI = container "maas-ui" "Federated UI module for Models-as-a-Service" "Go BFF + React" "Federated"
-
-            kubeRbacProxy -> fastifyBFF "Forwards authenticated requests" "HTTP/8080, X-Auth-Request-User headers"
-            fastifyBFF -> modelRegistryUI "Proxies Model Registry requests" "HTTPS/8043, X-Forwarded-Access-Token"
-            fastifyBFF -> genAIUI "Proxies Gen AI requests" "HTTPS/8143, X-Forwarded-Access-Token"
-            fastifyBFF -> maasUI "Proxies MaaS requests" "HTTPS/8243, X-Forwarded-Access-Token"
+        odhDashboard = softwareSystem "ODH Dashboard" "Primary web UI for Red Hat OpenShift AI - manages notebooks, model serving, pipelines, and platform settings" {
+            kubeRbacProxy = container "kube-rbac-proxy" "RBAC-enforcing reverse proxy authenticating users via OpenShift token review" "Go Sidecar" "Auth Proxy"
+            fastifyBFF = container "rhods-dashboard (Fastify BFF)" "Core dashboard backend serving React frontend, proxying K8s API calls, routing to federated modules" "Node.js/Fastify"
+            reactFrontend = container "React Frontend" "PatternFly-based SPA for dashboard UI" "React/TypeScript/Webpack"
+            modelRegistryUI = container "model-registry-ui" "Model Registry UI federated module" "React/Node.js" "Federated Module"
+            genAIUI = container "gen-ai-ui" "Gen AI Studio UI federated module" "React/Node.js" "Federated Module"
+            maasUI = container "maas-ui" "Models-as-a-Service UI federated module" "React/Node.js" "Federated Module"
         }
 
-        // External systems
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API for all resource CRUD operations" "External"
-        gateway = softwareSystem "data-science-gateway" "Gateway API ingress for external access" "External"
-        prometheus = softwareSystem "Prometheus/Thanos" "Metrics and monitoring platform" "External"
-        perses = softwareSystem "Perses" "Observability dashboards" "Internal ODH"
-        mlflow = softwareSystem "MLflow" "Experiment tracking platform" "Internal ODH"
+        // External dependencies
+        openshift = softwareSystem "OpenShift Platform" "Container platform with OAuth, Gateway API, and service-ca" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Kubernetes control plane API for resource CRUD and watches" "External"
+        dataScienceGateway = softwareSystem "data-science-gateway" "Gateway API (Envoy) for external traffic routing" "External"
+        openShiftOAuth = softwareSystem "OpenShift OAuth" "User authentication and token validation" "External"
 
-        // Platform components (CRD providers)
-        notebookController = softwareSystem "Notebook Controller" "Manages Jupyter notebook lifecycle (kubeflow.org)" "Internal ODH"
-        kserve = softwareSystem "KServe" "Model serving platform (serving.kserve.io)" "Internal ODH"
-        modelRegistryOp = softwareSystem "Model Registry Operator" "Manages model registry instances" "Internal ODH"
-        dspOperator = softwareSystem "Data Science Pipelines" "Pipeline orchestration" "Internal ODH"
-        rhodsOperator = softwareSystem "RHODS Operator" "Platform operator - manages DataScienceCluster" "Internal ODH"
+        // Internal ODH dependencies
+        rhodsOperator = softwareSystem "rhods-operator" "Deploys dashboard manifests via Kustomize" "Internal ODH"
+        perses = softwareSystem "data-science-perses" "Observability dashboards (Perses) for model serving metrics" "Internal ODH"
+        mlflow = softwareSystem "MLflow" "MLflow embedded UI integration via module federation" "Internal ODH"
+        thanosQuerier = softwareSystem "Thanos Querier" "Prometheus metrics queries for model serving" "External"
+
+        // Managed K8s resources
+        notebookCR = softwareSystem "Notebook CRs" "Jupyter notebook workbench instances" "K8s Resource"
+        modelRegistryCR = softwareSystem "Model Registry CRs" "Model registry instances and metadata" "K8s Resource"
+        inferenceServiceCR = softwareSystem "InferenceService CRs" "Model serving inference endpoints" "K8s Resource"
 
         // Relationships - Users
-        dataScientist -> odhDashboard "Manages notebooks, models, pipelines via" "HTTPS/443, Browser"
-        platformAdmin -> odhDashboard "Configures platform settings via" "HTTPS/443, Browser"
+        dataScientist -> odhDashboard "Manages notebooks, models, pipelines via browser" "HTTPS/443"
+        admin -> odhDashboard "Configures platform settings, accelerators, hardware profiles" "HTTPS/443"
 
-        // Relationships - Ingress
-        dataScientist -> gateway "Accesses dashboard through" "HTTPS/443, TLS 1.2+"
-        platformAdmin -> gateway "Accesses dashboard through" "HTTPS/443, TLS 1.2+"
-        gateway -> odhDashboard "Routes traffic to" "HTTPS/8443, TLS re-encrypt"
+        // Relationships - Internal
+        kubeRbacProxy -> openShiftOAuth "Validates user tokens" "HTTPS/443"
+        kubeRbacProxy -> k8sAPI "SubjectAccessReview checks" "HTTPS/443"
+        kubeRbacProxy -> fastifyBFF "Proxies authenticated requests" "HTTP/8080"
+        fastifyBFF -> reactFrontend "Serves SPA"
+        fastifyBFF -> modelRegistryUI "Proxies module federation requests" "HTTPS/8043"
+        fastifyBFF -> genAIUI "Proxies module federation requests" "HTTPS/8143"
+        fastifyBFF -> maasUI "Proxies module federation requests" "HTTPS/8243"
 
-        // Relationships - Egress
-        odhDashboard -> k8sAPI "Proxies all K8s API calls" "HTTPS/443, user impersonation"
-        odhDashboard -> prometheus "Queries metrics" "HTTPS/9092, SA token"
-        odhDashboard -> perses "Fetches observability data" "HTTP/8080"
-        odhDashboard -> mlflow "Embeds experiment tracking" "HTTPS/8443"
+        // Relationships - External
+        dataScienceGateway -> odhDashboard "Routes external traffic via HTTPRoute" "HTTPS/8443"
+        rhodsOperator -> odhDashboard "Deploys and manages" "Kustomize"
+        odhDashboard -> k8sAPI "All resource CRUD and WebSocket watches" "HTTPS+WSS/443"
+        odhDashboard -> perses "Proxies observability dashboards" "HTTP/8080"
+        odhDashboard -> mlflow "Proxies MLflow embedded UI" "HTTPS/8443"
+        odhDashboard -> thanosQuerier "Queries Prometheus metrics" "HTTPS/9092"
 
-        // Relationships - Platform CRDs
-        odhDashboard -> notebookController "Creates/manages Notebooks CRs" "via K8s API"
-        odhDashboard -> kserve "Reads InferenceService CRs" "via K8s API"
-        odhDashboard -> modelRegistryOp "Manages ModelRegistry CRs" "via K8s API"
-        odhDashboard -> dspOperator "Reads Pipeline CRs" "via K8s API"
-        odhDashboard -> rhodsOperator "Reads DataScienceCluster status" "via K8s API"
-
-        // Auth
-        kubeRbacProxy -> k8sAPI "Validates tokens" "HTTPS/443, TokenReview + SubjectAccessReview"
+        // Managed resources
+        odhDashboard -> notebookCR "Creates and manages notebooks" "K8s API"
+        odhDashboard -> modelRegistryCR "Manages model registries" "K8s API"
+        odhDashboard -> inferenceServiceCR "Views inference services" "K8s API"
     }
 
     views {
@@ -82,25 +82,25 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Person" {
-                shape Person
-                background #4a90e2
+            element "K8s Resource" {
+                background #f5a623
                 color #ffffff
             }
-            element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
-            element "Auth" {
+            element "Auth Proxy" {
                 background #e74c3c
                 color #ffffff
             }
-            element "Federated" {
-                background #3498db
+            element "Federated Module" {
+                background #9b59b6
                 color #ffffff
             }
-            element "Container" {
-                background #438dd5
+            element "Person" {
+                background #4a90e2
+                color #ffffff
+                shape Person
+            }
+            element "Software System" {
+                background #4a90e2
                 color #ffffff
             }
         }

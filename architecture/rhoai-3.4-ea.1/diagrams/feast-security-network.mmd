@@ -5,76 +5,79 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
         User["User / Data Scientist"]
-        MLClient["ML Client Application"]
     end
 
-    subgraph Ingress["INGRESS (OpenShift Routes)"]
-        UIRoute["OpenShift Route<br/>feast-{name}-ui<br/>443/TCP → 8888/8443<br/>TLS Reencrypt"]
+    subgraph Ingress["INGRESS (DMZ) - OpenShift Routes"]
+        Route["OpenShift Route<br/>feast-{name}-ui<br/>443/TCP → 8443/TCP<br/>TLS Reencrypt"]
     end
 
     subgraph ClusterInternal["CLUSTER INTERNAL (Kubernetes Network)"]
         direction TB
 
         subgraph NS_Operator["Namespace: redhat-ods-applications"]
-            Operator["Feast Operator<br/>Controller Manager<br/>SA: feast-operator-controller-manager<br/>Health: 8081/TCP HTTP<br/>Metrics: 8443/TCP HTTPS"]
+            Operator["Feast Operator Controller Manager<br/>SA: feast-operator-controller-manager<br/>FIPS: strictfipsruntime<br/>Health: 8081/TCP (HTTP)<br/>Metrics: 8443/TCP (HTTPS, TokenReview)"]
         end
 
         subgraph NS_User["Namespace: {user-namespace}"]
-            OnlineStore["Online Store<br/>feast-{name}-online<br/>80/443 → 6566/6567<br/>SA: feast-{name}"]
-            OfflineStore["Offline Store<br/>feast-{name}-offline<br/>80/443 → 8815/8816<br/>SA: feast-{name}"]
-            RegistryGRPC["Registry (gRPC)<br/>feast-{name}-registry<br/>80/443 → 6570/6571<br/>SA: feast-{name}"]
-            RegistryREST["Registry (REST)<br/>feast-{name}-registry-rest<br/>80/443 → 6572/6573<br/>SA: feast-{name}"]
-            UIServer["UI Server<br/>feast-{name}-ui<br/>80/443 → 8888/8443<br/>SA: feast-{name}"]
-            CronJobRunner["CronJob Runner<br/>origin-cli<br/>feast apply / materialize"]
-        end
+            direction TB
 
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+            subgraph FeastPod["Feast Deployment (Multi-container)"]
+                Online["Online Store<br/>6566/TCP HTTP | 6567/TCP HTTPS<br/>Auth: K8s RBAC / OIDC"]
+                Offline["Offline Store<br/>8815/TCP HTTP | 8816/TCP HTTPS<br/>Auth: K8s RBAC / OIDC"]
+                RegistryGRPC["Registry (gRPC)<br/>6570/TCP | 6571/TCP TLS<br/>Auth: K8s RBAC / OIDC"]
+                RegistryREST["Registry (REST)<br/>6572/TCP HTTP | 6573/TCP HTTPS<br/>Auth: K8s RBAC / OIDC"]
+                UI["UI<br/>8888/TCP HTTP | 8443/TCP HTTPS<br/>Auth: None"]
+            end
+
+            CronJob["CronJob: feast-{name}-cronjob<br/>Image: ose-cli<br/>SA: feast-{name}-cronjob"]
+        end
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        ExtDB["External Databases<br/>PostgreSQL / Redis / Snowflake<br/>TLS configurable<br/>Secret credentials"]
-        ObjStore["S3 / GCS Object Stores<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM / GCP creds"]
-        GitRepo["Git Repositories<br/>443/TCP HTTPS or 22/TCP SSH<br/>Token / SSH key"]
+    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Token"]
+        GitRepo["Git Repositories<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Token/SSH"]
+        DBBackend["Database Backends<br/>PostgreSQL :5432 / Redis :6379<br/>User-configured encryption<br/>User-configured auth"]
+        ObjStore["S3/GCS Object Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>User-configured auth"]
+    end
+
+    subgraph Monitoring["MONITORING"]
+        Prometheus["Prometheus<br/>Scrapes metrics"]
     end
 
     %% External flows
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| K8sAPI
-    User -->|"HTTPS/443<br/>TLS Reencrypt"| UIRoute
-    UIRoute -->|"HTTP(S)/8888-8443<br/>OpenShift serving cert"| UIServer
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Route
+    Route -->|"HTTPS/8443<br/>TLS Reencrypt<br/>OCP Service Certs"| UI
 
-    MLClient -->|"HTTP(S)/80-443<br/>K8s RBAC / OIDC"| OnlineStore
-    MLClient -->|"HTTP(S)/80-443<br/>K8s RBAC / OIDC"| OfflineStore
-    MLClient -->|"gRPC/80-443<br/>K8s RBAC / OIDC"| RegistryGRPC
-    MLClient -->|"HTTP(S)/80-443<br/>K8s RBAC / OIDC"| RegistryREST
+    %% ML Application flows
+    MLApp["ML Application"] -->|"HTTP(S)/80 or 443<br/>TLS (OCP auto)<br/>K8s RBAC / OIDC"| Online
+    MLApp -->|"HTTP(S)/80 or 443<br/>TLS (OCP auto)<br/>K8s RBAC / OIDC"| Offline
 
     %% Operator flows
     Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
 
     %% CronJob flows
-    CronJobRunner -->|"HTTP(S)/80-443<br/>SA Token"| OnlineStore
-    CronJobRunner -->|"HTTP(S)/80-443<br/>SA Token"| RegistryGRPC
+    CronJob -->|"HTTPS/443<br/>kubectl exec<br/>SA Token"| K8sAPI
 
-    %% Egress flows
-    OnlineStore -->|"TLS configurable<br/>Secret creds"| ExtDB
-    OfflineStore -->|"TLS configurable<br/>Secret creds"| ExtDB
-    RegistryGRPC -->|"HTTPS/443<br/>TLS 1.2+<br/>IAM/GCP"| ObjStore
-    Operator -->|"HTTPS/443 or SSH/22<br/>Token/SSH"| GitRepo
+    %% Feast pod egress
+    Online -->|"User-configured<br/>port/protocol"| DBBackend
+    Offline -->|"User-configured<br/>port/protocol"| DBBackend
+    RegistryGRPC -->|"HTTPS/443<br/>TLS 1.2+"| ObjStore
+    FeastPod -->|"HTTPS/443<br/>TLS 1.2+"| GitRepo
 
-    %% Prometheus
-    Prometheus["Prometheus"] -->|"HTTPS/8443<br/>TLS<br/>Bearer Token"| Operator
-    Prometheus -->|"HTTP/8000<br/>No auth"| OnlineStore
+    %% Monitoring
+    Prometheus -->|"HTTPS/8443<br/>TLS (self-signed)<br/>Bearer TokenReview"| Operator
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef clusterinternal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
     classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef feast fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef extsvc fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
-    class User,MLClient external
-    class UIRoute ingress
+    class User,MLApp external
+    class Route ingress
     class Operator operator
-    class OnlineStore,OfflineStore,RegistryGRPC,RegistryREST,UIServer,CronJobRunner clusterinternal
-    class ExtDB,ObjStore,GitRepo externalservice
-    class K8sAPI clusterinternal
-    class Prometheus external
+    class Online,Offline,RegistryGRPC,RegistryREST,UI,CronJob feast
+    class K8sAPI,GitRepo,DBBackend,ObjStore extsvc
+    class Prometheus monitoring

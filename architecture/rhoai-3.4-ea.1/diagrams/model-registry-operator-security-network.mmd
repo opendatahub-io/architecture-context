@@ -4,81 +4,82 @@
 
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client[External Client]
+        Client["External Client"]
     end
 
     subgraph Ingress["INGRESS (OpenShift Router)"]
-        RegistryRoute["Route: {registry-name}-https<br/>443/TCP → 8443/TCP<br/>TLS reencrypt"]
-        CatalogRoute["Route: model-catalog-https<br/>443/TCP → 8443/TCP<br/>TLS reencrypt"]
+        Route["OpenShift Route<br/>{name}-rest.{domain}<br/>443/TCP -> 8443/TCP<br/>TLS reencrypt"]
     end
 
     subgraph ClusterInternal["CLUSTER INTERNAL"]
         direction TB
 
-        subgraph RegistryPod["Model Registry Pod"]
-            KRBP_Reg["kube-rbac-proxy<br/>:8443/TCP HTTPS<br/>OpenShift serving cert<br/>K8s RBAC enforcement"]
-            RegContainer["model-registry<br/>:8080/TCP HTTP<br/>REST API"]
+        subgraph OperatorNS["Namespace: operator"]
+            Operator["Model Registry Operator<br/>SA: controller-manager<br/>8081/TCP health (HTTP)<br/>8443/TCP metrics (HTTPS)<br/>9443/TCP webhooks (HTTPS)"]
         end
 
-        subgraph CatalogPod["Model Catalog Pod"]
-            KRBP_Cat["kube-rbac-proxy<br/>:8443/TCP HTTPS<br/>OpenShift serving cert<br/>K8s RBAC enforcement"]
-            CatContainer["catalog<br/>:8080/TCP HTTP<br/>REST API"]
-            CatInit["catalog-data-init<br/>benchmark-data-init"]
+        subgraph RegistryNS["Namespace: {registry-namespace}"]
+            KubeRBAC["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS (serving cert)<br/>Auth: SAR services/get"]
+            MRContainer["model-registry REST<br/>8080/TCP HTTP<br/>plaintext (localhost)"]
+            PostgreSQL["PostgreSQL 16<br/>5432/TCP<br/>Password auth<br/>Configurable SSL"]
         end
 
-        subgraph OperatorPod["Operator Pod"]
-            Controller["controller-manager<br/>Health: :8081/TCP<br/>Metrics: :8443/TCP"]
+        subgraph CatalogNS["Model Catalog (Singleton)"]
+            CatalogProxy["kube-rbac-proxy<br/>8443/TCP HTTPS"]
+            CatalogREST["model-catalog REST<br/>8080/TCP HTTP"]
+            CatalogPG["model-catalog-postgres<br/>5432/TCP"]
         end
+
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS"]
     end
 
-    subgraph DatabaseServices["DATABASE SERVICES"]
-        RegPG["PostgreSQL<br/>{registry-name}-postgres<br/>:5432/TCP<br/>Password auth"]
-        CatPG["PostgreSQL<br/>model-catalog-postgres<br/>:5432/TCP<br/>Password auth"]
-        MySQL["MySQL (alternative)<br/>:3306/TCP<br/>Password auth<br/>Configurable SSL"]
-    end
-
-    subgraph K8sServices["KUBERNETES SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>:443/TCP HTTPS TLS<br/>SA Token auth"]
+    subgraph PlatformCRDs["ODH Platform CRDs"]
+        AuthCR["Auth CR<br/>services.platform.opendatahub.io"]
+        MRCR["ModelRegistry CR<br/>components.platform.opendatahub.io"]
     end
 
     %% External flows
-    Client -->|"HTTPS/443<br/>TLS<br/>Bearer Token"| RegistryRoute
-    Client -->|"HTTPS/443<br/>TLS<br/>Bearer Token"| CatalogRoute
+    Client -->|"HTTPS/443<br/>TLS"| Route
+    Route -->|"HTTPS/8443<br/>TLS reencrypt"| KubeRBAC
 
-    %% Ingress to cluster
-    RegistryRoute -->|"HTTPS/8443<br/>TLS reencrypt<br/>Bearer Token"| KRBP_Reg
-    CatalogRoute -->|"HTTPS/8443<br/>TLS reencrypt<br/>Bearer Token"| KRBP_Cat
+    %% Auth flow
+    KubeRBAC -->|"HTTPS/443<br/>TokenReview + SAR<br/>SA token"| K8sAPI
+    KubeRBAC -->|"HTTP/8080<br/>plaintext (localhost)<br/>authorized"| MRContainer
 
-    %% kube-rbac-proxy to containers
-    KRBP_Reg -->|"HTTP/8080<br/>localhost<br/>No auth (authorized)"| RegContainer
-    KRBP_Cat -->|"HTTP/8080<br/>localhost<br/>No auth (authorized)"| CatContainer
-
-    %% Auth verification
-    KRBP_Reg -->|"HTTPS/443<br/>TokenReview +<br/>SubjectAccessReview"| K8sAPI
-    KRBP_Cat -->|"HTTPS/443<br/>TokenReview +<br/>SubjectAccessReview"| K8sAPI
-
-    %% Init containers
-    CatInit -.->|"filesystem"| CatContainer
-
-    %% Database connections
-    RegContainer -->|"TCP/5432<br/>Configurable SSL<br/>Password"| RegPG
-    RegContainer -.->|"TCP/3306<br/>Configurable SSL<br/>Password"| MySQL
-    CatContainer -->|"TCP/5432<br/>Password"| CatPG
+    %% Database flow
+    MRContainer -->|"PostgreSQL/5432<br/>Configurable SSL<br/>username/password"| PostgreSQL
 
     %% Operator flows
-    Controller -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
+    Operator -->|"HTTPS/443<br/>TLS, SA token<br/>CRUD resources"| K8sAPI
+    Operator -->|"reads"| AuthCR
+    Operator -->|"reads"| MRCR
+
+    %% Catalog flows
+    Route -.->|"HTTPS/443 -> 8443<br/>model-catalog-rest.{domain}"| CatalogProxy
+    CatalogProxy -->|"HTTP/8080<br/>localhost"| CatalogREST
+    CatalogREST -->|"PostgreSQL/5432"| CatalogPG
+    CatalogProxy -->|"HTTPS/443<br/>SAR"| K8sAPI
+
+    %% Webhook flow
+    K8sAPI -->|"HTTPS/9443<br/>API server cert<br/>admission webhooks"| Operator
+
+    %% Network Policy annotations
+    NPNote["NetworkPolicy: {name}-https-route<br/>Allows ingress from<br/>openshift router namespace<br/>to port 8443/TCP"]
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef database fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef k8s fill:#fff2cc,stroke:#d6b656,stroke-width:2px
     classDef authproxy fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef platform fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef note fill:#fff2cc,stroke:#d6b656,stroke-width:1px,stroke-dasharray: 5 5
 
     class Client external
-    class RegistryRoute,CatalogRoute ingress
-    class RegContainer,CatContainer,CatInit,Controller internal
-    class KRBP_Reg,KRBP_Cat authproxy
-    class RegPG,CatPG,MySQL database
-    class K8sAPI k8s
+    class Route ingress
+    class Operator,MRContainer,CatalogREST internal
+    class KubeRBAC,CatalogProxy authproxy
+    class PostgreSQL,CatalogPG database
+    class K8sAPI internal
+    class AuthCR,MRCR platform
+    class NPNote note

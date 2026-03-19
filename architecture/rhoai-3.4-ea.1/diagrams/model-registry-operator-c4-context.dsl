@@ -4,47 +4,62 @@
 
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Registers and manages ML model artifacts, versions, and metadata"
+        datascientist = person "Data Scientist" "Creates and manages ML model registries and catalogs"
+        admin = person "Platform Admin" "Deploys and configures model registry operator"
 
-        modelRegistryOperator = softwareSystem "Model Registry Operator" "Manages lifecycle of Model Registry and Model Catalog instances on OpenShift/Kubernetes" {
-            mrReconciler = container "ModelRegistryReconciler" "Reconciles ModelRegistry CRs: creates Deployments, Services, Routes, NetworkPolicies, RBAC" "Go Controller (controller-runtime)"
-            mcReconciler = container "ModelCatalogReconciler" "Manages singleton model-catalog instance with PostgreSQL and catalog data" "Go Controller (controller-runtime)"
-            registryContainer = container "model-registry" "REST API server proxying to PostgreSQL/MySQL metadata store via ml-metadata" "Go Application, Port 8080"
-            catalogContainer = container "catalog" "REST API server serving curated model catalog metadata from PostgreSQL" "Go Application, Port 8080"
-            kubeRbacProxy = container "kube-rbac-proxy" "TLS-terminating auth proxy enforcing Kubernetes RBAC" "Sidecar, Port 8443"
+        modelRegistryOperator = softwareSystem "Model Registry Operator" "Kubernetes operator managing ModelRegistry CR lifecycle, model catalog, and per-instance auth proxies" {
+            mrReconciler = container "ModelRegistryReconciler" "Reconciles ModelRegistry CRs; creates deployments, services, routes, RBAC, and kube-rbac-proxy per instance" "Go Controller"
+            mcReconciler = container "ModelCatalogReconciler" "Manages singleton model catalog with PostgreSQL, RBAC, and routing" "Go Controller"
+            migrationMgr = container "StorageMigrationManager" "CRD storage version migration v1alpha1 to v1beta1" "Go Component"
+            webhookServer = container "Webhook Server" "Mutating and validating webhooks for ModelRegistry CRs" "Go Admission Webhook"
+            capDetector = container "ClusterCapabilities Detector" "Detects OpenShift platform APIs and BYOIDC mode" "Go Component"
         }
 
-        postgresql = softwareSystem "PostgreSQL 16" "Metadata storage backend for model registry and catalog" "External Database"
-        mysql = softwareSystem "MySQL" "Alternative metadata storage backend" "External Database"
-        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management and auth" "Infrastructure"
-        openshiftRouter = softwareSystem "OpenShift Router" "Ingress controller exposing Routes externally" "Infrastructure"
-        openshiftServingCerts = softwareSystem "OpenShift Serving Certs" "Automatic TLS certificate provisioning" "Infrastructure"
+        modelRegistryService = softwareSystem "Model Registry Service" "REST API for ML model metadata storage (deployed per CR)" {
+            restContainer = container "model-registry REST" "REST API serving model metadata via MLMD protocol" "Go Service" "8080/TCP"
+            kubeRBACProxy = container "kube-rbac-proxy" "RBAC-based authentication proxy sidecar" "Auth Proxy" "8443/TCP"
+        }
 
-        odhDashboard = softwareSystem "ODH Dashboard" "UI for managing registered models and model versions" "Internal ODH"
-        modelServing = softwareSystem "Model Serving (KServe/ModelMesh)" "Retrieves model artifact locations for inference deployment" "Internal ODH"
-        odhPlatformOperator = softwareSystem "ODH Platform Operator" "Platform-level ModelRegistry CR as owner for catalog resources" "Internal ODH"
-        authService = softwareSystem "Auth Service" "Provides admin group configuration for catalog RBAC" "Internal ODH"
-        catalogDataImage = softwareSystem "odh-model-metadata-collection" "Curated model catalog data and benchmark data" "Internal ODH"
+        modelCatalogService = softwareSystem "Model Catalog" "Singleton catalog service for model metadata and benchmarks" {
+            catalogREST = container "model-catalog REST" "Catalog REST API" "Go Service" "8080/TCP"
+            catalogProxy = container "model-catalog kube-rbac-proxy" "RBAC auth proxy for catalog" "Auth Proxy" "8443/TCP"
+        }
 
-        // User interactions
-        user -> modelRegistryOperator "Creates ModelRegistry CR, accesses registry/catalog REST API" "kubectl / HTTPS"
+        // External systems
+        postgresql = softwareSystem "PostgreSQL 16" "Relational database for model metadata storage" "Database"
+        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster API for resource management and RBAC enforcement" "Infrastructure"
+        openshiftRouter = softwareSystem "OpenShift Router" "Ingress controller providing external route access" "Infrastructure"
+        openshiftServingCert = softwareSystem "OpenShift Serving Cert Controller" "Auto-provisions TLS certificates for annotated services" "Infrastructure"
 
-        // Internal flows
-        mrReconciler -> kubernetesAPI "Manages resources (Deployments, Services, Routes, RBAC)" "HTTPS/443, SA Token"
-        mcReconciler -> kubernetesAPI "Manages catalog resources" "HTTPS/443, SA Token"
-        kubeRbacProxy -> kubernetesAPI "TokenReview, SubjectAccessReview" "HTTPS/443, SA Token"
-        registryContainer -> postgresql "Stores/retrieves model metadata" "TCP/5432, Password"
-        registryContainer -> mysql "Alternative storage" "TCP/3306, Password"
-        catalogContainer -> postgresql "Stores/retrieves catalog metadata" "TCP/5432, Password"
+        // Internal ODH systems
+        rhodsOperator = softwareSystem "rhods-operator" "Deploys model-registry-operator via kustomize overlay" "Internal RHOAI"
+        odhPlatformAuth = softwareSystem "ODH Platform Auth Service" "Provides admin group configuration via Auth CR" "Internal RHOAI"
+        odhPlatformMR = softwareSystem "ODH Platform ModelRegistry Component" "Platform-level ModelRegistry component CR" "Internal RHOAI"
 
-        // External integrations
-        openshiftRouter -> kubeRbacProxy "Routes external traffic" "HTTPS/8443, TLS reencrypt"
-        openshiftServingCerts -> kubeRbacProxy "Provisions TLS certificates" "Annotation-based"
-        odhDashboard -> modelRegistryOperator "UI management of models" "HTTPS/443, TLS reencrypt"
-        modelServing -> modelRegistryOperator "Retrieves model artifact locations" "HTTPS/8443, TLS"
-        mcReconciler -> odhPlatformOperator "Reads default-modelregistry CR" "CRD Watch"
-        mcReconciler -> authService "Reads admin group config" "CRD Watch"
-        mcReconciler -> catalogDataImage "Sources catalog data" "Init Container Image"
+        // Relationships - Users
+        datascientist -> modelRegistryService "Accesses model registry REST API" "HTTPS/443 via Route"
+        datascientist -> modelCatalogService "Browses model catalog" "HTTPS/443 via Route"
+        admin -> modelRegistryOperator "Creates ModelRegistry CRs" "kubectl/oc"
+
+        // Relationships - Operator
+        modelRegistryOperator -> kubernetesAPI "Manages resources (CRUD), webhook admission" "HTTPS/443"
+        modelRegistryOperator -> odhPlatformAuth "Reads admin groups from Auth CR" "HTTPS/443"
+        modelRegistryOperator -> odhPlatformMR "Reads ModelRegistry component for owner refs" "HTTPS/443"
+        rhodsOperator -> modelRegistryOperator "Deploys via kustomize overlay" "config/overlays/odh"
+
+        // Relationships - Services
+        modelRegistryService -> postgresql "Stores model metadata" "PostgreSQL/5432"
+        modelCatalogService -> postgresql "Stores catalog metadata" "PostgreSQL/5432"
+        kubeRBACProxy -> kubernetesAPI "TokenReview + SubjectAccessReview" "HTTPS/443"
+        openshiftRouter -> modelRegistryService "Routes external traffic" "HTTPS/8443 reencrypt"
+        openshiftRouter -> modelCatalogService "Routes external traffic" "HTTPS/8443 reencrypt"
+        openshiftServingCert -> modelRegistryService "Provisions TLS certificates" "Annotation-based"
+        openshiftServingCert -> modelRegistryOperator "Provisions TLS certificates" "Annotation-based"
+
+        // Container relationships
+        mrReconciler -> kubernetesAPI "Creates deployments, services, routes, RBAC" "HTTPS/443"
+        mcReconciler -> kubernetesAPI "Creates catalog resources" "HTTPS/443"
+        webhookServer -> kubernetesAPI "Admission responses" "HTTPS/9443"
     }
 
     views {
@@ -53,36 +68,37 @@ workspace {
             autoLayout
         }
 
-        container modelRegistryOperator "Containers" {
+        container modelRegistryOperator "OperatorContainers" {
+            include *
+            autoLayout
+        }
+
+        container modelRegistryService "ServiceContainers" {
             include *
             autoLayout
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
-            element "External Database" {
+            element "Database" {
+                shape Cylinder
                 background #336791
                 color #ffffff
-                shape Cylinder
             }
             element "Infrastructure" {
                 background #999999
                 color #ffffff
             }
-            element "Internal ODH" {
+            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Person" {
-                background #08427B
+            element "Auth Proxy" {
+                background #e74c3c
                 color #ffffff
-                shape Person
             }
-            element "Container" {
-                background #438DD5
+            element "Person" {
+                shape Person
+                background #4a90e2
                 color #ffffff
             }
         }

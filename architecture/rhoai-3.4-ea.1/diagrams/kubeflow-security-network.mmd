@@ -3,83 +3,69 @@
 
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User Browser / API Client"]
+        User["User Browser"]
     end
 
     subgraph Ingress["INGRESS (Gateway API)"]
-        Gateway["data-science-gateway (Envoy)<br/>Namespace: openshift-ingress<br/>443/TCP HTTPS<br/>TLS Mode: SIMPLE"]
+        Gateway["data-science-gateway<br/>Namespace: openshift-ingress<br/>443/TCP HTTPS<br/>TLS 1.2+ SIMPLE termination<br/>PathPrefix: /notebook/{ns}/{name}"]
     end
 
-    subgraph UserNS["USER NAMESPACE"]
+    subgraph NotebookPod["NOTEBOOK POD (User Namespace)"]
         direction TB
-
-        subgraph AuthPath["Auth Path (inject-auth: true)"]
-            KRBACProxy["kube-rbac-proxy sidecar<br/>8443/TCP HTTPS (service-ca TLS)<br/>Health: 8444/TCP<br/>SubjectAccessReview auth"]
-        end
-
-        subgraph NotebookPod["Notebook Pod (StatefulSet)"]
-            NotebookContainer["Notebook Container<br/>8888/TCP HTTP"]
-        end
-
-        subgraph CreatedResources["Controller-Created Resources"]
-            RefGrant["ReferenceGrant<br/>notebook-httproute-access"]
-            NetPol1["{notebook}-ctrl-np<br/>Allow: controller ns → 8888"]
-            NetPol2["{notebook}-kube-rbac-proxy-np<br/>Allow: all → 8443"]
-            ProxySvc["{notebook}-kube-rbac-proxy<br/>Service ClusterIP 8443"]
-            ProxyTLS["{notebook}-kube-rbac-proxy-tls<br/>Secret (service-ca)"]
-            ProxyCfg["{notebook}-kube-rbac-proxy-config<br/>ConfigMap"]
-            CABundle["workbench-trusted-ca-bundle<br/>ConfigMap"]
-        end
+        KubeRBACProxy["kube-rbac-proxy sidecar<br/>8443/TCP HTTPS<br/>TLS: service-ca cert<br/>Auth: SubjectAccessReview<br/>(get notebooks kubeflow.org)"]
+        NotebookApp["Notebook Application<br/>8888/TCP HTTP<br/>loopback only"]
     end
 
-    subgraph ControllerNS["CONTROLLER NAMESPACE"]
+    subgraph ControllerNS["CONTROLLER (opendatahub namespace)"]
         direction TB
-        Controller["ODH Notebook Controller<br/>SA: manager"]
-        WebhookServer["Mutating Webhook<br/>8443/TCP HTTPS (service-ca TLS)<br/>Auth: API server cert"]
-        Metrics["Metrics: 8080/TCP HTTP<br/>Health: 8081/TCP HTTP"]
-        HTTPRouteRes["HTTPRoute<br/>nb-{ns}-{notebook}<br/>parent: data-science-gateway"]
+        Controller["ODH Notebook Controller<br/>SA: odh-notebook-controller-manager<br/>Metrics: 8080/TCP HTTP<br/>Health: 8081/TCP HTTP"]
+        WebhookSvc["Webhook Server<br/>8443/TCP HTTPS<br/>TLS: service-ca cert<br/>Auth: K8s API server mTLS"]
     end
 
-    subgraph ClusterServices["CLUSTER SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: ServiceAccount token"]
-        ServiceCA["OpenShift service-ca<br/>TLS cert provisioning"]
-        ImageRegistry["OpenShift Image Registry<br/>5000/TCP HTTPS"]
+    subgraph K8sServices["KUBERNETES SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS"]
     end
 
-    %% External to Gateway
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token or None"| Gateway
+    subgraph InternalRHOAI["INTERNAL RHOAI SERVICES"]
+        DSPA["DataSciencePipelinesApplication<br/>via K8s API"]
+        ImageStreams["OpenShift ImageStreams<br/>via K8s API"]
+        ServiceCA["OpenShift service-ca<br/>Annotation-based cert provisioning"]
+        CACerts["odh-trusted-ca-bundle<br/>ConfigMap"]
+    end
 
-    %% Gateway to backends (via HTTPRoute)
-    Gateway -->|"HTTPS/8443<br/>TLS (service-ca)<br/>Bearer Token forwarded<br/>(auth enabled)"| KRBACProxy
-    Gateway -->|"HTTP/8888<br/>No encryption<br/>No auth<br/>(auth disabled)"| NotebookContainer
+    %% External access flow
+    User -->|"HTTPS/443<br/>TLS 1.2+"| Gateway
+    Gateway -->|"HTTPS/8443<br/>TLS (service-ca cert)<br/>Bearer token (SAR)"| KubeRBACProxy
+    KubeRBACProxy -->|"HTTP/8888<br/>plaintext (loopback)<br/>X-Auth-Request-User"| NotebookApp
 
-    %% kube-rbac-proxy flow
-    KRBACProxy -->|"HTTPS/443<br/>SubjectAccessReview<br/>SA token"| K8sAPI
-    KRBACProxy -->|"HTTP/8888<br/>localhost (loopback)<br/>X-Auth-Request-User/Groups"| NotebookContainer
+    %% SAR validation
+    KubeRBACProxy -.->|"SubjectAccessReview<br/>HTTPS/443"| K8sAPI
 
-    %% Controller operations
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>CRUD resources"| K8sAPI
-    K8sAPI -->|"HTTPS/8443<br/>Webhook call<br/>API server cert"| WebhookServer
+    %% Controller flows
+    Controller -->|"HTTPS/443<br/>SA token<br/>Watch Notebooks,<br/>CRUD HTTPRoutes,<br/>ReferenceGrants,<br/>NetworkPolicies"| K8sAPI
 
-    %% Service-CA provisions certs
-    ServiceCA -.->|"auto-provision TLS"| WebhookServer
-    ServiceCA -.->|"auto-provision TLS"| ProxyTLS
+    %% Webhook flow
+    K8sAPI -->|"mTLS<br/>POST /mutate-notebook-v1"| WebhookSvc
+    WebhookSvc -.->|"HTTPS/443<br/>SA token<br/>Read ImageStreams,<br/>ConfigMaps, Secrets"| K8sAPI
 
-    %% HTTPRoute references
-    HTTPRouteRes -.->|"parent ref"| Gateway
-    RefGrant -.->|"authorizes cross-ns<br/>backend refs"| HTTPRouteRes
+    %% Internal dependencies
+    Controller -.->|"Read DSPA config"| DSPA
+    WebhookSvc -.->|"Resolve images"| ImageStreams
+    Controller -.->|"Read CA certs"| CACerts
+    ServiceCA -.->|"Provision TLS certs"| WebhookSvc
+    ServiceCA -.->|"Provision TLS certs"| KubeRBACProxy
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef controller fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef cluster fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef resource fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
+    classDef notebookpod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef controller fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef k8s fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef internal fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class User external
     class Gateway ingress
-    class KRBACProxy,NotebookContainer servicemesh
-    class Controller,WebhookServer,Metrics,HTTPRouteRes controller
-    class K8sAPI,ServiceCA,ImageRegistry cluster
-    class RefGrant,NetPol1,NetPol2,ProxySvc,ProxyTLS,ProxyCfg,CABundle resource
+    class KubeRBACProxy,NotebookApp notebookpod
+    class Controller,WebhookSvc controller
+    class K8sAPI k8s
+    class DSPA,ImageStreams,ServiceCA,CACerts internal

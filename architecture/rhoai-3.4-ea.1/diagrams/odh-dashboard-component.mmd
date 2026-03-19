@@ -3,78 +3,121 @@
 %% Source: architecture/rhoai-3.4-ea.1/odh-dashboard.md
 
 graph TB
-    subgraph Pod["ODH Dashboard Pod"]
+    subgraph ExternalAccess["External Access"]
+        Browser[Browser / User]
+        Gateway["data-science-gateway<br/>(Envoy Gateway)<br/>443/TCP HTTPS"]
+    end
+
+    subgraph DashboardPod["ODH Dashboard Pod"]
         direction TB
 
-        subgraph Core["Core Dashboard"]
-            KubeRBACProxy["kube-rbac-proxy<br/>Auth Sidecar<br/>Port 8443/HTTPS"]
-            Dashboard["odh-dashboard<br/>Fastify BFF + React Frontend<br/>Port 8080/HTTP"]
-            KubeRBACProxy -->|"X-Auth-Request-User/Groups<br/>plaintext localhost"| Dashboard
+        subgraph AuthLayer["Authentication Layer"]
+            KubeRBACProxy["kube-rbac-proxy<br/>Port 8443/TCP<br/>TLS (service-ca)<br/>SAR Check"]
         end
 
-        subgraph FederatedModules["Federated UI Modules (Webpack Module Federation)"]
-            ModelRegistryUI["model-registry-ui<br/>Go BFF + React<br/>Port 8043/HTTPS"]
-            GenAIUI["gen-ai-ui<br/>Go BFF + React<br/>Port 8143/HTTPS"]
-            MaaSUI["maas-ui<br/>Go BFF + React<br/>Port 8243/HTTPS"]
+        subgraph MainContainer["Main Container - rhods-dashboard"]
+            Fastify["Fastify BFF Server<br/>Port 8080/TCP<br/>HTTP (internal)"]
+            ReactUI["React/PatternFly<br/>Frontend SPA"]
+            K8sProxy["/api/k8s/* Proxy"]
+            WSSProxy["/wss/k8s/* WebSocket Proxy"]
+            ModFedProxy["Module Federation<br/>Proxy Router"]
         end
 
-        Dashboard -->|"TLS, X-Forwarded-Access-Token"| ModelRegistryUI
-        Dashboard -->|"TLS, X-Forwarded-Access-Token"| GenAIUI
-        Dashboard -->|"TLS, X-Forwarded-Access-Token"| MaaSUI
-
-        subgraph ConfigMaps["Configuration"]
-            FedConfig["federation-config<br/>ConfigMap"]
-            RBACConfig["kube-rbac-proxy-config<br/>ConfigMap"]
+        subgraph FederatedModules["Federated Module Containers"]
+            ModelRegUI["model-registry-ui<br/>Port 8043/TCP<br/>TLS (service-ca)"]
+            GenAIUI["gen-ai-ui<br/>Port 8143/TCP<br/>TLS (service-ca)"]
+            MaaSUI["maas-ui<br/>Port 8243/TCP<br/>TLS (service-ca)"]
         end
     end
 
-    User[User Browser] -->|"HTTPS/443<br/>Bearer Token"| Gateway["data-science-gateway<br/>Gateway API"]
-    Gateway -->|"HTTPS/8443<br/>TLS re-encrypt"| KubeRBACProxy
-
-    %% CRDs Managed
-    subgraph CRDs["Custom Resource Definitions"]
-        OdhApp["OdhApplication<br/>dashboard.opendatahub.io/v1"]
-        OdhDoc["OdhDocument<br/>dashboard.opendatahub.io/v1"]
-        OdhQS["OdhQuickStart<br/>console.openshift.io/v1"]
-        OdhDC["OdhDashboardConfig<br/>opendatahub.io/v1alpha"]
+    subgraph ConfigResources["Configuration Resources"]
+        FedConfig["federation-config<br/>(ConfigMap)"]
+        RBACConfig["kube-rbac-proxy-config<br/>(ConfigMap)"]
+        DashConfig["odh-dashboard-config<br/>(OdhDashboardConfig CR)"]
+        ConsoleLink["ConsoleLink CR"]
+        HTTPRoute["HTTPRoute<br/>(Gateway API v1)"]
     end
 
-    Dashboard -->|"reads/manages"| CRDs
-
-    %% External Dependencies
-    Dashboard -->|"HTTPS/443<br/>User impersonation"| K8sAPI["Kubernetes API Server"]
-    Dashboard -->|"HTTPS/9092<br/>SA token"| Prometheus["Prometheus/Thanos"]
-    Dashboard -->|"HTTP/8080"| Perses["data-science-perses"]
-
-    %% Platform CRDs consumed
-    subgraph PlatformCRDs["Platform CRDs (consumed)"]
-        Notebooks["Notebooks<br/>kubeflow.org"]
-        InferenceServices["InferenceServices<br/>serving.kserve.io"]
-        ModelRegistries["ModelRegistries<br/>modelregistry.opendatahub.io"]
-        DSC["DataScienceCluster<br/>datasciencecluster.opendatahub.io"]
-        HWProfiles["HardwareProfiles<br/>infrastructure.opendatahub.io"]
-        NIMAccounts["NIM Accounts<br/>nim.opendatahub.io"]
+    subgraph K8sResources["Kubernetes Resources Managed"]
+        NotebookCR["Notebook CR<br/>(kubeflow.org)"]
+        AccelProfile["AcceleratorProfile CR<br/>(dashboard.opendatahub.io)"]
+        HWProfile["HardwareProfile CR<br/>(infrastructure.opendatahub.io)"]
+        InferenceService["InferenceService CR<br/>(serving.kserve.io)"]
+        ServingRuntime["ServingRuntime CR<br/>(serving.kserve.io)"]
+        ModelRegistry["ModelRegistry CR<br/>(modelregistry.opendatahub.io)"]
+        NIMAccount["NIM Account CR<br/>(nim.opendatahub.io)"]
     end
 
-    Dashboard -->|"CRUD via K8s API"| PlatformCRDs
+    subgraph ExternalDeps["External Dependencies"]
+        K8sAPI["Kubernetes API Server"]
+        OpenShiftOAuth["OpenShift OAuth"]
+        ThanosQuerier["Thanos Querier<br/>(openshift-monitoring)"]
+        Perses["data-science-perses<br/>(redhat-ods-monitoring)"]
+        MLflow["MLflow<br/>(redhat-ods-applications)"]
+    end
+
+    %% External access flow
+    Browser -->|"HTTPS/443"| Gateway
+    Gateway -->|"HTTPS/8443<br/>HTTPRoute"| KubeRBACProxy
+    KubeRBACProxy -->|"SAR check"| K8sAPI
+    KubeRBACProxy -->|"HTTP/8080<br/>x-forwarded headers"| Fastify
+
+    %% Internal routing
+    Fastify --> ReactUI
+    Fastify --> K8sProxy
+    Fastify --> WSSProxy
+    Fastify --> ModFedProxy
+
+    %% Module federation
+    ModFedProxy -->|"HTTPS/8043"| ModelRegUI
+    ModFedProxy -->|"HTTPS/8143"| GenAIUI
+    ModFedProxy -->|"HTTPS/8243"| MaaSUI
+
+    %% K8s API interactions
+    K8sProxy -->|"HTTPS/443<br/>User token"| K8sAPI
+    WSSProxy -->|"WSS/443<br/>User token"| K8sAPI
+    ModelRegUI -->|"HTTPS/443"| K8sAPI
+    GenAIUI -->|"HTTPS/443"| K8sAPI
+    MaaSUI -->|"HTTPS/443"| K8sAPI
+
+    %% External integrations
+    Fastify -->|"HTTP/8080"| Perses
+    Fastify -->|"HTTPS/8443"| MLflow
+    Fastify -->|"HTTPS/9092"| ThanosQuerier
+    KubeRBACProxy -->|"Token validation"| OpenShiftOAuth
+
+    %% Config references
+    FedConfig -.->|"configures"| ModFedProxy
+    RBACConfig -.->|"configures"| KubeRBACProxy
+    DashConfig -.->|"feature flags"| Fastify
+    HTTPRoute -.->|"routes to"| KubeRBACProxy
+
+    %% Managed resources
+    K8sProxy -.->|"CRUD"| NotebookCR
+    K8sProxy -.->|"CRUD"| AccelProfile
+    K8sProxy -.->|"CRUD"| HWProfile
+    K8sProxy -.->|"read"| InferenceService
+    K8sProxy -.->|"CRUD"| ServingRuntime
+    K8sProxy -.->|"CRUD"| ModelRegistry
+    K8sProxy -.->|"CRUD"| NIMAccount
 
     %% Styling
     style KubeRBACProxy fill:#e74c3c,color:#fff
-    style Dashboard fill:#4a90e2,color:#fff
-    style ModelRegistryUI fill:#3498db,color:#fff
-    style GenAIUI fill:#3498db,color:#fff
-    style MaaSUI fill:#3498db,color:#fff
-    style Gateway fill:#f39c12,color:#fff
+    style Fastify fill:#4a90e2,color:#fff
+    style ReactUI fill:#4a90e2,color:#fff
+    style ModelRegUI fill:#9b59b6,color:#fff
+    style GenAIUI fill:#9b59b6,color:#fff
+    style MaaSUI fill:#9b59b6,color:#fff
     style K8sAPI fill:#e8e8e8,stroke:#333
-    style Prometheus fill:#e8e8e8,stroke:#333
+    style Gateway fill:#f5a623,color:#fff
+    style ThanosQuerier fill:#e8e8e8,stroke:#333
     style Perses fill:#e8e8e8,stroke:#333
-    style OdhApp fill:#f5a623
-    style OdhDoc fill:#f5a623
-    style OdhQS fill:#f5a623
-    style OdhDC fill:#f5a623
-    style Notebooks fill:#7ed321
-    style InferenceServices fill:#7ed321
-    style ModelRegistries fill:#7ed321
-    style DSC fill:#7ed321
-    style HWProfiles fill:#7ed321
-    style NIMAccounts fill:#7ed321
+    style MLflow fill:#7ed321,stroke:#333
+    style OpenShiftOAuth fill:#e8e8e8,stroke:#333
+    style NotebookCR fill:#f5a623
+    style AccelProfile fill:#f5a623
+    style InferenceService fill:#f5a623
+    style ServingRuntime fill:#f5a623
+    style ModelRegistry fill:#f5a623
+    style NIMAccount fill:#f5a623
+    style HWProfile fill:#f5a623

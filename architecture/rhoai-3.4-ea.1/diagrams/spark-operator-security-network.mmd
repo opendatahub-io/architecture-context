@@ -5,70 +5,90 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
         User["User / Data Scientist"]
+        ClientApp["Client Application<br/>(Spark Connect)"]
     end
 
-    subgraph K8sTrust["KUBERNETES API (Trust Boundary)"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token / Client Cert"]
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS<br/>Auth: Bearer Token / SA Token"]
     end
 
     subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-applications)"]
         direction TB
 
-        subgraph WebhookDep["Webhook Deployment"]
-            Webhook["Webhook Server<br/>SA: webhook<br/>9443/TCP HTTPS (self-signed)<br/>Endpoints: /mutate-*, /validate-*"]
+        subgraph WebhookDeploy["Webhook Deployment"]
+            Webhook["spark-operator-webhook<br/>SA: spark-operator-webhook<br/>9443/TCP HTTPS (self-signed)<br/>8080/TCP metrics, 8081/TCP health<br/>runAsNonRoot, readOnly, drop ALL"]
         end
 
-        subgraph ControllerDep["Controller Deployment"]
-            Controller["Spark Operator Controller<br/>SA: controller<br/>Metrics: 8080/TCP HTTP<br/>Health: 8081/TCP HTTP"]
+        subgraph ControllerDeploy["Controller Deployment"]
+            Controller["spark-operator-controller<br/>SA: spark-operator-controller<br/>8080/TCP metrics, 8081/TCP health<br/>runAsNonRoot, readOnly, drop ALL"]
         end
+
+        WebhookSecret["Secret: spark-operator-webhook-certs<br/>kubernetes.io/tls<br/>Self-generated, auto-rotate"]
     end
 
-    subgraph WorkloadNS["WORKLOAD NAMESPACE (user-configurable)"]
+    subgraph WorkloadNS["WORKLOAD NAMESPACE (user namespace)"]
         direction TB
-
-        Driver["Spark Driver Pod<br/>Created by: spark-submit<br/>SA: spark"]
-        Executors["Spark Executor Pods<br/>Created by: Driver"]
-        SparkUI["Spark UI Service<br/>ClusterIP 4040/TCP HTTP<br/>No auth"]
-        SparkIngress["Spark UI Ingress<br/>80/TCP HTTP (optional TLS)<br/>No oauth-proxy"]
-    end
-
-    subgraph SparkConnect["SPARK CONNECT (optional)"]
-        ConnectServer["SparkConnect Server<br/>ClusterIP"]
+        Driver["Spark Driver Pod<br/>SA: spark-operator-spark<br/>4040/TCP Web UI"]
+        Executor["Spark Executor Pods"]
+        SCServer["SparkConnect Server<br/>7078, 7079/TCP<br/>4040/TCP HTTP<br/>15002/TCP gRPC"]
+        UISvc["Web UI Service<br/>ClusterIP 4040/TCP<br/>HTTP plaintext"]
+        UIIngress["Web UI Ingress<br/>80/TCP HTTP<br/>TLS: optional"]
     end
 
     subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>Scrapes 8080/TCP HTTP<br/>No auth"]
+        Prometheus["Prometheus"]
     end
 
-    subgraph OptionalSchedulers["OPTIONAL BATCH SCHEDULERS"]
-        Volcano["Volcano<br/>PodGroup CRDs<br/>443/TCP HTTPS"]
-        YuniKorn["YuniKorn<br/>Pod annotations"]
-        Kueue["Kueue<br/>Pod labels"]
+    subgraph DeployMgmt["DEPLOYMENT MANAGEMENT"]
+        RhodsOp["rhods-operator<br/>Kustomize deployment"]
     end
 
-    %% Flows
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| K8sAPI
-    K8sAPI -->|"HTTPS/443→9443<br/>TLS (self-signed)<br/>API Server TLS Client Cert"| Webhook
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>ServiceAccount Token"| K8sAPI
-    Controller -->|"spark-submit<br/>creates pods"| Driver
-    Driver -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    Driver -->|"TCP/various<br/>No encryption"| Executors
-    User -->|"gRPC/15002<br/>No encryption<br/>No auth"| ConnectServer
-    ConnectServer -->|"TCP/7078-7079<br/>No encryption"| Executors
-    Prometheus -->|"HTTP/8080<br/>No encryption<br/>No auth"| Controller
-    Controller -.->|"CRD API"| Volcano
+    %% External flows
+    User -->|"HTTPS/443<br/>TLS<br/>Bearer Token"| K8sAPI
+    ClientApp -->|"gRPC/15002<br/>plaintext<br/>No Auth"| SCServer
+
+    %% Control plane to webhook
+    K8sAPI -->|"HTTPS/443→9443<br/>TLS (self-signed)<br/>API Server CA"| Webhook
+
+    %% Controller to API server
+    Controller -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
+
+    %% Controller creates workloads
+    Controller -.->|"creates via<br/>spark-submit"| Driver
+    Controller -.->|"creates"| SCServer
+    Controller -.->|"creates"| UISvc
+    Controller -.->|"creates"| UIIngress
+
+    %% Driver creates executors
+    Driver -.->|"creates"| Executor
+
+    %% Webhook reads secret
+    WebhookSecret -.->|"mounted"| Webhook
+
+    %% Monitoring
+    Prometheus -->|"HTTP/8080<br/>plaintext<br/>No Auth"| Controller
+    Prometheus -->|"HTTP/8080<br/>plaintext<br/>No Auth"| Webhook
+
+    %% Deployment
+    RhodsOp -.->|"deploys"| Controller
+    RhodsOp -.->|"deploys"| Webhook
+
+    %% Ingress exposure
+    UIIngress -->|"HTTP/4040<br/>plaintext"| UISvc
+    UISvc -->|"4040/TCP"| Driver
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef k8sapi fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef workload fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef monitoring fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef scheduler fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef workload fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef secret fill:#f8cecc,stroke:#b85450,stroke-width:1px
 
-    class User external
-    class K8sAPI k8sapi
+    class User,ClientApp external
+    class K8sAPI controlplane
     class Webhook,Controller operator
-    class Driver,Executors,SparkUI,SparkIngress,ConnectServer workload
+    class Driver,Executor,SCServer,UISvc,UIIngress workload
     class Prometheus monitoring
-    class Volcano,YuniKorn,Kueue scheduler
+    class WebhookSecret secret
+    class RhodsOp external

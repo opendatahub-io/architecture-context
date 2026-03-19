@@ -248,6 +248,397 @@ Central orchestrator for the RHOAI platform - manages lifecycle of all data scie
 
 ---
 
+### FMS Guardrails Orchestrator
+
+Generated from: `architecture/rhoai-3.4-ea.1/fms-guardrails-orchestrator.md`
+
+A Rust-based middleware service that coordinates AI text generation with content safety guardrails by managing detector, chunker, and LLM backend services.
+
+#### For Developers
+- [Component Structure](./fms-guardrails-orchestrator-component.png) ([mmd](./fms-guardrails-orchestrator-component.mmd)) - Orchestrator internals, client layer, servers
+- [Data Flows](./fms-guardrails-orchestrator-dataflow.png) ([mmd](./fms-guardrails-orchestrator-dataflow.mmd)) - Detection, generation+classification, OpenAI completions flows
+- [Dependencies](./fms-guardrails-orchestrator-dependencies.png) ([mmd](./fms-guardrails-orchestrator-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./fms-guardrails-orchestrator-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./fms-guardrails-orchestrator-component.png) ([mmd](./fms-guardrails-orchestrator-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./fms-guardrails-orchestrator-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./fms-guardrails-orchestrator-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./fms-guardrails-orchestrator-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./fms-guardrails-orchestrator-rbac.png) ([mmd](./fms-guardrails-orchestrator-rbac.mmd)) - Authentication and authorization model
+
+---
+
+### Guardrails Detectors
+
+Generated from: `architecture/rhoai-3.4-ea.1/guardrails-detectors.md`
+
+A collection of detector algorithm microservices for the FMS Guardrails Orchestrator, providing text content analysis for safety, PII detection, file-type validation, and LLM-as-a-judge evaluation. Includes built-in detector (regex/PII, file-type, custom Python) and HuggingFace detector (ML-based classification).
+
+#### For Developers
+- [Component Structure](./guardrails-detectors-component.png) ([mmd](./guardrails-detectors-component.mmd)) - Built-in, HuggingFace, and LLM Judge detector internals
+- [Data Flows](./guardrails-detectors-dataflow.png) ([mmd](./guardrails-detectors-dataflow.mmd)) - Regex/PII detection, ML inference, LLM Judge evaluation, metrics scraping flows
+- [Dependencies](./guardrails-detectors-dependencies.png) ([mmd](./guardrails-detectors-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./guardrails-detectors-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./guardrails-detectors-component.png) ([mmd](./guardrails-detectors-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./guardrails-detectors-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./guardrails-detectors-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./guardrails-detectors-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./guardrails-detectors-rbac.png) ([mmd](./guardrails-detectors-rbac.mmd)) - Custom detector security, SSL/TLS configuration, authentication model
+
+---
+
+### Guardrails Regex Detector
+
+Generated from: `architecture/rhoai-3.4-ea.1/guardrails-regex-detector.md`
+
+A lightweight Rust-based HTTP microservice that detects PII (email, SSN, credit card) and custom regex patterns in text, serving as a detection backend for the FMS Guardrails Orchestrator.
+
+#### For Developers
+- [Component Structure](./guardrails-regex-detector-component.png) ([mmd](./guardrails-regex-detector-component.mmd)) - Service structure, detectors module, and endpoints
+- [Data Flows](./guardrails-regex-detector-dataflow.png) ([mmd](./guardrails-regex-detector-dataflow.mmd)) - PII detection request/response and health check flows
+- [Dependencies](./guardrails-regex-detector-dependencies.png) ([mmd](./guardrails-regex-detector-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./guardrails-regex-detector-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./guardrails-regex-detector-component.png) ([mmd](./guardrails-regex-detector-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./guardrails-regex-detector-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./guardrails-regex-detector-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./guardrails-regex-detector-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./guardrails-regex-detector-rbac.png) ([mmd](./guardrails-regex-detector-rbac.mmd)) - RBAC permissions and bindings
+
+---
+
+### Data Science Pipelines
+
+Generated from: `architecture/rhoai-3.4-ea.1/data-science-pipelines.md`
+
+Kubeflow Pipelines v2-based ML workflow orchestration platform with API server, persistence agent, scheduled workflow controller, cache server, frontend UI, and ML Metadata service.
+
+#### For Developers
+- [Component Structure](./data-science-pipelines-component.png) ([mmd](./data-science-pipelines-component.mmd)) - API server, controllers, agents, metadata services, in-pod binaries
+- [Data Flows](./data-science-pipelines-dataflow.png) ([mmd](./data-science-pipelines-dataflow.mmd)) - Pipeline run execution, scheduling, caching, and UI access flows
+- [Dependencies](./data-science-pipelines-dependencies.png) ([mmd](./data-science-pipelines-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./data-science-pipelines-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./data-science-pipelines-component.png) ([mmd](./data-science-pipelines-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./data-science-pipelines-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./data-science-pipelines-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./data-science-pipelines-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./data-science-pipelines-rbac.png) ([mmd](./data-science-pipelines-rbac.mmd)) - 6 service accounts, 6 cluster roles, webhook configurations
+
+---
+
+### Argo Workflows
+
+Generated from: `architecture/rhoai-3.4-ea.1/argo-workflows.md`
+
+Container-native workflow engine for orchestrating parallel jobs on Kubernetes, used as the execution backend for Data Science Pipelines in RHOAI. Produces workflow-controller and argoexec images.
+
+#### For Developers
+- [Component Structure](./argo-workflows-component.png) ([mmd](./argo-workflows-component.mmd)) - Controller, executor, CRDs, and upstream-only components
+- [Data Flows](./argo-workflows-dataflow.png) ([mmd](./argo-workflows-dataflow.mmd)) - Workflow execution, archival, and cron scheduling flows
+- [Dependencies](./argo-workflows-dependencies.png) ([mmd](./argo-workflows-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./argo-workflows-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./argo-workflows-component.png) ([mmd](./argo-workflows-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./argo-workflows-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./argo-workflows-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./argo-workflows-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./argo-workflows-rbac.png) ([mmd](./argo-workflows-rbac.mmd)) - RBAC permissions and bindings
+
+---
+
+### Batch Gateway
+
+Generated from: `architecture/rhoai-3.4-ea.1/batch-gateway.md`
+
+OpenAI-compatible batch inference gateway for the llm-d platform, providing `/v1/files` and `/v1/batches` APIs with multi-tenant isolation via configurable HTTP headers.
+
+#### For Developers
+- [Component Structure](./batch-gateway-component.png) ([mmd](./batch-gateway-component.mmd)) - API Server, Batch Processor, Redis, and file storage
+- [Data Flows](./batch-gateway-dataflow.png) ([mmd](./batch-gateway-dataflow.mmd)) - File upload, batch submission, processing, and cancellation flows
+- [Dependencies](./batch-gateway-dependencies.png) ([mmd](./batch-gateway-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./batch-gateway-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./batch-gateway-component.png) ([mmd](./batch-gateway-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./batch-gateway-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./batch-gateway-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./batch-gateway-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./batch-gateway-rbac.png) ([mmd](./batch-gateway-rbac.mmd)) - Application-level access control and tenant isolation
+
+---
+
+### Llama Stack K8s Operator
+
+Generated from: `architecture/rhoai-3.4-ea.1/llama-stack-k8s-operator.md`
+
+A Kubernetes operator that manages the lifecycle of Llama Stack distribution server instances on OpenShift/Kubernetes via the `LlamaStackDistribution` CRD.
+
+#### For Developers
+- [Component Structure](./llama-stack-k8s-operator-component.png) ([mmd](./llama-stack-k8s-operator-component.mmd)) - Reconciler, kustomize renderer, transformer plugins, and managed resources
+- [Data Flows](./llama-stack-k8s-operator-dataflow.png) ([mmd](./llama-stack-k8s-operator-dataflow.mmd)) - CR reconciliation, health check/status update, and ConfigMap change detection flows
+- [Dependencies](./llama-stack-k8s-operator-dependencies.png) ([mmd](./llama-stack-k8s-operator-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./llama-stack-k8s-operator-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./llama-stack-k8s-operator-component.png) ([mmd](./llama-stack-k8s-operator-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./llama-stack-k8s-operator-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./llama-stack-k8s-operator-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./llama-stack-k8s-operator-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./llama-stack-k8s-operator-rbac.png) ([mmd](./llama-stack-k8s-operator-rbac.mmd)) - RBAC permissions and bindings
+
+---
+
+### Llama Stack Distribution
+
+Generated from: `architecture/rhoai-3.4-ea.1/llama-stack-distribution.md`
+
+A containerized Llama Stack distribution providing a unified API server (port 8321) for AI inference, agents, evaluation, safety, and tool orchestration within RHOAI. Supports pluggable providers (vLLM, Milvus, TrustyAI, cloud AI services) configured via YAML.
+
+#### For Developers
+- [Component Structure](./llama-stack-distribution-component.png) ([mmd](./llama-stack-distribution-component.mmd)) - Server, API layer, providers, and external services
+- [Data Flows](./llama-stack-distribution-dataflow.png) ([mmd](./llama-stack-distribution-dataflow.mmd)) - Chat completion, safety-guarded inference, RAG, and evaluation flows
+- [Dependencies](./llama-stack-distribution-dependencies.png) ([mmd](./llama-stack-distribution-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./llama-stack-distribution-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./llama-stack-distribution-component.png) ([mmd](./llama-stack-distribution-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./llama-stack-distribution-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./llama-stack-distribution-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./llama-stack-distribution-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./llama-stack-distribution-rbac.png) ([mmd](./llama-stack-distribution-rbac.mmd)) - Authentication architecture and secrets management
+
+---
+
+### Llama Stack Provider TrustyAI Garak
+
+Generated from: `architecture/rhoai-3.4-ea.1/llama-stack-provider-trustyai-garak.md`
+
+Out-of-tree Llama Stack evaluation provider integrating NVIDIA Garak for automated LLM vulnerability scanning and red-teaming. Supports inline (subprocess) and remote (KFP pipeline) execution modes with shield testing.
+
+#### For Developers
+- [Component Structure](./llama-stack-provider-trustyai-garak-component.png) ([mmd](./llama-stack-provider-trustyai-garak-component.mmd)) - Provider plugin internals, KFP pipeline components
+- [Data Flows](./llama-stack-provider-trustyai-garak-dataflow.png) ([mmd](./llama-stack-provider-trustyai-garak-dataflow.mmd)) - Remote scan, inline scan, and shield-augmented scan flows
+- [Dependencies](./llama-stack-provider-trustyai-garak-dependencies.png) ([mmd](./llama-stack-provider-trustyai-garak-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./llama-stack-provider-trustyai-garak-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./llama-stack-provider-trustyai-garak-component.png) ([mmd](./llama-stack-provider-trustyai-garak-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./llama-stack-provider-trustyai-garak-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./llama-stack-provider-trustyai-garak-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./llama-stack-provider-trustyai-garak-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./llama-stack-provider-trustyai-garak-rbac.png) ([mmd](./llama-stack-provider-trustyai-garak-rbac.mmd)) - Service account and secrets-based access model
+
+---
+
+### llm-d Inference Scheduler
+
+Generated from: `architecture/rhoai-3.4-ea.1/llm-d-inference-scheduler.md`
+
+Optimized inference request routing scheduler for the llm-d framework, extending the Kubernetes Gateway API Inference Extension (GIE) with custom scheduling plugins, KV-cache-aware scoring, and Prefill/Decode disaggregation support via EPP and P/D routing sidecar.
+
+#### For Developers
+- [Component Structure](./llm-d-inference-scheduler-component.png) ([mmd](./llm-d-inference-scheduler-component.mmd)) - EPP, P/D sidecar, filter/scorer/profile plugins
+- [Data Flows](./llm-d-inference-scheduler-dataflow.png) ([mmd](./llm-d-inference-scheduler-dataflow.mmd)) - Standard inference, P/D disaggregation (NIXL v2), KV-Events flows
+- [Dependencies](./llm-d-inference-scheduler-dependencies.png) ([mmd](./llm-d-inference-scheduler-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./llm-d-inference-scheduler-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./llm-d-inference-scheduler-component.png) ([mmd](./llm-d-inference-scheduler-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./llm-d-inference-scheduler-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./llm-d-inference-scheduler-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./llm-d-inference-scheduler-security-network.txt) - Precise text format for SAR submissions (includes SSRF protection, TLS config)
+- [RBAC Visualization](./llm-d-inference-scheduler-rbac.png) ([mmd](./llm-d-inference-scheduler-rbac.mmd)) - RBAC permissions and bindings
+
+---
+
+### llm-d KV-Cache
+
+Generated from: `architecture/rhoai-3.4-ea.1/llm-d-kv-cache.md`
+
+A pluggable KV-Cache indexing library and service for KV-Cache-aware routing and scheduling in vLLM-based LLM inference platforms. Operates via Read Path (scoring pods by cached KV-blocks) and Write Path (ingesting ZMQ events from vLLM pods).
+
+#### For Developers
+- [Component Structure](./llm-d-kv-cache-component.png) ([mmd](./llm-d-kv-cache-component.mmd)) - Indexer, block index backends, event pool, tokenizer sidecar
+- [Data Flows](./llm-d-kv-cache-dataflow.png) ([mmd](./llm-d-kv-cache-dataflow.mmd)) - KV-cache scoring (read path), event ingestion (write path), pod auto-discovery
+- [Dependencies](./llm-d-kv-cache-dependencies.png) ([mmd](./llm-d-kv-cache-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./llm-d-kv-cache-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./llm-d-kv-cache-component.png) ([mmd](./llm-d-kv-cache-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./llm-d-kv-cache-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./llm-d-kv-cache-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./llm-d-kv-cache-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./llm-d-kv-cache-rbac.png) ([mmd](./llm-d-kv-cache-rbac.mmd)) - RBAC permissions, secrets, and authentication model
+
+---
+
+### ML Metadata (MLMD)
+
+Generated from: `architecture/rhoai-3.4-ea.1/ml-metadata.md`
+
+gRPC server and library for recording and retrieving metadata (artifacts, executions, contexts, lineage) associated with ML workflows, used by Data Science Pipelines in RHOAI.
+
+#### For Developers
+- [Component Structure](./ml-metadata-component.png) ([mmd](./ml-metadata-component.mmd)) - Server binary, core library, database backends, client libraries
+- [Data Flows](./ml-metadata-dataflow.png) ([mmd](./ml-metadata-dataflow.mmd)) - Pipeline metadata recording and lineage query flows
+- [Dependencies](./ml-metadata-dependencies.png) ([mmd](./ml-metadata-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./ml-metadata-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./ml-metadata-component.png) ([mmd](./ml-metadata-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./ml-metadata-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./ml-metadata-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./ml-metadata-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./ml-metadata-rbac.png) ([mmd](./ml-metadata-rbac.mmd)) - Application-level security model (no K8s RBAC)
+
+---
+
+### MLflow Tracking Server
+
+Generated from: `architecture/rhoai-3.4-ea.1/mlflow.md`
+
+ML lifecycle tracking server managing experiments, model registry, artifact storage, and LLM tracing with Kubernetes-native workspace isolation and RBAC via the `mlflow.kubeflow.org` API group.
+
+#### For Developers
+- [Component Structure](./mlflow-component.png) ([mmd](./mlflow-component.mmd)) - Flask/FastAPI server, auth plugin, workspace provider, UI
+- [Data Flows](./mlflow-dataflow.png) ([mmd](./mlflow-dataflow.mmd)) - Experiment logging, workspace resolution, OTLP trace ingestion flows
+- [Dependencies](./mlflow-dependencies.png) ([mmd](./mlflow-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./mlflow-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./mlflow-component.png) ([mmd](./mlflow-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./mlflow-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./mlflow-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./mlflow-security-network.txt) - Precise text format for SAR submissions (includes RBAC, secrets, auth modes)
+- [RBAC Visualization](./mlflow-rbac.png) ([mmd](./mlflow-rbac.mmd)) - Server SA roles, user authorization via mlflow.kubeflow.org
+
+---
+
+### MLflow Operator
+
+Generated from: `architecture/rhoai-3.4-ea.1/mlflow-operator.md`
+
+Kubernetes operator that manages MLflow tracking server deployments on OpenShift/RHOAI using CRDs (MLflow, MLflowConfig), embedded Helm chart rendering, Gateway API HTTPRoute ingress, and OpenShift ConsoleLink integration.
+
+#### For Developers
+- [Component Structure](./mlflow-operator-component.png) ([mmd](./mlflow-operator-component.mmd)) - Operator controller, Helm renderer, MLflow server pod with CA sidecars
+- [Data Flows](./mlflow-operator-dataflow.png) ([mmd](./mlflow-operator-dataflow.mmd)) - User request via Gateway API, operator reconciliation flows
+- [Dependencies](./mlflow-operator-dependencies.png) ([mmd](./mlflow-operator-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./mlflow-operator-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./mlflow-operator-component.png) ([mmd](./mlflow-operator-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./mlflow-operator-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./mlflow-operator-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./mlflow-operator-security-network.txt) - Precise text format for SAR submissions (includes RBAC, secrets, NetworkPolicy, CA bundle management)
+- [RBAC Visualization](./mlflow-operator-rbac.png) ([mmd](./mlflow-operator-rbac.mmd)) - Operator and MLflow SA roles, aggregate view/edit roles
+
+---
+
+### Models as a Service (MaaS)
+
+Generated from: `architecture/rhoai-3.4-ea.1/models-as-a-service.md`
+
+A platform API service providing tiered, policy-managed access to LLM inference models via an OpenAI-compatible interface with token management, tier-based rate limiting (free/premium/enterprise), and API key lifecycle. Uses Gateway API, Kuadrant auth/rate-limiting, and KServe LLMInferenceService discovery.
+
+#### For Developers
+- [Component Structure](./models-as-a-service-component.png) ([mmd](./models-as-a-service-component.mmd)) - MaaS API, gateway, auth policies, rate limiting, CRD watches
+- [Data Flows](./models-as-a-service-dataflow.png) ([mmd](./models-as-a-service-dataflow.mmd)) - Model listing, token issuance, gateway-level authorization flows
+- [Dependencies](./models-as-a-service-dependencies.png) ([mmd](./models-as-a-service-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./models-as-a-service-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./models-as-a-service-component.png) ([mmd](./models-as-a-service-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./models-as-a-service-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./models-as-a-service-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./models-as-a-service-security-network.txt) - Precise text format for SAR submissions (includes RBAC, rate limits, auth policies, network policies)
+- [RBAC Visualization](./models-as-a-service-rbac.png) ([mmd](./models-as-a-service-rbac.mmd)) - ClusterRole permissions, Kuadrant auth/rate-limit policies
+
+---
+
+### NeMo Guardrails
+
+Generated from: `architecture/rhoai-3.4-ea.1/NeMo-Guardrails.md`
+
+Programmable guardrails toolkit for LLM-based conversational systems. Provides input, output, dialog, and retrieval rails using Colang DSL, with an OpenAI-compatible API server (port 8000) and embedded NLP models for offline guardrail evaluation.
+
+#### For Developers
+- [Component Structure](./nemo-guardrails-component.png) ([mmd](./nemo-guardrails-component.mmd)) - Server, engine, Colang runtime, guardrail library, providers
+- [Data Flows](./nemo-guardrails-dataflow.png) ([mmd](./nemo-guardrails-dataflow.mmd)) - Chat completion with guardrails, guardrail-only check flows
+- [Dependencies](./nemo-guardrails-dependencies.png) ([mmd](./nemo-guardrails-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./nemo-guardrails-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./nemo-guardrails-component.png) ([mmd](./nemo-guardrails-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./nemo-guardrails-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./nemo-guardrails-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./nemo-guardrails-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./nemo-guardrails-rbac.png) ([mmd](./nemo-guardrails-rbac.mmd)) - Container security posture and secret management (no K8s RBAC)
+
+---
+
+### OpenVINO Model Server (OVMS)
+
+Generated from: `architecture/rhoai-3.4-ea.1/openvino_model_server.md`
+
+High-performance model inference server built on Intel OpenVINO, serving AI/ML models via gRPC and REST APIs with TensorFlow Serving, KServe v2, and OpenAI-compatible generative AI endpoints. Supports continuous batching for LLMs, DAG pipelines, MediaPipe graphs, and model loading from S3/GCS/Azure/HuggingFace.
+
+#### For Developers
+- [Component Structure](./openvino_model_server-component.png) ([mmd](./openvino_model_server-component.mmd)) - OVMS modules, frontends, GenAI calculators, storage backends
+- [Data Flows](./openvino_model_server-dataflow.png) ([mmd](./openvino_model_server-dataflow.mmd)) - REST/gRPC inference, OpenAI chat completion, model loading flows
+- [Dependencies](./openvino_model_server-dependencies.png) ([mmd](./openvino_model_server-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./openvino_model_server-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./openvino_model_server-component.png) ([mmd](./openvino_model_server-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./openvino_model_server-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./openvino_model_server-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./openvino_model_server-security-network.txt) - Precise text format for SAR submissions (includes auth model, container security, secrets)
+- [RBAC Visualization](./openvino_model_server-rbac.png) ([mmd](./openvino_model_server-rbac.mmd)) - API key auth, platform-level RBAC, container security
+
+---
+
 ### Platform (Aggregated View)
 
 Generated from: `architecture/rhoai-3.4-ea.1/PLATFORM.md`
@@ -268,6 +659,111 @@ The platform-level diagrams provide a holistic view of all 15 RHOAI components, 
 - [Security Network Diagram (Mermaid)](./platform-security-network.mmd) - Visual network topology (editable)
 - [Security Network Diagram (ASCII)](./platform-security-network.txt) - Precise text format for SAR submissions (includes RBAC, secrets, encryption summary)
 - [RBAC Visualization](./platform-rbac.png) ([mmd](./platform-rbac.mmd)) - All 14 operator RBAC permissions and bindings
+
+---
+
+### Spark Operator
+
+Generated from: `architecture/rhoai-3.4-ea.1/spark-operator.md`
+
+#### For Developers
+- [Component Structure](./spark-operator-component.png) ([mmd](./spark-operator-component.mmd)) - Mermaid diagram showing internal components
+- [Data Flows](./spark-operator-dataflow.png) ([mmd](./spark-operator-dataflow.mmd)) - Sequence diagram of request/response flows
+- [Dependencies](./spark-operator-dependencies.png) ([mmd](./spark-operator-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./spark-operator-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./spark-operator-component.png) ([mmd](./spark-operator-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./spark-operator-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./spark-operator-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./spark-operator-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./spark-operator-rbac.png) ([mmd](./spark-operator-rbac.mmd)) - RBAC permissions and bindings
+
+---
+
+### vllm-gaudi
+
+Generated from: `architecture/rhoai-3.4-ea.1/vllm-gaudi.md`
+
+#### For Developers
+- [Component Structure](./vllm-gaudi-component.png) ([mmd](./vllm-gaudi-component.mmd)) - Mermaid diagram showing internal components
+- [Data Flows](./vllm-gaudi-dataflow.png) ([mmd](./vllm-gaudi-dataflow.mmd)) - Sequence diagram of request/response flows
+- [Dependencies](./vllm-gaudi-dependencies.png) ([mmd](./vllm-gaudi-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./vllm-gaudi-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./vllm-gaudi-component.png) ([mmd](./vllm-gaudi-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./vllm-gaudi-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./vllm-gaudi-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./vllm-gaudi-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./vllm-gaudi-rbac.png) ([mmd](./vllm-gaudi-rbac.mmd)) - RBAC permissions and bindings
+
+---
+
+### vLLM Orchestrator Gateway
+
+Generated from: `architecture/rhoai-3.4-ea.1/vllm-orchestrator-gateway.md`
+
+#### For Developers
+- [Component Structure](./vllm-orchestrator-gateway-component.png) ([mmd](./vllm-orchestrator-gateway-component.mmd)) - Mermaid diagram showing internal components
+- [Data Flows](./vllm-orchestrator-gateway-dataflow.png) ([mmd](./vllm-orchestrator-gateway-dataflow.mmd)) - Sequence diagram of request/response flows
+- [Dependencies](./vllm-orchestrator-gateway-dependencies.png) ([mmd](./vllm-orchestrator-gateway-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./vllm-orchestrator-gateway-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./vllm-orchestrator-gateway-component.png) ([mmd](./vllm-orchestrator-gateway-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./vllm-orchestrator-gateway-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./vllm-orchestrator-gateway-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./vllm-orchestrator-gateway-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./vllm-orchestrator-gateway-rbac.png) ([mmd](./vllm-orchestrator-gateway-rbac.mmd)) - RBAC permissions and bindings
+
+---
+
+### Model Metadata Collection
+
+Generated from: `architecture/rhoai-3.4-ea.1/model-metadata-collection.md`
+
+#### For Developers
+- [Component Structure](./model-metadata-collection-component.png) ([mmd](./model-metadata-collection-component.mmd)) - Mermaid diagram showing internal components
+- [Data Flows](./model-metadata-collection-dataflow.png) ([mmd](./model-metadata-collection-dataflow.mmd)) - Sequence diagram of request/response flows
+- [Dependencies](./model-metadata-collection-dependencies.png) ([mmd](./model-metadata-collection-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./model-metadata-collection-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./model-metadata-collection-component.png) ([mmd](./model-metadata-collection-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./model-metadata-collection-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./model-metadata-collection-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./model-metadata-collection-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./model-metadata-collection-rbac.png) ([mmd](./model-metadata-collection-rbac.mmd)) - RBAC permissions and bindings
+
+---
+
+### vLLM-CPU
+
+Generated from: `architecture/rhoai-3.4-ea.1/vllm-cpu.md`
+
+#### For Developers
+- [Component Structure](./vllm-cpu-component.png) ([mmd](./vllm-cpu-component.mmd)) - Mermaid diagram showing internal components
+- [Data Flows](./vllm-cpu-dataflow.png) ([mmd](./vllm-cpu-dataflow.mmd)) - Sequence diagram of request/response flows
+- [Dependencies](./vllm-cpu-dependencies.png) ([mmd](./vllm-cpu-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./vllm-cpu-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./vllm-cpu-component.png) ([mmd](./vllm-cpu-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./vllm-cpu-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./vllm-cpu-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./vllm-cpu-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./vllm-cpu-rbac.png) ([mmd](./vllm-cpu-rbac.mmd)) - RBAC permissions and bindings
 
 ---
 
@@ -317,10 +813,32 @@ The platform-level diagrams provide a holistic view of all 15 RHOAI components, 
 - Include in documentation as-is
 - Perfect for security reviews (precise technical details)
 
+### Workload-Variant-Autoscaler
+
+Generated from: `architecture/rhoai-3.4-ea.1/workload-variant-autoscaler.md`
+
+#### For Developers
+- [Component Structure](./workload-variant-autoscaler-component.png) ([mmd](./workload-variant-autoscaler-component.mmd)) - Mermaid diagram showing internal components
+- [Data Flows](./workload-variant-autoscaler-dataflow.png) ([mmd](./workload-variant-autoscaler-dataflow.mmd)) - Sequence diagram of request/response flows
+- [Dependencies](./workload-variant-autoscaler-dependencies.png) ([mmd](./workload-variant-autoscaler-dependencies.mmd)) - Component dependency graph
+
+#### For Architects
+- [C4 Context](./workload-variant-autoscaler-c4-context.dsl) - System context in C4 format (Structurizr)
+- [Component Overview](./workload-variant-autoscaler-component.png) ([mmd](./workload-variant-autoscaler-component.mmd)) - High-level component view
+
+#### For Security Teams
+- [Security Network Diagram (PNG)](./workload-variant-autoscaler-security-network.png) - High-resolution network topology
+- [Security Network Diagram (Mermaid)](./workload-variant-autoscaler-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./workload-variant-autoscaler-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./workload-variant-autoscaler-rbac.png) ([mmd](./workload-variant-autoscaler-rbac.mmd)) - RBAC permissions and bindings
+
+---
+
 ## Updating Diagrams
 
 To regenerate after architecture changes:
 ```bash
+/generate-architecture-diagrams --architecture=../argo-workflows.md
 /generate-architecture-diagrams --architecture=../kserve.md
 /generate-architecture-diagrams --architecture=../data-science-pipelines-operator.md
 /generate-architecture-diagrams --architecture=../feast.md
@@ -332,5 +850,18 @@ To regenerate after architecture changes:
 /generate-architecture-diagrams --architecture=../odh-model-controller.md
 /generate-architecture-diagrams --architecture=../training-operator.md
 /generate-architecture-diagrams --architecture=../rhods-operator.md
+/generate-architecture-diagrams --architecture=../fms-guardrails-orchestrator.md
+/generate-architecture-diagrams --architecture=../data-science-pipelines.md
+/generate-architecture-diagrams --architecture=../batch-gateway.md
+/generate-architecture-diagrams --architecture=../llama-stack-k8s-operator.md
+/generate-architecture-diagrams --architecture=../llama-stack-provider-trustyai-garak.md
+/generate-architecture-diagrams --architecture=../llm-d-inference-scheduler.md
+/generate-architecture-diagrams --architecture=../llm-d-kv-cache.md
+/generate-architecture-diagrams --architecture=../mlflow.md
+/generate-architecture-diagrams --architecture=../models-as-a-service.md
+/generate-architecture-diagrams --architecture=../NeMo-Guardrails.md
+/generate-architecture-diagrams --architecture=../openvino_model_server.md
 /generate-architecture-diagrams --architecture=../PLATFORM.md
+/generate-architecture-diagrams --architecture=../vllm-gaudi.md
+/generate-architecture-diagrams --architecture=../workload-variant-autoscaler.md
 ```

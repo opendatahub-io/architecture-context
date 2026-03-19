@@ -3,42 +3,59 @@
 %% Source: architecture/rhoai-3.4-ea.1/kserve.md
 
 sequenceDiagram
+    participant User as User / kubectl
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
+    participant Webhook as KServe Webhook<br/>9443/TCP HTTPS TLS
+    participant Controller as KServe Controller<br/>Manager
+    participant Storage as S3 / GCS / Azure<br/>443/TCP HTTPS TLS 1.2+
+    participant StorageInit as Storage Initializer<br/>Init Container
     participant Client as External Client
-    participant IstioGW as Istio Ingress Gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant APIGW as Gateway (Gateway API)<br/>443/TCP HTTPS TLS 1.2+
-    participant KnAct as Knative Activator/<br/>Queue-Proxy<br/>80/TCP
-    participant Predictor as Model Serving Container<br/>8080/TCP HTTP
-    participant StorageInit as Storage Initializer<br/>(Init Container)
-    participant S3 as Cloud Storage<br/>(S3/GCS/Azure)<br/>443/TCP HTTPS
-    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS
-    participant KServeCtrl as KServe Controller<br/>Manager
-    participant Webhook as Webhook Server<br/>9443/TCP HTTPS
+    participant Gateway as Istio Gateway /<br/>OpenShift Router<br/>443/TCP HTTPS
+    participant Predictor as Predictor Pod<br/>8080/TCP HTTP
 
-    Note over Client, S3: Flow 1: Serverless Mode (Istio + Knative)
-    Client->>IstioGW: POST /v1/models/{model}:predict<br/>HTTPS/443, TLS 1.2+
-    IstioGW->>KnAct: Forward request<br/>HTTP/80, Istio mTLS
-    KnAct->>Predictor: Inference request<br/>HTTP/8080, plaintext (pod-local)
-    Predictor-->>KnAct: Prediction response
-    KnAct-->>IstioGW: Response (mTLS)
-    IstioGW-->>Client: JSON Response (TLS)
+    Note over User, Predictor: Flow 1: InferenceService Model Deployment (RawDeployment)
 
-    Note over Client, S3: Flow 2: Raw + Gateway API Mode
-    Client->>APIGW: POST /v1/models/{model}:predict<br/>HTTPS/443, TLS 1.2+
-    APIGW->>Predictor: Forward via HTTPRoute<br/>HTTP/80, Gateway-managed
-    Predictor-->>APIGW: Prediction response
-    APIGW-->>Client: JSON Response (TLS)
+    User->>K8sAPI: Create InferenceService CR<br/>Auth: Bearer Token / cert
+    K8sAPI->>Webhook: Mutate/Validate<br/>mTLS (API server cert)
+    Webhook-->>K8sAPI: Admission Response
+    K8sAPI-->>User: InferenceService created
 
-    Note over StorageInit, S3: Flow 3: Model Loading (Init Container)
-    StorageInit->>S3: Download model artifacts<br/>HTTPS/443, TLS 1.2+<br/>Auth: IAM/Access Keys
-    S3-->>StorageInit: Model artifacts
+    Controller->>K8sAPI: Watch InferenceService<br/>Auth: ServiceAccount token
+    K8sAPI-->>Controller: InferenceService event
 
-    Note over K8sAPI, Webhook: Flow 4: Webhook Admission Control
-    K8sAPI->>Webhook: POST /mutate-serving-kserve-io-...<br/>HTTPS/443 -> 9443<br/>TLS (cert-manager)
-    Webhook->>K8sAPI: Validation lookup<br/>HTTPS/443, ServiceAccount token
-    K8sAPI-->>Webhook: Validation result
-    Webhook-->>K8sAPI: Admission response
+    Controller->>K8sAPI: Create Deployment + Service<br/>+ HPA + VirtualService/HTTPRoute
+    K8sAPI-->>Controller: Resources created
 
-    Note over KServeCtrl, K8sAPI: Flow 5: Controller Reconciliation
-    KServeCtrl->>K8sAPI: Watch InferenceService CRs<br/>HTTPS/443, TLS 1.2+<br/>ServiceAccount token
-    K8sAPI-->>KServeCtrl: CR events
-    KServeCtrl->>K8sAPI: Create/Update resources<br/>(Deployments, Services,<br/>VirtualServices, HTTPRoutes)
+    StorageInit->>Storage: Download model artifacts<br/>Auth: Storage credentials
+    Storage-->>StorageInit: Model artifacts
+
+    Note over Client, Predictor: Flow 1 continued: Inference Request
+
+    Client->>Gateway: POST /v1/models/{model}:predict<br/>HTTPS TLS 1.2+<br/>Auth: Configurable
+    Gateway->>Predictor: Forward request<br/>HTTP / mTLS (Istio)
+    Predictor-->>Gateway: Prediction response
+    Gateway-->>Client: JSON response
+
+    Note over User, Predictor: Flow 2: LLMInferenceService Request Routing
+
+    participant LLMClient as LLM Client
+    participant GW as Gateway<br/>HTTPRoute<br/>443/TCP HTTPS
+    participant Scheduler as llm-d Scheduler<br/>9002/TCP gRPC
+    participant LLMPod as LLM Workload Pod<br/>8000/TCP HTTPS<br/>self-signed TLS
+
+    LLMClient->>GW: Inference request<br/>HTTPS TLS 1.2+
+    GW->>Scheduler: ExtProc routing<br/>gRPC 9002/TCP<br/>TLS (configurable)
+    Scheduler->>LLMPod: Routed request<br/>HTTPS 8000/TCP<br/>self-signed TLS
+    LLMPod-->>Scheduler: LLM response
+    Scheduler-->>GW: Response
+    GW-->>LLMClient: JSON response
+
+    Note over User, Predictor: Flow 3: Webhook Admission
+
+    participant APIServer as kube-apiserver
+    participant WebhookSvc as kserve-webhook-server<br/>443→9443/TCP HTTPS
+
+    APIServer->>WebhookSvc: Admission request<br/>HTTPS TLS (service-ca)<br/>Auth: mTLS
+    WebhookSvc->>K8sAPI: Validate resources<br/>Auth: ServiceAccount token
+    K8sAPI-->>WebhookSvc: Validation result
+    WebhookSvc-->>APIServer: Admission response

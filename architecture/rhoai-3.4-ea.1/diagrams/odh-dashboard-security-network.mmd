@@ -4,70 +4,70 @@
 
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Browser["User Browser"]
+        Browser["Browser / External Client"]
     end
 
-    subgraph Ingress["INGRESS (Gateway API)"]
-        Gateway["data-science-gateway<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ termination<br/>HTTPRoute (Gateway API)"]
+    subgraph Ingress["INGRESS (Gateway API - DMZ)"]
+        Gateway["data-science-gateway<br/>(Envoy Gateway)<br/>443/TCP external<br/>TLS 1.2+ termination<br/>Re-encrypt to service"]
     end
 
-    subgraph AuthLayer["AUTH LAYER (kube-rbac-proxy)"]
-        KRBAC["kube-rbac-proxy<br/>8443/TCP → 8080/TCP<br/>TLS (service-serving cert)<br/>TokenReview + SubjectAccessReview<br/>Health: 8444/TCP"]
+    subgraph AuthLayer["AUTHENTICATION LAYER (Pod Sidecar)"]
+        KRBP["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS (service-ca: dashboard-proxy-tls)<br/>AuthZ: SubjectAccessReview<br/>(list project.openshift.io/projects)"]
     end
 
-    subgraph AppLayer["APPLICATION LAYER (Dashboard Pod)"]
+    subgraph AppLayer["APPLICATION LAYER (redhat-ods-applications)"]
         direction TB
 
-        subgraph CoreApp["Core Dashboard"]
-            BFF["odh-dashboard (Fastify BFF)<br/>SA: odh-dashboard<br/>8080/TCP HTTP plaintext<br/>/api/k8s/*, /api/prometheus/*<br/>/wss/k8s/* (WebSocket)"]
+        subgraph MainContainer["Main: rhods-dashboard"]
+            Fastify["Fastify BFF<br/>8080/TCP HTTP<br/>SA: odh-dashboard<br/>Node.js >=22"]
         end
 
-        subgraph FedModules["Federated Modules (in-pod)"]
-            MRUI["model-registry-ui<br/>Go BFF<br/>8043/TCP HTTPS<br/>TLS (svc-serving cert)"]
-            GAUI["gen-ai-ui<br/>Go BFF<br/>8143/TCP HTTPS<br/>TLS (svc-serving cert)"]
-            MaUI["maas-ui<br/>Go BFF<br/>8243/TCP HTTPS<br/>TLS (svc-serving cert)"]
+        subgraph FedModules["Federated Module Containers"]
+            ModelReg["model-registry-ui<br/>8043/TCP HTTPS<br/>TLS (service-ca)<br/>Auth: x-forwarded-access-token"]
+            GenAI["gen-ai-ui<br/>8143/TCP HTTPS<br/>TLS (service-ca)<br/>Auth: x-forwarded-access-token"]
+            MaaS["maas-ui<br/>8243/TCP HTTPS<br/>TLS (service-ca)<br/>Auth: x-forwarded-access-token"]
         end
-
-        BFF -->|"HTTPS/8043<br/>X-Forwarded-Access-Token<br/>TLS"| MRUI
-        BFF -->|"HTTPS/8143<br/>X-Forwarded-Access-Token<br/>TLS"| GAUI
-        BFF -->|"HTTPS/8243<br/>X-Forwarded-Access-Token<br/>TLS"| MaUI
     end
 
-    subgraph ClusterServices["CLUSTER SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS<br/>SA token + user impersonation"]
-        Thanos["Prometheus/Thanos<br/>9092/TCP HTTPS TLS<br/>SA token"]
-        Perses["data-science-perses<br/>8080/TCP HTTP plaintext<br/>User token"]
-        MLflow["MLflow<br/>8443/TCP HTTPS TLS<br/>User token"]
+    subgraph EgressTargets["EGRESS TARGETS"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS/WSS<br/>TLS<br/>User Bearer token passthrough"]
+        Perses["data-science-perses<br/>(redhat-ods-monitoring)<br/>8080/TCP HTTP<br/>No encryption<br/>User token passthrough"]
+        MLflow["MLflow<br/>(redhat-ods-applications)<br/>8443/TCP HTTPS<br/>TLS<br/>User token passthrough"]
+        Thanos["Thanos Querier<br/>(openshift-monitoring)<br/>9092/TCP HTTPS<br/>TLS<br/>ServiceAccount token"]
     end
 
-    %% External flows
-    Browser -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Gateway
-    Gateway -->|"HTTPS/8443<br/>TLS (re-encrypt)<br/>Bearer Token passthrough"| KRBAC
-    KRBAC -->|"HTTP/8080<br/>plaintext (localhost)<br/>X-Auth-Request-User/Groups"| BFF
+    %% Traffic flows with security details
+    Browser -->|"HTTPS/443<br/>TLS 1.2+"| Gateway
+    Gateway -->|"HTTPS/8443<br/>TLS (service-ca)<br/>Forwarded user token"| KRBP
+    KRBP -->|"SAR Check<br/>HTTPS/443<br/>SA token"| K8sAPI
+    KRBP -->|"HTTP/8080<br/>localhost (no encryption)<br/>X-Auth-Request-User<br/>x-forwarded-access-token"| Fastify
 
-    %% Auth verification
-    KRBAC -.->|"HTTPS/443<br/>TokenReview<br/>SA token"| K8sAPI
-    KRBAC -.->|"HTTPS/443<br/>SubjectAccessReview<br/>SA token"| K8sAPI
+    %% Module federation (internal pod)
+    Fastify -->|"HTTPS/8043<br/>TLS (service-ca)<br/>x-forwarded-access-token"| ModelReg
+    Fastify -->|"HTTPS/8143<br/>TLS (service-ca)<br/>x-forwarded-access-token"| GenAI
+    Fastify -->|"HTTPS/8243<br/>TLS (service-ca)<br/>x-forwarded-access-token"| MaaS
 
-    %% Egress flows
-    BFF -->|"HTTPS/443<br/>TLS<br/>User impersonation"| K8sAPI
-    BFF -->|"HTTPS/9092<br/>TLS<br/>SA token"| Thanos
-    BFF -->|"HTTP/8080<br/>plaintext<br/>User token"| Perses
-    BFF -->|"HTTPS/8443<br/>TLS<br/>User token"| MLflow
+    %% Egress
+    Fastify -->|"HTTPS/443<br/>User Bearer token"| K8sAPI
+    Fastify -->|"WSS/443<br/>Token via subprotocol"| K8sAPI
+    Fastify -->|"HTTP/8080<br/>No encryption<br/>User token"| Perses
+    Fastify -->|"HTTPS/8443<br/>TLS<br/>User token"| MLflow
+    Fastify -->|"HTTPS/9092<br/>TLS<br/>SA token"| Thanos
 
-    MRUI -->|"HTTPS/443<br/>User token"| K8sAPI
-    GAUI -->|"HTTPS/443<br/>User token"| K8sAPI
-    MaUI -->|"HTTPS/443<br/>User token"| K8sAPI
+    %% Module egress
+    ModelReg -->|"HTTPS/443<br/>User Bearer token"| K8sAPI
+    GenAI -->|"HTTPS/443<br/>User Bearer token"| K8sAPI
+    MaaS -->|"HTTPS/443<br/>User Bearer token"| K8sAPI
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef auth fill:#f8cecc,stroke:#b85450,stroke-width:2px
     classDef app fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef cluster fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class Browser external
     class Gateway ingress
-    class KRBAC auth
-    class BFF,MRUI,GAUI,MaUI app
-    class K8sAPI,Thanos,Perses,MLflow cluster
+    class KRBP auth
+    class Fastify,ModelReg,GenAI,MaaS app
+    class K8sAPI,Perses,MLflow,Thanos egress

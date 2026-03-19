@@ -3,53 +3,69 @@
 %% Source: architecture/rhoai-3.4-ea.1/odh-dashboard.md
 
 sequenceDiagram
-    participant Browser as User Browser
+    participant Browser as Browser
     participant Gateway as data-science-gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant KRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
-    participant K8sAuth as K8s API (Auth)<br/>443/TCP HTTPS
-    participant BFF as odh-dashboard (Fastify)<br/>8080/TCP HTTP
+    participant KRBP as kube-rbac-proxy<br/>8443/TCP HTTPS TLS (service-ca)
+    participant K8sAuth as K8s API Server<br/>(SAR Check)
+    participant Fastify as Fastify BFF<br/>8080/TCP HTTP
     participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS
-    participant MR as model-registry-ui BFF<br/>8043/TCP HTTPS TLS
-    participant Thanos as Prometheus/Thanos<br/>9092/TCP HTTPS
+    participant ModReg as model-registry-ui<br/>8043/TCP HTTPS
+    participant GenAI as gen-ai-ui<br/>8143/TCP HTTPS
+    participant Perses as data-science-perses<br/>8080/TCP HTTP
+    participant Thanos as Thanos Querier<br/>9092/TCP HTTPS
 
-    Note over Browser,BFF: Flow 1: User accesses Dashboard UI
+    Note over Browser,K8sAPI: Flow 1: User Accessing Dashboard UI
 
-    Browser->>Gateway: GET / (HTTPS/443)<br/>Auth: Bearer Token (Cookie/Header)
-    Gateway->>KRBAC: Forward (HTTPS/8443)<br/>TLS re-encrypt
-    KRBAC->>K8sAuth: TokenReview (HTTPS/443)<br/>Auth: ServiceAccount token
-    K8sAuth-->>KRBAC: Token valid, user identity
-    KRBAC->>K8sAuth: SubjectAccessReview (HTTPS/443)<br/>Can user list projects?
-    K8sAuth-->>KRBAC: Authorized
-    KRBAC->>BFF: Forward (HTTP/8080, localhost)<br/>X-Auth-Request-User/Groups headers
-    BFF-->>KRBAC: React app bundle (static assets)
-    KRBAC-->>Gateway: HTTPS response
-    Gateway-->>Browser: Dashboard UI
+    Browser->>Gateway: GET / (HTTPS/443)<br/>TLS 1.2+
+    Gateway->>KRBP: HTTPS/8443<br/>TLS (service-ca)<br/>Forwarded user token
+    KRBP->>K8sAuth: SubjectAccessReview<br/>HTTPS/443, SA token<br/>Can user list projects?
+    K8sAuth-->>KRBP: Allowed
+    KRBP->>Fastify: HTTP/8080 (localhost)<br/>X-Auth-Request-User/Groups
+    Fastify-->>KRBP: React SPA + static assets
+    KRBP-->>Gateway: HTTPS response
+    Gateway-->>Browser: HTTPS response
 
-    Note over Browser,K8sAPI: Flow 2: Dashboard proxies K8s API call
+    Note over Browser,K8sAPI: Flow 2: Kubernetes API Passthrough
 
-    Browser->>KRBAC: POST /api/k8s/... (HTTPS/8443)<br/>Auth: Bearer Token
-    KRBAC->>BFF: Forward (HTTP/8080)<br/>X-Auth-Request-User header
-    BFF->>K8sAPI: K8s API call (HTTPS/443)<br/>Auth: User token impersonation
-    K8sAPI-->>BFF: API response
-    BFF-->>KRBAC: Response (HTTP)
-    KRBAC-->>Browser: Response (HTTPS)
+    Browser->>Gateway: POST /api/k8s/apis/kubeflow.org/v1/notebooks<br/>HTTPS/443
+    Gateway->>KRBP: HTTPS/8443
+    KRBP->>Fastify: HTTP/8080<br/>x-forwarded-access-token: user-token
+    Fastify->>K8sAPI: HTTPS/443<br/>Authorization: Bearer user-token
+    K8sAPI-->>Fastify: JSON Response
+    Fastify-->>KRBP: HTTP Response
+    KRBP-->>Gateway: HTTPS Response
+    Gateway-->>Browser: HTTPS Response
 
-    Note over Browser,MR: Flow 3: Federated Module Request (Model Registry)
+    Note over Browser,ModReg: Flow 3: Module Federation (Model Registry UI)
 
-    Browser->>KRBAC: GET /model-registry/api/... (HTTPS/8443)<br/>Auth: Bearer Token
-    KRBAC->>BFF: Forward to BFF
-    BFF->>MR: Proxy (HTTPS/8043)<br/>X-Forwarded-Access-Token header<br/>TLS (service-serving cert)
-    MR->>K8sAPI: K8s/Model Registry API (HTTPS/443)<br/>Auth: User token
-    K8sAPI-->>MR: Response
-    MR-->>BFF: Response (HTTPS)
-    BFF-->>KRBAC: Response
-    KRBAC-->>Browser: Response (HTTPS)
+    Browser->>Gateway: GET /model-registry/api/...<br/>HTTPS/443
+    Gateway->>KRBP: HTTPS/8443
+    KRBP->>Fastify: HTTP/8080<br/>x-forwarded-access-token
+    Fastify->>ModReg: HTTPS/8043<br/>TLS (service-ca)<br/>x-forwarded-access-token header
+    ModReg->>K8sAPI: HTTPS/443<br/>Bearer user-token
+    K8sAPI-->>ModReg: Response
+    ModReg-->>Fastify: Response
+    Fastify-->>Browser: Response (via KRBP + Gateway)
 
-    Note over Browser,Thanos: Flow 4: Prometheus Metrics Query
+    Note over Browser,K8sAPI: Flow 4: WebSocket Watch
 
-    Browser->>KRBAC: GET /api/prometheus/... (HTTPS/8443)<br/>Auth: Bearer Token
-    KRBAC->>BFF: Forward (HTTP/8080)
-    BFF->>Thanos: Query (HTTPS/9092)<br/>Auth: ServiceAccount token
-    Thanos-->>BFF: Metrics data
-    BFF-->>KRBAC: Response
-    KRBAC-->>Browser: Metrics response (HTTPS)
+    Browser->>Gateway: Upgrade /wss/k8s/...<br/>WSS/443
+    Gateway->>KRBP: WSS/8443
+    KRBP->>Fastify: WS/8080<br/>Token via subprotocol
+    Fastify->>K8sAPI: WSS/443<br/>Bearer token via subprotocol
+    K8sAPI-->>Fastify: Watch events (streaming)
+    Fastify-->>Browser: Watch events (streaming)
+
+    Note over Browser,Perses: Flow 5: Observability Proxy (Perses)
+
+    Browser->>Gateway: GET /perses/api/...<br/>HTTPS/443
+    Gateway->>KRBP: HTTPS/8443
+    KRBP->>Fastify: HTTP/8080
+    Fastify->>Perses: HTTP/8080<br/>No encryption<br/>User token passthrough
+    Perses-->>Fastify: Dashboard data
+    Fastify-->>Browser: Response (via KRBP + Gateway)
+
+    Note over Fastify,Thanos: Background: Metrics Queries
+
+    Fastify->>Thanos: HTTPS/9092<br/>TLS<br/>ServiceAccount token
+    Thanos-->>Fastify: Prometheus metrics
