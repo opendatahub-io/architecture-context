@@ -318,6 +318,16 @@ def collect_architectures(checkouts_dir: Path, output_dir: Path, platform_filter
             summary['files_created'].append(str(target_path))
             print(f"    ✓ {component_name}.md")
 
+            # Also copy the prompt file if it exists
+            prompt_file = arch_file.parent / "GENERATED_ARCHITECTURE_PROMPT.md"
+            if prompt_file.exists():
+                prompt_dir = platform_output_dir / "prompts"
+                prompt_dir.mkdir(exist_ok=True)
+                prompt_target = prompt_dir / f"{component_name}.md"
+                shutil.copy2(prompt_file, prompt_target)
+                summary['files_created'].append(str(prompt_target))
+                print(f"    ✓ prompts/{component_name}.md")
+
         # Create index
         create_index_readme(platform_output_dir, platform, components)
         summary['files_created'].append(str(platform_output_dir / 'README.md'))
