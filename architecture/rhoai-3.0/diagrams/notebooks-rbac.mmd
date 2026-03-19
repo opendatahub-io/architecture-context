@@ -1,97 +1,74 @@
 graph TD
-    subgraph "Service Accounts (per workbench instance)"
-        SA["{notebook-name}-sa<br/>Namespace: {user-namespace}"]
+    subgraph "Workbench Access RBAC (managed by notebook controllers)"
+        direction TB
+
+        subgraph "Users"
+            User["Data Scientist<br/>(OpenShift User)"]
+        end
+
+        subgraph "Authentication"
+            OAuth["OpenShift OAuth<br/>(Bearer Token)"]
+            KubeRBAC["kube-rbac-proxy<br/>(sidecar, port 8443/TCP)<br/>Injected by notebook-controller"]
+        end
+
+        subgraph "Authorization"
+            RBAC["Kubernetes RBAC<br/>(per-notebook access control)"]
+        end
+
+        subgraph "Workbench Resources (this component provides images)"
+            direction LR
+            IS_Jupyter["ImageStream<br/>image.openshift.io/v1<br/>Jupyter variants (10)"]
+            IS_CodeServer["ImageStream<br/>image.openshift.io/v1<br/>Code Server (1)"]
+            IS_RStudio["ImageStream<br/>image.openshift.io/v1<br/>RStudio (via BuildConfig)"]
+            IS_Runtime["ImageStream<br/>image.openshift.io/v1<br/>Pipeline Runtimes (7)"]
+        end
+
+        subgraph "Build Resources"
+            BC_RStudio["BuildConfig<br/>build.openshift.io/v1<br/>RStudio CPU + CUDA (2)"]
+            Secret["rhel-subscription-secret<br/>(Opaque)<br/>Manual provisioning<br/>No auto-rotation"]
+        end
     end
 
-    subgraph "OAuth Authentication"
-        OAuthProxy["OAuth Proxy Sidecar<br/>Validates OpenShift Tokens<br/>Enforces Namespace Access"]
-        OAuthConfig["Secret: {notebook-name}-oauth-config<br/>Type: Opaque<br/>OAuth proxy configuration"]
-        OAuthCookie["Secret: {notebook-name}-oauth-cookie-secret<br/>Type: Opaque<br/>Session cookies"]
+    subgraph "Controllers (manage RBAC, not part of this component)"
+        RhodsOp["rhods-operator<br/>Deploys ImageStream/<br/>BuildConfig manifests"]
+        NotebookCtrl["odh-notebook-controller<br/>Creates Pods, HTTPRoutes,<br/>Injects kube-rbac-proxy"]
+        Dashboard["odh-dashboard<br/>Reads ImageStream labels:<br/>opendatahub.io/notebook-image=true"]
     end
 
-    subgraph "User Secrets (mounted into workbench)"
-        GitSecret["git-credentials<br/>Type: kubernetes.io/basic-auth<br/>Keys: username, password/token"]
-        AWSSecret["aws-credentials<br/>Type: Opaque<br/>Keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY"]
-        DBSecret["database-credentials<br/>Type: Opaque<br/>Keys: DB_HOST, DB_USER, DB_PASSWORD"]
-    end
+    %% Access flow
+    User -->|"authenticates via"| OAuth
+    OAuth -->|"token validated by"| KubeRBAC
+    KubeRBAC -->|"checks"| RBAC
+    RBAC -->|"grants access to<br/>workbench pod"| IS_Jupyter
+    RBAC -->|"grants access to<br/>workbench pod"| IS_CodeServer
+    RBAC -->|"grants access to<br/>workbench pod"| IS_RStudio
 
-    subgraph "RBAC Managed by ODH Notebook Controller"
-        NotebookCRD["Notebook CRD<br/>apiVersion: kubeflow.org/v1<br/>Lifecycle management"]
-        NotebookController["ODH Notebook Controller<br/>Watches Notebook CRD<br/>Creates workbench pods"]
-    end
-
-    subgraph "Workbench Resources"
-        Pod["Workbench Pod<br/>{notebook-name}"]
-        Service["Service: notebook-{name}<br/>ClusterIP 8888/TCP"]
-        Route["Route: {notebook-name}<br/>*.apps.{cluster}<br/>443/TCP HTTPS Edge TLS"]
-        PVC["PersistentVolumeClaim<br/>{notebook-name}-pvc<br/>20-100 GiB"]
-    end
-
-    subgraph "Kubernetes API Access"
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.3"]
-        NamespaceResources["Namespace Resources<br/>Pods, Services, Secrets, ConfigMaps<br/>Limited to {user-namespace}"]
-    end
-
-    subgraph "External Authentication"
-        GitAuth["GitHub<br/>Git Token or SSH Key"]
-        S3Auth["S3 Storage<br/>AWS IAM Credentials"]
-        RegistryAuth["Quay.io<br/>Pull Secret"]
-    end
-
-    %% Service Account relationships
-    SA -->|uses| OAuthConfig
-    SA -->|uses| OAuthCookie
-    SA -.->|optional mount| GitSecret
-    SA -.->|optional mount| AWSSecret
-    SA -.->|optional mount| DBSecret
-
-    %% OAuth flow
-    OAuthProxy -->|validates| SA
-    OAuthProxy -->|enforces| NamespaceAccess["User must have access to<br/>{user-namespace}"]
-
-    %% Notebook Controller
-    NotebookController -->|creates| SA
-    NotebookController -->|creates| Pod
-    NotebookController -->|creates| Service
-    NotebookController -->|creates| Route
-    NotebookController -->|creates| OAuthConfig
-    NotebookController -->|creates| OAuthCookie
-    NotebookController -->|watches| NotebookCRD
-
-    %% Pod relationships
-    Pod -->|uses ServiceAccount| SA
-    Pod -->|bound to| Service
-    Pod -->|mounted| PVC
-    Route -->|routes to| Service
-
-    %% Kubernetes API access
-    SA -->|Bearer Token| K8sAPI
-    K8sAPI -->|authorizes| NamespaceResources
-    Pod -->|oc/kubectl commands| K8sAPI
-
-    %% External auth
-    Pod -->|uses| GitSecret
-    Pod -->|uses| AWSSecret
-    GitSecret -->|authenticates to| GitAuth
-    AWSSecret -->|authenticates to| S3Auth
+    %% Controller relationships
+    RhodsOp -->|"deploys"| IS_Jupyter
+    RhodsOp -->|"deploys"| IS_CodeServer
+    RhodsOp -->|"deploys"| IS_RStudio
+    RhodsOp -->|"deploys"| IS_Runtime
+    RhodsOp -->|"deploys"| BC_RStudio
+    NotebookCtrl -->|"creates pods from"| IS_Jupyter
+    NotebookCtrl -->|"creates pods from"| IS_CodeServer
+    NotebookCtrl -->|"creates pods from"| IS_RStudio
+    NotebookCtrl -->|"injects"| KubeRBAC
+    Dashboard -->|"reads metadata"| IS_Jupyter
+    Dashboard -->|"reads metadata"| IS_CodeServer
+    Dashboard -->|"reads metadata"| IS_RStudio
+    BC_RStudio -->|"uses"| Secret
 
     %% Styling
-    style SA fill:#4a90e2,stroke:#333,stroke-width:3px
-    style OAuthProxy fill:#f5a623,stroke:#333,stroke-width:2px
-    style OAuthConfig fill:#ffe6cc,stroke:#333
-    style OAuthCookie fill:#ffe6cc,stroke:#333
-    style NotebookController fill:#7ed321,stroke:#333,stroke-width:3px
-    style NotebookCRD fill:#7ed321,stroke:#333
-    style Pod fill:#d5e8d4,stroke:#333
-    style Service fill:#d5e8d4,stroke:#333
-    style Route fill:#d5e8d4,stroke:#333
-    style PVC fill:#d5e8d4,stroke:#333
-    style K8sAPI fill:#f5a623,stroke:#333
-    style NamespaceResources fill:#fff2cc,stroke:#333
-    style GitSecret fill:#e1d5e7,stroke:#333
-    style AWSSecret fill:#e1d5e7,stroke:#333
-    style DBSecret fill:#e1d5e7,stroke:#333
-    style GitAuth fill:#999,stroke:#333
-    style S3Auth fill:#999,stroke:#333
-    style RegistryAuth fill:#999,stroke:#333
-    style NamespaceAccess fill:#fff2cc,stroke:#333
+    style User fill:#4a90e2,color:#fff
+    style OAuth fill:#e74c3c,color:#fff
+    style KubeRBAC fill:#e74c3c,color:#fff
+    style RBAC fill:#f5a623,color:#fff
+    style IS_Jupyter fill:#7ed321,color:#fff
+    style IS_CodeServer fill:#7ed321,color:#fff
+    style IS_RStudio fill:#7ed321,color:#fff
+    style IS_Runtime fill:#7ed321,color:#fff
+    style BC_RStudio fill:#9b59b6,color:#fff
+    style Secret fill:#e67e22,color:#fff
+    style RhodsOp fill:#95a5a6,color:#fff
+    style NotebookCtrl fill:#95a5a6,color:#fff
+    style Dashboard fill:#95a5a6,color:#fff
