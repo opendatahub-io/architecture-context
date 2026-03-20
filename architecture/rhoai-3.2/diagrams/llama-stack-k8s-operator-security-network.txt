@@ -1,304 +1,139 @@
-┌─────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                   │
-│                                                                          │
-│  [User / Data Scientist]                                                 │
-│         │                                                                │
-│         │ Port: 443/TCP                                                  │
-│         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS 1.3                                            │
-│         │ Auth: Bearer Token (User Credentials)                          │
-│         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  KUBERNETES API SERVER (Control Plane)                                  │
-│                                                                          │
-│  [Kubernetes API Server]                                                 │
-│  - Port: 443/TCP                                                         │
-│  - Protocol: HTTPS                                                       │
-│  - Encryption: TLS 1.3                                                   │
-│  - AuthN: Bearer Token (ServiceAccount + User)                          │
-│  - AuthZ: RBAC (ClusterRole: manager-role)                              │
-│         │                                                                │
-│         │ Watch Stream                                                   │
-│         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS 1.3                                            │
-│         │ Auth: Bearer Token (controller-manager SA)                     │
-│         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  OPERATOR NAMESPACE (llama-stack-k8s-operator-system)                   │
-│                                                                          │
-│  [Llama Stack K8s Operator Controller]                                  │
-│  - Namespace: llama-stack-k8s-operator-system                            │
-│  - ServiceAccount: controller-manager                                    │
-│  - SecurityContext: Non-root (UID 1001)                                  │
-│  - Ports:                                                                │
-│    * 8080/TCP (HTTP, localhost) - Metrics (internal)                    │
-│    * 8081/TCP (HTTP) - Health probes (/healthz, /readyz)               │
-│         │                                                                │
-│         │ Port: 443/TCP                                                  │
-│         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS 1.3                                            │
-│         │ Auth: Bearer Token (SA)                                        │
-│         │ Operations: Create/Update/Delete Resources                     │
-│         ▼                                                                │
-│                                                                          │
-│  [kube-rbac-proxy Sidecar]                                               │
-│  - Purpose: Metrics authorization proxy                                  │
-│  - Ports:                                                                │
-│    * 8443/TCP (HTTPS, external) - Metrics endpoint                      │
-│    * 8080/TCP (HTTP, localhost) - Upstream metrics                      │
-│  - Auth: Bearer Token → SubjectAccessReview                             │
-│         │                                                                │
-│         │ Port: 443/TCP                                                  │
-│         │ Protocol: HTTPS                                                │
-│         │ Auth: SubjectAccessReview API call                             │
-│         ▼                                                                │
-│  [Kubernetes API Server] (SubjectAccessReview)                          │
-│         │                                                                │
-│         ◄─── Prometheus scrapes 8443/TCP (HTTPS, Bearer Token)          │
-│                                                                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│  USER NAMESPACE ({user-namespace})                                      │
-│                                                                          │
-│  [Llama Stack Server Deployment]                                         │
-│  - Created by: Operator                                                  │
-│  - Namespace: {user-namespace}                                           │
-│  - ServiceAccount: {instance-name}-sa                                   │
-│  - SecurityContext: fsGroup 1001, anyuid SCC (OpenShift)                │
-│  - Replicas: Configurable (default: 1, HPA-managed)                     │
-│                                                                          │
-│  [Llama Stack Pod]                                                       │
-│  - Container: Llama Stack Server                                         │
-│  - Port: 8321/TCP (HTTP)                                                 │
-│  - Probes: /v1/health (liveness/readiness)                              │
-│  - Environment:                                                          │
-│    * HF_HOME: {storage-mount-path}                                      │
-│    * SSL_CERT_FILE: {ca-bundle-path} (if TLS configured)               │
-│    * LLS_WORKERS: {worker-count}                                        │
-│    * LLS_PORT: 8321                                                     │
-│  - Volumes:                                                              │
-│    * PVC: {instance-name}-pvc (model storage, 10Gi default)            │
-│    * ConfigMap: {userConfig} (run.yaml configuration)                   │
-│         │                                                                │
-│         │ Port: 8321/TCP                                                 │
-│         │ Protocol: HTTP                                                 │
-│         │ Encryption: None (default)                                     │
-│         │ Auth: None (user must implement external proxy)                │
-│         ▼                                                                │
-│                                                                          │
-│  [ClusterIP Service: {instance-name}-service]                           │
-│  - Port: 8321/TCP → 8321/TCP                                            │
-│  - Protocol: HTTP                                                        │
-│  - Selector: app.kubernetes.io/instance={instance-name}                 │
-│  - NetworkPolicy: Optional (feature-flagged)                             │
-│    * Ingress: Allow from same namespace with label                      │
-│              app.kubernetes.io/part-of=llama-stack                      │
-│    * Ingress: Allow from operator namespace on port 8321/TCP            │
-│         │                                                                │
-│         ▲                                                                │
-│         │ Port: 8321/TCP                                                 │
-│         │ Protocol: HTTP                                                 │
-│         │ Encryption: None                                               │
-│         │ Auth: None                                                     │
-│         │                                                                │
-│  [Client Application / Internal Services]                               │
-│                                                                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES (Egress)                                             │
-│                                                                          │
-│  ┌──────────────────────────────────────────────────────────────┐      │
-│  │ [Container Registry - quay.io/docker.io]                     │      │
-│  │ - Port: 443/TCP                                               │      │
-│  │ - Protocol: HTTPS                                             │      │
-│  │ - Encryption: TLS 1.2+                                        │      │
-│  │ - Auth: Registry Credentials (Pull Secrets)                  │      │
-│  │ - Purpose: Pull Llama Stack distribution images               │      │
-│  └──────────────────────────────────────────────────────────────┘      │
-│         ▲                                                                │
-│         │ Image Pull (Kubelet)                                          │
-│                                                                          │
-│  ┌──────────────────────────────────────────────────────────────┐      │
-│  │ [HuggingFace Hub - huggingface.co]                           │      │
-│  │ - Port: 443/TCP                                               │      │
-│  │ - Protocol: HTTPS                                             │      │
-│  │ - Encryption: TLS 1.2+                                        │      │
-│  │ - Auth: HF Token (Bearer, optional)                          │      │
-│  │ - Purpose: Model and dataset downloads                        │      │
-│  │ - Secret: hf-token-secret (Opaque, user-provided)            │      │
-│  └──────────────────────────────────────────────────────────────┘      │
-│         ▲                                                                │
-│         │ Port: 443/TCP HTTPS                                           │
-│         │                                                                │
-│  ┌──────────────────────────────────────────────────────────────┐      │
-│  │ [Inference Providers - vLLM/Ollama]                          │      │
-│  │ - vLLM Port: 8000/TCP                                         │      │
-│  │ - Ollama Port: 11434/TCP                                      │      │
-│  │ - Protocol: HTTP/gRPC                                         │      │
-│  │ - Encryption: None (internal) / TLS (external)                │      │
-│  │ - Auth: API Keys (optional)                                   │      │
-│  │ - Purpose: Remote inference backends for Llama Stack          │      │
-│  └──────────────────────────────────────────────────────────────┘      │
-│         ▲                                                                │
-│         │ HTTP/gRPC calls from Llama Stack                              │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
+Security Network Diagram: llama-stack-k8s-operator
+Generated by: Claude Opus 4.6
+Source: architecture/rhoai-3.2/llama-stack-k8s-operator.md
 
-═══════════════════════════════════════════════════════════════════════════
-RBAC SUMMARY
-═══════════════════════════════════════════════════════════════════════════
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Monitoring)                                                      │
+│                                                                             │
+│  [Prometheus]                                                               │
+│         │                                                                   │
+│         │ Port: 8443/TCP                                                    │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS                                                   │
+│         │ Auth: Bearer token + SubjectAccessReview                          │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE (redhat-ods-applications)                               │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  Operator Pod                                                       │    │
+│  │                                                                     │    │
+│  │  [kube-rbac-proxy]                                                  │    │
+│  │  - Port: 8443/TCP (external) → 8080/TCP (internal)                 │    │
+│  │  - Protocol: HTTPS                                                  │    │
+│  │  - TLS Termination: TLS                                             │    │
+│  │  - AuthN: Bearer token                                              │    │
+│  │  - AuthZ: SubjectAccessReview via K8s API                           │    │
+│  │         │                                                           │    │
+│  │         │ Port: 8080/TCP                                            │    │
+│  │         │ Protocol: HTTP                                            │    │
+│  │         │ Encryption: plaintext (localhost only)                     │    │
+│  │         │ Auth: None                                                │    │
+│  │         ▼                                                           │    │
+│  │  [Controller Manager]                                               │    │
+│  │  - ServiceAccount: controller-manager                               │    │
+│  │  - runAsNonRoot: true                                               │    │
+│  │  - allowPrivilegeEscalation: false                                  │    │
+│  │  - capabilities: Drop ALL                                           │    │
+│  │  - Health: :8081/TCP /healthz (plaintext, no auth)                  │    │
+│  │  - Readiness: :8081/TCP /readyz (plaintext, no auth)                │    │
+│  │                                                                     │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│         │                                                                   │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: ServiceAccount token                                        │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                   │
+│                                                                             │
+│  [Kubernetes API Server]                                                    │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS 1.2+                                                     │
+│  - Auth: ServiceAccount token                                               │
+│  - Purpose: CR reconciliation, resource management, watch events            │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  MANAGED WORKLOAD NAMESPACE (user-defined)                                  │
+│                                                                             │
+│  Controller Manager                                                         │
+│         │                                                                   │
+│         │ Port: 8321/TCP                                                    │
+│         │ Protocol: HTTP                                                    │
+│         │ Encryption: plaintext                                             │
+│         │ Auth: None (NetworkPolicy optional)                               │
+│         ▼                                                                   │
+│  [Llama Stack Server Pod]                                                   │
+│  - ServiceAccount: {name}-sa                                                │
+│  - fsGroup: 1001                                                            │
+│  - Port: 8321/TCP                                                           │
+│  - Endpoints: /v1/health, /v1/providers, /v1/version                        │
+│  - Service: {name}-service (ClusterIP)                                      │
+│                                                                             │
+│  [NetworkPolicy] (optional, gated by enableNetworkPolicy flag)              │
+│  - Ingress: 8321/TCP from pods with label                                   │
+│    app.kubernetes.io/part-of: llama-stack (any namespace)                    │
+│  - Ingress: 8321/TCP from any pod in operator namespace                     │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
 
 ClusterRole: manager-role
-  Scope: Cluster-wide
-  ServiceAccount: controller-manager (llama-stack-k8s-operator-system)
-
-  Permissions:
-    - API Group: llamastack.io
-      Resources: llamastackdistributions, llamastackdistributions/status,
-                 llamastackdistributions/finalizers
-      Verbs: get, list, watch, create, update, patch, delete
-
-    - API Group: apps
-      Resources: deployments
-      Verbs: get, list, watch, create, update, patch, delete
-
-    - API Group: "" (core)
-      Resources: services, serviceaccounts, persistentvolumeclaims, configmaps
-      Verbs: get, list, watch, create, update, patch, delete
-
-    - API Group: networking.k8s.io
-      Resources: networkpolicies
-      Verbs: get, list, watch, create, update, patch, delete
-
-    - API Group: policy
-      Resources: poddisruptionbudgets
-      Verbs: get, list, watch, create, update, patch, delete
-
-    - API Group: autoscaling
-      Resources: horizontalpodautoscalers
-      Verbs: get, list, watch, create, update, patch, delete
-
-    - API Group: rbac.authorization.k8s.io
-      Resources: rolebindings, clusterroles, clusterrolebindings
-      Verbs: get, list, watch, create, update, patch, delete
-
-    - API Group: security.openshift.io
-      Resources: securitycontextconstraints (anyuid)
-      Verbs: use
-
-Role: auth-proxy-role (operator namespace)
   ServiceAccount: controller-manager
+  Bound via: ClusterRoleBinding/manager-rolebinding
   Permissions:
-    - API Group: "" (core)
-      Resources: configmaps
-      Verbs: get, list, watch
+  - llamastack.io / llamastackdistributions: get, list, watch, create, update, patch, delete
+  - llamastack.io / llamastackdistributions/status: get, update, patch
+  - llamastack.io / llamastackdistributions/finalizers: update
+  - apps / deployments: get, list, watch, create, update, patch, delete
+  - "" / services, serviceaccounts: get, list, watch, create, update, patch, delete
+  - "" / configmaps: get, list, watch, create, update, patch
+  - "" / persistentvolumeclaims: get, list, watch, create
+  - networking.k8s.io / networkpolicies: get, list, watch, create, update, patch, delete
+  - policy / poddisruptionbudgets: get, list, watch, create, update, patch, delete
+  - autoscaling / horizontalpodautoscalers: get, list, watch, create, update, patch, delete
+  - rbac.authorization.k8s.io / clusterrolebindings: get, list, delete
+  - rbac.authorization.k8s.io / clusterroles: get, list, watch
+  - rbac.authorization.k8s.io / rolebindings: get, list, watch, create, update, patch, delete
+  - security.openshift.io / securitycontextconstraints: use
+  - security.openshift.io / securitycontextconstraints (anyuid): use
 
-Role: leader-election-role (operator namespace)
-  ServiceAccount: controller-manager
-  Permissions:
-    - API Group: coordination.k8s.io
-      Resources: leases
-      Verbs: get, list, watch, create, update, patch
+ClusterRole: proxy-role
+  - authentication.k8s.io / tokenreviews: create
+  - authorization.k8s.io / subjectaccessreviews: create
 
-Llama Stack Server ServiceAccounts:
-  Name: {instance-name}-sa (user namespace)
-  ClusterRole: view (read-only K8s API access)
-  Purpose: Allow Llama Stack pods to query Kubernetes API
+Role: leader-election-role (Operator namespace)
+  - "" / configmaps: get, list, watch, create, update, patch, delete
+  - coordination.k8s.io / leases: get, list, watch, create, update, patch, delete
+  - "" / events: create, patch
 
-═══════════════════════════════════════════════════════════════════════════
-NETWORK POLICY (Optional - Feature Flagged)
-═══════════════════════════════════════════════════════════════════════════
+Dynamically Created RBAC (per LlamaStackDistribution):
+  RoleBinding: {name}-rb
+  - ClusterRole: system:openshift:scc:anyuid → ServiceAccount: {name}-sa
+  - Condition: Only when ClusterRole exists (OpenShift only)
 
-Enabled by: ConfigMap llama-stack-operator-config
-  Key: featureFlags.enableNetworkPolicy.enabled = true
+Security Context:
+  Controller Manager:
+  - runAsNonRoot: true
+  - allowPrivilegeEscalation: false
+  - capabilities: Drop ALL
+  kube-rbac-proxy:
+  - allowPrivilegeEscalation: false
+  - capabilities: Drop ALL
+  Managed Llama Stack Pods:
+  - fsGroup: 1001
 
-NetworkPolicy: {instance-name}-network-policy
-  Namespace: {user-namespace}
-  PodSelector: app.kubernetes.io/instance={instance-name}
+ConfigMaps:
+  - llama-stack-operator-config: Feature flags, image mappings (auto-created by operator)
+  - {name}-ca-bundle: Concatenated X.509 CA certificates (from user config + odh-trusted-ca-bundle)
 
-  Ingress Rules:
-    1. Allow from pods with label:
-       - app.kubernetes.io/part-of: llama-stack
-       - Same namespace
-       - Port: 8321/TCP
+Secrets:
+  - No secrets directly managed by this operator
 
-    2. Allow from all pods in operator namespace:
-       - Namespace: llama-stack-k8s-operator-system
-       - Port: 8321/TCP
-
-  Egress Rules:
-    - Not restricted (default allow)
-
-═══════════════════════════════════════════════════════════════════════════
-SECRETS
-═══════════════════════════════════════════════════════════════════════════
-
-Secret: controller-manager-token
-  Type: kubernetes.io/service-account-token
-  Namespace: llama-stack-k8s-operator-system
-  Purpose: Operator ServiceAccount credentials for K8s API
-  Provisioned By: Kubernetes
-  Auto-Rotate: No
-
-Secret: {instance-name}-sa-token
-  Type: kubernetes.io/service-account-token
-  Namespace: {user-namespace}
-  Purpose: Llama Stack server ServiceAccount credentials
-  Provisioned By: Kubernetes
-  Auto-Rotate: No
-
-Secret: hf-token-secret (user-provided)
-  Type: Opaque
-  Namespace: {user-namespace}
-  Purpose: HuggingFace API token for model downloads
-  Keys: HF_TOKEN
-  Provisioned By: User
-  Auto-Rotate: No
-
-Note: TLS secrets for HTTPS must be provisioned manually (operator does not
-      manage TLS secrets). Users can use cert-manager for automation.
-
-═══════════════════════════════════════════════════════════════════════════
-OPENSHIFT SECURITY CONTEXT CONSTRAINTS (SCC)
-═══════════════════════════════════════════════════════════════════════════
-
-Operator Pod:
-  - SCC: anyuid (required for operator functionality)
-  - RunAsUser: 1001 (non-root)
-  - FSGroup: Not set
-
-Llama Stack Server Pods:
-  - SCC: anyuid (required on OpenShift)
-  - RunAsUser: Defined by container image
-  - FSGroup: 1001 (for volume permissions)
-  - Volumes: PersistentVolumeClaim, ConfigMap, Secret
-
-═══════════════════════════════════════════════════════════════════════════
-TLS/ENCRYPTION SUMMARY
-═══════════════════════════════════════════════════════════════════════════
-
-Operator → Kubernetes API:
-  - TLS 1.3, Bearer Token (ServiceAccount)
-  - Certificate validation: Yes
-
-kube-rbac-proxy → Prometheus:
-  - TLS 1.2+ (HTTPS on 8443/TCP)
-  - Client auth: Bearer Token with SubjectAccessReview
-
-Llama Stack Server → HuggingFace:
-  - TLS 1.2+ (HTTPS on 443/TCP)
-  - Optional HF Token for authentication
-
-Llama Stack Server → vLLM/Ollama:
-  - Typically HTTP (no encryption) for internal services
-  - TLS possible for external/remote inference providers
-  - Optional API key authentication
-
-Llama Stack API (8321/TCP):
-  - Default: HTTP (no encryption, no authentication)
-  - Recommendation: Use external proxy/gateway for TLS and auth
-  - CA Bundle support: spec.server.tlsConfig for custom certificates
-
-Container Image Pull:
-  - TLS 1.2+ (HTTPS on 443/TCP)
-  - Registry credentials via Pull Secrets
-
-═══════════════════════════════════════════════════════════════════════════
+Authentication & Authorization Summary:
+  - Metrics (:8443): Bearer token + SubjectAccessReview via kube-rbac-proxy
+  - Health probes (:8081): No auth (unrestricted)
+  - Managed server (:8321): No auth (NetworkPolicy optional)
