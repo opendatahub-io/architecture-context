@@ -106,6 +106,19 @@ async def run_agent(name: str, cwd: str, prompt: str, log_dir: Path, model: str 
         log.write("AGENT OUTPUT:\n\n")
 
     start_time = time.monotonic()
+    last_activity = start_time
+
+    async def _heartbeat():
+        """Print periodic status while the agent is working silently."""
+        nonlocal last_activity
+        while True:
+            await asyncio.sleep(30)
+            silence = time.monotonic() - last_activity
+            elapsed = time.monotonic() - start_time
+            if silence >= 30:
+                print(f"[{name}] ... still running ({format_duration(elapsed)} elapsed)")
+
+    heartbeat_task = asyncio.create_task(_heartbeat())
 
     try:
         with open(log_file, 'a') as log:
@@ -113,6 +126,7 @@ async def run_agent(name: str, cwd: str, prompt: str, log_dir: Path, model: str 
                 await client.query(prompt)
 
                 async for msg in client.receive_response():
+                    last_activity = time.monotonic()
                     # Print to console with component name prefix
                     print(f"[{name}] {msg}")
                     # Also write to log file
@@ -141,3 +155,50 @@ async def run_agent(name: str, cwd: str, prompt: str, log_dir: Path, model: str 
             log.write(f"ERROR: {e}\n")
 
         return {"name": name, "success": False, "error": str(e), "log_file": str(log_file), "duration_seconds": elapsed}
+
+    finally:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
+
+
+async def run_agents_concurrently(
+    jobs: list,
+    log_dir: Path,
+    model: str,
+    max_concurrent: int,
+) -> list:
+    """
+    Run multiple agent jobs with a concurrency limit.
+
+    Logs queue position and slot acquisition so the user can see what's
+    happening when agents are waiting for a slot.
+
+    Args:
+        jobs: List of dicts with 'name', 'cwd', 'prompt' keys
+        log_dir: Directory for agent log files
+        model: Model shorthand (sonnet, opus, haiku)
+        max_concurrent: Max agents running at once
+
+    Returns:
+        List of result dicts (or Exceptions) in the same order as jobs
+    """
+    semaphore = asyncio.Semaphore(max_concurrent)
+    total = len(jobs)
+
+    async def _run(index: int, job: dict):
+        if semaphore.locked():
+            print(f"[{job['name']}] queued ({index + 1}/{total}), "
+                  f"waiting for slot ...")
+        async with semaphore:
+            return await run_agent(
+                job["name"], job["cwd"], job["prompt"], log_dir, model
+            )
+
+    print("Starting agent execution...\n")
+    return await asyncio.gather(
+        *(_run(i, job) for i, job in enumerate(jobs)),
+        return_exceptions=True,
+    )
