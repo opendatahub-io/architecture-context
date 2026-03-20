@@ -1,3 +1,5 @@
+> **Agents**: If you are an AI agent using the data in this repo (rather than running the pipeline), read [AGENT_USAGE.md](AGENT_USAGE.md) for how to navigate the `architecture/` directory.
+
 # RHOAI Architecture Diagrams
 
 Automated pipeline that clones ODH/RHOAI component repositories, generates per-component architecture summaries using Claude agents, aggregates them into platform-level documents, and produces Mermaid/C4 diagrams. All driven by `main.py`.
