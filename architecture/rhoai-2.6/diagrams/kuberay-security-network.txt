@@ -1,303 +1,184 @@
-┌─────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                   │
-│                                                                          │
-│  [External Client]                                                       │
-│         │                                                                │
-│         │ Port: 443/TCP                                                  │
-│         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS 1.2+                                           │
-│         │ Auth: Application-defined (Ray Dashboard/Serve)               │
-│         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (DMZ)                                                          │
-│                                                                          │
-│  [Kubernetes Ingress / OpenShift Route]                                 │
-│  - Port: 443/TCP (external) → 8265/8000/TCP (internal)                 │
-│  - TLS Termination: TLS 1.2+ (optional, user-configured)               │
-│  - Routes:                                                               │
-│    * {raycluster}-ingress → Ray Dashboard (8265/TCP)                   │
-│    * {rayservice}-ingress → Ray Serve (8000/TCP)                       │
-│         │                                                                │
-│         │ Port: 8265/TCP (Dashboard), 8000/TCP (Serve)                  │
-│         │ Protocol: HTTP                                                 │
-│         │ Encryption: None (plaintext)                                   │
-│         │ Auth: None (default, configurable)                             │
-│         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  KUBERNETES CLUSTER (Internal)                                          │
-│                                                                          │
-│  ┌─────────────────────────────────────────────────────────────────┐  │
-│  │  Namespace: opendatahub (or user-configured)                     │  │
-│  │                                                                   │  │
-│  │  [KubeRay Operator]                                              │  │
-│  │  - ServiceAccount: kuberay-operator                              │  │
-│  │  - Image: UBI9 Go toolset                                        │  │
-│  │  - Resource Limits: CPU 100m, Memory 512Mi                       │  │
-│  │  - Leader Election: Enabled (coordination.k8s.io/leases)        │  │
-│  │         │                                                         │  │
-│  │         │ Port: 443/TCP                                           │  │
-│  │         │ Protocol: HTTPS                                         │  │
-│  │         │ Encryption: TLS 1.2+                                    │  │
-│  │         │ Auth: Service Account Token                            │  │
-│  │         ▼                                                         │  │
-│  │  [Kubernetes API Server]                                         │  │
-│  │  - API Groups: ray.io, core, apps, batch, rbac, networking      │  │
-│  │  - Operations: Watch CRDs, Create/Update Pods/Services          │  │
-│  │                                                                   │  │
-│  │  [Prometheus (optional)]                                         │  │
-│  │         ▲                                                         │  │
-│  │         │ Port: 8080/TCP                                          │  │
-│  │         │ Protocol: HTTP                                          │  │
-│  │         │ Encryption: None                                        │  │
-│  │         │ Auth: None                                              │  │
-│  │         │                                                         │  │
-│  │  [KubeRay Operator Metrics Endpoint]                            │  │
-│  │  - Port: 8080/TCP (metrics), 8082/TCP (health)                  │  │
-│  │                                                                   │  │
-│  └─────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│  ┌─────────────────────────────────────────────────────────────────┐  │
-│  │  Namespace: ray-system (optional, for APIServer)                 │  │
-│  │                                                                   │  │
-│  │  [KubeRay APIServer]                                             │  │
-│  │  - ServiceAccount: kuberay-apiserver                             │  │
-│  │  - Service Type: NodePort (31887/31888)                          │  │
-│  │  - Resource Limits: CPU 500m, Memory 500Mi                       │  │
-│  │         │                                                         │  │
-│  │         │ Port: 8888/TCP (HTTP), 8887/TCP (gRPC)                 │  │
-│  │         │ Protocol: HTTP, gRPC                                    │  │
-│  │         │ Encryption: None                                        │  │
-│  │         │ Auth: Kubernetes RBAC                                   │  │
-│  │         ▼                                                         │  │
-│  │  [Kubernetes API Server]                                         │  │
-│  │                                                                   │  │
-│  └─────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│  ┌─────────────────────────────────────────────────────────────────┐  │
-│  │  Namespace: {user-namespace}                                     │  │
-│  │                                                                   │  │
-│  │  [Ray Head Pod]                                                  │  │
-│  │  - ServiceAccount: {raycluster}-sa (auto-created)               │  │
-│  │  - Image: rayproject/ray:2.7.0+                                 │  │
-│  │  - Command: ray start --head                                     │  │
-│  │  - Ports:                                                        │  │
-│  │    * 6379/TCP - GCS (Global Control Store)                      │  │
-│  │    * 8265/TCP - Ray Dashboard                                   │  │
-│  │    * 10001/TCP - Ray Client                                     │  │
-│  │  - Security Context: UID 1000 (OpenShift SCC)                   │  │
-│  │  - Volumes: emptyDir for /tmp/ray logs                          │  │
-│  │         │                                                         │  │
-│  │         │ Port: 6379/TCP                                          │  │
-│  │         │ Protocol: TCP (Ray GCS protocol)                        │  │
-│  │         │ Encryption: None (plaintext internal)                   │  │
-│  │         │ Auth: None (internal cluster trust)                     │  │
-│  │         ▼                                                         │  │
-│  │  [Ray Worker Pods]                                               │  │
-│  │  - ServiceAccount: {raycluster}-sa                              │  │
-│  │  - Image: rayproject/ray:2.7.0+                                 │  │
-│  │  - Command: ray start (connects to head)                        │  │
-│  │  - Replicas: Configurable (autoscaling min/max)                 │  │
-│  │  - Worker Groups: Multiple groups with different resources      │  │
-│  │  - Security Context: UID 1000                                    │  │
-│  │                                                                   │  │
-│  │  [Ray Serve Pod] (RayService)                                    │  │
-│  │  - Port: 8000/TCP - Serve endpoint                              │  │
-│  │  - Connects to Ray Head GCS (6379/TCP)                          │  │
-│  │                                                                   │  │
-│  │  [{raycluster}-head-svc - ClusterIP Service]                    │  │
-│  │  - Ports: 6379/TCP, 8265/TCP, 10001/TCP                         │  │
-│  │                                                                   │  │
-│  │  [{rayservice}-serve-svc - ClusterIP Service]                   │  │
-│  │  - Port: 8000/TCP                                                │  │
-│  │                                                                   │  │
-│  └─────────────────────────────────────────────────────────────────┘  │
-│         │                                                                │
-│         │ Port: 443/TCP                                                  │
-│         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS 1.2+                                           │
-│         │ Auth: Pull Secret (kubernetes.io/dockerconfigjson)            │
-│         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES                                                       │
-│                                                                          │
-│  [Container Registry]                                                    │
-│  - Purpose: Ray container image storage                                 │
-│  - Auth: Image pull secrets                                             │
-│  - Encryption: TLS 1.2+                                                  │
-│                                                                          │
-│  [External Storage - S3/GCS (optional)]                                 │
-│  - Purpose: Ray cluster data storage                                    │
-│  - Auth: Cloud provider credentials                                     │
-│  - Encryption: TLS 1.2+                                                  │
-│                                                                          │
-│  [Volcano Scheduler (optional)]                                         │
-│  - Purpose: Gang scheduling for Ray pods                                │
-│  - Integration: Via Kubernetes API                                      │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
+KubeRay Operator - Security Network Diagram
+Generated by: Claude Opus 4.6
+Source: architecture/rhoai-2.6/kuberay.md
+================================================================================
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [User / Data Scientist]                                                     │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: Bearer Token (kubectl / oc)                                  │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ) - Optional, opt-in via enableIngress: true                    │
+│                                                                              │
+│  [OpenShift Route / K8s Ingress]                                             │
+│  - Name: {cluster}-route (OpenShift) / {cluster}-ingress (K8s)               │
+│  - Port: 8265/TCP (external) → 8265/TCP (Ray Dashboard)                     │
+│  - Encryption: None (edge-terminable via annotations on OpenShift)           │
+│  - Auth: None (no authentication on Ray Dashboard)                           │
+│  - Auto-detect: OpenShift (Routes) vs K8s (Ingress)                         │
+│  - Override: USE_INGRESS_ON_OPENSHIFT=true                                   │
+│         │                                                                    │
+│         │ Port: 8265/TCP                                                     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: plaintext                                              │
+│         │ Auth: None                                                         │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (Operator Namespace)                                       │
+│                                                                              │
+│  [kuberay-operator]                                                          │
+│  - Deployment: kuberay-operator                                              │
+│  - ServiceAccount: kuberay-operator                                          │
+│  - Image: quay.io/opendatahub/kuberay-operator                               │
+│  - Health: 8082/TCP /healthz, /readyz (HTTP, plaintext, no auth)             │
+│  - Metrics: 8080/TCP /metrics (HTTP, plaintext, no auth)                     │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: ServiceAccount Bearer Token                                  │
+│         ▼                                                                    │
+│  [Kubernetes API Server]                                                     │
+│  - CRUD: Pods, Services, Routes, Ingresses, RBAC, CRDs                      │
+│  - Watch: RayClusters, RayJobs, RayServices                                 │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (User Namespace - per RayCluster)                          │
+│                                                                              │
+│  [Ray Head Pod]                                                              │
+│  - Ports:                                                                    │
+│    - 6379/TCP  (GCS/Redis - inter-node, plaintext, no auth)                  │
+│    - 8265/TCP  (Dashboard API - HTTP, plaintext, no auth)                    │
+│    - 8000/TCP  (Ray Serve - HTTP, plaintext, no auth)                        │
+│    - 8080/TCP  (Metrics - HTTP, plaintext, no auth)                          │
+│    - 10001/TCP (Ray Client - TCP, plaintext, no auth)                        │
+│    - 52365/TCP (Dashboard Agent - TCP, plaintext, no auth)                   │
+│  - SecurityContext: UID 1000 (run-as-ray-user SCC on OpenShift)              │
+│         │                                                                    │
+│         │ Ports: 6379/TCP, custom Ray ports                                  │
+│         │ Protocol: TCP                                                      │
+│         │ Encryption: plaintext                                              │
+│         │ Auth: None                                                         │
+│         ▼                                                                    │
+│  [Ray Worker Pods]                                                           │
+│  - Connect to head node for task distribution                                │
+│  - SecurityContext: UID 1000 (run-as-ray-user SCC on OpenShift)              │
+│                                                                              │
+│  [Head Service: {cluster}-head-svc]                                          │
+│  - Type: Configurable                                                        │
+│  - Ports: 6379, 8265, 8000, 8080, 10001, 52365                              │
+│  - Protocol: TCP, all plaintext, no auth                                     │
+│                                                                              │
+│  [Serve Service: {service}-serve-svc] (RayService only)                      │
+│  - Type: Configurable                                                        │
+│  - Port: 8000/TCP (Ray Serve traffic)                                        │
+│  - Protocol: HTTP, plaintext, no auth                                        │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR → RAY HEAD COMMUNICATION                                           │
+│                                                                              │
+│  kuberay-operator ──────────────────────────► Ray Head Pod                   │
+│         Port: 8265/TCP                                                       │
+│         Protocol: HTTP                                                       │
+│         Encryption: plaintext                                                │
+│         Auth: None                                                           │
+│         APIs consumed:                                                       │
+│           - GET/POST/DELETE /api/jobs/                                        │
+│           - GET/PUT /api/serve/deployments/ (v1 single-app)                  │
+│           - GET/PUT /api/serve/applications/ (v2 multi-app)                  │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  MONITORING                                                                  │
+│                                                                              │
+│  [Prometheus]                                                                │
+│  ──────────────────────────────────────────► kuberay-operator                │
+│         Port: 8080/TCP                                                       │
+│         Protocol: HTTP                                                       │
+│         Encryption: plaintext                                                │
+│         Auth: None                                                           │
+│         Path: /metrics                                                       │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+================================================================================
 
 ClusterRole: kuberay-operator
-  API Groups: ray.io
-    Resources: rayclusters, rayjobs, rayservices
-    Verbs: create, delete, get, list, patch, update, watch
-    Resources: rayclusters/status, rayjobs/status, rayservices/status
-    Verbs: get, patch, update
-    Resources: rayclusters/finalizers, rayjobs/finalizers, rayservices/finalizers
-    Verbs: update
+  ServiceAccount: kuberay-operator
+  Binding: kuberay-operator (ClusterRoleBinding)
 
-  API Groups: "" (core)
-    Resources: pods, services, events, serviceaccounts
-    Verbs: create, delete, get, list, patch, update, watch
-    Resources: pods/status, services/status
-    Verbs: create, delete, get, list, patch, update, watch
+  Core Resources:
+  - pods, pods/status:        create, delete, get, list, patch, update, watch
+  - services, services/status: create, delete, get, list, patch, update, watch
+  - serviceaccounts:          create, delete, get, list, watch
+  - events:                   create, delete, get, list, patch, update, watch
 
-  API Groups: batch
-    Resources: jobs
-    Verbs: create, delete, get, list, patch, update, watch
+  Batch Resources:
+  - batch/jobs:               create, delete, get, list, patch, update, watch
 
-  API Groups: rbac.authorization.k8s.io
-    Resources: roles, rolebindings
-    Verbs: create, delete, get, list, update, watch
+  Networking:
+  - extensions/ingresses:     create, delete, get, list, patch, update, watch
+  - networking.k8s.io/ingresses:      create, delete, get, list, patch, update, watch
+  - networking.k8s.io/ingressclasses: get, list, watch
 
-  API Groups: networking.k8s.io
-    Resources: ingresses, ingressclasses
-    Verbs: create, delete, get, list, patch, update, watch
+  Ray CRDs:
+  - ray.io/rayclusters, /finalizers, /status:  full CRUD + watch
+  - ray.io/rayjobs, /finalizers, /status:      full CRUD + watch
+  - ray.io/rayservices, /finalizers, /status:  full CRUD + watch
 
-  API Groups: route.openshift.io
-    Resources: routes
-    Verbs: create, delete, get, list, patch, update, watch
+  RBAC (for autoscaler):
+  - rbac.authorization.k8s.io/roles:        create, delete, get, list, update, watch
+  - rbac.authorization.k8s.io/rolebindings: create, delete, get, list, watch
 
-  API Groups: coordination.k8s.io
-    Resources: leases
-    Verbs: create, get, list, update
+  OpenShift:
+  - route.openshift.io/routes: create, delete, get, list, patch, update, watch
 
-ClusterRole: kuberay-apiserver (optional)
-  API Groups: ray.io
-    Resources: rayclusters, rayjobs, rayservices
-    Verbs: create, delete, get, list, patch, update, watch
+  Leader Election:
+  - coordination.k8s.io/leases: create, get, list, update
 
-  API Groups: "" (core)
-    Resources: configmaps, namespaces, events
-    Verbs: create, delete, get, list, patch, update, watch
+Dynamically Created RBAC (per RayCluster with autoscaler):
+  Role: {cluster-name}
+  - pods:                 get, list, watch, patch
+  - ray.io/rayclusters:  get, patch
 
-ClusterRoleBindings:
-  - kuberay-operator → ServiceAccount: kuberay-operator
-  - kuberay-apiserver → ServiceAccount: kuberay-apiserver (optional)
+SecurityContextConstraints (OpenShift):
+================================================================================
 
-Security Context Constraints (OpenShift):
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-SCC: run-as-ray-user
-  Type: MustRunAs
-  Run As User: UID 1000
-  Purpose: Allows Ray pods to run as non-root user UID 1000
-
-Pod Security Standards:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Component: kuberay-operator
-  runAsNonRoot: true
-  allowPrivilegeEscalation: false
-  Capabilities: None (drop all)
-
-Component: kuberay-apiserver
-  runAsNonRoot: default (not specified)
-  allowPrivilegeEscalation: default
-  Capabilities: None specified
-
-Component: Ray head/worker pods
-  Security context: User-defined in RayCluster spec
-  Default UID: 1000 (enforced by OpenShift SCC)
-
-Secrets:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Secret: {raycluster}-image-pull-secret
-  Type: kubernetes.io/dockerconfigjson
-  Purpose: Pull private Ray container images from registry
-  Provisioned By: User (manual creation)
-  Auto-Rotate: No
-  Contents: Docker registry credentials
-
-Secret: {raycluster}-redis-password (optional)
-  Type: Opaque
-  Purpose: External Redis authentication for Ray GCS
-  Provisioned By: User (if using external Redis)
-  Auto-Rotate: No
-  Contents: Redis password
+  SCC: run-as-ray-user
+  - RunAsUser: MustRunAs (UID 1000)
+  - Purpose: Allows Ray pods to run as the ray user
 
 Authentication & Authorization:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+================================================================================
 
-Endpoint: /metrics (kuberay-operator:8080)
-  Methods: GET
-  Auth: None (unauthenticated metrics)
-  Enforcement: None
-  Policy: Public access for Prometheus scraping
+  Ray Dashboard API:
+  - Auth: NONE - No authentication on intra-cluster dashboard access
+  - WARNING: Dashboard is unauthenticated; rely on network policies and
+    ingress controls to restrict access
 
-Endpoint: /healthz, /readyz (kuberay-operator:8082)
-  Methods: GET
-  Auth: None (unauthenticated health checks)
-  Enforcement: None
-  Policy: Public access for Kubernetes probes
+  Kubernetes API:
+  - Auth: ServiceAccount Bearer Token
+  - Enforcement: API Server RBAC via ClusterRole/kuberay-operator
 
-Endpoint: APIServer HTTP/gRPC (8888/8887)
-  Methods: All (POST, GET, PUT, PATCH, DELETE)
-  Auth: Kubernetes RBAC
-  Enforcement: Kubernetes API Server
-  Policy: ClusterRole-based access control (kuberay-apiserver role)
+Secrets:
+================================================================================
 
-Endpoint: Ray Dashboard (8265)
-  Methods: All (HTTP)
-  Auth: None (default, can be configured)
-  Enforcement: Application-level (Ray)
-  Policy: User-configurable authentication
+  No secrets directly managed by the operator.
+  Redis passwords for GCS fault tolerance are passed via environment
+  variables in user-defined RayCluster specs.
 
-Endpoint: Ray GCS (6379)
-  Methods: TCP
-  Auth: None (internal cluster communication)
-  Enforcement: Network isolation (ClusterIP)
-  Policy: Trust within Ray cluster namespace
+Network Security Notes:
+================================================================================
 
-Network Policies (Recommended):
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Ingress Rules:
-  - Allow: Ingress/Route → Ray Head (8265/TCP) - Dashboard access
-  - Allow: Ingress/Route → Ray Serve (8000/TCP) - Serve endpoint
-  - Allow: Prometheus → KubeRay Operator (8080/TCP) - Metrics scraping
-  - Allow: Kubernetes API → KubeRay Operator (health probes)
-  - Allow: Ray Workers → Ray Head (6379/TCP) - GCS communication
-  - Allow: External clients → APIServer (8888/8887/TCP) - API access
-
-Egress Rules:
-  - Allow: KubeRay Operator → Kubernetes API (443/TCP) - Resource management
-  - Allow: Ray Pods → Container Registry (443/TCP) - Image pulls
-  - Allow: Ray Pods → External Storage (443/TCP) - Data access (optional)
-  - Allow: Ray Workers → Ray Head (6379/TCP) - Cluster coordination
-
-Feature Flags & Security Settings:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
---enable-leader-election: true
-  Purpose: Enable leader election for HA operator deployment
-  Security Impact: Prevents split-brain scenarios in multi-replica deployments
-
---reconcile-concurrency: 1
-  Purpose: Maximum concurrent reconcile loops
-  Security Impact: Limits resource consumption
-
---watch-namespace: "" (all namespaces)
-  Purpose: Comma-separated list of namespaces to watch
-  Security Impact: Can restrict operator scope for multi-tenancy
-
---forced-cluster-upgrade: false
-  Purpose: Enable forced cluster upgrade capability
-  Security Impact: Allows destructive operations if enabled
-
---enable-batch-scheduler: false
-  Purpose: Enable Volcano gang scheduler integration
-  Security Impact: Additional dependency and RBAC requirements
+  - No Service Mesh integration found
+  - No Network Policies defined by operator
+  - All Ray inter-node communication is plaintext (no mTLS)
+  - Ray Dashboard API is unauthenticated
+  - Operator ↔ K8s API is secured via TLS + SA token
+  - OpenShift Routes can enable edge TLS termination via annotations
