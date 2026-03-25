@@ -28,6 +28,11 @@ Examples:
 
 Generate a comprehensive architecture summary following these steps:
 
+**IMPORTANT - TOOL USAGE**:
+- Do NOT call `ToolSearch`. You already have access to: Bash, Read, Write, Glob, Grep.
+- When reading multiple files, use **parallel tool calls** — issue multiple Read/Glob/Grep calls in a single turn rather than one at a time. This dramatically reduces execution time.
+- Prefer Grep with `--include` patterns over Bash `grep` commands.
+
 **CRITICAL - SOURCE REFERENCE TRACKING**:
 You MUST maintain a running log of EVERY file you read or grep during analysis. For each file, record:
 - The **relative file path** from the repository root
@@ -223,31 +228,13 @@ Route                       // Any Route creation (check purpose: redirect vs pr
 **Service Mesh**: Istio PeerAuthentication, AuthorizationPolicy
 - Extract: mTLS settings, authorization rules
 
-### Step 5: Extract Git Information
+### Step 5: Git Information
 
-Use the Python script to get all git information in one call (version, branch, remote URL, and recent commits):
+Git metadata (version, branch, remote URL, recent commits) is **pre-gathered by the orchestrator** and included at the top of this prompt under "Pre-gathered Git Metadata". Use that data directly — do NOT run git commands to re-collect it.
 
+If the pre-gathered metadata section is missing (e.g., when running this skill manually), fall back to:
 ```bash
-python scripts/get_git_changes.py . --format=metadata --since="3 months ago" --limit=20
-```
-
-This single command provides:
-- **Version**: From `git describe --tags --always` (use this if --version not specified)
-- **Branch**: Current git branch
-- **Remote URL**: Repository URL
-- **Recent commits**: Last 20 commits for Recent Changes section
-
-**Example output**:
-```
-Repository: .
-Version: v0.15.2-45-ga1b2c3d
-Branch: main
-Remote: https://github.com/opendatahub-io/kserve.git
-
-Recent commits (20):
-  a1b2c3d Add new inference runtime
-  e4f5g6h Fix scaling issue
-  ...
+git describe --tags --always 2>/dev/null; git branch --show-current; git remote get-url origin 2>/dev/null; git log --oneline --no-merges -20
 ```
 
 ### Step 6: Generate GENERATED_ARCHITECTURE.md

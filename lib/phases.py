@@ -19,9 +19,44 @@ from lib.kustomize_context import get_component_kustomize_context, format_kustom
 from lib.agent_runner import run_agent, run_agents_concurrently, get_model_display_name, format_duration
 from lib.cli import resolve_script_path
 
-# Import collection script as module
+# Import scripts as modules
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from collect_architectures import collect_architectures, print_summary
+from get_git_changes import get_metadata as get_git_metadata
+
+
+def _format_git_context(checkout_path: Path) -> str:
+    """Gather git metadata from a checkout and format as prompt context.
+
+    This runs the same logic as ``scripts/get_git_changes.py --format=metadata``
+    but directly in the orchestrator so the agent doesn't need to run it.
+
+    Returns an empty string if the path is not a git repository.
+    """
+    git_dir = checkout_path / ".git"
+    if not git_dir.exists():
+        return ""
+
+    meta = get_git_metadata(checkout_path, since="3 months ago", limit=20)
+
+    lines = [
+        "## Pre-gathered Git Metadata",
+        "",
+        f"Version: {meta['version']}",
+        f"Branch: {meta['branch']}",
+        f"Remote: {meta['remote_url']}",
+        "",
+    ]
+
+    commits = meta.get("recent_commits", [])
+    if commits:
+        lines.append(f"Recent commits ({len(commits)}):")
+        for c in commits:
+            lines.append(f"  {c}")
+    else:
+        lines.append("Recent commits: (none in last 3 months)")
+
+    return "\n".join(lines)
 
 
 async def run_fetch_phase(args) -> None:
@@ -255,6 +290,11 @@ async def run_generate_architecture_phase(args) -> None:
                 kustomize_ctx, component.source_folder
             ) + "\n"
 
+        # Pre-gather git metadata so the agent doesn't have to
+        git_context = _format_git_context(component.checkout_path)
+        if git_context:
+            git_context += "\n"
+
         prompt = f"""Generate a comprehensive architecture summary for this component repository.
 
 Distribution: {distribution}
@@ -262,6 +302,7 @@ Repository: {component.repo_org}/{component.repo_name}
 Manifests folder: {component.source_folder}
 {build_context}
 {kustomize_context_str}
+{git_context}
 IMPORTANT: The manifests folder location shows where kustomize deployment manifests are located.
 This is critical for understanding how this component is deployed in production.
 
