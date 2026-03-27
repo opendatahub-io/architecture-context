@@ -130,77 +130,128 @@ async def run_generate_architecture_phase(args) -> None:
     print("PHASE 3: Generating component architectures")
     print("=" * 60 + "\n")
 
-    # Auto-detect org if not provided
-    org = args.org
-    if not org:
-        org = "opendatahub-io" if args.platform == "odh" else "red-hat-data-services"
+    # Handle direct repo path mode (bypasses all manifest parsing)
+    if hasattr(args, 'repo_path') and args.repo_path:
+        repo_path = Path(args.repo_path)
+        if not repo_path.exists():
+            print(f"ERROR: Repository path does not exist: {repo_path}")
+            return
 
-    # Auto-detect operator name
-    operator_name = "opendatahub-operator" if args.platform == "odh" else "rhods-operator"
+        # Determine component name
+        component_name = args.component if args.component else repo_path.name
 
-    # Resolve script path
-    script_path = resolve_script_path(
-        platform=args.platform,
-        org=org,
-        branch=args.branch,
-        checkouts_dir=args.checkouts_dir,
-        script_path=args.script_path,
-    )
-
-    # Process manifests to get component info
-    components = process_manifest_script(
-        script_path,
-        platform=args.platform,
-        checkouts_dir=None  # Auto-detect from script_path
-    )
-
-    # Also check the operator repository itself (it's not in COMPONENT_MANIFESTS)
-    # The operator is the central component that manages all other components
-    script_path_obj = Path(script_path)
-    operator_path = script_path_obj.parent
-
-    # Determine checkouts_dir from script path (needed for operator + adjacent discovery)
-    parts = script_path_obj.parts
-    if "checkouts" in parts:
-        checkouts_idx = parts.index("checkouts")
-        checkouts_dir = Path(*parts[:checkouts_idx+2])
-    else:
-        checkouts_dir = script_path_obj.parent.parent
-
-    if operator_path.exists():
-        # Check if operator has architecture file
-        operator_arch_file = operator_path / "GENERATED_ARCHITECTURE.md"
-        has_operator_arch = operator_arch_file.exists()
-
-        # Create ComponentInfo for the operator
-        operator_component = ComponentInfo(
-            key="operator",  # Special key for the operator
-            repo_org=org,
-            repo_name=operator_name,
-            ref="N/A",  # Not from manifest
-            source_folder="config",  # Standard operator config location
-            checkout_path=operator_path,
-            has_architecture=has_operator_arch
+        # Create a single component
+        from lib.manifest_parser import ComponentInfo
+        arch_file = repo_path / "GENERATED_ARCHITECTURE.md"
+        component = ComponentInfo(
+            key=component_name,
+            repo_org=args.org or "unknown",
+            repo_name=repo_path.name,
+            ref="N/A",
+            source_folder=".",
+            checkout_path=repo_path,
+            has_architecture=arch_file.exists()
         )
+        components = {component_name: component}
+        checkouts_dir = None
+        operator_path = None
+        build_info = None
+        print(f"Processing single repository: {repo_path}")
+        print(f"Component name: {component_name}\n")
+    else:
+        # Standard flow: use manifest parsing
+        # Auto-detect org if not provided (only for known platforms)
+        org = args.org
+        if not org and args.platform in ["odh", "rhoai"]:
+            org = "opendatahub-io" if args.platform == "odh" else "red-hat-data-services"
+            print(f"Auto-detected org: {org}")
+        elif not org:
+            print("WARNING: --org not specified and platform is not odh/rhoai, org auto-detection skipped")
+            print("         Specify --org explicitly or provide --script-path to manifest script")
 
-        # Add operator to components dict
-        components["operator"] = operator_component
+        # Auto-detect operator name (only for known platforms)
+        operator_name = None
+        if args.platform == "odh":
+            operator_name = "opendatahub-operator"
+        elif args.platform == "rhoai":
+            operator_name = "rhods-operator"
 
-    # Discover adjacent components from the checkout directory
-    # Only for RHOAI (red-hat-data-services) with a branch specified,
-    # since opendatahub-io has too many irrelevant repos
-    if args.platform == "rhoai" and args.branch:
-        adjacent = discover_adjacent_components(checkouts_dir, components, org)
-        if adjacent:
-            print(f"Discovered {len(adjacent)} adjacent component(s) beyond manifests")
-            components.update(adjacent)
+        # Resolve script path (only works for odh/rhoai with script_path detection)
+        script_path = None
+        if args.script_path:
+            script_path = args.script_path
+        elif args.platform in ["odh", "rhoai"]:
+            script_path = resolve_script_path(
+                platform=args.platform,
+                org=org,
+                branch=args.branch,
+                checkouts_dir=args.checkouts_dir,
+                script_path=None,
+            )
 
-    # Extract build metadata from RHOAI-Build-Config (RHOAI only)
-    build_info = get_build_info(checkouts_dir)
-    if build_info:
-        info = format_build_info_context(build_info)
-        if info:
-            print(info)
+        # Process manifests to get component info (only if script path is available)
+        components = {}
+        if script_path:
+            components = process_manifest_script(
+                script_path,
+                platform=args.platform,
+                checkouts_dir=None  # Auto-detect from script_path
+            )
+
+        # Determine checkouts_dir and operator_path from script path (if available)
+        checkouts_dir = None
+        operator_path = None
+        if script_path:
+            script_path_obj = Path(script_path)
+            operator_path = script_path_obj.parent
+
+            # Determine checkouts_dir from script path (needed for operator + adjacent discovery)
+            parts = script_path_obj.parts
+            if "checkouts" in parts:
+                checkouts_idx = parts.index("checkouts")
+                checkouts_dir = Path(*parts[:checkouts_idx+2])
+            else:
+                checkouts_dir = script_path_obj.parent.parent
+
+        # Also check the operator repository itself (it's not in COMPONENT_MANIFESTS)
+        # The operator is the central component that manages all other components
+        # Only add if we have operator_name and operator_path
+        if operator_name and operator_path and operator_path.exists():
+            # Check if operator has architecture file
+            operator_arch_file = operator_path / "GENERATED_ARCHITECTURE.md"
+            has_operator_arch = operator_arch_file.exists()
+
+            # Create ComponentInfo for the operator
+            operator_component = ComponentInfo(
+                key="operator",  # Special key for the operator
+                repo_org=org,
+                repo_name=operator_name,
+                ref="N/A",  # Not from manifest
+                source_folder="config",  # Standard operator config location
+                checkout_path=operator_path,
+                has_architecture=has_operator_arch
+            )
+
+            # Add operator to components dict
+            components["operator"] = operator_component
+
+        # Discover adjacent components from the checkout directory
+        # Only for RHOAI (red-hat-data-services) with a branch specified,
+        # since opendatahub-io has too many irrelevant repos
+        if args.platform == "rhoai" and args.branch and checkouts_dir and org:
+            adjacent = discover_adjacent_components(checkouts_dir, components, org)
+            if adjacent:
+                print(f"Discovered {len(adjacent)} adjacent component(s) beyond manifests")
+                components.update(adjacent)
+
+        # Extract build metadata from RHOAI-Build-Config (RHOAI only)
+        build_info = None
+        if checkouts_dir:
+            build_info = get_build_info(checkouts_dir)
+            if build_info:
+                info = format_build_info_context(build_info)
+                if info:
+                    print(info)
 
     if not components:
         print("No components found with checkouts")
@@ -271,8 +322,8 @@ async def run_generate_architecture_phase(args) -> None:
     # Prepare agent jobs
     jobs = []
     for component in sorted(missing_arch, key=lambda c: c.key):
-        # Determine distribution
-        distribution = args.platform  # "odh" or "rhoai"
+        # Determine distribution - use platform if provided, otherwise "unknown"
+        distribution = args.platform if args.platform else "unknown"
 
         # Build prompt from skill instructions
         model_display = get_model_display_name(args.model)
@@ -280,25 +331,28 @@ async def run_generate_architecture_phase(args) -> None:
         if build_info:
             build_context = format_build_info_context(build_info) + "\n"
 
-        # Get RHOAI kustomize overlay context for this component
+        # Get kustomize overlay context for this component (if operator_path available)
         kustomize_context_str = ""
-        kustomize_ctx = get_component_kustomize_context(
-            component.key, operator_path
-        )
-        if kustomize_ctx:
-            kustomize_context_str = format_kustomize_context(
-                kustomize_ctx, component.source_folder
-            ) + "\n"
+        if operator_path:
+            kustomize_ctx = get_component_kustomize_context(
+                component.key, operator_path
+            )
+            if kustomize_ctx:
+                kustomize_context_str = format_kustomize_context(
+                    kustomize_ctx, component.source_folder
+                ) + "\n"
 
         # Pre-gather git metadata so the agent doesn't have to
         git_context = _format_git_context(component.checkout_path)
         if git_context:
             git_context += "\n"
 
+        # Build distribution line - only include if platform was specified
+        distribution_line = f"Distribution: {distribution}\n" if args.platform else ""
+
         prompt = f"""Generate a comprehensive architecture summary for this component repository.
 
-Distribution: {distribution}
-Repository: {component.repo_org}/{component.repo_name}
+{distribution_line}Repository: {component.repo_org}/{component.repo_name}
 Manifests folder: {component.source_folder}
 {build_context}
 {kustomize_context_str}
