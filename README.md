@@ -179,15 +179,23 @@ This context is injected into Phase 3 agent prompts so they start analysis from 
 ## Requirements
 
 - Python 3.13+
-- `gh-org-clone` CLI tool
+- `gh-org-clone` CLI tool (auto-installed to `./bin` if not found in PATH)
+- Go (required only if `gh-org-clone` needs to be built)
 - `claude-agent-sdk` (installed via `uv sync`)
 - `pyyaml`
 - `ANTHROPIC_API_KEY` or Vertex AI credentials (see `.env.example`)
+- `GITHUB_TOKEN` (optional, recommended to avoid API rate limits — see `.env.example`)
 
 ## Setup
 
 ```bash
 uv sync
 cp .env.example .env
-# Edit .env with API credentials
+# Edit .env with API credentials and optionally add GITHUB_TOKEN
 ```
+
+**GitHub Token**: To avoid GitHub API rate limits when cloning many repositories, add a GitHub Personal Access Token to your `.env` file:
+```bash
+GITHUB_TOKEN=ghp_your_token_here
+```
+Create a token at https://github.com/settings/tokens with `repo` scope (for private repos) or `public_repo` scope (for public repos only).

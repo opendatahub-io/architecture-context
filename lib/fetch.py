@@ -6,6 +6,25 @@ import asyncio
 from pathlib import Path
 
 
+def _prepare_env() -> dict:
+    """
+    Prepare environment variables for subprocess calls.
+
+    Includes GITHUB_TOKEN if set in environment (e.g., from .env file).
+
+    Returns:
+        Dictionary of environment variables to pass to subprocess
+    """
+    env = os.environ.copy()
+
+    # GITHUB_TOKEN is already in env if loaded from .env file
+    # Just ensure it's present for subprocess calls
+    if "GITHUB_TOKEN" in env:
+        print("Using GITHUB_TOKEN from environment")
+
+    return env
+
+
 async def _ensure_gh_org_clone() -> str:
     """
     Ensure gh-org-clone is available, installing it if necessary.
@@ -37,6 +56,9 @@ async def _ensure_gh_org_clone() -> str:
 
     clone_dir = tmp_dir / "gh-org-clone"
 
+    # Prepare environment with GITHUB_TOKEN if available
+    env = _prepare_env()
+
     # Clone the repository if not already present
     if not clone_dir.exists():
         print(f"Cloning to {clone_dir}...")
@@ -46,6 +68,7 @@ async def _ensure_gh_org_clone() -> str:
             str(clone_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
@@ -62,6 +85,7 @@ async def _ensure_gh_org_clone() -> str:
         cwd=str(clone_dir),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=env,
     )
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
@@ -117,10 +141,14 @@ async def fetch_repositories(
 
     print(f"Running: {' '.join(cmd)}")
 
+    # Prepare environment with GITHUB_TOKEN if available
+    env = _prepare_env()
+
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=env,
     )
 
     stdout, stderr = await proc.communicate()
