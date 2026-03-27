@@ -104,7 +104,9 @@ def parse_args():
     )
     generate_arch_parser.add_argument(
         "--platform",
-        help="Platform/distribution type (e.g., odh, rhoai, aap, ansible, awx). Used for auto-detection and passed to agents as context."
+        choices=["odh", "rhoai"],
+        required=True,
+        help="Platform to process (odh or rhoai)"
     )
     generate_arch_parser.add_argument(
         "--org",
@@ -122,10 +124,6 @@ def parse_args():
     generate_arch_parser.add_argument(
         "--script-path",
         help="Override path to get_all_manifests.sh script (auto-detected if not provided)"
-    )
-    generate_arch_parser.add_argument(
-        "--repo-path",
-        help="Path to a single repository to process (bypasses manifest parsing). Use with --component to name it."
     )
     generate_arch_parser.add_argument(
         "--max-concurrent",
