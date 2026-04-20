@@ -22,7 +22,7 @@ KFP SDK was updated from 2.15 to 2.16 in RHOAI 3.4, shipped in the data-science-
 ## Impact on Strategies
 
 - Reference KFP SDK **2.16** for RHOAI 3.5 strategies 
-- Notebook images that bundle the KFP SDK (e.g., KALE workbench) should pin to 2.16
+- Notebook images will use KFP SDK 2.16
 - Acceptance criteria referencing SDK version should specify 2.16
 
 ## Context
