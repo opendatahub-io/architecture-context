@@ -1,6 +1,6 @@
 # Architecture Context Overlays
 
-Overlays are architectural patches that correct or extend the generated architecture docs. They capture facts that emerged between regeneration cycles — version bumps, maturity changes, dependency shifts, platform decisions — so consumers of this repo use current information even when the generated docs haven't caught up yet.
+Overlays are architecture updates that correct or extend the generated architecture docs. They capture facts that emerged between regeneration cycles — version bumps, maturity changes, dependency shifts, platform decisions — so consumers of this repo use current information even when the generated docs haven't caught up yet.
 
 Overlays are consumed by any tooling that reads from this repo (strategy pipelines, architecture reviews, design validation). Each consumer decides how to match and prioritize overlays in its own context.
 
