@@ -53,20 +53,6 @@ Why this overlay exists. Typically: the generated architecture docs reference
 an older state because the newer branch hasn't been analyzed yet.
 ```
 
-## Frontmatter Fields
-
-| Field | Required | Type | Description |
-|-------|----------|------|-------------|
-| `id` | Yes | string | Three-digit sequence number (`"001"`, `"002"`, ...) |
-| `title` | Yes | string | Short description of the architectural fact |
-| `status` | Yes | enum | `active` (consumers read it) or `superseded` (consumers ignore it) |
-| `created` | Yes | string | Date created (YYYY-MM-DD) |
-| `affects` | Yes | list | Component names from `architecture/*.md`. Use `platform` for platform-wide facts |
-| `release` | Yes | list | RHOAI release versions (e.g., `["3.5"]`). Use `["all"]` for timeless facts |
-| `provenance` | Yes | list | URLs to PRs, issues, or decisions establishing this fact |
-| `author` | Yes | string | Name of the person who created the overlay |
-| `superseded_by` | No | string | Explanation or link when marking as superseded |
-
 ## Naming Convention
 
 `NNN-short-kebab-description.md`
