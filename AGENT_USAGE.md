@@ -9,6 +9,9 @@ All generated architecture data lives under `./architecture/`. The `checkouts/` 
 ## Directory Layout
 
 ```
+overlays/                             # Architecture updates between regeneration cycles
+  README.md
+  NNNN-short-description.md
 architecture/
   rhoai-{version}/                  # One directory per analyzed version
     {component}.md                  # Component architecture document (structured markdown)
@@ -93,6 +96,27 @@ Each component has up to 6 diagram files in the `diagrams/` subdirectory:
 | `{component}-c4-context.dsl` | Structurizr DSL | C4 model context diagram showing external actors and systems |
 
 PNG renders (`*.png`) are pre-generated from the Mermaid sources.
+
+## Overlays (`overlays/`)
+
+Overlays are architecture updates that correct or extend the generated docs between regeneration cycles. When a version bump, maturity change, or dependency shift happens and the architecture docs haven't been regenerated yet, an overlay captures the fact so consumers use current information.
+
+```
+overlays/
+  README.md                              # Format docs, naming convention, lifecycle
+  0001-kfp-sdk-2.16-in-rhoai-3.4.md     # Example overlay
+```
+
+Each overlay is a Markdown file with YAML frontmatter (`status`, `affects`, `release`, `provenance`, `author`) and three body sections (`## Fact`, `## Impact on Strategies`, `## Context`).
+
+### How to use overlays
+
+- **Read active overlays before trusting generated docs**: check `overlays/*.md` for any with `status: active` that affect the components you're looking at. Active overlays take precedence over the generated architecture docs when they conflict.
+- **Filter by component**: the `affects` field lists which components an overlay applies to. Match against the component you're researching.
+- **Filter by release**: the `release` field scopes overlays to specific RHOAI versions. Use `"all"` for timeless facts.
+- **Ignore superseded overlays**: overlays with `status: superseded` have been absorbed into the regenerated docs and can be skipped.
+
+See `overlays/README.md` for the full format specification.
 
 ## The `checkouts/` Directory (Local Only)
 
