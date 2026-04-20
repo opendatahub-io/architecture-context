@@ -1,5 +1,5 @@
 ---
-id: "001"
+id: "0001"
 title: KFP SDK updated to 2.16 in RHOAI 3.4
 status: active
 created: 2026-04-20
@@ -17,7 +17,7 @@ superseded_by: null
 
 ## Fact
 
-KFP SDK was updated from 2.15 to 2.16 in RHOAI 3.4, shipped in the data-science-pipelines-operator via PR #1007.
+KFP SDK was updated from 2.5 to 2.16 in RHOAI 3.4, shipped in the data-science-pipelines-operator via PR #1007.
 
 ## Impact on Strategies
 

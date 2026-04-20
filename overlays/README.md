@@ -23,7 +23,7 @@ Each overlay is a Markdown file with YAML frontmatter:
 
 ```yaml
 ---
-id: "001"
+id: "0001"
 title: Short description of the fact
 status: active                    # active | superseded
 created: 2026-04-20
@@ -55,15 +55,15 @@ an older state because the newer branch hasn't been analyzed yet.
 
 ## Naming Convention
 
-`NNN-short-kebab-description.md`
+`NNNN-short-kebab-description.md`
 
-- `NNN`: Zero-padded three-digit sequence number (insertion order)
+- `NNNN`: Zero-padded four-digit sequence number (insertion order)
 - Description: Kebab-case summary of the fact
 
 Examples:
-- `001-kfp-sdk-2.16-in-rhoai-3.5.md`
-- `002-kale-dev-preview-rhoai-3.5.md`
-- `003-gateway-api-replaces-istio-ingress.md`
+- `0001-kfp-sdk-2.16-in-rhoai-3.5.md`
+- `0002-kale-dev-preview-rhoai-3.5.md`
+- `0003-gateway-api-replaces-istio-ingress.md`
 
 ## Matching
 
