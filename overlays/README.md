@@ -1,6 +1,8 @@
 # Architecture Context Overlays
 
-Overlays are architectural patches that apply across all strategy documents. They capture facts that emerged between architecture context regeneration cycles — version bumps, maturity changes, dependency shifts, platform decisions — so the strategy pipeline uses current information even when the generated architecture docs haven't caught up yet.
+Overlays are architectural patches that correct or extend the generated architecture docs. They capture facts that emerged between regeneration cycles — version bumps, maturity changes, dependency shifts, platform decisions — so consumers of this repo use current information even when the generated docs haven't caught up yet.
+
+Overlays are consumed by any tooling that reads from this repo (strategy pipelines, architecture reviews, design validation). Each consumer decides how to match and prioritize overlays in its own context.
 
 ## When to Write an Overlay
 
@@ -8,23 +10,12 @@ Write an overlay when:
 - A component version changed (e.g., SDK bump, upstream release)
 - A feature's maturity level shifted (e.g., Dev Preview, GA)
 - A dependency was added, removed, or deprecated
-- A platform-wide decision was made that affects multiple strategies
+- A platform-wide decision was made that affects multiple components
 - The generated architecture docs are missing or wrong about something
 
 Do **not** write an overlay for:
-- Strategy-specific corrections — use `## Staff Engineer Input` in the strategy file
 - Information already in the current architecture docs — overlays patch gaps, not duplicates
-
-## Priority Chain
-
-Overlays sit in the middle of the input priority chain for strategy refinement:
-
-1. **Staff Engineer Input** — per-strategy, human-authored (highest priority)
-2. **Architecture Context Overlays** — cross-strategy corrections (this)
-3. **Removed RFE Context** — per-RFE implementation details
-4. **Architecture Context** — generated platform docs (lowest priority)
-
-Staff Engineer Input in a specific strategy can override an overlay. Overlays override the generated architecture context.
+- Corrections scoped to a single downstream artifact — handle those in the consuming tool
 
 ## File Format
 
@@ -43,7 +34,7 @@ release:                          # RHOAI releases this applies to
   - "3.5"                         # use "all" for timeless facts
 provenance:                       # links to PRs, issues, decisions
   - https://github.com/org/repo/pull/123
-author: Your Name                   # who created this overlay
+author: Your Name                 # who created this overlay
 superseded_by: null               # set when status changes to superseded
 ---
 
@@ -53,7 +44,7 @@ What changed, in 1-3 sentences. Include the specific version, PR, or decision.
 
 ## Impact on Strategies
 
-- Bullet list of what strategies should do differently
+- Bullet list of how this affects downstream consumers
 - Be specific: "use X, not Y" rather than "update references"
 
 ## Context
@@ -68,9 +59,9 @@ an older state because the newer branch hasn't been analyzed yet.
 |-------|----------|------|-------------|
 | `id` | Yes | string | Three-digit sequence number (`"001"`, `"002"`, ...) |
 | `title` | Yes | string | Short description of the architectural fact |
-| `status` | Yes | enum | `active` (pipeline reads it) or `superseded` (pipeline ignores it) |
+| `status` | Yes | enum | `active` (consumers read it) or `superseded` (consumers ignore it) |
 | `created` | Yes | string | Date created (YYYY-MM-DD) |
-| `affects` | Yes | list | Component names from `architecture/*.md`. Use `platform` for all strategies |
+| `affects` | Yes | list | Component names from `architecture/*.md`. Use `platform` for platform-wide facts |
 | `release` | Yes | list | RHOAI release versions (e.g., `["3.5"]`). Use `["all"]` for timeless facts |
 | `provenance` | Yes | list | URLs to PRs, issues, or decisions establishing this fact |
 | `author` | Yes | string | Name of the person who created the overlay |
@@ -88,21 +79,19 @@ Examples:
 - `002-kale-dev-preview-rhoai-3.5.md`
 - `003-gateway-api-replaces-istio-ingress.md`
 
-## Pipeline Matching
+## Matching
 
-The strategy pipeline matches overlays to strategies using **component intersection**:
+Consumers match overlays using the frontmatter fields:
 
-1. Read all overlay files with `status: active`
-2. Filter by `release` — overlay's release list must include the target release or `"all"`
-3. Match `affects` — overlay's component list must intersect with the strategy's Affected Components table
-4. Overlays with `affects: [platform]` match all strategies
-
-Matched overlays' `## Fact` and `## Impact on Strategies` sections are injected into the refinement and review context.
+1. **Status**: Only `active` overlays are consumed
+2. **Release**: Filter by target release version or `"all"`
+3. **Component**: Match `affects` list against the components relevant to the consumer's task
+4. Overlays with `affects: [platform]` apply to all components
 
 ## Lifecycle
 
-- **active**: The pipeline reads and applies this overlay during refine and review
-- **superseded**: The architecture context has caught up (regenerated with the correct information). Change `status` to `superseded`, set `superseded_by` to explain why. The file stays for audit trail; the pipeline ignores it.
+- **active**: Consumers read and apply this overlay
+- **superseded**: The architecture context has caught up (regenerated with the correct information). Change `status` to `superseded`, set `superseded_by` to explain why. The file stays for audit trail; consumers ignore it.
 
 Mark an overlay superseded when:
 - The architecture context is regenerated and includes the fact
