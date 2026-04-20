@@ -27,4 +27,4 @@ KFP SDK was updated from 2.15 to 2.16 in RHOAI 3.4, shipped in the data-science-
 
 ## Context
 
-The architecture context docs were generated from rhoai-3.4 branches and still reference KFP SDK 2.15. The 3.5 branch has not been analyzed yet. This overlay bridges the gap until the architecture context is regenerated for 3.5.
+The latest architecture context docs (rhoai-3.4-ea.2) reference KFP SDK 2.15 in `notebooks.md`. This overlay corrects that to 2.16 per the upstream PR merged into data-science-pipelines-operator.
