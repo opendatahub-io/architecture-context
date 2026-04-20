@@ -43,6 +43,7 @@ release:                          # RHOAI releases this applies to
   - "3.5"                         # use "all" for timeless facts
 provenance:                       # links to PRs, issues, decisions
   - https://github.com/org/repo/pull/123
+author: Your Name                   # who created this overlay
 superseded_by: null               # set when status changes to superseded
 ---
 
@@ -72,6 +73,7 @@ an older state because the newer branch hasn't been analyzed yet.
 | `affects` | Yes | list | Component names from `architecture/*.md`. Use `platform` for all strategies |
 | `release` | Yes | list | RHOAI release versions (e.g., `["3.5"]`). Use `["all"]` for timeless facts |
 | `provenance` | Yes | list | URLs to PRs, issues, or decisions establishing this fact |
+| `author` | Yes | string | Name of the person who created the overlay |
 | `superseded_by` | No | string | Explanation or link when marking as superseded |
 
 ## Naming Convention

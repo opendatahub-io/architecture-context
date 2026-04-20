@@ -1,6 +1,6 @@
 ---
 id: "001"
-title: KFP SDK updated to 2.16 in RHOAI 3.5
+title: KFP SDK updated to 2.16 in RHOAI 3.4
 status: active
 created: 2026-04-20
 affects:
@@ -8,9 +8,10 @@ affects:
   - data-science-pipelines-operator
   - notebooks
 release:
-  - "3.5"
+  - "3.4"
 provenance:
   - https://github.com/opendatahub-io/data-science-pipelines-operator/pull/1007
+author: Eder Ignatowicz
 superseded_by: null
 ---
 
@@ -20,8 +21,7 @@ KFP SDK was updated from 2.15 to 2.16 in RHOAI 3.4, shipped in the data-science-
 
 ## Impact on Strategies
 
-- Reference KFP SDK **2.16**, not 2.15, for RHOAI 3.5 strategies
-- The v2beta1 REST API surface is unchanged; the SDK update is a client-side change
+- Reference KFP SDK **2.16**, not 2.15, for RHOAI 3.5 strategies 
 - Notebook images that bundle the KFP SDK (e.g., KALE workbench) should pin to 2.16
 - Acceptance criteria referencing SDK version should specify 2.16
 
