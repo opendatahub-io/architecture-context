@@ -27,6 +27,8 @@ class ComponentInfo:
     source_folder: str  # Folder within repo
     checkout_path: Optional[Path] = None  # Path to local checkout
     has_architecture: bool = False  # Whether GENERATED_ARCHITECTURE.md exists
+    repo_url: Optional[str] = None  # Full GitHub URL
+    checkout_branch: Optional[str] = None  # Branch checked out locally
 
 
 def parse_manifest_array(content: str, array_name: str) -> Dict[str, ComponentInfo]:

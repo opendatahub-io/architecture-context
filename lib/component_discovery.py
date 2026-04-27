@@ -2,11 +2,27 @@
 
 import json
 import fnmatch
+import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
 from lib.manifest_parser import ComponentInfo
+
+
+def _detect_checkout_branch(checkout_path: Path) -> Optional[str]:
+    """Read the current branch from a git checkout."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=checkout_path,
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip() or None
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return None
 
 
 def write_component_map(
@@ -38,13 +54,23 @@ def write_component_map(
 
     component_data = {}
     for key, comp in components.items():
+        repo_url = comp.repo_url
+        if not repo_url and comp.repo_org and comp.repo_name:
+            repo_url = f"https://github.com/{comp.repo_org}/{comp.repo_name}"
+
+        checkout_branch = comp.checkout_branch
+        if not checkout_branch and comp.checkout_path:
+            checkout_branch = _detect_checkout_branch(comp.checkout_path)
+
         component_data[key] = {
             "key": comp.key,
             "repo_org": comp.repo_org,
             "repo_name": comp.repo_name,
+            "repo_url": repo_url,
             "ref": comp.ref,
             "source_folder": comp.source_folder,
             "checkout_path": str(comp.checkout_path) if comp.checkout_path else None,
+            "checkout_branch": checkout_branch,
             "has_architecture": comp.has_architecture,
         }
 
@@ -99,7 +125,9 @@ def read_component_map(
             ref=comp_data.get("ref"),
             source_folder=comp_data.get("source_folder"),
             checkout_path=Path(comp_data["checkout_path"]) if comp_data.get("checkout_path") else None,
-            has_architecture=comp_data.get("has_architecture", False)
+            has_architecture=comp_data.get("has_architecture", False),
+            repo_url=comp_data.get("repo_url"),
+            checkout_branch=comp_data.get("checkout_branch"),
         )
 
     return components
