@@ -25,6 +25,10 @@ Examples:
 /repo-to-architecture-summary ./kserve --distribution=rhoai --version=3.3
 ```
 
+## Output File
+
+**The output file MUST be named exactly `GENERATED_ARCHITECTURE.md`** — not `ARCHITECTURE_SUMMARY.md`, not `architecture.md`, not any other name. The filename is required by downstream tooling (collect, validate, platform aggregation). Write to `GENERATED_ARCHITECTURE.md` in the repository root.
+
 ## Instructions
 
 Generate a comprehensive architecture summary following these steps:
