@@ -165,28 +165,12 @@ def parse_args():
     generate_arch_parser.add_argument(
         "--platform",
         required=True,
-        help="Platform identifier from platforms.yaml (e.g., 'odh', 'rhoai-3.4')"
+        help="Platform identifier matching architecture/<platform>/component-map.json (e.g., 'rhoai', 'rhoai-3.4')"
     )
     generate_arch_parser.add_argument(
-        "--org",
-        help="GitHub organization name (auto-detected if not provided)"
-    )
-    generate_arch_parser.add_argument(
-        "--branch",
-        help="Branch name if using versioned checkout (e.g., rhoai-2.14)"
-    )
-    generate_arch_parser.add_argument(
-        "--suffix",
-        help="Directory suffix for the org checkout (e.g., --suffix=head -> <org>.head/). Defaults to branch name when --branch is set."
-    )
-    generate_arch_parser.add_argument(
-        "--checkouts-dir",
-        default="checkouts",
-        help="Base directory containing cloned repositories (default: checkouts)"
-    )
-    generate_arch_parser.add_argument(
-        "--script-path",
-        help="Override path to get_all_manifests.sh script (auto-detected if not provided)"
+        "--architecture-dir",
+        default="architecture",
+        help="Base architecture directory containing component-map.json files (default: architecture)"
     )
     generate_arch_parser.add_argument(
         "--max-concurrent",

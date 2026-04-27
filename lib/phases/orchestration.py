@@ -68,11 +68,7 @@ async def run_all_phases(args) -> None:
     max_concurrent = getattr(args, 'max_concurrent', 5)
     generate_arch_args = Namespace(
         platform=args.platform,
-        org=org,
-        branch=getattr(args, 'branch', None),
-        suffix=getattr(args, 'suffix', None),
-        checkouts_dir="checkouts",
-        script_path=None,
+        architecture_dir="architecture",
         max_concurrent=max_concurrent,
         limit=None,
         component=None,

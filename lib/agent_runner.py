@@ -177,6 +177,7 @@ async def run_agents_concurrently(
     log_dir: Path,
     model: str,
     max_concurrent: int,
+    enable_skills: bool = False,
 ) -> list:
     """
     Run multiple agent jobs with a concurrency limit.
@@ -189,6 +190,7 @@ async def run_agents_concurrently(
         log_dir: Directory for agent log files
         model: Model shorthand (sonnet, opus, haiku)
         max_concurrent: Max agents running at once
+        enable_skills: If True, enable Skill tool and load skills from filesystem
 
     Returns:
         List of result dicts (or Exceptions) in the same order as jobs
@@ -202,7 +204,8 @@ async def run_agents_concurrently(
                   f"waiting for slot ...")
         async with semaphore:
             return await run_agent(
-                job["name"], job["cwd"], job["prompt"], log_dir, model
+                job["name"], job["cwd"], job["prompt"], log_dir, model,
+                enable_skills=enable_skills,
             )
 
     print("Starting agent execution...\n")

@@ -1,18 +1,12 @@
 """Phase 3: Generate component architecture documentation."""
 
-import re
 import sys
 from pathlib import Path
 
-from lib.manifest_parser import (
-    ComponentInfo,
-    process_manifest_script,
-    discover_adjacent_components,
-)
+from lib.component_discovery import read_component_map, get_component_map_metadata
 from lib.build_info import get_build_info, format_build_info_context
 from lib.kustomize_context import get_component_kustomize_context, format_kustomize_context
 from lib.agent_runner import run_agents_concurrently, get_model_display_name, format_duration
-from lib.cli import resolve_script_path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
 from get_git_changes import get_metadata as get_git_metadata
@@ -58,74 +52,36 @@ async def run_generate_architecture_phase(args) -> None:
     print("PHASE 3: Generating component architectures")
     print("=" * 60 + "\n")
 
-    # Auto-detect org if not provided
-    org = args.org
-    if not org:
-        org = "opendatahub-io" if args.platform == "odh" else "red-hat-data-services"
+    architecture_dir = getattr(args, 'architecture_dir', 'architecture')
 
-    # Auto-detect operator name
-    operator_name = "opendatahub-operator" if args.platform == "odh" else "rhods-operator"
+    # Load components from component-map.json
+    components = read_component_map(args.platform, architecture_dir=architecture_dir)
+    if components is None:
+        print(f"ERROR: No component-map.json found for platform '{args.platform}'")
+        print(f"Expected: {architecture_dir}/{args.platform}/component-map.json")
+        print(f"\nRun discover-components first:")
+        print(f"  uv run main.py discover-components --platform={args.platform}")
+        return
 
-    # Resolve script path
-    script_path = resolve_script_path(
-        platform=args.platform,
-        org=org,
-        branch=args.branch,
-        suffix=getattr(args, 'suffix', None),
-        checkouts_dir=args.checkouts_dir,
-        script_path=args.script_path,
-    )
+    # Load metadata for checkouts_dir and version info
+    metadata = get_component_map_metadata(args.platform, architecture_dir=architecture_dir) or {}
 
-    # Process manifests to get component info
-    components = process_manifest_script(
-        script_path,
-        platform=args.platform,
-        checkouts_dir=None  # Auto-detect from script_path
-    )
+    # Derive distribution from platform (strip version suffix)
+    distribution = args.platform.split("-")[0] if "-" in args.platform else args.platform
 
-    # Also check the operator repository itself (it's not in COMPONENT_MANIFESTS)
-    # The operator is the central component that manages all other components
-    script_path_obj = Path(script_path)
-    operator_path = script_path_obj.parent
+    # Find the operator component for kustomize context
+    operator_path = None
+    for key in ("rhods-operator", "opendatahub-operator"):
+        if key in components and components[key].checkout_path:
+            operator_path = components[key].checkout_path
+            break
 
-    # Determine checkouts_dir from script path (needed for operator + adjacent discovery)
-    parts = script_path_obj.parts
-    if "checkouts" in parts:
-        checkouts_idx = parts.index("checkouts")
-        checkouts_dir = Path(*parts[:checkouts_idx+2])
-    else:
-        checkouts_dir = script_path_obj.parent.parent
-
-    if operator_path.exists():
-        # Check if operator has architecture file
-        operator_arch_file = operator_path / "GENERATED_ARCHITECTURE.md"
-        has_operator_arch = operator_arch_file.exists()
-
-        # Create ComponentInfo for the operator
-        operator_component = ComponentInfo(
-            key="operator",  # Special key for the operator
-            repo_org=org,
-            repo_name=operator_name,
-            ref="N/A",  # Not from manifest
-            source_folder="config",  # Standard operator config location
-            checkout_path=operator_path,
-            has_architecture=has_operator_arch
-        )
-
-        # Add operator to components dict
-        components["operator"] = operator_component
-
-    # Discover adjacent components from the checkout directory
-    # Only for RHOAI (red-hat-data-services) with a branch specified,
-    # since opendatahub-io has too many irrelevant repos
-    if args.platform == "rhoai" and args.branch:
-        adjacent = discover_adjacent_components(checkouts_dir, components, org)
-        if adjacent:
-            print(f"Discovered {len(adjacent)} adjacent component(s) beyond manifests")
-            components.update(adjacent)
+    # Derive checkouts_dir from metadata (first entry if comma-separated)
+    checkouts_dir_str = metadata.get("checkouts_dir", "")
+    checkouts_dir = Path(checkouts_dir_str.split(",")[0]) if checkouts_dir_str else None
 
     # Extract build metadata from RHOAI-Build-Config (RHOAI only)
-    build_info = get_build_info(checkouts_dir)
+    build_info = get_build_info(checkouts_dir) if checkouts_dir and checkouts_dir.exists() else None
     if build_info:
         info = format_build_info_context(build_info)
         if info:
@@ -137,25 +93,24 @@ async def run_generate_architecture_phase(args) -> None:
 
     # Apply component filter if specified
     if args.component:
-        # Create alias mapping for operator
-        component_aliases = {
-            'rhods-operator': 'operator',
-            'opendatahub-operator': 'operator',
-        }
-
-        # Resolve alias to actual key
-        target_key = component_aliases.get(args.component, args.component)
-
-        if target_key in components:
-            components = {target_key: components[target_key]}
-            if target_key != args.component:
-                print(f"Using alias: {args.component} -> {target_key}")
-            print(f"Filtered to single component: {target_key}\n")
+        if args.component in components:
+            components = {args.component: components[args.component]}
+            print(f"Filtered to single component: {args.component}\n")
         else:
             print(f"ERROR: Component '{args.component}' not found")
             print(f"Available components: {', '.join(sorted(components.keys()))}")
-            print(f"Available aliases: {', '.join(sorted(component_aliases.keys()))}")
             return
+
+    # Filter to components with actual checkouts on disk
+    components = {
+        k: v for k, v in components.items()
+        if v.checkout_path and v.checkout_path.exists()
+    }
+
+    # Refresh has_architecture from filesystem (component-map may be stale)
+    for component in components.values():
+        arch_file = component.checkout_path / "GENERATED_ARCHITECTURE.md"
+        component.has_architecture = arch_file.exists()
 
     # Handle --force: delete existing GENERATED_ARCHITECTURE.md files
     if args.force:
@@ -181,69 +136,43 @@ async def run_generate_architecture_phase(args) -> None:
         print("All components already have architecture documentation!")
         return
 
-    # Read the skill prompt template
-    skill_path = Path(".claude/skills/repo-to-architecture-summary/SKILL.md")
-    if not skill_path.exists():
-        print(f"ERROR: Skill file not found: {skill_path}")
-        return
-
-    skill_content = skill_path.read_text()
-
-    # Extract the instructions section (everything after "## Instructions")
-    instructions_match = re.search(r'## Instructions\n\n(.+)', skill_content, re.DOTALL)
-    if not instructions_match:
-        print("ERROR: Could not extract instructions from skill file")
-        return
-
-    instructions = instructions_match.group(1).strip()
-
     # Prepare agent jobs
     jobs = []
     for component in sorted(missing_arch, key=lambda c: c.key):
-        # Determine distribution
-        distribution = args.platform  # "odh" or "rhoai"
-
-        # Build prompt from skill instructions
         model_display = get_model_display_name(args.model)
-        build_context = ""
-        if build_info:
-            build_context = format_build_info_context(build_info) + "\n"
 
-        # Get RHOAI kustomize overlay context for this component
-        kustomize_context_str = ""
+        # Build context preamble with pre-gathered metadata
+        context_parts = []
+
+        if build_info:
+            ctx = format_build_info_context(build_info)
+            if ctx:
+                context_parts.append(ctx)
+
         kustomize_ctx = get_component_kustomize_context(
             component.key, operator_path
         )
         if kustomize_ctx:
-            kustomize_context_str = format_kustomize_context(
-                kustomize_ctx, component.source_folder
-            ) + "\n"
+            ctx = format_kustomize_context(kustomize_ctx, component.source_folder)
+            if ctx:
+                context_parts.append(ctx)
 
-        # Pre-gather git metadata so the agent doesn't have to
         git_context = _format_git_context(component.checkout_path)
         if git_context:
-            git_context += "\n"
+            context_parts.append(git_context)
 
-        prompt = f"""Generate a comprehensive architecture summary for this component repository.
+        context_block = "\n\n".join(context_parts)
+        if context_block:
+            context_block = f"\n\n{context_block}\n"
+
+        prompt = f"""The following context has been pre-gathered for this component:
 
 Distribution: {distribution}
 Repository: {component.repo_org}/{component.repo_name}
 Manifests folder: {component.source_folder}
-{build_context}
-{kustomize_context_str}
-{git_context}
-IMPORTANT: The manifests folder location shows where kustomize deployment manifests are located.
-This is critical for understanding how this component is deployed in production.
-
-IMPORTANT: For the "Generated By" metadata field, use exactly: {model_display}
-
-{instructions}
-"""
-
-        # Write the prompt to GENERATED_ARCHITECTURE_PROMPT.md alongside
-        # where GENERATED_ARCHITECTURE.md will be created
-        prompt_file = component.checkout_path / "GENERATED_ARCHITECTURE_PROMPT.md"
-        prompt_file.write_text(prompt)
+Generated By (use this exact string in Metadata): {model_display}
+{context_block}
+/repo-to-architecture-summary . --distribution={distribution}"""
 
         job = {
             "name": f"{component.key}",
@@ -276,7 +205,9 @@ IMPORTANT: For the "Generated By" metadata field, use exactly: {model_display}
     print(f"Model: {args.model}")
     print(f"{'=' * 60}\n")
 
-    results = await run_agents_concurrently(jobs, log_dir, args.model, args.max_concurrent)
+    results = await run_agents_concurrently(
+        jobs, log_dir, args.model, args.max_concurrent, enable_skills=True,
+    )
 
     # Summary
     successful = [r for r in results if isinstance(r, dict) and r.get("success")]
