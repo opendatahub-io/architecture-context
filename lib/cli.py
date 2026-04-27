@@ -88,9 +88,8 @@ def parse_args():
     )
     manifest_parser.add_argument(
         "--platform",
-        choices=["odh", "rhoai"],
         required=True,
-        help="Platform to parse (odh or rhoai)"
+        help="Platform identifier from platforms.yaml (e.g., 'odh', 'rhoai-3.4')"
     )
     manifest_parser.add_argument(
         "--org",
@@ -165,9 +164,8 @@ def parse_args():
     )
     generate_arch_parser.add_argument(
         "--platform",
-        choices=["odh", "rhoai"],
         required=True,
-        help="Platform to process (odh or rhoai)"
+        help="Platform identifier from platforms.yaml (e.g., 'odh', 'rhoai-3.4')"
     )
     generate_arch_parser.add_argument(
         "--org",
@@ -238,9 +236,8 @@ def parse_args():
     )
     collect_parser.add_argument(
         "--platform",
-        choices=["odh", "rhoai", "all"],
         default="all",
-        help="Which platform to collect (default: all)"
+        help="Platform to collect, or 'all' (default: all)"
     )
     collect_parser.add_argument(
         "--version",
@@ -264,7 +261,6 @@ def parse_args():
     )
     platform_arch_parser.add_argument(
         "--platform",
-        choices=["odh", "rhoai"],
         help="Only process this platform (default: all)"
     )
     platform_arch_parser.add_argument(
@@ -301,7 +297,6 @@ def parse_args():
     )
     diagrams_parser.add_argument(
         "--platform",
-        choices=["odh", "rhoai"],
         help="Only process this platform (default: all)"
     )
     diagrams_parser.add_argument(
@@ -338,9 +333,8 @@ def parse_args():
     )
     all_parser.add_argument(
         "--platform",
-        choices=["odh", "rhoai"],
         default="odh",
-        help="Platform to process (default: odh)"
+        help="Platform identifier from platforms.yaml (default: odh)"
     )
     all_parser.add_argument(
         "--org",

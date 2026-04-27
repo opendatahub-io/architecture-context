@@ -20,55 +20,54 @@ async def run_generate_platform_architecture_phase(args) -> None:
         print(f"Run 'collect-architectures' first to organize component files")
         return
 
-    # Discover platform-version directories
-    # Pattern: architecture/odh-3.3.0, architecture/rhoai-2.25.0
+    # Discover platform directories
     platform_dirs = []
     for item in architecture_dir.iterdir():
-        if item.is_dir():
-            # Parse directory name: <platform>-<version>
-            match = re.match(r'^(odh|rhoai)-(.+)$', item.name)
-            if match:
-                platform = match.group(1)
-                version = match.group(2)
+        if not item.is_dir():
+            continue
 
-                # Check if PLATFORM.md already exists
-                platform_md = item / "PLATFORM.md"
-                has_platform_md = platform_md.exists()
+        # Parse directory name: <platform> or <platform>-<version>
+        match = re.match(r'^(.+?)-(\d.*)$', item.name)
+        if match:
+            platform = match.group(1)
+            version = match.group(2)
+        else:
+            platform = item.name
+            version = None
 
-                # Check if there are component architecture files
-                component_files = [
-                    f for f in item.glob("*.md")
-                    if f.name not in ["README.md", "PLATFORM.md"]
-                ]
+        platform_md = item / "PLATFORM.md"
+        has_platform_md = platform_md.exists()
 
-                # Check if any component files are newer than PLATFORM.md
-                needs_generation = False
-                if not has_platform_md and len(component_files) > 0:
+        component_files = [
+            f for f in item.glob("*.md")
+            if f.name not in ["README.md", "PLATFORM.md"]
+        ]
+
+        needs_generation = False
+        if not has_platform_md and len(component_files) > 0:
+            needs_generation = True
+        elif has_platform_md and len(component_files) > 0:
+            platform_mtime = platform_md.stat().st_mtime
+            for comp_file in component_files:
+                if comp_file.stat().st_mtime > platform_mtime:
                     needs_generation = True
-                elif has_platform_md and len(component_files) > 0:
-                    # Check if any component file is newer than PLATFORM.md
-                    platform_mtime = platform_md.stat().st_mtime
-                    for comp_file in component_files:
-                        if comp_file.stat().st_mtime > platform_mtime:
-                            needs_generation = True
-                            # Delete stale PLATFORM.md (agents are bad at editing)
-                            print(f"  Deleting stale PLATFORM.md for {platform}-{version} (component files updated)")
-                            platform_md.unlink()
-                            has_platform_md = False
-                            break
+                    label = f"{platform}-{version}" if version else platform
+                    print(f"  Deleting stale PLATFORM.md for {label} (component files updated)")
+                    platform_md.unlink()
+                    has_platform_md = False
+                    break
 
-                platform_dirs.append({
-                    'platform': platform,
-                    'version': version,
-                    'path': item,
-                    'has_platform_md': has_platform_md,
-                    'component_count': len(component_files),
-                    'needs_generation': needs_generation
-                })
+        platform_dirs.append({
+            'platform': platform,
+            'version': version,
+            'path': item,
+            'has_platform_md': has_platform_md,
+            'component_count': len(component_files),
+            'needs_generation': needs_generation
+        })
 
     if not platform_dirs:
-        print(f"No platform-version directories found in {architecture_dir}")
-        print(f"Expected format: {architecture_dir}/odh-3.3.0, {architecture_dir}/rhoai-2.25.0")
+        print(f"No platform directories found in {architecture_dir}")
         return
 
     # Apply platform/version filters if specified
@@ -91,7 +90,10 @@ async def run_generate_platform_architecture_phase(args) -> None:
     already_has = [p for p in platform_dirs if p['has_platform_md']]
     no_components = [p for p in platform_dirs if p['component_count'] == 0]
 
-    print(f"Found {len(platform_dirs)} platform-version director(ies):")
+    def _label(p):
+        return f"{p['platform']}-{p['version']}" if p['version'] else p['platform']
+
+    print(f"Found {len(platform_dirs)} platform director(ies):")
     print(f"  Already has PLATFORM.md: {len(already_has)}")
     print(f"  Needs PLATFORM.md: {len(needs_generation)}")
     print(f"  No components: {len(no_components)}")
@@ -100,13 +102,13 @@ async def run_generate_platform_architecture_phase(args) -> None:
     if already_has:
         print("Platforms with PLATFORM.md:")
         for p in already_has:
-            print(f"  + {p['platform']}-{p['version']} ({p['component_count']} components)")
+            print(f"  + {_label(p)} ({p['component_count']} components)")
         print()
 
     if no_components:
         print("Platforms with no components:")
         for p in no_components:
-            print(f"  ! {p['platform']}-{p['version']}")
+            print(f"  ! {_label(p)}")
         print()
 
     if not needs_generation:
@@ -132,10 +134,10 @@ async def run_generate_platform_architecture_phase(args) -> None:
     # Prepare agent jobs
     checkouts_base = Path(getattr(args, 'checkouts_dir', 'checkouts'))
     jobs = []
-    for p in sorted(needs_generation, key=lambda x: (x['platform'], x['version'])):
+    for p in sorted(needs_generation, key=lambda x: (x['platform'], x['version'] or '')):
         # Look up supported OCP versions from build-config in checkouts
         build_context = ""
-        if p['platform'] == 'rhoai':
+        if p['platform'] == 'rhoai' and p['version']:
             org = "red-hat-data-services"
             org_dir = checkouts_base / f"{org}.rhoai-{p['version']}"
             platform_build_info = get_build_info(org_dir)
@@ -144,10 +146,11 @@ async def run_generate_platform_architecture_phase(args) -> None:
 
         # Build prompt from skill instructions
         model_display = get_model_display_name(args.model)
+        version_line = f"Version: {p['version']}" if p['version'] else "Version: head (latest)"
         prompt = f"""Aggregate component architecture summaries into a platform-level architecture document.
 
 Distribution: {p['platform']}
-Version: {p['version']}
+{version_line}
 Architecture directory: {p['path']}
 {build_context}
 This directory contains {p['component_count']} component architecture file(s).
@@ -164,7 +167,7 @@ IMPORTANT: For the "Generated By" metadata field, use exactly: {model_display}
 """
 
         job = {
-            "name": f"{p['platform']}-{p['version']}",
+            "name": _label(p),
             "cwd": str(p['path']),
             "prompt": prompt,
             "platform": p['platform'],
