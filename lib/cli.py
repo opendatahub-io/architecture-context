@@ -3,7 +3,16 @@
 import argparse
 
 
+def resolve_org_dir(org: str, suffix: str = None, branch: str = None) -> str:
+    """Return the org directory name, applying suffix or branch if provided."""
+    label = suffix or branch
+    if label:
+        return f"{org}.{label}"
+    return org
+
+
 def resolve_script_path(platform: str, org: str = None, branch: str = None,
+                        suffix: str = None,
                         checkouts_dir: str = "checkouts", script_path: str = None) -> str:
     """
     Resolve the path to get_all_manifests.sh.
@@ -11,7 +20,8 @@ def resolve_script_path(platform: str, org: str = None, branch: str = None,
     Args:
         platform: Platform type (odh or rhoai)
         org: GitHub org (auto-detected if None)
-        branch: Branch name (optional)
+        branch: Branch name (optional, used as directory suffix fallback)
+        suffix: Explicit directory suffix (takes precedence over branch)
         checkouts_dir: Base checkouts directory
         script_path: Explicit override path (returned as-is if provided)
 
@@ -25,11 +35,7 @@ def resolve_script_path(platform: str, org: str = None, branch: str = None,
         org = "opendatahub-io" if platform == "odh" else "red-hat-data-services"
 
     operator_name = "opendatahub-operator" if platform == "odh" else "rhods-operator"
-
-    if branch:
-        org_dir = f"{org}.{branch}"
-    else:
-        org_dir = org
+    org_dir = resolve_org_dir(org, suffix=suffix, branch=branch)
 
     return f"{checkouts_dir}/{org_dir}/{operator_name}/get_all_manifests.sh"
 
@@ -50,7 +56,12 @@ def parse_args():
     )
     fetch_parser.add_argument(
         "org",
-        help="GitHub organization name to clone"
+        nargs="?",
+        help="GitHub organization name to clone (alternative to --platform)"
+    )
+    fetch_parser.add_argument(
+        "--platform",
+        help="Platform name from platforms.yaml (e.g., rhoai, rhoai-3.4, odh)"
     )
     fetch_parser.add_argument(
         "--checkouts-dir",
@@ -64,6 +75,10 @@ def parse_args():
     fetch_parser.add_argument(
         "--suffix",
         help="Suffix for the org directory (e.g., --suffix=head -> <org>.head/). Defaults to branch name when --branch is set."
+    )
+    fetch_parser.add_argument(
+        "--exclude",
+        help="Comma-separated glob patterns to exclude repos (merged with platforms.yaml excludes)"
     )
 
     # Phase 2: Parse manifests
@@ -86,6 +101,10 @@ def parse_args():
         help="Branch name if using versioned checkout (e.g., rhoai-2.14)"
     )
     manifest_parser.add_argument(
+        "--suffix",
+        help="Directory suffix for the org checkout (e.g., --suffix=head -> <org>.head/). Defaults to branch name when --branch is set."
+    )
+    manifest_parser.add_argument(
         "--checkouts-dir",
         default="checkouts",
         help="Base directory containing cloned repositories (default: checkouts)"
@@ -93,6 +112,10 @@ def parse_args():
     manifest_parser.add_argument(
         "--script-path",
         help="Override path to get_all_manifests.sh script (auto-detected if not provided)"
+    )
+    manifest_parser.add_argument(
+        "--version",
+        help="Explicit version label (e.g., 2.14). Overrides auto-detection from branch name or Makefile."
     )
     manifest_parser.add_argument(
         "--format",
@@ -119,6 +142,10 @@ def parse_args():
     generate_arch_parser.add_argument(
         "--branch",
         help="Branch name if using versioned checkout (e.g., rhoai-2.14)"
+    )
+    generate_arch_parser.add_argument(
+        "--suffix",
+        help="Directory suffix for the org checkout (e.g., --suffix=head -> <org>.head/). Defaults to branch name when --branch is set."
     )
     generate_arch_parser.add_argument(
         "--checkouts-dir",
@@ -148,6 +175,10 @@ def parse_args():
         "--force",
         action="store_true",
         help="Delete existing GENERATED_ARCHITECTURE.md and regenerate"
+    )
+    generate_arch_parser.add_argument(
+        "--version",
+        help="Explicit version label (e.g., 2.14). Overrides auto-detection from branch name or Makefile."
     )
     generate_arch_parser.add_argument(
         "--model",
@@ -286,10 +317,18 @@ def parse_args():
         help="Specific branch to clone (e.g., rhoai-2.14 for RHOAI versions)"
     )
     all_parser.add_argument(
+        "--suffix",
+        help="Directory suffix for the org checkout (e.g., --suffix=head -> <org>.head/). Defaults to branch name when --branch is set."
+    )
+    all_parser.add_argument(
         "--max-concurrent",
         type=int,
         default=5,
         help="Maximum number of agents to run concurrently (default: 5)"
+    )
+    all_parser.add_argument(
+        "--version",
+        help="Explicit version label (e.g., 2.14). Overrides auto-detection from branch name or Makefile."
     )
     all_parser.add_argument(
         "--model",

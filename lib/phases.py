@@ -17,7 +17,7 @@ from lib.manifest_parser import (
 from lib.build_info import get_build_info, format_build_info_context
 from lib.kustomize_context import get_component_kustomize_context, format_kustomize_context
 from lib.agent_runner import run_agent, run_agents_concurrently, get_model_display_name, format_duration
-from lib.cli import resolve_script_path
+from lib.cli import resolve_script_path, resolve_org_dir
 
 # Import scripts as modules
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -66,10 +66,12 @@ async def run_fetch_phase(args) -> None:
     print("=" * 60 + "\n")
 
     await fetch_repositories(
-        args.org,
-        args.checkouts_dir,
+        org=getattr(args, 'org', None),
+        checkouts_dir=args.checkouts_dir,
         branch=getattr(args, 'branch', None),
-        suffix=getattr(args, 'suffix', None)
+        suffix=getattr(args, 'suffix', None),
+        exclude=getattr(args, 'exclude', None),
+        platform=getattr(args, 'platform', None),
     )
 
 
@@ -88,6 +90,7 @@ async def run_manifest_phase(args) -> None:
         platform=args.platform,
         org=args.org,
         branch=args.branch,
+        suffix=getattr(args, 'suffix', None),
         checkouts_dir=args.checkouts_dir,
         script_path=args.script_path,
     )
@@ -144,6 +147,7 @@ async def run_generate_architecture_phase(args) -> None:
         platform=args.platform,
         org=org,
         branch=args.branch,
+        suffix=getattr(args, 'suffix', None),
         checkouts_dir=args.checkouts_dir,
         script_path=args.script_path,
     )
@@ -902,12 +906,9 @@ async def run_all_phases(args) -> None:
     if not org:
         org = "opendatahub-io" if args.platform == "odh" else "red-hat-data-services"
 
-    # Extract version from branch name for filtering later phases
-    # For RHOAI: branch name is authoritative (e.g., rhoai-2.25 -> version 2.25)
-    # For ODH: no version in branch name, use None to auto-detect
-    target_version = None
-    if args.platform == "rhoai" and args.branch:
-        # Extract version from branch name pattern: rhoai-X.Y
+    # Determine target version: explicit --version > extracted from --branch > auto-detect
+    target_version = getattr(args, 'version', None)
+    if not target_version and args.platform == "rhoai" and args.branch:
         version_match = re.search(r'rhoai-([0-9][0-9a-zA-Z._-]*)', args.branch)
         if version_match:
             target_version = version_match.group(1)
@@ -925,10 +926,12 @@ async def run_all_phases(args) -> None:
 
     # Phase 1: Fetch repositories
     fetch_args = Namespace(
-        org=org,
+        org=getattr(args, 'org', None),
+        platform=args.platform,
         checkouts_dir="checkouts",
         branch=getattr(args, 'branch', None),
-        suffix=getattr(args, 'suffix', None)
+        suffix=getattr(args, 'suffix', None),
+        exclude=None,
     )
     await run_fetch_phase(fetch_args)
 
@@ -937,6 +940,7 @@ async def run_all_phases(args) -> None:
         platform=args.platform,
         org=org,
         branch=getattr(args, 'branch', None),
+        suffix=getattr(args, 'suffix', None),
         checkouts_dir="checkouts",
         script_path=None,
         format="summary"
@@ -949,6 +953,7 @@ async def run_all_phases(args) -> None:
         platform=args.platform,
         org=org,
         branch=getattr(args, 'branch', None),
+        suffix=getattr(args, 'suffix', None),
         checkouts_dir="checkouts",
         script_path=None,
         max_concurrent=max_concurrent,
@@ -969,11 +974,7 @@ async def run_all_phases(args) -> None:
         # For ODH or when no specific version, try to detect from operator Makefile
         from collect_architectures import get_version_from_makefile
         operator_name = "opendatahub-operator" if args.platform == "odh" else "rhods-operator"
-        if args.branch:
-            org_dir = f"{org}.{args.branch}"
-        else:
-            org_dir = org
-
+        org_dir = resolve_org_dir(org, suffix=getattr(args, 'suffix', None), branch=args.branch)
         operator_dir = Path("checkouts") / org_dir / operator_name
         if operator_dir.exists():
             makefile_path = operator_dir / "Makefile"
@@ -1023,7 +1024,7 @@ async def run_all_phases(args) -> None:
     print("ALL PHASES COMPLETED SUCCESSFULLY!")
     print("=" * 80)
     print(f"\nResults:")
-    print(f"  - Component architectures: checkouts/{org}.{args.branch if args.branch else ''}/*/GENERATED_ARCHITECTURE.md")
+    print(f"  - Component architectures: checkouts/{resolve_org_dir(org, suffix=getattr(args, 'suffix', None), branch=args.branch)}/*/GENERATED_ARCHITECTURE.md")
     print(f"  - Organized architectures: architecture/{args.platform}-*/")
     print(f"  - Platform documents: architecture/{args.platform}-*/PLATFORM.md")
     print(f"  - Diagrams: architecture/{args.platform}-*/diagrams/")

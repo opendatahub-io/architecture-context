@@ -5,6 +5,8 @@ import shutil
 import asyncio
 from pathlib import Path
 
+import yaml
+
 
 def _prepare_env() -> dict:
     """
@@ -23,6 +25,35 @@ def _prepare_env() -> dict:
         print("Using GITHUB_TOKEN from environment")
 
     return env
+
+
+def load_platform_config(platform: str, config_path: str = "platforms.yaml") -> dict:
+    """
+    Load platform configuration from platforms.yaml.
+
+    Args:
+        platform: Platform name (e.g., 'odh', 'rhoai')
+        config_path: Path to the platforms.yaml file
+
+    Returns:
+        Platform config dict
+
+    Raises:
+        FileNotFoundError: If platforms.yaml doesn't exist
+        KeyError: If platform isn't defined in the config
+    """
+    config_file = Path(config_path)
+    if not config_file.exists():
+        raise FileNotFoundError(f"Platform config not found: {config_path}")
+
+    with open(config_file) as f:
+        config = yaml.safe_load(f)
+
+    if platform not in config:
+        available = ", ".join(sorted(config.keys()))
+        raise KeyError(f"Platform '{platform}' not found in {config_path}. Available: {available}")
+
+    return config[platform]
 
 
 async def _ensure_gh_org_clone() -> str:
@@ -102,51 +133,48 @@ async def _ensure_gh_org_clone() -> str:
     return str(local_gh_org_clone)
 
 
-async def fetch_repositories(
+async def _clone_org(
+    gh_org_clone_cmd: str,
     org: str,
-    checkouts_dir: str = "checkouts",
+    checkouts_dir: Path,
     branch: str = None,
-    suffix: str = None
+    suffix: str = None,
+    exclude: str = None,
 ) -> None:
-    """
-    Clone all repositories from a GitHub organization using gh-org-clone.
+    """Clone all repositories from a single GitHub org.
 
     Args:
-        org: GitHub organization name
-        checkouts_dir: Base directory for cloning repositories
-        branch: Optional specific branch to clone (skips repos without this branch)
-        suffix: Optional suffix for the org directory (e.g., "head" -> <org>.head/).
-                When branch is set but suffix is not, suffix defaults to branch.
+        gh_org_clone_cmd: Path to gh-org-clone binary
+        org: GitHub org name
+        checkouts_dir: Base checkouts directory
+        branch: Optional branch to clone
+        suffix: Optional directory suffix (e.g., org.suffix/)
+        exclude: Comma-separated glob patterns to exclude
     """
-    # Ensure gh-org-clone is available
-    gh_org_clone_cmd = await _ensure_gh_org_clone()
-
-    if branch and not suffix:
-        suffix = branch
-
-    checkouts_path = Path(checkouts_dir).absolute()
-    checkouts_path.mkdir(parents=True, exist_ok=True)
-
-    print(f"Fetching repositories from organization: {org}")
     if suffix:
-        print(f"Target directory: {checkouts_path}/{org}.{suffix}")
+        print(f"\nFetching repositories from organization: {org}")
+        print(f"Target directory: {checkouts_dir}/{org}.{suffix}")
     else:
-        print(f"Target directory: {checkouts_path}/{org}")
+        print(f"\nFetching repositories from organization: {org}")
+        print(f"Target directory: {checkouts_dir}/{org}")
     if branch:
         print(f"Branch filter: {branch}")
+    if exclude:
+        print(f"Exclude patterns: {exclude}")
 
-    cmd = [gh_org_clone_cmd, "-path", str(checkouts_path)]
+    cmd = [gh_org_clone_cmd, "-path", str(checkouts_dir)]
 
     if branch:
         cmd.extend(["-branch", branch])
     if suffix:
         cmd.extend(["-suffix", suffix])
+    if exclude:
+        cmd.extend(["-exclude", exclude])
 
     cmd.append(org)
 
     print(f"Running: {' '.join(cmd)}")
 
-    # Prepare environment with GITHUB_TOKEN if available
     env = _prepare_env()
 
     proc = await asyncio.create_subprocess_exec(
@@ -159,6 +187,134 @@ async def fetch_repositories(
     returncode = await proc.wait()
 
     if returncode != 0:
-        raise RuntimeError(f"gh-org-clone failed with exit code {returncode}")
+        raise RuntimeError(f"gh-org-clone failed with exit code {returncode} for org {org}")
 
     print(f"Successfully cloned repositories from {org}")
+
+
+async def _clone_repo(
+    checkouts_dir: Path,
+    org: str,
+    repo: str,
+    branch: str = None,
+    suffix: str = None,
+) -> None:
+    """Clone an individual repository."""
+    org_dir = f"{org}.{suffix}" if suffix else org
+    repo_path = checkouts_dir / org_dir / repo
+
+    if repo_path.exists():
+        print(f"  Skipped {org}/{repo} (already exists)")
+        return
+
+    clone_url = f"https://github.com/{org}/{repo}.git"
+    print(f"  Cloning {org}/{repo}...")
+
+    repo_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = ["git", "clone"]
+    if branch:
+        cmd.extend(["-b", branch])
+    cmd.extend([clone_url, str(repo_path)])
+
+    env = _prepare_env()
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=None,
+        stderr=None,
+        env=env,
+    )
+
+    returncode = await proc.wait()
+
+    if returncode != 0:
+        if branch:
+            print(f"  Skipped {org}/{repo} (branch '{branch}' not found)")
+        else:
+            print(f"  Failed to clone {org}/{repo}")
+
+
+async def fetch_repositories(
+    org: str = None,
+    checkouts_dir: str = "checkouts",
+    branch: str = None,
+    suffix: str = None,
+    exclude: str = None,
+    platform: str = None,
+) -> None:
+    """
+    Clone repositories using gh-org-clone.
+
+    Can be called with either a single org name, or a platform name
+    which loads orgs/extras/exclusions from platforms.yaml.
+
+    Args:
+        org: GitHub organization name (used when platform is not set)
+        checkouts_dir: Base directory for cloning repositories
+        branch: Optional specific branch to clone (skips repos without this branch)
+        suffix: Optional suffix for the org directory (e.g., "head" -> <org>.head/).
+                When branch is set but suffix is not, suffix defaults to branch.
+        exclude: Comma-separated glob patterns to exclude repos
+        platform: Platform name to load config from platforms.yaml
+    """
+    gh_org_clone_cmd = await _ensure_gh_org_clone()
+
+    checkouts_path = Path(checkouts_dir).absolute()
+    checkouts_path.mkdir(parents=True, exist_ok=True)
+
+    if platform:
+        config = load_platform_config(platform)
+
+        # Branch precedence: CLI --branch > config branch
+        if not branch:
+            branch = config.get("branch")
+
+        # Suffix precedence: CLI --suffix > config suffix > branch fallback
+        if not suffix:
+            suffix = config.get("suffix")
+            if not suffix and branch:
+                suffix = branch
+
+        # Merge exclude patterns from config and CLI
+        config_excludes = config.get("exclude_repos", [])
+        all_excludes = list(config_excludes)
+        if exclude:
+            all_excludes.extend(exclude.split(","))
+        exclude_str = ",".join(all_excludes) if all_excludes else None
+
+        # Clone primary orgs (with branch + suffix)
+        orgs = config.get("orgs", [])
+        for cfg_org in orgs:
+            await _clone_org(gh_org_clone_cmd, cfg_org, checkouts_path,
+                             branch=branch, suffix=suffix, exclude=exclude_str)
+
+        # Clone extra orgs — per-entry overrides, falling back to platform suffix
+        extra_orgs = config.get("extra_orgs", [])
+        for entry in extra_orgs:
+            org_name = entry.get("org") if isinstance(entry, dict) else entry
+            org_branch = entry.get("branch") if isinstance(entry, dict) else None
+            org_suffix = (entry.get("suffix") if isinstance(entry, dict) else None) or suffix
+            await _clone_org(gh_org_clone_cmd, org_name, checkouts_path,
+                             branch=org_branch, suffix=org_suffix, exclude=exclude_str)
+
+        # Clone individual extra repos — per-entry overrides, falling back to platform suffix
+        extra_repos = config.get("extra_repos", [])
+        if extra_repos:
+            print(f"\nCloning {len(extra_repos)} extra repo(s)...")
+            for entry in extra_repos:
+                repo_branch = entry.get("branch")
+                repo_suffix = entry.get("suffix") or suffix
+                await _clone_repo(checkouts_path, entry["org"], entry["repo"],
+                                  branch=repo_branch, suffix=repo_suffix)
+
+    elif org:
+        # Direct org mode (original behavior)
+        if branch and not suffix:
+            suffix = branch
+
+        await _clone_org(gh_org_clone_cmd, org, checkouts_path,
+                         branch=branch, suffix=suffix, exclude=exclude)
+
+    else:
+        raise ValueError("Either 'org' or '--platform' must be specified")
