@@ -59,9 +59,12 @@ def format_duration(seconds: float) -> str:
     return " ".join(parts)
 
 
-async def run_agent(name: str, cwd: str, prompt: str, log_dir: Path, model: str = "sonnet") -> dict:
+async def run_agent(
+    name: str, cwd: str, prompt: str, log_dir: Path,
+    model: str = "sonnet", enable_skills: bool = False,
+) -> dict:
     """
-    Launch one independent Claude agent session to generate architecture.
+    Launch one independent Claude agent session.
 
     Args:
         name: Component name for identification
@@ -69,6 +72,7 @@ async def run_agent(name: str, cwd: str, prompt: str, log_dir: Path, model: str 
         prompt: Prompt to send to the agent
         log_dir: Directory to write log files
         model: Claude model to use (sonnet, opus, or haiku)
+        enable_skills: If True, enable Skill tool and load skills from filesystem
 
     Returns:
         dict with 'name', 'success', 'log_file', and optional 'error' keys
@@ -79,12 +83,16 @@ async def run_agent(name: str, cwd: str, prompt: str, log_dir: Path, model: str 
     # Convert shorthand to full model ID
     model_id = get_model_id(model)
 
+    allowed_tools = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
+    if enable_skills:
+        allowed_tools.extend(["Skill", "Task"])
+
     options = ClaudeAgentOptions(
         cwd=cwd,
-        allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+        allowed_tools=allowed_tools,
         permission_mode="bypassPermissions",
         model=model_id,
-        # No max_turns - let agent run as long as needed for thorough analysis
+        setting_sources=["user", "project"] if enable_skills else None,
     )
 
     print(f"\n{'=' * 60}")

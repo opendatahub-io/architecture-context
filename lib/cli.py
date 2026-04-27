@@ -124,6 +124,40 @@ def parse_args():
         help="Output format: summary (human-readable) or json (structured data)"
     )
 
+    # Phase 2b: Discover components
+    discover_parser = subparsers.add_parser(
+        "discover-components",
+        help="Discover components by exploring breadcrumbs (installers, operators, dependencies)"
+    )
+    discover_parser.add_argument(
+        "--platform",
+        required=True,
+        help="Platform identifier from platforms.yaml (e.g., 'odh', 'rhoai-3.4')"
+    )
+    discover_parser.add_argument(
+        "--checkouts-dir",
+        help="Directory containing cloned repositories (auto-detected from platforms.yaml if not set)"
+    )
+    discover_parser.add_argument(
+        "--entry-repo",
+        help="Starting point repository (e.g., 'opendatahub-operator', 'rhods-operator')"
+    )
+    discover_parser.add_argument(
+        "--architecture-dir",
+        default="architecture",
+        help="Output directory for component-map.json (default: architecture)"
+    )
+    discover_parser.add_argument(
+        "--exclude",
+        help="Additional repos to exclude (comma-separated patterns)"
+    )
+    discover_parser.add_argument(
+        "--model",
+        choices=["sonnet", "opus", "haiku"],
+        default="sonnet",
+        help="Claude model to use for discovery (default: sonnet)"
+    )
+
     # Phase 3: Generate architecture
     generate_arch_parser = subparsers.add_parser(
         "generate-architecture",
