@@ -323,6 +323,11 @@ Set `has_architecture: true/false` accordingly.
 
 See [output schema](references/output-schema.md) for the full component-map.json schema including metadata, component fields, dependency_graph, and excluded sections.
 
+**Important structural requirements:**
+- `components` must be a **dict** keyed by component key, not a list
+- `excluded` must be a **dict** keyed by repo name, not a list
+- Each component's `key` field must match its dict key
+
 ### Step 9: Write Output
 
 Write to `architecture/{platform}/component-map.json`.

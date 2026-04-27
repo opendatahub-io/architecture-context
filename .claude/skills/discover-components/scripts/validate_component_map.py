@@ -22,7 +22,7 @@ VALID_DISCOVERED_VIA = {
     "container_image", "dependency", "installer",
 }
 
-VALID_CONFIDENCE = {"high", "medium", "disputed"}
+VALID_CONFIDENCE = {"high", "medium", "low", "disputed"}
 
 REQUIRED_METADATA_FIELDS = {
     "platform": str,

@@ -36,7 +36,7 @@ Create the component map structure:
       "consumer_count": 3,
       "consumers": ["awx-operator", "eda-operator", "hub-operator"],
       "capability": "optional-capability-name-if-applicable",
-      "confidence": "high|medium|disputed",
+      "confidence": "high|medium|low|disputed",
       "consensus": {
         "votes": {"include": 2, "exclude": 1},
         "reviewers": {
