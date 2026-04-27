@@ -209,14 +209,9 @@ def parse_args():
         help="Collect and organize GENERATED_ARCHITECTURE.md files into architecture/ directory"
     )
     collect_parser.add_argument(
-        "--checkouts-dir",
-        default="checkouts",
-        help="Directory containing platform checkouts (default: checkouts)"
-    )
-    collect_parser.add_argument(
-        "--output-dir",
+        "--architecture-dir",
         default="architecture",
-        help="Output directory for organized architectures (default: architecture)"
+        help="Base architecture directory containing component-map.json files (default: architecture)"
     )
     collect_parser.add_argument(
         "--platform",

@@ -101,8 +101,7 @@ async def run_all_phases(args) -> None:
     # Phase 4: Collect architectures into organized structure
     # Filter to specific version if branch was provided
     collect_args = Namespace(
-        checkouts_dir="checkouts",
-        output_dir="architecture",
+        architecture_dir="architecture",
         platform=args.platform,  # Filter to only this platform
         version=target_version  # Filter to specific version from branch
     )
