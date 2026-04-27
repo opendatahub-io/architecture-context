@@ -48,12 +48,14 @@ async def run_discover_components_phase(args) -> None:
             print(f"Error: --checkouts-dir is required (could not resolve from platforms.yaml: {e})")
             return
 
-    architecture_dir = getattr(args, 'architecture_dir', 'architecture')
+    architecture_dir = str(Path(getattr(args, 'architecture_dir', 'architecture')).resolve())
 
     print(f"Platform: {args.platform}")
     if getattr(args, 'entry_repo', None):
         print(f"Entry point: {args.entry_repo}")
     print()
+
+    checkouts_dirs = [str(Path(d).resolve()) for d in checkouts_dirs]
 
     exclude_patterns = getattr(args, 'exclude', '') or ''
     if platform_config:
@@ -62,17 +64,11 @@ async def run_discover_components_phase(args) -> None:
             combined = ",".join(config_excludes)
             exclude_patterns = f"{exclude_patterns},{combined}" if exclude_patterns else combined
 
-    exclude_line = f" --exclude={exclude_patterns}" if exclude_patterns else ""
-    entry_line = f" --entry-repo={args.entry_repo}" if getattr(args, 'entry_repo', None) else ""
-    checkouts_dir_lines = "\n".join(f"--checkouts-dir={d}" for d in checkouts_dirs)
+    exclude_part = f" --exclude={exclude_patterns}" if exclude_patterns else ""
+    entry_part = f" --entry-repo={args.entry_repo}" if getattr(args, 'entry_repo', None) else ""
+    checkouts_parts = " ".join(f"--checkouts-dir={d}" for d in checkouts_dirs)
 
-    prompt = f"""Use the discover-components skill to discover platform components.
-
-Arguments:
---platform={args.platform}
-{checkouts_dir_lines}{entry_line}{exclude_line}
---architecture-dir={architecture_dir}
-"""
+    prompt = f"/discover-components --platform={args.platform} {checkouts_parts}{entry_part}{exclude_part} --architecture-dir={architecture_dir}"
 
     log_dir = Path("logs/discover-components")
     log_dir.mkdir(parents=True, exist_ok=True)

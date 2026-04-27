@@ -1,7 +1,8 @@
 ---
 name: discover-components
 description: Discover platform components by exploring breadcrumbs (installers, operators, dependencies) in checkouts directory. Outputs component-map.json for platforms without manifest scripts.
-allowed-tools: Read, Glob, Grep, Write, Task, Bash(ls *), Bash(find *), Bash(cat *), Bash(grep *)
+user-invocable: true
+allowed-tools: Read, Glob, Grep, Write, Task, Bash(ls *), Bash(find *), Bash(cat *), Bash(grep *), Bash(python *)
 ---
 
 # Discover Components
@@ -277,132 +278,12 @@ Track the dependency graph:
 }
 ```
 
-### Step 5a: Identify Shared Libraries
+### Steps 5a-5c: Classification
 
-After building the dependency graph, analyze it to find shared libraries:
-
-**Reverse the dependency graph** to count consumers:
-```
-{
-  "awx-operator": ["installer"],                          # 1 consumer
-  "eda-operator": ["installer"],                          # 1 consumer
-  "awx-api": ["awx-operator"],                           # 1 consumer
-  "django-ansible-base": ["awx-operator", "eda-operator", "automation-hub-operator"]  # 3 consumers!
-}
-```
-
-**Shared library detection criteria:**
-1. Is a dependency (not deployed standalone)
-2. Used by 2+ platform components
-3. In the same organization (first-party, not third-party)
-4. Contains actual code (not just config/docs)
-
-**For detected shared libraries:**
-- Mark as `type: "shared_library"`
-- Set `shipped: false` (not deployed directly)
-- Set `architecturally_significant: true`
-- Add `consumer_count` and `consumers: [...]`
-- Include in component map (don't exclude!)
-
-**Examples:**
-- ✅ `django-ansible-base` - Shared Django utilities used by AWX, EDA, Hub
-- ✅ `ansible-common-auth` - Shared authentication library
-- ✅ `platform-sdk` - SDK used by multiple operators
-- ❌ `django` - Third-party (not in platform org)
-- ❌ `postgres` - Third-party infrastructure
-- ❌ `one-off-util` - Only used by one component
-
-### Step 5b: Identify Architecturally Significant External APIs
-
-Some third-party repos aren't utilities you *use* — they're contracts you *implement*. These define the CRDs, APIs, or interface specifications that shape your platform's architecture. Excluding them loses critical architectural context.
-
-**After shared library detection, scan excluded third-party repos for API contract significance:**
-
-1. Repo exists in the checkouts directory (the platform team chose to mirror/fork it)
-2. Primarily defines APIs, CRDs, or interface contracts — look for:
-   - `apis/`, `config/crd/`, protobuf definitions (`.proto` files)
-   - Module is mostly types/interfaces (Go: types, structs, interfaces; Python: abstract base classes, schemas)
-   - Kubernetes API machinery (`GroupVersionResource`, `runtime.Object` implementations)
-3. Platform components import its types as **direct** (not indirect/transitive) dependencies
-4. High reference count in core control-plane or reconciliation code — the platform's controllers are **structured around** these types, not just calling utility functions
-
-**How to measure architectural impact:**
-```bash
-# Count references to the repo's types in core platform code
-grep -r "Gateway\|HTTPRoute\|GRPCRoute" {platform_repo}/pilot/ | wc -l
-# If this is in the hundreds across core packages, it's architectural
-```
-
-**The key distinction: tool vs. contract**
-- `django` is a **tool** — you call its functions, but your architecture doesn't revolve around Django types
-- `gateway-api` is a **contract** — your controllers exist to reconcile its CRDs, your entire ingress model is defined by its types
-
-**For detected API specifications:**
-- Mark as `type: "api_specification"`
-- Set `shipped: false` (not your code)
-- Set `architecturally_significant: true`
-- Add `upstream_org` field to clarify ownership (e.g., `"kubernetes-sigs"`)
-- Add `consumer_count` and `consumers: [...]`
-- Include in component map (don't exclude!)
-- Add a note clarifying it is upstream-owned but architecturally foundational
-
-**Examples:**
-- ✅ `gateway-api` - Kubernetes Gateway API (defines CRDs that Istio's control plane reconciles)
-- ✅ `operator-framework/api` - OLM API types (if platform operators are built around them)
-- ✅ `open-cluster-management/api` - OCM API types (if platform implements OCM contracts)
-- ❌ `envoy` - Upstream runtime dependency (you embed it, but don't implement its API spec)
-- ❌ `go-control-plane` - Utility library (you call it, architecture doesn't revolve around its types)
-- ❌ `client-go` - Kubernetes client library (tool, not contract)
-
-### Step 5c: Classify Component Type
-
-For each discovered component, determine its `type`. Do NOT default everything to `"operator"` just because it has manifests. Check what the repo actually contains:
-
-**`operator`** — Has a Deployment running a controller/reconciler binary AND owns its own operator lifecycle:
-- Contains `main.go` or equivalent entrypoint with controller-runtime/operator-sdk imports
-- Has `config/manager/` or operator bundle structure (OLM bundle, CSV)
-- Reconciles CRDs or cluster resources
-- Has its own OLM lifecycle (or is the top-level meta-operator)
-- Key distinction from `controller`: operators manage their own installation/upgrade lifecycle via OLM or equivalent
-
-**`controller`** — Runs a reconciliation loop but does NOT own its own operator lifecycle:
-- Uses controller-runtime/kubebuilder but is deployed as a sub-component of a parent operator
-- May define or watch CRDs, but doesn't have its own OLM bundle or CSV
-- Examples: notebook-controller (deployed by rhods-operator), odh-model-controller (deployed by rhods-operator)
-- Key distinction from `operator`: controllers are deployed by operators, not independently installable
-
-**`service`** — Runs as a workload but is not a controller/operator:
-- Serves API endpoints, processes data, runs as a daemon
-- Examples: API servers, model servers, proxies, pipeline servers
-
-**`ui`** — A user-facing web application (frontend, dashboard):
-- Contains frontend code (React, Angular, Vue, etc.) and optionally a backend-for-frontend
-- Serves a web UI that users interact with directly
-- Examples: odh-dashboard (React + Node.js), console (OpenShift web console)
-- Key distinction from `service`: the primary purpose is user-facing UI, not a headless API
-
-**`installer`** — Bootstraps the cluster or platform:
-- Contains terraform, ignition configs, installer logic
-- Examples: `installer`, `assisted-installer`
-
-**`asset`** — Ships static content, not running code:
-- GPG keys, branding assets, base images, OS definitions
-- Examples: `cluster-update-keys` (signing keys), `origin-branding` (UI branding), `okd-machine-os` (OS image definition), `driver-toolkit` (base container image)
-
-**`shared_library`** — Code imported by other components (detected in Step 5a)
-
-**`api_specification`** — Defines API contracts the platform implements (detected in Step 5b)
-
-**Quick heuristic:** If the repo has no `main.go`/`cmd/` and no Deployment that runs a binary it builds, it's not an operator.
-
-**`architecturally_significant` is independent of `type`.** Do NOT set `architecturally_significant: false` just because something is an `asset` or `service` instead of an `operator`. A component is architecturally significant if:
-- Other components depend on it or build on top of it (e.g., base container images)
-- It defines security boundaries (e.g., signing keys, certificates)
-- It's part of the bootstrap/install chain
-- It appears in the dependency graph with 2+ consumers
-- Removing or changing it would affect the architecture of the platform
-
-Default to `architecturally_significant: true` for all `core_platform` and `optional_platform` components regardless of type. Only set it to `false` for `payload_component` tier repos that are clearly peripheral (e.g., a deprecated shim that's still shipped but unused).
+See [classification heuristics](references/classification-heuristics.md) for:
+- **Step 5a**: Identify shared libraries (reverse dependency graph, detection criteria)
+- **Step 5b**: Identify architecturally significant external APIs (tool vs. contract distinction)
+- **Step 5c**: Classify component type (operator, controller, service, ui, installer, asset, shared_library, api_specification)
 
 ### Step 6: Classify Remaining Repos
 
@@ -426,141 +307,7 @@ Default to `architecturally_significant: true` for all `core_platform` and `opti
 
 ### Step 6a: Multi-Reviewer Consensus for Low-Confidence Repos
 
-After Step 6, you will have repos that fall into **low or medium confidence** buckets — they have some signals suggesting they're shipped components but not enough for a definitive classification. Instead of making a single-pass decision on these borderline repos, use a **multi-reviewer consensus** process to reduce false positives and false negatives.
-
-**When to trigger consensus review:**
-
-In **breadcrumb mode** (no release payload signals): repos classified as "Low confidence" or "Medium confidence" in Step 6.
-
-In **manifest mode**: repos in the `excluded` list that match ANY of these patterns:
-- Repo name matches a container image referenced by an included operator (potential operand)
-- Repo name suggests a runtime component (contains `server`, `runtime`, `gateway`, `proxy`, `scheduler`)
-- Repo contains a Dockerfile/Containerfile AND Kubernetes manifests but wasn't in the manifest script
-- Repo is in the same GitHub org as included components and has recent activity
-
-**Skip consensus** for repos that are clearly non-components (docs-only, CI tooling, archived). Only spend reviewer cycles on genuinely ambiguous cases.
-
-#### Consensus Procedure
-
-For each borderline repo, spawn **3 independent reviewer agents in parallel** using the Task tool with `subagent_type=Explore`. Each reviewer examines the same repo but through a different evaluation lens:
-
-**Reviewer A — Structural Analysis:**
-```
-Examine the repo at {checkout_path}. Determine whether this repo is a shipped
-platform component based on its STRUCTURE. Look for:
-- Dockerfile/Containerfile (builds a container image?)
-- Kubernetes manifests, Helm charts, kustomize overlays (deployed to a cluster?)
-- Operator patterns: main.go/cmd/, controller-runtime imports, CRD definitions
-- Service patterns: API server code, gRPC/REST endpoints, daemon entrypoints
-- Asset patterns: static content only, no running code
-
-Return a JSON object with exactly these fields:
-{
-  "vote": "include" | "exclude" | "unsure",
-  "suggested_type": "operator" | "controller" | "service" | "ui" | "asset" | "shared_library" | "other",
-  "rationale": "<one sentence explaining your reasoning>"
-}
-```
-
-**Reviewer B — Relational Analysis:**
-```
-Examine the repo at {checkout_path}. Determine whether this repo is a shipped
-platform component based on its RELATIONSHIPS to other components. Check:
-- Is this repo's name referenced as a container image in any included operator's
-  manifests, CSV, or source code? (Search the operator repos for image refs matching
-  this repo name)
-- Does this repo's go.mod / requirements.txt import or get imported by included components?
-- Is this repo referenced in CI/CD configs of included components?
-- Does this repo define CRDs that included operators reconcile?
-
-The included operators are: {list of already-included component keys}
-
-Return a JSON object with exactly these fields:
-{
-  "vote": "include" | "exclude" | "unsure",
-  "suggested_type": "operator" | "controller" | "service" | "ui" | "asset" | "shared_library" | "other",
-  "rationale": "<one sentence explaining your reasoning>",
-  "referenced_by": ["<list of components that reference this repo, if any>"]
-}
-```
-
-**Reviewer C — Functional Analysis:**
-```
-Examine the repo at {checkout_path}. Determine whether this repo is a shipped
-platform component based on its FUNCTION — what does it actually do at runtime?
-- Read the README, top-level docs, and main entrypoint to understand the repo's purpose
-- Is this a production runtime workload (serves traffic, processes data, manages resources)?
-- Is this a development/build tool (used during CI/CD but not deployed to production)?
-- Is this a test utility, documentation repo, or helper script collection?
-- Is this a serving runtime or model server (deployed by an operator on demand)?
-
-Return a JSON object with exactly these fields:
-{
-  "vote": "include" | "exclude" | "unsure",
-  "suggested_type": "operator" | "controller" | "service" | "ui" | "asset" | "shared_library" | "other",
-  "rationale": "<one sentence explaining your reasoning>"
-}
-```
-
-#### Aggregating Votes
-
-After all three reviewers return, aggregate their votes:
-
-| Votes | Decision | Confidence |
-|-------|----------|------------|
-| 3/3 include | Include the repo | `"high"` |
-| 3/3 exclude | Exclude the repo | `"high"` |
-| 2/3 include | Include the repo | `"medium"` |
-| 2/3 exclude | Exclude the repo | `"medium"` |
-| 3-way split or all unsure | Include the repo, flag for human review | `"disputed"` |
-
-For the `suggested_type`, use the majority type if 2+ reviewers agree. If all three suggest different types, prefer the structural reviewer's suggestion (Reviewer A) as the tiebreaker since it's based on concrete repo contents.
-
-#### Recording Consensus Results
-
-For repos that go through consensus review, add a `consensus` field to their entry in the component map:
-
-```json
-{
-  "confidence": "high|medium|disputed",
-  "consensus": {
-    "votes": {"include": 2, "exclude": 1},
-    "reviewers": {
-      "structural": {"vote": "include", "type": "service", "rationale": "Has Dockerfile and kustomize manifests for production deployment"},
-      "relational": {"vote": "include", "type": "service", "rationale": "Image referenced by data-science-pipelines-operator CSV"},
-      "functional": {"vote": "exclude", "type": "other", "rationale": "Operand binary only, no standalone deployment lifecycle"}
-    }
-  }
-}
-```
-
-For repos excluded via consensus, move them to the `excluded` section but preserve the consensus data:
-
-```json
-"excluded": {
-  "some-repo": {
-    "reason": "consensus_exclude",
-    "confidence": "medium",
-    "consensus": {
-      "votes": {"include": 1, "exclude": 2},
-      "reviewers": {
-        "structural": {"vote": "include", "type": "service", "rationale": "..."},
-        "relational": {"vote": "exclude", "type": "other", "rationale": "..."},
-        "functional": {"vote": "exclude", "type": "other", "rationale": "..."}
-      }
-    }
-  }
-}
-```
-
-Repos excluded with `"confidence": "disputed"` or `"medium"` should be highlighted in the Step 10 summary so the user knows to review them.
-
-#### Performance Notes
-
-- Launch all 3 reviewers for a single repo in parallel (single message with 3 Task tool calls)
-- If multiple repos need consensus review, batch them: review up to 3 repos concurrently (9 parallel agents total) to avoid excessive parallelism
-- Use `model: "haiku"` for reviewer agents to minimize cost and latency — the structural/relational/functional checks are straightforward exploration tasks
-- If the checkouts directory has more than 20 borderline repos, prioritize: review repos with names matching included operators' image references first, then repos with Dockerfiles + manifests, then the rest
+See [consensus review procedure](references/consensus-review.md) for the full multi-reviewer consensus process — when to trigger it, the 3 reviewer prompts (structural, relational, functional), vote aggregation rules, and how to record consensus results in the component map.
 
 ### Step 7: Check for Existing Architectures
 
@@ -574,69 +321,7 @@ Set `has_architecture: true/false` accordingly.
 
 ### Step 8: Build Output JSON
 
-Create the component map structure:
-
-```json
-{
-  "metadata": {
-    "platform": "{platform}",
-    "discovery_method": "breadcrumb|release_payload_signals",
-    "entry_point": "{entry_repo or 'multiple'}",
-    "discovered_at": "{ISO timestamp}",
-    "checkouts_dir": "{checkouts_dir}",
-    "total_repos_scanned": {count},
-    "components_discovered": {count},
-    "components_excluded": {count}
-  },
-  "components": {
-    "{component-key}": {
-      "key": "{component-key}",
-      "repo_org": "{org}",
-      "repo_name": "{repo-name}",
-      "ref": "main",
-      "source_folder": "config",
-      "checkout_path": "{full-path}",
-      "has_architecture": false,
-      "type": "operator|controller|service|ui|installer|asset|shared_library|api_specification",
-      "tier": "core_platform|optional_platform|payload_component|ecosystem",
-      "discovered_via": "release_payload_signal|operator_operand|operator_bundle|container_image|dependency|installer",
-      "referenced_by": ["installer"],
-      "shipped": true,
-      "architecturally_significant": true,
-      "consumer_count": 3,
-      "consumers": ["awx-operator", "eda-operator", "hub-operator"],
-      "capability": "optional-capability-name-if-applicable",
-      "confidence": "high|medium|disputed",
-      "consensus": {
-        "votes": {"include": 2, "exclude": 1},
-        "reviewers": {
-          "structural": {"vote": "include", "type": "service", "rationale": "..."},
-          "relational": {"vote": "include", "type": "service", "rationale": "..."},
-          "functional": {"vote": "exclude", "type": "other", "rationale": "..."}
-        }
-      }
-    }
-  },
-  "dependency_graph": {
-    "{repo}": ["{dep1}", "{dep2}"]
-  },
-  "excluded": {
-    "{repo-name}": "{reason}",
-    "{repo-name-reviewed}": {
-      "reason": "consensus_exclude",
-      "confidence": "high|medium",
-      "consensus": {
-        "votes": {"include": 0, "exclude": 3},
-        "reviewers": {
-          "structural": {"vote": "exclude", "type": "other", "rationale": "..."},
-          "relational": {"vote": "exclude", "type": "other", "rationale": "..."},
-          "functional": {"vote": "exclude", "type": "other", "rationale": "..."}
-        }
-      }
-    }
-  }
-}
-```
+See [output schema](references/output-schema.md) for the full component-map.json schema including metadata, component fields, dependency_graph, and excluded sections.
 
 ### Step 9: Write Output
 
@@ -644,192 +329,23 @@ Write to `architecture/{platform}/component-map.json`.
 
 **Always overwrite** the existing file if one is present — the user is re-running discovery to get updated results. Do NOT skip writing because the file already exists.
 
-```python
-# Use Write tool
+### Step 9a: Validate Output
+
+After writing, run the validation script to catch schema errors before reporting success:
+
+```bash
+python ${CLAUDE_SKILL_DIR}/scripts/validate_component_map.py architecture/{platform}/component-map.json
 ```
+
+If validation fails, read the errors, fix the JSON, re-write the file, and re-validate. Do not proceed to Step 10 until validation passes.
 
 ### Step 10: Report Summary
 
-Output a summary to the user:
-
-```
-================================================================================
-Component Discovery Complete
-================================================================================
-
-Platform: {platform}
-Checkouts directory: {checkouts_dir}
-Discovery method: {Breadcrumb exploration | Release payload signals}
-
-Results:
-  Total repositories scanned: {total}
-  Components discovered: {discovered}
-  Components excluded: {excluded}
-
---- If release payload signals were found: ---
-
-Release payload signals detected: {signal_types}
-
-Core platform ({count}):
-  ✓ cluster-etcd-operator (type: operator, tier: core_platform)
-  ✓ cluster-kube-apiserver-operator (type: operator, tier: core_platform)
-  ✓ machine-config-operator (type: operator, tier: core_platform)
-  ...
-
-Optional platform ({count}):
-  ✓ cluster-samples-operator (type: operator, tier: optional_platform, capability: openshift-samples)
-  ✓ console-operator (type: operator, tier: optional_platform, capability: Console)
-  ...
-
-Shared libraries / API specs:
-  ✓ library-go (type: shared_library, used by: N components) [ARCHITECTURALLY SIGNIFICANT]
-  ✓ gateway-api (type: api_specification, upstream: kubernetes-sigs) [ARCHITECTURALLY SIGNIFICANT]
-  ...
-
-Consensus-reviewed (included):
-  ✓ console (type: service, confidence: high, votes: 3/3 include)
-      structural: include — "Has Dockerfile, deployed as pod"
-      relational: include — "Image referenced by console-operator"
-      functional: include — "Web UI served in production"
-  ...
-
-Consensus-reviewed (excluded — review recommended):
-  ✗ some-tool (confidence: medium, votes: 2/3 exclude)
-  ...
-
-Disputed (needs human review):
-  ⚠ ambiguous-repo (confidence: disputed, votes: 1/1/1)
-  ...
-
-Ecosystem (excluded — no release payload signals):
-  ✗ aws-account-operator (ecosystem)
-  ✗ addon-operator (ecosystem)
-  ... and {N} more
-
---- If NO release payload signals found (breadcrumb mode): ---
-
-Entry points used:
-  - {entry1}
-  - {entry2}
-
-Discovered components:
-  ✓ awx-operator (type: operator, via: operator_bundle, ref by: installer)
-  ✓ eda-operator (type: operator, via: operator_bundle, ref by: installer)
-  ✓ awx-api (type: service, via: container_image, ref by: awx-operator)
-  ✓ django-ansible-base (type: shared_library, used by: 3 components) [ARCHITECTURALLY SIGNIFICANT]
-  ✓ gateway-api (type: api_specification, upstream: kubernetes-sigs) [ARCHITECTURALLY SIGNIFICANT]
-  ...
-
-Consensus-reviewed (included):
-  ✓ data-science-pipelines (type: service, confidence: medium, votes: 2/3 include)
-      structural: include — "Has Dockerfile and kustomize manifests"
-      relational: include — "Image referenced by data-science-pipelines-operator"
-      functional: exclude — "Operand only, no standalone lifecycle"
-  ...
-
-Consensus-reviewed (excluded — review recommended):
-  ✗ some-helper-tool (confidence: medium, votes: 2/3 exclude)
-      structural: include — "Has Dockerfile"
-      relational: exclude — "Not referenced by any included component"
-      functional: exclude — "CI/CD helper, not a production workload"
-  ...
-
-Disputed (needs human review):
-  ⚠ ambiguous-repo (confidence: disputed, votes: 1/1/1)
-      structural: include — "..."
-      relational: exclude — "..."
-      functional: unsure — "..."
-  ...
-
-Excluded repositories:
-  ✗ ansible-docs (documentation_only)
-  ✗ ansible-ci-tools (development_tooling)
-  ...
-
-Output: architecture/{platform}/component-map.json
-
-Next steps:
-1. Review component-map.json (edit if needed)
-2. Run: python main.py generate-architecture --platform={platform}
-3. Run: python main.py collect-architectures --platform={platform}
-================================================================================
-```
+See [output schema](references/output-schema.md) for the full report summary template. Output includes platform info, discovery method, component counts, tiered component lists, consensus-reviewed repos, and next steps.
 
 ## Heuristics for Component Classification
 
-### Include: Deployed Components (shipped: true)
-
-**Definitive (release payload signals — Step 2a):**
-- Has `include.release.openshift.io/*` or equivalent release inclusion annotation → definitely in payload
-- No `capability.openshift.io/name` **on Deployment manifest** → `tier: core_platform` (always installed)
-- Has `capability.openshift.io/name` **on Deployment manifest** → `tier: optional_platform` (can be disabled)
-- Capability annotations on non-Deployment resources (dashboards, credential requests) do NOT make the operator optional — they mean those sub-resources are conditional
-- Has `image-references` manifest → ships container images in the release
-- Bootstrap/self-referential components (CVO, installer) → `tier: core_platform` even without annotations
-
-When payload signals are available, they override all heuristic confidence levels below.
-
-**High confidence (definitely deployed) — breadcrumb mode fallback:**
-- Referenced in operator manifests
-- Referenced in installer playbooks
-- Container image built in CI and pushed to registry
-- Listed in OLM bundle
-- Has operator structure (bundle/, config/manager/)
-
-**Medium confidence (probably deployed):**
-- Has Kubernetes manifests
-- Has recent releases
-- Referenced by other high-confidence components
-
-**Low confidence (maybe deployed):**
-- Has Dockerfile
-- Active development
-- Matches naming pattern
-
-### Include: Shared Libraries (shipped: false, architecturally_significant: true)
-
-**Critical shared libraries:**
-- First-party code (same GitHub org)
-- Used by 2+ platform components
-- Contains actual code (not just config/docs)
-- Examples: django-ansible-base, shared authentication libraries, common SDKs
-
-**Detection method:**
-1. Found in requirements.txt, pyproject.toml, go.mod of multiple repos
-2. Reverse dependency count ≥ 2
-3. Repo exists in checkouts directory (first-party)
-4. Has source code (not a meta-repo)
-
-**Why include them:**
-- Critical for understanding platform architecture
-- Needed for security reviews (shared code paths)
-- Dependency impact analysis (if library has vulnerability, which components affected?)
-- Architecture dependencies (components share behavior through these)
-
-### Exclude: Non-Components
-
-**Always exclude:**
-- Third-party utility dependencies (django, flask, postgres, redis)
-- Docs/wiki repos (no code, just markdown)
-- CI/CD tooling repos
-- Test frameworks and utilities
-- Development helpers
-- Archived/stale repos (no commits in 12+ months)
-
-**Exception — do NOT exclude external API specifications:**
-- If a third-party repo defines CRDs/APIs that your platform *implements* (not just *uses*), include it as `type: "api_specification"` per Step 5b
-- The test: do your controllers/reconcilers exist to serve this repo's types? If yes, it's a contract, not a utility
-
-**How to distinguish first-party from third-party:**
-- First-party: In the same GitHub org as platform
-- Third-party: External dependencies (PyPI, npm, Go modules)
-- Third-party API spec: External org, but defines contracts your platform implements (see Step 5b)
-
-**Special cases:**
-- One-off dependencies (only used by 1 component): Exclude unless deployed
-- Internal tools (used by developers, not shipped): Exclude
-- Vendored third-party code: Exclude (treat as third-party)
-- Mirrored/forked API spec repos: Include if they meet Step 5b criteria
+See [classification heuristics](references/classification-heuristics.md) for full include/exclude criteria, confidence levels, shared library detection methods, and special cases.
 
 ## Error Handling
 
@@ -847,56 +363,4 @@ When payload signals are available, they override all heuristic confidence level
 
 ### Critical: Don't Exclude Shared Libraries or API Contracts!
 
-**Common mistake #1:** Excluding repos because they're "just dependencies"
-
-**Why this is wrong:**
-- First-party shared libraries (like django-ansible-base) are architecturally critical
-- They're YOUR code, not third-party packages
-- Security vulnerabilities in shared libraries impact ALL consumers
-- Understanding the platform requires understanding shared foundations
-- Architecture reviews need to see the full dependency picture
-
-**Common mistake #2:** Excluding external repos because they're "third-party upstream"
-
-**Why this is wrong for API specs:**
-- Some external repos define the API contracts your platform implements
-- Your controllers/reconcilers are structured around their types
-- Excluding them makes your architecture diagrams incomplete — the CRDs your control plane reconciles just vanish
-- Understanding *what* your platform implements is as important as understanding *how*
-
-**Common mistake #3:** Marking an operator as optional because ANY manifest has a capability annotation
-
-**Why this is wrong:**
-- A capability annotation on a dashboard means "only create this dashboard if Console is enabled"
-- A capability annotation on a credential request means "only create this credential if CloudCredential is enabled"
-- Neither of these means the OPERATOR is optional
-- Only the Deployment manifest determines the operator's tier
-- Example: `cluster-kube-apiserver-operator` has `capability.openshift.io/name: Console` on dashboards but is absolutely core — without it there's no API server
-
-**Common mistake #4:** Classifying every repo with manifests as `type: "operator"`
-
-**Why this is wrong:**
-- A repo that ships GPG signing keys (`cluster-update-keys`) is not an operator
-- A repo that ships branding assets (`origin-branding`) is not an operator
-- A repo that provides a base container image (`driver-toolkit`) is not an operator
-- Check for actual controller/reconciler code before using `type: "operator"` (see Step 5c)
-
-**Common mistake #5:** Excluding bootstrap components that lack release annotations
-
-**Why this is wrong:**
-- CVO is the thing that reads release annotations — it can't annotate itself
-- The installer bootstraps the cluster before CVO exists
-- These are the most architecturally significant components and must be `core_platform`
-
-**Rule of thumb:**
-- If it's in the same GitHub org AND used by 2+ components → INCLUDE as `type: "shared_library"`
-- If it's external BUT defines CRDs/APIs your platform implements → INCLUDE as `type: "api_specification"`
-- If it's external AND just a utility you call → EXCLUDE (django, postgres, redis)
-
-**Example distinction:**
-- ✅ Include: `ansible/django-ansible-base` (first-party, used by AWX + EDA + Hub)
-- ✅ Include: `kubernetes-sigs/gateway-api` (external, but Istio's control plane implements its CRDs)
-- ✅ Include: `cluster-version-operator` (core_platform, even without release annotations — it's the reconciler)
-- ❌ Exclude: `django/django` (third-party utility, not in ansible org)
-- ❌ Exclude: `postgres` (infrastructure, third-party)
-- ❌ Exclude: `envoyproxy/go-control-plane` (third-party library you call, not a contract you implement)
+See [common mistakes](references/common-mistakes.md) for the 5 most frequent classification errors and how to avoid them.
