@@ -120,9 +120,8 @@ async def run_collect_architectures_phase(args) -> None:
 
         print(f"  Found {len(found)} architecture file(s)")
 
-        # Create output directory
-        output_dir = architecture_dir / f"{platform_name}-{version}"
-        output_dir.mkdir(parents=True, exist_ok=True)
+        # Collect into the same directory as the component-map
+        output_dir = architecture_dir / platform_key
 
         # Copy files
         collected_names = []
@@ -134,7 +133,7 @@ async def run_collect_architectures_phase(args) -> None:
 
         # Create index
         _create_index_readme(
-            output_dir, platform_name, version, collected_names,
+            output_dir, platform_key, version, collected_names,
             source_map=str(map_file),
         )
         print(f"  Created: {output_dir}/README.md")
