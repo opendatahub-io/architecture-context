@@ -3,6 +3,7 @@
 import re
 from pathlib import Path
 
+from lib.component_discovery import get_component_map_metadata
 from lib.build_info import get_build_info, format_build_info_context
 from lib.agent_runner import run_agents_concurrently, get_model_display_name
 
@@ -20,95 +21,72 @@ async def run_generate_platform_architecture_phase(args) -> None:
         print(f"Run 'collect-architectures' first to organize component files")
         return
 
-    # Discover platform directories
-    platform_dirs = []
-    for item in architecture_dir.iterdir():
-        if not item.is_dir():
-            continue
+    # Determine which directories to scan
+    if args.platform:
+        candidate = architecture_dir / args.platform
+        if not candidate.is_dir():
+            print(f"No directory found: {candidate}")
+            available = [p.name for p in sorted(architecture_dir.iterdir()) if p.is_dir()]
+            print(f"Available: {', '.join(available)}")
+            return
+        scan_dirs = [candidate]
+    else:
+        scan_dirs = sorted(d for d in architecture_dir.iterdir() if d.is_dir())
 
-        # Parse directory name: <platform> or <platform>-<version>
-        match = re.match(r'^(.+?)-(\d.*)$', item.name)
-        if match:
-            platform = match.group(1)
-            version = match.group(2)
-        else:
-            platform = item.name
-            version = None
+    if args.version:
+        scan_dirs = [d for d in scan_dirs if args.version in d.name]
+        if not scan_dirs:
+            print(f"No directories found matching version: {args.version}")
+            return
+
+    # Check each directory for component files and staleness
+    platform_dirs = []
+    for item in scan_dirs:
+        component_files = [
+            f for f in item.glob("*.md")
+            if f.name not in ("README.md", "PLATFORM.md")
+        ]
+        if not component_files:
+            continue
 
         platform_md = item / "PLATFORM.md"
         has_platform_md = platform_md.exists()
 
-        component_files = [
-            f for f in item.glob("*.md")
-            if f.name not in ["README.md", "PLATFORM.md"]
-        ]
-
-        needs_generation = False
-        if not has_platform_md and len(component_files) > 0:
-            needs_generation = True
-        elif has_platform_md and len(component_files) > 0:
+        needs_generation = not has_platform_md
+        if has_platform_md:
             platform_mtime = platform_md.stat().st_mtime
             for comp_file in component_files:
                 if comp_file.stat().st_mtime > platform_mtime:
                     needs_generation = True
-                    label = f"{platform}-{version}" if version else platform
-                    print(f"  Deleting stale PLATFORM.md for {label} (component files updated)")
+                    print(f"  Deleting stale PLATFORM.md for {item.name} (component files updated)")
                     platform_md.unlink()
                     has_platform_md = False
                     break
 
         platform_dirs.append({
-            'platform': platform,
-            'version': version,
+            'name': item.name,
             'path': item,
             'has_platform_md': has_platform_md,
             'component_count': len(component_files),
-            'needs_generation': needs_generation
+            'needs_generation': needs_generation,
         })
 
     if not platform_dirs:
-        print(f"No platform directories found in {architecture_dir}")
+        print(f"No platform directories with component files found")
         return
 
-    # Apply platform/version filters if specified
-    if args.platform:
-        platform_dirs = [p for p in platform_dirs if p['platform'] == args.platform]
-        if not platform_dirs:
-            print(f"No directories found for platform: {args.platform}")
-            return
-
-    if args.version:
-        platform_dirs = [p for p in platform_dirs if p['version'] == args.version]
-        if not platform_dirs:
-            print(f"No directories found for version: {args.version}")
-            if args.platform:
-                print(f"Looking for: {args.platform}-{args.version}")
-            return
-
-    # Filter to platforms that need PLATFORM.md generation
     needs_generation = [p for p in platform_dirs if p['needs_generation']]
     already_has = [p for p in platform_dirs if p['has_platform_md']]
-    no_components = [p for p in platform_dirs if p['component_count'] == 0]
-
-    def _label(p):
-        return f"{p['platform']}-{p['version']}" if p['version'] else p['platform']
 
     print(f"Found {len(platform_dirs)} platform director(ies):")
     print(f"  Already has PLATFORM.md: {len(already_has)}")
     print(f"  Needs PLATFORM.md: {len(needs_generation)}")
-    print(f"  No components: {len(no_components)}")
     print()
 
     if already_has:
         print("Platforms with PLATFORM.md:")
         for p in already_has:
-            print(f"  + {_label(p)} ({p['component_count']} components)")
-        print()
-
-    if no_components:
-        print("Platforms with no components:")
-        for p in no_components:
-            print(f"  ! {_label(p)}")
+            print(f"  + {p['name']} ({p['component_count']} components)")
         print()
 
     if not needs_generation:
@@ -123,7 +101,6 @@ async def run_generate_platform_architecture_phase(args) -> None:
 
     skill_content = skill_path.read_text()
 
-    # Extract the instructions section
     instructions_match = re.search(r'## Instructions\n\n(.+)', skill_content, re.DOTALL)
     if not instructions_match:
         print("ERROR: Could not extract instructions from skill file")
@@ -132,29 +109,34 @@ async def run_generate_platform_architecture_phase(args) -> None:
     instructions = instructions_match.group(1).strip()
 
     # Prepare agent jobs
-    checkouts_base = Path(getattr(args, 'checkouts_dir', 'checkouts'))
     jobs = []
-    for p in sorted(needs_generation, key=lambda x: (x['platform'], x['version'] or '')):
-        # Look up supported OCP versions from build-config in checkouts
+    for p in sorted(needs_generation, key=lambda x: x['name']):
+        # Try to get build context from component-map metadata
         build_context = ""
-        if p['platform'] == 'rhoai' and p['version']:
-            org = "red-hat-data-services"
-            org_dir = checkouts_base / f"{org}.rhoai-{p['version']}"
-            platform_build_info = get_build_info(org_dir)
-            if platform_build_info:
-                build_context = format_build_info_context(platform_build_info) + "\n"
+        metadata = get_component_map_metadata(p['name'], architecture_dir=str(architecture_dir))
+        if metadata:
+            checkouts_dir_str = metadata.get("checkouts_dir", "")
+            if checkouts_dir_str:
+                first_dir = Path(checkouts_dir_str.split(",")[0])
+                if first_dir.exists():
+                    platform_build_info = get_build_info(first_dir)
+                    if platform_build_info:
+                        build_context = format_build_info_context(platform_build_info) + "\n"
 
-        # Build prompt from skill instructions
         model_display = get_model_display_name(args.model)
-        version_line = f"Version: {p['version']}" if p['version'] else "Version: head (latest)"
+
+        # Derive distribution from directory name
+        distribution = p['name'].split("-")[0] if "-" in p['name'] else p['name']
+        version = metadata.get("version", "unknown") if metadata else "unknown"
+
         prompt = f"""Aggregate component architecture summaries into a platform-level architecture document.
 
-Distribution: {p['platform']}
-{version_line}
-Architecture directory: {p['path']}
+Distribution: {distribution}
+Version: {version}
+Architecture directory: . (current working directory)
 {build_context}
 This directory contains {p['component_count']} component architecture file(s).
-Generate a comprehensive PLATFORM.md file by aggregating all component summaries.
+Read all *.md files in the current directory (excluding README.md) to aggregate into PLATFORM.md.
 
 IMPORTANT: The supported OCP versions dictate which OpenShift/Kubernetes APIs and platform
 features are available to or required by this release. The total shipped container image count
@@ -167,11 +149,9 @@ IMPORTANT: For the "Generated By" metadata field, use exactly: {model_display}
 """
 
         job = {
-            "name": _label(p),
+            "name": p['name'],
             "cwd": str(p['path']),
             "prompt": prompt,
-            "platform": p['platform'],
-            "version": p['version'],
         }
         jobs.append(job)
 

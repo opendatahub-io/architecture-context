@@ -111,9 +111,8 @@ async def run_all_phases(args) -> None:
     # Use target_version to filter to specific version if branch was provided
     platform_arch_args = Namespace(
         architecture_dir="architecture",
-        checkouts_dir="checkouts",
         platform=args.platform,
-        version=target_version,  # Filter to specific version from branch
+        version=target_version,
         max_concurrent=max_concurrent,
         limit=None,
         model=getattr(args, 'model', 'sonnet')

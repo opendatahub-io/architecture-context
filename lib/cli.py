@@ -234,13 +234,8 @@ def parse_args():
         help="Base architecture directory (default: architecture)"
     )
     platform_arch_parser.add_argument(
-        "--checkouts-dir",
-        default="checkouts",
-        help="Base directory containing cloned repositories (default: checkouts)"
-    )
-    platform_arch_parser.add_argument(
         "--platform",
-        help="Only process this platform (default: all)"
+        help="Only process this platform directory (e.g., 'rhoai'). Default: all"
     )
     platform_arch_parser.add_argument(
         "--version",
