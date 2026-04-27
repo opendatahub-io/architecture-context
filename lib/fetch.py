@@ -105,7 +105,8 @@ async def _ensure_gh_org_clone() -> str:
 async def fetch_repositories(
     org: str,
     checkouts_dir: str = "checkouts",
-    branch: str = None
+    branch: str = None,
+    suffix: str = None
 ) -> None:
     """
     Clone all repositories from a GitHub organization using gh-org-clone.
@@ -114,21 +115,23 @@ async def fetch_repositories(
         org: GitHub organization name
         checkouts_dir: Base directory for cloning repositories
         branch: Optional specific branch to clone (skips repos without this branch)
-
-    Note:
-        When branch is specified, gh-org-clone automatically creates a directory
-        named <org>.<branch> inside checkouts_dir. For example:
-        - Without branch: checkouts/red-hat-data-services/
-        - With branch:    checkouts/red-hat-data-services.rhoai-2.14/
+        suffix: Optional suffix for the org directory (e.g., "head" -> <org>.head/).
+                When branch is set but suffix is not, suffix defaults to branch.
     """
     # Ensure gh-org-clone is available
     gh_org_clone_cmd = await _ensure_gh_org_clone()
+
+    if branch and not suffix:
+        suffix = branch
 
     checkouts_path = Path(checkouts_dir).absolute()
     checkouts_path.mkdir(parents=True, exist_ok=True)
 
     print(f"Fetching repositories from organization: {org}")
-    print(f"Target directory: {checkouts_path}")
+    if suffix:
+        print(f"Target directory: {checkouts_path}/{org}.{suffix}")
+    else:
+        print(f"Target directory: {checkouts_path}/{org}")
     if branch:
         print(f"Branch filter: {branch}")
 
@@ -136,6 +139,8 @@ async def fetch_repositories(
 
     if branch:
         cmd.extend(["-branch", branch])
+    if suffix:
+        cmd.extend(["-suffix", suffix])
 
     cmd.append(org)
 
@@ -146,17 +151,14 @@ async def fetch_repositories(
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        stdout=None,
+        stderr=None,
         env=env,
     )
 
-    stdout, stderr = await proc.communicate()
+    returncode = await proc.wait()
 
-    if proc.returncode != 0:
-        print(f"Error cloning repositories: {stderr.decode()}")
-        raise RuntimeError(f"gh-org-clone failed with exit code {proc.returncode}")
+    if returncode != 0:
+        raise RuntimeError(f"gh-org-clone failed with exit code {returncode}")
 
     print(f"Successfully cloned repositories from {org}")
-    if stdout:
-        print(stdout.decode())

@@ -61,6 +61,10 @@ def parse_args():
         "--branch",
         help="Specific branch to clone (skips repos without this branch)"
     )
+    fetch_parser.add_argument(
+        "--suffix",
+        help="Suffix for the org directory (e.g., --suffix=head -> <org>.head/). Defaults to branch name when --branch is set."
+    )
 
     # Phase 2: Parse manifests
     manifest_parser = subparsers.add_parser(

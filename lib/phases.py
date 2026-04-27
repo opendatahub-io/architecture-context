@@ -68,7 +68,8 @@ async def run_fetch_phase(args) -> None:
     await fetch_repositories(
         args.org,
         args.checkouts_dir,
-        branch=getattr(args, 'branch', None)
+        branch=getattr(args, 'branch', None),
+        suffix=getattr(args, 'suffix', None)
     )
 
 
@@ -926,7 +927,8 @@ async def run_all_phases(args) -> None:
     fetch_args = Namespace(
         org=org,
         checkouts_dir="checkouts",
-        branch=getattr(args, 'branch', None)
+        branch=getattr(args, 'branch', None),
+        suffix=getattr(args, 'suffix', None)
     )
     await run_fetch_phase(fetch_args)
 
