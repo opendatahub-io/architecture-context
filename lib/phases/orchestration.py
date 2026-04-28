@@ -115,7 +115,7 @@ async def run_all_phases(args) -> None:
         version=target_version,
         max_concurrent=max_concurrent,
         limit=None,
-        model=getattr(args, 'model', 'sonnet')
+        model=getattr(args, 'model', 'opus')
     )
     await run_generate_platform_architecture_phase(platform_arch_args)
 

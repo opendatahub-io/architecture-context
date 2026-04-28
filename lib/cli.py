@@ -255,8 +255,8 @@ def parse_args():
     platform_arch_parser.add_argument(
         "--model",
         choices=["sonnet", "opus", "haiku"],
-        default="sonnet",
-        help="Claude model to use (default: sonnet)"
+        default="opus",
+        help="Claude model to use (default: opus — platform aggregation needs large context)"
     )
 
     # Phase 6: Generate diagrams
@@ -271,7 +271,7 @@ def parse_args():
     )
     diagrams_parser.add_argument(
         "--platform",
-        help="Only process this platform (default: all)"
+        help="Only process this platform directory (e.g., 'rhoai'). Default: all"
     )
     diagrams_parser.add_argument(
         "--version",

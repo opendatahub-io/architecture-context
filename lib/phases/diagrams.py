@@ -19,22 +19,28 @@ async def run_generate_diagrams_phase(args) -> None:
         print(f"Error: Architecture directory does not exist: {architecture_dir}")
         return
 
-    # Discover all .md files in all platform-version directories
+    # Determine which directories to scan
+    if args.platform:
+        candidate = architecture_dir / args.platform
+        if not candidate.is_dir():
+            print(f"No directory found: {candidate}")
+            available = [p.name for p in sorted(architecture_dir.iterdir()) if p.is_dir()]
+            print(f"Available: {', '.join(available)}")
+            return
+        scan_dirs = [candidate]
+    else:
+        scan_dirs = sorted(d for d in architecture_dir.iterdir() if d.is_dir())
+
+    if args.version:
+        scan_dirs = [d for d in scan_dirs if args.version in d.name]
+        if not scan_dirs:
+            print(f"No directories found matching version: {args.version}")
+            return
+
+    # Discover all .md files in selected directories
     diagram_jobs = []
 
-    for platform_dir in sorted(architecture_dir.iterdir()):
-        if not platform_dir.is_dir():
-            continue
-
-        # Parse directory name: <platform> or <platform>-<version>
-        match = re.match(r'^(.+?)-(\d.*)$', platform_dir.name)
-        if match:
-            platform = match.group(1)
-            version = match.group(2)
-        else:
-            platform = platform_dir.name
-            version = None
-
+    for platform_dir in scan_dirs:
         # Find all .md files (excluding README.md)
         md_files = [
             f for f in platform_dir.glob("*.md")
@@ -46,11 +52,9 @@ async def run_generate_diagrams_phase(args) -> None:
             diagrams_dir = platform_dir / "diagrams"
 
             # Check if diagrams already exist
-            # Look for any diagram files (.mmd, .dsl, .txt) with this component's name
             has_diagrams = False
             all_diagram_files = []
             if diagrams_dir.exists():
-                # Check for any of the expected diagram file types
                 mmd_files = list(diagrams_dir.glob(f"{component_name}-*.mmd"))
                 dsl_files = list(diagrams_dir.glob(f"{component_name}-*.dsl"))
                 txt_files = list(diagrams_dir.glob(f"{component_name}-*.txt"))
@@ -62,19 +66,15 @@ async def run_generate_diagrams_phase(args) -> None:
             if not has_diagrams:
                 needs_generation = True
             elif args.force_regenerate:
-                # Force regeneration - delete existing diagrams
                 print(f"  Deleting existing diagrams for {component_name} (--force-regenerate)")
                 for diagram_file in all_diagram_files:
                     diagram_file.unlink()
                 needs_generation = True
                 has_diagrams = False
             elif has_diagrams:
-                # Check if source .md file is newer than diagrams
                 md_mtime = md_file.stat().st_mtime
-                # Check oldest diagram file
                 oldest_diagram_mtime = min(f.stat().st_mtime for f in all_diagram_files)
                 if md_mtime > oldest_diagram_mtime:
-                    # Source is newer - delete stale diagrams
                     print(f"  Deleting stale diagrams for {component_name} (source file updated)")
                     for diagram_file in all_diagram_files:
                         diagram_file.unlink()
@@ -82,8 +82,7 @@ async def run_generate_diagrams_phase(args) -> None:
                     has_diagrams = False
 
             diagram_jobs.append({
-                'platform': platform,
-                'version': version,
+                'dir_name': platform_dir.name,
                 'md_file': md_file,
                 'component_name': component_name,
                 'diagrams_dir': diagrams_dir,
@@ -94,21 +93,6 @@ async def run_generate_diagrams_phase(args) -> None:
     if not diagram_jobs:
         print(f"No architecture files found in {architecture_dir}")
         return
-
-    # Apply platform/version filters if specified
-    if args.platform:
-        diagram_jobs = [j for j in diagram_jobs if j['platform'] == args.platform]
-        if not diagram_jobs:
-            print(f"No files found for platform: {args.platform}")
-            return
-
-    if args.version:
-        diagram_jobs = [j for j in diagram_jobs if j['version'] == args.version]
-        if not diagram_jobs:
-            print(f"No files found for version: {args.version}")
-            if args.platform:
-                print(f"Looking for: {args.platform}-{args.version}")
-            return
 
     # Filter to files that need diagrams
     needs_generation = [j for j in diagram_jobs if j['needs_generation']]
@@ -122,8 +106,7 @@ async def run_generate_diagrams_phase(args) -> None:
     if already_has:
         print("Files with diagrams (skipping):")
         for j in already_has:
-            label = f"{j['platform']}-{j['version']}" if j['version'] else j['platform']
-            print(f"  + {label}/{j['component_name']}.md")
+            print(f"  + {j['dir_name']}/{j['component_name']}.md")
         print()
 
     if not needs_generation:
@@ -140,7 +123,6 @@ async def run_generate_diagrams_phase(args) -> None:
 
     skill_content = skill_path.read_text()
 
-    # Extract the instructions section
     instructions_match = re.search(r'## Instructions\n\n(.+)', skill_content, re.DOTALL)
     if not instructions_match:
         print("ERROR: Could not extract instructions from skill file")
@@ -150,8 +132,7 @@ async def run_generate_diagrams_phase(args) -> None:
 
     # Prepare agent jobs
     jobs = []
-    for j in sorted(needs_generation, key=lambda x: (x['platform'], x['version'] or '', x['component_name'])):
-        # Build prompt from skill instructions
+    for j in sorted(needs_generation, key=lambda x: (x['dir_name'], x['component_name'])):
         model_display = get_model_display_name(args.model)
         prompt = f"""Generate architecture diagrams from the architecture markdown file.
 
@@ -171,7 +152,7 @@ IMPORTANT: For any "Generated by" fields in output files, use exactly: {model_di
 """
 
         job = {
-            "name": f"{j['platform']}-{j['version']}/{j['component_name']}" if j['version'] else f"{j['platform']}/{j['component_name']}",
+            "name": f"{j['dir_name']}/{j['component_name']}",
             "cwd": str(j['md_file'].parent),
             "prompt": prompt,
             "component_name": j['component_name'],
@@ -235,7 +216,6 @@ IMPORTANT: For any "Generated by" fields in output files, use exactly: {model_di
         print("GENERATING PNG FILES")
         print("=" * 60 + "\n")
 
-        # Get unique diagrams directories from successful jobs
         unique_dirs = set()
         for job, result in zip(jobs, results):
             if isinstance(result, dict) and result.get("success"):
