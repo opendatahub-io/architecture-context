@@ -73,7 +73,8 @@ async def run_all_phases(args) -> None:
         limit=None,
         component=None,
         force=False,
-        model=getattr(args, 'model', 'sonnet')
+        model=getattr(args, 'model', 'sonnet'),
+        tier=getattr(args, 'tier', 'all'),
     )
     await run_generate_architecture_phase(generate_arch_args)
 

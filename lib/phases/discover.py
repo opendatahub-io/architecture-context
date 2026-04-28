@@ -73,7 +73,7 @@ async def run_discover_components_phase(args) -> None:
     log_dir = Path("logs/discover-components")
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    model = getattr(args, 'model', 'sonnet')
+    model = getattr(args, 'model', 'opus')
     print(f"Running component discovery with Skills enabled (SDK)...")
     print(f"Model: {model}")
     print(f"Log directory: {log_dir}\n")

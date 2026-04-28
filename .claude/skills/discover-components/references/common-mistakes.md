@@ -19,39 +19,40 @@
 - Excluding them makes your architecture diagrams incomplete — the CRDs your control plane reconciles just vanish
 - Understanding *what* your platform implements is as important as understanding *how*
 
-**Common mistake #3:** Marking an operator as optional because ANY manifest has a capability annotation
+**Common mistake #3:** Classifying all DSC-managed components as `payload_component`
 
 **Why this is wrong:**
-- A capability annotation on a dashboard means "only create this dashboard if Console is enabled"
-- A capability annotation on a credential request means "only create this credential if CloudCredential is enabled"
-- Neither of these means the OPERATOR is optional
-- Only the Deployment manifest determines the operator's tier
-- Example: `cluster-kube-apiserver-operator` has `capability.openshift.io/name: Console` on dashboards but is absolutely core — without it there's no API server
+- Components with a field in the DataScienceCluster `Components` struct are user-togglable (Managed/Removed)
+- These are `optional_platform`, not `payload_component`
+- `payload_component` is for repos that provide container images deployed BY optional_platform operators — they have no DSC toggle
+- Example: `kserve` has a DSC field → `optional_platform`. `vllm` is deployed by `odh-model-controller` → `payload_component`
 
 **Common mistake #4:** Classifying every repo with manifests as `type: "operator"`
 
 **Why this is wrong:**
-- A repo that ships GPG signing keys (`cluster-update-keys`) is not an operator
-- A repo that ships branding assets (`origin-branding`) is not an operator
-- A repo that provides a base container image (`driver-toolkit`) is not an operator
+- A repo that ships notebook images (`notebooks-downstream`) is not an operator — it's an `asset`
+- A repo that provides a model server (`vllm`) is not an operator — it's a `service`
+- A repo that defines shared CRDs (`kubeflow`) is not an operator — it's a `shared_library`
 - Check for actual controller/reconciler code before using `type: "operator"` (see Step 5c)
 
-**Common mistake #5:** Excluding bootstrap components that lack release annotations
+**Common mistake #5:** Including build infrastructure as components
 
 **Why this is wrong:**
-- CVO is the thing that reads release annotations — it can't annotate itself
-- The installer bootstraps the cluster before CVO exists
-- These are the most architecturally significant components and must be `core_platform`
+- `RHOAI-Build-Config` contains build configs, catalog definitions, and image lists — it's NOT a shipped component
+- `must-gather` is a diagnostic tool, not a platform service
+- `konflux-central` is CI/CD infrastructure
+- These should be excluded, not included as `payload_component`
 
 **Rule of thumb:**
 - If it's in the same GitHub org AND used by 2+ components → INCLUDE as `type: "shared_library"`
 - If it's external BUT defines CRDs/APIs your platform implements → INCLUDE as `type: "api_specification"`
 - If it's external AND just a utility you call → EXCLUDE (django, postgres, redis)
+- If it's build/CI infrastructure or diagnostic tooling → EXCLUDE
 
 **Example distinction:**
-- ✅ Include: `ansible/django-ansible-base` (first-party, used by AWX + EDA + Hub)
-- ✅ Include: `kubernetes-sigs/gateway-api` (external, but Istio's control plane implements its CRDs)
-- ✅ Include: `cluster-version-operator` (core_platform, even without release annotations — it's the reconciler)
-- ❌ Exclude: `django/django` (third-party utility, not in ansible org)
-- ❌ Exclude: `postgres` (infrastructure, third-party)
-- ❌ Exclude: `envoyproxy/go-control-plane` (third-party library you call, not a contract you implement)
+- ✅ Include: `kubeflow` (first-party fork, used by notebooks + training-operator + trainer)
+- ✅ Include: `ml-metadata` (shared library, used by data-science-pipelines + model-registry)
+- ✅ Include: `odh-cli` (shipped CLI tool starting with RHOAI 3.3+)
+- ❌ Exclude: `RHOAI-Build-Config` (build infrastructure, not a deployed component)
+- ❌ Exclude: `must-gather` (diagnostic support tool)
+- ❌ Exclude: `konflux-central` (CI/CD infrastructure)

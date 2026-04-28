@@ -8,7 +8,7 @@ Create the component map structure:
 {
   "metadata": {
     "platform": "{platform}",
-    "discovery_method": "breadcrumb|release_payload_signals",
+    "discovery_method": "breadcrumb",
     "entry_point": "{entry_repo or 'multiple'}",
     "discovered_at": "{ISO timestamp}",
     "checkouts_dir": "{checkouts_dir}",
@@ -29,7 +29,7 @@ Create the component map structure:
       "has_architecture": false,
       "type": "operator|controller|service|ui|installer|asset|shared_library|api_specification",
       "tier": "core_platform|optional_platform|payload_component|ecosystem",
-      "discovered_via": "release_payload_signal|operator_operand|operator_bundle|container_image|dependency|installer",
+      "discovered_via": "operator_operand|operator_bundle|container_image|dependency|installer|dsc_spec",
       "referenced_by": ["installer"],
       "shipped": true,
       "architecturally_significant": true,
@@ -79,91 +79,42 @@ Component Discovery Complete
 
 Platform: {platform}
 Checkouts directory: {checkouts_dir}
-Discovery method: {Breadcrumb exploration | Release payload signals}
+Discovery method: Breadcrumb exploration
 
 Results:
   Total repositories scanned: {total}
   Components discovered: {discovered}
   Components excluded: {excluded}
 
---- If release payload signals were found: ---
-
-Release payload signals detected: {signal_types}
-
 Core platform ({count}):
-  ✓ cluster-etcd-operator (type: operator, tier: core_platform)
-  ✓ cluster-kube-apiserver-operator (type: operator, tier: core_platform)
-  ✓ machine-config-operator (type: operator, tier: core_platform)
+  ✓ rhods-operator (type: operator, tier: core_platform)
+  ✓ odh-dashboard (type: ui, tier: core_platform)
+  ✓ notebooks (type: controller, tier: core_platform)
+  ✓ odh-model-controller (type: controller, tier: core_platform)
   ...
 
 Optional platform ({count}):
-  ✓ cluster-samples-operator (type: operator, tier: optional_platform, capability: openshift-samples)
-  ✓ console-operator (type: operator, tier: optional_platform, capability: Console)
+  ✓ kserve (type: controller, tier: optional_platform)
+  ✓ data-science-pipelines-operator (type: operator, tier: optional_platform)
+  ✓ codeflare-operator (type: operator, tier: optional_platform)
+  ✓ kuberay (type: controller, tier: optional_platform)
+  ...
+
+Payload components ({count}):
+  ✓ vllm (type: service, tier: payload_component, ref by: odh-model-controller)
+  ✓ data-science-pipelines (type: service, tier: payload_component, ref by: data-science-pipelines-operator)
+  ✓ model-registry (type: service, tier: payload_component, ref by: model-registry-operator)
   ...
 
 Shared libraries / API specs:
-  ✓ library-go (type: shared_library, used by: N components) [ARCHITECTURALLY SIGNIFICANT]
-  ✓ gateway-api (type: api_specification, upstream: kubernetes-sigs) [ARCHITECTURALLY SIGNIFICANT]
-  ...
-
-Consensus-reviewed (included):
-  ✓ console (type: service, confidence: high, votes: 3/3 include)
-      structural: include — "Has Dockerfile, deployed as pod"
-      relational: include — "Image referenced by console-operator"
-      functional: include — "Web UI served in production"
-  ...
-
-Consensus-reviewed (excluded — review recommended):
-  ✗ some-tool (confidence: medium, votes: 2/3 exclude)
-  ...
-
-Disputed (needs human review):
-  ⚠ ambiguous-repo (confidence: disputed, votes: 1/1/1)
-  ...
-
-Ecosystem (excluded — no release payload signals):
-  ✗ aws-account-operator (ecosystem)
-  ✗ addon-operator (ecosystem)
-  ... and {N} more
-
---- If NO release payload signals found (breadcrumb mode): ---
-
-Entry points used:
-  - {entry1}
-  - {entry2}
-
-Discovered components:
-  ✓ awx-operator (type: operator, via: operator_bundle, ref by: installer)
-  ✓ eda-operator (type: operator, via: operator_bundle, ref by: installer)
-  ✓ awx-api (type: service, via: container_image, ref by: awx-operator)
-  ✓ django-ansible-base (type: shared_library, used by: 3 components) [ARCHITECTURALLY SIGNIFICANT]
-  ✓ gateway-api (type: api_specification, upstream: kubernetes-sigs) [ARCHITECTURALLY SIGNIFICANT]
-  ...
-
-Consensus-reviewed (included):
-  ✓ data-science-pipelines (type: service, confidence: medium, votes: 2/3 include)
-      structural: include — "Has Dockerfile and kustomize manifests"
-      relational: include — "Image referenced by data-science-pipelines-operator"
-      functional: exclude — "Operand only, no standalone lifecycle"
-  ...
-
-Consensus-reviewed (excluded — review recommended):
-  ✗ some-helper-tool (confidence: medium, votes: 2/3 exclude)
-      structural: include — "Has Dockerfile"
-      relational: exclude — "Not referenced by any included component"
-      functional: exclude — "CI/CD helper, not a production workload"
-  ...
-
-Disputed (needs human review):
-  ⚠ ambiguous-repo (confidence: disputed, votes: 1/1/1)
-      structural: include — "..."
-      relational: exclude — "..."
-      functional: unsure — "..."
+  ✓ kubeflow (type: shared_library, used by: N components) [ARCHITECTURALLY SIGNIFICANT]
+  ✓ ml-metadata (type: shared_library, used by: N components) [ARCHITECTURALLY SIGNIFICANT]
   ...
 
 Excluded repositories:
-  ✗ ansible-docs (documentation_only)
-  ✗ ansible-ci-tools (development_tooling)
+  ✗ RHOAI-Build-Config (build_infrastructure)
+  ✗ must-gather (diagnostic_tool)
+  ✗ konflux-central (build_infrastructure)
   ...
 
 Output: architecture/{platform}/component-map.json

@@ -131,17 +131,16 @@ Default to `architecturally_significant: true` for all `core_platform` and `opti
 
 ### Include: Deployed Components (shipped: true)
 
-**Definitive (release payload signals — Step 2a):**
-- Has `include.release.openshift.io/*` or equivalent release inclusion annotation → definitely in payload
-- No `capability.openshift.io/name` **on Deployment manifest** → `tier: core_platform` (always installed)
-- Has `capability.openshift.io/name` **on Deployment manifest** → `tier: optional_platform` (can be disabled)
-- Capability annotations on non-Deployment resources (dashboards, credential requests) do NOT make the operator optional — they mean those sub-resources are conditional
-- Has `image-references` manifest → ships container images in the release
-- Bootstrap/self-referential components (CVO, installer) → `tier: core_platform` even without annotations
+**Definitive (DSC spec — Step 2a):**
+- Has a field in the DataScienceCluster Components struct → `tier: optional_platform` (user-togglable via managementState)
+- Is the meta-operator itself (rhods-operator, opendatahub-operator) → `tier: core_platform`
+- Is an always-on component (odh-dashboard, notebooks, odh-model-controller) → `tier: core_platform`
+- Found in OLM catalog relatedImages → `shipped: true`
+- Found in RELATED_IMAGE mappings → `shipped: true`, `tier: payload_component` (unless classified higher by DSC spec)
 
-When payload signals are available, they override all heuristic confidence levels below.
+The DSC spec is the authoritative source for tier classification. It overrides all heuristic confidence levels below.
 
-**High confidence (definitely deployed) — breadcrumb mode fallback:**
+**High confidence (definitely deployed):**
 - Referenced in operator manifests
 - Referenced in installer playbooks
 - Container image built in CI and pushed to registry

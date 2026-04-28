@@ -3,14 +3,13 @@
 import re
 import json
 from pathlib import Path
-from typing import Dict, Optional, Any
-from dataclasses import dataclass, asdict
+from typing import Dict, List, Optional, Any
+from dataclasses import dataclass, field, asdict
 
 
 # Repos that are utilities/build-support, not platform components
 EXCLUDED_REPOS = {
     "must-gather",
-    "odh-cli",
     "rhoai-additional-images",
     "konflux-central",
 }
@@ -29,6 +28,13 @@ class ComponentInfo:
     has_architecture: bool = False  # Whether GENERATED_ARCHITECTURE.md exists
     repo_url: Optional[str] = None  # Full GitHub URL
     checkout_branch: Optional[str] = None  # Branch checked out locally
+    tier: Optional[str] = None
+    type: Optional[str] = None
+    discovered_via: Optional[str] = None
+    referenced_by: Optional[List[str]] = field(default=None)
+    shipped: Optional[bool] = None
+    architecturally_significant: Optional[bool] = None
+    confidence: Optional[str] = None
 
 
 def parse_manifest_array(content: str, array_name: str) -> Dict[str, ComponentInfo]:

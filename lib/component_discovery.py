@@ -62,7 +62,7 @@ def write_component_map(
         if not checkout_branch and comp.checkout_path:
             checkout_branch = _detect_checkout_branch(comp.checkout_path)
 
-        component_data[key] = {
+        entry = {
             "key": comp.key,
             "repo_org": comp.repo_org,
             "repo_name": comp.repo_name,
@@ -73,6 +73,12 @@ def write_component_map(
             "checkout_branch": checkout_branch,
             "has_architecture": comp.has_architecture,
         }
+        for attr in ("tier", "type", "discovered_via", "referenced_by",
+                      "shipped", "architecturally_significant", "confidence"):
+            val = getattr(comp, attr, None)
+            if val is not None:
+                entry[attr] = val
+        component_data[key] = entry
 
     if "discovered_at" not in metadata:
         metadata["discovered_at"] = datetime.now().isoformat()
@@ -128,6 +134,13 @@ def read_component_map(
             has_architecture=comp_data.get("has_architecture", False),
             repo_url=comp_data.get("repo_url"),
             checkout_branch=comp_data.get("checkout_branch"),
+            tier=comp_data.get("tier"),
+            type=comp_data.get("type"),
+            discovered_via=comp_data.get("discovered_via"),
+            referenced_by=comp_data.get("referenced_by"),
+            shipped=comp_data.get("shipped"),
+            architecturally_significant=comp_data.get("architecturally_significant"),
+            confidence=comp_data.get("confidence"),
         )
 
     return components

@@ -107,6 +107,17 @@ async def run_generate_architecture_phase(args) -> None:
         if v.checkout_path and v.checkout_path.exists()
     }
 
+    # Apply tier filter
+    tier_filter = getattr(args, 'tier', 'all')
+    if tier_filter == 'significant':
+        before = len(components)
+        components = {k: v for k, v in components.items() if v.architecturally_significant}
+        print(f"Tier filter 'significant': {before} -> {len(components)} components")
+    elif tier_filter == 'core':
+        before = len(components)
+        components = {k: v for k, v in components.items() if v.tier in ('core_platform', 'optional_platform')}
+        print(f"Tier filter 'core': {before} -> {len(components)} components")
+
     # Refresh has_architecture from filesystem (component-map may be stale)
     for component in components.values():
         arch_file = component.checkout_path / "GENERATED_ARCHITECTURE.md"

@@ -15,11 +15,11 @@ VALID_TIERS = {
     "core_platform", "optional_platform", "payload_component", "ecosystem",
 }
 
-VALID_DISCOVERY_METHODS = {"breadcrumb", "release_payload_signals"}
+VALID_DISCOVERY_METHODS = {"breadcrumb"}
 
 VALID_DISCOVERED_VIA = {
-    "release_payload_signal", "operator_operand", "operator_bundle",
-    "container_image", "dependency", "installer",
+    "operator_operand", "operator_bundle",
+    "container_image", "dependency", "installer", "dsc_spec",
 }
 
 VALID_CONFIDENCE = {"high", "medium", "low", "disputed"}

@@ -140,6 +140,25 @@ async def run_collect_architectures_phase(args) -> None:
 
         total_collected += len(collected_names)
 
+        # Report components with checkouts but missing architecture, grouped by tier
+        collected_keys = set(collected_names)
+        missing_by_tier = {}
+        for key, comp in sorted(components.items()):
+            if key in collected_keys:
+                continue
+            if not comp.checkout_path or not comp.checkout_path.exists():
+                continue
+            tier = comp.tier or "unknown"
+            missing_by_tier.setdefault(tier, []).append(key)
+
+        if missing_by_tier:
+            total_missing = sum(len(v) for v in missing_by_tier.values())
+            print(f"\n  {total_missing} component(s) with checkouts but no architecture:")
+            for tier in sorted(missing_by_tier):
+                keys = missing_by_tier[tier]
+                sig_marker = " *" if tier in ("core_platform", "optional_platform") else ""
+                print(f"    [{tier}]{sig_marker} ({len(keys)}): {', '.join(keys)}")
+
     print("\n" + "=" * 60)
     if total_collected:
         print(f"Collected {total_collected} architecture file(s)")

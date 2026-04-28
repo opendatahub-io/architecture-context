@@ -153,8 +153,8 @@ def parse_args():
     discover_parser.add_argument(
         "--model",
         choices=["sonnet", "opus", "haiku"],
-        default="sonnet",
-        help="Claude model to use for discovery (default: sonnet)"
+        default="opus",
+        help="Claude model to use for discovery (default: opus — discovery explores many repos and needs large context)"
     )
 
     # Phase 3: Generate architecture
@@ -201,6 +201,12 @@ def parse_args():
         choices=["sonnet", "opus", "haiku"],
         default="sonnet",
         help="Claude model to use (default: sonnet)"
+    )
+    generate_arch_parser.add_argument(
+        "--tier",
+        choices=["all", "significant", "core"],
+        default="all",
+        help="Which components to process: all (default), significant (architecturally_significant only), core (core/optional platform tiers only)"
     )
 
     # Phase 4: Collect architectures
@@ -337,6 +343,12 @@ def parse_args():
         choices=["sonnet", "opus", "haiku"],
         default="sonnet",
         help="Claude model to use for all agent tasks (default: sonnet)"
+    )
+    all_parser.add_argument(
+        "--tier",
+        choices=["all", "significant", "core"],
+        default="all",
+        help="Which components to generate architecture for: all (default), significant, core"
     )
 
     return parser.parse_args()

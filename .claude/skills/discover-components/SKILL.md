@@ -49,108 +49,55 @@ Exclude obvious non-components:
 - Common patterns:
   - `*-docs`, `*-documentation`
   - `*-ci`, `*-tools`, `*-testing`, `*-test`
-  - `must-gather`, `cli`, `additional-images`
-  - Build/release infrastructure repos
+  - `must-gather`, `additional-images`
+  - Build/release infrastructure repos (`RHOAI-Build-Config`, `konflux-central`)
+
+**Do NOT exclude** `odh-cli` — it is a shipped component starting with RHOAI 3.3+.
 
 Create an initial list of candidate repos.
 
-### Step 2a: Probe for Release Payload Signals
+### Step 2a: Classify Components by Tier (DSC-based)
 
-Before breadcrumb exploration, check whether the platform has **formal release inclusion signals** — annotations, manifests, or metadata that explicitly declare which repos ship in the product. Large platforms (OpenShift, OKD, etc.) often have these; small platforms typically don't.
+ODH and RHOAI use a **DataScienceCluster (DSC) CR** to manage platform components. The operator's DSC spec defines which components are user-togglable (can be set to `Managed` or `Removed`). This is the authoritative source for tier classification.
 
-**Why this matters:** Without payload signals, the skill must infer "is this shipped?" from heuristics (has Dockerfile? has operator structure?). On a platform with 800+ repos where 179 are operators, heuristics produce a useless component map. Payload signals give a definitive answer.
+**Step 1: Parse the DSC spec to find managed components.**
 
-**Probe procedure — sample 5-10 repos** (prefer repos named `cluster-*-operator` or `*-controller`) and scan their manifest directories for known signal patterns.
-
-**IMPORTANT: Path rules for signal scanning:**
-- Scan BOTH `manifests/` AND `install/` directories (some components use one or the other)
-- ALWAYS exclude `vendor/`, `testdata/`, `pkg/*/testdata/`, and `test/` paths — these contain vendored copies of other components' manifests and test fixtures that will produce false positives
-- Example: CVO's `vendor/` contains 97 YAML files with release annotations from OTHER operators
-
+Look in the operator repo for the DataScienceCluster types:
 ```bash
-# Correct: exclude vendor and testdata
-grep -r --exclude-dir=vendor --exclude-dir=testdata "include.release.openshift.io" {sample_repo}/manifests/ {sample_repo}/install/ 2>/dev/null
-# WRONG: scanning all YAML will hit vendor/ and testdata/
-grep -r "include.release.openshift.io" {sample_repo}/ 2>/dev/null
+grep "json:" {operator_repo}/api/datasciencecluster/v2/datasciencecluster_types.go | grep -v "//"
 ```
 
-#### Signal 1: Release Inclusion Annotations
-```bash
-grep -r --exclude-dir=vendor --exclude-dir=testdata "include.release.openshift.io\|release.openshift.io\|operator.openshift.io/managed" {sample_repo}/manifests/ {sample_repo}/install/ 2>/dev/null
-```
-These annotations declare that a component ships in a specific release profile (self-managed, single-node, hypershift, etc.).
+This lists all component fields in the `Components` struct. Each field corresponds to a sub-operator or controller that the user can toggle. These are the `optional_platform` components.
 
-#### Signal 2: Capability/Optional Annotations
+**Step 2: Map DSC field names to repos.** The DSC field names (e.g., `dashboard`, `kserve`, `ray`) map to component controller directories:
 ```bash
-grep -r --exclude-dir=vendor --exclude-dir=testdata "capability.openshift.io/name\|operator.openshift.io/capability" {sample_repo}/manifests/ {sample_repo}/install/ 2>/dev/null
-```
-These mark a payload component as **optional** — it ships by default but can be disabled. Components WITHOUT this annotation (but WITH release inclusion) are **core**.
-
-**CRITICAL: Check the Deployment, not just any manifest.** A capability annotation on a sub-resource (dashboard, credential request, operator group) means "this sub-resource is conditional on that capability" — it does NOT mean the operator itself is optional. To determine if the operator is truly optional, check specifically whether the operator's **Deployment manifest** (`kind: Deployment`) has the capability annotation:
-
-```bash
-# Find the operator's Deployment manifest and check for capability annotation
-grep -l "kind: Deployment" {repo}/manifests/ {repo}/install/ 2>/dev/null | xargs grep -l "capability.openshift.io/name" 2>/dev/null
+ls {operator_repo}/internal/controller/components/
 ```
 
-- If the **Deployment** has `capability.openshift.io/name: X` → the operator is `optional_platform` with `capability: "X"`
-- If only non-Deployment resources have capability annotations → the operator is `core_platform` (with some conditional sub-resources)
+Each directory name maps to a DSC field. Cross-reference with the RELATED_IMAGE mappings (Step 5.1a) and operator bundle to determine which repo each controller deploys.
 
-**Extract the actual capability name** from the annotation value (e.g., `capability.openshift.io/name: openshift-samples` → `"capability": "openshift-samples"`). Do NOT use a generic placeholder like `"optional-component"`.
+**Step 3: Apply tier classification.**
 
-#### Signal 3: Image Reference Manifests
-```bash
-ls {sample_repo}/manifests/image-references {sample_repo}/install/image-references 2>/dev/null
-```
-A structured file listing container images the repo contributes to the release payload.
-
-#### Signal 4: OLM Catalog Membership
-```bash
-ls {sample_repo}/bundle/manifests/*.clusterserviceversion.yaml 2>/dev/null
-```
-If a central catalog repo exists (e.g., `certified-operators`, `redhat-operators`), check whether this repo's CSV is listed there.
-
-#### Signal 5: Helm Chart Index / Kustomize Catalog
-```bash
-ls {sample_repo}/charts/ {sample_repo}/Chart.yaml 2>/dev/null
-```
-For Helm-based platforms, check if a central chart index references this repo.
-
-**If signals are found in 3+ sampled repos**, this platform has formal payload signals. Set `discovery_method: "release_payload_signals"` and proceed with a **full signal scan**:
-
-#### Full Signal Scan
-
-Scan ALL repos in the checkouts directory for the detected signal type(s). Apply the path rules above (scan `manifests/` + `install/`, exclude `vendor/` + `testdata/`). Classify each repo into a tier:
-
-| Tier | Criteria | Example |
+| Tier | Criteria | Examples |
 |------|----------|---------|
-| `core_platform` | Has release inclusion annotations and NO capability annotation **on its Deployment** | `cluster-etcd-operator`, `cluster-kube-apiserver-operator` |
-| `optional_platform` | Has release inclusion annotations AND capability annotation **on its Deployment** | `cluster-samples-operator` (capability: openshift-samples) |
-| `payload_component` | Has `image-references` but no release/capability annotations | Supporting images shipped in payload |
-| `ecosystem` | No release signals at all | `aws-account-operator` |
+| `core_platform` | The meta-operator itself AND components that are always deployed (not togglable via DSC) | `rhods-operator`, `opendatahub-operator`, `odh-dashboard`, `notebooks`, `odh-model-controller` |
+| `optional_platform` | Components with a DSC field — user can set `managementState: Managed/Removed` | `kserve`, `data-science-pipelines-operator`, `codeflare-operator`, `kuberay`, `kueue`, `trustyai-service-operator`, `model-registry-operator`, `modelmesh-serving`, `trainer`, `training-operator`, `spark-operator`, `feast`, `llama-stack-k8s-operator`, `mlflow-operator`, `models-as-a-service`, `workload-variant-autoscaler` |
+| `payload_component` | Shipped containers/libraries deployed BY core or optional components — not independently togglable | `vllm`, `data-science-pipelines`, `model-registry`, `codeflare-sdk`, `modelmesh`, `rest-proxy` |
 
-**Important subtlety:** A repo like `cluster-kube-apiserver-operator` may have `capability.openshift.io/name: Console` on dashboard manifests — this means "only create this dashboard if Console capability is enabled," NOT "this operator is optional." Only the Deployment-level annotation determines the operator's tier.
+**Key distinction:** `optional_platform` components are the ones a cluster admin toggles on/off. `payload_component` repos provide the container images or libraries that optional_platform operators deploy — they don't have their own DSC toggle.
 
-#### Bootstrap / Self-Referential Components
+**Dashboard, notebooks, and odh-model-controller** are `core_platform` even though they appear as DSC fields — they are always-on components required for the platform to function. The DSC fields for these exist for configuration, not for enable/disable.
 
-Some components exist **before** the release payload mechanism and naturally won't annotate themselves:
-
-- **Cluster Version Operator (CVO)** — the component that reads `include.release.openshift.io` annotations and reconciles all other operators. It doesn't annotate itself because it IS the reconciler. If a repo contains CVO logic (look for `ClusterVersion` controller code, or repo name matches `*-version-operator`), classify as `core_platform` automatically.
-- **Installer** — bootstraps the cluster before CVO takes over. If a repo is named `installer` or contains cluster bootstrapping logic (terraform, ignition configs), include it as `core_platform` with `type: "installer"`.
-- **Bootstrap components** — repos that run during cluster bootstrap (e.g., `cluster-bootstrap`) may use `install/` instead of `manifests/`. Check both.
-
-General rule: if a component is part of the **bootstrap chain** that brings the platform into existence before the normal operator lifecycle starts, it's `core_platform` even without release annotations.
+Set `discovery_method: "breadcrumb"` in metadata.
 
 **Record the tier for each repo.** This tiering drives the rest of the discovery process:
 - `core_platform` + `optional_platform` → full breadcrumb exploration in Steps 3-5
 - `payload_component` → include as component, lighter exploration
 - `ecosystem` → skip breadcrumb exploration, go directly to excluded (can be pulled back in by dependency analysis in Step 5a/5b)
 
-**If signals are NOT found** (fewer than 3 sampled repos match), this platform doesn't have formal payload signals. Set `discovery_method: "breadcrumb"` and proceed to Step 3 with the full candidate list as before.
-
 ### Step 3: Find Entry Points
 
-**If release payload signals were found (Step 2a):** Limit candidate repos to those in the `core_platform`, `optional_platform`, and `payload_component` tiers. Do NOT treat every operator-shaped repo as an entry point — only those with release signals.
+Limit candidate repos to those in the `core_platform`, `optional_platform`, and `payload_component` tiers. Do NOT treat every operator-shaped repo as an entry point.
 
 If `--entry-repo` specified, start there. Otherwise, search for common entry points:
 
@@ -235,29 +182,44 @@ Look for:
 
 ### Step 5: Build Component Graph
 
-**This step runs in BOTH breadcrumb and release_payload_signals modes.** Even when payload signals identified the components, you still need dependency analysis to discover shared libraries (Step 5a) and populate the dependency graph.
+After tier classification (Step 2a) and entry point exploration (Steps 3-4), discover additional components via operand mappings and dependency analysis.
 
-**In release_payload_signals mode**, two additional scans are required:
+**5.1a: Discover operands via RELATED_IMAGE mappings.** The operator deploys sub-components via `RELATED_IMAGE_*` environment variable mappings defined in `*_support.go` files.
 
-**5.1: Discover operand repos via `image-references`.** Operators often deploy separate repos as operands (the workload the operator manages). These operand repos typically have NO release annotations of their own — the operator carries the annotations and the operand is just a container image the operator deploys.
-
-Scan the `image-references` file (in `manifests/` or `install/`) of each discovered operator. For each image name listed:
-1. Check if a repo with that name exists in the checkouts directory
-2. If yes and it's not already in the component list, add it as `tier: "payload_component"`, `discovered_via: "operator_operand"`, `referenced_by: ["{operator-name}"]`
-3. Mark as `shipped: true` (it's deployed by the operator)
+Run the helper script to parse these mappings and match them to repos:
 
 ```bash
-# Example: console-operator's image-references lists "console" as an operand
-cat {operator_repo}/manifests/image-references
-# - name: console-operator    ← the operator itself
-# - name: console             ← the operand (separate repo!)
+python ${CLAUDE_SKILL_DIR}/scripts/parse_related_images.py {operator_repo} {checkouts_dir1} {checkouts_dir2} ...
 ```
 
-Common operator→operand pairs:
-- `console-operator` → `console` (web UI)
-- `cluster-ingress-operator` → router/haproxy-router
-- `cluster-image-registry-operator` → `image-registry`
-- `cluster-dns-operator` → coredns
+The script scans `internal/controller/components/*/*_support.go` for `imageParamMap` entries, normalizes the image keys, and matches them against repos in the checkouts directories. Output is JSON with `repos` (matched) and `unmatched` sections.
+
+For each matched repo in the output, if not already in the component list, add as `discovered_via: "operator_operand"`, `referenced_by: ["{operator-name}"]`. Use the tier already assigned in Step 2a if the repo was classified there; otherwise default to `tier: "payload_component"`.
+
+**5.1b: Discover operands via OLM catalog relatedImages (RHOAI).** RHOAI has a build config repo (`RHOAI-Build-Config`) containing OLM catalog YAML with `relatedImages` sections — the authoritative list of every container image shipped in each version.
+
+Run the helper script to parse the catalog and match images to repos:
+
+```bash
+python ${CLAUDE_SKILL_DIR}/scripts/parse_catalog_images.py --find-catalog {checkouts_dir1} {checkouts_dir2} ...
+```
+
+Or to target a specific version:
+
+```bash
+python ${CLAUDE_SKILL_DIR}/scripts/parse_catalog_images.py --find-catalog --version rhoai-3.4 {checkouts_dir1} {checkouts_dir2} ...
+```
+
+The script auto-finds the best `RHOAI-Build-Config/catalog/` directory, extracts unique images from `relatedImages` sections, and matches them to repos using multi-step normalization (strip `odh-` prefix, `-rhel[0-9]` suffix, hardware variant suffixes) plus known name mappings (e.g., `ml-pipelines-*` → `data-science-pipelines`, `dashboard` → `odh-dashboard`).
+
+The catalog directories are versioned by RHOAI release, not by checkout branch — `RHOAI-Build-Config` is typically checked out at `head` but contains catalogs for all historical versions. If no catalog directory exactly matches the target platform version, the script uses the **latest available version** as the best approximation.
+
+Output is JSON with:
+- `repos`: matched repos with image names and match method
+- `unmatched`: images with no repo match (third-party base images, internal tools)
+- `variant_groups`: images that are build variants of the same component
+
+For each matched repo, if not already in the component list, add as `discovered_via: "container_image"`, `referenced_by: ["rhods-operator"]`. Use the tier already assigned in Step 2a if the repo was classified there; otherwise default to `tier: "payload_component"`. Do NOT add `RHOAI-Build-Config` itself as a component — it is build infrastructure, not a shipped component. Unmatched images that are clearly third-party (`ubi-*`, `ose-*`, `postgresql-*`, `etcd`) should be ignored. Other unmatched images may represent components without source repos in the checkouts — note them but don't block on them.
 
 **5.2: Scan `go.mod` for shared libraries.** Scan `go.mod` (or equivalent) of each discovered `core_platform` and `optional_platform` component. Look for first-party dependencies (same GitHub org) that match repos in the checkouts directory. This is how shared libraries like `library-go`, `api`, `client-go` get discovered.
 
@@ -271,9 +233,9 @@ As you discover references:
 Track the dependency graph:
 ```
 {
-  "cluster-etcd-operator": ["api", "library-go", "client-go"],
-  "cluster-kube-apiserver-operator": ["api", "library-go", "client-go", "apiserver-library-go"],
-  "cluster-network-operator": ["api", "library-go", "client-go"],
+  "kserve": ["kubeflow", "gateway-api-inference-extension"],
+  "data-science-pipelines-operator": ["data-science-pipelines", "ml-metadata", "argo-workflows"],
+  "training-operator": ["kubeflow"],
   ...
 }
 ```
@@ -287,23 +249,15 @@ See [classification heuristics](references/classification-heuristics.md) for:
 
 ### Step 6: Classify Remaining Repos
 
-**If release payload signals were found (Step 2a):** The default is inverted. Repos without release signals are `ecosystem` tier and should be excluded unless they were pulled in as a shared library (Step 5a) or API specification (Step 5b). Do NOT apply the "possible shipped components" heuristics below to ecosystem-tier repos — the release signals are the authoritative source.
-
-**If NO release payload signals were found:** Use the heuristics below for repos not discovered via breadcrumbs:
-
-**Possible shipped components** (include with lower confidence):
-- Has `Dockerfile` or `Containerfile`
-- Has Kubernetes manifests (`config/`, `manifests/`)
-- Has operator structure (`bundle/`, `config/manager/`)
-- Has recent git activity (within last 6 months)
-- Has releases/tags
+Repos not discovered via DSC spec, RELATED_IMAGE mappings, OLM catalog, or dependency analysis are `ecosystem` tier and should be excluded unless they were pulled in as a shared library (Step 5a) or API specification (Step 5b).
 
 **Definitely not shipped** (exclude):
 - Documentation only (no code)
-- CI/CD tooling repos
+- CI/CD tooling repos (`konflux-central`, `RHOAI-Build-Config`)
 - Test utilities
 - Development helpers
 - Archived/stale (no commits in 12+ months)
+- Diagnostic/support tools (`must-gather`, `rhoai-additional-images`)
 
 ### Step 6a: Multi-Reviewer Consensus for Low-Confidence Repos
 

@@ -3,7 +3,7 @@
 import re
 from pathlib import Path
 
-from lib.component_discovery import get_component_map_metadata
+from lib.component_discovery import get_component_map_metadata, read_component_map
 from lib.build_info import get_build_info, format_build_info_context
 from lib.agent_runner import run_agents_concurrently, get_model_display_name
 
@@ -129,13 +129,32 @@ async def run_generate_platform_architecture_phase(args) -> None:
         distribution = p['name'].split("-")[0] if "-" in p['name'] else p['name']
         version = metadata.get("version", "unknown") if metadata else "unknown"
 
+        # Build component relationship graph from component-map
+        relationship_context = ""
+        comp_map = read_component_map(p['name'], architecture_dir=str(architecture_dir))
+        if comp_map:
+            rel_lines = []
+            for key, comp in sorted(comp_map.items()):
+                refs = comp.referenced_by or []
+                tier = comp.tier or "unknown"
+                comp_type = comp.type or "unknown"
+                sig = " [significant]" if comp.architecturally_significant else ""
+                ref_str = f" -- referenced by: {', '.join(refs)}" if refs else ""
+                rel_lines.append(f"  {key} (tier: {tier}, type: {comp_type}){sig}{ref_str}")
+            if rel_lines:
+                relationship_context = (
+                    "## Component Relationship Graph\n\n"
+                    "Use this to map component interactions and deployment relationships:\n\n"
+                    + "\n".join(rel_lines) + "\n\n"
+                )
+
         prompt = f"""Aggregate component architecture summaries into a platform-level architecture document.
 
 Distribution: {distribution}
 Version: {version}
 Architecture directory: . (current working directory)
 {build_context}
-This directory contains {p['component_count']} component architecture file(s).
+{relationship_context}This directory contains {p['component_count']} component architecture file(s).
 Read all *.md files in the current directory (excluding README.md) to aggregate into PLATFORM.md.
 
 IMPORTANT: The supported OCP versions dictate which OpenShift/Kubernetes APIs and platform
