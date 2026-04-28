@@ -1,10 +1,16 @@
 """Claude SDK agent launcher and model utilities."""
 
+from __future__ import annotations
+
 import time
 import asyncio
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
+
+if TYPE_CHECKING:
+    from lib.progress import AgentProgress
 
 
 def get_model_display_name(model_shorthand: str) -> str:
@@ -62,6 +68,7 @@ def format_duration(seconds: float) -> str:
 async def run_agent(
     name: str, cwd: str, prompt: str, log_dir: Path,
     model: str = "sonnet", enable_skills: bool = False,
+    progress: AgentProgress | None = None,
 ) -> dict:
     """
     Launch one independent Claude agent session.
@@ -95,12 +102,14 @@ async def run_agent(
         setting_sources=["user", "project"] if enable_skills else None,
     )
 
-    print(f"\n{'=' * 60}")
-    print(f"Starting agent: {name}")
-    print(f"Model: {model}")
-    print(f"Working directory: {cwd}")
-    print(f"Log file: {log_file}")
-    print(f"{'=' * 60}")
+    _log = progress.log if progress else print
+
+    _log(f"\n{'=' * 60}")
+    _log(f"Starting agent: {name}")
+    _log(f"Model: {model}")
+    _log(f"Working directory: {cwd}")
+    _log(f"Log file: {log_file}")
+    _log(f"{'=' * 60}")
 
     # Write log header before try block so error handler always has context
     with open(log_file, 'w') as log:
@@ -115,18 +124,23 @@ async def run_agent(
 
     start_time = time.monotonic()
     last_activity = start_time
+    heartbeat_task = None
 
-    async def _heartbeat():
-        """Print periodic status while the agent is working silently."""
-        nonlocal last_activity
-        while True:
-            await asyncio.sleep(30)
-            silence = time.monotonic() - last_activity
-            elapsed = time.monotonic() - start_time
-            if silence >= 30:
-                print(f"[{name}] ... still running ({format_duration(elapsed)} elapsed)")
+    if not progress:
+        async def _heartbeat():
+            """Print periodic status while the agent is working silently."""
+            nonlocal last_activity
+            while True:
+                await asyncio.sleep(30)
+                silence = time.monotonic() - last_activity
+                elapsed = time.monotonic() - start_time
+                if silence >= 30:
+                    print(f"[{name}] ... still running ({format_duration(elapsed)} elapsed)")
 
-    heartbeat_task = asyncio.create_task(_heartbeat())
+        heartbeat_task = asyncio.create_task(_heartbeat())
+
+    if progress:
+        progress.agent_started(name)
 
     try:
         with open(log_file, 'a') as log:
@@ -135,29 +149,25 @@ async def run_agent(
 
                 async for msg in client.receive_response():
                     last_activity = time.monotonic()
-                    # Print to console with component name prefix
-                    print(f"[{name}] {msg}")
-                    # Also write to log file
+                    _log(f"[{name}] {msg}")
                     log.write(f"{msg}\n")
                     log.flush()
 
         elapsed = time.monotonic() - start_time
 
-        print(f"\n{'=' * 60}")
-        print(f"Completed: {name} ({format_duration(elapsed)})")
-        print(f"{'=' * 60}")
+        if progress:
+            progress.agent_completed(name, success=True)
+        _log(f"Completed: {name} ({format_duration(elapsed)})")
 
         return {"name": name, "success": True, "log_file": str(log_file), "duration_seconds": elapsed}
 
     except Exception as e:
         elapsed = time.monotonic() - start_time
 
-        print(f"\n{'=' * 60}")
-        print(f"Failed: {name} ({format_duration(elapsed)})")
-        print(f"Error: {e}")
-        print(f"{'=' * 60}")
+        if progress:
+            progress.agent_completed(name, success=False)
+        _log(f"Failed: {name} ({format_duration(elapsed)}) — {e}")
 
-        # Log the error (header already written, so context is preserved)
         with open(log_file, 'a') as log:
             log.write(f"\n\n{'=' * 60}\n")
             log.write(f"ERROR: {e}\n")
@@ -165,11 +175,12 @@ async def run_agent(
         return {"name": name, "success": False, "error": str(e), "log_file": str(log_file), "duration_seconds": elapsed}
 
     finally:
-        heartbeat_task.cancel()
-        try:
-            await heartbeat_task
-        except asyncio.CancelledError:
-            pass
+        if heartbeat_task:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
 
 
 async def run_agents_concurrently(
@@ -182,8 +193,8 @@ async def run_agents_concurrently(
     """
     Run multiple agent jobs with a concurrency limit.
 
-    Logs queue position and slot acquisition so the user can see what's
-    happening when agents are waiting for a slot.
+    Displays a rich progress panel pinned to the bottom of the terminal
+    showing completion count, running agents, elapsed time, and ETA.
 
     Args:
         jobs: List of dicts with 'name', 'cwd', 'prompt' keys
@@ -195,21 +206,31 @@ async def run_agents_concurrently(
     Returns:
         List of result dicts (or Exceptions) in the same order as jobs
     """
+    from lib.progress import AgentProgress
+
     semaphore = asyncio.Semaphore(max_concurrent)
     total = len(jobs)
+    progress = AgentProgress(total, max_concurrent)
 
     async def _run(index: int, job: dict):
         if semaphore.locked():
-            print(f"[{job['name']}] queued ({index + 1}/{total}), "
-                  f"waiting for slot ...")
+            progress.log(f"[{job['name']}] queued ({index + 1}/{total}), "
+                         f"waiting for slot ...")
         async with semaphore:
             return await run_agent(
                 job["name"], job["cwd"], job["prompt"], log_dir, model,
                 enable_skills=enable_skills,
+                progress=progress,
             )
 
-    print("Starting agent execution...\n")
-    return await asyncio.gather(
-        *(_run(i, job) for i, job in enumerate(jobs)),
-        return_exceptions=True,
-    )
+    progress.log("Starting agent execution...\n")
+    progress.start()
+    try:
+        results = await asyncio.gather(
+            *(_run(i, job) for i, job in enumerate(jobs)),
+            return_exceptions=True,
+        )
+    finally:
+        progress.stop()
+
+    return results

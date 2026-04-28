@@ -94,7 +94,7 @@
 
 | Component | Path | Method | Port | Protocol | Auth | Purpose |
 |-----------|------|--------|------|----------|------|---------|
-| [component] | [/path] | [GET/POST/CRUD] | [8080/TCP] | [HTTP/HTTPS] | [auth mechanism] | [purpose] |
+| [component] | [endpoint] | [GET/POST/CRUD] | [8080/TCP] | [HTTP/HTTPS] | [auth mechanism] | [purpose] |
 
 ## Data Flows
 
