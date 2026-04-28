@@ -33,7 +33,7 @@
 
 | Path | Method | Port | Protocol | Encryption | Auth | Purpose |
 |------|--------|------|----------|------------|------|---------|
-| [/path] | [GET/POST] | [8080/TCP] | [HTTP/HTTPS] | [TLS 1.3/None] | [Bearer/mTLS/None] | [purpose] |
+| [endpoint] | [GET/POST] | [8080/TCP] | [HTTP/HTTPS] | [TLS 1.3/None] | [Bearer/mTLS/None] | [purpose] |
 
 ### gRPC Services
 

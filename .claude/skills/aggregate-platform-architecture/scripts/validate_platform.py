@@ -16,6 +16,7 @@ REQUIRED_H2_SECTIONS = [
     "Platform APIs",
     "Data Flows",
     "Deployment Architecture",
+    "Monitoring & Observability",
     "Platform Maturity",
 ]
 
@@ -35,10 +36,13 @@ REQUIRED_H3_SUBSECTIONS = {
         "RBAC Summary",
         "Secrets Inventory",
         "Authentication Mechanisms",
+        "TLS Configuration",
+        "Container Security",
     ],
     "Platform APIs": [
         "Custom Resource Definitions",
         "Public HTTP Endpoints",
+        "gRPC Services",
     ],
     "Data Flows": [
         "Key Platform Workflows",
@@ -46,6 +50,14 @@ REQUIRED_H3_SUBSECTIONS = {
     "Deployment Architecture": [
         "Deployment Topology",
         "Resource Summary",
+        "High Availability",
+        "Disconnected Support",
+        "Multi-Architecture Support",
+    ],
+    "Monitoring & Observability": [
+        "Prometheus Endpoints",
+        "Health Probes",
+        "Distributed Tracing",
     ],
 }
 
@@ -57,7 +69,7 @@ REQUIRED_METADATA_FIELDS = [
 ]
 
 EXPECTED_TABLE_HEADERS = {
-    "Component Inventory": ["Component", "Type", "Version", "Purpose"],
+    "Component Inventory": ["Component", "Type", "Language", "Repository", "Version", "Purpose"],
     "Integration Patterns": ["Pattern", "Components Using", "Description"],
     "Namespaces": ["Namespace", "Purpose", "Components"],
     "External Ingress Points": [
@@ -70,10 +82,20 @@ EXPECTED_TABLE_HEADERS = {
     "RBAC Summary": ["Component", "ClusterRole", "Key Resources", "Key Verbs"],
     "Secrets Inventory": ["Component", "Secret Name", "Type", "Purpose"],
     "Authentication Mechanisms": ["Pattern", "Components Using", "Enforcement Point"],
+    "TLS Configuration": ["Component", "Port", "TLS Type", "Certificate Source"],
+    "Container Security": ["Pattern", "Components Using", "Description"],
     "Custom Resource Definitions": ["Component", "API Group", "Kind", "Scope", "Purpose"],
     "Public HTTP Endpoints": [
         "Component", "Path", "Method", "Port", "Protocol", "Auth", "Purpose",
     ],
+    "gRPC Services": [
+        "Component", "Service", "Port", "Protocol", "Encryption", "Auth", "Purpose",
+    ],
+    "High Availability": ["Component", "Replicas", "HA Mechanism"],
+    "Multi-Architecture Support": ["Architecture", "Support Level", "Notes"],
+    "Prometheus Endpoints": ["Component", "Port", "Path", "Auth"],
+    "Health Probes": ["Component", "Liveness", "Readiness", "Startup"],
+    "Distributed Tracing": ["Component", "Protocol", "Destination"],
     "Version-Specific Changes": ["Component", "Changes"],
 }
 

@@ -256,6 +256,9 @@ Follow the template exactly as defined in [architecture template](references/arc
 - RHOAI 2.x pattern: Route + oauth-proxy (document with type "Route (OpenShift)")
 - Read controller code to confirm which pattern is actually implemented
 
+**CRITICAL — forbidden pattern in all output:**
+- NEVER write `[/` followed by a word — e.g., `[/metrics]`, `[/healthz]`, `[/readyz]`, `[/path]`. The downstream message parser interprets `[/word]` as an XML closing tag and crashes. Instead write the path without brackets: `/metrics`, `/healthz`, `GET /healthz:8081`, etc. This applies to all markdown content you write AND any text you output.
+
 **Precision requirements for table values:**
 
 - **Port numbers**: `8443/TCP`, `9090/TCP` (not "HTTPS port")
