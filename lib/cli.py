@@ -151,6 +151,11 @@ def parse_args():
         help="Additional repos to exclude (comma-separated patterns)"
     )
     discover_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-run discovery even if component-map.json already exists"
+    )
+    discover_parser.add_argument(
         "--model",
         choices=["sonnet", "opus", "haiku"],
         default="opus",

@@ -13,6 +13,16 @@ async def run_discover_components_phase(args) -> None:
     print("PHASE 2B: Discovering platform components")
     print("=" * 60 + "\n")
 
+    architecture_dir = str(Path(getattr(args, 'architecture_dir', 'architecture')).resolve())
+    map_file = Path(architecture_dir) / args.platform / "component-map.json"
+    force = getattr(args, 'force', False)
+
+    if map_file.exists() and not force:
+        print(f"Component map already exists: {map_file}")
+        print("Skipping discovery (use --force to re-run)\n")
+        print("=" * 60)
+        return
+
     platform_config = None
     checkouts_dirs = []
 
@@ -47,8 +57,6 @@ async def run_discover_components_phase(args) -> None:
         except (FileNotFoundError, KeyError) as e:
             print(f"Error: --checkouts-dir is required (could not resolve from platforms.yaml: {e})")
             return
-
-    architecture_dir = str(Path(getattr(args, 'architecture_dir', 'architecture')).resolve())
 
     print(f"Platform: {args.platform}")
     if getattr(args, 'entry_repo', None):
