@@ -134,6 +134,36 @@ async def run_generate_architecture_phase(args) -> None:
         jobs, log_dir, args.model, args.max_concurrent, enable_skills=True,
     )
 
+    # Recover crashed agents that still produced output.
+    # The CLI subprocess can crash on benign text patterns (e.g., [/path])
+    # after the agent has already written the architecture file.
+    # Handles both failed dicts (from run_agent's except block) and raw
+    # Exception objects (from asyncio.gather return_exceptions=True).
+    recovered = []
+    for i, (job, result) in enumerate(zip(jobs, results)):
+        if isinstance(result, dict) and result.get("success"):
+            continue
+        arch_file = job["checkout_path"] / "GENERATED_ARCHITECTURE.md"
+        if arch_file.exists() and arch_file.stat().st_size > 1000:
+            if isinstance(result, Exception):
+                results[i] = {
+                    "name": job["name"],
+                    "success": True,
+                    "recovered": True,
+                    "error": str(result),
+                    "log_file": str(log_dir / f"{job['name'].replace('/', '_')}.log"),
+                    "duration_seconds": 0,
+                }
+            else:
+                result["success"] = True
+                result["recovered"] = True
+            recovered.append(results[i])
+
+    if recovered:
+        print(f"\nRecovered {len(recovered)} agent(s) that crashed after writing output:")
+        for r in recovered:
+            print(f"  ~ {r['name']}: crashed ({r.get('error', '')[:80]}) but output file exists")
+
     # Summary
     successful = [r for r in results if isinstance(r, dict) and r.get("success")]
     failed = [r for r in results if isinstance(r, dict) and not r.get("success")]

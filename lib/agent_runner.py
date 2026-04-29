@@ -161,7 +161,15 @@ async def run_agent(
 
         return {"name": name, "success": True, "log_file": str(log_file), "duration_seconds": elapsed}
 
-    except Exception as e:
+    except BaseException as e:
+        # Catch BaseException (not just Exception) because the Claude Code CLI
+        # can crash on benign text patterns like [/path], causing anyio to cancel
+        # concurrent sub-agent tasks. The resulting CancelledError exceptions are
+        # wrapped in a BaseExceptionGroup, which is a BaseException — not caught
+        # by `except Exception`.
+        if isinstance(e, (KeyboardInterrupt, SystemExit)):
+            raise
+
         elapsed = time.monotonic() - start_time
 
         if progress:
@@ -216,12 +224,25 @@ async def run_agents_concurrently(
         if semaphore.locked():
             progress.log(f"[{job['name']}] queued ({index + 1}/{total}), "
                          f"waiting for slot ...")
-        async with semaphore:
-            return await run_agent(
-                job["name"], job["cwd"], job["prompt"], log_dir, model,
-                enable_skills=enable_skills,
-                progress=progress,
-            )
+        try:
+            async with semaphore:
+                return await run_agent(
+                    job["name"], job["cwd"], job["prompt"], log_dir, model,
+                    enable_skills=enable_skills,
+                    progress=progress,
+                )
+        except BaseException as e:
+            if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                raise
+            progress.agent_completed(job["name"], success=False)
+            progress.log(f"Failed (outer): {job['name']} — {e}")
+            return {
+                "name": job["name"],
+                "success": False,
+                "error": str(e),
+                "log_file": str(log_dir / f"{job['name'].replace('/', '_')}.log"),
+                "duration_seconds": 0,
+            }
 
     progress.log("Starting agent execution...\n")
     progress.start()

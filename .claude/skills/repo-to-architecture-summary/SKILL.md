@@ -317,7 +317,7 @@ When the repository has more source files than you can read in one context windo
 - Use the Task tool with `subagent_type=Explore` (read-only analysis)
 - Launch up to **3 sub-agents in parallel** per batch
 - Each sub-agent must read EVERY file in its assigned group — no skipping
-- **File-based output**: Each sub-agent writes its findings to a temp file (e.g., `/tmp/arch-analysis-{component}-group-{N}.md`) using the Write tool, then responds with only a short confirmation message. This avoids the CLI message parser crashing on patterns like `[/path]` or regex in large outputs.
+- **File-based output**: Each sub-agent writes its findings to a temp file (e.g., `/tmp/arch-analysis-{component}-group-{N}.md`) using the Write tool, then responds with only a short confirmation message. This keeps sub-agent responses small and avoids context bloat.
 - After all sub-agents complete, the main agent **reads each output file** using the Read tool, then aggregates findings into the architecture template
 
 **Multi-language repos**: Run sub-agents from multiple reference docs. For example, kserve needs both controller-analysis.md (Go operator) and python-service-analysis.md (Python SDK).
@@ -362,9 +362,6 @@ If the component is an operator that creates Kubernetes resources dynamically (D
    - RHOAI 2.x pattern: Route + oauth-proxy (document with type "Route (OpenShift)")
    - Read controller code to confirm which pattern is actually implemented
    - Document ALL resources even if they mix patterns (e.g., 3.x controllers that also create Routes for redirects)
-
-**CRITICAL — forbidden pattern in all output:**
-- NEVER write `[/` followed by a word — e.g., `[/metrics]`, `[/healthz]`, `[/readyz]`, `[/path]`. The downstream message parser interprets `[/word]` as an XML closing tag and crashes. Instead write the path without brackets: `/metrics`, `/healthz`, `GET /healthz:8081`, etc. This applies to all markdown content you write AND any text you output.
 
 **Precision requirements for table values:**
 

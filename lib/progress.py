@@ -109,4 +109,4 @@ class AgentProgress:
 
     def log(self, msg: str):
         """Print a message that scrolls above the progress panel."""
-        console.print(msg, highlight=False)
+        console.print(msg, markup=False, highlight=False)
