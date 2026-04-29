@@ -1,0 +1,104 @@
+# Konflux Component Discovery
+
+Parse Konflux Dockerfiles to identify every shippable container image a repository produces. Each `Dockerfile*konflux*` maps to one deployable component — a repo with 9 Konflux Dockerfiles produces 9 container images.
+
+This step runs **before** any language-specific analysis. Its output — a component inventory — drives which source directories need deeper analysis and which reference doc to use.
+
+## When to use
+
+Always. Run this as the first analysis step for every repository. Even single-component repos benefit from reading the Konflux Dockerfile to understand base images, build stages, and entry points.
+
+## Step 1: Find all Konflux build files
+
+```bash
+find . -maxdepth 3 \( -name "*Dockerfile*konflux*" -o -name "*Containerfile*konflux*" \) -print | sort
+```
+
+If no Konflux files exist, fall back to regular `Dockerfile` / `Containerfile` files:
+```bash
+find . -maxdepth 3 \( -name "Dockerfile*" -o -name "Containerfile*" \) ! -name "*.md" -print | sort
+```
+
+## Step 2: Read every Dockerfile
+
+Konflux Dockerfiles are small (typically 30-80 lines). Read ALL of them — no sub-agents needed for this step.
+
+For each Dockerfile, extract:
+
+| Field | What to look for | Example |
+|-------|-----------------|---------|
+| **Component name** | Filename suffix after `konflux` | `Dockerfile.konflux.genai` → `genai` |
+| **Base image** | `FROM` lines (build + runtime stages) | `registry.access.redhat.com/ubi9/nodejs-22`, `ubi9-minimal` |
+| **Build stages** | Named `AS` stages | `AS builder`, `AS ui-builder`, `AS bff-builder` |
+| **Source paths** | `COPY` directives (what source dirs are included) | `COPY cmd/ cmd/`, `COPY pkg/ pkg/`, `COPY frontend/ frontend/` |
+| **Entry command** | `CMD` or `ENTRYPOINT` | `CMD ["npm", "run", "start"]`, `ENTRYPOINT ["/bff"]` |
+| **Exposed ports** | `EXPOSE` directives | `EXPOSE 8080` |
+| **Build args** | `ARG` directives revealing config | `ARG MODULE_NAME=gen-ai`, `ARG GOTAGS="distro"` |
+| **Language** | Base image + build commands | `go-toolset` → Go, `nodejs-22` → Node, `python-311` → Python |
+| **FIPS compliance** | FIPS-related build flags | `GOEXPERIMENT=strictfipsruntime`, `-tags strictfipsruntime` |
+| **User** | Runtime user for security analysis | `USER 65532:65532`, `USER 1001` |
+
+## Step 3: Build component inventory table
+
+Produce a table mapping each Dockerfile to a component:
+
+| Dockerfile | Component | Language | Source Dirs | Port | Entry | Base Image |
+|-----------|-----------|----------|-------------|------|-------|------------|
+| `Dockerfile.konflux` | main | Go | `cmd/`, `pkg/`, `internal/` | 8080 | `/manager` | ubi9/go-toolset → ubi9-minimal |
+| `Dockerfile.konflux.genai` | genai | Go+TS | `packages/gen-ai/bff/`, `packages/gen-ai/frontend/` | 8080 | `/bff` | go-toolset + nodejs-22 → ubi9-minimal |
+
+## Step 4: Identify multi-component patterns
+
+Common multi-component patterns to recognize:
+
+### Monorepo with separate cmd/ entries
+```
+Dockerfile.konflux.apiserver  → cmd/apiserver/main.go
+Dockerfile.konflux.gc         → cmd/batch-gc/main.go
+Dockerfile.konflux.processor  → cmd/batch-processor/main.go
+```
+All share `internal/` and `pkg/` — analyze shared code once, entry points separately.
+
+### Frontend + BFF packages
+```
+Dockerfile.konflux            → frontend/ + backend/ (host app)
+Dockerfile.konflux.genai      → packages/gen-ai/frontend/ + packages/gen-ai/bff/
+Dockerfile.konflux.mlflow     → packages/mlflow/frontend/ + packages/mlflow/bff/
+```
+Each package is an independently deployable module federation remote.
+
+### Multi-stage build producing one binary
+```
+FROM go-toolset AS builder     → builds Go binary
+FROM ubi9-minimal              → copies binary + config only
+```
+Source analysis focuses on the builder stage's COPY paths.
+
+### Dispatcher pattern
+```
+Dockerfile.konflux → builds multiple binaries, single entry point selects mode
+```
+Look for mode-switching in the entry point (e.g., kube-auth-proxy).
+
+## Step 5: Map components to analysis strategies
+
+Use the component inventory to select which reference doc(s) apply:
+
+| Component language | Source pattern | Reference doc |
+|-------------------|---------------|---------------|
+| Go + `controllers/` or `internal/controller/` | Operator | `controller-analysis.md` |
+| Go + `cmd/*/main.go` (no controllers) | Service | `go-service-analysis.md` |
+| TypeScript + `frontend/` + Go `bff/` | Frontend+BFF | `frontend-bff-analysis.md` |
+| Python + `pyproject.toml`/`setup.py` | ML service | `python-service-analysis.md` |
+| Rust + `Cargo.toml` | Rust service | `rust-service-analysis.md` |
+| Only Dockerfile (no significant source) | Container image | `container-image-analysis.md` |
+
+Multi-language repos use multiple reference docs. For example, kserve has Go controllers AND a Python SDK — use both `controller-analysis.md` and `python-service-analysis.md`.
+
+## Aggregation
+
+The component inventory table feeds into the architecture template:
+- **Architecture Components** section: one row per component
+- **Container Images** section: base images, build stages, FIPS compliance
+- **Network Architecture → Services**: ports from EXPOSE directives (verified against source)
+- **Security**: runtime user, FIPS flags, base image provenance

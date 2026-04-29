@@ -36,7 +36,7 @@ Generate a comprehensive architecture summary following these steps:
 - Do NOT call `ToolSearch`. You already have access to: Bash, Read, Write, Glob, Grep, Task.
 - When reading multiple files, use **parallel tool calls** — issue multiple Read/Glob/Grep calls in a single turn rather than one at a time. This dramatically reduces execution time.
 - Prefer Grep with `--include` patterns over Bash `grep` commands.
-- For large repositories (20+ controller/webhook files), use the **Task tool to spawn sub-agents** that read files in parallel. See Step 4a below.
+- For large repositories, use the **Task tool to spawn sub-agents** that read files in parallel — see Step 3b (strategy selection) and Step 4a (sub-agent dispatch).
 
 **NEVER read `*_test.go` files.** They consume context without informing architecture. Exclude them from all find commands and never open them.
 
@@ -108,6 +108,7 @@ Identify:
    - Go operators: look for `main.go`, `controllers/`, `api/`
    - Python services: `setup.py`, `requirements.txt`, `pyproject.toml`
    - React/TypeScript: `package.json`, `src/`
+   - Rust services: `Cargo.toml`, `src/main.rs`
    - Containers: **PRIORITIZE `Dockerfile.konflux` or `Containerfile.konflux`** if they exist
      - RHOAI is completely built by Konflux; ODH is transitioning to Konflux
      - Regular `Dockerfile`/`Containerfile` may be outdated/unused - verify they're actually used in builds
@@ -117,6 +118,33 @@ Identify:
    - Kustomize: `kustomization.yaml`
    - Manifests: `*.yaml` in `manifests/`, `config/`, `deploy/`
    - **For opendatahub-operator**: Check `./opt/` directory for component manifests (populated by `make get-manifests`)
+
+### Step 3a: Konflux Component Discovery
+
+Identify every shippable container image by parsing Konflux Dockerfiles. Each `Dockerfile*konflux*` maps to one deployable component.
+
+```bash
+find . -maxdepth 3 \( -name "*Dockerfile*konflux*" -o -name "*Containerfile*konflux*" \) -print | sort
+```
+
+Read each Konflux Dockerfile and extract: component name (from filename suffix), base image, build stages, COPY source paths, exposed ports, and entry command. This creates a component inventory that drives all subsequent analysis.
+
+See [Konflux Component Discovery](references/konflux-component-discovery.md) for the full procedure.
+
+### Step 3b: Select Analysis Strategy
+
+Based on what you found in Steps 3 and 3a, select which reference doc(s) to use for deep code analysis in Step 4a:
+
+| Repo indicators | Reference doc | Sub-agent threshold |
+|-----------------|---------------|---------------------|
+| `go.mod` + `controllers/` or `internal/controller/` or `PROJECT` file | [Controller Analysis](references/controller-analysis.md) | 20+ Go files |
+| `package.json` + `frontend/` + `packages/*/bff/` | [Frontend + BFF Analysis](references/frontend-bff-analysis.md) | 200+ TS/Go files |
+| `pyproject.toml` or `setup.py` + Python source dirs | [Python Service Analysis](references/python-service-analysis.md) | 100+ Python files |
+| `go.mod` + `cmd/*/main.go` (no controller dirs) | [Go Service Analysis](references/go-service-analysis.md) | 50+ Go files |
+| `Cargo.toml` + `src/main.rs` | [Rust Service Analysis](references/rust-service-analysis.md) | 80+ Rust files |
+| Only Dockerfiles, no significant source code | [Container Image Analysis](references/container-image-analysis.md) | Never (read directly) |
+
+**Multi-language repos** (e.g., kserve with Go operators + Python SDK, model-registry with Go + Python + UI) should use multiple reference docs — one per language layer.
 
 ### Step 4: Analyze Code Artifacts
 
@@ -270,29 +298,29 @@ nginx                       // Redirect services (301 redirects from legacy URLs
 **Service Mesh**: Istio PeerAuthentication, AuthorizationPolicy
 - Extract: mTLS settings, authorization rules
 
-### Step 4a: Sub-Agent Controller & Webhook Analysis
+### Step 4a: Sub-Agent Deep Analysis
 
-For Go operators with controller and webhook directories, use the sub-agent dispatch pattern to ensure **every** source file is read. A single agent cannot read 100+ files in one context window — sub-agents solve this by parallelizing reads across separate contexts.
+When the repository has more source files than you can read in one context window, use the sub-agent dispatch pattern: enumerate files, group them by functional area, spawn sub-agents via the Task tool to read all files in parallel, then aggregate their structured findings.
 
-**Follow the complete procedure in [Controller & Webhook Analysis](references/controller-analysis.md)**, which covers:
+**Use the reference doc selected in Step 3b.** Each reference doc contains the complete procedure — enumeration commands, grouping heuristics, sub-agent prompt template, and aggregation instructions:
 
-1. **Enumerate** all non-test Go files and template files in controller/webhook/pkg directories
-2. **Count files** — if 20 or fewer, read them yourself; if more, proceed with sub-agents
-3. **Group files** by functional area (target 4-6 groups of 15-40 files each)
-4. **Spawn sub-agents** using the Task tool with `subagent_type=Explore` (up to 3 in parallel)
-5. **Aggregate findings** — merge all sub-agent results into the architecture template sections
+| Repo type | Reference doc | Sub-agent prompt extracts |
+|-----------|---------------|--------------------------|
+| Go operator | [Controller Analysis](references/controller-analysis.md) | Resources Created/Watched, Webhooks, Integration Points, Network Exposure, RBAC |
+| Frontend + BFF monorepo | [Frontend + BFF Analysis](references/frontend-bff-analysis.md) | API Surface, Module Federation, Routes, BFF Handlers, Upstream Calls, Config |
+| Python ML service | [Python Service Analysis](references/python-service-analysis.md) | API Endpoints, Proto/gRPC, Config, Health, Dependencies, Model Architecture |
+| Go service | [Go Service Analysis](references/go-service-analysis.md) | Entry Points, HTTP Handlers, gRPC, Upstream Calls, Auth, Health |
+| Rust service | [Rust Service Analysis](references/rust-service-analysis.md) | HTTP Routes, gRPC, Downstream Calls, Config, TLS/mTLS, Health |
+| Container image | [Container Image Analysis](references/container-image-analysis.md) | Base images, installed packages, ports, entry points (no sub-agents needed) |
 
-Each sub-agent reads every file in its group and returns structured tables covering:
-- Resources Created (GVK, name pattern, purpose)
-- Resources Watched/Owned (GVK, watch type)
-- Webhooks (GVK intercepted, what it validates/mutates)
-- Integration Points (cross-component references)
-- Network Exposure (ports, protocols, TLS)
-- RBAC (API groups, resources, verbs)
+**General sub-agent rules** (apply to all reference docs):
+- Use the Task tool with `subagent_type=Explore` (read-only analysis)
+- Launch up to **3 sub-agents in parallel** per batch
+- Each sub-agent must read EVERY file in its assigned group — no skipping
+- Each sub-agent returns structured markdown tables with file paths and line numbers
+- After all sub-agents return, the main agent aggregates findings into the architecture template
 
-The main agent then uses these findings to populate the Network Architecture, Security, Integration Points, and Architecture Components sections of the output.
-
-**This step is mandatory for all operators.** Skipping it produces shallow documentation that misses dynamically-created resources, webhook behavior, and integration points.
+**Multi-language repos**: Run sub-agents from multiple reference docs. For example, kserve needs both controller-analysis.md (Go operator) and python-service-analysis.md (Python SDK).
 
 ### Step 5: Git Information
 
