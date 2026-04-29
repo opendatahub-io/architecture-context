@@ -167,6 +167,14 @@ After all sub-agents complete, **read each output file** using the Read tool, th
 
 6. **Plugin Extension Points** → Architecture Components. Document the plugin API contract between host app and federated modules.
 
+7. **BFF Handlers + Config + Upstream Calls** → Sub-Component Details. Each BFF package gets its own `###` subsection under Sub-Component Details with:
+   - **Intent**: 1-2 sentences on why this component exists and when it's deployed (e.g., "Federated module sidecar providing Model Registry UI and API proxy. Deployed as a sidecar container when Model Registry is enabled.")
+   - **API Routes table**: All HTTP routes the BFF handles (from BFF Handlers findings)
+   - **Upstream Dependencies table**: All services the BFF calls (from Upstream Service Calls findings)
+   - **Configuration table**: All env vars and config (from Configuration findings)
+   
+   Every BFF package MUST have a subsection — do not skip any.
+
 ### Key architectural patterns to synthesize
 
 - **Proxy chain**: Frontend → Node.js backend (Fastify proxy) → Go BFF → upstream K8s/ML service. Document every hop.

@@ -129,6 +129,15 @@ find . -maxdepth 3 \( -name "*Dockerfile*konflux*" -o -name "*Containerfile*konf
 
 Read each Konflux Dockerfile and extract: component name (from filename suffix), base image, build stages, COPY source paths, exposed ports, and entry command. This creates a component inventory that drives all subsequent analysis.
 
+For each Dockerfile, also determine the component's **intent** — its architectural role:
+- **Primary service**: The main binary/server the repo exists to produce
+- **Sidecar module**: Runs alongside primary in the same pod (BFF modules, kube-rbac-proxy)
+- **Build variant**: Same component with instrumentation or different config (e.g., sealights)
+- **Utility image**: CLI tool, migration runner, init container
+- **Optional module**: Only deployed when a feature is enabled
+
+The intent drives the Sub-Component Details section in the output.
+
 See [Konflux Component Discovery](references/konflux-component-discovery.md) for the full procedure.
 
 ### Step 3b: Select Analysis Strategy
@@ -143,8 +152,11 @@ Based on what you found in Steps 3 and 3a, select which reference doc(s) to use 
 | `go.mod` + `cmd/*/main.go` (no controller dirs) | [Go Service Analysis](references/go-service-analysis.md) | 50+ Go files |
 | `Cargo.toml` + `src/main.rs` | [Rust Service Analysis](references/rust-service-analysis.md) | 80+ Rust files |
 | Only Dockerfiles, no significant source code | [Container Image Analysis](references/container-image-analysis.md) | Never (read directly) |
+| `manifests/` or `config/` with `kustomization.yaml` | [Kustomize Manifest Analysis](references/kustomize-manifest-analysis.md) | Never (read directly) |
 
 **Multi-language repos** (e.g., kserve with Go operators + Python SDK, model-registry with Go + Python + UI) should use multiple reference docs — one per language layer.
+
+**Kustomize manifests** are a supplementary analysis — use the kustomize reference doc alongside the primary language-specific doc. Almost all component repos have `manifests/` or `config/` directories that define deployment resources, parameterization, and distribution variants.
 
 ### Step 4: Analyze Code Artifacts
 
@@ -298,6 +310,8 @@ nginx                       // Redirect services (301 redirects from legacy URLs
 **Service Mesh**: Istio PeerAuthentication, AuthorizationPolicy
 - Extract: mTLS settings, authorization rules
 
+**Kustomize structure analysis**: When `manifests/` or `config/` directories contain `kustomization.yaml` files, analyze the full kustomize composition — not just individual YAML files. See [Kustomize Manifest Analysis](references/kustomize-manifest-analysis.md). Document the base/overlay structure, parameterization (`configMapGenerator`, `vars`, `replacements`, `params.env`), and distribution variants (ODH vs RHOAI) in the **Deployment Manifests** section. These manifests are consumed by the platform operator (`rhods-operator`/`opendatahub-operator`) via `get_all_manifests.sh` and define how the component is actually deployed on clusters.
+
 ### Step 4a: Sub-Agent Deep Analysis
 
 When the repository has more source files than you can read in one context window, use the sub-agent dispatch pattern: enumerate files, group them by functional area, spawn sub-agents via the Task tool to read all files in parallel, then aggregate their structured findings.
@@ -336,10 +350,15 @@ git describe --tags --always 2>/dev/null; git branch --show-current; git remote 
 Follow the template exactly as defined in [architecture template](references/architecture-template.md). Read that file before writing.
 
 **Structural rules:**
-- Use exactly the section headings and table column headers from the template — do not rename, reorder, or add sections
+- Use exactly the section headings and table column headers from the template — do not rename, reorder, or add sections (except Sub-Component Details, which is conditional)
 - If a section has no data (e.g., no gRPC services), keep the heading and empty table header row, omit data rows
-- Component-specific details (deployment modes, configuration, troubleshooting) go in the relevant existing sections (Architecture Components, Purpose/Detailed), not as new H2 sections
 - Document current behavior based on code analysis, not assumptions
+
+**Sub-Component Details** (multi-component repos only):
+When the component inventory from Step 3a contains multiple Konflux Dockerfiles, add a **Sub-Component Details** section after Architecture Components. Each Dockerfile-derived component gets its own `###` subsection with: intent (1-2 sentences on why it exists and when it's deployed), API routes, upstream dependencies, and configuration tables. For single-Dockerfile repos, skip this section — the Purpose section covers intent. Every sub-component MUST be analyzed — do not sample or skip any.
+
+**Architectural Analysis** (all repos):
+After completing all structured sections, write an **Architectural Analysis** section with free-form observations about the component's architecture. This is where you synthesize patterns, design decisions, risks, or noteworthy findings that don't fit the tables. Examples: "The BFF modules share a common Go framework but each implements auth differently", "The cache server webhook has no TLS — it relies on the namespace network policy for isolation", "The driver/launcher split mirrors a sidecar pattern but runs as sequential Argo steps". Write 2-5 paragraphs. Be specific and cite files or patterns you observed.
 
 **IMPORTANT — Operators that manage infrastructure require expanded output**:
 

@@ -21,6 +21,36 @@
 |-----------|------|---------|
 | [name] | [Go Operator / Python Service / React Frontend / etc.] | [what it does] |
 
+## Sub-Component Details
+
+_Include this section when the repo produces multiple deployable artifacts (multiple Konflux Dockerfiles, multiple cmd/ entry points, sidecar containers, etc.). For single-component repos, skip this section — the Purpose section covers intent._
+
+### [component-name]
+
+**Dockerfile**: `[Dockerfile.konflux.suffix]`
+**Intent**: [1-2 sentences: why this component exists, what role it plays (primary service / sidecar / build variant / optional module), and when it is deployed]
+**Image**: [container image name]
+**Language**: [Go, TypeScript, etc.]
+**Port**: [service port/TCP]
+
+#### API Routes
+
+| Path | Method | Upstream Service | Auth | Purpose |
+|------|--------|-----------------|------|---------|
+| [/api/v1/...] | [GET/POST] | [upstream] | [user_token/none] | [purpose] |
+
+#### Upstream Dependencies
+
+| Service | Protocol | Port | Auth | Purpose |
+|---------|----------|------|------|---------|
+| [service] | [HTTP/gRPC] | [port/TCP] | [Bearer/mTLS] | [purpose] |
+
+#### Configuration
+
+| Name | Type | Default | Purpose |
+|------|------|---------|---------|
+| [ENV_VAR] | [env/flag/config] | [default] | [purpose] |
+
 ## APIs Exposed
 
 ### Custom Resource Definitions (CRDs)
@@ -54,6 +84,28 @@
 | Component | Interaction Type | Purpose |
 |-----------|------------------|---------|
 | [name] | [API/CRD/Image/etc.] | [purpose] |
+
+## Deployment Manifests
+
+_How the component is deployed via kustomize. Analyze the `manifests/` or `config/` directory structure. Skip this section if the repo has no kustomize manifests._
+
+### Kustomize Structure
+
+| Base / Overlay | Path | Purpose |
+|----------------|------|---------|
+| [base/overlay/component] | [manifests/core-bases/base] | [Core deployment resources] |
+
+### Parameterization
+
+| Parameter | Source | Default | Purpose |
+|-----------|--------|---------|---------|
+| [image name / env var / config value] | [params.env / configMapGenerator / vars] | [default] | [purpose] |
+
+### Distribution Variants
+
+| Variant | Path | Differences |
+|---------|------|-------------|
+| [ODH / RHOAI / addon / onprem] | [manifests/odh/ or manifests/rhoai/] | [what differs from base] |
 
 ## Network Architecture
 
@@ -114,6 +166,10 @@
 | Component | Interaction Type | Port | Protocol | Encryption | Purpose |
 |-----------|------------------|------|----------|------------|---------|
 | [component] | [gRPC/REST/CRD Watch] | [9090/TCP] | [gRPC] | [mTLS] | [purpose] |
+
+## Architectural Analysis
+
+_Free-form analysis of the component's architecture. Cover patterns, design decisions, risks, or observations that don't fit the structured tables above. This section is for synthesizing insights — connecting dots across the codebase rather than cataloging individual facts._
 
 ## Recent Changes
 

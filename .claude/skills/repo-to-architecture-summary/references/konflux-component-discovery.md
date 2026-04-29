@@ -42,10 +42,19 @@ For each Dockerfile, extract:
 
 Produce a table mapping each Dockerfile to a component:
 
-| Dockerfile | Component | Language | Source Dirs | Port | Entry | Base Image |
-|-----------|-----------|----------|-------------|------|-------|------------|
-| `Dockerfile.konflux` | main | Go | `cmd/`, `pkg/`, `internal/` | 8080 | `/manager` | ubi9/go-toolset → ubi9-minimal |
-| `Dockerfile.konflux.genai` | genai | Go+TS | `packages/gen-ai/bff/`, `packages/gen-ai/frontend/` | 8080 | `/bff` | go-toolset + nodejs-22 → ubi9-minimal |
+| Dockerfile | Component | Intent | Language | Source Dirs | Port | Entry | Base Image |
+|-----------|-----------|--------|----------|-------------|------|-------|------------|
+| `Dockerfile.konflux` | main | Primary service | Go | `cmd/`, `pkg/`, `internal/` | 8080 | `/manager` | ubi9/go-toolset → ubi9-minimal |
+| `Dockerfile.konflux.genai` | genai | Sidecar module | Go+TS | `packages/gen-ai/bff/`, `packages/gen-ai/frontend/` | 8080 | `/bff` | go-toolset + nodejs-22 → ubi9-minimal |
+
+**Intent values** — classify each component:
+- **Primary service**: The main binary/server the repo exists to produce
+- **Sidecar module**: Runs alongside primary in the same pod (BFF modules, kube-rbac-proxy)
+- **Build variant**: Same component with instrumentation or different config (e.g., sealights)
+- **Utility image**: CLI tool, migration runner, init container
+- **Optional module**: Only deployed when a feature is enabled in platform config
+
+Intent drives the Sub-Component Details section. For multi-component repos, every component except build variants gets a dedicated subsection.
 
 ## Step 4: Identify multi-component patterns
 
@@ -99,6 +108,7 @@ Multi-language repos use multiple reference docs. For example, kserve has Go con
 
 The component inventory table feeds into the architecture template:
 - **Architecture Components** section: one row per component
-- **Container Images** section: base images, build stages, FIPS compliance
+- **Sub-Component Details** section (multi-component repos): one `###` subsection per component with intent, API routes, upstream deps, and configuration — populated by deeper analysis in subsequent steps
+- **Container Images** section: base images, build stages, FIPS compliance, intent column
 - **Network Architecture → Services**: ports from EXPOSE directives (verified against source)
 - **Security**: runtime user, FIPS flags, base image provenance
