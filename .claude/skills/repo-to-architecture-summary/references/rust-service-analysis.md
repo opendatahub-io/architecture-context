@@ -63,6 +63,11 @@ Rust services have a predictable structure. Read these in order:
 
 For each group, spawn a sub-agent using the Task tool with `subagent_type=Explore`. Launch up to **3 sub-agents in parallel**.
 
+**Output via files**: Each sub-agent writes its findings to a temporary file using the Write tool. Before spawning, generate a unique output path per group:
+```
+/tmp/arch-analysis-{component}-group-{N}.md
+```
+
 ### Sub-agent prompt template
 
 ```
@@ -140,11 +145,16 @@ Prometheus metrics, separate health server pattern.
 
 CRITICAL: Read EVERY file. Report EVERY finding. Include file paths and
 line numbers for all entries.
+
+IMPORTANT: Write ALL of your findings to {output_file} using the Write tool.
+Do NOT return findings as your response — the message parser cannot handle
+certain patterns in large outputs. Write the file, then respond with only:
+"Done. Findings written to {output_file}"
 ```
 
 ## Step 5: Aggregate findings
 
-After reading all files (or after sub-agents return), map findings to template sections:
+After all sub-agents complete, **read each output file** using the Read tool, then map findings to template sections:
 
 1. **HTTP Routes + gRPC Services + Proto Definitions** → Network Architecture (Services, Ingress). Document every exposed endpoint.
 

@@ -317,8 +317,8 @@ When the repository has more source files than you can read in one context windo
 - Use the Task tool with `subagent_type=Explore` (read-only analysis)
 - Launch up to **3 sub-agents in parallel** per batch
 - Each sub-agent must read EVERY file in its assigned group — no skipping
-- Each sub-agent returns structured markdown tables with file paths and line numbers
-- After all sub-agents return, the main agent aggregates findings into the architecture template
+- **File-based output**: Each sub-agent writes its findings to a temp file (e.g., `/tmp/arch-analysis-{component}-group-{N}.md`) using the Write tool, then responds with only a short confirmation message. This avoids the CLI message parser crashing on patterns like `[/path]` or regex in large outputs.
+- After all sub-agents complete, the main agent **reads each output file** using the Read tool, then aggregates findings into the architecture template
 
 **Multi-language repos**: Run sub-agents from multiple reference docs. For example, kserve needs both controller-analysis.md (Go operator) and python-service-analysis.md (Python SDK).
 

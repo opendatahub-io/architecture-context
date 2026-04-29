@@ -95,6 +95,11 @@ find . -maxdepth 3 -name "*Dockerfile*konflux*" | sort
 
 For each group, spawn a sub-agent using the Task tool with `subagent_type=Explore`. Launch up to **3 sub-agents in parallel**.
 
+**Output via files**: Each sub-agent writes its findings to a temporary file using the Write tool. Before spawning, generate a unique output path per group:
+```
+/tmp/arch-analysis-{component}-group-{N}.md
+```
+
 ### Sub-agent prompt template
 
 ```
@@ -169,11 +174,16 @@ Report as a table:
 
 CRITICAL: Read EVERY file. Report EVERY finding. Include file paths and
 line numbers for all entries.
+
+IMPORTANT: Write ALL of your findings to {output_file} using the Write tool.
+Do NOT return findings as your response — the message parser cannot handle
+certain patterns in large outputs. Write the file, then respond with only:
+"Done. Findings written to {output_file}"
 ```
 
 ## Step 5: Aggregate sub-agent findings
 
-After all sub-agents return, merge their findings:
+After all sub-agents complete, **read each output file** using the Read tool, then merge their findings:
 
 1. **Entry Points tables** → Architecture Components. One component per binary/entry point. Include the command-line interface.
 

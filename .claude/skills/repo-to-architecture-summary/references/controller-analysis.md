@@ -58,9 +58,16 @@ Group files by functional area. Each group should have 15-40 files — small eno
 
 For each group, spawn a sub-agent using the Task tool with `subagent_type=Explore`. Launch up to **3 sub-agents in parallel** (single message with multiple Task tool calls). If you have more than 3 groups, run them in batches of 3.
 
+**Output via files**: Each sub-agent writes its findings to a temporary file using the Write tool. The main agent then reads these files. This avoids the CLI message parser crashing on patterns like `[/opt/...]` or `[/<path>]` in sub-agent output.
+
+Before spawning, generate a unique output path per group:
+```
+/tmp/arch-analysis-{component}-group-{N}.md
+```
+
 ### Sub-agent prompt template
 
-Use this prompt for each sub-agent, filling in `{repo_path}`, `{group_description}`, and `{file_list}`:
+Use this prompt for each sub-agent, filling in `{repo_path}`, `{group_description}`, `{file_list}`, and `{output_file}`:
 
 ```
 Analyze the following source files from a Kubernetes operator repository at {repo_path}.
@@ -127,11 +134,23 @@ Report as a table:
 CRITICAL: Read EVERY file. Report EVERY finding. Include file paths and
 line numbers for all entries. If a file has no findings in a category,
 that's fine — but you must still read the file to confirm.
+
+IMPORTANT: Write ALL of your findings to {output_file} using the Write tool.
+Do NOT return findings as your response — the message parser cannot handle
+certain patterns in large outputs. Write the file, then respond with only:
+"Done. Findings written to {output_file}"
 ```
 
 ## Step 4: Aggregate sub-agent findings
 
-After all sub-agents return, merge their findings:
+After all sub-agents complete, **read each output file** using the Read tool:
+```
+Read /tmp/arch-analysis-{component}-group-1.md
+Read /tmp/arch-analysis-{component}-group-2.md
+...
+```
+
+Then merge their findings:
 
 1. **Combine all Resources Created tables** — deduplicate by GVK + name pattern. These populate the Network Architecture (Services, Ingress) and Architecture Components sections.
 
