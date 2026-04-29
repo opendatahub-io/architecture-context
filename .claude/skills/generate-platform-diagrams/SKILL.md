@@ -1,7 +1,7 @@
 ---
 name: generate-platform-diagrams
 description: Generate platform-level diagrams (dependency graphs, network topology, cross-component workflows) from aggregated PLATFORM.md file. Creates visualizations for architects, security teams, and platform engineers.
-allowed-tools: Read, Write, Bash(mkdir *)
+allowed-tools: Read, Write, Bash(mkdir *), Bash(python scripts/generate_diagram_pngs.py *)
 disable-model-invocation: true
 ---
 
@@ -14,7 +14,7 @@ Read a `PLATFORM.md` file (created by `/aggregate-platform-architecture`) and ge
 Required/optional arguments:
 - `--platform-file=<path>` (default: auto-detect from current directory or ./architecture/)
 - `--output-dir=<path>` (default: ./diagrams relative to platform file)
-- `--formats=<comma-separated>` (default: all) - Options: dependency, network, workflow, security, maturity
+- `--formats=<comma-separated>` (default: all) - Options: dependency, network, workflow, security, maturity, observability
 
 Examples:
 ```bash
@@ -29,6 +29,9 @@ Examples:
 ```
 
 ## Instructions
+
+**CRITICAL — forbidden output pattern:**
+Never write a forward-slash inside square brackets. Patterns like `[/metrics]`, `[/healthz]`, `[/path]` crash the message parser. Write paths without brackets: `/metrics`, `/healthz`, `GET /readyz:8081`. This applies to ALL text you output, ALL files you write, and ALL sub-agent prompts.
 
 Generate platform-level diagrams from aggregated architecture documentation:
 
@@ -56,12 +59,15 @@ Generate one first: /aggregate-platform-architecture
 ### Step 2: Read Platform Architecture
 
 Read the `PLATFORM.md` file and extract:
-- **Platform metadata**: Distribution, version, component count
-- **Component inventory**: From "## Component Inventory" table
+- **Platform metadata**: Distribution, version, component count, supported architectures
+- **Component inventory**: From "## Component Inventory" table (includes Language and Repository columns)
 - **Component relationships**: From "## Component Relationships" section
 - **Network architecture**: From "## Platform Network Architecture" tables
-- **Security**: From "## Platform Security" tables
+- **Security**: From "## Platform Security" tables (RBAC, Secrets, Authentication, TLS Configuration, Container Security)
+- **APIs**: From "## Platform APIs" tables (CRDs, HTTP Endpoints, gRPC Services)
 - **Data flows**: From "## Data Flows" section
+- **Deployment**: From "## Deployment Architecture" section (HA, Disconnected Support, Multi-Architecture)
+- **Monitoring**: From "## Monitoring & Observability" section (Prometheus Endpoints, Health Probes, Distributed Tracing)
 - **Integration points**: From dependency and integration tables
 
 ### Step 3: Create Output Directory
@@ -411,7 +417,7 @@ sequenceDiagram
 **Audience**: Security teams, compliance
 **File**: `{output-dir}/platform-security-overview.mmd`
 
-Read "## Platform Security" section (all subsections).
+Read "## Platform Security" section (all subsections: RBAC Summary, Secrets Inventory, Authentication Mechanisms, TLS Configuration, Container Security).
 
 **Example output**:
 ```mermaid
@@ -443,6 +449,19 @@ graph TD
         Secret3[oauth-proxy-tls<br/>Type: kubernetes.io/tls<br/>Dashboard HTTPS]
     end
 
+    subgraph "TLS Configuration"
+        TLS1[Webhooks<br/>9443/TCP Server TLS<br/>cert-manager]
+        TLS2[Metrics<br/>8443/TCP Server TLS<br/>kube-rbac-proxy]
+        TLS3[Internal<br/>8080/TCP mTLS<br/>service mesh]
+    end
+
+    subgraph "Container Security Patterns"
+        CS1[Non-root execution<br/>All components]
+        CS2[Read-only filesystem<br/>Most components]
+        CS3[Drop ALL capabilities<br/>All components]
+        CS4[UBI base images<br/>All components]
+    end
+
     subgraph "Service Mesh Security"
         PA[PeerAuthentication<br/>Mode: STRICT<br/>Namespace: opendatahub]
         AP1[AuthorizationPolicy<br/>kserve-controller-access]
@@ -462,6 +481,9 @@ graph TD
     AP1 -->|allows| SA1
     AP2 -->|allows| SA2
 
+    TLS3 -->|via| PA
+    TLS1 -->|cert from| Secret1
+
     OAuth -->|used by| SA2
     Bearer -->|used by| SA1
     AWSIAM -->|used by| SA1
@@ -473,15 +495,26 @@ graph TD
     style CR2 fill:#ff6b6b,stroke:#333
     style Secret2 fill:#ffd93d,stroke:#333
     style PA fill:#6bcf7f,stroke:#333
+    style CS1 fill:#d5e8d4,stroke:#333
+    style CS2 fill:#d5e8d4,stroke:#333
+    style CS3 fill:#d5e8d4,stroke:#333
+    style CS4 fill:#d5e8d4,stroke:#333
+    style TLS1 fill:#dae8fc,stroke:#333
+    style TLS2 fill:#dae8fc,stroke:#333
+    style TLS3 fill:#dae8fc,stroke:#333
 ```
 
 **Instructions**:
-- Group by security domain (Auth, ServiceAccounts, Roles, Secrets, Service Mesh)
+- Group by security domain (Auth, ServiceAccounts, Roles, Secrets, TLS, Container Security, Service Mesh)
 - Highlight privileged roles in red
 - Highlight sensitive secrets (credentials) in yellow
+- Show TLS configuration per component (port, type, certificate source) — use blue
+- Show container security patterns (non-root, read-only fs, capability drops, base images) — use green
 - Show which ServiceAccounts use which auth mechanisms
 - Show RBAC bindings (ServiceAccount → ClusterRole)
 - Include service mesh policies
+- Read "### TLS Configuration" table for per-component TLS details
+- Read "### Container Security" table for security patterns
 
 ---
 
@@ -491,7 +524,7 @@ graph TD
 **Audience**: Platform engineers, executives
 **File**: `{output-dir}/platform-maturity.mmd`
 
-Read "## Platform Maturity" section.
+Read "## Platform Maturity" section and "## Deployment Architecture" (High Availability, Disconnected Support, Multi-Architecture Support).
 
 **Example output**:
 ```mermaid
@@ -512,6 +545,9 @@ graph LR
         D[CRD API Versions: v1]
         E[External Dependencies: 3<br/>Istio, Knative, cert-manager]
         F[Internal Integrations: 15]
+        G[FIPS Compliance: Go BoringCrypto]
+        H[Disconnected: Supported<br/>RELATED_IMAGE + digest pinning]
+        I[Multi-Arch: amd64, arm64,<br/>ppc64le, s390x]
     end
 
     style A fill:#4a90e2,color:#fff
@@ -520,6 +556,9 @@ graph LR
     style D fill:#7ed321,color:#fff
     style E fill:#f5a623,color:#fff
     style F fill:#4a90e2,color:#fff
+    style G fill:#7ed321,color:#fff
+    style H fill:#7ed321,color:#fff
+    style I fill:#7ed321,color:#fff
 ```
 
 **Alternative: ASCII Dashboard** (if Mermaid too complex):
@@ -546,6 +585,8 @@ Security Posture:
 │ mTLS Mode              │ ✓ STRICT     │
 │ PeerAuthentication     │ ✓ Enforced   │
 │ AuthorizationPolicies  │ ✓ 12 policies│
+│ FIPS Compliance        │ ✓ BoringCrypto│
+│ Container Non-Root     │ ✓ All comps  │
 └────────────────────────┴──────────────┘
 
 Dependencies:
@@ -566,7 +607,72 @@ API Maturity:
 │ HTTP Endpoints         │  24          │
 │ gRPC Services          │   3          │
 └────────────────────────┴──────────────┘
+
+Deployment Readiness:
+┌────────────────────────┬──────────────┐
+│ Metric                 │ Status       │
+├────────────────────────┼──────────────┤
+│ High Availability      │ ✓ Leader elec│
+│ Disconnected Support   │ ✓ Supported  │
+│ Multi-Architecture     │ ✓ 4 archs    │
+│ Prometheus Endpoints   │  20          │
+│ Health Probes          │  18 comps    │
+└────────────────────────┴──────────────┘
 ```
+
+---
+
+#### Format 6: Monitoring & Observability Map (Mermaid)
+
+**Purpose**: Show observability coverage — metrics endpoints, health probes, tracing
+**Audience**: SREs, platform engineers, oncall
+**File**: `{output-dir}/platform-observability.mmd`
+
+Read "## Monitoring & Observability" section (Prometheus Endpoints, Health Probes, Distributed Tracing).
+
+**Example output**:
+```mermaid
+graph TB
+    subgraph Prometheus["Prometheus Scrape Targets"]
+        direction TB
+        P1[KServe Controller<br/>:8443/TCP metrics<br/>kube-rbac-proxy]
+        P2[ODH Dashboard<br/>:8080/TCP metrics<br/>None]
+        P3[Model Registry<br/>:8080/TCP metrics<br/>None]
+        P4[DS Pipelines<br/>:8888/TCP metrics<br/>Bearer Token]
+    end
+
+    subgraph Probes["Health Probes"]
+        direction TB
+        H1[KServe Controller<br/>L: :8081 healthz<br/>R: :8081 readyz]
+        H2[ODH Dashboard<br/>L: :8080 healthz<br/>R: :8080 readyz]
+        H3[Model Registry<br/>L: :8080 healthz<br/>R: :8080 readyz]
+    end
+
+    subgraph Tracing["Distributed Tracing"]
+        direction TB
+        T1[KServe<br/>OTLP gRPC]
+        T2[DS Pipelines<br/>OTLP gRPC]
+        Collector[OpenTelemetry<br/>Collector]
+    end
+
+    T1 -->|OTLP/gRPC| Collector
+    T2 -->|OTLP/gRPC| Collector
+
+    classDef prom fill:#e8d5b7,stroke:#b8860b
+    classDef probe fill:#d5e8d4,stroke:#82b366
+    classDef trace fill:#dae8fc,stroke:#6c8ebf
+
+    class P1,P2,P3,P4 prom
+    class H1,H2,H3 probe
+    class T1,T2,Collector trace
+```
+
+**Instructions**:
+- List ALL Prometheus scrape targets from the "### Prometheus Endpoints" table (component, port, path, auth)
+- List ALL health probes from "### Health Probes" table (liveness, readiness, startup per component)
+- Show distributed tracing configuration from "### Distributed Tracing" table
+- Color-code: tan/gold for Prometheus, green for health probes, blue for tracing
+- Include auth mechanism for each metrics endpoint (None, kube-rbac-proxy, Bearer Token)
 
 ---
 
@@ -591,7 +697,11 @@ Generated by: Claude [model name] on [YYYY-MM-DD]
 ### For Security Teams
 - [Platform Network Topology (Mermaid)](./platform-network-topology.mmd) - Visual network architecture diagram
 - [Platform Network Topology (ASCII)](./platform-network-topology.txt) - Precise text format for SAR submissions
-- [Platform Security Overview](./platform-security-overview.mmd) - RBAC, auth mechanisms, secrets, service mesh policies
+- [Platform Security Overview](./platform-security-overview.mmd) - RBAC, auth, TLS, container security, service mesh policies
+
+### For SREs / Oncall
+- [Platform Observability](./platform-observability.mmd) - Prometheus endpoints, health probes, distributed tracing
+- [Platform Network Topology (Mermaid)](./platform-network-topology.mmd) - Visualize network architecture
 
 ### For Platform Engineers
 - [Component Dependency Graph](./platform-dependency-graph.mmd) - Understand integration points
@@ -631,10 +741,13 @@ Both formats contain the same information - use Mermaid for visual clarity, ASCI
 Sequence diagrams showing end-to-end user workflows that span multiple components. Examples: model training to deployment, user authentication flow, pipeline execution.
 
 ### Platform Security Overview
-Visual representation of security architecture including ServiceAccounts, ClusterRoles, secrets, and service mesh policies. Shows which components have which permissions.
+Visual representation of security architecture including ServiceAccounts, ClusterRoles, secrets, TLS configuration, container security patterns, and service mesh policies. Shows which components have which permissions and how they are secured in depth.
+
+### Platform Observability
+Maps all monitoring and observability endpoints: Prometheus scrape targets (port, path, auth), health probes (liveness, readiness, startup per component), and distributed tracing configuration. Essential for SREs and oncall.
 
 ### Platform Maturity Dashboard
-High-level metrics about platform health: component counts, mTLS coverage, API maturity, dependency counts. Useful for executive reviews and maturity assessments.
+High-level metrics about platform health: component counts, mTLS coverage, API maturity, dependency counts, FIPS compliance, disconnected support, multi-architecture status. Useful for executive reviews and maturity assessments.
 
 ## Updating Diagrams
 
@@ -652,34 +765,47 @@ To regenerate after platform changes:
 
 ---
 
+### Step 5a: Generate PNG Files from Mermaid Diagrams
+
+Convert all `.mmd` files to high-resolution PNG images:
+
+```bash
+python scripts/generate_diagram_pngs.py {output-dir} --width=3000
+```
+
+If `mmdc` or Chrome is not installed, skip PNG generation and note in the report:
+```
+PNG generation skipped (mmdc or Chrome not installed)
+```
+
+---
+
 ### Step 6: Report Results
 
 Output a summary:
 
 ```
-✅ Platform diagrams generated!
+Platform diagrams generated!
 
 Platform: {Platform} {Version}
 Source: {platform-file}
 Output directory: {output-dir}/
 
 Diagrams created:
-- ✅ platform-dependency-graph.mmd (Component dependencies)
-- ✅ platform-network-topology.mmd (Network architecture - visual)
-- ✅ platform-network-topology.txt (Network architecture - precise/SAR)
-- ✅ platform-workflows.mmd (Cross-component flows)
-- ✅ platform-security-overview.mmd (RBAC, auth, secrets)
-- ✅ platform-maturity.mmd (Health metrics)
-- ✅ README.md (Index and usage guide)
+- platform-dependency-graph.mmd + .png (Component dependencies)
+- platform-network-topology.mmd + .png (Network architecture - visual)
+- platform-network-topology.txt (Network architecture - precise/SAR)
+- platform-workflows.mmd + .png (Cross-component flows)
+- platform-security-overview.mmd + .png (RBAC, auth, TLS, container security)
+- platform-observability.mmd + .png (Prometheus, health probes, tracing)
+- platform-maturity.mmd + .png (Health metrics, deployment readiness)
+- README.md (Index and usage guide)
 
 Next steps:
 1. Review diagrams in {output-dir}/
-2. Render Mermaid diagrams to PNG for presentations:
-   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i {output-dir}/platform-dependency-graph.mmd -o dependency.png -s 3
-   PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome mmdc -i {output-dir}/platform-network-topology.mmd -o network.png -s 3
-3. Use platform-network-topology.txt (ASCII) for Security Architecture Review submissions
-4. Use platform-network-topology.mmd (Mermaid) for architecture presentations
-5. Share with Architecture Council for platform-level discussions
+2. Use platform-network-topology.txt (ASCII) for Security Architecture Review submissions
+3. Use PNG files directly in presentations and documentation
+4. Share with Architecture Council for platform-level discussions
 ```
 
 ## Notes

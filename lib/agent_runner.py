@@ -67,7 +67,7 @@ def format_duration(seconds: float) -> str:
 
 async def run_agent(
     name: str, cwd: str, prompt: str, log_dir: Path,
-    model: str = "sonnet", enable_skills: bool = False,
+    model: str = "opus", enable_skills: bool = False,
     progress: AgentProgress | None = None,
 ) -> dict:
     """

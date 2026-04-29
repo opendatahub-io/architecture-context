@@ -98,7 +98,7 @@ async def run_generate_platform_architecture_phase(args) -> None:
         metadata = get_component_map_metadata(p['name'], architecture_dir=str(architecture_dir))
         distribution = p['name'].split("-")[0] if "-" in p['name'] else p['name']
         version = metadata.get("version", "unknown") if metadata else "unknown"
-        platform_dir_path = str(p['path'])
+        platform_dir_path = str(p['path'].resolve())
 
         prompt = (
             f"/aggregate-platform-architecture"
@@ -110,7 +110,7 @@ async def run_generate_platform_architecture_phase(args) -> None:
 
         job = {
             "name": p['name'],
-            "cwd": str(p['path']),
+            "cwd": ".",
             "prompt": prompt,
         }
         jobs.append(job)

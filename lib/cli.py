@@ -199,8 +199,8 @@ def parse_args():
     generate_arch_parser.add_argument(
         "--model",
         choices=["sonnet", "opus", "haiku"],
-        default="sonnet",
-        help="Claude model to use (default: sonnet)"
+        default="opus",
+        help="Claude model to use (default: opus)"
     )
     generate_arch_parser.add_argument(
         "--tier",
@@ -302,8 +302,8 @@ def parse_args():
     diagrams_parser.add_argument(
         "--model",
         choices=["sonnet", "opus", "haiku"],
-        default="sonnet",
-        help="Claude model to use (default: sonnet)"
+        default="opus",
+        help="Claude model to use (default: opus)"
     )
 
     # All phases
@@ -341,8 +341,8 @@ def parse_args():
     all_parser.add_argument(
         "--model",
         choices=["sonnet", "opus", "haiku"],
-        default="sonnet",
-        help="Claude model to use for all agent tasks (default: sonnet)"
+        default="opus",
+        help="Claude model to use for all agent tasks (default: opus)"
     )
     all_parser.add_argument(
         "--tier",

@@ -6,6 +6,7 @@ from argparse import Namespace
 from pathlib import Path
 
 from lib.cli import resolve_org_dir
+from lib.fetch import load_platform_config
 
 from lib.phases.fetch import run_fetch_phase
 from lib.phases.manifest import run_manifest_phase
@@ -18,15 +19,29 @@ from lib.phases.diagrams import run_generate_diagrams_phase
 
 async def run_all_phases(args) -> None:
     """Run all phases in sequence."""
+    # Load platform config for org/suffix/branch defaults
+    platform_config = load_platform_config(args.platform)
+
     # Auto-detect org if not provided
     org = args.org
     if not org:
-        org = "opendatahub-io" if args.platform == "odh" else "red-hat-data-services"
+        orgs = platform_config.get("orgs", [])
+        org = orgs[0] if orgs else ("opendatahub-io" if args.platform == "odh" else "red-hat-data-services")
+
+    # Resolve suffix: CLI --suffix > config suffix > branch fallback
+    suffix = getattr(args, 'suffix', None)
+    branch = getattr(args, 'branch', None)
+    if not suffix:
+        suffix = platform_config.get("suffix")
+    if not branch:
+        branch = platform_config.get("branch")
+    if not suffix and branch:
+        suffix = branch
 
     # Determine target version: explicit --version > extracted from --branch > auto-detect
     target_version = getattr(args, 'version', None)
-    if not target_version and args.platform == "rhoai" and args.branch:
-        version_match = re.search(r'rhoai-([0-9][0-9a-zA-Z._-]*)', args.branch)
+    if not target_version and args.platform.startswith("rhoai") and branch:
+        version_match = re.search(r'rhoai-([0-9][0-9a-zA-Z._-]*)', branch)
         if version_match:
             target_version = version_match.group(1)
 
@@ -34,11 +49,12 @@ async def run_all_phases(args) -> None:
     print("RUNNING ALL PHASES")
     print(f"Platform: {args.platform}")
     print(f"Organization: {org}")
-    if args.branch:
-        print(f"Branch: {args.branch}")
+    print(f"Suffix: {suffix}")
+    if branch:
+        print(f"Branch: {branch}")
     if target_version:
         print(f"Target Version: {target_version}")
-    print(f"Model: {getattr(args, 'model', 'sonnet')}")
+    print(f"Model: {getattr(args, 'model', 'opus')}")
     print("=" * 80 + "\n")
 
     # Phase 1: Fetch repositories
@@ -46,8 +62,8 @@ async def run_all_phases(args) -> None:
         org=getattr(args, 'org', None),
         platform=args.platform,
         checkouts_dir="checkouts",
-        branch=getattr(args, 'branch', None),
-        suffix=getattr(args, 'suffix', None),
+        branch=branch,
+        suffix=suffix,
         exclude=None,
     )
     await run_fetch_phase(fetch_args)
@@ -56,13 +72,24 @@ async def run_all_phases(args) -> None:
     manifest_args = Namespace(
         platform=args.platform,
         org=org,
-        branch=getattr(args, 'branch', None),
-        suffix=getattr(args, 'suffix', None),
+        branch=branch,
+        suffix=suffix,
         checkouts_dir="checkouts",
         script_path=None,
         format="summary"
     )
     await run_manifest_phase(manifest_args)
+
+    # Phase 2b: Discover components
+    discover_args = Namespace(
+        platform=args.platform,
+        checkouts_dir=None,
+        architecture_dir="architecture",
+        entry_repo=None,
+        exclude=None,
+        model=getattr(args, 'model', 'opus'),
+    )
+    await run_discover_components_phase(discover_args)
 
     # Phase 3: Generate component architectures
     max_concurrent = getattr(args, 'max_concurrent', 5)
@@ -73,7 +100,7 @@ async def run_all_phases(args) -> None:
         limit=None,
         component=None,
         force=False,
-        model=getattr(args, 'model', 'sonnet'),
+        model=getattr(args, 'model', 'opus'),
         tier=getattr(args, 'tier', 'all'),
     )
     await run_generate_architecture_phase(generate_arch_args)
@@ -89,7 +116,7 @@ async def run_all_phases(args) -> None:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
         from collect_architectures import get_version_from_makefile
         operator_name = "opendatahub-operator" if args.platform == "odh" else "rhods-operator"
-        org_dir = resolve_org_dir(org, suffix=getattr(args, 'suffix', None), branch=args.branch)
+        org_dir = resolve_org_dir(org, suffix=suffix, branch=branch)
         operator_dir = Path("checkouts") / org_dir / operator_name
         if operator_dir.exists():
             makefile_path = operator_dir / "Makefile"
@@ -129,7 +156,7 @@ async def run_all_phases(args) -> None:
         max_concurrent=max_concurrent,
         limit=None,
         force_regenerate=False,
-        model=getattr(args, 'model', 'sonnet')
+        model=getattr(args, 'model', 'opus')
     )
     await run_generate_diagrams_phase(diagrams_args)
 
@@ -137,7 +164,7 @@ async def run_all_phases(args) -> None:
     print("ALL PHASES COMPLETED SUCCESSFULLY!")
     print("=" * 80)
     print(f"\nResults:")
-    print(f"  - Component architectures: checkouts/{resolve_org_dir(org, suffix=getattr(args, 'suffix', None), branch=args.branch)}/*/GENERATED_ARCHITECTURE.md")
+    print(f"  - Component architectures: checkouts/{resolve_org_dir(org, suffix=suffix, branch=branch)}/*/GENERATED_ARCHITECTURE.md")
     print(f"  - Organized architectures: architecture/{args.platform}-*/")
     print(f"  - Platform documents: architecture/{args.platform}-*/PLATFORM.md")
     print(f"  - Diagrams: architecture/{args.platform}-*/diagrams/")

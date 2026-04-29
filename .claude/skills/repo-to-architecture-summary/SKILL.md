@@ -72,14 +72,26 @@ make get-manifests
 - Without this step, you'll miss component deployment details
 
 **For rhods-operator repository (RHOAI 3.x+)**:
-- Check `internal/controller/services/gateway/` for gateway controller code
-- This operator deploys critical platform ingress infrastructure:
-  - Gateway API (gateway.networking.k8s.io)
-  - EnvoyFilter for traffic management
-  - kube-rbac-proxy for authentication
-  - Components create HTTPRoute CRs that reference the data-science-gateway
-- Document this in the Ingress section even though it's not in static manifests
-- This is THE platform ingress mechanism - not optional to document
+
+This operator deploys the platform's entire ingress infrastructure. You MUST thoroughly analyze it:
+
+1. **List ALL controller directories** — run `find internal/controller -type d` and `find controllers -type d 2>/dev/null`
+2. **For EVERY controller directory found**, run `ls -la` to see all files, then **read every `.go` file and every template file** (`*.tmpl.yaml`, `*.yaml`, `*.tmpl`) in that directory and its `resources/` subdirectory
+3. Pay special attention to these directories (non-exhaustive — read ALL directories, not just these):
+   - `internal/controller/services/gateway/` — Gateway API, Envoy, EnvoyFilter, kube-rbac-proxy
+   - `internal/controller/services/gateway/resources/` — YAML/template files for Gateway, EnvoyFilter, Deployments
+   - Any directory matching `*dashboard*`, `*route*`, `*redirect*`, `*ingress*`, `*auth*`
+
+The ingress stack this operator deploys includes ALL of:
+- **Gateway API** (`gateway.networking.k8s.io`): Gateway CR defining the platform ingress entry point
+- **Envoy proxy**: The data plane that serves Gateway API traffic (deployed as a pod)
+- **EnvoyFilter CRs** (`networking.istio.io/v1alpha3`): Traffic shaping, header manipulation, auth integration
+- **kube-rbac-proxy**: Authentication/authorization sidecar injected into component pods
+- **OpenShift Routes**: Redirect routes for legacy URLs, OAuth callback routes
+- **nginx redirect services**: Deployment + Service + Route for 301 redirects from old hostnames
+- **HTTPRoute CRs**: Per-component routing rules referencing the parent Gateway
+
+Missing ANY of these produces an incomplete ingress architecture. Document every resource the controllers create.
 
 **For other repositories**: Skip to discovery below.
 
@@ -117,11 +129,18 @@ grep -r "github.com/openshift/api" --include="*.go" . | head -20
 # Gateway API usage (RHOAI 3.x ingress pattern)
 grep -r "gateway.networking.k8s.io" --include="*.go" . | head -20
 
+# Envoy / EnvoyFilter (RHOAI ingress data plane)
+grep -r "EnvoyFilter\|envoy" --include="*.go" . | head -20
+grep -r "EnvoyFilter\|envoy" --include="*.yaml" --include="*.tmpl.yaml" --include="*.tmpl" . | head -20
+
+# kube-rbac-proxy (RHOAI auth sidecar)
+grep -r "kube-rbac-proxy" --include="*.go" --include="*.yaml" --include="*.tmpl.yaml" . | head -20
+
 # OLM/Operator SDK patterns
 grep -r "github.com/operator-framework" --include="*.go" . | head -20
 
 # Service Mesh / Istio usage
-grep -r "istio.io/api" --include="*.go" . | head -20
+grep -r "istio.io/api\|networking.istio.io" --include="*.go" . | head -20
 ```
 
 **Interpret results**:
@@ -130,6 +149,8 @@ grep -r "istio.io/api" --include="*.go" . | head -20
 - `openshift/api/route/v1`: Manages OpenShift Routes (RHOAI 2.x pattern)
 - `openshift/api/config/v1`: Accesses OpenShift cluster configuration
 - `gateway.networking.k8s.io`: Manages Gateway API resources (RHOAI 3.x pattern)
+- `EnvoyFilter` / `networking.istio.io`: Creates Envoy filters for traffic shaping (RHOAI ingress)
+- `kube-rbac-proxy`: Injects auth sidecar containers (RHOAI 3.x auth pattern)
 - `operator-framework/api`: OLM-based operator with CRDs
 - `istio.io/api`: Integrates with Istio service mesh
 
@@ -148,11 +169,16 @@ Search for and analyze:
 **Controllers**: `controllers/`, `pkg/controller/`, `internal/controller/`, `*_controller.go`
 - Extract: Watched CRDs, reconciliation logic
 - **CRITICAL**: Read controller code to see what resources are created dynamically (not just manifests!)
-- Check `internal/controller/`, `controllers/`, `components/*/controllers/` for all controller code
-- **READ EVERY `.go` FILE** in controller directories — not just files matching known patterns. Controller logic is often split across helper files, action files, and feature-specific files (e.g., `dashboard_redirects.go`, `ocp_routes.go`, `gateway_support.go`). Skipping any `.go` file risks missing dynamically-created resources.
-- **READ EVERY TEMPLATE FILE** in `resources/` subdirectories under controller directories (e.g., `*.tmpl.yaml`, `*.yaml`). These templates define the exact Kubernetes resources the controller creates at runtime. List the directory first, then read each template file.
-- Look for gateway/ingress controllers that manage Gateway API, HTTPRoute, Istio Gateway, Routes, etc.
-- Example: `internal/controller/services/gateway/` indicates operator manages ingress infrastructure
+
+**MANDATORY controller enumeration procedure** (do not skip):
+1. Run `find . -type d -name "controller" -o -name "controllers" -o -name "controller*" | grep -v vendor | grep -v _test` to find ALL controller directories
+2. For EACH directory found, run `find {dir} -name "*.go" -o -name "*.yaml" -o -name "*.tmpl.yaml" -o -name "*.tmpl" | grep -v _test.go | sort` to list every file
+3. **READ EVERY FILE** in that listing. Not a sample. Not just files matching known patterns. EVERY `.go` file and EVERY template file.
+
+Controller logic is split across helper files, action files, and feature-specific files (e.g., `dashboard_redirects.go`, `ocp_routes.go`, `gateway_support.go`, `envoyfilter.go`, `kube_rbac_proxy.go`). Skipping any file risks missing dynamically-created resources.
+
+- Also check `components/*/controllers/` for component-specific controller code
+- `resources/` subdirectories under controllers contain templates that define the exact Kubernetes resources the controller creates at runtime
 - Document controller-managed ingress/egress in Network Architecture section
 
 **RHOAI 3.x Migration Patterns** (CRITICAL TO UNDERSTAND):
@@ -180,10 +206,15 @@ RHOAI 3.x controllers may ALSO create OpenShift Route CRs intentionally for:
 // Search for ALL of these patterns across ALL .go files in controller directories:
 HTTPRoute                    // Creating Gateway API HTTPRoutes
 gateway.networking.k8s.io    // Gateway API imports
+Gateway                      // Gateway CR (the ingress entry point itself)
+EnvoyFilter                  // Istio EnvoyFilter CRs (traffic shaping, header manipulation)
+networking.istio.io          // Istio API imports (for EnvoyFilter, VirtualService)
+envoy                        // Envoy proxy configuration or deployment
 kube-rbac-proxy             // Auth sidecar (3.x primary)
 routev1.Route               // OpenShift Routes (may be redirects, OAuth callbacks, or OcpRoute mode)
 oauth-proxy                 // OAuth proxy (2.x pattern)
 Route                       // Any Route creation (check purpose: redirect vs primary ingress)
+nginx                       // Redirect services (301 redirects from legacy URLs)
 ```
 
 **Examples**:
@@ -194,12 +225,18 @@ Route                       // Any Route creation (check purpose: redirect vs pr
 
 **Gateway API / Ingress Controllers**:
 - Search for: `gateway.networking.k8s.io`, `Gateway`, `HTTPRoute`, `GRPCRoute`, `TLSRoute`
+- Search for: `EnvoyFilter`, `networking.istio.io`, `envoy` (Envoy data plane)
+- Search for: `kube-rbac-proxy`, `oauth-proxy` (auth sidecars)
 - Check controller code to understand what ingress infrastructure is deployed
-- Common patterns in RHOAI 3.x:
-  - Platform operator deploys Gateway API + EnvoyFilter + auth infrastructure
-  - Component controllers create HTTPRoute CRs that reference a parent Gateway (e.g., "data-science-gateway")
-  - Component controllers inject kube-rbac-proxy sidecars for auth
-  - This is **critical ingress architecture** - must be documented even if not in manifests
+- RHOAI 3.x deploys a full ingress stack — ALL of these must be documented:
+  1. **Gateway CR** (`gateway.networking.k8s.io`): Defines the platform ingress entry point (e.g., "data-science-gateway")
+  2. **Envoy proxy**: The data plane pod that serves Gateway API traffic
+  3. **EnvoyFilter CRs** (`networking.istio.io/v1alpha3`): Traffic shaping, header manipulation, CORS, auth enforcement
+  4. **HTTPRoute CRs**: Per-component routing rules referencing the parent Gateway
+  5. **kube-rbac-proxy sidecars**: Auth enforcement per component pod
+  6. **OpenShift Routes**: Redirect routes (legacy URL → new Gateway URL), OAuth callbacks
+  7. **nginx redirect Deployments**: 301 redirect services for legacy hostnames
+- This is **critical ingress architecture** — must be documented even if not in static manifests
 - Read controller reconcile logic to understand what gets deployed at runtime
 
 **APIs**: Route definitions, OpenAPI specs, `.proto` files
