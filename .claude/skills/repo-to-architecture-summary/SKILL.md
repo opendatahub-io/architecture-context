@@ -18,12 +18,14 @@ Optional flags:
 - `--distribution=odh|rhoai|both` (default: both)
 - `--version=X.Y` (default: auto-detect)
 - `--output=FILENAME` (default: `GENERATED_ARCHITECTURE.md`)
+- `--generated-by=STRING` (default: auto-detect from model name + current date)
 
 Examples:
 ```bash
 /repo-to-architecture-summary                                    # analyze current directory
 /repo-to-architecture-summary checkouts/opendatahub-io/kserve   # analyze specific directory
 /repo-to-architecture-summary ./kserve --distribution=rhoai --output=GENERATED_ARCHITECTURE.md
+/repo-to-architecture-summary . --distribution=rhoai --generated-by="Claude Opus 4.6"
 ```
 
 ## Instructions
@@ -167,19 +169,27 @@ Search for and analyze:
 - Extract: API group, version, kind, scope
 
 **Controllers**: `controllers/`, `pkg/controller/`, `internal/controller/`, `*_controller.go`
-- Extract: Watched CRDs, reconciliation logic
+- Extract: Watched CRDs, reconciliation logic, dynamically-created resources, integration points
 - **CRITICAL**: Read controller code to see what resources are created dynamically (not just manifests!)
+- **CRITICAL**: Identify every external system the controller talks to (API calls, CRD watches, webhook calls, metrics endpoints, auth providers)
 
-**MANDATORY controller enumeration procedure** (do not skip):
+**MANDATORY controller enumeration procedure** (do not skip — applies to ALL operators, not just rhods-operator):
 1. Run `find . -type d -name "controller" -o -name "controllers" -o -name "controller*" | grep -v vendor | grep -v _test` to find ALL controller directories
 2. For EACH directory found, run `find {dir} -name "*.go" -o -name "*.yaml" -o -name "*.tmpl.yaml" -o -name "*.tmpl" | grep -v _test.go | sort` to list every file
-3. **READ EVERY FILE** in that listing. Not a sample. Not just files matching known patterns. EVERY `.go` file and EVERY template file.
+3. **READ EVERY FILE** in that listing. Not a sample. Not just files matching known patterns. EVERY `.go` file and EVERY template file. This is non-negotiable.
+4. For each file read, extract:
+   - **Resources created**: Every `&corev1.Service{}`, `&appsv1.Deployment{}`, `&routev1.Route{}`, `&gwv1.HTTPRoute{}`, etc.
+   - **Resources watched**: Every `.Watches()`, `.Owns()`, informer setup
+   - **External calls**: HTTP clients, gRPC dials, webhook invocations
+   - **Integration points**: CRD cross-references, label selectors matching other components, shared ConfigMaps/Secrets
+   - **Template resources**: Every `.tmpl.yaml` and `.yaml` in `resources/` subdirectories — these define the exact Kubernetes objects the controller creates at runtime
 
 Controller logic is split across helper files, action files, and feature-specific files (e.g., `dashboard_redirects.go`, `ocp_routes.go`, `gateway_support.go`, `envoyfilter.go`, `kube_rbac_proxy.go`). Skipping any file risks missing dynamically-created resources.
 
 - Also check `components/*/controllers/` for component-specific controller code
 - `resources/` subdirectories under controllers contain templates that define the exact Kubernetes resources the controller creates at runtime
 - Document controller-managed ingress/egress in Network Architecture section
+- Document every integration point in the Integration Points section — how this component connects to, configures, or depends on other components
 
 **RHOAI 3.x Migration Patterns** (CRITICAL TO UNDERSTAND):
 Controllers in RHOAI 3.x create different resources than 2.x. Read controller code to identify current behavior:
@@ -287,11 +297,27 @@ Follow the template exactly as defined in [architecture template](references/arc
 - Component-specific details (deployment modes, configuration, troubleshooting) go in the relevant existing sections (Architecture Components, Purpose/Detailed), not as new H2 sections
 - Document current behavior based on code analysis, not assumptions
 
-**IMPORTANT**: For RHOAI ingress architecture:
-- Document controller-managed ingress even if not in static manifests
-- RHOAI 3.x pattern: HTTPRoute + kube-rbac-proxy (document in Ingress table with type "HTTPRoute (Gateway API)")
-- RHOAI 2.x pattern: Route + oauth-proxy (document with type "Route (OpenShift)")
-- Read controller code to confirm which pattern is actually implemented
+**IMPORTANT — Operators that manage infrastructure require expanded output**:
+
+If the component is an operator that creates Kubernetes resources dynamically (Deployments, Services, Routes, HTTPRoutes, EnvoyFilters, NetworkPolicies, etc.), the output MUST go beyond the flat tables in the template. Specifically:
+
+1. **Network Architecture section**: Every resource the controller creates at runtime must appear in the Services, Ingress, or Egress tables. Include resources from Go code AND from `.tmpl.yaml` template files in `resources/` directories. If the operator manages a multi-layer ingress stack (Gateway → Envoy → auth proxy → application), document the full chain with traffic flow.
+
+2. **Integration Points section**: Must list every component this operator interacts with. For platform operators (rhods-operator, opendatahub-operator), this means every component CR it creates, every external CRD it watches, every webhook it calls, every shared Secret/ConfigMap it reads or writes.
+
+3. **Key Controllers section** (under Architecture Components or as subsections): Each controller that manages significant infrastructure deserves a dedicated subsection describing:
+   - What CRs/resources it watches
+   - What resources it creates/manages (list every resource type with its purpose)
+   - What external systems it integrates with
+   - The reconciliation flow (what happens when the CR changes)
+
+4. **For RHOAI ingress specifically**: The Gateway controller deploys a full stack — Gateway CR, Envoy proxy, EnvoyFilter CRs, kube-auth-proxy (OAuth and OIDC deployments), HTTPRoutes, DestinationRules, NetworkPolicies, OpenShift Routes (redirects), nginx redirect Deployments. Every one of these must appear in the output with its purpose, ports, TLS configuration, and how it connects to the next layer. A bullet-point summary is NOT sufficient — use the Ingress table AND a traffic flow description.
+
+5. **RHOAI ingress patterns**:
+   - RHOAI 3.x pattern: HTTPRoute + kube-rbac-proxy (document in Ingress table with type "HTTPRoute (Gateway API)")
+   - RHOAI 2.x pattern: Route + oauth-proxy (document with type "Route (OpenShift)")
+   - Read controller code to confirm which pattern is actually implemented
+   - Document ALL resources even if they mix patterns (e.g., 3.x controllers that also create Routes for redirects)
 
 **CRITICAL — forbidden pattern in all output:**
 - NEVER write `[/` followed by a word — e.g., `[/metrics]`, `[/healthz]`, `[/readyz]`, `[/path]`. The downstream message parser interprets `[/word]` as an XML closing tag and crashes. Instead write the path without brackets: `/metrics`, `/healthz`, `GET /healthz:8081`, etc. This applies to all markdown content you write AND any text you output.
@@ -309,9 +335,10 @@ Follow the template exactly as defined in [architecture template](references/arc
 Write the output file using the filename from the `--output` flag (default: `GENERATED_ARCHITECTURE.md`). The file goes in the repository root.
 
 **Important**: Populate the "Generated By" field in the Metadata section:
-- Use the current date in YYYY-MM-DD format (use `date +%Y-%m-%d` command if needed)
-- Include your model name (e.g., "Claude Sonnet 4.5", "Claude Opus 4.6", "Claude Haiku 3.5")
-- Example: `**Generated By**: Claude Sonnet 4.5 on 2026-03-13`
+- If `--generated-by` was provided, use that exact string
+- Otherwise, use your model name (e.g., "Claude Sonnet 4.5", "Claude Opus 4.6", "Claude Haiku 3.5")
+- Append the current date in YYYY-MM-DD format (use `date +%Y-%m-%d` command if needed)
+- Example: `**Generated By**: Claude Opus 4.6 on 2026-03-13`
 
 **CRITICAL**: The `## Source References` section MUST be populated from your tracking log before writing.
 - Every file you read during Steps 1-5 must appear in the "Files Analyzed" table
@@ -375,3 +402,20 @@ Next steps:
 - The Source References section enables auditing, accuracy validation, and iterative improvement
 - If you cannot find a source file for a claim, mark it as "inferred" in the Coverage summary rather than omitting it
 - Source references also serve as a reading guide for reviewers who want to verify specific claims
+
+### Depth expectations by component type
+
+- **Platform operators** (rhods-operator, opendatahub-operator): These are the most complex components. They manage dozens of sub-components, create hundreds of Kubernetes resources dynamically, and define the platform's entire networking, security, and deployment architecture. The output should be 500+ lines with detailed controller descriptions, complete resource inventories, full ingress/egress chains, and comprehensive integration points. A shallow 200-line summary is a failure.
+- **Component operators** (kserve, kueue, training-operator, etc.): Medium complexity. Focus on CRDs, controller logic, network exposure, and integration with the platform operator. 200-400 lines typical.
+- **Services and frontends** (dashboard, model registry API, etc.): Lower complexity. Focus on API surface, deployment topology, and security. 150-300 lines typical.
+
+### Integration points are critical
+
+The Integration Points section is one of the most valuable parts of the output — it tells architects and agents how components connect. For every component, ask:
+- What CRDs does it watch that belong to other components?
+- What Services/endpoints does it call?
+- What Secrets/ConfigMaps does it read that are created by other components?
+- What webhooks does it register that intercept other components' resources?
+- What labels/annotations does it set that other components select on?
+
+A platform operator should have 15-30+ integration point rows. A simple service might have 3-5. An empty Integration Points table is almost always wrong.
