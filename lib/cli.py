@@ -300,6 +300,10 @@ def parse_args():
         help="Limit number of files to process (for testing)"
     )
     diagrams_parser.add_argument(
+        "--component",
+        help="Only process this specific component (e.g., 'kserve', 'odh-dashboard', 'platform' for PLATFORM.md)"
+    )
+    diagrams_parser.add_argument(
         "--force-regenerate",
         action="store_true",
         help="Regenerate diagrams even if they already exist"

@@ -45,6 +45,11 @@ async def run_generate_diagrams_phase(args) -> None:
             if f.name != "README.md"
         ]
 
+        # Filter to a single component if --component was provided
+        if args.component:
+            target = args.component.lower()
+            md_files = [f for f in md_files if f.stem.lower() == target]
+
         for md_file in md_files:
             component_name = md_file.stem.lower()
             diagrams_dir = platform_dir / "diagrams"
@@ -89,7 +94,19 @@ async def run_generate_diagrams_phase(args) -> None:
             })
 
     if not diagram_jobs:
-        print(f"No architecture files found in {architecture_dir}")
+        if args.component:
+            print(f"No architecture file found for component '{args.component}'")
+            # Show available components in scanned dirs
+            available = []
+            for d in scan_dirs:
+                available.extend(
+                    f.stem for f in d.glob("*.md")
+                    if f.name != "README.md"
+                )
+            if available:
+                print(f"Available components: {', '.join(sorted(available))}")
+        else:
+            print(f"No architecture files found in {architecture_dir}")
         return
 
     # Filter to files that need diagrams
