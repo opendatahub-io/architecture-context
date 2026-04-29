@@ -2,7 +2,7 @@
 name: repo-to-architecture-summary
 description: Analyze a component repository and generate comprehensive architecture summary with structured markdown tables. Use when analyzing ODH/RHOAI components, documenting architecture, or creating security diagrams.
 user-invocable: true
-allowed-tools: Read, Glob, Grep, Bash(git *), Bash(ls *), Bash(find *), Bash(python *), Write
+allowed-tools: Read, Glob, Grep, Bash(git *), Bash(ls *), Bash(find *), Bash(python *), Write, Task
 ---
 
 # Repo to Architecture Summary
@@ -33,9 +33,12 @@ Examples:
 Generate a comprehensive architecture summary following these steps:
 
 **IMPORTANT - TOOL USAGE**:
-- Do NOT call `ToolSearch`. You already have access to: Bash, Read, Write, Glob, Grep.
+- Do NOT call `ToolSearch`. You already have access to: Bash, Read, Write, Glob, Grep, Task.
 - When reading multiple files, use **parallel tool calls** — issue multiple Read/Glob/Grep calls in a single turn rather than one at a time. This dramatically reduces execution time.
 - Prefer Grep with `--include` patterns over Bash `grep` commands.
+- For large repositories (20+ controller/webhook files), use the **Task tool to spawn sub-agents** that read files in parallel. See Step 4a below.
+
+**NEVER read `*_test.go` files.** They consume context without informing architecture. Exclude them from all find commands and never open them.
 
 **CRITICAL - SOURCE REFERENCE TRACKING**:
 You MUST maintain a running log of EVERY file you read or grep during analysis. For each file, record:
@@ -168,28 +171,17 @@ Search for and analyze:
 **CRDs**: `**/*_crd.yaml`, `config/crd/`, `api/*/groupversion_info.go`
 - Extract: API group, version, kind, scope
 
-**Controllers**: `controllers/`, `pkg/controller/`, `internal/controller/`, `*_controller.go`
+**Controllers and Webhooks**: `controllers/`, `pkg/controller/`, `internal/controller/`, `internal/webhook/`
+
 - Extract: Watched CRDs, reconciliation logic, dynamically-created resources, integration points
 - **CRITICAL**: Read controller code to see what resources are created dynamically (not just manifests!)
 - **CRITICAL**: Identify every external system the controller talks to (API calls, CRD watches, webhook calls, metrics endpoints, auth providers)
 
-**MANDATORY controller enumeration procedure** (do not skip — applies to ALL operators, not just rhods-operator):
-1. Run `find . -type d -name "controller" -o -name "controllers" -o -name "controller*" | grep -v vendor | grep -v _test` to find ALL controller directories
-2. For EACH directory found, run `find {dir} -name "*.go" -o -name "*.yaml" -o -name "*.tmpl.yaml" -o -name "*.tmpl" | grep -v _test.go | sort` to list every file
-3. **READ EVERY FILE** in that listing. Not a sample. Not just files matching known patterns. EVERY `.go` file and EVERY template file. This is non-negotiable.
-4. For each file read, extract:
-   - **Resources created**: Every `&corev1.Service{}`, `&appsv1.Deployment{}`, `&routev1.Route{}`, `&gwv1.HTTPRoute{}`, etc.
-   - **Resources watched**: Every `.Watches()`, `.Owns()`, informer setup
-   - **External calls**: HTTP clients, gRPC dials, webhook invocations
-   - **Integration points**: CRD cross-references, label selectors matching other components, shared ConfigMaps/Secrets
-   - **Template resources**: Every `.tmpl.yaml` and `.yaml` in `resources/` subdirectories — these define the exact Kubernetes objects the controller creates at runtime
+**Use the sub-agent dispatch procedure in Step 4a below** for all controller and webhook analysis. Do NOT attempt to read all controller/webhook files yourself — large operators have 100+ files that exceed a single context window. Step 4a spawns sub-agents via the Task tool to read files in parallel and return structured findings.
 
-Controller logic is split across helper files, action files, and feature-specific files (e.g., `dashboard_redirects.go`, `ocp_routes.go`, `gateway_support.go`, `envoyfilter.go`, `kube_rbac_proxy.go`). Skipping any file risks missing dynamically-created resources.
-
-- Also check `components/*/controllers/` for component-specific controller code
-- `resources/` subdirectories under controllers contain templates that define the exact Kubernetes resources the controller creates at runtime
 - Document controller-managed ingress/egress in Network Architecture section
-- Document every integration point in the Integration Points section — how this component connects to, configures, or depends on other components
+- Document every integration point in the Integration Points section
+- Document webhook behavior in the Security section (what gets validated/mutated at admission time)
 
 **RHOAI 3.x Migration Patterns** (CRITICAL TO UNDERSTAND):
 Controllers in RHOAI 3.x create different resources than 2.x. Read controller code to identify current behavior:
@@ -277,6 +269,30 @@ nginx                       // Redirect services (301 redirects from legacy URLs
 
 **Service Mesh**: Istio PeerAuthentication, AuthorizationPolicy
 - Extract: mTLS settings, authorization rules
+
+### Step 4a: Sub-Agent Controller & Webhook Analysis
+
+For Go operators with controller and webhook directories, use the sub-agent dispatch pattern to ensure **every** source file is read. A single agent cannot read 100+ files in one context window — sub-agents solve this by parallelizing reads across separate contexts.
+
+**Follow the complete procedure in [Controller & Webhook Analysis](references/controller-analysis.md)**, which covers:
+
+1. **Enumerate** all non-test Go files and template files in controller/webhook/pkg directories
+2. **Count files** — if 20 or fewer, read them yourself; if more, proceed with sub-agents
+3. **Group files** by functional area (target 4-6 groups of 15-40 files each)
+4. **Spawn sub-agents** using the Task tool with `subagent_type=Explore` (up to 3 in parallel)
+5. **Aggregate findings** — merge all sub-agent results into the architecture template sections
+
+Each sub-agent reads every file in its group and returns structured tables covering:
+- Resources Created (GVK, name pattern, purpose)
+- Resources Watched/Owned (GVK, watch type)
+- Webhooks (GVK intercepted, what it validates/mutates)
+- Integration Points (cross-component references)
+- Network Exposure (ports, protocols, TLS)
+- RBAC (API groups, resources, verbs)
+
+The main agent then uses these findings to populate the Network Architecture, Security, Integration Points, and Architecture Components sections of the output.
+
+**This step is mandatory for all operators.** Skipping it produces shallow documentation that misses dynamically-created resources, webhook behavior, and integration points.
 
 ### Step 5: Git Information
 
