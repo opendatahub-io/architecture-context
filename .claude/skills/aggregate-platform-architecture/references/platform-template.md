@@ -137,6 +137,30 @@
 
 [Aggregate resource counts: operators, gateway infrastructure, webhook servers, container images]
 
+### Sub-Component Inventory
+
+| Repository | Component | Intent | Dockerfile | Port | Language |
+|------------|-----------|--------|------------|------|----------|
+| [org/repo] | [component-name] | [Primary service / Sidecar module / Build variant / Utility image / Optional module] | [Dockerfile.konflux.suffix] | [port/TCP] | [Go / Python / TypeScript] |
+
+### Deployment Manifest Patterns
+
+#### Kustomize Patterns
+
+| Pattern | Components Using | Description |
+|---------|------------------|-------------|
+| [pattern name] | [component list] | [how this kustomize pattern is used across the platform] |
+
+#### Distribution Variants
+
+| Component | ODH Path | RHOAI Path | Key Differences |
+|-----------|----------|------------|-----------------|
+| [component] | [manifests/odh/] | [manifests/rhoai/] | [what diverges between distributions] |
+
+#### Manifest Consumption Pipeline
+
+[Description of how component manifests flow from component repos through get_all_manifests.sh into operator repos and onto the cluster]
+
 ### High Availability
 
 | Component | Replicas | HA Mechanism |
@@ -183,6 +207,10 @@
 - **FIPS Compliance**: [description]
 - **Disconnected Support**: [Enabled/Disabled]
 - **Multi-Architecture**: [architectures list]
+
+## Platform Architectural Analysis
+
+[Free-form synthesis of cross-cutting architectural observations that emerge from reading all component analyses together. Cover: shared design patterns across components, architectural tensions or inconsistencies (e.g., different auth approaches for similar services), common risks, platform-wide trade-offs, and notable findings that don't fit the structured sections above. This is where dots get connected across the platform — individual component observations become platform-level insights.]
 
 ## Version-Specific Changes ([version])
 

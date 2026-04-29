@@ -23,9 +23,6 @@ When invoked by the orchestrator, all arguments are provided on the command line
 
 ## Instructions
 
-**CRITICAL — forbidden output pattern:**
-Never write a forward-slash inside square brackets. Patterns like `[/metrics]`, `[/healthz]`, `[/path]` crash the message parser. Write paths without brackets: `/metrics`, `/healthz`, `GET /readyz:8081`. This applies to ALL text you output, ALL files you write, and ALL sub-agent prompts.
-
 **IMPORTANT - TOOL USAGE**:
 - Do NOT call `ToolSearch`. You already have access to: Bash, Read, Write, Glob, Grep.
 - When reading multiple files, use **parallel tool calls** — issue multiple Read calls in a single turn rather than one at a time.
@@ -68,6 +65,9 @@ From each component markdown, parse:
 - **APIs**: CRDs, HTTP endpoints, gRPC services (all three types)
 - **Ingress/Egress**: Network architecture tables
 - **Monitoring**: Prometheus metrics endpoints (port, path, auth), health probes (liveness/readiness/startup URLs), distributed tracing configuration
+- **Sub-Component Details**: When present, extract the sub-component inventory (component name, intent, Dockerfile, port, language) — these represent multiple deployable artifacts within a single repo (BFF sidecars, cmd/ binaries, build variants)
+- **Deployment Manifests**: When present, extract kustomize structure (base/overlay paths), parameterization sources (params.env, configMapGenerator), and distribution variants (ODH vs RHOAI differences)
+- **Architectural Analysis**: When present, capture the free-form architectural observations — design patterns, risks, trade-offs, and notable findings that the agent synthesized during component analysis
 
 ### Step 4: Build Dependency Graph
 
@@ -108,6 +108,27 @@ Combine deployment information:
 1. High availability configuration per component (replicas, leader election, stateless scaling)
 2. Disconnected/air-gapped support details (RELATED_IMAGE pattern, OLM relatedImages, digest pinning)
 3. Multi-architecture support matrix (which architectures each component supports, exceptions)
+
+### Step 6b: Aggregate Sub-Component Architecture
+
+For components with Sub-Component Details sections:
+1. Build a platform-wide sub-component inventory showing which repos produce multiple deployable artifacts
+2. Aggregate the total container image count (sum of Konflux Dockerfiles across all components)
+3. Identify architectural patterns across sub-components (e.g., BFF sidecar pattern, multi-binary cmd/ pattern)
+
+### Step 6c: Aggregate Deployment Manifest Patterns
+
+For components with Deployment Manifests sections:
+1. Identify common kustomize patterns across the platform (configMapGenerator + params.env, overlays, namespace prefixing)
+2. Aggregate distribution variant information — which components have ODH vs RHOAI differences and what diverges
+3. Document the manifest consumption pipeline: component repos → `get_all_manifests.sh` → operator `./opt/manifests/` → cluster deployment
+
+### Step 6d: Synthesize Architectural Analysis
+
+For components with Architectural Analysis sections:
+1. Read each component's free-form analysis and identify cross-cutting themes (shared patterns, common risks, recurring design decisions)
+2. Synthesize platform-level observations that emerge from reading all component analyses together
+3. Note architectural tensions or inconsistencies across components (e.g., different auth approaches for similar services)
 
 ### Step 7: Synthesize Platform Architecture
 
@@ -161,12 +182,14 @@ File created: {platform_dir}/PLATFORM.md
 
 Summary:
 - {N} components aggregated
+- {N} sub-components inventoried
 - {N} CRDs documented
 - {N} namespaces identified
 - {N} external dependencies found
 - {N} internal integrations mapped
 - {N} gRPC services documented
 - {N} Prometheus endpoints cataloged
+- {N} kustomize patterns identified
 - {N} languages represented
 ```
 

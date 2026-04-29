@@ -18,6 +18,7 @@ REQUIRED_H2_SECTIONS = [
     "Deployment Architecture",
     "Monitoring & Observability",
     "Platform Maturity",
+    "Platform Architectural Analysis",
 ]
 
 REQUIRED_H3_SUBSECTIONS = {
@@ -50,6 +51,8 @@ REQUIRED_H3_SUBSECTIONS = {
     "Deployment Architecture": [
         "Deployment Topology",
         "Resource Summary",
+        "Sub-Component Inventory",
+        "Deployment Manifest Patterns",
         "High Availability",
         "Disconnected Support",
         "Multi-Architecture Support",
@@ -91,6 +94,11 @@ EXPECTED_TABLE_HEADERS = {
     "gRPC Services": [
         "Component", "Service", "Port", "Protocol", "Encryption", "Auth", "Purpose",
     ],
+    "Sub-Component Inventory": [
+        "Repository", "Component", "Intent", "Dockerfile", "Port", "Language",
+    ],
+    "Kustomize Patterns": ["Pattern", "Components Using", "Description"],
+    "Distribution Variants": ["Component", "ODH Path", "RHOAI Path", "Key Differences"],
     "High Availability": ["Component", "Replicas", "HA Mechanism"],
     "Multi-Architecture Support": ["Architecture", "Support Level", "Notes"],
     "Prometheus Endpoints": ["Component", "Port", "Path", "Auth"],
@@ -116,7 +124,7 @@ def _parse_tables(text: str) -> dict[str, list[str]]:
     current_section = None
 
     for line in text.splitlines():
-        m = re.match(r'^(#{2,3})\s+(.+)$', line)
+        m = re.match(r'^(#{2,4})\s+(.+)$', line)
         if m:
             current_section = m.group(2).strip()
             # Strip "Workflow N:" prefix for data flow sub-workflows
