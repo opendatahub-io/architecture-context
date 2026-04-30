@@ -1,0 +1,156 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  ORCHESTRATION (Cluster Internal)                                           │
+│                                                                             │
+│  [TrustyAI LMEval Operator]                                                 │
+│  - Watches: LMEvalJob custom resources                                      │
+│  - Creates: Kubernetes Job + ConfigMap + Secret mounts                      │
+│         │                                                                   │
+│         │ Action: Creates K8s Job resource                                  │
+│         │ Protocol: Kubernetes API                                          │
+│         │ Auth: ServiceAccount RBAC                                         │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  BATCH JOB POD (Ephemeral - runs to completion)                             │
+│                                                                             │
+│  [LMEval Pod]                                                               │
+│  - Namespace: {user-namespace}                                              │
+│  - ServiceAccount: managed by operator                                      │
+│  - Image: quay.io/redhat-ai-dev/lmes-job:latest                           │
+│  - User: 65532:65532 (non-root)                                            │
+│  - Entrypoint: python main.py                                               │
+│                                                                             │
+│  Mounted Volumes:                                                           │
+│  - /meta/job.json (ConfigMap) - Job specification                           │
+│  - /tmp/.docker/config.json - OCI auth config                               │
+│  - /test_data (optional) - Offline datasets from init container             │
+│                                                                             │
+│  Environment Variables (from Secrets):                                       │
+│  - OPENAI_API_KEY - Inference endpoint auth                                 │
+│  - HF_TOKEN (optional) - HuggingFace gated access                          │
+│  - AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (optional) - S3 auth           │
+│                                                                             │
+│  ┌─── Egress Connections ──────────────────────────────────────────────┐    │
+│  │                                                                     │    │
+│  │  1. EvalHub Service (Status Callbacks)                              │    │
+│  │     Port: 443/TCP                                                   │    │
+│  │     Protocol: HTTPS                                                 │    │
+│  │     Encryption: TLS 1.2+                                            │    │
+│  │     Auth: Bearer Token                                              │    │
+│  │     Direction: EGRESS                                               │    │
+│  │     Purpose: INITIALIZING → POST_PROCESSING → COMPLETED status     │    │
+│  │                                                                     │    │
+│  │  2. OpenAI-compatible Inference Endpoint (vLLM / TGI)               │    │
+│  │     Port: configurable (typically 8080 or 443)                      │    │
+│  │     Protocol: HTTP or HTTPS                                         │    │
+│  │     Encryption: TLS 1.2+ (supports custom CA via verify_certificate)│    │
+│  │     Auth: Bearer Token (OPENAI_API_KEY)                             │    │
+│  │     Direction: EGRESS                                               │    │
+│  │     Purpose: POST /v1/completions - evaluation prompts              │    │
+│  │     Concurrency: Up to 128 concurrent requests (num_concurrent)     │    │
+│  │                                                                     │    │
+│  │  3. OCI Registry (Quay)                                             │    │
+│  │     Port: 443/TCP                                                   │    │
+│  │     Protocol: HTTPS (OCI Distribution API)                          │    │
+│  │     Encryption: TLS 1.2+                                            │    │
+│  │     Auth: Docker auth config (/tmp/.docker/config.json)             │    │
+│  │     Direction: EGRESS                                               │    │
+│  │     Purpose: Push evaluation result OCI artifacts (via skopeo)      │    │
+│  │                                                                     │    │
+│  │  4. HuggingFace Hub (Online Mode Only)                              │    │
+│  │     Port: 443/TCP                                                   │    │
+│  │     Protocol: HTTPS                                                 │    │
+│  │     Encryption: TLS 1.2+                                            │    │
+│  │     Auth: Bearer Token (HF_TOKEN, optional for gated models)        │    │
+│  │     Direction: EGRESS                                               │    │
+│  │     Purpose: Download benchmark datasets and tokenizers             │    │
+│  │                                                                     │    │
+│  │  5. S3-compatible Object Storage (Offline Mode Only)                │    │
+│  │     Port: 443/TCP                                                   │    │
+│  │     Protocol: HTTPS (S3 API)                                        │    │
+│  │     Encryption: TLS 1.2+ (supports custom CA)                       │    │
+│  │     Auth: AWS IAM credentials (AWS_ACCESS_KEY_ID, SECRET)           │    │
+│  │     Direction: EGRESS                                               │    │
+│  │     Purpose: Download offline test data for air-gapped evaluations  │    │
+│  │                                                                     │    │
+│  │  6. MLflow Tracking Server                                          │    │
+│  │     Port: configurable                                              │    │
+│  │     Protocol: HTTP or HTTPS                                         │    │
+│  │     Encryption: TLS 1.2+ (configurable)                             │    │
+│  │     Auth: configurable                                              │    │
+│  │     Direction: EGRESS                                               │    │
+│  │     Purpose: Persist evaluation metrics for experiment tracking     │    │
+│  │                                                                     │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  ┌─── Ingress ─────────────────────────────────────────────────────────┐    │
+│  │  NONE - Batch job exposes no ports, accepts no inbound connections  │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                          │
+│                                                                             │
+│  [EvalHub Service]                                                          │
+│  - Purpose: Job orchestration platform (status, progress, results)          │
+│  - Auth: Bearer Token                                                       │
+│  - Encryption: TLS 1.2+                                                     │
+│                                                                             │
+│  [OpenAI-compatible Inference Endpoint]                                     │
+│  - Purpose: Model under evaluation (vLLM, TGI, etc.)                       │
+│  - Auth: OPENAI_API_KEY Bearer Token                                        │
+│  - Encryption: TLS 1.2+ (custom CA supported)                              │
+│                                                                             │
+│  [OCI Registry - Quay]                                                      │
+│  - Purpose: Evaluation result artifact storage                              │
+│  - Auth: Docker auth config                                                 │
+│  - Encryption: TLS 1.2+                                                     │
+│                                                                             │
+│  [HuggingFace Hub - huggingface.co]                                         │
+│  - Purpose: Benchmark datasets and tokenizer downloads                      │
+│  - Auth: HF_TOKEN (optional, for gated content)                             │
+│  - Encryption: TLS 1.2+                                                     │
+│                                                                             │
+│  [S3-compatible Storage]                                                    │
+│  - Purpose: Offline test data for air-gapped deployments                    │
+│  - Auth: AWS IAM credentials                                                │
+│  - Encryption: TLS 1.2+                                                     │
+│                                                                             │
+│  [MLflow Tracking Server]                                                   │
+│  - Purpose: Experiment tracking and result comparison                       │
+│  - Auth: configurable                                                       │
+│  - Encryption: TLS 1.2+                                                     │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No RBAC definitions in this component
+- RBAC is managed by the TrustyAI LMEval Operator that creates the Job
+- Pod runs as non-root user 65532:65532
+
+Secrets:
+- Model auth secret (model.auth.secret_ref) - Opaque
+  Contains: OPENAI_API_KEY, HF_TOKEN (optional)
+  Provisioned by: User / LMEvalJob CR
+  Auto-Rotate: No
+
+- OCI auth config (/tmp/.docker/config.json) - Docker config
+  Contains: Registry authentication credentials
+  Provisioned by: Platform / Operator
+  Auto-Rotate: No
+
+- S3 credentials - Environment variables
+  Contains: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+  Provisioned by: User / ConfigMap
+  Auto-Rotate: No
+
+- CA certificates (verify_certificate path) - TLS CA bundle
+  Contains: Custom CA certificate for inference endpoint TLS verification
+  Provisioned by: Platform / Operator
+  Auto-Rotate: No
+
+Security Notes:
+- Container runs as non-root (UID 65532, GID 65532)
+- No inbound network connections (batch job, egress-only)
+- Supports custom CA certificates for TLS verification
+- Error messages sanitized to avoid leaking raw exception details
+- Concurrent request count bounded to max 128 to prevent abuse
+- Supports air-gapped/disconnected operation via offline mode

@@ -1,0 +1,70 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Istio Gateway (Envoy)<br/>443/TCP HTTPS TLS 1.2+
+    participant BFH as body-field-to-header<br/>(upstream plugin)
+    participant MPR as model-provider-resolver<br/>plugin
+    participant AT as api-translation<br/>plugin
+    participant AKI as apikey-injection<br/>plugin
+    participant NRG as nemo-request-guard<br/>plugin
+    participant NRespG as nemo-response-guard<br/>plugin
+    participant NeMo as NeMo Guardrails<br/>HTTP
+    participant Provider as Model Provider<br/>443/TCP HTTPS
+
+    Note over Client,Provider: Flow 1: External Model Inference Request
+
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTPS/443, TLS 1.2+
+    Gateway->>BFH: gRPC ext_proc/9004<br/>Request body (plaintext)
+    BFH->>BFH: Extract model name from body<br/>Set X-Gateway-Model-Name header
+
+    BFH->>MPR: CycleState passthrough
+    MPR->>MPR: Lookup ExternalModel in modelInfoStore<br/>Resolve provider name + model mapping
+    Note right of MPR: Writes to CycleState:<br/>provider, model, credential ref
+
+    MPR->>AT: CycleState with provider info
+    AT->>AT: Translate request body<br/>OpenAI → provider-native format
+    Note right of AT: OpenAI/Bedrock: path rewrite only<br/>Azure: path rewrite<br/>Anthropic: full body transform<br/>Vertex: path with project/location
+
+    AT->>AKI: CycleState with translated body
+    AKI->>AKI: Lookup API key in secretStore<br/>Inject auth header per provider
+    Note right of AKI: OpenAI: Authorization Bearer<br/>Anthropic: x-api-key<br/>Azure: api-key header
+
+    opt NeMo Guardrails Enabled
+        AKI->>NRG: CycleState passthrough
+        NRG->>NeMo: POST /v1/guardrail/checks<br/>HTTP, input content
+        NeMo-->>NRG: 200 OK, status: allowed/blocked
+        alt Request Blocked
+            NRG-->>Gateway: 403 Forbidden
+            Gateway-->>Client: 403 Forbidden
+        end
+    end
+
+    Gateway->>Provider: Translated request<br/>HTTPS/443, API key header
+    Provider-->>Gateway: Model response<br/>HTTPS/443
+
+    opt NeMo Response Guard Enabled
+        Gateway->>NRespG: gRPC ext_proc/9004<br/>Response body
+        NRespG->>NeMo: POST /v1/guardrail/checks<br/>HTTP, output content
+        NeMo-->>NRespG: 200 OK, status: allowed/blocked
+        alt Response Blocked
+            NRespG-->>Gateway: Modified response (blocked)
+        end
+    end
+
+    AT->>AT: Translate response body<br/>provider-native → OpenAI format
+    Gateway-->>Client: JSON Response<br/>HTTPS/443
+
+    Note over Client,Provider: Flow 2: ExternalModel & Secret Reconciliation (Background)
+
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+
+    loop ExternalModel Watch
+        MPR->>K8sAPI: Watch ExternalModel CRDs<br/>HTTPS/443, SA token
+        K8sAPI-->>MPR: ExternalModel events
+        MPR->>MPR: Update modelInfoStore
+    end
+
+    loop Secret Watch
+        AKI->>K8sAPI: Watch Secrets (bbr-managed=true)<br/>HTTPS/443, SA token
+        K8sAPI-->>AKI: Secret events
+        AKI->>AKI: Update secretStore
+    end

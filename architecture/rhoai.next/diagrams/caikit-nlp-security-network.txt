@@ -1,0 +1,112 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 8085/TCP (gRPC) or 8080/TCP (HTTP)                      │
+│         │ Protocol: gRPC / HTTP                                          │
+│         │ Encryption: Configurable TLS (RUNTIME_TLS_SERVER_KEY/CERT)     │
+│         │ Auth: None at library level (platform-enforced via             │
+│         │       kube-rbac-proxy sidecar in RHOAI 3.x)                   │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  RUNTIME BOUNDARY (Caikit Runtime Container)                            │
+│                                                                          │
+│  [Caikit Runtime Server]                                                 │
+│  - Container: odh-caikit-nlp-rhel9                                      │
+│  - gRPC Port: 8085/TCP (internal)                                       │
+│  - HTTP Port: 8080/TCP (internal)                                        │
+│  - TLS: Configurable via env vars                                        │
+│    - RUNTIME_TLS_SERVER_KEY (file path to TLS private key)              │
+│    - RUNTIME_TLS_SERVER_CERT (file path to TLS certificate)             │
+│    - RUNTIME_TLS_CLIENT_CERT (file path for mutual TLS)                 │
+│  - RUNTIME_LIBRARY=caikit_nlp                                           │
+│         │                                                                │
+│         │ in-process (Python)                                            │
+│         ▼                                                                │
+│  [caikit-nlp Library Modules]                                            │
+│  - TextGeneration (local HF models)                                      │
+│  - TextGenerationTGIS (remote TGIS)                                      │
+│  - PeftPromptTuning (training + inference)                               │
+│  - PeftPromptTuningTGIS (TGIS + prompt cache)                           │
+│  - EmbeddingModule (sentence-transformers)                               │
+│  - CrossEncoderModule                                                    │
+│  - SequenceClassification                                                │
+│  - FilteredSpanClassification                                            │
+│  - RegexSentenceSplitter                                                 │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (Outbound Connections from caikit-nlp)                          │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │ [TGIS Backend - Text Generation Inference Server]               │    │
+│  │ - Purpose: Remote text generation inference                     │    │
+│  │ - Port: Configurable (e.g., 8033/TCP, 8034/TCP)               │    │
+│  │ - Protocol: gRPC                                                │    │
+│  │ - Encryption: Configurable TLS                                  │    │
+│  │   - ca_cert_file: CA certificate for TLS verification          │    │
+│  │   - client_cert_file: Client cert for mTLS                     │    │
+│  │   - client_key_file: Client private key for mTLS               │    │
+│  │ - Auth: Optional mTLS (mutual TLS)                              │    │
+│  │ - Operations: Generate, GenerateStream, Tokenize                │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │ [HuggingFace Hub - huggingface.co]                              │    │
+│  │ - Purpose: Model and tokenizer download                         │    │
+│  │ - Port: 443/TCP                                                 │    │
+│  │ - Protocol: HTTPS                                               │    │
+│  │ - Encryption: TLS 1.2+                                          │    │
+│  │ - Auth: Optional API token                                      │    │
+│  │ - Default: DISABLED (allow_downloads=false)                     │    │
+│  │ - Requires explicit opt-in                                      │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │ [PyTorch Distributed Peers]                                     │    │
+│  │ - Purpose: Multi-GPU distributed training (torchrun)            │    │
+│  │ - Port: 29550/TCP                                               │    │
+│  │ - Protocol: TCP                                                 │    │
+│  │ - Encryption: PLAINTEXT (no TLS)                                │    │
+│  │ - Auth: None                                                    │    │
+│  │ - Note: Only active during PEFT prompt tuning training          │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM ORCHESTRATION                                                  │
+│                                                                          │
+│  [KServe / ModelMesh]                                                    │
+│  - Deploys caikit-nlp container (odh-caikit-nlp-rhel9)                 │
+│  - Creates Service resources (ClusterIP) for gRPC/HTTP ports            │
+│  - Manages ingress routing                                               │
+│                                                                          │
+│  [kube-rbac-proxy sidecar] (RHOAI 3.x)                                 │
+│  - Enforces authentication at pod level                                  │
+│  - Intercepts requests before they reach Caikit Runtime                 │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No Kubernetes RBAC — caikit-nlp is a Python library, not a Kubernetes operator
+- No ClusterRoles or RoleBindings defined
+- Authentication enforced externally by platform (kube-rbac-proxy sidecar)
+
+TLS Configuration:
+- Server TLS (gRPC + HTTP):
+  - RUNTIME_TLS_SERVER_KEY: TLS private key (file path, manual provisioning)
+  - RUNTIME_TLS_SERVER_CERT: TLS certificate (file path, manual provisioning)
+  - RUNTIME_TLS_CLIENT_CERT: Client certificate for mTLS (file path, optional)
+  - No auto-rotation configured
+
+- TGIS Backend TLS (outbound gRPC):
+  - ca_cert_file: CA certificate for server verification (config file path)
+  - client_cert_file: Client certificate for mutual TLS (config file path)
+  - client_key_file: Client private key for mutual TLS (config file path)
+  - Per-connection configuration via caikit config
+
+Security Notes:
+- Model downloads from HuggingFace Hub DISABLED by default (allow_downloads=false)
+- PyTorch distributed training uses PLAINTEXT TCP on port 29550 (no encryption)
+- No secrets stored in Kubernetes — all TLS materials are file-path references
+- Authentication is NOT enforced at the library level
+- Platform-level auth via kube-rbac-proxy is the primary security boundary

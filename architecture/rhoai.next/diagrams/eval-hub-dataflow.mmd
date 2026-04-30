@@ -1,0 +1,69 @@
+sequenceDiagram
+    participant Client as Client<br/>(Dashboard / CLI)
+    participant EvalHub as eval-hub API<br/>8080/TCP HTTPS
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant MLflow as MLflow Tracking<br/>HTTPS
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant Init as eval-runtime-init<br/>Init Container
+    participant Adapter as Adapter Container<br/>(LM Eval / Garak / etc.)
+    participant Sidecar as eval-runtime-sidecar<br/>8080/TCP localhost
+    participant OCI as OCI Registry<br/>443/TCP HTTPS
+
+    Note over Client,OCI: Flow 1: Evaluation Job Execution
+
+    Client->>EvalHub: POST /api/v1/evaluations/jobs<br/>Auth: Bearer Token (K8s SAR)
+    EvalHub->>K8sAPI: TokenReview + SubjectAccessReview<br/>Auth: ServiceAccount Token
+    K8sAPI-->>EvalHub: Authenticated & Authorized
+
+    EvalHub->>EvalHub: Store job in DB (PostgreSQL/SQLite)
+
+    opt MLflow enabled
+        EvalHub->>MLflow: POST /api/2.0/mlflow/experiments/create<br/>Auth: Bearer Token
+        MLflow-->>EvalHub: Experiment ID
+    end
+
+    EvalHub->>K8sAPI: Create batch/v1 Job + ConfigMap<br/>Auth: ServiceAccount Token
+    K8sAPI-->>EvalHub: Job created
+
+    EvalHub-->>Client: 201 Created (Job ID)
+
+    Note over K8sAPI,Adapter: Kubernetes schedules Job Pod
+
+    opt Test data configured
+        K8sAPI->>Init: Start init container
+        Init->>S3: Download test data<br/>Auth: AWS IAM credentials
+        S3-->>Init: Test data artifacts
+        Init-->>K8sAPI: Init complete
+    end
+
+    K8sAPI->>Adapter: Start adapter + sidecar containers
+    K8sAPI->>Sidecar: Start native sidecar (restartPolicy=Always)
+
+    Note over Adapter,Sidecar: Flow 2: Sidecar Auth Token Resolution
+
+    loop For each benchmark
+        Adapter->>Sidecar: POST /api/v1/evaluations/jobs/{id}/events<br/>HTTP localhost:8080 (plaintext)
+        Sidecar->>Sidecar: Read SA token from<br/>/var/run/secrets/.../token
+        Sidecar->>EvalHub: POST /api/v1/evaluations/jobs/{id}/events<br/>HTTPS 8443/TCP, Auth: Bearer SA Token
+        EvalHub-->>Sidecar: 200 OK
+        Sidecar-->>Adapter: 200 OK (proxied)
+
+        opt MLflow enabled
+            Adapter->>Sidecar: POST /api/2.0/mlflow/runs/log-metric<br/>HTTP localhost:8080
+            Sidecar->>MLflow: POST /api/2.0/mlflow/runs/log-metric<br/>HTTPS, Auth: Projected SA Token
+            MLflow-->>Sidecar: 200 OK
+            Sidecar-->>Adapter: 200 OK (proxied)
+        end
+    end
+
+    opt OCI export enabled
+        Adapter->>Sidecar: PUT /v2/{repo}/blobs/uploads<br/>HTTP localhost:8080
+        Sidecar->>OCI: PUT /v2/{repo}/blobs/uploads<br/>HTTPS 443/TCP, Auth: Docker Registry Token
+        OCI-->>Sidecar: 201 Created
+        Sidecar-->>Adapter: 201 Created (proxied)
+    end
+
+    Adapter->>Sidecar: Final status event (completed/failed)
+    Sidecar->>EvalHub: Final status callback<br/>HTTPS 8443/TCP
+    EvalHub->>EvalHub: Compute weighted score<br/>Update job state
+    EvalHub-->>Sidecar: 200 OK

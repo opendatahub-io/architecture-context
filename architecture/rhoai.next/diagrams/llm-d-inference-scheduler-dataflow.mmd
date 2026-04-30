@@ -1,0 +1,43 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Envoy Gateway<br/>80/TCP HTTP
+    participant EPP as EPP (ext-proc)<br/>9002/TCP gRPC TLS
+    participant K8s as Kubernetes API<br/>443/TCP HTTPS
+    participant Metrics as Model Server Metrics<br/>3000/TCP HTTP
+    participant ModelSvr as vLLM Model Server<br/>8000/TCP HTTP
+    participant PD as PD Sidecar<br/>8000/TCP HTTP/HTTPS
+    participant Prefiller as Prefiller Instance<br/>Dynamic HTTP/HTTPS
+    participant Decoder as Local Decoder (vLLM)<br/>8001/TCP HTTP
+    participant Encoder as Encoder Instance<br/>Dynamic HTTP/HTTPS
+    participant Tokenizer as UDS Tokenizer<br/>Unix Domain Socket
+
+    Note over Client,ModelSvr: Flow 1: Inference Request Scheduling (EPP)
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTP/80
+    Gateway->>EPP: ext-proc ProcessingRequest<br/>gRPC/9002 TLS 1.2+
+    EPP->>K8s: Watch InferencePool, Pods<br/>HTTPS/443 SA Bearer Token
+    EPP->>Metrics: GET /metrics<br/>HTTP/3000
+    EPP->>Tokenizer: Tokenize prompt<br/>gRPC over UDS
+    Tokenizer-->>EPP: Token IDs
+    Note over EPP: Run scheduling pipeline:<br/>Filters → Scorers → Pickers<br/>(KV cache, load, LoRA, prefix, session)
+    EPP-->>Gateway: ProcessingResponse<br/>Set target-endpoint header
+    Gateway->>ModelSvr: Forward to selected pod<br/>HTTP/8000
+
+    Note over Client,Decoder: Flow 2: Disaggregated Prefill/Decode (NIXL v2)
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTP/80
+    Gateway->>PD: Forward request<br/>HTTP/HTTPS 8000 TLS 1.2+
+    PD->>Prefiller: Prefill request<br/>HTTP/HTTPS (SSRF allowlist)
+    Prefiller-->>PD: Response with kv_transfer_params<br/>HTTP/HTTPS
+    PD->>Decoder: Decode request + KV params<br/>HTTP/8001 (localhost)
+    Decoder-->>PD: Streamed tokens
+    PD-->>Client: Streamed response<br/>HTTP/HTTPS 8000
+
+    Note over Client,Encoder: Flow 3: Encode/Prefill/Decode (EPD - Multimodal)
+    Client->>Gateway: POST /v1/chat/completions<br/>(with images) HTTP/80
+    Gateway->>PD: Forward request<br/>HTTP/HTTPS 8000 TLS 1.2+
+    PD->>Encoder: Encode images (fan-out)<br/>HTTP/HTTPS (SSRF allowlist)
+    Encoder-->>PD: Encoded representations
+    PD->>Prefiller: Prefill with encoded context<br/>HTTP/HTTPS (SSRF allowlist)
+    Prefiller-->>PD: Response with kv_transfer_params
+    PD->>Decoder: Decode request + KV params<br/>HTTP/8001 (localhost)
+    Decoder-->>PD: Streamed tokens
+    PD-->>Client: Streamed response<br/>HTTP/HTTPS 8000

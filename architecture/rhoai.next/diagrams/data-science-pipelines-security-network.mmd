@@ -1,0 +1,95 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["Data Scientist / KFP SDK"]
+    end
+
+    subgraph Ingress["INGRESS"]
+        Route["OpenShift Route<br/>443/TCP → 3000/TCP<br/>TLS edge termination"]
+        VirtualService["Istio VirtualService<br/>(multi-user mode)<br/>80/TCP mTLS ISTIO_MUTUAL"]
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (mTLS STRICT - multi-user mode)"]
+        direction TB
+
+        subgraph NS_Frontend["Frontend"]
+            FrontendServer["Frontend Server<br/>SA: ml-pipeline-ui<br/>Port: 3000/TCP<br/>runAsNonRoot, drop ALL"]
+        end
+
+        subgraph NS_Core["Core Services"]
+            APIServer["API Server<br/>SA: ml-pipeline<br/>Ports: 8888/TCP REST, 8887/TCP gRPC, 8443/TCP Webhook<br/>Auth: TokenReview + SubjectAccessReview<br/>FIPS: strictfipsruntime"]
+            PersistenceAgent["Persistence Agent<br/>SA: ml-pipeline-persistenceagent<br/>No listener port"]
+            ScheduledWFCtrl["Scheduled WF Controller<br/>SA: ml-pipeline-scheduledworkflow<br/>Port: 9090/TCP metrics"]
+        end
+
+        subgraph NS_Execution["Pipeline Step Pod (per-task)"]
+            Driver["Driver (init container)<br/>SA: pipeline-runner<br/>FIPS: strictfipsruntime"]
+            Launcher["Launcher (sidecar)<br/>SA: pipeline-runner<br/>FIPS: standard + FIPS builds"]
+            UserContainer["User Container<br/>runAsNonRoot"]
+        end
+
+        subgraph NS_Cache["Cache & Webhooks"]
+            CacheServer["Cache Server<br/>SA: kubeflow-pipelines-cache<br/>Port: 443→8443/TCP HTTPS<br/>Auth: Webhook CA cert"]
+            CacheDeployer["Cache Deployer<br/>SA: kubeflow-pipelines-cache-deployer-sa<br/>ClusterRole: CSR approval"]
+        end
+
+        subgraph NS_Metadata["Metadata Services"]
+            MetadataWriter["Metadata Writer<br/>SA: kubeflow-pipelines-metadata-writer<br/>Python"]
+            VisualizationServer["Visualization Server<br/>Port: 8888/TCP HTTP<br/>Python"]
+        end
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        Database["MySQL 8.x / PostgreSQL 15.x<br/>3306/5432 TCP<br/>Configurable TLS<br/>Auth: Username/Password"]
+        ObjectStore["MinIO / S3 / GCS<br/>9000/443 TCP<br/>HTTP/HTTPS<br/>Auth: Access Key/Secret"]
+        MLMD["ML Metadata (MLMD)<br/>8080/TCP gRPC<br/>Configurable TLS"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS<br/>Auth: SA Token"]
+        ArgoWF["Argo Workflows v3.7.11<br/>via K8s API<br/>CRD Watch + Create"]
+    end
+
+    %% External flows
+    Client -->|"HTTPS/443<br/>TLS edge<br/>Bearer Token"| Route
+    Route -->|"HTTP/3000<br/>mTLS (Istio)"| FrontendServer
+    Client -.->|"multi-user"| VirtualService
+    VirtualService -.->|"mTLS ISTIO_MUTUAL"| FrontendServer
+
+    %% Frontend to API
+    FrontendServer -->|"HTTP/8888<br/>Configurable TLS<br/>Proxied Bearer Token"| APIServer
+
+    %% API Server egress
+    APIServer -->|"MySQL/PG wire/3306,5432<br/>Configurable TLS<br/>Username/Password"| Database
+    APIServer -->|"HTTP(S)/9000,443<br/>Configurable TLS<br/>Access Key/Secret"| ObjectStore
+    APIServer -->|"gRPC/8080<br/>Configurable TLS"| MLMD
+    APIServer -->|"HTTPS/443<br/>TLS<br/>SA Token<br/>TokenReview, SAR"| K8sAPI
+
+    %% Execution flows
+    Driver -->|"gRPC/8080<br/>Configurable TLS"| MLMD
+    Driver -->|"gRPC/8887<br/>Configurable TLS<br/>SA Token"| APIServer
+    Launcher -->|"HTTP(S)/9000,443<br/>Configurable TLS<br/>Access Key/Secret"| ObjectStore
+    Launcher -->|"gRPC/8080<br/>Configurable TLS"| MLMD
+
+    %% Background services
+    PersistenceAgent -->|"gRPC/8887<br/>Configurable TLS<br/>Projected SA Token"| APIServer
+    PersistenceAgent -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
+    ScheduledWFCtrl -->|"gRPC/8887<br/>Configurable TLS<br/>Projected SA Token"| APIServer
+    ScheduledWFCtrl -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
+
+    %% Cache flows
+    K8sAPI -->|"HTTPS/8443<br/>TLS<br/>Webhook CA"| CacheServer
+    CacheServer -->|"MySQL wire/3306<br/>Configurable TLS<br/>Username/Password"| Database
+
+    %% Metadata
+    MetadataWriter -->|"gRPC/8080<br/>Configurable TLS"| MLMD
+    MetadataWriter -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef execution fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+
+    class Client external
+    class Route,VirtualService ingress
+    class FrontendServer,APIServer,PersistenceAgent,ScheduledWFCtrl,CacheServer,CacheDeployer,MetadataWriter,VisualizationServer servicemesh
+    class Driver,Launcher,UserContainer execution
+    class Database,ObjectStore,MLMD,K8sAPI,ArgoWF externalservice

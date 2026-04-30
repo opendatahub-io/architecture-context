@@ -1,0 +1,52 @@
+sequenceDiagram
+    participant User as User / Dashboard
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant MutWH as Mutating Webhook<br/>8443/TCP HTTPS
+    participant ValWH as Validating Webhook<br/>8443/TCP HTTPS
+    participant ODHC as ODH Controller
+    participant KFC as KF Controller
+    participant Gateway as data-science-gateway<br/>(Envoy) 443/TCP HTTPS
+    participant KRBP as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant Notebook as Notebook Container<br/>8888/TCP HTTP
+    participant Culler as Culling Reconciler
+
+    Note over User,Notebook: Flow 1: Notebook Creation (Auth Mode)
+
+    User->>K8sAPI: POST Notebook CR<br/>Auth: Bearer Token
+    K8sAPI->>MutWH: /mutate-notebook-v1<br/>TLS (service cert)
+    Note right of MutWH: Sets reconciliation lock<br/>Resolves ImageStream→digest<br/>Injects CA bundles<br/>Injects MLflow env vars<br/>Injects proxy settings
+    MutWH-->>K8sAPI: Mutated Notebook CR
+    K8sAPI->>ValWH: /validate-notebook-v1<br/>TLS (service cert)
+    Note right of ValWH: Validates MLflow annotation<br/>safety on running notebooks
+    ValWH-->>K8sAPI: Admitted
+
+    ODHC->>K8sAPI: Watch Notebook CR<br/>SA token
+    Note right of ODHC: Creates in user namespace:<br/>ServiceAccount, kube-rbac-proxy Service,<br/>ConfigMap, NetworkPolicy, Secret
+    ODHC->>K8sAPI: Create HTTPRoute<br/>(controller namespace)<br/>parentRef→data-science-gateway<br/>backendRef→kube-rbac-proxy:8443
+    ODHC->>K8sAPI: Create ReferenceGrant<br/>(user namespace)<br/>Allows cross-namespace routing
+    ODHC->>K8sAPI: Create ClusterRoleBinding<br/>system:auth-delegator
+    ODHC->>K8sAPI: Remove reconciliation lock
+
+    KFC->>K8sAPI: Watch Notebook CR<br/>SA token
+    Note right of KFC: Creates StatefulSet<br/>(with kube-rbac-proxy sidecar)<br/>Creates Service (80→8888)
+
+    Note over User,Notebook: Flow 2: User Accesses Notebook (Auth Mode)
+
+    User->>Gateway: GET /notebook/{ns}/{name}/*<br/>HTTPS TLS 1.3
+    Gateway->>KRBP: Forward request<br/>HTTPS TLS (service cert)
+    KRBP->>K8sAPI: TokenReview<br/>HTTPS TLS 1.2+<br/>SA token
+    K8sAPI-->>KRBP: Token valid
+    KRBP->>K8sAPI: SubjectAccessReview<br/>verb=get, resource=notebooks<br/>name={notebook}, ns={ns}
+    K8sAPI-->>KRBP: Access granted
+    KRBP->>Notebook: Forward to localhost<br/>HTTP 8888/TCP<br/>X-Auth-Request-User header
+    Notebook-->>KRBP: Response
+    KRBP-->>Gateway: Response
+    Gateway-->>User: Response
+
+    Note over Culler,Notebook: Flow 3: Idle Notebook Culling
+
+    Culler->>Notebook: GET /api/kernels, /api/terminals<br/>HTTP 8888/TCP (in-cluster)
+    Notebook-->>Culler: Activity status
+    Note right of Culler: If idle > CULL_IDLE_TIME
+    Culler->>K8sAPI: Patch Notebook status<br/>HTTPS 443/TCP<br/>SA token
+    KFC->>K8sAPI: Scale StatefulSet to 0<br/>HTTPS 443/TCP<br/>SA token

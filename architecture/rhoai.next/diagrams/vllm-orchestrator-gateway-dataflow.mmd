@@ -1,0 +1,42 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as vllm-orchestrator-gateway<br/>8090/TCP HTTP
+    participant Orchestrator as FMS Guardrails Orchestrator<br/>8085/TCP HTTP/HTTPS
+    participant Detectors as Guardrails Detectors<br/>(e.g., regex-language)
+    participant vLLM as vLLM / Model Server
+
+    Note over Client,vLLM: Flow 1: Non-Streaming Chat Completion with Detection
+
+    Client->>Gateway: POST /{route_name}/v1/chat/completions<br/>Authorization: Bearer token<br/>Content-Type: application/json<br/>{"stream": false, "messages": [...]}
+    Note over Gateway: Inject detector configs from<br/>route YAML into request payload
+    Gateway->>Orchestrator: POST /api/v2/chat/completions-detection<br/>Authorization passthrough<br/>X-Forwarded-* headers<br/>Optional mTLS client cert
+    Orchestrator->>Detectors: Run input detectors
+    Detectors-->>Orchestrator: Detection results
+    Orchestrator->>vLLM: Inference request
+    vLLM-->>Orchestrator: Generated completion
+    Orchestrator->>Detectors: Run output detectors
+    Detectors-->>Orchestrator: Detection results
+    Orchestrator-->>Gateway: JSON response with detections field
+    Note over Gateway: Check detections:<br/>If found → substitute fallback_message<br/>If none → pass through original
+    Gateway-->>Client: JSON response (original or fallback)
+
+    Note over Client,vLLM: Flow 2: Streaming Chat Completion (SSE)
+
+    Client->>Gateway: POST /{route_name}/v1/chat/completions<br/>{"stream": true, "messages": [...]}
+    Gateway->>Orchestrator: POST /api/v2/chat/completions-detection<br/>Optional mTLS
+    Orchestrator->>vLLM: Streaming inference
+    loop SSE chunks
+        vLLM-->>Orchestrator: SSE data chunk
+        Orchestrator-->>Gateway: SSE data chunk (may include detections)
+        Note over Gateway: Parse SSE chunk:<br/>If detection found → replace with fallback
+        Gateway-->>Client: SSE data chunk (original or fallback)
+    end
+    Gateway-->>Client: data: [DONE]
+
+    Note over Client,vLLM: Flow 3: Detection Triggered (Fallback)
+
+    Client->>Gateway: POST /{route_name}/v1/chat/completions
+    Gateway->>Orchestrator: POST /api/v2/chat/completions-detection
+    Orchestrator-->>Gateway: Response with detections populated
+    Note over Gateway: Detections found!<br/>Substitute route's fallback_message<br/>into choices[].message.content
+    Gateway-->>Client: Response with fallback_message<br/>(content policy enforced)

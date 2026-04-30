@@ -1,0 +1,69 @@
+sequenceDiagram
+    participant Browser as Browser User
+    participant SAClient as SA Client
+    participant AuthProxy as kube-auth-proxy<br/>4180/TCP HTTP
+    participant RBACProxy as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
+    participant OIDC as OIDC Provider<br/>443/TCP HTTPS
+    participant OSAuth as OpenShift OAuth<br/>443/TCP HTTPS
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Upstream as Upstream App
+
+    rect rgb(230, 245, 255)
+        Note over Browser,Upstream: Flow 1: OIDC Browser Authentication (auth mode)
+        Browser->>AuthProxy: GET /oauth2/start
+        AuthProxy->>Browser: 302 Redirect to OIDC authorize
+        Browser->>OIDC: GET /authorize (client_id, redirect_uri, scope)
+        OIDC->>Browser: Login page
+        Browser->>OIDC: POST credentials
+        OIDC->>Browser: 302 Redirect /oauth2/callback?code=xxx
+        Browser->>AuthProxy: GET /oauth2/callback?code=xxx (CSRF cookie)
+        AuthProxy->>OIDC: POST /token (client_id + client_secret + code)
+        OIDC-->>AuthProxy: access_token, id_token, refresh_token
+        AuthProxy->>Browser: Set-Cookie: _oauth2_proxy (AES-CFB encrypted)
+        Browser->>AuthProxy: GET /* (session cookie)
+        AuthProxy->>Upstream: Proxied request (GAP-Auth header)
+        Upstream-->>AuthProxy: Response
+        AuthProxy-->>Browser: Response
+    end
+
+    rect rgb(255, 243, 224)
+        Note over Browser,Upstream: Flow 2: OpenShift OAuth Authentication (auth mode)
+        Browser->>AuthProxy: GET /oauth2/start
+        AuthProxy->>K8sAPI: GET /.well-known/oauth-authorization-server
+        K8sAPI-->>AuthProxy: OAuth metadata (authorize, token URLs)
+        AuthProxy->>Browser: 302 Redirect to OpenShift authorize
+        Browser->>OSAuth: GET /authorize (client_id)
+        OSAuth->>Browser: 302 Redirect /oauth2/callback?code=xxx
+        Browser->>AuthProxy: GET /oauth2/callback?code=xxx
+        AuthProxy->>OSAuth: POST /token (client_id + client_secret + code)
+        OSAuth-->>AuthProxy: access_token
+        AuthProxy->>K8sAPI: GET /apis/user.openshift.io/v1/users/~ (Bearer token)
+        K8sAPI-->>AuthProxy: User info (name, email, groups)
+        AuthProxy->>Browser: Set-Cookie: _oauth2_proxy (encrypted)
+    end
+
+    rect rgb(232, 245, 233)
+        Note over SAClient,Upstream: Flow 3: Kubernetes RBAC Authorization (rbac mode)
+        SAClient->>RBACProxy: Request (Bearer token) HTTPS/8443
+        RBACProxy->>K8sAPI: POST TokenReview (SA token)
+        K8sAPI-->>RBACProxy: TokenReview response (user info)
+        RBACProxy->>K8sAPI: POST SubjectAccessReview (resource attrs)
+        K8sAPI-->>RBACProxy: SubjectAccessReview response (allowed/denied)
+        alt Authorized
+            RBACProxy->>Upstream: Proxied request (x-remote-user, x-remote-groups)
+            Upstream-->>RBACProxy: Response
+            RBACProxy-->>SAClient: Response
+        else Denied
+            RBACProxy-->>SAClient: 403 Forbidden
+        end
+    end
+
+    rect rgb(243, 229, 245)
+        Note over SAClient,Upstream: Flow 4: K8s SA Token Authentication (auth mode)
+        SAClient->>AuthProxy: Request (Bearer SA token) HTTP/4180
+        AuthProxy->>K8sAPI: POST TokenReview (SA token, audiences)
+        K8sAPI-->>AuthProxy: TokenReview response (authenticated)
+        AuthProxy->>Upstream: Proxied request (GAP-Auth: SA username)
+        Upstream-->>AuthProxy: Response
+        AuthProxy-->>SAClient: Response
+    end

@@ -1,0 +1,119 @@
+sequenceDiagram
+    participant User as User Browser
+    participant Gateway as data-science-gateway<br/>(Envoy)
+    participant AuthProxy as kube-auth-proxy
+    participant OAuthSvr as OpenShift OAuth
+    participant Dashboard as ODH Dashboard
+    participant K8sAPI as Kubernetes API
+    participant KServeCtrl as KServe Controller
+    participant StorageInit as storage-initializer
+    participant S3 as S3 Storage
+    participant vLLM as vLLM Pod
+    participant EPP as llm-d-inference-scheduler<br/>(EPP)
+    participant Client as API Client
+
+    Note over User,Client: Workflow 1: User Authentication via Gateway (OAuth Mode)
+
+    User->>Gateway: HTTPS request to platform endpoint
+    Gateway->>AuthProxy: ext_authz check (EnvoyFilter)
+    AuthProxy-->>Gateway: No valid cookie → 302 redirect
+    Gateway-->>User: 302 → OAuth login page
+    User->>OAuthSvr: Complete OAuth login
+    OAuthSvr-->>AuthProxy: Authorization code
+    AuthProxy->>OAuthSvr: Exchange code for token
+    OAuthSvr-->>AuthProxy: Access token
+    AuthProxy-->>User: Set _oauth2_proxy cookie
+    User->>Gateway: Retry with cookie
+    Gateway->>AuthProxy: ext_authz check
+    AuthProxy-->>Gateway: Valid → 200 OK
+    Note over Gateway: Lua filter extracts token,<br/>forwards as Bearer header
+    Gateway->>Dashboard: HTTP/8080 + Bearer token
+
+    Note over User,Client: Workflow 2: Component Deployment via DataScienceCluster
+
+    participant Admin as Cluster Admin
+    participant RhodsOp as rhods-operator
+    participant CompCtrl as Component Controller
+
+    Admin->>K8sAPI: Create DataScienceCluster CR
+    K8sAPI-->>RhodsOp: Watch event
+    RhodsOp->>K8sAPI: Ensure DSCInitialization exists
+    Note over RhodsOp: Provision infrastructure:<br/>namespaces, gateway,<br/>monitoring, auth
+    RhodsOp->>K8sAPI: Create component CRs<br/>(Kserve, Dashboard, Kueue, etc.)
+    K8sAPI-->>CompCtrl: Watch component CR
+    CompCtrl->>CompCtrl: Render kustomize manifests<br/>with params.env images
+    CompCtrl->>K8sAPI: Server-side apply manifests
+    CompCtrl->>K8sAPI: Update component CR status
+    K8sAPI-->>RhodsOp: Watch component status
+    RhodsOp->>K8sAPI: Aggregate statuses →<br/>DataScienceCluster status
+
+    Note over User,Client: Workflow 3: Model Serving via LLMInferenceService
+
+    participant LLMCtrl as llmisvc-controller
+
+    User->>K8sAPI: Create LLMInferenceService CR
+    K8sAPI-->>LLMCtrl: Watch event
+    LLMCtrl->>K8sAPI: Create Deployment<br/>(vLLM + storage-initializer init container)
+    LLMCtrl->>K8sAPI: Create Service, HTTPRoute,<br/>InferencePool, VariantAutoscaling
+    LLMCtrl->>K8sAPI: Generate self-signed TLS cert
+    Note over StorageInit: Init container starts
+    StorageInit->>S3: Download model weights<br/>(HTTPS/443, AWS IAM)
+    S3-->>StorageInit: Model artifacts
+    Note over vLLM: Main container starts,<br/>loads model into GPU memory
+    vLLM->>vLLM: Ready on 8000/TCP (HTTP)<br/>+ 8033/TCP (gRPC)
+    Client->>Gateway: POST /v1/chat/completions<br/>(HTTPS/443)
+    Gateway->>EPP: ext_proc routing decision<br/>(gRPC/9002)
+    EPP->>EPP: KV-cache-aware routing<br/>+ load balancing
+    EPP-->>Gateway: Target pod selection
+    Gateway->>vLLM: Forward request<br/>(HTTP/8000)
+    vLLM-->>Gateway: Inference response<br/>(streaming SSE)
+    Gateway-->>Client: JSON/SSE response<br/>(HTTPS/443)
+
+    Note over User,Client: Workflow 4: Data Science Pipeline Execution
+
+    participant DSP_API as DS Pipeline API Server
+    participant Argo as Argo Workflow Controller
+    participant PersAgent as Persistence Agent
+    participant MLMD as ML Metadata (gRPC)
+    participant MariaDB as MariaDB
+
+    User->>Dashboard: Submit pipeline run
+    Dashboard->>DSP_API: POST /apis/v2beta1/runs<br/>(HTTPS/8443, kube-rbac-proxy)
+    DSP_API->>K8sAPI: Create Argo Workflow CR
+    K8sAPI-->>Argo: Watch event
+    Argo->>K8sAPI: Create pipeline step pods<br/>(driver + launcher containers)
+    Note over Argo: Pipeline steps execute<br/>ML tasks sequentially
+    Argo->>S3: Store pipeline artifacts<br/>(HTTPS/443)
+    PersAgent->>DSP_API: Sync workflow status
+    DSP_API->>MariaDB: Persist run metadata<br/>(MySQL/3306)
+    MLMD->>MariaDB: Record artifact lineage<br/>(gRPC → MySQL)
+    User->>Dashboard: View pipeline results
+    Dashboard->>DSP_API: GET /apis/v2beta1/runs/{id}
+    DSP_API-->>Dashboard: Run status + artifacts
+    Dashboard-->>User: Display results
+
+    Note over User,Client: Workflow 5: MaaS Inference with Rate Limiting
+
+    participant Authorino as Authorino
+    participant Limitador as Limitador
+    participant MaaSAPI as maas-api
+    participant BBR as BBR ext_proc
+
+    Client->>Gateway: POST /v1/chat/completions<br/>Header: Authorization: Bearer sk-oai-xxx<br/>(HTTPS/443)
+    Gateway->>Authorino: AuthPolicy check<br/>(Kuadrant)
+    Authorino->>MaaSAPI: POST /internal/v1/api-keys/validate<br/>Validate API key hash
+    MaaSAPI-->>Authorino: Valid + subscription ID
+    Authorino->>Limitador: Check token rate limit<br/>for subscription
+    Limitador-->>Authorino: Within limit → allow
+    Authorino-->>Gateway: 200 OK + metadata
+    Gateway->>BBR: ext_proc (gRPC/9004)<br/>Extract model name
+    BBR->>BBR: Resolve provider<br/>Inject provider credentials
+    alt Self-hosted model
+        BBR-->>Gateway: Route to KServe InferenceService
+        Gateway->>vLLM: Forward to local model
+    else External provider
+        BBR->>S3: Route to external provider<br/>(OpenAI, Anthropic)
+        Note right of BBR: External LLM Provider<br/>HTTPS/443
+    end
+    vLLM-->>Gateway: Inference response
+    Gateway-->>Client: JSON response (HTTPS/443)

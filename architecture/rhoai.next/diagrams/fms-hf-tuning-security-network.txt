@@ -1,0 +1,132 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  KUBERNETES CONTROL PLANE (Trusted)                                      │
+│                                                                          │
+│  [Kubeflow Training Operator (KFTO)]                                     │
+│  - Namespace: kubeflow                                                   │
+│  - Purpose: Creates and manages PyTorchJob resources                     │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: Kubernetes API                                       │
+│         │ Encryption: TLS 1.3                                            │
+│         │ Auth: ServiceAccount Token                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  BATCH WORKLOAD ZONE (Training Pods)                                     │
+│                                                                          │
+│  [Kueue Queue Manager]                                                   │
+│  - Purpose: Queue-based job scheduling                                   │
+│  - Label: kueue.x-k8s.io/queue-name                                     │
+│         │                                                                │
+│         │ Scheduling decisions                                           │
+│         ▼                                                                │
+│                                                                          │
+│  [Training Pod - PyTorchJob Worker]                                      │
+│  - Namespace: {user-namespace}                                           │
+│  - Image: fms-hf-tuning:latest (UBI9 + CUDA 12.1)                      │
+│  - CMD: accelerate_launch.py                                             │
+│  - Resources: nvidia.com/gpu (NVIDIA GPU Operator)                       │
+│  - ServiceAccount: {pytorchjob-sa}                                       │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐     │
+│  │  Container Internal Architecture                                │     │
+│  │                                                                  │     │
+│  │  accelerate_launch.py                                            │     │
+│  │       │                                                          │     │
+│  │       │ subprocess (local)                                       │     │
+│  │       ▼                                                          │     │
+│  │  sft_trainer.py                                                  │     │
+│  │       │                                                          │     │
+│  │       ├── Data Preprocessor (local)                              │     │
+│  │       ├── Trainer Controller (local)                             │     │
+│  │       ├── Tracker Factory (local)                                │     │
+│  │       └── fms-acceleration plugins (local)                      │     │
+│  └─────────────────────────────────────────────────────────────────┘     │
+│                                                                          │
+│  Storage Mounts (Local Filesystem):                                      │
+│  ┌───────────────────────────────────┐                                  │
+│  │ PVC: Model Weights    (ReadOnly)  │ No network, local mount           │
+│  │ PVC: Training Data    (ReadOnly)  │ No network, local mount           │
+│  │ PVC: Output/Ckpts    (ReadWrite)  │ No network, local mount           │
+│  │ ConfigMap: /etc/config/config.json│ No network, local mount           │
+│  └───────────────────────────────────┘                                  │
+│                                                                          │
+│  GPU Access:                                                             │
+│  ┌───────────────────────────────────┐                                  │
+│  │ NVIDIA GPU (CUDA 12.1)           │ PCIe/NVLink, no network           │
+│  │ Provided by: NVIDIA GPU Operator │                                    │
+│  └───────────────────────────────────┘                                  │
+│                                                                          │
+│  Termination Logging:                                                    │
+│  - Path: /dev/termination-log (or TERMINATION_LOG_FILE)                 │
+│  - Exit codes: 0=success, 1=user error, 203=internal error              │
+│                                                                          │
+│  Multi-GPU Communication (FSDP):                                         │
+│  ┌───────────────────────────────────────────────────────────────┐      │
+│  │  [Rank 0] ◄──────► [Rank 1] ◄──────► [Rank N]               │      │
+│  │           │                                                    │      │
+│  │  Port: 29500/TCP (master_process_port)                        │      │
+│  │  Protocol: TCP (NCCL/Gloo)                                    │      │
+│  │  Encryption: ⚠️  PLAINTEXT (no TLS)                           │      │
+│  │  Auth: None                                                    │      │
+│  │  Scope: Pod-internal or inter-pod within PyTorchJob           │      │
+│  └───────────────────────────────────────────────────────────────┘      │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS TO EXTERNAL SERVICES                                             │
+│                                                                          │
+│  [HuggingFace Hub - huggingface.co]                                      │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Bearer Token (HF_TOKEN env var)                                │
+│  - Purpose: Model/tokenizer downloads via from_pretrained()              │
+│  - Direction: EGRESS only                                                │
+│                                                                          │
+│  [AimStack Server] (optional)                                            │
+│  - Port: configurable                                                    │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Encryption: configurable                                              │
+│  - Auth: None                                                            │
+│  - Purpose: Experiment metrics tracking                                  │
+│  - Direction: EGRESS only                                                │
+│                                                                          │
+│  [MLflow Server] (optional)                                              │
+│  - Port: configurable                                                    │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Encryption: configurable                                              │
+│  - Auth: configurable                                                    │
+│  - Purpose: Experiment metrics tracking                                  │
+│  - Direction: EGRESS only                                                │
+│                                                                          │
+│  [ClearML Server] (optional)                                             │
+│  - Port: configurable                                                    │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Encryption: configurable                                              │
+│  - Auth: API key                                                         │
+│  - Purpose: Experiment metrics tracking                                  │
+│  - Direction: EGRESS only                                                │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No ClusterRoles or RoleBindings defined by this component
+- RBAC is managed by the Kubeflow Training Operator for PyTorchJob pods
+- Pod runs with ServiceAccount provided by PyTorchJob spec
+
+Secrets:
+- HF_TOKEN (Opaque, env var) - HuggingFace Hub authentication for gated model downloads
+  - Provisioned by: User/ConfigMap
+  - Auto-Rotate: No
+- imagePullSecrets (kubernetes.io/dockerconfigjson) - Container registry credentials
+  - Provisioned by: User
+  - Auto-Rotate: No
+
+Security Notes:
+- ⚠️  NCCL/Gloo inter-process communication on port 29500/TCP is PLAINTEXT with NO authentication
+  - Risk: Data in transit between training ranks is unencrypted
+  - Mitigation: Typically pod-internal or within trusted cluster network
+- Container image uses UBI9 base with CUDA 12.1 development layer
+- Release image strips Python dev packages and dnf to minimize CVE surface
+- No inbound network services exposed (batch job pattern)
+- All egress connections use TLS except NCCL rendezvous
+- Triton cache directories configured for qLoRA kernel compilation at runtime

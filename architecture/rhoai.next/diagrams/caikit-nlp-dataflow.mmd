@@ -1,0 +1,54 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Runtime as Caikit Runtime<br/>gRPC :8085 / HTTP :8080<br/>Configurable TLS
+    participant TextGen as TextGeneration<br/>(Local)
+    participant TextGenTGIS as TextGenerationTGIS<br/>(Remote)
+    participant TGISClient as TGISGenerationClient
+    participant TGIS as TGIS Backend<br/>gRPC (configurable port)<br/>Optional mTLS
+    participant PeftTuning as PeftPromptTuning
+    participant EmbedMod as EmbeddingModule
+    participant HFModel as HuggingFace Model<br/>(Local GPU)
+    participant STModel as SentenceTransformers<br/>(Local)
+    participant PyTorch as PyTorch Distributed<br/>TCP :29550
+
+    Note over Client,PyTorch: Flow 1: Local Text Generation Inference
+    Client->>Runtime: POST /api/v1/task/text-generation<br/>or gRPC TextGeneration.Run<br/>Configurable TLS
+    Runtime->>TextGen: route to module (in-process)
+    TextGen->>HFModel: forward pass (CausalLM/Seq2SeqLM)
+    HFModel-->>TextGen: generated tokens
+    TextGen-->>Runtime: GeneratedTextResult
+    Runtime-->>Client: JSON/Protobuf response
+
+    Note over Client,TGIS: Flow 2: Remote TGIS Text Generation (Streaming)
+    Client->>Runtime: POST /api/v1/task/server-streaming-text-generation<br/>or gRPC TextGeneration.ServerStreamingRun
+    Runtime->>TextGenTGIS: route to TGIS module (in-process)
+    TextGenTGIS->>TGISClient: create request
+    TGISClient->>TGIS: gRPC GenerateStream<br/>Optional TLS/mTLS
+    loop Token Streaming
+        TGIS-->>TGISClient: GenerateStreamResponse (token)
+        TGISClient-->>TextGenTGIS: yield token
+        TextGenTGIS-->>Runtime: stream token
+        Runtime-->>Client: stream token
+    end
+
+    Note over Client,PyTorch: Flow 3: PEFT Prompt Tuning Training
+    Client->>Runtime: Training request<br/>gRPC/HTTP
+    Runtime->>PeftTuning: PeftPromptTuning.train()
+    PeftTuning->>HFModel: load base model
+    HFModel-->>PeftTuning: model loaded
+    opt Multi-GPU Training
+        PeftTuning->>PyTorch: torchrun elastic launch<br/>TCP :29550 (plaintext)
+        PyTorch-->>PeftTuning: distributed training coordination
+    end
+    PeftTuning->>PeftTuning: PEFT prompt tuning epochs
+    PeftTuning->>PeftTuning: save prompt vectors to disk
+    PeftTuning-->>Runtime: trained model artifact
+    Runtime-->>Client: training complete
+
+    Note over Client,STModel: Flow 4: Embedding Inference
+    Client->>Runtime: POST /api/v1/task/embedding<br/>or gRPC Embedding.Run
+    Runtime->>EmbedMod: route to module (in-process)
+    EmbedMod->>STModel: encode(text)<br/>Optional IPEX / torch.compile
+    STModel-->>EmbedMod: embedding vectors
+    EmbedMod-->>Runtime: EmbeddingResult
+    Runtime-->>Client: JSON/Protobuf response

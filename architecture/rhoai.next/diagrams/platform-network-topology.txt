@@ -1,0 +1,292 @@
+================================================================================
+RHOAI PLATFORM NETWORK TOPOLOGY
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                              │
+│  Browsers, API Consumers, CI/CD Systems                                      │
+│         │                                                                    │
+├─────────┼────────────────────────────────────────────────────────────────────┤
+│  INGRESS│ (openshift-ingress namespace)                                      │
+│         │                                                                    │
+│         ├─→ data-science-gateway (Envoy)                                     │
+│         │   Host: {subdomain}.rh-ai.{cluster-domain}                         │
+│         │   Port: 443/TCP (ext) → HTTPRoute → backends                       │
+│         │   Protocol: HTTPS, Encryption: TLS 1.2+                            │
+│         │   Auth: kube-auth-proxy ext_authz (OAuth2/OIDC cookie-based)       │
+│         │   Filters: EnvoyFilter ext_authz, Lua token extraction             │
+│         │   Routes to: Dashboard, KServe, Model Registry, DSP, MaaS         │
+│         │                                                                    │
+│         ├─→ dashboard-redirect (nginx)                                       │
+│         │   Port: 443/TCP                                                    │
+│         │   Protocol: HTTPS, Encryption: Edge TLS                            │
+│         │   Purpose: Redirect legacy dashboard routes to gateway             │
+│         │                                                                    │
+│         ├─→ ds-pipeline-{name} (OpenShift Route)                             │
+│         │   Port: 8443/TCP                                                   │
+│         │   Protocol: HTTPS, Encryption: Reencrypt TLS                       │
+│         │   Auth: kube-rbac-proxy (SubjectAccessReview)                       │
+│         │                                                                    │
+│         ├─→ {isvc-name} (HTTPRoute / Ingress / VirtualService)               │
+│         │   Port: 443/TCP                                                    │
+│         │   Protocol: HTTPS, Encryption: TLS 1.2+                            │
+│         │   Auth: Platform-managed (kube-auth-proxy or bearer token)         │
+│         │                                                                    │
+│         └─→ {llmSvc-name}-kserve-route (HTTPRoute via Gateway API)           │
+│             Port: 443/TCP                                                    │
+│             Protocol: HTTPS, Encryption: Per gateway config                  │
+│             Auth: Platform-managed                                           │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  GATEWAY AUTH LAYER                                                          │
+│                                                                              │
+│  kube-auth-proxy (openshift-ingress namespace)                               │
+│  ├── Mode 1: Integrated OpenShift OAuth                                      │
+│  │   └── Redirects to OpenShift OAuth Server → exchanges code → sets cookie  │
+│  ├── Mode 2: External OIDC                                                   │
+│  │   └── Redirects to external OIDC provider → validates token → sets cookie │
+│  └── Mode 3: No-Auth (external management)                                   │
+│      └── Passes requests through without authentication                      │
+│                                                                              │
+│  Kuadrant/Authorino (kuadrant-system namespace) — MaaS only                  │
+│  ├── API Key validation: sk-oai-* → maas-api hash verification               │
+│  ├── Token rate limiting: Limitador per-subscription limits                   │
+│  └── OIDC validation (configurable)                                          │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION SERVICES (redhat-ods-applications namespace)                    │
+│                                                                              │
+│  ┌─ rhods-operator ──────────────────────────────────────────────────────┐   │
+│  │  ServiceAccount: rhods-operator-controller-manager                    │   │
+│  │  Ports: 8443/TCP (metrics, kube-rbac-proxy), 8080/TCP (health/metrics)│   │
+│  │         8081/TCP (healthz/readyz), 9443/TCP (webhooks)                │   │
+│  │  ├─→ Kubernetes API (HTTPS/443, SA token)                             │   │
+│  │  └─→ OpenTelemetry Collector (OTLP/gRPC, traces)                     │   │
+│  └───────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  ┌─ kserve-controller ──────────────────────────────────────────────────┐   │
+│  │  ServiceAccount: kserve-controller-manager                            │   │
+│  │  Ports: 8080/TCP (metrics), 9443/TCP (webhooks)                       │   │
+│  │  ├─→ Kubernetes API (HTTPS/443, SA token)                             │   │
+│  │  └─→ S3/GCS/Azure (HTTPS/443, storage-initializer model download)    │   │
+│  └───────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  ┌─ llmisvc-controller ─────────────────────────────────────────────────┐   │
+│  │  ServiceAccount: llmisvc-controller-manager                           │   │
+│  │  Ports: 8443/TCP (metrics), 9443/TCP (webhooks)                       │   │
+│  │  ├─→ Kubernetes API (HTTPS/443, SA token)                             │   │
+│  │  └─→ Creates Deployments, Services, HTTPRoutes, InferencePools        │   │
+│  └───────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  ┌─ kueue-controller ───────────────────────────────────────────────────┐   │
+│  │  ServiceAccount: kueue-controller-manager                             │   │
+│  │  Ports: 8443/TCP (metrics), 8081/TCP (healthz), 9443/TCP (webhooks)   │   │
+│  │  ├─→ Kubernetes API (HTTPS/443, SA token)                             │   │
+│  │  └─→ Remote K8s API Servers (HTTPS/6443, MultiKueue)                  │   │
+│  └───────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  ┌─ ODH Dashboard ──────────────────────────────────────────────────────┐   │
+│  │  ServiceAccount: odh-dashboard                                        │   │
+│  │  Ports: 8080/TCP (main), 8443/TCP (kube-rbac-proxy)                   │   │
+│  │         8143-8643/TCP (7 BFF modules with TLS)                        │   │
+│  │  ├─→ Kubernetes API (HTTPS/443, SA token, service discovery)          │   │
+│  │  ├─→ ThanosQuerier (HTTPS/9092, Prometheus queries)                   │   │
+│  │  └─→ Backend services (Model Registry, KServe, DSP, MaaS, MLflow)    │   │
+│  └───────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  ┌─ data-science-pipelines-operator ────────────────────────────────────┐   │
+│  │  ServiceAccount: dspo-controller-manager                              │   │
+│  │  Ports: 8080/TCP (metrics), 8081/TCP (healthz)                        │   │
+│  │  └─→ Kubernetes API (HTTPS/443, SA token)                             │   │
+│  └───────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  ┌─ models-as-a-service ────────────────────────────────────────────────┐   │
+│  │  maas-controller:                                                     │   │
+│  │    SA: maas-controller, Ports: 8080/TCP, 8081/TCP                     │   │
+│  │  maas-api (models-as-a-service namespace):                            │   │
+│  │    SA: maas-api, Ports: 8080 or 8443/TCP                              │   │
+│  │  BBR ext_proc (ai-gateway-payload-processing):                        │   │
+│  │    Ports: 9004/TCP (ext_proc), 9005/TCP (metrics)                     │   │
+│  │  ├─→ PostgreSQL (5432/TCP, API key hash storage)                      │   │
+│  │  ├─→ KServe InferenceService (HTTP/8080, model inference)             │   │
+│  │  └─→ External LLM Providers (HTTPS/443, OpenAI/Anthropic proxy)      │   │
+│  └───────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  ┌─ Additional Operators ───────────────────────────────────────────────┐   │
+│  │  trustyai-service-operator  SA: trustyai-service-operator 8443,8081   │   │
+│  │  model-registry-operator    SA: model-registry-operator   8080,8081   │   │
+│  │  training-operator          SA: training-operator         8080,8081   │   │
+│  │  trainer                    SA: trainer-controller-mgr    8443,8081   │   │
+│  │  kuberay                    SA: kuberay-operator          8080,8081   │   │
+│  │  codeflare-operator         SA: codeflare-operator        8080,8081   │   │
+│  │  feast-operator             SA: feast-operator            8080,8081   │   │
+│  │  llama-stack-k8s-operator   SA: llama-stack-operator      8080,8081   │   │
+│  │  mlflow-operator            SA: mlflow-operator           8080,8081   │   │
+│  │  spark-operator             SA: spark-operator            8080,9443   │   │
+│  │  modelmesh-serving          SA: modelmesh-controller      8080       │   │
+│  │  odh-model-controller       SA: odh-model-controller      8080       │   │
+│  │  All → Kubernetes API (HTTPS/443, SA tokens)                          │   │
+│  └───────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  USER NAMESPACE WORKLOADS                                                    │
+│                                                                              │
+│  ┌─ Data Science Pipelines ─────────────────────────────────────────────┐   │
+│  │  ds-pipelines-api-server: 8888/TCP (REST), 8887/TCP (gRPC)            │   │
+│  │  ds-pipelines-frontend: 3000/TCP                                      │   │
+│  │  ml-metadata: 8080/TCP (gRPC)                                         │   │
+│  │  Argo Workflow Controller                                             │   │
+│  │  ├─→ S3-compatible storage (HTTPS/443, pipeline artifacts)            │   │
+│  │  ├─→ MariaDB (MySQL/3306, pipeline metadata)                         │   │
+│  │  └─→ Kubernetes API (HTTPS/443, workflow management)                  │   │
+│  └───────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  ┌─ Model Serving Pods ─────────────────────────────────────────────────┐   │
+│  │  vLLM: 8000/TCP (HTTP/OpenAI), 8033/TCP (gRPC/TGIS)                  │   │
+│  │  TGIS: 8033/TCP (gRPC), 3000/TCP (HTTP)                              │   │
+│  │  Caikit: 8085/TCP (gRPC), 8080/TCP (HTTP)                            │   │
+│  │  OpenVINO: 8080/TCP (gRPC+HTTP), 8888/TCP (REST)                     │   │
+│  │  MLServer: 8080/TCP (HTTP V2), 8081/TCP (gRPC V2)                    │   │
+│  │  ├─→ S3/HuggingFace (HTTPS/443, model weight download)               │   │
+│  │  └─→ Container Registry (HTTPS/443, image pull)                       │   │
+│  └───────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  ┌─ LLM-d Distributed Inference ────────────────────────────────────────┐   │
+│  │  llm-d-inference-scheduler (EPP): 9002/TCP (ext_proc), 9003/TCP (met)│   │
+│  │  llm-d-kv-cache indexer: 8080/TCP                                     │   │
+│  │  llm-d-routing-sidecar: reverse proxy                                 │   │
+│  │  workload-variant-autoscaler: 9090/TCP (metrics)                      │   │
+│  │  gateway-api-inference-extension: 9002/TCP (ext_proc), 9003/TCP (met)│   │
+│  │  └─→ vLLM pods (KV-cache-aware routing, P/D disaggregation)          │   │
+│  └───────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  ┌─ Training Workloads ─────────────────────────────────────────────────┐   │
+│  │  PyTorchJob, TFJob, MPIJob, TrainJob, RayCluster, SparkApplication    │   │
+│  │  ├─→ S3 (HTTPS/443, training data and checkpoints)                    │   │
+│  │  ├─→ Kueue (admission via LocalQueue → ClusterQueue)                  │   │
+│  │  └─→ HuggingFace Hub (HTTPS/443, model downloads for fine-tuning)    │   │
+│  └───────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  MONITORING (redhat-ods-monitoring namespace)                                │
+│                                                                              │
+│  MonitoringStack (Prometheus)                                                │
+│  ├── Scrapes: 22+ Prometheus targets across all namespaces                   │
+│  └── ServiceMonitor + PodMonitor CRs per component                           │
+│                                                                              │
+│  ThanosQuerier: 9092/TCP (HTTPS, federated queries)                          │
+│  Tempo: Distributed trace storage                                            │
+│  OpenTelemetry Collector: OTLP gRPC/HTTP → Tempo                            │
+│  Perses: Observability dashboards                                            │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (External Services)                                                  │
+│                                                                              │
+│  S3-Compatible Storage (s3.amazonaws.com, Ceph, MinIO)                       │
+│  - Purpose: Model artifacts, pipeline artifacts, training data               │
+│  - Auth: AWS IAM (IRSA), static credentials, STS                             │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Components: KServe, DSP, Model Registry, Training workloads              │
+│                                                                              │
+│  HuggingFace Hub (huggingface.co)                                            │
+│  - Purpose: Model weights and tokenizer download                             │
+│  - Auth: API token                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Components: KServe storage-initializer, vLLM variants                     │
+│                                                                              │
+│  OpenShift OAuth Server                                                      │
+│  - Purpose: Integrated OAuth authentication flow                             │
+│  - Auth: OAuth2 client credentials                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Components: kube-auth-proxy                                               │
+│                                                                              │
+│  External OIDC Provider                                                      │
+│  - Purpose: External identity provider authentication                        │
+│  - Auth: OIDC client credentials                                             │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Components: kube-auth-proxy (when configured)                             │
+│                                                                              │
+│  External LLM Providers (OpenAI, Anthropic)                                  │
+│  - Purpose: External model inference proxy                                   │
+│  - Auth: Provider API keys (injected by BBR ext_proc)                        │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Components: models-as-a-service BBR                                       │
+│                                                                              │
+│  MariaDB (external or in-cluster)                                            │
+│  - Purpose: Pipeline metadata storage                                        │
+│  - Auth: Username/password                                                   │
+│  - Encryption: TLS (configurable)                                            │
+│  - Components: data-science-pipelines                                        │
+│                                                                              │
+│  PostgreSQL                                                                  │
+│  - Purpose: MaaS API key hash storage, LlamaStack persistence               │
+│  - Auth: Username/password                                                   │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Components: models-as-a-service, rhds-llama-stack-distribution            │
+│                                                                              │
+│  OCI Container Registry (quay.io)                                            │
+│  - Purpose: Pull runtime images                                              │
+│  - Auth: Pull secrets                                                        │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Components: All (image pull at pod startup)                               │
+│                                                                              │
+│  Remote Kubernetes API Servers                                               │
+│  - Purpose: Multi-cluster workload distribution (MultiKueue)                 │
+│  - Auth: Kubeconfig with ServiceAccount tokens                               │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Components: kueue (MultiKueue controller)                                 │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+NAMESPACES:
+  - redhat-ods-applications: Primary platform namespace (all operators + dashboard)
+  - redhat-ods-monitoring: Monitoring stack (Prometheus, Thanos, Tempo, OTEL, Perses)
+  - openshift-ingress: Gateway infrastructure (Envoy, kube-auth-proxy, nginx redirect)
+  - models-as-a-service: MaaS platform (MaaS CRs, maas-api)
+  - kuadrant-system: Rate limiting infrastructure (Authorino, Limitador)
+  - istio-system: Service mesh control plane (when enabled)
+  - knative-serving: Knative Serving for KServe serverless mode
+  - User namespaces: Notebooks, InferenceServices, DSPAs, training jobs
+
+SERVICE MESH CONFIGURATION:
+  - PeerAuthentication: STRICT mTLS for mesh-enrolled InferenceService pods
+  - DestinationRule: SIMPLE TLS (insecureSkipVerify) for gateway → backend
+  - EnvoyFilter: ext_authz + Lua filter at data-science-gateway
+  - mTLS (cert-manager): Per-cluster certificates for CodeFlare/Ray clusters
+  - mTLS (self-signed): Controller-generated for LLMInferenceService workloads
+  - Status: MIXED — not all services are mesh-enrolled
+
+TLS SUMMARY:
+  - Webhooks (9443/TCP): cert-manager or OpenShift service-ca
+  - Metrics (8443/TCP): kube-rbac-proxy or direct TLS
+  - kube-auth-proxy: OpenShift service-ca
+  - LLMInferenceService workloads (8000/TCP): Self-signed (controller-generated)
+  - DSP pod-to-pod: OpenShift service-ca (PodToPodTLS)
+  - MaaS API (8443/TCP): Self-signed RSA-4096 or configured cert
+  - fms-guardrails-orchestrator (8443/TCP): Configurable mTLS
+  - Ray clusters: cert-manager mTLS
+  - vllm-cpu (8000/TCP): Certificate hot-reloading
+
+RBAC SUMMARY (Top Privileged ClusterRoles):
+  - opendatahub-operator-manager-role: datascienceclusters, dscinitializations,
+    16 component CRDs, services CRDs, namespaces, deployments, routes, oauthclients,
+    gateways, httproutes, envoyfilters
+  - kserve-manager-role: inferenceservices, servingruntimes, deployments, services,
+    httproutes, virtualservices, scaledobjects
+  - llmisvc-manager-role: llminferenceservices, inferencepools, inferencemodels,
+    httproutes, leaderworkersets, variantautoscalings, destinationrules
+  - kueue-manager-role: clusterqueues, localqueues, workloads, admissionchecks,
+    resourceflavors, pytorchjobs, tfjobs, rayclusters, rayjobs
+  - maas-controller-role: externalmodels, maasmodelrefs, maasauthpolicies,
+    maassubscriptions, tenants, httproutes, authpolicies, tokenratelimitpolicies
+
+AUTHENTICATION MECHANISMS:
+  1. kube-rbac-proxy (SubjectAccessReview) — Dashboard, DSP, TrustyAI, KServe,
+     ModelMesh, rhods-operator metrics endpoints
+  2. kube-auth-proxy (OAuth2/OIDC) — All gateway-routed services
+  3. API Key (sk-oai-*) — models-as-a-service via Kuadrant/Authorino
+  4. Bearer Token (K8s SA) — kube-auth-proxy token validation, KServe EPP
+  5. mTLS (cert-manager) — CodeFlare/Ray clusters
+  6. mTLS (self-signed) — LLMInferenceService workloads
+  7. Platform-delegated (none) — vLLM, TGIS, Caikit, OpenVINO containers

@@ -1,0 +1,68 @@
+sequenceDiagram
+    participant Client as Llama Stack Client
+    participant LLS as Llama Stack Server<br/>8321/TCP HTTP
+    participant Inline as Inline Provider<br/>(in-process)
+    participant Remote as Remote Provider<br/>(in-process)
+    participant KFP as KFP API Server<br/>443/TCP HTTPS TLS
+    participant Garak as Garak Subprocess<br/>(local CLI)
+    participant KFPPod as KFP Pipeline Pod
+    participant vLLM as vLLM Model Endpoint<br/>HTTP/HTTPS
+    participant S3 as S3 / MinIO<br/>443/TCP HTTPS
+    participant Safety as Llama Stack Safety API<br/>8321/TCP HTTP
+    participant Files as Llama Stack Files API<br/>8321/TCP HTTP
+    participant EvalHub as Eval-Hub Job<br/>(K8s Pod)
+    participant EHAdapter as GarakAdapter<br/>(in-process)
+
+    rect rgb(230, 240, 255)
+        Note over Client,Files: Flow 1: Inline Evaluation (Llama Stack Provider)
+        Client->>LLS: POST /eval/run_benchmark<br/>Auth: None (cluster-internal)
+        LLS->>Inline: invoke GarakInlineEvalAdapter
+        Inline->>Garak: spawn subprocess<br/>(process group isolation)
+        Garak->>vLLM: POST /v1/completions<br/>Auth: Bearer Token
+        vLLM-->>Garak: Model response
+        Garak-->>Inline: Scan results (JSONL)
+        Inline->>Safety: POST /safety/run_shield<br/>Input/output guardrails
+        Safety-->>Inline: Shield scan result
+        Inline->>Files: POST /files/upload<br/>Reports & artifacts
+        Files-->>Inline: File ID
+        Inline-->>LLS: Evaluation result
+        LLS-->>Client: Benchmark result + file references
+    end
+
+    rect rgb(255, 243, 224)
+        Note over Client,Files: Flow 2: Remote KFP Evaluation (Llama Stack Provider)
+        Client->>LLS: POST /eval/run_benchmark<br/>Auth: None (cluster-internal)
+        LLS->>Remote: invoke GarakRemoteEvalAdapter
+        Remote->>KFP: POST /apis/v2beta1/pipelines<br/>Auth: Bearer Token / SA
+        KFP-->>Remote: Pipeline run ID
+        Note over KFP,KFPPod: 6-step KFP pipeline executes
+        KFPPod->>Files: GET /files/download<br/>Fetch config artifacts
+        Files-->>KFPPod: Benchmark config
+        KFPPod->>vLLM: POST /v1/completions<br/>Auth: Bearer Token (from Secret)
+        vLLM-->>KFPPod: Model responses
+        KFPPod->>Files: POST /files/upload<br/>Scan results & reports
+        Files-->>KFPPod: File IDs
+        Remote->>KFP: GET /apis/v2beta1/runs/{id}<br/>Poll for completion
+        KFP-->>Remote: Run status: completed
+        Remote-->>LLS: Evaluation result
+        LLS-->>Client: Benchmark result + file references
+    end
+
+    rect rgb(232, 245, 233)
+        Note over EvalHub,S3: Flow 3: Eval-Hub KFP Evaluation
+        EvalHub->>EHAdapter: run_benchmark_job()
+        EHAdapter->>KFP: POST /apis/v2beta1/pipelines<br/>Auth: Bearer Token
+        KFP-->>EHAdapter: Pipeline run ID
+        Note over KFP,KFPPod: 6-step KFP pipeline executes
+        KFPPod->>S3: PUT artifact<br/>Auth: AWS IAM (Data Connection)
+        S3-->>KFPPod: Upload confirmed
+        KFPPod->>vLLM: POST /v1/completions<br/>Auth: API Key (from /mnt/model-auth)
+        vLLM-->>KFPPod: Model responses
+        KFPPod->>S3: PUT scan results<br/>Auth: AWS IAM
+        S3-->>KFPPod: Upload confirmed
+        EHAdapter->>KFP: GET /apis/v2beta1/runs/{id}<br/>Poll for completion
+        KFP-->>EHAdapter: Run status: completed
+        EHAdapter->>S3: GET scan results<br/>Auth: AWS IAM
+        S3-->>EHAdapter: Scan artifacts
+        EHAdapter-->>EvalHub: Evaluation metrics + artifacts
+    end

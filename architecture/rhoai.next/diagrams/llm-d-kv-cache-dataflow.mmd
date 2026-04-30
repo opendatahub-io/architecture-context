@@ -1,0 +1,45 @@
+sequenceDiagram
+    participant vLLM as vLLM Pod<br/>ZMQ PUB 5557/TCP
+    participant ZMQSub as ZMQ Subscriber<br/>(per-pod)
+    participant Pool as KV Events Pool<br/>(sharded workers)
+    participant Adapter as Engine Adapter<br/>(vLLM/SGLang)
+    participant Index as KV Block Index<br/>(LRU/Ristretto/Redis)
+    participant Scheduler as llm-d-inference-scheduler
+    participant Indexer as KV-Cache Indexer
+    participant TokenPool as Tokenization Pool
+    participant UDS as UDS Tokenizer<br/>gRPC over UDS
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant Storage as Shared Storage<br/>NFS/PVC
+    participant FSBackend as FS Backend<br/>(vLLM plugin)
+
+    Note over vLLM,Index: Flow 1: KV-Event Ingestion (Write Path)
+    vLLM->>ZMQSub: BlockStored/BlockRemoved event<br/>ZMQ 3-frame (topic, seq#, msgpack)
+    ZMQSub->>Pool: Route to worker<br/>FNV-1a(podID) % shards
+    Pool->>Adapter: Decode event payload<br/>msgpack
+    Adapter->>Index: Add/Evict block<br/>hash → pod location
+
+    Note over Scheduler,UDS: Flow 2: Pod Scoring (Read Path)
+    Scheduler->>Indexer: GetPodScores(request)<br/>in-process call
+    Indexer->>TokenPool: Tokenize prompt
+    TokenPool->>UDS: gRPC Tokenize()<br/>Unix Domain Socket
+    UDS-->>TokenPool: Token IDs + offsets
+    Note over UDS,HF: First use: download tokenizer
+    UDS->>HF: GET model tokenizer<br/>HTTPS 443, Bearer Token (opt)
+    HF-->>UDS: Tokenizer files
+    TokenPool-->>Indexer: Token IDs
+    Indexer->>Indexer: Compute block keys<br/>CBOR + FNV-64a chained hash
+    Indexer->>Index: Lookup block locations
+    Index-->>Indexer: Pod → block mappings
+    Indexer->>Indexer: Score pods<br/>(longest prefix match)
+    Indexer-->>Scheduler: Pod scores[]
+
+    Note over vLLM,Storage: Flow 3: KV-Cache Offloading (Storage Path)
+    vLLM->>FSBackend: OffloadingSpec lookup
+    FSBackend->>Storage: stat() check<br/>hash-based directory hierarchy
+    Storage-->>FSBackend: File exists/missing
+    vLLM->>FSBackend: Transfer request
+    FSBackend->>Storage: Async write (C++ engine)<br/>POSIX I/O or NVIDIA GDS
+    Storage-->>FSBackend: Write complete
+
+    Note over Storage,Storage: Flow 4: PVC Eviction
+    Note right of Storage: Activator: statvfs() polling<br/>Threshold: 85% cleanup / 70% target<br/>N crawlers: hex-based load balancing<br/>Deleter: xargs -0 rm -f batches

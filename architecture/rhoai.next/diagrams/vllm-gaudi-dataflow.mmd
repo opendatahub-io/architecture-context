@@ -1,0 +1,37 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.3
+    participant API as vLLM OpenAI API Server<br/>8000/TCP HTTP
+    participant Runner as HPUModelRunner
+    participant HPU as Intel Gaudi HPU<br/>(Gaudi2/Gaudi3)
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant S3 as Model Storage<br/>(S3/PVC/NFS)
+    participant Ray as Ray Head Node<br/>6379/TCP
+    participant Peer as HPUWorker Peers<br/>(rank 1..N)
+    participant HCCL as HCCL Peer HPUs<br/>RDMA/TCP
+
+    Note over Client,HPU: Flow 1: Model Inference Request
+    Client->>Proxy: POST /v1/chat/completions<br/>Auth: Bearer Token
+    Proxy->>Proxy: Validate token against<br/>Kubernetes API
+    Proxy->>API: Forward request<br/>HTTP/8000 (localhost, pre-authenticated)
+    API->>Runner: Schedule inference
+    Runner->>HPU: Forward pass<br/>(in-process, graph execution)
+    HPU-->>Runner: Token output
+    Runner-->>API: Generation result
+    API-->>Proxy: JSON response
+    Proxy-->>Client: HTTPS response<br/>TLS 1.3
+
+    Note over Runner,HCCL: Flow 2: Distributed Multi-HPU Inference
+    Runner->>Ray: Register worker (rank 0)<br/>TCP/6379
+    Ray->>Peer: Initialize workers (rank 1..N)<br/>TCP/dynamic
+    Runner->>HCCL: All-reduce / All-gather<br/>RDMA/TCP (plaintext)
+    Peer->>HCCL: Tensor/Expert/Data parallelism<br/>RDMA/TCP (plaintext)
+    Note over Runner,HCCL: NIXL KV transfer for<br/>disaggregated prefill (optional)
+
+    Note over Runner,S3: Flow 3: Model Weight Loading (Startup)
+    Runner->>HF: Download model weights & tokenizer<br/>HTTPS/443, HF_TOKEN Bearer
+    HF-->>Runner: Model artifacts
+    Runner->>S3: Download model weights<br/>HTTPS/443 or filesystem<br/>AWS IAM / SA auth
+    S3-->>Runner: Model weights
+    Runner->>HPU: Load weights to HPU memory<br/>(in-process)
+    Note over Runner,HPU: FP8/INC/GPTQ/AWQ quantization<br/>applied during loading

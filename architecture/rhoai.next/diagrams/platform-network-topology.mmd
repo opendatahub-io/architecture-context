@@ -1,0 +1,163 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Clients[External Clients<br/>Browsers, API Consumers]
+    end
+
+    subgraph Ingress["INGRESS (DMZ) - openshift-ingress namespace"]
+        DSGateway["data-science-gateway<br/>Envoy<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+        DashRedirect["dashboard-redirect<br/>nginx<br/>443/TCP HTTPS<br/>Edge TLS"]
+    end
+
+    subgraph ODS_Apps["redhat-ods-applications namespace"]
+        direction TB
+
+        subgraph Operators["Operator Controllers"]
+            RhodsOp["rhods-operator<br/>SA: rhods-operator-controller-manager<br/>8443, 8080, 8081, 9443/TCP"]
+            KServeCtrl["kserve-controller<br/>SA: kserve-controller-manager<br/>8080, 9443/TCP"]
+            LLMISVCCtrl["llmisvc-controller<br/>SA: llmisvc-controller-manager<br/>8443, 9443/TCP"]
+            KueueCtrl["kueue-controller<br/>SA: kueue-controller-manager<br/>8443, 8081, 9443/TCP"]
+            DSPOperator["data-science-pipelines-operator<br/>SA: dspo-controller-manager<br/>8080, 8081/TCP"]
+            TrustyAIOp["trustyai-service-operator<br/>SA: trustyai-service-operator<br/>8443, 8081/TCP"]
+            MaaSCtrl["maas-controller<br/>SA: maas-controller<br/>8080, 8081/TCP"]
+            MROperator["model-registry-operator<br/>SA: model-registry-operator<br/>8080, 8081/TCP"]
+            TrainingOp["training-operator<br/>SA: training-operator<br/>8080, 8081/TCP"]
+            TrainerCtrl["trainer<br/>SA: trainer-controller-manager<br/>8443, 8081/TCP"]
+        end
+
+        subgraph Services["Application Services"]
+            Dashboard["ODH Dashboard<br/>SA: odh-dashboard<br/>8080, 8443/TCP + BFF 8143-8643/TCP"]
+            ModelRegSvc["model-registry<br/>SA: model-registry<br/>8080/TCP"]
+        end
+
+        subgraph ModelServing["Model Serving"]
+            KServeInf["KServe InferenceService Pods<br/>8080/TCP HTTP, 8081/TCP gRPC"]
+            vLLMPods["vLLM Pods<br/>8000/TCP HTTP, 8033/TCP gRPC"]
+            ModelMeshPods["ModelMesh Pods<br/>8033/TCP gRPC, 2112/TCP metrics"]
+        end
+    end
+
+    subgraph UserNS["User Namespaces"]
+        Notebooks["Jupyter Notebooks<br/>SA: per-notebook"]
+        DSPStack["DSP API Server + Argo<br/>SA: ds-pipeline-*<br/>8888, 8887, 8443/TCP"]
+        TrustyAISvc["TrustyAI Service<br/>SA: trustyai-service<br/>8080/TCP"]
+        TrainingJobs["Training Jobs<br/>PyTorchJob, TrainJob, RayJob"]
+        MRInstances["Model Registry Instances<br/>8080/TCP"]
+        InfSvcs["InferenceService Pods<br/>8080, 8033/TCP"]
+        MLflowSvc["MLflow<br/>SA: mlflow<br/>5000/TCP"]
+        FeastSvc["Feast<br/>SA: feast<br/>6566, 8080/TCP"]
+    end
+
+    subgraph MaaSNS["models-as-a-service namespace"]
+        MaaSAPI["maas-api<br/>SA: maas-api<br/>8080 or 8443/TCP"]
+        BBR["BBR ext_proc<br/>9004, 9005/TCP"]
+    end
+
+    subgraph KuadrantNS["kuadrant-system namespace"]
+        Authorino["Authorino<br/>API Key Validation"]
+        Limitador["Limitador<br/>Rate Limiting"]
+    end
+
+    subgraph MonitoringNS["redhat-ods-monitoring namespace"]
+        Prometheus["MonitoringStack<br/>Prometheus"]
+        Thanos["ThanosQuerier<br/>9092/TCP"]
+        Tempo["Tempo<br/>Distributed Tracing"]
+        OTELCol["OpenTelemetry Collector"]
+        Perses["Perses<br/>Dashboards"]
+    end
+
+    subgraph Egress["EGRESS (External Services)"]
+        S3["S3-Compatible Storage<br/>443/TCP HTTPS<br/>AWS IAM / Static Creds"]
+        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>API Token"]
+        OAuthSvr["OpenShift OAuth Server<br/>443/TCP HTTPS"]
+        ExternalOIDC["External OIDC Provider<br/>443/TCP HTTPS"]
+        ExtLLM["External LLM Providers<br/>OpenAI, Anthropic<br/>443/TCP HTTPS"]
+        MariaDB["MariaDB<br/>3306/TCP MySQL<br/>TLS configurable"]
+        PgSQL["PostgreSQL<br/>5432/TCP<br/>TLS 1.2+"]
+        OCIReg["OCI Container Registry<br/>quay.io<br/>443/TCP HTTPS"]
+        RemoteK8s["Remote K8s API<br/>MultiKueue<br/>6443/TCP HTTPS"]
+    end
+
+    %% External to Ingress
+    Clients -->|HTTPS/443| DSGateway
+    Clients -->|HTTPS/443| DashRedirect
+
+    %% Ingress to services
+    DSGateway -->|ext_authz<br/>EnvoyFilter| KubeAuthProxy
+    KubeAuthProxy["kube-auth-proxy<br/>SA: kube-auth-proxy<br/>OAuth2/OIDC"]
+    DSGateway -->|HTTP/8080<br/>Lua token fwd| Dashboard
+    DSGateway -->|HTTP/8080<br/>Lua token fwd| KServeInf
+    DSGateway -->|HTTP/8080<br/>Lua token fwd| ModelRegSvc
+    DSGateway -->|HTTP/8080<br/>Lua token fwd| DSPStack
+    DSGateway -->|ext_proc/9004| BBR
+    DashRedirect -->|redirect| DSGateway
+
+    %% MaaS flow
+    DSGateway -->|AuthPolicy| Authorino
+    Authorino -->|validate key| MaaSAPI
+    Authorino -->|rate check| Limitador
+    BBR -->|credential inject| KServeInf
+    BBR -->|credential inject| ExtLLM
+    MaaSCtrl -->|reconciles| MaaSAPI
+
+    %% Operator → K8s API
+    RhodsOp -->|HTTPS/443<br/>SA token| K8sAPI["Kubernetes API<br/>6443/TCP"]
+    KServeCtrl -->|HTTPS/443<br/>SA token| K8sAPI
+    LLMISVCCtrl -->|HTTPS/443<br/>SA token| K8sAPI
+    KueueCtrl -->|HTTPS/443<br/>SA token| K8sAPI
+    DSPOperator -->|HTTPS/443<br/>SA token| K8sAPI
+    TrainerCtrl -->|HTTPS/443<br/>SA token| K8sAPI
+
+    %% Model serving egress
+    vLLMPods -->|HTTPS/443<br/>model download| S3
+    vLLMPods -->|HTTPS/443<br/>model download| HFHub
+    KServeInf -->|HTTPS/443<br/>storage-initializer| S3
+    InfSvcs -->|HTTPS/443<br/>storage-initializer| S3
+
+    %% DSP egress
+    DSPStack -->|HTTPS/443<br/>artifacts| S3
+    DSPStack -->|MySQL/3306<br/>metadata| MariaDB
+
+    %% MaaS egress
+    MaaSAPI -->|PostgreSQL/5432<br/>API key hashes| PgSQL
+
+    %% Auth egress
+    KubeAuthProxy -->|HTTPS/443<br/>OAuth flow| OAuthSvr
+    KubeAuthProxy -->|HTTPS/443<br/>OIDC| ExternalOIDC
+
+    %% Monitoring
+    Prometheus -.->|scrape metrics| RhodsOp
+    Prometheus -.->|scrape metrics| KServeCtrl
+    Prometheus -.->|scrape metrics| KueueCtrl
+    Prometheus -.->|scrape metrics| Dashboard
+    Prometheus -.->|scrape metrics| vLLMPods
+    Prometheus -.->|scrape metrics| DSPOperator
+    Dashboard -->|HTTPS/9092<br/>metrics query| Thanos
+
+    %% Tracing
+    RhodsOp -.->|OTLP/gRPC| OTELCol
+    OTELCol -.->|traces| Tempo
+
+    %% MultiKueue
+    KueueCtrl -->|HTTPS/6443<br/>multi-cluster| RemoteK8s
+
+    %% Container images
+    vLLMPods -->|HTTPS/443<br/>pull images| OCIReg
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef service fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef serving fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef monitoring fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef egress fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef maas fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+
+    class Clients external
+    class DSGateway,DashRedirect,KubeAuthProxy ingress
+    class RhodsOp,KServeCtrl,LLMISVCCtrl,KueueCtrl,DSPOperator,TrustyAIOp,MaaSCtrl,MROperator,TrainingOp,TrainerCtrl operator
+    class Dashboard,ModelRegSvc,DSPStack,TrustyAISvc,MLflowSvc,FeastSvc,MRInstances service
+    class KServeInf,vLLMPods,ModelMeshPods,InfSvcs serving
+    class Prometheus,Thanos,Tempo,OTELCol,Perses monitoring
+    class S3,HFHub,OAuthSvr,ExternalOIDC,ExtLLM,MariaDB,PgSQL,OCIReg,RemoteK8s,K8sAPI egress
+    class MaaSAPI,BBR,Authorino,Limitador maas

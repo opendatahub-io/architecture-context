@@ -1,0 +1,253 @@
+================================================================================
+  KSERVE SECURITY NETWORK DIAGRAM
+  Component: KServe (RHOAI Distribution)
+  Repository: https://github.com/red-hat-data-services/kserve.git
+================================================================================
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]                                                           │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: None, Bearer Token, or OAuth (per config)                    │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS LAYER                                                               │
+│                                                                              │
+│  ┌─────────────────────────────────┐  ┌────────────────────────────────────┐ │
+│  │ [Gateway / Ingress Controller]  │  │ [OpenShift Route]                  │ │
+│  │ - HTTPRoute (Gateway API)       │  │ - InferenceGraph external access   │ │
+│  │ - Kubernetes Ingress            │  │ - Port: 443/TCP (HTTPS)            │ │
+│  │ - Istio VirtualService          │  │ - TLS: Reencrypt                   │ │
+│  │ - Port: 443/TCP → 80 or 8443   │  │ - Auto-generated hostname          │ │
+│  │ - TLS Termination: TLS 1.2+    │  └────────────────────────────────────┘ │
+│  └─────────────────────────────────┘                                         │
+│         │                              │                                     │
+│         │ Port: 80/TCP or 8443/TCP     │ Port: 443/TCP or 8080/TCP           │
+│         │ Protocol: HTTP or HTTPS      │ Protocol: HTTPS/HTTP                │
+│         │ Encryption: None or TLS      │ Encryption: TLS (reencrypt)         │
+│         ▼                              ▼                                     │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  SERVICE LAYER (Kubernetes Internal)                                         │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │  InferenceService Pod                                                  │  │
+│  │  ┌───────────────────────┐    ┌──────────────────────────────────────┐ │  │
+│  │  │ [kube-rbac-proxy]     │    │ [Model Server Container]             │ │  │
+│  │  │ - Port: 8443/TCP      │───>│ - Port: 8080/TCP (REST V1/V2/OpenAI)│ │  │
+│  │  │ - Protocol: HTTPS     │    │ - Port: 8081/TCP (gRPC V2)          │ │  │
+│  │  │ - Encryption: TLS     │    │ - Protocol: HTTP (pod-local)        │ │  │
+│  │  │ - Auth: SubjectAccess │    │ - Encryption: None                  │ │  │
+│  │  │   Review (Bearer)     │    │ - Auth: None (trusted via proxy)    │ │  │
+│  │  └───────────────────────┘    └──────────────────────────────────────┘ │  │
+│  │  ┌───────────────────────┐    ┌──────────────────────────────────────┐ │  │
+│  │  │ [kserve-agent]        │    │ [storage-initializer] (init)         │ │  │
+│  │  │ - Port: 9081/TCP      │    │ - Downloads model at pod start      │ │  │
+│  │  │ - Reverse proxy       │    │ - S3/GCS/Azure/HF/HDFS/HTTP/Git     │ │  │
+│  │  │ - Request/Response log│    │ - No listening port                  │ │  │
+│  │  │ - Request batcher     │    │ - Runs once, then exits              │ │  │
+│  │  └───────────────────────┘    └──────────────────────────────────────┘ │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │  LLMInferenceService Stack                                             │  │
+│  │  ┌──────────────────────┐    ┌───────────────────────────────────────┐ │  │
+│  │  │ [Scheduler EPP]      │    │ [vLLM Workload Pod]                   │ │  │
+│  │  │ - Port: gRPC (var)   │───>│ - Port: 8000/TCP                     │ │  │
+│  │  │ - Port: gRPC-health  │    │ - Protocol: HTTPS                    │ │  │
+│  │  │ - Port: metrics      │    │ - Encryption: TLS (self-signed)      │ │  │
+│  │  │ - Port: zmq          │    │ - Auth: None (in-cluster)            │ │  │
+│  │  │ - Protocol: gRPC     │    └───────────────────────────────────────┘ │  │
+│  │  │ - Encryption: TLS    │                                              │  │
+│  │  │ - Auth: Bearer token │    ┌───────────────────────────────────────┐ │  │
+│  │  │   (tokenReview)      │    │ [Routing Sidecar]                     │ │  │
+│  │  └──────────────────────┘    │ - Disaggregated prefill/decode        │ │  │
+│  │                              │ - Pod-to-pod communication            │ │  │
+│  │  ┌──────────────────────┐    └───────────────────────────────────────┘ │  │
+│  │  │ [InferencePool CRD]  │                                              │  │
+│  │  │ - Gateway API ext    │                                              │  │
+│  │  │ - Request routing    │                                              │  │
+│  │  └──────────────────────┘                                              │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │  InferenceGraph Router                                                 │  │
+│  │  ┌──────────────────────────────────────────────────────────────────┐  │  │
+│  │  │ [kserve-router]                                                  │  │  │
+│  │  │ - Port: 8080/TCP (HTTP), optional TLS                            │  │  │
+│  │  │ - Auth: Optional bearer token (TokenReview + SubjectAccessReview)│  │  │
+│  │  │ - Routes: Splitter | Switch | Ensemble | Sequence                │  │  │
+│  │  │ - Detects Istio mesh for in-cluster calls                        │  │  │
+│  │  └──────────────────────────────────────────────────────────────────┘  │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE (Operator Namespace: opendatahub)                             │
+│                                                                              │
+│  ┌──────────────────────────────┐  ┌──────────────────────────────────────┐  │
+│  │ [kserve-controller-manager]  │  │ [llmisvc-controller-manager]         │  │
+│  │ SA: kserve-controller-manager│  │ SA: llmisvc-controller-manager       │  │
+│  │ - 8080/TCP metrics           │  │ - 8443/TCP secure metrics (HTTPS)    │  │
+│  │ - 9443/TCP webhook (TLS)     │  │ - 9443/TCP webhook (TLS)             │  │
+│  │ - 8081/TCP health            │  │ - 8081/TCP health                    │  │
+│  │ - TLS: OpenShift serving cert│  │ - TLS: OpenShift serving cert        │  │
+│  └──────────────────────────────┘  └──────────────────────────────────────┘  │
+│                                                                              │
+│  ┌──────────────────────────────┐  ┌──────────────────────────────────────┐  │
+│  │ [localmodel-controller]      │  │ [localmodelnode-agent] (DaemonSet)   │  │
+│  │ SA: kserve-localmodel-ctrl   │  │ SA: localmodelnode-agent             │  │
+│  │ - 8080/TCP metrics           │  │ - 8080/TCP metrics                   │  │
+│  │ - 9443/TCP webhook (TLS)     │  │ - 9443/TCP webhook (TLS)             │  │
+│  │ - 8081/TCP health            │  │ - 8081/TCP health                    │  │
+│  │ - Manages PV/PVC for models  │  │ - Creates download Jobs on nodes     │  │
+│  └──────────────────────────────┘  └──────────────────────────────────────┘  │
+│                                                                              │
+│  Webhook Services (all TLS via OpenShift serving certs):                     │
+│  - kserve-webhook-server-service:     443/TCP → 9443 (HTTPS)                │
+│  - llmisvc-webhook-server-service:    443/TCP → 9443 (HTTPS)                │
+│  - localmodel-webhook-server-service: 443/TCP → 9443 (HTTPS)                │
+│  - Auth: Kubernetes API server mTLS (admission webhook)                      │
+│                                                                              │
+│  Metrics Service:                                                            │
+│  - kserve-controller-manager-metrics-service: 8443/TCP (HTTPS)              │
+│  - Auth: kube-rbac-proxy (Bearer token)                                      │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES API SERVER                                                       │
+│                                                                              │
+│  [kube-apiserver]                                                            │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: ServiceAccount tokens, mTLS for webhooks                            │
+│  - All controllers communicate here for CRUD on resources                    │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                                  │
+│                                                                              │
+│  ┌──────────────────────┐  ┌──────────────────────┐  ┌────────────────────┐ │
+│  │ [S3-compatible]      │  │ [Google Cloud Storage]│  │ [Azure Blob]       │ │
+│  │ - Port: 443/TCP      │  │ - Port: 443/TCP      │  │ - Port: 443/TCP    │ │
+│  │ - Protocol: HTTPS    │  │ - Protocol: HTTPS    │  │ - Protocol: HTTPS  │ │
+│  │ - Encryption: TLS1.2+│  │ - Encryption: TLS1.2+│  │ - Encryption: TLS  │ │
+│  │ - Auth: AWS IAM /    │  │ - Auth: GCS SA JSON  │  │ - Auth: Azure creds│ │
+│  │   Access Key          │  │                      │  │   / Managed ID     │ │
+│  │ - Purpose: Model     │  │ - Purpose: Model     │  │ - Purpose: Model   │ │
+│  │   artifact storage   │  │   artifact storage   │  │   artifact storage │ │
+│  └──────────────────────┘  └──────────────────────┘  └────────────────────┘ │
+│                                                                              │
+│  ┌──────────────────────┐  ┌──────────────────────┐  ┌────────────────────┐ │
+│  │ [HuggingFace Hub]    │  │ [HDFS Namenode]      │  │ [Log Endpoint]     │ │
+│  │ - Port: 443/TCP      │  │ - Port: 8020/TCP     │  │ - Port: 443/TCP    │ │
+│  │ - Protocol: HTTPS    │  │ - Protocol: RPC      │  │ - Protocol: HTTPS  │ │
+│  │ - Encryption: TLS1.2+│  │ - Encryption: Opt TLS│  │ - Encryption: TLS  │ │
+│  │ - Auth: HF_TOKEN     │  │ - Auth: Kerberos     │  │ - Auth: Optional   │ │
+│  │   (optional)         │  │   keytab             │  │   CA cert          │ │
+│  │ - Purpose: Model     │  │ - Purpose: HDFS model│  │ - Purpose: Request │ │
+│  │   download           │  │   access             │  │   /response logging│ │
+│  └──────────────────────┘  └──────────────────────┘  └────────────────────┘ │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM DEPENDENCIES (Internal)                                            │
+│                                                                              │
+│  ┌──────────────────────┐  ┌──────────────────────┐  ┌────────────────────┐ │
+│  │ [Knative Serving]    │  │ [Istio]              │  │ [KEDA]             │ │
+│  │ - Port: 443/TCP      │  │ - Port: 443/TCP      │  │ - Port: 443/TCP    │ │
+│  │ - Protocol: HTTPS    │  │ - Protocol: HTTPS    │  │ - Protocol: HTTPS  │ │
+│  │ - Auth: SA token     │  │ - Auth: SA token     │  │ - Auth: SA token   │ │
+│  │ - Purpose: Serverless│  │ - Purpose: Traffic   │  │ - Purpose: Event   │ │
+│  │   deployment mode    │  │   mgmt, mTLS, DestR  │  │   driven autoscale │ │
+│  └──────────────────────┘  └──────────────────────┘  └────────────────────┘ │
+│                                                                              │
+│  ┌──────────────────────┐  ┌──────────────────────┐  ┌────────────────────┐ │
+│  │ [Gateway API]        │  │ [LeaderWorkerSet]    │  │ [Prometheus Op]    │ │
+│  │ - Port: 443/TCP      │  │ - Port: 443/TCP      │  │ - Port: 443/TCP    │ │
+│  │ - Protocol: HTTPS    │  │ - Protocol: HTTPS    │  │ - Protocol: HTTPS  │ │
+│  │ - Auth: SA token     │  │ - Auth: SA token     │  │ - Auth: SA token   │ │
+│  │ - Purpose: HTTPRoute │  │ - Purpose: Multi-node│  │ - Purpose: Pod/Svc │ │
+│  │   ingress for LLM    │  │   LLM workloads      │  │   Monitors         │ │
+│  └──────────────────────┘  └──────────────────────┘  └────────────────────┘ │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+RBAC SUMMARY
+================================================================================
+
+Service Account: kserve-controller-manager
+  ClusterRole: kserve-manager-role
+  - serving.kserve.io: inferenceservices, servingruntimes, clusterservingruntimes,
+    clusterstoragecontainers, localmodelcaches, localmodelnamespacecaches
+    [get, list, watch, create, update, patch, delete]
+  - apps: deployments [get, list, watch, create, update, patch, delete]
+  - "": services, configmaps, secrets, namespaces, events, pods, serviceaccounts
+    [get, list, watch, create, update, patch, delete]
+  - networking.k8s.io: ingresses [get, list, watch, create, update, patch, delete]
+  - serving.knative.dev: services [get, list, watch, create, update, patch, delete]
+  - networking.istio.io: virtualservices [get, list, watch, create, update, patch, delete]
+  - autoscaling: horizontalpodautoscalers [full CRUD]
+  - gateway.networking.k8s.io: httproutes [full CRUD]
+  - keda.sh: scaledobjects [full CRUD]
+  - opentelemetry.io: opentelemetrycollectors [full CRUD]
+  - route.openshift.io: routes [get, list, watch]
+
+Service Account: llmisvc-controller-manager
+  ClusterRole: llmisvc-manager-role
+  - serving.kserve.io: llminferenceservices, llminferenceserviceconfigs [full CRUD]
+  - gateway.networking.k8s.io: httproutes, gateways, gatewayclasses [full CRUD]
+  - inference.networking.x-k8s.io: inferencepools, inferenceobjectives,
+    inferencemodels, inferencemodelrewrites, inferencepoolimports [full CRUD]
+  - leaderworkerset.x-k8s.io: leaderworkersets [full CRUD]
+  - llmd.ai: variantautoscalings [full CRUD]
+  - monitoring.coreos.com: podmonitors, servicemonitors [full CRUD]
+  - networking.istio.io: destinationrules [get, list, watch, create, update, delete]
+  - security.openshift.io: SCC (openshift-ai-llminferenceservice-scc) [use]
+  - authentication.k8s.io: tokenreviews, subjectaccessreviews [create]
+
+Service Account: kserve-localmodel-controller-manager
+  ClusterRole: localmodel-manager-role
+  - serving.kserve.io: localmodelcaches, localmodelnamespacecaches,
+    localmodelnodes, localmodelnodegroups [full CRUD]
+  - "": persistentvolumes, persistentvolumeclaims, nodes [get, list, watch, create, update, patch]
+
+Service Account: localmodelnode-agent (DaemonSet)
+  ClusterRole: localmodelnode-agent-role
+  - serving.kserve.io: localmodelnodes, clusterstoragecontainers, localmodelnodegroups
+    [full CRUD]
+  - batch: jobs, jobs/status [full CRUD]
+
+================================================================================
+SECRETS
+================================================================================
+
+| Secret                              | Type                  | Purpose                         | Provisioned By                        | Auto-Rotate |
+|-------------------------------------|-----------------------|---------------------------------|---------------------------------------|-------------|
+| kserve-webhook-server-cert          | kubernetes.io/tls     | Webhook TLS                     | OpenShift serving cert                | Yes         |
+| llmisvc-webhook-server-cert         | kubernetes.io/tls     | LLMISvc webhook TLS             | OpenShift serving cert                | Yes         |
+| localmodel-webhook-server-cert      | kubernetes.io/tls     | LocalModel webhook TLS          | OpenShift serving cert                | Yes         |
+| {llmSvc}-kserve-self-signed-certs   | kubernetes.io/tls     | LLM workload TLS                | Controller-generated self-signed      | Yes         |
+| kserve-metrics-reader-sa-secret     | SA token              | Metrics reader token            | Controller                            | No          |
+| storage-config                      | Opaque                | Model storage creds (S3/GCS/HF) | User-managed                          | No          |
+
+================================================================================
+AUTHENTICATION & AUTHORIZATION
+================================================================================
+
+| Endpoint                          | Auth Mechanism                          | Enforcement Point              |
+|-----------------------------------|-----------------------------------------|--------------------------------|
+| InferenceService (RHOAI raw)      | Bearer token via kube-rbac-proxy        | kube-rbac-proxy sidecar (8443) |
+| InferenceGraph (raw)              | Bearer + TokenReview + SAR              | Router binary                  |
+| Controller metrics                | Bearer token via kube-rbac-proxy        | kube-rbac-proxy sidecar        |
+| LLMISvc scheduler metrics         | Bearer token (tokenReview)              | Scheduler EPP                  |
+| Webhook endpoints                 | Kubernetes API server mTLS              | kube-apiserver                 |
+
+================================================================================
+NETWORK POLICIES (ODH Overlay)
+================================================================================
+
+- Pod-to-pod traffic isolation via NetworkPolicies in ODH overlay
+- Service mesh mTLS (Istio DestinationRules) for LLMInferenceService traffic
+- OpenShift SCC for multi-node workloads and LocalModel agents

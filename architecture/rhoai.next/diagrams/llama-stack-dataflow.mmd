@@ -1,0 +1,60 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Server as Llama Stack Server<br/>8321/TCP HTTP/HTTPS
+    participant Auth as Authentication<br/>Middleware
+    participant IdP as OAuth2 IdP<br/>443/TCP HTTPS
+    participant Quota as Quota Middleware<br/>(SQLite backing)
+    participant ABAC as Access Control<br/>(Cedar ABAC)
+    participant Router as Provider Router
+    participant vLLM as vLLM Backend<br/>8000/TCP HTTP
+    participant VectorDB as Vector DB<br/>(pgvector 5432/TCP)
+    participant Safety as Safety Provider
+    participant Tool as Tool Runtime<br/>(Brave Search 443/TCP)
+
+    Note over Client,Tool: Flow 1: Inference Request (Chat Completion)
+    Client->>Server: POST /v1/inference/chat-completion<br/>Bearer JWT Token
+    Server->>Auth: Validate token
+    Auth->>IdP: Fetch JWKS keys<br/>HTTPS/443 TLS 1.2+
+    IdP-->>Auth: JSON Web Key Set
+    Auth-->>Server: User attributes extracted
+    Server->>Quota: Check rate limit
+    Quota-->>Server: Allowed (SQLite KV lookup)
+    Server->>ABAC: Check ABAC policy<br/>user × model × action
+    ABAC-->>Server: Permitted
+    Server->>Router: Route by model ID
+    Router->>vLLM: POST /v1/chat/completions<br/>API Key Bearer<br/>HTTP/8000
+    vLLM-->>Router: Completion response (streaming SSE)
+    Router-->>Server: Stream chunks
+    Server-->>Client: text/event-stream (SSE)<br/>Configurable TLS
+
+    Note over Client,Tool: Flow 2: RAG Query (Vector I/O)
+    Client->>Server: POST /v1/vector-io/query<br/>Bearer JWT Token
+    Server->>Auth: Validate token
+    Auth-->>Server: Authenticated
+    Server->>Quota: Check rate limit
+    Quota-->>Server: Allowed
+    Server->>Router: Route to embedding provider
+    Router->>vLLM: POST /v1/embeddings<br/>API Key Bearer
+    vLLM-->>Router: Embedding vectors
+    Router->>VectorDB: SQL query (pgvector)<br/>5432/TCP Username/Password<br/>Configurable TLS
+    VectorDB-->>Router: Similar document chunks
+    Router-->>Server: Query results
+    Server-->>Client: JSON response
+
+    Note over Client,Tool: Flow 3: Agent Turn with Tool Use
+    Client->>Server: POST /v1/agents/{id}/session/{sid}/turn<br/>Bearer JWT Token
+    Server->>Auth: Validate token
+    Auth-->>Server: Authenticated
+    Server->>Router: Route to agent provider
+    Router->>Safety: Input shield check
+    Safety-->>Router: Safe
+    Router->>vLLM: Chat completion (with tools)<br/>8000/TCP HTTP
+    vLLM-->>Router: tool_call: brave_search(query)
+    Router->>Tool: GET /api/search?q=...<br/>443/TCP HTTPS TLS 1.2+<br/>API Key
+    Tool-->>Router: Search results
+    Router->>vLLM: Follow-up completion<br/>(with tool results)
+    vLLM-->>Router: Final response
+    Router->>Safety: Output shield check
+    Safety-->>Router: Safe
+    Router-->>Server: Agent turn result
+    Server-->>Client: text/event-stream (SSE)

@@ -1,0 +1,153 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client / Dashboard]                                               │
+│         │                                                                    │
+│         │ Port: 80/TCP (Route)                                               │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (tls: null in manifest)                           │
+│         │ Auth: None at Route level                                          │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift Route)                                                   │
+│                                                                              │
+│  [trustyai Route]                                                            │
+│  - Type: OpenShift Route                                                     │
+│  - Port: 80/TCP (external) → 80/TCP (service)                               │
+│  - TLS: None (tls: null — no TLS termination at Route)                       │
+│  - Hostname: auto-generated                                                  │
+│         │                                                                    │
+│         │ Port: 80/TCP                                                       │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None                                                   │
+│         │ Auth: None                                                         │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  SERVICE (Cluster Internal)                                                  │
+│                                                                              │
+│  [trustyai-service ClusterIP]                                                │
+│  - Type: ClusterIP                                                           │
+│  - Port: 80/TCP → targetPort 8080/TCP                                        │
+│  - Protocol: HTTP                                                            │
+│  - Encryption: None on 8080; TLS available on 4443/TCP                       │
+│         │                                                                    │
+│         │ Port: 8080/TCP                                                     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (plaintext)                                       │
+│         │ Auth: None (auth delegated to sidecar)                             │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  POD (trustyai-service)                                                      │
+│                                                                              │
+│  ┌─────────────────────────────────┐  ┌──────────────────────────────────┐   │
+│  │ [kube-rbac-proxy sidecar]       │  │ [TrustyAI Service Container]     │   │
+│  │ (Injected by TrustyAI Operator) │  │                                  │   │
+│  │                                 │  │ - Image: registry.redhat.io/     │   │
+│  │ - Handles AuthN/AuthZ           │  │   rhods/odh-trustyai-service-    │   │
+│  │ - Token validation              │  │   rhel8:latest                   │   │
+│  │ - TLS termination               │  │ - Port: 8080/TCP (HTTP)          │   │
+│  │ - Proxies to 8080/TCP           │──▶  - Port: 4443/TCP (HTTPS)        │   │
+│  │                                 │  │ - SA: trustyai-serviceaccount    │   │
+│  │                                 │  │ - Java 17 / Quarkus 3.8.5       │   │
+│  └─────────────────────────────────┘  │                                  │   │
+│                                       │ Volumes:                         │   │
+│  ┌─────────────────────────────────┐  │ - /data (PVC 1Gi RWO)           │   │
+│  │ [Init Container]               │  │ - /etc/tls/internal/ (TLS certs) │   │
+│  │ - Writes model-serving-config   │  │                                  │   │
+│  │   ConfigMap payloadProcessors   │  └──────────────────────────────────┘   │
+│  │ - Points ModelMesh → TrustyAI  │                                         │
+│  └─────────────────────────────────┘                                         │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INTERNAL PLATFORM (Cluster Network)                                         │
+│                                                                              │
+│  [ModelMesh Serving]                                                         │
+│  - Direction: INBOUND                                                        │
+│  - Port: 80/TCP                                                              │
+│  - Protocol: HTTP POST                                                       │
+│  - Path: /consumer/kserve/v2                                                 │
+│  - Encryption: None                                                          │
+│  - Auth: None                                                                │
+│  - Purpose: Sends inference request/response payloads for data capture       │
+│                                                                              │
+│  [Prometheus]                                                                │
+│  - Direction: INBOUND (scrape)                                               │
+│  - Port: 80/TCP                                                              │
+│  - Protocol: HTTP GET                                                        │
+│  - Path: /q/metrics                                                          │
+│  - Encryption: None                                                          │
+│  - Auth: Bearer Token (ServiceAccount token via bearerTokenFile)             │
+│  - Purpose: Scrapes trustyai_spd, trustyai_dir, drift gauges                │
+│                                                                              │
+│  [TrustyAI Service Operator]                                                 │
+│  - Direction: MANAGEMENT                                                     │
+│  - Protocol: Kubernetes API                                                  │
+│  - Purpose: Creates/manages Deployment, Service, PVC, ConfigMap, auth proxy  │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (Outbound from TrustyAI)                                             │
+│                                                                              │
+│  [KServe / ModelMesh Model Servers]                                          │
+│  - Port: varies                                                              │
+│  - Protocol: gRPC/HTTP2 (V2) or HTTP (V1)                                   │
+│  - Encryption: plaintext (configurable)                                      │
+│  - Auth: None                                                                │
+│  - Purpose: Query models for predictions during explanation generation       │
+│  - Concurrency: Semaphore-limited gRPC calls                                │
+│                                                                              │
+│  [MariaDB / MySQL]                                                           │
+│  - Port: 3306/TCP                                                            │
+│  - Protocol: JDBC/TCP                                                        │
+│  - Encryption: plaintext (configurable)                                      │
+│  - Auth: Username/Password (env vars)                                        │
+│  - Purpose: Persistent inference data (DATABASE storage mode)                │
+│                                                                              │
+│  [MinIO]                                                                     │
+│  - Port: 9000/TCP                                                            │
+│  - Protocol: HTTPS (S3 API)                                                  │
+│  - Encryption: TLS                                                           │
+│  - Auth: Access Key / Secret Key (env vars)                                  │
+│  - Purpose: Persistent inference data (MINIO storage mode)                   │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: trustyai-role
+  - API Groups: "" (core)
+  - Resources: configmaps
+  - Verbs: create, delete, get, list, patch, update, watch
+- ClusterRoleBinding: trustyai-clusterrolebinding
+  - ServiceAccount: trustyai-serviceaccount (cluster-wide)
+
+Authentication & Authorization:
+- TrustyAI service implements NO built-in authentication or authorization
+- Auth is delegated to sidecar proxies injected by TrustyAI Service Operator:
+  - RHOAI 3.x: kube-rbac-proxy sidecar
+  - RHOAI 2.x: oauth-proxy sidecar
+- /q/metrics: Bearer token (SA token) for Prometheus scraping
+- All other endpoints: Rely on auth proxy + network isolation
+
+Secrets:
+- TLS certificate (/etc/tls/internal/)
+  - Type: kubernetes.io/tls
+  - Purpose: HTTPS on port 4443/TCP
+  - Provisioned by: OpenShift service serving certificates or manual
+  - Auto-Rotate: No
+
+- Database credentials
+  - Type: Opaque (env vars)
+  - Purpose: MariaDB/MySQL username and password
+  - Provisioned by: Manual / operator-provisioned
+  - Auto-Rotate: No
+
+- MinIO credentials
+  - Type: Opaque (env vars)
+  - Purpose: S3 access key and secret key
+  - Provisioned by: Manual / operator-provisioned
+  - Auto-Rotate: No
+
+RHOAI Distribution Notes:
+- Explainer endpoints (SHAP, LIME, CF, TS Saliency) DISABLED in RHOAI profile
+- Fairness metrics (SPD, DIR) and drift detection ENABLED
+- Image: registry.redhat.io/rhods/odh-trustyai-service-rhel8:latest
+- PVC storage default: 1Gi ReadWriteOnce (limits to single-replica)

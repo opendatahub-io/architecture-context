@@ -1,0 +1,87 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["External Client<br/>OpenAI-compatible API"]
+    end
+
+    subgraph Ingress["INGRESS / PROXY LAYER"]
+        Gateway["Gateway (Envoy)<br/>llm-d-inference-gateway<br/>80/TCP HTTP<br/>Providers: agentgateway / Istio / GKE"]
+    end
+
+    subgraph Cluster["IN-CLUSTER"]
+        direction TB
+
+        subgraph SchedulingZone["Scheduling Zone"]
+            EPP["Endpoint Picker (EPP)<br/>ghcr.io/llm-d/llm-d-inference-scheduler:v0.7.0<br/>Metrics: 9002/TCP, 9090/TCP<br/>ext-proc gRPC receiver"]
+        end
+
+        subgraph PoolZone["InferencePool (Namespace-scoped)"]
+            InfPool["InferencePool CR<br/>gateway.networking.k8s.io<br/>Selector: llm-d.ai/inference-serving=true<br/>FailMode: FailOpen/FailClose"]
+        end
+
+        subgraph ServerZone["Model Server Zone"]
+            direction LR
+            Decode["Decode Worker<br/>SA: sa | uid: 2000<br/>8000/TCP HTTP (vLLM API)<br/>8200/TCP HTTP (disagg decode)<br/>Labels: llm-d.ai/role=decode"]
+            Prefill["Prefill Worker<br/>SA: sa | uid: 2000<br/>8000/TCP HTTP (routing sidecar)<br/>Labels: llm-d.ai/role=prefill"]
+        end
+
+        subgraph RDMAZone["RDMA Network (Hardware-Isolated)"]
+            NIXL["NIXL v0.10.0<br/>5600/TCP RDMA<br/>Transports: NVLink/RoCE/InfiniBand/EFA<br/>GPUDirect Memory Registration<br/>No app-layer encryption"]
+        end
+
+        subgraph MonitoringZone["Monitoring Zone"]
+            Prometheus["Prometheus<br/>Scrapes: 9002, 9090/TCP"]
+            Jaeger["Jaeger (OTLP)<br/>Distributed Tracing"]
+            Grafana["Grafana Dashboards"]
+        end
+
+        subgraph OptionalZone["Optional: Precise Prefix Cache"]
+            ZMQ["ZMQ Publisher<br/>5556/TCP<br/>KV block events<br/>Unencrypted, in-cluster"]
+        end
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>SA Token Auth"]
+        Registry["ghcr.io/llm-d<br/>Container Registry<br/>Image Pull Secrets"]
+        ModelStore["Model Storage<br/>(HuggingFace/S3/PVC)<br/>HF Token / AWS IAM"]
+    end
+
+    %% Flows with security details
+    Client -->|"HTTP/80<br/>No TLS by default<br/>App-level auth varies"| Gateway
+    Gateway -->|"ext-proc gRPC<br/>In-cluster comm<br/>Loopback/sidecar"| EPP
+    EPP -->|"Label selector query<br/>K8s API watch"| InfPool
+    InfPool -->|"Pod discovery<br/>llm-d.ai/inference-serving=true"| Decode
+    InfPool -->|"Pod discovery<br/>llm-d.ai/role=prefill"| Prefill
+    Gateway -->|"HTTP/8000<br/>No mTLS by default"| Decode
+    Gateway -->|"HTTP/8000<br/>No mTLS by default"| Prefill
+    Prefill -->|"RDMA/5600<br/>GPUDirect<br/>No app encryption"| NIXL
+    NIXL -->|"KV blocks<br/>Direct memory"| Decode
+    Decode -.->|"Metrics/9002"| Prometheus
+    EPP -.->|"Metrics/9090"| Prometheus
+    Prometheus -.-> Grafana
+    Decode -.->|"OTLP traces"| Jaeger
+    EPP -->|"Pod watch<br/>SA Token"| K8sAPI
+    Decode -->|"Image pull"| Registry
+    Decode -->|"Model download<br/>HF Token/IAM"| ModelStore
+    Decode -.->|"ZMQ/5556<br/>Block events"| ZMQ
+    ZMQ -.->|"Cache index"| EPP
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef scheduling fill:#d4e6f1,stroke:#2e86c1,stroke-width:2px
+    classDef pool fill:#fdebd0,stroke:#e67e22,stroke-width:2px
+    classDef server fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef rdma fill:#f5b7b1,stroke:#e74c3c,stroke-width:2px
+    classDef monitoring fill:#e8daef,stroke:#8e44ad,stroke-width:1px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef optional fill:#d5f5e3,stroke:#27ae60,stroke-width:1px,stroke-dasharray: 5
+
+    class Client external
+    class Gateway ingress
+    class EPP scheduling
+    class InfPool pool
+    class Decode,Prefill server
+    class NIXL rdma
+    class Prometheus,Jaeger,Grafana monitoring
+    class K8sAPI,Registry,ModelStore externalservice
+    class ZMQ optional

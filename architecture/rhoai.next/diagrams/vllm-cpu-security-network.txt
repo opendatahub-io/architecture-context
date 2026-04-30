@@ -1,0 +1,141 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: None (KServe-managed)                                    │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ) - Managed by KServe                                      │
+│                                                                          │
+│  [KServe Ingress / HTTPRoute]                                            │
+│  - Port: 443/TCP (external) → 8000/TCP (internal)                      │
+│  - TLS Termination: TLS 1.2+ (SIMPLE mode)                             │
+│  - AuthN: KServe-managed                                                │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (TLS optional via --ssl-certfile)             │
+│         │ Auth: API Key (optional, VLLM_API_KEY)                        │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (vLLM-CPU Pod)                                              │
+│                                                                          │
+│  Container: odh-vllm-cpu-rhel9                                           │
+│  Base Image: UBI9-minimal                                                │
+│  User: UID 2000, GID 0 (non-root, OpenShift compatible)                │
+│                                                                          │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │  [OpenAI API Server - FastAPI/Uvicorn]                            │  │
+│  │  - Listen: 0.0.0.0:8000/TCP                                      │  │
+│  │  - Protocol: HTTP (TLS optional via --ssl-certfile/--ssl-keyfile) │  │
+│  │  - Auth: AuthenticationMiddleware (API Key validation)            │  │
+│  │  - CORS: Configurable via --allowed-origins                       │  │
+│  │  - Unauthenticated endpoints: /health, /metrics, /ping, /version │  │
+│  │  - TLS cert refresh: --enable-ssl-refresh (watchfiles)            │  │
+│  │                                                                    │  │
+│  │  Endpoints:                                                        │  │
+│  │    /v1/chat/completions   POST  (API Key)                         │  │
+│  │    /v1/completions        POST  (API Key)                         │  │
+│  │    /v1/responses          POST  (API Key)                         │  │
+│  │    /v1/messages           POST  (API Key) [Anthropic compat]      │  │
+│  │    /v1/models             GET   (API Key)                         │  │
+│  │    /v1/embeddings         POST  (API Key)                         │  │
+│  │    /v1/score              POST  (API Key)                         │  │
+│  │    /v1/classify           POST  (API Key)                         │  │
+│  │    /v1/audio/transcriptions POST (API Key)                        │  │
+│  │    /tokenize              POST  (API Key)                         │  │
+│  │    /detokenize            POST  (API Key)                         │  │
+│  │    /health                GET   (None)                            │  │
+│  │    /metrics               GET   (None)                            │  │
+│  │    /version               GET   (None)                            │  │
+│  │    /ping                  GET   (None)                            │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │  [gRPC Server - grpc.aio]                                         │  │
+│  │  - Listen: 0.0.0.0:50051/TCP                                     │  │
+│  │  - Protocol: gRPC                                                 │  │
+│  │  - Encryption: NONE (insecure port only)                          │  │
+│  │  - Auth: None                                                     │  │
+│  │  - ⚠️  WARNING: No TLS support for gRPC (not yet implemented)    │  │
+│  │  - Reflection: Enabled                                            │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │  [AsyncLLM Engine (V1)]                                           │  │
+│  │  - In-process Python async                                        │  │
+│  │  - PagedAttention, Continuous Batching, KV Cache                  │  │
+│  │  - Multiprocessing: fork method (VLLM_WORKER_MULTIPROC_METHOD)   │  │
+│  │                                                                    │  │
+│  │  [Model Executor - CPU]                                           │  │
+│  │  - Python + C/C++ native kernels (CMake)                          │  │
+│  │  - OpenBLAS, numactl, Intel OpenMP (x86_64)                      │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│         │                          │                     │               │
+│         │                          │                     │               │
+├─────────┼──────────────────────────┼─────────────────────┼───────────────┤
+│  EGRESS │                          │                     │               │
+│         │                          │                     │               │
+│         ▼                          ▼                     ▼               │
+│  ┌──────────────┐  ┌──────────────────────┐  ┌───────────────────────┐ │
+│  │ Hugging Face  │  │ S3-Compatible        │  │ OpenTelemetry         │ │
+│  │ Hub           │  │ Storage              │  │ Collector             │ │
+│  │               │  │                      │  │                       │ │
+│  │ Port: 443/TCP │  │ Port: 443/TCP        │  │ Port: configurable    │ │
+│  │ Proto: HTTPS  │  │ Proto: HTTPS         │  │ Proto: gRPC/HTTP      │ │
+│  │ Enc: TLS 1.2+ │  │ Enc: TLS 1.2+       │  │ Enc: TLS (config)     │ │
+│  │ Auth: Bearer  │  │ Auth: AWS IAM        │  │ Auth: None            │ │
+│  │  (HF_TOKEN)   │  │  (S3_ACCESS_KEY_ID / │  │                       │ │
+│  │               │  │   S3_SECRET_ACCESS_   │  │ Purpose: Distributed  │ │
+│  │ Purpose:      │  │   KEY)               │  │  tracing export       │ │
+│  │  Model &      │  │                      │  │  (optional)           │ │
+│  │  tokenizer    │  │ Purpose: Model       │  │                       │ │
+│  │  download     │  │  loading via         │  │ Note: Not available   │ │
+│  │               │  │  tensorizer          │  │  on s390x             │ │
+│  └──────────────┘  └──────────────────────┘  └───────────────────────┘ │
+│                                                                          │
+│  ┌──────────────┐                                                       │
+│  │ vLLM Usage   │                                                       │
+│  │ Stats        │                                                       │
+│  │              │                                                       │
+│  │ stats.vllm.ai│                                                       │
+│  │ Port: 443    │                                                       │
+│  │ Proto: HTTPS │                                                       │
+│  │ Auth: None   │                                                       │
+│  │              │                                                       │
+│  │ ⚠️  DISABLED │                                                       │
+│  │ by default   │                                                       │
+│  │ (VLLM_NO_    │                                                       │
+│  │ USAGE_STATS  │                                                       │
+│  │ =1)          │                                                       │
+│  └──────────────┘                                                       │
+└─────────────────────────────────────────────────────────────────────────┘
+
+INTEGRATION POINTS:
+- KServe: Deploys vLLM-CPU as ServingRuntime container, routes traffic (8000/TCP HTTP)
+- Prometheus: Scrapes /metrics endpoint (8000/TCP HTTP, no auth)
+- MCP Tool Servers: Optional tool calling via Model Context Protocol (configurable, HTTP)
+
+RBAC Summary:
+- No ClusterRoles or RoleBindings defined
+- vLLM-CPU runs as a regular workload pod managed by KServe
+- Container runs as non-root user (UID 2000, GID 0)
+
+Secrets:
+- (HF_TOKEN)                              Opaque (env var) - HF Hub auth, Manual, No auto-rotate
+- (S3_ACCESS_KEY_ID/S3_SECRET_ACCESS_KEY) Opaque (env var) - S3 auth, Manual, No auto-rotate
+- (VLLM_API_KEY)                          Opaque (env var) - Client API key auth, Manual, No auto-rotate
+- (ssl_keyfile/ssl_certfile)              kubernetes.io/tls - HTTPS serving, cert-manager/Manual, Yes (--enable-ssl-refresh)
+
+Security Notes:
+- ⚠️  gRPC port (50051) is insecure only - no TLS support
+- ⚠️  HTTP port (8000) defaults to plaintext - TLS requires explicit --ssl-certfile/--ssl-keyfile
+- ✅  API Key authentication available for /v1/* endpoints
+- ✅  Non-root container execution (UID 2000)
+- ✅  Usage stats telemetry disabled by default (VLLM_NO_USAGE_STATS=1)
+- ✅  TLS certificate hot-reload supported via --enable-ssl-refresh
+- ✅  CORS configurable via --allowed-origins

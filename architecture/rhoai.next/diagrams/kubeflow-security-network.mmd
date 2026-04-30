@@ -1,0 +1,80 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User["User / Dashboard"]
+    end
+
+    subgraph Ingress["INGRESS (Gateway API - TLS Termination)"]
+        Gateway["data-science-gateway (Envoy)<br/>Namespace: openshift-ingress<br/>443/TCP → 8443/TCP or 8888/TCP<br/>TLS 1.3 SIMPLE<br/>Path: /notebook/{ns}/{name}/*"]
+    end
+
+    subgraph AuthLayer["AUTHENTICATION LAYER"]
+        KRBP["kube-rbac-proxy sidecar<br/>Namespace: {user-namespace}<br/>8443/TCP HTTPS<br/>TLS: OpenShift service cert<br/>Secret: {name}-kube-rbac-proxy-tls"]
+    end
+
+    subgraph Workload["WORKLOAD (Network Policy Protected)"]
+        direction TB
+        Notebook["Jupyter Notebook Container<br/>Namespace: {user-namespace}<br/>SA: {notebook-name}<br/>8888/TCP HTTP<br/>StatefulSet (0 or 1 replicas)"]
+        NP1["NetworkPolicy: 8888/TCP<br/>ingress from controller NS only"]
+        NP2["NetworkPolicy: 8443/TCP<br/>ingress allowed (proxy enforces auth)"]
+    end
+
+    subgraph Controllers["CONTROLLERS (Operator Namespace)"]
+        direction TB
+        KFC["notebook-controller<br/>SA: notebook-controller-service-account<br/>8080/TCP metrics | 8081/TCP health"]
+        ODHC["odh-notebook-controller<br/>SA: odh-notebook-controller-manager<br/>8080/TCP metrics | 8081/TCP health<br/>8443/TCP webhook HTTPS"]
+    end
+
+    subgraph Webhooks["WEBHOOK ADMISSION"]
+        MutWH["Mutating: /mutate-notebook-v1<br/>8443/TCP HTTPS<br/>failurePolicy: Fail<br/>Image resolve, CA inject, proxy, MLflow"]
+        ValWH["Validating: /validate-notebook-v1<br/>8443/TCP HTTPS<br/>failurePolicy: Fail<br/>MLflow annotation safety"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: SA token"]
+        OShiftOAuth["OpenShift OAuth Server<br/>443/TCP HTTPS TLS 1.2+<br/>Legacy OAuthClient cleanup"]
+    end
+
+    %% External to Ingress
+    User -->|"HTTPS/443<br/>TLS 1.3<br/>No auth (TLS termination)"| Gateway
+
+    %% Ingress to Auth
+    Gateway -->|"HTTPS/8443<br/>TLS (service cert)<br/>Forwarded headers"| KRBP
+
+    %% Auth verification
+    KRBP -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>TokenReview"| K8sAPI
+    KRBP -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>SubjectAccessReview"| K8sAPI
+
+    %% Auth to Notebook
+    KRBP -->|"HTTP/8888<br/>localhost<br/>X-Auth-Request-User"| Notebook
+
+    %% Controller operations
+    KFC -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>StatefulSet, Service CRUD"| K8sAPI
+    KFC -->|"HTTP/8888<br/>No auth<br/>Kernel/terminal polling"| Notebook
+    ODHC -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>HTTPRoute, RBAC, NetworkPolicy"| K8sAPI
+    ODHC -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>Legacy cleanup"| OShiftOAuth
+
+    %% Webhook flows
+    K8sAPI -->|"HTTPS/8443<br/>TLS (service cert)<br/>Webhook auth"| MutWH
+    K8sAPI -->|"HTTPS/8443<br/>TLS (service cert)<br/>Webhook auth"| ValWH
+
+    %% Prometheus
+    Prometheus["Prometheus<br/>Metrics Scrape"] -->|"HTTP/8080<br/>No auth"| KFC
+    Prometheus -->|"HTTP/8080<br/>No auth"| ODHC
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef auth fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef workload fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controller fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef webhook fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef externalservice fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+
+    class User external
+    class Gateway ingress
+    class KRBP auth
+    class Notebook,NP1,NP2 workload
+    class KFC,ODHC controller
+    class MutWH,ValWH webhook
+    class K8sAPI,OShiftOAuth externalservice
+    class Prometheus external

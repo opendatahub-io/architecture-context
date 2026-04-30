@@ -1,0 +1,103 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User["User / kubectl"]
+    end
+
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        APIServer["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+    end
+
+    subgraph OperatorNS["OPERATOR NAMESPACE (opendatahub)"]
+        direction TB
+        Operator["Training Operator<br/>SA: training-operator<br/>Image: training-operator:v1.9.0-odh-3"]
+        WebhookSvc["Service: kubeflow-training-operator<br/>ClusterIP 443/TCP → 9443"]
+        MetricsPort["Metrics: 8080/TCP HTTP"]
+        HealthPort["Health: 8081/TCP HTTP"]
+        WebhookCert["Secret: webhook-cert<br/>OPA cert-controller<br/>Auto-rotated TLS"]
+    end
+
+    subgraph UserNS["USER NAMESPACES (per-job resources)"]
+        direction TB
+        subgraph PyTorchResources["PyTorchJob Resources"]
+            PTWorkers["PyTorch Worker Pods"]
+            PTNetPol["NetworkPolicy<br/>Allow: same-job + monitoring"]
+            PTHPA["HPA (elastic)"]
+        end
+        subgraph MPIResources["MPIJob Resources"]
+            Launcher["Launcher Pod<br/>SA: {job}-launcher<br/>kubectl init container"]
+            MPIWorkers["MPI Worker Pods"]
+            MPIConfigMap["ConfigMap<br/>hostfile + kubexec.sh"]
+            MPIRBAC["Role + RoleBinding<br/>(pods/exec)"]
+        end
+        subgraph GenericResources["Other Job Resources"]
+            Workers["Worker Pods<br/>Labels: training.kubeflow.org"]
+            HeadlessSvc["Headless Services<br/>ClusterIP=None<br/>Pod DNS discovery"]
+        end
+    end
+
+    subgraph Monitoring["MONITORING (openshift-monitoring)"]
+        Prometheus["Prometheus<br/>PodMonitor scrape"]
+    end
+
+    subgraph OptionalScheduling["OPTIONAL GANG SCHEDULING"]
+        Volcano["Volcano Scheduler<br/>PodGroup CRD"]
+        SchedulerPlugins["Scheduler Plugins<br/>PodGroup CRD"]
+        Kueue["Kueue MultiKueue<br/>(managedBy field, no network)"]
+    end
+
+    %% External flows
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>User credentials"| APIServer
+
+    %% Webhook callback
+    APIServer -->|"HTTPS/9443<br/>TLS (self-signed)<br/>API server client auth<br/>Fail-closed"| WebhookSvc
+    WebhookSvc --> Operator
+
+    %% Operator → API Server
+    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>CRUD: Pods, Services,<br/>ConfigMaps, CRDs, HPA,<br/>RBAC, NetworkPolicies"| APIServer
+
+    %% Operator creates resources
+    Operator -.->|creates| PTWorkers
+    Operator -.->|creates| PTNetPol
+    Operator -.->|creates| PTHPA
+    Operator -.->|creates| Launcher
+    Operator -.->|creates| MPIWorkers
+    Operator -.->|creates| MPIConfigMap
+    Operator -.->|creates| MPIRBAC
+    Operator -.->|creates| Workers
+    Operator -.->|creates| HeadlessSvc
+
+    %% Worker-to-worker
+    PTWorkers -->|"Framework port/TCP<br/>No encryption<br/>No auth"| PTWorkers
+    Workers -->|"Framework port/TCP<br/>No encryption<br/>No auth"| Workers
+
+    %% MPI launcher
+    Launcher -->|"HTTPS/443<br/>kubectl exec<br/>TLS 1.2+<br/>Launcher SA + RBAC"| APIServer
+    APIServer -->|"exec stream"| MPIWorkers
+
+    %% PyTorch elastic
+    PTWorkers -->|"29500/TCP c10d<br/>No encryption<br/>Rendezvous"| PTWorkers
+
+    %% Monitoring
+    Prometheus -->|"HTTP/8080<br/>No encryption<br/>No auth<br/>PodMonitor"| MetricsPort
+
+    %% Gang scheduling
+    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>PodGroup CRUD"| Volcano
+    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>PodGroup CRUD"| SchedulerPlugins
+
+    %% Cert management
+    WebhookCert -.->|"provides TLS"| Operator
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef controlplane fill:#dbeafe,stroke:#3b82f6,stroke-width:2px
+    classDef operatorns fill:#d1fae5,stroke:#059669,stroke-width:2px
+    classDef userns fill:#fef3c7,stroke:#d97706,stroke-width:2px
+    classDef monitoring fill:#ede9fe,stroke:#7c3aed,stroke-width:2px
+    classDef scheduling fill:#fff1f2,stroke:#e11d48,stroke-width:2px
+
+    class User external
+    class APIServer controlplane
+    class Operator,WebhookSvc,MetricsPort,HealthPort,WebhookCert operatorns
+    class PTWorkers,PTNetPol,PTHPA,Launcher,MPIWorkers,MPIConfigMap,MPIRBAC,Workers,HeadlessSvc userns
+    class Prometheus monitoring
+    class Volcano,SchedulerPlugins,Kueue scheduling

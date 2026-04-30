@@ -1,0 +1,146 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [HPA / KEDA Metrics Scraper]                                           │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (self-signed or cert-manager)                  │
+│         │ Auth: Bearer Token (metrics-reader ClusterRole)                │
+│         │ Purpose: Scrape wva_desired_replicas, wva_desired_ratio        │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  WVA CONTROLLER NAMESPACE (workload-variant-autoscaler-system)          │
+│                                                                          │
+│  [WVA Controller Manager Pod]                                            │
+│  - ServiceAccount: controller-manager                                    │
+│  - Image: ghcr.io/llm-d/llm-d-workload-variant-autoscaler:v0.5.1       │
+│  - Replicas: 1 (leader-elected)                                         │
+│                                                                          │
+│  Exposed Ports:                                                          │
+│  - 8443/TCP (HTTPS) - /metrics endpoint, TLS, Bearer Token auth        │
+│  - 8081/TCP (HTTP)  - /healthz, /readyz probes, no auth                 │
+│                                                                          │
+│  [controller-manager-metrics-service]                                    │
+│  - Type: ClusterIP                                                       │
+│  - Port: 8443/TCP → 8443/TCP                                            │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS (self-signed or cert-manager)                        │
+│  - Auth: Bearer Token (authn/authz filter)                               │
+│                                                                          │
+│  NetworkPolicy: allow-metrics-traffic                                    │
+│  - Ingress: Only from namespaces with metrics access label               │
+│  - Port: 8443/TCP                                                        │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS FLOWS                                                            │
+│                                                                          │
+│  [WVA Controller Manager]                                                │
+│         │                                                                │
+│         ├──── Destination: Prometheus / Thanos Querier                   │
+│         │     Port: 9090/TCP or 9091/TCP                                 │
+│         │     Protocol: HTTPS                                            │
+│         │     Encryption: TLS 1.2+                                       │
+│         │     Auth: Bearer Token (ServiceAccount token)                  │
+│         │     Token Path: /var/run/secrets/kubernetes.io/                │
+│         │                 serviceaccount/token                            │
+│         │     TLS Verify: Configurable (default: skip)                   │
+│         │     Purpose: PromQL queries for vLLM metrics                   │
+│         │              (kv_cache, queue_depth, token_rates, latency)     │
+│         │                                                                │
+│         ├──── Destination: Kubernetes API Server                         │
+│         │     Port: 443/TCP                                              │
+│         │     Protocol: HTTPS                                            │
+│         │     Encryption: TLS 1.2+                                       │
+│         │     Auth: ServiceAccount token                                 │
+│         │     Purpose: Watch/update CRs, Deployments, Nodes,            │
+│         │              ConfigMaps, scale subresource                     │
+│         │                                                                │
+│         └──── Destination: EPP Pods (Gateway API Inference Extension)    │
+│               Port: configurable/TCP                                     │
+│               Protocol: HTTPS                                            │
+│               Encryption: TLS                                            │
+│               Auth: Bearer Token (epp-metrics-token Secret)              │
+│               Token Path: /var/run/secrets/epp-metrics/token             │
+│               Purpose: Scrape flow_control_queue_size for                │
+│                        scale-from-zero decisions                         │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES API (Trusted Control Plane)                                  │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: ServiceAccount token                                            │
+│                                                                          │
+│  Resources Accessed:                                                     │
+│  - llmd.ai: variantautoscalings (CRUD + status + finalizers)            │
+│  - core: nodes, configmaps, namespaces, pods, secrets, services         │
+│  - apps: deployments (+ scale), replicasets, statefulsets               │
+│  - leaderworkerset.x-k8s.io: leaderworkersets (+ scale)                │
+│  - inference.networking.x-k8s.io: inferencepools                       │
+│  - coordination.k8s.io: leases (leader election)                        │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [Prometheus / Thanos Querier]                                           │
+│  - Purpose: vLLM inference server metrics source                         │
+│  - Port: 9090/TCP or 9091/TCP                                           │
+│  - Auth: Bearer Token (ServiceAccount)                                   │
+│  - Encryption: TLS 1.2+                                                  │
+│                                                                          │
+│  [EPP Pods - Gateway API Inference Extension]                            │
+│  - Purpose: Flow control queue size for scale-from-zero                  │
+│  - Port: configurable/TCP                                                │
+│  - Auth: Bearer Token (epp-metrics-token)                                │
+│  - Encryption: TLS                                                       │
+│                                                                          │
+│  [vLLM Inference Servers]                                                │
+│  - Purpose: Source of saturation metrics (indirect via Prometheus)        │
+│  - Metrics: kv_cache_usage_perc, num_requests_waiting,                  │
+│             request_success_total, cache_config_info, token counts       │
+│  - Connection: Indirect (Prometheus scrapes vLLM, WVA queries Prom)     │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: manager-role
+  - API Groups: llmd.ai
+    - Resources: variantautoscalings, variantautoscalings/status, variantautoscalings/finalizers
+    - Verbs: get, list, watch, create, update, patch, delete
+  - API Groups: "" (core)
+    - Resources: nodes, nodes/status (get, list, watch, update, patch)
+    - Resources: configmaps (get, list, watch, update)
+    - Resources: namespaces, pods, secrets, services (get, list, watch)
+    - Resources: events (create, patch)
+  - API Groups: apps
+    - Resources: deployments (get, list, watch, update, patch)
+    - Resources: deployments/scale (get, update)
+    - Resources: replicasets, statefulsets (get, list, watch)
+  - API Groups: leaderworkerset.x-k8s.io
+    - Resources: leaderworkersets (get, list, watch, update, patch)
+    - Resources: leaderworkersets/scale (get, update)
+  - API Groups: inference.networking.x-k8s.io, inference.networking.k8s.io
+    - Resources: inferencepools (get, list, watch)
+  - API Groups: monitoring.coreos.com
+    - Resources: servicemonitors (get, list, watch)
+
+- Role: leader-election-role (Namespace: workload-variant-autoscaler-system)
+  - configmaps: get, list, watch, create, update, patch, delete
+  - leases: get, list, watch, create, update, patch, delete
+  - events: create, patch
+
+NetworkPolicy:
+- Name: allow-metrics-traffic
+- Namespace: workload-variant-autoscaler-system
+- Ingress: Restricted to labeled namespaces on port 8443/TCP
+
+Secrets:
+- prometheus-client-cert (kubernetes.io/tls) - mTLS client cert for Prometheus, Manual/cert-manager, No auto-rotate
+- epp-metrics-token (Opaque) - Bearer token for EPP metrics scraping, ServiceAccount token, No auto-rotate
+
+ServiceMonitor:
+- Scrapes controller-manager-metrics-service on port 8443/TCP
+- Auth patch applied in OpenShift overlay for cluster-monitoring integration

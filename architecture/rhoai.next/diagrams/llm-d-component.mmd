@@ -1,0 +1,103 @@
+graph TB
+    subgraph External["External Clients"]
+        Client["Client Application<br/>(OpenAI-compatible API)"]
+    end
+
+    subgraph ProxyLayer["1. Proxy Layer"]
+        Gateway["Gateway<br/>(Envoy / Gateway API)<br/>Port: 80/HTTP"]
+        AG["agentgateway<br/>(Preferred)"]
+        Istio["Istio IngressGateway"]
+        GKEGW["GKE Gateway"]
+        AG -.- Gateway
+        Istio -.- Gateway
+        GKEGW -.- Gateway
+    end
+
+    subgraph EPPLayer["2. Endpoint Picker (EPP)"]
+        direction TB
+        ExtProc["Ext-Proc Server<br/>(gRPC bidirectional streaming)"]
+        ReqHandler["Request Handler<br/>(OpenAI parser, vLLM gRPC)"]
+        FlowControl["Flow Control<br/>Priority Bands: Premium/Standard/Best-Effort<br/>Fairness: Round-Robin / Global-Strict"]
+        Scheduler["Scheduler Pipeline<br/>Filter → Score → Pick"]
+
+        ExtProc --> ReqHandler
+        ReqHandler --> FlowControl
+        FlowControl --> Scheduler
+    end
+
+    subgraph DataLayer["EPP Data Sources"]
+        Prometheus["Polling Data Sources<br/>(Prometheus metrics)"]
+        K8sAPI["Notification Sources<br/>(K8s API: Pods, CRDs)"]
+        EPEvents["Endpoint Events<br/>(Add/Remove triggers)"]
+    end
+
+    subgraph PoolLayer["3. InferencePool (CRD)"]
+        InfPool["InferencePool CR<br/>(Gateway API Inference Extension)<br/>Namespace-scoped"]
+    end
+
+    subgraph ModelServers["4. Model Servers"]
+        direction LR
+        subgraph Decode["Decode Deployment"]
+            DecodeVLLM["vLLM / SGLang<br/>Port: 8000/TCP<br/>Port: 8200/TCP (disagg)"]
+        end
+        subgraph Prefill["Prefill Deployment (P/D)"]
+            PrefillVLLM["vLLM (Prefill)<br/>Port: 8000/TCP<br/>max_tokens=1"]
+            RoutingSidecar["Routing Sidecar<br/>Port: 8000/TCP"]
+        end
+    end
+
+    subgraph Accelerators["Hardware Accelerators"]
+        NVIDIA["NVIDIA<br/>A100/H100/H200/B200/L4"]
+        AMD["AMD<br/>MI250X+"]
+        Intel["Intel<br/>XPU/Gaudi"]
+        TPU["Google TPU<br/>v5e/v6e/v7"]
+        CPU["CPU<br/>x86_64 Xeon"]
+    end
+
+    subgraph KVTransfer["KV Cache Transfer"]
+        NIXL["NIXL<br/>Port: 5600/TCP<br/>RDMA (NVLink/RoCE/InfiniBand/EFA)"]
+    end
+
+    %% Request Flow
+    Client -->|"OpenAI API<br/>HTTP"| Gateway
+    Gateway -->|"ext-proc gRPC"| ExtProc
+    Scheduler -->|"endpoint selection"| InfPool
+    InfPool -->|"label-based discovery"| DecodeVLLM
+    InfPool -->|"label-based discovery"| PrefillVLLM
+    Gateway -->|"forward request"| DecodeVLLM
+    Gateway -->|"forward request"| RoutingSidecar
+
+    %% Data flows
+    Prometheus -.->|"queue depth, KV cache %"| Scheduler
+    K8sAPI -.->|"pod lifecycle"| Scheduler
+    EPEvents -.->|"setup/cleanup"| Scheduler
+
+    %% P/D disaggregation
+    PrefillVLLM -->|"KV cache transfer"| NIXL
+    NIXL -->|"GPU memory RDMA"| DecodeVLLM
+
+    %% Hardware
+    DecodeVLLM --- NVIDIA
+    DecodeVLLM --- AMD
+    DecodeVLLM --- Intel
+    DecodeVLLM --- TPU
+    DecodeVLLM --- CPU
+
+    %% Styling
+    classDef proxy fill:#4a90e2,stroke:#333,color:#fff
+    classDef epp fill:#9b59b6,stroke:#333,color:#fff
+    classDef pool fill:#f5a623,stroke:#333,color:#fff
+    classDef server fill:#27ae60,stroke:#333,color:#fff
+    classDef hw fill:#95a5a6,stroke:#333,color:#fff
+    classDef external fill:#ecf0f1,stroke:#999,stroke-width:2px
+    classDef kvtransfer fill:#e74c3c,stroke:#333,color:#fff
+    classDef data fill:#3498db,stroke:#333,color:#fff
+
+    class Gateway,AG,Istio,GKEGW proxy
+    class ExtProc,ReqHandler,FlowControl,Scheduler epp
+    class InfPool pool
+    class DecodeVLLM,PrefillVLLM,RoutingSidecar server
+    class NVIDIA,AMD,Intel,TPU,CPU hw
+    class Client external
+    class NIXL kvtransfer
+    class Prometheus,K8sAPI,EPEvents data

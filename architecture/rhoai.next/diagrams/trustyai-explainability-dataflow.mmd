@@ -1,0 +1,56 @@
+sequenceDiagram
+    participant Client as External Client
+    participant AuthProxy as Auth Proxy<br/>(kube-rbac-proxy)<br/>Injected by Operator
+    participant Route as OpenShift Route<br/>80/TCP HTTP
+    participant Service as trustyai-service<br/>ClusterIP 80/TCP
+    participant TrustyAI as TrustyAI Service<br/>8080/TCP HTTP<br/>4443/TCP HTTPS
+    participant Storage as Storage Backend<br/>(PVC / MariaDB / MinIO)
+    participant KServe as KServe Model Server<br/>gRPC/HTTP2
+    participant Prometheus as Prometheus
+
+    Note over Client,Prometheus: Flow 1: ModelMesh Inference Data Capture
+
+    participant ModelMesh as ModelMesh Serving
+
+    ModelMesh->>Service: POST /consumer/kserve/v2<br/>80/TCP HTTP, No Auth
+    Service->>TrustyAI: Forward to 8080/TCP
+    TrustyAI->>Storage: Persist inference data<br/>PVC: File I/O (CSV/Parquet)<br/>DB: JDBC 3306/TCP<br/>MinIO: S3 API 9000/TCP TLS
+    Storage-->>TrustyAI: Write confirmed
+
+    Note over Client,Prometheus: Flow 2: On-Demand Explanation (ODH only)
+
+    Client->>Route: POST /explainers/local/shap<br/>80/TCP HTTP
+    Route->>AuthProxy: Forward request
+    AuthProxy->>TrustyAI: Authenticated request<br/>8080/TCP
+    TrustyAI->>Storage: Load inference data
+    Storage-->>TrustyAI: Historical data
+    TrustyAI->>KServe: gRPC V2 InferRequest<br/>ModelInfer RPC<br/>Semaphore-limited concurrency
+    KServe-->>TrustyAI: InferResponse<br/>Prediction results
+    Note right of TrustyAI: Compute SHAP values<br/>using perturbations
+    TrustyAI-->>AuthProxy: SHAP explanation JSON
+    AuthProxy-->>Route: Response
+    Route-->>Client: 200 OK + explanation
+
+    Note over Client,Prometheus: Flow 3: Scheduled Metric Calculation & Publishing
+
+    Note right of TrustyAI: Quarkus Scheduler triggers<br/>every 5s (configurable)
+    TrustyAI->>Storage: Read inference data batch<br/>batch_size: 50000
+    Storage-->>TrustyAI: Dataframe
+    Note right of TrustyAI: Calculate SPD, DIR,<br/>KS, MMD, Meanshift
+    TrustyAI->>TrustyAI: Publish Micrometer gauges<br/>trustyai_spd, trustyai_dir
+
+    Prometheus->>Service: GET /q/metrics<br/>80/TCP HTTP<br/>Bearer Token (SA)
+    Service->>TrustyAI: Forward to 8080/TCP
+    TrustyAI-->>Prometheus: Prometheus exposition format<br/>trustyai_spd{model=..., feature=...}
+
+    Note over Client,Prometheus: Flow 4: Fairness Metric Request (RHOAI)
+
+    Client->>Route: POST /metrics/group/fairness/spd<br/>80/TCP HTTP
+    Route->>AuthProxy: Forward request
+    AuthProxy->>TrustyAI: Schedule SPD metric
+    TrustyAI->>Storage: Read reference data
+    Storage-->>TrustyAI: Dataframe
+    Note right of TrustyAI: Compute SPD for<br/>protected attribute
+    TrustyAI-->>AuthProxy: SPD result + schedule confirmation
+    AuthProxy-->>Route: Response
+    Route-->>Client: 200 OK + metric value

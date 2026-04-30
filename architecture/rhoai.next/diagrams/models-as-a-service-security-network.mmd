@@ -1,0 +1,77 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["External Client<br/>Bearer Token: API key (sk-oai-*)<br/>OR OpenShift token OR OIDC JWT"]
+    end
+
+    subgraph Ingress["INGRESS (openshift-ingress namespace)"]
+        direction TB
+        Gateway["maas-default-gateway<br/>Gateway API v1<br/>80/TCP HTTP, 443/TCP HTTPS<br/>TLS Mode: Terminate<br/>Host: maas.CLUSTER_DOMAIN"]
+
+        subgraph AuthZone["Authentication & Rate Limiting"]
+            Authorino["Kuadrant Authorino<br/>5001/TCP gRPC<br/>mTLS (Istio)<br/>3 auth methods:<br/>API key + TokenReview + OIDC"]
+            Limitador["Kuadrant Limitador<br/>8081/TCP gRPC<br/>mTLS (Istio)<br/>Token quota enforcement"]
+        end
+
+        BBR["payload-processing (BBR)<br/>SA: payload-processing<br/>9004/TCP gRPC ext_proc<br/>TLS (DestinationRule SIMPLE)<br/>Plugins: MODEL_TO_HEADER,<br/>PROVIDER_RESOLVER, API_TRANSLATION,<br/>APIKEY_INJECTION"]
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (Trusted - Istio)"]
+        direction TB
+
+        subgraph NS_ODH["Namespace: opendatahub"]
+            Controller["maas-controller<br/>SA: maas-controller<br/>8080/TCP metrics<br/>8081/TCP health"]
+            MaaSAPI["maas-api<br/>SA: maas-api<br/>8080/TCP HTTP or 8443/TCP HTTPS<br/>TLS: OpenShift serving cert<br/>Min TLS: 1.2"]
+        end
+
+        subgraph NS_User["Namespace: user-namespace"]
+            KServePod["KServe Model Pod<br/>8000/TCP HTTP/HTTPS<br/>Auth header stripped by Authorino"]
+        end
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        ExtProviders["External Model Providers<br/>(OpenAI, Anthropic, etc.)<br/>443/TCP HTTPS<br/>TLS 1.2+ (Istio origination)<br/>Auth: Injected API key"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>Auth: maas-db-config Secret"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: ServiceAccount token"]
+    end
+
+    %% External to Ingress
+    Client -->|"HTTPS/443<br/>TLS Terminate<br/>Bearer Token"| Gateway
+
+    %% Gateway to Auth
+    Gateway -->|"gRPC/5001<br/>mTLS (Istio)"| Authorino
+    Gateway -->|"gRPC/9004<br/>TLS SIMPLE"| BBR
+    Gateway -->|"gRPC/8081<br/>mTLS (Istio)"| Limitador
+
+    %% Authorino callbacks
+    Authorino -->|"HTTP/8080<br/>No encryption<br/>NetworkPolicy restricted"| MaaSAPI
+
+    %% Gateway to backends
+    Gateway -->|"HTTP/8000<br/>cluster-internal<br/>Auth header stripped"| KServePod
+    Gateway -->|"HTTPS/443<br/>TLS 1.2+ origination<br/>Injected API key"| ExtProviders
+
+    %% Gateway to maas-api (user-facing routes)
+    Gateway -->|"HTTP/8080<br/>cluster-internal<br/>X-MaaS-* headers"| MaaSAPI
+
+    %% Controller operations
+    Controller -->|"HTTPS/443<br/>SA token"| K8sAPI
+
+    %% maas-api egress
+    MaaSAPI -->|"TCP/5432<br/>DB credentials"| PostgreSQL
+    MaaSAPI -->|"HTTPS/443<br/>SA token"| K8sAPI
+    MaaSAPI -->|"HTTPS/8000<br/>TLS InsecureSkipVerify<br/>Bearer passthrough"| KServePod
+
+    %% BBR reads
+    BBR -->|"HTTPS/443<br/>SA token<br/>Read ExternalModel + Secrets"| K8sAPI
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef auth fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#e6d5e8,stroke:#9673a6,stroke-width:2px
+
+    class Client external
+    class Gateway,BBR ingress
+    class Authorino,Limitador auth
+    class Controller,MaaSAPI,KServePod servicemesh
+    class ExtProviders,PostgreSQL,K8sAPI externalservice

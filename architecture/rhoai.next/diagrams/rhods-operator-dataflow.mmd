@@ -1,0 +1,61 @@
+sequenceDiagram
+    participant User as User Browser
+    participant Router as OpenShift Router<br/>443/TCP HTTPS TLS 1.2+
+    participant Envoy as Gateway (Envoy)<br/>443/TCP HTTPS
+    participant AuthProxy as kube-auth-proxy<br/>8443/TCP HTTPS (Service CA)
+    participant OAuth as OpenShift OAuth Server<br/>443/TCP HTTPS
+    participant AppSvc as Application Service<br/>varies HTTP/HTTPS
+
+    Note over User,AppSvc: Flow 1: User Authentication via Gateway (OAuth Mode)
+
+    User->>Router: GET /dashboard<br/>HTTPS/443, No Auth
+    Router->>Envoy: Forward request
+    Envoy->>AuthProxy: ext_authz check<br/>HTTPS/8443, Cookie (_oauth2_proxy)
+    AuthProxy-->>Envoy: 302 Redirect (no cookie)
+    Envoy-->>User: 302 → OAuth login
+    User->>OAuth: Login page<br/>HTTPS/443, User credentials
+    OAuth-->>User: 302 + Authorization code
+    User->>Envoy: GET /oauth2/callback<br/>HTTPS/443, Auth code
+    Envoy->>AuthProxy: ext_authz callback<br/>HTTPS/8443
+    AuthProxy->>OAuth: Exchange code for token<br/>HTTPS/443, OAuthClient creds
+    OAuth-->>AuthProxy: Access token + refresh token
+    AuthProxy-->>Envoy: Set cookie (_oauth2_proxy)
+    Envoy-->>User: Set-Cookie + redirect to original URL
+    User->>Envoy: GET /dashboard<br/>HTTPS/443, Cookie
+    Envoy->>AuthProxy: ext_authz validate<br/>HTTPS/8443, Cookie
+    AuthProxy-->>Envoy: 200 OK + x-forwarded-access-token
+    Note over Envoy: Lua filter: extract access token,<br/>strip _oauth2_proxy cookies
+    Envoy->>AppSvc: Forward request<br/>Bearer Token (access token)
+    AppSvc-->>Envoy: Response
+    Envoy-->>User: Response
+
+    Note over User,AppSvc: Flow 2: Component Deployment via DSC
+
+    participant Admin as Cluster Admin
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant DSCCtrl as DSC Controller<br/>ServiceAccount token
+    participant CompCtrl as Component Controller<br/>ServiceAccount token
+
+    Admin->>K8sAPI: Create/Update DataScienceCluster CR<br/>HTTPS/6443, Bearer Token
+    K8sAPI-->>DSCCtrl: Watch event (DSC changed)
+    DSCCtrl->>K8sAPI: Create Component CR<br/>HTTPS/6443, SA token
+    K8sAPI-->>CompCtrl: Watch event (Component CR)
+    CompCtrl->>K8sAPI: Server-side apply manifests<br/>HTTPS/6443, SA token
+    CompCtrl->>K8sAPI: Update Component status<br/>HTTPS/6443, SA token
+    K8sAPI-->>DSCCtrl: Watch event (Component status)
+    DSCCtrl->>K8sAPI: Aggregate → update DSC status<br/>HTTPS/6443, SA token
+
+    Note over User,AppSvc: Flow 3: Monitoring Stack Data Collection
+
+    participant Prom as Prometheus<br/>(MonitoringStack)
+    participant OTELCol as OTEL Collector
+    participant TempoSvc as Tempo<br/>4317/TCP gRPC
+    participant ThanosQ as ThanosQuerier<br/>9090/TCP HTTP
+    participant PersesSvc as Perses
+
+    Prom->>AppSvc: Scrape metrics<br/>varies HTTP/HTTPS, SA token
+    OTELCol->>AppSvc: Collect traces<br/>varies gRPC/HTTP
+    OTELCol->>TempoSvc: Export traces<br/>gRPC/4317, TLS optional
+    ThanosQ->>Prom: Query metrics<br/>HTTP/9090, SA token
+    PersesSvc->>Prom: Query datasource<br/>HTTP, SA token
+    PersesSvc->>TempoSvc: Query traces<br/>HTTP, SA token

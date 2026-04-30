@@ -1,0 +1,50 @@
+sequenceDiagram
+    participant Client as Client<br/>(modelmesh-serving / external)
+    participant API as ModelMeshApi<br/>:8033/TCP gRPC<br/>TLS + mTLS (opt)
+    participant MM as SidecarModelMesh<br/>LRU Cache Engine
+    participant VMM as VModelManager<br/>Virtual Model Layer
+    participant LL as Litelinks<br/>:8080/TCP Thrift
+    participant RemoteMM as Remote ModelMesh<br/>Instance
+    participant Runtime as Colocated Runtime<br/>:8085/TCP or UDS<br/>gRPC plaintext
+    participant etcd as etcd<br/>:2379/TCP gRPC
+
+    Note over Client,etcd: Flow 1: Model Inference Request (Cache Hit)
+    Client->>API: gRPC inference request<br/>mm-model-id / mm-vmodel-id header
+    API->>MM: Route to local cache
+    MM->>MM: LRU cache lookup
+    MM->>Runtime: gRPC inference<br/>:8085 or /tmp/mmesh/grpc.sock
+    Runtime-->>MM: Prediction result
+    MM-->>API: Response
+    API-->>Client: gRPC response
+
+    Note over Client,etcd: Flow 1: Model Inference Request (Cache Miss - Forward)
+    Client->>API: gRPC inference request
+    API->>MM: Route to local cache
+    MM->>MM: LRU cache lookup (MISS)
+    MM->>LL: Forward to remote instance<br/>Thrift applyModelMulti
+    LL->>RemoteMM: Thrift :8080/TCP<br/>TLS + mTLS (opt)
+    RemoteMM->>Runtime: gRPC inference<br/>on remote runtime
+    Runtime-->>RemoteMM: Prediction result
+    RemoteMM-->>LL: Thrift response
+    LL-->>MM: Forward response
+    MM-->>API: Response
+    API-->>Client: gRPC response
+
+    Note over Client,etcd: Flow 2: Model Registration and Loading
+    Client->>API: registerModel RPC<br/>gRPC :8033
+    API->>MM: Register model
+    MM->>etcd: Write ModelRecord<br/>gRPC :2379
+    etcd-->>MM: Watch notification<br/>(placed instance)
+    MM->>Runtime: loadModel RPC<br/>gRPC :8085 or UDS
+    Runtime-->>MM: Load complete
+    MM->>etcd: Update ModelRecord<br/>with instance ID
+
+    Note over Client,etcd: Flow 3: Virtual Model Transition (Zero-Downtime)
+    Client->>API: setVModel RPC<br/>gRPC :8033
+    API->>VMM: Set new target model
+    VMM->>etcd: Write VModelRecord<br/>gRPC :2379
+    VMM->>MM: registerModel (target)
+    MM->>Runtime: loadModel (target)<br/>gRPC :8085 or UDS
+    Runtime-->>MM: Target loaded
+    VMM->>etcd: Atomic swap:<br/>active = target
+    VMM->>MM: unregisterModel (old active)<br/>if autoDelete

@@ -1,0 +1,58 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Gateway / Envoy<br/>80/TCP HTTP
+    participant EPP as Endpoint Picker (EPP)<br/>ext-proc gRPC
+    participant FC as Flow Control<br/>(Priority/Fairness)
+    participant Sched as Scheduler<br/>(Filter→Score→Pick)
+    participant Pool as InferencePool CR
+    participant Prefill as Prefill Worker<br/>8000/TCP
+    participant NIXL as NIXL KV Transfer<br/>5600/TCP RDMA
+    participant Decode as Decode Worker<br/>8200/TCP
+    participant Prom as Prometheus<br/>9002/9090
+
+    Note over Client,Decode: Standard Inference Flow (Non-Disaggregated)
+    Client->>Gateway: POST /v1/chat/completions<br/>OpenAI-compatible API
+    Gateway->>EPP: ext-proc gRPC<br/>(FULL_DUPLEX_STREAMED)
+    EPP->>FC: Parse request (OpenAI format)
+    FC->>FC: Check priority band<br/>(Premium/Standard/Best-Effort)
+    FC->>FC: Fairness check<br/>(x-gateway-inference-fairness-id)
+    FC->>Sched: Dispatch request
+    Sched->>Pool: Get endpoints<br/>(label selector)
+    Pool-->>Sched: Available endpoints
+    Sched->>Sched: Filter: KV cache, queue depth
+    Sched->>Sched: Score: prefix-cache, load, LoRA
+    Sched->>Sched: Pick: max-score / weighted-random
+    Sched-->>EPP: Selected endpoint
+    EPP-->>Gateway: Endpoint address
+    Gateway->>Decode: Forward request<br/>HTTP/8000
+    Decode-->>Gateway: Streaming response (SSE)
+    Gateway-->>Client: Streaming response
+
+    Note over Client,Decode: Prefill/Decode Disaggregation Flow
+    Client->>Gateway: POST /v1/chat/completions
+    Gateway->>EPP: ext-proc gRPC
+    EPP->>Sched: Route via disagg-profile-handler
+    Sched->>Sched: Select P & D worker pair
+    Sched-->>EPP: Prefill + Decode endpoints
+    EPP-->>Gateway: Prefill endpoint
+    Gateway->>Prefill: Forward (max_tokens=1)<br/>HTTP/8000
+    Prefill->>NIXL: KV cache transfer<br/>GPUDirect RDMA/5600
+    NIXL->>Decode: KV blocks transferred
+    Decode-->>Gateway: Streaming response<br/>HTTP/8200
+    Gateway-->>Client: Streaming response
+
+    Note over Sched,Prom: Background: Metrics Collection
+    loop Every polling interval
+        Prom-->>Sched: TotalQueuedRequests<br/>TotalRunningRequests<br/>KVCacheUtilization
+    end
+
+    Note over Client,Decode: Precise Prefix Cache-Aware Flow
+    Client->>Gateway: POST /v1/chat/completions
+    Gateway->>EPP: ext-proc gRPC
+    EPP->>Sched: Route with prefix scoring
+    Note right of Sched: ZMQ subscriber receives<br/>real-time KV block events<br/>from vLLM (port 5556)
+    Sched->>Sched: Score: precise-prefix-cache-scorer<br/>(highest block residency)
+    Sched-->>EPP: Best cache-matched endpoint
+    EPP-->>Gateway: Endpoint address
+    Gateway->>Decode: Forward request
+    Decode-->>Client: Response (cache hit = faster TTFT)

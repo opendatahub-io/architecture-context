@@ -1,0 +1,67 @@
+sequenceDiagram
+    autonumber
+
+    participant Client as External Client
+    participant Gateway as maas-default-gateway<br/>443/TCP HTTPS TLS Terminate
+    participant Authorino as Kuadrant Authorino<br/>5001/TCP gRPC mTLS
+    participant MaaSAPI as maas-api<br/>8080/TCP HTTP
+    participant BBR as payload-processing (BBR)<br/>9004/TCP gRPC TLS
+    participant Limitador as Kuadrant Limitador<br/>8081/TCP gRPC mTLS
+    participant KServe as KServe Model Pod<br/>8000/TCP HTTPS
+    participant ExtProvider as External Provider<br/>(OpenAI/Anthropic)<br/>443/TCP HTTPS
+    participant PostgreSQL as PostgreSQL<br/>5432/TCP
+
+    rect rgb(230, 245, 255)
+        Note over Client,KServe: Flow 1: Internal Model Inference (LLMInferenceService)
+        Client->>Gateway: POST /v1/chat/completions<br/>Auth: Bearer Token (API key or OpenShift token)
+        Gateway->>Authorino: AuthPolicy evaluation<br/>gRPC/mTLS (Istio)
+        Authorino->>MaaSAPI: POST /internal/v1/api-keys/validate<br/>HTTP (NetworkPolicy restricted)
+        MaaSAPI-->>Authorino: Key validation result (SHA-256 hash check)
+        Authorino->>MaaSAPI: POST /internal/v1/subscriptions/select<br/>HTTP (NetworkPolicy restricted)
+        MaaSAPI-->>Authorino: Selected subscription + headers
+        Gateway->>BBR: ext_proc: extract model name<br/>gRPC/TLS (DestinationRule SIMPLE)
+        BBR-->>Gateway: X-Gateway-Model-Name header
+        Gateway->>Limitador: TokenRateLimitPolicy evaluation<br/>gRPC/mTLS (Istio)
+        Limitador-->>Gateway: Rate limit decision
+        Gateway->>KServe: Forward to model pod (via HTTPRoute)<br/>HTTP/HTTPS (cluster-internal)
+        KServe-->>Gateway: Inference response
+        Gateway-->>Client: JSON response<br/>HTTPS/TLS
+    end
+
+    rect rgb(255, 243, 224)
+        Note over Client,ExtProvider: Flow 2: External Model Inference (ExternalModel)
+        Client->>Gateway: POST /v1/chat/completions<br/>Auth: Bearer Token
+        Gateway->>Authorino: AuthPolicy evaluation<br/>gRPC/mTLS
+        Authorino->>MaaSAPI: Validate + select subscription
+        MaaSAPI-->>Authorino: Subscription + identity headers
+        Gateway->>BBR: ext_proc: model extraction + provider resolution<br/>+ API translation + credential injection
+        BBR-->>Gateway: Transformed request + injected API key
+        Gateway->>Limitador: TokenRateLimitPolicy evaluation
+        Limitador-->>Gateway: Rate limit decision
+        Gateway->>ExtProvider: Forward to external provider<br/>HTTPS/TLS 1.2+ (Istio origination)<br/>Auth: Injected API key from credentialRef Secret
+        ExtProvider-->>Gateway: Provider response
+        Gateway-->>Client: Translated response<br/>HTTPS/TLS
+    end
+
+    rect rgb(232, 245, 233)
+        Note over Client,PostgreSQL: Flow 3: API Key Creation
+        Client->>Gateway: POST /v1/api-keys<br/>Auth: Bearer Token (OpenShift or existing API key)
+        Gateway->>Authorino: AuthPolicy evaluation
+        Authorino-->>Gateway: X-MaaS-Username, X-MaaS-Group headers
+        Gateway->>MaaSAPI: Forward (via HTTPRoute)<br/>HTTP (cluster-internal)
+        MaaSAPI->>PostgreSQL: Store key hash (SHA-256 with key_id salt)<br/>TCP/5432
+        PostgreSQL-->>MaaSAPI: Stored
+        MaaSAPI-->>Gateway: sk-oai-{key_id}_{secret} (show-once)
+        Gateway-->>Client: API key response<br/>HTTPS/TLS
+    end
+
+    rect rgb(243, 229, 245)
+        Note over Client,KServe: Flow 4: Model Discovery (/v1/models)
+        Client->>Gateway: GET /v1/models<br/>Auth: Bearer Token
+        Gateway->>MaaSAPI: Forward (via HTTPRoute)
+        MaaSAPI->>MaaSAPI: MaaSModelRef list from informer cache
+        MaaSAPI->>KServe: HTTP probe /v1/models per model<br/>HTTPS/8000 (InsecureSkipVerify)
+        KServe-->>MaaSAPI: Model availability
+        MaaSAPI-->>Gateway: OpenAI-compatible model list<br/>Cache-Control: no-store
+        Gateway-->>Client: Model list response
+    end

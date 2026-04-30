@@ -1,0 +1,54 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Gateway/Envoy Proxy<br/>443/TCP HTTPS
+    participant BBR as Body Based Router<br/>9004/TCP gRPC TLS
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant EPP as Endpoint Picker<br/>9002/TCP gRPC TLS
+    participant ModelPod as Model Server Pod<br/>(vLLM/SGLang/Triton)
+    participant LatencyPred as Latency Prediction<br/>8001+/TCP HTTP
+    participant OTel as OTel Collector<br/>4317/TCP gRPC
+
+    Note over Client,ModelPod: Flow 1: Inference Request Processing (with BBR)
+
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTPS/443, TLS 1.2+
+    Gateway->>BBR: ext-proc ProcessingRequest<br/>gRPC/9004, TLS
+    BBR->>BBR: Parse body, extract "model" field
+    BBR->>K8sAPI: Lookup ConfigMap (LoRA→base model)<br/>HTTPS/443, SA Token
+    K8sAPI-->>BBR: ConfigMap data
+    BBR-->>Gateway: ProcessingResponse<br/>+ X-Gateway-Model-Name header
+
+    Gateway->>EPP: ext-proc ProcessingRequest<br/>gRPC/9002, TLS
+    Note over EPP: Scheduling Pipeline:<br/>1. Filter (prefix-cache, SLO headroom)<br/>2. Score (queue, kv-cache, prefix-cache)<br/>3. Pick (weighted random)
+
+    opt Latency Prediction Enabled
+        EPP->>LatencyPred: GET /predict?...<br/>HTTP/8001+
+        LatencyPred-->>EPP: Predicted TTFT/TPOT
+    end
+
+    EPP->>ModelPod: Scrape /metrics<br/>HTTP (configurable)
+    ModelPod-->>EPP: Prometheus metrics<br/>(KV cache, queue, running requests)
+    EPP-->>Gateway: ProcessingResponse<br/>+ selected endpoint address
+    Gateway->>ModelPod: Forward inference request<br/>HTTP/8000 (cluster internal)
+    ModelPod-->>Gateway: Inference response
+    Gateway-->>Client: JSON response<br/>HTTPS/443
+
+    opt Tracing Enabled
+        EPP->>OTel: Export spans<br/>gRPC/4317
+    end
+
+    Note over Client,ModelPod: Flow 2: Model Name Extraction (BBR standalone)
+
+    Client->>Gateway: POST /v1/completions<br/>HTTPS/443, TLS 1.2+
+    Gateway->>BBR: ext-proc ProcessingRequest<br/>gRPC/9004, TLS
+    BBR->>BBR: Extract "model" from JSON body
+    BBR-->>Gateway: ProcessingResponse<br/>+ X-Gateway-Model-Name: llama-3-70b
+
+    Note over EPP,ModelPod: Flow 3: Continuous Metrics Collection
+
+    loop Every 50ms (configurable)
+        EPP->>ModelPod: GET /metrics<br/>HTTP (configurable)
+        ModelPod-->>EPP: KV cache utilization,<br/>queue depth, running requests,<br/>LoRA adapter info
+    end
+
+    Note over EPP: Prometheus Scraping (every 5s)
+    EPP->>EPP: Flush internal metrics<br/>to Prometheus endpoint (9090/TCP)

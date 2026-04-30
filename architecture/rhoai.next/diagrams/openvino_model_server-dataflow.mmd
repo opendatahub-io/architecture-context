@@ -1,0 +1,66 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Platform Gateway<br/>(KServe / OpenShift Route)
+    participant Drogon as Drogon HTTP Server<br/>REST port/TCP
+    participant gRPC as gRPC Server<br/>gRPC port/TCP
+    participant Handler as HttpRestApiHandler<br/>(API key validation)
+    participant MP as MediaPipe Graph Executor
+    participant LLM as LLM Calculator<br/>(GenAiServable)
+    participant GenAI as OpenVINO GenAI Pipeline<br/>(Continuous Batching)
+    participant MM as Model Manager
+    participant OV as OpenVINO Runtime<br/>(ModelInstance)
+    participant DAG as DAG Scheduler<br/>(EntryNode → DLNode → ExitNode)
+    participant CloudSDK as Cloud SDK<br/>(S3/GCS/Azure)
+    participant CloudStore as Cloud Storage<br/>443/TCP HTTPS TLS 1.2+
+
+    Note over Client,CloudStore: Flow 1: REST - OpenAI Chat Completions (Streaming)
+
+    Client->>Gateway: POST /v1/chat/completions<br/>Auth: Bearer Token
+    Gateway->>Drogon: Forward request
+    Drogon->>Handler: Route to handler
+    Handler->>Handler: Validate API key<br/>(if configured)
+    Handler->>MP: Dispatch to MediaPipe graph
+    MP->>LLM: Execute LLM Calculator
+    LLM->>GenAI: Run continuous batching pipeline<br/>(prefix cache, KV cache)
+    loop Token Generation (SSE Stream)
+        GenAI-->>LLM: Generated token
+        LLM-->>MP: Token packet
+        MP-->>Drogon: SSE event
+        Drogon-->>Client: data: {"choices":[...]}
+    end
+    Drogon-->>Client: data: [DONE]
+
+    Note over Client,CloudStore: Flow 2: gRPC - KServe v2 Model Inference
+
+    Client->>gRPC: ModelInfer RPC<br/>gRPC/HTTP2
+    gRPC->>MM: KFSInferenceServiceImpl
+    MM->>OV: Get ModelInstance<br/>(version routing)
+    OV->>OV: OpenVINO infer_request<br/>(CPU/GPU/NPU)
+    OV-->>MM: Inference result
+    MM-->>gRPC: InferResponse
+    gRPC-->>Client: gRPC response
+
+    Note over Client,CloudStore: Flow 3: Model Loading from Cloud Storage
+
+    MM->>MM: Config watcher detects<br/>new/updated model
+    MM->>CloudSDK: FileSystem Factory<br/>(detect s3:// gs:// az://)
+    CloudSDK->>CloudStore: Download model files<br/>Auth: IAM / SAS / ADC
+    CloudStore-->>CloudSDK: Model artifacts
+    CloudSDK-->>MM: Local model cache
+    MM->>OV: Compile model<br/>(OpenVINO Core)
+    OV-->>MM: Model ready
+
+    Note over Client,CloudStore: Flow 4: DAG Pipeline Inference
+
+    Client->>Drogon: POST /v1/models/pipeline:predict
+    Drogon->>Handler: Route to handler
+    Handler->>DAG: Dispatch to DAG pipeline
+    DAG->>DAG: EntryNode → parse input
+    loop For each DLNode / CustomNode
+        DAG->>OV: DLNode: OpenVINO inference
+        OV-->>DAG: Intermediate result
+        Note right of DAG: CustomNode: dlopen<br/>shared library
+    end
+    DAG->>DAG: ExitNode → assemble output
+    DAG-->>Drogon: Pipeline result
+    Drogon-->>Client: JSON response

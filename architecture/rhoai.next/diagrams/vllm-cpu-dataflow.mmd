@@ -1,0 +1,53 @@
+sequenceDiagram
+    participant Client as External Client
+    participant KServe as KServe Ingress<br/>443/TCP HTTPS TLS 1.2+
+    participant APIServer as vLLM API Server<br/>8000/TCP HTTP
+    participant AuthMW as AuthenticationMiddleware<br/>API Key Validation
+    participant Engine as AsyncLLM Engine (V1)<br/>PagedAttention
+    participant Executor as Model Executor<br/>CPU (OpenBLAS)
+    participant HFHub as Hugging Face Hub<br/>443/TCP HTTPS
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+
+    Note over HFHub,Executor: Flow 2: Model Loading at Startup
+    rect rgb(240, 248, 255)
+        Executor->>HFHub: GET model weights & tokenizer<br/>HTTPS/443, TLS 1.2+<br/>Auth: Bearer Token (HF_TOKEN)
+        HFHub-->>Executor: Model Artifacts
+        Note over Executor: Load into CPU Memory<br/>Initialize KV Cache<br/>(PagedAttention)
+    end
+
+    Note over Client,Executor: Flow 1: OpenAI Chat Completion Request
+    rect rgb(245, 255, 245)
+        Client->>KServe: POST /v1/chat/completions<br/>HTTPS/443, TLS 1.2+
+        KServe->>APIServer: Forward request<br/>HTTP/8000
+        APIServer->>AuthMW: Validate API Key
+        AuthMW-->>APIServer: Authorized
+        APIServer->>Engine: Submit inference request<br/>Python async (in-process)
+        Engine->>Executor: Execute model forward pass<br/>Python (in-process)
+        Note over Executor: CPU inference<br/>OpenBLAS / numactl
+        Executor-->>Engine: Token output
+        Engine-->>APIServer: Generated tokens
+        APIServer-->>KServe: SSE Stream response<br/>HTTP/8000
+        KServe-->>Client: JSON/SSE Response<br/>HTTPS/443
+    end
+
+    Note over Client,Executor: Flow 1b: Streaming Variant
+    rect rgb(255, 250, 240)
+        Client->>KServe: POST /v1/chat/completions<br/>stream: true
+        KServe->>APIServer: Forward
+        APIServer->>Engine: Submit request
+        loop Token-by-token generation
+            Engine->>Executor: Forward pass
+            Executor-->>Engine: Next token
+            Engine-->>APIServer: Token event
+            APIServer-->>KServe: SSE chunk
+            KServe-->>Client: SSE data event
+        end
+        APIServer-->>KServe: SSE [DONE]
+        KServe-->>Client: SSE [DONE]
+    end
+
+    Note over Executor,S3: Alternative: S3 Model Loading (Tensorizer)
+    rect rgb(255, 245, 245)
+        Executor->>S3: GET model artifacts<br/>HTTPS/443, TLS 1.2+<br/>Auth: AWS IAM (S3_ACCESS_KEY_ID)
+        S3-->>Executor: Serialized model
+    end
