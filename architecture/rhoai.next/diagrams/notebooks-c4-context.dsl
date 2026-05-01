@@ -1,59 +1,52 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates workbenches and runs ML experiments in JupyterLab, Code-Server, or RStudio"
-        platformAdmin = person "Platform Admin" "Manages RHOAI platform, deploys workbench ImageStreams"
+        dataScientist = person "Data Scientist" "Creates and uses workbenches for ML development, data exploration, and model training"
 
-        notebooks = softwareSystem "Notebooks (Workbench & Runtime Images)" "Container image factory producing ~20 workbench and pipeline runtime images for RHOAI" {
-            jupyterMinimal = container "jupyter/minimal" "Base JupyterLab with Python 3.12" "Container Image (UBI9)"
-            jupyterDatascience = container "jupyter/datascience" "Data science workbench with ML libraries, DB connectors, Elyra" "Container Image (UBI9)"
-            jupyterPytorch = container "jupyter/pytorch" "PyTorch + CUDA GPU workbench" "Container Image (UBI9+CUDA)"
-            jupyterTensorflow = container "jupyter/tensorflow" "TensorFlow + CUDA GPU workbench" "Container Image (UBI9+CUDA)"
-            jupyterTrustyai = container "jupyter/trustyai" "AI explainability workbench with Java 17" "Container Image (UBI9)"
-            codeserver = container "Code-Server" "VS Code in the browser with nginx proxy + idle culling CGI" "Container Image (UBI9)"
-            rstudio = container "RStudio" "RStudio Server with R 4.5.1, nginx proxy + idle culling CGI" "Container Image (UBI9)"
-            runtimes = container "Pipeline Runtimes" "Lightweight execution environments for Elyra pipeline steps" "Container Image (UBI9)"
-            manifests = container "Kustomize Manifests" "ImageStream definitions with 114 replacement rules, sha256-pinned" "YAML/Kustomize"
-            idleCulling = container "Idle Culling Stack" "nginx + httpd CGI emulating /api/kernels/ for non-Jupyter workbenches" "nginx + httpd + bash CGI"
+        notebooks = softwareSystem "Notebooks (Workbench & Runtime Images)" "Container image factory producing ~20 workbench and runtime images for interactive data science environments" {
+            jupyterMinimal = container "jupyter/minimal" "Base JupyterLab workbench with Python 3.12" "Container Image"
+            jupyterDatascience = container "jupyter/datascience" "JupyterLab with ML libraries, Elyra, DB connectors" "Container Image"
+            jupyterPytorch = container "jupyter/pytorch" "JupyterLab with PyTorch + CUDA" "Container Image"
+            jupyterPytorchLLM = container "jupyter/pytorch+llmcompressor" "JupyterLab with LLM quantization" "Container Image"
+            jupyterTensorflow = container "jupyter/tensorflow" "JupyterLab with TensorFlow + CUDA" "Container Image"
+            jupyterTrustyai = container "jupyter/trustyai" "JupyterLab with AI explainability + Java" "Container Image"
+            jupyterRocmPytorch = container "jupyter/rocm/pytorch" "JupyterLab with PyTorch + AMD ROCm" "Container Image"
+            jupyterRocmTf = container "jupyter/rocm/tensorflow" "JupyterLab with TensorFlow + AMD ROCm" "Container Image"
+            codeserver = container "codeserver" "VS Code in browser (code-server) with nginx + CGI idle culling" "Container Image"
+            rstudio = container "rstudio" "RStudio Server with R 4.5, nginx + CGI idle culling" "Container Image"
+            runtimes = container "Pipeline Runtimes" "7 runtime images for Elyra pipeline step execution" "Container Images"
+            manifests = container "Kustomize Manifests" "ImageStream definitions with 114 replacement rules for RHOAI/ODH" "Kustomize"
+            buildinputs = container "buildinputs" "Go CLI that extracts Dockerfile dependencies via LLB for Konflux" "Go CLI"
         }
 
-        rhodsOperator = softwareSystem "rhods-operator" "Deploys workbench ImageStreams to cluster from kustomize manifests" "Internal RHOAI"
-        odhDashboard = softwareSystem "ODH Dashboard" "UI for data scientists to select and create workbenches" "Internal RHOAI"
-        notebookController = softwareSystem "ODH Notebook Controller" "Manages Notebook CR lifecycle, injects kube-rbac-proxy sidecar" "Internal RHOAI"
-        notebookCuller = softwareSystem "Notebook Controller Culler" "Polls /api/kernels/ to detect and cull idle workbenches" "Internal RHOAI"
-        dsp = softwareSystem "Data Science Pipelines" "Pipeline execution platform for ML workflows" "Internal RHOAI"
-        konflux = softwareSystem "Konflux CI" "Hermetic build pipeline with cachi2 dependency prefetch" "External"
-        containerRegistry = softwareSystem "Container Registry" "registry.redhat.io - stores published workbench images" "External"
-        pypi = softwareSystem "PyPI / CRAN" "Python and R package repositories" "External"
-        databases = softwareSystem "User Databases" "PostgreSQL, MySQL, MongoDB data sources" "External"
-        s3 = softwareSystem "Object Storage" "S3-compatible storage for datasets and models" "External"
+        rhodsOperator = softwareSystem "rhods-operator / opendatahub-operator" "Deploys workbench ImageStreams to cluster" "Internal ODH"
+        odhDashboard = softwareSystem "ODH Dashboard" "User-facing UI for workbench creation and management" "Internal ODH"
+        notebookController = softwareSystem "ODH Notebook Controller" "Manages Notebook CR lifecycle, sidecar injection, image resolution" "Internal ODH"
+        notebookCuller = softwareSystem "Notebook Controller Culler" "Detects idle workbenches via /api/kernels/ polling" "Internal ODH"
+        dsPipelines = softwareSystem "Data Science Pipelines" "Pipeline orchestration using Elyra-submitted DAGs" "Internal ODH"
 
-        # Relationships
-        dataScientist -> odhDashboard "Selects workbench type via UI"
-        dataScientist -> notebooks "Uses workbench for ML development" "HTTPS/8443 via kube-rbac-proxy"
-        platformAdmin -> rhodsOperator "Deploys RHOAI platform"
+        konfluxCI = softwareSystem "Konflux CI" "Hermetic container image build system" "External"
+        containerRegistry = softwareSystem "Container Registry" "registry.redhat.io / quay.io for image storage" "External"
+        pypi = softwareSystem "PyPI / Package Registries" "Python and R package repositories" "External"
+        databases = softwareSystem "User Databases" "PostgreSQL, MySQL, MongoDB user-configured data sources" "External"
+        k8sAPI = softwareSystem "Kubernetes API" "OpenShift API server" "External"
 
-        odhDashboard -> notebooks "Reads ImageStream annotations to populate workbench selection" "HTTPS/6443"
-        notebookController -> notebooks "Creates workbench pods, injects sidecars, resolves images" "Kubernetes API"
+        dataScientist -> odhDashboard "Selects workbench type and creates workbench"
+        dataScientist -> notebooks "Uses workbench for ML development" "HTTPS via kube-rbac-proxy"
+
+        konfluxCI -> notebooks "Builds hermetic container images" "cachi2 prefetched deps"
+        konfluxCI -> containerRegistry "Pushes built images" "HTTPS/443"
+
+        manifests -> rhodsOperator "Provides ImageStream definitions" "Kustomize"
+        rhodsOperator -> k8sAPI "Deploys ImageStreams" "HTTPS/6443"
+        odhDashboard -> k8sAPI "Reads ImageStream annotations" "HTTPS/6443"
+        notebookController -> k8sAPI "Mutating webhook, resolves images, injects sidecar" "HTTPS/6443"
         notebookCuller -> notebooks "Polls /api/kernels/ for idle detection" "HTTPS/8443"
-        rhodsOperator -> notebooks "Deploys ImageStream manifests" "Kubernetes API"
-        dsp -> notebooks "Runs pipeline steps using runtime images" "Pod creation"
-
-        notebooks -> dsp "Submits pipelines via Elyra" "HTTP/8888"
-        notebooks -> pypi "Installs packages at runtime" "HTTPS/443"
-        notebooks -> databases "User-configured data connections" "TCP/5432,3306,27017"
-        notebooks -> s3 "Reads/writes datasets and models" "HTTPS/443"
-
-        konflux -> notebooks "Builds container images hermetically" "CI/CD"
-        konflux -> containerRegistry "Pushes built images" "HTTPS/443"
-        containerRegistry -> notebooks "Provides images via ImageStream pull" "HTTPS/443"
-
-        # Internal container relationships
-        jupyterMinimal -> jupyterDatascience "Base image for" "Dockerfile FROM"
-        jupyterDatascience -> jupyterPytorch "Base image for" "Dockerfile FROM"
-        jupyterDatascience -> jupyterTensorflow "Base image for" "Dockerfile FROM"
-        jupyterDatascience -> jupyterTrustyai "Base image for" "Dockerfile FROM"
-        codeserver -> idleCulling "Uses for Jupyter API emulation"
-        rstudio -> idleCulling "Uses for Jupyter API emulation"
+        notebooks -> dsPipelines "Submits Elyra pipelines" "HTTP/8888"
+        dsPipelines -> runtimes "Launches pipeline step pods"
+        notebooks -> pypi "User package installation" "HTTPS/443"
+        notebooks -> databases "User-configured data connections" "TCP"
+        containerRegistry -> notebooks "ImageStream image pull" "HTTPS/443"
+        buildinputs -> konfluxCI "Provides minimal build context deps"
     }
 
     views {
@@ -72,7 +65,7 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal ODH" {
                 background #7ed321
                 color #ffffff
             }
@@ -81,13 +74,9 @@ workspace {
                 background #4a90e2
                 color #ffffff
             }
-            element "Container" {
-                background #438dd5
-                color #ffffff
-            }
-            element "Software System" {
-                background #1168bd
-                color #ffffff
+            element "Container Image" {
+                background #d5e8d4
+                color #333333
             }
         }
     }

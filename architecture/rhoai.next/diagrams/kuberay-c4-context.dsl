@@ -1,51 +1,51 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and deploys distributed Ray computing workloads on RHOAI"
+        user = person "Data Scientist" "Creates and manages Ray clusters, jobs, and serving deployments for distributed ML workloads"
 
-        kuberay = softwareSystem "KubeRay Operator" "Manages the lifecycle of RayCluster, RayJob, and RayService custom resources and their associated Kubernetes infrastructure" {
-            rayClusterController = container "RayCluster Controller" "Manages Ray cluster pod lifecycle, services, ingress, and RBAC" "Go (controller-runtime)"
-            rayJobController = container "RayJob Controller" "Manages Ray job submission, lifecycle, and deletion policies" "Go (controller-runtime)"
-            rayServiceController = container "RayService Controller" "Manages Ray Serve deployments with zero-downtime upgrades" "Go (controller-runtime)"
-            authController = container "Authentication Controller" "Creates Gateway API HTTPRoutes and injects kube-rbac-proxy sidecars" "Go (controller-runtime)"
-            mtlsController = container "mTLS Controller" "Manages cert-manager certificates for inter-node TLS" "Go (controller-runtime)"
-            networkPolicyController = container "NetworkPolicy Controller" "Creates annotation-driven network isolation policies" "Go (controller-runtime)"
-            webhookServer = container "Webhook Server" "Validates and mutates RayCluster custom resources" "Go (admission webhook)" "9443/TCP HTTPS"
+        kuberay = softwareSystem "KubeRay Operator" "Manages lifecycle of RayCluster, RayJob, and RayService CRDs and their associated Kubernetes infrastructure for distributed Ray computing" {
+            rayClusterCtrl = container "RayCluster Controller" "Manages Ray cluster pod lifecycle, services, ingress, and autoscaler RBAC" "Go (controller-runtime)"
+            rayJobCtrl = container "RayJob Controller" "Manages Ray job submission, lifecycle, and deletion policies" "Go (controller-runtime)"
+            rayServiceCtrl = container "RayService Controller" "Manages zero-downtime Ray Serve upgrades with active/pending cluster pattern" "Go (controller-runtime)"
+            authCtrl = container "Authentication Controller" "Creates Gateway API HTTPRoutes and injects kube-rbac-proxy sidecars for authenticated dashboard access" "Go (controller-runtime)"
+            mtlsCtrl = container "mTLS Controller" "Manages cert-manager Issuer and Certificate resources for inter-pod mTLS" "Go (controller-runtime)"
+            netpolCtrl = container "NetworkPolicy Controller" "Creates annotation-driven NetworkPolicies for defense-in-depth network isolation" "Go (controller-runtime)"
+            webhook = container "Webhook Server" "Validates and mutates RayCluster resources via admission webhooks" "Go (9443/TCP TLS)"
+            metrics = container "Metrics Server" "Exposes Prometheus metrics for Ray clusters, jobs, and services" "Go (8080/TCP)"
         }
 
-        rhoaiPlatform = softwareSystem "RHOAI Platform" "Red Hat OpenShift AI platform operator" "Internal RHOAI" {
-            rhodsOperator = container "RHODS Operator" "Deploys KubeRay via kustomize manifests" "Go Operator"
-            dsgw = container "data-science-gateway" "Platform Gateway for external traffic routing" "Gateway API"
+        rhoaiPlatform = softwareSystem "RHOAI Platform" "Red Hat OpenShift AI platform operator and components" "Internal RHOAI" {
+            rhodsOperator = container "rhods-operator" "Deploys KubeRay operator via kustomize manifests" "Go Operator"
+            dsgw = container "data-science-gateway" "Platform Gateway resource for external traffic routing to Ray dashboards" "Gateway API"
         }
 
         certManager = softwareSystem "cert-manager" "Certificate lifecycle management for mTLS" "External"
-        gatewayAPI = softwareSystem "Gateway API" "HTTPRoute and ReferenceGrant for authenticated dashboard access" "External"
-        kubeRBACProxy = softwareSystem "kube-rbac-proxy" "Authentication/authorization sidecar proxy (OIDC + SubjectAccessReview)" "External"
-        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management" "External"
+        gatewayAPI = softwareSystem "Gateway API" "HTTPRoute and ReferenceGrant for authenticated ingress" "External"
+        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management, auth reviews" "External"
         redis = softwareSystem "Redis" "External state store for GCS fault tolerance" "External"
-        volcano = softwareSystem "Volcano / YuniKorn" "Batch scheduling for gang scheduling support" "External"
+        volcano = softwareSystem "Volcano" "Gang scheduling for batch workloads" "External"
+        kubeRBACProxy = softwareSystem "kube-rbac-proxy" "Authentication/authorization proxy sidecar for Ray head pods" "Internal RHOAI"
 
-        // User interactions
-        user -> kuberay "Creates RayCluster/RayJob/RayService CRs via kubectl/dashboard"
-        user -> rhoaiPlatform "Accesses Ray dashboards via Gateway" "HTTPS/443"
+        # User interactions
+        user -> kuberay "Creates RayCluster/RayJob/RayService via kubectl" "HTTPS/443"
+        user -> dsgw "Accesses Ray Dashboard" "HTTPS/443 OIDC"
 
-        // Platform interactions
-        rhoaiPlatform -> kuberay "Deploys operator via kustomize manifests"
+        # Internal flows
+        rayClusterCtrl -> k8sAPI "Manages Pods, Services, Ingress, RBAC" "HTTPS/443"
+        rayJobCtrl -> k8sAPI "Creates submitter Jobs, watches status" "HTTPS/443"
+        rayServiceCtrl -> k8sAPI "Manages active/pending clusters, updates Service selectors" "HTTPS/443"
+        authCtrl -> k8sAPI "Creates HTTPRoutes, ReferenceGrants, injects sidecars" "HTTPS/443"
+        mtlsCtrl -> certManager "Creates Issuer and Certificate CRDs" "CRD API"
+        netpolCtrl -> k8sAPI "Creates/manages NetworkPolicy resources" "HTTPS/443"
 
-        // KubeRay dependencies
-        kuberay -> kubernetesAPI "Watches CRDs, CRUD pods/services/jobs/RBAC" "HTTPS/443"
-        kuberay -> certManager "Creates Issuer and Certificate resources for mTLS" "CRD Create/Watch"
-        kuberay -> gatewayAPI "Creates HTTPRoutes for dashboard access" "CRD Create"
-        kuberay -> kubeRBACProxy "Injects as sidecar for authenticated dashboard access" "HTTPS/8443"
-        kuberay -> redis "GCS fault tolerance external storage (optional)" "TCP/6379"
-        kuberay -> volcano "Gang scheduling integration (optional)" "Pod annotations"
+        # Platform integration
+        rhodsOperator -> kuberay "Deploys operator via kustomize" "Kustomize"
+        dsgw -> kubeRBACProxy "Routes dashboard traffic" "HTTPS/8443"
+        kubeRBACProxy -> k8sAPI "TokenReview and SubjectAccessReview" "HTTPS/443"
 
-        // Internal interactions
-        rayClusterController -> webhookServer "Validates RayCluster CRs"
-        rayJobController -> rayClusterController "Creates RayCluster for job execution"
-        rayServiceController -> rayClusterController "Manages active/pending RayCluster pairs"
-        authController -> rayClusterController "Adds kube-rbac-proxy sidecar to head pods"
-        mtlsController -> rayClusterController "Mounts TLS secrets into head/worker pods"
-        networkPolicyController -> rayClusterController "Creates NetworkPolicy for cluster pods"
+        # External dependencies
+        kuberay -> redis "GCS fault tolerance storage" "TCP/6379"
+        kuberay -> volcano "Gang scheduling integration" "Pod annotations"
+        kuberay -> certManager "Certificate provisioning" "CRD Create/Watch"
     }
 
     views {
@@ -60,6 +60,10 @@ workspace {
         }
 
         styles {
+            element "Software System" {
+                background #438DD5
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -69,16 +73,12 @@ workspace {
                 color #ffffff
             }
             element "Person" {
-                shape Person
-                background #4a90e2
-                color #ffffff
-            }
-            element "Software System" {
-                background #4a90e2
+                shape person
+                background #08427B
                 color #ffffff
             }
             element "Container" {
-                background #438dd5
+                background #438DD5
                 color #ffffff
             }
         }

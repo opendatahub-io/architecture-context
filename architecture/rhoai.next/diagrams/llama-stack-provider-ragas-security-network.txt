@@ -1,134 +1,150 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                   │
 │                                                                          │
-│  [Client / Data Scientist]                                               │
+│  [External Client]                                                       │
 │         │                                                                │
 │         │ Port: 8321/TCP                                                 │
 │         │ Protocol: HTTP                                                 │
-│         │ Encryption: None (server-configured)                           │
-│         │ Auth: None (server-configured)                                 │
+│         │ Encryption: None (server-configurable)                         │
+│         │ Auth: None (server-configurable)                               │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  LLAMA STACK SERVER PROCESS                                             │
-│  (Provider Plugin - runs in-process)                                     │
+│  LLAMA STACK SERVER (Application Boundary)                              │
 │                                                                          │
 │  [Llama Stack Server]                                                    │
-│  - Port: 8321/TCP (HTTP, configurable)                                  │
-│  - Endpoints:                                                            │
-│    - POST /alpha/eval/run_eval                                           │
-│    - GET  /alpha/eval/job/status                                         │
-│    - GET  /alpha/eval/job/result                                         │
-│    - POST /alpha/eval/job/cancel                                         │
-│  - Auth: None (server-configured)                                        │
-│  - Encryption: None (server-configured)                                  │
+│  - Port: 8321/TCP (HTTP)                                                │
+│  - Hosts: Eval API, Inference API, DatasetIO API                        │
+│  - Provider Plugin: inline::trustyai_ragas                              │
+│  - Provider Plugin: remote::trustyai_ragas                              │
 │                                                                          │
-│  ┌─────────────────────────────────────────────────────────────────┐    │
-│  │  llama-stack-provider-ragas (Provider Plugin)                    │    │
-│  │                                                                   │    │
-│  │  [RagasEvaluatorInline]        [RagasEvaluatorRemote]            │    │
-│  │  - inline::trustyai_ragas      - remote::trustyai_ragas          │    │
-│  │  - In-process execution        - KFP pipeline execution          │    │
-│  │  - Uses Llama Stack APIs       - Submits to Kubeflow Pipelines   │    │
-│  │    via Python calls            - Reads results from S3           │    │
-│  └─────────────────────────────────────────────────────────────────┘    │
-│         │                    │                    │                       │
-│         │ (in-process)       │                    │                       │
-│         ▼                    │                    │                       │
-│  [Llama Stack Inference API] │                    │                       │
-│  [Llama Stack DatasetIO API] │                    │                       │
-│                               │                    │                       │
-├───────────────────────────────┼────────────────────┼───────────────────┤
-│  EGRESS CONNECTIONS           │                    │                       │
-│                               │                    │                       │
-│                               │ Port: 443/TCP      │ Port: 443/TCP        │
-│                               │ Protocol: HTTPS    │ Protocol: HTTPS      │
-│                               │ Encryption: TLS    │ Encryption: TLS      │
-│                               │   1.2+             │   1.2+               │
-│                               │ Auth: Bearer Token │ Auth: AWS IAM        │
-│                               │   (KFP token or    │   credentials        │
-│                               │   kubeconfig)      │   (from K8s Secret)  │
-│                               ▼                    ▼                       │
+│  ┌─────────────────────────────────────────────────────────────────┐     │
+│  │  INLINE PROVIDER (in-process)                                    │     │
+│  │                                                                   │     │
+│  │  [RagasEvaluatorInline]                                           │     │
+│  │  - Runs ragas.evaluate() in asyncio.to_thread                    │     │
+│  │  - Adapts via LlamaStackInlineLLM / InlineEmbeddings             │     │
+│  │  - All calls are in-process Python (no network)                  │     │
+│  └─────────────────────────────────────────────────────────────────┘     │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐     │
+│  │  REMOTE PROVIDER (submits to KFP)                                │     │
+│  │                                                                   │     │
+│  │  [RagasEvaluatorRemote]                                           │     │
+│  │  - Constructs 2-step KFP pipeline                                │     │
+│  │  - Polls KFP for completion                                      │     │
+│  │  - Fetches results from S3                                       │     │
+│  │         │                                                         │     │
+│  │         │ Port: 443/TCP                                           │     │
+│  │         │ Protocol: HTTPS                                         │     │
+│  │         │ Encryption: TLS 1.2+                                    │     │
+│  │         │ Auth: Bearer Token (KFP token or kubeconfig token)     │     │
+│  │         ▼                                                         │     │
+│  └─────────────────────────────────────────────────────────────────┘     │
+│         │                                                                │
+│         │ (S3 result fetch)                                              │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: AWS IAM credentials (from Kubernetes Secret)             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBEFLOW PIPELINES (Internal Platform)                                 │
+│                                                                          │
+│  [KFP API Server]                                                        │
+│  - Port: 443/TCP (HTTPS)                                                │
+│  - Auth: Bearer Token                                                    │
+│  - Receives pipeline submissions                                         │
+│         │                                                                │
+│         │ Executes pipeline pods                                         │
+│         ▼                                                                │
+│  [KFP Pipeline Pod - Step 1: retrieve_data]                             │
+│  - Base image: resolved from ConfigMap or default                       │
+│  - Namespace: pipeline execution namespace                              │
+│         │                                                                │
+│         │ Port: 8321/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None ⚠️                                            │
+│         │ Auth: None ⚠️                                                  │
+│         │ Direction: → Llama Stack Server (callback)                     │
+│         ▼                                                                │
+│  [KFP Pipeline Pod - Step 2: run_ragas]                                 │
+│  - Mounts: AWS credentials from Kubernetes Secret                       │
+│  - Runs: ragas.evaluate() with remote LLM/Embeddings wrappers          │
+│         │                                                                │
+│         ├─ Port: 8321/TCP → Llama Stack (HTTP, no TLS ⚠️, no auth ⚠️)  │
+│         │  (LlamaStackRemoteLLM / RemoteEmbeddings callbacks)           │
+│         │                                                                │
+│         └─ Port: 443/TCP → S3 Storage (HTTPS, TLS 1.2+, AWS IAM)       │
+│                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  EXTERNAL SERVICES                                                       │
 │                                                                          │
-│  [Kubeflow Pipelines API]                                                │
-│  - Purpose: Submit and monitor KFP pipeline runs (remote provider)      │
-│  - Port: 443/TCP                                                         │
-│  - Protocol: HTTPS                                                       │
-│  - Encryption: TLS 1.2+                                                  │
-│  - Auth: Bearer Token (KUBEFLOW_PIPELINES_TOKEN env var or kubeconfig)  │
-│                                                                          │
-│  [S3-compatible Object Storage]                                          │
-│  - Purpose: Store/retrieve evaluation results (JSONL format)            │
+│  [S3-compatible Storage]                                                 │
 │  - Port: 443/TCP                                                         │
 │  - Protocol: HTTPS                                                       │
 │  - Encryption: TLS 1.2+                                                  │
 │  - Auth: AWS IAM credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY) │
+│  - Purpose: Store/retrieve evaluation results (JSONL format)            │
 │                                                                          │
 │  [Kubernetes API Server]                                                 │
-│  - Purpose: Read ConfigMaps for base image; kubeconfig for KFP auth     │
 │  - Port: 443/TCP                                                         │
 │  - Protocol: HTTPS                                                       │
 │  - Encryption: TLS 1.2+                                                  │
 │  - Auth: ServiceAccount token or kubeconfig                              │
+│  - Purpose: Read ConfigMaps (trustyai-service-operator-config);         │
+│             Load kubeconfig for KFP token fallback                       │
 │                                                                          │
-│  [Ollama Server (sample distribution only)]                              │
-│  - Purpose: Inference and embedding backend                              │
+│  [Ollama Server (sample distro only)]                                    │
 │  - Port: 11434/TCP                                                       │
 │  - Protocol: HTTP                                                        │
 │  - Encryption: None                                                      │
 │  - Auth: None                                                            │
-│                                                                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│  KFP PIPELINE POD (Remote Execution Context)                             │
-│                                                                          │
-│  [KFP Pod: retrieve_data component]                                      │
-│         │                                                                │
-│         │ Port: 8321/TCP                                                 │
-│         │ Protocol: HTTP                                                 │
-│         │ Encryption: None ⚠️  (SECURITY CONCERN)                        │
-│         │ Auth: None ⚠️  (SECURITY CONCERN)                              │
-│         ▼                                                                │
-│  → Llama Stack Server (datasets API)                                     │
-│                                                                          │
-│  [KFP Pod: run_ragas component]                                          │
-│         │                        │                                       │
-│         │ Port: 8321/TCP         │ Port: 443/TCP                         │
-│         │ Protocol: HTTP         │ Protocol: HTTPS                       │
-│         │ Encryption: None ⚠️    │ Encryption: TLS 1.2+                  │
-│         │ Auth: None ⚠️          │ Auth: AWS IAM credentials             │
-│         ▼                        ▼                                       │
-│  → Llama Stack Server       → S3 Storage                                 │
-│    (completions/embeddings)   (write results JSONL)                      │
-│                                                                          │
-│  Note: AWS credentials injected via kubernetes.use_secret_as_env()       │
+│  - Purpose: Inference and embedding backend                              │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 
-RBAC Summary:
-- No ClusterRoles or ClusterRoleBindings defined by this component
-- Provider relies on Llama Stack server's ServiceAccount
-- KFP pods use credentials injected via Kubernetes Secrets
+SECURITY NOTES:
+
+⚠️  KFP Pipeline Pods → Llama Stack Server communication is unencrypted HTTP
+    without authentication. The KUBEFLOW_LLAMA_STACK_URL must be accessible
+    from KFP pods. This is a security concern for sensitive evaluation data.
+
+⚠️  Llama Stack Server external endpoint (8321/TCP) has no TLS or auth by
+    default. Encryption and authentication are server-configurable but not
+    enforced by this provider.
 
 Secrets:
-- (user-provided S3 credentials) (Opaque) - AWS credentials for S3 results, Manual, No auto-rotate
-- kubeflow-pipelines-token (Opaque) - KFP API token for pipeline submission, Manual, No auto-rotate
-- llama-stack-inference-model-secret (Opaque) - vLLM URL/API token/TLS/model name, Manual, No auto-rotate
-- aws-credentials (Opaque) - AWS credentials for S3 from LlamaStack pod, Manual, No auto-rotate
+- (user-provided S3 credentials) [Opaque] - AWS credentials for S3 result storage
+  - Keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION
+  - Provisioned: Manual (oc create secret generic)
+  - Auto-Rotate: No
 
-Security Concerns:
-⚠️  KFP pipeline pods communicate with Llama Stack server over HTTP (8321/TCP)
-    without TLS or authentication. The KUBEFLOW_LLAMA_STACK_URL must be
-    accessible from KFP pods, and traffic is unencrypted within the cluster.
-⚠️  No RBAC roles defined - relies entirely on the host server's SA permissions.
-⚠️  All secrets are manually provisioned with no auto-rotation.
+- kubeflow-pipelines-token [Opaque] - KFP API bearer token
+  - Provisioned: Manual
+  - Auto-Rotate: No
 
-Authentication Flow:
-- KFP API: Bearer token from KUBEFLOW_PIPELINES_TOKEN env var, or extracted
-  from local kubeconfig (~/.kube/config) as fallback
-- S3: AWS IAM credentials injected into KFP pods via Kubernetes Secrets
-  using kfp-kubernetes use_secret_as_env()
-- Kubernetes API: ServiceAccount token for ConfigMap reads; kubeconfig for
-  KFP token fallback
-- Base image resolution chain: env var → ConfigMap (trustyai-service-operator-config)
-  → hardcoded default (quay.io)
+- llama-stack-inference-model-secret [Opaque] - vLLM URL, API token, TLS config
+  - Keys: vLLM URL, API token, TLS verification flag, model name
+  - Provisioned: Manual
+  - Auto-Rotate: No
+
+- aws-credentials [Opaque] - AWS credentials for S3 from LlamaStack pod
+  - Provisioned: Manual
+  - Auto-Rotate: No
+
+RBAC Summary:
+- No RBAC roles defined by this component
+- Relies on Llama Stack server's ServiceAccount permissions
+- KFP pods use credentials injected via kubernetes.use_secret_as_env()
+
+Authentication Mechanisms:
+- Kubeflow Pipelines: Bearer Token (from KUBEFLOW_PIPELINES_TOKEN env var or kubeconfig)
+- S3 Storage: AWS IAM credentials (injected via Kubernetes Secret into KFP pods)
+- Kubernetes API: ServiceAccount token or kubeconfig (for ConfigMap reads)
+- Llama Stack Server: None (server-configurable, not provider-enforced)
+
+Base Image Resolution Chain (Remote Provider):
+1. Environment variable (highest priority)
+2. Kubernetes ConfigMap: trustyai-service-operator-config
+   - Namespace: redhat-ods-applications or opendatahub
+3. Hardcoded default Quay image (lowest priority)

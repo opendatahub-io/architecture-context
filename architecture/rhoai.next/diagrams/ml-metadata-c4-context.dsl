@@ -1,39 +1,34 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Creates and runs ML pipelines, queries metadata and lineage"
-        platformadmin = person "Platform Admin" "Deploys and configures MLMD server and database backends"
+        pipelineEngineer = person "Pipeline Engineer" "Creates and monitors ML pipelines that produce metadata"
+        dataScientist = person "Data Scientist" "Queries lineage and artifact metadata for ML experiments"
 
         mlmd = softwareSystem "ML Metadata (MLMD)" "gRPC server and client library for recording and retrieving metadata associated with ML workflows" {
-            grpcServer = container "metadata_store_server" "gRPC server binary providing MetadataStoreService API (40+ RPC methods)" "C++ gRPC Service"
-            metadataStore = container "MetadataStore" "Business logic layer for metadata CRUD operations and lineage queries" "C++ Library"
-            dbAccessLayer = container "Database Access Layer" "Pluggable backend supporting MySQL, PostgreSQL, and SQLite" "C++ Library"
-            pythonClient = container "ml-metadata Python Client" "Python client library for interacting with gRPC server or local database via pybind11" "Python Library"
-            protoDefinitions = container "MetadataStoreService Proto" "Protocol Buffers service and message definitions" "Protocol Buffers"
-
-            protoDefinitions -> grpcServer "Defines API for"
-            grpcServer -> metadataStore "Delegates operations to"
-            metadataStore -> dbAccessLayer "Queries via"
-            pythonClient -> grpcServer "Connects to via gRPC" "gRPC/HTTP2 8080/TCP"
+            grpcServer = container "metadata_store_server" "C++ gRPC server providing MetadataStoreService API with 40+ RPC methods" "C++ / gRPC / BoringSSL"
+            pythonClient = container "ml-metadata Python Client" "Python client library with pybind11 bindings and gRPC connectivity" "Python / pybind11"
+            protoService = container "MetadataStoreService Proto" "Protocol Buffers service definition for metadata CRUD and lineage queries" "Protocol Buffers"
         }
 
         kubeflowPipelines = softwareSystem "Kubeflow Pipelines" "ML pipeline orchestration platform" "Internal RHOAI"
-        kubeflowPipelinesSDK = softwareSystem "Kubeflow Pipelines SDK" "Python SDK for pipeline authoring and metadata access" "Internal RHOAI"
         dataSciencePipelines = softwareSystem "Data Science Pipelines" "RHOAI pipeline infrastructure for artifact and lineage tracking" "Internal RHOAI"
         mysql = softwareSystem "MySQL / MariaDB" "Relational database for persistent metadata storage" "External"
-        postgresql = softwareSystem "PostgreSQL" "Alternative relational database backend" "External"
-        rhodsOperator = softwareSystem "RHODS Operator" "Deploys and manages MLMD server and related resources" "Internal RHOAI"
+        postgresql = softwareSystem "PostgreSQL" "Alternative relational database for persistent metadata storage" "External"
 
-        datascientist -> kubeflowPipelinesSDK "Authors and runs pipelines via"
-        datascientist -> mlmd "Queries metadata and lineage via Python client"
-        platformadmin -> rhodsOperator "Configures MLMD deployment via"
+        # Relationships
+        pipelineEngineer -> kubeflowPipelines "Creates and runs ML pipelines"
+        dataScientist -> mlmd "Queries lineage and artifact metadata" "gRPC/HTTP2 8080/TCP"
 
-        kubeflowPipelines -> mlmd "Records pipeline run metadata" "gRPC/HTTP2 8080/TCP"
-        kubeflowPipelinesSDK -> mlmd "Queries and updates metadata" "gRPC/HTTP2 8080/TCP"
-        dataSciencePipelines -> mlmd "Stores artifact and lineage data" "gRPC/HTTP2 8080/TCP"
-        rhodsOperator -> mlmd "Deploys and configures"
+        kubeflowPipelines -> mlmd "Records pipeline run metadata: artifacts, executions, contexts, events" "gRPC/HTTP2 8080/TCP"
+        dataSciencePipelines -> mlmd "Records artifact and lineage tracking metadata" "gRPC/HTTP2 8080/TCP"
 
-        mlmd -> mysql "Stores metadata records" "MySQL protocol 3306/TCP"
-        mlmd -> postgresql "Stores metadata records (alternative)" "PostgreSQL protocol 5432/TCP"
+        mlmd -> mysql "Stores metadata persistently" "MySQL Protocol 3306/TCP, Optional TLS"
+        mlmd -> postgresql "Stores metadata persistently (alternative)" "PostgreSQL Protocol 5432/TCP, Optional TLS"
+
+        # Container-level relationships
+        kubeflowPipelines -> grpcServer "PutExecution, PutArtifacts, PutEvents" "gRPC/HTTP2"
+        pythonClient -> grpcServer "All 40+ RPC methods" "gRPC/HTTP2"
+        grpcServer -> mysql "INSERT, SELECT, UPDATE, DELETE" "MySQL Protocol"
+        grpcServer -> postgresql "INSERT, SELECT, UPDATE, DELETE" "PostgreSQL Protocol"
     }
 
     views {
@@ -48,21 +43,21 @@ workspace {
         }
 
         styles {
-            element "Person" {
-                shape Person
-                background #08427b
-                color #ffffff
-            }
-            element "Software System" {
-                background #1168bd
+            element "External" {
+                background #999999
                 color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "External" {
-                background #999999
+            element "Person" {
+                shape Person
+                background #4a90e2
+                color #ffffff
+            }
+            element "Software System" {
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {

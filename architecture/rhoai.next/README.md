@@ -1,7 +1,7 @@
-# RHOAI unknown - Component Architectures
+# RHOAI.NEXT unknown - Component Architectures
 
-Source: architecture/rhoai/component-map.json
-Date: 2026-04-29
+Source: architecture/rhoai.next/component-map.json
+Date: 2026-05-01
 
 ## Components
 
@@ -10,6 +10,7 @@ Date: 2026-04-29
 | MLServer | [MLServer.md](./MLServer.md) |
 | NeMo-Guardrails | [NeMo-Guardrails.md](./NeMo-Guardrails.md) |
 | ai-gateway-payload-processing | [ai-gateway-payload-processing.md](./ai-gateway-payload-processing.md) |
+| ai4rag | [ai4rag.md](./ai4rag.md) |
 | argo-workflows | [argo-workflows.md](./argo-workflows.md) |
 | batch-gateway | [batch-gateway.md](./batch-gateway.md) |
 | caikit | [caikit.md](./caikit.md) |
@@ -79,6 +80,6 @@ Date: 2026-04-29
 
 ## Summary
 
-- **Platform**: RHOAI
+- **Platform**: RHOAI.NEXT
 - **Version**: unknown
-- **Components**: 69
+- **Components**: 70

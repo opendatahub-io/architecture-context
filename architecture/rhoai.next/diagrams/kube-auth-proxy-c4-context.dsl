@@ -1,63 +1,68 @@
 workspace {
     model {
-        browserUser = person "Browser User" "Human user authenticating via OAuth2/OIDC for RHOAI platform access"
-        serviceClient = person "Service Account Client" "Machine client using K8s SA tokens or certificates for API access"
+        browserUser = person "Browser User" "Human user accessing RHOAI platform components via browser"
+        serviceClient = person "Service Account Client" "Machine-to-machine client using K8s service account tokens"
 
         kubeAuthProxy = softwareSystem "kube-auth-proxy" "FIPS-compliant dual-mode authentication/authorization reverse proxy for RHOAI platform components" {
-            entrypoint = container "entrypoint" "Mode dispatcher selecting auth or rbac proxy based on PROXY_MODE env" "Go CLI"
-            authProxy = container "kube-auth-proxy" "OAuth2/OIDC authentication proxy with session management, cookie handling, and IdP integration" "Go Service" {
+            entrypoint = container "entrypoint" "Mode dispatcher that selects proxy binary based on PROXY_MODE env var" "Go CLI"
+            authProxy = container "kube-auth-proxy (auth mode)" "OAuth2/OIDC authentication proxy with session management, cookie handling, and IdP integration" "Go Service" {
                 tags "AuthMode"
             }
-            rbacProxy = container "kube-rbac-proxy" "Kubernetes RBAC authorization proxy via SubjectAccessReview" "Go Service" {
+            rbacProxy = container "kube-rbac-proxy (rbac mode)" "Kubernetes RBAC authorization proxy via SubjectAccessReview for protecting metrics and API endpoints" "Go Service" {
                 tags "RBACMode"
             }
         }
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Provides TokenReview, SubjectAccessReview, and OpenShift API endpoints" "Platform" {
-            tags "Internal"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API server for TokenReview and SubjectAccessReview" {
+            tags "ClusterService"
         }
-        oidcProvider = softwareSystem "OIDC Provider" "External identity provider (Keycloak, DEX) for OIDC authentication flows" "External" {
+        osOAuth = softwareSystem "OpenShift OAuth Server" "OpenShift native OAuth2 authorization server" {
+            tags "ClusterService"
+        }
+        osUserAPI = softwareSystem "OpenShift User API" "OpenShift user identity service" {
+            tags "ClusterService"
+        }
+        oidcProvider = softwareSystem "OIDC Provider" "External identity provider (Keycloak, DEX)" {
             tags "External"
         }
-        openshiftOAuth = softwareSystem "OpenShift OAuth Server" "OpenShift-native OAuth2 authorization server for cluster users" "Platform" {
-            tags "Internal"
-        }
-        redis = softwareSystem "Redis" "Optional session storage backend (alternative to cookie-based sessions)" "External" {
+        redis = softwareSystem "Redis" "Optional session storage backend" {
             tags "External"
         }
-        upstreamApp = softwareSystem "Upstream Application" "Protected RHOAI platform component receiving authenticated traffic" "Internal RHOAI" {
-            tags "Internal"
+        upstreamApp = softwareSystem "Upstream Application" "Protected RHOAI platform component (e.g., Dashboard, Model Registry)" {
+            tags "InternalRHOAI"
         }
-        rhodsOperator = softwareSystem "rhods-operator" "Platform operator that deploys kube-auth-proxy as sidecar container" "Internal RHOAI" {
-            tags "Internal"
+        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator that deploys kube-auth-proxy as sidecar" {
+            tags "InternalRHOAI"
         }
-        envoyGateway = softwareSystem "Envoy / Gateway API" "Ingress layer using ext_authz for external authorization" "Platform" {
-            tags "Internal"
+        envoyGateway = softwareSystem "Envoy / Gateway API" "Ingress layer using ext_authz integration" {
+            tags "InternalRHOAI"
         }
 
         # Person relationships
-        browserUser -> kubeAuthProxy "Authenticates via OAuth2/OIDC browser flow" "HTTP/4180"
-        serviceClient -> kubeAuthProxy "Authenticates via Bearer token or client cert" "HTTPS/8443"
+        browserUser -> kubeAuthProxy "Authenticates via OAuth2/OIDC flow" "HTTP/4180"
+        serviceClient -> kubeAuthProxy "Authenticates via Bearer token" "HTTPS/8443"
 
-        # System relationships
-        kubeAuthProxy -> k8sAPI "TokenReview and SubjectAccessReview" "HTTPS/443 TLS 1.2+"
-        kubeAuthProxy -> oidcProvider "OIDC discovery, token exchange, refresh" "HTTPS/443 TLS 1.2+"
-        kubeAuthProxy -> openshiftOAuth "OAuth2 authorization code flow" "HTTPS/443 TLS 1.2+"
-        kubeAuthProxy -> redis "Session storage (optional)" "TCP/6379"
-        kubeAuthProxy -> upstreamApp "Proxies authenticated requests with identity headers" "HTTP/HTTPS configurable"
-        rhodsOperator -> kubeAuthProxy "Deploys as sidecar container in component pods"
-        envoyGateway -> kubeAuthProxy "ext_authz subrequest to /oauth2/auth" "HTTP/4180"
+        # Internal container relationships
+        entrypoint -> authProxy "Dispatches (PROXY_MODE=auth)" "os.Exec"
+        entrypoint -> rbacProxy "Dispatches (PROXY_MODE=rbac, default)" "os.Exec"
 
-        # Container relationships
-        entrypoint -> authProxy "Exec (PROXY_MODE=auth)"
-        entrypoint -> rbacProxy "Exec (PROXY_MODE=rbac, default)"
-        authProxy -> k8sAPI "TokenReview API" "HTTPS/443"
-        authProxy -> oidcProvider "OIDC flows" "HTTPS/443"
-        authProxy -> openshiftOAuth "OAuth2 flows" "HTTPS/443"
-        authProxy -> redis "Session read/write" "TCP/6379"
-        authProxy -> upstreamApp "Proxied requests" "HTTP/HTTPS"
-        rbacProxy -> k8sAPI "TokenReview + SubjectAccessReview" "HTTPS/443"
-        rbacProxy -> upstreamApp "Proxied requests" "HTTP/HTTPS"
+        # Auth mode dependencies
+        authProxy -> oidcProvider "OIDC discovery, token exchange, userinfo, logout" "HTTPS/443"
+        authProxy -> osOAuth "OAuth2 authorization code flow, token exchange" "HTTPS/443"
+        authProxy -> osUserAPI "Retrieve user identity (name, email, groups)" "HTTPS/443"
+        authProxy -> k8sAPI "TokenReview for K8s SA token validation" "HTTPS/443"
+        authProxy -> redis "Session storage read/write" "TCP/6379"
+        authProxy -> upstreamApp "Proxied authenticated requests with GAP-Auth header" "HTTP/HTTPS"
+
+        # RBAC mode dependencies
+        rbacProxy -> k8sAPI "TokenReview (authn) + SubjectAccessReview (authz)" "HTTPS/443"
+        rbacProxy -> upstreamApp "Proxied authorized requests with x-remote-user header" "HTTP/HTTPS"
+
+        # Operator relationship
+        rhodsOperator -> kubeAuthProxy "Deploys as sidecar container, provisions RBAC" "Deployment spec"
+
+        # Envoy integration
+        envoyGateway -> authProxy "ext_authz subrequest to /oauth2/auth" "HTTP/4180"
     }
 
     views {
@@ -72,11 +77,28 @@ workspace {
         }
 
         styles {
+            element "Software System" {
+                background #438dd5
+                color #ffffff
+            }
+            element "Person" {
+                background #08427b
+                color #ffffff
+                shape person
+            }
+            element "Container" {
+                background #438dd5
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal" {
+            element "ClusterService" {
+                background #5a9a3e
+                color #ffffff
+            }
+            element "InternalRHOAI" {
                 background #7ed321
                 color #ffffff
             }
@@ -85,16 +107,7 @@ workspace {
                 color #ffffff
             }
             element "RBACMode" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Person" {
-                shape Person
-                background #08427b
-                color #ffffff
-            }
-            element "Software System" {
-                background #1168bd
+                background #2c6cb0
                 color #ffffff
             }
         }

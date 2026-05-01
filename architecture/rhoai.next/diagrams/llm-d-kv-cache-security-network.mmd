@@ -1,72 +1,76 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client"]
+        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
+        ModelScope["ModelScope API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
     end
 
-    subgraph Ingress["INGRESS (OpenShift Route - Edge TLS)"]
-        Route["OpenShift Route<br/>443/TCP → 8080/TCP<br/>TLS Edge Termination<br/>No Auth"]
+    subgraph Ingress["INGRESS (Edge TLS)"]
+        Route["OpenShift Route<br/>443/TCP → 8080/TCP<br/>TLS Edge termination"]
     end
 
-    subgraph Cluster["CLUSTER INTERNAL (No Encryption)"]
+    subgraph ClusterInternal["CLUSTER INTERNAL (No encryption)"]
         direction TB
 
-        subgraph Pod["KV-Cache Manager Pod<br/>NS: hc4ai-operator<br/>SA: operator-controller-manager"]
-            direction LR
-            Manager["KV-Cache Manager<br/>8080/TCP HTTP (scoring+metrics)<br/>50051/TCP gRPC (IndexerService)<br/>No Auth, No Encryption"]
-            Tokenizer["UDS Tokenizer Sidecar<br/>8082/TCP HTTP (health)<br/>UDS: /tmp/tokenizer/*.socket<br/>No Auth, No Encryption"]
-            Manager ---|"gRPC over UDS<br/>shared emptyDir"| Tokenizer
+        subgraph ManagerPod["KV-Cache Manager Pod"]
+            direction TB
+            Manager["KV-Cache Manager<br/>(Go Container)<br/>8080/TCP HTTP<br/>50051/TCP gRPC"]
+            TokenizerSidecar["UDS Tokenizer Sidecar<br/>(Python Container)<br/>8082/TCP HTTP health<br/>UDS: /tmp/tokenizer/*.socket"]
+            Manager -->|"gRPC over UDS<br/>No encryption<br/>Pod-local trust"| TokenizerSidecar
         end
 
-        subgraph InternalServices["Cluster Services"]
-            vLLM["vLLM Pods<br/>ZMQ PUB 5557/TCP<br/>No Encryption, No Auth"]
-            K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS, SA Token Auth"]
-            Redis["Redis / Valkey (optional)<br/>6379/TCP RESP<br/>No Encryption, No Auth"]
-            OTLP["OTLP Collector<br/>4317/TCP gRPC<br/>No Encryption, No Auth"]
-            Prom["Prometheus<br/>Scrapes 8080/TCP<br/>No Auth"]
+        subgraph VLLMPods["vLLM Inference Pods"]
+            vLLM["vLLM Engine<br/>5557/TCP ZMQ PUB"]
+            FSBackend["FS Backend Plugin<br/>(in-process)"]
         end
 
-        subgraph Storage["FILESYSTEM (Shared PVC)"]
-            SharedPVC["Shared Storage NFS/PVC<br/>POSIX Filesystem<br/>POSIX Permissions<br/>No Encryption"]
-            Evictor["PVC Evictor Pod<br/>No Network Interfaces<br/>N+2 Process Model<br/>85%/70% Thresholds"]
+        subgraph OptionalServices["Optional Services"]
+            Redis["Redis / Valkey<br/>6379/TCP RESP<br/>No encryption"]
+        end
+
+        subgraph StorageLayer["Storage Layer"]
+            SharedPVC["Shared Storage<br/>(NFS/PVC)<br/>POSIX permissions"]
+            EvictorPod["PVC Evictor Pod<br/>No network ports<br/>POSIX filesystem only"]
+        end
+
+        subgraph K8sControl["Kubernetes Control Plane"]
+            K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS + SA Token"]
         end
     end
 
-    subgraph ExternalSvc["EXTERNAL SERVICES"]
-        HF["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
-        ModelScope["ModelScope API (optional)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
+    subgraph Observability["OBSERVABILITY"]
+        OTLP["OTLP Collector<br/>4317/TCP gRPC<br/>No encryption"]
+        Prometheus["Prometheus<br/>Scrapes 8080/TCP HTTP<br/>No encryption"]
     end
 
     %% External flows
-    Client -->|"HTTPS/443<br/>TLS Edge<br/>No Auth"| Route
-    Route -->|"HTTP/8080<br/>Plaintext<br/>Post-TLS"| Manager
+    TokenizerSidecar -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
+    TokenizerSidecar -.->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| ModelScope
 
-    %% Cluster internal flows
-    vLLM -->|"ZMQ SUB/5557<br/>Plaintext<br/>No Auth"| Manager
-    Manager -->|"Pod Watch/443<br/>TLS<br/>SA Token"| K8sAPI
-    Manager -->|"RESP/6379<br/>Plaintext<br/>No Auth"| Redis
-    Manager -->|"gRPC/4317<br/>Plaintext<br/>No Auth"| OTLP
-    Prom -->|"HTTP/8080<br/>Plaintext<br/>No Auth"| Manager
+    %% Ingress flow
+    Route -->|"HTTP/8080<br/>No encryption"| Manager
 
-    %% Storage flows
-    Manager -->|"POSIX I/O + GDS<br/>No Encryption<br/>POSIX Perms"| SharedPVC
-    Evictor -->|"scandir + rm<br/>POSIX Perms"| SharedPVC
+    %% Internal flows
+    vLLM -->|"ZMQ/5557<br/>No encryption<br/>No auth"| Manager
+    Manager -.->|"RESP/6379<br/>No encryption<br/>No auth"| Redis
+    Manager -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
+    FSBackend -->|"POSIX/GDS<br/>No encryption<br/>POSIX perms"| SharedPVC
+    EvictorPod -->|"POSIX fs<br/>No encryption<br/>POSIX perms"| SharedPVC
 
-    %% External service flows
-    Tokenizer -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (opt)"| HF
-    Tokenizer -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (opt)"| ModelScope
+    %% Observability flows
+    Manager -->|"gRPC/4317<br/>No encryption"| OTLP
+    Prometheus -->|"HTTP/8080<br/>scrape"| Manager
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef cluster fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef pod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef storage fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef observability fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef k8s fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
 
-    class Client external
+    class HFHub,ModelScope external
     class Route ingress
-    class Manager,Tokenizer pod
-    class vLLM,K8sAPI,Redis,OTLP,Prom cluster
-    class SharedPVC,Evictor storage
-    class HF,ModelScope externalservice
+    class Manager,TokenizerSidecar,vLLM,FSBackend,Redis internal
+    class SharedPVC,EvictorPod storage
+    class OTLP,Prometheus observability
+    class K8sAPI k8s

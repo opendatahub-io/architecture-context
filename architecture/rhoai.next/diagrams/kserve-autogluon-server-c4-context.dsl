@@ -1,50 +1,51 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and deploys AutoGluon ML models for tabular prediction and time series forecasting"
-        mlEngineer = person "ML Engineer" "Deploys and manages InferenceService CRs for model serving"
+        dataScientist = person "Data Scientist" "Creates and deploys ML models for inference"
+        mlEngineer = person "ML Engineer" "Manages model serving infrastructure and runtimes"
 
-        autogluonServer = softwareSystem "KServe AutoGluon Server" "KServe-compatible model serving runtime for AutoGluon TabularPredictor and TimeSeriesPredictor models via REST and gRPC inference APIs" {
-            serverProcess = container "AutoGluon Server" "FastAPI-based HTTP/gRPC model server with auto-detection of TabularPredictor and TimeSeriesPredictor models" "Python / KServe SDK / uvicorn"
-            tabularPredictor = container "TabularPredictor" "Classification, regression, and quantile regression inference with v1+v2 protocol support" "AutoGluon 1.5.0+rhaiv.2"
-            timeSeriesPredictor = container "TimeSeriesPredictor" "Time series forecasting inference with v1 REST protocol" "AutoGluon 1.5.0+rhaiv.2"
-            predictorFactory = container "Predictor Factory" "Auto-detects model type (tabular vs time series) and instantiates correct predictor" "Python"
-            storageClient = container "Storage Client" "Downloads model artifacts from remote storage backends" "kserve-storage / boto3"
+        autogluonServer = softwareSystem "KServe AutoGluon Server" "Serves AutoGluon TabularPredictor and TimeSeriesPredictor models via REST (v1/v2) and gRPC inference APIs" {
+            httpServer = container "HTTP Server" "FastAPI/Uvicorn HTTP server exposing v1 REST and v2 Open Inference Protocol endpoints" "Python (FastAPI)" "Service"
+            grpcServer = container "gRPC Server" "gRPC inference endpoint implementing v2 Open Inference Protocol" "Python (grpcio)" "Service"
+            predictorFactory = container "Predictor Factory" "Auto-detects model type (Tabular vs TimeSeries) and delegates inference" "Python" "Component"
+            tabularPredictor = container "Tabular Predictor" "AutoGluon TabularPredictor for classification, regression, and quantile regression" "Python (autogluon.tabular 1.5.0+rhaiv.2)" "Component"
+            timeSeriesPredictor = container "TimeSeries Predictor" "AutoGluon TimeSeriesPredictor for time series forecasting" "Python (autogluon.timeseries 1.5.0+rhaiv.2)" "Component"
+            modelRepository = container "Model Repository" "Manages multiple models loaded from /mnt/models directory" "Python" "Component"
+            storageLib = container "kserve-storage" "Downloads model artifacts from S3, GCS, PVC, or generic URI" "Python (boto3, google-cloud-storage)" "Library"
         }
 
-        kserveController = softwareSystem "KServe Controller" "Manages InferenceService lifecycle, deploys predictor pods" "Internal RHOAI"
-        istio = softwareSystem "Istio Service Mesh" "Traffic management, mTLS enforcement, and authorization" "External"
-        knativeServing = softwareSystem "Knative Serving" "Serverless autoscaling and revision management" "External"
-        storageInitializer = softwareSystem "Storage Initializer" "Init container that downloads model artifacts to /mnt/models" "Internal RHOAI"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
+        kserveController = softwareSystem "KServe Controller" "Manages InferenceService lifecycle and deploys model serving pods" "Internal RHOAI"
+        storageInitializer = softwareSystem "Storage Initializer" "Init container that downloads model artifacts to /mnt/models before server starts" "Internal RHOAI"
+        istio = softwareSystem "Istio Service Mesh" "Provides mTLS enforcement, traffic routing, and service identity" "External"
+        knative = softwareSystem "Knative Serving" "Provides serverless autoscaling and revision management" "External"
+        prometheus = softwareSystem "Prometheus" "Collects metrics from model serving pods" "Internal RHOAI"
+        s3Storage = softwareSystem "S3-Compatible Storage" "Stores ML model artifacts" "External"
+        gcsStorage = softwareSystem "GCS Storage" "Stores ML model artifacts" "External"
+        huggingfaceHub = softwareSystem "HuggingFace Hub" "Hosts pre-trained models and tokenizers" "External"
 
-        s3 = softwareSystem "S3-Compatible Storage" "Model artifact storage (AWS S3, MinIO)" "External"
-        gcs = softwareSystem "GCS Storage" "Model artifact storage (Google Cloud Storage)" "External"
-        huggingFace = softwareSystem "HuggingFace Hub" "Pre-trained model and tokenizer downloads" "External"
+        # Relationships - External users
+        dataScientist -> autogluonServer "Sends inference requests via" "HTTPS/443"
+        mlEngineer -> kserveController "Creates InferenceService CR via" "kubectl"
 
-        # User relationships
-        dataScientist -> autogluonServer "Sends inference requests" "HTTPS/443 via Gateway"
-        mlEngineer -> kserveController "Creates InferenceService CR" "kubectl / K8s API"
+        # Relationships - Internal
+        httpServer -> predictorFactory "Routes inference requests to"
+        grpcServer -> predictorFactory "Routes gRPC inference to"
+        predictorFactory -> tabularPredictor "Delegates tabular inference to"
+        predictorFactory -> timeSeriesPredictor "Delegates time series inference to"
+        modelRepository -> predictorFactory "Provides loaded models to"
+        storageLib -> s3Storage "Downloads model artifacts from" "HTTPS/443"
+        storageLib -> gcsStorage "Downloads model artifacts from" "HTTPS/443"
 
-        # Internal container relationships
-        serverProcess -> tabularPredictor "Delegates tabular inference" "In-process"
-        serverProcess -> timeSeriesPredictor "Delegates time series inference" "In-process"
-        serverProcess -> predictorFactory "Creates predictors via" "In-process"
-        predictorFactory -> tabularPredictor "Instantiates" "In-process"
-        predictorFactory -> timeSeriesPredictor "Instantiates" "In-process"
-        storageClient -> s3 "Downloads model artifacts" "HTTPS/443 AWS IAM"
-        storageClient -> gcs "Downloads model artifacts" "HTTPS/443 GCP SA"
+        # Relationships - Platform
+        kserveController -> autogluonServer "Deploys and manages pods for" "CRD (InferenceService)"
+        storageInitializer -> autogluonServer "Downloads model artifacts to /mnt/models" "Shared Volume"
+        istio -> autogluonServer "Enforces mTLS and routes traffic" "mTLS/15006"
+        knative -> autogluonServer "Provides autoscaling for" "Knative Service"
+        prometheus -> autogluonServer "Scrapes metrics from" "HTTP/8080"
 
-        # Platform relationships
-        kserveController -> autogluonServer "Deploys as predictor pod" "K8s API / CRD"
-        storageInitializer -> autogluonServer "Provides model artifacts" "Shared volume /mnt/models"
-        istio -> autogluonServer "Enforces mTLS, routes traffic" "Sidecar proxy"
-        knativeServing -> autogluonServer "Manages autoscaling" "Pod lifecycle"
-        prometheus -> autogluonServer "Scrapes metrics" "HTTP/8080"
-
-        # External service relationships
-        autogluonServer -> s3 "Downloads models" "HTTPS/443"
-        autogluonServer -> gcs "Downloads models" "HTTPS/443"
-        autogluonServer -> huggingFace "Downloads tokenizers/models" "HTTPS/443"
+        # Relationships - External services
+        autogluonServer -> s3Storage "Downloads model artifacts" "HTTPS/443"
+        autogluonServer -> gcsStorage "Downloads model artifacts" "HTTPS/443"
+        autogluonServer -> huggingfaceHub "Downloads models and tokenizers" "HTTPS/443"
     }
 
     views {
@@ -79,6 +80,16 @@ workspace {
             element "Container" {
                 background #438DD5
                 color #ffffff
+            }
+            element "Component" {
+                background #85BBF0
+                color #000000
+            }
+            element "Service" {
+                shape hexagon
+            }
+            element "Library" {
+                shape component
             }
         }
     }

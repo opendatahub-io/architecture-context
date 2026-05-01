@@ -1,60 +1,65 @@
 sequenceDiagram
     participant Client as External Client
     participant Server as Llama Stack Server<br/>8321/TCP HTTP/HTTPS
-    participant Auth as Authentication<br/>Middleware
-    participant IdP as OAuth2 IdP<br/>443/TCP HTTPS
-    participant Quota as Quota Middleware<br/>(SQLite backing)
-    participant ABAC as Access Control<br/>(Cedar ABAC)
+    participant Auth as Authentication Middleware<br/>JWT/OAuth2
+    participant Quota as Quota Middleware
+    participant ABAC as Access Control (ABAC)
     participant Router as Provider Router
-    participant vLLM as vLLM Backend<br/>8000/TCP HTTP
-    participant VectorDB as Vector DB<br/>(pgvector 5432/TCP)
-    participant Safety as Safety Provider
-    participant Tool as Tool Runtime<br/>(Brave Search 443/TCP)
+    participant IdP as OAuth2 IdP<br/>443/TCP HTTPS
+    participant SQLite as SQLite KV Store<br/>File I/O
+    participant vLLM as vLLM Server<br/>8000/TCP HTTP
+    participant VectorDB as Vector DB (pgvector)<br/>5432/TCP
+    participant Safety as Safety Provider<br/>(inline)
+    participant Search as Brave Search API<br/>443/TCP HTTPS
 
-    Note over Client,Tool: Flow 1: Inference Request (Chat Completion)
-    Client->>Server: POST /v1/inference/chat-completion<br/>Bearer JWT Token
+    Note over Client,Search: Flow 1: Chat Completion (Inference)
+    Client->>Server: POST /v1/inference/chat-completion<br/>Auth: Bearer JWT
     Server->>Auth: Validate token
-    Auth->>IdP: Fetch JWKS keys<br/>HTTPS/443 TLS 1.2+
-    IdP-->>Auth: JSON Web Key Set
+    Auth->>IdP: GET /.well-known/jwks.json<br/>TLS 1.2+
+    IdP-->>Auth: JWKS keys (cached)
     Auth-->>Server: User attributes extracted
     Server->>Quota: Check rate limit
-    Quota-->>Server: Allowed (SQLite KV lookup)
-    Server->>ABAC: Check ABAC policy<br/>user × model × action
-    ABAC-->>Server: Permitted
-    Server->>Router: Route by model ID
-    Router->>vLLM: POST /v1/chat/completions<br/>API Key Bearer<br/>HTTP/8000
-    vLLM-->>Router: Completion response (streaming SSE)
-    Router-->>Server: Stream chunks
+    Quota->>SQLite: Read/increment counter
+    SQLite-->>Quota: Quota OK (< 1000/day)
+    Quota-->>Server: Allowed
+    Server->>ABAC: Check resource access<br/>model::llama-3
+    ABAC-->>Server: Permit
+    Server->>Router: Route to inference provider
+    Router->>vLLM: POST /v1/chat/completions<br/>Auth: API Key (Bearer)
+    vLLM-->>Router: Completion result (SSE stream)
+    Router-->>Server: Stream tokens
     Server-->>Client: text/event-stream (SSE)<br/>Configurable TLS
 
-    Note over Client,Tool: Flow 2: RAG Query (Vector I/O)
-    Client->>Server: POST /v1/vector-io/query<br/>Bearer JWT Token
+    Note over Client,Search: Flow 2: RAG Query (Vector I/O)
+    Client->>Server: POST /v1/vector-io/query<br/>Auth: Bearer JWT
     Server->>Auth: Validate token
-    Auth-->>Server: Authenticated
+    Auth-->>Server: OK
     Server->>Quota: Check rate limit
     Quota-->>Server: Allowed
-    Server->>Router: Route to embedding provider
-    Router->>vLLM: POST /v1/embeddings<br/>API Key Bearer
-    vLLM-->>Router: Embedding vectors
-    Router->>VectorDB: SQL query (pgvector)<br/>5432/TCP Username/Password<br/>Configurable TLS
-    VectorDB-->>Router: Similar document chunks
+    Server->>ABAC: Check resource access<br/>vector_db::my-docs
+    ABAC-->>Server: Permit
+    Server->>Router: Route to vector IO provider
+    Router->>vLLM: POST /v1/embeddings<br/>Generate query embedding
+    vLLM-->>Router: Embedding vector
+    Router->>VectorDB: SELECT similarity query<br/>Auth: Username/Password<br/>Configurable TLS
+    VectorDB-->>Router: Matching chunks
     Router-->>Server: Query results
     Server-->>Client: JSON response
 
-    Note over Client,Tool: Flow 3: Agent Turn with Tool Use
-    Client->>Server: POST /v1/agents/{id}/session/{sid}/turn<br/>Bearer JWT Token
+    Note over Client,Search: Flow 3: Agent Turn with Tool Use
+    Client->>Server: POST /v1/agents/{id}/session/{sid}/turn<br/>Auth: Bearer JWT
     Server->>Auth: Validate token
-    Auth-->>Server: Authenticated
+    Auth-->>Server: OK
     Server->>Router: Route to agent provider
-    Router->>Safety: Input shield check
+    Router->>Safety: Run input shield<br/>(inline check)
     Safety-->>Router: Safe
-    Router->>vLLM: Chat completion (with tools)<br/>8000/TCP HTTP
-    vLLM-->>Router: tool_call: brave_search(query)
-    Router->>Tool: GET /api/search?q=...<br/>443/TCP HTTPS TLS 1.2+<br/>API Key
-    Tool-->>Router: Search results
-    Router->>vLLM: Follow-up completion<br/>(with tool results)
+    Router->>vLLM: POST /v1/chat/completions<br/>with tool definitions
+    vLLM-->>Router: tool_call: brave_search("query")
+    Router->>Search: GET /search?q=query<br/>Auth: API Key<br/>TLS 1.2+
+    Search-->>Router: Search results
+    Router->>vLLM: POST /v1/chat/completions<br/>with tool results
     vLLM-->>Router: Final response
-    Router->>Safety: Output shield check
+    Router->>Safety: Run output shield<br/>(inline check)
     Safety-->>Router: Safe
-    Router-->>Server: Agent turn result
+    Router-->>Server: Stream agent response
     Server-->>Client: text/event-stream (SSE)

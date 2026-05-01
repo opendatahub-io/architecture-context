@@ -1,132 +1,113 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  KUBERNETES CONTROL PLANE (Trusted)                                      │
 │                                                                          │
-│  [Kubeflow Training Operator (KFTO)]                                     │
-│  - Namespace: kubeflow                                                   │
-│  - Purpose: Creates and manages PyTorchJob resources                     │
+│  [KFTO PyTorchJob Controller]                                            │
+│  - Namespace: redhat-ods-applications (or operator namespace)            │
+│  - ServiceAccount: kubeflow-training-operator                            │
 │         │                                                                │
-│         │ Port: 6443/TCP                                                 │
+│         │ Action: Creates PyTorchJob pods                                │
 │         │ Protocol: Kubernetes API                                       │
 │         │ Encryption: TLS 1.3                                            │
 │         │ Auth: ServiceAccount Token                                     │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  BATCH WORKLOAD ZONE (Training Pods)                                     │
+│  TRAINING NAMESPACE (User/Project Namespace)                             │
 │                                                                          │
-│  [Kueue Queue Manager]                                                   │
-│  - Purpose: Queue-based job scheduling                                   │
-│  - Label: kueue.x-k8s.io/queue-name                                     │
-│         │                                                                │
-│         │ Scheduling decisions                                           │
-│         ▼                                                                │
-│                                                                          │
-│  [Training Pod - PyTorchJob Worker]                                      │
+│  [Training Pod - accelerate_launch.py]                                   │
 │  - Namespace: {user-namespace}                                           │
-│  - Image: fms-hf-tuning:latest (UBI9 + CUDA 12.1)                      │
-│  - CMD: accelerate_launch.py                                             │
-│  - Resources: nvidia.com/gpu (NVIDIA GPU Operator)                       │
 │  - ServiceAccount: {pytorchjob-sa}                                       │
-│                                                                          │
-│  ┌─────────────────────────────────────────────────────────────────┐     │
-│  │  Container Internal Architecture                                │     │
-│  │                                                                  │     │
-│  │  accelerate_launch.py                                            │     │
-│  │       │                                                          │     │
-│  │       │ subprocess (local)                                       │     │
-│  │       ▼                                                          │     │
-│  │  sft_trainer.py                                                  │     │
-│  │       │                                                          │     │
-│  │       ├── Data Preprocessor (local)                              │     │
-│  │       ├── Trainer Controller (local)                             │     │
-│  │       ├── Tracker Factory (local)                                │     │
-│  │       └── fms-acceleration plugins (local)                      │     │
-│  └─────────────────────────────────────────────────────────────────┘     │
-│                                                                          │
-│  Storage Mounts (Local Filesystem):                                      │
-│  ┌───────────────────────────────────┐                                  │
-│  │ PVC: Model Weights    (ReadOnly)  │ No network, local mount           │
-│  │ PVC: Training Data    (ReadOnly)  │ No network, local mount           │
-│  │ PVC: Output/Ckpts    (ReadWrite)  │ No network, local mount           │
-│  │ ConfigMap: /etc/config/config.json│ No network, local mount           │
-│  └───────────────────────────────────┘                                  │
-│                                                                          │
-│  GPU Access:                                                             │
-│  ┌───────────────────────────────────┐                                  │
-│  │ NVIDIA GPU (CUDA 12.1)           │ PCIe/NVLink, no network           │
-│  │ Provided by: NVIDIA GPU Operator │                                    │
-│  └───────────────────────────────────┘                                  │
-│                                                                          │
-│  Termination Logging:                                                    │
-│  - Path: /dev/termination-log (or TERMINATION_LOG_FILE)                 │
-│  - Exit codes: 0=success, 1=user error, 203=internal error              │
-│                                                                          │
-│  Multi-GPU Communication (FSDP):                                         │
-│  ┌───────────────────────────────────────────────────────────────┐      │
-│  │  [Rank 0] ◄──────► [Rank 1] ◄──────► [Rank N]               │      │
-│  │           │                                                    │      │
-│  │  Port: 29500/TCP (master_process_port)                        │      │
-│  │  Protocol: TCP (NCCL/Gloo)                                    │      │
-│  │  Encryption: ⚠️  PLAINTEXT (no TLS)                           │      │
-│  │  Auth: None                                                    │      │
-│  │  Scope: Pod-internal or inter-pod within PyTorchJob           │      │
-│  └───────────────────────────────────────────────────────────────┘      │
+│  - Image: quay.io/modh/fms-hf-tuning:release                            │
+│  - Resources: nvidia.com/gpu (NVIDIA GPU Operator)                       │
+│  - Config: /etc/config/config.json (ConfigMap mount)                     │
+│         │                                                                │
+│         │ Action: subprocess launch                                      │
+│         │ Protocol: Local process                                        │
+│         ▼                                                                │
+│  [sft_trainer.py - SFTTrainer]                                           │
+│  - Process: Python subprocess within same pod                            │
+│  - PEFT: LoRA, aLoRA, Prompt Tuning                                     │
+│  - Acceleration: QLoRA, padding-free, multipack, ScatterMoE, ODM        │
+│         │                                                                │
+│    ┌────┼────────────┬─────────────┐                                     │
+│    │    │            │             │                                      │
+│    ▼    ▼            ▼             ▼                                      │
+│  [PVC - Model]  [PVC - Data]  [PVC - Output]  [GPU - CUDA]              │
+│  - Mount: RWX   - Mount: ROX  - Mount: RWX    - PCIe/NVLink             │
+│  - Local FS     - Local FS    - Local FS      - No network              │
+│  - No auth      - No auth     - No auth       - No auth                 │
 │                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  EGRESS TO EXTERNAL SERVICES                                             │
+│  INTER-POD COMMUNICATION (Multi-GPU / Multi-Node)                        │
+│                                                                          │
+│  [FSDP Process Group]                                                    │
+│  - Port: 29500/TCP                                                       │
+│  - Protocol: TCP (NCCL/Gloo backend)                                     │
+│  - Encryption: *** PLAINTEXT *** (no TLS)                                │
+│  - Auth: None                                                            │
+│  - Note: NCCL traffic between ranks is unencrypted                       │
+│         │                                                                │
+│  [Rank 0] ◄──NCCL──► [Rank 1] ◄──NCCL──► [Rank N]                      │
+│  - All-reduce, all-gather operations                                     │
+│  - Gradient synchronization                                              │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS - EXTERNAL SERVICES                                              │
 │                                                                          │
 │  [HuggingFace Hub - huggingface.co]                                      │
 │  - Port: 443/TCP                                                         │
 │  - Protocol: HTTPS                                                       │
 │  - Encryption: TLS 1.2+                                                  │
-│  - Auth: Bearer Token (HF_TOKEN env var)                                │
+│  - Auth: Bearer Token (HF_TOKEN env var)                                 │
 │  - Purpose: Model/tokenizer downloads via from_pretrained()              │
-│  - Direction: EGRESS only                                                │
 │                                                                          │
-│  [AimStack Server] (optional)                                            │
+│  [AimStack Server]                                                       │
 │  - Port: configurable                                                    │
 │  - Protocol: HTTP/HTTPS                                                  │
 │  - Encryption: configurable                                              │
 │  - Auth: None                                                            │
 │  - Purpose: Experiment metrics tracking                                  │
-│  - Direction: EGRESS only                                                │
 │                                                                          │
-│  [MLflow Server] (optional)                                              │
+│  [MLflow Server]                                                         │
 │  - Port: configurable                                                    │
 │  - Protocol: HTTP/HTTPS                                                  │
 │  - Encryption: configurable                                              │
 │  - Auth: configurable                                                    │
 │  - Purpose: Experiment metrics tracking                                  │
-│  - Direction: EGRESS only                                                │
 │                                                                          │
-│  [ClearML Server] (optional)                                             │
+│  [ClearML Server]                                                        │
 │  - Port: configurable                                                    │
 │  - Protocol: HTTP/HTTPS                                                  │
 │  - Encryption: configurable                                              │
 │  - Auth: API key                                                         │
 │  - Purpose: Experiment metrics tracking                                  │
-│  - Direction: EGRESS only                                                │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- No ClusterRoles or RoleBindings defined by this component
-- RBAC is managed by the Kubeflow Training Operator for PyTorchJob pods
-- Pod runs with ServiceAccount provided by PyTorchJob spec
+  No RBAC resources (ClusterRoles, RoleBindings) are defined by this component.
+  RBAC is managed externally by the Kubeflow Training Operator for PyTorchJob pods.
+  Training pods run under user-provided ServiceAccounts within project namespaces.
 
 Secrets:
-- HF_TOKEN (Opaque, env var) - HuggingFace Hub authentication for gated model downloads
-  - Provisioned by: User/ConfigMap
-  - Auto-Rotate: No
-- imagePullSecrets (kubernetes.io/dockerconfigjson) - Container registry credentials
-  - Provisioned by: User
-  - Auto-Rotate: No
+  - HF_TOKEN (env var / Opaque secret)
+    - Purpose: HuggingFace Hub authentication for gated model downloads
+    - Provisioned by: User/ConfigMap
+    - Auto-Rotate: No
+
+  - imagePullSecrets (kubernetes.io/dockerconfigjson)
+    - Purpose: Container registry credentials for pulling fms-hf-tuning image
+    - Provisioned by: User
+    - Auto-Rotate: No
 
 Security Notes:
-- ⚠️  NCCL/Gloo inter-process communication on port 29500/TCP is PLAINTEXT with NO authentication
-  - Risk: Data in transit between training ranks is unencrypted
-  - Mitigation: Typically pod-internal or within trusted cluster network
-- Container image uses UBI9 base with CUDA 12.1 development layer
-- Release image strips Python dev packages and dnf to minimize CVE surface
-- No inbound network services exposed (batch job pattern)
-- All egress connections use TLS except NCCL rendezvous
-- Triton cache directories configured for qLoRA kernel compilation at runtime
+  - ⚠️  NCCL inter-rank communication (port 29500/TCP) is PLAINTEXT
+    - No TLS or authentication between distributed training ranks
+    - Relies on Kubernetes network policies for isolation
+    - Consider: Service mesh sidecar injection for mTLS if sensitive data
+  - Container image uses UBI9 base with CUDA 12.1
+    - Multi-stage build strips dev packages and dnf to minimize CVE surface
+  - Error handling distinguishes user errors (exit 1) vs internal errors (exit 203)
+  - Termination logs written to /dev/termination-log for K8s status reporting
+  - simpleeval library used for safe expression evaluation in trainer controller rules
+    - Restricts imports and dunder access
+  - Jinja2 templates run in sandboxed mode for data formatting

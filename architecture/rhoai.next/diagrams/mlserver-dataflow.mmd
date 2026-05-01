@@ -1,68 +1,75 @@
 sequenceDiagram
     participant Client as External Client
-    participant KServe as KServe / Istio<br/>(TLS termination + Auth)
+    participant Istio as KServe/Istio Gateway<br/>TLS Termination
     participant REST as MLServer REST<br/>8080/TCP HTTP
-    participant gRPC as MLServer gRPC<br/>8081/TCP gRPC
-    participant Kafka as Kafka Broker<br/>9092/TCP
+    participant GRPC as MLServer gRPC<br/>8081/TCP gRPC
+    participant Kafka as Kafka Broker<br/>9092/TCP AMQP
+    participant MW as Inference Middleware<br/>(CloudEvents)
     participant DP as DataPlane Handler
-    participant MW as InferenceMiddleware<br/>(CloudEvents)
-    participant Batch as Adaptive Batcher<br/>(size/time queue)
     participant Cache as Response Cache<br/>(FIFO)
-    participant Pool as Parallel Inference Pool<br/>(multiprocessing.Queue)
+    participant Batch as Adaptive Batcher<br/>(size/time)
+    participant Pool as Parallel Pool<br/>(multiprocessing)
     participant Model as MLModel.predict()<br/>(Runtime Plugin)
-    participant Storage as Model Storage<br/>/mnt/models
     participant Metrics as Metrics Server<br/>8082/TCP
     participant OTel as OpenTelemetry Collector<br/>4317/TCP gRPC
-    participant Prom as Prometheus
+    participant Storage as Model Storage<br/>(PVC/S3)
 
-    Note over Client, Model: Flow 1: REST Inference Request
-    Client->>KServe: POST /v2/models/{name}/infer<br/>(HTTPS, Bearer Token)
-    KServe->>REST: Forward request<br/>(HTTP 8080, TLS terminated)
-    REST->>DP: Route to DataPlane handler
-    DP->>MW: Apply InferenceMiddleware
-    MW->>Cache: Check response cache
+    Note over Client,Storage: Flow 1: REST Inference Request
+
+    Client->>Istio: POST /v2/models/{name}/infer<br/>HTTPS (TLS 1.3)
+    Istio->>REST: Forward (TLS terminated)<br/>HTTP 8080/TCP
+    REST->>MW: Route to handler
+    MW->>DP: Process inference request
+    DP->>Cache: Check cache (optional)
     alt Cache Hit
-        Cache-->>MW: Cached response
-        MW-->>DP: Return cached
+        Cache-->>DP: Cached response
     else Cache Miss
-        MW->>Batch: Queue for batching
+        DP->>Batch: Queue request (optional)
         Batch->>Model: Batched predict()
         Model-->>Batch: Batched response
-        Batch-->>MW: Split individual responses
-        MW->>Cache: Store in cache
+        Batch-->>DP: Individual response
+        DP->>Cache: Store in cache
     end
     DP-->>REST: InferenceResponse
-    REST-->>KServe: HTTP 200 JSON
-    KServe-->>Client: HTTPS response
+    REST-->>Istio: HTTP 200
+    Istio-->>Client: JSON Response
 
-    Note over Client, Model: Flow 2: gRPC Inference Request
-    Client->>KServe: ModelInfer RPC<br/>(gRPC, TLS)
-    KServe->>gRPC: Forward request<br/>(gRPC 8081, insecure)
-    gRPC->>DP: Route to DataPlane
+    Note over Client,Storage: Flow 2: gRPC Inference Request
+
+    Client->>Istio: ModelInfer RPC<br/>gRPC/TLS
+    Istio->>GRPC: Forward<br/>gRPC 8081/TCP
+    GRPC->>DP: Servicer → DataPlane
     DP->>Model: predict()
     Model-->>DP: InferenceResponse
-    DP-->>gRPC: gRPC response
-    gRPC-->>KServe: ModelInferResponse
-    KServe-->>Client: gRPC response
+    DP-->>GRPC: Response
+    GRPC-->>Istio: gRPC Response
+    Istio-->>Client: ModelInferResponse
 
-    Note over Kafka, Model: Flow 3: Kafka Event-Driven Inference
-    Kafka->>Kafka: Consumer reads from input topic<br/>(9092/TCP)
-    Note right of Kafka: MLServer Kafka Consumer
-    Kafka->>DP: Kafka handler → DataPlane
+    Note over Client,Storage: Flow 3: Kafka Event-Driven Inference
+
+    Kafka->>REST: Consumer polls topic
+    Note right of REST: KafkaServer uses<br/>internal handler
+    REST->>DP: Process event
     DP->>Model: predict()
-    Model-->>DP: InferenceResponse
-    DP->>Kafka: Producer writes to output topic<br/>(9092/TCP)
+    Model-->>DP: Response
+    DP-->>REST: Result
+    REST->>Kafka: Producer publishes to output topic
 
-    Note over DP, Pool: Flow 4: Parallel Inference
-    DP->>Pool: Dispatch to worker<br/>(round-robin)
-    Pool->>Model: Worker process predict()<br/>(IPC Queue)
-    Model-->>Pool: Response via Queue
-    Pool-->>DP: Merged response
+    Note over Client,Storage: Flow 4: Parallel Inference (Multi-Worker)
 
-    Note over Model, Storage: Model Loading
-    Storage-->>Model: Load model artifacts<br/>(/mnt/models filesystem)
+    DP->>Pool: Dispatch request
+    Pool->>Pool: Round-robin to worker<br/>(multiprocessing.Queue)
+    Pool->>Model: Worker process predict()
+    Model-->>Pool: Result via IPC Queue
+    Pool-->>DP: Aggregated response
 
-    Note over REST, OTel: Observability
-    REST->>OTel: Export traces<br/>(OTLP gRPC 4317, insecure)
-    gRPC->>OTel: Export traces<br/>(OTLP gRPC 4317, insecure)
-    Prom->>Metrics: Scrape /metrics<br/>(HTTP 8082)
+    Note over Client,Storage: Observability
+
+    REST->>OTel: Export traces<br/>OTLP gRPC 4317/TCP (insecure)
+    GRPC->>OTel: Export traces<br/>OTLP gRPC 4317/TCP (insecure)
+    REST->>Metrics: Starlette metrics
+    GRPC->>Metrics: py-grpc-prometheus metrics
+
+    Note over Client,Storage: Model Loading
+
+    Model->>Storage: Load artifacts<br/>/mnt/models (PVC mount)

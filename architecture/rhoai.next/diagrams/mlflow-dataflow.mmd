@@ -7,48 +7,57 @@ sequenceDiagram
     participant PG as PostgreSQL<br/>5432/TCP TLS 1.2+
     participant S3 as S3 / MinIO<br/>443/TCP HTTPS
 
-    Note over MLPod,S3: Flow 1: Experiment Tracking
+    Note over MLPod, S3: Flow 1: Experiment Tracking
 
-    MLPod->>Proxy: POST /api/2.0/mlflow/runs/create<br/>HTTPS 8443 | Bearer Token (K8s SA)
-    Proxy->>Proxy: Validate SA Token<br/>against K8s API
-    Proxy->>MLflow: Forward request<br/>HTTP 5000 (pod-local)
+    MLPod->>Proxy: POST /api/2.0/mlflow/runs/create<br/>HTTPS/8443, Bearer Token (K8s SA)
+    Proxy->>Proxy: Validate SA Token
+    Proxy->>MLflow: Forward request<br/>HTTP/5000 (pod-local, plaintext)
     MLflow->>MLflow: Resolve workspace from<br/>X-MLFLOW-WORKSPACE header
-    MLflow->>PG: INSERT run record<br/>PostgreSQL TLS 1.2+ | User/Pass
+    MLflow->>PG: INSERT run record<br/>PostgreSQL/5432, TLS 1.2+<br/>Auth: Username/Password
     PG-->>MLflow: Run ID
-    MLflow->>S3: PUT artifact (model file)<br/>HTTPS 443 | AWS IAM / Access Key
+    MLflow-->>Proxy: 200 OK (Run metadata)
+    Proxy-->>MLPod: 200 OK
+
+    MLPod->>Proxy: POST /api/2.0/mlflow/runs/log-batch<br/>HTTPS/8443, Bearer Token
+    Proxy->>MLflow: Forward request<br/>HTTP/5000
+    MLflow->>PG: INSERT metrics, params, tags<br/>PostgreSQL/5432, TLS 1.2+
+    MLflow->>S3: PUT artifact files<br/>HTTPS/443, AWS IAM / Access Key
     S3-->>MLflow: 200 OK
-    MLflow-->>Proxy: JSON Response
-    Proxy-->>MLPod: HTTPS Response
+    PG-->>MLflow: OK
+    MLflow-->>Proxy: 200 OK
+    Proxy-->>MLPod: 200 OK
 
     participant Browser as User Browser
     participant Dashboard as RHOAI Dashboard<br/>443/TCP HTTPS
-    participant FedUI as MLflow Federated UI<br/>5000/TCP via Gateway
+    participant FedUI as MLflow Federated UI
+    participant MFAPI as MLflow API<br/>via Platform Gateway
 
-    Note over Browser,FedUI: Flow 2: UI Embedding via Module Federation
+    Note over Browser, MFAPI: Flow 2: UI Embedding via Module Federation
 
-    Browser->>Dashboard: Navigate to experiments<br/>HTTPS 443 | OAuth/OIDC
-    Dashboard->>FedUI: Load remoteEntry.js<br/>HTTPS via Gateway | Bearer Token
-    FedUI-->>Dashboard: Federated components loaded
-    FedUI->>MLflow: GET /api/2.0/mlflow/experiments/search<br/>HTTPS via Gateway | Bearer Token
-    MLflow->>PG: SELECT experiments<br/>PostgreSQL TLS 1.2+
-    PG-->>MLflow: Experiment data
-    MLflow-->>FedUI: JSON Response
+    Browser->>Dashboard: Navigate to Experiments<br/>HTTPS/443, OAuth/OIDC
+    Dashboard->>FedUI: Load remoteEntry.js<br/>HTTPS via Gateway, Bearer Token
+    FedUI-->>Dashboard: MlflowExperimentWrapper
+    Dashboard->>MFAPI: GET /api/2.0/mlflow/experiments/search<br/>HTTPS/443, Bearer Token
+    MFAPI-->>Dashboard: Experiment list (JSON)
 
-    participant OTelSDK as OpenTelemetry SDK
-    Note over OTelSDK,PG: Flow 3: OTLP Trace Ingestion
+    participant OTELApp as OTEL-instrumented App
+    participant MLflowOTLP as MLflow /v1/traces<br/>5000/TCP HTTP
 
-    OTelSDK->>MLflow: POST /v1/traces<br/>HTTP 5000 | Protobuf binary | Bearer Token
-    MLflow->>PG: INSERT trace spans<br/>PostgreSQL TLS 1.2+
-    PG-->>MLflow: Stored
-    MLflow-->>OTelSDK: 200 OK
+    Note over OTELApp, PG: Flow 3: OTLP Trace Ingestion
+
+    OTELApp->>MLflowOTLP: POST /v1/traces<br/>HTTP/5000, Bearer Token<br/>Content-Type: application/x-protobuf
+    MLflowOTLP->>PG: INSERT trace spans<br/>PostgreSQL/5432, TLS 1.2+
+    PG-->>MLflowOTLP: OK
+    MLflowOTLP-->>OTELApp: 200 OK
 
     participant Client as Client Application
-    participant LLM as LLM Provider<br/>(OpenAI/Anthropic/etc.)<br/>443/TCP HTTPS
+    participant GW as MLflow AI Gateway<br/>5000/TCP HTTP
+    participant LLM as LLM Provider<br/>(OpenAI/Anthropic)<br/>443/TCP HTTPS
 
-    Note over Client,LLM: Flow 4: AI Gateway LLM Proxy
+    Note over Client, LLM: Flow 4: AI Gateway LLM Proxy
 
-    Client->>MLflow: POST /gateway/chat/completions<br/>HTTP 5000 | Bearer Token
-    MLflow->>MLflow: Decrypt provider API key<br/>(KEK envelope encryption)
-    MLflow->>LLM: POST /v1/chat/completions<br/>HTTPS 443 | Provider API Key
-    LLM-->>MLflow: Completion response
-    MLflow-->>Client: Proxied JSON response
+    Client->>GW: POST /gateway/chat/completions<br/>HTTP/5000, Bearer Token
+    GW->>GW: Decrypt provider API key<br/>(KEK envelope encryption)
+    GW->>LLM: POST /v1/chat/completions<br/>HTTPS/443, Provider API Key
+    LLM-->>GW: Streaming SSE response
+    GW-->>Client: Proxied SSE response

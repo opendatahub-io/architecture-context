@@ -1,70 +1,83 @@
 sequenceDiagram
     participant Client as External Client
-    participant Gateway as Istio Gateway (Envoy)<br/>443/TCP HTTPS TLS 1.2+
-    participant BFH as body-field-to-header<br/>(upstream plugin)
+    participant Gateway as Istio Gateway<br/>(Envoy Proxy)<br/>443/TCP HTTPS TLS 1.2+
+    participant ExtProc as payload-processing<br/>(ext_proc)<br/>9004/TCP gRPC plaintext
+    participant BFH as body-field-to-header<br/>plugin
     participant MPR as model-provider-resolver<br/>plugin
     participant AT as api-translation<br/>plugin
     participant AKI as apikey-injection<br/>plugin
-    participant NRG as nemo-request-guard<br/>plugin
-    participant NRespG as nemo-response-guard<br/>plugin
-    participant NeMo as NeMo Guardrails<br/>HTTP
-    participant Provider as Model Provider<br/>443/TCP HTTPS
+    participant NemoReq as nemo-request-guard<br/>plugin
+    participant NemoSvc as NeMo Guardrails<br/>Service
+    participant NemoResp as nemo-response-guard<br/>plugin
+    participant Provider as Cloud Provider<br/>(OpenAI/Anthropic/Azure/<br/>Bedrock/Vertex)<br/>443/TCP HTTPS
 
     Note over Client,Provider: Flow 1: External Model Inference Request
 
-    Client->>Gateway: POST /v1/chat/completions<br/>HTTPS/443, TLS 1.2+
-    Gateway->>BFH: gRPC ext_proc/9004<br/>Request body (plaintext)
-    BFH->>BFH: Extract model name from body<br/>Set X-Gateway-Model-Name header
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTPS/443, TLS 1.2+<br/>Client auth (per Gateway config)
+    Gateway->>ExtProc: ext_proc request body<br/>gRPC/9004 plaintext
 
-    BFH->>MPR: CycleState passthrough
-    MPR->>MPR: Lookup ExternalModel in modelInfoStore<br/>Resolve provider name + model mapping
-    Note right of MPR: Writes to CycleState:<br/>provider, model, credential ref
+    Note over ExtProc,AKI: Plugin Chain Processing (ordered)
 
-    MPR->>AT: CycleState with provider info
-    AT->>AT: Translate request body<br/>OpenAI → provider-native format
-    Note right of AT: OpenAI/Bedrock: path rewrite only<br/>Azure: path rewrite<br/>Anthropic: full body transform<br/>Vertex: path with project/location
+    ExtProc->>BFH: Process request body
+    BFH-->>ExtProc: Set X-Gateway-Model-Name header<br/>(from body.model field)
 
-    AT->>AKI: CycleState with translated body
-    AKI->>AKI: Lookup API key in secretStore<br/>Inject auth header per provider
-    Note right of AKI: OpenAI: Authorization Bearer<br/>Anthropic: x-api-key<br/>Azure: api-key header
+    ExtProc->>MPR: Process request
+    Note right of MPR: Reads modelInfoStore<br/>(in-memory, from<br/>ExternalModel reconciler)
+    MPR-->>ExtProc: Set CycleState:<br/>provider, model, credentialRef
 
-    opt NeMo Guardrails Enabled
-        AKI->>NRG: CycleState passthrough
-        NRG->>NeMo: POST /v1/guardrail/checks<br/>HTTP, input content
-        NeMo-->>NRG: 200 OK, status: allowed/blocked
+    opt NeMo Guardrails enabled
+        Note over NemoReq,NemoSvc: Flow 2: NeMo Input Guard Check
+        ExtProc->>NemoReq: Process request
+        NemoReq->>NemoSvc: POST /v1/guardrail/checks<br/>HTTP, configurable port
+        NemoSvc-->>NemoReq: 200 OK (status: allowed/blocked)
         alt Request Blocked
-            NRG-->>Gateway: 403 Forbidden
+            NemoReq-->>ExtProc: 403 Forbidden
+            ExtProc-->>Gateway: Reject request
             Gateway-->>Client: 403 Forbidden
         end
+        NemoReq-->>ExtProc: Allow (continue chain)
     end
 
-    Gateway->>Provider: Translated request<br/>HTTPS/443, API key header
-    Provider-->>Gateway: Model response<br/>HTTPS/443
+    ExtProc->>AT: Process request
+    Note right of AT: Translates OpenAI format →<br/>provider-native format<br/>(Anthropic Messages, Azure,<br/>Bedrock, Vertex AI)
+    AT-->>ExtProc: Mutated body + path rewrite
 
-    opt NeMo Response Guard Enabled
-        Gateway->>NRespG: gRPC ext_proc/9004<br/>Response body
-        NRespG->>NeMo: POST /v1/guardrail/checks<br/>HTTP, output content
-        NeMo-->>NRespG: 200 OK, status: allowed/blocked
-        alt Response Blocked
-            NRespG-->>Gateway: Modified response (blocked)
-        end
+    ExtProc->>AKI: Process request
+    Note right of AKI: Reads secretStore<br/>(in-memory, from<br/>Secret reconciler)
+    AKI-->>ExtProc: Inject auth header<br/>(Bearer/x-api-key/api-key)
+
+    ExtProc-->>Gateway: Mutated request<br/>(new body, headers, path)
+    Gateway->>Provider: Translated request<br/>HTTPS/443, TLS 1.2+<br/>API key in header
+
+    Provider-->>Gateway: Provider response
+    Gateway->>ExtProc: ext_proc response body
+
+    ExtProc->>AT: Process response
+    Note right of AT: Translates provider response →<br/>OpenAI format<br/>(strip provider fields)
+    AT-->>ExtProc: Normalized response body
+
+    opt NeMo Output Guard enabled
+        ExtProc->>NemoResp: Process response
+        NemoResp->>NemoSvc: POST /v1/guardrail/checks<br/>HTTP, configurable port
+        NemoSvc-->>NemoResp: 200 OK (status: allowed/blocked)
+        NemoResp-->>ExtProc: Allow/block decision
     end
 
-    AT->>AT: Translate response body<br/>provider-native → OpenAI format
-    Gateway-->>Client: JSON Response<br/>HTTPS/443
+    ExtProc-->>Gateway: Final response body
+    Gateway-->>Client: JSON Response<br/>OpenAI-compatible format
 
-    Note over Client,Provider: Flow 2: ExternalModel & Secret Reconciliation (Background)
+    Note over Client,Provider: Flow 3 & 4: Background Reconciliation (continuous)
 
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
 
-    loop ExternalModel Watch
-        MPR->>K8sAPI: Watch ExternalModel CRDs<br/>HTTPS/443, SA token
-        K8sAPI-->>MPR: ExternalModel events
-        MPR->>MPR: Update modelInfoStore
+    rect rgb(240, 248, 255)
+        Note over ExtProc,K8sAPI: ExternalModel Reconciliation
+        K8sAPI-->>ExtProc: Watch ExternalModel CRDs<br/>HTTPS/443, ServiceAccount token
+        Note right of ExtProc: Updates modelInfoStore<br/>(in-memory cache)
     end
 
-    loop Secret Watch
-        AKI->>K8sAPI: Watch Secrets (bbr-managed=true)<br/>HTTPS/443, SA token
-        K8sAPI-->>AKI: Secret events
-        AKI->>AKI: Update secretStore
+    rect rgb(255, 248, 240)
+        Note over ExtProc,K8sAPI: Secret Reconciliation
+        K8sAPI-->>ExtProc: Watch Secrets (bbr-managed=true)<br/>HTTPS/443, ServiceAccount token
+        Note right of ExtProc: Updates secretStore<br/>(in-memory cache)
     end

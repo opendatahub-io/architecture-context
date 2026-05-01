@@ -2,53 +2,65 @@ sequenceDiagram
     participant Client as External Client
     participant Gateway as KServe Gateway<br/>443/TCP HTTPS TLS 1.2+
     participant Istio as Istio Sidecar<br/>15006/TCP mTLS
-    participant Server as AutoGluon Server<br/>8080/TCP HTTP
+    participant HTTP as AutoGluon HTTP Server<br/>8080/TCP HTTP
+    participant GRPC as AutoGluon gRPC Server<br/>8081/TCP gRPC
+    participant Factory as Predictor Factory
     participant Tabular as TabularPredictor<br/>(in-process)
     participant TimeSeries as TimeSeriesPredictor<br/>(in-process)
     participant Storage as kserve-storage<br/>(in-process)
     participant S3 as S3/GCS Storage<br/>443/TCP HTTPS
 
     Note over Client,S3: Flow 1: Model Loading from Storage (startup)
-    Storage->>S3: Download model artifacts<br/>HTTPS/443, TLS 1.2+<br/>Auth: AWS IAM / GCP SA
-    S3-->>Storage: Model artifacts
-    Storage->>Server: Write to /mnt/models
-    Server->>Server: predictor_detect.py<br/>Auto-detect model type
-    alt TimeSeriesPredictor detected
-        Server->>TimeSeries: TimeSeriesPredictor.load()
-    else TabularPredictor detected
-        Server->>Tabular: TabularPredictor.load()
+    rect rgb(240, 248, 255)
+        Storage->>S3: Download model artifacts<br/>HTTPS/443, TLS 1.2+<br/>AWS IAM / GCP SA credentials
+        S3-->>Storage: Model files
+        Storage->>Factory: Write to /mnt/models
+        Factory->>Factory: Auto-detect predictor type<br/>(try TimeSeriesPredictor first,<br/>fallback to TabularPredictor)
+        alt TimeSeriesPredictor detected
+            Factory->>TimeSeries: Load model
+        else TabularPredictor detected
+            Factory->>Tabular: Load model
+        end
     end
 
-    Note over Client,S3: Flow 2: Tabular Inference (v2 Open Inference Protocol)
-    Client->>Gateway: POST /v2/models/{model}/infer<br/>Auth: Bearer Token or mTLS
-    Gateway->>Istio: Forward request<br/>TLS terminated
-    Istio->>Server: HTTP/8080<br/>mTLS STRICT (mesh internal)
-    Server->>Server: Parse v2 tensor inputs<br/>Map to DataFrame columns
-    Server->>Tabular: predict(DataFrame)
-    Tabular-->>Server: Predictions array
-    Server->>Server: Format v2 InferResponse<br/>(named output tensors)
-    Server-->>Istio: JSON Response
-    Istio-->>Gateway: mTLS
-    Gateway-->>Client: HTTPS Response
+    Note over Client,S3: Flow 2: Tabular Inference (V2 Open Inference Protocol)
+    rect rgb(240, 255, 240)
+        Client->>Gateway: POST /v2/models/{name}/infer<br/>Auth: Bearer Token or mTLS
+        Gateway->>Istio: Forward request<br/>mTLS STRICT
+        Istio->>HTTP: HTTP/8080<br/>plaintext (within mesh)
+        HTTP->>Factory: Route to model
+        Factory->>Tabular: predict(payload)<br/>tensor inputs → DataFrame
+        Tabular-->>Factory: Prediction result
+        Factory-->>HTTP: InferResponse (tensors)
+        HTTP-->>Istio: JSON Response
+        Istio-->>Gateway: mTLS
+        Gateway-->>Client: HTTPS Response
+    end
 
-    Note over Client,S3: Flow 3: Time Series Forecasting (v1 REST)
-    Client->>Gateway: POST /v1/models/{model}:predict<br/>Auth: Bearer Token or mTLS
-    Gateway->>Istio: Forward request<br/>TLS terminated
-    Istio->>Server: HTTP/8080<br/>mTLS STRICT (mesh internal)
-    Server->>Server: Parse v1 JSON instances<br/>Build TimeSeriesDataFrame
-    Server->>TimeSeries: predict(TimeSeriesDataFrame)
-    TimeSeries-->>Server: Forecast results
-    Server->>Server: Format v1 JSON predictions
-    Server-->>Istio: JSON Response
-    Istio-->>Gateway: mTLS
-    Gateway-->>Client: HTTPS Response
+    Note over Client,S3: Flow 3: Time Series Forecasting (V1 REST)
+    rect rgb(255, 248, 240)
+        Client->>Gateway: POST /v1/models/{name}:predict<br/>Auth: Bearer Token or mTLS
+        Gateway->>Istio: Forward request<br/>mTLS STRICT
+        Istio->>HTTP: HTTP/8080<br/>plaintext (within mesh)
+        HTTP->>Factory: Route to model
+        Factory->>TimeSeries: predict(payload)<br/>JSON instances → TimeSeriesDataFrame
+        TimeSeries-->>Factory: Forecast result
+        Factory-->>HTTP: JSON predictions
+        HTTP-->>Istio: JSON Response
+        Istio-->>Gateway: mTLS
+        Gateway-->>Client: HTTPS Response
+    end
 
-    Note over Client,S3: Flow 4: gRPC Inference (v2 OIP)
-    Client->>Gateway: gRPC ModelInfer<br/>443/TCP, TLS 1.2+
-    Gateway->>Istio: Forward
-    Istio->>Server: gRPC/8081<br/>mTLS
-    Server->>Tabular: predict(DataFrame)
-    Tabular-->>Server: Predictions
-    Server-->>Istio: gRPC InferResponse
-    Istio-->>Gateway: mTLS
-    Gateway-->>Client: gRPC Response
+    Note over Client,S3: Flow 4: gRPC Inference (V2 Protocol)
+    rect rgb(248, 240, 255)
+        Client->>Gateway: gRPC ModelInfer<br/>Auth: Bearer Token or mTLS
+        Gateway->>Istio: Forward request<br/>mTLS STRICT
+        Istio->>GRPC: gRPC/8081<br/>plaintext (within mesh)
+        GRPC->>Factory: Route to model
+        Factory->>Tabular: predict(payload)
+        Tabular-->>Factory: Prediction result
+        Factory-->>GRPC: InferResponse (protobuf)
+        GRPC-->>Istio: gRPC Response
+        Istio-->>Gateway: mTLS
+        Gateway-->>Client: gRPC Response
+    end

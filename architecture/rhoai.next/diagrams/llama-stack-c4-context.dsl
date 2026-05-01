@@ -1,70 +1,75 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and deploys ML models, runs inference, manages agents"
-        appDeveloper = person "Application Developer" "Integrates AI capabilities via OpenAI-compatible APIs"
+        user = person "Data Scientist / Developer" "Creates inference requests, manages agents, and deploys models via Llama Stack API"
+        platformOps = person "Platform Operator" "Deploys and configures Llama Stack distributions via CLI and YAML templates"
 
-        llamaStack = softwareSystem "Llama Stack" "Extensible AI inference and agent orchestration server providing unified API for model inference, safety, RAG, evaluation, and agentic workflows" {
-            server = container "Llama Stack Server" "FastAPI/Uvicorn HTTP API server on port 8321" "Python / FastAPI"
-            authMiddleware = container "Authentication Middleware" "Validates Bearer JWT tokens via JWKS or token introspection" "Python Module"
-            quotaMiddleware = container "Quota Middleware" "Enforces per-client request rate limits" "Python Module"
-            accessControl = container "Access Control Engine" "Cedar-inspired ABAC policy engine for resource-level authorization" "Python Module"
-            providerRouter = container "Provider Router" "Routes API requests to correct provider based on model/resource registration" "Python Module"
-            cli = container "CLI (llama)" "Command-line interface for stack build, run, model download, template management" "Python CLI (fire)"
+        llamaStack = softwareSystem "Llama Stack" "Extensible AI inference and agent orchestration server with unified API layer" {
+            server = container "Llama Stack Server" "FastAPI/Uvicorn HTTP server exposing inference, agents, safety, RAG, eval, and telemetry endpoints" "Python (FastAPI)"
+            authMiddleware = container "Authentication Middleware" "Validates Bearer tokens via OAuth2 JWT (JWKS), token introspection, or custom auth provider" "Python Module"
+            quotaMiddleware = container "Quota Middleware" "Enforces per-client request rate limits for authenticated and anonymous users" "Python Module"
+            accessControl = container "Access Control Engine" "Cedar-inspired ABAC policy engine enforcing permit/forbid rules on resource operations" "Python Module"
+            providerRouter = container "Provider Router" "Routes API requests to correct provider implementation based on model/resource ID routing tables" "Python Module"
+            cli = container "llama CLI" "Command-line interface for stack build, run, model download, and template management" "Python CLI (fire)"
         }
 
-        # Inference Providers
-        vllm = softwareSystem "vLLM" "High-performance LLM inference engine — primary backend for RHOAI" "External"
-        ollama = softwareSystem "Ollama" "Local LLM inference for development" "External"
-        tgi = softwareSystem "TGI / HuggingFace" "HuggingFace Text Generation Inference" "External"
+        # Inference Backends
+        vllm = softwareSystem "vLLM" "High-performance LLM inference server (primary RHOAI backend)" "External"
+        ollama = softwareSystem "Ollama" "Local LLM inference server for development" "External"
+        tgi = softwareSystem "TGI" "HuggingFace Text Generation Inference" "External"
         openai = softwareSystem "OpenAI API" "OpenAI cloud inference service" "External"
         anthropic = softwareSystem "Anthropic API" "Anthropic cloud inference service" "External"
-        bedrock = softwareSystem "AWS Bedrock" "AWS-hosted inference service" "External"
+        bedrock = softwareSystem "AWS Bedrock" "AWS-managed inference service" "External"
         gemini = softwareSystem "Google Gemini API" "Google cloud inference service" "External"
         nvidia = softwareSystem "NVIDIA NIM" "NVIDIA cloud inference service" "External"
 
-        # Vector Databases
-        pgvector = softwareSystem "PostgreSQL (pgvector)" "Relational database with vector similarity search" "External"
+        # Vector Stores
+        pgvector = softwareSystem "PostgreSQL (pgvector)" "Vector storage for RAG workflows" "External"
         chromadb = softwareSystem "ChromaDB" "Vector database for RAG" "External"
-        qdrant = softwareSystem "Qdrant" "Vector search engine" "External"
-        milvus = softwareSystem "Milvus" "Distributed vector database" "External"
+        qdrant = softwareSystem "Qdrant" "Vector database for RAG" "External"
+        milvus = softwareSystem "Milvus" "Vector database for RAG" "External"
 
-        # Tools & Services
-        braveSearch = softwareSystem "Brave Search" "Web search API for agent tools" "External"
-        tavilySearch = softwareSystem "Tavily Search" "Web search API for agent tools" "External"
-        wolframAlpha = softwareSystem "Wolfram Alpha" "Computation engine for agent tools" "External"
-
-        # Infrastructure
-        oauth2IdP = softwareSystem "OAuth2 Identity Provider" "JWT token issuance and JWKS key publication" "External"
+        # Supporting Services
+        oauth2Idp = softwareSystem "OAuth2 Identity Provider" "JWT token validation via JWKS and token introspection" "External"
         otlpCollector = softwareSystem "OTLP Collector" "OpenTelemetry trace and metrics aggregation" "External"
-        huggingfaceHub = softwareSystem "HuggingFace Hub" "Model repository for downloading model artifacts" "External"
-        sqlite = softwareSystem "SQLite" "File-based metadata store, quota tracking, inference history" "Internal"
+        huggingfaceHub = softwareSystem "HuggingFace Hub" "Model artifact downloads and metadata" "External"
+        sqlite = softwareSystem "SQLite" "Local metadata store, quota tracking, inference history" "Internal"
+
+        # Tool APIs
+        braveSearch = softwareSystem "Brave Search API" "Web search tool for agents" "External"
+        tavilySearch = softwareSystem "Tavily Search API" "Web search tool for agents" "External"
 
         # Relationships
-        dataScientist -> llamaStack "Creates agents, runs inference, manages models" "HTTPS/8321 Bearer JWT"
-        appDeveloper -> llamaStack "Calls OpenAI-compatible inference API" "HTTPS/8321 Bearer JWT"
+        user -> llamaStack "Creates inference requests, manages agents and resources" "REST API / HTTPS 8321"
+        platformOps -> cli "Configures and deploys Llama Stack distributions" "CLI"
+        cli -> server "Starts server with distribution config" "--config run.yaml"
 
-        llamaStack -> vllm "Sends inference requests" "HTTP/8000 API Key"
-        llamaStack -> ollama "Sends inference requests (dev)" "HTTP/11434"
-        llamaStack -> tgi "Sends inference requests" "HTTPS/443 API Key"
-        llamaStack -> openai "Sends inference requests" "HTTPS/443 API Key"
-        llamaStack -> anthropic "Sends inference requests" "HTTPS/443 API Key"
-        llamaStack -> bedrock "Sends inference requests" "HTTPS/443 AWS IAM"
-        llamaStack -> gemini "Sends inference requests" "HTTPS/443 API Key"
-        llamaStack -> nvidia "Sends inference requests" "HTTPS/443 API Key"
+        server -> authMiddleware "Validates incoming requests"
+        authMiddleware -> quotaMiddleware "Passes authenticated requests"
+        quotaMiddleware -> accessControl "Passes rate-limited requests"
+        accessControl -> providerRouter "Passes authorized requests"
 
-        llamaStack -> pgvector "Stores/queries vector embeddings" "TCP/5432 Username/Password"
-        llamaStack -> chromadb "Stores/queries vector embeddings" "HTTP/8000"
-        llamaStack -> qdrant "Stores/queries vector embeddings" "HTTP/6333"
-        llamaStack -> milvus "Stores/queries vector embeddings" "gRPC/19530"
+        authMiddleware -> oauth2Idp "Fetches JWKS / introspects tokens" "HTTPS/443"
+        quotaMiddleware -> sqlite "Tracks request counts" "File I/O"
 
-        llamaStack -> braveSearch "Web search for agent tools" "HTTPS/443 API Key"
-        llamaStack -> tavilySearch "Web search for agent tools" "HTTPS/443 API Key"
-        llamaStack -> wolframAlpha "Computation for agent tools" "HTTPS/443 API Key"
+        providerRouter -> vllm "Inference requests (primary)" "HTTP/8000"
+        providerRouter -> ollama "Inference requests (dev)" "HTTP/11434"
+        providerRouter -> tgi "Inference requests" "HTTPS/443"
+        providerRouter -> openai "Inference requests" "HTTPS/443"
+        providerRouter -> anthropic "Inference requests" "HTTPS/443"
+        providerRouter -> bedrock "Inference requests" "HTTPS/443 (AWS SigV4)"
+        providerRouter -> gemini "Inference requests" "HTTPS/443"
+        providerRouter -> nvidia "Inference requests" "HTTPS/443"
 
-        llamaStack -> oauth2IdP "Fetches JWKS keys for JWT validation" "HTTPS/443"
-        llamaStack -> otlpCollector "Exports traces and metrics" "HTTP/4318"
-        llamaStack -> huggingfaceHub "Downloads model artifacts" "HTTPS/443 API Key"
-        llamaStack -> sqlite "Reads/writes metadata, quotas, history" "File I/O"
+        providerRouter -> pgvector "Vector storage queries" "TCP/5432"
+        providerRouter -> chromadb "Vector storage queries" "HTTP/8000"
+        providerRouter -> qdrant "Vector storage queries" "HTTP/6333"
+        providerRouter -> milvus "Vector storage queries" "gRPC/19530"
+
+        providerRouter -> braveSearch "Web search for agent tools" "HTTPS/443"
+        providerRouter -> tavilySearch "Web search for agent tools" "HTTPS/443"
+
+        server -> otlpCollector "Exports traces and metrics" "HTTP/4318"
+        server -> huggingfaceHub "Downloads model artifacts" "HTTPS/443"
     }
 
     views {

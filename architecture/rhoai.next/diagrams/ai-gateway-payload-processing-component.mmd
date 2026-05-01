@@ -1,24 +1,18 @@
 graph TB
-    subgraph External["External Clients"]
-        Client[Client Application]
-    end
-
-    subgraph IstioGW["Istio Gateway"]
-        Envoy["Envoy Proxy<br/>443/TCP HTTPS"]
-    end
-
-    subgraph BBR["AI Gateway Payload Processing (BBR ext_proc)"]
+    subgraph BBRService["AI Gateway Payload Processing<br/>(BBR ext_proc Host)"]
         direction TB
-        BodyFieldToHeader["body-field-to-header<br/>(upstream plugin)"]
-        ModelProviderResolver["model-provider-resolver<br/>plugin"]
-        APITranslation["api-translation<br/>plugin"]
-        APIKeyInjection["apikey-injection<br/>plugin"]
-        NemoRequestGuard["nemo-request-guard<br/>plugin"]
-        NemoResponseGuard["nemo-response-guard<br/>plugin"]
 
-        subgraph Stores["In-Memory Stores"]
-            ModelInfoStore["modelInfoStore<br/>(ExternalModel cache)"]
-            SecretStore["secretStore<br/>(API key cache)"]
+        subgraph PluginChain["Plugin Chain (ordered)"]
+            direction LR
+            BodyFieldToHeader["body-field-to-header<br/>(upstream)<br/>Extracts model name<br/>→ X-Gateway-Model-Name"]
+            ModelProviderResolver["model-provider-resolver<br/>Resolves model →<br/>provider + credentials"]
+            APITranslation["api-translation<br/>OpenAI ↔ Provider<br/>format translation"]
+            APIKeyInjection["apikey-injection<br/>Injects provider<br/>auth headers"]
+        end
+
+        subgraph GuardPlugins["Guard Plugins (optional)"]
+            NemoRequestGuard["nemo-request-guard<br/>Input content rails"]
+            NemoResponseGuard["nemo-response-guard<br/>Output content rails"]
         end
 
         subgraph Reconcilers["Controller-Runtime Reconcilers"]
@@ -26,53 +20,60 @@ graph TB
             SecretReconciler["Secret<br/>Reconciler"]
         end
 
-        BodyFieldToHeader -->|"X-Gateway-Model-Name header"| ModelProviderResolver
-        ModelProviderResolver -->|"CycleState: provider, model"| APITranslation
-        APITranslation -->|"CycleState: translated body"| APIKeyInjection
+        subgraph InMemoryStores["In-Memory Stores (RWMutex)"]
+            ModelInfoStore["modelInfoStore<br/>model → provider mapping"]
+            SecretStore["secretStore<br/>API keys cache"]
+        end
 
-        ModelProviderResolver -->|reads| ModelInfoStore
-        APIKeyInjection -->|reads| SecretStore
+        BodyFieldToHeader --> ModelProviderResolver
+        ModelProviderResolver --> APITranslation
+        APITranslation --> APIKeyInjection
+
         ExternalModelReconciler -->|populates| ModelInfoStore
         SecretReconciler -->|populates| SecretStore
+        ModelProviderResolver -->|reads| ModelInfoStore
+        APIKeyInjection -->|reads| SecretStore
     end
 
-    subgraph K8sAPI["Kubernetes API Server"]
-        ExternalModelCR["ExternalModel CRD<br/>maas.opendatahub.io/v1alpha1"]
-        Secrets["Secrets<br/>(bbr-managed=true)"]
-    end
+    %% External Inputs
+    Client[Client] -->|HTTPS/443| IstioGateway["Istio Gateway<br/>(Envoy Proxy)"]
+    IstioGateway -->|gRPC ext_proc<br/>9004/TCP| BBRService
 
-    subgraph Providers["External Model Providers"]
-        OpenAI["OpenAI API"]
-        Anthropic["Anthropic API"]
-        Azure["Azure OpenAI"]
-        Bedrock["AWS Bedrock"]
-        Vertex["Google Vertex AI"]
-    end
+    %% CRD Watches
+    ExternalModelCR["ExternalModel CR<br/>(maas.opendatahub.io/v1alpha1)"] -->|watched by| ExternalModelReconciler
+    LabeledSecrets["Kubernetes Secrets<br/>(bbr-managed=true)"] -->|watched by| SecretReconciler
 
-    subgraph NemoService["NeMo Guardrails Service"]
-        NemoAPI["NeMo API<br/>/v1/guardrail/checks"]
-    end
+    %% Guard Egress
+    NemoRequestGuard -->|HTTP POST<br/>/v1/guardrail/checks| NemoService["NeMo Guardrails<br/>Service"]
+    NemoResponseGuard -->|HTTP POST<br/>/v1/guardrail/checks| NemoService
 
-    Client -->|"HTTPS/443"| Envoy
-    Envoy -->|"gRPC ext_proc/9004"| BodyFieldToHeader
-    NemoRequestGuard -->|"HTTP POST"| NemoAPI
-    NemoResponseGuard -->|"HTTP POST"| NemoAPI
-    ExternalModelReconciler -->|"HTTPS/443<br/>Watch"| ExternalModelCR
-    SecretReconciler -->|"HTTPS/443<br/>Watch"| Secrets
-    Envoy -->|"HTTPS/443<br/>API key injected"| Providers
+    %% Provider Egress (via Gateway)
+    IstioGateway -->|HTTPS/443<br/>API key injected| Providers["Cloud Providers<br/>(OpenAI, Anthropic, Azure,<br/>Bedrock, Vertex AI)"]
 
-    style BBR fill:#e8f0fe,stroke:#4a90e2,stroke-width:2px
-    style BodyFieldToHeader fill:#999,stroke:#333
-    style ModelProviderResolver fill:#4a90e2,stroke:#333,color:#fff
-    style APITranslation fill:#4a90e2,stroke:#333,color:#fff
-    style APIKeyInjection fill:#4a90e2,stroke:#333,color:#fff
-    style NemoRequestGuard fill:#9b59b6,stroke:#333,color:#fff
-    style NemoResponseGuard fill:#9b59b6,stroke:#333,color:#fff
-    style ModelInfoStore fill:#f5a623,stroke:#333
-    style SecretStore fill:#f5a623,stroke:#333
-    style ExternalModelReconciler fill:#7ed321,stroke:#333
-    style SecretReconciler fill:#7ed321,stroke:#333
-    style Envoy fill:#ffe6cc,stroke:#d79b00
-    style ExternalModelCR fill:#d5e8d4,stroke:#82b366
-    style Secrets fill:#d5e8d4,stroke:#82b366
-    style NemoAPI fill:#e1d5e7,stroke:#9673a6
+    %% K8s API
+    ExternalModelReconciler -->|Watch| K8sAPI["Kubernetes API<br/>443/TCP HTTPS"]
+    SecretReconciler -->|Watch| K8sAPI
+
+    %% MaaS dependency
+    MaaS["models-as-a-service<br/>(MaaS)"] -->|creates| ExternalModelCR
+
+    %% Styling
+    style BBRService fill:#e8f4fd,stroke:#4a90e2,stroke-width:2px
+    style PluginChain fill:#d5e8d4,stroke:#82b366,stroke-width:1px
+    style GuardPlugins fill:#fff2cc,stroke:#d6b656,stroke-width:1px
+    style Reconcilers fill:#f8cecc,stroke:#b85450,stroke-width:1px
+    style InMemoryStores fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
+    style BodyFieldToHeader fill:#dae8fc,stroke:#6c8ebf
+    style ModelProviderResolver fill:#dae8fc,stroke:#6c8ebf
+    style APITranslation fill:#dae8fc,stroke:#6c8ebf
+    style APIKeyInjection fill:#dae8fc,stroke:#6c8ebf
+    style NemoRequestGuard fill:#fff2cc,stroke:#d6b656
+    style NemoResponseGuard fill:#fff2cc,stroke:#d6b656
+    style IstioGateway fill:#ffe6cc,stroke:#d79b00
+    style Client fill:#f9f9f9,stroke:#999
+    style ExternalModelCR fill:#f5a623,stroke:#333
+    style LabeledSecrets fill:#f5a623,stroke:#333
+    style NemoService fill:#e8e8e8,stroke:#999
+    style Providers fill:#e8e8e8,stroke:#999
+    style K8sAPI fill:#e8e8e8,stroke:#999
+    style MaaS fill:#7ed321,stroke:#333

@@ -1,185 +1,199 @@
-┌─────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                   │
-│                                                                          │
-│  [External Client]                                                       │
-│  - Protocol: OpenAI-compatible REST API                                  │
-│  - Methods: POST /v1/completions, /v1/chat/completions                  │
-│         │                                                                │
-│         │ Port: 80/TCP                                                   │
-│         │ Protocol: HTTP                                                 │
-│         │ Encryption: None (HTTP) / TLS via provider                     │
-│         │ Auth: Application-level (varies by deployment)                 │
-│         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  INGRESS / PROXY LAYER                                                   │
-│                                                                          │
-│  [Gateway (Envoy / Gateway API)]                                         │
-│  - Resource: gateway.networking.k8s.io/v1 Gateway                        │
-│  - Name: llm-d-inference-gateway                                         │
-│  - Port: 80/TCP (external listener)                                      │
-│  - Implementations:                                                      │
-│    - agentgateway (Preferred, self-installed)                             │
-│    - Istio IngressGateway                                                │
-│    - GKE Gateway (Cloud-managed LB)                                      │
-│    - kgateway (Deprecated)                                               │
-│  - Deployment Mode:                                                      │
-│    - Gateway API Mode (production)                                       │
-│    - Standalone Mode (EPP + Envoy sidecar, no Gateway API)              │
-│         │                                                                │
-│         │ Port: N/A (in-process / gRPC)                                  │
-│         │ Protocol: Envoy ext-proc gRPC                                  │
-│         │ Mode: FULL_DUPLEX_STREAMED                                     │
-│         │ Encryption: In-cluster (loopback or sidecar)                   │
-│         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  SCHEDULING LAYER (In-Cluster)                                           │
-│                                                                          │
-│  [Endpoint Picker (EPP)]                                                 │
-│  - Image: ghcr.io/llm-d/llm-d-inference-scheduler:v0.7.0               │
-│  - ServiceAccount: (guide-specific)                                      │
-│  - Ports:                                                                │
-│    - 9002/TCP: Prometheus metrics                                        │
-│    - 9090/TCP: Prometheus metrics (alt)                                  │
-│  - Internal Components:                                                  │
-│    - Ext-Proc Server (gRPC endpoint for proxy)                          │
-│    - Request Handler (OpenAI parser)                                     │
-│    - Flow Control (priority bands, fairness)                             │
-│    - Scheduler (Filter→Score→Pick)                                       │
-│  - Data Sources:                                                         │
-│    - Prometheus (polling: queue depth, KV cache %)                       │
-│    - Kubernetes API (notifications: pod lifecycle)                       │
-│    - ZMQ/5556 (precise prefix cache events, optional)                   │
-│         │                                                                │
-│         │ Endpoint Selection                                             │
-│         │ Via: InferencePool CR (label-based pod discovery)              │
-│         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  INFERENCE POOL (In-Cluster)                                             │
-│                                                                          │
-│  [InferencePool CRD]                                                     │
-│  - API: gateway.networking.k8s.io (Inference Extension)                  │
-│  - Scope: Namespace-scoped                                               │
-│  - Purpose: Groups model server pods via label selectors                 │
-│  - Security: Namespace isolation, endpointPickerRef to EPP              │
-│  - Failure Mode: FailOpen / FailClose (configurable)                    │
-│         │                                                                │
-│         │ Label-based pod discovery                                      │
-│         │ Selector: llm-d.ai/inference-serving: "true"                  │
-│         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  MODEL SERVER LAYER (In-Cluster)                                         │
-│                                                                          │
-│  [Decode Worker(s)]                                                      │
-│  - ServiceAccount: sa                                                    │
-│  - Image: vllm/vllm-openai / ghcr.io/llm-d/llm-d-cuda                  │
-│  - Ports:                                                                │
-│    - 8000/TCP: vLLM OpenAI API                                           │
-│    - 8200/TCP: Decode vLLM (in P/D disaggregation)                      │
-│  - Labels:                                                               │
-│    - llm-d.ai/role: decode                                               │
-│    - llm-d.ai/inference-serving: "true"                                  │
-│  - Health Probes:                                                        │
-│    - Startup: GET /v1/models (long timeout for large models)            │
-│    - Liveness: GET /health                                               │
-│    - Readiness: GET /v1/models                                           │
-│  - Security Context: Non-root user (uid 2000, vllm)                    │
-│  - OpenShift Compatible: Arbitrary UID support                          │
-│         │                                                                │
-│  [Prefill Worker(s)] (P/D Disaggregation Mode Only)                     │
-│  - Ports:                                                                │
-│    - 8000/TCP: Prefill vLLM + Routing Sidecar                           │
-│  - Labels:                                                               │
-│    - llm-d.ai/role: prefill                                              │
-│  - Routing Sidecar:                                                      │
-│    - Image: ghcr.io/llm-d/llm-d-routing-sidecar:v0.7.1                 │
-│         │                                                                │
-│         │ Port: 5600/TCP                                                 │
-│         │ Protocol: NIXL KV Cache Transfer                               │
-│         │ Encryption: None (RDMA direct memory)                          │
-│         │ Transport: GPUDirect RDMA                                      │
-│         │   - NVLink (intra-node)                                        │
-│         │   - RoCE (inter-node)                                          │
-│         │   - InfiniBand (inter-node)                                    │
-│         │   - EFA (AWS, optional)                                        │
-│         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  KV CACHE TRANSFER (In-Cluster, RDMA Network)                            │
-│                                                                          │
-│  [NIXL v0.10.0]                                                          │
-│  - Port: 5600/TCP                                                        │
-│  - Purpose: KV cache block transfer (Prefill → Decode)                  │
-│  - Protocol: GPU memory registration, direct memory access              │
-│  - Backends: UCX, UCCL, libfabric                                       │
-│  - Requires: RDMA-capable network, GPUDirect support                    │
-│  - No application-layer encryption (hardware-level isolation)           │
-│                                                                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│  MONITORING / OBSERVABILITY (In-Cluster)                                 │
-│                                                                          │
-│  [Prometheus]                                                            │
-│  - Scrapes: Model servers, EPP                                           │
-│  - Ports: 9002/TCP, 9090/TCP                                            │
-│  - Metrics: Queue depth, KV cache utilization, running requests         │
-│                                                                          │
-│  [Jaeger / OpenTelemetry]                                                │
-│  - Protocol: OTLP                                                        │
-│  - Coverage: vLLM, Proxy, EPP                                           │
-│  - Config: OTEL_EXPORTER_OTLP_ENDPOINT env var                          │
-│                                                                          │
-│  [Grafana]                                                               │
-│  - Dashboards: vLLM Overview, Failure & Saturation,                     │
-│    Diagnostic Drill-Down, P/D Coordinator, EPP Metrics                  │
-│                                                                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES / DEPENDENCIES                                        │
-│                                                                          │
-│  [Kubernetes API Server]                                                 │
-│  - Purpose: Pod discovery, CRD management, RBAC                         │
-│  - Auth: ServiceAccount tokens                                           │
-│                                                                          │
-│  [Container Registry - ghcr.io/llm-d]                                   │
-│  - Purpose: Image pulls                                                  │
-│  - Auth: Image pull secrets (if private)                                 │
-│  - Images: llm-d-cuda, llm-d-rocm, llm-d-cpu, llm-d-hpu, llm-d-xpu   │
-│                                                                          │
-│  [Model Storage]                                                         │
-│  - Purpose: Model artifact storage (HuggingFace, S3, PVC)              │
-│  - Auth: Varies (HF token, AWS IAM, PV mount)                          │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]                                                           │
+│  - Application sending OpenAI-compatible API requests                        │
+│         │                                                                    │
+│         │ Port: 80/TCP                                                       │
+│         │ Protocol: HTTP (OpenAI-compatible REST API)                        │
+│         │ Encryption: TLS if gateway configured (implementation-dependent)   │
+│         │ Auth: Bearer Token (optional, gateway-dependent)                   │
+│         │ Headers: x-gateway-inference-fairness-id (optional)                │
+│         │          x-gateway-inference-objective (optional)                  │
+│         │          x-prediction-based-scheduling (optional)                  │
+│         │          x-slo-ttft-ms, x-slo-tpot-ms (optional)                 │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS / PROXY LAYER                                                       │
+│                                                                              │
+│  [Gateway - Envoy / Gateway API]                                             │
+│  - Resource: gateway.networking.k8s.io/v1 Gateway                            │
+│  - Name: llm-d-inference-gateway                                             │
+│  - Port: 80/TCP (external listener, HTTP)                                    │
+│  - Implementations:                                                          │
+│    • agentgateway (preferred, self-installed)                                 │
+│    • Istio IngressGateway (TLS termination possible)                         │
+│    • GKE Gateway (cloud-managed LB, regional internal/external)              │
+│    • kgateway (deprecated → migrating to agentgateway)                       │
+│  - AllowedRoutes: All namespaces                                             │
+│         │                                                                    │
+│         │ Port: ext-proc gRPC (internal)                                     │
+│         │ Protocol: gRPC (FULL_DUPLEX_STREAMED mode)                         │
+│         │ Encryption: In-cluster (pod-to-pod or sidecar)                     │
+│         │ Auth: Kubernetes service identity                                  │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  SCHEDULING LAYER (Cluster Internal)                                         │
+│                                                                              │
+│  [Endpoint Picker (EPP)]                                                     │
+│  - Image: ghcr.io/llm-d/llm-d-inference-scheduler:v0.7.0                    │
+│  - Deployment modes:                                                         │
+│    • Standalone: EPP + Envoy sidecar in same pod                             │
+│    • Gateway API: Separate pod, linked via InferencePool endpointPickerRef   │
+│  - Prometheus metrics port: 9002/TCP or 9090/TCP                             │
+│  - Failure mode: FailOpen or FailClose (configurable)                        │
+│         │                                                                    │
+│         │ Endpoint selection (label-based pod discovery)                     │
+│         │ Protocol: Kubernetes API (watch + list)                            │
+│         │ Auth: ServiceAccount token (RBAC)                                  │
+│         ▼                                                                    │
+│  [InferencePool CRD]                                                         │
+│  - API: gateway.networking.k8s.io (Inference Extension)                      │
+│  - Scope: Namespace-scoped (security isolation)                              │
+│  - Selector: Label-based pod discovery (llm-d.ai/inference-serving: "true")  │
+│  - endpointPickerRef: Links to EPP service                                   │
+│         │                                                                    │
+│         │ Port: 8000/TCP                                                     │
+│         │ Protocol: HTTP (OpenAI-compatible API)                             │
+│         │ Encryption: In-cluster (pod-to-pod)                                │
+│         │ Auth: Kubernetes network policy (if configured)                    │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  MODEL SERVER LAYER (Cluster Internal)                                       │
+│                                                                              │
+│  [Model Server - vLLM (Primary)]                                             │
+│  - Images: ghcr.io/llm-d/llm-d-{cuda,rocm,xpu,hpu,cpu}                     │
+│  - ServiceAccount: sa                                                        │
+│  - Ports:                                                                    │
+│    • 8000/TCP - vLLM API (default) / Prefill / Routing sidecar              │
+│    • 8200/TCP - Decode vLLM (in P/D disaggregation)                          │
+│  - Health endpoints:                                                         │
+│    • GET /health (liveness)                                                  │
+│    • GET /v1/models (startup + readiness)                                    │
+│  - Labels:                                                                   │
+│    • llm-d.ai/role: decode | prefill | prefill-decode                       │
+│    • llm-d.ai/inference-serving: "true"                                      │
+│    • llm-d.ai/model: <model-name>                                           │
+│  - User: Non-root (uid 2000, vllm) - OpenShift compatible                   │
+│  - ENTRYPOINT: python -m vllm.entrypoints.openai.api_server                 │
+│                                                                              │
+│  [Model Server - SGLang (Alternative)]                                       │
+│  - Port: 8000/TCP                                                            │
+│  - Same health/readiness pattern as vLLM                                     │
+│                                                                              │
+│  [Routing Sidecar - P/D Disaggregation]                                      │
+│  - Image: ghcr.io/llm-d/llm-d-routing-sidecar:v0.7.1                        │
+│  - Port: 8000/TCP (frontend)                                                 │
+│  - Orchestrates prefill → NIXL transfer → decode                            │
+│         │                                                                    │
+│         │ Port: 5600/TCP                                                     │
+│         │ Protocol: NIXL (KV cache transfer)                                 │
+│         │ Transport: RDMA (GPUDirect)                                        │
+│         │   • NVLink (intra-node)                                            │
+│         │   • RoCE v2 (inter-node)                                           │
+│         │   • InfiniBand (inter-node)                                        │
+│         │   • EFA (AWS)                                                      │
+│         │ Encryption: None (GPU memory direct transfer)                      │
+│         │ Auth: None (network-level isolation)                               │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  DATA / CACHE PLANE (Cluster Internal)                                       │
+│                                                                              │
+│  [NIXL Transfer - GPU Memory]                                                │
+│  - Version: 0.10.0                                                           │
+│  - Port: 5600/TCP                                                            │
+│  - Backends: UCX v1.20.0, UCCL, libfabric                                   │
+│  - GPU Memory Registration: GPUDirect RDMA                                   │
+│  - Purpose: KV cache block transfer between prefill and decode workers       │
+│                                                                              │
+│  [ZMQ - Prefix Cache Events]                                                 │
+│  - Port: 5556/TCP                                                            │
+│  - Protocol: ZeroMQ PUB/SUB                                                 │
+│  - Purpose: Real-time KV cache block hash events                             │
+│  - Direction: vLLM → EPP (one-way publish)                                  │
+│                                                                              │
+│  [LMCache - Shared Storage Cache]                                            │
+│  - Version: v0.3.14                                                          │
+│  - Tiers: HBM → CPU RAM → Local Disk → Shared Storage (CephFS/Lustre)      │
+│  - Purpose: Hierarchical KV cache offloading                                 │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  OBSERVABILITY LAYER                                                         │
+│                                                                              │
+│  [Prometheus]                                                                │
+│  - Collects from: Model servers (vLLM/SGLang), EPP                           │
+│  - Ports: 9002/TCP, 9090/TCP (EPP metrics)                                   │
+│  - Metrics: queue_depth, kv_cache_utilization, running_requests,             │
+│    block_size, num_gpu_blocks                                                │
+│  - Platform variants:                                                        │
+│    • GKE: Google Cloud Managed Prometheus                                    │
+│    • OpenShift: User Workload Monitoring                                     │
+│    • Self-managed: Prometheus Helm chart                                     │
+│                                                                              │
+│  [Jaeger / OpenTelemetry]                                                    │
+│  - Protocol: OTLP (OpenTelemetry Protocol)                                   │
+│  - Coverage: vLLM, Proxy, EPP                                                │
+│  - Config: OTEL_SERVICE_NAME, OTEL_EXPORTER_OTLP_ENDPOINT                   │
+│  - vLLM args: --otlp-traces-endpoint                                        │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES / REGISTRIES                                              │
+│                                                                              │
+│  [Container Registry - ghcr.io/llm-d]                                        │
+│  - Port: 443/TCP HTTPS                                                       │
+│  - Images: llm-d-{cuda,rocm,xpu,hpu,cpu}:{version}                          │
+│  - Auth: Container registry credentials                                      │
+│                                                                              │
+│  [Model Storage]                                                             │
+│  - Provider-dependent (S3, GCS, PVC, etc.)                                   │
+│  - Protocol: HTTPS or NFS                                                    │
+│  - Auth: Cloud IAM or ServiceAccount credentials                             │
+│                                                                              │
+│  [GitHub - github.com/llm-d]                                                 │
+│  - CI/CD: 55 GitHub Actions workflows                                        │
+│  - Security: Trivy scanning (CRITICAL/HIGH/MEDIUM, SARIF)                    │
+│  - Policy: DCO sign-off required, fork gate for external PRs                 │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Security Summary:
+================
+
+Container Security:
+- Non-root user (uid 2000, vllm) for all model server containers
+- OpenShift-compatible security context
+- Trivy vulnerability scanning in CI (CRITICAL/HIGH/MEDIUM)
+- Multi-stage builds minimize attack surface (runtime stage only)
+- Pinned dependency versions via docker/common-versions
+
+Network Security:
+- InferencePool is namespace-scoped for security isolation
+- Gateway API controls ingress routing
+- NIXL RDMA transfers are unencrypted (GPU memory direct - network isolation required)
+- ZMQ pub/sub is unencrypted (cluster-internal only)
+- Gateway failure mode configurable: FailOpen or FailClose
+
+CI/CD Security:
+- DCO sign-off required on all commits
+- Fork gate prevents unauthorized builds from external PRs
+- Signed commit verification (ci-signed-commits.yaml)
+- SARIF upload to GitHub Security tab
 
 Port Summary:
-┌──────────┬──────────┬──────────────────────────────────────────────────┐
-│ Port     │ Protocol │ Service                                          │
-├──────────┼──────────┼──────────────────────────────────────────────────┤
-│ 80/TCP   │ HTTP     │ Gateway external listener                       │
-│ 8000/TCP │ HTTP     │ vLLM API / Prefill vLLM / Routing sidecar       │
-│ 8200/TCP │ HTTP     │ Decode vLLM (P/D disaggregation)                │
-│ 5600/TCP │ RDMA     │ NIXL KV cache transfer                          │
-│ 9002/TCP │ HTTP     │ EPP Prometheus metrics                          │
-│ 9090/TCP │ HTTP     │ EPP Prometheus metrics (alt)                    │
-│ 5556/TCP │ ZMQ      │ Precise prefix cache events                     │
-└──────────┴──────────┴──────────────────────────────────────────────────┘
+=============
+| Port  | Protocol  | Service                              | Encryption     |
+|-------|-----------|--------------------------------------|----------------|
+| 80    | HTTP      | Gateway listener (external)          | TLS optional   |
+| 8000  | HTTP      | vLLM API / Routing sidecar           | None (internal)|
+| 8200  | HTTP      | Decode vLLM (disaggregation)         | None (internal)|
+| 5600  | NIXL/RDMA | KV cache transfer                    | None (RDMA)    |
+| 5556  | ZMQ       | Prefix cache events                  | None (internal)|
+| 9002  | HTTP      | EPP Prometheus metrics               | None (internal)|
+| 9090  | HTTP      | EPP Prometheus metrics (alt)         | None (internal)|
 
 RBAC Summary:
-- ServiceAccount: sa (per-namespace, model server pods)
-- ServiceAccount: (guide-specific) for EPP
-- InferencePool: Namespace-scoped CRD (security isolation)
-- Non-root containers: uid 2000 (vllm user)
-- OpenShift: Arbitrary UID compatible
-
-Security Considerations:
-- Gateway HTTP (port 80): No TLS by default; TLS depends on gateway provider
-- ext-proc gRPC: In-cluster communication (loopback/sidecar)
-- Model server: HTTP (no mTLS by default); relies on network policies
-- NIXL RDMA: No application-layer encryption; hardware-level isolation
-- ZMQ (5556): Unencrypted; in-cluster only
-- Container images: Trivy vulnerability scanning (CRITICAL/HIGH/MEDIUM)
-- CI/CD: DCO sign-off required, fork gate for external PRs
-- Image signing: SARIF upload to GitHub Security tab
-
-Secrets:
-- Model storage credentials (HuggingFace token, AWS IAM, etc.)
-- Image pull secrets (for private registries)
-- Gateway TLS certificates (provider-managed)
-- OTEL endpoint configuration
+=============
+- ServiceAccount: sa (model server pods)
+- InferencePool: Requires RBAC to watch/list pods in namespace
+- EPP: Requires RBAC for Kubernetes API (pods, CRDs, services)
+- Namespace-scoped InferencePool enforces security isolation

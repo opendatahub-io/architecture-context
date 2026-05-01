@@ -1,48 +1,54 @@
 sequenceDiagram
     participant Client as External Client
-    participant Router as text-generation-router<br/>8033/TCP gRPC | 3000/TCP HTTP
-    participant Batcher as Batching Engine<br/>(in-process)
-    participant Shard0 as text-generation-server<br/>Shard 0 (UDS)
-    participant ShardN as text-generation-server<br/>Shard N (UDS)
+    participant Router as text-generation-router<br/>8033/TCP gRPC<br/>Optional TLS
+    participant Queue as Validation + Queue<br/>(Internal)
+    participant Batcher as Batcher<br/>(Weight-aware)
+    participant Shard0 as text-generation-server<br/>Shard 0 (Python)<br/>UDS
+    participant ShardN as text-generation-server<br/>Shard N (Python)<br/>UDS
     participant GPU as NVIDIA GPU<br/>CUDA 12.1
-    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
 
-    Note over Client,HFHub: Flow 1: Text Generation Request (Unary)
-    Client->>Router: gRPC Generate(BatchedGenerationRequest)<br/>8033/TCP, Optional TLS/mTLS
-    Router->>Router: Validate (temp, top_k, top_p,<br/>sequence lengths, stop sequences)
-    Router->>Batcher: Enqueue validated request
-    Batcher->>Shard0: gRPC Prefill(Batch)<br/>UDS /tmp/text-generation-server-0
-    Shard0->>GPU: CUDA forward pass<br/>(flash/paged attention)
+    Note over Client,GPU: Flow 1: Unary Text Generation Request
+
+    Client->>Router: Generate RPC (gRPC/8033)<br/>Optional TLS/mTLS
+    Router->>Queue: Validate request<br/>(temperature, top_k, top_p,<br/>sequence lengths, stop sequences)
+    Queue->>Batcher: Enqueue validated request
+    Batcher->>Batcher: Form optimal batch<br/>(prefill + next-token weights,<br/>padding thresholds)
+    Batcher->>Shard0: Prefill RPC (UDS gRPC)<br/>/tmp/text-generation-server-0
+    Shard0->>GPU: CUDA inference forward pass<br/>(Flash/Paged Attention)
     GPU-->>Shard0: Logits + KV cache
-    Shard0-->>Batcher: PrefillResponse
-    loop Until EOS or max_new_tokens
-        Batcher->>Shard0: gRPC NextToken(batches, cached_batch)
-        Shard0->>GPU: CUDA decode step
+    loop Token Generation
+        Batcher->>Shard0: NextToken RPC (UDS gRPC)
+        Shard0->>GPU: Decode step
         GPU-->>Shard0: Next token logits
-        Shard0-->>Batcher: NextTokenResponse
+        Shard0-->>Batcher: Generated token
     end
-    Batcher-->>Router: Completed generation
-    Router-->>Client: GenerationResponse<br/>8033/TCP gRPC
+    Batcher-->>Router: Complete generation result
+    Router-->>Client: GenerationResponse (gRPC/8033)
 
-    Note over Client,HFHub: Flow 2: Multi-GPU Tensor Parallel Inference
-    Shard0->>ShardN: NCCL AllReduce<br/>29500/TCP (intra-pod, plaintext)
-    ShardN->>GPU: CUDA forward pass (partial)
-    GPU-->>ShardN: Partial results
-    ShardN-->>Shard0: NCCL AllReduce result
+    Note over Client,GPU: Flow 2: Multi-GPU Tensor Parallel Inference
 
-    Note over Client,HFHub: Flow 3: Streaming Generation
-    Client->>Router: gRPC GenerateStream<br/>8033/TCP server-streaming
-    Router->>Batcher: Enqueue streaming request
-    loop Token-by-token
-        Batcher->>Shard0: gRPC NextToken<br/>UDS
-        Shard0->>GPU: CUDA decode
-        GPU-->>Shard0: Token
-        Shard0-->>Batcher: NextTokenResponse
-        Batcher-->>Router: Token generated
-        Router-->>Client: GenerationResponse (streamed)<br/>gRPC server-stream
+    Note over Shard0,ShardN: Launcher spawns N shard processes (1 per GPU)
+    Shard0->>ShardN: NCCL/GLOO init (29500/TCP)<br/>Intra-pod, plaintext
+    Note over Shard0,ShardN: All shards load model weights<br/>(partitioned across GPUs)
+    Batcher->>Shard0: Batch request via ServiceDiscovery
+    Shard0->>ShardN: NCCL all-reduce<br/>(tensor parallel sync)
+    ShardN-->>Shard0: Partial results merged
+    Shard0-->>Batcher: Combined inference result
+
+    Note over Client,GPU: Flow 3: Streaming Generation
+
+    Client->>Router: GenerateStream RPC<br/>(gRPC server-stream/8033)
+    Router->>Batcher: Enqueue stream request
+    Batcher->>Shard0: Prefill RPC (UDS)
+    Shard0->>GPU: Initial forward pass
+    GPU-->>Shard0: First token
+    loop Token-by-Token Streaming
+        Shard0-->>Router: GenerationResponse (token)
+        Router-->>Client: Streamed token (gRPC)
+        Note over Router: Cancel check every token
+        Batcher->>Shard0: NextToken RPC
+        Shard0->>GPU: Decode step
+        GPU-->>Shard0: Next token
     end
-
-    Note over Client,HFHub: Model Loading (startup)
-    Shard0->>HFHub: Download model weights<br/>HTTPS 443/TCP, Optional auth token
-    HFHub-->>Shard0: Model artifacts (safetensors)
-    Shard0->>GPU: Load weights to GPU memory
+    Shard0-->>Router: Final token (stop condition)
+    Router-->>Client: Stream complete

@@ -4,94 +4,68 @@ graph TB
     end
 
     subgraph Ingress["INGRESS (DMZ) - KServe Managed"]
-        KServeIngress["KServe Ingress / HTTPRoute<br/>443/TCP → 8000/TCP<br/>TLS 1.2+ (SIMPLE)<br/>KServe-managed AuthN"]
+        KServeIngress["KServe Ingress / HTTPRoute<br/>443/TCP → 8000/TCP<br/>TLS 1.2+ (SIMPLE)<br/>Configured by InferenceService CRD"]
     end
 
-    subgraph Application["APPLICATION (vLLM-CPU Pod)<br/>UID: 2000, GID: 0 (non-root)<br/>Image: odh-vllm-cpu-rhel9 (UBI9)"]
+    subgraph Application["APPLICATION (Internal - ClusterIP)"]
         direction TB
 
-        subgraph HTTPLayer["HTTP Service"]
-            APIServer["OpenAI API Server<br/>(FastAPI/Uvicorn)<br/>0.0.0.0:8000/TCP<br/>HTTP (TLS optional)<br/>AuthenticationMiddleware"]
+        subgraph NS_User["Namespace: {user-namespace}"]
+            direction TB
+            AuthMW["AuthenticationMiddleware<br/>API Key Validation<br/>(skipped: /health, /metrics, /ping, /version)"]
 
-            subgraph AuthEndpoints["Authenticated Endpoints (API Key)"]
-                ChatAPI["/v1/chat/completions"]
-                CompAPI["/v1/completions"]
-                RespAPI["/v1/responses"]
-                AnthAPI["/v1/messages"]
-                ModelsAPI["/v1/models"]
-                EmbedAPI["/v1/embeddings"]
-                ScoreAPI["/v1/score"]
-                TokenizeAPI["/tokenize"]
+            subgraph APIEndpoints["vllm-openai Service - 8000/TCP"]
+                APIServer["vLLM-CPU API Server<br/>FastAPI/Uvicorn<br/>Container: odh-vllm-cpu-rhel9<br/>UID: 2000 / GID: 0<br/>TLS: optional (--ssl-certfile)"]
             end
 
-            subgraph OpenEndpoints["Unauthenticated Endpoints"]
-                HealthAPI["/health"]
-                MetricsAPI["/metrics"]
-                VersionAPI["/version"]
-                PingAPI["/ping"]
+            subgraph GRPCEndpoint["vllm-grpc Service - 50051/TCP"]
+                GRPCServer["gRPC Server<br/>VllmEngine Service<br/>⚠ plaintext ONLY (no TLS)<br/>Reflection: enabled"]
             end
-        end
 
-        subgraph GRPCLayer["gRPC Service ⚠️ INSECURE"]
-            GRPCServer["gRPC Server<br/>(grpc.aio)<br/>0.0.0.0:50051/TCP<br/>plaintext only<br/>No Auth"]
-        end
+            AsyncEngine["AsyncLLM Engine (V1)<br/>PagedAttention + KV Cache<br/>Multiprocessing: fork"]
+            ModelExec["Model Executor<br/>CPU: OpenBLAS + numactl<br/>Arch: ppc64le, s390x, x86_64"]
 
-        subgraph EngineLayer["Inference Engine"]
-            Engine["AsyncLLM Engine (V1)<br/>PagedAttention<br/>Continuous Batching"]
-            Executor["Model Executor<br/>CPU (OpenBLAS/numactl)<br/>C/C++ Native Kernels"]
+            AuthMW --> APIServer
+            APIServer --> AsyncEngine
+            GRPCServer --> AsyncEngine
+            AsyncEngine --> ModelExec
         end
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        HFHub["Hugging Face Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (HF_TOKEN)"]
-        S3["S3-Compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM Credentials"]
-        OTel["OpenTelemetry Collector<br/>(configurable port)<br/>gRPC/HTTP<br/>TLS (configurable)<br/>(optional, not on s390x)"]
-        UsageStats["vLLM Usage Stats<br/>stats.vllm.ai<br/>443/TCP HTTPS<br/>⚠️ DISABLED by default"]
+    subgraph ExternalServices["EGRESS - External Services"]
+        HFHub["Hugging Face Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer (HF_TOKEN)"]
+        S3["S3-Compatible Storage<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS IAM"]
+        UsageStats["vLLM Usage Stats<br/>stats.vllm.ai<br/>443/TCP HTTPS<br/>⛔ DISABLED (VLLM_NO_USAGE_STATS=1)"]
+        OTel["OpenTelemetry Collector<br/>configurable port<br/>gRPC/HTTP TLS<br/>(optional, not on s390x)"]
     end
 
-    subgraph PlatformServices["PLATFORM SERVICES"]
+    subgraph Monitoring["MONITORING"]
         Prometheus["Prometheus<br/>Scrapes /metrics<br/>8000/TCP HTTP"]
     end
 
-    %% External → Ingress
-    Client -->|"HTTPS/443<br/>TLS 1.2+"| KServeIngress
+    %% Flows
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (optional)"| KServeIngress
+    KServeIngress -->|"HTTP/8000<br/>None (TLS optional)<br/>Forwarded Bearer"| AuthMW
 
-    %% Ingress → Application
-    KServeIngress -->|"HTTP/8000<br/>API Key (optional)"| APIServer
-
-    %% API Server routes
-    APIServer --> AuthEndpoints
-    APIServer --> OpenEndpoints
-
-    %% API → Engine
-    APIServer -->|"in-process<br/>Python async"| Engine
-    GRPCServer -->|"in-process<br/>Python async"| Engine
-    Engine -->|"in-process"| Executor
-
-    %% Egress flows
-    Executor -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer (HF_TOKEN)"| HFHub
-    Executor -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    Engine -.->|"gRPC/HTTP<br/>TLS (config)<br/>(optional)"| OTel
-    Engine -.->|"HTTPS/443<br/>DISABLED"| UsageStats
-
-    %% Platform integrations
-    Prometheus -->|"HTTP/8000<br/>No Auth"| MetricsAPI
+    AsyncEngine -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer (HF_TOKEN)"| HFHub
+    AsyncEngine -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    APIServer -.->|"gRPC/HTTP<br/>TLS configurable"| OTel
+    AsyncEngine -.->|"HTTPS/443<br/>⛔ DISABLED"| UsageStats
+    Prometheus -->|"HTTP/8000<br/>No Auth"| APIServer
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef authed fill:#d5e8d4,stroke:#82b366
-    classDef open fill:#e1d5e7,stroke:#9673a6
+    classDef monitoring fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef disabled fill:#e0e0e0,stroke:#999,stroke-width:1px,stroke-dasharray: 5 5
 
     class Client external
     class KServeIngress ingress
-    class APIServer,Engine,Executor application
+    class AuthMW,APIServer,AsyncEngine,ModelExec application
     class GRPCServer warning
-    class HFHub,S3,OTel,UsageStats externalservice
-    class Prometheus platform
-    class ChatAPI,CompAPI,RespAPI,AnthAPI,ModelsAPI,EmbedAPI,ScoreAPI,TokenizeAPI authed
-    class HealthAPI,MetricsAPI,VersionAPI,PingAPI open
+    class HFHub,S3,OTel externalservice
+    class UsageStats disabled
+    class Prometheus monitoring

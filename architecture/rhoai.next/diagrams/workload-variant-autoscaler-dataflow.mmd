@@ -1,56 +1,55 @@
 sequenceDiagram
-    participant User as User / Platform
+    participant Admin as Admin / User
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant VAReconciler as VA Reconciler
     participant CMReconciler as ConfigMap Reconciler
     participant Config as Config Object<br/>(in-memory)
-    participant Prom as Prometheus / Thanos<br/>9090/TCP HTTPS TLS 1.2+
-    participant SatEngine as Saturation Engine<br/>(V1/V2/QueueModel)
+    participant SatEngine as Saturation Engine<br/>(30s loop)
+    participant SFZEngine as Scale-from-Zero Engine<br/>(100ms loop)
+    participant Prometheus as Prometheus / Thanos<br/>9090/TCP HTTPS
+    participant EPP as EPP Pods<br/>HTTPS
     participant Cache as Decision Cache<br/>(in-memory)
-    participant VAReconciler as VA Reconciler
-    participant Actuator as Actuator<br/>/metrics 8443/TCP HTTPS
-    participant HPAKEDA as HPA / KEDA
-    participant EPP as EPP Pods<br/>HTTPS TLS
-    participant SFZEngine as Scale-from-Zero<br/>Engine
+    participant Actuator as Actuator<br/>8443/TCP HTTPS
     participant DirectAct as DirectActuator
-    participant ScaleTarget as Deployment /<br/>LeaderWorkerSet
+    participant HPAKEDA as HPA / KEDA
 
-    Note over User,ScaleTarget: Flow 1: Saturation-Based Autoscaling (every 30s)
+    Note over Admin,HPAKEDA: Flow 1: Saturation-Based Autoscaling
 
-    User->>K8sAPI: Create VariantAutoscaling CR
-    K8sAPI->>VAReconciler: Watch event (VA created)
+    Admin->>K8sAPI: Create VariantAutoscaling CR
+    K8sAPI-->>VAReconciler: Watch event (VA created)
+    VAReconciler->>K8sAPI: Resolve scale target<br/>(Deployment/LWS)
 
-    loop Every 30s optimization cycle
-        SatEngine->>Prom: PromQL: vllm:kv_cache_usage_perc,<br/>num_requests_waiting, token rates<br/>Auth: Bearer Token (SA)
-        Prom-->>SatEngine: Per-replica metrics
-        SatEngine->>SatEngine: Run saturation analysis<br/>(V1 percentage / V2 token / QueueModel)
+    loop Every 30 seconds
+        SatEngine->>Prometheus: PromQL: vllm:kv_cache_usage_perc,<br/>vllm:num_requests_waiting, token rates<br/>Auth: Bearer Token
+        Prometheus-->>SatEngine: Per-replica metrics
+        SatEngine->>SatEngine: Run analysis<br/>(V1/V2/Queueing Model)
         SatEngine->>Cache: Store scaling decision<br/>(desired replicas per VA)
-        Cache->>VAReconciler: Channel trigger (requeue)
+        Cache-->>VAReconciler: Channel trigger
     end
 
-    VAReconciler->>K8sAPI: Patch VA status<br/>(optimal allocation)<br/>Auth: ServiceAccount
-    SatEngine->>Actuator: Update Prometheus gauges
-    Note over Actuator: wva_desired_replicas<br/>wva_current_replicas<br/>wva_desired_ratio
+    VAReconciler->>Cache: Read decision
+    VAReconciler->>K8sAPI: Patch VA status<br/>(desired replicas, conditions)
+    VAReconciler->>Actuator: Update Prometheus metrics<br/>(wva_desired_replicas, wva_desired_ratio)
     HPAKEDA->>Actuator: GET /metrics<br/>Auth: Bearer Token
-    Actuator-->>HPAKEDA: Scaling metrics
-    HPAKEDA->>K8sAPI: Scale Deployment<br/>Auth: ServiceAccount
-    K8sAPI->>ScaleTarget: Update replicas
+    Actuator-->>HPAKEDA: wva_desired_replicas=N
+    HPAKEDA->>K8sAPI: Scale Deployment<br/>(scale subresource)
 
-    Note over User,ScaleTarget: Flow 2: Scale-from-Zero (every 100ms)
+    Note over Admin,HPAKEDA: Flow 2: Scale-from-Zero
 
-    loop Every 100ms polling cycle
+    loop Every 100 milliseconds
         SFZEngine->>EPP: Scrape flow_control_queue_size<br/>Auth: Bearer Token (epp-metrics-token)
-        EPP-->>SFZEngine: Queue size metrics
-        alt Pending requests for dormant model
-            SFZEngine->>K8sAPI: PATCH scale subresource<br/>(replicas: 0 → 1)<br/>Auth: ServiceAccount
-            K8sAPI->>ScaleTarget: Direct scale-up
-            SFZEngine->>Cache: Store scale-from-zero decision
-            Cache->>VAReconciler: Channel trigger
-            VAReconciler->>K8sAPI: Patch VA status
-        end
+        EPP-->>SFZEngine: Queue size > 0
     end
 
-    Note over User,ScaleTarget: Flow 3: ConfigMap Configuration
+    SFZEngine->>DirectAct: Scale up immediately
+    DirectAct->>K8sAPI: PATCH scale subresource<br/>(replicas: 0 → 1)
+    SFZEngine->>Cache: Store decision
+    Cache-->>VAReconciler: Channel trigger
+    VAReconciler->>K8sAPI: Patch VA status
 
-    K8sAPI->>CMReconciler: ConfigMap watch event
-    CMReconciler->>Config: Update scaling parameters<br/>(saturation thresholds,<br/>per-model tuning)
-    Config-->>SatEngine: Applied on next<br/>optimization cycle
+    Note over Admin,HPAKEDA: Flow 3: ConfigMap Configuration
+
+    Admin->>K8sAPI: Update ConfigMap<br/>(saturation-scaling-config)
+    K8sAPI-->>CMReconciler: Watch event
+    CMReconciler->>Config: Update config object
+    Config-->>SatEngine: Next loop reads<br/>updated parameters

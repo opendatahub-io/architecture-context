@@ -1,39 +1,30 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and manages ML pipeline runs via Data Science Pipelines"
-        dspAdmin = person "Platform Admin" "Configures and manages DSP infrastructure"
+        user = person "Data Scientist" "Creates and runs ML pipelines through Data Science Pipelines"
 
         argoWorkflows = softwareSystem "Argo Workflows" "Kubernetes-native workflow execution engine for Data Science Pipelines" {
-            workflowController = container "workflow-controller" "Reconciles Workflow CRDs, creates pods, manages lifecycle, GC, and archival. Leader election via Leases. Worker pools: 32 workflow, 4 TTL, 4 cleanup, 8 cron, 8 archive." "Go Controller" "UID 8737"
-            argoexec = container "argoexec" "Sidecar/init container in every step pod. Handles artifact upload/download, output capture, and result reporting. FIPS dual-build." "Go Executor (sidecar)" "UID 2000"
+            workflowController = container "workflow-controller" "Watches Workflow CRDs, creates/manages pods for workflow steps, handles lifecycle, GC, and archival" "Go Controller"
+            argoexec = container "argoexec" "Runs inside workflow step pods as init/wait containers for artifact management and result reporting" "Go Executor Sidecar"
         }
 
         dspo = softwareSystem "Data Science Pipelines Operator" "Deploys and configures Argo Workflows components" "Internal RHOAI"
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration, CRD hosting, pod execution" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Container orchestration, CRD hosting, pod execution" "External"
         s3 = softwareSystem "S3-compatible Storage" "Artifact storage for workflow inputs/outputs (S3, GCS, Azure Blob, HDFS)" "External"
-        postgresql = softwareSystem "PostgreSQL" "Optional workflow history archival and node status offloading" "External"
-        mysql = softwareSystem "MySQL" "Optional workflow history archival (alternative to PostgreSQL)" "External"
+        postgresql = softwareSystem "PostgreSQL / MySQL" "Optional workflow archival and node status offloading" "External"
         prometheus = softwareSystem "Prometheus" "Metrics collection for workflow execution telemetry" "External"
         argoEvents = softwareSystem "Argo Events" "Event-driven workflow triggering via WorkflowEventBinding" "External"
 
-        # User interactions
-        user -> dspo "Creates DataSciencePipelinesApplication CR" "kubectl / UI"
-        dspo -> argoWorkflows "Deploys, configures, manages lifecycle" "Kubernetes Deployment"
+        # Relationships
+        user -> dspo "Submits pipeline runs via DSP API"
+        dspo -> argoWorkflows "Deploys, configures, and manages lifecycle"
 
-        # Workflow Controller interactions
-        workflowController -> kubernetes "CRD CRUD, pod management, leader election" "HTTPS/443 TLS 1.2+"
-        workflowController -> postgresql "Archive workflow history" "TCP/5432 TLS configurable"
-        workflowController -> mysql "Archive workflow history (alt)" "TCP/3306 TLS configurable"
+        workflowController -> k8sAPI "CRD CRUD, pod lifecycle, leader election, ConfigMap watch" "HTTPS/443"
+        workflowController -> postgresql "Archives workflow history" "TCP/5432 or 3306"
+        argoexec -> k8sAPI "Reports task results, patches pod annotations" "HTTPS/443"
+        argoexec -> s3 "Uploads/downloads workflow artifacts" "HTTPS/443"
 
-        # Executor interactions
-        argoexec -> kubernetes "Patch annotations, report results" "HTTPS/443 TLS 1.2+"
-        argoexec -> s3 "Upload/download artifacts" "HTTPS/443 TLS 1.2+"
-
-        # Monitoring
-        prometheus -> argoWorkflows "Scrape metrics" "HTTP/9090"
-
-        # Event integration
-        argoEvents -> argoWorkflows "Trigger workflows via WorkflowEventBinding" "CRD Watch"
+        prometheus -> argoWorkflows "Scrapes workflow execution metrics" "HTTP/9090"
+        argoEvents -> argoWorkflows "Triggers workflows from EventSource/Sensor events"
     }
 
     views {
@@ -48,6 +39,19 @@ workspace {
         }
 
         styles {
+            element "Person" {
+                shape Person
+                background #08427b
+                color #ffffff
+            }
+            element "Software System" {
+                background #1168bd
+                color #ffffff
+            }
+            element "Container" {
+                background #438dd5
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -55,19 +59,6 @@ workspace {
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
-            }
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Container" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Person" {
-                background #08427b
-                color #ffffff
-                shape Person
             }
         }
     }

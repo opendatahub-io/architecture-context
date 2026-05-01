@@ -1,48 +1,55 @@
 sequenceDiagram
     participant User as User / Data Scientist
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
-    participant Operator as KubeRay Operator<br/>ServiceAccount Token
+    participant Operator as KubeRay Operator<br/>SA Token Auth
     participant HeadPod as Ray Head Pod<br/>8265/TCP HTTP
-    participant Workers as Ray Worker Pods
+    participant WorkerPods as Ray Worker Pods
     participant Submitter as Submitter Job Pod
-    participant Gateway as data-science-gateway<br/>443/TCP HTTPS
+    participant Gateway as data-science-gateway<br/>443/TCP HTTPS TLS 1.2+
     participant RBACProxy as kube-rbac-proxy<br/>8443/TCP HTTPS
     participant TokenReview as TokenReview API<br/>443/TCP HTTPS
     participant SAR as SubjectAccessReview API<br/>443/TCP HTTPS
 
-    Note over User,Workers: Flow 1: RayJob Execution via K8sJobMode
-    User->>K8sAPI: POST RayJob CR<br/>Auth: Bearer Token (kubectl)
-    K8sAPI-->>Operator: Watch event: RayJob created
-    Operator->>K8sAPI: Create RayCluster (pods, services)<br/>Auth: ServiceAccount Token
-    K8sAPI-->>HeadPod: Ray Head Pod scheduled
-    K8sAPI-->>Workers: Ray Worker Pods scheduled
-    Operator->>K8sAPI: Create Kubernetes Job (submitter)<br/>Auth: ServiceAccount Token
-    K8sAPI-->>Submitter: Submitter Job Pod scheduled
-    Submitter->>HeadPod: POST /api/jobs (submit Ray job)<br/>8265/TCP HTTP
-    HeadPod-->>Submitter: Job ID response
-    Operator->>HeadPod: GET /api/jobs/{id} (poll status)<br/>8265/TCP HTTP
-    HeadPod-->>Operator: Job status (RUNNING/SUCCEEDED/FAILED)
+    Note over User, Submitter: Flow 1: RayJob Execution via K8sJobMode
 
-    Note over User,SAR: Flow 2: Authenticated Dashboard Access via Gateway API (RHOAI)
-    User->>Gateway: GET /ray/{ns}/{cluster}/<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: OIDC Token
-    Gateway->>RBACProxy: Forward to head pod sidecar<br/>8443/TCP HTTPS TLS (self-signed)<br/>Auth: OIDC Token forwarded
-    RBACProxy->>TokenReview: Validate OIDC token<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: ServiceAccount Token
-    TokenReview-->>RBACProxy: Token valid (user identity)
-    RBACProxy->>SAR: Check authorization<br/>verb=get, resource=services<br/>resourceName={cluster}-head-svc
-    SAR-->>RBACProxy: Authorized
-    RBACProxy->>HeadPod: GET /dashboard (localhost)<br/>8265/TCP HTTP (local)
+    User->>K8sAPI: kubectl apply RayJob<br/>HTTPS/443, Bearer Token
+    K8sAPI-->>Operator: Watch event: RayJob created
+    Operator->>K8sAPI: Create RayCluster<br/>HTTPS/443, SA Token
+    K8sAPI-->>Operator: RayCluster created
+    Operator->>K8sAPI: Create Pods, Services<br/>HTTPS/443, SA Token
+    Note over HeadPod, WorkerPods: Ray cluster starts up
+    Operator->>K8sAPI: Create K8s Job (submitter)<br/>HTTPS/443, SA Token
+    Submitter->>HeadPod: POST /api/jobs<br/>HTTP/8265 (or mTLS)
+    HeadPod-->>Submitter: Job ID
+    loop Poll job status
+        Operator->>HeadPod: GET /api/jobs/{id}<br/>HTTP/8265 (or mTLS)
+        HeadPod-->>Operator: Job status
+    end
+
+    Note over User, SAR: Flow 2: Authenticated Dashboard Access via Gateway API (RHOAI)
+
+    User->>Gateway: Browse Ray Dashboard<br/>HTTPS/443, OIDC Token
+    Gateway->>RBACProxy: HTTPRoute match /ray/{ns}/{cluster}/<br/>HTTPS/8443, OIDC Token forwarded
+    RBACProxy->>TokenReview: Validate OIDC token<br/>HTTPS/443, SA Token
+    TokenReview-->>RBACProxy: Token valid, user identity
+    RBACProxy->>SAR: Check verb=get resource=services<br/>resourceName={cluster}-head-svc<br/>HTTPS/443, SA Token
+    SAR-->>RBACProxy: Allowed
+    RBACProxy->>HeadPod: Proxy to localhost<br/>HTTP/8265 (local)
     HeadPod-->>RBACProxy: Dashboard HTML
     RBACProxy-->>Gateway: Response
     Gateway-->>User: Dashboard rendered
 
-    Note over User,Workers: Flow 3: RayService Zero-Downtime Upgrade
-    User->>K8sAPI: Update RayService spec<br/>Auth: Bearer Token
+    Note over User, K8sAPI: Flow 3: RayService Zero-Downtime Upgrade
+
+    User->>K8sAPI: Update RayService spec<br/>HTTPS/443, Bearer Token
     K8sAPI-->>Operator: Watch event: RayService updated
-    Operator->>K8sAPI: Create pending RayCluster<br/>Auth: ServiceAccount Token
-    K8sAPI-->>HeadPod: Pending Ray Head Pod ready
-    Operator->>HeadPod: POST /api/serve/config (deploy new config)<br/>8265/TCP HTTP
-    HeadPod-->>Operator: Serve config applied
-    Operator->>HeadPod: GET /api/serve/deployments (health check)<br/>8265/TCP HTTP
-    HeadPod-->>Operator: All deployments HEALTHY
-    Operator->>K8sAPI: Update serve-svc selector → pending cluster<br/>Auth: ServiceAccount Token
-    Operator->>K8sAPI: Delete old active RayCluster<br/>Auth: ServiceAccount Token
+    Operator->>K8sAPI: Create pending RayCluster<br/>HTTPS/443, SA Token
+    Note over HeadPod: Pending cluster starts
+    Operator->>HeadPod: POST /api/serve/config<br/>HTTP/8265, deploy new Serve config
+    HeadPod-->>Operator: Config applied
+    loop Check Serve health
+        Operator->>HeadPod: GET /api/serve/deployments<br/>HTTP/8265
+        HeadPod-->>Operator: Deployment status
+    end
+    Operator->>K8sAPI: Update serve-svc selector<br/>to pending cluster
+    Operator->>K8sAPI: Delete old active RayCluster

@@ -1,58 +1,64 @@
 sequenceDiagram
     participant Client as External Client
-    participant Auth as Kuadrant/Authorino<br/>Auth Gateway
+    participant AuthGW as Kuadrant/Authorino<br/>Auth Gateway
     participant API as API Server<br/>8000/TCP HTTP/HTTPS
     participant PG as PostgreSQL<br/>5432/TCP pgx
     participant Redis as Redis/Valkey<br/>6379/TCP RESP
     participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant Proc as Batch Processor<br/>9090/TCP (obs)
-    participant Infer as Inference Gateway<br/>HTTP/HTTPS
-    participant GC as Garbage Collector
+    participant Proc as Processor<br/>9090/TCP (obs)
+    participant InfGW as Inference Gateway<br/>llm-d
 
-    Note over Client,Infer: Flow 1: Batch Job Submission
-    Client->>Auth: POST /v1/batches<br/>Auth: Bearer Token
-    Auth->>API: Forward + X-MaaS-Username header
-    API->>PG: INSERT batch record<br/>pgx, Optional TLS
-    API->>Redis: ZADD to priority queue<br/>RESP, Optional TLS
-    API-->>Client: 200 OK (batch object)
+    Note over Client,InfGW: Flow 1: File Upload
+    Client->>AuthGW: POST /v1/files (multipart)<br/>Auth: API key / SA token
+    AuthGW->>API: Forward + X-MaaS-Username header
+    API->>S3: Upload JSONL file<br/>AWS IAM credentials
+    S3-->>API: Upload confirmed
+    API->>PG: Insert file metadata<br/>Connection URL auth
+    PG-->>API: File record created
+    API-->>Client: 200 OK {file_id, status: "uploaded"}
 
-    Note over Client,S3: Flow 2: File Upload
-    Client->>Auth: POST /v1/files<br/>multipart/form-data
-    Auth->>API: Forward + tenant header
-    API->>S3: Upload file content<br/>HTTPS TLS 1.2+, AWS IAM
-    API->>PG: INSERT file record<br/>pgx, Optional TLS
-    API-->>Client: 200 OK (file object)
+    Note over Client,InfGW: Flow 2: Batch Job Submission
+    Client->>AuthGW: POST /v1/batches<br/>Auth: API key / SA token
+    AuthGW->>API: Forward + X-MaaS-Username header
+    API->>PG: Insert batch metadata<br/>Connection URL auth
+    PG-->>API: Batch record created
+    API->>Redis: ZADD to priority queue<br/>Connection URL auth
+    Redis-->>API: Enqueued
+    API-->>Client: 200 OK {batch_id, status: "validating"}
 
-    Note over Proc,S3: Flow 3: Batch Job Processing
-    loop Poll queue (every 5s)
-        Proc->>Redis: BZMPop from priority queue<br/>RESP, Optional TLS
+    Note over Client,InfGW: Flow 3: Batch Job Processing
+    Proc->>Redis: BZMPop (blocking dequeue)<br/>poll_interval: 5s
+    Redis-->>Proc: Job ID + priority score
+    Proc->>PG: Read batch metadata
+    PG-->>Proc: Batch spec + input_file_id
+    Proc->>S3: Download input JSONL file
+    S3-->>Proc: File content
+    Note over Proc: Preprocess: Build binary plan<br/>(sort by system prompt hash)
+
+    loop For each request in plan (concurrency controlled)
+        Proc->>InfGW: POST /v1/chat/completions<br/>Auth: Bearer token / mTLS
+        InfGW-->>Proc: Inference response
+        Proc->>Redis: Update progress counters
     end
-    Redis-->>Proc: Job ID (dequeued)
-    Proc->>PG: Load batch + file metadata<br/>pgx, Optional TLS
-    Proc->>S3: Download input JSONL<br/>HTTPS TLS 1.2+, AWS IAM
-    Note over Proc: Preprocess: build binary plan<br/>(sort by system prompt hash)
-    loop For each request in plan (concurrency-controlled)
-        Proc->>Infer: POST /v1/chat/completions<br/>HTTP/HTTPS, Bearer/mTLS
-        Infer-->>Proc: Inference response
-    end
-    Proc->>S3: Upload output JSONL<br/>HTTPS TLS 1.2+, AWS IAM
-    Proc->>S3: Upload error JSONL (if any)<br/>HTTPS TLS 1.2+
-    Proc->>PG: Update batch status = completed<br/>pgx, Optional TLS
-    Proc->>Redis: Update progress/status<br/>RESP, Optional TLS
 
-    Note over Client,Redis: Flow 4: Batch Cancellation
-    Client->>Auth: POST /v1/batches/{id}/cancel
-    Auth->>API: Forward + tenant header
-    API->>Redis: RPush cancel event<br/>RESP, Optional TLS
-    Proc->>Redis: BLMPop cancel events<br/>(event watcher)
-    Redis-->>Proc: Cancel event received
-    Proc->>PG: Update batch status = cancelled<br/>pgx, Optional TLS
+    Proc->>S3: Upload output JSONL file<br/>AWS IAM credentials
+    S3-->>Proc: Upload confirmed
+    Proc->>PG: Update batch status = completed
+    Proc->>Redis: Set final progress status
 
-    Note over GC,S3: Flow 5: Garbage Collection
-    loop Every 30 minutes
-        GC->>PG: Query expired batches/files<br/>pgx, Optional TLS
-        GC->>Redis: Query expired entries<br/>RESP, Optional TLS
-        GC->>S3: Delete expired files<br/>HTTPS TLS 1.2+, AWS IAM
-        GC->>PG: DELETE expired records<br/>pgx, Optional TLS
-        GC->>Redis: DELETE expired keys<br/>RESP, Optional TLS
-    end
+    Note over Client,InfGW: Flow 4: Batch Cancellation
+    Client->>AuthGW: POST /v1/batches/{id}/cancel
+    AuthGW->>API: Forward + X-MaaS-Username header
+    API->>Redis: RPush cancel event<br/>to event channel
+    Redis-->>API: Event published
+    API-->>Client: 200 OK {status: "cancelling"}
+    Redis->>Proc: BLMPop cancel event
+    Note over Proc: Cancel in-flight requests<br/>via context cancellation
+    Proc->>PG: Update status = cancelled
+
+    Note over Client,InfGW: Flow 5: Garbage Collection (periodic)
+    Note over PG,S3: GC scans every 30 minutes
+    activate PG
+    Note right of PG: Query expired batches/files
+    PG-->>S3: Delete expired physical files
+    deactivate PG

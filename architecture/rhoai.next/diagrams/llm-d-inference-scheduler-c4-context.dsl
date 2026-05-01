@@ -1,48 +1,53 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist / ML Engineer" "Deploys and queries LLM inference services"
-        sre = person "SRE / Platform Operator" "Monitors and manages the inference platform"
+        datascientist = person "Data Scientist / ML Engineer" "Deploys and manages LLM inference workloads"
+        application = person "Application / Client" "Sends inference requests to LLM models"
 
         llmdScheduler = softwareSystem "llm-d Inference Scheduler" "Intelligent inference request scheduler for LLM workloads via Envoy ext-proc" {
-            epp = container "EPP (Endpoint Picker)" "Envoy ext-proc server that makes scheduling decisions via configurable filter/scorer/picker plugins" "Go gRPC Service" {
-                extProcServer = component "ext-proc gRPC Server" "Bidirectional streaming ext-proc for request/response processing" "gRPC H2"
-                schedulingPipeline = component "Scheduling Pipeline" "Filters, Scorers, Pickers chain for optimal endpoint selection" "Go Plugin Framework"
-                flowControl = component "Flow Control Layer" "Multi-priority queuing with fairness, ordering, and admission control" "Go (Experimental)"
-                crdReconcilers = component "CRD Reconcilers" "Watch InferencePool, Pod, InferenceObjective, InferenceModelRewrite" "controller-runtime"
-                metricsCollector = component "Metrics Collector" "Scrapes model server Prometheus metrics (queue depth, KV cache, running requests)" "Go HTTP Client"
-                dataLayer = component "Data Layer" "DAG-based data producer/consumer framework for scheduling context" "Go"
+            epp = container "EPP (Endpoint Picker)" "Envoy ext-proc server — runs configurable filter/scorer/picker scheduling pipeline to select optimal model-serving pod" "Go gRPC Service" {
+                extProcServer = component "gRPC ext-proc Server" "Receives ProcessingRequest from Envoy, returns routing decision" "gRPC H2, 9002/TCP"
+                schedulingPipeline = component "Scheduling Pipeline" "Filters → Scorers → Pickers with plugin architecture" "Go"
+                dataLayer = component "Data Layer" "Collects metrics, KV cache events, CRD state for scheduling decisions" "Go"
+                metricsServer = component "Metrics Server" "Exposes Prometheus metrics (TTFT, TPOT, SLO violations)" "HTTP, 9090/TCP"
+                healthServer = component "Health Server" "gRPC liveness and readiness checks" "gRPC, 9003/TCP"
             }
-            pdSidecar = container "PD Sidecar Proxy" "Orchestrates disaggregated Prefill/Decode execution with pluggable KV transfer protocols" "Go HTTP Reverse Proxy"
-            udsTokenizer = container "UDS Tokenizer" "Tokenization sidecar communicating over Unix Domain Socket" "Sidecar Container"
+            pdSidecar = container "PD Sidecar Proxy" "Orchestrates disaggregated Prefill/Decode execution with pluggable KV transfer protocols (NIXL v2, shared storage, SGLang)" "Go HTTP Reverse Proxy"
+            udsTokenizer = container "UDS Tokenizer" "Tokenizes prompts for prefix-cache-aware scoring" "Sidecar Container"
         }
 
-        envoyGateway = softwareSystem "Envoy Gateway" "Data plane gateway with ext-proc filter for inference request routing" "External"
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration with CRDs for InferencePool, Pod management" "External"
-        gatewayAPI = softwareSystem "Gateway API + GIE" "Gateway API v1.5.1 with Inference Extension v1.5.0 CRDs" "External"
-        vllm = softwareSystem "vLLM Model Servers" "LLM model serving engine with Prometheus metrics and inference API" "Internal Platform"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing export target" "External"
-        llmdKVCache = softwareSystem "llm-d-kv-cache" "KV cache block indexer library for prefix cache scoring" "Internal Platform"
+        envoyGateway = softwareSystem "Envoy Gateway" "Data plane gateway with ext-proc filter for routing inference requests" "External"
+        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway and HTTPRoute CRDs for ingress" "External"
+        gie = softwareSystem "Gateway API Inference Extension (GIE)" "Framework providing InferencePool, InferenceModel CRDs and ext-proc interfaces" "External"
+        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform — API server, RBAC, CRD watches" "External"
+        vllm = softwareSystem "vLLM Model Servers" "LLM model serving engine exposing inference API and Prometheus metrics" "Internal Platform"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring via ServiceMonitor" "External"
+        otel = softwareSystem "OpenTelemetry Collector" "Distributed tracing export target (OTLP)" "External"
+        llmdKVCache = softwareSystem "llm-d-kv-cache" "KV cache block indexer library for precise prefix cache scoring" "Internal Platform"
 
-        // User interactions
-        dataScientist -> llmdScheduler "Sends inference requests via Gateway" "HTTP/80"
-        sre -> prometheus "Monitors scheduling metrics" "HTTP"
+        # User interactions
+        datascientist -> llmdScheduler "Configures InferencePool, InferenceObjective, EndpointPickerConfig"
+        application -> envoyGateway "Sends inference requests (HTTP POST /v1/chat/completions)"
 
-        // System interactions
-        envoyGateway -> llmdScheduler "ext-proc callbacks for routing decisions" "gRPC/9002 TLS"
-        llmdScheduler -> kubernetes "Watches CRDs (InferencePool, Pod, InferenceObjective)" "HTTPS/443"
-        llmdScheduler -> vllm "Scrapes metrics + routes inference requests" "HTTP/3000, HTTP/8000"
-        llmdScheduler -> otelCollector "Exports distributed traces" "gRPC/4317 OTLP"
-        prometheus -> llmdScheduler "Scrapes EPP metrics" "HTTP/9090"
-        llmdScheduler -> llmdKVCache "KV cache block index for prefix scoring" "Go library"
+        # Core scheduling flow
+        envoyGateway -> llmdScheduler "Calls EPP via gRPC ext-proc for routing decisions" "gRPC/9002 TLS"
+        llmdScheduler -> envoyGateway "Returns target endpoint header"
+        envoyGateway -> vllm "Forwards routed inference requests" "HTTP/8000"
 
-        // PD Sidecar interactions
-        pdSidecar -> vllm "Routes to prefiller/decoder instances" "HTTP/HTTPS Dynamic"
-        envoyGateway -> pdSidecar "Forwards disaggregated inference requests" "HTTP/HTTPS 8000"
+        # EPP dependencies
+        llmdScheduler -> kubernetes "Watches InferencePool, Pod, InferenceObjective, InferenceModelRewrite CRDs" "HTTPS/443"
+        llmdScheduler -> vllm "Scrapes Prometheus metrics (queue depth, KV cache, running requests)" "HTTP/3000"
+        llmdScheduler -> llmdKVCache "KV cache block index for prefix cache scoring" "Go library"
 
-        // Internal container interactions
-        epp -> udsTokenizer "Tokenize prompts" "gRPC over UDS"
-        epp -> pdSidecar "Routing headers injected via Envoy" "Indirect via Envoy"
+        # PD Sidecar flow
+        pdSidecar -> vllm "Sends prefill/encode/decode requests" "HTTP(S)/Dynamic"
+
+        # Observability
+        prometheus -> llmdScheduler "Scrapes metrics" "HTTP/9090"
+        llmdScheduler -> otel "Exports distributed traces" "gRPC/4317 OTLP"
+
+        # Framework dependency
+        llmdScheduler -> gie "Extends ext-proc framework with LLM-specific scheduling plugins" "Go library"
+        llmdScheduler -> gatewayAPI "Uses Gateway and HTTPRoute CRDs" "Kubernetes API"
     }
 
     views {
@@ -73,10 +78,10 @@ workspace {
             element "Person" {
                 background #08427b
                 color #ffffff
-                shape Person
+                shape person
             }
             element "Software System" {
-                background #1168bd
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {

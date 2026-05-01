@@ -3,58 +3,69 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (DMZ)"]
-        Gateway["KServe Gateway / Istio Gateway<br/>443/TCP &rarr; internal<br/>TLS 1.2+ termination<br/>JWT validation (delegated)"]
+    subgraph Ingress["INGRESS (DMZ) — KServe Networking Layer"]
+        Gateway["KServe Gateway / Istio Gateway<br/>443/TCP → 8080/TCP (HTTP) | 8081/TCP (gRPC)<br/>TLS 1.2+ termination<br/>RequestAuthentication (JWT)"]
     end
 
     subgraph ServiceMesh["SERVICE MESH (mTLS STRICT)"]
         direction TB
 
-        subgraph PodBoundary["Pod: AutoGluon InferenceService"]
-            IstioSidecar["Istio Sidecar (Envoy)<br/>15006/TCP inbound<br/>mTLS STRICT<br/>SPIFFE identity"]
-            AutoGluonContainer["AutoGluon Server Container<br/>UID: 1001 (non-root)<br/>8080/TCP HTTP (v1+v2 REST)<br/>8081/TCP gRPC (v2 OIP)<br/>No K8s API access<br/>Read-only rootfs"]
-        end
+        subgraph NS_User["Namespace: {user-namespace}"]
+            direction TB
+            IstioSidecar["Istio Sidecar (Envoy)<br/>15006/TCP interception<br/>mTLS termination<br/>SPIFFE identity"]
 
-        Prometheus["Prometheus<br/>Metrics Scraper"]
+            subgraph AutoGluonPod["AutoGluon Server Pod<br/>UID: 1001 (non-root) | No K8s API access"]
+                direction TB
+                HTTPServer["HTTP Server (FastAPI/Uvicorn)<br/>8080/TCP plaintext<br/>V1: /v1/models/{name}:predict<br/>V2: /v2/models/{name}/infer<br/>Health: /v2/health/live | /ready"]
+                GRPCServer["gRPC Server<br/>8081/TCP plaintext<br/>V2 Open Inference Protocol"]
+                ModelRuntime["Model Runtime (in-process)<br/>TabularPredictor | TimeSeriesPredictor<br/>autogluon 1.5.0+rhaiv.2"]
+            end
+        end
+    end
+
+    subgraph Platform["PLATFORM SERVICES"]
+        KServeCtrl["KServe Controller<br/>Deploys InferenceService pods"]
+        StorageInit["Storage Initializer<br/>Init Container<br/>Writes to /mnt/models"]
+        Knative["Knative Serving<br/>Autoscaling"]
+        Prometheus["Prometheus<br/>Metrics scrape :8080"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        S3["S3 Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM credentials"]
-        GCS["GCS Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>GCP SA credentials"]
-        GenericURI["HTTP/HTTPS URI<br/>443 or 80/TCP<br/>TLS 1.2+ or plaintext<br/>Bearer Token (optional)"]
-        HuggingFace["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>HF Token (optional)"]
+        S3["S3 Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS IAM credentials"]
+        GCS["GCS Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: GCP SA credentials"]
+        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: HF Token (optional)"]
     end
 
-    %% External to Ingress
+    %% Inbound flows
     Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token or mTLS"| Gateway
+    Gateway -->|"HTTP/15006<br/>mTLS STRICT<br/>Service Identity"| IstioSidecar
+    IstioSidecar -->|"HTTP/8080 plaintext<br/>(intra-pod localhost)"| HTTPServer
+    IstioSidecar -->|"gRPC/8081 plaintext<br/>(intra-pod localhost)"| GRPCServer
+    HTTPServer --> ModelRuntime
+    GRPCServer --> ModelRuntime
 
-    %% Ingress to Service Mesh
-    Gateway -->|"HTTP<br/>mTLS STRICT<br/>Service Identity (SPIFFE)"| IstioSidecar
-
-    %% Sidecar to Container (same pod)
-    IstioSidecar -->|"HTTP/8080 + gRPC/8081<br/>plaintext (localhost)<br/>No auth (same pod)"| AutoGluonContainer
+    %% Platform flows
+    KServeCtrl -.->|"CRD Watch<br/>InferenceService"| AutoGluonPod
+    StorageInit -.->|"Shared Volume<br/>/mnt/models"| ModelRuntime
+    Knative -.->|"Autoscaling"| AutoGluonPod
+    Prometheus -.->|"HTTP/8080<br/>metrics scrape"| HTTPServer
 
     %% Egress flows
-    AutoGluonContainer -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    AutoGluonContainer -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP SA"| GCS
-    AutoGluonContainer -->|"HTTPS/443 or HTTP/80<br/>TLS 1.2+ or plaintext"| GenericURI
-    AutoGluonContainer -->|"HTTPS/443<br/>TLS 1.2+<br/>HF Token"| HuggingFace
-
-    %% Prometheus scrape
-    Prometheus -->|"HTTP/8080<br/>plaintext (within mesh)<br/>Metrics scrape"| AutoGluonContainer
+    ModelRuntime -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    ModelRuntime -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP SA"| GCS
+    ModelRuntime -->|"HTTPS/443<br/>TLS 1.2+<br/>HF Token"| HFHub
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef pod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef container fill:#b3d9ff,stroke:#4a86c8,stroke-width:2px
+    classDef pod fill:#b6d7a8,stroke:#6aa84f,stroke-width:2px
+    classDef platform fill:#cfe2f3,stroke:#6fa8dc,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef monitoring fill:#e6d5f7,stroke:#9673a6,stroke-width:2px
 
     class Client external
     class Gateway ingress
     class IstioSidecar servicemesh
-    class AutoGluonContainer container
-    class S3,GCS,GenericURI,HuggingFace externalservice
-    class Prometheus monitoring
+    class HTTPServer,GRPCServer,ModelRuntime pod
+    class KServeCtrl,StorageInit,Knative,Prometheus platform
+    class S3,GCS,HFHub externalservice

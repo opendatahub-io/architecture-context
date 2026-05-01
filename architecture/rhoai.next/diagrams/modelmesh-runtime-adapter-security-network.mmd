@@ -1,73 +1,76 @@
 graph TB
-    subgraph PodBoundary["POD BOUNDARY (ModelMesh Serving Pod)<br/>All internal traffic: plaintext localhost"]
+    subgraph External["INBOUND (Cluster-Internal)"]
+        ModelMesh["ModelMesh Controller<br/>(modelmesh-serving)<br/>gRPC client"]
+    end
+
+    subgraph PodBoundary["POD BOUNDARY (Model Serving Pod)<br/>All internal: plaintext localhost, no auth"]
         direction TB
 
-        subgraph PullerZone["model-serving-puller"]
-            Puller["model-serving-puller<br/>8084/TCP gRPC<br/>Plaintext (localhost)<br/>No Auth<br/><br/>Strips credentials before<br/>forwarding to adapter"]
-            PullmanLib["pullman Library<br/>Storage abstraction<br/>FNV-64a cache keys<br/>(no raw creds in cache)"]
-            Puller --- PullmanLib
+        subgraph PullerSidecar["Sidecar: model-serving-puller"]
+            Puller["model-serving-puller<br/>Listen: 8084/TCP gRPC<br/>Encryption: None (localhost)<br/>Auth: None<br/>Methods: LoadModel, UnloadModel,<br/>PredictModelSize, RuntimeStatus"]
         end
 
-        subgraph AdapterZone["Runtime Adapter (one active per pod)"]
-            TritonA["triton-adapter<br/>8085/TCP gRPC<br/>→ Triton 8001/TCP gRPC"]
-            MLServerA["mlserver-adapter<br/>8085/TCP gRPC<br/>→ MLServer 8001/TCP gRPC"]
-            OVMSA["ovms-adapter<br/>8085/TCP gRPC<br/>→ OVMS 8001/TCP HTTP"]
-            TorchServeA["torchserve-adapter<br/>8085/TCP gRPC<br/>→ TorchServe 7071/TCP gRPC"]
+        subgraph AdapterSidecar["Sidecar: Runtime Adapter (one of four)"]
+            TritonA["triton-adapter<br/>8085/TCP gRPC"]
+            MLServerA["mlserver-adapter<br/>8085/TCP gRPC"]
+            OVMSA["ovms-adapter<br/>8085/TCP gRPC"]
+            TorchServeA["torchserve-adapter<br/>8085/TCP gRPC"]
         end
 
-        subgraph RuntimeZone["Inference Runtime (one active per pod)"]
-            TritonR["NVIDIA Triton<br/>8001/TCP gRPC"]
-            MLServerR["SeldonIO MLServer<br/>8001/TCP gRPC"]
-            OVMSR["OpenVINO Model Server<br/>8001/TCP HTTP REST"]
-            TorchServeR["TorchServe<br/>7071/TCP mgmt gRPC<br/>7070/TCP infer gRPC"]
+        subgraph RuntimeMain["Main: Inference Runtime"]
+            Triton["NVIDIA Triton<br/>8001/TCP gRPC"]
+            MLServer["SeldonIO MLServer<br/>8001/TCP gRPC"]
+            OVMS["OpenVINO OVMS<br/>8001/TCP HTTP"]
+            TorchServeMgmt["TorchServe Mgmt<br/>7071/TCP gRPC"]
+            TorchServeInfer["TorchServe Infer<br/>7070/TCP gRPC"]
         end
 
         subgraph Volumes["Volume Mounts"]
-            StorageConfig["/storage-config<br/>K8s Secret<br/>Storage credentials"]
-            Models["/models<br/>EmptyDir<br/>Downloaded artifacts"]
+            Models["/models<br/>emptyDir"]
+            StorageConfig["/storage-config<br/>Secret mount"]
             PVCMount["/pvc_mounts<br/>PVC (optional)"]
         end
-
-        Puller -->|"gRPC/8085<br/>Plaintext localhost<br/>No Auth<br/>(credentials stripped)"| TritonA
-        Puller -->|"gRPC/8085<br/>Plaintext localhost<br/>No Auth"| MLServerA
-        Puller -->|"gRPC/8085<br/>Plaintext localhost<br/>No Auth"| OVMSA
-        Puller -->|"gRPC/8085<br/>Plaintext localhost<br/>No Auth"| TorchServeA
-
-        TritonA -->|"gRPC/8001<br/>Plaintext localhost"| TritonR
-        MLServerA -->|"gRPC/8001<br/>Plaintext localhost"| MLServerR
-        OVMSA -->|"HTTP/8001<br/>Plaintext localhost"| OVMSR
-        TorchServeA -->|"gRPC/7071<br/>Plaintext localhost"| TorchServeR
-
-        StorageConfig -.->|"credentials"| PullmanLib
     end
 
-    subgraph Inbound["INBOUND (Pod-Internal)"]
-        ModelMesh["ModelMesh Controller<br/>(modelmesh-serving)<br/>Same pod"]
+    subgraph EgressServices["EGRESS (External Services)"]
+        S3["AWS S3 / IBM COS<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Access Key + Secret"]
+        GCS["Google Cloud Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Service Account JSON"]
+        Azure["Azure Blob Storage<br/>{account}.blob.core.windows.net<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Service Principal"]
+        HTTPEp["HTTP/HTTPS Endpoints<br/>User-configured<br/>Optional TLS<br/>Auth: Headers / mTLS"]
     end
 
-    subgraph Egress["EGRESS (TLS-Encrypted)"]
-        S3["AWS S3 / IBM COS<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Access Key ID<br/>+ Secret Access Key"]
-        GCS["Google Cloud Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Service Account<br/>(JSON credentials)"]
-        AzureBlob["Azure Blob Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Service Principal<br/>or Connection String"]
-        HTTPEndpoint["HTTP/HTTPS Endpoints<br/>Port: configurable<br/>Encryption: Optional TLS<br/>Auth: Optional headers/mTLS"]
-    end
+    %% Inbound flows
+    ModelMesh -->|"gRPC/8084<br/>Plaintext<br/>No Auth"| Puller
 
-    ModelMesh -->|"gRPC/8084<br/>Plaintext localhost<br/>No Auth"| Puller
+    %% Pod-internal flows
+    Puller -->|"gRPC/8085<br/>Plaintext<br/>Credentials stripped"| TritonA
+    Puller -->|"gRPC/8085<br/>Plaintext<br/>Credentials stripped"| MLServerA
+    Puller -->|"gRPC/8085<br/>Plaintext<br/>Credentials stripped"| OVMSA
+    Puller -->|"gRPC/8085<br/>Plaintext<br/>Credentials stripped"| TorchServeA
 
-    PullmanLib -->|"HTTPS/443<br/>TLS 1.2+<br/>Access Key + Secret"| S3
-    PullmanLib -->|"HTTPS/443<br/>TLS 1.2+<br/>SA JSON credentials"| GCS
-    PullmanLib -->|"HTTPS/443<br/>TLS 1.2+<br/>Service Principal"| AzureBlob
-    PullmanLib -->|"HTTP(S)<br/>Optional TLS<br/>Optional headers"| HTTPEndpoint
+    TritonA -->|"gRPC/8001<br/>Plaintext"| Triton
+    MLServerA -->|"gRPC/8001<br/>Plaintext"| MLServer
+    OVMSA -->|"HTTP/8001<br/>Plaintext"| OVMS
+    TorchServeA -->|"gRPC/7071<br/>Plaintext"| TorchServeMgmt
+    TorchServeA -->|"gRPC/7070<br/>Plaintext<br/>Health: Ping"| TorchServeInfer
+
+    %% Egress flows
+    Puller -->|"HTTPS/443<br/>TLS 1.2+<br/>Access Key + Secret"| S3
+    Puller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA JSON"| GCS
+    Puller -->|"HTTPS/443<br/>TLS 1.2+<br/>Service Principal"| Azure
+    Puller -->|"HTTP(S)<br/>Optional TLS<br/>Headers/mTLS"| HTTPEp
+
+    %% Volume access
+    StorageConfig -.->|"Credentials"| Puller
 
     %% Styling
-    classDef podinternal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef inbound fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef inbound fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef pod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef secrets fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef storage fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef volume fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
-    class Puller,PullmanLib,TritonA,MLServerA,OVMSA,TorchServeA,TritonR,MLServerR,OVMSR,TorchServeR podinternal
     class ModelMesh inbound
-    class S3,GCS,AzureBlob,HTTPEndpoint egress
-    class StorageConfig secrets
-    class Models,PVCMount storage
+    class Puller,TritonA,MLServerA,OVMSA,TorchServeA pod
+    class Triton,MLServer,OVMS,TorchServeMgmt,TorchServeInfer pod
+    class S3,GCS,Azure,HTTPEp egress
+    class Models,StorageConfig,PVCMount volume

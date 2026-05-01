@@ -1,62 +1,46 @@
 sequenceDiagram
     participant User as User / CI
-    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS
     participant Webhook as Webhook Server<br/>9443/TCP HTTPS TLS
-    participant Controller as Controller Manager<br/>8080/TCP metrics
+    participant Controller as Controller Manager<br/>controller-runtime
     participant Driver as Spark Driver Pod
-    participant Executors as Spark Executor Pods<br/>7078/TCP, 7079/TCP
+    participant Executor as Spark Executor Pods<br/>7078, 7079/TCP
 
-    Note over User,Executors: Flow 1: SparkApplication Submission
-
-    User->>K8sAPI: POST SparkApplication CR<br/>HTTPS/443 | Bearer token
-    K8sAPI->>Webhook: Mutate SparkApplication<br/>HTTPS/9443 | API server mTLS
-    Webhook-->>K8sAPI: Defaulted SparkApplication
-    K8sAPI->>Webhook: Validate SparkApplication<br/>HTTPS/9443 | API server mTLS
-    Webhook->>K8sAPI: Check ResourceQuota<br/>HTTPS/443 | SA token
-    K8sAPI-->>Webhook: Quota info
-    Webhook-->>K8sAPI: Validation result
-
-    K8sAPI->>Controller: Watch event: SparkApplication created
-    Controller->>K8sAPI: Create driver pod (spark-submit)<br/>HTTPS/443 | SA token
-    K8sAPI->>Webhook: Mutate Pod (label selector)<br/>HTTPS/9443 | API server mTLS
-    Note over Webhook: Injects: volumes, env vars,<br/>sidecars, Prometheus config,<br/>security contexts, scheduling
-    Webhook-->>K8sAPI: Mutated Pod spec
-    K8sAPI-->>Controller: Pod created
-
-    Driver->>K8sAPI: Create executor pods<br/>HTTPS/443 | spark-operator-spark SA token
-    K8sAPI->>Webhook: Mutate executor Pods<br/>HTTPS/9443 | API server mTLS
-    Webhook-->>K8sAPI: Mutated executor specs
-    Driver->>Executors: Task execution<br/>TCP/7078 (driver-rpc)<br/>TCP/7079 (blockmanager)
-    Executors-->>Driver: Task results
-
-    Controller->>K8sAPI: Create UI Service ({app}-ui-svc:4040)<br/>HTTPS/443 | SA token
-    Controller->>K8sAPI: Update SparkApplication status<br/>HTTPS/443 | SA token
-
-    Note over User,Executors: Flow 2: ScheduledSparkApplication Cron Execution
-
-    User->>K8sAPI: POST ScheduledSparkApplication CR<br/>HTTPS/443 | Bearer token
-    K8sAPI->>Webhook: Mutate + Validate<br/>HTTPS/9443 | API server mTLS
-    Webhook-->>K8sAPI: Validated
-
-    loop Cron Schedule
-        Controller->>K8sAPI: Create SparkApplication CR<br/>HTTPS/443 | SA token
-        Note over Controller: Applies concurrency policy:<br/>Allow / Forbid / Replace
-        K8sAPI->>Controller: Triggers SparkApplication reconcile
-        Note over Controller,Executors: (Same as Flow 1 from here)
+    rect rgb(230, 245, 255)
+        Note over User,Executor: Flow 1: SparkApplication Submission
+        User->>K8sAPI: 1. kubectl apply SparkApplication<br/>HTTPS/443 | Bearer token
+        K8sAPI->>Webhook: 2. Admission review (mutate + validate)<br/>HTTPS/9443 | TLS | API server mTLS
+        Webhook->>K8sAPI: 3. Set defaults, validate spec<br/>HTTPS/443 | TLS | ServiceAccount token
+        K8sAPI-->>Controller: 4. Watch event: SparkApplication created
+        Controller->>K8sAPI: 4. Reconcile: create driver pod<br/>HTTPS/443 | TLS | ServiceAccount token
+        Controller->>Driver: 5. spark-submit execution<br/>Process exec
+        Note over Driver: Driver starts running
+        Driver->>K8sAPI: 6. Request executor pods<br/>HTTPS/443 | TLS | SA: spark-operator-spark
+        K8sAPI->>Webhook: 7. Admission review (mutate pods)<br/>HTTPS/9443 | TLS | API server mTLS
+        Note over Webhook: Inject volumes, env vars,<br/>sidecars, monitoring config,<br/>security contexts
+        Webhook-->>K8sAPI: Pod mutated
+        K8sAPI-->>Driver: Executors created
+        Driver->>Executor: 8. Task distribution<br/>TCP/7078, 7079 | No encryption
+        Executor-->>Driver: Task results
+        Driver-->>Controller: Application completed
+        Controller->>K8sAPI: Update status, cleanup (TTL)
     end
 
-    Note over User,Executors: Flow 3: SparkConnect Server Lifecycle
+    rect rgb(255, 245, 230)
+        Note over User,Executor: Flow 2: ScheduledSparkApplication Cron Execution
+        Note over Controller: Cron timer fires
+        Controller->>K8sAPI: 1. Check concurrency policy<br/>HTTPS/443 | TLS | ServiceAccount token
+        Controller->>K8sAPI: 2. Create child SparkApplication CR<br/>HTTPS/443 | TLS | ServiceAccount token
+        Note over Controller: 3. SparkApplication reconcile loop<br/>(follows Flow 1 steps 4-8)
+    end
 
-    User->>K8sAPI: POST SparkConnect CR<br/>HTTPS/443 | Bearer token
-    K8sAPI->>Controller: Watch event: SparkConnect created
-
-    Controller->>K8sAPI: Create ConfigMap (executor pod template)<br/>HTTPS/443 | SA token
-    Controller->>K8sAPI: Create server Pod<br/>HTTPS/443 | SA token
-    Controller->>K8sAPI: Create Service (4 ports)<br/>HTTPS/443 | SA token
-
-    participant Client as SparkConnect Client
-
-    Client->>Driver: Spark Connect protocol<br/>TCP/15002 | No auth
-    Driver->>Executors: Task execution<br/>TCP/7078, 7079
-    Executors-->>Driver: Results
-    Driver-->>Client: Response
+    rect rgb(230, 255, 230)
+        Note over User,Executor: Flow 3: SparkConnect Server Lifecycle
+        User->>K8sAPI: 1. Create SparkConnect CR<br/>HTTPS/443 | TLS | Bearer token
+        K8sAPI-->>Controller: Watch event: SparkConnect created
+        Controller->>K8sAPI: 2. Create ConfigMap (executor pod template)<br/>HTTPS/443 | TLS | ServiceAccount token
+        Controller->>K8sAPI: 3. Create server Pod<br/>HTTPS/443 | TLS | ServiceAccount token
+        Controller->>K8sAPI: 4. Create Service (4 ports)<br/>7078, 7079, 4040, 15002/TCP
+        participant Client as Spark Connect Client
+        Client->>Driver: 5. Connect to Spark Connect server<br/>TCP/15002 | Spark Connect protocol | No encryption
+    end

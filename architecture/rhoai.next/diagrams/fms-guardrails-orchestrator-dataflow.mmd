@@ -1,72 +1,68 @@
 sequenceDiagram
-    participant Client as Client
+    participant Client as External Client
     participant API as Orchestrator API<br/>8033/TCP HTTP
-    participant Health as Health Server<br/>8034/TCP HTTP
+    participant HealthSrv as Health Server<br/>8034/TCP HTTP
     participant Chunker as Chunker Service<br/>8085/TCP gRPC
     participant Detector as Detector Service(s)<br/>8080/TCP HTTP
-    participant GenGRPC as TGIS / Caikit NLP<br/>8033|8085/TCP gRPC
-    participant OpenAI as OpenAI API (vLLM)<br/>8080/TCP HTTP
-    participant OTLP as OTLP Collector<br/>4317/TCP gRPC
+    participant TGIS as TGIS / Caikit NLP<br/>8033|8085/TCP gRPC
+    participant OpenAI as OpenAI-compatible API<br/>8080/TCP HTTP
+    participant OTEL as OTLP Collector<br/>4317/TCP gRPC
 
-    Note over Client,OTLP: Flow 1: Text Generation with Input/Output Detection (Unary)
-
-    Client->>API: POST /api/v2/text/generation-detection<br/>HTTP, TLS optional, Passthrough headers
-    API->>OTLP: Trace span (start)
+    Note over Client,OTEL: Flow 1: Text Generation with Input/Output Detection (Unary)
+    Client->>API: POST /api/v2/text/generation-detection<br/>TLS optional, Passthrough headers
+    API->>OTEL: Trace span: request received
     API->>Chunker: Chunk input text<br/>gRPC, mTLS optional, Bearer optional
-    Chunker-->>API: Chunked text
-    API->>Detector: Detect input content (parallel)<br/>HTTP POST /api/v1/text/contents, TLS optional
-    Detector-->>API: Input detection results
-    Note over API: Check input thresholds<br/>Block if harmful detected
-    API->>GenGRPC: Generate text<br/>gRPC Generate, mTLS optional
-    GenGRPC-->>API: Generated text
+    Chunker-->>API: Chunked tokens
+    API->>Detector: POST /api/v1/text/contents (input detection)<br/>HTTP, TLS optional, Bearer optional
+    Detector-->>API: Detection results (scores)
+    Note over API: Check input scores vs thresholds<br/>Block if harmful content detected
+    API->>TGIS: Generate text (unary)<br/>gRPC, mTLS optional, Bearer optional
+    TGIS-->>API: Generated text
     API->>Chunker: Chunk output text<br/>gRPC, mTLS optional
-    Chunker-->>API: Chunked output
-    API->>Detector: Detect output content (parallel)<br/>HTTP POST /api/v1/text/generation, TLS optional
-    Detector-->>API: Output detection results
-    Note over API: Check output thresholds<br/>Filter if harmful detected
+    Chunker-->>API: Chunked tokens
+    API->>Detector: POST /api/v1/text/generation (output detection)<br/>HTTP, TLS optional
+    Detector-->>API: Detection results (scores)
+    Note over API: Check output scores vs thresholds<br/>Filter if harmful content detected
     API-->>Client: Generation response<br/>(with detection metadata)
-    API->>OTLP: Trace span (end)
+    API->>OTEL: Trace span: request complete
 
-    Note over Client,OTLP: Flow 2: Chat Completions with Detection (Streaming)
-
-    Client->>API: POST /api/v2/chat/completions-detection<br/>HTTP, TLS optional, Passthrough headers
-    API->>Detector: Detect input (text_contents)<br/>HTTP POST, TLS optional
-    Detector-->>API: Input content results
-    API->>Detector: Detect input (text_chat)<br/>HTTP POST, TLS optional
-    Detector-->>API: Input chat results
-    Note over API: Check input thresholds
-    API->>OpenAI: POST /v1/chat/completions (stream=true)<br/>HTTP/SSE, TLS optional, Bearer optional
+    Note over Client,OTEL: Flow 2: Chat Completions with Detection (Streaming)
+    Client->>API: POST /api/v2/chat/completions-detection<br/>TLS optional, Passthrough headers
+    API->>Detector: POST /api/v1/text/contents (input - text_contents)<br/>HTTP, TLS optional
+    Detector-->>API: Input content detection results
+    API->>Detector: POST /api/v1/text/chat (input - text_chat)<br/>HTTP, TLS optional
+    Detector-->>API: Input chat detection results
+    Note over API: Check input scores vs thresholds
+    API->>OpenAI: POST /v1/chat/completions (streaming SSE)<br/>HTTP, TLS optional, Bearer optional
     loop Streaming chunks
         OpenAI-->>API: SSE chunk
         API->>Chunker: BidiStreaming chunk<br/>gRPC bidi-stream, mTLS optional
         Chunker-->>API: Tokenized chunk
-        API->>Detector: Detect output chunk<br/>HTTP POST, TLS optional
-        Detector-->>API: Chunk detection result
-        Note over API: DetectionBatcher<br/>aggregates + orders results
+        API->>Detector: POST /api/v1/text/contents (output detection)<br/>HTTP, TLS optional
+        Detector-->>API: Chunk detection results
+        Note over API: DetectionBatchStream coordinates<br/>ordered batch release
         API-->>Client: SSE chunk (filtered)
     end
-    API-->>Client: SSE [DONE]
+    API-->>Client: Stream complete
 
-    Note over Client,OTLP: Flow 3: Standalone Content Detection
-
-    Client->>API: POST /api/v2/text/detection/content<br/>HTTP, TLS optional, Passthrough headers
-    API->>Chunker: Chunk text<br/>gRPC, mTLS optional
-    Chunker-->>API: Chunked text
-    API->>Detector: Detect content (parallel)<br/>HTTP POST, TLS optional
+    Note over Client,OTEL: Flow 3: Standalone Content Detection
+    Client->>API: POST /api/v2/text/detection/content<br/>TLS optional, Passthrough headers
+    API->>Chunker: Chunk input text<br/>gRPC, mTLS optional
+    Chunker-->>API: Chunked tokens
+    API->>Detector: POST /api/v1/text/contents<br/>HTTP, TLS optional (parallel detectors)
     Detector-->>API: Detection results
     API-->>Client: Detection response
 
-    Note over Client,Health: Health Check Flow
-
-    Client->>Health: GET /health (liveness)<br/>HTTP 8034/TCP
-    Health-->>Client: 200 OK (name + version)
-    Client->>Health: GET /info (readiness)<br/>HTTP 8034/TCP
-    Health->>GenGRPC: Health probe (gRPC/HTTP)
-    Health->>Chunker: Health probe (gRPC)
-    Health->>Detector: Health probe (HTTP GET /health)
-    Health->>OpenAI: Health probe (HTTP GET /health)
-    GenGRPC-->>Health: Status
-    Chunker-->>Health: Status
-    Detector-->>Health: Status
-    OpenAI-->>Health: Status
-    Health-->>Client: 200 OK (aggregated status)
+    Note over Client,OTEL: Health Check Flow
+    Client->>HealthSrv: GET /health (liveness)
+    HealthSrv-->>Client: 200 OK (name + version)
+    Client->>HealthSrv: GET /info (readiness)
+    HealthSrv->>TGIS: Health probe (gRPC/HTTP)
+    HealthSrv->>Chunker: Health probe (gRPC)
+    HealthSrv->>Detector: GET /health (HTTP/8081)
+    HealthSrv->>OpenAI: GET /health (HTTP)
+    TGIS-->>HealthSrv: Status
+    Chunker-->>HealthSrv: Status
+    Detector-->>HealthSrv: Status
+    OpenAI-->>HealthSrv: Status
+    HealthSrv-->>Client: 200 OK (aggregated health)

@@ -1,42 +1,47 @@
 sequenceDiagram
     participant User as User / API Client
     participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant Webhook as Validating Webhook<br/>9443/TCP HTTPS TLS
-    participant Controller as TrainJob Reconciler<br/>trainer-controller-manager
-    participant TrainingPod as Training Pod (rank-0)<br/>28080/TCP HTTP
-    participant WorkerPods as Training Worker Pods
+    participant Webhook as Webhook Server<br/>9443/TCP HTTPS TLS
+    participant Reconciler as TrainJobReconciler<br/>(controller-runtime)
+    participant RuntimeFW as Runtime Framework<br/>(Plugin Chain)
+    participant TrainingPod as Training Pod rank-0<br/>28080/TCP HTTP
 
-    rect rgb(230, 245, 255)
-        Note over User, Controller: Flow 1: TrainJob Creation & Resource Provisioning
-        User->>K8sAPI: POST TrainJob CR<br/>Auth: Bearer Token / Client Cert
-        K8sAPI->>Webhook: POST /validate-trainer-...-trainjob<br/>9443/TCP HTTPS, TLS Client Cert
-        Webhook-->>K8sAPI: Admission Response (Allow/Deny)
-        K8sAPI-->>User: TrainJob Created
-        K8sAPI->>Controller: Watch Event (TrainJob)<br/>ServiceAccount Token
-        Controller->>K8sAPI: Create JobSet<br/>443/TCP HTTPS, SA Bearer Token
-        Controller->>K8sAPI: Create NetworkPolicy (RHOAI)<br/>443/TCP HTTPS, SA Bearer Token
-        Controller->>K8sAPI: Create PodGroup (if Volcano/CoScheduling)<br/>443/TCP HTTPS, SA Bearer Token
-        Controller->>K8sAPI: Create SSH Secret + Hostfile CM (if MPI)<br/>443/TCP HTTPS, SA Bearer Token
+    Note over User,TrainingPod: Flow 1: TrainJob Creation and Resource Provisioning
+
+    User->>K8sAPI: POST TrainJob CR<br/>Auth: Bearer Token / Client Cert
+    K8sAPI->>Webhook: POST /validate-trainer-...-trainjob<br/>TLS Client Cert
+    Webhook-->>K8sAPI: Allowed
+    K8sAPI-->>User: TrainJob Created
+    K8sAPI->>Reconciler: Watch Event (TrainJob)<br/>ServiceAccount Token
+    Reconciler->>RuntimeFW: Resolve Runtime + Build Resources
+    RuntimeFW-->>Reconciler: JobSet, PodGroup, Secrets, ConfigMaps
+    Reconciler->>K8sAPI: Create JobSet<br/>ServiceAccount Bearer Token
+    Reconciler->>K8sAPI: Create NetworkPolicy (RHOAI)<br/>ServiceAccount Bearer Token
+    Reconciler->>K8sAPI: Create PodGroup (if Volcano/CoScheduling)<br/>ServiceAccount Bearer Token
+    Reconciler->>K8sAPI: Create SSH Secret + Hostfile CM (if MPI)<br/>ServiceAccount Bearer Token
+
+    Note over User,TrainingPod: Flow 2: RHAI Progression Tracking (RHOAI)
+
+    loop Every 30s (configurable 5s-300s)
+        Reconciler->>K8sAPI: List Pods (APIReader direct call)<br/>ServiceAccount Bearer Token
+        K8sAPI-->>Reconciler: Pod list with status
+        Reconciler->>TrainingPod: GET /metrics<br/>HTTP plaintext (NetworkPolicy enforced)
+        TrainingPod-->>Reconciler: Training metrics JSON
+        Reconciler->>K8sAPI: PATCH TrainJob annotations<br/>ServiceAccount Bearer Token
     end
 
-    rect rgb(255, 243, 224)
-        Note over Controller, TrainingPod: Flow 2: RHAI Progression Tracking (RHOAI)
-        Controller->>K8sAPI: List Pods (APIReader direct call)<br/>443/TCP HTTPS, SA Bearer Token
-        K8sAPI-->>Controller: Pod list with rank-0 IP
-        Controller->>TrainingPod: GET /metrics<br/>28080/TCP HTTP plaintext<br/>Auth: None (NetworkPolicy enforced)
-        TrainingPod-->>Controller: Metrics JSON (loss, epoch, step)
-        Controller->>K8sAPI: Patch TrainJob annotations<br/>443/TCP HTTPS, SA Bearer Token
-    end
+    Note over User,TrainingPod: Flow 3: Distributed PyTorch Training (inter-pod)
 
-    rect rgb(224, 255, 230)
-        Note over TrainingPod, WorkerPods: Flow 3: Distributed PyTorch Training
-        WorkerPods->>TrainingPod: Connect to master<br/>29500/TCP plaintext
-        TrainingPod-->>WorkerPods: Coordination response
-        WorkerPods->>WorkerPods: NCCL all-reduce<br/>Dynamic ports, TCP plaintext<br/>NetworkPolicy: same-job pods only
-    end
+    participant Worker as Trainer Node (worker)
+    participant Master as Trainer Node rank-0 (master)<br/>29500/TCP
 
-    rect rgb(255, 224, 230)
-        Note over TrainingPod, WorkerPods: Flow 4: MPI Distributed Training
-        TrainingPod->>WorkerPods: SSH Launch (mpirun)<br/>2222/TCP SSH, ECDSA P521 key auth
-        WorkerPods->>WorkerPods: MPI/NCCL communication<br/>Dynamic ports, TCP plaintext<br/>NetworkPolicy: same-job pods only
-    end
+    Worker->>Master: TCP rendezvous<br/>Port 29500/TCP plaintext
+    Worker->>Worker: NCCL all-reduce<br/>Dynamic ports, plaintext<br/>(same-job NetworkPolicy)
+
+    Note over User,TrainingPod: Flow 4: MPI Distributed Training (inter-pod)
+
+    participant Launcher as MPI Launcher Pod
+    participant MPINode as MPI Node Pods<br/>2222/TCP SSH
+
+    Launcher->>MPINode: SSH connection<br/>Port 2222/TCP<br/>ECDSA P521 key auth
+    MPINode->>MPINode: NCCL/MPI collective ops<br/>Dynamic ports, plaintext<br/>(same-job NetworkPolicy)

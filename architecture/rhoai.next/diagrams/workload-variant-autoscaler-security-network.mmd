@@ -1,53 +1,71 @@
 graph TB
-    subgraph External["EXTERNAL (Untrusted)"]
-        HPAKEDA["HPA / KEDA<br/>Metrics Scraper"]
+    subgraph MetricsConsumers["METRICS CONSUMERS (Internal Trusted)"]
+        HPA["HPA / KEDA"]
     end
 
-    subgraph WVANamespace["WVA CONTROLLER NAMESPACE<br/>(workload-variant-autoscaler-system)"]
+    subgraph WVANamespace["WVA CONTROLLER<br/>(workload-variant-autoscaler-system)"]
         direction TB
 
-        subgraph NetworkPolicyZone["NetworkPolicy: allow-metrics-traffic<br/>Ingress: labeled namespaces only, port 8443"]
-            MetricsService["controller-manager-metrics-service<br/>ClusterIP 8443/TCP<br/>HTTPS, TLS (self-signed/cert-manager)<br/>Auth: Bearer Token (authn/authz)"]
+        subgraph WVAPod["WVA Controller Manager Pod"]
+            direction TB
+            MetricsEndpoint["Metrics Endpoint<br/>8443/TCP HTTPS<br/>TLS (self-signed/cert-manager)<br/>Bearer Token auth"]
+            HealthEndpoint["Health Endpoint<br/>8081/TCP HTTP<br/>No auth"]
 
-            WVAPod["WVA Controller Manager Pod<br/>SA: controller-manager<br/>Image: ghcr.io/llm-d/llm-d-workload-variant-autoscaler:v0.5.1<br/>Ports: 8443/TCP (HTTPS), 8081/TCP (HTTP probes)"]
+            subgraph EnginesInternal["Scaling Engines"]
+                SatEngine["Saturation Engine<br/>(30s loop)"]
+                SFZEngine["Scale-from-Zero Engine<br/>(100ms loop)"]
+            end
+
+            subgraph ControllersInternal["Controllers"]
+                VAReconciler["VA Reconciler"]
+                CMReconciler["ConfigMap Reconciler"]
+                IPReconciler["InferencePool Reconciler"]
+            end
+
+            DecisionCache["Decision Cache"]
+            DirectAct["DirectActuator"]
         end
+
+        Service["controller-manager-metrics-service<br/>ClusterIP 8443/TCP"]
+        NetworkPolicy["NetworkPolicy: allow-metrics-traffic<br/>Ingress: namespaces with<br/>networking/allow-metrics-scraping=true"]
     end
 
-    subgraph ControlPlane["KUBERNETES CONTROL PLANE (Trusted)"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: ServiceAccount Token"]
+    subgraph ExternalServices["PLATFORM SERVICES"]
+        Prometheus["Prometheus / Thanos Querier<br/>9090/TCP or 9091/TCP<br/>HTTPS TLS 1.2+<br/>Bearer Token (SA token)"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount token"]
+        EPP["EPP Pods<br/>(Gateway API Inference Ext.)<br/>configurable/TCP HTTPS<br/>TLS<br/>Bearer Token (epp-metrics-token)"]
     end
 
-    subgraph PlatformServices["PLATFORM SERVICES"]
-        Prometheus["Prometheus / Thanos Querier<br/>9090/TCP or 9091/TCP<br/>HTTPS TLS 1.2+<br/>Auth: Bearer Token (SA)"]
-
-        EPP["EPP Pods<br/>(Gateway API Inference Extension)<br/>configurable/TCP<br/>HTTPS TLS<br/>Auth: Bearer Token (epp-metrics-token)"]
-    end
-
-    subgraph InferenceLayer["INFERENCE LAYER (Indirect)"]
-        vLLM["vLLM Inference Servers<br/>(metrics scraped by Prometheus)<br/>kv_cache, queue_depth, tokens"]
+    subgraph ScaleTargets["SCALE TARGETS"]
+        Deployments["Deployments"]
+        LWS["LeaderWorkerSets"]
     end
 
     %% Ingress flows
-    HPAKEDA -->|"HTTPS/8443<br/>TLS<br/>Bearer Token<br/>(metrics-reader ClusterRole)"| MetricsService
-    MetricsService -->|"internal"| WVAPod
+    HPA -->|"HTTPS/8443<br/>TLS<br/>Bearer Token<br/>(metrics-reader RBAC)"| Service
+    Service --> MetricsEndpoint
 
     %% Egress flows
-    WVAPod -->|"HTTPS/9090-9091<br/>TLS 1.2+<br/>Bearer Token (SA token)<br/>PromQL queries"| Prometheus
-    WVAPod -->|"HTTPS/443<br/>TLS 1.2+<br/>ServiceAccount token<br/>Watch/Update CRs, Deployments, Nodes"| K8sAPI
-    WVAPod -->|"HTTPS/configurable<br/>TLS<br/>Bearer Token (epp-metrics-token)<br/>flow_control_queue_size"| EPP
+    SatEngine -->|"HTTPS/9090<br/>TLS 1.2+<br/>Bearer Token<br/>(SA token)"| Prometheus
+    SFZEngine -->|"HTTPS/configurable<br/>TLS<br/>Bearer Token<br/>(epp-metrics-token)"| EPP
+    VAReconciler -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>(watch/patch CRs)"| K8sAPI
+    DirectAct -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>(scale subresource)"| K8sAPI
 
-    %% Indirect
-    Prometheus -.->|"scrapes vLLM metrics"| vLLM
+    %% Scale target flows
+    HPA -->|"HTTPS/443<br/>scale subresource"| Deployments
+    HPA -->|"HTTPS/443<br/>scale subresource"| LWS
+    DirectAct -.->|"scale-from-zero<br/>direct scaling"| Deployments
+    DirectAct -.->|"scale-from-zero<br/>direct scaling"| LWS
 
     %% Styling
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef wvazone fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef inference fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef consumer fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef wva fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef external fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef target fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef endpoint fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
-    class HPAKEDA external
-    class MetricsService,WVAPod wvazone
-    class K8sAPI controlplane
-    class Prometheus,EPP platform
-    class vLLM inference
+    class HPA consumer
+    class SatEngine,SFZEngine,VAReconciler,CMReconciler,IPReconciler,DecisionCache,DirectAct wva
+    class MetricsEndpoint,HealthEndpoint endpoint
+    class Prometheus,K8sAPI,EPP external
+    class Deployments,LWS target

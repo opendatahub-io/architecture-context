@@ -1,62 +1,49 @@
 sequenceDiagram
-    participant User as User / kubectl
-    participant APIServer as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
+    participant User as User / Data Scientist
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
     participant Webhook as Kueue Webhook Server<br/>9443/TCP HTTPS TLS
-    participant Controller as Kueue Controller<br/>Manager
-    participant Scheduler as Kueue Admission<br/>Scheduler
-    participant Cache as In-Memory<br/>Quota Cache
-
-    Note over User,Cache: Flow 1: Job Admission
-
-    User->>APIServer: POST Job (batch/v1)<br/>Auth: User credentials
-    APIServer->>Webhook: POST /mutate-batch-v1-job<br/>Auth: API Server client cert
-    Webhook->>Webhook: Default queue-name label<br/>Set suspend=true<br/>Lossless defaulting
-    Webhook-->>APIServer: Mutated Job
-    APIServer->>Webhook: POST /validate-batch-v1-job<br/>Auth: API Server client cert
-    Webhook->>Webhook: Validate queue-name immutability
-    Webhook-->>APIServer: Admission Response
-
-    Note over Controller,Cache: Workload Creation & Scheduling
-
-    Controller->>APIServer: Watch Jobs<br/>Auth: ServiceAccount Token
-    APIServer-->>Controller: Job Created Event
-    Controller->>APIServer: Create Workload CR<br/>Auth: ServiceAccount Token
-    Controller->>Cache: Update queue state
-
-    Scheduler->>Cache: Check pending workloads
-    Cache-->>Scheduler: Pending workload list
-    Scheduler->>Cache: Check ClusterQueue quotas<br/>& ResourceFlavor assignment
-    Cache-->>Scheduler: Quota available
-
-    Scheduler->>APIServer: Update Workload status<br/>(Admitted=true, flavors assigned)<br/>Auth: ServiceAccount Token
-    Controller->>APIServer: Unsuspend Job<br/>(set suspend=false)<br/>Auth: ServiceAccount Token
-    APIServer-->>User: Job pods created
-
-    Note over User,Cache: Flow 2: MultiKueue Distribution
-
+    participant Controller as Kueue Controller<br/>(Workload Reconciler)
+    participant Scheduler as Kueue Admission Scheduler<br/>(Periodic Loop)
+    participant Cache as In-Memory Cache<br/>(Quotas, Flavors, State)
     participant RemoteAPI as Remote K8s API Server<br/>6443/TCP HTTPS TLS 1.2+
 
-    Controller->>APIServer: Watch Workloads<br/>Auth: ServiceAccount Token
-    APIServer-->>Controller: Workload admitted to<br/>MultiKueue ClusterQueue
+    Note over User,RemoteAPI: Flow 1: Job Admission (Single Cluster)
 
-    Controller->>RemoteAPI: Create remote Workload + Job<br/>Auth: kubeconfig credentials
-    RemoteAPI-->>Controller: Remote workload created
-    Controller->>RemoteAPI: Watch remote Workload status<br/>Auth: kubeconfig credentials
-    RemoteAPI-->>Controller: Remote workload completed
-    Controller->>APIServer: Update local Workload status<br/>Auth: ServiceAccount Token
+    User->>K8sAPI: 1. kubectl create job<br/>Auth: User credentials
+    K8sAPI->>Webhook: 2. Mutating webhook call<br/>Auth: API Server client cert
+    Webhook->>Webhook: 3. Default queue-name label<br/>Set suspend=true
+    Webhook-->>K8sAPI: Mutated Job (suspended)
+    K8sAPI->>Webhook: Validating webhook call<br/>Auth: API Server client cert
+    Webhook-->>K8sAPI: Validation OK
 
-    Note over User,Cache: Flow 3: Provisioning Request
+    Controller->>K8sAPI: 4. Watch Job events<br/>Auth: ServiceAccount Token
+    K8sAPI-->>Controller: Job created event
+    Controller->>K8sAPI: Create Workload CR<br/>Auth: ServiceAccount Token
 
-    Scheduler->>Cache: Check quota - insufficient nodes
-    Scheduler->>APIServer: Create ProvisioningRequest CR<br/>Auth: ServiceAccount Token
+    Scheduler->>Cache: 5. Periodic scheduling cycle<br/>Pull pending workloads
+    Cache-->>Scheduler: Pending workloads + ClusterQueue state
+    Scheduler->>Scheduler: Assign ResourceFlavors<br/>Check quotas, priorities, fair sharing
+    Scheduler->>K8sAPI: Update Workload status (Admitted)<br/>Auth: ServiceAccount Token
 
-    participant Autoscaler as Cluster Autoscaler
+    Controller->>K8sAPI: Unsuspend Job<br/>Inject node affinity<br/>Auth: ServiceAccount Token
+    K8sAPI-->>User: Job pods start running
 
-    Autoscaler->>APIServer: Watch ProvisioningRequests<br/>Auth: ServiceAccount Token
-    APIServer-->>Autoscaler: New ProvisioningRequest
-    Autoscaler->>Autoscaler: Provision nodes
-    Autoscaler->>APIServer: Update ProvisioningRequest status<br/>(Provisioned=true)
-    Controller->>APIServer: Watch ProvisioningRequest status
-    APIServer-->>Controller: Nodes provisioned
-    Controller->>APIServer: Update AdmissionCheck<br/>(Ready=true)
-    Scheduler->>APIServer: Admit Workload
+    Note over User,RemoteAPI: Flow 2: MultiKueue Workload Distribution
+
+    User->>K8sAPI: 1. Submit job to management cluster<br/>Auth: User credentials
+    Controller->>K8sAPI: Create local Workload CR<br/>Auth: ServiceAccount Token
+    Scheduler->>K8sAPI: Admit with MultiKueue AdmissionCheck<br/>Auth: ServiceAccount Token
+
+    Controller->>RemoteAPI: 2. Create remote Workload + Job<br/>Auth: kubeconfig credentials (Secret)
+    Note over RemoteAPI: Remote Kueue admits<br/>and runs the job
+
+    RemoteAPI-->>Controller: 3. Watch remote Workload status<br/>Auth: kubeconfig credentials
+    Controller->>K8sAPI: 4. Sync status back to local Workload<br/>Auth: ServiceAccount Token
+
+    Note over User,RemoteAPI: Flow 3: Provisioning Request
+
+    Controller->>K8sAPI: 1. Create ProvisioningRequest CR<br/>Auth: ServiceAccount Token
+    Note over K8sAPI: Cluster Autoscaler watches<br/>ProvisioningRequest
+    K8sAPI-->>Controller: 2. ProvisioningRequest status update<br/>(nodes provisioned)
+    Controller->>K8sAPI: 3. Update AdmissionCheck → Ready<br/>Auth: ServiceAccount Token
+    Scheduler->>K8sAPI: Complete admission<br/>Auth: ServiceAccount Token

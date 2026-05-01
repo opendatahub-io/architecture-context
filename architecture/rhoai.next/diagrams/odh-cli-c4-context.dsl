@@ -1,114 +1,102 @@
 workspace {
     model {
-        admin = person "Platform Admin" "RHOAI cluster administrator performing upgrade validation and management"
+        admin = person "Platform Admin" "RHOAI platform administrator performing upgrade readiness checks and migrations"
 
-        odhCli = softwareSystem "odh-cli (rhai-cli)" "CLI tool for validating, managing, and migrating RHOAI deployments" {
-            cobraCommands = container "Command Layer" "lint, get, backup, components, deps, migrate commands" "Go (Cobra)"
-            checkRegistry = container "Check Registry" "37 diagnostic checks across 5 groups (dependency, service, platform, component, workload)" "Go"
-            actionRegistry = container "Action Registry" "Migration actions (e.g., RHBOK Kueue migration)" "Go"
-            depResolverRegistry = container "Dependency Resolver Registry" "Backup dependency resolution (ConfigMaps, Secrets, PVCs)" "Go"
-            k8sClient = container "Kubernetes Client" "Dynamic client with Reader/Writer separation, QPS:50/Burst:100" "Go"
-            versionDetector = container "Version Detector" "Detects RHOAI version from DSC/DSCI/CSV sources" "Go"
+        odhcli = softwareSystem "odh-cli" "CLI tool for validating, managing, and migrating RHOAI deployments" {
+            cliCore = container "kubectl-odh" "Primary CLI binary with lint, backup, migrate, get, deps, components commands" "Go 1.25 (Cobra, FIPS-compliant)"
+            lintFramework = container "Lint Framework" "37 diagnostic checks across 5 groups (dependency, platform, component, workload, service)" "Go"
+            backupPipeline = container "Backup Pipeline" "3-stage pipeline: discovery → resolution → writing with concurrent workers" "Go"
+            migrationFramework = container "Migration Framework" "ActionRegistry-based migration execution with dry-run support" "Go"
+            k8sClient = container "Kubernetes Client" "Reader/Writer interfaces with elevated QPS (50/100), nil-safe OLM" "Go (client-go)"
+            yq = container "yq" "Vendored YAML processor built with FIPS-compliant build tags" "Go"
+            upgradeHelpers = container "rhoai-upgrade-helpers" "Shell and Python migration scripts (git submodule)" "Shell, Python"
         }
 
-        yq = softwareSystem "yq (vendored)" "YAML processor built with FIPS-compliant build tags" "Bundled Tool"
-        upgradeHelpers = softwareSystem "rhoai-upgrade-helpers" "Shell/Python scripts for upgrade operations" "Bundled Tool"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for all resource operations" "External"
+        olmAPI = softwareSystem "Operator Lifecycle Manager" "Operator installation and version management" "External"
+        openshift = softwareSystem "OpenShift API" "ClusterVersion detection, ImageStream queries" "External"
 
-        k8sApi = softwareSystem "Kubernetes API Server" "Cluster API for all resource operations" "External"
-        openshiftApi = softwareSystem "OpenShift API Server" "OpenShift-specific APIs (ClusterVersion, ImageStreams)" "External"
-        olm = softwareSystem "Operator Lifecycle Manager" "Operator installation and version management" "External"
+        dsc = softwareSystem "DataScienceCluster" "Singleton CR managing RHOAI component lifecycle" "Internal RHOAI"
+        dsci = softwareSystem "DSCInitialization" "Singleton CR for RHOAI initialization config" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "ML model serving (InferenceService, ServingRuntime)" "Internal ODH"
+        kubeflow = softwareSystem "Kubeflow" "Notebook server management" "Internal ODH"
+        kueue = softwareSystem "Kueue" "Workload queuing (ClusterQueue, LocalQueue)" "Internal ODH"
+        ray = softwareSystem "Ray" "Distributed compute (RayCluster, RayJob)" "Internal ODH"
+        trainingOp = softwareSystem "Training Operator" "Distributed training (PyTorchJob)" "Internal ODH"
+        dsp = softwareSystem "Data Science Pipelines" "ML pipeline orchestration (DSPA)" "Internal ODH"
+        dashboard = softwareSystem "ODH Dashboard" "AcceleratorProfile, HardwareProfile management" "Internal ODH"
+        trustyai = softwareSystem "TrustyAI" "AI governance (GuardrailsOrchestrator)" "Internal ODH"
+        codeflare = softwareSystem "CodeFlare" "AppWrapper management (deprecated)" "Internal ODH"
+        llamastack = softwareSystem "LlamaStack" "LLM distribution management" "Internal ODH"
+        kuadrant = softwareSystem "Kuadrant" "Gateway API management" "External"
+        authorino = softwareSystem "Authorino" "Auth/TLS management for KServe" "External"
 
-        dsc = softwareSystem "DataScienceCluster" "RHOAI platform singleton CR - version detection and component management" "Internal RHOAI"
-        dsci = softwareSystem "DSCInitialization" "RHOAI initialization singleton CR - namespace discovery" "Internal RHOAI"
-        rhoaiOperator = softwareSystem "RHOAI Operator" "rhods-operator / opendatahub-operator via OLM" "Internal RHOAI"
+        odhGitops = softwareSystem "odh-gitops (GitHub)" "Dependency manifest repository" "External"
+        localFS = softwareSystem "Local Filesystem" "Backup output and kubeconfig storage" "External"
 
-        kserve = softwareSystem "KServe" "InferenceService, ServingRuntime CRDs - workload validation" "Internal RHOAI"
-        notebooks = softwareSystem "Kubeflow Notebooks" "Notebook CRDs - backup and lint checks" "Internal RHOAI"
-        kueue = softwareSystem "Kueue" "ClusterQueue, LocalQueue CRDs - migration and validation" "Internal RHOAI"
-        pipelines = softwareSystem "Data Science Pipelines" "DSPA CRDs - backup with S3/MariaDB dependency resolution" "Internal RHOAI"
-        ray = softwareSystem "Ray" "RayCluster, RayJob CRDs - AppWrapper cleanup checks" "Internal RHOAI"
-        trainingOp = softwareSystem "Training Operator" "PyTorchJob CRDs - completion status checks" "Internal RHOAI"
-        dashboard = softwareSystem "Dashboard" "AcceleratorProfile, HardwareProfile CRDs - migration readiness" "Internal RHOAI"
-        trustyai = softwareSystem "TrustyAI" "GuardrailsOrchestrator CRDs - OTEL migration checks" "Internal RHOAI"
-        codeflare = softwareSystem "CodeFlare" "AppWrapper CRDs - removal validation" "Internal RHOAI"
+        admin -> odhcli "Runs upgrade checks, backups, and migrations" "CLI"
+        odhcli -> k8sAPI "Reads/writes cluster resources" "HTTPS/6443, Bearer Token"
+        odhcli -> olmAPI "Queries operator status, creates subscriptions" "HTTPS/6443, Bearer Token"
+        odhcli -> openshift "Detects platform version" "HTTPS/6443, Bearer Token"
 
-        odhGitops = softwareSystem "odh-gitops (GitHub)" "Remote dependency manifests (values.yaml, Chart.yaml)" "External"
-        localFs = softwareSystem "Local Filesystem" "Backup YAML output and migration backups" "External"
+        odhcli -> dsc "Reads config, patches component state" "HTTPS/6443"
+        odhcli -> dsci "Reads initialization config" "HTTPS/6443"
+        odhcli -> kserve "Validates InferenceServices" "HTTPS/6443"
+        odhcli -> kubeflow "Validates and backs up Notebooks" "HTTPS/6443"
+        odhcli -> kueue "Validates queues, RHBOK migration" "HTTPS/6443"
+        odhcli -> ray "Validates RayClusters, AppWrapper cleanup" "HTTPS/6443"
+        odhcli -> trainingOp "Checks PyTorchJob completion" "HTTPS/6443"
+        odhcli -> dsp "Validates and backs up DSPAs" "HTTPS/6443"
+        odhcli -> dashboard "Checks AcceleratorProfile migration" "HTTPS/6443"
+        odhcli -> trustyai "Validates OTEL migration" "HTTPS/6443"
+        odhcli -> codeflare "Validates AppWrapper removal" "HTTPS/6443"
+        odhcli -> llamastack "Validates architecture compatibility" "HTTPS/6443"
+        odhcli -> kuadrant "Validates Gateway API readiness" "HTTPS/6443"
+        odhcli -> authorino "Validates TLS readiness" "HTTPS/6443"
 
-        # User interactions
-        admin -> odhCli "Runs lint/backup/migrate/get/deps/components commands"
+        odhcli -> odhGitops "Fetches dependency manifests" "HTTPS/443"
+        odhcli -> localFS "Writes backup YAML files" "Filesystem I/O"
 
-        # Internal container relationships
-        cobraCommands -> checkRegistry "Dispatches lint checks"
-        cobraCommands -> actionRegistry "Dispatches migration actions"
-        cobraCommands -> depResolverRegistry "Resolves backup dependencies"
-        cobraCommands -> k8sClient "All Kubernetes operations"
-        checkRegistry -> k8sClient "Read-only cluster access"
-        actionRegistry -> k8sClient "Read/write cluster access"
-        depResolverRegistry -> k8sClient "Read-only cluster access"
-        cobraCommands -> versionDetector "RHOAI version detection"
-        versionDetector -> k8sClient "Reads DSC/DSCI/CSV"
-
-        # External interactions
-        k8sClient -> k8sApi "HTTPS/6443, Bearer Token, TLS 1.2+"
-        k8sClient -> openshiftApi "HTTPS/6443, Bearer Token, TLS 1.2+"
-        k8sClient -> olm "HTTPS/6443, Bearer Token, TLS 1.2+"
-
-        # Internal RHOAI interactions (all via K8s API)
-        odhCli -> dsc "Read/Patch via K8s API" "HTTPS/6443"
-        odhCli -> dsci "Read via K8s API" "HTTPS/6443"
-        odhCli -> rhoaiOperator "Read OLM status" "HTTPS/6443"
-        odhCli -> kserve "Read workloads for lint/backup" "HTTPS/6443"
-        odhCli -> notebooks "Read workloads for lint/backup" "HTTPS/6443"
-        odhCli -> kueue "Read/migrate ClusterQueues" "HTTPS/6443"
-        odhCli -> pipelines "Read DSPAs for lint/backup" "HTTPS/6443"
-        odhCli -> ray "Read workloads for lint" "HTTPS/6443"
-        odhCli -> trainingOp "Read PyTorchJobs for lint" "HTTPS/6443"
-        odhCli -> dashboard "Read profiles for migration checks" "HTTPS/6443"
-        odhCli -> trustyai "Read Guardrails for lint" "HTTPS/6443"
-        odhCli -> codeflare "Read AppWrappers for removal validation" "HTTPS/6443"
-
-        # External service interactions
-        odhCli -> odhGitops "Fetch dependency manifests (optional --refresh)" "HTTPS/443"
-        odhCli -> localFs "Write backup YAML files"
+        cliCore -> lintFramework "Dispatches lint command"
+        cliCore -> backupPipeline "Dispatches backup command"
+        cliCore -> migrationFramework "Dispatches migrate command"
+        cliCore -> k8sClient "All cluster operations"
+        lintFramework -> k8sClient "Read-only queries"
+        backupPipeline -> k8sClient "Read queries + file writes"
+        migrationFramework -> k8sClient "Read + write operations"
     }
 
     views {
-        systemContext odhCli "SystemContext" {
+        systemContext odhcli "SystemContext" {
             include *
             autoLayout
         }
 
-        container odhCli "Containers" {
+        container odhcli "Containers" {
             include *
             autoLayout
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
             element "Internal RHOAI" {
+                background #e53935
+                color #ffffff
+            }
+            element "Internal ODH" {
                 background #7ed321
                 color #ffffff
             }
-            element "Bundled Tool" {
-                background #f5a623
-                color #ffffff
-            }
             element "Person" {
-                background #08427B
-                color #ffffff
                 shape Person
-            }
-            element "Container" {
-                background #438DD5
+                background #4a90e2
                 color #ffffff
+            }
+            element "Software System" {
+                shape RoundedBox
             }
         }
     }

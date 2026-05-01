@@ -1,52 +1,84 @@
 graph TB
-    subgraph "TGIS Container (Single Pod)"
+    subgraph Container["TGIS Container (Single Pod)"]
         direction TB
 
-        subgraph "Process: Launcher"
-            Launcher["text-generation-launcher<br/>(Rust CLI Binary)<br/>PID 1 / Supervisor"]
+        subgraph LauncherLayer["Process Supervisor"]
+            Launcher["text-generation-launcher<br/>(Rust CLI Binary)<br/>Orchestrates lifecycle,<br/>tokenizer prep, config resolution"]
         end
 
-        subgraph "Process: Router"
-            Router["text-generation-router<br/>(Rust Service Binary)<br/>gRPC :8033 | HTTP :3000"]
-            Batcher["Batching Engine<br/>Weight-aware queue"]
-            Validator["Request Validator<br/>temp, top_k, top_p, lengths"]
-            Router --> Batcher
-            Router --> Validator
+        subgraph RouterLayer["Client-Facing Layer"]
+            Router["text-generation-router<br/>(Rust Service Binary)<br/>gRPC/HTTP server, batching,<br/>queuing, validation, metrics"]
+            HealthHTTP["/health endpoint<br/>3000/TCP HTTP"]
+            MetricsHTTP["/metrics endpoint<br/>3000/TCP HTTP"]
+            gRPCAPI["fmaas.GenerationService<br/>8033/TCP gRPC<br/>Generate, GenerateStream,<br/>Tokenize, ModelInfo"]
         end
 
-        subgraph "Process: Shard(s)"
-            Shard0["text-generation-server<br/>(Python gRPC - Shard 0)<br/>UDS /tmp/text-generation-server-0"]
-            Shard1["text-generation-server<br/>(Python gRPC - Shard N)<br/>UDS /tmp/text-generation-server-N"]
-            Shard0 ---|"NCCL/GLOO<br/>29500/TCP"| Shard1
+        subgraph ShardLayer["GPU Inference Layer"]
+            Shard0["text-generation-server<br/>Shard 0 (Python)<br/>UDS: /tmp/text-generation-server-0"]
+            Shard1["text-generation-server<br/>Shard 1 (Python)<br/>UDS: /tmp/text-generation-server-1"]
+            ShardN["text-generation-server<br/>Shard N (Python)<br/>UDS: /tmp/text-generation-server-N"]
         end
 
-        Launcher -->|"spawns + monitors"| Router
-        Launcher -->|"spawns per-GPU"| Shard0
-        Launcher -->|"spawns per-GPU"| Shard1
-        Batcher -->|"gRPC via UDS<br/>Prefill, NextToken"| Shard0
-        Batcher -->|"gRPC via UDS<br/>Prefill, NextToken"| Shard1
+        subgraph InternalProto["Internal gRPC Protocol"]
+            IntAPI["generate.v1.TextGenerationService<br/>Prefill, NextToken, PruneBatch,<br/>Health, ModelInfo, ClearCache"]
+        end
     end
 
-    Client[External Client] -->|"gRPC :8033<br/>fmaas.GenerationService<br/>Optional TLS"| Router
-    Prometheus[Prometheus] -->|"HTTP GET :3000<br/>/metrics"| Router
-    K8sProbes["K8s Probes<br/>liveness/readiness"] -->|"HTTP GET :3000<br/>/health"| Router
+    %% Process lifecycle
+    Launcher -->|spawns| Shard0
+    Launcher -->|spawns| Shard1
+    Launcher -->|spawns| ShardN
+    Launcher -->|starts after shards ready| Router
 
-    KServe["KServe<br/>ServingRuntime"] -->|"manages lifecycle"| Launcher
-    GPU["NVIDIA GPU<br/>CUDA 12.1"] -->|"compute"| Shard0
-    GPU -->|"compute"| Shard1
-    Shard0 -->|"HTTPS :443<br/>model download"| HFHub["HuggingFace Hub"]
-    ModelPVC["Shared PVC<br/>models-pvc"] -->|"volume mount<br/>/shared_model_storage"| Shard0
+    %% Router connections
+    Router --- HealthHTTP
+    Router --- MetricsHTTP
+    Router --- gRPCAPI
+    Router -->|UDS gRPC| IntAPI
+    IntAPI -->|batch requests| Shard0
+    IntAPI -->|batch requests| Shard1
+    IntAPI -->|batch requests| ShardN
 
-    style Launcher fill:#e67e22,stroke:#333,stroke-width:2px,color:#fff
-    style Router fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
-    style Batcher fill:#5dade2,stroke:#333,stroke-width:1px
-    style Validator fill:#5dade2,stroke:#333,stroke-width:1px
-    style Shard0 fill:#27ae60,stroke:#333,stroke-width:2px,color:#fff
-    style Shard1 fill:#27ae60,stroke:#333,stroke-width:2px,color:#fff
-    style Client fill:#f9f9f9,stroke:#999,stroke-width:2px
-    style Prometheus fill:#f9f9f9,stroke:#999,stroke-width:2px
-    style K8sProbes fill:#f9f9f9,stroke:#999,stroke-width:2px
-    style KServe fill:#7ed321,stroke:#333,stroke-width:2px
-    style GPU fill:#f5a623,stroke:#333,stroke-width:2px
-    style HFHub fill:#f5a623,stroke:#333,stroke-width:2px
-    style ModelPVC fill:#f5a623,stroke:#333,stroke-width:2px
+    %% Multi-GPU communication
+    Shard0 <-->|NCCL/GLOO<br/>29500/TCP| Shard1
+    Shard1 <-->|NCCL/GLOO<br/>29500/TCP| ShardN
+
+    %% External connections
+    Client[External Client] -->|gRPC 8033/TCP<br/>Optional TLS| gRPCAPI
+    Prometheus[Prometheus] -->|HTTP scrape<br/>3000/TCP| MetricsHTTP
+    K8sProbes[K8s Probes] -->|HTTP GET<br/>3000/TCP| HealthHTTP
+
+    %% Dependencies
+    GPU["NVIDIA GPU<br/>CUDA 12.1"]
+    Shard0 -->|CUDA kernels| GPU
+    Shard1 -->|CUDA kernels| GPU
+    ShardN -->|CUDA kernels| GPU
+
+    ModelPVC["Shared Model PVC<br/>/shared_model_storage"]
+    Shard0 -->|loads weights| ModelPVC
+    Shard1 -->|loads weights| ModelPVC
+    ShardN -->|loads weights| ModelPVC
+
+    HFHub["HuggingFace Hub<br/>443/TCP HTTPS"]
+    Shard0 -.->|download models<br/>if not cached| HFHub
+
+    KServe["KServe<br/>ServingRuntime CR"]
+    KServe -->|manages| Container
+
+    %% Styling
+    style Launcher fill:#e67e22,stroke:#d35400,color:#fff
+    style Router fill:#3498db,stroke:#2980b9,color:#fff
+    style HealthHTTP fill:#2ecc71,stroke:#27ae60,color:#fff
+    style MetricsHTTP fill:#2ecc71,stroke:#27ae60,color:#fff
+    style gRPCAPI fill:#9b59b6,stroke:#8e44ad,color:#fff
+    style Shard0 fill:#1abc9c,stroke:#16a085,color:#fff
+    style Shard1 fill:#1abc9c,stroke:#16a085,color:#fff
+    style ShardN fill:#1abc9c,stroke:#16a085,color:#fff
+    style IntAPI fill:#f39c12,stroke:#e67e22,color:#fff
+    style Client fill:#ecf0f1,stroke:#bdc3c7
+    style Prometheus fill:#ecf0f1,stroke:#bdc3c7
+    style K8sProbes fill:#ecf0f1,stroke:#bdc3c7
+    style GPU fill:#e74c3c,stroke:#c0392b,color:#fff
+    style ModelPVC fill:#95a5a6,stroke:#7f8c8d,color:#fff
+    style HFHub fill:#f5a623,stroke:#e09612
+    style KServe fill:#7ed321,stroke:#6bc10f

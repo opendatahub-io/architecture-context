@@ -1,37 +1,39 @@
 sequenceDiagram
     participant Client as External Client
-    participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.3
-    participant API as vLLM OpenAI API Server<br/>8000/TCP HTTP
+    participant KRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.3
+    participant vLLM as vLLM OpenAI API Server<br/>8000/TCP HTTP
     participant Runner as HPUModelRunner
     participant HPU as Intel Gaudi HPU<br/>(Gaudi2/Gaudi3)
-    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant S3 as Model Storage<br/>(S3/PVC/NFS)
-    participant Ray as Ray Head Node<br/>6379/TCP
-    participant Peer as HPUWorker Peers<br/>(rank 1..N)
+    participant S3 as Model Storage<br/>(S3/HuggingFace/PVC)
+    participant Ray as Ray Head<br/>6379/TCP
+    participant Peer as HPUWorker Peers<br/>(Rank 1..N)
     participant HCCL as HCCL Peer HPUs<br/>RDMA/TCP
 
-    Note over Client,HPU: Flow 1: Model Inference Request
-    Client->>Proxy: POST /v1/chat/completions<br/>Auth: Bearer Token
-    Proxy->>Proxy: Validate token against<br/>Kubernetes API
-    Proxy->>API: Forward request<br/>HTTP/8000 (localhost, pre-authenticated)
-    API->>Runner: Schedule inference
-    Runner->>HPU: Forward pass<br/>(in-process, graph execution)
-    HPU-->>Runner: Token output
-    Runner-->>API: Generation result
-    API-->>Proxy: JSON response
-    Proxy-->>Client: HTTPS response<br/>TLS 1.3
+    Note over Client, HCCL: Flow 1: Model Inference Request
 
-    Note over Runner,HCCL: Flow 2: Distributed Multi-HPU Inference
-    Runner->>Ray: Register worker (rank 0)<br/>TCP/6379
-    Ray->>Peer: Initialize workers (rank 1..N)<br/>TCP/dynamic
-    Runner->>HCCL: All-reduce / All-gather<br/>RDMA/TCP (plaintext)
-    Peer->>HCCL: Tensor/Expert/Data parallelism<br/>RDMA/TCP (plaintext)
-    Note over Runner,HCCL: NIXL KV transfer for<br/>disaggregated prefill (optional)
+    Client->>KRBAC: POST /v1/chat/completions<br/>Auth: Bearer Token
+    KRBAC->>KRBAC: Validate token against<br/>Kubernetes API Server
+    KRBAC->>vLLM: Forward (HTTP localhost)<br/>Pre-authenticated
+    vLLM->>Runner: Schedule inference batch<br/>(bucketed shapes)
+    Runner->>HPU: Execute compiled graph<br/>(attention + FFN)
+    HPU-->>Runner: Token logits
+    Runner-->>vLLM: Generated tokens
+    vLLM-->>KRBAC: JSON Response
+    KRBAC-->>Client: HTTPS Response<br/>TLS 1.3
 
-    Note over Runner,S3: Flow 3: Model Weight Loading (Startup)
-    Runner->>HF: Download model weights & tokenizer<br/>HTTPS/443, HF_TOKEN Bearer
-    HF-->>Runner: Model artifacts
-    Runner->>S3: Download model weights<br/>HTTPS/443 or filesystem<br/>AWS IAM / SA auth
-    S3-->>Runner: Model weights
-    Runner->>HPU: Load weights to HPU memory<br/>(in-process)
-    Note over Runner,HPU: FP8/INC/GPTQ/AWQ quantization<br/>applied during loading
+    Note over Client, HCCL: Flow 2: Distributed Multi-HPU Inference
+
+    Runner->>Ray: Register worker (Rank 0)<br/>TCP 6379
+    Ray->>Peer: Initialize workers (Rank 1..N)<br/>TCP dynamic
+    Runner->>HCCL: All-reduce gradients<br/>RDMA/TCP
+    Peer->>HCCL: All-gather activations<br/>RDMA/TCP
+    HCCL-->>Runner: Synchronized tensors
+    HCCL-->>Peer: Synchronized tensors
+
+    Note over Client, HCCL: Flow 3: Model Weight Loading (Startup)
+
+    Runner->>S3: Download model weights<br/>HTTPS 443/TCP<br/>Auth: HF_TOKEN or AWS IAM
+    S3-->>Runner: Model artifacts<br/>(safetensors/bin)
+    Runner->>Runner: Apply quantization<br/>(FP8/GPTQ/AWQ/INC)
+    Runner->>HPU: Transfer weights to<br/>HPU device memory
+    Note right of HPU: Compile execution graphs<br/>for bucketed shapes

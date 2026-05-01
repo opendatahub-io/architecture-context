@@ -4,28 +4,31 @@ graph TB
     end
 
     subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token / Client Cert"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP<br/>TLS 1.2+<br/>Bearer Token / Client Cert<br/>RBAC Authorization"]
     end
 
     subgraph OperatorNS["OPERATOR NAMESPACE (opendatahub)"]
+        direction TB
         Controller["trainer-controller-manager<br/>SA: kubeflow-trainer-controller-manager<br/>Image: rhoai/odh-trainer-rhel9"]
 
         subgraph ControllerPorts["Controller Ports"]
-            WebhookPort["9443/TCP Webhook<br/>HTTPS TLS<br/>API Server Client Cert"]
-            MetricsPort["8443/TCP Metrics<br/>HTTPS TLS<br/>No Auth"]
-            HealthPort["8081/TCP Health<br/>HTTP<br/>No Auth"]
+            WebhookPort["9443/TCP Webhook<br/>HTTPS, TLS self-managed"]
+            MetricsPort["8443/TCP Metrics<br/>HTTPS, TLS"]
+            HealthPort["8081/TCP Health<br/>HTTP, plaintext"]
         end
 
-        Controller --- WebhookPort
-        Controller --- MetricsPort
-        Controller --- HealthPort
+        Controller --- ControllerPorts
     end
 
-    subgraph TrainingNS["TRAINING NAMESPACE (user-namespace)"]
-        subgraph NetworkPolicyZone["NetworkPolicy (per TrainJob)"]
-            Rank0["Training Pod (rank-0)<br/>28080/TCP Metrics HTTP<br/>29500/TCP PyTorch Master TCP<br/>2222/TCP SSH (MPI)"]
-            Workers["Training Worker Pods<br/>29500/TCP PyTorch TCP<br/>2222/TCP SSH (MPI)<br/>Dynamic NCCL ports"]
+    subgraph TrainingNS["TRAINING NAMESPACE (user-namespace)<br/>NetworkPolicy Enforced"]
+        direction TB
+
+        subgraph TrainPods["Training Pods (per TrainJob)"]
+            Rank0["Training Pod rank-0<br/>28080/TCP metrics (HTTP)<br/>29500/TCP rendezvous (TCP)<br/>2222/TCP SSH (MPI)"]
+            Workers["Training Pod rank-1..N<br/>29500/TCP rendezvous (TCP)<br/>2222/TCP SSH (MPI)<br/>Dynamic NCCL ports"]
         end
+
+        HeadlessSvc["Headless Service<br/>DNS peer discovery<br/>53/UDP"]
     end
 
     subgraph Monitoring["MONITORING"]
@@ -33,21 +36,23 @@ graph TB
     end
 
     %% External flows
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token / Client Cert"| K8sAPI
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| K8sAPI
 
     %% Control plane to operator
-    K8sAPI -->|"HTTPS/9443<br/>TLS (self-managed)<br/>API Server TLS Client Cert<br/>failurePolicy=Fail"| WebhookPort
+    K8sAPI -->|"HTTPS/9443<br/>TLS (self-managed)<br/>API Server TLS client cert<br/>failurePolicy: Fail"| WebhookPort
 
-    %% Operator to control plane (bidirectional)
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Bearer Token<br/>CRD watches, CRUD, status"| K8sAPI
+    %% Operator to control plane
+    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Bearer Token<br/>CRD watches, resource CRUD"| K8sAPI
 
-    %% Operator to training pods
-    Controller -->|"HTTP/28080<br/>plaintext<br/>No Auth<br/>NetworkPolicy enforced<br/>RHAI Progression"| Rank0
+    %% Operator to training pods (RHAI)
+    Controller -->|"HTTP/28080<br/>plaintext<br/>No auth<br/>NetworkPolicy enforced<br/>RHAI progression polling"| Rank0
 
-    %% Training pod communication
-    Workers -->|"TCP/29500<br/>plaintext<br/>PyTorch rendezvous"| Rank0
-    Rank0 <-->|"TCP Dynamic<br/>plaintext NCCL<br/>NetworkPolicy: same-job"| Workers
-    Rank0 -->|"SSH/2222<br/>ECDSA P521 key<br/>MPI launch"| Workers
+    %% Inter-pod communication
+    Workers <-->|"TCP/29500 rendezvous<br/>NCCL dynamic ports<br/>plaintext<br/>NetworkPolicy: same-job only"| Rank0
+    Workers <-->|"SSH/2222 (MPI)<br/>ECDSA P521 key auth<br/>NetworkPolicy: same-job only"| Rank0
+
+    %% DNS
+    TrainPods -.->|"DNS/53 UDP"| HeadlessSvc
 
     %% Monitoring
     Prometheus -->|"HTTPS/8443<br/>TLS<br/>PodMonitor scrape"| MetricsPort
@@ -58,10 +63,11 @@ graph TB
     classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef training fill:#fff2cc,stroke:#d6b656,stroke-width:2px
     classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef networkpolicy fill:#ffe6cc,stroke:#d79b00,stroke-width:2px,stroke-dasharray: 5 5
+    classDef ports fill:#f0f0f0,stroke:#666,stroke-width:1px
 
     class User external
     class K8sAPI controlplane
-    class Controller,WebhookPort,MetricsPort,HealthPort operator
-    class Rank0,Workers training
+    class Controller operator
+    class WebhookPort,MetricsPort,HealthPort ports
+    class Rank0,Workers,HeadlessSvc training
     class Prometheus monitoring

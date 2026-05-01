@@ -1,69 +1,51 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates ML models, runs evaluations, and uses AI services"
-        platformAdmin = person "Platform Admin" "Manages RHOAI platform components and operator configuration"
+        dataScientist = person "Data Scientist" "Creates ML models, runs evaluations, and monitors model behavior"
+        platformAdmin = person "Platform Admin" "Manages RHOAI platform and operator configuration"
 
         trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Multi-controller operator managing TrustyAI, LMEval, Guardrails, NemoGuardrails, and EvalHub services" {
-            mainBinary = container "Operator Binary" "Main operator process with controller-runtime" "Go 1.23"
-            tasController = container "TAS Controller" "Manages TrustyAIService lifecycle — deploys explainability service with kube-rbac-proxy, Istio, KServe integration" "Go Controller"
-            lmesController = container "LMES Controller" "Manages LMEvalJob lifecycle — orchestrates Pod-based evaluation jobs with driver sidecar" "Go Controller"
-            gorchController = container "GORCH Controller" "Manages GuardrailsOrchestrator — deploys guardrails with auto-config from InferenceServices" "Go Controller"
-            nemoController = container "NemoGuardrails Controller" "Manages NemoGuardrails — deploys NVIDIA NeMo safety enforcement" "Go Controller"
-            evalHubController = container "EvalHub Controller" "Manages EvalHub — deploys centralized evaluation results service" "Go Controller"
-            jobMgrController = container "JobMgr Controller" "Wraps LMEvalJob as Kueue GenericJob for workload admission" "Go Controller"
+            operatorBinary = container "Operator Binary" "Main controller-runtime process with 6 controllers" "Go 1.23"
+            tasController = container "TAS Controller" "Manages TrustyAIService CRDs, deploys explainability service" "Go Controller"
+            lmesController = container "LMES Controller" "Manages LMEvalJob CRDs, orchestrates evaluation jobs" "Go Controller"
+            gorchController = container "GORCH Controller" "Manages GuardrailsOrchestrator CRDs, auto-configures from InferenceServices" "Go Controller"
+            nemoController = container "NemoGuardrails Controller" "Manages NemoGuardrails CRDs" "Go Controller"
+            evalhubController = container "EvalHub Controller" "Manages EvalHub CRDs, multi-tenant namespace support" "Go Controller"
+            jobMgrController = container "JobMgr Controller" "Wraps LMEvalJobs as Kueue GenericJob workloads" "Go Controller"
+            lmesDriver = container "ta-lmes-driver" "Sidecar binary coordinating LM evaluation execution" "Go CLI Binary"
         }
 
-        trustyaiService = softwareSystem "TrustyAI Service" "Model explainability and monitoring service" "Managed"
-        guardrailsOrchestrator = softwareSystem "Guardrails Orchestrator" "AI safety guardrails with detector and generation service orchestration" "Managed"
-        nemoGuardrails = softwareSystem "NeMo Guardrails" "NVIDIA NeMo AI safety enforcement" "Managed"
-        evalHub = softwareSystem "EvalHub" "Centralized evaluation results management service" "Managed"
-        lmesDriver = softwareSystem "ta-lmes-driver" "LM evaluation job execution engine (ephemeral Pods)" "Managed"
+        kubeAPI = softwareSystem "Kubernetes API Server" "Cluster control plane" "External"
+        kserve = softwareSystem "KServe" "Model serving with InferenceService CRDs" "Internal RHOAI"
+        istio = softwareSystem "Istio Service Mesh" "Traffic management and mTLS" "External"
+        kueue = softwareSystem "Kueue" "Workload admission and resource quota management" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection via ServiceMonitor" "External"
+        openShiftRouter = softwareSystem "OpenShift Router" "Ingress via Routes with TLS termination" "External"
+        certController = softwareSystem "OpenShift Serving Cert Controller" "Auto-provisions TLS certificates for Services" "External"
+        rhoaiOperator = softwareSystem "RHOAI Operator" "Parent operator providing DSC config" "Internal RHOAI"
+        postgresql = softwareSystem "PostgreSQL" "Database for TAS and EvalHub storage" "External"
+        s3Storage = softwareSystem "S3-compatible Storage" "Model artifacts and offline assets" "External"
+        huggingFace = softwareSystem "Hugging Face Hub" "Model and dataset downloads" "External"
+        ociRegistry = softwareSystem "OCI Container Registry" "Evaluation result uploads" "External"
+        otlpCollector = softwareSystem "OTLP Collector" "OpenTelemetry traces and metrics" "External"
 
-        kserve = softwareSystem "KServe" "Model serving with InferenceService and ServingRuntime CRDs" "External - Platform"
-        istio = softwareSystem "Istio" "Service mesh for mTLS traffic management" "External - Platform"
-        kueue = softwareSystem "Kueue" "Workload admission and resource quota management" "External - Platform"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External - Platform"
-        openshift = softwareSystem "OpenShift" "Container platform providing Routes, serving certs, RBAC" "External - Platform"
-        rhodsOperator = softwareSystem "RHODS/ODH Operator" "Platform operator providing DSC config and trusted CA bundle" "Internal - Platform"
+        dataScientist -> trustyaiOperator "Creates CRDs via kubectl (TrustyAIService, LMEvalJob, GuardrailsOrchestrator)"
+        platformAdmin -> rhoaiOperator "Configures DSC with TrustyAI component"
 
-        postgresql = softwareSystem "PostgreSQL" "Database storage for TAS and EvalHub" "External"
-        s3Storage = softwareSystem "S3 Storage" "Model artifacts and evaluation assets" "External"
-        ociRegistry = softwareSystem "OCI Registry" "Container registry for evaluation result upload" "External"
-        huggingFace = softwareSystem "Hugging Face Hub" "Model and dataset download" "External"
-        otlpCollector = softwareSystem "OTLP Collector" "OpenTelemetry traces, metrics, and logs" "External"
+        trustyaiOperator -> kubeAPI "Watches CRDs, CRUD resources" "HTTPS/443"
+        trustyaiOperator -> kserve "Watches InferenceServices, injects payload processors" "K8s API"
+        trustyaiOperator -> istio "Creates DestinationRule and VirtualService for mTLS" "K8s API"
+        trustyaiOperator -> kueue "Creates Workloads for admission control" "K8s API"
+        trustyaiOperator -> prometheus "Creates ServiceMonitors for metrics scraping" "K8s API"
+        trustyaiOperator -> openShiftRouter "Creates Routes for external access" "K8s API"
+        trustyaiOperator -> certController "Annotates Services for TLS cert provisioning" "K8s API"
+        trustyaiOperator -> postgresql "TAS and EvalHub database storage" "TCP/TLS"
+        trustyaiOperator -> s3Storage "LMES offline asset download" "HTTPS/443"
+        trustyaiOperator -> huggingFace "LMES model/dataset download" "HTTPS/443"
+        trustyaiOperator -> ociRegistry "LMES result upload" "HTTPS/443"
+        trustyaiOperator -> otlpCollector "GORCH and EvalHub telemetry export" "gRPC/HTTP"
 
-        # User interactions
-        dataScientist -> trustyaiService "Queries model explainability via Route" "HTTPS/443, Bearer Token"
-        dataScientist -> guardrailsOrchestrator "Sends guarded inference requests via Route" "HTTPS/443, Bearer Token"
-        dataScientist -> trustyaiOperator "Creates LMEvalJob CR via kubectl" "HTTPS/443, Bearer Token"
-        dataScientist -> evalHub "Views evaluation results via Route" "HTTPS/443, Bearer Token"
-        platformAdmin -> trustyaiOperator "Configures operator via CRDs and ConfigMap" "Kubernetes API"
-
-        # Operator → managed services
-        tasController -> trustyaiService "Creates Deployment, Service, Route, ServiceMonitor" "Kubernetes API"
-        gorchController -> guardrailsOrchestrator "Creates Deployment, Service, Route, ConfigMap" "Kubernetes API"
-        nemoController -> nemoGuardrails "Creates Deployment, Service, Route" "Kubernetes API"
-        evalHubController -> evalHub "Creates Deployment, Service, Route, RBAC" "Kubernetes API"
-        lmesController -> lmesDriver "Creates Pod with driver sidecar" "Kubernetes API"
-
-        # Operator → platform dependencies
-        tasController -> kserve "Watches/patches InferenceServices for payload processing" "Kubernetes API"
-        gorchController -> kserve "Discovers generation and detector services" "Kubernetes API"
-        tasController -> istio "Creates DestinationRule and VirtualService" "Kubernetes API"
-        jobMgrController -> kueue "Creates Workloads for admission control" "Kubernetes API"
-        tasController -> prometheus "Creates ServiceMonitors" "Kubernetes API"
-        trustyaiOperator -> openshift "Creates Routes, uses serving certs" "Kubernetes API"
-        trustyaiOperator -> rhodsOperator "Reads trustyai-dsc-config and odh-trusted-ca-bundle" "ConfigMap"
-
-        # Managed service → external
-        trustyaiService -> postgresql "Stores model data" "TCP, TLS optional, Username/Password"
-        evalHub -> postgresql "Stores evaluation results" "TCP, TLS optional, Username/Password"
-        lmesDriver -> s3Storage "Downloads offline assets" "HTTPS/443, AWS IAM"
-        lmesDriver -> ociRegistry "Uploads evaluation results" "HTTPS/443, Username/Password"
-        lmesDriver -> huggingFace "Downloads models and datasets" "HTTPS/443, API Token"
-        guardrailsOrchestrator -> otlpCollector "Exports telemetry" "gRPC/HTTP, TLS configurable"
-        evalHub -> otlpCollector "Exports telemetry" "gRPC/HTTP, TLS configurable"
-        guardrailsOrchestrator -> kserve "Proxies to detector and generation services" "HTTP/HTTPS"
+        rhoaiOperator -> trustyaiOperator "Provides trustyai-dsc-config ConfigMap"
+        kserve -> trustyaiOperator "Sends inference payloads to TAS" "HTTP/8080"
     }
 
     views {
@@ -82,26 +64,22 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "External - Platform" {
-                background #6c8ebf
-                color #ffffff
-            }
-            element "Internal - Platform" {
-                background #82b366
-                color #ffffff
-            }
-            element "Managed" {
+            element "Internal RHOAI" {
                 background #7ed321
-                color #ffffff
+                color #333333
             }
             element "Person" {
-                shape Person
+                shape person
                 background #4a90e2
                 color #ffffff
             }
             element "Software System" {
-                background #4a90e2
+                background #438dd5
                 color #ffffff
+            }
+            element "Container" {
+                background #85bbf0
+                color #333333
             }
         }
     }

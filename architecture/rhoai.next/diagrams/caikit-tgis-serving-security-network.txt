@@ -1,166 +1,126 @@
-================================================================================
-SECURITY NETWORK DIAGRAM: caikit-tgis-serving
-================================================================================
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token / OpenShift auth                            │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                          │
+│                                                                          │
+│  [Istio Ingress Gateway]                                                 │
+│  - Port: 443/TCP (external) → 8012/TCP (internal)                      │
+│  - TLS Termination: TLS 1.2+ (SIMPLE mode)                             │
+│  - Certificate: wildcard-certs (kubernetes.io/tls)                      │
+│  - AuthN: Bearer Token validation (delegated to Istio)                  │
+│         │                                                                │
+│         │ Port: 8012/TCP                                                 │
+│         │ Protocol: HTTP / gRPC (HTTP2)                                  │
+│         │ Encryption: mTLS (STRICT)                                      │
+│         │ Auth: Istio Service Identity                                   │
+│         ▼                                                                │
+│  [Knative Activator / Queue-Proxy]                                       │
+│  - Namespace: knative-serving                                            │
+│  - Manages autoscaling and request queuing                              │
+│  - TLS Passthrough: enablePassthrough=true for gRPC                     │
+│         │                                                                │
+│         │ Port: 8080/TCP (HTTP) or 8085/TCP (gRPC h2c)                  │
+│         │ Protocol: HTTP / gRPC                                          │
+│         │ Encryption: mTLS (Istio sidecar)                               │
+│         │ Auth: Istio Service Identity                                   │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Trusted - mTLS STRICT)                                   │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │  KServe ServingRuntime Pod                                         │ │
+│  │  Namespace: {user-namespace}                                       │ │
+│  │                                                                    │ │
+│  │  [Istio Sidecar Proxy]                                             │ │
+│  │  - Enforces mTLS for all inbound/outbound traffic                  │ │
+│  │  - PeerAuthentication: STRICT (except port 8086)                   │ │
+│  │                                                                    │ │
+│  │  ┌──────────────────────────────────────────────────────────────┐ │ │
+│  │  │  transformer-container: Caikit Runtime                       │ │ │
+│  │  │  - Image: caikit-tgis-serving:latest                         │ │ │
+│  │  │  - Entrypoint: python -m caikit.runtime                      │ │ │
+│  │  │  - Listening Ports:                                          │ │ │
+│  │  │    - 8080/TCP (HTTP API - text generation)                   │ │ │
+│  │  │    - 8085/TCP (gRPC API - NlpService, h2c)                   │ │ │
+│  │  │    - 8086/TCP (Metrics - Prometheus)                         │ │ │
+│  │  │  - Libraries: caikit 0.28.1, caikit-nlp 0.5.14,             │ │ │
+│  │  │               caikit-tgis-backend 0.1.39                     │ │ │
+│  │  └──────────────────────────────────────────────────────────────┘ │ │
+│  │         │                                                          │ │
+│  │         │ Port: 8033/TCP                                           │ │
+│  │         │ Protocol: gRPC                                           │ │
+│  │         │ Encryption: None (localhost / pod-internal)               │ │
+│  │         │ Auth: None                                               │ │
+│  │         ▼                                                          │ │
+│  │  ┌──────────────────────────────────────────────────────────────┐ │ │
+│  │  │  kserve-container: TGIS (Text Generation Inference Server)   │ │ │
+│  │  │  - Port: 8033/TCP (gRPC)                                     │ │ │
+│  │  │  - Model mount: /mnt/models                                  │ │ │
+│  │  │  - Loads LLM into GPU memory                                 │ │ │
+│  │  └──────────────────────────────────────────────────────────────┘ │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│  [Prometheus - openshift-user-workload-monitoring]                       │
+│         │                                                                │
+│         │ Port: 8086/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: PERMISSIVE (PeerAuthentication port exception)     │
+│         │ Auth: None                                                     │
+│         │ NetworkPolicy: Allows ingress from                             │
+│         │   openshift-user-workload-monitoring namespace                 │
+│         ▼                                                                │
+│  [Caikit Metrics Endpoint - port 8086]                                   │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [S3-Compatible Storage]                                                 │
+│  - Purpose: Model artifact storage (downloaded at pod startup)          │
+│  - Port: 443/TCP                                                        │
+│  - Protocol: HTTPS                                                      │
+│  - Encryption: TLS 1.2+                                                 │
+│  - Auth: AWS IAM credentials / Opaque Secret                            │
+│  - Accessed by: KServe Storage Initializer (init container)             │
+│                                                                          │
+│  [PersistentVolumeClaim]                                                 │
+│  - Purpose: Alternative model storage via volume mount                  │
+│  - Mount path: /mnt/models                                              │
+│  - Auth: N/A (filesystem access)                                        │
+└─────────────────────────────────────────────────────────────────────────┘
 
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                        │
-│                                                                              │
-│  [External Client]                                                           │
-│         │                                                                    │
-│         │ Port: 443/TCP                                                      │
-│         │ Protocol: HTTPS / HTTPS(h2) for gRPC                               │
-│         │ Encryption: TLS 1.2+                                               │
-│         │ Auth: Bearer Token / OpenShift Auth (optional)                      │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (DMZ)                                                               │
-│                                                                              │
-│  [Istio Ingress Gateway]                                                     │
-│  - External Port: 443/TCP (HTTPS)                                            │
-│  - TLS Termination: TLS 1.2+ (SIMPLE mode, wildcard-certs)                   │
-│  - Internal Forward Port: 8012/TCP                                           │
-│  - AuthN: RequestAuthentication (validates JWT/Bearer if present)            │
-│         │                                                                    │
-│  [Knative Local Gateway] (internal only)                                     │
-│  - Port: 8081/TCP (HTTP, no TLS)                                             │
-│  - Exposure: Internal service-to-service only                                │
-│         │                                                                    │
-│         │ Port: 8012/TCP                                                     │
-│         │ Protocol: HTTP / gRPC(HTTP2)                                       │
-│         │ Encryption: mTLS (Istio STRICT)                                    │
-│         │ Auth: Service Identity (Istio mTLS)                                │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  SERVICE MESH (Trusted - mTLS STRICT)                                        │
-│                                                                              │
-│  [Knative Activator / Queue-Proxy]                                           │
-│  - Namespace: knative-serving / {user-namespace}                             │
-│  - Purpose: Autoscaling, traffic management, request buffering               │
-│         │                                                                    │
-│         │ Port: 8080/TCP (HTTP) or 8085/TCP (gRPC h2c)                       │
-│         │ Protocol: HTTP / gRPC                                              │
-│         │ Encryption: mTLS (Istio sidecar)                                   │
-│         │ Auth: Service Identity (Istio)                                     │
-│         ▼                                                                    │
-│  ┌─────────────────────────────────────────────────────────────────────────┐ │
-│  │  KServe ServingRuntime Pod                                               │ │
-│  │  Namespace: {user-namespace}                                             │ │
-│  │                                                                          │ │
-│  │  ┌──────────────────────────────────────────────┐                       │ │
-│  │  │ transformer-container (caikit-tgis-serving)   │                       │ │
-│  │  │ Image: caikit-tgis-serving:latest             │                       │ │
-│  │  │ Entrypoint: python -m caikit.runtime          │                       │ │
-│  │  │                                                │                       │ │
-│  │  │ Ports:                                         │                       │ │
-│  │  │   8080/TCP - HTTP API (text-generation)       │                       │ │
-│  │  │   8085/TCP - gRPC API (NlpService, h2c)      │                       │ │
-│  │  │   8086/TCP - Metrics (Prometheus)             │                       │ │
-│  │  │                                                │                       │ │
-│  │  │ Libraries:                                     │                       │ │
-│  │  │   caikit 0.28.1                               │                       │ │
-│  │  │   caikit-nlp 0.5.14                           │                       │ │
-│  │  │   caikit-tgis-backend 0.1.39                  │                       │ │
-│  │  └─────────────┬────────────────────────────────┘                       │ │
-│  │                │                                                         │ │
-│  │                │ Port: 8033/TCP                                           │ │
-│  │                │ Protocol: gRPC                                          │ │
-│  │                │ Encryption: None (localhost)                             │ │
-│  │                │ Auth: None                                              │ │
-│  │                ▼                                                         │ │
-│  │  ┌──────────────────────────────────────────────┐                       │ │
-│  │  │ kserve-container (TGIS)                       │                       │ │
-│  │  │ Port: 8033/TCP (gRPC)                         │                       │ │
-│  │  │ Model Path: /mnt/models                       │                       │ │
-│  │  │ Purpose: LLM inference engine (GPU)           │                       │ │
-│  │  └──────────────────────────────────────────────┘                       │ │
-│  │                                                                          │ │
-│  │  ┌──────────────────────────────────────────────┐                       │ │
-│  │  │ Istio Sidecar (Envoy Proxy)                   │                       │ │
-│  │  │ PeerAuthentication: STRICT                    │                       │ │
-│  │  │ Port 8086 Exception: PERMISSIVE               │                       │ │
-│  │  └──────────────────────────────────────────────┘                       │ │
-│  └─────────────────────────────────────────────────────────────────────────┘ │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  MONITORING (Internal)                                                       │
-│                                                                              │
-│  [Prometheus - openshift-user-workload-monitoring]                           │
-│         │                                                                    │
-│         │ Port: 8086/TCP                                                     │
-│         │ Protocol: HTTP                                                     │
-│         │ Encryption: Plaintext (PeerAuthentication PERMISSIVE)              │
-│         │ Auth: None                                                         │
-│         │ NetworkPolicy: Allows from openshift-user-workload-monitoring ns   │
-│         ▼                                                                    │
-│  [Caikit Metrics Endpoint]                                                   │
-│  - ServiceMonitor: caikit-metrics-monitor                                    │
-│  - Service: caikit-metrics-service (ClusterIP, 8086/TCP)                     │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES                                                           │
-│                                                                              │
-│  [S3-Compatible Storage]                                                     │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: AWS IAM credentials / Opaque Secret                                 │
-│  - Purpose: Model artifact download (via KServe storage initializer)         │
-│                                                                              │
-│  [PersistentVolumeClaim]                                                     │
-│  - Type: Filesystem mount                                                    │
-│  - Mount: /mnt/models                                                        │
-│  - Purpose: Model files for inference                                        │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+RBAC Summary:
+- ClusterRole: kserve-prometheus-k8s (demo)
+  - API Groups: "" (core)
+  - Resources: services, endpoints, pods
+  - Verbs: get, list, watch
+  - Purpose: Allow Prometheus to discover and scrape metrics targets
+- Note: Production RBAC is managed by KServe and the platform operator (rhods-operator)
 
-================================================================================
-RBAC SUMMARY
-================================================================================
+Service Mesh Configuration:
+- PeerAuthentication: STRICT (namespace-scoped)
+  - Exception: Port 8086 set to PERMISSIVE for Prometheus metrics scraping
+- NetworkPolicy: Allows ingress from openshift-user-workload-monitoring namespace
+  - Destination: port 8086/TCP
+  - Purpose: Enable User Workload Monitoring Prometheus scrape access
+- Istio Sidecar: Injected into all ServingRuntime pods
+  - Provides mTLS encryption for all inter-service communication
+  - TLS Passthrough enabled for gRPC streaming (enablePassthrough: "true")
 
-ClusterRole: kserve-prometheus-k8s (demo)
-  API Groups: "" (core)
-  Resources: services, endpoints, pods
-  Verbs: get, list, watch
+Secrets:
+- wildcard-certs (kubernetes.io/tls) - TLS certificate for Knative ingress gateway, manual provisioning, no auto-rotation
+- S3 storage credentials (Opaque) - AWS IAM / S3 access credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY), user/operator provisioned, no auto-rotation
+- git_auth_secret (Opaque) - Git authentication for Konflux CI/CD builds, Pipelines-as-Code provisioned
 
-Note: Primary RBAC for the running pod is managed by KServe and the platform
-operator (rhods-operator/opendatahub-operator), not by this repository.
-
-================================================================================
-SERVICE MESH CONFIGURATION
-================================================================================
-
-PeerAuthentication:
-  - Mode: STRICT (all ports)
-  - Port Exception: 8086/TCP → PERMISSIVE (metrics scraping)
-
-NetworkPolicy:
-  - Name: networkpolicy-uwm
-  - Allows ingress from: openshift-user-workload-monitoring namespace
-  - Target port: 8086/TCP
-
-ServiceMeshControlPlane: (demo)
-  - Namespace: istio-system
-  - mTLS: STRICT
-  - Proxy injection: enabled
-
-================================================================================
-SECRETS
-================================================================================
-
-| Secret Name              | Type              | Purpose                          | Rotation |
-|--------------------------|-------------------|----------------------------------|----------|
-| wildcard-certs (demo)    | kubernetes.io/tls | TLS cert for Knative gateway     | Manual   |
-| S3 storage credentials   | Opaque            | S3 access (AWS_ACCESS_KEY_ID,    | No       |
-|                          |                   | AWS_SECRET_ACCESS_KEY)           |          |
-| git_auth_secret (Tekton) | Opaque            | Git auth for Konflux PR builds   | No       |
-
-================================================================================
-AUTHENTICATION SUMMARY
-================================================================================
-
-| Endpoint              | Auth Mechanism              | Enforcement Point        |
-|-----------------------|-----------------------------|--------------------------|
-| HTTP/gRPC (8080/8085) | mTLS (Istio sidecar)        | PeerAuthentication       |
-| Metrics (8086)        | None (PERMISSIVE)           | Port-level exception     |
-| External ingress      | Bearer Token / OpenShift    | Knative + Istio ingress  |
-| TGIS (localhost:8033) | None                        | Pod-internal (localhost) |
+Container Image Security:
+- Base image: ubi9/ubi-minimal (Red Hat Universal Base Image 9 Minimal)
+- Multi-arch: linux/x86_64, linux/arm64
+- Build system: Konflux (Tekton PipelineRun in rhoai-tenant namespace)
+- No custom application code - entrypoint delegates to upstream caikit.runtime

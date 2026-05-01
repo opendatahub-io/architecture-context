@@ -1,95 +1,92 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["Data Scientist<br/>(Browser)"]
+        User["Data Scientist / User"]
     end
 
-    subgraph Ingress["INGRESS (OpenShift Router)"]
-        Route["OpenShift Route / HTTPRoute<br/>443/TCP<br/>TLS 1.2+ (edge/reencrypt)<br/>OAuth Redirect"]
+    subgraph Ingress["INGRESS (Platform-Managed)"]
+        Route["HTTPRoute / OpenShift Route<br/>443/TCP → 8443/TCP<br/>TLS Edge Termination<br/>Created by Notebook Controller"]
     end
 
-    subgraph WorkbenchPod["WORKBENCH POD (User Namespace)"]
+    subgraph WorkbenchPod["WORKBENCH POD (Trust Boundary)"]
         direction TB
 
-        subgraph SidecarContainer["Sidecar: kube-rbac-proxy"]
-            KubeRBAC["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>OAuth Token Validation<br/>Namespace RBAC Check"]
+        KubeRBAC["kube-rbac-proxy sidecar<br/>8443/TCP (TLS)<br/>OAuth token validation<br/>Injected by Notebook Controller"]
+
+        subgraph JupyterStack["Jupyter Workbench"]
+            JupyterLab["JupyterLab Server<br/>8888/TCP HTTP<br/>--auth=none<br/>Native /api/kernels/"]
         end
 
-        subgraph MainContainer["Main Container (one of)"]
-            direction TB
-            JupyterLab["JupyterLab<br/>8888/TCP HTTP<br/>plaintext, no auth"]
-            CodeServerStack["code-server Stack<br/>nginx: 80/TCP<br/>code-server: 8787/TCP<br/>httpd CGI: 8080/TCP"]
-            RStudioStack["RStudio Stack<br/>nginx: 80/TCP<br/>RStudio: 8787/TCP<br/>httpd CGI: 8080/TCP"]
+        subgraph CodeServerStack["Code-Server Workbench"]
+            CSNginx["nginx proxy<br/>80/TCP HTTP"]
+            CSServer["code-server<br/>8787/TCP HTTP<br/>--auth=none"]
+            CSHttpd["httpd CGI<br/>8080/TCP HTTP<br/>/api/kernels/ emulation"]
+        end
+
+        subgraph RStudioStack["RStudio Workbench"]
+            RSNginx["nginx proxy<br/>80/TCP HTTP"]
+            RSServer["RStudio Server<br/>8787/TCP HTTP"]
+            RSHttpd["httpd CGI<br/>8080/TCP HTTP<br/>/api/kernels/ emulation"]
         end
     end
 
-    subgraph PlatformServices["PLATFORM SERVICES (Operator Namespace)"]
-        Culler["Notebook Controller Culler<br/>Polls /api/kernels/<br/>SA: Bearer Token"]
-        NotebookCtrl["ODH Notebook Controller<br/>Mutating Webhook<br/>Injects kube-rbac-proxy"]
-        Operator["rhods-operator<br/>Deploys ImageStreams"]
-        Dashboard["ODH Dashboard<br/>Reads ImageStream Annotations"]
+    subgraph InCluster["IN-CLUSTER SERVICES"]
+        DSP["Data Science Pipelines API<br/>8888/TCP HTTP<br/>Bearer Token"]
+        Culler["Notebook Controller Culler<br/>Polls /api/kernels/"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+"]
     end
 
-    subgraph BuildInfra["BUILD INFRASTRUCTURE"]
-        Konflux["Konflux CI<br/>Hermetic Build<br/>cachi2 prefetch<br/>Hash-verified deps"]
-        BuildConfig["OpenShift BuildConfig<br/>(RStudio only)<br/>Requires RHEL subscription"]
-    end
-
-    subgraph ExternalEgress["EGRESS (User-initiated)"]
-        PyPI["PyPI / RHAI Console<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
+        PyPI["PyPI / Red Hat AI Console<br/>443/TCP HTTPS<br/>TLS 1.2+"]
         CRAN["CRAN<br/>443/TCP HTTPS<br/>TLS 1.2+"]
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS optional<br/>User/Pass"]
-        MySQL["MySQL<br/>3306/TCP<br/>TLS optional<br/>User/Pass"]
-        MongoDB["MongoDB<br/>27017/TCP<br/>TLS optional<br/>User/Pass"]
-        DSP["Data Science Pipelines<br/>8888/TCP HTTP<br/>Bearer Token<br/>(in-cluster)"]
-    end
-
-    subgraph ContainerRegistry["CONTAINER REGISTRY"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS optional<br/>Username/Password"]
+        MySQL["MySQL<br/>3306/TCP<br/>TLS optional<br/>Username/Password"]
+        MongoDB["MongoDB<br/>27017/TCP<br/>TLS optional<br/>Username/Password"]
         Registry["registry.redhat.io<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Pull Secret"]
     end
 
-    %% External access flow
+    %% External to Ingress
     User -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth"| Route
-    Route -->|"HTTPS/8443<br/>TLS<br/>Bearer Token"| KubeRBAC
-    KubeRBAC -->|"HTTP/8888<br/>plaintext (localhost)<br/>no auth"| JupyterLab
-    KubeRBAC -->|"HTTP/80<br/>plaintext (localhost)<br/>no auth"| CodeServerStack
-    KubeRBAC -->|"HTTP/80<br/>plaintext (localhost)<br/>no auth"| RStudioStack
 
-    %% Idle culling
-    Culler -->|"HTTPS/8443<br/>TLS<br/>SA Bearer Token"| KubeRBAC
+    %% Ingress to Pod
+    Route -->|"HTTPS/8443<br/>TLS<br/>OAuth token"| KubeRBAC
 
-    %% Platform management
-    NotebookCtrl -->|"Creates Pod<br/>Injects sidecar<br/>Mounts CA bundles"| WorkbenchPod
-    Operator -->|"Deploys ImageStreams<br/>Kubernetes API<br/>TLS 1.2+"| WorkbenchPod
-    Dashboard -->|"HTTPS/6443<br/>Bearer Token<br/>Reads annotations"| WorkbenchPod
+    %% kube-rbac-proxy to workbenches
+    KubeRBAC -->|"HTTP/8888<br/>plaintext<br/>localhost"| JupyterLab
+    KubeRBAC -->|"HTTP/80<br/>plaintext<br/>localhost"| CSNginx
+    KubeRBAC -->|"HTTP/80<br/>plaintext<br/>localhost"| RSNginx
 
-    %% Build & registry
-    Konflux -->|"HTTPS/443<br/>TLS 1.2+<br/>SA auth"| Registry
-    BuildConfig -->|"Build API<br/>TLS 1.2+"| Registry
-    Registry -->|"Image Pull<br/>sha256 digest"| WorkbenchPod
+    %% Code-Server internal
+    CSNginx -->|"HTTP/8787<br/>localhost"| CSServer
+    CSNginx -->|"HTTP/8080<br/>localhost"| CSHttpd
+    CSHttpd -->|"HTTP/8787<br/>/codeserver/healthz"| CSServer
 
-    %% Egress from workbench
-    MainContainer -->|"HTTPS/443"| PyPI
-    MainContainer -->|"HTTPS/443"| CRAN
-    MainContainer -->|"TCP/5432"| PostgreSQL
-    MainContainer -->|"TCP/3306"| MySQL
-    MainContainer -->|"TCP/27017"| MongoDB
-    MainContainer -->|"HTTP/8888<br/>Bearer Token"| DSP
+    %% RStudio internal
+    RSNginx -->|"HTTP/8787<br/>localhost"| RSServer
+    RSNginx -->|"HTTP/8080<br/>localhost"| RSHttpd
+    RSHttpd -->|"File read<br/>nginx access log"| RSNginx
+
+    %% Culler flow
+    Culler -->|"HTTPS/8443<br/>TLS<br/>Bearer Token"| KubeRBAC
+
+    %% Egress from workbenches
+    JupyterLab -->|"HTTP/8888<br/>Bearer Token<br/>in-cluster"| DSP
+    JupyterLab -->|"HTTPS/443<br/>TLS 1.2+"| PyPI
+    JupyterLab -->|"TCP/5432<br/>Username/Password"| PostgreSQL
+    JupyterLab -->|"TCP/3306<br/>Username/Password"| MySQL
+    JupyterLab -->|"TCP/27017<br/>Username/Password"| MongoDB
+    RSServer -->|"HTTPS/443<br/>TLS 1.2+"| CRAN
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef pod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef sidecar fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef build fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef egress fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef registry fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef trustboundary fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef authproxy fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef internalservice fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class User external
     class Route ingress
-    class KubeRBAC sidecar
-    class JupyterLab,CodeServerStack,RStudioStack pod
-    class Culler,NotebookCtrl,Operator,Dashboard platform
-    class Konflux,BuildConfig build
-    class PyPI,CRAN,PostgreSQL,MySQL,MongoDB,DSP egress
-    class Registry registry
+    class KubeRBAC authproxy
+    class JupyterLab,CSNginx,CSServer,CSHttpd,RSNginx,RSServer,RSHttpd trustboundary
+    class DSP,Culler,K8sAPI internalservice
+    class PyPI,CRAN,PostgreSQL,MySQL,MongoDB,Registry externalservice

@@ -2,88 +2,81 @@ graph TB
     subgraph BatchGateway["Batch Gateway System"]
         direction TB
 
-        subgraph APIServer["API Server (Go HTTP Service)"]
-            APIRoutes["REST API Routes<br/>/v1/batches, /v1/files"]
-            ReqMiddleware["Request Middleware<br/>Tenant extraction"]
-            SecurityHeaders["Security Headers<br/>Middleware"]
-            RecoveryMW["Recovery Middleware"]
-            HealthAPI["Health/Ready/Metrics<br/>Port 8081/TCP"]
+        subgraph APIServer["API Server (8000/TCP + 8081/TCP)"]
+            Router[HTTP Router]
+            BatchHandler[Batch Handler<br/>/v1/batches]
+            FileHandler[File Handler<br/>/v1/files]
+            TenantMW[Tenant Middleware<br/>X-MaaS-Username]
+            SecurityMW[Security Headers MW]
+            RecoveryMW[Recovery Middleware]
+            HealthAPI[Health/Ready/Metrics<br/>:8081]
+            Router --> TenantMW
+            TenantMW --> SecurityMW
+            SecurityMW --> RecoveryMW
+            RecoveryMW --> BatchHandler
+            RecoveryMW --> FileHandler
         end
 
-        subgraph Processor["Batch Processor (Go Background Worker)"]
-            Poller["Queue Poller<br/>BZMPop"]
-            Preprocessor["Preprocessor<br/>Plan Builder"]
-            Executor["Executor<br/>Inference Dispatcher"]
-            Finalizer["Finalizer<br/>Result Uploader"]
-            Recovery["Startup Recovery"]
-            CancelWatcher["Cancel Event Watcher"]
-            HealthProc["Health/Ready/Metrics<br/>Port 9090/TCP"]
+        subgraph Processor["Processor (9090/TCP observability)"]
+            Poller[Queue Poller<br/>poll_interval: 5s]
+            Preprocessor[Preprocessor<br/>Plan Builder]
+            Executor[Executor<br/>Inference Dispatcher]
+            Finalizer[Finalizer<br/>Result Uploader]
+            Recovery[Startup Recovery]
+            GlobalSem[Global Semaphore<br/>concurrency: 100]
+            ModelSem[Per-Model Semaphore<br/>concurrency: 10]
+            HealthProc[Health/Ready/Metrics<br/>:9090]
+            Poller --> Preprocessor
+            Preprocessor --> Executor
+            Executor --> GlobalSem
+            Executor --> ModelSem
+            Executor --> Finalizer
         end
 
-        subgraph GC["Garbage Collector (Go Background Worker)"]
-            Scanner["Expiry Scanner"]
-            Cleaner["Metadata + File Cleaner"]
+        subgraph GC["Garbage Collector"]
+            Scanner[Expiry Scanner<br/>interval: 30m]
+            Deleter[Batch Deleter<br/>max_concurrency: 10]
+            Scanner --> Deleter
         end
     end
 
-    %% External clients
-    Client["External Client<br/>(API Consumer)"]
-    AuthGW["Kuadrant/Authorino<br/>Auth Gateway"]
+    subgraph DataLayer["Shared Data Layer"]
+        PostgreSQL[(PostgreSQL<br/>5432/TCP<br/>Metadata Storage)]
+        Redis[(Redis/Valkey<br/>6379/TCP<br/>Queue + Events + Status)]
+        S3[(S3 Storage<br/>443/TCP<br/>File Storage)]
+    end
 
-    %% Data stores
-    PostgreSQL[("PostgreSQL<br/>5432/TCP<br/>Metadata Storage")]
-    Redis[("Redis/Valkey<br/>6379/TCP<br/>Queue + Events + Status")]
-    S3[("S3-Compatible Storage<br/>443/TCP<br/>File Storage")]
+    Client[External Client] -->|POST /v1/batches<br/>POST /v1/files| Router
+    AuthGW[Kuadrant/Authorino<br/>Auth Gateway] -->|Tenant Header<br/>Injection| Router
 
-    %% Downstream
-    InferenceGW["llm-d Inference Gateway<br/>HTTP/HTTPS<br/>Global or Per-Model"]
+    BatchHandler -->|metadata ops| PostgreSQL
+    BatchHandler -->|enqueue job| Redis
+    FileHandler -->|upload/download| S3
+    FileHandler -->|file metadata| PostgreSQL
 
-    %% Client flow
-    Client -->|"API requests"| AuthGW
-    AuthGW -->|"Tenant header injected"| APIRoutes
-    APIRoutes --> ReqMiddleware
-    ReqMiddleware --> SecurityHeaders
+    Poller -->|BZMPop dequeue| Redis
+    Preprocessor -->|read job metadata| PostgreSQL
+    Preprocessor -->|download input| S3
+    Executor -->|inference requests| InferenceGW[Inference Gateway<br/>llm-d]
+    Finalizer -->|upload results| S3
+    Finalizer -->|update status| PostgreSQL
+    Finalizer -->|update progress| Redis
 
-    %% API Server connections
-    APIServer -->|"pgx 5432/TCP"| PostgreSQL
-    APIServer -->|"RESP 6379/TCP"| Redis
-    APIServer -->|"HTTPS 443/TCP"| S3
+    Deleter -->|delete expired| PostgreSQL
+    Deleter -->|delete expired| Redis
+    Deleter -->|delete files| S3
 
-    %% Processor connections
-    Poller -->|"BZMPop 6379/TCP"| Redis
-    Preprocessor -->|"Download input"| S3
-    Executor -->|"Inference requests"| InferenceGW
-    Finalizer -->|"Upload results"| S3
-    Finalizer -->|"Update status"| PostgreSQL
-    CancelWatcher -->|"BLMPop events"| Redis
+    Prometheus[Prometheus] -->|scrape| HealthAPI
+    Prometheus -->|scrape| HealthProc
 
-    %% Processor internal flow
-    Poller --> Preprocessor
-    Preprocessor --> Executor
-    Executor --> Finalizer
-
-    %% GC connections
-    GC -->|"Query expired"| PostgreSQL
-    GC -->|"Query expired"| Redis
-    GC -->|"Delete files"| S3
-
-    %% Observability
-    Prometheus["Prometheus<br/>Metrics Scrape"]
-    OTel["OpenTelemetry Collector<br/>gRPC Trace Export"]
-
-    HealthAPI -.->|"scrape /metrics"| Prometheus
-    HealthProc -.->|"scrape /metrics"| Prometheus
-    BatchGateway -.->|"OTLP traces"| OTel
-
-    %% Styling
-    style APIServer fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
-    style Processor fill:#7ed321,stroke:#333,stroke-width:2px,color:#fff
-    style GC fill:#f5a623,stroke:#333,stroke-width:2px,color:#fff
+    style APIServer fill:#4a90e2,stroke:#333,color:#fff
+    style Processor fill:#7ed321,stroke:#333,color:#fff
+    style GC fill:#f5a623,stroke:#333,color:#fff
+    style DataLayer fill:#f0f0f0,stroke:#999
     style PostgreSQL fill:#336791,stroke:#333,color:#fff
     style Redis fill:#dc382d,stroke:#333,color:#fff
-    style S3 fill:#569a31,stroke:#333,color:#fff
-    style InferenceGW fill:#9b59b6,stroke:#333,color:#fff
-    style Client fill:#f9f9f9,stroke:#999,stroke-width:2px
-    style AuthGW fill:#e67e22,stroke:#333,color:#fff
+    style S3 fill:#ff9900,stroke:#333,color:#fff
+    style Client fill:#e8e8e8,stroke:#333
+    style AuthGW fill:#9b59b6,stroke:#333,color:#fff
+    style InferenceGW fill:#2ecc71,stroke:#333,color:#fff
     style Prometheus fill:#e6522c,stroke:#333,color:#fff
-    style OTel fill:#425cc7,stroke:#333,color:#fff

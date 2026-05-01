@@ -1,7 +1,7 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                   │
 │                                                                          │
-│  [External Client / KServe Route]                                        │
+│  [External Client]                                                       │
 │         │                                                                │
 │         │ Port: 8033/TCP                                                 │
 │         │ Protocol: gRPC                                                 │
@@ -12,75 +12,79 @@
 │  PLATFORM INGRESS (KServe Layer)                                        │
 │                                                                          │
 │  [KServe InferenceService / Gateway]                                     │
-│  - Manages ServingRuntime container lifecycle                            │
-│  - External auth/authz enforced here (kube-rbac-proxy, Gateway API)     │
+│  - Provides external routing and auth enforcement                        │
+│  - kube-rbac-proxy sidecar (production RHOAI)                           │
+│  - Gateway API HTTPRoute (optional)                                      │
+│  - TGIS runs as KServe ServingRuntime container                         │
 │         │                                                                │
-│         │ Port: 8033/TCP (gRPC) + 3000/TCP (HTTP)                       │
+│         │ Port: 8033/TCP (gRPC), 3000/TCP (HTTP)                        │
 │         │ Protocol: gRPC + HTTP                                          │
-│         │ Encryption: Optional TLS                                       │
-│         │ Auth: Platform-level (kube-rbac-proxy sidecar)                 │
+│         │ Encryption: Platform-dependent                                 │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  TGIS POD (Single Container, Non-Root UID 2000)                         │
+│  POD BOUNDARY (Single Container)                                        │
+│                                                                          │
+│  User: tgis (UID 2000, GID 0)                                           │
+│  SecurityContext: allowPrivilegeEscalation=false                         │
+│  SecurityContext: seccompProfile=RuntimeDefault                          │
+│  SecurityContext: readOnlyRootFilesystem (optional patch)                │
 │                                                                          │
 │  ┌─────────────────────────────────────────────────────────────────┐    │
 │  │  [text-generation-router] (Rust)                                │    │
-│  │  - Listen: 0.0.0.0:8033/TCP (gRPC)                              │    │
-│  │  - Listen: 0.0.0.0:3000/TCP (HTTP)                              │    │
-│  │  - gRPC TLS: Optional (--tls-cert-path, --tls-key-path)        │    │
-│  │  - Client mTLS: Optional (--tls-client-ca-cert-path)            │    │
-│  │  - HTTP endpoints: /health (200/503), /metrics (Prometheus)     │    │
+│  │  - gRPC server: fmaas.GenerationService                         │    │
+│  │    Port: 8033/TCP                                                │    │
+│  │    Encryption: Optional TLS (TLS_CERT_PATH, TLS_KEY_PATH)       │    │
+│  │    Auth: Optional mTLS (TLS_CLIENT_CA_CERT_PATH)                │    │
+│  │    Methods: Generate, GenerateStream, Tokenize, ModelInfo        │    │
+│  │  - HTTP server:                                                  │    │
+│  │    Port: 3000/TCP                                                │    │
+│  │    /health (GET) - Unauthenticated                               │    │
+│  │    /metrics (GET) - Unauthenticated (Prometheus)                 │    │
+│  │    Encryption: None (plaintext)                                  │    │
+│  │    Auth: None                                                    │    │
 │  │         │                                                        │    │
-│  │         │ Protocol: gRPC                                         │    │
-│  │         │ Transport: Unix Domain Socket                          │    │
+│  │         │ Protocol: gRPC over Unix Domain Socket                 │    │
 │  │         │ Path: /tmp/text-generation-server-{rank}               │    │
-│  │         │ Encryption: None (process-local, same pod)             │    │
+│  │         │ Encryption: None (process-local, no network)           │    │
 │  │         │ Auth: None (filesystem permissions)                    │    │
 │  │         ▼                                                        │    │
-│  │  [text-generation-server] (Python, per GPU shard)               │    │
-│  │  - Shard 0: UDS /tmp/text-generation-server-0                   │    │
-│  │  - Shard N: UDS /tmp/text-generation-server-N                   │    │
-│  │  - User: tgis (UID 2000, GID 0)                                 │    │
-│  │  - SecurityContext:                                              │    │
-│  │    - allowPrivilegeEscalation: false                             │    │
-│  │    - readOnlyRootFilesystem: true (optional patch)               │    │
-│  │    - seccompProfile: RuntimeDefault                              │    │
-│  │  - Inter-shard: NCCL/GLOO 29500/TCP (intra-pod only)           │    │
+│  │  [text-generation-server] (Python) × N shards                   │    │
+│  │  - Internal gRPC: generate.v1.TextGenerationService              │    │
+│  │    Socket: UDS /tmp/text-generation-server-{rank}                │    │
+│  │    Methods: Prefill, NextToken, PruneBatch, Health,              │    │
+│  │             ModelInfo, ServiceDiscovery, ClearCache              │    │
+│  │  - Inter-shard communication:                                    │    │
+│  │    Port: 29500/TCP                                               │    │
+│  │    Protocol: NCCL/GLOO                                           │    │
+│  │    Encryption: None (intra-pod loopback)                         │    │
+│  │    Auth: None                                                    │    │
 │  └─────────────────────────────────────────────────────────────────┘    │
-│                                                                          │
-│  Volumes:                                                                │
-│  - /dev/shm (emptyDir, 2Gi) - NCCL shared memory                       │
-│  - /shared_model_storage (PVC: models-pvc) - Pre-cached models          │
+│         │                                                                │
+│         │ CUDA Runtime API                                               │
+│         │ Protocol: CUDA kernel calls                                    │
+│         │ Encryption: N/A (hardware bus)                                 │
+│         ▼                                                                │
+│  [NVIDIA GPU]                                                            │
+│  - Resource: nvidia.com/gpu                                              │
+│  - CUDA 12.1.0, NCCL 2.18.3                                            │
+│  - Managed by: NVIDIA GPU Operator                                       │
 │                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  CLUSTER INTERNAL                                                        │
 │                                                                          │
-│  [inference-server Service]                                              │
-│  - Type: ClusterIP (headless, clusterIP: None)                          │
-│  - Port: 8033/TCP → 8033 (grpc)                                         │
-│  - Exposure: Internal only                                               │
-│  - Encryption: Optional TLS (configurable at router level)              │
-│  - Auth: None at service level                                           │
+│  [Kubernetes API Server]                                                 │
+│  - Probes /health on 3000/TCP (HTTP, plaintext)                         │
+│  - Liveness + Readiness checks                                          │
 │                                                                          │
 │  [Prometheus]                                                            │
-│  - Scrapes: GET /metrics :3000/TCP                                      │
-│  - Protocol: HTTP                                                        │
-│  - Encryption: None (plaintext)                                          │
-│  - Auth: None                                                            │
+│  - Scrapes /metrics on 3000/TCP (HTTP, plaintext)                       │
+│  - Metrics: request latency, batch size, queue depth,                   │
+│    token generation time, GPU utilization                                │
 │                                                                          │
-│  [Kubernetes Probes]                                                     │
-│  - liveness: GET /health :3000/TCP                                      │
-│  - readiness: GET /health :3000/TCP                                     │
-│  - Protocol: HTTP                                                        │
-│  - Encryption: None (plaintext)                                          │
-│  - Auth: None                                                            │
-│                                                                          │
-│  [PyTorch Distributed (intra-pod only)]                                  │
-│  - Port: 29500/TCP                                                       │
-│  - Protocol: NCCL/GLOO                                                   │
-│  - Encryption: None (plaintext)                                          │
-│  - Auth: None                                                            │
-│  - Scope: Between shards within same pod only                            │
+│  [Shared Model PVC]                                                      │
+│  - Mount: /shared_model_storage/transformers_cache                       │
+│  - Purpose: Pre-cached model weights                                     │
+│  - Access: ReadWriteMany (or ReadOnlyMany)                               │
 │                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  EXTERNAL SERVICES (Egress)                                              │
@@ -89,45 +93,46 @@
 │  - Port: 443/TCP                                                         │
 │  - Protocol: HTTPS                                                       │
 │  - Encryption: TLS 1.2+                                                  │
-│  - Auth: Optional HuggingFace auth token                                │
-│  - Purpose: Model weight downloading (if not pre-cached via PVC)        │
+│  - Auth: Optional HuggingFace auth token                                 │
+│  - Purpose: Model weight downloading (if not pre-cached)                 │
 │                                                                          │
-│  [NVIDIA GPU Driver / CUDA Runtime]                                      │
-│  - Interface: CUDA kernel calls                                          │
-│  - Managed by: NVIDIA GPU Operator                                       │
-│  - Resources: nvidia.com/gpu (scheduled by kubelet)                     │
 └─────────────────────────────────────────────────────────────────────────┘
+
+Service Definition:
+- Name: inference-server
+- Type: ClusterIP (headless, clusterIP: None)
+- Port: 8033/TCP → 8033 (grpc)
+- Exposure: Internal only (no external ingress defined)
+- Note: Headless for direct pod-to-pod communication (KServe routing)
 
 RBAC Summary:
 - No RBAC resources defined at TGIS level
 - TGIS runs as non-root user (UID 2000, GID 0)
 - Kubernetes RBAC handled at KServe/platform level
-- Container security:
-  - allowPrivilegeEscalation: false
-  - readOnlyRootFilesystem: true (optional kustomize patch)
-  - seccompProfile: RuntimeDefault
 
 Secrets:
 - TLS cert/key (optional, kubernetes.io/tls) - gRPC server TLS encryption
-  - Provisioned by: Manual or cert-manager
-  - Auto-rotate: No
+  - Provisioned by: Manual / cert-manager
+  - Auto-Rotate: No
 - HuggingFace auth token (optional, Opaque) - Private model access
   - Provisioned by: Manual
-  - Auto-rotate: No
+  - Auto-Rotate: No
 
 Authentication & Authorization:
-- fmaas.GenerationService (gRPC :8033):
-  - Auth: Optional mTLS via TLS_CLIENT_CA_CERT_PATH
-  - Enforcement: tonic gRPC TLS server
-  - No application-level authz (delegated to platform)
-- /health (HTTP :3000): Unauthenticated (health probes only)
-- /metrics (HTTP :3000): Unauthenticated (Prometheus scraping)
-- Production auth: Enforced at KServe ingress layer
-  (kube-rbac-proxy sidecar, Gateway API HTTPRoute)
+- fmaas.GenerationService (gRPC/8033):
+  - Auth: TLS client certificate (optional mTLS)
+  - Enforcement: tonic gRPC server
+  - Policy: TLS_CLIENT_CA_CERT_PATH enables client cert validation
+- /health (HTTP/3000): Unauthenticated (health probes only)
+- /metrics (HTTP/3000): Unauthenticated (Prometheus scraping)
+- Production auth: Enforced at KServe/platform ingress layer
+  - kube-rbac-proxy sidecar
+  - Gateway API HTTPRoute
 
-Network Policy Notes:
-- No NetworkPolicy defined in manifests
-- Headless Service (clusterIP: None) enables direct pod access
-- External access via KServe/platform ingress layer
-- Intra-pod communication only for NCCL (29500/TCP)
-- UDS communication between router and shards (no network)
+Security Hardening:
+- Container runs as non-root user 'tgis' (UID 2000)
+- allowPrivilegeEscalation: false
+- readOnlyRootFilesystem: supported via kustomize patch
+- seccompProfile: RuntimeDefault
+- No privilege escalation paths
+- UDS communication (no network exposure for internal APIs)

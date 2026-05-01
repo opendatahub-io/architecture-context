@@ -1,79 +1,41 @@
 sequenceDiagram
     participant KFTO as KFTO PyTorchJob<br/>Controller
-    participant Pod as Training Pod
-    participant AccelLaunch as accelerate_launch.py<br/>Container Entrypoint
-    participant SFTTrainer as sft_trainer.py<br/>Core Training Engine
-    participant PVC_M as PVC<br/>Model Weights
-    participant PVC_D as PVC<br/>Training Data
-    participant GPU as NVIDIA GPU<br/>CUDA
-    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
-    participant PVC_O as PVC<br/>Output/Checkpoints
+    participant Pod as Training Pod<br/>(accelerate_launch.py)
+    participant SFT as sft_trainer.py<br/>(SFTTrainer)
+    participant PVC as PVC Storage<br/>(model + data + output)
+    participant GPU as NVIDIA GPU<br/>(CUDA)
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
     participant Tracker as Experiment Tracker<br/>(Aim/MLflow/ClearML)
+    participant NCCL as NCCL/Gloo<br/>29500/TCP
 
-    Note over KFTO,Pod: Flow 1: Training Job Execution
-
-    KFTO->>Pod: Create PyTorchJob Pod<br/>Kubernetes API, TLS 1.3<br/>ServiceAccount Auth
-    Pod->>AccelLaunch: Start container CMD<br/>Read /etc/config/config.json
-
-    AccelLaunch->>AccelLaunch: Parse JSON config<br/>Detect GPU count<br/>Configure FSDP defaults
-
-    AccelLaunch->>SFTTrainer: subprocess: accelerate launch<br/>sft_trainer.py with args
-
-    SFTTrainer->>PVC_M: Load model weights<br/>Local filesystem mount
-    PVC_M-->>SFTTrainer: Model artifacts
-
-    SFTTrainer->>PVC_D: Load training data<br/>Local filesystem mount
-    PVC_D-->>SFTTrainer: Training dataset
-
-    opt Model not on PVC (fallback)
-        SFTTrainer->>HFHub: GET model/tokenizer<br/>HTTPS/443, TLS 1.2+<br/>Auth: Bearer HF_TOKEN
-        HFHub-->>SFTTrainer: Model artifacts
+    rect rgb(230, 245, 255)
+        Note over KFTO,Pod: Flow 1: Training Job Execution
+        KFTO->>Pod: Create training pod<br/>Kubernetes API / TLS 1.3<br/>ServiceAccount auth
+        Pod->>Pod: Parse JSON config<br/>(SFT_TRAINER_CONFIG_JSON_PATH)
+        Pod->>SFT: subprocess: accelerate launch<br/>sft_trainer.py
+        SFT->>PVC: Load model weights<br/>Local filesystem mount
+        PVC-->>SFT: Model artifacts
+        SFT->>PVC: Load training data<br/>Local filesystem mount
+        PVC-->>SFT: Training dataset
+        SFT->>HF: Download model/tokenizer (fallback)<br/>HTTPS/443 / TLS 1.2+<br/>Bearer Token (HF_TOKEN)
+        HF-->>SFT: Pre-trained weights
+        SFT->>GPU: Training computation<br/>PCIe/NVLink
+        GPU-->>SFT: Gradients & loss
+        SFT->>Tracker: Push metrics<br/>HTTP(S) / configurable
+        SFT->>PVC: Save checkpoints & output<br/>Local filesystem mount
+        SFT->>Pod: Training complete
+        Pod->>Pod: Write /dev/termination-log<br/>(exit code 0/1/203)
     end
 
-    SFTTrainer->>SFTTrainer: Data preprocessing<br/>(handlers, templates,<br/>tokenization)
-
-    loop Training Loop (epochs x steps)
-        SFTTrainer->>GPU: Forward/backward pass<br/>PCIe/NVLink
-        GPU-->>SFTTrainer: Gradients
-
-        SFTTrainer->>SFTTrainer: Trainer Controller<br/>Evaluate rules<br/>(early stopping, thresholds)
-
-        opt Checkpoint interval
-            SFTTrainer->>PVC_O: Save checkpoint<br/>Local filesystem
+    rect rgb(255, 245, 230)
+        Note over Pod,NCCL: Flow 2: Multi-GPU FSDP Training
+        Pod->>Pod: Detect GPU count<br/>torch.cuda.device_count()
+        Pod->>NCCL: Initialize process group<br/>TCP/29500 (plaintext)
+        NCCL-->>Pod: Rendezvous complete
+        loop Each FSDP Rank
+            Pod->>GPU: Shard model parameters<br/>PCIe/NVLink
+            GPU->>NCCL: All-reduce gradients<br/>NCCL (plaintext)
+            NCCL-->>GPU: Synchronized gradients
         end
-
-        opt Tracker enabled
-            SFTTrainer->>Tracker: Push metrics<br/>HTTP/HTTPS
-        end
-    end
-
-    SFTTrainer->>PVC_O: Save final model<br/>+ LoRA adapters
-    SFTTrainer-->>AccelLaunch: Training complete
-
-    opt vLLM post-processing
-        AccelLaunch->>AccelLaunch: Post-process LoRA adapters<br/>for vLLM compatibility
-    end
-
-    AccelLaunch->>Pod: Write termination log<br/>/dev/termination-log
-    Pod-->>KFTO: Pod completed<br/>Exit code 0 (success)<br/>or 1 (user error)<br/>or 203 (internal error)
-
-    Note over Pod,GPU: Flow 2: Multi-GPU FSDP Training
-
-    AccelLaunch->>AccelLaunch: Detect num_gpus > 1<br/>Apply FSDP defaults
-
-    AccelLaunch->>SFTTrainer: Launch with accelerate<br/>--num_processes=N
-
-    SFTTrainer->>SFTTrainer: Initialize FSDP<br/>process group
-
-    par NCCL Rendezvous
-        SFTTrainer->>SFTTrainer: Rank 0 master<br/>port 29500/TCP
-        Note right of SFTTrainer: plaintext TCP<br/>NCCL/Gloo backend
-    end
-
-    loop FSDP Training
-        par All Ranks
-            SFTTrainer->>GPU: Sharded forward/backward<br/>PCIe/NVLink per rank
-            GPU-->>SFTTrainer: Local gradients
-        end
-        SFTTrainer->>SFTTrainer: All-reduce gradients<br/>NCCL 29500/TCP plaintext
+        Pod->>PVC: Save consolidated checkpoint<br/>(rank 0 only)
     end

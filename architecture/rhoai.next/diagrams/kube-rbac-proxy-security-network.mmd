@@ -1,99 +1,88 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client<br/>(curl / browser / API)"]
+        Client["External Client<br/>(curl, browser, service)"]
     end
 
-    subgraph Ingress["INGRESS (Platform Gateway)"]
-        HTTPRoute["HTTPRoute (Gateway API)<br/>Created by rhods-operator"]
+    subgraph Ingress["INGRESS (Gateway API)"]
+        Gateway["Gateway API HTTPRoute<br/>8443/TCP<br/>TLS 1.2+ SIMPLE<br/>Host-based routing"]
     end
 
-    subgraph ComponentPod["COMPONENT POD (Sidecar Pattern)"]
+    subgraph SidecarProxy["SIDECAR PROXY (kube-rbac-proxy)"]
         direction TB
 
-        subgraph ProxySidecar["kube-rbac-proxy Sidecar<br/>UID: 65534 (nobody)"]
-            direction TB
-            Listener["Secure Listener<br/>8443/TCP HTTPS<br/>TLS 1.2+ (hot-reload)"]
-            HealthCheck["/healthz<br/>(unauthenticated)"]
+        subgraph AuthPipeline["Authentication Pipeline"]
+            ProxyListener["Secure Listener<br/>0.0.0.0:8443/TCP<br/>TLS 1.2+<br/>UID: 65534 (nobody)"]
 
-            subgraph AuthN["Authentication (mutually exclusive)"]
-                TokenReviewAuth["Delegating Auth<br/>K8s TokenReview<br/>2min cache"]
-                OIDCAuth["OIDC Auth<br/>JWT validation<br/>JWKS via HTTPS"]
-                X509Auth["X.509 mTLS<br/>Client cert<br/>CN as identity"]
+            subgraph AuthN["AuthN (mutually exclusive)"]
+                Delegating["Delegating<br/>K8s TokenReview<br/>2-min cache"]
+                OIDCAuth["OIDC JWT<br/>JWKS validation<br/>Claims mapping"]
+                X509["X.509 Client Cert<br/>CN-based identity"]
             end
 
-            subgraph AuthZ["Authorization (union chain)"]
-                HardcodedAllow["1. Hardcoded Metrics<br/>Auto-allow prometheus-k8s<br/>GET /metrics"]
-                StaticRules["2. Static Authorizer<br/>Config file rules<br/>No API calls"]
-                SARCheck["3. SAR Authorizer<br/>SubjectAccessReview<br/>Allow: 5min cache<br/>Deny: 30s cache"]
+            subgraph AuthZ["AuthZ (chained, priority order)"]
+                Hardcoded["1. Hardcoded<br/>prometheus-k8s SA<br/>GET /metrics"]
+                Static["2. Static<br/>Config file rules<br/>No API calls"]
+                SAR["3. SAR<br/>SubjectAccessReview<br/>Allow: 5m / Deny: 30s"]
             end
-
-            TokenFilter["Token Sanitization<br/>Masks tokens in logs"]
         end
 
-        UpstreamApp["Upstream Application<br/>Metrics / APIs / Dashboards"]
+        HealthEndpoint["/healthz<br/>(unauthenticated)<br/>--proxy-endpoints-port"]
     end
 
-    subgraph K8sControlPlane["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+<br/>TokenReview + SAR APIs"]
+    subgraph UpstreamPod["UPSTREAM APPLICATION (Same Pod)"]
+        UpstreamApp["Application Container<br/>HTTP/HTTPS/h2c<br/>Configurable port<br/>Receives: X-Forwarded-User/Groups"]
     end
 
-    subgraph Monitoring["INTERNAL MONITORING"]
-        Prometheus["Prometheus<br/>Namespace: openshift-monitoring<br/>SA: prometheus-k8s"]
+    subgraph Monitoring["MONITORING (Internal, Trusted)"]
+        Prometheus["OpenShift Prometheus<br/>Namespace: openshift-monitoring<br/>SA: prometheus-k8s<br/>Hardcoded allow (no SAR)"]
     end
 
-    subgraph ExternalSvc["EXTERNAL SERVICES (optional)"]
-        OIDCIssuer["OIDC Issuer<br/>443/TCP HTTPS TLS 1.2+<br/>/.well-known + /jwks"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+<br/>TokenReview + SAR<br/>Auth: SA token (in-cluster)"]
+        OIDCProvider["OIDC Provider<br/>443/TCP HTTPS TLS 1.2+<br/>Discovery + JWKS<br/>Auth: None (public)"]
     end
 
     subgraph Operators["PLATFORM OPERATORS"]
-        RhodsOp["rhods-operator<br/>(sidecar injection)"]
-        CertMgr["cert-manager<br/>(TLS provisioning)"]
+        RhodsOperator["rhods-operator<br/>Injects sidecar container<br/>into component pod specs"]
+        CertManager["cert-manager /<br/>Platform Operator<br/>TLS cert provisioning"]
     end
 
-    %% External → Ingress
-    Client -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer / OIDC JWT"| HTTPRoute
-
-    %% Ingress → Proxy
-    HTTPRoute -->|"HTTPS/8443<br/>TLS 1.2+<br/>Auth: pass-through"| Listener
-
-    %% Prometheus → Proxy
-    Prometheus -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer (SA token)<br/>Hardcoded allow"| Listener
-
-    %% AuthN → K8s API
-    TokenReviewAuth -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-
-    %% AuthN → OIDC
-    OIDCAuth -->|"HTTPS/443<br/>TLS 1.2+<br/>Public endpoint"| OIDCIssuer
-
-    %% AuthZ → K8s API
-    SARCheck -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    %% External → Ingress → Proxy
+    Client -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer / OIDC JWT"| Gateway
+    Gateway -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer / mTLS / OIDC"| ProxyListener
 
     %% Proxy → Upstream
-    ProxySidecar -->|"HTTP/HTTPS/h2c<br/>Configurable<br/>Optional mTLS"| UpstreamApp
+    ProxyListener -->|"HTTP/HTTPS/h2c<br/>Configurable port<br/>Optional mTLS"| UpstreamApp
 
-    %% Operator flows (dashed)
-    RhodsOp -.->|"Injects sidecar<br/>into pod spec"| ProxySidecar
-    CertMgr -.->|"Provisions TLS<br/>cert/key pair"| ProxySidecar
+    %% Prometheus → Proxy
+    Prometheus -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer Token (SA)"| ProxyListener
+
+    %% Proxy → External Services
+    Delegating -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    SAR -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    OIDCAuth -->|"HTTPS/443<br/>TLS 1.2+<br/>Public endpoint"| OIDCProvider
+
+    %% Operators
+    RhodsOperator -.->|"Sidecar injection"| ProxyListener
+    CertManager -.->|"TLS certs<br/>(mounted files)"| ProxyListener
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef proxy fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef authn fill:#d5e8d4,stroke:#82b366,stroke-width:1px
-    classDef authz fill:#fff2cc,stroke:#d6b656,stroke-width:1px
-    classDef k8s fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef monitoring fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef extsvc fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef operator fill:#e6d0de,stroke:#996185,stroke-width:1px
-    classDef upstream fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef authn fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef authz fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef upstream fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef monitoring fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef operator fill:#e8e8e8,stroke:#666,stroke-width:1px,stroke-dasharray: 5 5
 
     class Client external
-    class HTTPRoute ingress
-    class Listener,HealthCheck,TokenFilter proxy
-    class TokenReviewAuth,OIDCAuth,X509Auth authn
-    class HardcodedAllow,StaticRules,SARCheck authz
-    class K8sAPI k8s
-    class Prometheus monitoring
-    class OIDCIssuer extsvc
-    class RhodsOp,CertMgr operator
+    class Gateway ingress
+    class ProxyListener,HealthEndpoint proxy
+    class Delegating,OIDCAuth,X509 authn
+    class Hardcoded,Static,SAR authz
     class UpstreamApp upstream
+    class Prometheus monitoring
+    class K8sAPI,OIDCProvider externalservice
+    class RhodsOperator,CertManager operator

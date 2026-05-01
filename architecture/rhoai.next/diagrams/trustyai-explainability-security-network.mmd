@@ -1,82 +1,75 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client / Dashboard"]
+        Client["Client / Dashboard / ODH UI"]
     end
 
     subgraph Ingress["INGRESS (OpenShift Route)"]
-        Route["trustyai Route<br/>80/TCP HTTP<br/>TLS: None"]
+        Route["OpenShift Route: trustyai<br/>80/TCP<br/>TLS: None (tls: null)"]
     end
 
-    subgraph ClusterNetwork["CLUSTER NETWORK (Internal)"]
+    subgraph PodBoundary["POD BOUNDARY (Auth Enforcement)"]
         direction TB
 
-        subgraph ServiceLayer["Service: trustyai-service (ClusterIP)"]
-            SVC["ClusterIP 80/TCP → 8080/TCP"]
+        AuthProxy["kube-rbac-proxy / oauth-proxy<br/>(sidecar injected by Operator)<br/>Validates Bearer/OAuth tokens"]
+
+        subgraph App["APPLICATION"]
+            TrustyAI["TrustyAI Service<br/>Quarkus 3.8.5 / Java 17<br/>SA: trustyai-serviceaccount<br/>Ports: 8080/TCP (HTTP), 4443/TCP (HTTPS)"]
         end
 
-        subgraph Pod["Pod: trustyai-service"]
-            direction LR
-            AuthProxy["kube-rbac-proxy<br/>(sidecar)<br/>Token Validation<br/>TLS Termination"]
-            Container["TrustyAI Service<br/>8080/TCP HTTP<br/>4443/TCP HTTPS<br/>SA: trustyai-serviceaccount<br/>Java 17 / Quarkus 3.8.5"]
-            InitContainer["Init Container<br/>Writes model-serving-config<br/>payloadProcessors → TrustyAI"]
-        end
-
-        subgraph InternalPlatform["INTERNAL PLATFORM"]
-            ModelMesh["ModelMesh Serving<br/>POST /consumer/kserve/v2<br/>80/TCP HTTP"]
-            Prometheus["Prometheus<br/>GET /q/metrics<br/>80/TCP HTTP<br/>Bearer Token (SA)"]
-            Operator["TrustyAI Service Operator<br/>CRD-managed lifecycle"]
-        end
+        AuthProxy -->|"HTTP/8080<br/>plaintext<br/>pre-authenticated"| TrustyAI
     end
 
-    subgraph EgressTargets["EGRESS TARGETS"]
-        KServe["KServe Model Servers<br/>gRPC/HTTP2 (V2)<br/>HTTP (V1)<br/>plaintext"]
-        MariaDB["MariaDB / MySQL<br/>3306/TCP JDBC<br/>plaintext<br/>Username/Password"]
-        MinIO["MinIO<br/>9000/TCP S3 API<br/>HTTPS TLS<br/>Access Key / Secret Key"]
+    subgraph InternalSources["INTERNAL SOURCES (Cluster)"]
+        ModelMesh["ModelMesh Serving<br/>POST /consumer/kserve/v2<br/>via payloadProcessors ConfigMap"]
+        Prometheus["Prometheus<br/>GET /q/metrics<br/>Bearer token (SA)<br/>ServiceMonitor"]
     end
 
-    subgraph Volumes["VOLUMES"]
-        PVC["PVC: 1Gi RWO<br/>/data<br/>CSV/Parquet"]
-        TLSCert["TLS Cert<br/>/etc/tls/internal/<br/>kubernetes.io/tls"]
+    subgraph StorageBackends["STORAGE BACKENDS"]
+        PVC["PVC (default)<br/>ReadWriteOnce 1Gi<br/>/inputs<br/>CSV / Parquet"]
+        MariaDB["MariaDB / MySQL<br/>3306/TCP<br/>JDBC plaintext<br/>Username/Password"]
+        MinIO["MinIO<br/>9000/TCP<br/>S3 API HTTPS/TLS<br/>Access Key / Secret Key"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES (Model Inference)"]
+        KServeModels["KServe / ModelMesh<br/>Model Servers<br/>gRPC/HTTP2 plaintext<br/>No Auth"]
+    end
+
+    subgraph OperatorManagement["OPERATOR MANAGEMENT"]
+        Operator["TrustyAI Service Operator<br/>Manages: Deployment, Service,<br/>PVC, ConfigMap, Auth Proxy"]
     end
 
     %% External flows
-    Client -->|"HTTP 80/TCP<br/>No TLS<br/>No Auth (at Route)"| Route
-    Route -->|"HTTP 80/TCP"| SVC
-    SVC -->|"HTTP 8080/TCP"| AuthProxy
-    AuthProxy -->|"Authenticated<br/>HTTP 8080/TCP"| Container
+    Client -->|"HTTP/80<br/>No TLS<br/>No Auth"| Route
+    Route -->|"HTTP/80<br/>plaintext"| AuthProxy
 
-    %% Internal platform flows
-    ModelMesh -->|"HTTP POST 80/TCP<br/>No Auth<br/>Inference payloads"| SVC
-    Prometheus -->|"HTTP GET 80/TCP<br/>Bearer Token (SA)<br/>Scrape metrics"| SVC
-    Operator -.->|"K8s API<br/>Manage lifecycle"| Pod
+    %% Internal inbound flows
+    ModelMesh -->|"HTTP/80<br/>plaintext<br/>No Auth"| TrustyAI
+    Prometheus -->|"HTTP/80<br/>plaintext<br/>Bearer token (SA)"| TrustyAI
 
-    %% Egress flows
-    Container -->|"gRPC/HTTP2<br/>plaintext<br/>No Auth"| KServe
-    Container -->|"JDBC 3306/TCP<br/>plaintext<br/>Username/Password"| MariaDB
-    Container -->|"S3 API 9000/TCP<br/>HTTPS TLS<br/>Access Key"| MinIO
+    %% Outbound flows
+    TrustyAI -->|"File I/O<br/>local mount"| PVC
+    TrustyAI -->|"JDBC/3306<br/>plaintext<br/>Username/Password"| MariaDB
+    TrustyAI -->|"S3 API/9000<br/>HTTPS TLS<br/>Access Key"| MinIO
+    TrustyAI -->|"gRPC-HTTP2/varies<br/>plaintext<br/>No Auth"| KServeModels
 
-    %% Volume mounts
-    Container -.->|"mount"| PVC
-    Container -.->|"mount"| TLSCert
-
-    %% Init container
-    InitContainer -.->|"writes ConfigMap"| ModelMesh
+    %% Operator management
+    Operator -.->|"creates & manages"| PodBoundary
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef pod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef security fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef volume fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
+    classDef authproxy fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef storage fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef operator fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef internalsource fill:#d5e8d4,stroke:#82b366,stroke-width:2px
 
     class Client external
     class Route ingress
-    class SVC cluster
-    class AuthProxy security
-    class Container pod
-    class InitContainer pod
-    class ModelMesh,Prometheus,Operator cluster
-    class KServe,MariaDB,MinIO egress
-    class PVC,TLSCert volume
+    class AuthProxy authproxy
+    class TrustyAI application
+    class PVC,MariaDB,MinIO storage
+    class KServeModels externalservice
+    class Operator operator
+    class ModelMesh,Prometheus internalsource

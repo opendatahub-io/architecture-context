@@ -6,132 +6,138 @@
 │         │ Port: 443/TCP                                                  │
 │         │ Protocol: HTTPS                                                │
 │         │ Encryption: TLS 1.2+                                           │
-│         │ Auth: Bearer Token or mTLS (optional, policy-dependent)        │
+│         │ Auth: Bearer Token or mTLS (optional, per platform config)     │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (DMZ)                                                          │
+│  INGRESS (DMZ) — Managed by KServe Networking Layer                     │
 │                                                                          │
 │  [KServe Gateway / Istio Gateway]                                        │
-│  - Port: 443/TCP (external) → internal routing                          │
+│  - Port: 443/TCP (external) → 8080/TCP (internal HTTP)                  │
+│  - Port: 443/TCP (external) → 8081/TCP (internal gRPC)                  │
 │  - TLS Termination: TLS 1.2+                                            │
-│  - AuthN: Delegated (RequestAuthentication / JWT validation)             │
-│  - Managed by: KServe networking layer (Istio / Knative / Gateway API)  │
+│  - AuthN: RequestAuthentication (validates JWT if configured)            │
+│  - Note: Ingress NOT configured by this component — managed externally  │
 │         │                                                                │
-│         │ Port: 15006/TCP (Istio sidecar interception)                   │
+│         │ Port: 15006/TCP (Istio interception)                           │
 │         │ Protocol: HTTP                                                 │
-│         │ Encryption: mTLS (STRICT mode)                                 │
+│         │ Encryption: mTLS (STRICT)                                      │
 │         │ Auth: Service Identity (Istio SPIFFE)                          │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  SERVICE MESH (Trusted - mTLS STRICT)                                   │
+│  SERVICE MESH (Trusted — mTLS STRICT)                                   │
 │                                                                          │
 │  [Istio Sidecar (Envoy Proxy)]                                           │
 │  - Namespace: {user-namespace}                                           │
 │  - Port: 15006/TCP (inbound interception)                                │
-│  - mTLS: STRICT                                                         │
-│  - AuthorizationPolicy: Managed by platform                             │
+│  - Role: mTLS termination, traffic routing, telemetry                    │
 │         │                                                                │
-│         │ Port: 8080/TCP (HTTP) / 8081/TCP (gRPC)                       │
+│         │ Port: 8080/TCP (HTTP) and 8081/TCP (gRPC)                      │
 │         │ Protocol: HTTP / gRPC                                          │
-│         │ Encryption: plaintext (localhost, within pod)                   │
-│         │ Auth: None (sidecar-to-container, same pod)                    │
+│         │ Encryption: plaintext (within pod, localhost)                   │
+│         │ Auth: None (intra-pod communication)                           │
 │         ▼                                                                │
 │  [AutoGluon Server Pod]                                                  │
 │  - Namespace: {user-namespace}                                           │
-│  - ServiceAccount: {infer-service-name}-sa                              │
-│  - Container Image: registry.redhat.io/rhoai/autogluon-server           │
+│  - ServiceAccount: {inference-service-name}-sa                           │
+│  - Image: registry.redhat.io/rhai/autogluon-server-rhel9:tag            │
 │  - UID: 1001 (non-root)                                                  │
-│  - Ports:                                                                │
-│    - 8080/TCP: HTTP (v1 REST + v2 OIP via FastAPI/uvicorn)              │
-│    - 8081/TCP: gRPC (v2 OIP inference)                                  │
 │  - No Kubernetes API access                                              │
-│  - No RBAC roles/bindings                                                │
-│  - Read-only filesystem (except /tmp, $HOME)                             │
+│  - Capabilities: None (non-privileged)                                   │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────────────┐    │
+│  │  HTTP Server (FastAPI/Uvicorn)                                    │    │
+│  │  - Port: 8080/TCP                                                 │    │
+│  │  - Protocol: HTTP (plaintext)                                     │    │
+│  │  - Endpoints:                                                      │    │
+│  │    GET  /v2/health/live          (liveness probe)                  │    │
+│  │    GET  /v2/health/ready         (readiness probe)                 │    │
+│  │    POST /v1/models/{name}:predict (v1 inference)                   │    │
+│  │    POST /v2/models/{name}/infer   (v2 OIP inference)               │    │
+│  │    GET  /v2/models/{name}         (model metadata)                 │    │
+│  │    POST /v2/repository/models/{name}/load   (dynamic load)         │    │
+│  │    POST /v2/repository/models/{name}/unload (dynamic unload)       │    │
+│  └──────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────────────┐    │
+│  │  gRPC Server                                                       │    │
+│  │  - Port: 8081/TCP                                                 │    │
+│  │  - Protocol: gRPC (plaintext)                                     │    │
+│  │  - Service: KServe Inference (V2 Open Inference Protocol)          │    │
+│  └──────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────────────┐    │
+│  │  Model Runtime (in-process, no network)                            │    │
+│  │  - TabularPredictor (autogluon.tabular 1.5.0+rhaiv.2)            │    │
+│  │  - TimeSeriesPredictor (autogluon.timeseries 1.5.0+rhaiv.2)      │    │
+│  │  - Model artifacts loaded from /mnt/models (shared volume)         │    │
+│  └──────────────────────────────────────────────────────────────────┘    │
 │         │                                                                │
-│         │ Port: 443/TCP                                                  │
-│         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS 1.2+                                           │
-│         │ Auth: AWS IAM credentials / GCP SA / None                      │
-│         ▼                                                                │
+│         │ (Egress — model artifact download at startup)                  │
+│         │                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  EXTERNAL SERVICES (Egress)                                              │
 │                                                                          │
-│  [S3-Compatible Storage - s3.amazonaws.com / s3.*.amazonaws.com]         │
-│  - Purpose: Model artifact download (via kserve-storage / boto3)         │
+│  [S3-Compatible Storage — s3.amazonaws.com / custom endpoint]            │
 │  - Port: 443/TCP                                                         │
 │  - Protocol: HTTPS                                                       │
 │  - Encryption: TLS 1.2+                                                  │
-│  - Auth: AWS IAM credentials (access key / IRSA)                         │
+│  - Auth: AWS IAM credentials / access key (from storage-credentials)     │
+│  - Purpose: Model artifact download via kserve-storage (boto3)           │
 │                                                                          │
-│  [GCS Storage - storage.googleapis.com]                                  │
-│  - Purpose: Model artifact download (via kserve-storage)                 │
+│  [GCS Storage — storage.googleapis.com]                                  │
 │  - Port: 443/TCP                                                         │
 │  - Protocol: HTTPS                                                       │
 │  - Encryption: TLS 1.2+                                                  │
 │  - Auth: GCP service account credentials                                 │
+│  - Purpose: Model artifact download via kserve-storage                   │
 │                                                                          │
-│  [HTTP/HTTPS URI Endpoint]                                               │
-│  - Purpose: Model artifact download from generic URI                     │
-│  - Port: 443/TCP or 80/TCP                                              │
-│  - Protocol: HTTPS or HTTP                                               │
-│  - Encryption: TLS 1.2+ (HTTPS) or plaintext (HTTP)                     │
-│  - Auth: None or Bearer Token                                            │
-│                                                                          │
-│  [HuggingFace Hub - huggingface.co]                                      │
-│  - Purpose: Model/tokenizer downloads for time series (Chronos)          │
+│  [HuggingFace Hub — huggingface.co]                                      │
 │  - Port: 443/TCP                                                         │
 │  - Protocol: HTTPS                                                       │
 │  - Encryption: TLS 1.2+                                                  │
 │  - Auth: HF Token (optional)                                             │
+│  - Purpose: Model/tokenizer downloads via huggingface-hub                │
+│                                                                          │
+│  [Generic HTTP/HTTPS URI]                                                │
+│  - Port: 443/TCP or 80/TCP                                               │
+│  - Protocol: HTTPS or HTTP                                               │
+│  - Encryption: TLS 1.2+ (HTTPS) or plaintext (HTTP)                     │
+│  - Auth: None or Bearer Token                                            │
+│  - Purpose: Model artifact download from generic URI                     │
+│                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 
-INTERNAL INTEGRATION POINTS (within cluster):
-
-  [KServe Controller]
-  - Interaction: CRD Watch (InferenceService)
-  - Purpose: Deploys this container as predictor in InferenceService pods
-  - No direct network connection to server container
-
-  [Storage Initializer (Init Container)]
-  - Interaction: Shared volume mount (/mnt/models)
-  - Purpose: Downloads model artifacts before server starts
-  - No direct network connection (sequential container execution)
-
-  [Knative Serving]
-  - Interaction: Pod autoscaling
-  - Purpose: Revision management and autoscaling in serverless mode
-  - No direct network connection to server container
-
-  [Prometheus]
-  - Interaction: Metrics scrape
-  - Port: 8080/TCP
-  - Protocol: HTTP
-  - Encryption: None (within mesh)
-  - Purpose: Scrape uvicorn/KServe server metrics
-
 RBAC Summary:
-  No RBAC roles or bindings defined by this component.
-  - Runs as non-privileged container (UID 1001)
-  - No Kubernetes API access from within container
-  - RBAC managed by KServe controller and platform operator
+- No RBAC defined by this component
+- Runs as non-privileged container (UID 1001)
+- No Kubernetes API access
+- RBAC managed by KServe controller and platform operator (rhods-operator)
+
+Service Mesh Configuration:
+- Istio sidecar injected for mTLS enforcement
+- PeerAuthentication: STRICT (when configured by platform)
+- Traffic routing managed by KServe networking layer (Istio VirtualService / Gateway API)
+- Auth delegated to service mesh or platform ingress (kube-rbac-proxy)
 
 Secrets:
-  - storage-credentials (Opaque) - S3/GCS credentials for model download
-    - Provisioned by: User or platform operator
-    - Auto-Rotate: No
-    - Mounted as: Environment variables or volume (via KServe storage config)
+- storage-credentials (Opaque) - S3/GCS credentials for model download
+  - Provisioned by: User or platform operator
+  - Auto-rotate: No
+  - Contains: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY (S3) or GCP service account JSON (GCS)
+
+Container Security:
+- Base Image: registry.redhat.io/rhai/base-image-cpu-rhel9
+- Runs as: UID 1001 (non-root)
+- Read-only filesystem workaround: runtime_paths.py ensures writable CWD (/tmp or $HOME)
+- MPLCONFIGDIR: /tmp/matplotlib (prevents writes to read-only paths)
+- No privilege escalation
+- No host network access
+- No Kubernetes API access from container
 
 Authentication & Authorization:
-  - No authentication at container level
-  - All auth delegated to:
-    - Istio sidecar (mTLS enforcement, service identity)
-    - KServe Gateway (TLS termination, JWT validation)
-    - kube-rbac-proxy (if configured by platform)
-  - Enforcement point: Service mesh / platform ingress layer
-
-Container Security Context:
-  - UID: 1001 (non-root)
-  - Read-only root filesystem (writable: /tmp, $HOME)
-  - No privileged escalation
-  - No host network/PID/IPC
-  - Base image: registry.redhat.io/rhai/base-image-cpu-rhel9
+- No auth at container level
+- All auth delegated to:
+  1. Istio sidecar (mTLS, SPIFFE identity)
+  2. KServe Gateway (RequestAuthentication, JWT validation)
+  3. kube-rbac-proxy (if configured by platform)
+- Endpoint-level policy enforcement at mesh/gateway layer, not in application

@@ -1,54 +1,50 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist / ML Engineer" "Discovers models, creates API keys, and sends inference requests"
-        platformAdmin = person "Platform Administrator" "Configures MaaS CRDs: MaaSModelRef, MaaSAuthPolicy, MaaSSubscription, Tenant"
+        datascientist = person "Data Scientist / ML Engineer" "Creates subscriptions, obtains API keys, and sends inference requests to LLM models"
+        admin = person "Platform Administrator" "Configures models, auth policies, subscriptions, and Tenant settings"
 
         maas = softwareSystem "Models as a Service (MaaS)" "Multi-tenant LLM inference gateway with model discovery, API key management, authentication, authorization, and token-based rate limiting" {
-            maasController = container "maas-controller" "Reconciles MaaS CRDs into HTTPRoutes, AuthPolicies, TokenRateLimitPolicies, and Istio resources; manages Tenant lifecycle and platform deployment via kustomize" "Go Operator (controller-runtime)"
-            maasAPI = container "maas-api" "OpenAI-compatible REST API for model listing, subscription management, and API key CRUD with PostgreSQL backend" "Go HTTP Service (Gin)" {
-                tags "WebApp"
-            }
-            payloadProcessing = container "payload-processing (BBR)" "Envoy external processor for request/response transformation: model extraction, provider resolution, API translation, credential injection" "Go gRPC Service (Envoy ext_proc)"
+            controller = container "maas-controller" "Reconciles MaaS CRDs into HTTPRoutes, AuthPolicies, TokenRateLimitPolicies, and Istio resources; manages Tenant lifecycle and platform deployment" "Go Operator (controller-runtime)"
+            api = container "maas-api" "OpenAI-compatible REST API for model listing (/v1/models), subscription management, and API key CRUD with PostgreSQL backend" "Go HTTP Service (Gin)"
+            bbr = container "payload-processing (BBR)" "Envoy external processor for request/response transformation: model extraction, provider resolution, API translation, credential injection" "Go gRPC Service (ext_proc)"
+            gateway = container "maas-default-gateway" "Gateway API ingress point for all model inference and management traffic" "Gateway API v1"
         }
 
-        kuadrant = softwareSystem "Kuadrant" "Authentication (Authorino), rate limiting (Limitador), AuthPolicy and TokenRateLimitPolicy CRDs" "External" {
-            authorino = container "Authorino" "Authentication and authorization engine" "gRPC/5001"
-            limitador = container "Limitador" "Token rate limit enforcement" "gRPC/8081"
+        kuadrant = softwareSystem "Kuadrant" "Policy framework providing Authorino (AuthN/AuthZ) and Limitador (rate limiting)" "External" {
+            authorino = container "Authorino" "Evaluates AuthPolicies: API key validation, Kubernetes TokenReview, OIDC JWT verification" "AuthN/AuthZ Service"
+            limitador = container "Limitador" "Enforces TokenRateLimitPolicies: per-subscription token quotas" "Rate Limiter"
         }
 
-        gatewayAPI = softwareSystem "Gateway API" "HTTPRoute and Gateway CRDs for ingress routing" "External"
-        istio = softwareSystem "Istio / OpenShift Service Mesh" "ServiceEntry, DestinationRule, EnvoyFilter for traffic management and mTLS" "External"
-        kserve = softwareSystem "KServe" "LLMInferenceService CRD for internal model serving" "Internal ODH"
-        postgresql = softwareSystem "PostgreSQL" "API key hash storage (SHA-256) and schema migrations" "External"
-        externalProviders = softwareSystem "External Model Providers" "OpenAI, Anthropic, and other LLM providers" "External"
-        odhOperator = softwareSystem "ODH / RHOAI Operator" "Enables MaaS component via DataScienceCluster CRD" "Internal ODH"
-        prometheus = softwareSystem "Prometheus (User Workload Monitoring)" "Metrics collection via PodMonitor and ServiceMonitor" "External"
-        openshiftIngress = softwareSystem "OpenShift Ingress" "Hosts maas-default-gateway for external traffic" "External"
+        kserve = softwareSystem "KServe" "Serves internal LLM models via LLMInferenceService CRDs with Knative autoscaling" "Internal RHOAI"
+        istio = softwareSystem "Istio / OpenShift Service Mesh" "Service mesh providing mTLS, ServiceEntry, DestinationRule, EnvoyFilter for traffic management" "External"
+        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for HTTPRoute and Gateway resource management" "External"
+        postgresql = softwareSystem "PostgreSQL" "Relational database for API key hash storage and schema migrations" "External"
+        odhOperator = softwareSystem "ODH / RHOAI Operator" "Enables MaaS component via DataScienceCluster and deploys maas-controller" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus (User Workload Monitoring)" "Metrics collection via PodMonitor and ServiceMonitor scraping" "External"
+        externalProviders = softwareSystem "External Model Providers" "Third-party LLM APIs: OpenAI, Anthropic, and other providers" "External"
 
         # User interactions
-        dataScientist -> maas "Discovers models, creates API keys, sends inference requests" "HTTPS/443"
-        platformAdmin -> maas "Configures model access, subscriptions, and tenant settings" "kubectl / CRDs"
+        datascientist -> maas "Sends inference requests, lists models, manages API keys" "HTTPS/443"
+        admin -> maas "Creates MaaSModelRef, MaaSAuthPolicy, MaaSSubscription, Tenant CRDs" "kubectl/HTTPS"
 
-        # MaaS internal flows
-        maasController -> maasAPI "Deploys via Tenant reconciliation" "kustomize apply"
-        maasController -> payloadProcessing "Deploys via Tenant reconciliation" "kustomize apply"
+        # MaaS internal
+        gateway -> authorino "Authentication and authorization evaluation" "gRPC/5001 mTLS"
+        gateway -> bbr "Request/response transformation" "gRPC/9004 TLS"
+        gateway -> limitador "Token rate limit enforcement" "gRPC/8081 mTLS"
+        authorino -> api "API key validation and subscription selection callbacks" "HTTP/8080"
+        controller -> api "Deploys via Tenant reconciler kustomize" "Kubernetes API"
+        controller -> bbr "Deploys via Tenant reconciler kustomize" "Kubernetes API"
 
-        # MaaS to external systems
-        maas -> kuadrant "Authentication and rate limiting" "AuthPolicy, TokenRateLimitPolicy CRDs"
-        maas -> gatewayAPI "Ingress routing" "HTTPRoute, Gateway CRDs"
-        maas -> istio "Traffic management, mTLS, external model routing" "ServiceEntry, DestinationRule, EnvoyFilter"
-        maas -> kserve "Internal model serving backend" "LLMInferenceService watch"
-        maasAPI -> postgresql "API key hash CRUD, schema migrations" "TCP/5432"
-        payloadProcessing -> externalProviders "Credential injection for external models" "HTTPS/443"
-
-        # Auth flows
-        authorino -> maasAPI "API key validation, subscription selection" "HTTP/8080 callbacks"
-        limitador -> maas "Token rate limit enforcement" "gRPC/8081"
-
-        # Platform integration
+        # External dependencies
+        maas -> kserve "Routes inference to internal models via HTTPRoute" "HTTP(S)/8000"
+        maas -> externalProviders "Routes inference to external models via ServiceEntry + TLS origination" "HTTPS/443"
+        maas -> istio "ServiceEntry, DestinationRule, EnvoyFilter for mesh configuration" "CRD CRUD"
+        maas -> gatewayAPI "HTTPRoute, Gateway resource management" "CRD CRUD"
+        api -> postgresql "API key hash CRUD and schema migrations" "TCP/5432"
+        maas -> kuadrant "AuthPolicy, TokenRateLimitPolicy, RateLimitPolicy management" "CRD CRUD"
         odhOperator -> maas "Enables modelsasservice component, deploys maas-controller" "DataScienceCluster CRD"
-        prometheus -> maas "Scrapes metrics" "HTTP/8080, HTTP/15090"
-        openshiftIngress -> maas "Hosts Gateway for external traffic" "Gateway API"
+        prometheus -> maas "Scrapes controller, gateway, Authorino, Limitador metrics" "HTTP/8080,15090"
+        bbr -> externalProviders "Reads ExternalModel CRDs to resolve providers and inject credentials" "Kubernetes API"
     }
 
     views {
@@ -62,17 +58,12 @@ workspace {
             autoLayout
         }
 
-        container kuadrant "KuadrantContainers" {
-            include *
-            autoLayout
-        }
-
         styles {
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal ODH" {
+            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
@@ -81,16 +72,13 @@ workspace {
                 background #4a90e2
                 color #ffffff
             }
-            element "WebApp" {
-                shape WebBrowser
-            }
             element "Software System" {
-                background #1168bd
+                background #438dd5
                 color #ffffff
             }
             element "Container" {
-                background #438dd5
-                color #ffffff
+                background #85bbf0
+                color #000000
             }
         }
     }

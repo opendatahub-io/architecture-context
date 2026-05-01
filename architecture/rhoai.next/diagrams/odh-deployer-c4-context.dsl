@@ -1,54 +1,71 @@
 workspace {
     model {
-        sre = person "SRE / Platform Admin" "Manages RHODS platform installation and monitoring"
-        datascientist = person "Data Scientist" "Uses RHODS platform for ML workloads"
+        admin = person "Cluster Admin" "Installs and manages RHODS platform on OpenShift"
+        dataScientist = person "Data Scientist" "Uses RHODS dashboard, notebooks, model serving"
+        sre = person "SRE Engineer" "Monitors platform health, responds to alerts (managed service)"
 
-        odhDeployer = softwareSystem "odh-deployer" "Init container that bootstraps RHODS platform by creating KfDef CRs, CRDs, monitoring stack, network policies, and dashboard configuration" {
-            deploySh = container "deploy.sh" "Main deployment entrypoint orchestrating entire RHODS setup via oc CLI commands" "Shell Script (Bash)"
-            kfdefManifests = container "KfDef Manifests" "KfDef custom resource definitions triggering operator to deploy individual RHODS components" "YAML Manifests"
-            monitoringStack = container "Monitoring Stack" "Prometheus, Alertmanager, Blackbox Exporter deployment manifests with SLO recording rules" "YAML Manifests"
-            dashboardConfig = container "Dashboard Config" "CRDs, ISV application tiles, OdhDashboardConfig, serving runtime templates" "YAML + Kustomize"
-            networkPolicies = container "Network Policies" "Network policies for redhat-ods-applications, monitoring, and operator namespaces" "YAML Manifests"
+        odhDeployer = softwareSystem "odh-deployer" "Init container that bootstraps the RHODS platform by creating KfDef CRs, CRDs, monitoring stack, network policies, and dashboard configuration" {
+            deployScript = container "deploy.sh" "Main entrypoint that orchestrates entire RHODS setup via oc CLI commands" "Shell Script (Bash)"
+            kfdefManifests = container "KfDef Manifests" "8 KfDef custom resource definitions for individual RHODS components" "YAML"
+            monitoringManifests = container "Monitoring Manifests" "Prometheus, Alertmanager, Blackbox Exporter deployment manifests with SLO rules" "YAML"
+            dashboardConfig = container "Dashboard Config" "CRDs, ISV tiles, OdhDashboardConfig, serving runtime templates" "YAML + Kustomize"
+            networkManifests = container "Network Manifests" "NetworkPolicies for applications, monitoring, and operator namespaces" "YAML"
         }
 
-        rhodsOperator = softwareSystem "rhods-operator" "OpenDataHub operator that watches KfDef CRs and reconciles component deployments" "Internal RHOAI"
-        odhManifests = softwareSystem "odh-manifests" "Bundled component manifests tarball extracted by operator" "Internal RHOAI"
-        rhodsDashboard = softwareSystem "rhods-dashboard" "RHODS Dashboard web UI" "Internal RHOAI"
-        notebookController = softwareSystem "odh-notebook-controller" "Manages notebook pod lifecycle" "Internal RHOAI"
-        modelController = softwareSystem "odh-model-controller" "Manages model serving lifecycle" "Internal RHOAI"
-        modelmeshController = softwareSystem "modelmesh-controller" "ModelMesh serving controller" "Internal RHOAI"
-        dspo = softwareSystem "data-science-pipelines-operator" "Data Science Pipelines operator" "Internal RHOAI"
-        clusterPrometheus = softwareSystem "prometheus-k8s (openshift-monitoring)" "Cluster built-in Prometheus for metric federation" "External"
-        openshiftAPI = softwareSystem "OpenShift API Server" "Kubernetes/OpenShift API server" "External"
+        rhodsOperator = softwareSystem "rhods-operator" "OpenDataHub operator that watches KfDef CRs and deploys RHODS component workloads from bundled manifests" "Internal RHOAI"
+        rhodsDashboard = softwareSystem "RHODS Dashboard" "Web UI for data science workflows, notebook management, and model serving" "Internal RHOAI"
+        notebookController = softwareSystem "ODH Notebook Controller" "Manages Jupyter notebook pod lifecycle" "Internal RHOAI"
+        modelController = softwareSystem "ODH Model Controller" "Manages model serving infrastructure" "Internal RHOAI"
+        modelmeshController = softwareSystem "ModelMesh Controller" "Multi-model serving controller for inference services" "Internal RHOAI"
+        dspo = softwareSystem "Data Science Pipelines Operator" "Manages data science pipeline workflows" "Internal RHOAI"
+
+        prometheus = softwareSystem "RHODS Prometheus" "Dedicated Prometheus instance for RHODS SLO monitoring with oauth-proxy" "Monitoring"
+        alertmanager = softwareSystem "RHODS Alertmanager" "Alert routing for SLO violations with oauth-proxy" "Monitoring"
+        blackboxExporter = softwareSystem "Blackbox Exporter" "HTTP probe for dashboard availability SLO" "Monitoring"
+
+        clusterPrometheus = softwareSystem "Cluster Prometheus" "OpenShift built-in monitoring in openshift-monitoring namespace" "External"
+        openshiftAPI = softwareSystem "OpenShift API Server" "Kubernetes API server for cluster operations" "External"
         openshiftConsole = softwareSystem "OpenShift Console" "OpenShift web console with Application Launcher" "External"
-        pagerduty = softwareSystem "PagerDuty" "Incident alerting service (managed service only)" "External"
+
+        pagerduty = softwareSystem "PagerDuty" "Incident management for critical alerts (managed service only)" "External"
         deadMansSnitch = softwareSystem "Dead Man's Snitch" "Monitoring liveness heartbeat service (managed service only)" "External"
-        smtpServer = softwareSystem "SMTP Server" "Email notification service (managed service only)" "External"
-        osdAddon = softwareSystem "OSD Addon Framework" "OpenShift Dedicated addon parameter injection" "External"
+        smtpServer = softwareSystem "SMTP Server" "Email delivery for user-facing notifications (managed service only)" "External"
+        osdAddonFramework = softwareSystem "OSD Addon Framework" "Provisions addon secrets and parameters on OpenShift Dedicated" "External"
 
-        sre -> odhDeployer "Triggers deployment via operator"
-        datascientist -> rhodsDashboard "Uses RHODS dashboard"
+        # Deployer relationships
+        admin -> odhDeployer "Triggers via operator installation"
+        odhDeployer -> openshiftAPI "Creates namespaces, CRDs, KfDef CRs, NetworkPolicies, RBAC" "HTTPS/443, SA token"
+        odhDeployer -> rhodsOperator "Creates KfDef CRs that trigger component deployment" "Kubernetes API"
+        odhDeployer -> openshiftConsole "Creates ConsoleLink CR for dashboard access" "Kubernetes API"
 
-        deploySh -> openshiftAPI "Creates namespaces, CRDs, KfDefs, ConfigMaps, Secrets, NetworkPolicies via oc CLI" "HTTPS/443"
-        deploySh -> kfdefManifests "Applies KfDef CRs"
-        deploySh -> monitoringStack "Deploys Prometheus, Alertmanager, Blackbox Exporter"
-        deploySh -> dashboardConfig "Applies CRDs, ISV tiles, OdhDashboardConfig"
-        deploySh -> networkPolicies "Applies network policies"
+        # Operator relationships
+        rhodsOperator -> rhodsDashboard "Deploys from KfDef manifests" "Kubernetes API"
+        rhodsOperator -> notebookController "Deploys from KfDef manifests" "Kubernetes API"
+        rhodsOperator -> modelController "Deploys from KfDef manifests" "Kubernetes API"
+        rhodsOperator -> modelmeshController "Deploys from KfDef manifests" "Kubernetes API"
+        rhodsOperator -> dspo "Deploys from KfDef manifests" "Kubernetes API"
 
-        odhDeployer -> rhodsOperator "Creates KfDef CRs that operator watches and reconciles" "Kubernetes API"
-        rhodsOperator -> odhManifests "Extracts and applies component manifests" "file:///opt/manifests"
-        odhDeployer -> openshiftConsole "Creates ConsoleLink CR for dashboard in Application Launcher" "Kubernetes API"
-        odhDeployer -> osdAddon "Reads addon-managed-odh-parameters, pagerduty, smtp, deadmanssnitch secrets" "Kubernetes API"
+        # Monitoring relationships
+        prometheus -> clusterPrometheus "Federated metrics scraping" "HTTPS/9091, Bearer token"
+        prometheus -> notebookController "Scrape metrics" "HTTP/8080"
+        prometheus -> modelController "Scrape metrics" "HTTP/8080"
+        prometheus -> modelmeshController "Scrape metrics" "HTTP/8080"
+        prometheus -> dspo "Scrape metrics" "HTTP/8080"
+        prometheus -> rhodsOperator "Scrape metrics" "HTTP/8383"
+        prometheus -> blackboxExporter "Probe requests" "HTTP/9115"
+        blackboxExporter -> rhodsDashboard "HTTP availability probe" "HTTPS/8443"
+        prometheus -> alertmanager "Fire SLO alerts"
+        alertmanager -> pagerduty "Critical alerts" "HTTPS/443, Service key"
+        alertmanager -> deadMansSnitch "Heartbeat" "HTTPS/443"
+        alertmanager -> smtpServer "User notification emails" "SMTP/TLS"
 
-        monitoringStack -> clusterPrometheus "Federates haproxy, controller_runtime, container, kubelet metrics" "HTTPS/9091"
-        monitoringStack -> notebookController "Scrapes metrics" "HTTP/8080"
-        monitoringStack -> modelController "Scrapes metrics" "HTTP/8080"
-        monitoringStack -> modelmeshController "Scrapes metrics" "HTTP/8080"
-        monitoringStack -> dspo "Scrapes metrics" "HTTP/8080"
-        monitoringStack -> rhodsDashboard "Blackbox probe for SLO monitoring" "HTTPS/8443"
-        monitoringStack -> pagerduty "Sends critical alerts (managed service only)" "HTTPS/443"
-        monitoringStack -> deadMansSnitch "Sends heartbeat (managed service only)" "HTTPS/443"
-        monitoringStack -> smtpServer "Sends user notification emails (managed service only)" "SMTP/TLS"
+        # User relationships
+        dataScientist -> rhodsDashboard "Uses for ML workflows" "HTTPS/8443"
+        sre -> prometheus "Monitors SLOs" "HTTPS/9091, OAuth"
+        sre -> alertmanager "Manages alerts" "HTTPS/443, OAuth"
+
+        # Addon framework
+        osdAddonFramework -> odhDeployer "Provisions secrets (PagerDuty, SMTP, DMS)" "Kubernetes Secrets"
     }
 
     views {
@@ -71,14 +88,18 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Person" {
-                shape Person
-                background #4a90e2
+            element "Monitoring" {
+                background #e6522c
                 color #ffffff
             }
             element "Software System" {
                 background #4a90e2
                 color #ffffff
+            }
+            element "Person" {
+                background #08427b
+                color #ffffff
+                shape person
             }
             element "Container" {
                 background #438dd5

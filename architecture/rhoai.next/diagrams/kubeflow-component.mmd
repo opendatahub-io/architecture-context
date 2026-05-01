@@ -1,75 +1,64 @@
 graph TB
-    subgraph KubeflowControllers["Kubeflow Notebook Controllers (Dual-Controller Architecture)"]
-        direction TB
-
-        subgraph KFController["notebook-controller (Upstream)"]
-            KFC[KF Controller<br/>Go Operator<br/>controller-runtime 0.21.0]
-            KFMetrics[Metrics Server<br/>8080/TCP]
-            KFHealth[Health Probes<br/>8081/TCP]
-            CullingReconciler[Culling Reconciler<br/>Idle Detection]
-            KFC --- KFMetrics
-            KFC --- KFHealth
-            KFC --- CullingReconciler
+    subgraph "Kubeflow Notebook Controllers"
+        subgraph "notebook-controller (Upstream)"
+            KFController["KF Notebook Controller<br/>Go Operator (controller-runtime)<br/>:8080 metrics, :8081 health"]
+            KFCuller["Culling Reconciler<br/>Idle detection & auto-stop"]
+            KFController --- KFCuller
         end
 
-        subgraph ODHController["odh-notebook-controller (RHOAI Extension)"]
-            ODHC[ODH Controller<br/>Go Operator<br/>controller-runtime 0.21.0]
-            ODHMetrics[Metrics Server<br/>8080/TCP]
-            ODHHealth[Health Probes<br/>8081/TCP]
-            MutatingWH[Mutating Webhook<br/>8443/TCP HTTPS]
-            ValidatingWH[Validating Webhook<br/>8443/TCP HTTPS]
-            ODHC --- ODHMetrics
-            ODHC --- ODHHealth
-            ODHC --- MutatingWH
-            ODHC --- ValidatingWH
+        subgraph "odh-notebook-controller (RHOAI Extension)"
+            ODHController["ODH Notebook Controller<br/>Go Operator (controller-runtime)<br/>:8080 metrics, :8081 health, :8443 webhook"]
+            MutatingWH["Mutating Webhook<br/>/mutate-notebook-v1<br/>:8443/TCP HTTPS"]
+            ValidatingWH["Validating Webhook<br/>/validate-notebook-v1<br/>:8443/TCP HTTPS"]
+            ODHController --- MutatingWH
+            ODHController --- ValidatingWH
         end
     end
 
-    %% CRD
-    NotebookCR["Notebook CR<br/>kubeflow.org/v1<br/>(Namespaced)"]
+    User["User / ODH Dashboard"] -->|"kubectl create Notebook"| K8sAPI["Kubernetes API<br/>443/TCP HTTPS"]
+    K8sAPI -->|"admission webhook"| MutatingWH
+    K8sAPI -->|"admission webhook"| ValidatingWH
 
-    %% User interaction
-    User[User / Dashboard] -->|creates| NotebookCR
-    NotebookCR -->|watched by| KFC
-    NotebookCR -->|watched by| ODHC
-
-    %% Webhook flow
-    User -->|admission| MutatingWH
-    User -->|admission| ValidatingWH
+    %% CRDs
+    NotebookCR["Notebook CR<br/>kubeflow.org/v1"]
+    K8sAPI -->|"stores"| NotebookCR
+    NotebookCR -->|"watched by"| KFController
+    NotebookCR -->|"watched by"| ODHController
 
     %% KF Controller creates
-    KFC -->|creates| StatefulSet[StatefulSet<br/>Notebook Pod]
-    KFC -->|creates| NBService[Service<br/>port 80→8888]
-    KFC -->|"creates - optional"| VirtualService[VirtualService<br/>Istio]
+    KFController -->|"creates"| StatefulSet["StatefulSet<br/>(notebook pod)"]
+    KFController -->|"creates"| SvcNB["Service<br/>{name}:80→8888"]
+    KFController -.->|"creates (optional)"| VirtualService["VirtualService<br/>(Istio overlay only)"]
 
     %% ODH Controller creates
-    ODHC -->|creates| HTTPRoute[HTTPRoute<br/>Gateway API]
-    ODHC -->|creates| RefGrant[ReferenceGrant<br/>Cross-namespace]
-    ODHC -->|creates| KRBPService[kube-rbac-proxy<br/>Service 8443/TCP]
-    ODHC -->|creates| NetPolicy[NetworkPolicy<br/>Ingress isolation]
-    ODHC -->|creates| AuthCRB[ClusterRoleBinding<br/>auth-delegator]
+    ODHController -->|"creates"| HTTPRoute["HTTPRoute<br/>nb-{ns}-{name}<br/>Path: /notebook/{ns}/{name}"]
+    ODHController -->|"creates"| RefGrant["ReferenceGrant<br/>(cross-namespace auth)"]
+    ODHController -->|"creates"| NetPol["NetworkPolicy<br/>(ingress restriction)"]
+    ODHController -->|"creates"| KRBPSvc["kube-rbac-proxy Service<br/>{name}-kube-rbac-proxy:8443"]
+    ODHController -->|"creates"| CRBSA["ClusterRoleBinding<br/>system:auth-delegator"]
 
-    %% Idle culling
-    CullingReconciler -->|polls 8888/TCP| StatefulSet
+    %% Culler
+    KFCuller -->|"polls :8888"| StatefulSet
+    KFCuller -->|"scales to 0"| StatefulSet
 
-    %% External dependencies
-    HTTPRoute -->|parentRef| DSGateway[data-science-gateway<br/>openshift-ingress]
-    KRBPService -->|TLS cert| ServiceCA[OpenShift Service CA]
+    %% Reconciliation lock
+    MutatingWH -.->|"sets stop-notebook lock"| NotebookCR
+    ODHController -.->|"removes lock after init"| NotebookCR
 
-    %% Styling
-    style KFC fill:#4a90e2,color:#fff
-    style ODHC fill:#4a90e2,color:#fff
-    style MutatingWH fill:#e8524a,color:#fff
-    style ValidatingWH fill:#e8524a,color:#fff
-    style CullingReconciler fill:#4a90e2,color:#fff
-    style NotebookCR fill:#f5a623,color:#fff
-    style StatefulSet fill:#7ed321,color:#fff
-    style NBService fill:#7ed321,color:#fff
-    style HTTPRoute fill:#7ed321,color:#fff
-    style RefGrant fill:#7ed321,color:#fff
-    style KRBPService fill:#7ed321,color:#fff
-    style NetPolicy fill:#7ed321,color:#fff
-    style AuthCRB fill:#7ed321,color:#fff
-    style VirtualService fill:#999,color:#fff
-    style DSGateway fill:#e8e8e8,stroke:#333
-    style ServiceCA fill:#e8e8e8,stroke:#333
+    %% Gateway
+    HTTPRoute -->|"parentRef"| Gateway["data-science-gateway<br/>(openshift-ingress)"]
+
+    %% Styles
+    style KFController fill:#4a90e2,stroke:#333,color:#fff
+    style KFCuller fill:#4a90e2,stroke:#333,color:#fff
+    style ODHController fill:#7ed321,stroke:#333,color:#fff
+    style MutatingWH fill:#7ed321,stroke:#333,color:#fff
+    style ValidatingWH fill:#7ed321,stroke:#333,color:#fff
+    style NotebookCR fill:#f5a623,stroke:#333,color:#fff
+    style StatefulSet fill:#9b59b6,stroke:#333,color:#fff
+    style HTTPRoute fill:#e74c3c,stroke:#333,color:#fff
+    style Gateway fill:#e8e8e8,stroke:#333
+    style NetPol fill:#e74c3c,stroke:#333,color:#fff
+    style KRBPSvc fill:#e74c3c,stroke:#333,color:#fff
+    style K8sAPI fill:#e8e8e8,stroke:#333
+    style VirtualService fill:#cccccc,stroke:#999,stroke-dasharray: 5 5

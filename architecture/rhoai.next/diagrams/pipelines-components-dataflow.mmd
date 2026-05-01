@@ -1,56 +1,70 @@
 sequenceDiagram
     participant User as Data Scientist
-    participant DSPA as DSPA / KFP API Server
-    participant Init as Init Container
-    participant SharedVol as Shared Volume<br/>/config/managed-pipelines/
+    participant DSPA as DSPA<br/>KFP Runtime
+    participant Init as Init Container<br/>(pipelines-components)
+    participant KFP as KFP API Server
     participant TaskPod as KFP Task Pod
+    participant PVC as Shared PVC<br/>(50Gi nfs-csi RWX)
     participant S3 as S3 Storage<br/>443/TCP HTTPS
     participant HF as Hugging Face Hub<br/>443/TCP HTTPS
-    participant PVC as Shared PVC<br/>(nfs-csi)
     participant LlamaStack as Llama Stack API<br/>443/TCP HTTPS
     participant ModelReg as Model Registry<br/>443/TCP HTTPS
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
 
-    Note over Init,SharedVol: Flow 4: Init Container Startup
-    Init->>Init: Read /app/managed-pipelines.json
-    Init->>SharedVol: Copy compiled pipeline YAMLs
-    DSPA->>SharedVol: Discover & register managed pipelines
+    rect rgb(230, 240, 255)
+        Note over Init,KFP: Flow 4: Init Container Startup
+        Init->>Init: Read /app/managed-pipelines.json
+        Init->>KFP: Copy compiled YAMLs to<br/>/config/managed-pipelines/<br/>(shared volume, filesystem)
+        KFP->>KFP: Discover & register<br/>managed pipelines
+    end
 
-    Note over User,ModelReg: Flow 1: AutoML Tabular Training
-    User->>DSPA: Submit AutoML pipeline run
-    DSPA->>TaskPod: Schedule data loader pod
-    TaskPod->>S3: Download dataset<br/>HTTPS/443, AWS IAM
-    S3-->>TaskPod: Dataset CSV/Parquet
-    TaskPod->>PVC: Write dataset to shared PVC
-    DSPA->>TaskPod: Schedule training pod (odh-automl image)
-    TaskPod->>PVC: Read dataset, write model artifacts
-    DSPA->>TaskPod: Schedule leaderboard evaluation
-    TaskPod->>PVC: Read model artifacts
-    TaskPod->>DSPA: Store leaderboard as KFP artifact<br/>HTTPS/443, SA Token
+    rect rgb(255, 245, 230)
+        Note over User,S3: Flow 1: AutoML Tabular Training Pipeline
+        User->>DSPA: Submit AutoML Tabular Pipeline
+        DSPA->>TaskPod: Schedule data loader pod
+        TaskPod->>S3: Download dataset<br/>HTTPS/443, TLS 1.2+<br/>Auth: AWS IAM credentials
+        S3-->>TaskPod: Dataset CSV/Parquet
+        TaskPod->>PVC: Write dataset to shared workspace
+        DSPA->>TaskPod: Schedule AutoGluon training pod<br/>(odh-automl image)
+        TaskPod->>PVC: Read dataset, write models
+        TaskPod->>TaskPod: AutoGluon model training<br/>& selection
+        DSPA->>TaskPod: Schedule leaderboard pod
+        TaskPod->>PVC: Read model artifacts
+        TaskPod->>KFP: Upload leaderboard artifact<br/>HTTPS/443, SA Token
+    end
 
-    Note over User,ModelReg: Flow 2: Fine-Tuning (LoRA/SFT/OSFT)
-    User->>DSPA: Submit fine-tuning pipeline run
-    DSPA->>TaskPod: Schedule dataset download pod
-    TaskPod->>HF: Download model & dataset<br/>HTTPS/443, Bearer Token
-    HF-->>TaskPod: Model weights + dataset
-    TaskPod->>PVC: Write to 50Gi PVC (RWX, nfs-csi)
-    DSPA->>TaskPod: Schedule training pod (GPU)
-    TaskPod->>PVC: Read data, write fine-tuned model
-    DSPA->>TaskPod: Schedule lm-eval evaluation
-    TaskPod->>PVC: Read model, run benchmarks
-    DSPA->>TaskPod: Schedule model registration
-    TaskPod->>ModelReg: Register model with provenance<br/>HTTPS/443, Bearer Token
+    rect rgb(230, 255, 230)
+        Note over User,ModelReg: Flow 2: Fine-Tuning Pipeline (LoRA/SFT/OSFT)
+        User->>DSPA: Submit fine-tuning pipeline
+        DSPA->>TaskPod: Schedule dataset download pod
+        TaskPod->>HF: Download model & dataset<br/>HTTPS/443, TLS 1.2+<br/>Auth: Bearer Token (HF_TOKEN)
+        HF-->>TaskPod: Model weights & dataset
+        TaskPod->>PVC: Write to shared PVC<br/>(50Gi, nfs-csi, RWX)
+        DSPA->>TaskPod: Schedule training pod (GPU)
+        TaskPod->>PVC: Read data, train model
+        TaskPod->>TaskPod: Training via<br/>unsloth/mini-trainer/instructlab
+        TaskPod->>PVC: Write fine-tuned model
+        DSPA->>TaskPod: Schedule lm-eval pod
+        TaskPod->>PVC: Read model artifacts
+        TaskPod->>TaskPod: Evaluate with lm-eval harness
+        DSPA->>TaskPod: Schedule model registration pod
+        TaskPod->>ModelReg: Register model with provenance<br/>HTTPS/443, TLS 1.2+<br/>Auth: Bearer Token (K8s SA)
+    end
 
-    Note over User,ModelReg: Flow 3: AutoRAG Optimization
-    User->>DSPA: Submit AutoRAG pipeline run
-    DSPA->>TaskPod: Schedule document discovery pod
-    TaskPod->>S3: List & download documents<br/>HTTPS/443, AWS IAM
-    S3-->>TaskPod: PDF/DOCX/PPTX/HTML documents
-    DSPA->>TaskPod: Schedule text extraction (Docling)
-    TaskPod->>TaskPod: Extract text (in-process Docling)
-    DSPA->>TaskPod: Schedule RAG optimization (odh-autorag image)
-    TaskPod->>LlamaStack: Generate embeddings<br/>HTTPS/443, API Key
-    LlamaStack-->>TaskPod: Document embeddings
-    TaskPod->>TaskPod: Index in ChromaDB (in-process)
-    TaskPod->>LlamaStack: LLM inference for evaluation<br/>HTTPS/443, API Key
-    DSPA->>TaskPod: Schedule leaderboard evaluation
-    TaskPod->>DSPA: Store RAG leaderboard as KFP artifact
+    rect rgb(255, 230, 245)
+        Note over User,LlamaStack: Flow 3: AutoRAG Document Optimization Pipeline
+        User->>DSPA: Submit AutoRAG pipeline
+        DSPA->>TaskPod: Schedule test data loader pod
+        TaskPod->>S3: Download test data<br/>HTTPS/443, AWS IAM
+        DSPA->>TaskPod: Schedule documents discovery pod
+        TaskPod->>S3: Discover documents<br/>HTTPS/443, AWS IAM
+        DSPA->>TaskPod: Schedule text extraction pod<br/>(odh-autorag image)
+        TaskPod->>TaskPod: Docling extracts text<br/>(PDF, DOCX, PPTX, HTML)
+        DSPA->>TaskPod: Schedule RAG optimization pod<br/>(odh-autorag image)
+        TaskPod->>LlamaStack: Generate embeddings<br/>HTTPS/443, TLS 1.2+<br/>Auth: API Key
+        LlamaStack-->>TaskPod: Embedding vectors
+        TaskPod->>TaskPod: ChromaDB indexing<br/>(in-process)
+        TaskPod->>TaskPod: ai4rag template optimization
+        DSPA->>TaskPod: Schedule leaderboard pod
+        TaskPod->>KFP: Upload evaluation artifact<br/>HTTPS/443, SA Token
+    end

@@ -1,137 +1,134 @@
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                        │
-│                                                                              │
-│  [External Client]                                                           │
-│         │                                                                    │
-│         │ Port: 8443/TCP                                                     │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS 1.3                                                │
-│         │ Auth: Bearer Token (Kubernetes SA or user token)                    │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (Auth Enforcement)                                                  │
-│                                                                              │
-│  [kube-rbac-proxy Sidecar]                                                   │
-│  - Port: 8443/TCP (external) → 8000/TCP (internal)                          │
-│  - TLS Termination: TLS 1.3                                                  │
-│  - AuthN: Bearer Token validation against Kubernetes API                     │
-│  - AuthZ: RBAC on ServiceAccount or user identity                            │
-│  - Injected by: RHOAI platform operator                                      │
-│         │                                                                    │
-│         │ Port: 8000/TCP                                                     │
-│         │ Protocol: HTTP                                                     │
-│         │ Encryption: None (localhost / pod-internal)                         │
-│         │ Auth: None (pre-authenticated by sidecar)                          │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  APPLICATION (Pod-Internal)                                                  │
-│                                                                              │
-│  [vLLM OpenAI API Server]                                                    │
-│  - Container: odh-vllm-gaudi-rhel9                                           │
-│  - Port: 8000/TCP                                                            │
-│  - User: non-root (UID 2000)                                                 │
-│  - Endpoints:                                                                │
-│    - POST /v1/completions         (text completion)                          │
-│    - POST /v1/chat/completions    (chat completion)                          │
-│    - GET  /v1/models              (list models)                              │
-│    - POST /v1/embeddings          (embeddings)                               │
-│    - GET  /health                 (health check, no auth internally)          │
-│    - GET  /metrics                (prometheus metrics, no auth internally)    │
-│         │                                                                    │
-│         │ In-process calls                                                   │
-│         ▼                                                                    │
-│  [HPUModelRunner + HPUWorker]                                                │
-│  - Executes model inference on Intel Gaudi HPU                               │
-│  - Uses SynapseAI Runtime (v1.23.0) for graph compilation                    │
-│  - Uses PyTorch HPU Backend (v2.9.0) for tensor operations                   │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  EGRESS (Outbound from Pod)                                                  │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │ Model Weight Downloads (Startup)                                    │     │
-│  │                                                                     │     │
-│  │ [HuggingFace Hub - huggingface.co]                                  │     │
-│  │ - Port: 443/TCP                                                     │     │
-│  │ - Protocol: HTTPS                                                   │     │
-│  │ - Encryption: TLS 1.2+                                              │     │
-│  │ - Auth: HF_TOKEN Bearer token                                      │     │
-│  │ - Purpose: Download model weights and tokenizer files               │     │
-│  │                                                                     │     │
-│  │ [Model Storage - S3/PVC/NFS]                                        │     │
-│  │ - Port: Varies (443/TCP for S3, filesystem for PVC/NFS)             │     │
-│  │ - Protocol: HTTPS or filesystem                                     │     │
-│  │ - Encryption: TLS 1.2+ (for S3)                                     │     │
-│  │ - Auth: AWS IAM / service account                                   │     │
-│  │ - Purpose: Download model weights at startup                        │     │
-│  └─────────────────────────────────────────────────────────────────────┘     │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │ Distributed Inference (Intra-Cluster, Multi-HPU)                    │     │
-│  │                                                                     │     │
-│  │ [Ray Cluster Peers]                                                 │     │
-│  │ - Port: 6379/TCP (head node) + dynamic ports                        │     │
-│  │ - Protocol: TCP                                                     │     │
-│  │ - Encryption: None (plaintext, intra-cluster)                       │     │
-│  │ - Auth: Ray cluster auth                                            │     │
-│  │ - Purpose: Distributed inference coordination                       │     │
-│  │                                                                     │     │
-│  │ [HCCL Peer HPUs]                                                    │     │
-│  │ - Port: Dynamic                                                     │     │
-│  │ - Protocol: RDMA/TCP                                                │     │
-│  │ - Encryption: None (plaintext, intra-cluster)                       │     │
-│  │ - Auth: None                                                        │     │
-│  │ - Purpose: Habana Collective Communication (all-reduce, all-gather) │     │
-│  │   for tensor/data/expert parallelism                                │     │
-│  │                                                                     │     │
-│  │ [NIXL Peer Nodes]                                                   │     │
-│  │ - Port: Dynamic                                                     │     │
-│  │ - Protocol: RDMA/TCP                                                │     │
-│  │ - Encryption: None (plaintext, intra-cluster)                       │     │
-│  │ - Auth: None                                                        │     │
-│  │ - Purpose: KV cache transfer for disaggregated prefill              │     │
-│  └─────────────────────────────────────────────────────────────────────┘     │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  PLATFORM INTEGRATION                                                        │
-│                                                                              │
-│  [KServe / ServingRuntime]                                                   │
-│  - Deploys odh-vllm-gaudi-rhel9 as InferenceService container               │
-│  - Creates Service (ClusterIP) on port 8000/TCP                              │
-│  - Injects kube-rbac-proxy sidecar for auth enforcement                      │
-│  - Manages ingress (Gateway API HTTPRoute / OpenShift Route)                 │
-│                                                                              │
-│  [RHOAI Dashboard]                                                           │
-│  - Users select vLLM-Gaudi runtime for Intel Gaudi workloads                 │
-│                                                                              │
-│  [Model Registry]                                                            │
-│  - Stores container image references for model serving                       │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client / Data Scientist]                                      │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.3                                            │
+│         │ Auth: Bearer Token (Kubernetes SA or user token)               │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Pod-level Auth Proxy)                                         │
+│                                                                          │
+│  [kube-rbac-proxy Sidecar]                                               │
+│  - Port: 8443/TCP (external) → 8000/TCP (internal, localhost)           │
+│  - TLS Termination: TLS 1.3                                             │
+│  - AuthN: Bearer Token validation against Kubernetes API server         │
+│  - AuthZ: RBAC on Kubernetes ServiceAccount or user token               │
+│  - Injected by: RHOAI platform operator                                 │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (localhost/pod-internal)                       │
+│         │ Auth: None (pre-authenticated by proxy)                        │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (Pod-internal, Trusted after auth)                         │
+│                                                                          │
+│  [vLLM OpenAI API Server]                                                │
+│  - Container: odh-vllm-gaudi-rhel9                                       │
+│  - Port: 8000/TCP (HTTP, plaintext)                                      │
+│  - User: non-root (UID 2000)                                             │
+│  - Endpoints:                                                            │
+│    - POST /v1/completions       (text completion)                        │
+│    - POST /v1/chat/completions  (chat completion)                        │
+│    - GET  /v1/models            (list models)                            │
+│    - POST /v1/embeddings        (text embeddings)                        │
+│    - GET  /health               (health check, no auth internally)       │
+│    - GET  /metrics              (prometheus metrics, no auth internally)  │
+│         │                                                                │
+│         │ In-process calls                                               │
+│         ▼                                                                │
+│  [HPUModelRunner / HPUWorker]                                            │
+│  - Plugin: vllm_gaudi (registered via entry points)                      │
+│  - Device: Intel Gaudi HPU (Gaudi2 or Gaudi3)                            │
+│  - Attention: Standard, MLA, Unified, Unified-MLA                        │
+│  - Quantization: FP8, INC, GPTQ, AWQ, Compressed-Tensors, ModelOpt      │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER-INTERNAL (Intra-cluster, no encryption)                        │
+│                                                                          │
+│  ┌─── Distributed Inference (Multi-HPU) ───┐                            │
+│  │                                          │                            │
+│  │  [Ray Cluster]                           │                            │
+│  │  - Port: 6379/TCP (head node)            │                            │
+│  │  - Protocol: TCP                         │                            │
+│  │  - Encryption: None (plaintext)          │                            │
+│  │  - Auth: Ray cluster internal            │                            │
+│  │         │                                │                            │
+│  │         │ Dynamic ports                  │                            │
+│  │         ▼                                │                            │
+│  │  [HPUWorker Peers (Rank 1..N)]           │                            │
+│  │  - Protocol: TCP                         │                            │
+│  │  - Encryption: None (plaintext)          │                            │
+│  │                                          │                            │
+│  │  [HCCL Peer HPUs]                        │                            │
+│  │  - Protocol: RDMA/TCP                    │                            │
+│  │  - Encryption: None (plaintext)          │                            │
+│  │  - Purpose: All-reduce, all-gather for   │                            │
+│  │    tensor/expert/data parallelism         │                            │
+│  │                                          │                            │
+│  │  [NIXL Peer Nodes] (Optional)            │                            │
+│  │  - Protocol: RDMA/TCP                    │                            │
+│  │  - Encryption: None (plaintext)          │                            │
+│  │  - Purpose: KV cache transfer for        │                            │
+│  │    disaggregated prefill                  │                            │
+│  └──────────────────────────────────────────┘                            │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                              │
+│                                                                          │
+│  [HuggingFace Hub - huggingface.co]                                      │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: HF_TOKEN Bearer                                                 │
+│  - Purpose: Model weight and tokenizer downloads                         │
+│                                                                          │
+│  [S3 Storage - s3.amazonaws.com or compatible]                           │
+│  - Port: 443/TCP (or varies for PVC/NFS)                                │
+│  - Protocol: HTTPS (or filesystem for PVC)                               │
+│  - Encryption: TLS 1.2+ (for S3)                                        │
+│  - Auth: AWS IAM / service account                                       │
+│  - Purpose: Model artifact storage and retrieval                         │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
 - No RBAC resources defined by this component
-- RBAC is managed by KServe deployment and platform operator (rhods-operator)
-- kube-rbac-proxy sidecar enforces RBAC on incoming requests:
-  - Validates Bearer tokens against Kubernetes API server
-  - Enforces RBAC on ServiceAccount or user identity
+- RBAC is managed by:
+  - KServe deployment (ServingRuntime CRDs)
+  - RHOAI platform operator (rhods-operator)
+  - kube-rbac-proxy sidecar (Bearer token validation against K8s API server)
+
+Authentication & Authorization:
+- /v1/* endpoints:
+  - Auth: Bearer Token (delegated to kube-rbac-proxy sidecar)
+  - Enforcement: kube-rbac-proxy on port 8443/TCP
+  - Policy: RBAC on Kubernetes ServiceAccount or user token
+- /health, /metrics:
+  - Auth: None (when accessed pod-internally)
+  - Exposure: Informational, pod-local access only
 
 Secrets:
-- HF_TOKEN (Opaque, env var) - HuggingFace Hub authentication for model downloads
-  - Provisioned by: User/admin
+- HF_TOKEN (Opaque, env var)
+  - Purpose: HuggingFace Hub authentication for model downloads
+  - Provisioned By: User/admin
   - Auto-Rotate: No
-  - Purpose: Bearer token for accessing gated models on HuggingFace Hub
+  - Sensitivity: Medium (grants read access to gated model repositories)
 
 Container Security:
 - Base Image: UBI 9.6 (Red Hat Universal Base Image)
-- Run-as User: non-root (UID 2000) for OpenShift compatibility
-- Build System: Konflux (multi-stage Dockerfile)
-- Version Pins: vLLM v0.16.0, vllm-gaudi v0.16.0, SynapseAI 1.23.0
+- Runtime User: non-root (UID 2000)
+- Build: Multi-stage Dockerfile via Konflux pipeline
+- No capabilities or privilege escalation required
 
-Network Security Notes:
-- Distributed inference channels (Ray, HCCL, NIXL) use PLAINTEXT
-  - These are intra-cluster communications between pods in the same namespace
-  - No encryption or authentication on distributed inference traffic
-  - Risk: If cluster network is compromised, inference data could be intercepted
-- External model downloads use TLS 1.2+ with proper authentication
-- Client-facing traffic is TLS 1.3 terminated at kube-rbac-proxy sidecar
+Network Notes:
+- vLLM itself does NOT implement authentication or TLS
+- All external auth/TLS is handled by kube-rbac-proxy sidecar (injected by platform)
+- Intra-cluster distributed communication (Ray, HCCL, NIXL) is plaintext
+  - Acceptable: Pod-to-pod within trusted cluster network
+  - Risk: No encryption on RDMA/TCP channels for model weights and KV caches
+- Egress to HuggingFace Hub requires HF_TOKEN if accessing gated models
+- Egress to S3 requires AWS IAM credentials (typically via IRSA or env vars)

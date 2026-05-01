@@ -1,53 +1,52 @@
 workspace {
     model {
-        orchestrator = person "FMS Guardrails Orchestrator" "Routes content inspection requests to detection backends"
+        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "Routes content inspection requests to detection backends; handles external-facing authentication" "Internal RHOAI"
 
-        regexDetector = softwareSystem "Guardrails Regex Detector" "Lightweight Rust HTTP service that detects PII and custom patterns in text using regex matching" {
-            axumServer = container "Axum HTTP Server" "Routes HTTP requests, binds to 0.0.0.0:8080" "Rust / Axum 0.7.9"
-            detectionEngine = container "Detection Engine" "Performs regex pattern matching against text content" "Rust / regex 1.11.1"
-            builtinRegistry = container "Builtin Pattern Registry" "HashMap of named PII patterns (email, ssn, credit-card)" "Rust HashMap"
+        regexDetector = softwareSystem "Guardrails Regex Detector" "Lightweight Rust HTTP service that detects PII and custom patterns in text using regular expressions" {
+            server = container "Regex Detector Server" "Axum-based HTTP server binding to 0.0.0.0:8080" "Rust / Axum 0.7.9"
+            detectionEngine = container "Detection Engine" "Regex pattern matching with built-in PII patterns (email, SSN, credit card) and custom pattern support" "Rust / regex 1.11.1"
         }
 
-        k8s = softwareSystem "Kubernetes" "Container orchestration platform" "External"
+        user = person "Platform Operator" "Deploys and configures the guardrails detection stack"
 
-        orchestrator -> regexDetector "Sends text content for PII/pattern inspection" "HTTP POST /api/v1/text/contents, 8080/TCP, No TLS"
-        k8s -> regexDetector "Health check probes" "HTTP GET /health, 8080/TCP"
+        # Relationships
+        orchestrator -> regexDetector "Sends text content inspection requests" "HTTP/8080 POST /api/v1/text/contents"
+        user -> orchestrator "Configures guardrails policies"
 
-        axumServer -> detectionEngine "Delegates pattern matching"
-        detectionEngine -> builtinRegistry "Looks up builtin patterns by name"
+        # Internal container relationships
+        server -> detectionEngine "Routes detection requests"
     }
 
     views {
         systemContext regexDetector "SystemContext" {
             include *
             autoLayout
-            description "System context showing Guardrails Regex Detector in the RHOAI Guardrails ecosystem"
+            description "System context showing the Guardrails Regex Detector within the RHOAI guardrails ecosystem"
         }
 
         container regexDetector "Containers" {
             include *
             autoLayout
-            description "Internal structure of the Guardrails Regex Detector service"
+            description "Container view showing internal structure of the Regex Detector service"
         }
 
         styles {
+            element "Internal RHOAI" {
+                background #7ed321
+                color #ffffff
+            }
             element "Software System" {
                 background #4a90e2
                 color #ffffff
-                shape RoundedBox
-            }
-            element "External" {
-                background #999999
-                color #ffffff
             }
             element "Container" {
-                background #438dd5
+                background #4a90e2
                 color #ffffff
             }
             element "Person" {
-                background #f5a623
+                background #08427b
                 color #ffffff
-                shape Person
+                shape person
             }
         }
     }

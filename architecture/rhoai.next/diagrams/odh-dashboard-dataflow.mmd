@@ -1,71 +1,57 @@
 sequenceDiagram
-    participant Browser as Browser<br/>(Data Scientist)
+    participant Browser as Browser
+    participant Route as OpenShift Route<br/>443/TCP HTTPS TLS 1.2+
+    participant KRBP as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
+    participant Backend as odh-dashboard Backend<br/>8080/TCP HTTP (localhost)
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
     participant OAuth as OpenShift OAuth<br/>443/TCP HTTPS
-    participant Route as OpenShift Route<br/>443/TCP HTTPS
-    participant KRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
-    participant BFF as odh-dashboard BFF<br/>8080/TCP HTTP
-    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
-    participant GenAI as gen-ai BFF<br/>8143/TCP HTTPS
-    participant LlamaStack as LlamaStack<br/>8321/TCP HTTP
-    participant Pipeline as DS Pipeline API<br/>8443/TCP HTTPS
+    participant BFF as Sidecar BFF<br/>(gen-ai/maas/automl/etc.)
+    participant Upstream as Upstream Service<br/>(Pipelines/Registry/LlamaStack)
 
-    Note over Browser,K8s: Flow 1: User Authentication & Dashboard Access
-
+    Note over Browser,OAuth: Flow 1: User Authentication & Dashboard Access
     Browser->>Route: GET / (HTTPS/443)
-    Route->>KRBAC: TLS reencrypt
-    KRBAC-->>Browser: 302 Redirect to OAuth
+    Route->>KRBP: Forward (TLS Reencrypt)
+    KRBP-->>Browser: 302 Redirect to OAuth
     Browser->>OAuth: OAuth2 Authorization Code Flow
-    OAuth-->>Browser: Bearer Token (cookie)
+    OAuth-->>Browser: Bearer Token (cookie/header)
     Browser->>Route: GET / + Bearer Token
-    Route->>KRBAC: TLS reencrypt + Bearer
-    KRBAC->>KRBAC: Validate: can list projects?
-    KRBAC->>BFF: HTTP/8080 + x-forwarded-access-token
-    BFF->>K8s: GET /api/status (Bearer user token)
-    K8s-->>BFF: User identity + cluster info
-    BFF-->>KRBAC: JSON response
-    KRBAC-->>Route: HTTPS response
-    Route-->>Browser: Dashboard SPA + user context
+    Route->>KRBP: Forward (TLS Reencrypt)
+    KRBP->>KRBP: Validate: user can list projects<br/>(SubjectAccessReview)
+    KRBP->>Backend: Forward + x-forwarded-access-token<br/>+ x-auth-request-user (HTTP/8080)
+    Backend->>K8sAPI: GET /api/status<br/>Bearer Token (user) HTTPS/6443
+    K8sAPI-->>Backend: User identity + cluster info
+    Backend-->>KRBP: JSON response
+    KRBP-->>Route: HTTPS response
+    Route-->>Browser: Dashboard SPA + config
 
-    Note over Browser,K8s: Flow 2: Federated Module Loading
-
+    Note over Browser,BFF: Flow 2: Frontend Loads Federated Module
     Browser->>Route: GET /_mf/gen-ai/remoteEntry.js
-    Route->>KRBAC: TLS reencrypt + Bearer
-    KRBAC->>BFF: HTTP/8080 + x-forwarded-access-token
-    BFF->>GenAI: HTTPS/8143 + x-forwarded-access-token
-    GenAI-->>BFF: remoteEntry.js (Module Federation)
-    BFF-->>KRBAC: JS response
-    KRBAC-->>Browser: Module chunks loaded
+    Route->>KRBP: Forward (TLS Reencrypt)
+    KRBP->>Backend: /_mf/* proxy (HTTP/8080)
+    Backend->>BFF: Forward to gen-ai sidecar<br/>HTTPS/8143 + x-forwarded-access-token
+    BFF-->>Backend: remoteEntry.js + chunks
+    Backend-->>KRBP: Response
+    KRBP-->>Route: HTTPS response
+    Route-->>Browser: Module Federation JS bundle
 
-    Note over Browser,LlamaStack: Flow 3: Gen AI Inference Request
-
-    Browser->>Route: POST /gen-ai/api/v1/lsd/responses
-    Route->>KRBAC: TLS reencrypt + Bearer
-    KRBAC->>BFF: HTTP/8080 + x-forwarded-access-token
-    BFF->>GenAI: HTTPS/8143 + Bearer
-    GenAI->>LlamaStack: HTTP/8321 + Bearer<br/>POST /inference/chat
-    LlamaStack-->>GenAI: AI Response (streaming)
-    GenAI-->>BFF: Response
-    BFF-->>KRBAC: Response
-    KRBAC-->>Browser: JSON AI response
-
-    Note over Browser,Pipeline: Flow 4: Pipeline Run Creation
-
+    Note over Browser,Upstream: Flow 3: BFF Proxies to Upstream Service
     Browser->>Route: POST /api/service/pipelines/runs
-    Route->>KRBAC: TLS reencrypt + Bearer
-    KRBAC->>BFF: HTTP/8080 + x-forwarded-access-token
-    BFF->>Pipeline: HTTPS/8443 + Bearer (user token)
-    Pipeline-->>BFF: Pipeline run created
-    BFF-->>KRBAC: Response
-    KRBAC-->>Browser: Run details
+    Route->>KRBP: Forward (TLS Reencrypt)
+    KRBP->>Backend: Forward (HTTP/8080)<br/>x-forwarded-access-token
+    Backend->>Upstream: POST /apis/v2beta1/runs<br/>Bearer Token (user) HTTPS/8443
+    Upstream-->>Backend: Pipeline run response
+    Backend-->>KRBP: JSON response (HTTP)
+    KRBP-->>Route: HTTPS response
+    Route-->>Browser: Pipeline run result
 
-    Note over Browser,K8s: Flow 5: WebSocket Watch (Real-time Updates)
-
-    Browser->>Route: WS Upgrade /wss/k8s/api/v1/pods?watch=true
-    Route->>KRBAC: WSS/8443 + Bearer
-    KRBAC->>BFF: WS/8080 + x-forwarded-access-token
-    BFF->>K8s: WSS/6443 + Bearer (base64 subprotocol)
+    Note over Browser,K8sAPI: Flow 4: Kubernetes Watch via WebSocket
+    Browser->>Route: WSS /wss/k8s/api/v1/namespaces/ns/pods?watch=true
+    Route->>KRBP: WebSocket upgrade (TLS Reencrypt)
+    KRBP->>Backend: WS upgrade (localhost/8080)<br/>x-forwarded-access-token
+    Backend->>K8sAPI: WSS Watch request<br/>Bearer Token (base64 subprotocol)<br/>HTTPS/6443
     loop Watch Events
-        K8s-->>BFF: Event: ADDED/MODIFIED/DELETED
-        BFF-->>KRBAC: WS frame
-        KRBAC-->>Browser: Real-time update
+        K8sAPI-->>Backend: Watch event (WSS)
+        Backend-->>KRBP: Watch event (WS)
+        KRBP-->>Route: Watch event (WSS)
+        Route-->>Browser: Watch event (WSS)
     end

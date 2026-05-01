@@ -1,47 +1,54 @@
 sequenceDiagram
     participant User as User / kubectl
-    participant API as K8s API Server<br/>443/TCP HTTPS TLS 1.2+
+    participant APIServer as K8s API Server<br/>443/TCP HTTPS TLS 1.2+
     participant Webhook as Training Operator Webhook<br/>9443/TCP HTTPS TLS (self-signed)
     participant Operator as Training Operator Controller<br/>opendatahub namespace
-    participant Pods as Worker Pods<br/>User namespace
-    participant Svc as Headless Service<br/>(pod DNS discovery)
-    participant Prom as OpenShift Monitoring<br/>8080/TCP HTTP
+    participant Pods as Worker Pods<br/>user namespace
+    participant HeadlessSvc as Headless Service<br/>ClusterIP=None
+    participant Monitoring as OpenShift Monitoring<br/>8080/TCP HTTP
 
-    rect rgb(230, 240, 255)
-        Note over User,Operator: Flow 1: Training Job Lifecycle
-        User->>API: 1. Create PyTorchJob CR<br/>Auth: User credentials
-        API->>Webhook: 2. Validation webhook callback<br/>HTTPS/9443, TLS (self-signed)
-        Webhook-->>API: Admission Response (allow/deny)
-        API-->>User: CR created
-        Operator->>API: 3. Watch detects new CR<br/>HTTPS/443, ServiceAccount token
-        Operator->>API: 4. Create Worker Pods<br/>HTTPS/443, ServiceAccount token
-        API-->>Operator: Pods created
-        Operator->>API: 5. Create Headless Services<br/>HTTPS/443, ServiceAccount token
-        API-->>Operator: Services created
-        Pods->>Svc: 6. DNS lookup for peer discovery<br/>Framework port/TCP, No encryption
-        Pods->>Pods: 7. Training data exchange<br/>Framework port/TCP, No encryption
-    end
+    Note over User,Monitoring: Flow 1: Training Job Lifecycle (PyTorch/TF/XGBoost/Paddle/JAX)
 
-    rect rgb(255, 240, 230)
-        Note over User,Pods: Flow 2: MPI Job Execution
-        Operator->>API: 1. Create ConfigMap (hostfile),<br/>RBAC (SA, Role, RoleBinding)<br/>HTTPS/443
-        Operator->>API: 2. Create Worker Pods<br/>HTTPS/443
-        Operator->>API: 3. Create Launcher Pod<br/>(with kubectl init container)<br/>HTTPS/443
-        Note over Pods: Launcher runs mpirun
-        Pods->>API: 4. kubectl exec to workers<br/>HTTPS/443, Launcher SA token
-        Pods->>Pods: 5. MPI execution on workers<br/>via kubectl exec stream<br/>TLS 1.2+, SA RBAC
-    end
+    User->>APIServer: POST /apis/kubeflow.org/v1/{jobtype}<br/>Auth: User credentials
+    APIServer->>Webhook: POST /validate-kubeflow-org-v1-{jobtype}<br/>HTTPS/9443, TLS (self-signed)
+    Webhook-->>APIServer: Admission Response (allow/deny)
+    APIServer-->>User: Job CR created
 
-    rect rgb(230, 255, 240)
-        Note over User,Pods: Flow 3: PyTorch Elastic Training
-        Operator->>API: 1. Create HPA for elastic scaling<br/>HTTPS/443
-        Pods->>Pods: 2. Worker rendezvous at Master<br/>29500/TCP c10d, No encryption
-        Note over API: HPA controller scales workers
-        API->>Operator: 3. HPA triggers scale event
-        Operator->>API: 4. Reconcile pods (add/remove)<br/>HTTPS/443, ServiceAccount token
-    end
+    Note over Operator: Informer detects new CR
 
-    rect rgb(245, 245, 255)
-        Note over Prom,Operator: Metrics Collection
-        Prom->>Operator: Scrape /metrics<br/>HTTP/8080, No auth<br/>PodMonitor, NetworkPolicy allows
-    end
+    Operator->>APIServer: Create Pods (workers)<br/>HTTPS/443, ServiceAccount token
+    Operator->>APIServer: Create Headless Service<br/>HTTPS/443, ServiceAccount token
+    Operator->>APIServer: Create NetworkPolicy (PyTorch only)<br/>HTTPS/443, ServiceAccount token
+
+    Note over Pods,HeadlessSvc: Workers discover each other via DNS
+
+    Pods->>HeadlessSvc: DNS lookup: {job}-{type}-{index}<br/>Framework port/TCP
+    Pods->>Pods: Training data exchange<br/>Framework port/TCP, No encryption
+
+    Note over Operator: Monitors pod status via informers
+
+    Operator->>APIServer: Update Job status<br/>HTTPS/443, ServiceAccount token
+
+    Monitoring->>Operator: GET /metrics<br/>HTTP/8080, No auth
+
+    Note over User,Monitoring: Flow 2: MPI Job Execution (Asymmetric Pattern)
+
+    User->>APIServer: POST /apis/kubeflow.org/v1/mpijobs<br/>Auth: User credentials
+    APIServer-->>User: MPIJob CR created
+
+    Operator->>APIServer: Create ConfigMap (hostfile, kubexec.sh)<br/>HTTPS/443
+    Operator->>APIServer: Create ServiceAccount + Role + RoleBinding<br/>HTTPS/443
+    Operator->>APIServer: Create Worker Pods<br/>HTTPS/443
+    Operator->>APIServer: Create Launcher Pod (with kubectl init container)<br/>HTTPS/443
+
+    Note over Pods: Launcher runs mpirun
+
+    Pods->>APIServer: kubectl exec into workers<br/>HTTPS/443, Launcher SA token
+    APIServer->>Pods: exec stream to worker pods<br/>TLS 1.2+
+
+    Note over User,Monitoring: Flow 3: PyTorch Elastic Training
+
+    Operator->>APIServer: Create HorizontalPodAutoscaler<br/>HTTPS/443
+    Pods->>Pods: c10d rendezvous on Master/Worker-0<br/>29500/TCP, No encryption
+    Note over APIServer: HPA scales worker replicas
+    Operator->>APIServer: Reconcile pods after scale event<br/>HTTPS/443

@@ -1,54 +1,53 @@
 sequenceDiagram
     participant Client as External Client
-    participant EvalAPI as Llama Stack Server<br/>8321/TCP HTTP<br/>/alpha/eval/*
-    participant DatasetIO as DatasetIO API<br/>(in-process)
-    participant Inference as Inference API<br/>(in-process)
-    participant KFP as Kubeflow Pipelines<br/>443/TCP HTTPS
-    participant KFPPod as KFP Pipeline Pod<br/>(retrieve_data + run_ragas)
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant LS as Llama Stack Server<br/>8321/TCP HTTP
+    participant Inline as RagasEvaluatorInline<br/>(in-process)
+    participant Remote as RagasEvaluatorRemote<br/>(in-process)
+    participant KFP as Kubeflow Pipelines<br/>443/TCP HTTPS TLS1.2+
+    participant KFPPod as KFP Pipeline Pod
+    participant S3 as S3 Storage<br/>443/TCP HTTPS TLS1.2+
 
-    rect rgb(220, 240, 255)
-        Note over Client,Inference: Flow 1: Inline Evaluation (in-process)
-        Client->>EvalAPI: POST /alpha/eval/run_eval<br/>benchmark_id, candidate
-        EvalAPI->>DatasetIO: Retrieve dataset rows<br/>(Python in-process call)
-        DatasetIO-->>EvalAPI: Dataset rows
-        EvalAPI->>Inference: LLM completions via<br/>LlamaStackInlineLLM<br/>(Python in-process call)
-        Inference-->>EvalAPI: LLM responses
-        EvalAPI->>Inference: Embeddings via<br/>LlamaStackInlineEmbeddings<br/>(Python in-process call)
-        Inference-->>EvalAPI: Embedding vectors
-        Note over EvalAPI: ragas.evaluate() runs<br/>metrics: faithfulness,<br/>answer_relevancy,<br/>context_precision,<br/>context_recall
-        EvalAPI-->>Client: Job ID (completed inline)
-        Client->>EvalAPI: GET /alpha/eval/job/result
-        EvalAPI-->>Client: Evaluation scores (JSON)
-    end
+    Note over Client,S3: Flow 1: Inline Evaluation
 
-    rect rgb(255, 240, 220)
-        Note over Client,S3: Flow 2: Remote Evaluation (Kubeflow Pipelines)
-        Client->>EvalAPI: POST /alpha/eval/run_eval<br/>benchmark_id, candidate
-        EvalAPI->>KFP: Health check (GET /apis/v2beta1/healthz)<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer Token
-        KFP-->>EvalAPI: Healthy
-        EvalAPI->>KFP: create_run_from_pipeline_func()<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer Token
-        KFP-->>EvalAPI: Run ID
-        EvalAPI-->>Client: Job ID (async)
+    Client->>LS: POST /alpha/eval/run_eval<br/>8321/TCP HTTP
+    LS->>Inline: Route to inline::trustyai_ragas
+    Inline->>LS: Read dataset (DatasetIO API)<br/>in-process Python call
+    LS-->>Inline: Dataset rows
+    Inline->>LS: LLM inference (Inference API)<br/>in-process via LlamaStackInlineLLM
+    LS-->>Inline: LLM response
+    Inline->>LS: Embeddings (Inference API)<br/>in-process via LlamaStackInlineEmbeddings
+    LS-->>Inline: Embedding vectors
+    Note over Inline: ragas.evaluate() runs<br/>in asyncio.to_thread
+    Inline-->>LS: Evaluation results
+    Client->>LS: GET /alpha/eval/job/result<br/>8321/TCP HTTP
+    LS-->>Client: JSON evaluation results
 
-        Note over KFP,S3: Pipeline execution (async)
-        KFP->>KFPPod: Schedule pipeline run
-        KFPPod->>EvalAPI: Step 1: retrieve_data<br/>GET datasets from Llama Stack<br/>8321/TCP HTTP (no TLS, no auth)
-        EvalAPI-->>KFPPod: Dataset rows
-        KFPPod->>EvalAPI: Step 2: run_ragas<br/>LLM completions via LlamaStackRemoteLLM<br/>8321/TCP HTTP (no TLS, no auth)
-        EvalAPI-->>KFPPod: LLM responses
-        KFPPod->>EvalAPI: Embeddings via LlamaStackRemoteEmbeddings<br/>8321/TCP HTTP (no TLS, no auth)
-        EvalAPI-->>KFPPod: Embedding vectors
-        Note over KFPPod: ragas.evaluate() runs
-        KFPPod->>S3: Write results (JSONL)<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS IAM credentials
+    Note over Client,S3: Flow 2: Remote Evaluation (Kubeflow Pipelines)
 
-        Client->>EvalAPI: GET /alpha/eval/job/status
-        EvalAPI->>KFP: Check run status<br/>443/TCP HTTPS
-        KFP-->>EvalAPI: Run status
-        EvalAPI-->>Client: Job status
+    Client->>LS: POST /alpha/eval/run_eval<br/>8321/TCP HTTP
+    LS->>Remote: Route to remote::trustyai_ragas
+    Remote->>KFP: GET /apis/v2beta1/healthz<br/>443/TCP HTTPS Bearer Token
+    KFP-->>Remote: Health OK
+    Remote->>KFP: create_run_from_pipeline_func<br/>443/TCP HTTPS Bearer Token
+    KFP-->>Remote: Run ID
 
-        Client->>EvalAPI: GET /alpha/eval/job/result
-        EvalAPI->>S3: Read results (JSONL)<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS IAM credentials
-        S3-->>EvalAPI: Result data
-        EvalAPI-->>Client: Evaluation scores (JSON)
-    end
+    Note over KFP,KFPPod: KFP executes 2-step pipeline
+
+    KFP->>KFPPod: Step 1: retrieve_data
+    KFPPod->>LS: GET datasets<br/>8321/TCP HTTP (no auth)
+    LS-->>KFPPod: Dataset rows
+    KFP->>KFPPod: Step 2: run_ragas
+    KFPPod->>LS: LLM inference<br/>8321/TCP HTTP via LlamaStackRemoteLLM
+    LS-->>KFPPod: LLM response
+    KFPPod->>LS: Embeddings<br/>8321/TCP HTTP via LlamaStackRemoteEmbeddings
+    LS-->>KFPPod: Embedding vectors
+    Note over KFPPod: ragas.evaluate() runs
+    KFPPod->>S3: Write results (JSONL)<br/>443/TCP HTTPS AWS IAM
+    S3-->>KFPPod: Write confirmed
+
+    Client->>LS: GET /alpha/eval/job/status<br/>8321/TCP HTTP
+    Remote->>KFP: Check run status<br/>443/TCP HTTPS
+    KFP-->>Remote: Run completed
+    Remote->>S3: Fetch results (s3fs)<br/>443/TCP HTTPS AWS IAM
+    S3-->>Remote: JSONL results
+    LS-->>Client: JSON evaluation results

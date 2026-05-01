@@ -1,74 +1,72 @@
 graph TB
-    subgraph External["EXTERNAL (No External Ingress by Default)"]
-        Client["Inference Client<br/>(Cluster-internal only)"]
+    subgraph External["EXTERNAL (Untrusted)"]
+        InferenceClient["Inference Client"]
+        GRPCClient["gRPC Client"]
     end
 
-    subgraph ClusterInternal["KUBERNETES CLUSTER"]
+    subgraph ClusterServices["CLUSTER SERVICES (Internal)"]
         direction TB
 
-        subgraph ControllerNS["Controller Namespace"]
-            Controller["modelmesh-controller<br/>SA: modelmesh-controller<br/>SCC: restricted"]
-            WebhookSvc["Webhook Service<br/>9443/TCP HTTPS<br/>TLS: cert-manager/serving-certs"]
-        end
-
-        subgraph RuntimeNS["Runtime Namespace(s)<br/>(modelmesh-enabled=true)"]
-            subgraph RuntimePod["Runtime Pod (Multi-Container)"]
-                direction TB
-                OAuthProxy["oauth-proxy<br/>8443/TCP HTTPS<br/>TLS: model-serving-proxy-tls<br/>Auth: OpenShift OAuth<br/>SAR: get services"]
-                RESTProxy["REST Proxy<br/>configurable/TCP HTTP<br/>No Auth"]
-                ModelMesh["ModelMesh Sidecar (Java)<br/>8033/TCP gRPC<br/>TLS: optional (tls.secretName)<br/>Auth: mTLS optional (tls.clientAuth)"]
-                Puller["Puller (runtime-adapter)<br/>8086/TCP gRPC<br/>No encryption (pod-local)"]
-                Runtime["Model Runtime<br/>(Triton/OVMS/MLServer/TorchServe)<br/>Unix socket (pod-local)"]
+        subgraph NS_Controller["Namespace: controller-namespace"]
+            subgraph ControllerPod["modelmesh-controller Pod<br/>SA: modelmesh-controller"]
+                Controller["modelmesh-controller<br/>8080/TCP metrics (HTTP)<br/>8081/TCP health (HTTP)"]
+                WebhookSrv["Webhook Server<br/>9443/TCP HTTPS<br/>TLS: cert-manager/serving-certs"]
             end
-
-            InferenceSvc["modelmesh-serving Service (ClusterIP)<br/>8033/TCP gRPC | 8443/TCP HTTPS | 2112/TCP metrics"]
         end
 
         K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: ServiceAccount token"]
+
+        subgraph NS_User["Namespace: user-namespace"]
+            subgraph RuntimePod["Runtime Pod (multi-container)<br/>SA: modelmesh-serving-sa"]
+                OAuthProxy["oauth-proxy<br/>8443/TCP HTTPS<br/>TLS: model-serving-proxy-tls<br/>Auth: OpenShift OAuth SAR"]
+                RESTProxy["REST Proxy<br/>restProxy.port/TCP HTTP<br/>No auth"]
+                MMesh["ModelMesh Sidecar (Java)<br/>8033/TCP gRPC<br/>TLS optional, mTLS optional<br/>2112/TCP metrics HTTPS"]
+                PullerSidecar["Puller (runtime-adapter)<br/>8086/TCP gRPC (pod-local)"]
+                ModelRuntime["Model Runtime<br/>(Triton/OVMS/MLServer/TorchServe)<br/>Unix socket (pod-local)"]
+            end
+        end
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        etcd["etcd<br/>2379/TCP gRPC<br/>TLS: auto-detected<br/>Auth: user/pass + optional mTLS certs<br/>Secret: model-serving-etcd"]
-        Storage["Model Storage (S3/GCS/Azure)<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Storage-specific credentials<br/>Secret: storage-config"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        etcd["etcd<br/>2379/TCP gRPC<br/>TLS optional<br/>Auth: Username/Password + mTLS"]
+        ModelStorage["Model Storage<br/>(S3/GCS/Azure)<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS IAM / GCS SA / Azure SAS"]
+        Prometheus["Prometheus<br/>Scrapes via ServiceMonitor"]
     end
 
-    %% Client flows
-    Client -->|"HTTPS/8443<br/>TLS<br/>OAuth token"| OAuthProxy
-    Client -->|"gRPC/8033<br/>TLS(opt)<br/>mTLS(opt)"| ModelMesh
+    %% External to cluster flows
+    InferenceClient -->|"HTTPS/8443<br/>TLS<br/>OAuth token"| OAuthProxy
+    GRPCClient -->|"gRPC/8033<br/>TLS optional<br/>mTLS optional"| MMesh
 
-    %% Internal pod flows
-    OAuthProxy -->|"HTTP/8008<br/>No encryption<br/>pod-local"| RESTProxy
-    RESTProxy -->|"gRPC<br/>pod-local"| ModelMesh
-    ModelMesh -->|"unix socket<br/>pod-local"| Runtime
-    ModelMesh -->|"gRPC/8086<br/>pod-local"| Puller
+    %% Pod-internal flows
+    OAuthProxy -->|"HTTP (pod-local)<br/>No encryption"| RESTProxy
+    RESTProxy -->|"gRPC (pod-local)"| MMesh
+    MMesh -->|"Unix socket<br/>(pod-local)"| ModelRuntime
+    MMesh -->|"gRPC/8086<br/>(pod-local)"| PullerSidecar
 
     %% Controller flows
     Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    Controller -->|"gRPC/8033<br/>TLS(opt)<br/>SetVModel"| ModelMesh
+    K8sAPI -->|"HTTPS/9443<br/>TLS<br/>API server cert"| WebhookSrv
+    Controller -->|"gRPC/8033<br/>TLS optional<br/>SetVModel/GetVModelStatus"| MMesh
 
-    %% K8s API flows
-    K8sAPI -->|"HTTPS/9443<br/>TLS<br/>API server cert"| WebhookSvc
+    %% External service flows
+    MMesh -->|"gRPC/2379<br/>TLS optional<br/>Username/Password"| etcd
+    PullerSidecar -->|"HTTPS/443<br/>TLS 1.2+<br/>Storage credentials"| ModelStorage
 
-    %% Egress flows
-    ModelMesh -->|"gRPC/2379<br/>TLS(auto)<br/>user/pass + mTLS"| etcd
-    Puller -->|"HTTPS/443<br/>TLS 1.2+<br/>Storage creds"| Storage
+    %% Monitoring
+    Prometheus -.->|"scrape 8080/TCP"| Controller
+    Prometheus -.->|"scrape 2112/TCP HTTPS"| MMesh
 
-    %% Service routing
-    InferenceSvc -.->|"routes to"| RuntimePod
-
-    %% Styling
+    %% Network Policy annotations
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef controller fill:#4a90e2,stroke:#2c6fbb,stroke-width:2px,color:#fff
-    classDef runtimepod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef auth fill:#9b59b6,stroke:#7d3c98,stroke-width:2px,color:#fff
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef service fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef infra fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef controller fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    classDef runtime fill:#7b68ee,stroke:#333,stroke-width:2px,color:#fff
+    classDef k8s fill:#326ce5,stroke:#333,stroke-width:2px,color:#fff
+    classDef extservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef monitoring fill:#e8e8e8,stroke:#999,stroke-width:1px
 
-    class Client external
-    class Controller,WebhookSvc controller
-    class ModelMesh,Puller,Runtime,RESTProxy runtimepod
-    class OAuthProxy auth
-    class etcd,Storage externalservice
-    class InferenceSvc service
-    class K8sAPI infra
+    class InferenceClient,GRPCClient external
+    class Controller,WebhookSrv controller
+    class OAuthProxy,RESTProxy,MMesh,PullerSidecar,ModelRuntime runtime
+    class K8sAPI k8s
+    class etcd,ModelStorage extservice
+    class Prometheus monitoring

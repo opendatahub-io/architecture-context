@@ -1,57 +1,49 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and manages LLM evaluation jobs via Dashboard or CLI"
-        platformAdmin = person "Platform Administrator" "Deploys and configures eval-hub as part of RHOAI"
+        dataScientist = person "Data Scientist" "Creates and manages LLM evaluation jobs"
+        platformAdmin = person "Platform Administrator" "Deploys and configures eval-hub via RHOAI operator"
 
-        evalHub = softwareSystem "Eval-Hub" "REST API service for orchestrating LLM benchmark evaluations across multiple providers with MLflow tracking" {
-            apiServer = container "eval-hub API Server" "Main REST API managing evaluations, providers, collections. Delegates auth to K8s API." "Go REST Service, 8080/TCP"
-            runtimeSidecar = container "eval-runtime-sidecar" "Reverse proxy in Job pods for eval-hub, MLflow, OCI registry auth. Native sidecar (KEP-753)." "Go Sidecar, 8080/TCP localhost"
-            runtimeInit = container "eval-runtime-init" "Downloads S3 test data into Job pods before benchmark execution." "Go Init Container"
-            configLoader = container "Config Loader" "Hot-reloads provider/collection configs from ConfigMap mounts via inotify." "Go (embedded)"
+        evalHub = softwareSystem "Eval-Hub" "REST API service for orchestrating LLM benchmark evaluations across multiple evaluation providers with integrated experiment tracking" {
+            apiServer = container "eval-hub API Server" "Main REST API managing evaluations, providers, collections. Handles job lifecycle, RBAC delegation, and config hot-reload" "Go REST API"
+            runtimeSidecar = container "eval-runtime-sidecar" "Reverse proxy in evaluation Job pods. Handles auth token resolution for eval-hub, MLflow, and OCI registry calls" "Go Sidecar (KEP-753)"
+            runtimeInit = container "eval-runtime-init" "Downloads S3 test data into evaluation Job pods before benchmark execution" "Go Init Container"
+            storageLayer = container "Storage Layer" "Dual-backend: PostgreSQL (production) or SQLite (development). Entity data stored as JSONB/JSON TEXT" "pgx / modernc.org/sqlite"
         }
 
-        kubernetesAPI = softwareSystem "Kubernetes API Server" "Authentication (TokenReview), authorization (SubjectAccessReview), Job scheduling" "External"
-        postgresql = softwareSystem "PostgreSQL" "Persistent storage for evaluations, collections, providers (JSONB)" "External"
-        mlflow = softwareSystem "MLflow Tracking Server" "Experiment creation and run tracking with workspace scoping" "Internal RHOAI"
-        s3Storage = softwareSystem "S3-compatible Storage" "Test data storage for evaluation jobs" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "TokenReview, SubjectAccessReview, batch/v1 Job CRUD, ConfigMap management" "External"
+        postgresql = softwareSystem "PostgreSQL" "Persistent storage for evaluations, collections, providers" "External"
+        mlflow = softwareSystem "MLflow Tracking Server" "Experiment creation, run tracking, metric logging with workspace scoping" "Internal RHOAI"
+        s3 = softwareSystem "S3-compatible Storage" "Test data storage for evaluation jobs (AWS S3 or MinIO)" "External"
         ociRegistry = softwareSystem "OCI Registry" "Evaluation result artifact export via Distribution API v2" "External"
-        kueue = softwareSystem "Kueue" "Priority queue scheduling for evaluation Jobs" "External"
-        rhoaiOperator = softwareSystem "RHOAI Operator" "Deploys and manages eval-hub lifecycle" "Internal RHOAI"
-        serviceCA = softwareSystem "OpenShift Service CA" "Provides CA certificates for internal HTTPS" "External"
+        kueue = softwareSystem "Kueue" "Priority-based queue scheduling for evaluation jobs" "External"
+        serviceCA = softwareSystem "OpenShift Service CA" "Provides CA certificates for internal HTTPS verification" "External"
 
-        lmEvalHarness = softwareSystem "LM Evaluation Harness" "Evaluation adapter for 180+ NLP benchmarks" "Adapter"
-        garak = softwareSystem "Garak" "Evaluation adapter for security/red-team scans (8 benchmarks)" "Adapter"
-        lighteval = softwareSystem "Lighteval" "Evaluation adapter for Lighteval framework benchmarks (30+)" "Adapter"
-        guideLLM = softwareSystem "GuideLLM" "Evaluation adapter for performance benchmarks" "Adapter"
-        ibmCLEAR = softwareSystem "IBM CLEAR" "Evaluation adapter for IBM CLEAR benchmarks" "Adapter"
+        lmEval = softwareSystem "LM Evaluation Harness" "Runs 180+ LLM benchmarks via adapter container" "Adapter"
+        garak = softwareSystem "Garak" "Runs security/red-team evaluation scans (8 benchmarks)" "Adapter"
+        lighteval = softwareSystem "Lighteval" "Runs Lighteval framework benchmarks (30+ benchmarks)" "Adapter"
+        guidellm = softwareSystem "GuideLLM" "Runs GuideLLM performance benchmarks" "Adapter"
+        ibmClear = softwareSystem "IBM CLEAR" "Runs IBM CLEAR evaluation benchmarks" "Adapter"
 
-        # Person relationships
-        dataScientist -> evalHub "Creates evaluation jobs, manages collections/providers" "HTTPS/8080, Bearer Token"
-        platformAdmin -> rhoaiOperator "Configures and deploys eval-hub" "kubectl/oc"
+        rhoaiOperator = softwareSystem "RHOAI Operator" "Deploys and manages eval-hub as part of the RHOAI platform" "Internal RHOAI"
 
-        # Core service relationships
-        evalHub -> kubernetesAPI "TokenReview, SubjectAccessReview, Job CRUD, ConfigMap CRUD" "HTTPS/443, SA Token"
+        dataScientist -> evalHub "Creates evaluation jobs, manages collections and providers" "HTTPS/8080, Bearer Token"
+        platformAdmin -> rhoaiOperator "Configures RHOAI platform including eval-hub" "CLI/Console"
+
+        rhoaiOperator -> evalHub "Deploys and manages" "Kubernetes Resources"
+
+        evalHub -> k8sAPI "TokenReview, SAR, Job CRUD, ConfigMaps" "HTTPS/443, SA Token"
         evalHub -> postgresql "CRUD for evaluations, collections, providers" "pgx/5432, Username/Password"
-        evalHub -> mlflow "Create/track experiments and runs" "HTTPS, Bearer Token"
-        evalHub -> s3Storage "Download test data (via init container)" "HTTPS/443, AWS IAM"
-        evalHub -> ociRegistry "Push evaluation result artifacts (via sidecar)" "HTTPS/443, Docker Registry Token"
-        evalHub -> kueue "Priority scheduling for evaluation Jobs" "K8s labels"
-        rhoaiOperator -> evalHub "Deploys and manages lifecycle" "Kubernetes API"
-        serviceCA -> evalHub "Provides CA certificates" "ConfigMap mount"
+        evalHub -> mlflow "Experiment creation, run tracking" "HTTPS, Bearer Token"
+        evalHub -> s3 "Test data download (init container)" "HTTPS/443, AWS IAM"
+        evalHub -> ociRegistry "Result artifact export (sidecar)" "HTTPS/443, Docker Registry Token"
+        evalHub -> kueue "Priority job scheduling" "Job Labels"
+        evalHub -> serviceCA "CA certificates" "ConfigMap Mount"
 
-        # Internal container relationships
-        apiServer -> runtimeSidecar "Callback destination for status events" "HTTPS/8443"
-        runtimeInit -> s3Storage "Downloads test data" "HTTPS/443, AWS IAM"
-        runtimeSidecar -> apiServer "Proxies status callbacks" "HTTPS/8443, SA Token"
-        runtimeSidecar -> mlflow "Proxies MLflow API calls" "HTTPS, Projected SA Token"
-        runtimeSidecar -> ociRegistry "Proxies OCI push/pull" "HTTPS/443, Registry Token"
-
-        # Adapter relationships
-        lmEvalHarness -> runtimeSidecar "Benchmark results via proxy" "HTTP/8080 localhost"
-        garak -> runtimeSidecar "Security scan results via proxy" "HTTP/8080 localhost"
-        lighteval -> runtimeSidecar "Evaluation results via proxy" "HTTP/8080 localhost"
-        guideLLM -> runtimeSidecar "Performance results via proxy" "HTTP/8080 localhost"
-        ibmCLEAR -> runtimeSidecar "Evaluation results via proxy" "HTTP/8080 localhost"
+        evalHub -> lmEval "Spawns as adapter container in evaluation Job" "K8s Job"
+        evalHub -> garak "Spawns as adapter container in evaluation Job" "K8s Job"
+        evalHub -> lighteval "Spawns as adapter container in evaluation Job" "K8s Job"
+        evalHub -> guidellm "Spawns as adapter container in evaluation Job" "K8s Job"
+        evalHub -> ibmClear "Spawns as adapter container in evaluation Job" "K8s Job"
     }
 
     views {

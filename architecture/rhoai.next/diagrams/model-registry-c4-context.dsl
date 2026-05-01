@@ -1,52 +1,52 @@
 workspace {
     model {
         dataScientist = person "Data Scientist" "Creates, registers, and deploys ML models"
-        platformOperator = person "Platform Operator" "Deploys and configures Model Registry via RHOAI operator"
+        mlEngineer = person "ML Engineer" "Manages model lifecycle and serving infrastructure"
 
-        modelRegistry = softwareSystem "Model Registry" "Central REST API service for recording and retrieving ML model lifecycle metadata" {
-            proxy = container "model-registry (proxy)" "Core REST API server for ML model metadata management (v1alpha3, 50+ endpoints)" "Go REST Service" "Primary"
-            catalog = container "model-catalog" "Curated model catalog with Hugging Face integration and MCP server discovery" "Go REST Service"
-            controller = container "inferenceservice-controller" "Syncs KServe InferenceService CRs with Model Registry API tracking deployment state" "Go Controller (controller-runtime)"
-            csi = container "mr-storage-initializer" "KServe storage initializer that resolves model-registry:// URIs to actual storage URIs" "Go CLI Tool"
-            asyncJob = container "async-upload job" "Transfers model artifacts between storage backends (S3, OCI) and registers in Model Registry" "Python Kubernetes Job"
-            ui = container "model-registry-ui" "Web interface for model discovery, management, and catalog browsing" "TypeScript/React + Go BFF"
-            mysqlDB = container "MySQL Database" "Primary metadata storage (EmbedMD schema)" "MySQL 8.3" "Database"
-            postgresDB = container "PostgreSQL Database" "Alternative metadata storage" "PostgreSQL 16+" "Database"
-            catalogDB = container "Catalog PostgreSQL" "Catalog metadata storage" "PostgreSQL" "Database"
+        modelRegistry = softwareSystem "Model Registry" "Central REST API service for recording and retrieving ML model metadata, versions, artifacts, experiments, and inference services" {
+            proxy = container "model-registry (proxy)" "Core REST API server for ML model metadata management" "Go REST Service" "Port: 8080/TCP"
+            catalog = container "model-catalog" "Curated model catalog with Hugging Face integration and MCP server" "Go REST Service" "Port: 8080/TCP"
+            ui = container "model-registry-ui" "Web interface for model discovery and management" "TypeScript/React + Go BFF" "Port: 8080/TCP"
+            controller = container "inferenceservice-controller" "Syncs KServe InferenceService CRs with Model Registry API" "Go Controller (controller-runtime)" "Port: 8081/TCP"
+            csi = container "mr-storage-initializer" "Resolves model-registry:// URIs to actual storage URIs for KServe" "Go CLI Tool" "Init Container"
+            asyncUpload = container "async-upload Job" "Transfers model artifacts between storage backends and registers in Model Registry" "Python Kubernetes Job" "On-demand"
         }
 
-        kserve = softwareSystem "KServe" "Standardized serverless ML inference platform with InferenceService CRDs" "Internal ODH"
-        istio = softwareSystem "Istio Service Mesh" "Service mesh for mTLS, traffic routing, and authorization" "Internal ODH"
-        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management" "Infrastructure"
-        rhoaiOperator = softwareSystem "RHOAI Platform Operator" "Manages deployment of RHOAI components via kustomize" "Internal ODH"
-
-        s3 = softwareSystem "S3-compatible Storage" "Model artifact storage and transfer" "External"
-        ociRegistry = softwareSystem "OCI Registries" "Container image registries for model images" "External"
-        huggingFace = softwareSystem "Hugging Face Hub" "Public model catalog and metadata source" "External"
-        sigstore = softwareSystem "Sigstore (Fulcio, Rekor, TSA)" "Model signing and verification infrastructure" "External"
+        mysql = softwareSystem "MySQL 8.3" "Primary metadata storage backend" "Database"
+        postgresql = softwareSystem "PostgreSQL 16+" "Alternative metadata storage backend" "Database"
+        kserve = softwareSystem "KServe" "Kubernetes-native ML model serving with InferenceService CRDs" "Internal ODH"
+        istio = softwareSystem "Istio Service Mesh" "Traffic management, mTLS enforcement, and authorization" "Internal ODH"
+        k8sApi = softwareSystem "Kubernetes API" "Cluster resource management and watch streams" "Infrastructure"
+        s3 = softwareSystem "S3-compatible Storage" "Model artifact storage" "External"
+        ociRegistry = softwareSystem "OCI Registries" "Model container image storage" "External"
+        sigstore = softwareSystem "Sigstore" "Model signing and verification (Fulcio, Rekor, TSA)" "External"
+        hfHub = softwareSystem "Hugging Face Hub" "Model metadata and gating validation" "External"
+        rhoaiOperator = softwareSystem "RHOAI Platform Operator" "Deploys and manages Model Registry via kustomize manifests" "Internal ODH"
 
         # Person interactions
-        dataScientist -> modelRegistry "Registers models, browses catalog, deploys inference services"
-        platformOperator -> rhoaiOperator "Configures and deploys Model Registry"
+        dataScientist -> modelRegistry "Registers models, creates experiments, browses catalog"
+        mlEngineer -> modelRegistry "Manages model versions, serving environments, and deployments"
 
         # Internal container interactions
-        ui -> proxy "Queries model metadata" "REST/HTTP 8080"
-        proxy -> mysqlDB "Reads/writes model metadata" "MySQL/3306"
-        proxy -> postgresDB "Reads/writes model metadata" "PostgreSQL/5432"
-        catalog -> catalogDB "Stores catalog metadata" "PostgreSQL/5432"
-        controller -> proxy "Syncs InferenceService state" "HTTP/8080 Bearer Token"
-        csi -> proxy "Resolves model-registry:// URIs" "HTTP/8080"
-        asyncJob -> proxy "Updates artifact metadata" "HTTP/8080 Bearer Token"
+        ui -> proxy "REST API calls" "HTTP/8080 Istio mTLS"
+        controller -> proxy "CRUD InferenceService and ServingEnvironment" "HTTP/8080 Bearer Token"
+        csi -> proxy "Resolve model-registry:// URIs" "HTTP/8080"
+        asyncUpload -> proxy "Register/update model artifacts" "HTTP/8080 Bearer Token"
 
-        # External system interactions
-        modelRegistry -> kserve "Controller watches InferenceService CRDs; CSI registered as ClusterStorageContainer" "K8s Watch API / TLS 1.2+"
-        modelRegistry -> istio "Traffic routing via VirtualService, mTLS via DestinationRule, access control via AuthorizationPolicy" "mTLS ISTIO_MUTUAL"
-        controller -> k8sAPI "Watches InferenceService CRs, patches labels/annotations" "HTTPS/443"
-        catalog -> huggingFace "Fetches curated model metadata and gating validation" "HTTPS/443"
-        asyncJob -> s3 "Reads/writes model artifacts" "HTTPS/443 AWS IAM"
-        asyncJob -> ociRegistry "Pushes/pulls model container images" "HTTPS/443"
-        asyncJob -> sigstore "Signs and verifies model artifacts" "HTTPS/443 OIDC"
-        csi -> s3 "Downloads model artifacts via KServe storage providers" "HTTPS/443"
+        # Database connections
+        proxy -> mysql "Metadata persistence (EmbedMD schema)" "MySQL/3306 Optional TLS 1.2+"
+        proxy -> postgresql "Metadata persistence (EmbedMD schema)" "PostgreSQL/5432 Optional TLS 1.2+"
+        catalog -> postgresql "Catalog data storage" "PostgreSQL/5432"
+
+        # External dependencies
+        catalog -> hfHub "Fetch model metadata, validate gating" "HTTPS/443"
+        controller -> k8sApi "Watch InferenceService CRs, patch labels" "HTTPS/443 SA Token"
+        controller -> kserve "Monitors InferenceService CRs for state sync" "K8s Watch API"
+        csi -> s3 "Download model artifacts" "HTTPS/443 Storage credentials"
+        asyncUpload -> s3 "Read/write model artifacts" "HTTPS/443 AWS IAM"
+        asyncUpload -> ociRegistry "Push/pull model container images" "HTTPS/443 Registry credentials"
+        asyncUpload -> sigstore "Sign and verify models" "HTTPS/443 K8s SA OIDC"
+        istio -> proxy "mTLS traffic routing via VirtualService" "HTTP/8080 ISTIO_MUTUAL"
         rhoaiOperator -> modelRegistry "Deploys via kustomize manifests" "K8s API"
     }
 
@@ -62,10 +62,6 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -74,27 +70,26 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
+            element "Database" {
+                background #f5a623
+                shape Cylinder
+            }
             element "Infrastructure" {
-                background #666666
+                background #4a90e2
                 color #ffffff
             }
-            element "Person" {
-                shape person
-                background #08427b
+            element "Software System" {
+                background #1168bd
                 color #ffffff
             }
             element "Container" {
                 background #438dd5
                 color #ffffff
             }
-            element "Database" {
-                shape cylinder
-                background #f5a623
-                color #000000
-            }
-            element "Primary" {
-                background #4a90e2
+            element "Person" {
+                background #08427b
                 color #ffffff
+                shape Person
             }
         }
     }

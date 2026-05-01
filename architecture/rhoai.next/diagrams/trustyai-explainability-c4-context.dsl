@@ -1,60 +1,64 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates ML models, monitors fairness and drift metrics"
-        mlEngineer = person "ML Engineer" "Deploys models, configures explainability and monitoring"
+        dataScientist = person "Data Scientist" "Creates ML models and monitors fairness/drift metrics"
+        mlEngineer = person "ML Engineer" "Deploys models and configures inference pipelines"
 
-        trustyai = softwareSystem "TrustyAI Explainability" "AI explainability, fairness metrics (SPD, DIR), and data drift detection service for ML models" {
-            service = container "explainability-service" "Quarkus 3.8.5 REST microservice exposing 50+ HTTP endpoints for metrics, explanations, and data management" "Java 17 / Quarkus"
-            core = container "explainability-core" "Core XAI algorithms: SHAP, LIME, Counterfactual, PDP; fairness metrics: DIR, SPD; drift detection: KS, MMD, Meanshift" "Java Library"
-            connectors = container "explainability-connectors" "KServe V1/V2 HTTP and gRPC prediction provider clients with protobuf stubs" "Java Library"
-            arrow = container "explainability-arrow" "Apache Arrow IPC serialization for Java-Python data interoperability" "Java Library"
+        trustyai = softwareSystem "TrustyAI Explainability" "Quarkus-based REST service providing AI explainability (SHAP, LIME, CF), fairness metrics (SPD, DIR), and drift detection (KS, MMD, Meanshift)" {
+            service = container "explainability-service" "Primary REST service exposing 50+ HTTP endpoints for metrics, explanations, and data management" "Quarkus 3.8.5 / Java 17"
+            core = container "explainability-core" "Core XAI algorithms, fairness metrics, drift detection, and data models" "Java Library"
+            connectors = container "explainability-connectors" "KServe V1/V2 HTTP and gRPC prediction provider clients" "Java Library + Protobuf"
+            arrow = container "explainability-arrow" "Apache Arrow IPC serialization for Java-Python data exchange" "Java Library"
+            authProxy = container "Auth Proxy Sidecar" "Authenticates incoming requests before forwarding to service" "kube-rbac-proxy / oauth-proxy"
         }
 
-        modelMesh = softwareSystem "ModelMesh Serving" "Multi-model serving platform that routes inference requests" "Internal RHOAI"
-        kserve = softwareSystem "KServe Model Servers" "KServe V1/V2 compatible model serving endpoints" "Internal RHOAI"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and alerting platform" "Internal Platform"
+        modelMesh = softwareSystem "ModelMesh Serving" "Serves ML models and routes inference payloads to consumers" "Internal RHOAI"
+        kserveModels = softwareSystem "KServe Model Servers" "KServe V1/V2 compatible model inference servers" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal Platform"
         grafana = softwareSystem "Grafana / Dashboard" "Visualization of fairness and drift metrics" "Internal Platform"
-        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Operator managing TrustyAI service instances per namespace via CRDs" "Internal RHOAI"
-        mariadb = softwareSystem "MariaDB / MySQL" "Relational database for persistent inference data storage" "External / Optional"
-        minio = softwareSystem "MinIO" "S3-compatible object storage for inference data" "External / Optional"
-        odhDashboard = softwareSystem "ODH Dashboard" "OpenShift Data Hub user interface" "Internal RHOAI"
+        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Manages TrustyAI service lifecycle via CRDs" "Internal RHOAI"
 
-        # Relationships
-        dataScientist -> trustyai "Requests fairness metrics, drift detection, explanations" "REST API / HTTP"
-        mlEngineer -> trustyaiOperator "Configures TrustyAI instances" "kubectl / CRDs"
+        mariadb = softwareSystem "MariaDB / MySQL" "Relational database for inference data persistence" "External (optional)"
+        minio = softwareSystem "MinIO" "S3-compatible object storage for inference data" "External (optional)"
 
-        modelMesh -> trustyai "Sends inference payloads for data capture" "HTTP POST /consumer/kserve/v2 / 80/TCP"
-        trustyai -> kserve "Queries models for predictions during explanation generation" "gRPC V2 / HTTP"
-        prometheus -> trustyai "Scrapes fairness and drift metrics" "HTTP GET /q/metrics / Bearer Token"
-        grafana -> prometheus "Queries metrics for dashboard visualization" "PromQL"
-        trustyaiOperator -> trustyai "Creates and manages service instances, injects auth proxy" "Kubernetes API"
-        trustyai -> mariadb "Persists inference data (DATABASE mode)" "JDBC / 3306/TCP"
-        trustyai -> minio "Persists inference data (MINIO mode)" "S3 API / HTTPS 9000/TCP"
-        odhDashboard -> trustyai "Displays TrustyAI metrics and status" "REST API / HTTP"
+        # User interactions
+        dataScientist -> trustyai "Requests fairness metrics, drift reports, and explanations" "REST/HTTP 80/TCP"
+        mlEngineer -> trustyaiOperator "Configures TrustyAI instance per namespace" "kubectl / CRD"
 
-        # Internal container relationships
-        service -> core "Uses algorithms for metric computation and explanations"
-        service -> connectors "Uses for model inference calls"
-        service -> arrow "Uses for Java-Python data exchange"
-        connectors -> kserve "gRPC/HTTP calls to model servers"
+        # Internal container interactions
+        service -> core "Uses algorithms and data models"
+        service -> connectors "Calls model servers for inference"
+        service -> arrow "Serializes data for Python interop"
+        authProxy -> service "Forwards authenticated requests" "HTTP/8080 plaintext"
+
+        # External system interactions
+        modelMesh -> trustyai "Sends inference payloads" "HTTP POST /consumer/kserve/v2 80/TCP"
+        trustyai -> kserveModels "Queries models for predictions during explanations" "gRPC/HTTP2 plaintext"
+        prometheus -> trustyai "Scrapes fairness and drift metrics" "HTTP GET /q/metrics 80/TCP Bearer"
+        grafana -> prometheus "Visualizes metrics" "PromQL"
+        trustyaiOperator -> trustyai "Creates and manages deployment lifecycle"
+        trustyai -> mariadb "Persists inference data (DATABASE mode)" "JDBC/3306 plaintext"
+        trustyai -> minio "Persists inference data (MINIO mode)" "S3 API/9000 HTTPS TLS"
     }
 
     views {
         systemContext trustyai "SystemContext" {
             include *
             autoLayout
-            description "TrustyAI Explainability in the RHOAI ecosystem"
         }
 
         container trustyai "Containers" {
             include *
             autoLayout
-            description "Internal modules of TrustyAI Explainability"
         }
 
         styles {
+            element "Person" {
+                shape Person
+                background #08427b
+                color #ffffff
+            }
             element "Software System" {
-                background #438dd5
+                background #1168bd
                 color #ffffff
             }
             element "Internal RHOAI" {
@@ -65,13 +69,8 @@ workspace {
                 background #4a90e2
                 color #ffffff
             }
-            element "External / Optional" {
+            element "External" {
                 background #999999
-                color #ffffff
-            }
-            element "Person" {
-                shape person
-                background #08427b
                 color #ffffff
             }
             element "Container" {

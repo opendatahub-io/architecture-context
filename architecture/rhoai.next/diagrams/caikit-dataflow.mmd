@@ -1,78 +1,78 @@
 sequenceDiagram
-    participant Client as Client Application
-    participant KServe as KServe / Istio Gateway
-    participant gRPC as Caikit gRPC Server<br/>8085/TCP TLS/mTLS
-    participant HTTP as Caikit HTTP Server<br/>8080/TCP TLS/mTLS
+    autonumber
+
+    participant Client as External Client
+    participant KServe as KServe/ModelMesh
+    participant GRPC as Caikit gRPC Server<br/>8085/TCP
+    participant HTTP as Caikit HTTP Server<br/>8080/TCP
+    participant Wrapper as CaikitRuntimeServerWrapper
     participant Predict as GlobalPredictServicer
     participant Train as GlobalTrainServicer
-    participant MM as ModelMesh Controller
-    participant MRS as ModelRuntimeServicer
-    participant MgrCore as Model Manager (core)
-    participant Module as Module.run() / .load() / .train()
+    participant MM as Model Manager
+    participant Module as Module.run() / Module.train()
     participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant Metrics as Metrics Server<br/>8086/TCP HTTP
-    participant OTEL as OTLP Collector<br/>4317/4318/TCP
-    participant Probe as caikit-health-probe
+    participant Metrics as Metrics Server<br/>8086/TCP
+    participant OTEL as OTEL Collector<br/>4317/TCP
     participant Kubelet as Kubernetes kubelet
+    participant Probe as caikit-health-probe
 
     rect rgb(230, 245, 255)
-        Note over Client,Module: Flow 1: Model Inference (gRPC)
-        Client->>gRPC: gRPC inference request<br/>TLS/mTLS (configurable)
-        gRPC->>Predict: CaikitRuntimeServerWrapper<br/>routes RPC
-        Predict->>MgrCore: retrieve_model(model_id)
-        MgrCore->>Module: Module.run(input)
-        Module-->>MgrCore: prediction result
-        MgrCore-->>Predict: result
-        Predict->>Metrics: record RPC metrics<br/>HTTP/8086 plaintext
-        Predict->>OTEL: export trace span<br/>OTLP gRPC/4317
-        Predict-->>gRPC: response
-        gRPC-->>Client: gRPC response
+        Note over Client,Metrics: Flow 1: Model Inference (gRPC)
+        Client->>GRPC: gRPC Inference Request<br/>TLS/mTLS (configurable)
+        GRPC->>Wrapper: Route RPC
+        Wrapper->>Predict: Dispatch to GlobalPredictServicer
+        Predict->>MM: Retrieve loaded model
+        MM->>Module: Module.run()
+        Module-->>Predict: Prediction result
+        Predict->>Metrics: Record RPC metrics<br/>HTTP/8086 plaintext
+        Predict-->>Client: gRPC Response
     end
 
     rect rgb(230, 255, 230)
         Note over Client,Module: Flow 2: Model Inference (HTTP)
-        Client->>HTTP: POST /api/v1/task/{task_name}<br/>HTTPS/mTLS (configurable)
+        Client->>HTTP: POST /api/v1/task/{task_name}<br/>HTTP/HTTPS (configurable)
         HTTP->>Predict: predict_model()
-        Predict->>MgrCore: retrieve_model(model_id)
-        MgrCore->>Module: Module.run(input)
-        Module-->>MgrCore: prediction result
-        MgrCore-->>Predict: result
+        Predict->>MM: Retrieve loaded model
+        MM->>Module: Module.run()
+        Module-->>Predict: Prediction result
         Predict-->>HTTP: JSON response
-        HTTP-->>Client: HTTP 200 + JSON body
+        HTTP-->>Client: HTTP 200 JSON
     end
 
     rect rgb(255, 245, 230)
-        Note over MM,S3: Flow 3: Model Loading (ModelMesh)
-        MM->>MRS: loadModel(model_id, model_path)<br/>unix:///tmp/mmesh/grpc.sock<br/>plaintext (pod-local)
-        MRS->>MgrCore: load_model(model_id, path)
-        MgrCore->>MgrCore: LocalModelFinder<br/>resolve local path
-        MgrCore->>Module: Module.load(model_path, backend)
-        Module-->>MgrCore: loaded model instance
-        MgrCore-->>MRS: model loaded + size
-        MRS-->>MM: ModelInfo(sizeInBytes)
+        Note over KServe,Module: Flow 3: Model Loading (ModelMesh)
+        KServe->>GRPC: loadModel<br/>unix:///tmp/mmesh/grpc.sock<br/>plaintext (pod-local)
+        GRPC->>MM: ModelRuntimeServicer.loadModel
+        MM->>MM: Locate model artifacts (local path)
+        MM->>Module: Module.load()
+        Module-->>MM: Model loaded
+        MM-->>KServe: Load success + model size
     end
 
     rect rgb(255, 230, 230)
         Note over Client,S3: Flow 4: Training Job
-        Client->>gRPC: training request<br/>gRPC/8085 or HTTP/8080
-        gRPC->>Train: GlobalTrainServicer
-        Train->>Train: LocalModelTrainer<br/>spawn thread/subprocess
-        Train->>Module: Module.train(data_stream)
-        Module->>S3: fetch training data<br/>HTTPS/443 TLS 1.2+<br/>AWS IAM credentials
-        S3-->>Module: data artifacts
-        Module->>Module: training execution
-        Module->>S3: save trained model<br/>HTTPS/443 TLS 1.2+
-        Module-->>Train: training complete
-        Train-->>gRPC: training_id + status
-        gRPC-->>Client: training response
+        Client->>GRPC: Training request<br/>gRPC 8085 or HTTP 8080
+        GRPC->>Train: GlobalTrainServicer
+        Train->>Module: Module.train() (thread/subprocess)
+        Module->>S3: Fetch training data<br/>HTTPS/443, TLS 1.2+<br/>AWS IAM credentials
+        S3-->>Module: Training data
+        Module->>S3: Save trained model<br/>HTTPS/443
+        Module-->>Train: Training complete
+        Train-->>Client: Training status
     end
 
     rect rgb(245, 230, 255)
-        Note over Kubelet,HTTP: Flow 5: Health Probe
-        Kubelet->>Probe: exec liveness/readiness check
-        Probe->>HTTP: GET /health<br/>HTTP/HTTPS 8080/TCP<br/>TLS matches server config
-        HTTP-->>Probe: 200 OK
-        Probe->>gRPC: grpc.health.v1.Health.Check<br/>8085/TCP or unix socket<br/>TLS matches server config
-        gRPC-->>Probe: SERVING
-        Probe-->>Kubelet: exit 0 (healthy)
+        Note over Kubelet,GRPC: Flow 5: Health Probe
+        Kubelet->>Probe: Execute readiness/liveness check
+        Probe->>HTTP: GET /health<br/>HTTP/HTTPS (matches server config)
+        HTTP-->>Probe: Health status
+        Probe->>GRPC: grpc.health.v1.Health.Check<br/>gRPC (matches server config)
+        GRPC-->>Probe: SERVING status
+        Probe-->>Kubelet: Probe result (exit code)
+    end
+
+    rect rgb(240, 240, 240)
+        Note over GRPC,OTEL: Background: Telemetry
+        GRPC->>OTEL: Export trace spans<br/>gRPC/4317 or HTTP/4318<br/>TLS/mTLS (configurable)
+        Metrics->>Metrics: Expose /metrics<br/>HTTP/8086 plaintext
     end

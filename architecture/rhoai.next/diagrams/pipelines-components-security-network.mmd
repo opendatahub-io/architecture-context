@@ -1,77 +1,74 @@
 graph TB
-    subgraph Cluster["KUBERNETES CLUSTER (Trusted)"]
+    subgraph Cluster["CLUSTER INTERNAL (Kubernetes)"]
         direction TB
 
-        subgraph KFPContext["KFP Pipeline Execution Context"]
-            direction TB
-
-            InitContainer["Init Container<br/>pipelines-components<br/>SA: DSPA pipeline runner<br/>No network ports"]
-            SharedVol["Shared Volume<br/>/config/managed-pipelines/"]
-            KFPServer["KFP API Server<br/>Discovers pipeline YAMLs"]
-
-            InitContainer -->|"Filesystem<br/>Volume mount<br/>No network"| SharedVol
-            SharedVol -->|"Filesystem<br/>Volume mount"| KFPServer
+        subgraph InitFlow["Init Container Flow"]
+            InitContainer["Init Container<br/>(pipelines-components)<br/>SA: DSPA pipeline runner<br/>No network ports"]
+            KFPServer["KFP API Server<br/>Reads from shared volume"]
         end
 
         subgraph TaskPods["KFP Task Pods (Ephemeral Batch Jobs)"]
             direction TB
-
-            AutoMLPod["AutoML Task Pod<br/>Image: odh-automl<br/>PVC: 12Gi RWO"]
-            AutoRAGPod["AutoRAG Task Pod<br/>Image: odh-autorag<br/>PVC: 50Gi RWX"]
-            FineTunePod["Fine-Tuning Task Pod<br/>GPU-accelerated<br/>PVC: 50Gi RWX nfs-csi"]
+            AutoMLPod["AutoML Task Pod<br/>Image: odh-automl<br/>SA: DSPA pipeline runner<br/>GPU: nvidia.com/gpu"]
+            AutoRAGPod["AutoRAG Task Pod<br/>Image: odh-autorag<br/>SA: DSPA pipeline runner"]
+            FTPod["Fine-Tuning Task Pod<br/>SA: DSPA pipeline runner<br/>GPU: nvidia.com/gpu<br/>PVC: 50Gi nfs-csi RWX"]
         end
 
-        K8sAPI["Kubernetes API Server<br/>6443/TCP"]
-        DSPA["DSPA<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token"]
+        subgraph Storage["Cluster Storage"]
+            SharedVolume["Shared Volume<br/>/config/managed-pipelines/"]
+            PVC["Shared PVC<br/>50Gi nfs-csi RWX<br/>(fine-tuning)<br/>12Gi RWO (AutoML)"]
+        end
     end
 
-    subgraph Internal["INTERNAL PLATFORM SERVICES"]
-        ModelRegistry["Kubeflow Model Registry<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (SA)"]
+    subgraph PlatformServices["INTERNAL PLATFORM SERVICES"]
+        ModelRegistry["Kubeflow Model Registry<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (K8s SA)"]
+        KFPArtifact["KFP Artifact Store<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token (auto-mounted)"]
     end
 
-    subgraph External["EXTERNAL SERVICES"]
-        S3["S3-Compatible Storage<br/>(MinIO/Ceph/AWS)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM Credentials"]
-
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        S3["S3 Storage<br/>(MinIO/Ceph/AWS)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM Credentials"]
         HFHub["Hugging Face Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (HF_TOKEN)"]
-
         LlamaStack["Llama Stack API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key"]
-
         LLMAPI["LLM API<br/>(OpenAI-compatible)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key"]
-
         OCIRegistry["OCI Container Registry<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Registry Credentials"]
-
-        PyPIMirror["Red Hat PyPI Mirror<br/>console.redhat.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>No auth"]
+        WandB["W&B / MLflow<br/>(optional)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key"]
     end
 
-    %% Egress flows from task pods
+    %% Init container flow (filesystem only)
+    InitContainer -->|"Filesystem<br/>Copy compiled YAMLs"| SharedVolume
+    SharedVolume -->|"Filesystem<br/>Pipeline discovery"| KFPServer
+
+    %% Task pod to cluster storage
+    AutoMLPod -->|"Filesystem<br/>R/W dataset & models"| PVC
+    AutoRAGPod -->|"Filesystem<br/>R/W documents"| PVC
+    FTPod -->|"Filesystem<br/>R/W training data"| PVC
+
+    %% Task pod to platform services
+    FTPod -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| ModelRegistry
+    AutoMLPod -->|"HTTPS/443<br/>SA Token"| KFPArtifact
+    AutoRAGPod -->|"HTTPS/443<br/>SA Token"| KFPArtifact
+    FTPod -->|"HTTPS/6443<br/>SA Token"| K8sAPI
+    AutoMLPod -->|"HTTPS/6443<br/>SA Token"| K8sAPI
+
+    %% Task pod to external services
     AutoMLPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
     AutoRAGPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    FineTunePod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-
-    FineTunePod -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
-    FineTunePod -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| ModelRegistry
-
+    FTPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    FTPod -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
     AutoRAGPod -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| LlamaStack
     AutoRAGPod -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| LLMAPI
-
-    FineTunePod -->|"HTTPS/443<br/>TLS 1.2+<br/>Registry Creds"| OCIRegistry
-
-    %% K8s API access
-    TaskPods -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-
-    %% DSPA integration
-    KFPServer -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| DSPA
+    FTPod -->|"HTTPS/443<br/>TLS 1.2+<br/>Registry Creds"| OCIRegistry
+    FTPod -.->|"HTTPS/443<br/>TLS 1.2+<br/>API Key (optional)"| WandB
 
     %% Styling
-    classDef cluster fill:#e8f0fe,stroke:#4a90e2,stroke-width:2px
-    classDef kfpcontext fill:#fff2cc,stroke:#d6b656,stroke-width:1px
-    classDef taskpods fill:#dae8fc,stroke:#6c8ebf,stroke-width:1px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef external fill:#f5f5f5,stroke:#999,stroke-width:2px
-    classDef k8s fill:#e1d5e7,stroke:#9673a6
+    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef external fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef storage fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef initflow fill:#f5f5f5,stroke:#666,stroke-width:1px
 
-    class InitContainer,SharedVol,KFPServer kfpcontext
-    class AutoMLPod,AutoRAGPod,FineTunePod taskpods
-    class ModelRegistry internal
-    class S3,HFHub,LlamaStack,LLMAPI,OCIRegistry,PyPIMirror external
-    class K8sAPI,DSPA k8s
+    class InitContainer,AutoMLPod,AutoRAGPod,FTPod cluster
+    class KFPServer,ModelRegistry,KFPArtifact,K8sAPI platform
+    class S3,HFHub,LlamaStack,LLMAPI,OCIRegistry,WandB external
+    class SharedVolume,PVC storage

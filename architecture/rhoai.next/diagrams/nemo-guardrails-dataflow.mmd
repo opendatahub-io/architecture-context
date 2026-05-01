@@ -1,66 +1,75 @@
 sequenceDiagram
-    participant Client as Client / Platform Component
+    participant Client as Client Application
     participant Server as NeMo Guardrails Server<br/>8000/TCP HTTP
-    participant InputRails as Input Rails<br/>(content safety, injection, PII)
+    participant InputR as Input Rails<br/>(Content Safety, Injection,<br/>Topic Control)
     participant LLM as Upstream LLM Provider<br/>443/TCP HTTPS TLS 1.2+
-    participant OutputRails as Output Rails<br/>(hallucination, factcheck)
-    participant OTEL as OpenTelemetry Collector<br/>4317/4318 TCP
+    participant OutputR as Output Rails<br/>(Hallucination, Factcheck,<br/>Sensitive Data)
+    participant OTEL as OpenTelemetry Collector<br/>4317/TCP gRPC
 
-    Note over Client,OTEL: Flow 1: Chat Completion with Guardrails
+    Note over Client,OTEL: Flow 1: Chat Completion with Guardrails (/v1/chat/completions)
 
-    Client->>Server: POST /v1/chat/completions<br/>HTTP/8000, Header forwarding (X-* headers)
+    Client->>Server: POST /v1/chat/completions<br/>Headers: X-*, Authorization<br/>Body: OpenAI-compat chat request
     activate Server
 
-    Server->>InputRails: Process input rails
-    activate InputRails
-    InputRails->>LLM: Self-check guardrail prompts<br/>HTTPS/443, Bearer Token
-    LLM-->>InputRails: Guardrail evaluation result
-    InputRails-->>Server: Input validation result
-    deactivate InputRails
+    Server->>Server: Load Colang flows from<br/>ConfigMap (config.yaml + rails.co)
 
-    alt Input rails PASS
-        Server->>LLM: Chat completion request<br/>HTTPS/443, Bearer Token
-        LLM-->>Server: LLM response
-
-        Server->>OutputRails: Process output rails
-        activate OutputRails
-        OutputRails->>LLM: Hallucination/factcheck prompts<br/>HTTPS/443, Bearer Token
-        LLM-->>OutputRails: Guardrail evaluation result
-        OutputRails-->>Server: Output validation result
-        deactivate OutputRails
-
-        alt Output rails PASS
-            Server-->>Client: JSON response (chat completion)
-        else Output rails FAIL
-            Server-->>Client: Blocked/modified response
-        end
-    else Input rails FAIL
-        Server-->>Client: Blocked response (input rejected)
+    rect rgb(255, 235, 235)
+        Note over Server,LLM: Input Rail Pipeline
+        Server->>InputR: Execute input rails on user message
+        InputR->>LLM: Self-check prompt<br/>"Does this contain harmful content?"<br/>Auth: Bearer Token
+        LLM-->>InputR: Safety evaluation result
+        InputR-->>Server: Input rail verdict (pass/fail)
     end
 
-    Server->>OTEL: Export traces (OTLP)<br/>gRPC/4317 or HTTP/4318
+    alt Input Rails PASS
+        rect rgb(235, 255, 235)
+            Note over Server,LLM: Dialog + Generation Pipeline
+            Server->>LLM: Chat completion request<br/>Auth: Bearer Token<br/>Model: MAIN_MODEL_ENGINE
+            LLM-->>Server: Generated LLM response
+        end
+
+        rect rgb(235, 235, 255)
+            Note over Server,LLM: Output Rail Pipeline
+            Server->>OutputR: Execute output rails on LLM response
+            OutputR->>LLM: Factcheck/hallucination check<br/>Auth: Bearer Token
+            LLM-->>OutputR: Evaluation result
+            OutputR-->>Server: Output rail verdict (pass/fail)
+        end
+
+        alt Output Rails PASS
+            Server-->>Client: 200 OK<br/>OpenAI-compat response<br/>(with guardrail metadata)
+        else Output Rails FAIL
+            Server-->>Client: 200 OK<br/>Canned refusal response<br/>(output blocked by guardrails)
+        end
+    else Input Rails FAIL
+        Server-->>Client: 200 OK<br/>Canned refusal response<br/>(input blocked by guardrails)
+    end
+
+    Server->>OTEL: Export trace spans (async)<br/>OTLP protocol
+
     deactivate Server
 
-    Note over Client,OTEL: Flow 2: Guardrail Checks (No LLM Generation)
+    Note over Client,OTEL: Flow 2: Guardrail Checks Only (/v1/guardrail/checks - fork-specific)
 
-    Client->>Server: POST /v1/guardrail/checks<br/>HTTP/8000, Header forwarding
+    Client->>Server: POST /v1/guardrail/checks<br/>Headers: X-*, Authorization<br/>Body: messages[] with roles
     activate Server
 
-    Server->>InputRails: Evaluate user messages (input rails)
-    activate InputRails
-    InputRails->>LLM: Self-check guardrail prompts<br/>HTTPS/443, Bearer Token
-    LLM-->>InputRails: Evaluation result
-    InputRails-->>Server: Per-message rail status
-    deactivate InputRails
+    loop For each message by role
+        alt role = user
+            Server->>InputR: Run input rails
+            InputR->>LLM: Self-check evaluation<br/>Auth: Bearer Token
+            LLM-->>InputR: Result
+            InputR-->>Server: Per-message verdict
+        else role = assistant
+            Server->>OutputR: Run output rails
+            OutputR->>LLM: Factcheck/safety evaluation<br/>Auth: Bearer Token
+            LLM-->>OutputR: Result
+            OutputR-->>Server: Per-message verdict
+        end
+    end
 
-    Server->>OutputRails: Evaluate assistant messages (output rails)
-    activate OutputRails
-    OutputRails->>LLM: Output check prompts<br/>HTTPS/443, Bearer Token
-    LLM-->>OutputRails: Evaluation result
-    OutputRails-->>Server: Per-message rail status
-    deactivate OutputRails
+    Server-->>Client: 200 OK<br/>Per-message + aggregate status<br/>(pass/fail per rail)
 
-    Server-->>Client: Aggregate rail status<br/>(per-message + overall pass/fail)
+    Server->>OTEL: Export trace spans (async)
 
-    Server->>OTEL: Export traces (OTLP)
     deactivate Server

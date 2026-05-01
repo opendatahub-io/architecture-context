@@ -1,43 +1,68 @@
 sequenceDiagram
-    participant Client as External Client
-    participant Gateway as Envoy Gateway<br/>80/TCP HTTP
-    participant EPP as EPP (ext-proc)<br/>9002/TCP gRPC TLS
+    participant Client as Inference Client
+    participant Gateway as Gateway API<br/>80/TCP HTTP
+    participant Envoy as Envoy Proxy<br/>ext-proc filter
+    participant EPP as EPP (Endpoint Picker)<br/>9002/TCP gRPC TLS
     participant K8s as Kubernetes API<br/>443/TCP HTTPS
-    participant Metrics as Model Server Metrics<br/>3000/TCP HTTP
-    participant ModelSvr as vLLM Model Server<br/>8000/TCP HTTP
-    participant PD as PD Sidecar<br/>8000/TCP HTTP/HTTPS
-    participant Prefiller as Prefiller Instance<br/>Dynamic HTTP/HTTPS
+    participant ModelMetrics as Model Server Metrics<br/>3000/TCP HTTP
+    participant UDS as UDS Tokenizer<br/>UDS gRPC
+    participant ModelServer as Selected Model Server<br/>8000/TCP HTTP
+
+    Note over EPP,K8s: Background: EPP watches CRDs
+    EPP->>K8s: Watch InferencePool, Pod,<br/>InferenceObjective, InferenceModelRewrite
+    K8s-->>EPP: Stream CRD events<br/>SA Bearer token auth
+
+    Note over EPP,ModelMetrics: Background: EPP scrapes metrics (every 50ms)
+    EPP->>ModelMetrics: GET /metrics<br/>queue depth, KV cache, running requests
+    ModelMetrics-->>EPP: Prometheus metrics
+
+    Note over Client,ModelServer: Flow 1: Inference Request Scheduling
+    Client->>Gateway: POST /v1/chat/completions
+    Gateway->>Envoy: Route via HTTPRoute
+    Envoy->>EPP: gRPC ext-proc ProcessingRequest<br/>(request headers + body)
+    EPP->>UDS: Tokenize prompt<br/>(gRPC over Unix Domain Socket)
+    UDS-->>EPP: Token IDs
+    Note over EPP: Run scheduling pipeline:<br/>1. Filters (ByLabel, SLOHeadroom)<br/>2. Scorers (KVCache, LoadAware,<br/>   PrefixCache, LoRA, Latency)<br/>3. Picker (MaxScore/WeightedRandom)
+    EPP-->>Envoy: ProcessingResponse<br/>(inject target-endpoint header)
+    Envoy->>ModelServer: Forward request to<br/>selected model server
+    ModelServer-->>Envoy: Inference response<br/>(streaming SSE)
+    Envoy-->>Gateway: Response
+    Gateway-->>Client: Streamed response
+
+    Note over Client,ModelServer: Flow 2: Disaggregated Prefill/Decode (NIXL v2)
+
+    participant PDSidecar as PD Sidecar Proxy<br/>8000/TCP HTTP/HTTPS
+    participant Prefiller as Prefiller Instance<br/>Dynamic port
     participant Decoder as Local Decoder (vLLM)<br/>8001/TCP HTTP
-    participant Encoder as Encoder Instance<br/>Dynamic HTTP/HTTPS
-    participant Tokenizer as UDS Tokenizer<br/>Unix Domain Socket
 
-    Note over Client,ModelSvr: Flow 1: Inference Request Scheduling (EPP)
-    Client->>Gateway: POST /v1/chat/completions<br/>HTTP/80
-    Gateway->>EPP: ext-proc ProcessingRequest<br/>gRPC/9002 TLS 1.2+
-    EPP->>K8s: Watch InferencePool, Pods<br/>HTTPS/443 SA Bearer Token
-    EPP->>Metrics: GET /metrics<br/>HTTP/3000
-    EPP->>Tokenizer: Tokenize prompt<br/>gRPC over UDS
-    Tokenizer-->>EPP: Token IDs
-    Note over EPP: Run scheduling pipeline:<br/>Filters → Scorers → Pickers<br/>(KV cache, load, LoRA, prefix, session)
-    EPP-->>Gateway: ProcessingResponse<br/>Set target-endpoint header
-    Gateway->>ModelSvr: Forward to selected pod<br/>HTTP/8000
+    Client->>Gateway: POST /v1/chat/completions
+    Gateway->>Envoy: Route via HTTPRoute
+    Envoy->>EPP: gRPC ext-proc
+    EPP-->>Envoy: Route to PD sidecar<br/>(prefiller + decoder headers)
+    Envoy->>PDSidecar: Forward with routing headers
+    PDSidecar->>Prefiller: Prefill request<br/>(HTTP/HTTPS, SSRF allowlist)
+    Prefiller-->>PDSidecar: Prefill response<br/>(kv_transfer_params)
+    PDSidecar->>Decoder: Decode request with<br/>kv_transfer_params<br/>8001/TCP localhost
+    Decoder-->>PDSidecar: Streamed tokens
+    PDSidecar-->>Envoy: Streamed response
+    Envoy-->>Gateway: Response
+    Gateway-->>Client: Streamed response
 
-    Note over Client,Decoder: Flow 2: Disaggregated Prefill/Decode (NIXL v2)
-    Client->>Gateway: POST /v1/chat/completions<br/>HTTP/80
-    Gateway->>PD: Forward request<br/>HTTP/HTTPS 8000 TLS 1.2+
-    PD->>Prefiller: Prefill request<br/>HTTP/HTTPS (SSRF allowlist)
-    Prefiller-->>PD: Response with kv_transfer_params<br/>HTTP/HTTPS
-    PD->>Decoder: Decode request + KV params<br/>HTTP/8001 (localhost)
-    Decoder-->>PD: Streamed tokens
-    PD-->>Client: Streamed response<br/>HTTP/HTTPS 8000
+    Note over Client,ModelServer: Flow 3: Encode/Prefill/Decode (E/P/D Multimodal)
 
-    Note over Client,Encoder: Flow 3: Encode/Prefill/Decode (EPD - Multimodal)
-    Client->>Gateway: POST /v1/chat/completions<br/>(with images) HTTP/80
-    Gateway->>PD: Forward request<br/>HTTP/HTTPS 8000 TLS 1.2+
-    PD->>Encoder: Encode images (fan-out)<br/>HTTP/HTTPS (SSRF allowlist)
-    Encoder-->>PD: Encoded representations
-    PD->>Prefiller: Prefill with encoded context<br/>HTTP/HTTPS (SSRF allowlist)
-    Prefiller-->>PD: Response with kv_transfer_params
-    PD->>Decoder: Decode request + KV params<br/>HTTP/8001 (localhost)
-    Decoder-->>PD: Streamed tokens
-    PD-->>Client: Streamed response<br/>HTTP/HTTPS 8000
+    participant Encoder as Encoder Instance<br/>Dynamic port
+
+    Client->>Gateway: POST /v1/chat/completions<br/>(multimodal content)
+    Gateway->>Envoy: Route via HTTPRoute
+    Envoy->>EPP: gRPC ext-proc
+    EPP-->>Envoy: Route to PD sidecar<br/>(encoder + prefiller + decoder headers)
+    Envoy->>PDSidecar: Forward with routing headers
+    PDSidecar->>Encoder: Encode request (fan-out)<br/>(HTTP/HTTPS, SSRF allowlist)
+    Encoder-->>PDSidecar: Encoded representations
+    PDSidecar->>Prefiller: Prefill with encoded data<br/>(HTTP/HTTPS, SSRF allowlist)
+    Prefiller-->>PDSidecar: Prefill response<br/>(kv_transfer_params)
+    PDSidecar->>Decoder: Decode request<br/>8001/TCP localhost
+    Decoder-->>PDSidecar: Streamed tokens
+    PDSidecar-->>Envoy: Streamed response
+    Envoy-->>Gateway: Response
+    Gateway-->>Client: Streamed response

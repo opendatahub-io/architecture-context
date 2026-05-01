@@ -1,42 +1,43 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates evaluation jobs to benchmark ML models"
-        platformAdmin = person "Platform Admin" "Manages RHOAI platform and operator configuration"
+        datascientist = person "Data Scientist" "Creates LMEvalJob CRs to evaluate language models against benchmarks"
 
-        lmeval = softwareSystem "LM Evaluation Harness" "Batch-oriented runtime for language model benchmark evaluations using lm-evaluation-harness framework" {
+        lmeval = softwareSystem "LM Evaluation Harness" "Batch-oriented runtime for language model evaluation using lm-evaluation-harness framework" {
             adapter = container "LMEval Adapter" "EvalHub adapter: reads job spec, configures lm-eval, runs benchmarks, reports results" "Python (main.py)"
             lmevalLib = container "lm_eval Library" "Core evaluation framework: task management, model abstraction, metric computation" "Python Library"
-            ociPublisher = container "OCI Artifact Publisher" "Packages evaluation output as OCI artifacts and pushes to registry" "Python (scripts/oci.py) + skopeo"
-            s3Downloader = container "S3 Downloader" "Downloads test data from S3-compatible storage for offline evaluation mode" "Python (scripts/s3_downloader.py)"
+            ociPublisher = container "OCI Artifact Publisher" "Packages evaluation results as OCI artifacts and pushes to registry via skopeo" "Python (scripts/oci.py)"
+            s3Downloader = container "S3 Downloader" "Downloads test data from S3 for offline/air-gapped evaluations" "Python (scripts/s3_downloader.py)"
         }
 
         trustyaiOperator = softwareSystem "TrustyAI LMEval Operator" "Creates Kubernetes Jobs from LMEvalJob custom resources" "Internal RHOAI"
-        evalHub = softwareSystem "EvalHub Service" "Job orchestration platform for evaluation lifecycle management" "Internal RHOAI"
-        inferenceEndpoint = softwareSystem "Inference Endpoint" "OpenAI-compatible model serving (vLLM, TGI)" "Internal RHOAI"
-        mlflow = softwareSystem "MLflow Tracking Server" "Experiment tracking and result comparison" "Internal RHOAI"
-        ociRegistry = softwareSystem "OCI Registry (Quay)" "Container and artifact registry for evaluation results" "External"
-        huggingfaceHub = softwareSystem "HuggingFace Hub" "Public model and dataset repository" "External"
-        s3Storage = softwareSystem "S3-compatible Storage" "Object storage for offline test data" "External"
+        evalhub = softwareSystem "EvalHub Service" "Evaluation orchestration platform: job management, status tracking, results aggregation" "Internal RHOAI"
+        inferenceEndpoint = softwareSystem "Inference Endpoint (vLLM/TGI)" "OpenAI-compatible model serving: receives prompts, returns completions" "Internal/External"
+        ociRegistry = softwareSystem "OCI Registry (Quay)" "Stores evaluation result OCI artifacts" "External"
+        hfHub = softwareSystem "HuggingFace Hub" "Public repository for benchmark datasets and tokenizers" "External"
+        s3Storage = softwareSystem "S3-compatible Storage" "Object storage for offline test data in air-gapped environments" "External"
+        mlflow = softwareSystem "MLflow Tracking Server" "Experiment tracking: stores evaluation metrics and metadata" "Internal RHOAI"
 
-        # User interactions
-        dataScientist -> trustyaiOperator "Creates LMEvalJob CR via kubectl"
-        platformAdmin -> trustyaiOperator "Configures operator settings"
+        # Person interactions
+        datascientist -> trustyaiOperator "Creates LMEvalJob CR via kubectl"
 
-        # Orchestration
-        trustyaiOperator -> lmeval "Creates K8s Job with ConfigMap and Secrets"
+        # Operator creates the job
+        trustyaiOperator -> lmeval "Creates K8s Job with LMEval container"
 
-        # Internal component interactions
+        # LMEval external interactions
+        lmeval -> evalhub "Reports status, progress, final results" "HTTPS/443, Bearer Token"
+        lmeval -> inferenceEndpoint "Sends evaluation prompts, receives completions" "HTTP(S), Bearer Token"
+        lmeval -> ociRegistry "Pushes evaluation result artifacts" "HTTPS/443, Docker Auth"
+        lmeval -> hfHub "Downloads benchmark datasets and tokenizers" "HTTPS/443, Bearer Token (optional)"
+        lmeval -> s3Storage "Downloads offline test data (air-gapped mode)" "HTTPS/443, AWS IAM"
+        lmeval -> mlflow "Persists evaluation metrics" "HTTP(S), configurable"
+
+        # Container-level interactions
         adapter -> lmevalLib "Configures and invokes simple_evaluate()"
-        adapter -> ociPublisher "Triggers OCI artifact push"
-        s3Downloader -> lmevalLib "Populates /test_data for offline mode"
-
-        # External interactions
-        adapter -> evalHub "Reports job status (INITIALIZING → COMPLETED)" "HTTPS/443, Bearer Token"
-        lmevalLib -> inferenceEndpoint "Sends evaluation prompts, receives completions" "HTTP(S), Bearer Token"
-        ociPublisher -> ociRegistry "Pushes evaluation result OCI artifacts" "HTTPS/443, Docker Auth"
-        lmevalLib -> huggingfaceHub "Downloads benchmark datasets and tokenizers" "HTTPS/443, Bearer Token"
-        s3Downloader -> s3Storage "Downloads offline test data" "HTTPS/443, AWS IAM"
-        adapter -> mlflow "Persists evaluation metrics" "HTTP(S)"
+        adapter -> ociPublisher "Triggers result artifact push"
+        s3Downloader -> s3Storage "Downloads datasets to /test_data"
+        lmevalLib -> inferenceEndpoint "POST /v1/completions (local-completions backend)"
+        ociPublisher -> ociRegistry "skopeo push OCI artifacts"
+        adapter -> evalhub "Status callbacks (INITIALIZING, POST_PROCESSING, COMPLETED)"
     }
 
     views {
@@ -51,13 +52,17 @@ workspace {
         }
 
         styles {
-            element "Person" {
-                shape Person
-                background #08427b
+            element "Software System" {
+                background #438DD5
                 color #ffffff
             }
-            element "Software System" {
-                background #1168bd
+            element "Person" {
+                background #08427B
+                color #ffffff
+                shape person
+            }
+            element "Container" {
+                background #438DD5
                 color #ffffff
             }
             element "External" {
@@ -68,8 +73,8 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Container" {
-                background #438dd5
+            element "Internal/External" {
+                background #d4a017
                 color #ffffff
             }
         }

@@ -1,83 +1,78 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["Client / Data Scientist"]
+        Client["External Client"]
     end
 
-    subgraph LlamaStackProcess["LLAMA STACK SERVER PROCESS (Port 8321)"]
+    subgraph AppBoundary["LLAMA STACK SERVER (Application Boundary)"]
         direction TB
-        EvalAPI["Eval API<br/>/alpha/eval/*<br/>8321/TCP HTTP<br/>Auth: None (configurable)"]
+        LlamaStack["Llama Stack Server<br/>8321/TCP HTTP<br/>Auth: None (configurable)"]
 
-        subgraph Provider["llama-stack-provider-ragas (Plugin)"]
-            direction LR
-            InlineProvider["RagasEvaluatorInline<br/>inline::trustyai_ragas<br/>(in-process execution)"]
-            RemoteProvider["RagasEvaluatorRemote<br/>remote::trustyai_ragas<br/>(KFP pipeline execution)"]
+        subgraph InlineZone["Inline Provider (in-process)"]
+            InlineEval["RagasEvaluatorInline<br/>ragas.evaluate() in asyncio.to_thread<br/>All calls in-process (no network)"]
         end
 
-        InferenceAPI["Inference API<br/>(in-process)"]
-        DatasetIOAPI["DatasetIO API<br/>(in-process)"]
+        subgraph RemoteZone["Remote Provider"]
+            RemoteEval["RagasEvaluatorRemote<br/>Constructs KFP pipeline<br/>Polls status, fetches results"]
+        end
     end
 
-    subgraph KFPExecution["KFP PIPELINE POD (Remote Execution)"]
+    subgraph KFPZone["KUBEFLOW PIPELINES (Internal Platform)"]
         direction TB
-        RetrieveData["retrieve_data<br/>component"]
-        RunRagas["run_ragas<br/>component<br/>(LlamaStackRemoteLLM<br/>LlamaStackRemoteEmbeddings)"]
-        RetrieveData --> RunRagas
+        KFPAPI["KFP API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token"]
+
+        subgraph PipelinePods["Pipeline Execution"]
+            Step1["KFP Pod: retrieve_data<br/>Base image from ConfigMap"]
+            Step2["KFP Pod: run_ragas<br/>Mounts AWS Secret"]
+        end
+
+        KFPAPI --> Step1
+        Step1 --> Step2
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        KFP["Kubeflow Pipelines API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Bearer Token"]
-        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: AWS IAM"]
-        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: SA Token"]
+        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Token"]
         Ollama["Ollama Server<br/>11434/TCP HTTP<br/>No TLS, No Auth<br/>(sample distro only)"]
     end
 
-    subgraph Secrets["SECRETS (Manual Provisioning)"]
-        direction LR
-        S3Creds["S3 Credentials<br/>(AWS_ACCESS_KEY_ID<br/>AWS_SECRET_ACCESS_KEY)"]
-        KFPToken["kubeflow-pipelines-token<br/>(Bearer Token)"]
-        InferSecret["llama-stack-inference-<br/>model-secret<br/>(vLLM URL, API token)"]
-        AWSCreds["aws-credentials<br/>(AWS creds for pod)"]
-    end
-
     %% Client to Llama Stack
-    Client -->|"HTTP/8321<br/>No TLS<br/>No Auth"| EvalAPI
+    Client -->|"HTTP/8321<br/>No TLS ⚠️<br/>No Auth (configurable)"| LlamaStack
 
-    %% Internal flows
-    EvalAPI --> InlineProvider
-    EvalAPI --> RemoteProvider
-    InlineProvider -->|"in-process<br/>Python call"| InferenceAPI
-    InlineProvider -->|"in-process<br/>Python call"| DatasetIOAPI
+    %% Llama Stack internal routing
+    LlamaStack --> InlineEval
+    LlamaStack --> RemoteEval
 
-    %% Remote provider egress
-    RemoteProvider -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| KFP
-    RemoteProvider -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    RemoteProvider -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    %% Remote provider to KFP
+    RemoteEval -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| KFPAPI
 
-    %% KFP pod flows (security concerns)
-    KFP -->|schedules| RetrieveData
-    RetrieveData -->|"HTTP/8321<br/>⚠ No TLS<br/>⚠ No Auth"| DatasetIOAPI
-    RunRagas -->|"HTTP/8321<br/>⚠ No TLS<br/>⚠ No Auth"| InferenceAPI
-    RunRagas -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    %% KFP pods callback to Llama Stack (security concern)
+    Step1 -->|"HTTP/8321<br/>No TLS ⚠️<br/>No Auth ⚠️"| LlamaStack
+    Step2 -->|"HTTP/8321<br/>No TLS ⚠️<br/>No Auth ⚠️"| LlamaStack
 
-    %% Secret references
-    S3Creds -.->|injected via<br/>use_secret_as_env| RunRagas
-    KFPToken -.->|env var| RemoteProvider
-    AWSCreds -.->|mounted| RetrieveData
+    %% KFP pods to S3
+    Step2 -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM (Secret)"| S3
+
+    %% Remote provider fetches results from S3
+    RemoteEval -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM (s3fs)"| S3
+
+    %% ConfigMap resolution
+    RemoteEval -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+
+    %% Ollama (sample only)
+    LlamaStack -.->|"HTTP/11434<br/>No TLS<br/>No Auth"| Ollama
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef server fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef provider fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
-    classDef api fill:#f5a623,stroke:#333,stroke-width:2px,color:#fff
-    classDef kfp fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef appboundary fill:#dbeafe,stroke:#3b82f6,stroke-width:2px
+    classDef inline fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef remote fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef kfp fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef secrets fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef warning fill:#ff6b6b,stroke:#c0392b,stroke-width:2px,color:#fff
+    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
-    class EvalAPI api
-    class InlineProvider,RemoteProvider provider
-    class InferenceAPI,DatasetIOAPI api
-    class RetrieveData,RunRagas kfp
-    class KFP,S3,K8sAPI,Ollama externalservice
-    class S3Creds,KFPToken,InferSecret,AWSCreds secrets
+    class LlamaStack appboundary
+    class InlineEval inline
+    class RemoteEval remote
+    class KFPAPI,Step1,Step2 kfp
+    class S3,K8sAPI,Ollama externalservice

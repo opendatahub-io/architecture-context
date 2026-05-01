@@ -4,84 +4,101 @@ graph TB
     end
 
     subgraph Ingress["INGRESS / PROXY LAYER"]
-        Gateway["Gateway (Envoy)<br/>llm-d-inference-gateway<br/>80/TCP HTTP<br/>Providers: agentgateway / Istio / GKE"]
+        Gateway["Gateway (Envoy)<br/>llm-d-inference-gateway<br/>80/TCP HTTP<br/>TLS optional (impl-dependent)<br/>AllowedRoutes: All NS"]
+
+        subgraph GatewayImpls["Gateway Implementations"]
+            AG["agentgateway<br/>(Preferred)"]
+            IstioGW["Istio<br/>IngressGateway"]
+            GKEGW["GKE Gateway<br/>(Cloud LB)"]
+        end
     end
 
-    subgraph Cluster["IN-CLUSTER"]
+    subgraph SchedulingZone["SCHEDULING LAYER (Cluster Internal)"]
+        EPP["Endpoint Picker (EPP)<br/>ghcr.io/llm-d/llm-d-inference-scheduler:v0.7.0<br/>ext-proc gRPC (FULL_DUPLEX_STREAMED)<br/>Metrics: 9002/TCP, 9090/TCP<br/>FailMode: FailOpen/FailClose"]
+
+        Pool["InferencePool CRD<br/>gateway.networking.k8s.io<br/>Namespace-scoped<br/>Label selector: llm-d.ai/inference-serving"]
+    end
+
+    subgraph ModelZone["MODEL SERVER LAYER (Cluster Internal)"]
         direction TB
 
-        subgraph SchedulingZone["Scheduling Zone"]
-            EPP["Endpoint Picker (EPP)<br/>ghcr.io/llm-d/llm-d-inference-scheduler:v0.7.0<br/>Metrics: 9002/TCP, 9090/TCP<br/>ext-proc gRPC receiver"]
+        subgraph StandardMode["Standard Serving"]
+            ModelServer["Model Server (vLLM/SGLang)<br/>SA: sa | User: uid 2000 (non-root)<br/>8000/TCP HTTP<br/>Health: /health, /v1/models<br/>Labels: llm-d.ai/role, llm-d.ai/model"]
         end
 
-        subgraph PoolZone["InferencePool (Namespace-scoped)"]
-            InfPool["InferencePool CR<br/>gateway.networking.k8s.io<br/>Selector: llm-d.ai/inference-serving=true<br/>FailMode: FailOpen/FailClose"]
+        subgraph PDMode["P/D Disaggregation"]
+            Sidecar["Routing Sidecar<br/>v0.7.1<br/>8000/TCP HTTP"]
+            Prefill["Prefill Worker<br/>8000/TCP HTTP<br/>llm-d.ai/role: prefill"]
+            Decode["Decode Worker<br/>8200/TCP HTTP<br/>llm-d.ai/role: decode"]
         end
+    end
 
-        subgraph ServerZone["Model Server Zone"]
-            direction LR
-            Decode["Decode Worker<br/>SA: sa | uid: 2000<br/>8000/TCP HTTP (vLLM API)<br/>8200/TCP HTTP (disagg decode)<br/>Labels: llm-d.ai/role=decode"]
-            Prefill["Prefill Worker<br/>SA: sa | uid: 2000<br/>8000/TCP HTTP (routing sidecar)<br/>Labels: llm-d.ai/role=prefill"]
-        end
+    subgraph DataPlane["DATA / CACHE PLANE (Cluster Internal)"]
+        NIXL["NIXL Transfer<br/>v0.10.0<br/>5600/TCP RDMA<br/>GPUDirect (NVLink/RoCE/IB/EFA)<br/>NO ENCRYPTION"]
+        ZMQ["ZMQ PUB/SUB<br/>5556/TCP<br/>KV cache block events<br/>NO ENCRYPTION"]
+        LMCache["LMCache v0.3.14<br/>Tiered: HBM→CPU→Disk→Shared<br/>CephFS/Lustre"]
+    end
 
-        subgraph RDMAZone["RDMA Network (Hardware-Isolated)"]
-            NIXL["NIXL v0.10.0<br/>5600/TCP RDMA<br/>Transports: NVLink/RoCE/InfiniBand/EFA<br/>GPUDirect Memory Registration<br/>No app-layer encryption"]
-        end
-
-        subgraph MonitoringZone["Monitoring Zone"]
-            Prometheus["Prometheus<br/>Scrapes: 9002, 9090/TCP"]
-            Jaeger["Jaeger (OTLP)<br/>Distributed Tracing"]
-            Grafana["Grafana Dashboards"]
-        end
-
-        subgraph OptionalZone["Optional: Precise Prefix Cache"]
-            ZMQ["ZMQ Publisher<br/>5556/TCP<br/>KV block events<br/>Unencrypted, in-cluster"]
-        end
+    subgraph Observability["OBSERVABILITY"]
+        Prometheus["Prometheus<br/>Metrics collection<br/>GKE/OCP/Self-managed"]
+        Jaeger["Jaeger / OpenTelemetry<br/>OTLP Protocol<br/>Distributed tracing"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>SA Token Auth"]
-        Registry["ghcr.io/llm-d<br/>Container Registry<br/>Image Pull Secrets"]
-        ModelStore["Model Storage<br/>(HuggingFace/S3/PVC)<br/>HF Token / AWS IAM"]
+        Registry["ghcr.io/llm-d<br/>443/TCP HTTPS<br/>Container images"]
+        ModelStorage["Model Storage<br/>(S3/GCS/PVC)<br/>HTTPS/NFS<br/>Cloud IAM Auth"]
     end
 
-    %% Flows with security details
-    Client -->|"HTTP/80<br/>No TLS by default<br/>App-level auth varies"| Gateway
-    Gateway -->|"ext-proc gRPC<br/>In-cluster comm<br/>Loopback/sidecar"| EPP
-    EPP -->|"Label selector query<br/>K8s API watch"| InfPool
-    InfPool -->|"Pod discovery<br/>llm-d.ai/inference-serving=true"| Decode
-    InfPool -->|"Pod discovery<br/>llm-d.ai/role=prefill"| Prefill
-    Gateway -->|"HTTP/8000<br/>No mTLS by default"| Decode
-    Gateway -->|"HTTP/8000<br/>No mTLS by default"| Prefill
-    Prefill -->|"RDMA/5600<br/>GPUDirect<br/>No app encryption"| NIXL
-    NIXL -->|"KV blocks<br/>Direct memory"| Decode
-    Decode -.->|"Metrics/9002"| Prometheus
-    EPP -.->|"Metrics/9090"| Prometheus
-    Prometheus -.-> Grafana
-    Decode -.->|"OTLP traces"| Jaeger
-    EPP -->|"Pod watch<br/>SA Token"| K8sAPI
-    Decode -->|"Image pull"| Registry
-    Decode -->|"Model download<br/>HF Token/IAM"| ModelStore
-    Decode -.->|"ZMQ/5556<br/>Block events"| ZMQ
-    ZMQ -.->|"Cache index"| EPP
+    %% External to Ingress
+    Client -->|"HTTP/80<br/>TLS optional<br/>Bearer Token optional<br/>Headers: x-gateway-inference-*"| Gateway
+
+    %% Ingress to Scheduling
+    Gateway -->|"ext-proc gRPC<br/>In-cluster<br/>Service Identity"| EPP
+
+    %% Scheduling to Pool
+    EPP -->|"K8s API watch/list<br/>SA Token (RBAC)"| Pool
+
+    %% Pool to Model Servers
+    Pool -->|"Label discovery<br/>llm-d.ai/inference-serving"| ModelServer
+    Pool -->|"Label discovery"| Sidecar
+
+    %% Gateway forwards to model servers
+    Gateway -->|"HTTP/8000<br/>In-cluster"| ModelServer
+
+    %% P/D Disaggregation flow
+    Gateway -->|"HTTP/8000<br/>In-cluster"| Sidecar
+    Sidecar -->|"HTTP/8000<br/>max_tokens=1"| Prefill
+    Prefill -->|"NIXL/5600<br/>RDMA GPUDirect<br/>NO ENCRYPTION"| NIXL
+    NIXL -->|"KV blocks<br/>RDMA transfer"| Decode
+    Decode -->|"HTTP/8200"| Sidecar
+
+    %% ZMQ events
+    ModelServer -->|"ZMQ/5556<br/>Block hash events<br/>NO ENCRYPTION"| ZMQ
+    ZMQ -->|"Cache index<br/>updates"| EPP
+
+    %% Metrics
+    ModelServer -->|"Metrics scrape"| Prometheus
+    EPP -->|"9002/9090 TCP"| Prometheus
+    Prometheus -.->|"Polling data"| EPP
+    ModelServer -->|"OTLP traces"| Jaeger
+
+    %% External services
+    ModelServer -->|"HTTPS/443<br/>Registry creds"| Registry
+    ModelServer -->|"HTTPS/NFS<br/>IAM Auth"| ModelStorage
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef scheduling fill:#d4e6f1,stroke:#2e86c1,stroke-width:2px
-    classDef pool fill:#fdebd0,stroke:#e67e22,stroke-width:2px
-    classDef server fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef rdma fill:#f5b7b1,stroke:#e74c3c,stroke-width:2px
-    classDef monitoring fill:#e8daef,stroke:#8e44ad,stroke-width:1px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef optional fill:#d5f5e3,stroke:#27ae60,stroke-width:1px,stroke-dasharray: 5
+    classDef scheduling fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef modelserver fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef dataplane fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef observability fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
-    class Gateway ingress
-    class EPP scheduling
-    class InfPool pool
-    class Decode,Prefill server
-    class NIXL rdma
-    class Prometheus,Jaeger,Grafana monitoring
-    class K8sAPI,Registry,ModelStore externalservice
-    class ZMQ optional
+    class Gateway,AG,IstioGW,GKEGW ingress
+    class EPP,Pool scheduling
+    class ModelServer,Sidecar,Prefill,Decode modelserver
+    class NIXL,ZMQ,LMCache dataplane
+    class Prometheus,Jaeger observability
+    class Registry,ModelStorage externalservice

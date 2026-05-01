@@ -1,45 +1,71 @@
 sequenceDiagram
-    participant vLLM as vLLM Pod<br/>ZMQ PUB 5557/TCP
-    participant ZMQSub as ZMQ Subscriber<br/>(per-pod)
+    autonumber
+
+    participant vLLM as vLLM Pod<br/>5557/TCP ZMQ PUB
+    participant ZMQ as ZMQ Subscriber<br/>(kvevents)
     participant Pool as KV Events Pool<br/>(sharded workers)
     participant Adapter as Engine Adapter<br/>(vLLM/SGLang)
     participant Index as KV Block Index<br/>(LRU/Ristretto/Redis)
-    participant Scheduler as llm-d-inference-scheduler
-    participant Indexer as KV-Cache Indexer
+    participant Scheduler as llm-d-inference-scheduler<br/>(embeds library)
+    participant Indexer as KV-Cache Indexer<br/>(pkg/kvcache)
     participant TokenPool as Tokenization Pool
-    participant UDS as UDS Tokenizer<br/>gRPC over UDS
-    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant Storage as Shared Storage<br/>NFS/PVC
-    participant FSBackend as FS Backend<br/>(vLLM plugin)
+    participant UDS as UDS Tokenizer<br/>(gRPC over UDS)
+    participant Processor as Token Processor<br/>(FNV-64a hash)
+    participant Scorer as KV Block Scorer
 
-    Note over vLLM,Index: Flow 1: KV-Event Ingestion (Write Path)
-    vLLM->>ZMQSub: BlockStored/BlockRemoved event<br/>ZMQ 3-frame (topic, seq#, msgpack)
-    ZMQSub->>Pool: Route to worker<br/>FNV-1a(podID) % shards
-    Pool->>Adapter: Decode event payload<br/>msgpack
-    Adapter->>Index: Add/Evict block<br/>hash → pod location
+    rect rgb(230, 245, 255)
+        Note over vLLM,Index: Flow 1: KV-Event Ingestion (Write Path)
+        vLLM->>ZMQ: ZMQ PUB 5557/TCP<br/>[topic, seqno, msgpack payload]
+        ZMQ->>Pool: Route to worker<br/>(FNV-1a hash of pod ID)
+        Pool->>Adapter: Parse event<br/>(msgpack decode)
+        Adapter-->>Pool: BlockStored / BlockRemoved<br/>/ AllBlocksCleared
+        Pool->>Index: Add/Evict block<br/>(hash → pod location)
+    end
 
-    Note over Scheduler,UDS: Flow 2: Pod Scoring (Read Path)
-    Scheduler->>Indexer: GetPodScores(request)<br/>in-process call
-    Indexer->>TokenPool: Tokenize prompt
-    TokenPool->>UDS: gRPC Tokenize()<br/>Unix Domain Socket
-    UDS-->>TokenPool: Token IDs + offsets
-    Note over UDS,HF: First use: download tokenizer
-    UDS->>HF: GET model tokenizer<br/>HTTPS 443, Bearer Token (opt)
-    HF-->>UDS: Tokenizer files
-    TokenPool-->>Indexer: Token IDs
-    Indexer->>Indexer: Compute block keys<br/>CBOR + FNV-64a chained hash
-    Indexer->>Index: Lookup block locations
-    Index-->>Indexer: Pod → block mappings
-    Indexer->>Indexer: Score pods<br/>(longest prefix match)
-    Indexer-->>Scheduler: Pod scores[]
+    rect rgb(230, 255, 230)
+        Note over Scheduler,Scorer: Flow 2: Pod Scoring (Read Path)
+        Scheduler->>Indexer: GetPodScores(request)<br/>(in-process or gRPC)
+        Indexer->>TokenPool: Tokenize prompt
+        TokenPool->>UDS: gRPC Tokenize()<br/>(Unix Domain Socket)
+        UDS-->>TokenPool: Token IDs + offsets
+        TokenPool-->>Indexer: Tokens
+        Indexer->>Processor: Compute block keys<br/>(CBOR + FNV-64a chain)
+        Processor-->>Indexer: Block hashes
+        Indexer->>Index: Lookup block locations
+        Index-->>Indexer: Pod → block mappings
+        Indexer->>Scorer: Score(pods, blocks)
+        Scorer-->>Indexer: Scored pod list
+        Indexer-->>Scheduler: Pod scores<br/>(cache-aware ranking)
+    end
 
-    Note over vLLM,Storage: Flow 3: KV-Cache Offloading (Storage Path)
-    vLLM->>FSBackend: OffloadingSpec lookup
-    FSBackend->>Storage: stat() check<br/>hash-based directory hierarchy
-    Storage-->>FSBackend: File exists/missing
-    vLLM->>FSBackend: Transfer request
-    FSBackend->>Storage: Async write (C++ engine)<br/>POSIX I/O or NVIDIA GDS
-    Storage-->>FSBackend: Write complete
+    rect rgb(255, 243, 224)
+        Note over vLLM,Index: Flow 3: KV-Cache Offloading (Storage Path)
+        participant Storage as Shared Storage<br/>(NFS/PVC)
+        participant FSMgr as FS Backend Manager
+        participant CppEng as C++ storage_offload<br/>(async I/O + GDS)
 
-    Note over Storage,Storage: Flow 4: PVC Eviction
-    Note right of Storage: Activator: statvfs() polling<br/>Threshold: 85% cleanup / 70% target<br/>N crawlers: hex-based load balancing<br/>Deleter: xargs -0 rm -f batches
+        vLLM->>FSMgr: OffloadingSpec lookup
+        FSMgr->>Storage: stat() check<br/>(POSIX filesystem)
+        Storage-->>FSMgr: File exists/not
+        vLLM->>CppEng: Transfer blocks
+        CppEng->>Storage: Read/Write<br/>(POSIX or GPU-Direct)
+        Storage-->>CppEng: KV-cache data
+    end
+
+    rect rgb(255, 230, 230)
+        Note over vLLM,Index: Flow 4: PVC Eviction
+        participant PVC as PVC Mount
+        participant Act as Activator<br/>(statvfs polling)
+        participant Crawl as N Crawlers<br/>(hex-based LB)
+        participant Del as Deleter<br/>(xargs rm)
+
+        Act->>PVC: statvfs() O(1)
+        PVC-->>Act: Disk usage %
+        Note over Act: Usage > 85% threshold
+        Act->>Crawl: Start scanning
+        Crawl->>PVC: scandir() by hex range
+        PVC-->>Crawl: Eligible files<br/>(atime > 60min)
+        Crawl->>Del: Queue files (IPC)
+        Del->>PVC: xargs -0 rm -f<br/>(batch delete)
+        Note over Act: Stop when < 70%
+    end

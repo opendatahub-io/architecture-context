@@ -1,49 +1,51 @@
 sequenceDiagram
     participant Client as Client / UI BFF
     participant Istio as Istio Gateway<br/>mTLS STRICT
-    participant MR as Model Registry<br/>8080/TCP HTTP
-    participant DB as MySQL/PostgreSQL<br/>3306/5432 TCP
+    participant MR as model-registry (proxy)<br/>8080/TCP HTTP
+    participant DB as MySQL 3306 / PostgreSQL 5432<br/>Optional TLS 1.2+
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant Controller as ISVC Controller<br/>8081/TCP
-    participant KServe as KServe Pod<br/>(init container)
-    participant CSI as mr-storage-initializer
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant Job as Async Upload Job
+    participant Controller as inferenceservice-controller<br/>8081/TCP
+    participant CSI as mr-storage-initializer<br/>Init Container
+    participant S3 as S3/HTTP/GCS Storage<br/>443/TCP HTTPS
+    participant AsyncJob as async-upload Job<br/>Python
     participant OCI as OCI Registry<br/>443/TCP HTTPS
-    participant Sigstore as Sigstore<br/>443/TCP HTTPS
+    participant Sigstore as Sigstore Services<br/>443/TCP HTTPS
 
-    Note over Client,DB: Flow 1: Model Registration via REST API
-    Client->>Istio: POST /api/model_registry/v1alpha3/registered_models<br/>HTTP
-    Istio->>MR: Forward (mTLS STRICT)<br/>Istio AuthorizationPolicy
-    MR->>DB: INSERT (MySQL/PostgreSQL protocol)<br/>Username/Password, Optional TLS 1.2+
+    Note over Client, DB: Flow 1: Model Registration via REST API
+
+    Client->>Istio: POST /api/model_registry/v1alpha3/registered_models<br/>Istio mTLS
+    Istio->>MR: Forward (mTLS ISTIO_MUTUAL)<br/>AuthorizationPolicy
+    MR->>DB: INSERT (MySQL/PostgreSQL protocol)<br/>Username/Password from Secret
     DB-->>MR: Result
     MR-->>Istio: 201 Created (JSON)
     Istio-->>Client: Response
 
-    Note over K8sAPI,MR: Flow 2: InferenceService Sync (Controller)
-    K8sAPI->>Controller: Watch InferenceService events<br/>TLS 1.2+, SA Token
-    Controller->>MR: PUT /inference_services<br/>HTTP, Bearer Token
-    MR->>DB: UPSERT
+    Note over K8sAPI, MR: Flow 2: InferenceService Sync (Controller)
+
+    K8sAPI->>Controller: Watch InferenceService CRs<br/>TLS 1.2+ / SA Token
+    Controller->>MR: PUT /inference_services<br/>HTTP / Bearer Token
+    MR->>DB: UPSERT serving state
     DB-->>MR: Result
     MR-->>Controller: 200 OK
-    Controller->>K8sAPI: PATCH InferenceService labels<br/>HTTPS 443, SA Token
+    Controller->>K8sAPI: Patch ISVC labels<br/>HTTPS / SA Token
 
-    Note over KServe,S3: Flow 3: Model Download via CSI Storage Initializer
-    KServe->>CSI: Init container invocation<br/>model-registry:// URI
-    CSI->>MR: GET /model_artifacts/{id}<br/>HTTP 8080, No Auth
-    MR-->>CSI: Artifact URI (s3://...)
-    CSI->>S3: Download model<br/>HTTPS 443, Storage Credentials
-    S3-->>CSI: Model artifacts
-    CSI-->>KServe: Model ready in volume
+    Note over CSI, S3: Flow 3: Model Download via CSI Storage Initializer
 
-    Note over Job,Sigstore: Flow 4: Async Model Upload Job
-    Job->>S3: GET source artifacts<br/>HTTPS 443, Source Credentials
-    S3-->>Job: Model files
-    Job->>OCI: Push model image<br/>HTTPS 443, Registry Credentials
-    OCI-->>Job: Push complete
-    Job->>Sigstore: Sign model (Fulcio/Rekor/TSA)<br/>HTTPS 443, K8s SA Token (OIDC)
-    Sigstore-->>Job: Signature
-    Job->>MR: PUT /model_artifacts<br/>HTTP 8080, Bearer Token
-    MR->>DB: UPDATE artifact metadata
+    Note right of CSI: KServe invokes as init container
+    CSI->>MR: GET /model_versions/{id}/artifacts<br/>HTTP / No auth
+    MR-->>CSI: Artifact URI (s3://... or https://...)
+    CSI->>S3: Download model artifacts<br/>HTTPS / Storage credentials
+    S3-->>CSI: Model files
+
+    Note over AsyncJob, Sigstore: Flow 4: Async Model Upload Job
+
+    AsyncJob->>S3: GET source model artifacts<br/>HTTPS / AWS IAM
+    S3-->>AsyncJob: Model files
+    AsyncJob->>OCI: Push model image<br/>HTTPS / Registry credentials
+    OCI-->>AsyncJob: Image digest
+    AsyncJob->>Sigstore: Sign model (Fulcio/Rekor/TSA)<br/>HTTPS / K8s SA Token (OIDC)
+    Sigstore-->>AsyncJob: Signature + transparency entry
+    AsyncJob->>MR: POST /model_artifacts<br/>HTTP / Bearer Token
+    MR->>DB: INSERT artifact record
     DB-->>MR: Result
-    MR-->>Job: 200 OK
+    MR-->>AsyncJob: 201 Created
