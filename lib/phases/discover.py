@@ -2,9 +2,71 @@
 
 from pathlib import Path
 
+import json
+
 from lib.fetch import load_platform_config
 from lib.component_discovery import get_component_map_metadata
 from lib.agent_runner import run_agent
+
+
+def _apply_map_overrides(map_file: Path, platform_config: dict) -> None:
+    """Move include_components entries from excluded to components in the JSON."""
+    includes = platform_config.get("include_components", [])
+    excludes = platform_config.get("exclude_components", [])
+    if not includes and not excludes:
+        return
+
+    data = json.loads(map_file.read_text())
+    components = data.get("components", {})
+    excluded = data.get("excluded", {})
+    changed = False
+
+    # Pull include_components out of excluded into components
+    for entry in includes:
+        key = entry["key"]
+        if key in excluded and key not in components:
+            del excluded[key]
+            suffix = platform_config.get("suffix")
+            repo_org = entry.get("repo_org")
+            repo_name = entry.get("repo_name", key)
+            org_dir = f"{repo_org}.{suffix}" if suffix and repo_org else repo_org
+            checkout_path = None
+            if org_dir:
+                for candidate_dir in [org_dir, repo_org]:
+                    candidate = Path("checkouts") / candidate_dir / repo_name
+                    if candidate.exists():
+                        checkout_path = str(candidate.resolve())
+                        break
+            components[key] = {
+                "key": key,
+                "repo_org": repo_org,
+                "repo_name": repo_name,
+                "checkout_path": checkout_path,
+                "type": entry.get("type"),
+                "tier": "payload_component",
+                "has_architecture": False,
+            }
+            print(f"  Promoted from excluded to components: {key}")
+            changed = True
+
+    # Remove exclude_components from components
+    import fnmatch
+    for key in list(components.keys()):
+        for pattern in excludes:
+            if fnmatch.fnmatch(key, pattern):
+                del components[key]
+                excluded[key] = "excluded_via_platforms_yaml"
+                print(f"  Demoted from components to excluded: {key}")
+                changed = True
+                break
+
+    if changed:
+        data["components"] = components
+        data["excluded"] = excluded
+        data["metadata"]["components_discovered"] = len(components)
+        data["metadata"]["components_excluded"] = len(excluded)
+        map_file.write_text(json.dumps(data, indent=2) + "\n")
+        print(f"  Updated {map_file}")
 
 
 async def run_discover_components_phase(args) -> None:
@@ -103,6 +165,10 @@ async def run_discover_components_phase(args) -> None:
         map_file = Path(architecture_dir) / args.platform / "component-map.json"
         if map_file.exists():
             print(f"Component map written: {map_file}")
+
+            # Apply include_components / exclude_components from platforms.yaml
+            if platform_config:
+                _apply_map_overrides(map_file, platform_config)
 
             metadata = get_component_map_metadata(args.platform, architecture_dir)
             if metadata:

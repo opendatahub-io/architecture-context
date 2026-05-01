@@ -2,8 +2,9 @@
 
 from pathlib import Path
 
-from lib.component_discovery import read_component_map
+from lib.component_discovery import read_component_map, apply_platform_overrides
 from lib.agent_runner import run_agents_concurrently, get_model_display_name, format_duration
+from lib.fetch import load_platform_config
 
 
 async def run_generate_architecture_phase(args) -> None:
@@ -22,6 +23,14 @@ async def run_generate_architecture_phase(args) -> None:
         print(f"\nRun discover-components first:")
         print(f"  uv run main.py discover-components --platform={args.platform}")
         return
+
+    # Apply platform overrides (exclude_components, include_components, etc.)
+    platform_config = load_platform_config(args.platform)
+    if platform_config:
+        checkouts_dir = getattr(args, 'checkouts_dir', 'checkouts')
+        components = apply_platform_overrides(
+            components, platform_config, checkouts_base=checkouts_dir,
+        )
 
     # Derive distribution from platform (strip version suffix)
     distribution = args.platform.split("-")[0] if "-" in args.platform else args.platform

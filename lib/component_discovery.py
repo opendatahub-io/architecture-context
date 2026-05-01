@@ -233,9 +233,13 @@ def apply_platform_overrides(
             repo_name = entry.get("repo_name", key)
             checkout_path = None
             if repo_org:
-                candidate = Path(checkouts_base) / repo_org / repo_name
-                if candidate.exists():
-                    checkout_path = candidate
+                suffix = platform_config.get("suffix")
+                org_dir = f"{repo_org}.{suffix}" if suffix else repo_org
+                for candidate_dir in [org_dir, repo_org]:
+                    candidate = Path(checkouts_base) / candidate_dir / repo_name
+                    if candidate.exists():
+                        checkout_path = candidate
+                        break
 
             components[key] = ComponentInfo(
                 key=key,
