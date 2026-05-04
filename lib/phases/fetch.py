@@ -16,4 +16,5 @@ async def run_fetch_phase(args) -> None:
         suffix=getattr(args, 'suffix', None),
         exclude=getattr(args, 'exclude', None),
         platform=getattr(args, 'platform', None),
+        pull=getattr(args, 'pull', False),
     )

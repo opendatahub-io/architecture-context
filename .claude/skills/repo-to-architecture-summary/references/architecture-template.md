@@ -153,6 +153,52 @@ _How the component is deployed via kustomize. Analyze the `manifests/` or `confi
 |----------|---------|----------------|-------------------|--------|
 | [endpoint] | [GET, POST] | [Bearer/mTLS/etc.] | [Istio/kube-rbac-proxy/etc.] | [policy] |
 
+### FIPS Compliance
+
+FIPS compliance has two layers: **build-time enforcement** (check-payload validation in Konflux) and **application-level crypto correctness** (what the code actually does with cryptography). Both must be documented.
+
+#### Build-Time FIPS (check-payload gate)
+
+Konflux validates images via [check-payload](https://github.com/openshift/check-payload), which enforces:
+- Go binaries must be **dynamically linked** (CGO_ENABLED=1, no static linking)
+- **OpenSSL must be installed** in the container image
+- No statically linked Go crypto (pure-Go crypto / BoringCrypto static gets rejected)
+
+| Aspect | Value | Source |
+|--------|-------|--------|
+| **Build flags** | [GOEXPERIMENT=strictfipsruntime / CGO_ENABLED=1 / -tags strictfipsruntime / N/A] | [Dockerfile.konflux:line / go build command] |
+| **Linking** | [Dynamic (CGO) / Static / Unknown] | [Dockerfile / Makefile build command] |
+| **OpenSSL in image** | [Yes (via UBI base) / Explicitly installed / Not present] | [Dockerfile / base image] |
+| **OLM FIPS annotation** | [features.operators.openshift.io/fips-compliant: "true" / not present] | [CSV manifest path] |
+
+#### Application-Level Crypto
+
+check-payload is the bare minimum — it validates build artifacts but not runtime behavior. Document what the application actually does with cryptography:
+
+| Aspect | Value | Source |
+|--------|-------|--------|
+| **TLS configuration** | [Uses crypto/tls with default config / Custom cipher suites / Hardcoded non-FIPS ciphers / No TLS] | [source file:line] |
+| **Crypto libraries** | [stdlib crypto/tls (FIPS via OpenSSL) / pycryptodome (not FIPS) / pyOpenSSL / BouncyCastle / None] | [go.mod / requirements.txt / pom.xml] |
+| **Certificate handling** | [System trust store / Custom CA bundle / Hardcoded certs / cert-manager] | [source file:line] |
+| **Non-FIPS crypto risks** | [None detected / Uses MD5 for checksums / Uses RC4 / Custom RNG / etc.] | [source file:line] |
+
+_Document both layers. A component can pass check-payload (dynamically linked Go, OpenSSL present) while still using non-FIPS cipher suites in its TLS config or importing a non-FIPS crypto library. Conversely, a Python component may "pass" FIPS simply by inheriting OpenSSL from the UBI base image without any explicit FIPS opt-in._
+
+_If no FIPS signals are found at either layer, document that absence — it is architecturally significant._
+
+### Build Hermeticity
+
+| Layer | Lock File | Present | Tool | Source |
+|-------|-----------|---------|------|--------|
+| **OS packages (RPM)** | [rpms.lock.yaml / not found] | [Yes/No] | [rpm-lockfile-prototype] | [path or "N/A"] |
+| **Language deps** | [go.sum / uv.lock / poetry.lock / Pipfile.lock / package-lock.json / yarn.lock / Cargo.lock / pixi.lock / not found] | [Yes/No] | [go mod / uv / poetry / pipenv / npm / yarn / cargo / pixi] | [path] |
+| **Artifacts** | [artifacts.lock.yaml / not found] | [Yes/No] | [Hermeto] | [path or "N/A"] |
+| **Hermeto prefetch** | [cachi2.env sourced in Dockerfile / not present] | [Yes/No] | [Hermeto (formerly cachi2)] | [Dockerfile line] |
+
+_Lock files often exist only on downstream release branches (e.g., `rhoai-3.4`) and not on upstream/main branches. Document what is present on the branch being analyzed. If analyzing an upstream branch with no lock files, note that the downstream release branch likely adds them._
+
+_Hermeticity gaps (missing lock files at any layer) are supply chain risks worth documenting. A component with `go.sum` but no `rpms.lock.yaml` has hermetic Go deps but non-hermetic OS packages._
+
 ## Data Flows
 
 ### Flow 1: [Flow Name]

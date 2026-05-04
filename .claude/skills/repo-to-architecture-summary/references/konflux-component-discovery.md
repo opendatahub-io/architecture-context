@@ -35,7 +35,9 @@ For each Dockerfile, extract:
 | **Exposed ports** | `EXPOSE` directives | `EXPOSE 8080` |
 | **Build args** | `ARG` directives revealing config | `ARG MODULE_NAME=gen-ai`, `ARG GOTAGS="distro"` |
 | **Language** | Base image + build commands | `go-toolset` → Go, `nodejs-22` → Node, `python-311` → Python |
-| **FIPS compliance** | FIPS-related build flags | `GOEXPERIMENT=strictfipsruntime`, `-tags strictfipsruntime` |
+| **FIPS compliance** | FIPS-related build flags — **carry forward to Security → FIPS Compliance** | `GOEXPERIMENT=strictfipsruntime`, `-tags strictfipsruntime`, `CGO_ENABLED=1` |
+| **Hermeto prefetch** | Hermetic dependency injection (formerly cachi2) — **carry forward to Security → Build Hermeticity** | `if [ -f /cachi2/cachi2.env ]; then . /cachi2/cachi2.env`, `COPY $REMOTE_SOURCES`, `/cachi2/output/deps/` |
+| **Dep install commands** | How deps are fetched — hermetic vs network | `go mod download`, `pip install --require-hashes --no-deps`, `npm ci`, `pip install -r requirements.txt` (non-hermetic) |
 | **User** | Runtime user for security analysis | `USER 65532:65532`, `USER 1001` |
 
 ## Step 3: Build component inventory table
@@ -111,4 +113,6 @@ The component inventory table feeds into the architecture template:
 - **Sub-Component Details** section (multi-component repos): one `###` subsection per component with intent, API routes, upstream deps, and configuration — populated by deeper analysis in subsequent steps
 - **Container Images** section: base images, build stages, FIPS compliance, intent column
 - **Network Architecture → Services**: ports from EXPOSE directives (verified against source)
-- **Security**: runtime user, FIPS flags, base image provenance
+- **Security → FIPS Compliance**: FIPS build flags from Dockerfiles (`GOEXPERIMENT=strictfipsruntime`, `CGO_ENABLED=1`, `-tags strictfipsruntime`) MUST be written into the FIPS Compliance table. If NO FIPS flags were found in any Dockerfile, document that absence — it is architecturally significant (the component may rely on base image FIPS mode or may not be FIPS-compliant at all)
+- **Security → Build Hermeticity**: Document lock files found at each layer (RPM: `rpms.lock.yaml`, language: `go.sum`/`uv.lock`/`poetry.lock`/`Pipfile.lock`/`package-lock.json`/`yarn.lock`/`Cargo.lock`/`pixi.lock`, artifacts: `artifacts.lock.yaml`) and Hermeto (formerly cachi2) prefetch usage from the Dockerfile. Note hermeticity gaps — a missing layer means that layer's deps are not reproducibly locked. Also note if the branch is upstream (lock files often absent) vs downstream release (lock files added during hardening)
+- **Security**: runtime user, base image provenance

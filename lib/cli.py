@@ -80,6 +80,11 @@ def parse_args():
         "--exclude",
         help="Comma-separated glob patterns to exclude repos (merged with platforms.yaml excludes)"
     )
+    fetch_parser.add_argument(
+        "--pull",
+        action="store_true",
+        help="Pull latest changes in existing repos instead of skipping them"
+    )
 
     # Phase 2: Parse manifests
     manifest_parser = subparsers.add_parser(

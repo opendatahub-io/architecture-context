@@ -133,6 +133,57 @@ async def _ensure_gh_org_clone() -> str:
     return str(local_gh_org_clone)
 
 
+async def _pull_one_repo(repo_path: Path, env: dict) -> str:
+    """Pull a single repo. Returns a status line."""
+    proc = await asyncio.create_subprocess_exec(
+        "git", "pull", "--ff-only",
+        cwd=str(repo_path),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    stdout, stderr = await proc.communicate()
+    name = repo_path.name
+    if proc.returncode == 0:
+        out = stdout.decode().strip()
+        if "Already up to date" in out:
+            return f"  {name}: up to date"
+        return f"  {name}: updated"
+    return f"  {name}: pull failed ({stderr.decode().strip()})"
+
+
+async def _pull_existing_repos(checkouts_dir: Path, org: str, suffix: str = None,
+                               max_concurrent: int = 10) -> None:
+    """Pull latest changes in all existing repos for an org, concurrently."""
+    org_dir = f"{org}.{suffix}" if suffix else org
+    org_path = checkouts_dir / org_dir
+
+    if not org_path.exists():
+        return
+
+    env = _prepare_env()
+    repos = sorted(p for p in org_path.iterdir() if p.is_dir() and (p / ".git").exists())
+
+    if not repos:
+        return
+
+    total = len(repos)
+    print(f"\nPulling {total} existing repos in {org_dir} ({max_concurrent} concurrent)...")
+
+    sem = asyncio.Semaphore(max_concurrent)
+    done = 0
+
+    async def _limited_pull(repo_path):
+        nonlocal done
+        async with sem:
+            result = await _pull_one_repo(repo_path, env)
+        done += 1
+        print(f"  [{done}/{total}] {result.strip()}")
+        return result
+
+    await asyncio.gather(*[_limited_pull(r) for r in repos])
+
+
 async def _clone_org(
     gh_org_clone_cmd: str,
     org: str,
@@ -198,13 +249,33 @@ async def _clone_repo(
     repo: str,
     branch: str = None,
     suffix: str = None,
+    pull: bool = False,
 ) -> None:
     """Clone an individual repository."""
     org_dir = f"{org}.{suffix}" if suffix else org
     repo_path = checkouts_dir / org_dir / repo
 
     if repo_path.exists():
-        print(f"  Skipped {org}/{repo} (already exists)")
+        if pull and (repo_path / ".git").exists():
+            env = _prepare_env()
+            proc = await asyncio.create_subprocess_exec(
+                "git", "pull", "--ff-only",
+                cwd=str(repo_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode == 0:
+                out = stdout.decode().strip()
+                if "Already up to date" in out:
+                    print(f"  {org}/{repo}: up to date")
+                else:
+                    print(f"  {org}/{repo}: updated")
+            else:
+                print(f"  {org}/{repo}: pull failed ({stderr.decode().strip()})")
+        else:
+            print(f"  Skipped {org}/{repo} (already exists)")
         return
 
     clone_url = f"https://github.com/{org}/{repo}.git"
@@ -242,6 +313,7 @@ async def fetch_repositories(
     suffix: str = None,
     exclude: str = None,
     platform: str = None,
+    pull: bool = False,
 ) -> None:
     """
     Clone repositories using gh-org-clone.
@@ -257,6 +329,7 @@ async def fetch_repositories(
                 When branch is set but suffix is not, suffix defaults to branch.
         exclude: Comma-separated glob patterns to exclude repos
         platform: Platform name to load config from platforms.yaml
+        pull: If True, pull latest changes in existing repos
     """
     gh_org_clone_cmd = await _ensure_gh_org_clone()
 
@@ -288,6 +361,8 @@ async def fetch_repositories(
         for cfg_org in orgs:
             await _clone_org(gh_org_clone_cmd, cfg_org, checkouts_path,
                              branch=branch, suffix=suffix, exclude=exclude_str)
+            if pull:
+                await _pull_existing_repos(checkouts_path, cfg_org, suffix=suffix)
 
         # Clone extra orgs — per-entry overrides, falling back to platform suffix
         extra_orgs = config.get("extra_orgs", [])
@@ -297,6 +372,8 @@ async def fetch_repositories(
             org_suffix = (entry.get("suffix") if isinstance(entry, dict) else None) or suffix
             await _clone_org(gh_org_clone_cmd, org_name, checkouts_path,
                              branch=org_branch, suffix=org_suffix, exclude=exclude_str)
+            if pull:
+                await _pull_existing_repos(checkouts_path, org_name, suffix=org_suffix)
 
         # Clone individual extra repos — per-entry overrides, falling back to platform suffix
         extra_repos = config.get("extra_repos", [])
@@ -306,7 +383,7 @@ async def fetch_repositories(
                 repo_branch = entry.get("branch")
                 repo_suffix = entry.get("suffix") or suffix
                 await _clone_repo(checkouts_path, entry["org"], entry["repo"],
-                                  branch=repo_branch, suffix=repo_suffix)
+                                  branch=repo_branch, suffix=repo_suffix, pull=pull)
 
     elif org:
         # Direct org mode (original behavior)
@@ -315,6 +392,8 @@ async def fetch_repositories(
 
         await _clone_org(gh_org_clone_cmd, org, checkouts_path,
                          branch=branch, suffix=suffix, exclude=exclude)
+        if pull:
+            await _pull_existing_repos(checkouts_path, org, suffix=suffix)
 
     else:
         raise ValueError("Either 'org' or '--platform' must be specified")

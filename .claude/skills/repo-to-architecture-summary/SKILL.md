@@ -186,6 +186,11 @@ grep -r "github.com/operator-framework" --include="*.go" . | head -20
 
 # Service Mesh / Istio usage
 grep -r "istio.io/api\|networking.istio.io" --include="*.go" . | head -20
+
+# FIPS compliance (build flags, crypto, OLM annotations)
+grep -r "GOEXPERIMENT\|strictfipsruntime\|CGO_ENABLED" --include="Dockerfile*" --include="Containerfile*" --include="Makefile*" --include="*.sh" . | head -20
+grep -r "fips-compliant\|fips\.enabled\|FIPS" --include="*.yaml" --include="*.json" . | head -20
+grep -r "boring\|boringcrypto\|openssl\|crypto/tls" --include="*.go" . | head -20
 ```
 
 **Interpret results**:
@@ -198,6 +203,60 @@ grep -r "istio.io/api\|networking.istio.io" --include="*.go" . | head -20
 - `kube-rbac-proxy`: Injects auth sidecar containers (RHOAI 3.x auth pattern)
 - `operator-framework/api`: OLM-based operator with CRDs
 - `istio.io/api`: Integrates with Istio service mesh
+- `GOEXPERIMENT=strictfipsruntime`: Go binary compiled with FIPS-compliant crypto
+- `CGO_ENABLED=1` (with strictfipsruntime): Required for Go FIPS — dynamically links against OpenSSL
+- `-tags strictfipsruntime`: Build tag enabling FIPS crypto at compile time
+- `fips-compliant: "true"` in CSV: OLM feature annotation declaring FIPS compliance
+- `boringcrypto` / `boring` in imports: Using BoringCrypto backend for FIPS
+- `crypto/tls`: Go TLS configuration — check for custom cipher suite restrictions or non-FIPS defaults
+- **No FIPS signals**: Also significant — document the absence in the Security → FIPS Compliance section
+
+**FIPS analysis has two layers — document both**:
+
+**Layer 1: Build-time (check-payload gate)**:
+Konflux validates images via [check-payload](https://github.com/openshift/check-payload) which enforces: Go binaries must be dynamically linked (CGO_ENABLED=1), OpenSSL must be installed in the image, no statically linked Go crypto. The `Dockerfile.konflux*` files are where these build flags live. If Konflux discovery (Step 3a) found FIPS flags, carry them into Security → FIPS Compliance. If NOT found, also check:
+- CSV manifests (`bundle/manifests/*.clusterserviceversion.yaml`) for `features.operators.openshift.io/fips-compliant` annotation
+- Go build commands in Makefiles for `-tags strictfipsruntime` or `GOEXPERIMENT` env vars
+
+**Layer 2: Application-level crypto correctness**:
+check-payload is the bare minimum — it validates build artifacts but not runtime crypto behavior. A binary can pass check-payload while still using non-FIPS cipher suites. Search the source code for:
+```bash
+# Go: TLS config, cipher suites, custom crypto
+grep -r "tls\.Config\|CipherSuites\|MinVersion\|InsecureSkipVerify" --include="*.go" . | head -20
+grep -r "crypto/md5\|crypto/rc4\|crypto/des" --include="*.go" . | head -10
+
+# Python: non-FIPS crypto libraries
+grep -r "pycryptodome\|pycrypto\|hashlib\.md5\|Crypto\." --include="*.py" . | head -10
+grep -r "cryptography\|pyOpenSSL" --include="*.txt" --include="*.toml" --include="*.cfg" . | head -10
+
+# Rust: crypto crate choices
+grep -r "ring\|rustls\|openssl" --include="*.toml" . | head -10
+
+# Java: BouncyCastle, custom crypto providers
+grep -r "BouncyCastle\|Security\.addProvider\|Cipher\.getInstance" --include="*.java" . | head -10
+```
+Document findings in both the Build-Time and Application-Level tables under Security → FIPS Compliance. A component that passes check-payload but uses `crypto/md5` or `InsecureSkipVerify` has a FIPS gap worth noting.
+
+**Build hermeticity — check lock files at every layer**:
+Hermetic builds require all dependencies to be pre-resolved and locked. Check for lock files at three layers:
+
+```bash
+# RPM-level locks (from rpm-lockfile-prototype — often only on downstream release branches)
+find . -maxdepth 3 -name "rpms.lock.yaml" | head -10
+
+# Language-level locks
+find . -maxdepth 3 \( -name "go.sum" -o -name "uv.lock" -o -name "poetry.lock" -o -name "Pipfile.lock" -o -name "package-lock.json" -o -name "yarn.lock" -o -name "Cargo.lock" -o -name "pixi.lock" \) | head -20
+
+# Artifact locks (Hermeto — locks non-package artifacts like ML models)
+find . -maxdepth 3 -name "artifacts.lock.yaml" | head -10
+
+# Hermeto (formerly cachi2) prefetch integration in Dockerfiles
+grep -r "cachi2\|hermeto\|REMOTE_SOURCES" --include="Dockerfile*" --include="Containerfile*" . | head -10
+```
+
+**Important**: Lock files often exist only on downstream release branches (`rhoai-3.4`, `rhoai-3.3`) and not on upstream/main branches. This is expected — Konflux adds lock files during release hardening. Document what is present on the branch being analyzed and note if the branch is upstream vs downstream.
+
+Document findings in the **Security → Build Hermeticity** table. Gaps at any layer (e.g., `go.sum` present but no `rpms.lock.yaml`) are supply chain risks worth noting.
 
 **Document findings** in Architecture Components table:
 - Example: "Go Operator | controller-runtime based | Manages Gateway API (HTTPRoute), OpenShift Routes (legacy), Istio VirtualService"
