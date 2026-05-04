@@ -1,15 +1,15 @@
 package markdown
 
 import (
-	"os"
+	"io/fs"
 	"path/filepath"
 	"strings"
 
 	"github.com/jctanner/arch-query/internal/types"
 )
 
-func ParseComponentDoc(path string) (*types.ComponentDoc, error) {
-	data, err := os.ReadFile(path)
+func ParseComponentDoc(fsys fs.FS, path string) (*types.ComponentDoc, error) {
+	data, err := fs.ReadFile(fsys, path)
 	if err != nil {
 		return nil, err
 	}

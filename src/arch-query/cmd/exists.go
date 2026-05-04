@@ -18,14 +18,14 @@ var existsCmd = &cobra.Command{
 
 		version := versionArg
 		if version == "" {
-			versions, err := loader.DiscoverVersions(baseDir)
+			versions, err := loader.DiscoverVersions(archFS, archSymlinks)
 			if err != nil {
 				return err
 			}
 			version = loader.DefaultVersion(versions)
 		}
 
-		data, err := loader.LoadVersion(baseDir, version)
+		data, err := loader.LoadVersion(archFS, version)
 		if err != nil {
 			return fmt.Errorf("loading version %s: %w", version, err)
 		}
@@ -33,7 +33,7 @@ var existsCmd = &cobra.Command{
 		for k, doc := range data.Components {
 			if strings.EqualFold(k, name) {
 				fmt.Printf("%s exists in %s inventory.\n", k, version)
-				fmt.Printf("Type: %s | Doc: %s/%s/%s\n", doc.DeployType, baseDir, version, doc.FileName)
+				fmt.Printf("Type: %s | Doc: %s/%s\n", doc.DeployType, version, doc.FileName)
 				return nil
 			}
 		}

@@ -1,18 +1,18 @@
 package overlay
 
 import (
-	"os"
-	"path/filepath"
+	"errors"
+	"io/fs"
 	"strings"
 
 	"github.com/jctanner/arch-query/internal/types"
 	"gopkg.in/yaml.v3"
 )
 
-func LoadOverlays(overlaysDir string) ([]*types.OverlayDoc, error) {
-	entries, err := os.ReadDir(overlaysDir)
+func LoadOverlays(fsys fs.FS, overlaysDir string) ([]*types.OverlayDoc, error) {
+	entries, err := fs.ReadDir(fsys, overlaysDir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err
@@ -23,7 +23,7 @@ func LoadOverlays(overlaysDir string) ([]*types.OverlayDoc, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") || e.Name() == "README.md" {
 			continue
 		}
-		o, err := parseOverlayFile(filepath.Join(overlaysDir, e.Name()))
+		o, err := parseOverlayFile(fsys, overlaysDir+"/"+e.Name())
 		if err != nil {
 			continue
 		}
@@ -32,8 +32,8 @@ func LoadOverlays(overlaysDir string) ([]*types.OverlayDoc, error) {
 	return overlays, nil
 }
 
-func parseOverlayFile(path string) (*types.OverlayDoc, error) {
-	data, err := os.ReadFile(path)
+func parseOverlayFile(fsys fs.FS, path string) (*types.OverlayDoc, error) {
+	data, err := fs.ReadFile(fsys, path)
 	if err != nil {
 		return nil, err
 	}

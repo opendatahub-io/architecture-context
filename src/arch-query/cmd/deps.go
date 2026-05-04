@@ -19,14 +19,14 @@ var depsCmd = &cobra.Command{
 
 		version := versionArg
 		if version == "" {
-			versions, err := loader.DiscoverVersions(baseDir)
+			versions, err := loader.DiscoverVersions(archFS, archSymlinks)
 			if err != nil {
 				return err
 			}
 			version = loader.DefaultVersion(versions)
 		}
 
-		data, err := loader.LoadVersion(baseDir, version)
+		data, err := loader.LoadVersion(archFS, version)
 		if err != nil {
 			return fmt.Errorf("loading version %s: %w", version, err)
 		}

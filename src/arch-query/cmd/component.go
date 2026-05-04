@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 
@@ -9,6 +10,8 @@ import (
 	"github.com/jctanner/arch-query/internal/output"
 	"github.com/spf13/cobra"
 )
+
+var componentRaw bool
 
 var componentCmd = &cobra.Command{
 	Use:   "component <name>",
@@ -19,14 +22,24 @@ var componentCmd = &cobra.Command{
 
 		version := versionArg
 		if version == "" {
-			versions, err := loader.DiscoverVersions(baseDir)
+			versions, err := loader.DiscoverVersions(archFS, archSymlinks)
 			if err != nil {
 				return err
 			}
 			version = loader.DefaultVersion(versions)
 		}
 
-		data, err := loader.LoadVersion(baseDir, version)
+		if componentRaw {
+			path := version + "/" + name + ".md"
+			data, err := fs.ReadFile(archFS, path)
+			if err != nil {
+				return fmt.Errorf("reading %s: %w", path, err)
+			}
+			fmt.Print(string(data))
+			return nil
+		}
+
+		data, err := loader.LoadVersion(archFS, version)
 		if err != nil {
 			return fmt.Errorf("loading version %s: %w", version, err)
 		}
@@ -54,6 +67,15 @@ var componentCmd = &cobra.Command{
 		output.KeyValue(os.Stdout, "Repository", doc.Repository)
 		output.KeyValue(os.Stdout, "Languages", doc.Languages)
 		output.KeyValue(os.Stdout, "Version", doc.Version)
+
+		if len(doc.Components) > 0 {
+			output.SectionHeader(os.Stdout, "Architecture Components")
+			tw := output.NewTabWriter(os.Stdout)
+			for _, ac := range doc.Components {
+				fmt.Fprintf(tw, "  %s\t%s\t%s\n", ac.Name, ac.Type, ac.Purpose)
+			}
+			tw.Flush()
+		}
 
 		if len(doc.CRDs) > 0 {
 			output.SectionHeader(os.Stdout, "CRDs")
@@ -120,11 +142,12 @@ var componentCmd = &cobra.Command{
 			}
 		}
 
-		fmt.Printf("\nFull doc: %s/%s/%s\n", baseDir, version, doc.FileName)
+		fmt.Printf("\nFull doc: %s/%s\n", version, doc.FileName)
 		return nil
 	},
 }
 
 func init() {
+	componentCmd.Flags().BoolVar(&componentRaw, "raw", false, "Print the full raw markdown instead of the parsed fact sheet")
 	rootCmd.AddCommand(componentCmd)
 }

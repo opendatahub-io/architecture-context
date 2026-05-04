@@ -37,11 +37,11 @@ Examples:
 			verA, verB = args[1], args[2]
 		}
 
-		dataA, err := loader.LoadVersion(baseDir, verA)
+		dataA, err := loader.LoadVersion(archFS, verA)
 		if err != nil {
 			return fmt.Errorf("loading %s: %w", verA, err)
 		}
-		dataB, err := loader.LoadVersion(baseDir, verB)
+		dataB, err := loader.LoadVersion(archFS, verB)
 		if err != nil {
 			return fmt.Errorf("loading %s: %w", verB, err)
 		}

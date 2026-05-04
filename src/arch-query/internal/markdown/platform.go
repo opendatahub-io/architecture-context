@@ -1,16 +1,17 @@
 package markdown
 
 import (
-	"os"
+	"errors"
+	"io/fs"
 	"strings"
 
 	"github.com/jctanner/arch-query/internal/types"
 )
 
-func ParsePlatformDoc(path string) (*types.PlatformDoc, error) {
-	data, err := os.ReadFile(path)
+func ParsePlatformDoc(fsys fs.FS, path string) (*types.PlatformDoc, error) {
+	data, err := fs.ReadFile(fsys, path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err

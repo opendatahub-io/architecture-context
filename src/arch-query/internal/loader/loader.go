@@ -1,8 +1,7 @@
 package loader
 
 import (
-	"os"
-	"path/filepath"
+	"io/fs"
 	"strings"
 
 	"github.com/jctanner/arch-query/internal/markdown"
@@ -10,13 +9,13 @@ import (
 	"github.com/jctanner/arch-query/internal/types"
 )
 
-func LoadVersion(baseDir, version string) (*types.VersionData, error) {
-	versionDir, err := ResolveVersion(baseDir, version)
+func LoadVersion(fsys fs.FS, version string) (*types.VersionData, error) {
+	resolved, err := ResolveVersion(fsys, version)
 	if err != nil {
 		return nil, err
 	}
 
-	entries, err := os.ReadDir(versionDir)
+	entries, err := fs.ReadDir(fsys, resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -31,24 +30,23 @@ func LoadVersion(baseDir, version string) (*types.VersionData, error) {
 			continue
 		}
 		key := strings.TrimSuffix(name, ".md")
-		path := filepath.Join(versionDir, name)
-		doc, err := markdown.ParseComponentDoc(path)
+		path := resolved + "/" + name
+		doc, err := markdown.ParseComponentDoc(fsys, path)
 		if err != nil {
 			continue
 		}
 		components[key] = doc
 	}
 
-	platformPath := filepath.Join(versionDir, "PLATFORM.md")
-	platform, _ := markdown.ParsePlatformDoc(platformPath)
+	platformPath := resolved + "/PLATFORM.md"
+	platform, _ := markdown.ParsePlatformDoc(fsys, platformPath)
 
-	overlaysDir := filepath.Join(filepath.Dir(baseDir), "overlays")
-	overlays, _ := overlay.LoadOverlays(overlaysDir)
+	overlays, _ := overlay.LoadOverlays(fsys, "overlays")
 
 	data := &types.VersionData{
 		Version: types.VersionInfo{
 			Name:           version,
-			Path:           versionDir,
+			Path:           resolved,
 			ComponentCount: len(components),
 		},
 		Components: components,
@@ -57,8 +55,4 @@ func LoadVersion(baseDir, version string) (*types.VersionData, error) {
 	}
 
 	return data, nil
-}
-
-func OverlaysDir(baseDir string) string {
-	return filepath.Join(filepath.Dir(baseDir), "overlays")
 }

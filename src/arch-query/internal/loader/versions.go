@@ -1,6 +1,8 @@
 package loader
 
 import (
+	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -9,43 +11,38 @@ import (
 	"github.com/jctanner/arch-query/internal/types"
 )
 
-func DiscoverVersions(baseDir string) ([]types.VersionInfo, error) {
-	entries, err := os.ReadDir(baseDir)
+func DiscoverVersions(fsys fs.FS, symlinks map[string]string) ([]types.VersionInfo, error) {
+	entries, err := fs.ReadDir(fsys, ".")
 	if err != nil {
 		return nil, err
 	}
 
 	targetToAliases := make(map[string][]string)
-	var realDirs []string
+	for alias, target := range symlinks {
+		targetToAliases[target] = append(targetToAliases[target], alias)
+	}
 
+	var realDirs []string
 	for _, entry := range entries {
-		fullPath := filepath.Join(baseDir, entry.Name())
-		info, err := entry.Info()
-		if err != nil {
+		if !entry.IsDir() {
 			continue
 		}
-
-		if info.Mode()&os.ModeSymlink != 0 {
-			target, err := os.Readlink(fullPath)
-			if err != nil {
-				continue
-			}
-			targetToAliases[target] = append(targetToAliases[target], entry.Name())
-		} else if entry.IsDir() {
-			realDirs = append(realDirs, entry.Name())
+		name := entry.Name()
+		if _, isAlias := symlinks[name]; isAlias {
+			continue
 		}
+		realDirs = append(realDirs, name)
 	}
 
 	var versions []types.VersionInfo
 	for _, name := range realDirs {
-		if name == "diagrams" {
+		if name == "diagrams" || name == "overlays" {
 			continue
 		}
-		fullPath := filepath.Join(baseDir, name)
-		count := countComponentFiles(fullPath)
+		count := countComponentFiles(fsys, name)
 		v := types.VersionInfo{
 			Name:           name,
-			Path:           fullPath,
+			Path:           name,
 			IsSymlink:      false,
 			Aliases:        targetToAliases[name],
 			ComponentCount: count,
@@ -72,24 +69,19 @@ func DefaultVersion(versions []types.VersionInfo) string {
 	return ""
 }
 
-func ResolveVersion(baseDir, version string) (string, error) {
-	fullPath := filepath.Join(baseDir, version)
-	resolved, err := filepath.EvalSymlinks(fullPath)
-	if err != nil {
-		return "", err
-	}
-	info, err := os.Stat(resolved)
+func ResolveVersion(fsys fs.FS, version string) (string, error) {
+	info, err := fs.Stat(fsys, version)
 	if err != nil {
 		return "", err
 	}
 	if !info.IsDir() {
-		return "", os.ErrNotExist
+		return "", fs.ErrNotExist
 	}
-	return resolved, nil
+	return version, nil
 }
 
-func countComponentFiles(dir string) int {
-	entries, err := os.ReadDir(dir)
+func countComponentFiles(fsys fs.FS, dir string) int {
+	entries, err := fs.ReadDir(fsys, dir)
 	if err != nil {
 		return 0
 	}
@@ -102,9 +94,46 @@ func countComponentFiles(dir string) int {
 	return count
 }
 
+// LoadSymlinksFromDisk discovers symlinks by reading the real filesystem.
+func LoadSymlinksFromDisk(baseDir string) map[string]string {
+	symlinks := make(map[string]string)
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		return symlinks
+	}
+	for _, entry := range entries {
+		fullPath := filepath.Join(baseDir, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(fullPath)
+			if err != nil {
+				continue
+			}
+			symlinks[entry.Name()] = target
+		}
+	}
+	return symlinks
+}
+
+// LoadSymlinksFromFS reads a symlinks.json manifest from the filesystem.
+func LoadSymlinksFromFS(fsys fs.FS) map[string]string {
+	data, err := fs.ReadFile(fsys, "symlinks.json")
+	if err != nil {
+		return make(map[string]string)
+	}
+	var symlinks map[string]string
+	if err := json.Unmarshal(data, &symlinks); err != nil {
+		return make(map[string]string)
+	}
+	return symlinks
+}
+
 var excludedFiles = map[string]bool{
-	"PLATFORM.md":          true,
-	"README.md":            true,
+	"PLATFORM.md":           true,
+	"README.md":             true,
 	"RHOAI-Build-Config.md": true,
 }
 

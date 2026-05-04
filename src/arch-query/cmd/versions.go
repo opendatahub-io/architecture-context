@@ -14,7 +14,7 @@ var versionsCmd = &cobra.Command{
 	Use:   "versions",
 	Short: "List available architecture-context versions",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		versions, err := loader.DiscoverVersions(baseDir)
+		versions, err := loader.DiscoverVersions(archFS, archSymlinks)
 		if err != nil {
 			return fmt.Errorf("discovering versions: %w", err)
 		}
