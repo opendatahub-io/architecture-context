@@ -15,16 +15,30 @@ LLM agents consume architecture-context via filesystem tools — `ls` to discove
 
 Expected impact: **85-90% reduction in tool calls and tokens** for architecture-context queries.
 
-## Build
+## Install
+
+Pre-built binaries with embedded architecture data are available on the [releases page](https://github.com/opendatahub-io/architecture-context/releases). These are self-contained — no clone required.
+
+```bash
+# Download the latest release for your platform
+curl -LO https://github.com/opendatahub-io/architecture-context/releases/latest/download/arch-query-linux-amd64
+chmod +x arch-query-linux-amd64
+./arch-query-linux-amd64 versions
+```
+
+Available binaries: `arch-query-linux-amd64`, `arch-query-linux-arm64`, `arch-query-darwin-amd64`, `arch-query-darwin-arm64`.
+
+## Build from Source
 
 ```bash
 # From project root
-make build        # -> ./bin/arch-query
+make build            # -> ./bin/arch-query (disk-only, reads ./architecture/)
+make build-embedded   # -> ./bin/arch-query (bundled, architecture data compiled in)
 
 # From src/arch-query/
-make build        # -> ../../bin/arch-query
-make test         # run tests
-make smoke        # run smoke tests against real data
+make build            # -> ../../bin/arch-query
+make test             # run tests
+make smoke            # run smoke tests against real data
 ```
 
 Requires Go 1.25+.
