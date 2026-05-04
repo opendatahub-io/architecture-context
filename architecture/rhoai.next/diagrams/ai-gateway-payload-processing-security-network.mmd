@@ -3,75 +3,76 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (Gateway)"]
-        Gateway["Istio Gateway (Envoy Proxy)<br/>443/TCP → internal routing<br/>TLS 1.2+ termination<br/>AuthN: per Gateway config"]
+    subgraph GatewayPlane["GATEWAY API DATA PLANE"]
+        Gateway["Gateway API Gateway<br/>(Envoy Proxy)<br/>443/TCP → internal<br/>TLS 1.2+ termination"]
+        EnvoyFilter["Istio EnvoyFilter<br/>Attaches ExtProc to Gateway"]
+        EnvoyFilter -.->|configures| Gateway
     end
 
-    subgraph Internal["SERVICE (Network Isolated - Same Namespace as Gateway)"]
+    subgraph PayloadProcessing["PAYLOAD PROCESSING SERVICE"]
         direction TB
+        ExtProc["ai-gateway-payload-processing<br/>SA: payload-processing-{release}<br/>Image: quay.io/opendatahub/odh-ai-gateway-payload-processing"]
 
-        subgraph PayloadProc["AI Gateway Payload Processing"]
-            direction TB
-            ExtProc["ext_proc gRPC Server<br/>9004/TCP plaintext<br/>Auth: None (Envoy-internal)<br/>SA: payload-processing-{release}"]
-            Health["Health Check<br/>9005/TCP HTTP plaintext"]
+        subgraph Ports["Exposed Ports"]
+            GRPC["9004/TCP gRPC ExtProc<br/>plaintext, no auth<br/>(pod-local only)"]
+            Health["9005/TCP HTTP health<br/>plaintext, no auth<br/>(kubelet probes)"]
+        end
 
-            subgraph Plugins["Plugin Chain"]
-                direction LR
-                P1["body-field-to-header"]
-                P2["model-provider-resolver"]
-                P3["nemo-request-guard<br/>(optional)"]
-                P4["api-translation"]
-                P5["apikey-injection"]
-            end
-
-            subgraph Stores["In-Memory Stores"]
-                ModelStore["modelInfoStore<br/>(ExternalModel cache)"]
-                SecretStoreBox["secretStore<br/>(API keys cache)<br/>⚠ Sensitive"]
-            end
+        subgraph Plugins["Plugin Pipeline"]
+            P1["body-field-to-header"]
+            P2["model-provider-resolver"]
+            P3["api-translation"]
+            P4["apikey-injection"]
+            P5["nemo-request-guard<br/>(optional)"]
+            P6["nemo-response-guard<br/>(optional)"]
         end
     end
 
-    subgraph K8sControl["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA bearer token auth"]
+    subgraph K8sServices["KUBERNETES SERVICES (Trusted)"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Bearer token"]
     end
 
-    subgraph OptionalServices["OPTIONAL SERVICES"]
-        NemoSvc["NeMo Guardrails Service<br/>configurable port<br/>HTTP/HTTPS (configurable)<br/>Auth: None"]
+    subgraph InternalServices["INTERNAL SERVICES"]
+        NemoSvc["NeMo Guardrails Service<br/>configurable port<br/>HTTP plaintext ⚠<br/>No auth"]
     end
 
-    subgraph ProviderEgress["EXTERNAL CLOUD PROVIDERS (via Gateway)"]
+    subgraph ExternalProviders["EXTERNAL LLM PROVIDERS"]
         OpenAI["OpenAI API<br/>api.openai.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer token"]
-        Anthropic["Anthropic API<br/>api.anthropic.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: x-api-key"]
-        Azure["Azure OpenAI<br/>{resource}.openai.azure.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: api-key"]
-        Bedrock["AWS Bedrock<br/>{region}.bedrock.amazonaws.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer token"]
-        Vertex["Google Vertex AI<br/>{region}-aiplatform.googleapis.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer token"]
+        Anthropic["Anthropic API<br/>api.anthropic.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: x-api-key header"]
+        Azure["Azure OpenAI API<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: api-key header"]
+        Bedrock["AWS Bedrock API<br/>bedrock.amazonaws.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer token"]
+        Vertex["Google Vertex AI API<br/>aiplatform.googleapis.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer token"]
     end
 
     %% Flows
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Client auth"| Gateway
-    Gateway -->|"gRPC ext_proc/9004<br/>plaintext<br/>No auth (network isolation)"| ExtProc
-    ExtProc -->|"HTTPS/443<br/>TLS 1.2+<br/>SA bearer token"| K8sAPI
-    ExtProc -->|"HTTP(S)/configurable<br/>No auth<br/>POST /v1/guardrail/checks"| NemoSvc
-    Gateway -->|"HTTPS/443<br/>TLS 1.2+<br/>API key (injected)"| OpenAI
-    Gateway -->|"HTTPS/443<br/>TLS 1.2+<br/>x-api-key (injected)"| Anthropic
-    Gateway -->|"HTTPS/443<br/>TLS 1.2+<br/>api-key (injected)"| Azure
-    Gateway -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer (injected)"| Bedrock
-    Gateway -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer (injected)"| Vertex
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Client token"| Gateway
+    Gateway -->|"gRPC/9004<br/>plaintext<br/>No auth (pod-local)"| GRPC
+    ExtProc -->|"mutated request<br/>gRPC/9004"| Gateway
+
+    P2 -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Bearer token<br/>Watch ExternalModel CRDs"| K8sAPI
+    P4 -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Bearer token<br/>Watch labeled Secrets"| K8sAPI
+
+    P5 -->|"HTTP configurable<br/>plaintext ⚠<br/>No auth<br/>POST /v1/guardrail/checks"| NemoSvc
+    P6 -->|"HTTP configurable<br/>plaintext ⚠<br/>No auth<br/>POST /v1/guardrail/checks"| NemoSvc
+
+    Gateway -->|"HTTPS/443<br/>TLS 1.2+<br/>Injected Bearer"| OpenAI
+    Gateway -->|"HTTPS/443<br/>TLS 1.2+<br/>Injected x-api-key"| Anthropic
+    Gateway -->|"HTTPS/443<br/>TLS 1.2+<br/>Injected api-key"| Azure
+    Gateway -->|"HTTPS/443<br/>TLS 1.2+<br/>Injected Bearer"| Bedrock
+    Gateway -->|"HTTPS/443<br/>TLS 1.2+<br/>Injected Bearer"| Vertex
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef gateway fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef processing fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef k8s fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef optional fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef internal fill:#fff2cc,stroke:#d6b656,stroke-width:2px
     classDef provider fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef sensitive fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef warning fill:#ffcccc,stroke:#cc0000,stroke-width:2px
 
     class Client external
-    class Gateway ingress
-    class ExtProc,Health,P1,P2,P3,P4,P5 internal
-    class ModelStore sensitive
-    class SecretStoreBox sensitive
+    class Gateway,EnvoyFilter gateway
+    class ExtProc,GRPC,Health,P1,P2,P3,P4,P5,P6 processing
     class K8sAPI k8s
-    class NemoSvc optional
+    class NemoSvc warning
     class OpenAI,Anthropic,Azure,Bedrock,Vertex provider

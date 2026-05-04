@@ -1,89 +1,97 @@
 workspace {
     model {
-        admin = person "Platform Admin" "RHOAI platform administrator performing upgrade readiness checks and migrations"
+        admin = person "Platform Administrator" "RHOAI cluster administrator performing upgrades, diagnostics, and migrations"
 
-        odhcli = softwareSystem "odh-cli" "CLI tool for validating, managing, and migrating RHOAI deployments" {
-            cliCore = container "kubectl-odh" "Primary CLI binary with lint, backup, migrate, get, deps, components commands" "Go 1.25 (Cobra, FIPS-compliant)"
-            lintFramework = container "Lint Framework" "37 diagnostic checks across 5 groups (dependency, platform, component, workload, service)" "Go"
-            backupPipeline = container "Backup Pipeline" "3-stage pipeline: discovery → resolution → writing with concurrent workers" "Go"
-            migrationFramework = container "Migration Framework" "ActionRegistry-based migration execution with dry-run support" "Go"
-            k8sClient = container "Kubernetes Client" "Reader/Writer interfaces with elevated QPS (50/100), nil-safe OLM" "Go (client-go)"
-            yq = container "yq" "Vendored YAML processor built with FIPS-compliant build tags" "Go"
-            upgradeHelpers = container "rhoai-upgrade-helpers" "Shell and Python migration scripts (git submodule)" "Shell, Python"
+        odhCli = softwareSystem "odh-cli (kubectl-odh)" "CLI tool for validating, diagnosing, backing up, and migrating RHOAI deployments" {
+            cobraCommands = container "Cobra Command Layer" "lint, backup, get, deps, components, migrate, version commands" "Go (Cobra)"
+            lintEngine = container "Lint Engine" "37 diagnostic checks across 5 groups with version-aware gating" "Go"
+            backupPipeline = container "Backup Pipeline" "Concurrent 3-stage pipeline: Discovery → Resolver → Writer" "Go"
+            migrationFramework = container "Migration Framework" "Two-phase Prepare/Run with progress tracking" "Go"
+            clientWrapper = container "K8s Client Wrapper" "client-go with QPS=50, Burst=100, Reader/Writer split" "Go (client-go)"
+            resourceRegistry = container "Resource Type Registry" "40+ GVK/GVR definitions, single source of truth" "Go"
+            outputEnvelope = container "Output Envelope" "cli.opendatahub.io/v1 self-describing output (table/JSON/YAML)" "Go"
         }
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for all resource operations" "External"
-        olmAPI = softwareSystem "Operator Lifecycle Manager" "Operator installation and version management" "External"
-        openshift = softwareSystem "OpenShift API" "ClusterVersion detection, ImageStream queries" "External"
+        k8sApi = softwareSystem "Kubernetes API Server" "Cluster API with RBAC enforcement" "External" {
+            tags "External"
+        }
 
-        dsc = softwareSystem "DataScienceCluster" "Singleton CR managing RHOAI component lifecycle" "Internal RHOAI"
-        dsci = softwareSystem "DSCInitialization" "Singleton CR for RHOAI initialization config" "Internal RHOAI"
-        kserve = softwareSystem "KServe" "ML model serving (InferenceService, ServingRuntime)" "Internal ODH"
-        kubeflow = softwareSystem "Kubeflow" "Notebook server management" "Internal ODH"
-        kueue = softwareSystem "Kueue" "Workload queuing (ClusterQueue, LocalQueue)" "Internal ODH"
-        ray = softwareSystem "Ray" "Distributed compute (RayCluster, RayJob)" "Internal ODH"
-        trainingOp = softwareSystem "Training Operator" "Distributed training (PyTorchJob)" "Internal ODH"
-        dsp = softwareSystem "Data Science Pipelines" "ML pipeline orchestration (DSPA)" "Internal ODH"
-        dashboard = softwareSystem "ODH Dashboard" "AcceleratorProfile, HardwareProfile management" "Internal ODH"
-        trustyai = softwareSystem "TrustyAI" "AI governance (GuardrailsOrchestrator)" "Internal ODH"
-        codeflare = softwareSystem "CodeFlare" "AppWrapper management (deprecated)" "Internal ODH"
-        llamastack = softwareSystem "LlamaStack" "LLM distribution management" "Internal ODH"
-        kuadrant = softwareSystem "Kuadrant" "Gateway API management" "External"
-        authorino = softwareSystem "Authorino" "Auth/TLS management for KServe" "External"
+        dsc = softwareSystem "DataScienceCluster" "Singleton CR managing RHOAI component lifecycle" "Internal ODH" {
+            tags "Internal ODH"
+        }
 
-        odhGitops = softwareSystem "odh-gitops (GitHub)" "Dependency manifest repository" "External"
-        localFS = softwareSystem "Local Filesystem" "Backup output and kubeconfig storage" "External"
+        dsci = softwareSystem "DSCInitialization" "Singleton CR for RHOAI initialization and namespace config" "Internal ODH" {
+            tags "Internal ODH"
+        }
 
-        admin -> odhcli "Runs upgrade checks, backups, and migrations" "CLI"
-        odhcli -> k8sAPI "Reads/writes cluster resources" "HTTPS/6443, Bearer Token"
-        odhcli -> olmAPI "Queries operator status, creates subscriptions" "HTTPS/6443, Bearer Token"
-        odhcli -> openshift "Detects platform version" "HTTPS/6443, Bearer Token"
+        olm = softwareSystem "Operator Lifecycle Manager" "Manages operator installations, subscriptions, and CSVs" "External" {
+            tags "External"
+        }
 
-        odhcli -> dsc "Reads config, patches component state" "HTTPS/6443"
-        odhcli -> dsci "Reads initialization config" "HTTPS/6443"
-        odhcli -> kserve "Validates InferenceServices" "HTTPS/6443"
-        odhcli -> kubeflow "Validates and backs up Notebooks" "HTTPS/6443"
-        odhcli -> kueue "Validates queues, RHBOK migration" "HTTPS/6443"
-        odhcli -> ray "Validates RayClusters, AppWrapper cleanup" "HTTPS/6443"
-        odhcli -> trainingOp "Checks PyTorchJob completion" "HTTPS/6443"
-        odhcli -> dsp "Validates and backs up DSPAs" "HTTPS/6443"
-        odhcli -> dashboard "Checks AcceleratorProfile migration" "HTTPS/6443"
-        odhcli -> trustyai "Validates OTEL migration" "HTTPS/6443"
-        odhcli -> codeflare "Validates AppWrapper removal" "HTTPS/6443"
-        odhcli -> llamastack "Validates architecture compatibility" "HTTPS/6443"
-        odhcli -> kuadrant "Validates Gateway API readiness" "HTTPS/6443"
-        odhcli -> authorino "Validates TLS readiness" "HTTPS/6443"
+        workloads = softwareSystem "User Workloads" "Notebooks, InferenceServices, DSPAs, RayClusters, PyTorchJobs, etc." "Internal ODH" {
+            tags "Internal ODH"
+        }
 
-        odhcli -> odhGitops "Fetches dependency manifests" "HTTPS/443"
-        odhcli -> localFS "Writes backup YAML files" "Filesystem I/O"
+        certManager = softwareSystem "cert-manager" "Certificate management operator (required RHOAI dependency)" "External" {
+            tags "External"
+        }
 
-        cliCore -> lintFramework "Dispatches lint command"
-        cliCore -> backupPipeline "Dispatches backup command"
-        cliCore -> migrationFramework "Dispatches migrate command"
-        cliCore -> k8sClient "All cluster operations"
-        lintFramework -> k8sClient "Read-only queries"
-        backupPipeline -> k8sClient "Read queries + file writes"
-        migrationFramework -> k8sClient "Read + write operations"
+        serviceMesh = softwareSystem "Service Mesh v3" "Istio-based service mesh (required for 2.x→3.x upgrade)" "External" {
+            tags "External"
+        }
+
+        kueue = softwareSystem "Kueue / RHBOK" "Job queueing system (migration target: Kueue → Red Hat Build of Kueue)" "Internal ODH" {
+            tags "Internal ODH"
+        }
+
+        github = softwareSystem "GitHub (odh-gitops)" "Public repository hosting dependency manifests" "External" {
+            tags "External"
+        }
+
+        filesystem = softwareSystem "Local Filesystem" "Stores backup YAML files and migration artifacts" "External" {
+            tags "External"
+        }
+
+        admin -> odhCli "Runs kubectl odh commands" "CLI"
+        odhCli -> k8sApi "Queries and patches resources" "HTTPS/6443 TLS 1.2+ Bearer Token"
+        odhCli -> dsc "Reads version, component state; patches managementState" "HTTPS/6443 via K8s API"
+        odhCli -> dsci "Reads version, namespace, ServiceMesh state" "HTTPS/6443 via K8s API"
+        odhCli -> olm "Checks operator status; creates Subscriptions (migrate)" "HTTPS/6443 via K8s API"
+        odhCli -> workloads "Lists and inspects for lint checks and backup" "HTTPS/6443 via K8s API"
+        odhCli -> certManager "Validates installation (lint dependency check)" "HTTPS/6443 via K8s API"
+        odhCli -> serviceMesh "Validates catalog availability (lint dependency check)" "HTTPS/6443 via K8s API"
+        odhCli -> kueue "Validates data integrity; migrates to RHBOK" "HTTPS/6443 via K8s API"
+        odhCli -> github "Fetches dependency manifests (optional --refresh)" "HTTPS/443 TLS 1.2+"
+        odhCli -> filesystem "Writes backup YAML files and migration artifacts" "Local I/O"
+
+        cobraCommands -> lintEngine "Delegates lint execution"
+        cobraCommands -> backupPipeline "Delegates backup execution"
+        cobraCommands -> migrationFramework "Delegates migration execution"
+        cobraCommands -> outputEnvelope "Formats output"
+        lintEngine -> clientWrapper "Reads cluster state (Reader interface only)"
+        backupPipeline -> clientWrapper "Reads resources and dependencies"
+        migrationFramework -> clientWrapper "Reads and writes cluster state (full Client)"
+        clientWrapper -> resourceRegistry "Resolves GVK/GVR definitions"
     }
 
     views {
-        systemContext odhcli "SystemContext" {
+        systemContext odhCli "SystemContext" {
             include *
             autoLayout
         }
 
-        container odhcli "Containers" {
+        container odhCli "Containers" {
             include *
             autoLayout
         }
 
         styles {
-            element "External" {
-                background #999999
+            element "Software System" {
+                background #4a90e2
                 color #ffffff
             }
-            element "Internal RHOAI" {
-                background #e53935
+            element "External" {
+                background #999999
                 color #ffffff
             }
             element "Internal ODH" {
@@ -92,11 +100,12 @@ workspace {
             }
             element "Person" {
                 shape Person
-                background #4a90e2
+                background #08427b
                 color #ffffff
             }
-            element "Software System" {
-                shape RoundedBox
+            element "Container" {
+                background #438dd5
+                color #ffffff
             }
         }
     }

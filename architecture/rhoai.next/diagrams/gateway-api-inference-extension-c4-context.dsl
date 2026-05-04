@@ -1,50 +1,46 @@
 workspace {
     model {
-        user = person "ML Engineer / Data Scientist" "Sends inference requests to hosted ML models"
-        platformAdmin = person "Platform Admin" "Configures InferencePool, routing rules, and model deployments"
+        dataScientist = person "Data Scientist / ML Engineer" "Deploys and queries ML models via inference APIs"
+        platformAdmin = person "Platform Administrator" "Configures InferencePool, routing rules, and gateway policies"
 
-        igw = softwareSystem "Gateway API Inference Extension" "Extends Gateway API-compatible proxies into inference gateways with KV-cache-aware endpoint selection and body-based routing" {
-            epp = container "Endpoint Picker (EPP)" "Intelligent endpoint selection for inference requests via pluggable scheduling framework (Filter → Score → Pick)" "Go ext-proc Service"
-            bbr = container "Body Based Router (BBR)" "Parses HTTP request bodies to extract model names into headers for gateway routing" "Go ext-proc Service"
-            latencyTraining = container "Latency Training Server" "Trains XGBoost models for predicting TTFT and TPOT latency" "Python Sidecar (optional)"
-            latencyPrediction = container "Latency Prediction Server" "Serves latency predictions via HTTP for scheduling decisions" "Python Sidecar (optional)"
-            clientGo = container "client-go Library" "Generated Kubernetes client library (clientset, informers, listers) for IGW CRDs" "Go Library"
+        igw = softwareSystem "Gateway API Inference Extension" "Extends Gateway API proxies into inference gateways with KV-cache-aware endpoint selection and request routing" {
+            epp = container "Endpoint Picker (EPP)" "Envoy ext-proc server performing intelligent endpoint selection using scheduling plugins, flow control, and model server metrics" "Go gRPC Service"
+            bbr = container "Body-Based Router (BBR)" "Envoy ext-proc server parsing request bodies to extract model names and map LoRA adapters to base models" "Go gRPC Service"
+            latencyTraining = container "Latency Training Server" "Trains latency prediction models (XGBoost/LightGBM) from inference telemetry" "Python Service"
+            latencyPrediction = container "Latency Prediction Server" "Serves TTFT/TPOT latency predictions via HTTP API" "Python Service"
         }
 
-        envoyGateway = softwareSystem "Gateway / Envoy Proxy" "Gateway API-compatible proxy with ext-proc filter support (Envoy Gateway, kGateway, GKE Gateway, Istio)" "External"
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform hosting CRDs and model server pods" "External"
-        modelServers = softwareSystem "Model Servers" "vLLM, SGLang, Triton TensorRT-LLM, trtllm-serve — backends hosting inference models" "External"
+        envoyGateway = softwareSystem "Envoy-Compatible Gateway" "Gateway API proxy (Envoy Gateway / kgateway / Istio / GKE Gateway) with ext-proc filter chain" "External"
+        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform providing CRD hosting, Pod discovery, RBAC, leader election" "External"
+        modelServers = softwareSystem "Model Servers" "vLLM / SGLang / Triton TensorRT-LLM serving inference requests" "External"
         prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
-        otel = softwareSystem "OpenTelemetry Collector" "Distributed tracing backend" "External"
-        gatewayAPI = softwareSystem "Gateway API CRDs" "HTTPRoute and related CRDs for traffic routing" "External"
+        otlpCollector = softwareSystem "OpenTelemetry Collector" "Distributed trace collection" "External"
+        gatewayAPICRDs = softwareSystem "Gateway API CRDs" "HTTPRoute references InferencePool as backend" "External"
 
         # User interactions
-        user -> envoyGateway "Sends inference requests" "HTTPS/443"
-        platformAdmin -> kubernetes "Creates InferencePool, InferenceObjective, InferenceModelRewrite CRDs" "kubectl/HTTPS"
+        dataScientist -> envoyGateway "Sends inference requests via HTTPS/443"
+        platformAdmin -> kubernetes "Creates InferencePool, InferenceObjective, InferenceModelRewrite CRDs"
 
-        # Gateway ↔ IGW interactions
-        envoyGateway -> bbr "Sends request for body parsing" "gRPC/9004 TLS"
+        # Gateway → IGW ext-proc chain
+        envoyGateway -> bbr "Sends request body for model name extraction" "gRPC/9004 TLS"
         envoyGateway -> epp "Sends request for endpoint selection" "gRPC/9002 TLS"
-        envoyGateway -> modelServers "Forwards inference request to selected endpoint" "HTTP/8000"
 
-        # EPP interactions
-        epp -> kubernetes "Watches InferencePool, InferenceObjective, InferenceModelRewrite, Pods" "HTTPS/443"
-        epp -> modelServers "Scrapes Prometheus metrics (KV cache, queue depth, LoRA)" "HTTP/configurable"
-        epp -> latencyPrediction "Queries latency predictions for scoring" "HTTP/8001"
-        epp -> otel "Exports distributed traces" "gRPC/4317"
+        # EPP internal
+        epp -> latencyTraining "Submits training data" "HTTP/8000"
+        epp -> latencyPrediction "Requests latency predictions" "HTTP/8001+"
 
-        # BBR interactions
-        bbr -> kubernetes "Watches ConfigMaps (adapter-to-base-model mappings)" "HTTPS/443"
+        # IGW → External systems
+        epp -> kubernetes "Watches InferencePool, InferenceObjective, InferenceModelRewrite CRDs, Pods, Leases" "HTTPS/443"
+        bbr -> kubernetes "Watches ConfigMaps with bbr-managed label" "HTTPS/443"
+        epp -> modelServers "Scrapes Prometheus metrics (KV cache, queue depth, LoRA status)" "HTTP/varies"
+        envoyGateway -> modelServers "Forwards inference requests to selected endpoint" "HTTP/varies"
 
-        # Latency Predictor interactions
-        latencyTraining -> latencyPrediction "Syncs trained XGBoost models" "HTTP/internal"
+        # Observability
+        prometheus -> igw "Scrapes metrics from EPP/BBR" "HTTP/9090"
+        epp -> otlpCollector "Exports distributed traces" "gRPC/4317"
 
-        # Monitoring
-        prometheus -> epp "Scrapes EPP metrics" "HTTP/9090"
-        prometheus -> bbr "Scrapes BBR metrics" "HTTP/9090"
-
-        # client-go used by EPP
-        epp -> clientGo "Uses generated clientset and informers" "In-process"
+        # Gateway API integration
+        gatewayAPICRDs -> envoyGateway "HTTPRoute references InferencePool as backendRef"
     }
 
     views {
@@ -59,17 +55,17 @@ workspace {
         }
 
         styles {
-            element "External" {
-                background #999999
-                color #ffffff
-            }
             element "Person" {
-                shape person
-                background #08427b
+                shape Person
+                background #4a90e2
                 color #ffffff
             }
             element "Software System" {
-                background #1168bd
+                background #4a90e2
+                color #ffffff
+            }
+            element "External" {
+                background #999999
                 color #ffffff
             }
             element "Container" {

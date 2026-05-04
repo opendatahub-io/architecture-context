@@ -1,67 +1,56 @@
 sequenceDiagram
-    participant User as User / Dashboard
-    participant Route as OpenShift Route<br/>443/TCP HTTPS TLS 1.2+
-    participant KRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant Client as External Client
+    participant Router as OpenShift Router<br/>443/TCP HTTPS
+    participant KRBP as kube-rbac-proxy<br/>8443/TCP HTTPS
     participant TAS as TrustyAI Service<br/>8080/TCP HTTP
-    participant DB as PostgreSQL<br/>TLS (optional)
-
-    Note over User, DB: Flow 1: TrustyAI Model Explainability
-
-    User->>Route: HTTPS/443<br/>Bearer Token
-    Route->>KRBAC: HTTPS/8443<br/>TLS 1.2+ (serving cert)
-    KRBAC->>KRBAC: SubjectAccessReview<br/>(get verb on services)
-    KRBAC->>TAS: HTTP/8080<br/>localhost (no TLS)
-    TAS->>DB: TCP/configurable<br/>TLS (optional), Username/Password
-    DB-->>TAS: Query Results
-    TAS-->>KRBAC: Response
-    KRBAC-->>Route: HTTPS Response
-    Route-->>User: JSON Response
-
-    Note over User, DB: Flow 2: KServe Payload Processing
-
-    participant KServe as KServe<br/>InferenceService
-
-    KServe->>TAS: HTTP/8080<br/>Payload Data (no auth)
-    TAS->>DB: Store payload<br/>TCP, Credentials
-    DB-->>TAS: ACK
-
-    Note over User, DB: Flow 3: LM Evaluation Job Execution
-
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant MM as ModelMesh/KServe<br/>Serving Pod
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
     participant LMESCtrl as LMES Controller
-    participant LMPod as LMEval Pod<br/>+ Driver Sidecar
-    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant S3 as S3 / OCI Registry<br/>443/TCP HTTPS
+    participant EvalPod as LM Evaluation Pod
+    participant Driver as ta-lmes-driver<br/>18080/TCP HTTP
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant OCI as OCI Registry<br/>443/TCP HTTPS
+    participant GORCHCtrl as GORCH Controller
+    participant Orchestrator as Guardrails<br/>Orchestrator Pod
+    participant Detectors as Detector Services
+    participant EHCtrl as EvalHub Controller
+    participant EvalHub as EvalHub Service<br/>8443/TCP HTTPS
+    participant DB as PostgreSQL/SQLite
+    participant MLFlow as MLFlow Tracking
 
-    User->>K8sAPI: Create LMEvalJob CR<br/>HTTPS/443, Bearer Token
-    K8sAPI-->>LMESCtrl: Watch event
-    LMESCtrl->>K8sAPI: Create Pod<br/>HTTPS/443, SA Token
-    K8sAPI-->>LMPod: Pod scheduled
-    LMESCtrl->>LMPod: Status check<br/>HTTP/5000 (pod exec)
-    LMPod->>HF: Download model/dataset<br/>HTTPS/443, API Token
-    HF-->>LMPod: Model artifacts
-    LMPod->>LMPod: Run evaluation
-    LMPod->>S3: Upload results<br/>HTTPS/443, AWS IAM
-    LMPod-->>LMESCtrl: Status update
+    Note over Client, TAS: Flow 1: TrustyAI Service Payload Processing
+    Client->>Router: POST /v1/models/predict<br/>HTTPS TLS 1.2+
+    Router->>KRBP: Reencrypt<br/>8443/TCP TLS
+    KRBP->>KRBP: SubjectAccessReview
+    KRBP->>TAS: Forward<br/>8080/TCP HTTP (localhost)
+    MM->>KRBP: POST /consumer/kserve/v2<br/>8443/TCP TLS (serving cert)
+    KRBP->>TAS: Payload data<br/>MM_PAYLOAD_PROCESSORS
 
-    Note over User, DB: Flow 4: Guardrails Orchestration
+    Note over Client, OCI: Flow 2: LMEvalJob Execution
+    Client->>K8sAPI: Create LMEvalJob CR<br/>Bearer token
+    K8sAPI-->>LMESCtrl: Watch notification
+    LMESCtrl->>K8sAPI: Create Pod<br/>SA token
+    Note over EvalPod: Init container copies<br/>driver binary
+    EvalPod->>Driver: Start driver process
+    Driver->>S3: Download assets (if offline)<br/>443/TCP HTTPS, AWS IAM
+    Note over Driver: Execute<br/>lm-evaluation-harness
+    LMESCtrl->>Driver: GET /GetStatus<br/>18080/TCP HTTP (pod exec)
+    Driver-->>LMESCtrl: Progress + status
+    Driver->>OCI: Upload results (if configured)<br/>443/TCP HTTPS
 
-    participant GORCHRoute as OpenShift Route<br/>443/TCP HTTPS
-    participant GKRBAC as kube-rbac-proxy<br/>8432/TCP HTTPS
-    participant Orch as Guardrails<br/>Orchestrator<br/>8032/TCP HTTPS
-    participant Detector as Detector<br/>InferenceService
-    participant GenSvc as Generation<br/>InferenceService
+    Note over GORCHCtrl, Detectors: Flow 3: Guardrails Orchestrator Auto-Discovery
+    GORCHCtrl->>K8sAPI: List InferenceServices<br/>SA token
+    GORCHCtrl->>K8sAPI: List Services by label<br/>SA token
+    GORCHCtrl->>K8sAPI: Create ConfigMaps<br/>(orchestrator config)
+    Client->>Router: Request to Orchestrator<br/>HTTPS
+    Router->>Orchestrator: Forward via kube-rbac-proxy
+    Orchestrator->>Detectors: Check content safety<br/>HTTPS/HTTP
+    Orchestrator->>MM: Forward to InferenceService<br/>HTTPS/HTTP
 
-    User->>GORCHRoute: HTTPS/443<br/>Bearer Token
-    GORCHRoute->>GKRBAC: HTTPS/8432<br/>TLS 1.2+
-    GKRBAC->>GKRBAC: SubjectAccessReview
-    GKRBAC->>Orch: HTTPS/8032<br/>TLS 1.2+ (serving cert)
-    Orch->>Detector: Safety check<br/>HTTP/HTTPS, TLS 1.2+
-    Detector-->>Orch: Detection result
-    Orch->>GenSvc: Generate response<br/>HTTP/HTTPS, TLS 1.2+
-    GenSvc-->>Orch: Generated output
-    Orch->>Detector: Output check<br/>HTTP/HTTPS, TLS 1.2+
-    Detector-->>Orch: Validation result
-    Orch-->>GKRBAC: Safe response
-    GKRBAC-->>GORCHRoute: HTTPS Response
-    GORCHRoute-->>User: JSON Response
+    Note over EHCtrl, MLFlow: Flow 4: EvalHub Evaluation and Monitoring
+    Client->>Router: API request<br/>443/TCP HTTPS
+    Router->>EvalHub: Reencrypt<br/>8443/TCP HTTPS
+    Note over EvalHub: SAR + X-Tenant scoping
+    EvalHub->>DB: Query/Store data<br/>5432/TCP
+    EvalHub->>MLFlow: Experiment tracking<br/>HTTPS, projected SA token
+    EHCtrl->>EvalHub: Job failure events<br/>POST /api/v1/evaluations/jobs/{id}/events<br/>8443/TCP HTTPS

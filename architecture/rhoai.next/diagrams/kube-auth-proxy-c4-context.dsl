@@ -1,68 +1,54 @@
 workspace {
     model {
-        browserUser = person "Browser User" "Human user accessing RHOAI platform components via browser"
-        serviceClient = person "Service Account Client" "Machine-to-machine client using K8s service account tokens"
+        user = person "Data Scientist / Platform User" "Accesses RHOAI components via browser or API"
+        prometheus = person "Prometheus" "OpenShift monitoring service account" "Service Account"
 
-        kubeAuthProxy = softwareSystem "kube-auth-proxy" "FIPS-compliant dual-mode authentication/authorization reverse proxy for RHOAI platform components" {
-            entrypoint = container "entrypoint" "Mode dispatcher that selects proxy binary based on PROXY_MODE env var" "Go CLI"
-            authProxy = container "kube-auth-proxy (auth mode)" "OAuth2/OIDC authentication proxy with session management, cookie handling, and IdP integration" "Go Service" {
-                tags "AuthMode"
+        kubeAuthProxy = softwareSystem "kube-auth-proxy" "FIPS-compliant authentication and authorization reverse proxy for RHOAI components" {
+            entrypoint = container "entrypoint" "Runtime binary selector - dispatches to auth or rbac mode based on PROXY_MODE" "Go CLI"
+            authProxy = container "kube-auth-proxy" "Authentication proxy supporting OIDC and OpenShift OAuth, with session management and upstream proxying" "Go Service" {
+                oauthHandler = component "OAuth2 Handler" "Handles /oauth2/* endpoints (sign_in, start, callback, sign_out, userinfo, auth)" "HTTP Handler"
+                sessionManager = component "Session Manager" "Cookie-based or Redis-based session storage with AES encryption" "Middleware"
+                middlewareChain = component "Middleware Chain" "Request processing: scope -> health -> metrics -> session -> headers -> proxy" "alice middleware"
+                upstreamProxy = component "Upstream Proxy" "Reverse proxy to upstream application with header injection" "HTTP Reverse Proxy"
             }
-            rbacProxy = container "kube-rbac-proxy (rbac mode)" "Kubernetes RBAC authorization proxy via SubjectAccessReview for protecting metrics and API endpoints" "Go Service" {
-                tags "RBACMode"
+            rbacProxy = container "kube-rbac-proxy" "Kubernetes RBAC authorization proxy using SubjectAccessReview for access control" "Go Service" {
+                tokenReviewAuth = component "TokenReview Authenticator" "Validates bearer tokens via Kubernetes TokenReview API" "Authenticator"
+                sarAuthorizer = component "SAR Authorizer" "SubjectAccessReview-based authorization with caching (5m pos, 30s neg)" "Authorizer"
+                hardcodedAuth = component "Hardcoded Authorizer" "Allows Prometheus SA to GET /metrics without SAR" "Authorizer"
+                staticAuth = component "Static Authorizer" "Pattern-based authorization rules from YAML config" "Authorizer"
             }
         }
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API server for TokenReview and SubjectAccessReview" {
-            tags "ClusterService"
-        }
-        osOAuth = softwareSystem "OpenShift OAuth Server" "OpenShift native OAuth2 authorization server" {
-            tags "ClusterService"
-        }
-        osUserAPI = softwareSystem "OpenShift User API" "OpenShift user identity service" {
-            tags "ClusterService"
-        }
-        oidcProvider = softwareSystem "OIDC Provider" "External identity provider (Keycloak, DEX)" {
-            tags "External"
-        }
-        redis = softwareSystem "Redis" "Optional session storage backend" {
-            tags "External"
-        }
-        upstreamApp = softwareSystem "Upstream Application" "Protected RHOAI platform component (e.g., Dashboard, Model Registry)" {
-            tags "InternalRHOAI"
-        }
-        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator that deploys kube-auth-proxy as sidecar" {
-            tags "InternalRHOAI"
-        }
-        envoyGateway = softwareSystem "Envoy / Gateway API" "Ingress layer using ext_authz integration" {
-            tags "InternalRHOAI"
-        }
+        oidcProvider = softwareSystem "OIDC Provider" "External identity provider (Keycloak, Azure AD, etc.)" "External"
+        openshiftOAuth = softwareSystem "OpenShift OAuth Server" "OpenShift's built-in OAuth authentication system" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API server for TokenReview and SubjectAccessReview" "External"
+        redis = softwareSystem "Redis" "Optional distributed session storage (Standalone/Sentinel/Cluster)" "External"
+        envoyGateway = softwareSystem "Envoy Gateway" "Gateway API data plane for ingress traffic routing" "External"
+        rhodsOperator = softwareSystem "rhods-operator" "Platform operator that deploys kube-auth-proxy as sidecar" "Internal RHOAI"
+        upstreamApp = softwareSystem "Upstream Application" "RHOAI component (Dashboard, Notebook, etc.) being protected" "Internal RHOAI"
 
-        # Person relationships
-        browserUser -> kubeAuthProxy "Authenticates via OAuth2/OIDC flow" "HTTP/4180"
-        serviceClient -> kubeAuthProxy "Authenticates via Bearer token" "HTTPS/8443"
+        # User interactions
+        user -> kubeAuthProxy "Authenticates via browser (OIDC/OAuth) or API (Bearer/SA token)"
+        prometheus -> kubeAuthProxy "Scrapes /metrics endpoint (hardcoded allow)" "HTTPS/8443"
 
-        # Internal container relationships
-        entrypoint -> authProxy "Dispatches (PROXY_MODE=auth)" "os.Exec"
-        entrypoint -> rbacProxy "Dispatches (PROXY_MODE=rbac, default)" "os.Exec"
+        # Entrypoint dispatch
+        entrypoint -> authProxy "Dispatches when PROXY_MODE=auth"
+        entrypoint -> rbacProxy "Dispatches when PROXY_MODE=rbac (default)"
 
         # Auth mode dependencies
-        authProxy -> oidcProvider "OIDC discovery, token exchange, userinfo, logout" "HTTPS/443"
-        authProxy -> osOAuth "OAuth2 authorization code flow, token exchange" "HTTPS/443"
-        authProxy -> osUserAPI "Retrieve user identity (name, email, groups)" "HTTPS/443"
+        authProxy -> oidcProvider "OIDC token exchange, JWKS verification, end_session" "HTTPS/443"
+        authProxy -> openshiftOAuth "OAuth token exchange, user info" "HTTPS/443"
         authProxy -> k8sAPI "TokenReview for K8s SA token validation" "HTTPS/443"
-        authProxy -> redis "Session storage read/write" "TCP/6379"
-        authProxy -> upstreamApp "Proxied authenticated requests with GAP-Auth header" "HTTP/HTTPS"
+        authProxy -> redis "Session storage and retrieval" "Redis/6379"
+        authProxy -> upstreamApp "Proxies authenticated requests with injected headers" "HTTP/HTTPS"
 
         # RBAC mode dependencies
-        rbacProxy -> k8sAPI "TokenReview (authn) + SubjectAccessReview (authz)" "HTTPS/443"
-        rbacProxy -> upstreamApp "Proxied authorized requests with x-remote-user header" "HTTP/HTTPS"
+        rbacProxy -> k8sAPI "TokenReview (authn) and SubjectAccessReview (authz)" "HTTPS/443"
+        rbacProxy -> upstreamApp "Proxies authorized requests with identity headers" "HTTP/HTTPS/h2c"
 
-        # Operator relationship
-        rhodsOperator -> kubeAuthProxy "Deploys as sidecar container, provisions RBAC" "Deployment spec"
-
-        # Envoy integration
-        envoyGateway -> authProxy "ext_authz subrequest to /oauth2/auth" "HTTP/4180"
+        # External integrations
+        envoyGateway -> authProxy "ext_authz subrequests for Gateway API traffic" "HTTP/4180"
+        rhodsOperator -> kubeAuthProxy "Deploys as sidecar container in component pods" "K8s API"
     }
 
     views {
@@ -76,39 +62,27 @@ workspace {
             autoLayout
         }
 
+        component authProxy "AuthProxyComponents" {
+            include *
+            autoLayout
+        }
+
+        component rbacProxy "RBACProxyComponents" {
+            include *
+            autoLayout
+        }
+
         styles {
-            element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
-            element "Person" {
-                background #08427b
-                color #ffffff
-                shape person
-            }
-            element "Container" {
-                background #438dd5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "ClusterService" {
-                background #5a9a3e
-                color #ffffff
-            }
-            element "InternalRHOAI" {
+            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "AuthMode" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "RBACMode" {
-                background #2c6cb0
-                color #ffffff
+            element "Service Account" {
+                shape Robot
             }
         }
     }

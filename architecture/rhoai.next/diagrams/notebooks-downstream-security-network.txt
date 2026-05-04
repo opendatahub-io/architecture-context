@@ -1,149 +1,130 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                   │
 │                                                                          │
-│  [User Browser]                                                          │
+│  [Data Scientist / Browser]                                              │
 │         │                                                                │
 │         │ Port: 443/TCP                                                  │
 │         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS 1.3                                            │
-│         │ Auth: OIDC/OAuth (OpenShift authentication)                    │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: OAuth2 / OpenID Connect (via RHOAI Dashboard)            │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (Platform Gateway)                                             │
+│  INGRESS (Platform-Managed)                                              │
 │                                                                          │
-│  [Platform Gateway (Envoy)]                                              │
-│  - Port: 443/TCP (external) → HTTPRoute                                │
-│  - TLS Termination: TLS 1.3                                             │
-│  - AuthN: OIDC/OAuth                                                    │
+│  [HTTPRoute / OpenShift Route]                                           │
+│  - Created by: ODH Notebook Controller (NOT by this component)           │
+│  - Host: {namespace}-{name}.apps.cluster.example.com                     │
+│  - Port: 443/TCP (external) → 8888/TCP or 8787/TCP (internal)          │
+│  - TLS Termination: TLS 1.2+ (SIMPLE)                                   │
+│  - AuthN: Managed by ingress layer                                       │
 │         │                                                                │
-│         │ Port: 8443/TCP                                                 │
-│         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS                                                │
-│         │ Auth: Bearer Token (SubjectAccessReview)                       │
+│         │ Port: 8888/TCP (Jupyter) or 8787/TCP (RStudio/code-server)    │
+│         │ Protocol: HTTP (plaintext)                                     │
+│         │ Encryption: None (internal only)                               │
+│         │ Auth: kube-rbac-proxy sidecar (RHOAI 3.x)                     │
+│         │       oauth-proxy sidecar (RHOAI 2.x)                         │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  POD (Workbench Pod - per user)                                         │
+│  WORKBENCH POD (User Namespace)                                          │
 │                                                                          │
-│  [kube-rbac-proxy Sidecar]                                               │
-│  - Namespace: {user-project}                                             │
-│  - Port: 8443/TCP (ingress)                                              │
-│  - Purpose: AuthN/AuthZ enforcement via SubjectAccessReview              │
-│  - Injected by: ODH Notebook Controller                                  │
+│  ┌─────────────────────────┐  ┌──────────────────────────────────┐      │
+│  │ kube-rbac-proxy sidecar │  │ Workbench Container              │      │
+│  │ (injected by Controller)│→ │                                  │      │
+│  │ Port: N/A (intercepts)  │  │ JupyterLab:  8888/TCP HTTP      │      │
+│  │ Auth: Bearer Token      │  │ code-server: 8787/TCP HTTP      │      │
+│  │       (kube API authz)  │  │ RStudio:     8787/TCP HTTP      │      │
+│  └─────────────────────────┘  │                                  │      │
+│                                │ User: UID 1001 (non-root)       │      │
+│                                │ GID: 0 (OpenShift random UID)   │      │
+│                                │ Token: DISABLED                 │      │
+│                                │ (--ServerApp.token='')           │      │
+│                                └──────────────────────────────────┘      │
+│                                                                          │
+│  ⚠️  WARNING: Workbench images have NO built-in authentication.          │
+│     MUST be deployed with Notebook Controller sidecar injection.         │
+│     Direct exposure = unauthenticated access.                            │
+│                                                                          │
+│  [ClusterIP Service]                                                     │
+│  - Name: notebook (per workbench)                                        │
+│  - Port: 8888/TCP → notebook-port (8888)                                │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: None                                                      │
+│  - Exposure: Internal only                                               │
 │         │                                                                │
-│         │ Port: 8888/TCP (Jupyter) or 8080/TCP (CodeServer/RStudio)     │
-│         │ Protocol: HTTP                                                 │
-│         │ Encryption: None (pod-local loopback)                          │
-│         │ Auth: None (--auth none)                                       │
+│         │ (outbound from workbench at runtime)                           │
 │         ▼                                                                │
-│  ┌───────────────────────────────────────────────────────────────┐       │
-│  │  JUPYTER VARIANT                                              │       │
-│  │                                                                │       │
-│  │  [JupyterLab Server]                                          │       │
-│  │  - Port: 8888/TCP                                              │       │
-│  │  - Protocol: HTTP                                              │       │
-│  │  - User: UID 1001 / GID 0 (non-root)                          │       │
-│  │  - Auth: None (external enforcement)                           │       │
-│  │  - API: /api (REST), / (WebSocket for terminals/kernels)       │       │
-│  └───────────────────────────────────────────────────────────────┘       │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (from running workbenches and build-time)                        │
 │                                                                          │
-│  ┌───────────────────────────────────────────────────────────────┐       │
-│  │  CODE-SERVER / RSTUDIO VARIANT                                │       │
-│  │                                                                │       │
-│  │  [NGINX Reverse Proxy]                                        │       │
-│  │  - Port: 8080/TCP (ingress from kube-rbac-proxy)               │       │
-│  │  - Health: /api/status                                         │       │
-│  │  - Process manager: supervisord                                │       │
-│  │         │                                                      │       │
-│  │         │ Port: 8787/TCP                                       │       │
-│  │         │ Protocol: HTTP                                       │       │
-│  │         │ Encryption: None (localhost)                          │       │
-│  │         ▼                                                      │       │
-│  │  [code-server v4.98 / RStudio 2024.12]                        │       │
-│  │  - Port: 8787/TCP                                              │       │
-│  │  - User: UID 1001 / GID 0 (non-root)                          │       │
-│  │  - Auth: None (--auth none / no internal auth)                 │       │
-│  └───────────────────────────────────────────────────────────────┘       │
+│  [OpenShift API Server]                                                  │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Bearer Token (ServiceAccount)                                   │
+│  - Purpose: oc CLI commands from within workbenches                      │
 │                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  EGRESS (Outbound from Workbench Pods)                                  │
+│  EGRESS (Build-Time Only — not from running workbenches)                 │
 │                                                                          │
-│         │                                                                │
-│         ├──── Port: 443/TCP ────────────────────────────────────────┐    │
-│         │     Protocol: HTTPS                                       │    │
-│         │     Encryption: TLS 1.2+                                  │    │
-│         │     Auth: ServiceAccount Token                            │    │
-│         │     ▼                                                     │    │
-│         │  [Kubernetes API Server]                                  │    │
-│         │  - Purpose: oc CLI commands from notebooks                │    │
-│         │                                                           │    │
-│         ├──── Port: 443/TCP ────────────────────────────────────────┤    │
-│         │     Protocol: HTTPS                                       │    │
-│         │     Encryption: TLS 1.2+                                  │    │
-│         │     Auth: None                                            │    │
-│         │     ▼                                                     │    │
-│         │  [PyPI / pip repositories]                                │    │
-│         │  - Purpose: User-initiated pip install                    │    │
-│         │                                                           │    │
-│         ├──── Port: 443/TCP ────────────────────────────────────────┤    │
-│         │     Protocol: HTTPS                                       │    │
-│         │     Encryption: TLS 1.2+                                  │    │
-│         │     Auth: None                                            │    │
-│         │     ▼                                                     │    │
-│         │  [CRAN]                                                   │    │
-│         │  - Purpose: R package installation (RStudio only)         │    │
-│         │                                                           │    │
-│         ├──── Port: Various ────────────────────────────────────────┤    │
-│         │     Protocol: Various (MongoDB/MSSQL/PostgreSQL)          │    │
-│         │     Encryption: Various                                   │    │
-│         │     Auth: User credentials                                │    │
-│         │     ▼                                                     │    │
-│         │  [User-configured Databases]                              │    │
-│         │  - MongoDB: 27017/TCP                                     │    │
-│         │  - MSSQL: 1433/TCP                                        │    │
-│         │  - PostgreSQL: 5432/TCP                                   │    │
-│         │                                                           │    │
-│         └───────────────────────────────────────────────────────────┘    │
+│  [PyPI - pypi.org]                                                       │
+│  - Port: 443/TCP, Protocol: HTTPS, Encryption: TLS 1.2+                │
+│  - Auth: None                                                            │
+│  - Purpose: Python package installation via micropipenv                  │
 │                                                                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│  PIPELINE RUNTIME (Ephemeral Pods)                                      │
+│  [NVIDIA CUDA Repo - developer.download.nvidia.com]                     │
+│  - Port: 443/TCP, Protocol: HTTPS, Encryption: TLS 1.2+                │
+│  - Auth: None                                                            │
+│  - Purpose: CUDA/cuDNN package installation for GPU images               │
 │                                                                          │
-│  [Elyra Pipeline Editor] ──(in-process in datascience notebook)──┐      │
-│         │                                                         │      │
-│         │ Port: 443/TCP                                           │      │
-│         │ Protocol: HTTPS                                         │      │
-│         │ Auth: Bearer Token                                      │      │
-│         ▼                                                         │      │
-│  [KFP Orchestrator]                                               │      │
-│         │                                                         │      │
-│         │ Creates Pod (ServiceAccount)                            │      │
-│         ▼                                                         │      │
-│  [Runtime Image Pod]                                              │      │
-│  - Image: quay.io/modh/runtime-images                             │      │
-│  - No ports exposed (headless execution)                          │      │
-│  - User: UID 1001 / GID 0 (non-root)                             │      │
-│  - Ephemeral: terminated after pipeline node completes            │      │
+│  [AMD ROCm Repo - repo.radeon.com]                                      │
+│  - Port: 443/TCP, Protocol: HTTPS, Encryption: TLS 1.2+                │
+│  - Auth: None                                                            │
+│  - Purpose: ROCm package installation for AMD GPU images                 │
+│                                                                          │
+│  [Container Registry - quay.io/modh]                                     │
+│  - Port: 443/TCP, Protocol: HTTPS, Encryption: TLS 1.2+                │
+│  - Auth: None (pull) / Push secret (push)                                │
+│  - Purpose: Image registry for pulling/pushing built images              │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- No ClusterRoles or RoleBindings defined by this repository
-- RBAC is managed per-workbench by the ODH Notebook Controller
-- Each workbench pod gets its own ServiceAccount in the user's namespace
-- kube-rbac-proxy sidecar enforces SubjectAccessReview for user access
-
-Security Posture:
-- All containers run as non-root (UID 1001, GID 0)
-- Supports OpenShift's random UID security model
-- No internal authentication — all auth delegated to sidecar proxy
-- No TLS termination in workbench containers — TLS handled by platform ingress
-- Base images: Red Hat UBI 9 (RHEL-based, FIPS-validated crypto)
-- CUDA/ROCm drivers installed from vendor repositories
+  None defined by this component.
+  RBAC for workbench pods is managed by the ODH Notebook Controller.
+  Workbench pods run as UID 1001 (non-root) with GID 0 for
+  OpenShift random UID compatibility.
 
 Secrets:
-- rhel-subscription-secret (Opaque) - RHEL subscription for RStudio BuildConfig builds, Manual provisioning, No auto-rotation
+  - rhel-subscription-secret (Opaque)
+    Purpose: RHEL subscription credentials for entitled RStudio RHEL9 builds
+    Mounted at: /opt/app-root/src/.sec
+    Provisioned by: Manual (build environment)
+    Auto-Rotate: No
 
-Image Registries:
-- Source: registry.access.redhat.com (UBI9 base images)
-- Source: quay.io/sclorg (CentOS Stream 9 for RStudio)
-- Source: developer.download.nvidia.com (CUDA toolkit)
-- Destination: quay.io/modh/ (published workbench images)
+  - git_auth_secret (kubernetes.io/basic-auth)
+    Purpose: Git authentication for Konflux Tekton pipelines
+    Provisioned by: Konflux / Pipelines as Code
+    Auto-Rotate: Yes
+
+Authentication Model:
+  - All workbench images DISABLE built-in authentication
+    (e.g., --ServerApp.token='' for JupyterLab)
+  - Authentication enforced EXTERNALLY by ODH Notebook Controller:
+    - RHOAI 3.x: kube-rbac-proxy sidecar
+    - RHOAI 2.x: oauth-proxy sidecar
+  - Enforcement point: Sidecar container intercepts traffic before
+    reaching the workbench container
+
+FIPS Compliance:
+  - Images inherit FIPS from UBI 9 base (system OpenSSL is FIPS-validated)
+  - No custom TLS configuration — workbenches listen on plaintext HTTP
+  - TLS terminated at platform ingress layer
+  - No custom cryptographic code introduced by Dockerfiles
+  - RStudio installs compat-openssl11 but links to system OpenSSL
+
+Build Hermeticity:
+  - Python deps: LOCKED (Pipfile.lock — 30 files)
+  - OS packages (RPM): NOT LOCKED (dnf/yum pulls latest)
+  - Go deps: LOCKED (go.sum — 2 files, build tools only)
+  - No Hermeto/cachi2 prefetch integration
+  - ⚠️ Hermeticity gap at OS package layer on main branch

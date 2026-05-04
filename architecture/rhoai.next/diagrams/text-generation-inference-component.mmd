@@ -1,84 +1,70 @@
 graph TB
-    subgraph Container["TGIS Container (Single Pod)"]
+    subgraph TGIS["Text Generation Inference Server (TGIS)"]
         direction TB
 
-        subgraph LauncherLayer["Process Supervisor"]
-            Launcher["text-generation-launcher<br/>(Rust CLI Binary)<br/>Orchestrates lifecycle,<br/>tokenizer prep, config resolution"]
+        subgraph Launcher["text-generation-launcher (Rust)"]
+            LauncherProc["Launcher Process<br/>Process supervisor<br/>Signal propagation<br/>Health polling"]
         end
 
-        subgraph RouterLayer["Client-Facing Layer"]
-            Router["text-generation-router<br/>(Rust Service Binary)<br/>gRPC/HTTP server, batching,<br/>queuing, validation, metrics"]
-            HealthHTTP["/health endpoint<br/>3000/TCP HTTP"]
-            MetricsHTTP["/metrics endpoint<br/>3000/TCP HTTP"]
-            gRPCAPI["fmaas.GenerationService<br/>8033/TCP gRPC<br/>Generate, GenerateStream,<br/>Tokenize, ModelInfo"]
+        subgraph Router["text-generation-router (Rust)"]
+            direction LR
+            GRPCServer["gRPC Server<br/>8033/TCP<br/>fmaas.GenerationService"]
+            HTTPServer["HTTP Server<br/>3000/TCP<br/>/health, /metrics"]
+            Validation["Request Validation<br/>+ Tokenization"]
+            Batcher["Continuous Batcher<br/>Dynamic batch formation<br/>Queue jumping<br/>Prefill weight limits"]
+            TLSTermination["TLS Termination<br/>rustls / OpenSSL<br/>Optional mTLS"]
         end
 
-        subgraph ShardLayer["GPU Inference Layer"]
-            Shard0["text-generation-server<br/>Shard 0 (Python)<br/>UDS: /tmp/text-generation-server-0"]
-            Shard1["text-generation-server<br/>Shard 1 (Python)<br/>UDS: /tmp/text-generation-server-1"]
-            ShardN["text-generation-server<br/>Shard N (Python)<br/>UDS: /tmp/text-generation-server-N"]
+        subgraph Client["text-generation-client (Rust)"]
+            GRPCClient["gRPC Client<br/>UDS Communication"]
         end
 
-        subgraph InternalProto["Internal gRPC Protocol"]
-            IntAPI["generate.v1.TextGenerationService<br/>Prefill, NextToken, PruneBatch,<br/>Health, ModelInfo, ClearCache"]
+        subgraph Shards["text-generation-server (Python)"]
+            direction LR
+            Shard0["Shard 0<br/>GPU 0<br/>UDS: /tmp/tgs-0"]
+            Shard1["Shard 1<br/>GPU 1<br/>UDS: /tmp/tgs-1"]
+            ShardN["Shard N<br/>GPU N<br/>UDS: /tmp/tgs-N"]
         end
     end
 
-    %% Process lifecycle
-    Launcher -->|spawns| Shard0
-    Launcher -->|spawns| Shard1
-    Launcher -->|spawns| ShardN
-    Launcher -->|starts after shards ready| Router
+    %% External actors
+    Client_Ext["Client<br/>(KServe Route)"]
+    Kubelet["Kubernetes Kubelet"]
 
-    %% Router connections
-    Router --- HealthHTTP
-    Router --- MetricsHTTP
-    Router --- gRPCAPI
-    Router -->|UDS gRPC| IntAPI
-    IntAPI -->|batch requests| Shard0
-    IntAPI -->|batch requests| Shard1
-    IntAPI -->|batch requests| ShardN
+    %% Launcher relationships
+    LauncherProc -->|spawns| Shard0
+    LauncherProc -->|spawns| Shard1
+    LauncherProc -->|spawns| ShardN
+    LauncherProc -->|spawns| GRPCServer
 
-    %% Multi-GPU communication
-    Shard0 <-->|NCCL/GLOO<br/>29500/TCP| Shard1
-    Shard1 <-->|NCCL/GLOO<br/>29500/TCP| ShardN
+    %% Request flow
+    Client_Ext -->|"gRPC 8033/TCP<br/>TLS/mTLS"| GRPCServer
+    Kubelet -->|"HTTP 3000/TCP"| HTTPServer
 
-    %% External connections
-    Client[External Client] -->|gRPC 8033/TCP<br/>Optional TLS| gRPCAPI
-    Prometheus[Prometheus] -->|HTTP scrape<br/>3000/TCP| MetricsHTTP
-    K8sProbes[K8s Probes] -->|HTTP GET<br/>3000/TCP| HealthHTTP
+    GRPCServer --> TLSTermination
+    TLSTermination --> Validation
+    Validation --> Batcher
 
-    %% Dependencies
-    GPU["NVIDIA GPU<br/>CUDA 12.1"]
-    Shard0 -->|CUDA kernels| GPU
-    Shard1 -->|CUDA kernels| GPU
-    ShardN -->|CUDA kernels| GPU
+    %% Router to shards via client
+    Batcher -->|"Prefill/NextToken"| GRPCClient
+    GRPCClient -->|"gRPC over UDS"| Shard0
+    GRPCClient -->|"gRPC over UDS"| Shard1
+    GRPCClient -->|"gRPC over UDS"| ShardN
 
-    ModelPVC["Shared Model PVC<br/>/shared_model_storage"]
-    Shard0 -->|loads weights| ModelPVC
-    Shard1 -->|loads weights| ModelPVC
-    ShardN -->|loads weights| ModelPVC
-
-    HFHub["HuggingFace Hub<br/>443/TCP HTTPS"]
-    Shard0 -.->|download models<br/>if not cached| HFHub
-
-    KServe["KServe<br/>ServingRuntime CR"]
-    KServe -->|manages| Container
+    %% Inter-shard communication
+    Shard0 <-->|"NCCL 29500/TCP<br/>Tensor Parallelism"| Shard1
+    Shard1 <-->|"NCCL 29500/TCP<br/>Tensor Parallelism"| ShardN
 
     %% Styling
-    style Launcher fill:#e67e22,stroke:#d35400,color:#fff
-    style Router fill:#3498db,stroke:#2980b9,color:#fff
-    style HealthHTTP fill:#2ecc71,stroke:#27ae60,color:#fff
-    style MetricsHTTP fill:#2ecc71,stroke:#27ae60,color:#fff
-    style gRPCAPI fill:#9b59b6,stroke:#8e44ad,color:#fff
-    style Shard0 fill:#1abc9c,stroke:#16a085,color:#fff
-    style Shard1 fill:#1abc9c,stroke:#16a085,color:#fff
-    style ShardN fill:#1abc9c,stroke:#16a085,color:#fff
-    style IntAPI fill:#f39c12,stroke:#e67e22,color:#fff
-    style Client fill:#ecf0f1,stroke:#bdc3c7
-    style Prometheus fill:#ecf0f1,stroke:#bdc3c7
-    style K8sProbes fill:#ecf0f1,stroke:#bdc3c7
-    style GPU fill:#e74c3c,stroke:#c0392b,color:#fff
-    style ModelPVC fill:#95a5a6,stroke:#7f8c8d,color:#fff
-    style HFHub fill:#f5a623,stroke:#e09612
-    style KServe fill:#7ed321,stroke:#6bc10f
+    style LauncherProc fill:#4a90e2,stroke:#333,color:#fff
+    style GRPCServer fill:#4a90e2,stroke:#333,color:#fff
+    style HTTPServer fill:#4a90e2,stroke:#333,color:#fff
+    style Validation fill:#4a90e2,stroke:#333,color:#fff
+    style Batcher fill:#4a90e2,stroke:#333,color:#fff
+    style TLSTermination fill:#4a90e2,stroke:#333,color:#fff
+    style GRPCClient fill:#4a90e2,stroke:#333,color:#fff
+    style Shard0 fill:#7ed321,stroke:#333,color:#fff
+    style Shard1 fill:#7ed321,stroke:#333,color:#fff
+    style ShardN fill:#7ed321,stroke:#333,color:#fff
+    style Client_Ext fill:#f5a623,stroke:#333,color:#fff
+    style Kubelet fill:#e8e8e8,stroke:#333

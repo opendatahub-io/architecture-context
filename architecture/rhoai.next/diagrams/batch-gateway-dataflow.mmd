@@ -1,64 +1,58 @@
 sequenceDiagram
     participant Client as External Client
-    participant AuthGW as Kuadrant/Authorino<br/>Auth Gateway
-    participant API as API Server<br/>8000/TCP HTTP/HTTPS
-    participant PG as PostgreSQL<br/>5432/TCP pgx
-    participant Redis as Redis/Valkey<br/>6379/TCP RESP
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant Proc as Processor<br/>9090/TCP (obs)
-    participant InfGW as Inference Gateway<br/>llm-d
+    participant API as Apiserver<br/>Configurable Port<br/>HTTP/HTTPS
+    participant PG as PostgreSQL<br/>5432/TCP
+    participant Redis as Redis/Valkey<br/>6379/TCP
+    participant FS as File Store<br/>S3 (443/TCP) / FS
+    participant Proc as Processor<br/>Worker Pool
+    participant IGW as Inference Gateway<br/>HTTP/HTTPS
 
-    Note over Client,InfGW: Flow 1: File Upload
-    Client->>AuthGW: POST /v1/files (multipart)<br/>Auth: API key / SA token
-    AuthGW->>API: Forward + X-MaaS-Username header
-    API->>S3: Upload JSONL file<br/>AWS IAM credentials
-    S3-->>API: Upload confirmed
-    API->>PG: Insert file metadata<br/>Connection URL auth
-    PG-->>API: File record created
-    API-->>Client: 200 OK {file_id, status: "uploaded"}
+    rect rgb(230, 245, 255)
+        Note over Client,IGW: Flow 1: Batch Job Submission & Execution
 
-    Note over Client,InfGW: Flow 2: Batch Job Submission
-    Client->>AuthGW: POST /v1/batches<br/>Auth: API key / SA token
-    AuthGW->>API: Forward + X-MaaS-Username header
-    API->>PG: Insert batch metadata<br/>Connection URL auth
-    PG-->>API: Batch record created
-    API->>Redis: ZADD to priority queue<br/>Connection URL auth
-    Redis-->>API: Enqueued
-    API-->>Client: 200 OK {batch_id, status: "validating"}
+        Client->>API: POST /v1/files (multipart upload)<br/>Header: X-MaaS-Username<br/>TLS 1.2+ (optional)
+        API->>FS: Store file content<br/>HTTPS (S3) / Local (FS)
+        API->>PG: Store file metadata<br/>TCP, TLS (optional)
+        API-->>Client: 200 OK {file_id}
 
-    Note over Client,InfGW: Flow 3: Batch Job Processing
-    Proc->>Redis: BZMPop (blocking dequeue)<br/>poll_interval: 5s
-    Redis-->>Proc: Job ID + priority score
-    Proc->>PG: Read batch metadata
-    PG-->>Proc: Batch spec + input_file_id
-    Proc->>S3: Download input JSONL file
-    S3-->>Proc: File content
-    Note over Proc: Preprocess: Build binary plan<br/>(sort by system prompt hash)
+        Client->>API: POST /v1/batches {input_file_id}<br/>Header: X-MaaS-Username<br/>TLS 1.2+ (optional)
+        API->>PG: Create batch record<br/>TCP, TLS (optional)
+        API->>Redis: Enqueue to priority queue (sorted set)<br/>TCP, TLS (optional)
+        API-->>Client: 200 OK {batch_id, status: validating}
 
-    loop For each request in plan (concurrency controlled)
-        Proc->>InfGW: POST /v1/chat/completions<br/>Auth: Bearer token / mTLS
-        InfGW-->>Proc: Inference response
-        Proc->>Redis: Update progress counters
+        Proc->>Redis: Dequeue job (BLMPop)<br/>TCP, TLS (optional)
+        Redis-->>Proc: Job payload with priority
+        Proc->>FS: Download input JSONL<br/>HTTPS (S3) / Local
+        FS-->>Proc: Input file content
+        Proc->>PG: Update status → in_progress
+
+        loop For each request in JSONL (concurrent)
+            Proc->>IGW: POST /v1/chat/completions<br/>Authorization: Bearer {api-key}<br/>TLS 1.2+ (configurable)
+            IGW-->>Proc: Completion response
+            Proc->>Redis: Update progress counter
+        end
+
+        Proc->>FS: Upload output JSONL<br/>HTTPS (S3) / Local
+        Proc->>PG: Update status → completed<br/>Set output_file_id
     end
 
-    Proc->>S3: Upload output JSONL file<br/>AWS IAM credentials
-    S3-->>Proc: Upload confirmed
-    Proc->>PG: Update batch status = completed
-    Proc->>Redis: Set final progress status
+    rect rgb(255, 240, 230)
+        Note over Client,IGW: Flow 2: Batch Cancellation
 
-    Note over Client,InfGW: Flow 4: Batch Cancellation
-    Client->>AuthGW: POST /v1/batches/{id}/cancel
-    AuthGW->>API: Forward + X-MaaS-Username header
-    API->>Redis: RPush cancel event<br/>to event channel
-    Redis-->>API: Event published
-    API-->>Client: 200 OK {status: "cancelling"}
-    Redis->>Proc: BLMPop cancel event
-    Note over Proc: Cancel in-flight requests<br/>via context cancellation
-    Proc->>PG: Update status = cancelled
+        Client->>API: POST /v1/batches/{id}/cancel<br/>Header: X-MaaS-Username
+        API->>Redis: Publish cancel event (LPUSH)<br/>TCP
+        Redis-->>Proc: Cancel notification (BLMPop)
+        Proc->>FS: Upload partial output JSONL
+        Proc->>PG: Update status → cancelled
+        API-->>Client: 200 OK {status: cancelling}
+    end
 
-    Note over Client,InfGW: Flow 5: Garbage Collection (periodic)
-    Note over PG,S3: GC scans every 30 minutes
-    activate PG
-    Note right of PG: Query expired batches/files
-    PG-->>S3: Delete expired physical files
-    deactivate PG
+    rect rgb(240, 255, 240)
+        Note over Client,IGW: Flow 3: Garbage Collection
+
+        Note over Proc: batch-gateway-gc (periodic)
+        Proc->>PG: Query expired batches/files<br/>WHERE expires_at < NOW()
+        PG-->>Proc: Expired record list
+        Proc->>FS: Delete expired file content
+        Proc->>PG: Delete expired metadata records
+    end

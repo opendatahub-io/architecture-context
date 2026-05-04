@@ -1,86 +1,85 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                   │
+│  EXTERNAL (Clients within cluster or via platform ingress)              │
 │                                                                          │
-│  [REST Client / Data Scientist / Application]                            │
+│  [REST Client / Application]                                             │
 │         │                                                                │
-│         │ Port: 8008/TCP (via ModelMesh Service)                          │
+│         │ Port: 8008/TCP                                                 │
 │         │ Protocol: HTTP or HTTPS                                        │
-│         │ Encryption: Optional TLS (configurable via MM_TLS_* env vars)  │
-│         │ Auth: None (enforced upstream by platform ingress)              │
+│         │ Encryption: Optional TLS (server cert via                      │
+│         │             MM_TLS_KEY_CERT_PATH / MM_TLS_PRIVATE_KEY_PATH)    │
+│         │ Auth: None at proxy level                                      │
+│         │       (relies on platform ingress / network isolation)         │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  POD-LOCAL (ModelMesh Serving Pod)                                       │
+│  SIDECAR CONTAINER (within ModelMesh Serving Pod)                       │
 │                                                                          │
-│  ┌────────────────────────────────────────────────────────────┐          │
-│  │  [rest-proxy Sidecar Container]                            │          │
-│  │  - Image: rest-proxy (from model-serving-config ConfigMap) │          │
-│  │  - Listener Port: 8008/TCP                                 │          │
-│  │  - Protocol: HTTP or HTTPS                                 │          │
-│  │  - TLS Config:                                             │          │
-│  │    - HTTP TLS: MM_TLS_KEY_CERT_PATH / MM_TLS_PRIVATE_KEY_PATH        │
-│  │    - gRPC TLS: REST_PROXY_USE_TLS (true/false)             │          │
-│  │    - gRPC TLS Verify: REST_PROXY_TLS_SKIP_VERIFY (optional)│          │
-│  │  - Max gRPC Message: REST_PROXY_GRPC_MAX_MSG_SIZE_BYTES    │          │
-│  │    (default 16 MB)                                         │          │
-│  │  - No Kubernetes API interaction                           │          │
-│  │  - No ServiceAccount token required                        │          │
-│  │  - Stateless (no persistent storage)                       │          │
-│  │         │                                                  │          │
-│  │         │ Port: 8033/TCP                                   │          │
-│  │         │ Protocol: gRPC                                   │          │
-│  │         │ Encryption: Optional TLS (REST_PROXY_USE_TLS)    │          │
-│  │         │ Auth: None                                       │          │
-│  │         │ Direction: localhost only                         │          │
-│  │         ▼                                                  │          │
-│  └────────────────────────────────────────────────────────────┘          │
+│  [rest-proxy]                                                            │
+│  - Namespace: {user-namespace}                                           │
+│  - Container: sidecar (injected by ModelMesh operator)                  │
+│  - Image: rest-proxy (built by Konflux, FIPS-compliant)                 │
+│  - Build: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime                 │
+│  - Base: registry.access.redhat.com/ubi9/ubi-minimal                    │
+│  - Listener: 8008/TCP (HTTP or HTTPS)                                   │
+│  - TLS Config:                                                           │
+│    - Server TLS: Optional (cert/key via MM_TLS_KEY_CERT_PATH)           │
+│    - InsecureSkipVerify: Configurable (REST_PROXY_SKIP_VERIFY)          │
+│    - Crypto: stdlib crypto/tls (FIPS via OpenSSL backend)               │
 │                                                                          │
-│  ┌────────────────────────────────────────────────────────────┐          │
-│  │  [ModelMesh Serving Container]                             │          │
-│  │  - Port: 8033/TCP (gRPC V2 Predict Protocol)              │          │
-│  │  - Protocol: gRPC                                         │          │
-│  │  - Encryption: Optional TLS                               │          │
-│  │  - Purpose: Actual model inference execution               │          │
-│  └────────────────────────────────────────────────────────────┘          │
+│  Environment Variables:                                                  │
+│  - REST_PROXY_LISTEN (default :8008)                                    │
+│  - REST_PROXY_GRPC_PORT (default 8033)                                  │
+│  - REST_PROXY_USE_TLS (upstream gRPC TLS toggle)                        │
+│  - REST_PROXY_SKIP_VERIFY (skip TLS cert verification - RISK)           │
+│  - MM_TLS_KEY_CERT_PATH (TLS cert for HTTP listener)                    │
+│  - MM_TLS_PRIVATE_KEY_PATH (TLS key for HTTP listener)                  │
+│  - REST_PROXY_GRPC_MAX_MSG_SIZE (max gRPC message size)                 │
+│         │                                                                │
+│         │ Port: 8033/TCP                                                 │
+│         │ Protocol: gRPC                                                 │
+│         │ Encryption: Optional TLS (configurable via                     │
+│         │             REST_PROXY_USE_TLS)                                │
+│         │ Auth: None                                                     │
+│         │ Scope: localhost (pod-local)                                    │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CO-LOCATED SERVICE (same pod)                                           │
 │                                                                          │
+│  [ModelMesh gRPC Inference Service]                                      │
+│  - Port: 8033/TCP                                                        │
+│  - Protocol: gRPC (KServe V2 Predict Protocol)                          │
+│  - Encryption: Optional TLS                                              │
+│  - Service: inference.GRPCInferenceService                               │
+│  - RPCs: ModelInfer, ModelMetadata                                        │
+│  - Scope: localhost only (pod-internal)                                   │
 └─────────────────────────────────────────────────────────────────────────┘
 
-NETWORK SUMMARY:
-- All traffic between rest-proxy and ModelMesh is localhost (pod-local)
-- No cross-namespace or cross-pod network communication from rest-proxy
-- External access to rest-proxy is via ModelMesh Serving's Kubernetes Service
-- No ingress resources defined by rest-proxy itself
-
-TLS CONFIGURATION:
-- HTTP Listener TLS:
-  - Enabled when MM_TLS_KEY_CERT_PATH and MM_TLS_PRIVATE_KEY_PATH are set
-  - Certificate provisioned by ModelMesh Serving / cert-manager
-  - Rotation depends on provisioner (cert-manager supports auto-rotation)
-- gRPC Upstream TLS:
-  - Enabled when REST_PROXY_USE_TLS=true
-  - Can skip certificate verification via InsecureSkipVerify (dev/test only)
-  - Uses same MM_TLS_KEY_CERT_PATH for CA trust
-
 RBAC Summary:
-- No RBAC required
-- rest-proxy does not interact with Kubernetes API
-- No ClusterRoles, Roles, or RoleBindings
-- No ServiceAccount permissions needed
+  None. This component does not interact with the Kubernetes API.
+  No ClusterRoles, Roles, or RoleBindings.
 
 Secrets:
-- TLS certificate (MM_TLS_KEY_CERT_PATH) - TLS key/cert files
-  - Purpose: TLS encryption for HTTP listener and/or gRPC upstream
-  - Provisioned By: ModelMesh Serving / cert-manager
-  - Auto-Rotate: Depends on provisioner
+  - TLS cert/key (via MM_TLS_KEY_CERT_PATH / MM_TLS_PRIVATE_KEY_PATH)
+    Type: kubernetes.io/tls
+    Purpose: TLS termination for the HTTP listener
+    Provisioned By: ModelMesh Serving operator
+    Auto-Rotate: Unknown
 
 Authentication & Authorization:
-- No direct authentication enforcement by rest-proxy
-- All endpoints accept unauthenticated requests
-- Auth is expected to be enforced by:
-  - ModelMesh Serving's auth layer
-  - Platform ingress (e.g., Istio, OpenShift Route)
-  - Service mesh policies (if deployed with service mesh)
+  - No authentication enforced at proxy level
+  - Relies on:
+    1. Network-level isolation (pod-local gRPC communication)
+    2. Platform ingress authentication (if exposed externally)
+    3. Service mesh policies (if deployed with Istio/OSSM)
 
 FIPS Compliance:
-- Konflux build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
-- Base images: ubi9/go-toolset (builder), ubi9/ubi-minimal (runtime)
-- Required for RHOAI FedRAMP / FIPS 140-2 compliance
+  - Build: CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime -tags strictfipsruntime
+  - Linking: Dynamic (CGO_ENABLED=1) for OpenSSL backend
+  - Base Image: UBI9 minimal (includes OpenSSL)
+  - Crypto: stdlib crypto/tls → FIPS-validated via OpenSSL
+
+Security Risks:
+  - REST_PROXY_SKIP_VERIFY env var can disable TLS cert verification
+    (not a FIPS issue, but bypasses certificate validation)
+  - No authentication at proxy level (by design - relies on network isolation)
+  - No health/readiness/liveness probes (relies on parent pod lifecycle)
+  - No metrics/monitoring endpoint

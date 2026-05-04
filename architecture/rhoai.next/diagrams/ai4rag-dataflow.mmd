@@ -1,83 +1,76 @@
 sequenceDiagram
-    autonumber
+    participant User as Data Scientist<br/>(User Code)
+    participant Exp as AI4RAGExperiment<br/>(Orchestrator)
+    participant SS as SearchSpace<br/>(Parameter Mgmt)
+    participant HPO as GAMOptimizer<br/>(Surrogate Model)
+    participant Chunker as LangChainChunker<br/>(Text Splitting)
+    participant Embed as EmbeddingModel<br/>(LS / OpenAI)
+    participant VS as VectorStore<br/>(LS / Chroma)
+    participant Ret as Retriever<br/>(Vector/Hybrid)
+    participant FM as FoundationModel<br/>(LS / OpenAI)
+    participant Eval as UnitxtEvaluator<br/>(Metrics)
+    participant LS as Llama Stack Server<br/>(HTTP/HTTPS)
+    participant EH as EventHandler<br/>(Local / KFP)
 
-    participant User as User / Pipeline
-    participant Exp as AI4RAGExperiment
-    participant MPS as ModelsPreSelector
-    participant Chroma as ChromaDB<br/>(In-memory)
-    participant LS as Llama Stack Server<br/>HTTP/HTTPS<br/>API Key Auth
-    participant OAI as OpenAI API<br/>HTTP/HTTPS<br/>API Key Auth
-    participant Eval as UnitxtEvaluator
-    participant GAM as GAMOptimizer
-    participant SS as AI4RAGSearchSpace
-    participant RAG as SimpleRAG Pipeline
-    participant LSVS as LlamaStack VectorStore<br/>(Milvus/Qdrant)
-    participant EH as EventHandler<br/>(Local/KFP)
+    rect rgb(240, 248, 255)
+        Note over User,EH: Flow 1: RAG Optimization Experiment
+        User->>Exp: experiment.search(rag_template, search_space, n_trials)
 
-    rect rgb(230, 245, 255)
-        Note over User,EH: Phase 0: Search Space Preparation
-        User->>Exp: run(benchmark_data, search_space_config)
-        Exp->>LS: models.list()
-        LS-->>Exp: Available models
-        Exp->>LS: Validate foundation models (chat test)
-        LS-->>Exp: Validation results
-        Exp->>LS: Validate embedding models (embed_query test)
-        LS-->>Exp: Embedding validation + dimension auto-detect
-        Exp->>LS: Context length auto-detection (binary search)
-        LS-->>Exp: Max context lengths
-        Exp->>SS: Build constrained search space
-        SS-->>Exp: Pruned parameter combinations
-    end
-
-    rect rgb(255, 243, 224)
-        Note over User,EH: Phase 1: Models Pre-Selection (MPS)
-        Exp->>MPS: run_pre_selection(benchmark_sample)
-        loop For each (foundation_model, embedding_model) pair
-            MPS->>LS: Generate embeddings for sample docs
-            LS-->>MPS: Embedding vectors
-            MPS->>Chroma: Create in-memory vector store
-            MPS->>Chroma: Insert embedded chunks
-            Chroma-->>MPS: Indexed
-            MPS->>Chroma: Retrieve relevant chunks
-            Chroma-->>MPS: Retrieved context
-            MPS->>LS: Chat completion (RAG query)
-            LS-->>MPS: Generated answer
-            MPS->>Eval: evaluate_metrics(answer, ground_truth)
-            Eval-->>MPS: faithfulness, answer_correctness, context_correctness
+        rect rgb(255, 248, 240)
+            Note over Exp,LS: Optional: Models Pre-Selection (MPS)
+            Exp->>LS: models.list()<br/>HTTP/HTTPS, API Key
+            LS-->>Exp: Available models list
+            loop For each model pair
+                Exp->>Embed: embed(benchmark_docs)
+                Embed->>LS: POST embeddings<br/>HTTP/HTTPS, API Key
+                LS-->>Embed: Embedding vectors
+                Exp->>FM: chat(benchmark_queries)
+                FM->>LS: POST chat/completions<br/>HTTP/HTTPS, API Key
+                LS-->>FM: Generated answers
+                Exp->>Eval: evaluate(answers, ground_truth)
+                Eval-->>Exp: Metrics + confidence intervals
+            end
+            Exp->>SS: narrow_search_space(top_models)
         end
-        MPS-->>Exp: Top-K model pairs ranked by metrics
-    end
 
-    rect rgb(232, 245, 233)
-        Note over User,EH: Phase 2: GAM-based Hyperparameter Optimization
-        Exp->>GAM: optimize(search_space, top_model_pairs)
-        loop For each optimization iteration
-            GAM->>SS: Select next parameter node (GAM prediction)
-            SS-->>GAM: {chunk_size, overlap, embedding_model,<br/>foundation_model, retrieval_method, top_k, search_mode}
+        rect rgb(240, 255, 240)
+            Note over Exp,EH: Main Optimization Loop (n_trials iterations)
+            loop For each trial
+                Exp->>HPO: suggest_next_params()
+                HPO->>SS: sample(constraints)
+                SS-->>HPO: Parameter configuration
+                HPO-->>Exp: {chunk_size, overlap, model, search_mode, ...}
 
-            GAM->>RAG: run_single_evaluation(params)
+                Note over Exp,VS: Stage 1: Index Documents
+                Exp->>Chunker: chunk(documents, chunk_size, overlap)
+                Chunker-->>Exp: Document chunks (in-process)
+                Exp->>Embed: embed(chunks)
+                Embed->>LS: POST embeddings<br/>HTTP/HTTPS, API Key
+                LS-->>Embed: Embedding vectors
+                Exp->>VS: insert(chunks, embeddings)
+                VS->>LS: POST vector_io/insert<br/>HTTP/HTTPS, API Key
+                LS-->>VS: Confirmation
 
-            RAG->>RAG: Chunk documents (RecursiveCharacterTextSplitter)
-            RAG->>LS: Generate embeddings for chunks
-            LS-->>RAG: Embedding vectors
-            RAG->>LSVS: Create/insert into vector store
-            LSVS-->>RAG: Indexed
+                Note over Exp,FM: Stage 2: Retrieve & Generate
+                Exp->>Ret: retrieve(query, top_k)
+                Ret->>VS: similarity_search(query_embedding)
+                VS->>LS: POST vector_io/query<br/>HTTP/HTTPS, API Key
+                LS-->>VS: Relevant chunks
+                VS-->>Ret: Context documents
+                Ret-->>Exp: Retrieved context
+                Exp->>FM: chat(query + context)
+                FM->>LS: POST chat/completions<br/>HTTP/HTTPS, API Key
+                LS-->>FM: Generated answer
+                FM-->>Exp: RAG answer
 
-            RAG->>LSVS: Search (vector/keyword/hybrid)
-            LSVS-->>RAG: Retrieved documents
-
-            RAG->>LS: Chat completion with context
-            LS-->>RAG: Generated answer
-
-            RAG->>Eval: evaluate_metrics(answer, ground_truth)
-            Eval-->>RAG: Scores with confidence intervals
-
-            RAG-->>GAM: Evaluation result
-            GAM->>GAM: Update GAM model with new observation
-            GAM->>EH: on_pattern_creation(pattern_payload)
+                Note over Exp,EH: Stage 3: Evaluate & Record
+                Exp->>Eval: evaluate(answer, ground_truth, context)
+                Eval-->>Exp: {correctness, faithfulness, context_correctness}
+                Exp->>HPO: observe(params, score)
+                Exp->>EH: emit(PatternPayload, EvaluationRecord)
+                EH-->>EH: Write JSON / KFP metadata
+            end
         end
-        GAM-->>Exp: Best parameter configuration + scores
-    end
 
-    Exp->>EH: on_experiment_complete(results)
-    Exp-->>User: Optimal RAG configuration
+        Exp-->>User: Best RAG Pattern<br/>(optimal hyperparameters + scores)
+    end

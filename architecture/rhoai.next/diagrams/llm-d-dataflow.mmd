@@ -1,59 +1,34 @@
 sequenceDiagram
     participant Client as External Client
-    participant Gateway as Gateway / Envoy<br/>80/TCP HTTP
-    participant EPP as Endpoint Picker (EPP)<br/>ext-proc gRPC
-    participant Pool as InferencePool<br/>(K8s CRD)
-    participant vLLM as Model Server (vLLM)<br/>8000/TCP HTTP
-    participant Prom as Prometheus<br/>9002/9090 TCP
+    participant GW as Gateway<br/>80/TCP HTTP
+    participant EPP as llm-d-inference-scheduler<br/>(EPP) 9002/TCP gRPC
+    participant PrefillVLLM as Prefill vLLM<br/>8000/TCP HTTP
+    participant DecodeSidecar as Routing Sidecar<br/>8000/TCP HTTP
+    participant DecodeVLLM as Decode vLLM<br/>8200/TCP HTTP
+    participant OTEL as OTEL Collector<br/>4317/TCP gRPC
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
 
-    Note over Client, vLLM: Standard Inference Flow (Optimized Baseline)
+    Note over Client,HF: Flow 1: Standard Inference (Optimized Baseline)
+    Client->>GW: POST /v1/chat/completions<br/>HTTP/80
+    GW->>EPP: ext_proc routing<br/>gRPC/9002
+    EPP-->>GW: Selected backend (scored)
+    GW->>DecodeVLLM: Forward request<br/>HTTP/8000
+    DecodeVLLM-->>Client: Streamed response<br/>HTTP/80
 
-    Client->>Gateway: POST /v1/chat/completions<br/>OpenAI-compatible API
-    Gateway->>EPP: ext-proc gRPC<br/>Request headers + body
+    Note over Client,HF: Flow 2: Prefill/Decode Disaggregation
+    Client->>GW: POST /v1/chat/completions<br/>HTTP/80
+    GW->>EPP: ext_proc (prefill profile)<br/>gRPC/9002
+    EPP-->>GW: Selected prefill backend
+    GW->>PrefillVLLM: Forward request<br/>HTTP/8000
+    PrefillVLLM->>DecodeVLLM: KV cache transfer<br/>NIXL/5600 RDMA/TCP
+    DecodeSidecar->>DecodeVLLM: Coordinated decode<br/>HTTP/8200
+    DecodeVLLM-->>Client: Streamed response<br/>HTTP/80
 
-    Note over EPP: Filter → Score → Pick Pipeline
-    EPP->>Pool: Query available endpoints<br/>(label-based discovery)
-    Pool-->>EPP: Endpoint list<br/>(ready model server pods)
+    Note over Client,HF: Flow 3: Model Loading (Startup)
+    DecodeVLLM->>HF: Download model weights<br/>HTTPS/443 HF_TOKEN
+    HF-->>DecodeVLLM: Model artifacts
 
-    Note over EPP: Scoring:<br/>KV cache utilization<br/>Queue depth<br/>Prefix cache affinity<br/>LoRA affinity
-
-    EPP-->>Gateway: Selected endpoint address<br/>(ext-proc response)
-    Gateway->>vLLM: Forward request to<br/>selected model server<br/>HTTP/8000
-    vLLM-->>Gateway: Streaming response<br/>(SSE / JSON)
-    Gateway-->>Client: Response stream
-
-    Note over vLLM, Prom: Metrics Collection (Continuous)
-    vLLM->>Prom: Expose metrics<br/>queue_depth, kv_cache_util,<br/>running_requests
-    Prom-->>EPP: Poll metrics<br/>(scheduling decisions)
-
-    Note over Client, vLLM: Prefill/Decode Disaggregation Flow
-
-    participant Sidecar as Routing Sidecar<br/>8000/TCP
-    participant Prefill as Prefill Worker<br/>8000/TCP
-    participant NIXL as NIXL Transfer<br/>5600/TCP RDMA
-    participant Decode as Decode Worker<br/>8200/TCP
-
-    Client->>Gateway: POST /v1/chat/completions
-    Gateway->>EPP: ext-proc gRPC
-    Note over EPP: disagg-profile-handler<br/>Selects P & D worker pair
-    EPP-->>Gateway: Prefill endpoint + Decode endpoint
-    Gateway->>Sidecar: Forward to routing sidecar<br/>HTTP/8000
-    Sidecar->>Prefill: Prefill request<br/>(max_tokens=1)<br/>HTTP/8000
-    Prefill->>NIXL: KV cache transfer<br/>GPUDirect RDMA<br/>Port 5600
-    NIXL->>Decode: KV blocks transferred<br/>NVLink / RoCE / InfiniBand
-    Decode-->>Sidecar: Decode response<br/>HTTP/8200
-    Sidecar-->>Gateway: Streaming response
-    Gateway-->>Client: Response stream
-
-    Note over Client, vLLM: Precise Prefix Cache-Aware Routing
-
-    participant ZMQ as ZMQ Publisher<br/>5556/TCP
-
-    vLLM->>ZMQ: KV cache block events<br/>(block hash, add/remove)
-    ZMQ->>EPP: Real-time cache index<br/>updates via ZMQ
-    Client->>Gateway: POST /v1/chat/completions
-    Gateway->>EPP: ext-proc gRPC
-    Note over EPP: precise-prefix-cache-scorer<br/>Routes to pod with highest<br/>prefix-block residency
-    EPP-->>Gateway: Best-match endpoint
-    Gateway->>vLLM: Forward (cache hit)<br/>HTTP/8000
-    vLLM-->>Client: Fast response<br/>(prefix cached)
+    Note over Client,HF: Flow 4: Observability
+    DecodeVLLM->>OTEL: Export traces<br/>OTLP gRPC/4317
+    PrefillVLLM->>OTEL: Export traces<br/>OTLP gRPC/4317
+    EPP->>OTEL: Export traces<br/>OTLP gRPC/4317

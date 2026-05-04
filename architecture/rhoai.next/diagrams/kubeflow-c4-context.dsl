@@ -1,54 +1,75 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and manages Jupyter notebook workbenches"
-        platformAdmin = person "Platform Admin" "Configures RHOAI platform and notebook settings"
+        user = person "Data Scientist" "Creates and manages Jupyter notebook workbenches via RHOAI Dashboard or kubectl"
 
-        kubeflow = softwareSystem "Kubeflow Notebook Controllers" "Manages the lifecycle of Jupyter Notebook workbenches on OpenShift, providing creation, routing, authentication, idle detection, and platform integration" {
-            kfController = container "KF Notebook Controller" "Core notebook lifecycle: StatefulSet, Service management, idle culling" "Go Operator (controller-runtime)"
-            odhController = container "ODH Notebook Controller" "RHOAI extensions: HTTPRoute routing, kube-rbac-proxy auth, NetworkPolicy, webhook mutations, MLflow/Elyra/Feast integration" "Go Operator (controller-runtime)"
-            mutatingWebhook = container "Mutating Webhook" "Injects configuration at notebook creation: image resolution, CA bundles, proxy settings, auth sidecars, MLflow env vars" "Admission Webhook (8443/TCP HTTPS)"
-            validatingWebhook = container "Validating Webhook" "Prevents unsafe state transitions (e.g., MLflow annotation removal on running notebooks)" "Admission Webhook (8443/TCP HTTPS)"
+        kubeflow = softwareSystem "Kubeflow Notebook Controllers" "Dual-controller architecture managing Jupyter notebook lifecycle, auth, networking, and platform integrations on RHOAI" {
+            notebookController = container "notebook-controller" "Core notebook lifecycle: StatefulSet, Service, VirtualService creation; pod status mirroring; idle notebook culling via Jupyter kernel/terminal API polling" "Go Operator (controller-runtime)"
+            odhNotebookController = container "odh-notebook-controller" "RHOAI extensions: kube-rbac-proxy sidecar injection, HTTPRoute/ReferenceGrant management, NetworkPolicy creation, DSPA/MLflow/Feast integrations, mutating/validating webhooks" "Go Operator (controller-runtime)"
+            commonLib = container "common" "Shared reconciliation helpers for Deployment, Service, StatefulSet, VirtualService resources" "Go Library"
+            mutatingWebhook = container "Mutating Webhook" "Intercepts Notebook CR creation to inject kube-rbac-proxy sidecar, DSPA secrets, MLflow env vars, Feast config, ImageStream resolution" "HTTPS/8443"
+            validatingWebhook = container "Validating Webhook" "Prevents removal of MLflow annotations on running notebooks" "HTTPS/8443"
         }
 
-        kubernetesAPI = softwareSystem "Kubernetes API" "Core API server for all cluster operations" "External"
-        gatewayAPI = softwareSystem "data-science-gateway" "Central Gateway API ingress gateway (Envoy) in openshift-ingress namespace" "External"
-        openshiftImageRegistry = softwareSystem "OpenShift Image Registry" "ImageStream tag to digest resolution for notebook images" "External"
-        openshiftServiceCA = softwareSystem "OpenShift Service CA" "Auto-provisions TLS certificates for services and webhooks" "External"
-        dataSciencePipelines = softwareSystem "Data Science Pipelines" "Pipeline execution and Elyra runtime configuration" "Internal RHOAI"
-        mlflowOperator = softwareSystem "MLflow Operator" "Provides MLflow integration ClusterRole for notebook ServiceAccounts" "Internal RHOAI"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
-        odhDashboard = softwareSystem "ODH Dashboard" "Web UI for managing RHOAI workbenches" "Internal RHOAI"
-        istio = softwareSystem "Istio" "Service mesh (optional, Kubeflow overlay only)" "External"
-        feastIntegration = softwareSystem "Feast" "Feature store integration via label-driven ConfigMap mount" "Internal RHOAI"
+        kubernetesAPI = softwareSystem "Kubernetes API Server" "Core cluster API for all resource CRUD operations" "External" {
+            tags "External"
+        }
 
-        # User interactions
-        dataScientist -> odhDashboard "Creates notebook workbenches via" "HTTPS/443"
-        dataScientist -> gatewayAPI "Accesses notebooks via" "HTTPS/443 TLS 1.3"
-        platformAdmin -> kubernetesAPI "Configures platform via" "HTTPS/443"
+        gatewayAPI = softwareSystem "Gateway API (data-science-gateway)" "Gateway API Gateway for external notebook access via HTTPRoutes" "External" {
+            tags "External"
+        }
 
-        # Dashboard → Kubeflow
-        odhDashboard -> kubernetesAPI "Creates Notebook CRs via" "HTTPS/443"
+        openshiftServiceCA = softwareSystem "OpenShift Service CA" "Provides TLS certificates for webhook and kube-rbac-proxy services" "External" {
+            tags "External"
+        }
 
-        # Internal interactions
-        kfController -> kubernetesAPI "CRUD: StatefulSets, Services, Events" "HTTPS/443 SA token"
-        odhController -> kubernetesAPI "CRUD: HTTPRoutes, NetworkPolicies, RBAC, Secrets, ConfigMaps" "HTTPS/443 SA token"
-        kfController -> kubernetesAPI "Idle detection: polls notebook kernels/terminals" "HTTP/8888"
-        mutatingWebhook -> kubernetesAPI "Called during admission" "HTTPS/8443"
-        validatingWebhook -> kubernetesAPI "Called during admission" "HTTPS/8443"
+        openshiftImageStreams = softwareSystem "OpenShift ImageStreams" "Resolves notebook container images from ImageStream tags" "External" {
+            tags "External"
+        }
 
-        # External dependencies
-        odhController -> gatewayAPI "Creates HTTPRoutes referencing" "Gateway API"
-        odhController -> openshiftImageRegistry "Resolves ImageStream tags to digests" "HTTPS/443"
-        odhController -> openshiftServiceCA "Auto-provisions TLS certs via annotations" "Annotation-based"
-        odhController -> dataSciencePipelines "Discovers DSPA for Elyra config" "HTTPS/443"
-        odhController -> mlflowOperator "References ClusterRole for notebook RoleBindings" "ClusterRole ref"
-        odhController -> feastIntegration "Mounts Feast ConfigMap when label present" "Label-driven"
-        kfController -> istio "Creates VirtualServices (Kubeflow overlay only)" "HTTPS/443"
-        prometheus -> kfController "Scrapes metrics" "HTTP/8080"
-        prometheus -> odhController "Scrapes metrics" "HTTP/8080"
+        dspa = softwareSystem "Data Science Pipelines Operator" "Provides DSPA CRD for pipeline configuration and S3 credentials" "Internal RHOAI" {
+            tags "Internal"
+        }
 
-        # Gateway flow
-        gatewayAPI -> kubeflow "Routes /notebook/{ns}/{name} to kube-rbac-proxy" "HTTPS/8443"
+        mlflow = softwareSystem "MLflow Operator" "Provides MLflow tracking integration via ClusterRole binding" "Internal RHOAI" {
+            tags "Internal"
+        }
+
+        feast = softwareSystem "Feast" "Feature store integration via ConfigMap mounting" "Internal RHOAI" {
+            tags "Internal"
+        }
+
+        rhodsOperator = softwareSystem "rhods-operator / Gateway Controller" "Manages Gateway CR providing hostname for HTTPRoute parentRef" "Internal RHOAI" {
+            tags "Internal"
+        }
+
+        kubeRBACProxy = softwareSystem "kube-rbac-proxy" "Per-notebook auth sidecar: TokenReview + SubjectAccessReview enforcement" "Sidecar" {
+            tags "Sidecar"
+        }
+
+        # Relationships
+        user -> kubeflow "Creates Notebook CR via kubectl/Dashboard"
+        user -> gatewayAPI "Accesses notebook UI" "HTTPS/443"
+
+        kubeflow -> kubernetesAPI "CRUD on StatefulSets, Services, HTTPRoutes, NetworkPolicies, Secrets" "HTTPS/6443"
+        kubeflow -> gatewayAPI "Reads Gateway CR hostname; creates HTTPRoutes" "HTTPS/6443 (via K8s API)"
+        kubeflow -> openshiftServiceCA "Receives TLS certificates" "Auto-injection"
+        kubeflow -> openshiftImageStreams "Resolves notebook images" "HTTPS/6443 (via K8s API)"
+        kubeflow -> dspa "Reads DSPA CR for S3 config; creates pipeline secrets" "HTTPS/6443 (via K8s API)"
+        kubeflow -> mlflow "Creates ClusterRole bindings per notebook" "HTTPS/6443 (via K8s API)"
+        kubeflow -> feast "Mounts Feast ConfigMap per notebook" "K8s ConfigMap"
+        kubeflow -> rhodsOperator "Reads Gateway CR hostname" "HTTPS/6443 (via K8s API)"
+        kubeflow -> kubeRBACProxy "Injects as sidecar into notebook pods" "Webhook mutation"
+
+        gatewayAPI -> kubeRBACProxy "Routes notebook traffic" "HTTPS/8443"
+        kubeRBACProxy -> kubernetesAPI "TokenReview + SubjectAccessReview" "HTTPS/6443"
+
+        notebookController -> commonLib "Uses reconciliation helpers"
+        odhNotebookController -> commonLib "Uses reconciliation helpers"
+        odhNotebookController -> mutatingWebhook "Serves"
+        odhNotebookController -> validatingWebhook "Serves"
+
+        kubernetesAPI -> mutatingWebhook "Calls on Notebook CR create/update" "HTTPS/8443"
+        kubernetesAPI -> validatingWebhook "Calls on Notebook CR create/update" "HTTPS/8443"
     }
 
     views {
@@ -67,22 +88,26 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal" {
                 background #7ed321
                 color #ffffff
             }
-            element "Person" {
-                shape Person
-                background #4a90e2
+            element "Sidecar" {
+                background #d0021b
                 color #ffffff
             }
             element "Software System" {
-                background #438dd5
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {
-                background #438dd5
+                background #4a90e2
                 color #ffffff
+            }
+            element "Person" {
+                background #08427b
+                color #ffffff
+                shape Person
             }
         }
     }

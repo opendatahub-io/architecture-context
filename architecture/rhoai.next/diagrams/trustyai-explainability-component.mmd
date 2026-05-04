@@ -1,82 +1,112 @@
 graph TB
-    subgraph TrustyAI["TrustyAI Explainability Service"]
-        direction TB
-
-        subgraph ServiceLayer["explainability-service (Quarkus 3.8.5)"]
-            REST["REST API<br/>8080/TCP HTTP<br/>4443/TCP HTTPS"]
-            Consumer["Payload Consumer<br/>/consumer/kserve/v2"]
-            MetricsEngine["Fairness & Drift Metrics<br/>SPD, DIR, KS, MMD, Meanshift"]
-            Explainers["Explainer Endpoints<br/>SHAP, LIME, CF, TSSaliency<br/>(ODH only)"]
-            Scheduler["Quarkus Scheduler<br/>Periodic Metric Calculation"]
-            PromPublisher["Prometheus Publisher<br/>Micrometer Gauges"]
-            StorageIF["Storage Interface<br/>PVC / DB / MinIO / Memory"]
+    subgraph TrustyAI["TrustyAI Explainability"]
+        subgraph CoreLib["explainability-core (Java Library)"]
+            LIME["LIME Explainer"]
+            SHAP["SHAP Kernel Explainer"]
+            CF["Counterfactual Explainer<br/>(OptaPlanner)"]
+            PDP["Partial Dependence Plot"]
+            AggLIME["Aggregated LIME"]
+            PredProvider["PredictionProvider<br/>Interface"]
         end
 
-        subgraph CoreLib["explainability-core (Library)"]
-            Algorithms["XAI Algorithms<br/>SHAP, LIME, CF, PDP"]
-            FairnessMetrics["Fairness Metrics<br/>DIR, SPD"]
-            DriftDetection["Drift Detection<br/>KS, Fourier MMD, Meanshift"]
-            DataModel["Data Model<br/>Feature, Prediction, Dataframe"]
+        subgraph Connectors["explainability-connectors (Java Library)"]
+            KServeV1HTTP["KServe v1 HTTP<br/>Prediction Provider"]
+            KServeV2HTTP["KServe v2 HTTP<br/>Prediction Provider"]
+            KServeV2GRPC["KServe v2 gRPC<br/>Prediction Provider"]
+            Protobuf["grpc_predict_v2.proto"]
         end
 
-        subgraph Connectors["explainability-connectors (Library)"]
-            GRPC["gRPC Client<br/>KServe V2 Protocol"]
-            HTTPClient["HTTP Client<br/>KServe V1/V2"]
-            Proto["Protobuf Stubs<br/>grpc_predict_v2.proto"]
+        subgraph ArrowLib["explainability-arrow (Java Library)"]
+            ArrowConv["Arrow Converters<br/>Columnar Data Format"]
         end
 
-        subgraph Arrow["explainability-arrow (Library)"]
-            ArrowIPC["Apache Arrow IPC<br/>Java-Python Interop"]
+        subgraph Service["explainability-service (Quarkus 3.8.5)"]
+            subgraph Endpoints["REST Endpoints (8080/TCP)"]
+                FairnessEP["Fairness Metrics<br/>/metrics/group/fairness/*<br/>SPD, DIR"]
+                DriftEP["Drift Detection<br/>/metrics/drift/*<br/>KSTest, FourierMMD, Meanshift"]
+                ExplainerEP["Explainer Endpoints<br/>/explainers/*<br/>(ODH only)"]
+                ConsumerEP["Payload Consumer<br/>/consumer/kserve/v2"]
+                DataEP["Data Endpoints<br/>/data/upload, /data/download"]
+                InfoEP["Service Info<br/>/info, /info/tags, /info/names"]
+                HealthEP["Health & Metrics<br/>/q/health/*, /q/metrics"]
+            end
+
+            subgraph Internal["Internal Components"]
+                PayloadReconciler["KServeInference<br/>PayloadReconciler"]
+                PrometheusScheduler["Prometheus<br/>Scheduler"]
+                CloudEventConsumer["CloudEvent<br/>Consumer"]
+            end
+
+            subgraph Storage["Pluggable Storage Backends"]
+                PVCStorage["PVC Storage<br/>/inputs"]
+                HibernateStorage["Hibernate Storage<br/>MariaDB/MySQL"]
+                MinioStorage["MinIO Storage<br/>S3 API"]
+                MemoryStorage["In-Memory Storage"]
+            end
         end
     end
 
-    %% Internal flows
-    REST --> MetricsEngine
-    REST --> Explainers
-    Consumer --> StorageIF
-    Scheduler --> MetricsEngine
-    MetricsEngine --> PromPublisher
-    MetricsEngine --> CoreLib
-    Explainers --> CoreLib
-    Explainers --> Connectors
-    CoreLib --> DataModel
-    Connectors --> Proto
+    %% Internal connections
+    PredProvider -->|async predictAsync| KServeV1HTTP
+    PredProvider -->|async predictAsync| KServeV2HTTP
+    PredProvider -->|async predictAsync| KServeV2GRPC
+    KServeV2GRPC -->|uses| Protobuf
 
-    %% External interactions
-    ModelMesh["ModelMesh Serving"] -->|POST inference payloads| Consumer
-    Client["Client / Dashboard"] -->|REST API requests| REST
-    Prometheus["Prometheus"] -->|GET /q/metrics| PromPublisher
+    LIME -->|uses| PredProvider
+    SHAP -->|uses| PredProvider
+    CF -->|uses| PredProvider
+    PDP -->|uses| PredProvider
+    AggLIME -->|uses| PredProvider
 
-    Connectors -->|gRPC / HTTP| KServeModels["KServe Model Servers"]
-    StorageIF -->|File I/O| PVC["PVC (CSV/Parquet)"]
-    StorageIF -->|JDBC 3306/TCP| MariaDB["MariaDB / MySQL"]
-    StorageIF -->|S3 API 9000/TCP| MinIO["MinIO"]
+    ExplainerEP -->|invokes| LIME
+    ExplainerEP -->|invokes| SHAP
+    ExplainerEP -->|invokes| CF
+    ExplainerEP -->|invokes| PDP
 
-    Operator["TrustyAI Service Operator"] -.->|manages lifecycle| TrustyAI
-    AuthProxy["kube-rbac-proxy / oauth-proxy"] -.->|sidecar auth| REST
+    ConsumerEP -->|feeds| PayloadReconciler
+    CloudEventConsumer -->|feeds| PayloadReconciler
+    PayloadReconciler -->|persists| PVCStorage
+    PayloadReconciler -->|persists| HibernateStorage
+    PayloadReconciler -->|persists| MinioStorage
+
+    FairnessEP -->|reads| PVCStorage
+    DriftEP -->|reads| PVCStorage
+    PrometheusScheduler -->|computes & publishes| HealthEP
+
+    DataEP -->|uses| ArrowConv
+
+    %% External actors
+    ModelMesh["ModelMesh<br/>Serving Runtime"] -->|POST payloads| ConsumerEP
+    KServeIS["KServe<br/>InferenceService"] -->|CloudEvents| CloudEventConsumer
+
+    KServeV2HTTP -->|HTTP 8080| ModelServer["KServe/ModelMesh<br/>Model Server"]
+    KServeV2GRPC -->|gRPC| ModelServer
+    KServeV1HTTP -->|HTTP 8080| ModelServer
+
+    Prometheus["Prometheus /<br/>OpenShift Monitoring"] -->|scrapes /q/metrics| HealthEP
+    Client["Client /<br/>Dashboard"] -->|REST API| FairnessEP
+    Client -->|REST API| DriftEP
+
+    HibernateStorage -->|JDBC 3306| MariaDB["MariaDB / MySQL"]
+    MinioStorage -->|S3 API| MinIO["MinIO"]
+
+    Operator["trustyai-service-operator"] -.->|deploys & manages| Service
 
     %% Styling
-    style REST fill:#4a90e2,stroke:#333,color:#fff
-    style Consumer fill:#4a90e2,stroke:#333,color:#fff
-    style MetricsEngine fill:#4a90e2,stroke:#333,color:#fff
-    style Explainers fill:#4a90e2,stroke:#333,color:#fff
-    style Scheduler fill:#4a90e2,stroke:#333,color:#fff
-    style PromPublisher fill:#4a90e2,stroke:#333,color:#fff
-    style StorageIF fill:#4a90e2,stroke:#333,color:#fff
-    style Algorithms fill:#7ed321,stroke:#333
-    style FairnessMetrics fill:#7ed321,stroke:#333
-    style DriftDetection fill:#7ed321,stroke:#333
-    style DataModel fill:#7ed321,stroke:#333
-    style GRPC fill:#f5a623,stroke:#333
-    style HTTPClient fill:#f5a623,stroke:#333
-    style Proto fill:#f5a623,stroke:#333
-    style ArrowIPC fill:#9b59b6,stroke:#333,color:#fff
-    style ModelMesh fill:#e8e8e8,stroke:#333
-    style KServeModels fill:#e8e8e8,stroke:#333
-    style Prometheus fill:#e8e8e8,stroke:#333
-    style PVC fill:#e8e8e8,stroke:#333
-    style MariaDB fill:#e8e8e8,stroke:#333
-    style MinIO fill:#e8e8e8,stroke:#333
-    style Operator fill:#e8e8e8,stroke:#333
-    style AuthProxy fill:#e8e8e8,stroke:#333
-    style Client fill:#f9f9f9,stroke:#999
+    style TrustyAI fill:#e8f4fd,stroke:#4a90e2,stroke-width:2px
+    style CoreLib fill:#dcedc8,stroke:#689f38
+    style Connectors fill:#fff3e0,stroke:#f57c00
+    style ArrowLib fill:#f3e5f5,stroke:#8e24aa
+    style Service fill:#e3f2fd,stroke:#1565c0
+    style Endpoints fill:#bbdefb,stroke:#1976d2
+    style Internal fill:#c8e6c9,stroke:#388e3c
+    style Storage fill:#fff9c4,stroke:#f9a825
+
+    style ModelMesh fill:#e8e8e8,stroke:#666
+    style KServeIS fill:#e8e8e8,stroke:#666
+    style ModelServer fill:#e8e8e8,stroke:#666
+    style Prometheus fill:#e8e8e8,stroke:#666
+    style Client fill:#f5f5f5,stroke:#999
+    style MariaDB fill:#e8e8e8,stroke:#666
+    style MinIO fill:#e8e8e8,stroke:#666
+    style Operator fill:#7ed321,stroke:#333

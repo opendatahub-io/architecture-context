@@ -1,63 +1,66 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client"]
+        Client["External Client<br/>Data Scientist"]
     end
 
-    subgraph Ingress["INGRESS (Gateway API)"]
-        Gateway["data-science-gateway<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ (SIMPLE)<br/>Platform Auth"]
+    subgraph Ingress["INGRESS (Platform Gateway)"]
+        Gateway["data-science-gateway<br/>(Envoy)<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ (gateway-terminated)<br/>Path: /mlflow/* rewrite<br/>Auth: Platform OIDC/OAuth"]
     end
 
-    subgraph Namespace["NAMESPACE: redhat-ods-applications"]
+    subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-applications)"]
         direction TB
 
-        subgraph OperatorPod["MLflow Operator Pod"]
-            Operator["MLflow Controller<br/>SA: controller-manager<br/>8081/TCP HTTP (probes)<br/>8443/TCP HTTPS (metrics)"]
+        subgraph OpPod["MLflow Operator Pod"]
+            Operator["mlflow-operator<br/>SA: mlflow-operator-controller-manager<br/>8081/TCP (health, no auth)<br/>8443/TCP (metrics, Bearer Token)<br/>FIPS: strictfipsruntime"]
         end
 
-        subgraph MLflowPod["MLflow Server Pod (Helm-rendered)"]
-            MLflow["MLflow Server<br/>SA: mlflow-sa<br/>8443/TCP HTTPS (uvicorn SSL)<br/>Auth: K8s RBAC (SSAR)"]
-            CASidecar["CA Bundle Sidecar<br/>Watches ConfigMaps<br/>Regenerates every 30s"]
+        subgraph MLflowPod["MLflow Tracking Server Pod"]
+            InitCA["Init: combine-ca-bundles<br/>system + platform + custom CAs"]
+            MLflowSrv["MLflow Server<br/>SA: mlflow-sa<br/>8443/TCP HTTPS<br/>TLS: service-ca cert (mlflow-tls)<br/>Ciphers: PROFILE=SYSTEM<br/>Auth: K8s RBAC (SSAR)<br/>Security middleware: enforced"]
+            Sidecar["Sidecar: ca-bundle-watcher<br/>30s checksum interval"]
         end
-
-        NetPol["NetworkPolicy<br/>Ingress: 8443 from ANY ns<br/>Egress: allowlisted ports"]
     end
 
-    subgraph ClusterServices["CLUSTER SERVICES"]
-        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA Bearer Token"]
-        DNS["CoreDNS<br/>53/UDP+TCP, 5353/UDP+TCP<br/>No encryption"]
-        ServiceCA["OpenShift service-ca<br/>Auto-provisions TLS certs"]
-        Prometheus["Prometheus<br/>8443/TCP HTTPS<br/>TLS (service-ca)<br/>SA Bearer Token"]
+    subgraph K8sServices["KUBERNETES SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token / SSAR"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS (optional, PGSSLMODE)<br/>Connection string creds"]
-        MySQL["MySQL<br/>3306/TCP<br/>TLS (optional)<br/>Connection string creds"]
-        S3["S3-compatible Storage<br/>443/TCP, 9000/TCP<br/>8333/TCP, 8334/TCP<br/>TLS (optional)<br/>AWS IAM creds"]
+        DB["PostgreSQL/MySQL<br/>5432/3306/TCP<br/>TLS (optional, CA bundle)<br/>Connection string creds"]
+        S3["S3-compatible Storage<br/>443/9000/8333-8334/TCP<br/>HTTPS/HTTP<br/>TLS (optional, CA bundle)<br/>AWS IAM credentials"]
+        DNS["CoreDNS<br/>53/UDP, 53/TCP<br/>5353/UDP, 5353/TCP<br/>No encryption"]
+    end
+
+    subgraph PlatformResources["PLATFORM RESOURCES"]
+        CABundle["odh-trusted-ca-bundle<br/>(ConfigMap)<br/>Platform CA certificates"]
+        ServiceCA["openshift-service-ca<br/>TLS cert provisioning"]
     end
 
     %% Flows
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Platform Auth"| Gateway
-    Gateway -->|"HTTPS/8443<br/>TLS (service-ca)<br/>Forwarded Bearer Token"| MLflow
-    MLflow -->|"HTTPS/6443<br/>TLS 1.2+<br/>SelfSubjectAccessReview"| K8sAPI
-    Operator -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    MLflow -->|"TCP/5432<br/>TLS (optional)<br/>Credentials"| PostgreSQL
-    MLflow -->|"TCP/3306<br/>TLS (optional)<br/>Credentials"| MySQL
-    MLflow -->|"HTTPS/443,9000<br/>TLS (optional)<br/>AWS IAM"| S3
-    MLflow -->|"DNS/53,5353"| DNS
-    Prometheus -->|"HTTPS/8443<br/>TLS (service-ca)<br/>SA Bearer Token"| MLflow
-    ServiceCA -.->|"provisions certs"| MLflow
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Platform OIDC/OAuth"| Gateway
+    Gateway -->|"HTTPS/8443<br/>TLS (re-encrypted)<br/>service-ca cert<br/>Forwarded identity"| MLflowSrv
+
+    Operator -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Bearer Token<br/>Watch CRs + SSA"| K8sAPI
+    MLflowSrv -->|"HTTPS/6443<br/>TLS 1.2+<br/>SSAR + NS list<br/>Secret read"| K8sAPI
+
+    MLflowSrv -->|"PG:5432 / MySQL:3306<br/>TLS optional<br/>PGSSLMODE=verify-full<br/>Conn string creds"| DB
+    MLflowSrv -->|"HTTPS/443,9000,8333<br/>TLS optional<br/>AWS IAM creds"| S3
+    MLflowSrv -->|"53,5353/UDP+TCP<br/>No encryption"| DNS
+
+    CABundle -.->|"Volume mount"| MLflowPod
+    ServiceCA -.->|"Provisions<br/>mlflow-tls secret"| MLflowPod
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef namespace fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef clusterservice fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef operatorns fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef k8s fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef netpol fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef platform fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
     class Client external
     class Gateway ingress
-    class Operator,MLflow,CASidecar namespace
-    class NetPol netpol
-    class K8sAPI,DNS,ServiceCA,Prometheus clusterservice
-    class PostgreSQL,MySQL,S3 externalservice
+    class Operator,MLflowSrv,InitCA,Sidecar operatorns
+    class K8sAPI k8s
+    class DB,S3,DNS externalservice
+    class CABundle,ServiceCA platform

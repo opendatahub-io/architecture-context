@@ -1,37 +1,29 @@
 workspace {
     model {
-        client = person "Client Application" "OpenAI-compatible client sending chat completion requests"
+        apiClient = person "API Client" "Application or user consuming OpenAI-compatible chat completion endpoints"
 
-        gateway = softwareSystem "vllm-orchestrator-gateway" "HTTP gateway providing multiple OpenAI-compatible chat completion endpoints with configurable detector-based content filtering" {
-            httpServer = container "HTTP Server" "Listens on 8090/TCP, routes requests based on YAML config" "Rust (axum 0.7.9)"
-            configLoader = container "Config Loader" "Reads YAML configuration defining detectors, routes, and orchestrator settings" "Rust (serde_yml)"
-            detectorInjector = container "Detector Injector" "Injects detector specifications into client payloads before forwarding" "Rust"
-            detectionChecker = container "Detection Checker" "Inspects orchestrator responses for detections; substitutes fallback messages" "Rust"
-            sseHandler = container "SSE Stream Handler" "Processes chunked SSE responses for streaming chat completions" "Rust (futures::StreamExt)"
-            tlsClient = container "TLS Client" "Builds mTLS-capable HTTP client when certificates are present" "Rust (openssl + native-tls)"
+        gateway = softwareSystem "vllm-orchestrator-gateway" "Rust HTTP gateway providing route-based OpenAI-compatible chat completion endpoints with configurable detector pipelines for content filtering" {
+            router = container "axum Router" "Dynamically registers routes from YAML config; maps /{route}/v1/chat/completions to proxy handler" "Rust/axum"
+            proxyHandler = container "Proxy Handler" "Injects detector configuration into payload, forwards to orchestrator, applies fallback messages on detections" "Rust"
+            streamProcessor = container "SSE Stream Processor" "Processes orchestrator SSE stream chunk-by-chunk, applying fallback logic per chunk" "Rust"
+            configLoader = container "Config Loader" "Parses YAML config defining orchestrator connection, detector definitions, and route-to-detector mappings" "Rust/serde_yml"
+            tlsBuilder = container "TLS Client Builder" "Constructs mTLS identity (PEM → PKCS#12 via openssl crate) for secure orchestrator communication" "Rust/openssl"
         }
 
-        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "Backend service performing LLM generation and detector evaluation" "Internal TrustyAI"
-        detectors = softwareSystem "Guardrails Detectors" "Content detection services (e.g., regex-language) for input/output filtering" "Internal TrustyAI"
-        vllm = softwareSystem "vLLM / Model Server" "LLM inference backend for chat completion generation" "Internal"
-        serviceCA = softwareSystem "OpenShift service-ca" "Provides CA certificate for validating orchestrator TLS" "Platform"
-        certManager = softwareSystem "cert-manager" "Provisions client TLS certificates for mTLS" "Platform"
+        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "Performs actual content detection on chat completions, manages detector invocation and model routing" "Internal TrustyAI"
+        detectors = softwareSystem "Content Detectors" "Detection servers (e.g., regex-detector) that analyze input/output content for policy violations" "Internal TrustyAI"
+        vllm = softwareSystem "vLLM Model Server" "LLM inference backend serving model predictions" "Internal"
+        certManager = softwareSystem "cert-manager" "Provisions and rotates TLS certificates for mTLS" "External Platform"
+        serviceCaOperator = softwareSystem "service-ca-operator" "Provides CA certificates for trusting internal service certificates" "External Platform"
+        trustyaiOperator = softwareSystem "TrustyAI Operator" "Deploys and manages lifecycle of gateway, creates Kubernetes Service and mounts secrets" "Internal RHOAI"
 
-        # External relationships
-        client -> gateway "POST /{route_name}/v1/chat/completions" "HTTP/8090"
-        gateway -> orchestrator "POST /api/v2/chat/completions-detection" "HTTP or HTTPS/8085 (optional mTLS)"
-        orchestrator -> detectors "Invokes configured detectors" "Internal"
-        orchestrator -> vllm "Inference request" "Internal"
-        serviceCA -> gateway "CA cert at /etc/tls/ca/service-ca.crt" "File mount"
-        certManager -> gateway "Client cert+key at /etc/tls/private/" "File mount"
-
-        # Container relationships
-        httpServer -> configLoader "Loads route/detector config at startup"
-        httpServer -> detectorInjector "Passes request for detector injection"
-        detectorInjector -> tlsClient "Sends modified request to orchestrator"
-        tlsClient -> detectionChecker "Returns orchestrator response"
-        httpServer -> sseHandler "Handles streaming requests"
-        sseHandler -> detectorInjector "Injects detectors for streaming"
+        apiClient -> gateway "POST /{route}/v1/chat/completions" "HTTP/8090, plaintext, optional Auth header"
+        gateway -> orchestrator "POST /api/v2/chat/completions-detection" "HTTP or HTTPS/8085, optional mTLS, Auth forwarded"
+        orchestrator -> detectors "Invokes content detection" "Internal"
+        orchestrator -> vllm "Routes inference requests" "Internal"
+        certManager -> gateway "Provisions TLS cert/key" "kubernetes.io/tls secret volume mount"
+        serviceCaOperator -> gateway "Provisions CA certificate" "Opaque secret volume mount"
+        trustyaiOperator -> gateway "Deploys, creates Service, mounts config/secrets" "Kubernetes API"
     }
 
     views {
@@ -46,25 +38,25 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
             element "Internal TrustyAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Platform" {
-                background #f5a623
+            element "Internal" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Internal RHOAI" {
+                background #50e3c2
+                color #000000
+            }
+            element "External Platform" {
+                background #999999
                 color #ffffff
             }
             element "Person" {
+                shape Person
                 background #08427b
-                color #ffffff
-                shape person
-            }
-            element "Container" {
-                background #438dd5
                 color #ffffff
             }
         }

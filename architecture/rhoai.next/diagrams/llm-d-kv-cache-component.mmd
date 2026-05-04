@@ -1,92 +1,90 @@
 graph TB
-    subgraph "llm-d-kv-cache System"
-        direction TB
-
-        subgraph GoCore["Go Core Library"]
-            direction TB
-            Indexer["KV-Cache Indexer<br/>(pkg/kvcache/)<br/>Pod scoring & routing"]
-            EventsPool["KV Events Pool<br/>(pkg/kvevents/)<br/>Sharded ZMQ ingestion"]
-            BlockIndex["KV Block Index<br/>(pkg/kvcache/kvblock/)<br/>LRU / Ristretto / Redis"]
-            TokenPool["Tokenization Pool<br/>(pkg/tokenization/)<br/>Multi-strategy fallback"]
-            TokenProcessor["Token Processor<br/>Block key computation<br/>FNV-64a hash chain"]
-            Scorer["KV Block Scorer<br/>Cache-hit scoring"]
-            Preprocessor["Chat Completions<br/>Preprocessor<br/>(CGo Python bridge)"]
-            Telemetry["OpenTelemetry<br/>Tracing<br/>(pkg/telemetry/)"]
-            Metrics["Prometheus Metrics<br/>(pkg/kvcache/metrics/)"]
+    subgraph "llm-d-kv-cache"
+        subgraph "Go Library (pkg/kvcache)"
+            Indexer["KV-Cache Indexer<br/>(pkg/kvcache)"]
+            TokenProcessor["TokenProcessor<br/>FNV-64a hashing"]
+            Scorer["KVBlock Scorer<br/>Cache-hit scoring"]
+            Indexer -->|computes hashes| TokenProcessor
+            Indexer -->|scores pods| Scorer
         end
 
-        subgraph Sidecar["UDS Tokenizer Sidecar (Python)"]
-            TokenizerSvc["UDS Tokenizer Service<br/>services/uds_tokenizer/<br/>gRPC over Unix Domain Socket<br/>Port: 8082/TCP (health)"]
+        subgraph "Index Backends (pkg/kvcache/kvblock)"
+            InMemoryLRU["InMemory LRU"]
+            CostAwareMemory["CostAware Memory<br/>(Ristretto)"]
+            RedisBackend["Redis / Valkey<br/>Backend"]
+            IndexInterface["kvblock.Index<br/>Interface"]
+            IndexInterface -.->|impl| InMemoryLRU
+            IndexInterface -.->|impl| CostAwareMemory
+            IndexInterface -.->|impl| RedisBackend
         end
 
-        subgraph FSBackend["Filesystem Backend (Python/C++)"]
-            OffloadMgr["SharedStorageOffloading<br/>Manager<br/>kv_connectors/llmd_fs_backend/"]
-            FileMapper["FileMapper<br/>Hash-based directory hierarchy"]
-            CppEngine["C++ storage_offload<br/>Async I/O + NVIDIA GDS"]
+        subgraph "Event Ingestion (pkg/kvevents)"
+            Pool["kvevents.Pool<br/>Sharded Worker Pool"]
+            ZMQSub["ZMQ Subscriber<br/>5557/TCP"]
+            SubManager["Subscriber Manager<br/>(Pod Discovery)"]
+            VLLMAdapter["vLLM Adapter<br/>msgpack decode"]
+            SGLangAdapter["SGLang Adapter<br/>msgpack decode"]
+            ZMQSub -->|raw messages| Pool
+            SubManager -->|manages| ZMQSub
+            Pool -->|dispatches| VLLMAdapter
+            Pool -->|dispatches| SGLangAdapter
         end
 
-        subgraph Evictor["PVC Evictor (Python)"]
-            Activator["Activator<br/>Disk usage monitor<br/>statvfs() polling"]
-            Crawlers["N Crawler Processes<br/>Hex-based load balancing"]
-            Deleter["Deleter<br/>Batch rm via xargs"]
+        subgraph "Tokenization (pkg/tokenization)"
+            TokenPool["Tokenization Pool"]
+            UdsClient["UDS Tokenizer Client<br/>gRPC over UDS"]
+            TokenPool -->|delegates| UdsClient
         end
+
+        subgraph "UDS Tokenizer Service (Python Sidecar)"
+            GRPCServer["gRPC Server<br/>UDS: /tmp/tokenizer/tokenizer-uds.socket<br/>Health: 8082/TCP"]
+            Renderer["vLLM OpenAIServingRender<br/>(CPU mode)"]
+            GRPCServer -->|renders| Renderer
+        end
+
+        subgraph "Storage Connectors"
+            FSBackend["llmd_fs_backend<br/>Python/C++/CUDA<br/>vLLM OffloadingConnector"]
+            PVCEvictor["PVC Evictor<br/>N crawlers + activator + deleter"]
+        end
+
+        Indexer -->|updates| IndexInterface
+        Pool -->|Add/Evict| IndexInterface
+        UdsClient -->|gRPC| GRPCServer
     end
 
-    %% Internal connections
-    Indexer -->|"queries"| BlockIndex
-    Indexer -->|"tokenizes"| TokenPool
-    Indexer -->|"computes block keys"| TokenProcessor
-    Indexer -->|"scores pods"| Scorer
-    EventsPool -->|"updates index"| BlockIndex
-    TokenPool -->|"gRPC over UDS"| TokenizerSvc
-    TokenPool -->|"CGo bridge"| Preprocessor
-    OffloadMgr -->|"maps files"| FileMapper
-    OffloadMgr -->|"async I/O"| CppEngine
-    Activator -->|"triggers"| Crawlers
-    Crawlers -->|"queues files"| Deleter
+    %% External actors
+    EPP["llm-d EPP<br/>(Host Scheduler)"]
+    EPP -->|embeds & calls ScoreTokens| Indexer
+    EPP -->|tokenize prompts| TokenPool
 
-    %% External connections
-    vLLMPods["vLLM Inference Pods"]
-    Scheduler["llm-d-inference-scheduler"]
+    VLLMPods["vLLM / SGLang Pods"]
+    VLLMPods -->|ZMQ PUB 5557/TCP<br/>KV-Events| ZMQSub
+    VLLMPods -->|OffloadingConnector API| FSBackend
+
     K8sAPI["Kubernetes API"]
-    Redis["Redis / Valkey<br/>(optional)"]
-    SharedStorage["Shared Storage<br/>(NFS/PVC)"]
-    HFHub["HuggingFace Hub"]
-    OTLPCollector["OTLP Collector"]
-    PromScraper["Prometheus"]
+    SubManager -->|Pod watch| K8sAPI
 
-    vLLMPods -->|"ZMQ PUB 5557/TCP<br/>KV-cache events"| EventsPool
-    Scheduler -->|"embeds library<br/>in-process"| Indexer
-    K8sAPI -->|"Pod watch<br/>controller-runtime"| EventsPool
-    BlockIndex -.->|"RESP 6379/TCP<br/>(optional)"| Redis
-    CppEngine -->|"POSIX / GDS"| SharedStorage
-    Evictor -->|"POSIX filesystem"| SharedStorage
-    TokenizerSvc -->|"HTTPS 443/TCP"| HFHub
-    Telemetry -->|"gRPC 4317/TCP"| OTLPCollector
-    Metrics -->|"HTTP 8080/TCP"| PromScraper
+    SharedStorage["Shared Storage<br/>(NFS / PVC)"]
+    FSBackend -->|POSIX I/O| SharedStorage
+    PVCEvictor -->|manages disk| SharedStorage
+
+    Redis["Redis / Valkey<br/>6379/TCP"]
+    RedisBackend -->|block index| Redis
+
+    HFHub["HuggingFace Hub<br/>443/TCP HTTPS"]
+    Renderer -->|download tokenizers| HFHub
 
     %% Styling
     style Indexer fill:#4a90e2,stroke:#333,color:#fff
-    style EventsPool fill:#4a90e2,stroke:#333,color:#fff
-    style BlockIndex fill:#4a90e2,stroke:#333,color:#fff
+    style Pool fill:#4a90e2,stroke:#333,color:#fff
     style TokenPool fill:#4a90e2,stroke:#333,color:#fff
-    style TokenProcessor fill:#4a90e2,stroke:#333,color:#fff
-    style Scorer fill:#4a90e2,stroke:#333,color:#fff
-    style Preprocessor fill:#4a90e2,stroke:#333,color:#fff
-    style Telemetry fill:#4a90e2,stroke:#333,color:#fff
-    style Metrics fill:#4a90e2,stroke:#333,color:#fff
-    style TokenizerSvc fill:#7ed321,stroke:#333,color:#fff
-    style OffloadMgr fill:#f5a623,stroke:#333,color:#fff
-    style FileMapper fill:#f5a623,stroke:#333,color:#fff
-    style CppEngine fill:#f5a623,stroke:#333,color:#fff
-    style Activator fill:#bd10e0,stroke:#333,color:#fff
-    style Crawlers fill:#bd10e0,stroke:#333,color:#fff
-    style Deleter fill:#bd10e0,stroke:#333,color:#fff
-    style vLLMPods fill:#e8e8e8,stroke:#333
-    style Scheduler fill:#e8e8e8,stroke:#333
-    style K8sAPI fill:#e8e8e8,stroke:#333
-    style Redis fill:#e8e8e8,stroke:#333
-    style SharedStorage fill:#e8e8e8,stroke:#333
-    style HFHub fill:#e8e8e8,stroke:#333
-    style OTLPCollector fill:#e8e8e8,stroke:#333
-    style PromScraper fill:#e8e8e8,stroke:#333
+    style GRPCServer fill:#9b59b6,stroke:#333,color:#fff
+    style Renderer fill:#9b59b6,stroke:#333,color:#fff
+    style FSBackend fill:#e67e22,stroke:#333,color:#fff
+    style PVCEvictor fill:#e67e22,stroke:#333,color:#fff
+    style EPP fill:#7ed321,stroke:#333,color:#fff
+    style VLLMPods fill:#7ed321,stroke:#333,color:#fff
+    style K8sAPI fill:#999,stroke:#333,color:#fff
+    style Redis fill:#999,stroke:#333,color:#fff
+    style HFHub fill:#999,stroke:#333,color:#fff
+    style SharedStorage fill:#f5a623,stroke:#333,color:#fff

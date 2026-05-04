@@ -1,75 +1,54 @@
 sequenceDiagram
-    participant Client as Client Application
+    participant Client as Client / Platform Ingress
     participant Server as NeMo Guardrails Server<br/>8000/TCP HTTP
-    participant InputR as Input Rails<br/>(Content Safety, Injection,<br/>Topic Control)
+    participant InputRails as Input Rails Pipeline
+    participant Embeddings as Embedding Provider<br/>(FastEmbed/OpenAI/NIM)
     participant LLM as Upstream LLM Provider<br/>443/TCP HTTPS TLS 1.2+
-    participant OutputR as Output Rails<br/>(Hallucination, Factcheck,<br/>Sensitive Data)
-    participant OTEL as OpenTelemetry Collector<br/>4317/TCP gRPC
+    participant OutputRails as Output Rails Pipeline
+    participant ContentSafety as Content Safety Model<br/>443/TCP HTTPS
 
-    Note over Client,OTEL: Flow 1: Chat Completion with Guardrails (/v1/chat/completions)
+    Note over Client,ContentSafety: Flow 1: Chat Completion with Guardrails (LLMRails)
 
-    Client->>Server: POST /v1/chat/completions<br/>Headers: X-*, Authorization<br/>Body: OpenAI-compat chat request
-    activate Server
+    Client->>Server: POST /v1/chat/completions<br/>Authorization: Bearer Token
+    Server->>Server: Select engine (LLMRails or IORails)<br/>based on config
+    Server->>InputRails: Execute input rails pipeline
+    InputRails->>Embeddings: Generate embeddings for<br/>similarity-based checks
+    Embeddings-->>InputRails: Embedding vectors
+    InputRails->>LLM: Evaluate content safety<br/>Bearer Token / API key
+    LLM-->>InputRails: Safety evaluation result
 
-    Server->>Server: Load Colang flows from<br/>ConfigMap (config.yaml + rails.co)
+    alt Input BLOCKED
+        InputRails-->>Server: BLOCKED (rail violation)
+        Server-->>Client: 200 OK (blocked response message)
+    else Input PASSED
+        InputRails-->>Server: PASSED
+        Server->>LLM: POST /v1/chat/completions<br/>Bearer Token (forwarded from client or env var)
+        LLM-->>Server: LLM response
+        Server->>OutputRails: Execute output rails pipeline
+        OutputRails->>LLM: Evaluate output safety
+        LLM-->>OutputRails: Safety evaluation result
 
-    rect rgb(255, 235, 235)
-        Note over Server,LLM: Input Rail Pipeline
-        Server->>InputR: Execute input rails on user message
-        InputR->>LLM: Self-check prompt<br/>"Does this contain harmful content?"<br/>Auth: Bearer Token
-        LLM-->>InputR: Safety evaluation result
-        InputR-->>Server: Input rail verdict (pass/fail)
-    end
-
-    alt Input Rails PASS
-        rect rgb(235, 255, 235)
-            Note over Server,LLM: Dialog + Generation Pipeline
-            Server->>LLM: Chat completion request<br/>Auth: Bearer Token<br/>Model: MAIN_MODEL_ENGINE
-            LLM-->>Server: Generated LLM response
-        end
-
-        rect rgb(235, 235, 255)
-            Note over Server,LLM: Output Rail Pipeline
-            Server->>OutputR: Execute output rails on LLM response
-            OutputR->>LLM: Factcheck/hallucination check<br/>Auth: Bearer Token
-            LLM-->>OutputR: Evaluation result
-            OutputR-->>Server: Output rail verdict (pass/fail)
-        end
-
-        alt Output Rails PASS
-            Server-->>Client: 200 OK<br/>OpenAI-compat response<br/>(with guardrail metadata)
-        else Output Rails FAIL
-            Server-->>Client: 200 OK<br/>Canned refusal response<br/>(output blocked by guardrails)
-        end
-    else Input Rails FAIL
-        Server-->>Client: 200 OK<br/>Canned refusal response<br/>(input blocked by guardrails)
-    end
-
-    Server->>OTEL: Export trace spans (async)<br/>OTLP protocol
-
-    deactivate Server
-
-    Note over Client,OTEL: Flow 2: Guardrail Checks Only (/v1/guardrail/checks - fork-specific)
-
-    Client->>Server: POST /v1/guardrail/checks<br/>Headers: X-*, Authorization<br/>Body: messages[] with roles
-    activate Server
-
-    loop For each message by role
-        alt role = user
-            Server->>InputR: Run input rails
-            InputR->>LLM: Self-check evaluation<br/>Auth: Bearer Token
-            LLM-->>InputR: Result
-            InputR-->>Server: Per-message verdict
-        else role = assistant
-            Server->>OutputR: Run output rails
-            OutputR->>LLM: Factcheck/safety evaluation<br/>Auth: Bearer Token
-            LLM-->>OutputR: Result
-            OutputR-->>Server: Per-message verdict
+        alt Output BLOCKED
+            OutputRails-->>Server: BLOCKED
+            Server-->>Client: 200 OK (blocked response message)
+        else Output PASSED
+            OutputRails-->>Server: PASSED (or MODIFIED)
+            Server-->>Client: 200 OK (LLM response)
         end
     end
 
-    Server-->>Client: 200 OK<br/>Per-message + aggregate status<br/>(pass/fail per rail)
+    Note over Client,ContentSafety: Flow 2: Guardrail Check Only (No LLM Generation)
 
-    Server->>OTEL: Export trace spans (async)
+    Client->>Server: POST /v1/guardrail/checks<br/>Authorization: Bearer Token
+    Server->>Server: Route to input/output/tool_input<br/>rails based on message role
+    Server->>ContentSafety: Evaluate against configured rails<br/>Bearer Token / API key
+    ContentSafety-->>Server: Rail evaluation result
+    Server-->>Client: RailsResult {status: PASSED/MODIFIED/BLOCKED}
 
-    deactivate Server
+    Note over Client,ContentSafety: Flow 3: Embedding-based Guardrail Evaluation
+
+    Server->>Embeddings: Compute embeddings<br/>(local FastEmbed or API call)
+    Embeddings-->>Server: Embedding vectors
+    Server->>Server: Annoy ANN index lookup<br/>(local file I/O)
+    Server->>LLM: Similarity-based rail evaluation<br/>HTTPS/443 Bearer Token
+    LLM-->>Server: Evaluation result

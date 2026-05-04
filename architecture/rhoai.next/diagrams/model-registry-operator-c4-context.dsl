@@ -1,61 +1,65 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and manages ML model registries and accesses model metadata"
-        platformAdmin = person "Platform Admin" "Deploys and configures RHOAI platform components"
+        user = person "Data Scientist / ML Engineer" "Creates model registries and manages ML model metadata"
+        platformAdmin = person "Platform Admin" "Deploys and configures the Model Registry Operator via RHOAI platform"
 
-        modelRegistryOperator = softwareSystem "Model Registry Operator" "Kubernetes operator managing Model Registry and Model Catalog lifecycle" {
-            mrReconciler = container "ModelRegistryReconciler" "Reconciles individual ModelRegistry CRs with full lifecycle management" "Go Controller (controller-runtime)"
-            mcReconciler = container "ModelCatalogReconciler" "Manages singleton Model Catalog service with catalog source discovery" "Go Controller (controller-runtime)"
-            webhookServer = container "Webhook Server" "Defaulting, validating, and conversion webhooks for ModelRegistry CRs" "Go Admission Webhook"
-            migrationManager = container "StorageMigrationManager" "Handles CRD storage version migration from v1alpha1 to v1beta1" "Go Background Goroutine"
+        modelRegistryOperator = softwareSystem "Model Registry Operator" "Kubernetes operator that manages Model Registry and Model Catalog instances on Red Hat OpenShift AI" {
+            controller = container "ModelRegistryReconciler" "Reconciles ModelRegistry CRs to deploy registry instances with database, auth, and networking" "Go (controller-runtime)"
+            catalogController = container "ModelCatalogReconciler" "Manages centralized model catalog with metadata from ConfigMaps and init containers" "Go (controller-runtime)"
+            webhookServer = container "Webhook Server" "Validates and mutates ModelRegistry CRs; handles v1alpha1→v1beta1 migration" "Go (9443/TCP HTTPS)"
+            migrationManager = container "Storage Version Migration" "Manages CRD storage version migration from v1alpha1 to v1beta1" "Go"
         }
 
-        modelRegistryAPI = softwareSystem "Model Registry REST API" "REST API service for model metadata management" {
-            restContainer = container "REST API Container" "Serves Model Registry REST API" "Go HTTP Server"
-            kubeRBACProxy = container "kube-rbac-proxy" "Authentication/authorization sidecar proxy" "Go HTTPS Proxy"
+        registryInstance = softwareSystem "Model Registry Instance" "Deployed data plane: REST API with kube-rbac-proxy auth and PostgreSQL/MySQL backing store" {
+            kubeRbacProxy = container "kube-rbac-proxy" "Authentication sidecar enforcing SubjectAccessReview-based authorization" "Go (8443/TCP HTTPS)"
+            restAPI = container "Model Registry REST API" "Serves model metadata CRUD operations" "Go/Python (8080/TCP HTTP)"
+            database = container "PostgreSQL / MySQL" "Backing store for model registry metadata" "PostgreSQL 16 / MySQL (5432/TCP or 3306/TCP)"
         }
 
-        modelCatalogAPI = softwareSystem "Model Catalog Service" "Catalog service for discovering ML models" {
-            catalogContainer = container "Catalog REST API" "Serves Model Catalog API with seed data" "Go HTTP Server"
-            catalogProxy = container "kube-rbac-proxy (Catalog)" "Auth sidecar for catalog" "Go HTTPS Proxy"
+        catalogInstance = softwareSystem "Model Catalog" "Centralized catalog of ML models with curated metadata" {
+            catalogProxy = container "kube-rbac-proxy (Catalog)" "Authentication sidecar for catalog access" "Go (8443/TCP HTTPS)"
+            catalogAPI = container "Model Catalog REST API" "Serves catalog model metadata" "Go/Python (8080/TCP HTTP)"
+            catalogDB = container "Catalog PostgreSQL" "Backing store for catalog data" "PostgreSQL 16 (5432/TCP)"
         }
 
-        postgresql = softwareSystem "PostgreSQL" "Relational database for model metadata storage" "Database"
-        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for resource management" "External"
-        openshiftRouter = softwareSystem "OpenShift Router" "Ingress controller for external HTTPS access" "External"
-        openshiftConfig = softwareSystem "OpenShift Config API" "Cluster configuration (ingress domain)" "External"
-        platformAuth = softwareSystem "Platform Auth CR" "RHOAI platform authentication and admin group configuration" "Internal RHOAI"
-        platformMRComponent = softwareSystem "Platform ModelRegistry CR" "RHOAI platform component for model registry" "Internal RHOAI"
-        rhodsOperator = softwareSystem "RHODS / ODH Operator" "Platform operator that deploys model-registry-operator" "Internal RHOAI"
-        storageVersionMigrationAPI = softwareSystem "StorageVersionMigration API" "Kubernetes API for CRD version migration" "External"
+        # External systems
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for resource management and RBAC" "External"
+        certManager = softwareSystem "cert-manager" "X.509 certificate management for webhook TLS" "External"
+        openshiftRouter = softwareSystem "OpenShift Router" "Ingress controller providing Route-based external access" "External"
+        servingCertSigner = softwareSystem "OpenShift serving-cert-signer" "Provisions TLS certificates for kube-rbac-proxy via service annotations" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
+
+        # Internal ODH/RHOAI systems
+        platformOperator = softwareSystem "RHOAI Platform Operator" "Deploys and manages the Model Registry Operator via kustomize overlays" "Internal RHOAI"
+        platformCRDs = softwareSystem "Platform CRDs" "ModelRegistry Component CR and Auth CR for cross-component integration" "Internal RHOAI"
 
         # Relationships
-        dataScientist -> openshiftRouter "Accesses Model Registry via HTTPS Route" "HTTPS/443"
-        dataScientist -> openshiftRouter "Accesses Model Catalog via HTTPS Route" "HTTPS/443"
-        platformAdmin -> modelRegistryOperator "Creates ModelRegistry CRs via kubectl" "HTTPS/443"
+        user -> openshiftRouter "Accesses model registries and catalog via HTTPS/443"
+        platformAdmin -> k8sAPI "Creates ModelRegistry CRs via kubectl"
+        platformOperator -> modelRegistryOperator "Deploys operator via kustomize overlays"
 
-        rhodsOperator -> modelRegistryOperator "Deploys via kustomize manifests"
+        modelRegistryOperator -> k8sAPI "Reconciles resources, watches CRDs" "HTTPS/443 SA Token"
+        modelRegistryOperator -> registryInstance "Creates and manages" "K8s API"
+        modelRegistryOperator -> catalogInstance "Creates and manages" "K8s API"
 
-        openshiftRouter -> kubeRBACProxy "TLS reencrypt" "HTTPS/8443"
-        kubeRBACProxy -> kubernetesAPI "TokenReview + SubjectAccessReview" "HTTPS/443"
-        kubeRBACProxy -> restContainer "Proxied requests" "HTTP/8080"
+        controller -> webhookServer "Validated by"
+        controller -> migrationManager "Triggers storage migration"
+        catalogController -> platformCRDs "Watches ModelRegistry Component CR and Auth CR" "K8s API"
 
-        openshiftRouter -> catalogProxy "TLS reencrypt" "HTTPS/8443"
-        catalogProxy -> kubernetesAPI "TokenReview + SubjectAccessReview" "HTTPS/443"
-        catalogProxy -> catalogContainer "Proxied requests" "HTTP/8080"
+        openshiftRouter -> kubeRbacProxy "Routes traffic" "HTTPS/8443 TLS reencrypt"
+        kubeRbacProxy -> k8sAPI "SubjectAccessReview" "HTTPS/443"
+        kubeRbacProxy -> restAPI "Forwards authorized requests" "HTTP/8080 localhost"
+        restAPI -> database "Reads/writes metadata" "TCP/5432 or 3306"
 
-        mrReconciler -> kubernetesAPI "CRUD on managed resources" "HTTPS/443"
-        mrReconciler -> openshiftConfig "Read cluster ingress domain" "HTTPS/443"
-        mcReconciler -> kubernetesAPI "CRUD on managed resources" "HTTPS/443"
-        mcReconciler -> platformAuth "Read admin groups for catalog RBAC" "HTTPS/443"
-        mcReconciler -> platformMRComponent "Owner reference for cascading deletion" "HTTPS/443"
-        migrationManager -> storageVersionMigrationAPI "Create migration resources" "HTTPS/443"
-        migrationManager -> kubernetesAPI "Fallback manual migration" "HTTPS/443"
+        openshiftRouter -> catalogProxy "Routes catalog traffic" "HTTPS/8443 TLS reencrypt"
+        catalogProxy -> k8sAPI "SubjectAccessReview" "HTTPS/443"
+        catalogProxy -> catalogAPI "Forwards authorized requests" "HTTP/8080 localhost"
+        catalogAPI -> catalogDB "Reads/writes catalog data" "TCP/5432"
 
-        restContainer -> postgresql "Query/persist model metadata" "PostgreSQL/5432"
-        catalogContainer -> postgresql "Query/persist catalog data" "PostgreSQL/5432"
-
-        webhookServer -> kubernetesAPI "Admission webhook registration" "HTTPS/443"
+        certManager -> modelRegistryOperator "Provisions webhook TLS cert"
+        servingCertSigner -> registryInstance "Provisions kube-rbac-proxy TLS certs"
+        servingCertSigner -> catalogInstance "Provisions catalog kube-rbac-proxy TLS cert"
+        prometheus -> modelRegistryOperator "Scrapes metrics" "HTTPS/8443 Bearer Token"
     }
 
     views {
@@ -69,7 +73,12 @@ workspace {
             autoLayout
         }
 
-        container modelRegistryAPI "RegistryContainers" {
+        container registryInstance "RegistryContainers" {
+            include *
+            autoLayout
+        }
+
+        container catalogInstance "CatalogContainers" {
             include *
             autoLayout
         }
@@ -81,20 +90,15 @@ workspace {
             }
             element "Internal RHOAI" {
                 background #7ed321
-                color #000000
-            }
-            element "Database" {
-                background #438dd5
                 color #ffffff
-                shape Cylinder
             }
             element "Person" {
-                background #08427b
+                shape person
+                background #4a90e2
                 color #ffffff
-                shape Person
             }
             element "Software System" {
-                background #1168bd
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {

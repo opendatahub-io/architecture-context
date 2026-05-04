@@ -1,41 +1,42 @@
 sequenceDiagram
-    participant Client as ML Application /<br/>Notebook
-    participant Online as Feature Server (Online)<br/>6567/TCP HTTPS
-    participant SecMgr as SecurityManager<br/>(OIDC / K8s RBAC)
-    participant OnlineDB as Online Store<br/>(Redis/PostgreSQL)
-    participant OfflineDB as Offline Store<br/>(BigQuery/DuckDB)
-    participant CronJob as CronJob (ose-cli)<br/>Materialization
-    participant Operator as Feast Operator<br/>Go Controller
+    participant Client as ML Model / Client
+    participant Route as OpenShift Route<br/>443/TCP HTTPS TLS
+    participant FS as Feature Server<br/>6566/TCP HTTP/HTTPS
+    participant SecMgr as SecurityManager<br/>(in-process)
+    participant Redis as Online Store (Redis)<br/>6379/TCP
+    participant BQ as Offline Store (BigQuery)<br/>443/TCP HTTPS
+    participant Registry as Registry<br/>6001/TCP gRPC
+    participant Operator as Feast Operator
     participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant OIDC as OIDC Provider<br/>443/TCP HTTPS
+    participant CronJob as Materialization CronJob
 
-    Note over Client,OnlineDB: Flow 1: Online Feature Retrieval
+    Note over Client,Redis: Flow 1: Online Feature Retrieval
+    Client->>Route: POST /get-online-features<br/>Auth: Bearer Token (OIDC/K8s)
+    Route->>FS: Forward (TLS edge termination)
+    FS->>SecMgr: Validate token & check<br/>Permission: READ_ONLINE
+    SecMgr-->>FS: Authorized
+    FS->>Redis: GET feature values<br/>Auth: Password, TLS optional
+    Redis-->>FS: Feature values
+    FS-->>Route: JSON Response
+    Route-->>Client: Feature values
 
-    Client->>Online: POST /get-online-features<br/>HTTPS/TLS (service-serving certs)<br/>Auth: Bearer Token (OIDC/K8s)
-    Online->>SecMgr: Validate token & RBAC<br/>inject_user_details
-    SecMgr->>K8sAPI: TokenReview (K8s auth mode)
-    K8sAPI-->>SecMgr: Token valid + user info
-    SecMgr->>OIDC: JWKS retrieval (OIDC auth mode)
-    OIDC-->>SecMgr: JWKS keys
-    SecMgr-->>Online: READ_ONLINE authorized
-    Online->>OnlineDB: Read features<br/>TCP/TLS (configurable)<br/>Auth: Store credentials
-    OnlineDB-->>Online: Feature values
-    Online-->>Client: JSON Response<br/>HTTPS/TLS
+    Note over CronJob,Redis: Flow 2: Feature Materialization (CronJob)
+    CronJob->>FS: kubectl exec<br/>Auth: ServiceAccount RBAC
+    FS->>BQ: Query historical features<br/>Auth: GCP credentials, TLS 1.2+
+    BQ-->>FS: Feature data (batch)
+    FS->>Redis: Write materialized features<br/>Auth: Password, TLS optional
+    Redis-->>FS: ACK
 
-    Note over CronJob,OnlineDB: Flow 2: Feature Materialization (CronJob)
+    Note over Client,Redis: Flow 3: Feature Push
+    Client->>Route: POST /push<br/>Auth: Bearer Token
+    Route->>FS: Forward
+    FS->>SecMgr: Check Permission:<br/>WRITE_ONLINE / WRITE_OFFLINE
+    SecMgr-->>FS: Authorized
+    FS->>Redis: Write to online store<br/>(immediate)
+    FS->>BQ: Write to offline store<br/>(batched, background)
 
-    CronJob->>Online: POST /materialize<br/>HTTPS/TLS<br/>Auth: Intra-communication token
-    Online->>OfflineDB: Read historical features<br/>TCP/HTTPS/TLS<br/>Auth: Store credentials
-    OfflineDB-->>Online: Historical feature data
-    Online->>OnlineDB: Write materialized features<br/>TCP/TLS<br/>Auth: Store credentials
-    OnlineDB-->>Online: Write confirmed
-    Online-->>CronJob: 200 OK
-
-    Note over Operator,K8sAPI: Flow 3: Notebook ConfigMap Injection
-
-    Operator->>K8sAPI: Watch Notebook CRs<br/>HTTPS/TLS<br/>Auth: ServiceAccount token
-    K8sAPI-->>Operator: Notebook with<br/>opendatahub.io/feast-integration: "true"
-    Operator->>K8sAPI: Read FeatureStore client ConfigMap<br/>HTTPS/TLS
-    K8sAPI-->>Operator: feature_store.yaml config
-    Operator->>K8sAPI: Create/Update {notebook}-feast-config ConfigMap<br/>HTTPS/TLS
-    K8sAPI-->>Operator: ConfigMap created
+    Note over Operator,K8sAPI: Flow 4: Operator Auto-Access RBAC
+    Operator->>FS: GET /api/v1/permissions<br/>Port: 8001/TCP<br/>Auth: Intra-communication JWT
+    FS-->>Operator: Permission policies
+    Operator->>K8sAPI: Create/Update RBAC resources<br/>Auth: ServiceAccount token
+    K8sAPI-->>Operator: RBAC resources created

@@ -2,81 +2,63 @@ graph TB
     subgraph BatchGateway["Batch Gateway System"]
         direction TB
 
-        subgraph APIServer["API Server (8000/TCP + 8081/TCP)"]
-            Router[HTTP Router]
-            BatchHandler[Batch Handler<br/>/v1/batches]
-            FileHandler[File Handler<br/>/v1/files]
-            TenantMW[Tenant Middleware<br/>X-MaaS-Username]
-            SecurityMW[Security Headers MW]
-            RecoveryMW[Recovery Middleware]
-            HealthAPI[Health/Ready/Metrics<br/>:8081]
-            Router --> TenantMW
-            TenantMW --> SecurityMW
-            SecurityMW --> RecoveryMW
-            RecoveryMW --> BatchHandler
-            RecoveryMW --> FileHandler
+        subgraph Apiserver["batch-gateway-apiserver"]
+            direction LR
+            BatchAPI["Batch Handler<br/>/v1/batches/*"]
+            FileAPI["File Handler<br/>/v1/files/*"]
+            Middleware["Request Middleware<br/>Tenant Extraction"]
+            HealthAPI["Health/Ready/Metrics<br/>:8081"]
+            Middleware --> BatchAPI
+            Middleware --> FileAPI
         end
 
-        subgraph Processor["Processor (9090/TCP observability)"]
-            Poller[Queue Poller<br/>poll_interval: 5s]
-            Preprocessor[Preprocessor<br/>Plan Builder]
-            Executor[Executor<br/>Inference Dispatcher]
-            Finalizer[Finalizer<br/>Result Uploader]
-            Recovery[Startup Recovery]
-            GlobalSem[Global Semaphore<br/>concurrency: 100]
-            ModelSem[Per-Model Semaphore<br/>concurrency: 10]
-            HealthProc[Health/Ready/Metrics<br/>:9090]
-            Poller --> Preprocessor
-            Preprocessor --> Executor
-            Executor --> GlobalSem
-            Executor --> ModelSem
-            Executor --> Finalizer
+        subgraph Processor["batch-gateway-processor"]
+            direction LR
+            Poller["Queue Poller<br/>poll_interval: 5s"]
+            WorkerPool["Worker Pool<br/>num_workers: configurable"]
+            Executor["Inference Executor<br/>global + per-model concurrency"]
+            Recovery["Crash Recovery<br/>Startup scan"]
+            Poller --> WorkerPool
+            WorkerPool --> Executor
+            Recovery -.->|re-enqueue| WorkerPool
         end
 
-        subgraph GC["Garbage Collector"]
-            Scanner[Expiry Scanner<br/>interval: 30m]
-            Deleter[Batch Deleter<br/>max_concurrency: 10]
-            Scanner --> Deleter
+        subgraph GC["batch-gateway-gc"]
+            direction LR
+            Scanner["Expiry Scanner<br/>periodic interval"]
+            Cleaner["Record & File Cleaner<br/>max_concurrency: 10"]
+            Scanner --> Cleaner
         end
     end
 
-    subgraph DataLayer["Shared Data Layer"]
-        PostgreSQL[(PostgreSQL<br/>5432/TCP<br/>Metadata Storage)]
-        Redis[(Redis/Valkey<br/>6379/TCP<br/>Queue + Events + Status)]
-        S3[(S3 Storage<br/>443/TCP<br/>File Storage)]
-    end
+    Client[External Client] -->|"POST /v1/files<br/>POST /v1/batches<br/>Tenant Header"| Middleware
+    Client -->|"GET /v1/batches/{id}<br/>GET /v1/files/{id}/content"| Middleware
 
-    Client[External Client] -->|POST /v1/batches<br/>POST /v1/files| Router
-    AuthGW[Kuadrant/Authorino<br/>Auth Gateway] -->|Tenant Header<br/>Injection| Router
+    BatchAPI -->|"enqueue job"| RedisQueue["Redis/Valkey<br/>Priority Queue<br/>6379/TCP"]
+    BatchAPI -->|"store metadata"| PostgreSQL["PostgreSQL<br/>5432/TCP"]
+    FileAPI -->|"store file"| FileStore["File Store<br/>S3 (443/TCP) / FS (PVC)"]
+    FileAPI -->|"store metadata"| PostgreSQL
 
-    BatchHandler -->|metadata ops| PostgreSQL
-    BatchHandler -->|enqueue job| Redis
-    FileHandler -->|upload/download| S3
-    FileHandler -->|file metadata| PostgreSQL
+    Poller -->|"dequeue job"| RedisQueue
+    Executor -->|"POST inference<br/>Bearer token"| InferenceGW["LLM Inference Gateway<br/>(llm-d / vLLM)"]
+    Executor -->|"read input / write output"| FileStore
+    Executor -->|"update status"| PostgreSQL
 
-    Poller -->|BZMPop dequeue| Redis
-    Preprocessor -->|read job metadata| PostgreSQL
-    Preprocessor -->|download input| S3
-    Executor -->|inference requests| InferenceGW[Inference Gateway<br/>llm-d]
-    Finalizer -->|upload results| S3
-    Finalizer -->|update status| PostgreSQL
-    Finalizer -->|update progress| Redis
+    Scanner -->|"query expired"| PostgreSQL
+    Cleaner -->|"delete files"| FileStore
+    Cleaner -->|"delete metadata"| PostgreSQL
 
-    Deleter -->|delete expired| PostgreSQL
-    Deleter -->|delete expired| Redis
-    Deleter -->|delete files| S3
+    BatchAPI -->|"publish cancel"| RedisEvents["Redis/Valkey<br/>Event Channel"]
+    WorkerPool -->|"subscribe cancel"| RedisEvents
+    WorkerPool -->|"progress updates"| RedisStatus["Redis/Valkey<br/>Status Store"]
 
-    Prometheus[Prometheus] -->|scrape| HealthAPI
-    Prometheus -->|scrape| HealthProc
-
-    style APIServer fill:#4a90e2,stroke:#333,color:#fff
+    style Apiserver fill:#4a90e2,stroke:#333,color:#fff
     style Processor fill:#7ed321,stroke:#333,color:#fff
     style GC fill:#f5a623,stroke:#333,color:#fff
-    style DataLayer fill:#f0f0f0,stroke:#999
+    style Client fill:#f9f9f9,stroke:#999
     style PostgreSQL fill:#336791,stroke:#333,color:#fff
-    style Redis fill:#dc382d,stroke:#333,color:#fff
-    style S3 fill:#ff9900,stroke:#333,color:#fff
-    style Client fill:#e8e8e8,stroke:#333
-    style AuthGW fill:#9b59b6,stroke:#333,color:#fff
-    style InferenceGW fill:#2ecc71,stroke:#333,color:#fff
-    style Prometheus fill:#e6522c,stroke:#333,color:#fff
+    style RedisQueue fill:#dc382d,stroke:#333,color:#fff
+    style RedisEvents fill:#dc382d,stroke:#333,color:#fff
+    style RedisStatus fill:#dc382d,stroke:#333,color:#fff
+    style FileStore fill:#ff9900,stroke:#333,color:#fff
+    style InferenceGW fill:#9b59b6,stroke:#333,color:#fff

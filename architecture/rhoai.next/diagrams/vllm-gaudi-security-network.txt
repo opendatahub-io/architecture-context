@@ -1,134 +1,142 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                   │
 │                                                                          │
-│  [External Client / Data Scientist]                                      │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token (JWT)                                       │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Platform Gateway)                                             │
+│                                                                          │
+│  [KServe Gateway / HTTPRoute]                                            │
+│  - Exposure: External (Gateway API)                                      │
+│  - Port: 443/TCP (external) → 8443/TCP (internal)                       │
+│  - TLS Mode: SIMPLE (TLS 1.2+)                                          │
+│  - Auth: Delegates to kube-rbac-proxy                                    │
 │         │                                                                │
 │         │ Port: 8443/TCP                                                 │
 │         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS 1.3                                            │
-│         │ Auth: Bearer Token (Kubernetes SA or user token)               │
+│         │ Encryption: TLS                                                │
+│         │ Auth: ServiceAccount Token                                     │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (Pod-level Auth Proxy)                                         │
+│  AUTH SIDECAR (Pod-level Security Boundary)                             │
 │                                                                          │
 │  [kube-rbac-proxy Sidecar]                                               │
-│  - Port: 8443/TCP (external) → 8000/TCP (internal, localhost)           │
-│  - TLS Termination: TLS 1.3                                             │
-│  - AuthN: Bearer Token validation against Kubernetes API server         │
-│  - AuthZ: RBAC on Kubernetes ServiceAccount or user token               │
-│  - Injected by: RHOAI platform operator                                 │
+│  - Purpose: TLS termination + RBAC enforcement                           │
+│  - Port: 8443/TCP (external) → 8000/TCP (localhost)                     │
+│  - AuthN: Bearer Token (JWT) validation                                  │
+│  - AuthZ: Kubernetes RBAC SubjectAccessReview                            │
+│  - Policy: RHOAI platform auth policy                                    │
 │         │                                                                │
 │         │ Port: 8000/TCP                                                 │
 │         │ Protocol: HTTP                                                 │
-│         │ Encryption: None (localhost/pod-internal)                       │
-│         │ Auth: None (pre-authenticated by proxy)                        │
+│         │ Encryption: None (localhost/in-pod)                            │
+│         │ Auth: None (already validated by sidecar)                      │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  APPLICATION (Pod-internal, Trusted after auth)                         │
+│  APPLICATION (Container)                                                │
 │                                                                          │
-│  [vLLM OpenAI API Server]                                                │
-│  - Container: odh-vllm-gaudi-rhel9                                       │
+│  [vLLM API Server (odh-vllm-gaudi-rhel9)]                               │
+│  - Base Image: registry.access.redhat.com/ubi9/ubi                       │
+│  - Runtime: Python 3.x + SynapseAI v1.23.0                              │
 │  - Port: 8000/TCP (HTTP, plaintext)                                      │
-│  - User: non-root (UID 2000)                                             │
 │  - Endpoints:                                                            │
-│    - POST /v1/completions       (text completion)                        │
-│    - POST /v1/chat/completions  (chat completion)                        │
-│    - GET  /v1/models            (list models)                            │
-│    - POST /v1/embeddings        (text embeddings)                        │
-│    - GET  /health               (health check, no auth internally)       │
-│    - GET  /metrics              (prometheus metrics, no auth internally)  │
+│    - /v1/completions      (POST) - Text completions                      │
+│    - /v1/chat/completions (POST) - Chat completions                      │
+│    - /v1/models           (GET)  - List models                           │
+│    - /v1/embeddings       (POST) - Embeddings                            │
+│    - /health              (GET)  - Health check (unauthenticated)        │
+│    - /metrics             (GET)  - Prometheus metrics (unauthenticated)  │
+│  - FIPS: ⚠ DISABLED (openssl-fips-provider-so removed in Dockerfile)    │
 │         │                                                                │
 │         │ In-process calls                                               │
 │         ▼                                                                │
-│  [HPUModelRunner / HPUWorker]                                            │
-│  - Plugin: vllm_gaudi (registered via entry points)                      │
-│  - Device: Intel Gaudi HPU (Gaudi2 or Gaudi3)                            │
-│  - Attention: Standard, MLA, Unified, Unified-MLA                        │
-│  - Quantization: FP8, INC, GPTQ, AWQ, Compressed-Tensors, ModelOpt      │
+│  [HPUWorker / HPUModelRunner]                                            │
+│  - Purpose: Model execution on Gaudi accelerators                        │
+│  - Communication: In-process (no network)                                │
+│         │                                                                │
+│         │ Device driver interface                                        │
+│         │ Protocol: SynapseAI HAL                                        │
+│         ▼                                                                │
+│  [Intel Gaudi Device (HPU)]                                              │
+│  - Driver: Habana SynapseAI v1.23.0 (rev 695)                           │
+│  - Purpose: Model inference execution                                    │
 │                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  CLUSTER-INTERNAL (Intra-cluster, no encryption)                        │
+│  INTER-WORKER COMMUNICATION (In-Cluster, Plaintext)                     │
 │                                                                          │
-│  ┌─── Distributed Inference (Multi-HPU) ───┐                            │
-│  │                                          │                            │
-│  │  [Ray Cluster]                           │                            │
-│  │  - Port: 6379/TCP (head node)            │                            │
-│  │  - Protocol: TCP                         │                            │
-│  │  - Encryption: None (plaintext)          │                            │
-│  │  - Auth: Ray cluster internal            │                            │
-│  │         │                                │                            │
-│  │         │ Dynamic ports                  │                            │
-│  │         ▼                                │                            │
-│  │  [HPUWorker Peers (Rank 1..N)]           │                            │
-│  │  - Protocol: TCP                         │                            │
-│  │  - Encryption: None (plaintext)          │                            │
-│  │                                          │                            │
-│  │  [HCCL Peer HPUs]                        │                            │
-│  │  - Protocol: RDMA/TCP                    │                            │
-│  │  - Encryption: None (plaintext)          │                            │
-│  │  - Purpose: All-reduce, all-gather for   │                            │
-│  │    tensor/expert/data parallelism         │                            │
-│  │                                          │                            │
-│  │  [NIXL Peer Nodes] (Optional)            │                            │
-│  │  - Protocol: RDMA/TCP                    │                            │
-│  │  - Encryption: None (plaintext)          │                            │
-│  │  - Purpose: KV cache transfer for        │                            │
-│  │    disaggregated prefill                  │                            │
-│  └──────────────────────────────────────────┘                            │
+│  [HCCL Peer Workers]                                                     │
+│  - Purpose: Tensor/pipeline parallelism collective ops                   │
+│  - Port: Dynamic                                                         │
+│  - Protocol: HCCL                                                        │
+│  - Encryption: None (in-cluster)                                         │
+│  - Auth: None                                                            │
+│  - Pattern: All-reduce, all-gather, reduce-scatter                       │
+│                                                                          │
+│  [NIXL Side Channel] (Optional — disaggregated serving)                  │
+│  - Purpose: KV cache transfer coordination                               │
+│  - Port: VLLM_NIXL_SIDE_CHANNEL_PORT + dp_rank                          │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: None (plaintext)                                          │
+│  - Auth: None                                                            │
+│  - Data path: NIXL / RDMA (direct memory transfer)                       │
+│                                                                          │
+│  [Ray Head Node] (Optional — multi-node)                                 │
+│  - Purpose: Distributed worker orchestration                             │
+│  - Port: 6379/TCP                                                        │
+│  - Protocol: Ray protocol                                                │
+│  - Encryption: None                                                      │
+│  - Auth: None                                                            │
 │                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES (Egress)                                              │
+│  EXTERNAL SERVICES (Egress)                                             │
 │                                                                          │
-│  [HuggingFace Hub - huggingface.co]                                      │
+│  [S3/MinIO — Model Storage]                                              │
+│  - Purpose: Model weight download at startup                             │
 │  - Port: 443/TCP                                                         │
 │  - Protocol: HTTPS                                                       │
 │  - Encryption: TLS 1.2+                                                  │
-│  - Auth: HF_TOKEN Bearer                                                 │
-│  - Purpose: Model weight and tokenizer downloads                         │
+│  - Auth: AWS IAM / Access Key                                            │
 │                                                                          │
-│  [S3 Storage - s3.amazonaws.com or compatible]                           │
-│  - Port: 443/TCP (or varies for PVC/NFS)                                │
-│  - Protocol: HTTPS (or filesystem for PVC)                               │
-│  - Encryption: TLS 1.2+ (for S3)                                        │
-│  - Auth: AWS IAM / service account                                       │
-│  - Purpose: Model artifact storage and retrieval                         │
+│  [Hugging Face Hub — huggingface.co]                                     │
+│  - Purpose: Model weights and tokenizer download                         │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Bearer Token (optional, for gated models)                       │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- No RBAC resources defined by this component
-- RBAC is managed by:
-  - KServe deployment (ServingRuntime CRDs)
-  - RHOAI platform operator (rhods-operator)
-  - kube-rbac-proxy sidecar (Bearer token validation against K8s API server)
-
-Authentication & Authorization:
-- /v1/* endpoints:
-  - Auth: Bearer Token (delegated to kube-rbac-proxy sidecar)
-  - Enforcement: kube-rbac-proxy on port 8443/TCP
-  - Policy: RBAC on Kubernetes ServiceAccount or user token
-- /health, /metrics:
-  - Auth: None (when accessed pod-internally)
-  - Exposure: Informational, pod-local access only
+- No RBAC resources defined in this repository
+- RBAC is managed by KServe and the RHOAI operator
+- kube-rbac-proxy sidecar enforces Kubernetes RBAC via SubjectAccessReview
 
 Secrets:
-- HF_TOKEN (Opaque, env var)
-  - Purpose: HuggingFace Hub authentication for model downloads
-  - Provisioned By: User/admin
-  - Auto-Rotate: No
-  - Sensitivity: Medium (grants read access to gated model repositories)
+- Model storage credentials (Opaque) - S3/MinIO access keys, provisioned by User/RHOAI Dashboard, no auto-rotation
+- HuggingFace token (Opaque) - Hub auth for gated models, provisioned by User, no auto-rotation
 
-Container Security:
-- Base Image: UBI 9.6 (Red Hat Universal Base Image)
-- Runtime User: non-root (UID 2000)
-- Build: Multi-stage Dockerfile via Konflux pipeline
-- No capabilities or privilege escalation required
+Authentication & Authorization:
+- /v1/* endpoints: Bearer Token (JWT) enforced by kube-rbac-proxy sidecar
+- /health, /metrics: Unauthenticated (direct access, no sidecar interception)
+- RHOAI 3.x: kube-rbac-proxy sidecar
+- RHOAI 2.x: oauth-proxy sidecar (legacy)
 
-Network Notes:
-- vLLM itself does NOT implement authentication or TLS
-- All external auth/TLS is handled by kube-rbac-proxy sidecar (injected by platform)
-- Intra-cluster distributed communication (Ray, HCCL, NIXL) is plaintext
-  - Acceptable: Pod-to-pod within trusted cluster network
-  - Risk: No encryption on RDMA/TCP channels for model weights and KV caches
-- Egress to HuggingFace Hub requires HF_TOKEN if accessing gated models
-- Egress to S3 requires AWS IAM credentials (typically via IRSA or env vars)
+FIPS Compliance:
+- ⚠ WARNING: OpenSSL FIPS provider REMOVED in container build
+  - Dockerfile line 63: rpm -e --nodeps openssl-fips-provider-so || true
+  - Container runs with standard (non-FIPS) OpenSSL
+  - Likely due to SynapseAI runtime compatibility
+  - Deployments requiring FIPS compliance must address this gap
+- Base image: UBI 9 (FIPS-capable but provider removed)
+- No custom TLS configuration — delegates to platform (KServe sidecar)
+
+Build Hermeticity:
+- ⚠ Non-hermetic build (hermetic: false in Tekton PipelineRun)
+- No lock files present (rpms.lock.yaml, pip lock, artifacts.lock.yaml)
+- Build clones from GitHub, downloads from vault.habana.ai and PyPI at build time
+- Downstream release branches may add lock files during release hardening

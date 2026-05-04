@@ -1,61 +1,68 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["Client Application"]
+        Client["Client / Data Scientist<br/>Application"]
     end
 
-    subgraph PlatformLayer["PLATFORM LAYER (RHOAI)"]
-        RBACProxy["kube-rbac-proxy Sidecar<br/>Auth Enforcement<br/>Token Validation / RBAC"]
+    subgraph PlatformIngress["PLATFORM INGRESS (Managed)"]
+        Ingress["KServe InferenceService /<br/>Gateway API / kube-rbac-proxy<br/>TLS Termination<br/>AuthN/AuthZ: Platform-level"]
     end
 
-    subgraph CaikitRuntime["CAIKIT RUNTIME (Inference Container)"]
+    subgraph InternalCluster["INTERNAL CLUSTER (Trusted)"]
         direction TB
 
-        gRPCServer["Caikit gRPC Server<br/>8085/TCP<br/>Configurable TLS<br/>RUNTIME_TLS_SERVER_KEY/CERT"]
-        HTTPGateway["Caikit HTTP REST Gateway<br/>8080/TCP<br/>Configurable TLS<br/>/api/v1/task/*"]
+        subgraph RuntimePod["caikit Runtime Container<br/>User: caikit (UID 1001)<br/>Image: ubi9/ubi-minimal"]
+            HTTPSvc["HTTP Server<br/>ClusterIP 8080/TCP<br/>Plaintext<br/>No Auth (delegated)"]
+            GRPCSvc["gRPC Server<br/>ClusterIP 8085/TCP<br/>Plaintext<br/>No Auth (delegated)"]
 
-        subgraph CaikitNLPLib["caikit-nlp Library (in-process)"]
-            direction LR
-            TextGenMods["TextGeneration<br/>TextGenerationTGIS<br/>PeftPromptTuning<br/>PeftPromptTuningTGIS"]
-            EmbedMods["EmbeddingModule<br/>CrossEncoderModule"]
-            ClassMods["SequenceClassification<br/>FilteredSpanClassification<br/>RegexSentenceSplitter"]
+            subgraph CaikitNLP["caikit-nlp Library (in-process)"]
+                LocalModules["Local Modules<br/>TextGeneration<br/>PeftPromptTuning<br/>EmbeddingModule<br/>CrossEncoderModule<br/>SequenceClassification"]
+                RemoteModules["TGIS Modules<br/>TextGenerationTGIS<br/>PeftPromptTuningTGIS<br/>TGISAutoFinder"]
+            end
         end
 
-        TGISClient["TGISGenerationClient<br/>(gRPC client)"]
+        subgraph MultiGPU["MULTI-GPU TRAINING"]
+            OtherRank["Other Runtime Pod<br/>(peer rank)"]
+        end
     end
 
-    subgraph EgressTargets["EGRESS DESTINATIONS"]
-        TGIS["TGIS Backend<br/>Configurable Port/TCP<br/>gRPC<br/>Optional TLS/mTLS"]
-        HFHub["HuggingFace Hub<br/>443/TCP<br/>HTTPS / TLS 1.2+<br/>API Token (optional)<br/>DEFAULT: DISABLED"]
-        PyTorchDist["PyTorch Distributed Peers<br/>29550/TCP<br/>TCP PLAINTEXT<br/>No Auth"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        TGIS["TGIS Server<br/>gRPC (default 8033/TCP)<br/>TLS optional<br/>mTLS optional"]
+        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Token auth (optional)"]
     end
 
-    %% Flows
-    Client -->|"gRPC/8085 or HTTP/8080<br/>Configurable TLS<br/>No in-lib auth"| RBACProxy
-    RBACProxy -->|"Authenticated request<br/>gRPC/8085"| gRPCServer
-    RBACProxy -->|"Authenticated request<br/>HTTP/8080"| HTTPGateway
+    %% Client to Platform
+    Client -->|"HTTP/8080 or gRPC/8085<br/>Auth: Platform-managed"| Ingress
 
-    gRPCServer --> CaikitNLPLib
-    HTTPGateway --> CaikitNLPLib
+    %% Platform to Runtime
+    Ingress -->|"HTTP/8080<br/>Plaintext (in-cluster)<br/>Auth validated at ingress"| HTTPSvc
+    Ingress -->|"gRPC/8085<br/>Plaintext (in-cluster)<br/>Auth validated at ingress"| GRPCSvc
 
-    TextGenMods --> TGISClient
-    TGISClient -->|"gRPC / Configurable Port<br/>Optional TLS/mTLS<br/>ca_cert + client_cert"| TGIS
+    %% Internal module routing
+    HTTPSvc --> LocalModules
+    HTTPSvc --> RemoteModules
+    GRPCSvc --> LocalModules
+    GRPCSvc --> RemoteModules
 
-    CaikitNLPLib -.->|"HTTPS/443<br/>TLS 1.2+<br/>API Token (opt)<br/>DISABLED by default"| HFHub
+    %% Egress: TGIS
+    RemoteModules -->|"gRPC/8033 (configurable)<br/>TLS optional<br/>mTLS: ca_cert, client_cert, client_key"| TGIS
 
-    TextGenMods -.->|"TCP/29550<br/>PLAINTEXT<br/>No Auth<br/>Distributed training only"| PyTorchDist
+    %% Egress: HuggingFace
+    LocalModules -->|"HTTPS/443<br/>TLS 1.2+<br/>HF Token (optional)<br/>Only when allow_downloads=true"| HFHub
+
+    %% Multi-GPU training
+    RuntimePod -->|"TCP/29550 (configurable)<br/>Plaintext<br/>PyTorch Distributed (torchrun)"| OtherRank
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef platform fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef runtime fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef library fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef runtime fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef module fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
 
     class Client external
-    class RBACProxy platform
-    class gRPCServer,HTTPGateway runtime
-    class TextGenMods,EmbedMods,ClassMods library
-    class TGISClient runtime
-    class TGIS,HFHub egress
-    class PyTorchDist warning
+    class Ingress ingress
+    class HTTPSvc,GRPCSvc,RuntimePod internal
+    class LocalModules,RemoteModules module
+    class TGIS,HFHub externalservice
+    class OtherRank internal

@@ -1,104 +1,94 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client<br/>OpenAI-compatible API"]
+        Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS / PROXY LAYER"]
-        Gateway["Gateway (Envoy)<br/>llm-d-inference-gateway<br/>80/TCP HTTP<br/>TLS optional (impl-dependent)<br/>AllowedRoutes: All NS"]
-
-        subgraph GatewayImpls["Gateway Implementations"]
-            AG["agentgateway<br/>(Preferred)"]
-            IstioGW["Istio<br/>IngressGateway"]
-            GKEGW["GKE Gateway<br/>(Cloud LB)"]
-        end
+    subgraph Ingress["INGRESS (Gateway API)"]
+        Gateway["Gateway<br/>(Istio / agentgateway / GKE)<br/>80/TCP HTTP<br/>TLS: Provider-dependent<br/>Auth: Provider-dependent"]
     end
 
-    subgraph SchedulingZone["SCHEDULING LAYER (Cluster Internal)"]
-        EPP["Endpoint Picker (EPP)<br/>ghcr.io/llm-d/llm-d-inference-scheduler:v0.7.0<br/>ext-proc gRPC (FULL_DUPLEX_STREAMED)<br/>Metrics: 9002/TCP, 9090/TCP<br/>FailMode: FailOpen/FailClose"]
-
-        Pool["InferencePool CRD<br/>gateway.networking.k8s.io<br/>Namespace-scoped<br/>Label selector: llm-d.ai/inference-serving"]
+    subgraph ControlPlane["CONTROL PLANE (Cluster Internal)"]
+        EPP["llm-d-inference-scheduler (EPP)<br/>9002/TCP gRPC ext_proc<br/>8081/TCP HTTP<br/>No Encryption<br/>Plugin chains: scoring, filtering"]
     end
 
-    subgraph ModelZone["MODEL SERVER LAYER (Cluster Internal)"]
+    subgraph DataPlane["DATA PLANE (Pod Network)"]
         direction TB
 
-        subgraph StandardMode["Standard Serving"]
-            ModelServer["Model Server (vLLM/SGLang)<br/>SA: sa | User: uid 2000 (non-root)<br/>8000/TCP HTTP<br/>Health: /health, /v1/models<br/>Labels: llm-d.ai/role, llm-d.ai/model"]
+        subgraph DecodeNS["Decode Path"]
+            RoutingSidecar["Routing Sidecar<br/>(P/D mode only)<br/>8000/TCP HTTP<br/>Init container<br/>No Encryption"]
+            DecodeVLLM["vLLM Decode Server<br/>8000/TCP or 8200/TCP HTTP<br/>UID: 2000 GID: 0<br/>automountSAToken: false<br/>No Encryption / No Auth"]
         end
 
-        subgraph PDMode["P/D Disaggregation"]
-            Sidecar["Routing Sidecar<br/>v0.7.1<br/>8000/TCP HTTP"]
-            Prefill["Prefill Worker<br/>8000/TCP HTTP<br/>llm-d.ai/role: prefill"]
-            Decode["Decode Worker<br/>8200/TCP HTTP<br/>llm-d.ai/role: decode"]
+        subgraph PrefillNS["Prefill Path"]
+            PrefillVLLM["vLLM Prefill Server<br/>8000/TCP HTTP<br/>5600/TCP NIXL<br/>No Encryption / No Auth"]
+        end
+
+        subgraph WideEPNS["Wide EP Path (Multi-Node)"]
+            LeaderPod["Leader vLLM Pod<br/>5555/TCP vLLM DP RPC<br/>5600/TCP NIXL"]
+            WorkerPods["Worker vLLM Pods<br/>(LeaderWorkerSet)<br/>IB/RoCE RDMA"]
         end
     end
 
-    subgraph DataPlane["DATA / CACHE PLANE (Cluster Internal)"]
-        NIXL["NIXL Transfer<br/>v0.10.0<br/>5600/TCP RDMA<br/>GPUDirect (NVLink/RoCE/IB/EFA)<br/>NO ENCRYPTION"]
-        ZMQ["ZMQ PUB/SUB<br/>5556/TCP<br/>KV cache block events<br/>NO ENCRYPTION"]
-        LMCache["LMCache v0.3.14<br/>Tiered: HBM→CPU→Disk→Shared<br/>CephFS/Lustre"]
-    end
-
-    subgraph Observability["OBSERVABILITY"]
-        Prometheus["Prometheus<br/>Metrics collection<br/>GKE/OCP/Self-managed"]
-        Jaeger["Jaeger / OpenTelemetry<br/>OTLP Protocol<br/>Distributed tracing"]
+    subgraph Observability["OBSERVABILITY PLANE"]
+        Prometheus["Prometheus<br/>9090/TCP HTTP<br/>Optional TLS<br/>Scrapes /metrics"]
+        OTEL["OTEL Collector<br/>4317/TCP gRPC OTLP<br/>No Encryption"]
+        Jaeger["Jaeger<br/>16686/TCP HTTP<br/>Trace UI"]
+        Grafana["Grafana<br/>Dashboards"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        Registry["ghcr.io/llm-d<br/>443/TCP HTTPS<br/>Container images"]
-        ModelStorage["Model Storage<br/>(S3/GCS/PVC)<br/>HTTPS/NFS<br/>Cloud IAM Auth"]
+        HF["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: HF_TOKEN"]
+        RDMAFabric["RDMA/IB Fabric<br/>InfiniBand / RoCE<br/>L2 Transport<br/>No Encryption"]
     end
 
     %% External to Ingress
-    Client -->|"HTTP/80<br/>TLS optional<br/>Bearer Token optional<br/>Headers: x-gateway-inference-*"| Gateway
+    Client -->|"HTTP/80<br/>Provider-dependent TLS & Auth"| Gateway
 
-    %% Ingress to Scheduling
-    Gateway -->|"ext-proc gRPC<br/>In-cluster<br/>Service Identity"| EPP
+    %% Ingress to Control Plane
+    Gateway -->|"gRPC/9002<br/>ext_proc<br/>No Encryption"| EPP
 
-    %% Scheduling to Pool
-    EPP -->|"K8s API watch/list<br/>SA Token (RBAC)"| Pool
+    %% Control Plane to Data Plane
+    EPP -.->|"Selects backend"| DecodeVLLM
+    EPP -.->|"Selects backend"| PrefillVLLM
 
-    %% Pool to Model Servers
-    Pool -->|"Label discovery<br/>llm-d.ai/inference-serving"| ModelServer
-    Pool -->|"Label discovery"| Sidecar
+    %% Gateway to Data Plane (after EPP selection)
+    Gateway -->|"HTTP/8000<br/>No Encryption"| RoutingSidecar
+    Gateway -->|"HTTP/8000<br/>No Encryption"| DecodeVLLM
+    Gateway -->|"HTTP/8000<br/>No Encryption"| PrefillVLLM
 
-    %% Gateway forwards to model servers
-    Gateway -->|"HTTP/8000<br/>In-cluster"| ModelServer
+    %% Within Data Plane
+    RoutingSidecar -->|"HTTP/8200<br/>No Encryption"| DecodeVLLM
+    PrefillVLLM -->|"NIXL/5600<br/>RDMA/TCP<br/>No Encryption (L2)"| DecodeVLLM
+    LeaderPod -->|"vLLM DP RPC/5555<br/>No Encryption"| WorkerPods
+    LeaderPod -->|"NIXL/5600<br/>RDMA/TCP (L2)"| WorkerPods
+    LeaderPod -->|"NVSHMEM/NCCL<br/>IB/RoCE RDMA (L2)"| WorkerPods
 
-    %% P/D Disaggregation flow
-    Gateway -->|"HTTP/8000<br/>In-cluster"| Sidecar
-    Sidecar -->|"HTTP/8000<br/>max_tokens=1"| Prefill
-    Prefill -->|"NIXL/5600<br/>RDMA GPUDirect<br/>NO ENCRYPTION"| NIXL
-    NIXL -->|"KV blocks<br/>RDMA transfer"| Decode
-    Decode -->|"HTTP/8200"| Sidecar
+    %% Egress
+    DecodeVLLM -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HF
+    PrefillVLLM -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HF
+    PrefillVLLM -->|"RDMA<br/>L2 No Encryption"| RDMAFabric
+    DecodeVLLM -->|"RDMA<br/>L2 No Encryption"| RDMAFabric
 
-    %% ZMQ events
-    ModelServer -->|"ZMQ/5556<br/>Block hash events<br/>NO ENCRYPTION"| ZMQ
-    ZMQ -->|"Cache index<br/>updates"| EPP
-
-    %% Metrics
-    ModelServer -->|"Metrics scrape"| Prometheus
-    EPP -->|"9002/9090 TCP"| Prometheus
-    Prometheus -.->|"Polling data"| EPP
-    ModelServer -->|"OTLP traces"| Jaeger
-
-    %% External services
-    ModelServer -->|"HTTPS/443<br/>Registry creds"| Registry
-    ModelServer -->|"HTTPS/NFS<br/>IAM Auth"| ModelStorage
+    %% Observability
+    DecodeVLLM -.->|"OTLP gRPC/4317"| OTEL
+    PrefillVLLM -.->|"OTLP gRPC/4317"| OTEL
+    EPP -.->|"OTLP gRPC/4317"| OTEL
+    OTEL -.->|"traces"| Jaeger
+    Prometheus -.->|"scrape /metrics<br/>HTTP/8000"| DecodeVLLM
+    Prometheus -.->|"scrape /metrics<br/>HTTP/8000"| PrefillVLLM
+    Prometheus -.->|"data source"| Grafana
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef scheduling fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef modelserver fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef dataplane fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef dataplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef observability fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class Client external
-    class Gateway,AG,IstioGW,GKEGW ingress
-    class EPP,Pool scheduling
-    class ModelServer,Sidecar,Prefill,Decode modelserver
-    class NIXL,ZMQ,LMCache dataplane
-    class Prometheus,Jaeger observability
-    class Registry,ModelStorage externalservice
+    class Gateway ingress
+    class EPP controlplane
+    class RoutingSidecar,DecodeVLLM,PrefillVLLM,LeaderPod,WorkerPods dataplane
+    class Prometheus,OTEL,Jaeger,Grafana observability
+    class HF,RDMAFabric externalservice

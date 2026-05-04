@@ -1,0 +1,104 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["External Client / Data Scientist"]
+    end
+
+    subgraph Ingress["INGRESS LAYER (Gateway / Envoy ext-proc)"]
+        direction TB
+        Envoy["Envoy Proxy<br/>TLS Termination"]
+
+        subgraph ExtProc["External Processing Services"]
+            AIGateway["ai-gateway-payload-processing<br/>9004/gRPC ExtProc<br/>9005/HTTP Health<br/>API key injection"]
+            GWExt["gateway-api-inference-extension<br/>EPP: 9002/gRPC | BBR: 9004/gRPC<br/>9003,9005/HTTP Health | 9090/HTTP Metrics<br/>Self-signed TLS 4096-bit RSA"]
+        end
+
+        BatchGW["batch-gateway<br/>HTTP REST (OpenAI Batch API)<br/>Auth: X-MaaS-Username header<br/>cert-manager TLS"]
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (Istio mTLS where configured)"]
+        direction TB
+
+        subgraph InferenceSrv["Inference Serving (KServe-managed)"]
+            CaikitTGIS["caikit-tgis-serving<br/>8080/HTTP REST | 8085/gRPC<br/>8086/HTTP Metrics (PERMISSIVE mTLS)<br/>8033/gRPC TGIS (localhost)<br/>Istio mTLS sidecar"]
+            GuardrailsDet["guardrails-detectors<br/>8080/HTTP REST<br/>8085/HTTP Metrics<br/>KServe InferenceService"]
+        end
+
+        subgraph OrchLayer["Orchestration & Pipelines"]
+            Guardrails["fms-guardrails-orchestrator<br/>8033/HTTP | 8034/HTTP Health<br/>rustls/ring (NOT FIPS)<br/>NoVerifier TLS bypass"]
+            ArgoWF["argo-workflows<br/>9090/HTTP Metrics<br/>6060/HTTP Health<br/>Dual FIPS/non-FIPS binary"]
+            DSPipelines["data-science-pipelines<br/>8888/HTTP REST | 8887/gRPC (9 svc)<br/>8443/HTTPS Webhook<br/>service-ca TLS"]
+        end
+
+        subgraph OperatorLayer["Kubernetes Operators"]
+            CFOperator["codeflare-operator<br/>9443/HTTPS Webhooks<br/>8080/HTTP Metrics<br/>OAuth proxy injection<br/>RSA 2048 CA certs"]
+            DSPOperator["data-science-pipelines-operator<br/>8080/HTTP Metrics<br/>kube-rbac-proxy sidecar<br/>service-ca TLS"]
+            FeastOp["feast-operator<br/>OIDC + K8s RBAC<br/>strictfipsruntime"]
+        end
+
+        subgraph ServingLayer["Feature Serving & Evaluation"]
+            FeastSrv["feast-feature-server<br/>6566/HTTP REST<br/>gRPC (configurable)<br/>8000/HTTP Metrics"]
+            EvalHub["eval-hub<br/>8080/HTTP REST<br/>8443/HTTPS MCP<br/>K8s TokenReview + SAR"]
+        end
+
+        subgraph TrainingLayer["Training"]
+            FMSTuning["fms-hf-tuning<br/>29500/TCP FSDP<br/>PLAINTEXT<br/>CUDA 12.1"]
+        end
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        K8sAPI["Kubernetes API<br/>6443/HTTPS<br/>SA Tokens"]
+        PostgreSQL["PostgreSQL/MariaDB<br/>5432/3306 TCP<br/>Password auth"]
+        S3["S3/Minio<br/>443/HTTPS<br/>IAM/Access Keys"]
+        Redis["Redis/Valkey<br/>6379/TCP<br/>Password auth"]
+        HFHub["HuggingFace Hub<br/>443/HTTPS<br/>HF_TOKEN"]
+        ModelProviders["Model Providers<br/>443/HTTPS<br/>API Keys"]
+    end
+
+    %% External to Ingress
+    Client -->|"HTTPS/443<br/>TLS 1.3<br/>Bearer/OAuth"| Envoy
+    Client -->|"HTTP REST<br/>X-MaaS-Username"| BatchGW
+
+    %% Envoy to ExtProc
+    Envoy -->|"gRPC/9004"| AIGateway
+    Envoy -->|"gRPC/9002,9004"| GWExt
+
+    %% Ingress to Service Mesh
+    Envoy -->|"mTLS"| CaikitTGIS
+    Envoy -->|"HTTP/8033"| Guardrails
+
+    %% Internal flows
+    Guardrails -->|"HTTP/8080<br/>Content screening"| GuardrailsDet
+    Guardrails -->|"gRPC<br/>Generation"| CaikitTGIS
+    DSPipelines -->|"K8s API<br/>Create Workflow"| ArgoWF
+    DSPOperator -->|"Manages"| DSPipelines
+    CFOperator -->|"Creates<br/>RayClusters"| K8sAPI
+    FeastOp -->|"Manages"| FeastSrv
+
+    %% Egress to External Services
+    CFOperator -->|"HTTPS/6443"| K8sAPI
+    DSPOperator -->|"HTTPS/6443"| K8sAPI
+    EvalHub -->|"HTTPS/6443<br/>TokenReview/SAR"| K8sAPI
+    DSPipelines -->|"SQL"| PostgreSQL
+    BatchGW -->|"SQL"| PostgreSQL
+    EvalHub -->|"SQL"| PostgreSQL
+    ArgoWF -->|"HTTPS/443"| S3
+    DSPipelines -->|"HTTPS/443"| S3
+    BatchGW -->|"HTTPS/443"| S3
+    BatchGW -->|"TCP/6379"| Redis
+    FMSTuning -->|"HTTPS/443<br/>HF_TOKEN"| HFHub
+    GuardrailsDet -->|"HTTPS/443"| HFHub
+    AIGateway -->|"HTTPS/443<br/>API Keys"| ModelProviders
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef critical fill:#f8cecc,stroke:#b85450,stroke-width:3px
+    classDef warning fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    class Client external
+    class Envoy,AIGateway,GWExt,BatchGW ingress
+    class CaikitTGIS,GuardrailsDet,ArgoWF,DSPipelines,CFOperator,DSPOperator,FeastOp,FeastSrv,EvalHub servicemesh
+    class Guardrails,FMSTuning critical
+    class K8sAPI,PostgreSQL,S3,Redis,HFHub,ModelProviders externalservice

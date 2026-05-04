@@ -1,70 +1,78 @@
 sequenceDiagram
     autonumber
 
-    participant Client as Llama Stack Client
-    participant LLS as Llama Stack Server<br/>8321/TCP HTTP
-    participant Inline as Inline Provider<br/>(in-process)
-    participant Remote as Remote Provider<br/>(in-process)
-    participant Garak as Garak Subprocess<br/>(local CLI)
-    participant KFP as KFP API Server<br/>443/TCP HTTPS TLS
-    participant KFPPod as KFP Pipeline Pod
-    participant vLLM as vLLM Model Endpoint<br/>HTTP/HTTPS
-    participant Safety as Llama Stack Safety API<br/>8321/TCP HTTP
-    participant Files as Llama Stack Files API<br/>8321/TCP HTTP
-    participant S3 as S3 / MinIO<br/>443/TCP HTTPS TLS
-    participant SDG as SDG Model Endpoint<br/>HTTP/HTTPS
-    participant EvalHub as Eval-Hub Job<br/>(K8s Job)
-    participant Adapter as GarakAdapter<br/>(in-process)
+    participant User as User / API Client
+    participant LSD as Llama Stack Server<br/>8321/TCP HTTP
+    participant Inline as GarakInlineEvalAdapter
+    participant Remote as GarakRemoteEvalAdapter
+    participant Garak as garak subprocess
+    participant KFP as KFP API (DSPA)<br/>443/TCP HTTPS TLS
+    participant KFPPod as KFP Pod (garak)
+    participant LLM as Target LLM (vLLM)<br/>443/TCP HTTPS
+    participant FilesAPI as Llama Stack Files API
+    participant S3 as S3 Object Storage<br/>443/TCP HTTPS TLS
+    participant EvalHub as Eval-Hub Service
+    participant Adapter as GarakAdapter Pod
+    participant Sidecar as Eval-Hub Sidecar<br/>localhost HTTP
+    participant OCI as OCI Registry<br/>443/TCP HTTPS TLS
+    participant MLflow as MLflow<br/>443/TCP HTTPS
 
-    rect rgb(230, 240, 255)
-        Note over Client,Files: Flow 1: Inline Evaluation (Llama Stack Provider)
-        Client->>LLS: POST /eval/run_benchmark<br/>Auth: None (cluster-internal)
-        LLS->>Inline: invoke GarakInlineEvalAdapter
-        Inline->>Garak: spawn subprocess<br/>os.setsid() process group
-        Garak->>vLLM: POST /v1/completions<br/>Auth: Bearer Token (VLLM_API_TOKEN)
-        vLLM-->>Garak: Model response
-        Garak-->>Inline: JSONL results + exit code
-        Inline->>Safety: POST /safety/run_shield<br/>Input/output guardrail scan
-        Safety-->>Inline: Shield scan results
-        Inline->>Files: POST /files/upload<br/>Reports, configs, datasets
-        Files-->>Inline: File references
-        Inline-->>LLS: EvalResult with artifacts
-        LLS-->>Client: JSON response
-    end
+    Note over User,FilesAPI: Flow 1: Inline Garak Scan (Llama Stack)
 
-    rect rgb(255, 240, 230)
-        Note over Client,SDG: Flow 2: Remote KFP Evaluation (Llama Stack Provider)
-        Client->>LLS: POST /eval/run_benchmark<br/>Auth: None (cluster-internal)
-        LLS->>Remote: invoke GarakRemoteEvalAdapter
-        Remote->>KFP: Submit pipeline<br/>Auth: Bearer Token / SA
-        KFP->>KFPPod: Schedule 6-step pipeline
-        KFPPod->>Files: Step 1 (validate): download config
-        Files-->>KFPPod: Config artifacts
-        KFPPod->>Files: Step 2 (taxonomy): download taxonomy
-        Files-->>KFPPod: Taxonomy data
-        KFPPod->>SDG: Step 3 (sdg_generate)<br/>Auth: API Key (__FROM_ENV__)
-        SDG-->>KFPPod: Synthetic adversarial prompts
-        KFPPod->>vLLM: Step 4-5 (garak_scan)<br/>Auth: Bearer Token
-        vLLM-->>KFPPod: Model responses
-        KFPPod->>Files: Step 6 (parse_results): upload reports
-        Files-->>KFPPod: File references
-        Remote-->>LLS: EvalResult (async polling)
-        LLS-->>Client: JSON response
-    end
+    User->>LSD: POST /eval/run_eval<br/>HTTP 8321/TCP
+    LSD->>Inline: dispatch to inline provider
+    Inline->>Garak: spawn subprocess<br/>(os.setsid, semaphore-gated)
+    Garak->>LLM: POST /v1/chat/completions<br/>HTTPS 443/TCP<br/>Auth: Bearer Token
+    LLM-->>Garak: Probe responses
+    Garak-->>Inline: Exit code + scan results
+    Inline->>FilesAPI: Upload reports (in-process)
+    Inline-->>LSD: Job status + results
+    LSD-->>User: eval.jobs.status / retrieve
 
-    rect rgb(240, 255, 240)
-        Note over EvalHub,S3: Flow 3: Eval-Hub KFP Evaluation
-        EvalHub->>Adapter: run_benchmark_job()
-        Adapter->>KFP: Submit 6-step pipeline<br/>Auth: Bearer Token
-        KFP->>KFPPod: Schedule pipeline
-        KFPPod->>S3: Step 1 (validate): download config<br/>Auth: AWS IAM
-        S3-->>KFPPod: Config artifacts
-        KFPPod->>vLLM: Step 4 (garak_scan)<br/>Auth: API Key
-        vLLM-->>KFPPod: Model responses
-        KFPPod->>S3: Step 5: upload artifacts<br/>Auth: AWS IAM
-        S3-->>KFPPod: Upload confirmation
-        Adapter->>S3: Download results<br/>Auth: AWS IAM
-        S3-->>Adapter: Scan artifacts
-        Adapter->>Adapter: Parse results,<br/>generate HTML report
-        Note over Adapter: Forward to eval-hub sidecar<br/>+ OCI registry + MLflow
+    Note over User,S3: Flow 2: Remote KFP Garak Scan (Llama Stack)
+
+    User->>LSD: POST /eval/run_eval<br/>HTTP 8321/TCP
+    LSD->>Remote: dispatch to remote provider
+    Remote->>KFP: Submit pipeline run<br/>HTTPS 443/TCP<br/>Auth: SA Bearer Token
+    KFP->>KFPPod: Schedule pod
+    KFPPod->>LLM: POST /v1/chat/completions<br/>HTTPS 443/TCP<br/>Auth: Bearer Token
+    LLM-->>KFPPod: Probe responses
+    KFPPod->>FilesAPI: Upload results<br/>HTTP 8321/TCP
+    Remote-->>LSD: Poll KFP status
+    LSD-->>User: eval.jobs.status / retrieve
+
+    Note over EvalHub,MLflow: Flow 3: Eval-Hub Simple Mode
+
+    EvalHub->>Adapter: K8s Job creation<br/>ConfigMap mount /meta/job.json
+    Adapter->>Garak: spawn subprocess
+    Garak->>LLM: POST /v1/chat/completions<br/>HTTPS 443/TCP<br/>Auth: Bearer Token
+    LLM-->>Garak: Probe responses
+    Garak-->>Adapter: Scan results
+    Adapter->>OCI: Push artifact bundle<br/>HTTPS 443/TCP<br/>Auth: Registry creds
+    Adapter->>MLflow: Log metrics + artifacts<br/>HTTPS 443/TCP
+    Adapter->>Sidecar: Report completion<br/>HTTP localhost
+
+    Note over EvalHub,S3: Flow 4: Eval-Hub KFP Mode
+
+    EvalHub->>Adapter: K8s Job creation<br/>ConfigMap mount /meta/job.json
+    Adapter->>KFP: Submit pipeline run<br/>HTTPS 443/TCP<br/>Auth: SA Bearer Token
+    KFP->>KFPPod: Schedule pod
+    KFPPod->>LLM: Probes<br/>HTTPS 443/TCP
+    KFPPod->>S3: Upload artifacts<br/>HTTPS 443/TCP<br/>Auth: AWS IAM
+    Adapter->>KFP: Poll status<br/>HTTPS 443/TCP
+    Adapter->>S3: Download results<br/>HTTPS 443/TCP<br/>Auth: AWS IAM
+    Adapter->>OCI: Push bundle<br/>HTTPS 443/TCP
+    Adapter->>MLflow: Log metrics<br/>HTTPS 443/TCP
+    Adapter->>Sidecar: Report completion<br/>HTTP localhost
+
+    Note over KFPPod,S3: Flow 5: Intents Benchmark Pipeline (KFP - 6 Steps)
+
+    rect rgb(255, 243, 224)
+        KFPPod->>KFPPod: Step 1: validate (garak import check)
+        KFPPod->>S3: Step 2: resolve_taxonomy<br/>HTTPS 443 / AWS IAM
+        KFPPod->>LLM: Step 3: sdg_generate<br/>HTTPS 443 / SDG_API_KEY
+        KFPPod->>S3: Step 4: prepare_prompts<br/>Upload CSVs / AWS IAM
+        KFPPod->>LLM: Step 5: garak_scan<br/>HTTPS 443 / Bearer Token
+        Note right of KFPPod: 5a: Attacker Model (TAP)<br/>5b: Judge Model<br/>5c: Evaluator Model
+        KFPPod->>S3: Step 6: write_kfp_outputs<br/>HTTPS 443 / AWS IAM
     end

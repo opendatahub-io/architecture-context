@@ -1,65 +1,61 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates, trains, and deploys ML models using task-based APIs"
-        appDeveloper = person "Application Developer" "Integrates AI capabilities via gRPC/HTTP inference APIs"
+        dataScientist = person "Data Scientist" "Creates, trains, and deploys AI/ML models via task-specific APIs"
+        application = person "Application / Service" "Consumes model inference endpoints for predictions"
 
-        caikit = softwareSystem "Caikit" "Python AI toolkit providing modular framework for building, training, and serving AI models through task-specific APIs over gRPC and HTTP" {
-            core = container "caikit.core" "Module framework with task, data model, and model management abstractions" "Python Library" {
-                moduleFramework = component "Module Framework" "@module decorator, ModuleBase, MODULE_REGISTRY" "Python"
-                taskDefs = component "Task Definitions" "@task decorator, typed input/output contracts" "Python"
-                dataModel = component "Data Model" "@dataobject decorator, protobuf-backed data classes" "Python"
-                modelManager = component "Model Manager" "Model load/save/find with pluggable backends" "Python"
-                backendSystem = component "Backend System" "LocalBackend + extensible module backends" "Python"
+        caikit = softwareSystem "Caikit" "AI toolkit and runtime framework providing task-specific gRPC and HTTP APIs for model serving and training" {
+            core = container "caikit.core" "Module/Task/DataModel framework with plugin architecture for AI model implementations" "Python Library"
+            interfaces = container "caikit.interfaces" "Domain-specific task and data model definitions for NLP, vision, and time series" "Python Library"
+            runtime = container "caikit.runtime" "Dual-protocol (gRPC + HTTP) model serving runtime with Model Mesh integration" "Python Service" {
+                grpcServer = component "gRPC Server" "Serves dynamic task-specific RPCs on port 8085/TCP" "grpcio"
+                httpServer = component "HTTP Server" "Serves REST API on port 8080/TCP with SSE streaming" "FastAPI/Uvicorn"
+                metricsEndpoint = component "Metrics Endpoint" "Prometheus metrics on port 8086/TCP" "prometheus_client"
+                serviceFactory = component "ServicePackageFactory" "Dynamically generates gRPC and HTTP routes from registered modules" "Python"
+                globalPredictServicer = component "GlobalPredictServicer" "Routes inference requests to loaded models" "Python"
+                globalTrainServicer = component "GlobalTrainServicer" "Manages async training job execution" "Python"
+                modelManager = component "ModelManager" "Manages model lifecycle (load, unload, retrieve)" "Python"
+                modelRuntimeServicer = component "ModelRuntimeServicer" "Implements Model Mesh sidecar API" "Python"
             }
-
-            runtime = container "caikit.runtime" "gRPC and HTTP servers that dynamically generate serving endpoints from registered modules" "Python Service" {
-                grpcServer = component "gRPC Server" "gRPC/HTTP2 on port 8085, TLS/mTLS configurable" "Python/grpcio"
-                httpServer = component "HTTP Server" "FastAPI/Uvicorn on port 8080, TLS/mTLS configurable" "Python/FastAPI"
-                metricsServer = component "Metrics Server" "Prometheus exposition on port 8086" "Python/prometheus_client"
-                predictServicer = component "GlobalPredictServicer" "Routes inference requests to model modules" "Python"
-                trainServicer = component "GlobalTrainServicer" "Routes training requests to model modules" "Python"
-                modelRuntimeServicer = component "ModelRuntimeServicer" "ModelMesh sidecar API implementation" "Python"
-                serviceFactory = component "ServicePackageFactory" "Dynamic gRPC/HTTP service generation from module registry" "Python"
-            }
-
-            interfaces = container "caikit.interfaces" "Domain-specific task and data model definitions" "Python Library" {
-                nlp = component "NLP" "TextGeneration, Embedding, Classification, Reranking tasks" "Python"
-                timeSeries = component "Time Series" "Forecasting, Anomaly Detection tasks" "Python"
-                vision = component "Vision" "Image Classification tasks" "Python"
-            }
-
-            healthProbe = container "caikit_health_probe" "Kubernetes health probe for liveness and readiness checks" "Python CLI"
-
-            clientLib = container "caikit.runtime.client" "Remote model discovery and proxy module for distributed inference" "Python Library"
+            config = container "caikit.config" "Hierarchical YAML-based configuration with environment variable overrides" "Python Library"
+            healthProbe = container "caikit_health_probe" "Kubernetes liveness/readiness probe binary with TLS verification" "Python CLI"
         }
 
-        modelMesh = softwareSystem "ModelMesh" "Multi-model serving controller for Kubernetes" "External"
-        kserve = softwareSystem "KServe" "Serverless inference platform for Kubernetes" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and alerting" "External"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing collection" "External"
-        s3Storage = softwareSystem "S3-compatible Storage" "Object storage for model artifacts and training data" "External"
-        caikitNLP = softwareSystem "caikit-nlp / caikit-tgis-serving" "Downstream libraries that register AI modules" "Internal RHOAI"
-        remoteCaikit = softwareSystem "Remote Caikit Runtime" "Another Caikit instance for distributed inference" "Internal RHOAI"
+        modelMesh = softwareSystem "Model Mesh" "Multi-model serving orchestration framework" "Internal Platform"
+        kserve = softwareSystem "KServe" "Standardized serverless ML inference platform" "Internal Platform"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing collection and export" "Internal Platform"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal Platform"
+        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for model artifacts and training data" "External"
+        kubeRBACProxy = softwareSystem "kube-rbac-proxy" "Kubernetes RBAC-based authentication sidecar" "Internal Platform"
+        caikitNLP = softwareSystem "caikit-nlp / caikit-tgis-serving" "Downstream NLP module implementations" "Internal Platform"
 
-        # User interactions
-        dataScientist -> caikit "Submits training jobs and queries model info" "gRPC/8085, HTTP/8080"
-        appDeveloper -> caikit "Sends inference requests" "gRPC/8085, HTTP/8080"
+        # Relationships
+        dataScientist -> caikit "Deploys models and submits training jobs" "HTTP/gRPC"
+        application -> caikit "Sends inference requests" "HTTP/gRPC"
 
-        # External system interactions
-        modelMesh -> caikit "Model lifecycle management (load/unload/size)" "gRPC/unix socket"
-        kserve -> caikit "Container orchestration" "Container Runtime"
-        caikit -> s3Storage "Fetches model artifacts, training data" "HTTPS/443"
-        caikit -> otelCollector "Exports trace spans" "gRPC/4317, HTTP/4318"
-        prometheus -> caikit "Scrapes metrics" "HTTP/8086"
-        caikitNLP -> caikit "Registers modules via @module decorator" "Python import"
-        caikit -> remoteCaikit "Distributed inference" "gRPC/8085, HTTP/8080"
+        # Internal
+        runtime -> core "Uses module/task/datamodel abstractions" "Python import"
+        runtime -> interfaces "Uses domain-specific task definitions" "Python import"
+        config -> core "Provides configuration to all components" "Python import"
+        healthProbe -> runtime "Probes gRPC and HTTP servers for readiness" "gRPC/HTTP with TLS"
 
-        # Internal container interactions
-        runtime -> core "Uses module framework for model operations"
-        interfaces -> core "Registers tasks and data models"
-        healthProbe -> runtime "Checks gRPC and HTTP server health"
-        clientLib -> runtime "Proxies requests to remote runtimes"
-        serviceFactory -> moduleFramework "Introspects registry to generate services"
+        # Runtime internals
+        grpcServer -> globalPredictServicer "Routes gRPC inference RPCs" "in-process"
+        httpServer -> globalPredictServicer "Routes HTTP inference requests" "in-process"
+        httpServer -> globalTrainServicer "Routes HTTP training requests" "in-process"
+        globalPredictServicer -> modelManager "Retrieves loaded models" "in-process"
+        globalTrainServicer -> modelManager "Retrieves modules for training" "in-process"
+        modelRuntimeServicer -> modelManager "Loads/unloads models on Model Mesh request" "in-process"
+        serviceFactory -> grpcServer "Generates gRPC service descriptors" "in-process"
+        serviceFactory -> httpServer "Generates HTTP routes" "in-process"
+
+        # External integrations
+        modelMesh -> caikit "Manages model lifecycle via sidecar API" "gRPC/Unix socket"
+        caikit -> otelCollector "Exports distributed traces" "gRPC/4317 or HTTP/4318"
+        prometheus -> caikit "Scrapes runtime metrics" "HTTP/8086"
+        caikit -> s3Storage "Downloads model artifacts, reads training data" "HTTPS/443"
+        kubeRBACProxy -> caikit "Forwards authenticated requests" "HTTP/gRPC"
+        kserve -> caikit "Hosts caikit as model server in InferenceService pods" "Container runtime"
+        caikitNLP -> caikit "Depends on caikit SDK for module/task framework" "Python dependency"
     }
 
     views {
@@ -73,32 +69,27 @@ workspace {
             autoLayout
         }
 
-        component core "CoreComponents" {
-            include *
-            autoLayout
-        }
-
         component runtime "RuntimeComponents" {
             include *
             autoLayout
         }
 
         styles {
-            element "Person" {
-                shape person
-                background #08427b
+            element "Software System" {
+                background #4a90e2
                 color #ffffff
             }
-            element "Software System" {
-                background #1168bd
+            element "Internal Platform" {
+                background #7ed321
                 color #ffffff
             }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
-                background #7ed321
+            element "Person" {
+                shape person
+                background #08427b
                 color #ffffff
             }
             element "Container" {

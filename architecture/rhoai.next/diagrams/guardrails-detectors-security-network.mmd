@@ -3,68 +3,54 @@ graph TB
         HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+"]
     end
 
-    subgraph Cluster["CLUSTER INTERNAL"]
-        subgraph OrchestratorZone["ORCHESTRATOR ZONE"]
-            Orchestrator["FMS Guardrails Orchestrator<br/>Invokes detectors for<br/>content analysis pipeline"]
+    subgraph PlatformIngress["PLATFORM INGRESS"]
+        Orchestrator["FMS Guardrails Orchestrator<br/>(Internal Caller)<br/>mTLS via Istio"]
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (mTLS via Istio Sidecar)"]
+        direction TB
+
+        subgraph BuiltInZone["Built-in Detector"]
+            BuiltIn["Built-in Detector<br/>ClusterIP 8080/TCP<br/>Image: odh-built-in-detector-rhel9<br/>Endpoints: /api/v1/text/contents,<br/>/health, /metrics, /registry"]
         end
 
-        subgraph DetectorZone["DETECTOR ZONE"]
-            subgraph DirectDeploy["Direct Deployment (No Istio)"]
-                BuiltIn["Built-in Detector<br/>8080/TCP HTTP<br/>Encryption: None<br/>Auth: None<br/>Service: ClusterIP"]
-            end
-
-            subgraph KServeMesh["KServe + Istio Service Mesh (mTLS)"]
-                HFDet["HuggingFace Detector<br/>8000/TCP HTTP<br/>Encryption: mTLS (Istio)<br/>Auth: KServe<br/>KServe InferenceService"]
-
-                LLMJudgeDet["LLM Judge Detector<br/>8000/TCP HTTP<br/>Encryption: mTLS (Istio)<br/>Auth: KServe<br/>KServe InferenceService"]
-            end
+        subgraph HFZone["HuggingFace Detector (KServe ISVC)"]
+            HFDetector["HuggingFace Detector<br/>ClusterIP 8000/TCP<br/>sidecar.istio.io/inject: true<br/>Image: odh-guardrails-detector-<br/>huggingface-runtime-rhel9<br/>Endpoints: /api/v1/text/contents,<br/>/health, /metrics"]
         end
 
-        subgraph StorageZone["STORAGE / UPSTREAM SERVICES"]
-            MinIO["S3/MinIO<br/>minio-guardrails-guardian<br/>9000/TCP HTTP<br/>Encryption: None<br/>Auth: AWS IAM (Secret)"]
-
-            vLLM["vLLM / OpenAI-compatible<br/>LLM Server<br/>Port: configurable<br/>HTTP Plaintext<br/>Auth: None"]
-        end
-
-        subgraph Platform["PLATFORM SERVICES"]
-            KServe["KServe Controller<br/>Manages InferenceServices"]
-            Istio["Istio Service Mesh<br/>mTLS enforcement"]
-            Prom["Prometheus<br/>Scrapes /metrics"]
+        subgraph JudgeZone["LLM Judge Detector (KServe ISVC)"]
+            JudgeDetector["LLM Judge Detector<br/>ClusterIP 8000/TCP<br/>sidecar.istio.io/inject: true<br/>Image: guardrails-detector-llm-judge<br/>Endpoints: /api/v1/text/contents,<br/>/api/v1/text/generation,<br/>/health, /metrics"]
         end
     end
 
-    %% Orchestrator to Detectors
-    Orchestrator -->|"HTTP/8080<br/>Plaintext<br/>No Auth"| BuiltIn
-    Orchestrator -->|"HTTP/8000<br/>mTLS (Istio)<br/>KServe Auth"| HFDet
-    Orchestrator -->|"HTTP/8000<br/>mTLS (Istio)<br/>KServe Auth"| LLMJudgeDet
+    subgraph InternalServices["INTERNAL SERVICES"]
+        S3["S3/MinIO Storage<br/>ClusterIP 9000/TCP<br/>HTTP | No encryption<br/>Auth: AWS credentials"]
+        VLLM["vLLM Server<br/>8080/TCP<br/>HTTP | No encryption<br/>Auth: None"]
+        Prometheus["Prometheus<br/>Scrapes /metrics<br/>trustyai_guardrails_* counters"]
+    end
 
-    %% Detector upstream dependencies
-    HFDet -->|"HTTP/9000<br/>Plaintext<br/>AWS Credentials"| MinIO
-    LLMJudgeDet -->|"HTTP/configurable<br/>Plaintext<br/>No Auth"| vLLM
+    %% Flows
+    Orchestrator -->|"HTTP/8080<br/>mTLS (Istio)<br/>Platform auth"| BuiltIn
+    Orchestrator -->|"HTTP/8000<br/>mTLS (Istio)<br/>Platform auth"| HFDetector
+    Orchestrator -->|"HTTP/8000<br/>mTLS (Istio)<br/>Platform auth"| JudgeDetector
 
-    %% Optional external
-    HFDet -.->|"HTTPS/443<br/>TLS 1.2+<br/>Init container"| HFHub
+    HFDetector -->|"HTTP/9000<br/>No encryption<br/>AWS IAM credentials"| S3
+    JudgeDetector -->|"HTTP/8080<br/>No encryption<br/>No auth"| VLLM
+    HFHub -.->|"HTTPS/443<br/>TLS 1.2+<br/>Init container only"| HFDetector
 
-    %% Platform management
-    KServe -.->|manages| HFDet
-    KServe -.->|manages| LLMJudgeDet
-    Istio -.->|sidecar inject| HFDet
-    Istio -.->|sidecar inject| LLMJudgeDet
-    Prom -.->|scrape /metrics| BuiltIn
-    Prom -.->|scrape /metrics| HFDet
-    Prom -.->|scrape /metrics| LLMJudgeDet
+    Prometheus -.->|"HTTP/8080, 8000<br/>Scrape /metrics"| BuiltIn
+    Prometheus -.->|"HTTP/8000<br/>Scrape /metrics"| HFDetector
+    Prometheus -.->|"HTTP/8000<br/>Scrape /metrics"| JudgeDetector
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef orchestrator fill:#7ed321,stroke:#333,stroke-width:2px,color:#fff
-    classDef directDetector fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
-    classDef meshDetector fill:#2c6fbb,stroke:#333,stroke-width:2px,color:#fff
-    classDef storage fill:#f5a623,stroke:#333,stroke-width:2px,color:#fff
-    classDef platform fill:#e8e8e8,stroke:#666,stroke-width:1px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef internal fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef warning fill:#ffcccc,stroke:#cc0000,stroke-width:2px
 
     class HFHub external
-    class Orchestrator orchestrator
-    class BuiltIn directDetector
-    class HFDet,LLMJudgeDet meshDetector
-    class MinIO,vLLM storage
-    class KServe,Istio,Prom platform
+    class Orchestrator ingress
+    class BuiltIn,HFDetector,JudgeDetector servicemesh
+    class S3,Prometheus internal
+    class VLLM warning

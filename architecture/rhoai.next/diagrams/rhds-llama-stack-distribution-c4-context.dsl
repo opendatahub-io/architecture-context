@@ -1,106 +1,113 @@
 workspace {
     model {
-        user = person "Data Scientist / Developer" "Creates inference requests, evaluations, RAG queries, and agent sessions"
+        dataScientist = person "Data Scientist" "Deploys models and runs inference, evaluation, and agentic workflows"
+        mlEngineer = person "ML Engineer" "Configures inference backends, safety shields, and evaluation pipelines"
 
-        llamaStack = softwareSystem "Llama Stack Distribution" "Multi-provider AI orchestration server exposing inference, agents, eval, safety, vector_io, and tool_runtime APIs" {
-            server = container "Llama Stack Server" "FastAPI/Uvicorn HTTP server on port 8321/TCP" "Python 3.12"
-            config = container "Distribution Config" "Defines APIs, provider mappings, storage backends, registered resources" "YAML (config.yaml)"
-            entrypoint = container "Entrypoint Script" "Starts server with optional OpenTelemetry instrumentation" "Shell Script"
-            inlineProviders = container "Inline Providers" "Milvus Lite, FAISS, Sentence Transformers, RAGAS inline" "Python Libraries"
+        llamaStackDistro = softwareSystem "Llama Stack Distribution" "Unified API gateway for LLM inference, evaluation, safety, vector I/O, agents, and tool runtime" {
+            server = container "Llama Stack Server" "Unified API gateway exposing OpenAI-compatible and Llama Stack native APIs on port 8321/TCP" "Python / FastAPI / uvicorn"
+            configYaml = container "config.yaml" "Provider-plugin configuration with environment-variable-driven provider activation" "YAML Configuration"
+            entrypoint = container "entrypoint.sh" "Container startup script with optional OpenTelemetry instrumentation" "Shell Script"
+            embeddingModel = container "granite-embedding-125m-english" "Pre-downloaded IBM Granite embedding model for inline embeddings" "Model Artifact"
         }
 
-        // Internal Platform Dependencies
-        vllm = softwareSystem "vLLM Serving Runtime" "Primary inference backend for LLM and embedding model serving" "Internal RHOAI"
-        postgresql = softwareSystem "PostgreSQL 17+" "Persistent storage: KV store, SQL store, inference logs, agent state" "Internal"
+        vllm = softwareSystem "vLLM" "Primary LLM inference and embedding backend" "Internal RHOAI"
+        postgresql = softwareSystem "PostgreSQL" "Persistent storage for kvstore, SQL, inference logs, agent state, conversations, prompts, file metadata, batches" "Internal"
         trustyaiFMS = softwareSystem "TrustyAI FMS Orchestrator" "Safety shield evaluation for content moderation" "Internal RHOAI"
-        trustyaiLMEval = softwareSystem "TrustyAI LMEval" "LLM evaluation job orchestration via Kubernetes Jobs" "Internal RHOAI"
-        kubeflowPipelines = softwareSystem "Kubeflow Pipelines" "Remote RAGAS and Garak evaluation pipeline execution" "Internal RHOAI"
-        platformOperator = softwareSystem "rhods-operator" "Manages deployment, ingress, and auth for Llama Stack" "Internal RHOAI"
+        trustyaiLMEval = softwareSystem "TrustyAI LMEval" "Model evaluation using LM Evaluation Harness (via K8s Jobs)" "Internal RHOAI"
+        kubeflowPipelines = softwareSystem "Kubeflow Pipelines" "Pipeline orchestration for RAGAS and Garak evaluations" "Internal RHOAI"
+        milvus = softwareSystem "Milvus" "Vector database for similarity search (remote or embedded lite mode)" "Internal"
+        pgvector = softwareSystem "pgvector" "PostgreSQL-backed vector database" "Internal"
+        qdrant = softwareSystem "Qdrant" "Vector database for similarity search" "External"
+        s3 = softwareSystem "S3 / S3-compatible Storage" "File storage backend for model artifacts and data" "External"
+        awsBedrock = softwareSystem "AWS Bedrock" "Remote LLM inference via AWS" "External Cloud"
+        googleVertexAI = softwareSystem "Google Vertex AI" "Remote LLM inference via Google Cloud" "External Cloud"
+        azureOpenAI = softwareSystem "Azure OpenAI" "Remote LLM inference via Azure" "External Cloud"
+        ibmWatsonX = softwareSystem "IBM WatsonX" "Remote LLM inference via IBM" "External Cloud"
+        openAI = softwareSystem "OpenAI" "Remote LLM inference via OpenAI" "External Cloud"
+        braveSearch = softwareSystem "Brave Search API" "Web search tool for agentic workflows" "External"
+        tavilySearch = softwareSystem "Tavily Search API" "Web search tool for agentic workflows" "External"
+        mcpServers = softwareSystem "MCP Servers" "Model Context Protocol tool servers" "External"
+        huggingFaceHub = softwareSystem "HuggingFace Hub" "Dataset and model download" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API for creating evaluation Jobs" "Internal"
+        otelCollector = softwareSystem "OTEL Collector" "OpenTelemetry traces and metrics collection" "Internal"
 
-        // Cloud Inference Backends
-        awsBedrock = softwareSystem "AWS Bedrock" "Remote inference via AWS-hosted models" "External Cloud"
-        watsonx = softwareSystem "IBM WatsonX" "Remote inference via WatsonX-hosted models" "External Cloud"
-        azureOpenAI = softwareSystem "Azure OpenAI" "Remote inference via Azure-hosted models" "External Cloud"
-        vertexAI = softwareSystem "Google Vertex AI" "Remote inference via Vertex AI models" "External Cloud"
-        openai = softwareSystem "OpenAI API" "Remote inference via OpenAI models" "External Cloud"
+        # User interactions
+        dataScientist -> llamaStackDistro "Runs inference, evaluation, and agentic workflows" "HTTP/8321"
+        mlEngineer -> llamaStackDistro "Configures providers and backends" "HTTP/8321"
 
-        // Vector Databases
-        milvusRemote = softwareSystem "Milvus (Remote)" "Remote vector database" "External/Internal"
-        pgvector = softwareSystem "pgvector" "Vector database via PostgreSQL extension" "Internal"
-        qdrant = softwareSystem "Qdrant" "Remote vector database" "External/Internal"
+        # Internal container interactions
+        server -> configYaml "Reads provider configuration"
+        entrypoint -> server "Starts with optional OTEL instrumentation"
+        server -> embeddingModel "Loads for inline embedding"
 
-        // External Services
-        s3 = softwareSystem "S3-compatible Storage" "File storage backend" "External"
-        huggingface = softwareSystem "HuggingFace Hub" "Model and dataset downloads" "External"
-        braveSearch = softwareSystem "Brave Search API" "Web search tool runtime" "External"
-        tavilySearch = softwareSystem "Tavily Search API" "Web search tool runtime" "External"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing and metrics" "Internal"
+        # Primary inference backends
+        llamaStackDistro -> vllm "LLM inference and embedding" "HTTP/HTTPS (Bearer Token)"
+        llamaStackDistro -> awsBedrock "Remote LLM inference" "HTTPS/443 (Bearer Token)"
+        llamaStackDistro -> googleVertexAI "Remote LLM inference" "HTTPS/443 (ADC)"
+        llamaStackDistro -> azureOpenAI "Remote LLM inference" "HTTPS/443 (API Key)"
+        llamaStackDistro -> ibmWatsonX "Remote LLM inference" "HTTPS/443 (API Key)"
+        llamaStackDistro -> openAI "Remote LLM inference" "HTTPS/443 (API Key)"
 
-        // Relationships
-        user -> llamaStack "Sends inference, eval, safety, RAG requests" "HTTP/8321"
-        platformOperator -> llamaStack "Deploys and manages ingress/auth"
+        # Storage
+        llamaStackDistro -> postgresql "Persistent state storage" "PostgreSQL/5432 (Password)"
+        llamaStackDistro -> s3 "File storage" "HTTPS/443 (AWS IAM)"
 
-        llamaStack -> vllm "LLM inference and embedding requests" "HTTP(S)/8000, Bearer Token"
-        llamaStack -> postgresql "Persistent KV/SQL storage" "PostgreSQL/5432, Password"
-        llamaStack -> trustyaiFMS "Safety shield evaluation" "HTTP(S), configurable SSL"
-        llamaStack -> trustyaiLMEval "LLM evaluation jobs" "K8s API, SA token"
-        llamaStack -> kubeflowPipelines "Remote eval pipelines" "HTTP, Bearer Token"
+        # Vector databases
+        llamaStackDistro -> milvus "Vector similarity search" "HTTP/gRPC (Token + mTLS)"
+        llamaStackDistro -> pgvector "Vector similarity search" "PostgreSQL (Password)"
+        llamaStackDistro -> qdrant "Vector similarity search" "HTTP/gRPC (API Key)"
 
-        llamaStack -> awsBedrock "Cloud inference" "HTTPS/443, Bearer Token"
-        llamaStack -> watsonx "Cloud inference" "HTTPS/443, API Key"
-        llamaStack -> azureOpenAI "Cloud inference" "HTTPS/443, API Key"
-        llamaStack -> vertexAI "Cloud inference" "HTTPS/443, Google ADC"
-        llamaStack -> openai "Cloud inference" "HTTPS/443, API Key"
+        # Safety and evaluation
+        llamaStackDistro -> trustyaiFMS "Safety shield evaluation" "HTTP/HTTPS (SSL Cert)"
+        llamaStackDistro -> trustyaiLMEval "Model evaluation" "HTTP"
+        llamaStackDistro -> kubeflowPipelines "RAGAS/Garak evaluation pipelines" "HTTPS (Bearer Token)"
+        llamaStackDistro -> kubernetesAPI "Create LMEval Jobs" "HTTPS/443 (SA Token)"
 
-        llamaStack -> milvusRemote "Vector search" "REST/gRPC, Token"
-        llamaStack -> pgvector "Vector search" "PostgreSQL/5432, Password"
-        llamaStack -> qdrant "Vector search" "REST(6333)/gRPC(6334), API Key"
+        # Tool runtimes
+        llamaStackDistro -> braveSearch "Web search for agents" "HTTPS/443 (API Key)"
+        llamaStackDistro -> tavilySearch "Web search for agents" "HTTPS/443 (API Key)"
+        llamaStackDistro -> mcpServers "MCP tool execution" "HTTP/HTTPS"
+        llamaStackDistro -> huggingFaceHub "Dataset/model download" "HTTPS/443"
 
-        llamaStack -> s3 "File storage" "HTTPS/443, AWS IAM"
-        llamaStack -> huggingface "Dataset and model downloads" "HTTPS/443"
-        llamaStack -> braveSearch "Web search" "HTTPS/443, API Key"
-        llamaStack -> tavilySearch "Web search" "HTTPS/443, API Key"
-        llamaStack -> otelCollector "Traces and metrics" "HTTP/4318, OTLP"
+        # Observability
+        llamaStackDistro -> otelCollector "Traces and metrics export" "HTTP OTLP"
     }
 
     views {
-        systemContext llamaStack "SystemContext" {
+        systemContext llamaStackDistro "SystemContext" {
             include *
             autoLayout
         }
 
-        container llamaStack "Containers" {
+        container llamaStackDistro "Containers" {
             include *
             autoLayout
         }
 
         styles {
-            element "External Cloud" {
-                background #fff2cc
-                shape RoundedBox
+            element "Person" {
+                shape Person
+                background #4a90e2
+                color #ffffff
+            }
+            element "Software System" {
+                background #438dd5
+                color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
             element "Internal" {
-                background #336791
+                background #85bb65
                 color #ffffff
             }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "External/Internal" {
-                background #d5e8d4
-            }
-            element "Person" {
-                background #4a90e2
-                color #ffffff
-                shape Person
-            }
-            element "Software System" {
-                background #438dd5
+            element "External Cloud" {
+                background #f5a623
                 color #ffffff
             }
             element "Container" {

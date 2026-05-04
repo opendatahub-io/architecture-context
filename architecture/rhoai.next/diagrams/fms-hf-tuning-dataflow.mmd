@@ -1,41 +1,62 @@
 sequenceDiagram
-    participant KFTO as KFTO PyTorchJob<br/>Controller
-    participant Pod as Training Pod<br/>(accelerate_launch.py)
-    participant SFT as sft_trainer.py<br/>(SFTTrainer)
-    participant PVC as PVC Storage<br/>(model + data + output)
-    participant GPU as NVIDIA GPU<br/>(CUDA)
-    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant Tracker as Experiment Tracker<br/>(Aim/MLflow/ClearML)
-    participant NCCL as NCCL/Gloo<br/>29500/TCP
+    participant KFTO as Kubeflow Training<br/>Operator
+    participant AccLaunch as accelerate_launch.py<br/>Container Entry Point
+    participant SFT as sft_trainer.py<br/>Training Orchestration
+    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
+    participant PVCIn as PVC /data/input<br/>Filesystem
+    participant GPU as GPU (CUDA)<br/>PCIe/NVLink
+    participant Workers as FSDP Workers<br/>29500/TCP plaintext
+    participant PVCOut as PVC /data/output<br/>Filesystem
+    participant Tracker as MLflow/Aim/ClearML<br/>HTTP/HTTPS
 
-    rect rgb(230, 245, 255)
-        Note over KFTO,Pod: Flow 1: Training Job Execution
-        KFTO->>Pod: Create training pod<br/>Kubernetes API / TLS 1.3<br/>ServiceAccount auth
-        Pod->>Pod: Parse JSON config<br/>(SFT_TRAINER_CONFIG_JSON_PATH)
-        Pod->>SFT: subprocess: accelerate launch<br/>sft_trainer.py
-        SFT->>PVC: Load model weights<br/>Local filesystem mount
-        PVC-->>SFT: Model artifacts
-        SFT->>PVC: Load training data<br/>Local filesystem mount
-        PVC-->>SFT: Training dataset
-        SFT->>HF: Download model/tokenizer (fallback)<br/>HTTPS/443 / TLS 1.2+<br/>Bearer Token (HF_TOKEN)
-        HF-->>SFT: Pre-trained weights
-        SFT->>GPU: Training computation<br/>PCIe/NVLink
-        GPU-->>SFT: Gradients & loss
-        SFT->>Tracker: Push metrics<br/>HTTP(S) / configurable
-        SFT->>PVC: Save checkpoints & output<br/>Local filesystem mount
-        SFT->>Pod: Training complete
-        Pod->>Pod: Write /dev/termination-log<br/>(exit code 0/1/203)
-    end
+    Note over KFTO,Tracker: Flow 1: Training Job Execution
 
-    rect rgb(255, 245, 230)
-        Note over Pod,NCCL: Flow 2: Multi-GPU FSDP Training
-        Pod->>Pod: Detect GPU count<br/>torch.cuda.device_count()
-        Pod->>NCCL: Initialize process group<br/>TCP/29500 (plaintext)
-        NCCL-->>Pod: Rendezvous complete
-        loop Each FSDP Rank
-            Pod->>GPU: Shard model parameters<br/>PCIe/NVLink
-            GPU->>NCCL: All-reduce gradients<br/>NCCL (plaintext)
-            NCCL-->>GPU: Synchronized gradients
+    KFTO->>AccLaunch: Create PyTorchJob Pod<br/>Kubernetes API (TLS 1.2+)<br/>Auth: ServiceAccount
+    activate AccLaunch
+
+    AccLaunch->>AccLaunch: Parse JSON config<br/>(SFT_TRAINER_CONFIG_JSON_PATH)<br/>Auto-detect GPU count
+
+    AccLaunch->>HFHub: Download model & tokenizer<br/>HTTPS/443 (TLS 1.2+)<br/>Auth: Bearer Token (HF_TOKEN)
+    HFHub-->>AccLaunch: Model weights & tokenizer files
+
+    AccLaunch->>SFT: Launch training (in-process)
+    activate SFT
+
+    SFT->>PVCIn: Load training dataset<br/>Filesystem (POSIX permissions)
+    PVCIn-->>SFT: Training data (JSON/JSONL/Parquet/Arrow)
+
+    SFT->>SFT: Data preprocessing<br/>Tokenization, chat templates<br/>Vision data collation
+
+    SFT->>GPU: Forward/backward pass<br/>PCIe/NVLink
+    GPU-->>SFT: Gradients
+
+    SFT->>Workers: FSDP gradient synchronization<br/>29500/TCP (c10d static rendezvous)<br/>Encryption: plaintext<br/>Auth: None
+    Workers-->>SFT: Synchronized gradients
+
+    loop Training Loop (epochs)
+        SFT->>GPU: Forward/backward pass
+        GPU-->>SFT: Gradients
+        SFT->>Workers: Gradient sync (FSDP)
+        Workers-->>SFT: Synchronized gradients
+        SFT->>SFT: Trainer Controller<br/>Rule evaluation (simpleeval)<br/>Early stopping check
+
+        opt Experiment Tracking
+            SFT->>Tracker: Log metrics (loss, lr, epoch)<br/>HTTP/HTTPS (configurable)<br/>Auth: URI/API key
         end
-        Pod->>PVC: Save consolidated checkpoint<br/>(rank 0 only)
     end
+
+    SFT->>PVCOut: Save model checkpoint<br/>Filesystem (POSIX permissions)<br/>safetensors format
+    PVCOut-->>SFT: Write confirmation
+
+    deactivate SFT
+
+    Note over AccLaunch,PVCOut: Flow 2: vLLM Adapter Post-Processing
+
+    AccLaunch->>PVCOut: Read adapter_model.safetensors<br/>from checkpoint directory
+    PVCOut-->>AccLaunch: LoRA adapter weights
+
+    AccLaunch->>AccLaunch: post_process_vLLM_adapters<br/>Extract new embeddings
+
+    AccLaunch->>PVCOut: Write new_embeddings.safetensors<br/>Write .complete sentinel file
+
+    deactivate AccLaunch

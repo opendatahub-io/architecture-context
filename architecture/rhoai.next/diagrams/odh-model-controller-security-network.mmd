@@ -1,82 +1,73 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
+        User["User / kubectl"]
         Dashboard["RHOAI Dashboard"]
-        Users["Users / kubectl"]
+        Client["External Client<br/>(inference consumer)"]
     end
 
-    subgraph InternalCluster["INTERNAL CLUSTER (Trusted)"]
+    subgraph Ingress["INGRESS (External Model Access)"]
+        Route["Per-ISVC OpenShift Route<br/>443/TCP<br/>TLS Edge/Reencrypt<br/>Optional AuthPolicy"]
+    end
+
+    subgraph ClusterInternal["CLUSTER INTERNAL (Kubernetes Network)"]
         direction TB
 
         subgraph NS_ODH["Namespace: opendatahub"]
-            direction TB
-
-            ServingAPI["model-serving-api<br/>:8443/TCP HTTPS<br/>:9090/TCP HTTPS metrics<br/>TLS 1.2+ FIPS ciphers<br/>SA: model-serving-api"]
-
-            Manager["odh-model-controller<br/>:8081/TCP HTTP health<br/>:8080/TCP metrics<br/>:9443/TCP HTTPS webhook<br/>SA: odh-model-controller"]
-
-            WebhookSvc["Webhook Service<br/>:443→9443/TCP<br/>TLS (OpenShift serving cert)<br/>Fail-closed"]
-
-            MetricsSvc["Metrics Service<br/>:8080/TCP<br/>HTTP/HTTPS configurable<br/>Optional authn/authz"]
+            OMC["odh-model-controller<br/>SA: odh-model-controller<br/>Ports: 8080(metrics), 8081(health),<br/>9443(webhooks HTTPS)"]
+            MSA["model-serving-api<br/>SA: model-serving-api<br/>Port: 8443(HTTPS FIPS),<br/>9090(metrics HTTPS)"]
         end
 
-        K8sAPI["Kubernetes API Server<br/>:443/TCP HTTPS<br/>TLS 1.2+<br/>SA token / User impersonation"]
+        subgraph Services["ClusterIP Services"]
+            SvcMSA["model-serving-api<br/>443→8443 HTTPS<br/>Bearer Token"]
+            SvcMetrics["metrics-service<br/>8443 HTTPS<br/>authn/authz"]
+            SvcWebhook["webhook-service<br/>443→9443 HTTPS<br/>cert injection"]
+        end
+
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token / User Token"]
     end
 
-    subgraph CreatedResources["CREATED RESOURCES (per-namespace)"]
-        Routes["OpenShift Routes<br/>(external model access)"]
-        AuthPolicies["Kuadrant AuthPolicies<br/>(Gateway auth)"]
-        EnvoyFilters["Istio EnvoyFilters<br/>(TLS termination)"]
-        ServiceMonitors["ServiceMonitors<br/>(Prometheus scraping)"]
-        NetworkPolicies["NetworkPolicies<br/>(network isolation)"]
-        KEDATrigger["KEDA TriggerAuths<br/>(autoscaling creds)"]
-        RayTLSCerts["Ray TLS Secrets<br/>(per-pod certs)"]
-        StorageConfig["storage-config<br/>(S3 credentials)"]
+    subgraph ExternalEgress["EXTERNAL SERVICES (Egress)"]
+        NGC["api.ngc.nvidia.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>NGC API Key (Bearer)"]
+        NVCR["nvcr.io<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>NGC API Key (Basic)"]
+        AuthnNV["authn.nvidia.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Token Exchange"]
+        ModelReg["Model Registry API<br/>Configurable Port<br/>HTTPS/HTTP<br/>Bearer Token"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        NVIDIAAuth["authn.nvidia.com<br/>:443/TCP HTTPS<br/>TLS 1.2+<br/>Basic Auth (API key)"]
-        NVIDIANGC["api.ngc.nvidia.com<br/>:443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (NGC)"]
-        NVCR["nvcr.io<br/>:443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token"]
-        ModelReg["Kubeflow Model Registry<br/>HTTP/HTTPS configurable<br/>Bearer Token"]
-        OTLP["OTLP Collector<br/>gRPC configurable<br/>TLS configurable"]
-    end
+    %% External to Ingress
+    Client -->|"HTTPS/443<br/>TLS Edge/Reencrypt<br/>Optional Auth"| Route
 
-    %% External → Internal flows
-    Dashboard -->|"HTTPS/8443<br/>TLS 1.2+ FIPS<br/>Bearer Token + RBAC"| ServingAPI
-    Users -->|"HTTPS/443<br/>TLS 1.2+<br/>User token"| K8sAPI
+    %% External to Cluster
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| K8sAPI
+    Dashboard -->|"HTTPS/443<br/>TLS 1.2+ (FIPS)<br/>Bearer Token"| SvcMSA
+
+    %% Service routing
+    SvcMSA -.->|"8443"| MSA
+    SvcMetrics -.->|"8443"| OMC
+    SvcWebhook -.->|"9443"| OMC
 
     %% Internal flows
-    ServingAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>User-impersonated token"| K8sAPI
-    Manager -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    K8sAPI -->|"HTTPS/443→9443<br/>TLS admission cert"| WebhookSvc
+    K8sAPI -->|"HTTPS/9443<br/>TLS cert injection<br/>Admission"| OMC
+    OMC -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    MSA -->|"HTTPS/443<br/>TLS 1.2+<br/>User Token (SSAR)"| K8sAPI
+    MSA -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token (list)"| K8sAPI
 
-    %% Manager → Created Resources (all via K8s API)
-    Manager -.->|creates| Routes
-    Manager -.->|creates| AuthPolicies
-    Manager -.->|creates| EnvoyFilters
-    Manager -.->|creates| ServiceMonitors
-    Manager -.->|creates| NetworkPolicies
-    Manager -.->|creates| KEDATrigger
-    Manager -.->|creates| RayTLSCerts
-    Manager -.->|creates| StorageConfig
-
-    %% Egress flows
-    Manager -->|"HTTPS/443<br/>TLS 1.2+<br/>Basic Auth"| NVIDIAAuth
-    Manager -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| NVIDIANGC
-    Manager -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| NVCR
-    Manager -->|"HTTP(S)<br/>configurable<br/>Bearer Token"| ModelReg
-    ServingAPI -.->|"gRPC<br/>TLS configurable"| OTLP
+    %% Egress
+    OMC -->|"HTTPS/443<br/>TLS 1.2+<br/>NGC API Key"| NGC
+    OMC -->|"HTTPS/443<br/>TLS 1.2+<br/>NGC Basic Auth"| NVCR
+    OMC -->|"HTTPS/443<br/>TLS 1.2+"| AuthnNV
+    OMC -->|"HTTPS<br/>TLS 1.2+ (optional)<br/>Bearer Token"| ModelReg
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef k8s fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef created fill:#fff2cc,stroke:#d6b656,stroke-width:1px,stroke-dasharray:5
-    classDef extservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef odhns fill:#e8f4fd,stroke:#4a90e2,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef clusterinternal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef service fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef k8s fill:#e0e0e0,stroke:#424242,stroke-width:2px
 
-    class Dashboard,Users external
-    class ServingAPI,Manager,WebhookSvc,MetricsSvc odhns
+    class User,Dashboard,Client external
+    class Route ingress
+    class OMC,MSA clusterinternal
+    class SvcMSA,SvcMetrics,SvcWebhook service
     class K8sAPI k8s
-    class Routes,AuthPolicies,EnvoyFilters,ServiceMonitors,NetworkPolicies,KEDATrigger,RayTLSCerts,StorageConfig created
-    class NVIDIAAuth,NVIDIANGC,NVCR,ModelReg,OTLP extservice
+    class NGC,NVCR,AuthnNV,ModelReg externalservice

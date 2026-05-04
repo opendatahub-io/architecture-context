@@ -1,103 +1,81 @@
 graph TB
-    subgraph External["External Clients"]
-        Client["Client Application<br/>(OpenAI-compatible API)"]
-    end
-
-    subgraph ProxyLayer["1. Proxy Layer"]
-        Gateway["Gateway<br/>(Envoy / Gateway API)<br/>Port: 80/HTTP"]
-        AG["agentgateway<br/>(Preferred)"]
-        Istio["Istio<br/>(IngressGateway)"]
-        GKEGw["GKE Gateway<br/>(Cloud-managed LB)"]
-        AG -.- Gateway
-        Istio -.- Gateway
-        GKEGw -.- Gateway
-    end
-
-    subgraph EPPLayer["2. Endpoint Picker (EPP)"]
+    subgraph "llm-d Integration Stack"
         direction TB
-        ExtProc["Ext-Proc Server<br/>(gRPC bidirectional streaming)"]
-        ReqHandler["Request Handler<br/>(OpenAI API Parser)"]
-        FlowCtrl["Flow Control<br/>Priority Bands: Premium / Standard / Best-Effort<br/>Fairness: Round-Robin / Strict"]
-        Scheduler["Scheduler Pipeline<br/>Filter → Score → Pick"]
-        ExtProc --> ReqHandler
-        ReqHandler --> FlowCtrl
-        FlowCtrl --> Scheduler
+
+        subgraph "Container Images"
+            CUDA["llm-d-cuda<br/>NVIDIA GPU Image<br/>(vLLM + NIXL + UCX + NVSHMEM<br/>+ DeepEP + DeepGEMM + FlashInfer<br/>+ LMCache + OTEL)"]
+            CPU["llm-d-cpu<br/>CPU-Only Image<br/>(vLLM + NIXL + UCX)"]
+            HPU["llm-d-hpu<br/>Intel Gaudi Image<br/>(vLLM-Gaudi + NIXL)"]
+            ROCm["llm-d-rocm<br/>AMD ROCm Image<br/>(vLLM + RIXL + UCX)"]
+            RDMATools["llm-d-rdma-tools<br/>Diagnostic Image<br/>(iperf3, perftest, NCCL tests)"]
+        end
+
+        subgraph "Deployment Recipes"
+            BaseRecipes["Kustomize Bases<br/>(single-host, P/D, wide-EP)"]
+            GatewayRecipes["Gateway Recipes<br/>(Istio, kgateway, agentgateway, GKE)"]
+            SchedulerValues["Scheduler Helm Values<br/>(EPP plugin chains, scoring profiles)"]
+        end
+
+        subgraph "Well-Lit Path Guides"
+            OptBaseline["Optimized Baseline"]
+            PDDisagg["P/D Disaggregation"]
+            WideEP["Wide Expert-Parallelism"]
+            TieredCache["Tiered KV Cache"]
+            PredLatency["Predicted Latency Scheduling"]
+            FlowCtrl["Flow Control"]
+            WkldAutoscale["Workload Autoscaling"]
+        end
     end
 
-    subgraph SchedulerDetail["Scheduler Plugins"]
-        direction LR
-        Filters["Filters:<br/>prefix-cache-affinity<br/>slo-headroom-tier<br/>prefill/decode<br/>label-selector"]
-        Scorers["Scorers:<br/>kv-cache-utilization<br/>queue-depth<br/>prefix-scorer<br/>lora-affinity<br/>latency-scorer<br/>session-affinity"]
-        Pickers["Pickers:<br/>max-score<br/>random<br/>weighted-random"]
-        Filters --> Scorers
-        Scorers --> Pickers
-    end
+    %% CRDs consumed
+    GatewayCR["Gateway CR<br/>(gateway.networking.k8s.io/v1)"]
+    HTTPRouteCR["HTTPRoute CR<br/>(gateway.networking.k8s.io/v1)"]
+    InferencePoolCR["InferencePool CR<br/>(inference.networking.x-k8s.io)"]
+    InferenceObjCR["InferenceObjective CR<br/>(inference.networking.x-k8s.io)"]
+    LWSCR["LeaderWorkerSet CR<br/>(leaderworkerset.x-k8s.io/v1)"]
 
-    subgraph PoolLayer["3. InferencePool (CRD)"]
-        Pool["InferencePool<br/>(gateway.networking.k8s.io)<br/>Endpoint Discovery<br/>+ Gateway Integration"]
-    end
+    %% Runtime components (external)
+    EPP["llm-d-inference-scheduler<br/>(EPP v0.8.0)"]
+    RoutingSidecar["llm-d-routing-sidecar<br/>(v0.7.1)"]
+    WVA["Workload Variant Autoscaler<br/>(ig-wva)"]
 
-    subgraph ModelLayer["4. Model Servers"]
-        direction LR
-        vLLM["vLLM<br/>(Primary Engine)<br/>Port: 8000/TCP"]
-        SGLang["SGLang<br/>(Alternative Engine)<br/>Port: 8000/TCP"]
-    end
+    %% Connections
+    BaseRecipes -->|"deploys"| CUDA
+    BaseRecipes -->|"deploys"| CPU
+    BaseRecipes -->|"deploys"| HPU
+    BaseRecipes -->|"deploys"| ROCm
+    GatewayRecipes -->|"configures"| GatewayCR
+    GatewayRecipes -->|"configures"| HTTPRouteCR
+    SchedulerValues -->|"configures"| EPP
+    BaseRecipes -->|"references"| InferencePoolCR
+    PDDisagg -->|"uses"| RoutingSidecar
+    WideEP -->|"uses"| LWSCR
+    FlowCtrl -->|"uses"| InferenceObjCR
+    WkldAutoscale -->|"uses"| WVA
 
-    subgraph Accelerators["Accelerator Hardware"]
-        direction LR
-        NVIDIA["NVIDIA<br/>A100/H100/H200/B200"]
-        AMD["AMD<br/>MI250X+"]
-        IntelXPU["Intel XPU<br/>Max 1550+"]
-        IntelHPU["Intel HPU<br/>Gaudi 1/2/3"]
-        TPU["Google TPU<br/>v5e/v6e/v7"]
-        CPU["CPU<br/>x86_64 Xeon"]
-    end
-
-    subgraph DataSources["EPP Data Sources"]
-        Prometheus["Prometheus Metrics<br/>(Queue depth, KV cache %)"]
-        K8sAPI["Kubernetes API<br/>(Pod lifecycle events)"]
-        ZMQ["ZMQ Events<br/>(KV cache block events)<br/>Port: 5556"]
-    end
-
-    %% Main request flow
-    Client -->|"OpenAI API<br/>HTTP/80"| Gateway
-    Gateway -->|"ext-proc gRPC"| ExtProc
-    Scheduler --> Pool
-    Scheduler -.-> SchedulerDetail
-    Pool -->|"label-based<br/>discovery"| vLLM
-    Pool -->|"label-based<br/>discovery"| SGLang
-    Gateway -->|"forwards request<br/>to selected endpoint"| vLLM
-    Gateway -->|"forwards request<br/>to selected endpoint"| SGLang
-
-    vLLM --> NVIDIA
-    vLLM --> AMD
-    vLLM --> IntelXPU
-    vLLM --> IntelHPU
-    vLLM --> TPU
-    vLLM --> CPU
-    SGLang --> NVIDIA
-
-    %% Data source connections
-    Prometheus -.->|"polling"| ExtProc
-    K8sAPI -.->|"watch events"| ExtProc
-    ZMQ -.->|"cache events"| ExtProc
+    %% Guide to recipe connections
+    OptBaseline -->|"combines"| BaseRecipes
+    PDDisagg -->|"combines"| BaseRecipes
+    WideEP -->|"combines"| BaseRecipes
+    TieredCache -->|"combines"| BaseRecipes
+    PredLatency -->|"combines"| BaseRecipes
+    FlowCtrl -->|"combines"| BaseRecipes
+    WkldAutoscale -->|"combines"| BaseRecipes
 
     %% Styling
-    style Client fill:#f9f9f9,stroke:#333,stroke-width:2px
-    style Gateway fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
-    style ExtProc fill:#e67e22,stroke:#333,stroke-width:2px,color:#fff
-    style ReqHandler fill:#e67e22,stroke:#333,stroke-width:1px,color:#fff
-    style FlowCtrl fill:#e67e22,stroke:#333,stroke-width:1px,color:#fff
-    style Scheduler fill:#e67e22,stroke:#333,stroke-width:2px,color:#fff
-    style Pool fill:#f5a623,stroke:#333,stroke-width:2px
-    style vLLM fill:#27ae60,stroke:#333,stroke-width:2px,color:#fff
-    style SGLang fill:#27ae60,stroke:#333,stroke-width:2px,color:#fff
-    style NVIDIA fill:#76b900,stroke:#333,stroke-width:1px
-    style AMD fill:#ed1c24,stroke:#333,stroke-width:1px,color:#fff
-    style IntelXPU fill:#0071c5,stroke:#333,stroke-width:1px,color:#fff
-    style IntelHPU fill:#0071c5,stroke:#333,stroke-width:1px,color:#fff
-    style TPU fill:#4285f4,stroke:#333,stroke-width:1px,color:#fff
-    style CPU fill:#999,stroke:#333,stroke-width:1px
-    style Prometheus fill:#e6522c,stroke:#333,stroke-width:1px,color:#fff
-    style K8sAPI fill:#326ce5,stroke:#333,stroke-width:1px,color:#fff
-    style ZMQ fill:#df0000,stroke:#333,stroke-width:1px,color:#fff
+    style CUDA fill:#4a90e2,stroke:#333,color:#fff
+    style CPU fill:#4a90e2,stroke:#333,color:#fff
+    style HPU fill:#4a90e2,stroke:#333,color:#fff
+    style ROCm fill:#4a90e2,stroke:#333,color:#fff
+    style RDMATools fill:#7f8c8d,stroke:#333,color:#fff
+    style BaseRecipes fill:#f5a623,stroke:#333,color:#000
+    style GatewayRecipes fill:#f5a623,stroke:#333,color:#000
+    style SchedulerValues fill:#f5a623,stroke:#333,color:#000
+    style EPP fill:#7ed321,stroke:#333,color:#000
+    style RoutingSidecar fill:#7ed321,stroke:#333,color:#000
+    style WVA fill:#7ed321,stroke:#333,color:#000
+    style GatewayCR fill:#e8e8e8,stroke:#666
+    style HTTPRouteCR fill:#e8e8e8,stroke:#666
+    style InferencePoolCR fill:#e8e8e8,stroke:#666
+    style InferenceObjCR fill:#e8e8e8,stroke:#666
+    style LWSCR fill:#e8e8e8,stroke:#666

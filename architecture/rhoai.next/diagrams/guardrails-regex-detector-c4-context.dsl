@@ -1,52 +1,53 @@
 workspace {
     model {
-        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "Routes content inspection requests to detection backends; handles external-facing authentication" "Internal RHOAI"
+        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "Routes text content to detector backends for safety screening before/after LLM inference" "Internal RHOAI"
 
-        regexDetector = softwareSystem "Guardrails Regex Detector" "Lightweight Rust HTTP service that detects PII and custom patterns in text using regular expressions" {
-            server = container "Regex Detector Server" "Axum-based HTTP server binding to 0.0.0.0:8080" "Rust / Axum 0.7.9"
-            detectionEngine = container "Detection Engine" "Regex pattern matching with built-in PII patterns (email, SSN, credit card) and custom pattern support" "Rust / regex 1.11.1"
+        regexDetector = softwareSystem "Guardrails Regex Detector" "Lightweight Rust HTTP service for PII and custom pattern detection via regex matching" {
+            server = container "Axum HTTP Server" "Async HTTP server listening on port 8080" "Rust / Axum 0.7.9 / Tokio"
+            builtinDetectors = container "Built-in PII Detectors" "Pre-compiled regex patterns for email, SSN, credit card" "Rust regex crate"
+            customRegex = container "Custom Regex Engine" "Compiles and executes arbitrary regex from request params" "Rust regex crate"
         }
 
-        user = person "Platform Operator" "Deploys and configures the guardrails detection stack"
+        llm = softwareSystem "LLM Inference Service" "Large Language Model serving predictions" "External"
 
         # Relationships
-        orchestrator -> regexDetector "Sends text content inspection requests" "HTTP/8080 POST /api/v1/text/contents"
-        user -> orchestrator "Configures guardrails policies"
+        orchestrator -> regexDetector "Sends text for PII/regex detection" "HTTP/8080 POST /api/v1/text/contents"
+        orchestrator -> llm "Sends prompts / receives completions" "HTTP/gRPC"
 
-        # Internal container relationships
-        server -> detectionEngine "Routes detection requests"
+        # Internal relationships
+        server -> builtinDetectors "Invokes named patterns (email, ssn, credit-card)"
+        server -> customRegex "Invokes custom regex from detector_params"
     }
 
     views {
         systemContext regexDetector "SystemContext" {
             include *
             autoLayout
-            description "System context showing the Guardrails Regex Detector within the RHOAI guardrails ecosystem"
+            description "System context showing the Guardrails Regex Detector within the FMS Guardrails ecosystem"
         }
 
         container regexDetector "Containers" {
             include *
             autoLayout
-            description "Container view showing internal structure of the Regex Detector service"
+            description "Internal structure of the Guardrails Regex Detector service"
         }
 
         styles {
+            element "Software System" {
+                background #438dd5
+                color #ffffff
+            }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Software System" {
-                background #4a90e2
+            element "External" {
+                background #999999
                 color #ffffff
             }
             element "Container" {
-                background #4a90e2
+                background #438dd5
                 color #ffffff
-            }
-            element "Person" {
-                background #08427b
-                color #ffffff
-                shape person
             }
         }
     }

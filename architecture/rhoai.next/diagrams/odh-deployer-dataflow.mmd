@@ -1,56 +1,41 @@
 sequenceDiagram
-    participant DeploySH as deploy.sh<br/>(Init Container)
+    participant Deploy as deploy.sh Container
     participant K8sAPI as OpenShift API Server<br/>443/TCP HTTPS
-    participant Operator as rhods-operator<br/>(Watch Loop)
-    participant Dashboard as rhods-dashboard<br/>8443/TCP HTTPS
-    participant NBC as odh-notebook-controller<br/>8080/TCP HTTP
-    participant ModelCtrl as odh-model-controller<br/>8080/TCP HTTP
-    participant MMCtrl as modelmesh-controller<br/>8080/TCP HTTP
-    participant DSPO as data-science-pipelines-operator<br/>8080/TCP HTTP
-    participant Prom as Prometheus<br/>9091/TCP HTTPS
-    participant ClusterProm as prometheus-k8s<br/>(openshift-monitoring)<br/>9091/TCP HTTPS
-    participant Blackbox as Blackbox Exporter<br/>9115/TCP HTTP
-    participant AM as Alertmanager<br/>10443/TCP HTTPS
+    participant ODHOp as ODH Operator<br/>(KfDef Controller)
+    participant Manifests as odh-manifests<br/>(tarball file://)
+    participant Prom as Prometheus<br/>9090/TCP
+    participant BB as Blackbox Exporter<br/>9114/TCP HTTPS
+    participant AM as Alertmanager<br/>9093/TCP
+    participant ClusterProm as Cluster Prometheus<br/>9091/TCP HTTPS
+    participant Components as Platform Components<br/>8080/TCP HTTP
+    participant Endpoints as User-Facing Endpoints<br/>HTTPS
     participant PD as PagerDuty<br/>443/TCP HTTPS
     participant DMS as Dead Man's Snitch<br/>443/TCP HTTPS
+    participant SMTP as SMTP Server<br/>STARTTLS
 
-    Note over DeploySH, K8sAPI: Flow 1: Deployer Bootstraps RHODS Platform
+    Note over Deploy,K8sAPI: Flow 1: Platform Deployment
+    Deploy->>K8sAPI: Create namespaces<br/>Auth: ServiceAccount Token<br/>TLS 1.2+
+    Deploy->>K8sAPI: Apply KfDef CRs<br/>Auth: ServiceAccount Token
+    K8sAPI-->>ODHOp: KfDef watch event
+    ODHOp->>Manifests: Load manifests<br/>file:// protocol
+    Manifests-->>ODHOp: YAML manifests
+    ODHOp->>K8sAPI: Create component Deployments<br/>Auth: ServiceAccount Token<br/>TLS 1.2+
+    Deploy->>K8sAPI: Apply monitoring stack<br/>Auth: ServiceAccount Token
+    Deploy->>K8sAPI: Apply network policies<br/>Auth: ServiceAccount Token
+    Deploy->>K8sAPI: Install dashboard config + ISV tiles<br/>Auth: ServiceAccount Token
 
-    DeploySH->>K8sAPI: Create namespaces (oc apply)<br/>Auth: ServiceAccount token
-    K8sAPI-->>DeploySH: Created
-    DeploySH->>K8sAPI: Apply Dashboard CRDs<br/>(OdhApplication, OdhDocument, OdhQuickStart, OdhDashboardConfig)
-    K8sAPI-->>DeploySH: Applied
-    DeploySH->>K8sAPI: Apply ISV app tiles, configs, serving runtimes
-    K8sAPI-->>DeploySH: Applied
-    DeploySH->>K8sAPI: Create KfDef CRs (8 CRs)<br/>(dashboard, nbc, model-mesh, dspo, notebooks, monitoring, anaconda...)
-    K8sAPI-->>DeploySH: Created
-    DeploySH->>K8sAPI: Apply NetworkPolicies, RBAC, ConsoleLink
-    K8sAPI-->>DeploySH: Applied
+    Note over Prom,Components: Flow 2: Prometheus Metrics Federation
+    Prom->>ClusterProm: Federate metrics<br/>9091/TCP HTTPS<br/>Auth: Bearer Token (SA)<br/>TLS (service CA)
+    Prom->>Components: Scrape component metrics<br/>8080/TCP HTTP<br/>Auth: None
+    Prom->>BB: Query probe results<br/>9114/TCP HTTPS<br/>Auth: Bearer Token
+    BB->>Endpoints: Probe availability<br/>HTTPS<br/>Auth: Bearer Token (SA)
+    Endpoints-->>BB: HTTP status
+    BB-->>Prom: Probe metrics
+    Components-->>Prom: /metrics response
+    ClusterProm-->>Prom: Federated metrics
 
-    K8sAPI->>Operator: KfDef watch event
-    Operator->>K8sAPI: Deploy components from<br/>odh-manifests tarball
-    K8sAPI-->>Operator: Components deployed
-
-    Note over Prom, DMS: Flow 2: Prometheus Monitoring Pipeline
-
-    Prom->>ClusterProm: Federated scraping<br/>HTTPS/9091, TLS (service CA)<br/>Auth: Bearer token (SA)
-    ClusterProm-->>Prom: haproxy, controller_runtime,<br/>container, kubelet metrics
-
-    Prom->>Dashboard: Scrape metrics (via Blackbox)<br/>HTTPS/8443, TLS
-    Prom->>NBC: Scrape metrics<br/>HTTP/8080, No Auth
-    Prom->>ModelCtrl: Scrape metrics<br/>HTTP/8080, No Auth
-    Prom->>MMCtrl: Scrape metrics<br/>HTTP/8080, No Auth
-    Prom->>DSPO: Scrape metrics<br/>HTTP/8080, No Auth
-
-    Prom->>Blackbox: Probe request<br/>HTTP/9115
-    Blackbox->>Dashboard: HTTP probe<br/>HTTPS/8443, Bearer token (SA)
-    Dashboard-->>Blackbox: Probe result
-    Blackbox-->>Prom: Probe metrics
-
-    Note over Prom: SLO burn-rate evaluation<br/>(5m/1h, 30m/6h, 2h/1d, 6h/3d windows)
-
-    Prom->>AM: Fire alert (burn rate exceeded)
-
-    AM->>PD: Critical alert<br/>HTTPS/443, Service key<br/>(managed service only)
-    AM->>DMS: Heartbeat webhook<br/>HTTPS/443<br/>(managed service only)
-    AM-->>AM: Email via SMTP<br/>(user notifications)
+    Note over Prom,SMTP: Flow 3: Alert Notification (Managed Service)
+    Prom->>AM: Fire alert<br/>9093/TCP HTTP<br/>Loopback, no encryption
+    AM->>PD: Critical alerts<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Service Key
+    AM->>SMTP: Email notifications<br/>STARTTLS<br/>Auth: Username/Password
+    AM->>DMS: Watchdog heartbeat<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: URL Token

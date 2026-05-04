@@ -1,47 +1,44 @@
 sequenceDiagram
-    participant User as User / API Client
+    participant User as Data Scientist
     participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
     participant Webhook as Webhook Server<br/>9443/TCP HTTPS TLS
-    participant Reconciler as TrainJobReconciler<br/>(controller-runtime)
-    participant RuntimeFW as Runtime Framework<br/>(Plugin Chain)
-    participant TrainingPod as Training Pod rank-0<br/>28080/TCP HTTP
+    participant Controller as trainer-controller-manager<br/>(controller-runtime)
+    participant JobSet as JobSet Controller
+    participant TrainPod as Training Pod (rank 0)<br/>28080/TCP HTTP
+    participant MPIWorker as MPI Worker Pods<br/>2222/TCP SSH
 
-    Note over User,TrainingPod: Flow 1: TrainJob Creation and Resource Provisioning
+    Note over User, MPIWorker: Flow 1: TrainJob Reconciliation
 
-    User->>K8sAPI: POST TrainJob CR<br/>Auth: Bearer Token / Client Cert
-    K8sAPI->>Webhook: POST /validate-trainer-...-trainjob<br/>TLS Client Cert
-    Webhook-->>K8sAPI: Allowed
-    K8sAPI-->>User: TrainJob Created
-    K8sAPI->>Reconciler: Watch Event (TrainJob)<br/>ServiceAccount Token
-    Reconciler->>RuntimeFW: Resolve Runtime + Build Resources
-    RuntimeFW-->>Reconciler: JobSet, PodGroup, Secrets, ConfigMaps
-    Reconciler->>K8sAPI: Create JobSet<br/>ServiceAccount Bearer Token
-    Reconciler->>K8sAPI: Create NetworkPolicy (RHOAI)<br/>ServiceAccount Bearer Token
-    Reconciler->>K8sAPI: Create PodGroup (if Volcano/CoScheduling)<br/>ServiceAccount Bearer Token
-    Reconciler->>K8sAPI: Create SSH Secret + Hostfile CM (if MPI)<br/>ServiceAccount Bearer Token
+    User->>K8sAPI: kubectl create TrainJob<br/>HTTPS/443, Bearer Token/OIDC
+    K8sAPI->>Webhook: POST /validate-trainer-...-trainjob<br/>HTTPS/9443, API server client cert
+    Webhook-->>K8sAPI: Admission Response (allow/deny)
+    K8sAPI-->>User: TrainJob created
 
-    Note over User,TrainingPod: Flow 2: RHAI Progression Tracking (RHOAI)
+    K8sAPI--)Controller: Watch event: TrainJob created
+    Controller->>K8sAPI: GET TrainJob, TrainingRuntime<br/>HTTPS/443, ServiceAccount token
+    K8sAPI-->>Controller: Runtime spec resolved
 
-    loop Every 30s (configurable 5s-300s)
-        Reconciler->>K8sAPI: List Pods (APIReader direct call)<br/>ServiceAccount Bearer Token
-        K8sAPI-->>Reconciler: Pod list with status
-        Reconciler->>TrainingPod: GET /metrics<br/>HTTP plaintext (NetworkPolicy enforced)
-        TrainingPod-->>Reconciler: Training metrics JSON
-        Reconciler->>K8sAPI: PATCH TrainJob annotations<br/>ServiceAccount Bearer Token
+    Controller->>K8sAPI: CREATE/PATCH JobSet<br/>HTTPS/443, ServiceAccount token
+    Controller->>K8sAPI: CREATE NetworkPolicy (RHAI)<br/>HTTPS/443, ServiceAccount token
+    Controller->>K8sAPI: UPDATE TrainJob/status<br/>HTTPS/443, ServiceAccount token
+
+    JobSet--)K8sAPI: Watch event: JobSet
+    JobSet->>K8sAPI: CREATE Jobs/Pods
+
+    Note over Controller, TrainPod: Flow 2: RHAI Progression Tracking
+
+    loop Every reconciliation cycle
+        Controller->>K8sAPI: LIST Pods (training job)<br/>HTTPS/443, ServiceAccount token
+        K8sAPI-->>Controller: Pod list with IPs
+        Controller->>TrainPod: GET /metrics<br/>HTTP/28080, plaintext, No auth
+        TrainPod-->>Controller: Training metrics (JSON)
+        Controller->>K8sAPI: PATCH TrainJob annotations<br/>HTTPS/443, ServiceAccount token
     end
 
-    Note over User,TrainingPod: Flow 3: Distributed PyTorch Training (inter-pod)
+    Note over Controller, MPIWorker: Flow 3: MPI Distributed Training Setup
 
-    participant Worker as Trainer Node (worker)
-    participant Master as Trainer Node rank-0 (master)<br/>29500/TCP
-
-    Worker->>Master: TCP rendezvous<br/>Port 29500/TCP plaintext
-    Worker->>Worker: NCCL all-reduce<br/>Dynamic ports, plaintext<br/>(same-job NetworkPolicy)
-
-    Note over User,TrainingPod: Flow 4: MPI Distributed Training (inter-pod)
-
-    participant Launcher as MPI Launcher Pod
-    participant MPINode as MPI Node Pods<br/>2222/TCP SSH
-
-    Launcher->>MPINode: SSH connection<br/>Port 2222/TCP<br/>ECDSA P521 key auth
-    MPINode->>MPINode: NCCL/MPI collective ops<br/>Dynamic ports, plaintext<br/>(same-job NetworkPolicy)
+    Controller->>K8sAPI: CREATE Secret (SSH key pair)<br/>HTTPS/443, ServiceAccount token
+    Controller->>K8sAPI: CREATE ConfigMap (hostfile)<br/>HTTPS/443, ServiceAccount token
+    Note over TrainPod, MPIWorker: MPI launcher initiates distributed training
+    TrainPod->>MPIWorker: SSH connection<br/>SSH/2222, RSA key pair auth
+    MPIWorker-->>TrainPod: Training results

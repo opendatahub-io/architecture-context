@@ -3,69 +3,63 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (DMZ) - KServe Managed"]
-        KServeIngress["KServe Ingress / HTTPRoute<br/>443/TCP → 8000/TCP<br/>TLS 1.2+ (SIMPLE)<br/>Configured by InferenceService CRD"]
+    subgraph Ingress["INGRESS (Managed by KServe)"]
+        KServeGW["KServe InferenceService Gateway<br/>HTTPRoute/Route → vLLM<br/>TLS managed by KServe/Istio"]
     end
 
-    subgraph Application["APPLICATION (Internal - ClusterIP)"]
+    subgraph ClusterInternal["CLUSTER INTERNAL"]
         direction TB
 
-        subgraph NS_User["Namespace: {user-namespace}"]
-            direction TB
-            AuthMW["AuthenticationMiddleware<br/>API Key Validation<br/>(skipped: /health, /metrics, /ping, /version)"]
-
-            subgraph APIEndpoints["vllm-openai Service - 8000/TCP"]
-                APIServer["vLLM-CPU API Server<br/>FastAPI/Uvicorn<br/>Container: odh-vllm-cpu-rhel9<br/>UID: 2000 / GID: 0<br/>TLS: optional (--ssl-certfile)"]
-            end
-
-            subgraph GRPCEndpoint["vllm-grpc Service - 50051/TCP"]
-                GRPCServer["gRPC Server<br/>VllmEngine Service<br/>⚠ plaintext ONLY (no TLS)<br/>Reflection: enabled"]
-            end
-
-            AsyncEngine["AsyncLLM Engine (V1)<br/>PagedAttention + KV Cache<br/>Multiprocessing: fork"]
-            ModelExec["Model Executor<br/>CPU: OpenBLAS + numactl<br/>Arch: ppc64le, s390x, x86_64"]
-
-            AuthMW --> APIServer
-            APIServer --> AsyncEngine
-            GRPCServer --> AsyncEngine
-            AsyncEngine --> ModelExec
+        subgraph VllmPod["vLLM CPU Pod"]
+            HTTPServer["vllm-openai<br/>ClusterIP 8000/TCP<br/>HTTP(S) - Configurable TLS<br/>Bearer API Key on /v1/* only<br/>⚠️ 20+ unauthenticated endpoints"]
+            GRPCServer["vllm-grpc<br/>ClusterIP 50051/TCP<br/>gRPC - No encryption<br/>No auth"]
+            MetricsEP["Prometheus Metrics<br/>8000/TCP (shared)<br/>HTTP - No auth"]
         end
+
+        subgraph Optional["Optional Distributed (No Encryption)"]
+            Gloo["Gloo Backend<br/>TCP - No encryption"]
+            Ray["Ray Cluster<br/>6379/TCP - No encryption"]
+        end
+
+        Prometheus["Prometheus<br/>Metrics Collection"]
     end
 
-    subgraph ExternalServices["EGRESS - External Services"]
-        HFHub["Hugging Face Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer (HF_TOKEN)"]
-        S3["S3-Compatible Storage<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS IAM"]
-        UsageStats["vLLM Usage Stats<br/>stats.vllm.ai<br/>443/TCP HTTPS<br/>⛔ DISABLED (VLLM_NO_USAGE_STATS=1)"]
-        OTel["OpenTelemetry Collector<br/>configurable port<br/>gRPC/HTTP TLS<br/>(optional, not on s390x)"]
+    subgraph EgressServices["EGRESS (External Services)"]
+        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS 1.2+<br/>Bearer HF_TOKEN"]
+        S3["S3-Compatible Storage<br/>443/TCP HTTPS TLS 1.2+<br/>AWS IAM credentials"]
+        OTLPCol["OTLP Collector<br/>gRPC/HTTP Configurable<br/>⚠️ Insecure by default"]
+        RHStats["Red Hat Stats<br/>console.redhat.com<br/>443/TCP HTTPS TLS 1.2+<br/>No auth"]
     end
 
-    subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>Scrapes /metrics<br/>8000/TCP HTTP"]
-    end
+    %% External flows
+    Client -->|"HTTP(S)/8000<br/>Configurable TLS<br/>Bearer API Key"| KServeGW
+    KServeGW -->|"HTTP(S)/8000<br/>Configurable TLS<br/>Bearer forwarded"| HTTPServer
+    Client -->|"gRPC/50051<br/>No encryption<br/>No auth"| GRPCServer
 
-    %% Flows
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (optional)"| KServeIngress
-    KServeIngress -->|"HTTP/8000<br/>None (TLS optional)<br/>Forwarded Bearer"| AuthMW
+    %% Internal flows
+    HTTPServer -.->|"TCP"| Gloo
+    HTTPServer -.->|"Ray/6379"| Ray
+    Prometheus -->|"HTTP/8000<br/>Scrape"| MetricsEP
 
-    AsyncEngine -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer (HF_TOKEN)"| HFHub
-    AsyncEngine -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    APIServer -.->|"gRPC/HTTP<br/>TLS configurable"| OTel
-    AsyncEngine -.->|"HTTPS/443<br/>⛔ DISABLED"| UsageStats
-    Prometheus -->|"HTTP/8000<br/>No Auth"| APIServer
+    %% Egress flows
+    HTTPServer -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer HF_TOKEN"| HFHub
+    HTTPServer -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    HTTPServer -->|"gRPC/HTTP<br/>⚠️ Insecure default"| OTLPCol
+    HTTPServer -->|"HTTPS/443<br/>TLS 1.2+"| RHStats
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef monitoring fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef disabled fill:#e0e0e0,stroke:#999,stroke-width:1px,stroke-dasharray: 5 5
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef warning fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef egresssvc fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef danger fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
-    class KServeIngress ingress
-    class AuthMW,APIServer,AsyncEngine,ModelExec application
-    class GRPCServer warning
-    class HFHub,S3,OTel externalservice
-    class UsageStats disabled
-    class Prometheus monitoring
+    class KServeGW ingress
+    class HTTPServer,MetricsEP internal
+    class GRPCServer danger
+    class Gloo,Ray warning
+    class Prometheus internal
+    class HFHub,S3,RHStats egresssvc
+    class OTLPCol danger

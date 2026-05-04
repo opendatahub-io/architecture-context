@@ -1,62 +1,68 @@
 sequenceDiagram
-    participant User as User Browser
-    participant Router as OpenShift Router<br/>443/TCP HTTPS TLS 1.2+
-    participant Gateway as Gateway (Envoy)<br/>443/TCP HTTPS
-    participant AuthProxy as kube-auth-proxy<br/>8443/TCP HTTPS TLS (svc CA)
-    participant OAuth as OpenShift OAuth Server<br/>443/TCP HTTPS TLS 1.2+
-    participant App as Application Service<br/>varies HTTP/HTTPS
+    autonumber
 
-    Note over User, App: Flow 1: User Authentication via Gateway (OAuth Mode)
+    participant User as User/Client
+    participant Router as OpenShift Router<br/>443/TCP HTTPS
+    participant Envoy as Gateway (Envoy)<br/>443/TCP TLS Terminate
+    participant EF as EnvoyFilter<br/>ext_authz
+    participant KAP as kube-auth-proxy<br/>8443/TCP HTTPS
+    participant OAuth as OAuth/OIDC Provider<br/>443/TCP HTTPS
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Upstream as Upstream Component<br/>(via HTTPRoute)
 
-    User->>Router: GET /app<br/>HTTPS/443, TLS 1.2+, No Auth
-    Router->>Gateway: Forward to Gateway
-    Gateway->>AuthProxy: ext_authz check<br/>HTTPS/8443, TLS (svc CA)<br/>Cookie: _oauth2_proxy
-    AuthProxy-->>Gateway: 401 Redirect (no session)
-    Gateway-->>User: 302 Redirect to OAuth
-    User->>OAuth: Login form<br/>HTTPS/443, TLS 1.2+<br/>User credentials
-    OAuth-->>User: 302 Redirect with auth code
-    User->>Gateway: GET /oauth2/callback<br/>HTTPS/443, TLS 1.2+<br/>Authorization code
-    Gateway->>AuthProxy: ext_authz callback<br/>HTTPS/8443
-    AuthProxy->>OAuth: Exchange code for token<br/>HTTPS/443, OAuthClient credentials
-    OAuth-->>AuthProxy: Access token + ID token
-    AuthProxy-->>Gateway: 200 OK, Set-Cookie: _oauth2_proxy
-    Gateway-->>User: 302 Redirect to /app (with cookie)
-    User->>Router: GET /app (with cookie)
-    Router->>Gateway: Forward
-    Gateway->>AuthProxy: ext_authz check (cookie valid)
-    AuthProxy-->>Gateway: 200 OK (x-forwarded-access-token)
-    Note over Gateway: Lua filter extracts token,<br/>strips _oauth2_proxy cookies
-    Gateway->>App: Forward request<br/>Authorization: Bearer {token}
-    App-->>Gateway: Response
-    Gateway-->>User: Response
+    Note over User,Upstream: Flow 1: Platform Ingress Authentication (Gateway API)
 
-    Note over User, App: Flow 2: Component Deployment via DSC
+    User->>Router: HTTPS/443<br/>TLS 1.2+
+    Router->>Envoy: HTTPS/443<br/>TLS termination
+    Envoy->>EF: ext_authz check<br/>(internal)
+    EF->>KAP: HTTPS/8443<br/>Bearer Token check
+    KAP->>OAuth: HTTPS/443<br/>OAuth2 client creds<br/>TLS 1.2+
+    OAuth-->>KAP: Token validated
+    KAP->>K8sAPI: HTTPS/443<br/>TokenReview<br/>ServiceAccount token
+    K8sAPI-->>KAP: Review result
+    KAP-->>EF: Auth decision
+    EF-->>Envoy: Authorized
+    Envoy->>Upstream: Forward request<br/>(via HTTPRoute)<br/>Auth headers forwarded
+    Upstream-->>Envoy: Response
+    Envoy-->>Router: Response
+    Router-->>User: HTTPS Response
 
-    participant Admin as Cluster Admin
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
-    participant DSCCtrl as DSC Controller<br/>(operator pod)
-    participant CompCtrl as Component Controller<br/>(operator pod)
+    participant Admin as Platform Admin
+    participant Webhook as DSC Webhook<br/>9443/TCP HTTPS
+    participant DSCCtrl as DSC Controller
+    participant CompCtrl as Component Controller
+    participant Manifests as Kustomize Manifests<br/>/opt/manifests-template
 
-    Admin->>K8sAPI: Create DataScienceCluster CR<br/>HTTPS/6443, Bearer Token
-    K8sAPI-->>DSCCtrl: Watch event (DSC created)
-    DSCCtrl->>K8sAPI: Create Component CRs<br/>HTTPS/6443, SA Token
-    K8sAPI-->>CompCtrl: Watch event (Component CR)
-    CompCtrl->>K8sAPI: Server-side apply manifests<br/>HTTPS/6443, SA Token
-    CompCtrl->>K8sAPI: Check deployment status<br/>HTTPS/6443, SA Token
-    K8sAPI-->>DSCCtrl: Component status update
-    DSCCtrl->>K8sAPI: Aggregate DSC status<br/>HTTPS/6443, SA Token
+    Note over Admin,Manifests: Flow 2: Component Deployment via DSC
 
-    Note over User, App: Flow 3: Monitoring Stack Data Collection
+    Admin->>K8sAPI: kubectl apply DSC<br/>HTTPS/443, Bearer Token
+    K8sAPI->>Webhook: Validate DSC<br/>HTTPS/9443, mTLS
+    Webhook-->>K8sAPI: Admission allowed
+    K8sAPI-->>Admin: DSC created
+    K8sAPI->>DSCCtrl: Watch event (DSC)
+    DSCCtrl->>K8sAPI: Create Component CR<br/>(e.g., Dashboard, KServe)
+    K8sAPI->>CompCtrl: Watch event (Component CR)
+    CompCtrl->>Manifests: Read kustomize manifests<br/>(filesystem)
+    Manifests-->>CompCtrl: Rendered manifests
+    CompCtrl->>K8sAPI: Apply manifests<br/>HTTPS/443<br/>ServiceAccount Bearer Token
+    K8sAPI-->>CompCtrl: Resources created
 
-    participant Prom as MonitoringStack<br/>Prometheus<br/>9090/TCP HTTP
-    participant OTELCol as OTEL Collector<br/>varies gRPC/HTTP
-    participant Tempo as Tempo<br/>4317/TCP gRPC
-    participant Thanos as ThanosQuerier<br/>9090/TCP HTTP
-    participant Perses as Perses<br/>varies HTTP
+    participant OTel as OTel Collector<br/>(TargetAllocator)
+    participant Pods as Component Pods<br/>(scrape=true)
+    participant Prom as MonitoringStack<br/>(Prometheus)
+    participant Thanos as ThanosQuerier<br/>10901/TCP gRPC
+    participant NSProxy as Namespace Proxy<br/>8443/TCP HTTPS
+    participant Dashboard as Dashboard/UI
 
-    Prom->>App: Scrape metrics<br/>varies HTTP/HTTPS<br/>SA Token
-    OTELCol->>App: Collect traces<br/>varies gRPC/HTTP<br/>SA Token
-    OTELCol->>Tempo: Export traces<br/>gRPC/4317, TLS (optional)
-    Thanos->>Prom: Query metrics<br/>HTTP/9090, SA Token
-    Perses->>Prom: Query metrics<br/>varies HTTP, SA Token
-    Perses->>Tempo: Query traces<br/>varies HTTP, SA Token
+    Note over OTel,Dashboard: Flow 3: Monitoring Metrics Collection
+
+    OTel->>Pods: Scrape metrics<br/>HTTP (varies)<br/>monitoring.opendatahub.io/scrape=true
+    Pods-->>OTel: Metrics data
+    OTel->>Prom: OTLP HTTP/4318<br/>TLS
+    Thanos->>Prom: gRPC/10901<br/>TLS<br/>Federated query
+    Prom-->>Thanos: Metrics response
+    Dashboard->>NSProxy: HTTPS/8443<br/>Bearer Token
+    NSProxy->>NSProxy: kube-rbac-proxy<br/>SubjectAccessReview
+    NSProxy->>Prom: HTTPS/9090<br/>TLS (service-CA)
+    Prom-->>NSProxy: Metrics
+    NSProxy-->>Dashboard: Authorized metrics

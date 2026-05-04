@@ -3,65 +3,76 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph PlatformIngress["PLATFORM INGRESS (KServe Layer)"]
-        KServeGW["KServe InferenceService<br/>Gateway / kube-rbac-proxy<br/>Auth enforcement"]
+    subgraph Ingress["INGRESS (KServe-Managed)"]
+        KServeRoute["KServe Route / HTTPRoute<br/>443/TCP → 8033/TCP<br/>TLS 1.2+ (SIMPLE/MUTUAL)<br/>Managed by KServe InferenceService"]
     end
 
-    subgraph PodBoundary["POD BOUNDARY (Single Container)<br/>User: tgis (UID 2000, GID 0)<br/>allowPrivilegeEscalation: false<br/>seccompProfile: RuntimeDefault"]
+    subgraph TGISPod["TGIS POD (Internal)"]
         direction TB
 
-        subgraph RouterProcess["text-generation-router (Rust)"]
-            gRPCServer["fmaas.GenerationService<br/>8033/TCP gRPC<br/>Optional TLS<br/>Optional mTLS"]
-            HTTPServer["HTTP Server<br/>3000/TCP plaintext<br/>/health + /metrics<br/>Unauthenticated"]
+        Router["text-generation-router (Rust)<br/>gRPC: 8033/TCP | HTTP: 3000/TCP<br/>TLS: rustls 0.22.4 + OpenSSL<br/>mTLS: Optional client CA verification"]
+
+        subgraph Shards["Python Inference Shards"]
+            direction LR
+            Shard0["Shard 0<br/>UDS: /tmp/tgs-0<br/>GPU 0"]
+            Shard1["Shard 1<br/>UDS: /tmp/tgs-1<br/>GPU 1"]
+            ShardN["Shard N<br/>UDS: /tmp/tgs-N<br/>GPU N"]
         end
 
-        subgraph ShardProcesses["text-generation-server (Python) × N"]
-            InternalAPI["generate.v1.TextGenerationService<br/>UDS /tmp/text-generation-server-{rank}<br/>No encryption, No auth"]
-            NCCL["Inter-shard NCCL/GLOO<br/>29500/TCP loopback<br/>No encryption"]
-        end
+        NCCLComm["NCCL Communication<br/>29500/TCP plaintext<br/>allreduce over NVLink/PCIe"]
     end
 
-    subgraph ClusterInternal["CLUSTER INTERNAL"]
-        K8sProbes["Kubernetes Probes<br/>Liveness + Readiness"]
-        Prometheus["Prometheus<br/>Metrics scraping"]
-        ModelPVC["Shared Model PVC<br/>/shared_model_storage<br/>Filesystem access"]
+    subgraph Monitoring["MONITORING (Internal)"]
+        Kubelet["Kubernetes Kubelet<br/>HTTP Probes"]
+        Prometheus["Prometheus / OCP Monitoring<br/>HTTP /metrics scrape"]
+        OTel["OpenTelemetry Collector<br/>gRPC (configurable)"]
     end
 
-    subgraph GPULayer["GPU HARDWARE"]
-        GPU["NVIDIA GPU<br/>CUDA 12.1.0<br/>NCCL 2.18.3"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS 1.2+<br/>HF Token (optional)"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Optional auth token"]
+    subgraph Storage["STORAGE"]
+        PVC["PVC (models-pvc)<br/>/shared_model_storage<br/>Persistent model weights"]
     end
 
-    %% Flows
-    Client -->|"gRPC/8033<br/>Optional TLS<br/>Optional mTLS"| KServeGW
-    KServeGW -->|"gRPC/8033 + HTTP/3000<br/>Platform auth"| gRPCServer
+    %% External flows
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Configurable auth"| KServeRoute
+    KServeRoute -->|"gRPC/8033<br/>TLS/mTLS<br/>Client certs (optional)"| Router
 
-    gRPCServer -->|"UDS gRPC<br/>No encryption<br/>Process-local"| InternalAPI
-    InternalAPI -->|"CUDA runtime<br/>Hardware bus"| GPU
+    %% Internal pod flows
+    Router -->|"gRPC over UDS<br/>plaintext (local)<br/>No auth"| Shard0
+    Router -->|"gRPC over UDS<br/>plaintext (local)<br/>No auth"| Shard1
+    Router -->|"gRPC over UDS<br/>plaintext (local)<br/>No auth"| ShardN
 
-    K8sProbes -->|"HTTP GET /health<br/>3000/TCP plaintext<br/>No auth"| HTTPServer
-    Prometheus -->|"HTTP GET /metrics<br/>3000/TCP plaintext<br/>No auth"| HTTPServer
+    Shard0 <-->|"NCCL/29500<br/>plaintext"| NCCLComm
+    Shard1 <-->|"NCCL/29500<br/>plaintext"| NCCLComm
+    ShardN <-->|"NCCL/29500<br/>plaintext"| NCCLComm
 
-    InternalAPI -->|"Filesystem<br/>Volume mount"| ModelPVC
-    InternalAPI -.->|"HTTPS/443<br/>TLS 1.2+<br/>Optional token"| HFHub
+    %% Monitoring flows
+    Kubelet -->|"HTTP/3000<br/>No TLS<br/>No auth"| Router
+    Prometheus -->|"HTTP/3000<br/>No TLS<br/>No auth"| Router
+    Router -->|"gRPC<br/>configurable"| OTel
+
+    %% External service flows
+    Shard0 -->|"HTTPS/443<br/>TLS 1.2+<br/>HF Token"| HFHub
+
+    %% Storage
+    Shard0 -.-|"Volume mount"| PVC
+    Shard1 -.-|"Volume mount"| PVC
+    ShardN -.-|"Volume mount"| PVC
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef pod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef router fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef shard fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef cluster fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef gpu fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef extsvc fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef tgispod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef storage fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
 
     class Client external
-    class KServeGW ingress
-    class gRPCServer,HTTPServer router
-    class InternalAPI,NCCL shard
-    class K8sProbes,Prometheus,ModelPVC cluster
-    class GPU gpu
-    class HFHub extsvc
+    class KServeRoute ingress
+    class Router,Shard0,Shard1,ShardN,NCCLComm tgispod
+    class Kubelet,Prometheus,OTel monitoring
+    class HFHub externalservice
+    class PVC storage

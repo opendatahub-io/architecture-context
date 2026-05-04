@@ -1,109 +1,94 @@
 graph TB
-    subgraph MaaS["Models as a Service (MaaS) Platform"]
+    subgraph MaaS["Models as a Service Platform"]
         direction TB
 
         subgraph Controller["maas-controller (Go Operator)"]
-            MaaSModelRefCtrl["MaaSModelRef<br/>Controller"]
-            MaaSAuthCtrl["MaaSAuthPolicy<br/>Controller"]
-            MaaSSubCtrl["MaaSSubscription<br/>Controller"]
-            TenantCtrl["Tenant<br/>Controller"]
-            ExtModelCtrl["ExternalModel<br/>Controller"]
+            TenantReconciler["Tenant Reconciler<br/>Platform lifecycle mgmt"]
+            ModelRefReconciler["MaaSModelRef Reconciler<br/>Model endpoint tracking"]
+            AuthPolicyReconciler["MaaSAuthPolicy Reconciler<br/>Access control aggregation"]
+            SubscriptionReconciler["MaaSSubscription Reconciler<br/>Rate limit aggregation"]
+            ExternalModelReconciler["ExternalModel Reconciler<br/>External provider routing"]
         end
 
-        subgraph API["maas-api (Go/Gin HTTP Service)"]
-            ModelsHandler["Models Handler<br/>/v1/models"]
-            APIKeyHandler["API Key Handler<br/>/v1/api-keys"]
-            SubHandler["Subscription Handler<br/>/v1/subscriptions"]
-            InternalAPI["Internal API<br/>/internal/v1/*"]
+        subgraph API["maas-api (Go HTTP Service - Gin)"]
+            APIKeyHandler["API Key Handler<br/>CRUD, validation, revocation"]
+            ModelDiscovery["Model Discovery<br/>KServe model probing"]
+            SubscriptionSelector["Subscription Selector<br/>Authorino callback"]
+            HealthEndpoint["Health Endpoint"]
         end
 
-        subgraph BBR["payload-processing (BBR ext_proc)"]
-            ModelExtract["Model Extraction<br/>body → X-Gateway-Model-Name"]
-            ProviderResolve["Provider Resolution<br/>ExternalModel CRD lookup"]
-            APITranslation["API Translation<br/>OpenAI ↔ backend"]
-            CredInjection["Credential Injection<br/>Secret → API key header"]
+        subgraph BBR["payload-processing (BBR ext-proc)"]
+            ModelToHeader["model-to-header plugin<br/>Extract model from body"]
+            ProviderResolver["model-provider-resolver<br/>Resolve ExternalModel"]
+            APITranslation["api-translation plugin<br/>Format translation"]
+            KeyInjection["apikey-injection plugin<br/>Credential injection"]
         end
     end
 
     %% CRDs
-    ExternalModelCR["ExternalModel CR"]
-    MaaSModelRefCR["MaaSModelRef CR"]
-    MaaSAuthPolicyCR["MaaSAuthPolicy CR"]
-    MaaSSubscriptionCR["MaaSSubscription CR"]
     TenantCR["Tenant CR<br/>(singleton: default-tenant)"]
+    ModelRefCR["MaaSModelRef CR"]
+    AuthPolicyCR["MaaSAuthPolicy CR"]
+    SubscriptionCR["MaaSSubscription CR"]
+    ExternalModelCR["ExternalModel CR"]
 
-    %% Generated Resources
-    HTTPRoute["HTTPRoute<br/>(per-model)"]
-    AuthPolicy["Kuadrant<br/>AuthPolicy"]
-    TRLP["Kuadrant<br/>TokenRateLimitPolicy"]
-    ServiceEntry["Istio<br/>ServiceEntry"]
-    DestRule["Istio<br/>DestinationRule"]
-    EnvoyFilter["Istio<br/>EnvoyFilter"]
+    %% User interactions
+    User["Data Scientist / Platform Admin"]
+    User -->|creates| TenantCR
+    User -->|creates| ModelRefCR
+    User -->|creates| AuthPolicyCR
+    User -->|creates| SubscriptionCR
+    User -->|creates| ExternalModelCR
 
-    %% External Systems
-    Client["External Client"]
-    Gateway["maas-default-gateway<br/>(Gateway API)"]
-    Authorino["Kuadrant Authorino"]
-    Limitador["Kuadrant Limitador"]
-    KServe["KServe<br/>LLMInferenceService"]
-    PostgreSQL["PostgreSQL"]
-    ExtProviders["External Providers<br/>(OpenAI, Anthropic, etc.)"]
+    %% Controller watches
+    TenantCR -->|watched by| TenantReconciler
+    ModelRefCR -->|watched by| ModelRefReconciler
+    AuthPolicyCR -->|watched by| AuthPolicyReconciler
+    SubscriptionCR -->|watched by| SubscriptionReconciler
+    ExternalModelCR -->|watched by| ExternalModelReconciler
 
-    %% CRD → Controller watches
-    MaaSModelRefCR -->|watched by| MaaSModelRefCtrl
-    MaaSAuthPolicyCR -->|watched by| MaaSAuthCtrl
-    MaaSSubscriptionCR -->|watched by| MaaSSubCtrl
-    TenantCR -->|watched by| TenantCtrl
-    ExternalModelCR -->|watched by| ExtModelCtrl
+    %% Controller creates
+    AuthPolicyReconciler -->|creates aggregated| KuadrantAuthPolicy["Kuadrant AuthPolicy<br/>(1 per model HTTPRoute)"]
+    SubscriptionReconciler -->|creates aggregated| KuadrantTRLP["Kuadrant TokenRateLimitPolicy<br/>(1 per model HTTPRoute)"]
+    ExternalModelReconciler -->|creates| IstioSE["Istio ServiceEntry"]
+    ExternalModelReconciler -->|creates| IstioDR["Istio DestinationRule"]
+    ExternalModelReconciler -->|creates| HTTPRoute["Gateway API HTTPRoute"]
+    TenantReconciler -->|deploys via kustomize| API
+    TenantReconciler -->|deploys via kustomize| BBR
 
-    %% Controller → Generated Resources
-    MaaSModelRefCtrl -->|creates| HTTPRoute
-    MaaSAuthCtrl -->|creates/aggregates| AuthPolicy
-    MaaSSubCtrl -->|creates/aggregates| TRLP
-    ExtModelCtrl -->|creates| ServiceEntry
-    ExtModelCtrl -->|creates| DestRule
-    TenantCtrl -->|deploys via kustomize| API
-    TenantCtrl -->|deploys via kustomize| BBR
-    TenantCtrl -->|creates| EnvoyFilter
+    %% API dependencies
+    APIKeyHandler -->|stores keys| PostgreSQL["PostgreSQL<br/>5432/TCP"]
+    ModelDiscovery -->|probes| KServeIS["KServe InferenceService"]
+    SubscriptionSelector -->|reads| SubscriptionCR
 
-    %% Client flow
-    Client -->|HTTPS/443| Gateway
-    Gateway -->|gRPC/5001| Authorino
-    Gateway -->|gRPC/9004| BBR
-    Gateway -->|gRPC/8081| Limitador
-    Gateway -->|HTTPRoute| KServe
-    Gateway -->|HTTPRoute| ExtProviders
+    %% BBR flow
+    Gateway["Gateway<br/>(maas-default-gateway)<br/>443/TCP"] -->|ext-proc| ModelToHeader
+    ModelToHeader --> ProviderResolver
+    ProviderResolver --> APITranslation
+    APITranslation --> KeyInjection
 
-    %% Authorino → maas-api callbacks
-    Authorino -->|validate key| InternalAPI
-    Authorino -->|select subscription| InternalAPI
+    %% External integrations
+    Gateway -->|Authorino callback| APIKeyHandler
+    Gateway -->|Authorino callback| SubscriptionSelector
+    KuadrantAuthPolicy -->|enforced by| Authorino["Authorino"]
+    KuadrantTRLP -->|enforced by| Limitador["Limitador"]
 
-    %% maas-api dependencies
-    APIKeyHandler -->|hash store| PostgreSQL
-    ModelsHandler -->|probe /v1/models| KServe
-
-    %% BBR dependencies
-    ProviderResolve -->|reads| ExternalModelCR
-    CredInjection -->|reads Secret| ExtProviders
-
-    %% Styles
+    %% Styling
     style Controller fill:#4a90e2,stroke:#333,color:#fff
-    style API fill:#50c878,stroke:#333,color:#fff
-    style BBR fill:#9b59b6,stroke:#333,color:#fff
-    style MaaSModelRefCR fill:#f5a623,stroke:#333
-    style MaaSAuthPolicyCR fill:#f5a623,stroke:#333
-    style MaaSSubscriptionCR fill:#f5a623,stroke:#333
+    style API fill:#50a0d0,stroke:#333,color:#fff
+    style BBR fill:#5ab0e0,stroke:#333,color:#fff
     style TenantCR fill:#f5a623,stroke:#333
+    style ModelRefCR fill:#f5a623,stroke:#333
+    style AuthPolicyCR fill:#f5a623,stroke:#333
+    style SubscriptionCR fill:#f5a623,stroke:#333
     style ExternalModelCR fill:#f5a623,stroke:#333
-    style HTTPRoute fill:#e8e8e8,stroke:#666
-    style AuthPolicy fill:#e8e8e8,stroke:#666
-    style TRLP fill:#e8e8e8,stroke:#666
-    style ServiceEntry fill:#e8e8e8,stroke:#666
-    style DestRule fill:#e8e8e8,stroke:#666
-    style EnvoyFilter fill:#e8e8e8,stroke:#666
-    style Gateway fill:#ff6b6b,stroke:#333,color:#fff
-    style Authorino fill:#e74c3c,stroke:#333,color:#fff
-    style Limitador fill:#e74c3c,stroke:#333,color:#fff
-    style KServe fill:#3498db,stroke:#333,color:#fff
-    style PostgreSQL fill:#336791,stroke:#333,color:#fff
-    style ExtProviders fill:#f39c12,stroke:#333
+    style KuadrantAuthPolicy fill:#7ed321,stroke:#333
+    style KuadrantTRLP fill:#7ed321,stroke:#333
+    style Authorino fill:#999,stroke:#333
+    style Limitador fill:#999,stroke:#333
+    style PostgreSQL fill:#999,stroke:#333
+    style Gateway fill:#e8e8e8,stroke:#333
+    style IstioSE fill:#7ed321,stroke:#333
+    style IstioDR fill:#7ed321,stroke:#333
+    style HTTPRoute fill:#7ed321,stroke:#333
+    style KServeIS fill:#999,stroke:#333

@@ -1,73 +1,86 @@
 graph TB
     subgraph SparkOperator["Spark Operator"]
         direction TB
-        subgraph ControllerMgr["Controller Manager"]
-            SAController[spark-operator-controller<br/>controller-runtime]
-            SparkAppCtrl[SparkApplication<br/>Reconciler]
-            SchedCtrl[ScheduledSparkApplication<br/>Reconciler]
-            ConnCtrl[SparkConnect<br/>Reconciler]
-            SAController --> SparkAppCtrl
-            SAController --> SchedCtrl
-            SAController --> ConnCtrl
+
+        subgraph ControllerDeploy["Controller Deployment"]
+            Controller["spark-operator controller<br/>(Go, controller-runtime)<br/>Port: 8080/TCP metrics<br/>Port: 8081/TCP probes"]
+            SparkAppCtrl["SparkApplication<br/>Controller<br/>(13+ state machine)"]
+            SchedCtrl["ScheduledSparkApplication<br/>Controller<br/>(cron-based)"]
+            ConnectCtrl["SparkConnect<br/>Controller"]
+            MutWHCtrl["MutatingWebhookConfig<br/>Controller<br/>(CA bundle sync)"]
+            ValWHCtrl["ValidatingWebhookConfig<br/>Controller<br/>(CA bundle sync)"]
+            Controller --- SparkAppCtrl
+            Controller --- SchedCtrl
+            Controller --- ConnectCtrl
+            Controller --- MutWHCtrl
+            Controller --- ValWHCtrl
         end
 
-        subgraph WebhookServer["Webhook Server"]
-            Webhook[spark-operator-webhook<br/>controller-runtime]
-            PodDefaulter[SparkPod Defaulter<br/>volumes, env, sidecars,<br/>monitoring, security]
-            AppDefaulter[SparkApplication<br/>Defaulter]
-            AppValidator[SparkApplication<br/>Validator]
-            SchedDefaulter[ScheduledSparkApplication<br/>Defaulter]
-            SchedValidator[ScheduledSparkApplication<br/>Validator]
-            Webhook --> PodDefaulter
-            Webhook --> AppDefaulter
-            Webhook --> AppValidator
-            Webhook --> SchedDefaulter
-            Webhook --> SchedValidator
+        subgraph WebhookDeploy["Webhook Deployment"]
+            Webhook["spark-operator webhook<br/>(Go, Admission Server)<br/>Port: 9443/TCP HTTPS"]
+            CertProvider["Certificate Provider<br/>(self-signed or cert-manager)"]
+            Webhook --- CertProvider
+        end
+
+        subgraph SchedulerRegistry["Batch Scheduler Registry"]
+            Volcano["Volcano<br/>Scheduler"]
+            KubeSched["kube-scheduler<br/>plugins"]
+            Yunikorn["Yunikorn<br/>Scheduler"]
         end
     end
 
-    User[User / CI] -->|kubectl apply| K8sAPI[Kubernetes API Server]
+    %% CRDs
+    SparkAppCR["SparkApplication CR<br/>sparkoperator.k8s.io/v1beta2"]
+    SchedSparkAppCR["ScheduledSparkApplication CR<br/>sparkoperator.k8s.io/v1beta2"]
+    SparkConnectCR["SparkConnect CR<br/>sparkoperator.k8s.io/v1alpha1"]
 
-    K8sAPI -->|admission webhook<br/>9443/TCP TLS| Webhook
-    K8sAPI -->|watch/list events| SAController
+    %% User interaction
+    User["User / Data Scientist"] -->|"kubectl apply"| SparkAppCR
+    User -->|"kubectl apply"| SchedSparkAppCR
+    User -->|"kubectl apply"| SparkConnectCR
 
-    SparkAppCtrl -->|creates| SparkAppCR[SparkApplication CR<br/>sparkoperator.k8s.io/v1beta2]
-    SparkAppCtrl -->|spark-submit| DriverPod[Driver Pod]
-    DriverPod -->|creates| ExecutorPods[Executor Pods]
-    DriverPod -->|7078, 7079/TCP| ExecutorPods
+    %% CR watching
+    SparkAppCR -->|"watched by"| SparkAppCtrl
+    SchedSparkAppCR -->|"watched by"| SchedCtrl
+    SparkConnectCR -->|"watched by"| ConnectCtrl
 
-    SchedCtrl -->|cron trigger| SchedAppCR[ScheduledSparkApplication CR<br/>sparkoperator.k8s.io/v1beta2]
-    SchedCtrl -->|creates child| SparkAppCR
+    %% Webhook validation
+    SparkAppCR -->|"admission"| Webhook
+    SchedSparkAppCR -->|"admission"| Webhook
 
-    ConnCtrl -->|manages| ConnCR[SparkConnect CR<br/>sparkoperator.k8s.io/v1alpha1]
-    ConnCtrl -->|creates| ConnPod[Connect Server Pod]
-    ConnCtrl -->|creates| ConnSvc[Connect Service<br/>7078, 7079, 4040, 15002/TCP]
+    %% Controller creates resources
+    SparkAppCtrl -->|"spark-submit<br/>(local exec)"| SparkSubmit["spark-submit"]
+    SparkSubmit -->|"creates via K8s API"| DriverPod["Driver Pod"]
+    DriverPod -->|"creates"| ExecutorPods["Executor Pods"]
+    SparkAppCtrl -->|"creates"| UISvc["Web UI Service<br/>4040/TCP"]
+    SparkAppCtrl -->|"creates"| UIIngress["Web UI Ingress"]
 
-    SparkAppCtrl -->|creates| UISvc[Spark UI Service<br/>4040/TCP]
-    SparkAppCtrl -->|creates| Ingress[Ingress Resource]
+    ConnectCtrl -->|"creates"| ConnectPod["Spark Connect<br/>Server Pod"]
+    ConnectCtrl -->|"creates"| ConnectSvc["Connect Service<br/>15002/TCP gRPC"]
 
-    PodDefaulter -->|mutates| DriverPod
-    PodDefaulter -->|mutates| ExecutorPods
+    %% Webhook mutates pods
+    Webhook -->|"mutates pods<br/>(25+ mutations)"| DriverPod
+    Webhook -->|"mutates pods"| ExecutorPods
 
-    %% External dependencies
-    SparkAppCtrl -.->|optional| Volcano[Volcano Scheduler]
-    SparkAppCtrl -.->|optional| Yunikorn[Yunikorn Scheduler]
-    SparkAppCtrl -.->|optional| KubeSchedPlugins[kube-scheduler-plugins]
-    Webhook -.->|optional TLS| CertManager[cert-manager]
+    %% Scheduler integration
+    SparkAppCtrl -->|"creates PodGroup"| Volcano
+    SparkAppCtrl -->|"creates PodGroup"| KubeSched
+    SparkAppCtrl -->|"injects annotations"| Yunikorn
 
-    SAController -->|metrics 8080/TCP| Prometheus[Prometheus]
+    %% External
+    K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS"]
+    Controller -->|"CRUD operations"| K8sAPI
+    Webhook -->|"called by"| K8sAPI
 
-    style SAController fill:#4a90e2,stroke:#333,color:#fff
+    %% Styling
+    style Controller fill:#4a90e2,stroke:#333,color:#fff
     style Webhook fill:#4a90e2,stroke:#333,color:#fff
-    style SparkAppCR fill:#f5a623,stroke:#333
-    style SchedAppCR fill:#f5a623,stroke:#333
-    style ConnCR fill:#f5a623,stroke:#333
-    style DriverPod fill:#7ed321,stroke:#333
-    style ExecutorPods fill:#7ed321,stroke:#333
-    style ConnPod fill:#7ed321,stroke:#333
+    style SparkAppCR fill:#f5a623,stroke:#333,color:#fff
+    style SchedSparkAppCR fill:#f5a623,stroke:#333,color:#fff
+    style SparkConnectCR fill:#f5a623,stroke:#333,color:#fff
+    style DriverPod fill:#7ed321,stroke:#333,color:#fff
+    style ExecutorPods fill:#7ed321,stroke:#333,color:#fff
+    style ConnectPod fill:#7ed321,stroke:#333,color:#fff
     style K8sAPI fill:#e8e8e8,stroke:#333
-    style Volcano fill:#999,stroke:#333
-    style Yunikorn fill:#999,stroke:#333
-    style KubeSchedPlugins fill:#999,stroke:#333
-    style CertManager fill:#999,stroke:#333
-    style Prometheus fill:#e8e8e8,stroke:#333
+    style SparkSubmit fill:#d0d0d0,stroke:#333
+    style User fill:#b8e6ff,stroke:#333

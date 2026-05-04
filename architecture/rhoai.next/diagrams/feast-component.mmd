@@ -1,65 +1,88 @@
 graph TB
     subgraph FeastOperator["Feast Operator (Go)"]
-        Controller["feast-operator<br/>Controller Manager<br/>Go 1.22.9"]
-        FeatureStoreReconciler["FeatureStore<br/>Reconciler"]
-        NotebookReconciler["Notebook ConfigMap<br/>Reconciler"]
-        AutoAccessRBAC["Auto-Access<br/>RBAC Controller"]
-        Controller --> FeatureStoreReconciler
-        Controller --> NotebookReconciler
-        Controller --> AutoAccessRBAC
+        direction TB
+        Controller["FeatureStore Controller<br/>controller-runtime<br/>Port: 8081/TCP health"]
+        NotebookCtrl["Notebook ConfigMap Controller<br/>Optional: watches kubeflow.org/v1 Notebook"]
+        AccessMgr["Auto-Access RBAC Manager<br/>Translates Feast permissions to K8s RBAC"]
+        AuthzMgr["AuthZ Manager<br/>OIDC + K8s token config"]
+        TLSMgr["TLS Manager<br/>Service-serving certs / user-provided"]
+        MetricsEP["Metrics Endpoint<br/>Port: 8443/TCP HTTPS"]
+
+        Controller --> AccessMgr
+        Controller --> AuthzMgr
+        Controller --> TLSMgr
+        Controller --> NotebookCtrl
     end
 
-    subgraph FeatureServerStack["Feature Server (Python, per-instance)"]
-        FeatureServer["feature-server<br/>FastAPI/Gunicorn<br/>Python 3.12"]
-        SecurityMgr["SecurityManager<br/>OIDC / K8s RBAC"]
-        RegistryGRPC["Registry gRPC Server<br/>6570/6571 TCP"]
-        RegistryREST["Registry REST Server<br/>6572/6573 TCP"]
-        FeatureServer --> SecurityMgr
-        FeatureServer --> RegistryGRPC
-        FeatureServer --> RegistryREST
+    subgraph FeatureServer["Feature Server (Python/FastAPI)"]
+        direction TB
+        RestAPI["REST API<br/>Port: 6566/TCP<br/>TLS optional"]
+        GrpcAPI["gRPC API<br/>Port: configurable/TCP<br/>TLS optional"]
+        SecurityMgr["SecurityManager<br/>Permission policy enforcement"]
+        Registry["Registry<br/>Port: 6001/TCP gRPC<br/>Port: 8001/TCP REST"]
+        Metrics["Prometheus Metrics<br/>Port: 8000/TCP"]
+
+        RestAPI --> SecurityMgr
+        GrpcAPI --> SecurityMgr
+        RestAPI --> Registry
     end
 
-    User["Data Scientist /<br/>ML Application"] -->|"POST /get-online-features<br/>6567/TCP HTTPS"| FeatureServer
+    subgraph FeastUI["Feast UI (React/Elastic UI)"]
+        UI["Web UI<br/>Port: 3000/TCP"]
+    end
 
+    subgraph CronJobPod["Materialization CronJob"]
+        CronJob["ose-cli / origin-cli<br/>kubectl exec into feature-server"]
+    end
+
+    %% User interactions
+    User[Data Scientist / ML Model] -->|"POST /get-online-features<br/>Bearer Token"| RestAPI
+    User -->|"gRPC GetOnlineFeatures<br/>Bearer Token"| GrpcAPI
+    User -->|"Browse features"| UI
+
+    %% Operator creates resources
     FeatureStoreCR["FeatureStore CR<br/>feast.dev/v1"]
-    User -->|"kubectl apply"| FeatureStoreCR
-    FeatureStoreCR -->|"watched by"| FeatureStoreReconciler
+    FeatureStoreCR -->|"watched by"| Controller
+    Controller -->|"creates/manages"| FeatureServer
+    Controller -->|"creates/manages"| FeastUI
+    Controller -->|"creates/manages"| CronJobPod
 
-    FeatureStoreReconciler -->|"creates"| Deployment["Deployment<br/>(feature-server pod)"]
-    FeatureStoreReconciler -->|"creates"| Services["Services<br/>(online/offline/registry/ui)"]
-    FeatureStoreReconciler -->|"creates"| CronJob["CronJob<br/>(materialization)"]
-    FeatureStoreReconciler -->|"creates"| RBAC["Roles &<br/>RoleBindings"]
-    FeatureStoreReconciler -->|"creates"| TLS["TLS Secrets<br/>(service-serving certs)"]
+    %% CronJob interaction
+    CronJob -->|"kubectl exec"| RestAPI
 
-    NotebookCR["Notebook CR<br/>kubeflow.org"]
-    NotebookReconciler -->|"watches"| NotebookCR
-    NotebookReconciler -->|"creates"| ConfigMap["feast-config<br/>ConfigMap"]
+    %% Operator fetches permissions
+    Controller -->|"GET /api/v1/permissions<br/>Intra-communication JWT"| Registry
 
-    AutoAccessRBAC -->|"fetches policies"| RegistryREST
-    AutoAccessRBAC -->|"creates"| ClusterRoleBindings["ClusterRoleBindings<br/>(dynamic)"]
+    %% External dependencies
+    Controller -->|"watches/creates resources"| K8sAPI["Kubernetes API<br/>6443/TCP"]
+    Controller -->|"creates Routes"| OpenShiftAPI["OpenShift API<br/>6443/TCP"]
 
-    FeatureServer -->|"read/write"| OnlineStore["Online Store<br/>(Redis/PostgreSQL)"]
-    FeatureServer -->|"read"| OfflineStore["Offline Store<br/>(BigQuery/DuckDB)"]
+    %% Feature server backends
+    RestAPI -->|"read/write"| OnlineStore["Online Store<br/>(Redis, PostgreSQL, DynamoDB,<br/>Elasticsearch, Milvus, ...)"]
+    RestAPI -->|"read"| OfflineStore["Offline Store<br/>(BigQuery, Snowflake,<br/>DuckDB, ...)"]
+    Registry -->|"store metadata"| RegistryBackend["Registry Backend<br/>(SQL, S3, GCS, Remote)"]
 
-    Controller -->|"reconciliation"| K8sAPI["Kubernetes API<br/>6443/TCP"]
+    %% Notebook integration
+    NotebookCtrl -->|"injects ConfigMap"| Notebooks["Kubeflow Notebooks"]
 
-    style Controller fill:#4a90e2,stroke:#333,color:#fff
-    style FeatureStoreReconciler fill:#4a90e2,stroke:#333,color:#fff
-    style NotebookReconciler fill:#4a90e2,stroke:#333,color:#fff
-    style AutoAccessRBAC fill:#4a90e2,stroke:#333,color:#fff
-    style FeatureServer fill:#7b68ee,stroke:#333,color:#fff
-    style SecurityMgr fill:#7b68ee,stroke:#333,color:#fff
-    style RegistryGRPC fill:#7b68ee,stroke:#333,color:#fff
-    style RegistryREST fill:#7b68ee,stroke:#333,color:#fff
-    style FeatureStoreCR fill:#f5a623,stroke:#333
-    style NotebookCR fill:#f5a623,stroke:#333
-    style OnlineStore fill:#e8e8e8,stroke:#333
-    style OfflineStore fill:#e8e8e8,stroke:#333
-    style K8sAPI fill:#e8e8e8,stroke:#333
-    style ConfigMap fill:#7ed321,stroke:#333
-    style CronJob fill:#7ed321,stroke:#333
-    style RBAC fill:#7ed321,stroke:#333
-    style TLS fill:#7ed321,stroke:#333
-    style Deployment fill:#7ed321,stroke:#333
-    style Services fill:#7ed321,stroke:#333
-    style ClusterRoleBindings fill:#7ed321,stroke:#333
+    %% Styling
+    style Controller fill:#4a90e2,color:#fff
+    style NotebookCtrl fill:#4a90e2,color:#fff
+    style AccessMgr fill:#4a90e2,color:#fff
+    style AuthzMgr fill:#4a90e2,color:#fff
+    style TLSMgr fill:#4a90e2,color:#fff
+    style MetricsEP fill:#4a90e2,color:#fff
+    style RestAPI fill:#50c878,color:#fff
+    style GrpcAPI fill:#50c878,color:#fff
+    style SecurityMgr fill:#50c878,color:#fff
+    style Registry fill:#50c878,color:#fff
+    style Metrics fill:#50c878,color:#fff
+    style UI fill:#9b59b6,color:#fff
+    style CronJob fill:#e67e22,color:#fff
+    style FeatureStoreCR fill:#f5a623,color:#fff
+    style OnlineStore fill:#e8e8e8,stroke:#999
+    style OfflineStore fill:#e8e8e8,stroke:#999
+    style RegistryBackend fill:#e8e8e8,stroke:#999
+    style K8sAPI fill:#e8e8e8,stroke:#999
+    style OpenShiftAPI fill:#e8e8e8,stroke:#999
+    style Notebooks fill:#7ed321,color:#fff

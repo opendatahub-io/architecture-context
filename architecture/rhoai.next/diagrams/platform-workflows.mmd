@@ -1,38 +1,110 @@
 sequenceDiagram
     participant User as Data Scientist
     participant Dashboard as ODH Dashboard
-    participant KServeCtrl as KServe Controller
-    participant ODHModelCtrl as odh-model-controller
-    participant Gateway as Envoy Gateway
-    participant KRBAC as kube-rbac-proxy
-    participant Runtime as Model Runtime (vLLM/TGIS/OVMS)
+    participant KubeAuth as kube-auth-proxy
+    participant Kubeflow as Kubeflow Controller
+    participant Notebook as Notebook Pod
     participant S3 as S3 Storage
+    participant Pipelines as DS Pipelines
+    participant Argo as Argo Workflows
+    participant ModelReg as Model Registry
+    participant MLMeta as ml-metadata
+    participant KServe as KServe Controller
+    participant Gateway as Envoy Gateway
+    participant EPP as llm-d-inference-scheduler
+    participant vLLM as vLLM Pod
+    participant GuardGW as vllm-orchestrator-gw
+    participant GuardOrch as fms-guardrails-orch
+    participant Detectors as guardrails-detectors
     participant Client as External Client
 
-    Note over User,Client: Workflow 1: Model Serving (KServe InferenceService)
+    Note over User,Client: ═══ Workflow 1: Model Serving via KServe ═══
 
-    User->>Dashboard: Login via OIDC (kube-auth-proxy)
-    Dashboard-->>User: Show model serving UI
+    User->>Gateway: POST InferenceService CR
+    Gateway->>KubeAuth: ext_authz check
+    KubeAuth-->>Gateway: Authenticated (OAuth2/OIDC)
+    Gateway->>Dashboard: Forward to API
+    Dashboard->>KServe: Create InferenceService CR
+    KServe->>KServe: Reconcile: create Deployment,<br/>Service, HTTPRoute
+    KServe->>Gateway: Configure HTTPRoute
+    Note over KServe: storage-initializer init container
+    KServe->>S3: Download model artifacts<br/>(HTTPS/443, IAM creds)
+    KServe->>vLLM: Start predictor pod
+    Note over vLLM: Model loaded, ready for inference
 
-    User->>Dashboard: Create InferenceService CR
-    Dashboard->>KServeCtrl: CR created in user namespace
+    Client->>Gateway: POST /v1/chat/completions<br/>(HTTPS/443, TLS 1.2+)
+    Gateway->>vLLM: Forward to InferenceService pod<br/>(HTTP/8000)
+    vLLM->>vLLM: Run inference
+    vLLM-->>Gateway: Prediction result
+    Gateway-->>Client: JSON response (HTTPS)
 
-    KServeCtrl->>KServeCtrl: Reconcile: Create Deployment, Service, HTTPRoute
-    KServeCtrl->>Gateway: Register HTTPRoute
-    ODHModelCtrl->>ODHModelCtrl: Create Route, EnvoyFilter, monitoring resources
+    Note over User,Client: ═══ Workflow 2: LLM Inference with llm-d Scheduling ═══
 
-    Note over Runtime: Pod starts, pulls image from quay.io
-    Runtime->>S3: Download model artifacts (HTTPS/443, AWS IAM)
-    Note over Runtime: Model loaded, ready to serve
+    Client->>Gateway: POST /v1/chat/completions<br/>(HTTPS/443)
+    Gateway->>EPP: ext_proc gRPC filter<br/>(9002/TCP)
+    EPP->>EPP: Score pods by KV-cache hit,<br/>queue depth, load
+    EPP-->>Gateway: Selected target pod IP
+    Gateway->>vLLM: Route to selected prefill worker<br/>(HTTP/8000)
+    vLLM->>vLLM: Process prefill phase
+    Note over vLLM: Transfer KV-cache to decode worker
+    vLLM-->>Gateway: Streaming tokens
+    Gateway-->>Client: SSE streaming response
 
-    Client->>Gateway: POST predict (HTTPS/443, TLS 1.2+)
-    Gateway->>KRBAC: Forward via HTTPRoute
-    KRBAC->>KRBAC: TokenReview + SubjectAccessReview
-    KRBAC->>Runtime: Forward to model runtime (HTTP/8000)
-    Runtime-->>KRBAC: Inference response
-    KRBAC-->>Gateway: Response
-    Gateway-->>Client: JSON prediction result (HTTPS)
+    Note over User,Client: ═══ Workflow 3: Notebook Development ═══
 
-    User->>Dashboard: View model metrics
-    Dashboard->>Dashboard: Query Thanos (Bearer token)
-    Dashboard-->>User: Model status + metrics
+    User->>Gateway: Access Dashboard<br/>(HTTPS/443)
+    Gateway->>KubeAuth: ext_authz check
+    KubeAuth->>KubeAuth: OAuth2/OIDC flow<br/>(→ OpenShift OAuth server)
+    KubeAuth-->>Gateway: Authenticated
+    Gateway->>Dashboard: Forward to UI
+    User->>Dashboard: Create notebook workbench
+    Dashboard->>Kubeflow: Create Notebook CR
+    Kubeflow->>Kubeflow: Reconcile: create StatefulSet,<br/>Service, HTTPRoute
+    Note over Kubeflow: odh-notebook-controller injects<br/>kube-rbac-proxy sidecar + NetworkPolicy
+    Kubeflow->>Notebook: Launch notebook pod
+
+    User->>Gateway: Access notebook<br/>(HTTPS/443, per-notebook HTTPRoute)
+    Gateway->>KubeAuth: ext_authz check
+    KubeAuth-->>Gateway: Authenticated
+    Gateway->>Notebook: Forward to Jupyter<br/>(via kube-rbac-proxy sidecar)
+    Notebook->>S3: Download training data<br/>(HTTPS/443)
+    Note over Notebook: Train model in notebook
+    Notebook->>S3: Upload model artifacts
+
+    Note over User,Client: ═══ Workflow 4: Pipeline-Driven Model Registration ═══
+
+    User->>Dashboard: Submit pipeline run
+    Dashboard->>Pipelines: Create PipelineRun
+    Pipelines->>Argo: Create Workflow DAG
+    Argo->>Argo: Execute pipeline steps
+    Argo->>S3: Store pipeline artifacts<br/>(HTTPS/443)
+    Argo->>ModelReg: Register model<br/>(REST/8080, Istio mTLS)
+    ModelReg->>MLMeta: Store metadata<br/>(gRPC/8080)
+    ModelReg->>S3: Record artifact location
+    Argo->>KServe: Create InferenceService CR<br/>(auto-deploy step)
+    KServe->>S3: Download model
+    KServe->>vLLM: Deploy model endpoint
+
+    User->>Dashboard: View model in registry
+    Dashboard->>ModelReg: Fetch model metadata<br/>(BFF/8043, TLS 1.3)
+    ModelReg-->>Dashboard: Model info + serving status
+    Dashboard-->>User: Display model card + endpoint URL
+
+    Note over User,Client: ═══ Workflow 5: Guardrailed Inference ═══
+
+    Client->>GuardGW: POST /v1/chat/completions<br/>(HTTP/8090)
+    GuardGW->>GuardOrch: Forward request<br/>(HTTP/8033)
+    GuardOrch->>Detectors: Run input detectors<br/>(HTTP/8080, NetworkPolicy only)
+    Detectors-->>GuardOrch: Detection results<br/>(PII, toxicity, etc.)
+
+    alt Input blocked
+        GuardOrch-->>GuardGW: 400 blocked response
+        GuardGW-->>Client: Blocked: policy violation
+    else Input passes
+        GuardOrch->>vLLM: Forward to LLM<br/>(HTTP/8000)
+        vLLM-->>GuardOrch: LLM response
+        GuardOrch->>Detectors: Run output detectors
+        Detectors-->>GuardOrch: Output detection results
+        GuardOrch-->>GuardGW: Filtered response
+        GuardGW-->>Client: Safe response
+    end

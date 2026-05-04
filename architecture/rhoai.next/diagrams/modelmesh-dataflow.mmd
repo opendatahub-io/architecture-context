@@ -1,55 +1,43 @@
 sequenceDiagram
-    participant Client as External Client
-    participant API as ModelMeshApi<br/>8033/TCP gRPC<br/>TLS + mTLS (opt)
-    participant MM as SidecarModelMesh<br/>LRU Cache
-    participant Runtime as Model Runtime<br/>8085/TCP or UDS<br/>plaintext gRPC
-    participant LL as Litelinks<br/>8080/TCP Thrift<br/>TLS + mTLS (opt)
-    participant RemoteMM as Remote ModelMesh<br/>Instance
-    participant RemoteRT as Remote Model<br/>Runtime
-    participant etcd as etcd<br/>2379/TCP gRPC<br/>TLS (opt)
-    participant VMgr as VModelManager
+    participant Client as Client / KServe Proxy
+    participant MM1 as ModelMesh Instance A<br/>8033/TCP gRPC<br/>Optional TLS/mTLS
+    participant etcd as etcd Cluster<br/>2379/TCP gRPC<br/>Optional TLS
+    participant MM2 as ModelMesh Instance B<br/>8033/TCP Thrift/gRPC<br/>TLS/mTLS
+    participant RT1 as Model Runtime A<br/>8085/TCP or UDS<br/>No TLS (localhost)
+    participant RT2 as Model Runtime B<br/>8085/TCP or UDS<br/>No TLS (localhost)
 
-    Note over Client,etcd: Flow 1: Model Inference Request (Cache Hit)
-    Client->>API: gRPC Inference Request<br/>TLS + mTLS (optional)
-    API->>MM: Route request (in-process)
-    MM->>MM: LRU Cache Lookup (hit)
-    MM->>Runtime: Forward to runtime<br/>gRPC :8085 or UDS
-    Runtime-->>MM: Prediction Result
-    MM-->>API: Response
-    API-->>Client: gRPC Response
+    Note over Client,RT2: Flow 1: Model Inference Request (model loaded locally)
 
-    Note over Client,etcd: Flow 1b: Model Inference Request (Cache Miss - Forward)
-    Client->>API: gRPC Inference Request
-    API->>MM: Route request (in-process)
-    MM->>MM: LRU Cache Lookup (miss)
-    MM->>LL: Forward to remote instance<br/>Thrift/TCP :8080
-    LL->>RemoteMM: applyModelMulti RPC<br/>TLS + mTLS (optional)
-    RemoteMM->>RemoteRT: Forward to runtime<br/>gRPC :8085 or UDS
-    RemoteRT-->>RemoteMM: Prediction Result
-    RemoteMM-->>LL: Response
-    LL-->>MM: Response
-    MM-->>API: Response
-    API-->>Client: gRPC Response
+    Client->>MM1: gRPC inference request<br/>8033/TCP, TLS optional, mTLS optional
+    MM1->>etcd: Lookup model location<br/>2379/TCP, gRPC, TLS optional
+    etcd-->>MM1: Model record (loaded on Instance A)
+    MM1->>RT1: Forward to local runtime<br/>8085/TCP or UDS, no encryption
+    RT1-->>MM1: Inference result
+    MM1-->>Client: gRPC response
 
-    Note over Client,etcd: Flow 2: Model Registration and Loading
-    Client->>API: registerModel RPC<br/>gRPC :8033
-    API->>MM: Register (in-process)
-    MM->>etcd: Write ModelRecord<br/>gRPC :2379
-    etcd-->>MM: Watch notification<br/>(placed instance)
-    MM->>Runtime: loadModel RPC<br/>gRPC :8085 or UDS
-    Runtime-->>MM: Load complete
-    MM->>etcd: Update ModelRecord<br/>(add instance ID)
-    MM-->>API: Registration confirmed
-    API-->>Client: Success response
+    Note over Client,RT2: Flow 1b: Model Inference Request (model loaded remotely)
 
-    Note over Client,etcd: Flow 3: Virtual Model Transition (Zero-Downtime)
-    Client->>API: setVModel RPC<br/>gRPC :8033
-    API->>VMgr: Set vmodel (in-process)
-    VMgr->>etcd: Write VModelRecord<br/>gRPC :2379
-    VMgr->>MM: registerModel (target)
-    MM->>Runtime: loadModel (target)<br/>gRPC :8085 or UDS
-    Runtime-->>MM: Target loaded
-    VMgr->>etcd: Atomic swap<br/>active ↔ target
-    VMgr->>MM: unregisterModel (old active)
-    VMgr-->>API: Transition complete
-    API-->>Client: Success response
+    Client->>MM1: gRPC inference request<br/>8033/TCP
+    MM1->>etcd: Lookup model location<br/>2379/TCP
+    etcd-->>MM1: Model record (loaded on Instance B)
+    MM1->>MM2: Forward inference via litelinks<br/>8033/TCP, Thrift/gRPC, TLS, mTLS
+    MM2->>RT2: Forward to local runtime<br/>8085/TCP or UDS, no encryption
+    RT2-->>MM2: Inference result
+    MM2-->>MM1: Response via litelinks
+    MM1-->>Client: gRPC response
+
+    Note over Client,RT2: Flow 2: Model Registration and Loading
+
+    Client->>MM1: registerModel gRPC<br/>8033/TCP, TLS/mTLS
+    MM1->>etcd: Create model record<br/>2379/TCP, TLS
+    Note over MM1: Leader selects target instance
+    MM1->>RT1: loadModel gRPC<br/>8085/TCP or UDS
+    RT1-->>MM1: Model loaded (size, max concurrency)
+    MM1->>etcd: Update model status = LOADED<br/>2379/TCP
+
+    Note over Client,RT2: Flow 3: Model Eviction (LRU Cache Pressure)
+
+    Note over MM1: Cache capacity exceeded
+    MM1->>RT1: unloadModel gRPC<br/>8085/TCP or UDS
+    RT1-->>MM1: Model unloaded
+    MM1->>etcd: Update model record<br/>2379/TCP

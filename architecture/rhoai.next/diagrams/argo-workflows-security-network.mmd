@@ -1,67 +1,69 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User / DSP API"]
+        User["User / DSP Operator"]
     end
 
     subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AuthN: ServiceAccount Token<br/>AuthZ: RBAC"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>RBAC: argo-cluster-role"]
     end
 
-    subgraph Internal["INTERNAL (Controller Namespace)"]
+    subgraph ControllerNS["CONTROLLER NAMESPACE"]
         direction TB
+        WFC["workflow-controller<br/>SA: argo<br/>FIPS: strictfipsruntime<br/>Image: odh-dsp-argo-workflowcontroller"]
+        Metrics["Metrics Endpoint<br/>9090/TCP HTTP<br/>No encryption<br/>No auth"]
+        Healthz["Health Endpoint<br/>6060/TCP HTTP<br/>No encryption<br/>No auth"]
+        WFC --- Metrics
+        WFC --- Healthz
+    end
 
-        subgraph ControllerBox["workflow-controller"]
-            Controller["workflow-controller<br/>SA: argo<br/>UID: 8737<br/>Read-Only FS: Yes<br/>Capabilities: ALL dropped"]
-            Metrics["Metrics: 9090/TCP HTTP<br/>No auth"]
-            Healthz["Healthz: 6060/TCP HTTP<br/>No auth"]
-        end
+    subgraph WorkflowNS["WORKFLOW POD (per step)"]
+        direction TB
+        MainContainer["Main Container<br/>(pipeline step)"]
+        ArgoExec["argoexec sidecar<br/>SA: workflow SA<br/>⚠ Default: non-FIPS binary<br/>Image: odh-dsp-argo-argoexec"]
+        EmissaryVol["/var/run/argo/<br/>emptyDir (emissary)"]
+        MainContainer -.- EmissaryVol
+        ArgoExec -.- EmissaryVol
+    end
 
-        subgraph StepPodBox["Step Pod (per workflow step)"]
-            ArgoExec["argoexec (sidecar)<br/>SA: {workflow-sa}<br/>UID: 2000<br/>Capabilities: ALL dropped<br/>FIPS: dual build"]
-        end
+    subgraph ArtifactStorage["ARTIFACT STORAGE"]
+        S3["S3 / Minio<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AccessKey/SecretKey"]
+        GCS["GCS<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Key/Workload Identity"]
+        Azure["Azure Blob<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SharedKey/SAS/MI"]
+    end
+
+    subgraph Database["DATABASE (Optional)"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS configurable<br/>Secret credentials"]
+        MySQL["MySQL<br/>3306/TCP<br/>TLS configurable<br/>Secret credentials"]
     end
 
     subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>HTTP scrape"]
-    end
-
-    subgraph ExternalServices["EXTERNAL SERVICES (optional)"]
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS configurable<br/>Username/password"]
-        MySQL["MySQL<br/>3306/TCP<br/>TLS configurable<br/>Username/password"]
-        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM / access key"]
-        GCS["GCS Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>GCP SA"]
-        AzureBlob["Azure Blob<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Azure AD"]
-        HDFS["HDFS<br/>8020/TCP RPC<br/>Kerberos optional"]
+        Prometheus["Prometheus<br/>Scrapes 9090/TCP<br/>HTTP, No encryption"]
     end
 
     %% Flows
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| K8sAPI
-
-    K8sAPI -->|"Watch stream<br/>TLS 1.2+<br/>SA Token"| Controller
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>CRD CRUD, Pod mgmt,<br/>Leader Election (Lease)"| K8sAPI
-
-    Controller -->|"Creates step pods<br/>with argoexec sidecar"| ArgoExec
-
-    Controller -->|"TCP/5432<br/>TLS configurable<br/>Username/password<br/>Workflow archival"| PostgreSQL
-    Controller -->|"TCP/3306<br/>TLS configurable<br/>Username/password<br/>Workflow archival"| MySQL
-
-    ArgoExec -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>Patch annotations"| K8sAPI
-    ArgoExec -->|"HTTPS/443<br/>TLS 1.2+<br/>IAM/access key<br/>Artifact I/O"| S3
-    ArgoExec -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP SA<br/>Artifact I/O"| GCS
-    ArgoExec -->|"HTTPS/443<br/>TLS 1.2+<br/>Azure AD<br/>Artifact I/O"| AzureBlob
-    ArgoExec -->|"RPC/8020<br/>Kerberos<br/>Artifact I/O"| HDFS
-
-    Prometheus -->|"HTTP/9090<br/>No encryption<br/>No auth"| Metrics
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Bearer Token"| K8sAPI
+    K8sAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>Informer watches"| WFC
+    WFC -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Bearer Token<br/>CRUD Pods/Workflows"| K8sAPI
+    WFC -->|"Creates pods"| WorkflowNS
+    ArgoExec -->|"HTTPS/443<br/>TLS 1.2+<br/>AccessKey/SecretKey"| S3
+    ArgoExec -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Bearer Token"| K8sAPI
+    WFC -.->|"PostgreSQL/5432<br/>TLS configurable<br/>Secret creds"| PostgreSQL
+    WFC -.->|"MySQL/3306<br/>TLS configurable<br/>Secret creds"| MySQL
+    Prometheus -->|"HTTP/9090<br/>No encryption"| Metrics
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef controller fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef workflowpod fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef database fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef monitoring fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class User external
     class K8sAPI controlplane
-    class Controller,ArgoExec,Metrics,Healthz internal
+    class WFC,Metrics,Healthz controller
+    class MainContainer,ArgoExec,EmissaryVol workflowpod
+    class S3,GCS,Azure storage
+    class PostgreSQL,MySQL database
     class Prometheus monitoring
-    class PostgreSQL,MySQL,S3,GCS,AzureBlob,HDFS externalservice

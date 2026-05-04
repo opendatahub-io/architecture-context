@@ -1,60 +1,51 @@
 sequenceDiagram
-    participant Index as Models Index<br/>(YAML file)
-    participant Extractor as model-extractor<br/>(Go CLI)
-    participant HF as HuggingFace API<br/>443/TCP HTTPS TLS 1.2+
-    participant OCI as OCI Registry<br/>(registry.redhat.io)<br/>443/TCP HTTPS TLS 1.2+
-    participant FS as Local Filesystem<br/>(output/ & data/)
-    participant Report as metadata-report<br/>(Go CLI)
-    participant Container as Data Container<br/>(ubi9-minimal)
-    participant Dashboard as RHOAI Dashboard<br/>(Volume Mount)
+    participant CI as CI/CD Runner
+    participant Ext as model-extractor<br/>(Go CLI)
+    participant HF as HuggingFace API<br/>443/TCP HTTPS
+    participant RHReg as registry.redhat.io<br/>443/TCP HTTPS
+    participant AccReg as registry.access.redhat.com<br/>443/TCP HTTPS
+    participant FS as Local Filesystem
+    participant Konflux as Konflux Pipeline
+    participant Quay as quay.io/rhoai<br/>443/TCP HTTPS
+    participant DC as Data Container<br/>(UBI9-minimal)
+    participant Dash as RHOAI Dashboard
 
-    Note over Index,Dashboard: Flow 1: Model Catalog Generation Pipeline
+    Note over CI,Dash: Flow 1: Model Catalog Generation (CI/CD)
 
-    Extractor->>Index: Read models-index.yaml
-    Index-->>Extractor: Model image references
+    CI->>FS: Read models-index.yaml,<br/>validated-models-index.yaml,<br/>other-models-index.yaml
+    CI->>Ext: Execute model-extractor
+    Ext->>FS: Parse index YAML files
+    FS-->>Ext: Model definitions
 
-    loop For each model (max 5 concurrent)
-        Extractor->>OCI: GET /v2/{repo}/manifests/{tag}
-        OCI-->>Extractor: Container manifest
-        Extractor->>OCI: GET /v2/{repo}/blobs/{digest}
-        OCI-->>Extractor: Layer blob (modelcard)
-        Extractor->>OCI: GET /v2/{repo}/blobs/{config-digest}
-        OCI-->>Extractor: Config blob (timestamps, arch)
+    par Fetch OCI Metadata
+        Ext->>RHReg: GET /v2/.../manifests<br/>OCI Registry API v2
+        RHReg-->>Ext: Image manifests,<br/>architectures, timestamps
+    and Fetch HuggingFace Metadata
+        Ext->>HF: GET /api/models/{id}<br/>Auth: Bearer HF_TOKEN (optional)
+        HF-->>Ext: Model details, README,<br/>collections, validation status
     end
 
-    Note over Extractor,HF: HuggingFace Enrichment (optional, skip with --skip-huggingface)
+    Note over Ext: Multi-source metadata merge<br/>7 priority levels with<br/>provenance tracking
 
-    Extractor->>HF: GET /api/collections?owner=RedHatAI
-    Note right of Extractor: Auth: Bearer HF_TOKEN (optional)
-    HF-->>Extractor: Collection list
+    Ext->>FS: Write output/ (per-model YAML)
+    Ext->>FS: Write data/models-catalog.yaml<br/>data/validated-models-catalog.yaml<br/>data/other-models-catalog.yaml
 
-    loop For each model in collections
-        Extractor->>HF: GET /api/models/{model-id}
-        HF-->>Extractor: Model metadata (downloads, likes, tags, license)
-        Extractor->>HF: GET /{model-id}/raw/main/README.md
-        HF-->>Extractor: README YAML frontmatter
-    end
+    Note over CI,Dash: Flow 2: MCP Server Catalog Generation (CI/CD)
 
-    Extractor->>FS: Write extracted metadata (output/)
-    Extractor->>FS: Write models-catalog.yaml (data/)
-    Extractor->>FS: Write validated-models-catalog.yaml (data/)
+    CI->>Ext: Execute with -mcp-index flag
+    Ext->>FS: Read *-mcp-servers-index.yaml
+    Ext->>FS: Read input/mcp_servers/*.yaml
+    Ext->>AccReg: GET /v2/.../manifests<br/>OCI Registry API v2
+    AccReg-->>Ext: MCP server image metadata
+    Ext->>FS: Write data/*-mcp-servers-catalog.yaml
 
-    Note over Index,Dashboard: Flow 2: MCP Server Catalog Generation
+    Note over CI,Dash: Flow 3: Container Build & Push
 
-    Extractor->>FS: Read MCP server input YAML (input/mcp_servers/)
-    loop For each MCP server image
-        Extractor->>OCI: GET /v2/{repo}/manifests/{tag}
-        OCI-->>Extractor: Image manifest (arch, timestamps)
-    end
-    Extractor->>FS: Write redhat-mcp-servers-catalog.yaml (data/)
+    Konflux->>FS: Dockerfile.konflux<br/>COPY data/*.yaml
+    Konflux->>Quay: Push container image<br/>Auth: Quay credentials<br/>Multi-arch: x86_64, ppc64le,<br/>s390x, arm64
 
-    Note over Index,Dashboard: Flow 3: Metadata Report
+    Note over CI,Dash: Flow 4: Runtime Data Consumption (On-Cluster)
 
-    Report->>FS: Read models-catalog.yaml & extraction output
-    Report->>FS: Write completeness reports (MD + YAML)
-
-    Note over Index,Dashboard: Flow 4: Container Image Data Access (Runtime)
-
-    Note over Container: Built by Konflux<br/>YAML files copied into /app/data/
-    Dashboard->>Container: Volume mount /app/data/
-    Container-->>Dashboard: Catalog YAML files
+    DC->>DC: sleep infinity<br/>(data-only container)
+    Dash->>DC: Volume mount /app/data
+    DC-->>Dash: Catalog YAML files<br/>(shared filesystem)

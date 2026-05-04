@@ -1,55 +1,60 @@
 sequenceDiagram
     participant Client as External Client
-    participant gRPC as Caikit gRPC Server<br/>8085/TCP Configurable TLS
-    participant HTTP as Caikit HTTP Gateway<br/>8080/TCP Configurable TLS
-    participant TextGenLocal as TextGeneration<br/>(Local)
-    participant TextGenTGIS as TextGenerationTGIS<br/>(Remote)
-    participant PeftTuning as PeftPromptTuning<br/>(Training)
-    participant EmbedMod as EmbeddingModule
-    participant TGISClient as TGISGenerationClient<br/>(gRPC)
-    participant TGIS as TGIS Backend<br/>Configurable Port/TCP
-    participant HFModel as HuggingFace Model<br/>(in-memory)
-    participant STModel as SentenceTransformers<br/>(in-memory)
-    participant Distributed as PyTorch Distributed<br/>29550/TCP plaintext
-    participant FS as Local Filesystem
+    participant HTTP as caikit Runtime<br/>HTTP 8080/TCP
+    participant GRPC as caikit Runtime<br/>gRPC 8085/TCP
+    participant TextGen as TextGeneration<br/>(Local Module)
+    participant TextGenTGIS as TextGenerationTGIS<br/>(TGIS Module)
+    participant PeftTrain as PeftPromptTuning<br/>(Training)
+    participant PeftTGIS as PeftPromptTuningTGIS<br/>(TGIS Module)
+    participant EmbMod as EmbeddingModule<br/>(Embeddings)
+    participant HFModel as HuggingFace Model<br/>(GPU/CPU Memory)
+    participant TGIS as TGIS Server<br/>gRPC (configurable port)
+    participant STModel as SentenceTransformer<br/>(In-Memory)
+    participant Disk as Local Disk<br/>(Prompt Vectors)
 
-    Note over Client,FS: Flow 1: Local Text Generation Inference
-    Client->>gRPC: TextGenerationTaskRequest<br/>gRPC / Configurable TLS
-    gRPC->>TextGenLocal: dispatch run()
-    TextGenLocal->>HFModel: generate()<br/>(CausalLM or Seq2SeqLM)
-    HFModel-->>TextGenLocal: Generated tokens
-    TextGenLocal-->>gRPC: GeneratedTextResult
-    gRPC-->>Client: TextGenerationTaskResponse
+    Note over Client,STModel: Flow 1: Local Text Generation Inference
 
-    Note over Client,FS: Flow 2: Remote TGIS Text Generation (Streaming)
-    Client->>gRPC: ServerStreamingTextGenerationTaskRequest<br/>gRPC / Configurable TLS
-    gRPC->>TextGenTGIS: dispatch run_stream_out()
-    TextGenTGIS->>TGISClient: generate_stream()
-    TGISClient->>TGIS: GenerationRequest<br/>gRPC / Optional mTLS
-    loop Streaming tokens
-        TGIS-->>TGISClient: GenerationResponse (token)
-        TGISClient-->>TextGenTGIS: yield token
-        TextGenTGIS-->>gRPC: yield GeneratedTextStreamResult
-        gRPC-->>Client: stream token
-    end
+    Client->>HTTP: POST /api/v1/task/text-generation<br/>Auth: Delegated to platform
+    HTTP->>TextGen: Python call (in-process)
+    TextGen->>HFModel: PyTorch inference
+    HFModel-->>TextGen: Generated text
+    TextGen-->>HTTP: Response
+    HTTP-->>Client: JSON Response
 
-    Note over Client,FS: Flow 3: PEFT Prompt Tuning Training
-    Client->>gRPC: TrainingRequest<br/>gRPC / Configurable TLS
-    gRPC->>PeftTuning: dispatch train()
-    PeftTuning->>HFModel: Load base model
-    opt Distributed Training
-        PeftTuning->>Distributed: torchrun elastic launch<br/>29550/TCP plaintext
-        Distributed-->>PeftTuning: Synchronized gradients
-    end
-    PeftTuning->>PeftTuning: PEFT prompt tuning<br/>(forward/backward passes)
-    PeftTuning->>FS: Save prompt vectors<br/>(encoder/decoder artifacts)
-    PeftTuning-->>gRPC: TrainingResult (model_id)
-    gRPC-->>Client: TrainingResponse
+    Note over Client,TGIS: Flow 2: TGIS Remote Text Generation
 
-    Note over Client,FS: Flow 4: Embedding Inference
-    Client->>HTTP: POST /api/v1/task/embedding<br/>HTTP / Configurable TLS
-    HTTP->>EmbedMod: dispatch run()
-    EmbedMod->>STModel: encode()<br/>(sentence-transformers)
-    STModel-->>EmbedMod: Embedding vector(s)
-    EmbedMod-->>HTTP: EmbeddingResult
+    Client->>HTTP: POST /api/v1/task/text-generation<br/>Auth: Delegated to platform
+    HTTP->>TextGenTGIS: Python call (in-process)
+    TextGenTGIS->>TGIS: gRPC GenerationService<br/>TLS optional / mTLS optional
+    TGIS-->>TextGenTGIS: Generated text
+    TextGenTGIS-->>HTTP: Response
+    HTTP-->>Client: JSON Response
+
+    Note over Client,STModel: Flow 3: Text Embedding
+
+    Client->>GRPC: gRPC NlpService.EmbeddingTaskPredict<br/>Auth: Delegated to platform
+    GRPC->>EmbMod: Python call (in-process)
+    EmbMod->>STModel: SentenceTransformer.encode()
+    STModel-->>EmbMod: Embedding vectors
+    EmbMod-->>GRPC: Response
+    GRPC-->>Client: gRPC Response
+
+    Note over Client,Disk: Flow 4: Prompt Tuning Training
+
+    Client->>HTTP: POST /api/v1/task/train<br/>Auth: Delegated to platform
+    HTTP->>PeftTrain: Python call (in-process)
+    PeftTrain->>HFModel: Load frozen base model
+    HFModel-->>PeftTrain: Model loaded
+    PeftTrain->>PeftTrain: PEFT training loop<br/>(Accelerate mixed-precision)
+    PeftTrain->>Disk: Save prompt vectors<br/>(encoder.pt / decoder.pt)
+    PeftTrain-->>HTTP: Training complete
+    HTTP-->>Client: Training result
+
+    Note over Client,TGIS: Flow 5: TGIS Prompt Tuning Inference
+
+    Client->>HTTP: POST /api/v1/task/text-generation<br/>Auth: Delegated to platform
+    HTTP->>PeftTGIS: Python call (in-process)
+    PeftTGIS->>TGIS: gRPC with prompt cache ID<br/>TLS optional / mTLS optional
+    TGIS-->>PeftTGIS: Generated text
+    PeftTGIS-->>HTTP: Response
     HTTP-->>Client: JSON Response

@@ -1,90 +1,108 @@
 graph TB
-    subgraph "vllm-gaudi Plugin"
+    subgraph "vLLM Gaudi Plugin (vllm_gaudi)"
         direction TB
-        HpuPlatform["HpuPlatform<br/>(Platform Registration)"]
-        ExtModule["Extension Module<br/>(Config, Features, Validation)"]
 
-        subgraph "Worker Layer"
-            HPUWorker["HPUWorker<br/>(Device Init, Memory Profiling,<br/>Distributed Communication)"]
-            HPUModelRunner["HPUModelRunner<br/>(Forward Pass, KV Cache,<br/>Graph Compilation)"]
+        subgraph "Platform Layer"
+            HpuPlatform["HpuPlatform<br/>Device detection, config validation,<br/>attention backend selection, memory mgmt"]
         end
 
         subgraph "Attention Backends"
-            StdAttn["Standard HPU Attention"]
-            MLAAttn["MLA Attention<br/>(Multi-head Latent)"]
-            UnifiedAttn["Unified Attention<br/>(Flash-style Online Merge)"]
-            UnifiedMLA["Unified MLA"]
+            HPUAttn["HPUAttention"]
+            HPUMLA["HPU MLA"]
+            HPUUnified["HPU UnifiedAttention"]
+            HPUUnifiedMLA["HPU UnifiedMLA"]
         end
 
-        subgraph "Quantization"
-            FP8["FP8<br/>(per-tensor/channel/block)"]
-            INC["Intel Neural<br/>Compressor"]
-            GPTQ["GPTQ<br/>(2/3/4/8-bit)"]
-            AWQ["AWQ (4-bit)"]
-            CompTensors["Compressed<br/>Tensors"]
-            ModelOpt["ModelOpt FP8"]
+        subgraph "Custom Ops"
+            FusedMoE["FusedMoE"]
+            FP8Ops["FP8 Ops"]
+            GPTQOps["GPTQ Ops"]
+            AWQOps["AWQ Ops"]
+            LayerNorm["LayerNorm"]
+            RotaryEmbed["RotaryEmbedding"]
+            CompTensors["CompressedTensors"]
+            MambaOps["Mamba/SSM Ops"]
+        end
+
+        subgraph "Model Overrides"
+            DeepSeek["DeepSeek"]
+            Qwen["Qwen2.5/3 VL"]
+            Gemma["Gemma3"]
+            Pixtral["Pixtral"]
+            MiniMax["MiniMax"]
+            OtherModels["+ 7 more architectures"]
+        end
+
+        subgraph "Worker Runtime"
+            HPUWorker["HPUWorker"]
+            HPUModelRunner["HPUModelRunner"]
+            HPUInputBatch["HPUInputBatch"]
         end
 
         subgraph "Distributed"
-            HPUComm["HPU Communicator<br/>(HCCL)"]
-            NIXLConn["NIXL Connector<br/>(KV Transfer)"]
-            DPUtils["Data Parallel<br/>MoE Utils"]
+            HpuComm["HpuCommunicator<br/>HCCL all-reduce/all-gather"]
+            NIXLConn["NIXL Connector<br/>KV cache disaggregation"]
+            HeteroNIXL["Hetero NIXL Connector<br/>Block size/layout conversion"]
         end
 
-        subgraph "Speculative Decoding"
-            EAGLE["EAGLE<br/>Spec Decode"]
-            RejSampler["Rejection<br/>Sampler"]
+        subgraph "Extension System"
+            Config["Dynamic Config"]
+            Features["Feature Flags"]
+            Bucketing["Bucketing Strategies"]
+            Defrag["Cache Defragmentation"]
+            Profiler["Profiler"]
         end
     end
 
-    subgraph "Container: odh-vllm-gaudi-rhel9"
-        vLLMServer["vLLM OpenAI API Server<br/>Port 8000/TCP"]
+    subgraph "vLLM Framework (upstream v0.16.0)"
+        APIServer["vLLM OpenAI API Server<br/>Port 8000/TCP"]
+        PluginSystem["Plugin System<br/>vllm.platform_plugins<br/>vllm.general_plugins"]
     end
 
-    User[Data Scientist / Client] -->|"POST /v1/completions<br/>POST /v1/chat/completions"| KubeRBACProxy
-    KubeRBACProxy["kube-rbac-proxy<br/>(Sidecar, 8443/TCP TLS)"] -->|"HTTP 8000/TCP<br/>(pre-authenticated)"| vLLMServer
+    subgraph "Intel Habana Runtime"
+        SynapseAI["SynapseAI v1.23.0<br/>Graph compiler, TPC kernels"]
+        HabanaTorch["habana_frameworks.torch<br/>FusedSDPA, HPU graphs"]
+    end
 
-    vLLMServer -->|"plugin entry points<br/>vllm.platform_plugins"| HpuPlatform
-    HpuPlatform -->|registers| HPUWorker
-    HpuPlatform -->|configures| ExtModule
+    subgraph "External Services"
+        KServe["KServe InferenceService"]
+        S3["S3 / MinIO<br/>Model Storage"]
+        HFHub["Hugging Face Hub"]
+    end
+
+    %% Plugin registration
+    PluginSystem -->|loads plugin| HpuPlatform
+    HpuPlatform -->|selects| HPUAttn
+    HpuPlatform -->|selects| HPUMLA
+    HpuPlatform -->|selects| HPUUnified
+    HpuPlatform -->|selects| HPUUnifiedMLA
+
+    %% Worker flow
+    APIServer -->|inference request| HPUWorker
     HPUWorker -->|executes| HPUModelRunner
-    HPUModelRunner -->|selects| StdAttn
-    HPUModelRunner -->|selects| UnifiedAttn
-    HPUModelRunner -->|selects| MLAAttn
-    HPUModelRunner -->|applies| FP8
-    HPUModelRunner -->|applies| GPTQ
-    HPUWorker -->|coordinates| HPUComm
-    HPUWorker -->|transfers KV| NIXLConn
+    HPUModelRunner -->|uses| HabanaTorch
+    HabanaTorch -->|compiles/runs| SynapseAI
 
-    HPUModelRunner -->|loads weights| ModelStorage["Model Storage<br/>(S3 / HuggingFace / PVC)"]
+    %% Deployment
+    KServe -->|routes to| APIServer
+    HPUWorker -->|downloads models| S3
+    HPUWorker -->|downloads models| HFHub
 
-    KServe["KServe<br/>(ServingRuntime)"] -->|"deploys container<br/>manages lifecycle"| vLLMServer
+    %% Distributed
+    HPUWorker -->|collective ops| HpuComm
+    HPUWorker -.->|KV transfer| NIXLConn
 
-    HPUModelRunner -->|"executes on"| GaudiHPU["Intel Gaudi HPU<br/>(Gaudi2 / Gaudi3)"]
-    HPUComm -->|"RDMA/TCP"| GaudiHPU
-
-    style HpuPlatform fill:#4a90e2,color:#fff
-    style HPUWorker fill:#4a90e2,color:#fff
-    style HPUModelRunner fill:#4a90e2,color:#fff
-    style ExtModule fill:#4a90e2,color:#fff
-    style vLLMServer fill:#50c878,color:#fff
-    style KubeRBACProxy fill:#f5a623,color:#fff
-    style KServe fill:#7ed321,color:#fff
-    style GaudiHPU fill:#9b59b6,color:#fff
-    style ModelStorage fill:#e8e8e8,stroke:#333
-    style User fill:#f9f9f9,stroke:#333
-    style StdAttn fill:#6cb4ee
-    style MLAAttn fill:#6cb4ee
-    style UnifiedAttn fill:#6cb4ee
-    style UnifiedMLA fill:#6cb4ee
-    style FP8 fill:#f0ad4e
-    style INC fill:#f0ad4e
-    style GPTQ fill:#f0ad4e
-    style AWQ fill:#f0ad4e
-    style CompTensors fill:#f0ad4e
-    style ModelOpt fill:#f0ad4e
-    style HPUComm fill:#d9534f,color:#fff
-    style NIXLConn fill:#d9534f,color:#fff
-    style DPUtils fill:#d9534f,color:#fff
-    style EAGLE fill:#5bc0de
-    style RejSampler fill:#5bc0de
+    %% Styling
+    style HpuPlatform fill:#4a90e2,stroke:#333,color:#fff
+    style APIServer fill:#4a90e2,stroke:#333,color:#fff
+    style HPUWorker fill:#4a90e2,stroke:#333,color:#fff
+    style HPUModelRunner fill:#4a90e2,stroke:#333,color:#fff
+    style SynapseAI fill:#9b59b6,stroke:#333,color:#fff
+    style HabanaTorch fill:#9b59b6,stroke:#333,color:#fff
+    style KServe fill:#7ed321,stroke:#333
+    style S3 fill:#f5a623,stroke:#333
+    style HFHub fill:#f5a623,stroke:#333
+    style HPUAttn fill:#3498db,stroke:#333,color:#fff
+    style HPUMLA fill:#3498db,stroke:#333,color:#fff
+    style HPUUnified fill:#3498db,stroke:#333,color:#fff
+    style HPUUnifiedMLA fill:#3498db,stroke:#333,color:#fff

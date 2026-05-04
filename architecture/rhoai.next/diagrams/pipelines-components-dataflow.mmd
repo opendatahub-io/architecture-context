@@ -1,70 +1,79 @@
 sequenceDiagram
+    autonumber
+
     participant User as Data Scientist
-    participant DSPA as DSPA<br/>KFP Runtime
-    participant Init as Init Container<br/>(pipelines-components)
     participant KFP as KFP API Server
-    participant TaskPod as KFP Task Pod
-    participant PVC as Shared PVC<br/>(50Gi nfs-csi RWX)
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant HF as Hugging Face Hub<br/>443/TCP HTTPS
-    participant LlamaStack as Llama Stack API<br/>443/TCP HTTPS
-    participant ModelReg as Model Registry<br/>443/TCP HTTPS
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Argo as Argo Workflows
+    participant Init as odh-pipelines-components<br/>(Init Container)
+    participant DL as dataset_download<br/>Component
+    participant Train as train_model<br/>Component (LoRA/OSFT/SFT)
+    participant Eval as universal_llm_evaluator<br/>Component
+    participant Deploy as kubeflow_model_registry<br/>Component
+    participant S3 as AWS S3<br/>443/TCP HTTPS
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant K8s as Kubernetes API<br/>443/TCP HTTPS
+    participant TrainerPods as Training Worker Pods<br/>(GPU)
+    participant PVC as PVC Workspace<br/>(Filesystem)
+    participant ModelReg as Model Registry<br/>8080/TCP HTTP
+    participant vLLM as vLLM<br/>(Local Inference)
 
     rect rgb(230, 240, 255)
-        Note over Init,KFP: Flow 4: Init Container Startup
-        Init->>Init: Read /app/managed-pipelines.json
-        Init->>KFP: Copy compiled YAMLs to<br/>/config/managed-pipelines/<br/>(shared volume, filesystem)
-        KFP->>KFP: Discover & register<br/>managed pipelines
-    end
-
-    rect rgb(255, 245, 230)
-        Note over User,S3: Flow 1: AutoML Tabular Training Pipeline
-        User->>DSPA: Submit AutoML Tabular Pipeline
-        DSPA->>TaskPod: Schedule data loader pod
-        TaskPod->>S3: Download dataset<br/>HTTPS/443, TLS 1.2+<br/>Auth: AWS IAM credentials
-        S3-->>TaskPod: Dataset CSV/Parquet
-        TaskPod->>PVC: Write dataset to shared workspace
-        DSPA->>TaskPod: Schedule AutoGluon training pod<br/>(odh-automl image)
-        TaskPod->>PVC: Read dataset, write models
-        TaskPod->>TaskPod: AutoGluon model training<br/>& selection
-        DSPA->>TaskPod: Schedule leaderboard pod
-        TaskPod->>PVC: Read model artifacts
-        TaskPod->>KFP: Upload leaderboard artifact<br/>HTTPS/443, SA Token
+        Note over Init,KFP: Flow 1: Managed Pipeline Staging (Platform Startup)
+        Init->>Init: generate_managed_pipelines.py<br/>Compiles pipeline.py → YAML
+        Init->>KFP: Copy YAMLs to /config/managed-pipelines<br/>(shared volume mount)
     end
 
     rect rgb(230, 255, 230)
-        Note over User,ModelReg: Flow 2: Fine-Tuning Pipeline (LoRA/SFT/OSFT)
-        User->>DSPA: Submit fine-tuning pipeline
-        DSPA->>TaskPod: Schedule dataset download pod
-        TaskPod->>HF: Download model & dataset<br/>HTTPS/443, TLS 1.2+<br/>Auth: Bearer Token (HF_TOKEN)
-        HF-->>TaskPod: Model weights & dataset
-        TaskPod->>PVC: Write to shared PVC<br/>(50Gi, nfs-csi, RWX)
-        DSPA->>TaskPod: Schedule training pod (GPU)
-        TaskPod->>PVC: Read data, train model
-        TaskPod->>TaskPod: Training via<br/>unsloth/mini-trainer/instructlab
-        TaskPod->>PVC: Write fine-tuned model
-        DSPA->>TaskPod: Schedule lm-eval pod
-        TaskPod->>PVC: Read model artifacts
-        TaskPod->>TaskPod: Evaluate with lm-eval harness
-        DSPA->>TaskPod: Schedule model registration pod
-        TaskPod->>ModelReg: Register model with provenance<br/>HTTPS/443, TLS 1.2+<br/>Auth: Bearer Token (K8s SA)
+        Note over User,ModelReg: Flow 2: Fine-Tuning Pipeline (LoRA/OSFT/SFT)
+        User->>KFP: Submit fine-tuning pipeline run
+        KFP->>Argo: Create Argo Workflow
+
+        Argo->>DL: Step 1: Download Dataset
+        DL->>HF: GET dataset<br/>HTTPS/443, TLS 1.2+<br/>Auth: HF_TOKEN (optional)
+        HF-->>DL: Dataset files
+        DL->>S3: GET dataset (alternative)<br/>HTTPS/443, TLS 1.2+<br/>Auth: AWS IAM
+        S3-->>DL: Dataset files
+        DL->>PVC: Write to /data
+
+        Argo->>Train: Step 2: Submit Training Job
+        Train->>K8s: POST TrainingJob CR<br/>HTTPS/443, TLS 1.2+<br/>Auth: ServiceAccount token
+        K8s->>TrainerPods: Schedule GPU worker pods
+        TrainerPods->>PVC: Read dataset, write checkpoints
+        TrainerPods-->>Train: Stream logs + completion status
+
+        Argo->>Eval: Step 3: Evaluate Model
+        Eval->>PVC: Load trained model
+        Eval->>vLLM: Local GPU inference
+        vLLM-->>Eval: Benchmark results (MMLU, GSM8K, etc.)
+
+        Argo->>Deploy: Step 4: Register Model
+        Deploy->>ModelReg: POST model metadata<br/>HTTP/8080, plaintext<br/>Auth: None
+        ModelReg-->>Deploy: Model version ID
     end
 
-    rect rgb(255, 230, 245)
-        Note over User,LlamaStack: Flow 3: AutoRAG Document Optimization Pipeline
-        User->>DSPA: Submit AutoRAG pipeline
-        DSPA->>TaskPod: Schedule test data loader pod
-        TaskPod->>S3: Download test data<br/>HTTPS/443, AWS IAM
-        DSPA->>TaskPod: Schedule documents discovery pod
-        TaskPod->>S3: Discover documents<br/>HTTPS/443, AWS IAM
-        DSPA->>TaskPod: Schedule text extraction pod<br/>(odh-autorag image)
-        TaskPod->>TaskPod: Docling extracts text<br/>(PDF, DOCX, PPTX, HTML)
-        DSPA->>TaskPod: Schedule RAG optimization pod<br/>(odh-autorag image)
-        TaskPod->>LlamaStack: Generate embeddings<br/>HTTPS/443, TLS 1.2+<br/>Auth: API Key
-        LlamaStack-->>TaskPod: Embedding vectors
-        TaskPod->>TaskPod: ChromaDB indexing<br/>(in-process)
-        TaskPod->>TaskPod: ai4rag template optimization
-        DSPA->>TaskPod: Schedule leaderboard pod
-        TaskPod->>KFP: Upload evaluation artifact<br/>HTTPS/443, SA Token
+    rect rgb(255, 245, 230)
+        Note over User,S3: Flow 3: AutoRAG Optimization Pipeline
+        User->>KFP: Submit AutoRAG pipeline run
+        KFP->>Argo: Create Argo Workflow
+
+        Note right of Argo: Steps: test_data_loader →<br/>documents_discovery →<br/>text_extraction →<br/>search_space_preparation →<br/>rag_templates_optimization →<br/>leaderboard_evaluation
+
+        Argo->>S3: Load test data + discover documents<br/>HTTPS/443, AWS IAM
+        S3-->>Argo: JSON test data + document list
+        Argo->>S3: Download documents for extraction<br/>HTTPS/443, AWS IAM
+        S3-->>Argo: Document files (PDF, DOCX, etc.)
+    end
+
+    rect rgb(255, 230, 230)
+        Note over User,S3: Flow 4: AutoML Tabular Training Pipeline
+        User->>KFP: Submit AutoML pipeline run
+        KFP->>Argo: Create Argo Workflow
+
+        Note right of Argo: Steps: automl_data_loader →<br/>autogluon_models_training →<br/>leaderboard_evaluation
+
+        Argo->>S3: Stream CSV data<br/>HTTPS/443, AWS IAM
+        S3-->>Argo: CSV dataset
+        Argo->>PVC: Write train/test splits
+        Note right of Argo: AutoGluon training<br/>(local computation)
+        Argo->>PVC: Write model metrics
     end

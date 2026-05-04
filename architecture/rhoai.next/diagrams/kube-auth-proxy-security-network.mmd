@@ -1,71 +1,77 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Browser["Browser User"]
-        SAClient["Service Account Client"]
+        Browser["User Browser"]
+        K8sClient["K8s Client /<br/>Prometheus"]
     end
 
-    subgraph PodNetwork["POD NETWORK (Sidecar Proxy)"]
+    subgraph Ingress["INGRESS (Gateway / Route)"]
+        EnvoyGW["Envoy Gateway / OpenShift Router<br/>443/TCP → 4180 or 8443<br/>TLS 1.3 termination<br/>Managed by rhods-operator"]
+    end
+
+    subgraph PodAuth["POD-LOCAL: Auth Mode (PROXY_MODE=auth)"]
         direction TB
+        AuthProxy["kube-auth-proxy<br/>4180/TCP HTTP | 443/TCP HTTPS<br/>FIPS: strictfipsruntime<br/>AuthN: OIDC / OAuth / JWT / K8s SA"]
 
-        subgraph Container["Container: quay.io/rhoai/odh-kube-auth-proxy<br/>FIPS: strictfipsruntime"]
+        subgraph AuthEndpoints["Auth Endpoints"]
             direction LR
-
-            subgraph AuthModeBox["Auth Mode"]
-                AuthProxy["kube-auth-proxy<br/>4180/TCP HTTP<br/>AuthN: K8s SA TokenReview,<br/>JWT Bearer, OAuth2 cookie,<br/>Basic Auth (htpasswd)<br/>Session: AES-CFB cookie"]
-            end
-
-            subgraph RBACModeBox["RBAC Mode (default)"]
-                RBACProxy["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS 1.2+<br/>AuthN: TokenReview,<br/>OIDC JWT, X.509 cert<br/>AuthZ: SubjectAccessReview"]
-            end
+            OAuthAuth["/oauth2/auth<br/>(ext_authz: 202/401)"]
+            OAuthStart["/oauth2/start<br/>(initiate flow)"]
+            OAuthCallback["/oauth2/callback<br/>(code exchange)"]
         end
 
-        Upstream["Upstream Application<br/>Proxied requests<br/>Headers: GAP-Auth /<br/>x-remote-user / x-remote-groups"]
+        AuthUpstream["Upstream App<br/>(pod-local)<br/>Proxied headers"]
+        AuthProxy --> AuthEndpoints
+        AuthProxy -->|"HTTP/HTTPS<br/>X-Forwarded-User<br/>X-Forwarded-Email"| AuthUpstream
     end
 
-    subgraph ClusterServices["CLUSTER SERVICES (Trusted - In-Cluster)"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+ (in-cluster CA)<br/>SA token auth"]
-        OSAuth["OpenShift OAuth Server<br/>443/TCP HTTPS<br/>TLS 1.2+ (service CA)<br/>OAuth2 client credentials"]
-        OSUser["OpenShift User API<br/>443/TCP HTTPS<br/>TLS 1.2+ (service CA)<br/>Bearer token"]
-        Redis["Redis (Optional)<br/>6379/TCP<br/>TLS optional<br/>Password auth optional"]
+    subgraph PodRBAC["POD-LOCAL / CLUSTER: RBAC Mode (PROXY_MODE=rbac)"]
+        direction TB
+        RBACProxy["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS 1.2+ (configurable ciphers)<br/>FIPS: strictfipsruntime<br/>AuthN: TokenReview / OIDC / X509<br/>AuthZ: SAR + static + hardcoded"]
+        RBACUpstream["Upstream App<br/>x-remote-user<br/>x-remote-groups"]
+        RBACProxy -->|"HTTP/HTTPS/h2c<br/>authorized requests"| RBACUpstream
+    end
+
+    subgraph ClusterInternal["CLUSTER-INTERNAL (Trusted)"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+ (in-cluster CA)<br/>Auth: ServiceAccount token"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        OIDC["OIDC Provider<br/>(Keycloak, DEX)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>OAuth2 client credentials"]
+        OIDC["OIDC Provider<br/>(Keycloak, Azure AD, etc.)<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: OAuth2 client credentials"]
+        OSAuth["OpenShift OAuth Server<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: OAuth2 client credentials"]
+        Redis["Redis (optional)<br/>6379/TCP<br/>Optional TLS<br/>Auth: Password/ACL<br/>Standalone / Sentinel / Cluster"]
     end
 
-    %% External to proxy flows
-    Browser -->|"HTTP/4180<br/>No encryption<br/>(TLS at ingress)<br/>OAuth2 flow"| AuthProxy
-    SAClient -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer token"| RBACProxy
-    SAClient -->|"HTTP/4180<br/>Bearer SA token"| AuthProxy
+    %% External to Ingress
+    Browser -->|"HTTPS/443<br/>TLS 1.3"| EnvoyGW
 
-    %% Proxy to upstream
-    AuthProxy -->|"HTTP/HTTPS<br/>configurable<br/>GAP-Auth header"| Upstream
-    RBACProxy -->|"HTTP/HTTPS<br/>configurable<br/>x-remote-user"| Upstream
+    %% Ingress to Auth Mode
+    EnvoyGW -->|"HTTP/4180<br/>ext_authz subrequest"| AuthProxy
+    EnvoyGW -->|"Direct proxy<br/>HTTP/4180"| AuthProxy
 
-    %% Proxy to cluster services
-    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>TokenReview"| K8sAPI
-    RBACProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>TokenReview +<br/>SubjectAccessReview"| K8sAPI
-    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth2 client creds"| OSAuth
-    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer token"| OSUser
-    AuthProxy -->|"TCP/6379<br/>TLS optional<br/>Password optional"| Redis
+    %% Direct RBAC access
+    K8sClient -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer token"| RBACProxy
 
-    %% Proxy to external services
-    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth2 client creds<br/>OIDC discovery +<br/>token exchange"| OIDC
+    %% Auth Mode egress
+    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>Client credentials + code"| OIDC
+    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>Client credentials"| OSAuth
+    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token (TokenReview)"| K8sAPI
+    AuthProxy -->|"Redis/6379<br/>Optional TLS<br/>Password/ACL"| Redis
 
-    %% Operator relationship
-    Operator["rhods-operator"] -.->|"Deploys sidecar<br/>+ provisions RBAC"| Container
+    %% RBAC Mode egress
+    RBACProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token (TokenReview)"| K8sAPI
+    RBACProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token (SAR)"| K8sAPI
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef proxy fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
-    classDef upstream fill:#7ed321,stroke:#333,stroke-width:2px,color:#fff
-    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef extservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef operator fill:#f5a623,stroke:#333,stroke-width:2px,color:#fff
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef podauth fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef podrbac fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef clusterinternal fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
-    class Browser,SAClient external
-    class AuthProxy,RBACProxy proxy
-    class Upstream upstream
-    class K8sAPI,OSAuth,OSUser,Redis cluster
-    class OIDC extservice
-    class Operator operator
+    class Browser,K8sClient external
+    class EnvoyGW ingress
+    class AuthProxy,AuthUpstream,OAuthAuth,OAuthStart,OAuthCallback podauth
+    class RBACProxy,RBACUpstream podrbac
+    class K8sAPI clusterinternal
+    class OIDC,OSAuth,Redis externalservice

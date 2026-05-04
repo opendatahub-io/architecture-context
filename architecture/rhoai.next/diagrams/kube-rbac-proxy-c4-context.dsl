@@ -1,40 +1,46 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist / User" "Accesses RHOAI component endpoints (dashboards, APIs, notebooks)"
-        platformAdmin = person "Platform Admin" "Manages RHOAI platform via operator"
-        sre = person "SRE / Monitoring" "Monitors platform health and metrics"
+        operator = person "Platform Operator" "Manages RHOAI platform components via rhods-operator"
+        developer = person "Developer / Data Scientist" "Accesses protected component endpoints"
 
-        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "HTTP reverse proxy sidecar enforcing Kubernetes RBAC authorization via TokenReview and SubjectAccessReview" {
-            secureListener = container "Secure Listener" "TLS-terminating HTTPS listener on port 8443" "Go net/http Server"
-            authNFilter = container "Authentication Filter" "Authenticates requests via TokenReview, OIDC JWT, or X.509 client certs" "Go Library (pkg/authn)"
-            authZFilter = container "Authorization Filter" "Authorizes via hardcoded rules, static config, or SubjectAccessReview" "Go Library (pkg/authz)"
-            reverseProxy = container "Reverse Proxy" "Forwards authenticated/authorized requests to upstream application" "Go httputil.ReverseProxy"
-            tlsReloader = container "TLS Reloader" "Hot-reloads TLS certificates from disk without restart" "Go Library (pkg/tls)"
-            tokenSanitizer = container "Token Sanitizer" "Masks bearer tokens in log output to prevent credential leakage" "Go Library"
-
-            secureListener -> authNFilter "passes request"
-            authNFilter -> authZFilter "authenticated identity"
-            authZFilter -> reverseProxy "authorized request"
+        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "HTTP reverse proxy enforcing Kubernetes RBAC authorization via SubjectAccessReview before forwarding to upstream" {
+            secureListener = container "Secure Listener" "TLS-terminated HTTPS listener on port 8443" "Go net/http"
+            authnModule = container "Authentication Module" "Supports delegating (TokenReview), OIDC JWT, and x509 client certificate authentication" "Go pkg/authn"
+            authzModule = container "Authorization Module" "Union authorizer: hardcoded metrics + static + SubjectAccessReview" "Go pkg/authz"
+            filterChain = container "Filter Chain" "HTTP middleware: path filter, authn, authz, header injection" "Go pkg/filters"
+            reverseProxy = container "Reverse Proxy" "Forwards authenticated/authorized requests to upstream application" "Go pkg/proxy"
+            tlsReloader = container "TLS CertReloader" "Hot-reloads TLS certificates at configurable intervals" "Go pkg/tls"
+            sanitizingFilter = container "Sanitizing Filter" "Masks bearer tokens in klog output to prevent credential leakage" "Go"
         }
 
-        kubeApiServer = softwareSystem "Kubernetes API Server" "Cluster API server providing TokenReview and SubjectAccessReview APIs" "External"
-        oidcProvider = softwareSystem "OIDC Provider" "OpenID Connect identity provider for JWT-based authentication" "External"
-        upstreamApp = softwareSystem "Upstream Application" "Component application container running in same pod (e.g., dashboard, notebook controller)" "Internal RHOAI"
-        prometheus = softwareSystem "OpenShift Monitoring (Prometheus)" "Cluster monitoring stack scraping /metrics endpoints" "External"
-        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator that injects kube-rbac-proxy sidecars into component pods" "Internal RHOAI"
-        certManager = softwareSystem "cert-manager / Platform Operator" "Provisions and rotates TLS certificates for the proxy" "External"
-        gatewayAPI = softwareSystem "Gateway API (HTTPRoute)" "Platform ingress gateway routing external traffic to component services" "External"
+        k8sApiServer = softwareSystem "Kubernetes API Server" "Provides TokenReview and SubjectAccessReview APIs for authn/authz" "External"
+        upstreamApp = softwareSystem "Upstream Application" "Protected application container running on localhost within the same pod" "Internal"
+        prometheus = softwareSystem "OpenShift Monitoring (Prometheus)" "Scrapes /metrics endpoints with hardcoded authorization" "External"
+        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator that injects kube-rbac-proxy as sidecar" "Internal RHOAI"
+        certManager = softwareSystem "cert-manager / Platform TLS" "Provisions and rotates TLS certificates" "External"
+        oidcProvider = softwareSystem "OIDC Identity Provider" "Provides OIDC discovery and JWT signing keys (optional)" "External"
 
-        dataScientist -> gatewayAPI "Accesses RHOAI endpoints" "HTTPS/8443"
-        gatewayAPI -> kubeRbacProxy "Routes to component Service" "HTTPS/8443, TLS 1.2+"
-        kubeRbacProxy -> kubeApiServer "TokenReview (authn) and SubjectAccessReview (authz)" "HTTPS/443, SA token"
-        kubeRbacProxy -> oidcProvider "OIDC discovery and JWKS retrieval (when configured)" "HTTPS/443"
-        kubeRbacProxy -> upstreamApp "Proxies authenticated/authorized requests" "HTTP/HTTPS/h2c"
-        prometheus -> kubeRbacProxy "Scrapes /metrics (hardcoded allow for prometheus-k8s SA)" "HTTPS/8443"
-        rhodsOperator -> kubeRbacProxy "Injects sidecar container into component pod specs" "Deployment spec"
-        certManager -> kubeRbacProxy "Provisions TLS certificates (mounted as files)" "File mount"
-        sre -> prometheus "Reviews metrics and alerts" "HTTPS"
-        platformAdmin -> rhodsOperator "Configures RHOAI platform" "kubectl/oc"
+        # User interactions
+        developer -> kubeRbacProxy "Sends HTTPS requests to protected endpoints" "HTTPS/8443, Bearer/mTLS/OIDC"
+        rhodsOperator -> kubeRbacProxy "Injects as sidecar container into component pods" "Container Injection"
+        certManager -> kubeRbacProxy "Provisions TLS certificates via file mounts" "File Mount"
+
+        # System interactions
+        kubeRbacProxy -> k8sApiServer "TokenReview and SubjectAccessReview API calls" "HTTPS/443, SA Token"
+        kubeRbacProxy -> upstreamApp "Forwards authenticated/authorized requests" "HTTP (localhost)"
+        kubeRbacProxy -> oidcProvider "Fetches OIDC discovery and JWKS keys" "HTTPS/443"
+        prometheus -> kubeRbacProxy "Scrapes /metrics (hardcoded allow)" "HTTPS/8443, Bearer Token"
+
+        # Container interactions
+        secureListener -> filterChain "Passes incoming requests through middleware"
+        filterChain -> authnModule "Delegates authentication"
+        filterChain -> authzModule "Delegates authorization"
+        filterChain -> reverseProxy "Forwards after auth succeeds"
+        authnModule -> k8sApiServer "TokenReview API" "HTTPS/443"
+        authnModule -> oidcProvider "OIDC Discovery + JWKS" "HTTPS/443"
+        authzModule -> k8sApiServer "SubjectAccessReview API" "HTTPS/443"
+        reverseProxy -> upstreamApp "HTTP proxy to localhost"
+        tlsReloader -> secureListener "Hot-reloads certificates"
     }
 
     views {
@@ -53,6 +59,10 @@ workspace {
                 background #999999
                 color #ffffff
             }
+            element "Internal" {
+                background #d5e8d4
+                color #333333
+            }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
@@ -67,7 +77,7 @@ workspace {
                 color #ffffff
             }
             element "Container" {
-                background #6baed6
+                background #438dd5
                 color #ffffff
             }
         }

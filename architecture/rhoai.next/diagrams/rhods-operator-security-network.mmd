@@ -1,93 +1,95 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["User Browser / API Client"]
+        Client["User/Client"]
     end
 
     subgraph Ingress["INGRESS (DMZ)"]
-        direction TB
-        Router["OpenShift Router<br/>443/TCP<br/>TLS Passthrough/Edge/Reencrypt"]
-
-        subgraph GatewayZone["Gateway Layer"]
-            Gateway["data-science-gateway<br/>(Envoy via Gateway API)<br/>443/TCP HTTPS<br/>TLS 1.2+ Terminate"]
-            EnvoyFilter["EnvoyFilter: authn-filter<br/>ext_authz + Lua<br/>Token extraction<br/>Cookie stripping"]
-        end
-
-        subgraph RedirectZone["Redirect Layer"]
-            DashRedirect["Dashboard Redirect<br/>(nginx)<br/>8080/TCP HTTP<br/>301 Redirect"]
-        end
+        Router["OpenShift Router / LB<br/>443/TCP<br/>TLS Passthrough/Edge"]
+        Gateway["data-science-gateway (Envoy)<br/>443/TCP → 443<br/>TLS Termination<br/>GatewayClass: data-science-gateway"]
     end
 
     subgraph AuthLayer["AUTHENTICATION LAYER"]
-        AuthProxy["kube-auth-proxy<br/>NS: openshift-ingress<br/>SA: kube-auth-proxy<br/>8443/TCP HTTPS (svc CA)<br/>9000/TCP HTTP (metrics)"]
+        EnvoyFilter["EnvoyFilter<br/>ext_authz enforcement"]
+        KAP["kube-auth-proxy<br/>8443/TCP HTTPS<br/>9000/TCP metrics<br/>SA: kube-auth-proxy<br/>NS: openshift-ingress"]
     end
 
-    subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-applications)"]
-        Operator["rhods-operator (manager)<br/>SA: opendatahub-operator-controller-manager<br/>9443/TCP HTTPS (webhooks)<br/>8080/TCP HTTP (metrics)<br/>8081/TCP HTTP (health)"]
-    end
-
-    subgraph MonitoringNS["MONITORING NAMESPACE (redhat-ods-monitoring)"]
+    subgraph ControlPlane["OPERATOR CONTROL PLANE (Trusted)"]
         direction TB
-        Prometheus["MonitoringStack<br/>Prometheus<br/>9090/TCP HTTP"]
-        ThanosQ["ThanosQuerier<br/>9090/TCP HTTP"]
-        TempoSvc["Tempo<br/>4317/TCP gRPC<br/>TLS optional"]
-        OTELCol["OTEL Collector<br/>varies gRPC/HTTP"]
-        PersesSvc["Perses<br/>varies HTTP"]
-        MetricsProxy["Prometheus Metrics Proxy<br/>9090/TCP HTTPS<br/>kube-rbac-proxy"]
+        Operator["rhods-operator manager<br/>SA: opendatahub-operator-controller-manager<br/>Image: quay.io/opendatahub/opendatahub-operator"]
+
+        subgraph OperatorPorts["Operator Ports"]
+            Webhook["Webhook Server<br/>9443/TCP HTTPS<br/>mTLS (API server)"]
+            Metrics["Metrics<br/>8080/TCP HTTP<br/>Bearer Token (kube-rbac-proxy)"]
+            Health["Health/Readiness<br/>8081/TCP HTTP<br/>No auth"]
+        end
     end
 
-    subgraph ComponentNS["COMPONENT NAMESPACES"]
-        Components["Component Services<br/>(Dashboard, KServe, Kueue, etc.)<br/>kube-rbac-proxy sidecar<br/>8443/TCP HTTPS<br/>Bearer Token → SAR"]
+    subgraph MonitoringStack["MONITORING STACK (Internal)"]
+        OTel["OTel Collector<br/>(TargetAllocator)<br/>HTTP scrape"]
+        Prom["MonitoringStack (Prometheus)<br/>9090/TCP HTTPS<br/>TLS (service-CA)"]
+        Thanos["ThanosQuerier<br/>10901/TCP gRPC TLS"]
+        NSProxy["Namespace Proxy<br/>8443/TCP HTTPS<br/>kube-rbac-proxy<br/>SubjectAccessReview"]
+        CProxy["Cluster Proxy<br/>8443/TCP HTTPS<br/>kube-rbac-proxy<br/>SubjectAccessReview"]
+        Collector["Collector Service<br/>9411/TCP HTTPS TLS"]
+        Tempo2["Tempo (Traces)"]
+        Perses2["Perses (Viz)"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token / Client Cert"]
-        OAuthServer["OpenShift OAuth Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>OAuthClient Creds"]
-        OIDCProvider["External OIDC Provider<br/>(optional)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>OIDC Client Creds"]
+        OAuth["OpenShift OAuth Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>OAuth2 client creds"]
+        OIDC["External OIDC Provider<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>OIDC client creds"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Bearer Token"]
+    end
+
+    subgraph UpstreamComponents["UPSTREAM COMPONENTS (via HTTPRoute)"]
+        Dashboard2["Dashboard"]
+        KServe2["KServe"]
+        Workbenches2["Workbenches"]
+        OtherComp["Other Components..."]
     end
 
     %% External → Ingress
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Cookie / Bearer Token"| Router
-    Router -->|"Forward"| Gateway
-    Router -->|"Edge TLS<br/>301 Redirect"| DashRedirect
+    Client -->|"HTTPS/443<br/>TLS 1.2+"| Router
+    Router -->|"HTTPS/443<br/>TLS passthrough"| Gateway
 
-    %% Gateway → Auth
-    Gateway -->|"ext_authz<br/>HTTPS/8443<br/>TLS (svc CA)<br/>Cookie validation"| AuthProxy
-    EnvoyFilter -.->|"configures"| Gateway
+    %% Ingress → Auth
+    Gateway -->|"ext_authz<br/>internal"| EnvoyFilter
+    EnvoyFilter -->|"HTTPS/8443<br/>Bearer Token check"| KAP
 
-    %% Auth → OAuth
-    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuthClient creds"| OAuthServer
-    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>OIDC creds"| OIDCProvider
+    %% Auth → External
+    KAP -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth2 creds"| OAuth
+    KAP -->|"HTTPS/443<br/>TLS 1.2+<br/>OIDC creds"| OIDC
+    KAP -->|"HTTPS/443<br/>TokenReview"| K8sAPI
 
-    %% Gateway → Components (post-auth)
-    Gateway -->|"HTTP/varies<br/>Bearer Token<br/>(forwarded)"| Components
+    %% Authorized traffic → Upstream
+    Gateway -->|"HTTP/HTTPS<br/>Auth headers forwarded<br/>via HTTPRoute"| UpstreamComponents
 
     %% Operator → K8s API
-    Operator -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Bearer Token"| K8sAPI
 
-    %% Operator webhooks
-    K8sAPI -->|"HTTPS/9443<br/>TLS (cert-mgr)<br/>API server cert"| Operator
+    %% API Server → Webhook
+    K8sAPI -->|"HTTPS/9443<br/>mTLS"| Webhook
 
     %% Monitoring flows
-    Prometheus -->|"HTTP/varies<br/>SA Token"| Components
-    OTELCol -->|"gRPC/HTTP<br/>SA Token"| Components
-    OTELCol -->|"gRPC/4317<br/>TLS optional"| TempoSvc
-    ThanosQ -->|"HTTP/9090<br/>SA Token"| Prometheus
-    PersesSvc -->|"HTTP/varies<br/>SA Token"| Prometheus
-    PersesSvc -->|"HTTP/varies<br/>SA Token"| TempoSvc
+    OTel -->|"HTTP (varies)<br/>scrape targets"| UpstreamComponents
+    OTel -->|"OTLP HTTP/4318<br/>TLS"| Prom
+    Thanos -->|"gRPC/10901<br/>TLS"| Prom
+    NSProxy -->|"HTTPS/9090<br/>TLS (service-CA)"| Prom
+    CProxy -->|"HTTPS/9090<br/>TLS (service-CA)"| Prom
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef auth fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef components fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef controlplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef monitoring fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef upstream fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
-    class Router,Gateway,EnvoyFilter,DashRedirect ingress
-    class AuthProxy auth
-    class Operator operator
-    class Prometheus,ThanosQ,TempoSvc,OTELCol,PersesSvc,MetricsProxy monitoring
-    class Components components
-    class K8sAPI,OAuthServer,OIDCProvider externalservice
+    class Router,Gateway ingress
+    class EnvoyFilter,KAP auth
+    class Operator,Webhook,Metrics,Health controlplane
+    class OTel,Prom,Thanos,NSProxy,CProxy,Collector,Tempo2,Perses2 monitoring
+    class OAuth,OIDC,K8sAPI externalservice
+    class Dashboard2,KServe2,Workbenches2,OtherComp upstream

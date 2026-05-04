@@ -1,61 +1,52 @@
 workspace {
     model {
-        user = person "Data Scientist" "Submits ML training jobs and workloads to Kubernetes"
+        user = person "Data Scientist / ML Engineer" "Submits training jobs and inference workloads to Kubernetes"
+        admin = person "Cluster Admin" "Configures resource quotas, queues, and scheduling policies"
 
-        kueue = softwareSystem "Kueue" "Kubernetes-native job queueing system managing workload admission based on quota, priority, and fair sharing" {
-            controllerManager = container "kueue-controller-manager" "Single binary hosting all controllers, scheduler, webhooks, and visibility API" "Go (controller-runtime)"
-            webhookServer = container "Webhook Server" "Mutating and validating admission webhooks for all supported job types and CRDs" "HTTPS/9443"
-            admissionScheduler = container "Admission Scheduler" "Periodic scheduling loop that assigns ResourceFlavors and quotas to pending workloads" "Go"
-            inMemoryCache = container "In-Memory Cache" "Live snapshot of ClusterQueue quotas, flavor assignments, and workload states" "Go"
-            multiKueueController = container "MultiKueue Controller" "Federated scheduling - distributes workloads to remote worker clusters" "Go"
-            provisioningController = container "Provisioning Controller" "Creates ProvisioningRequests for cluster autoscaler integration" "Go"
-            tasController = container "TAS Controller" "Topology-Aware Scheduling with topology ungater for hardware-aware pod placement" "Go"
-            visibilityAPI = container "Visibility API" "Aggregated API for querying pending workload status" "Go"
+        kueue = softwareSystem "Kueue" "Kubernetes-native job queueing system managing admission, scheduling, preemption, and quota enforcement" {
+            controllerManager = container "Kueue Controller Manager" "controller-runtime based operator with core controllers, scheduler, webhook server, and job framework plugins" "Go Operator"
+            webhookServer = container "Webhook Server" "Validates and mutates job and queue CRDs on creation/update" "Go (port 9443/TCP TLS)"
+            scheduler = container "Scheduler" "Continuous scheduling loop evaluating pending workloads against quotas, flavors, priorities, and preemption" "Go (in-process Runnable)"
+            jobFramework = container "Job Framework" "Plugin architecture integrating batch/v1 Jobs, JobSets, Kubeflow jobs, Ray jobs, AppWrappers, Pods" "Go Plugins"
+            multiKueue = container "MultiKueue Subsystem" "Multi-cluster workload federation with remote cluster client management" "Go (feature-gated, disabled in RHOAI)"
+            provisioningCtrl = container "Provisioning Controller" "Creates ProvisioningRequest CRs for cluster autoscaler integration" "Go Controller"
+            tasCtrl = container "TAS Controllers" "Topology-Aware Scheduling for pod placement within topology domains" "Go Controllers"
         }
 
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform and API server" "External"
-        certManager = softwareSystem "cert-manager" "TLS certificate lifecycle management" "External"
-        clusterAutoscaler = softwareSystem "Cluster Autoscaler" "Automatic node provisioning based on ProvisioningRequests" "External"
-        remoteK8sClusters = softwareSystem "Remote Kubernetes Clusters" "Worker clusters for MultiKueue workload distribution" "External"
-
-        kubeflowTraining = softwareSystem "Kubeflow Training Operator" "Manages PyTorchJob, TFJob, XGBoostJob, PaddleJob workloads" "Internal RHOAI"
-        kubeflowMPI = softwareSystem "Kubeflow MPI Operator" "Manages MPIJob workloads" "Internal RHOAI"
-        kuberay = softwareSystem "KubeRay Operator" "Manages RayCluster and RayJob workloads" "Internal RHOAI"
-        jobsetController = softwareSystem "JobSet Controller" "Manages JobSet workloads" "Internal RHOAI"
-        codeflare = softwareSystem "CodeFlare AppWrapper" "Manages AppWrapper workloads" "Internal RHOAI"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and alerting" "Monitoring"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Central API for cluster resource management" "External"
+        trainingOperator = softwareSystem "Training Operator (Kubeflow)" "Manages PyTorchJob, TFJob, MPIJob, PaddleJob, XGBoostJob CRDs" "Internal RHOAI"
+        rayOperator = softwareSystem "KubeRay Operator" "Manages RayJob and RayCluster CRDs" "Internal RHOAI"
+        jobsetController = softwareSystem "JobSet Controller" "Manages JobSet CRDs for multi-job coordination" "Internal RHOAI"
+        codeflare = softwareSystem "CodeFlare Operator" "Manages AppWrapper CRDs for batch workload grouping" "Internal RHOAI"
+        certManager = softwareSystem "cert-manager" "External certificate management (optional alternative to internal certs)" "External"
+        clusterAutoscaler = softwareSystem "Cluster Autoscaler" "Reads ProvisioningRequests and provisions nodes via cloud APIs" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and alerting" "Internal RHOAI"
+        rhoaiOperator = softwareSystem "RHOAI Operator" "Platform operator that deploys Kueue via kustomize manifests" "Internal RHOAI"
+        remoteCluster = softwareSystem "Remote Worker Cluster" "Target cluster for MultiKueue workload federation" "External"
 
         # User interactions
-        user -> kueue "Submits jobs via kubectl" "HTTPS/6443"
-        user -> kubernetes "Creates Job, PyTorchJob, RayJob CRs" "HTTPS/6443"
+        user -> kueue "Submits jobs (kubectl create)" "HTTPS/6443"
+        admin -> kueue "Configures ClusterQueues, LocalQueues, ResourceFlavors" "HTTPS/6443"
 
-        # Kueue internal flows
-        controllerManager -> webhookServer "Hosts"
-        controllerManager -> admissionScheduler "Hosts"
-        admissionScheduler -> inMemoryCache "Reads quota/flavor state"
-        controllerManager -> multiKueueController "Hosts"
-        controllerManager -> provisioningController "Hosts"
-        controllerManager -> tasController "Hosts"
-        controllerManager -> visibilityAPI "Hosts"
+        # Kueue → Kubernetes
+        kueue -> k8sAPI "All controller reconciliation, CRD CRUD, webhook registration, watch resources" "HTTPS/6443 TLS 1.2+ SA token"
 
-        # Kueue to Kubernetes
-        kueue -> kubernetes "All controller operations: CRD CRUD, job management, RBAC" "HTTPS/6443"
-        kubernetes -> kueue "Admission webhook calls" "HTTPS/9443"
+        # Platform deploys Kueue
+        rhoaiOperator -> kueue "Deploys via kustomize manifests" "Kustomize"
 
-        # Kueue to external systems
-        kueue -> certManager "TLS certificate provisioning and rotation" "HTTPS/6443"
-        kueue -> clusterAutoscaler "ProvisioningRequest for node provisioning" "CRD via API"
-        kueue -> remoteK8sClusters "MultiKueue workload distribution" "HTTPS/6443"
+        # Job framework integrations
+        kueue -> trainingOperator "Watches/manages Kubeflow training job CRDs" "HTTPS/6443"
+        kueue -> rayOperator "Watches/manages RayJob and RayCluster CRDs" "HTTPS/6443"
+        kueue -> jobsetController "Watches/manages JobSet CRDs" "HTTPS/6443"
+        kueue -> codeflare "Watches/manages AppWrapper CRDs" "HTTPS/6443"
 
-        # Kueue integration with job frameworks
-        kueue -> kubeflowTraining "Watches and manages PyTorchJob, TFJob, etc." "CRD Watch + Webhook"
-        kueue -> kubeflowMPI "Watches and manages MPIJob" "CRD Watch + Webhook"
-        kueue -> kuberay "Watches and manages RayCluster, RayJob" "CRD Watch + Webhook"
-        kueue -> jobsetController "Watches and manages JobSet" "CRD Watch + Webhook"
-        kueue -> codeflare "Watches and manages AppWrapper" "CRD Watch + Webhook"
+        # External integrations
+        kueue -> certManager "TLS certificate management (optional)" "HTTPS"
+        kueue -> clusterAutoscaler "Creates ProvisioningRequest CRs" "HTTPS/6443"
+        kueue -> remoteCluster "MultiKueue workload federation (disabled in RHOAI)" "HTTPS/6443 TLS 1.2+"
 
         # Monitoring
-        prometheus -> kueue "Scrapes metrics" "HTTPS/8443"
+        prometheus -> kueue "Scrapes metrics" "HTTPS/8443 Bearer Token"
     }
 
     views {
@@ -70,18 +61,6 @@ workspace {
         }
 
         styles {
-            element "External" {
-                background #999999
-                color #ffffff
-            }
-            element "Internal RHOAI" {
-                background #7ed321
-                color #ffffff
-            }
-            element "Monitoring" {
-                background #4a90e2
-                color #ffffff
-            }
             element "Person" {
                 shape Person
                 background #08427b
@@ -89,6 +68,14 @@ workspace {
             }
             element "Software System" {
                 background #1168bd
+                color #ffffff
+            }
+            element "External" {
+                background #999999
+                color #ffffff
+            }
+            element "Internal RHOAI" {
+                background #7ed321
                 color #ffffff
             }
             element "Container" {

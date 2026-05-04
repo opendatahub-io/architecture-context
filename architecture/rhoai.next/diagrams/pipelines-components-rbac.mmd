@@ -1,87 +1,93 @@
 graph TD
-    subgraph "Pipeline Task Pods"
-        InitPod["Init Container<br/>(pipelines-components)"]
-        AutoMLPod["AutoML Task Pods<br/>(odh-automl)"]
-        AutoRAGPod["AutoRAG Task Pods<br/>(odh-autorag)"]
-        FTPod["Fine-Tuning Task Pods"]
+    subgraph "Pipeline Execution Identity"
+        SA_Runner["ServiceAccount<br/>pipeline-runner-{dsp-instance}<br/>(Pre-configured by platform operator)"]
     end
 
-    subgraph "Service Account (Inherited from DSPA)"
-        SA["DSPA Pipeline Runner SA<br/>(configured by DSPA operator)"]
+    subgraph "Init Container Identity"
+        SA_Init["ServiceAccount<br/>ds-pipeline-{dsp-instance}<br/>(Init container runs under DSP SA)"]
     end
 
-    subgraph "Inherited Permissions (via DSPA)"
-        SecretRead["core / Secrets<br/>get, list"]
-        PVCManage["core / PersistentVolumeClaims<br/>get, list, create, delete"]
-        PodManage["core / Pods<br/>get, list, watch"]
-        KFPAccess["KFP API Access<br/>pipeline execution, artifact storage"]
+    subgraph "Platform-Managed RBAC (rhods-operator)"
+        CR_Pipeline["ClusterRole<br/>(managed by operator)<br/>Pipeline execution permissions"]
+        CRB_Pipeline["ClusterRoleBinding<br/>(managed by operator)"]
     end
 
-    subgraph "Secrets Accessed at Runtime"
-        S3Secret["s3-secret<br/>train_data_secret<br/>input_data_secret<br/>(Opaque)<br/>AWS S3 credentials"]
-        HFToken["hf-token<br/>(Opaque)<br/>HF API token"]
-        LLMCreds["llm-credentials<br/>llama_stack_secret<br/>(Opaque)<br/>API key + endpoint"]
-        K8sCreds["kubernetes-credentials<br/>(Opaque)<br/>K8s API URL + token"]
-        OCIPull["oci-pull-secret-model-download<br/>(Opaque)<br/>OCI registry credentials"]
-        S3Conn["s3-connection<br/>(Opaque)<br/>DSPA S3 connection"]
+    SA_Runner -->|"bound via"| CRB_Pipeline
+    CRB_Pipeline -->|"grants"| CR_Pipeline
+
+    subgraph "Required API Access (Pipeline Steps)"
+        direction TB
+        KFPResources["kfp Resources<br/>Pods, Services, ConfigMaps<br/>Verbs: get, list, watch"]
+        TrainingResources["kubeflow.org Resources<br/>TrainingJob, ClusterTrainingRuntime<br/>Verbs: create, get, list, watch, delete"]
+        SecretResources["core Resources<br/>Secrets (credential injection)<br/>Verbs: get, list"]
+        PVCResources["core Resources<br/>PersistentVolumeClaims<br/>Verbs: get, list, create"]
     end
 
-    subgraph "External Service Authentication"
-        S3Auth["S3 Storage<br/>Auth: AWS IAM<br/>(AccessKeyId/SecretAccessKey)"]
-        HFAuth["Hugging Face Hub<br/>Auth: Bearer Token<br/>(HF_TOKEN)"]
-        LlamaAuth["Llama Stack API<br/>Auth: API Key"]
-        RegAuth["Model Registry<br/>Auth: Bearer Token<br/>(K8s SA Token)"]
-        OCIAuth["OCI Registry<br/>Auth: Registry Credentials"]
+    CR_Pipeline -->|"pipeline execution"| KFPResources
+    CR_Pipeline -->|"fine-tuning jobs"| TrainingResources
+    CR_Pipeline -->|"credentials"| SecretResources
+    CR_Pipeline -->|"workspace storage"| PVCResources
+
+    subgraph "User-Provisioned Secrets (No Auto-Rotation)"
+        direction TB
+        S3Creds["train_data_secret_name<br/>input_data_secret_name<br/>test_data_secret_name<br/>s3-secret<br/>(Opaque)<br/>AWS_ACCESS_KEY_ID<br/>AWS_SECRET_ACCESS_KEY<br/>AWS_S3_ENDPOINT<br/>AWS_DEFAULT_REGION"]
+        LlamaCreds["llama_stack_secret_name<br/>(Opaque)<br/>LLAMA_STACK_CLIENT_BASE_URL<br/>LLAMA_STACK_CLIENT_API_KEY"]
+        HFCreds["hf-token<br/>(Opaque)<br/>HF_TOKEN"]
+        K8sCreds["kubernetes-credentials<br/>(Opaque)<br/>KUBERNETES_SERVER_URL<br/>KUBERNETES_AUTH_TOKEN"]
+        OCICreds["oci-pull-secret-model-download<br/>(Opaque)<br/>OCI registry credentials"]
+        LLMCreds["llm-credentials<br/>(Opaque)<br/>LLM_API_KEY"]
     end
 
-    %% All pods use inherited SA
-    InitPod -->|"uses"| SA
-    AutoMLPod -->|"uses"| SA
-    AutoRAGPod -->|"uses"| SA
-    FTPod -->|"uses"| SA
+    SA_Runner -->|"mounts as env vars<br/>(RHOAI Connections)"| S3Creds
+    SA_Runner -->|"mounts as env vars"| LlamaCreds
+    SA_Runner -->|"mounts as env vars"| HFCreds
+    SA_Runner -->|"mounts as env vars"| K8sCreds
+    SA_Runner -->|"mounts as env vars"| OCICreds
+    SA_Runner -->|"mounts as env vars"| LLMCreds
 
-    %% SA grants inherited permissions
-    SA -->|"inherits from DSPA"| SecretRead
-    SA -->|"inherits from DSPA"| PVCManage
-    SA -->|"inherits from DSPA"| PodManage
-    SA -->|"inherits from DSPA"| KFPAccess
+    subgraph "ConfigMaps (Pipeline Config)"
+        SDGFlow["sdg-llm-test-flow<br/>(ConfigMap)<br/>SDG flow YAML at /etc/sdg"]
+        SDGPrompt["sdg-llm-test-prompt<br/>(ConfigMap)<br/>Prompt templates at /etc/sdg/prompts"]
+    end
 
-    %% Secrets accessed by pods
-    SecretRead -->|"reads"| S3Secret
-    SecretRead -->|"reads"| HFToken
-    SecretRead -->|"reads"| LLMCreds
-    SecretRead -->|"reads"| K8sCreds
-    SecretRead -->|"reads"| OCIPull
-    SecretRead -->|"reads"| S3Conn
+    SA_Runner -->|"mounts as volume"| SDGFlow
+    SA_Runner -->|"mounts as volume"| SDGPrompt
 
-    %% Secrets used for auth
-    S3Secret -->|"provides creds for"| S3Auth
-    HFToken -->|"provides token for"| HFAuth
-    LLMCreds -->|"provides key for"| LlamaAuth
-    K8sCreds -->|"provides token for"| RegAuth
-    OCIPull -->|"provides creds for"| OCIAuth
+    subgraph "External Auth Targets"
+        S3Auth["AWS S3<br/>Per-bucket IAM policy"]
+        HFAuth["HuggingFace Hub<br/>Token for gated repos"]
+        LlamaAuth["Llama Stack<br/>Server-side API key auth"]
+        LLMAuth["LLM Provider<br/>Provider-side API key auth"]
+        ModelRegAuth["Model Registry<br/>⚠ NO AUTH (insecure HTTP)"]
+        K8sAuth["Kubernetes API<br/>RBAC policy enforcement"]
+    end
+
+    S3Creds -->|"AWS IAM"| S3Auth
+    HFCreds -->|"Bearer Token"| HFAuth
+    LlamaCreds -->|"API Key Header"| LlamaAuth
+    LLMCreds -->|"API Key"| LLMAuth
+    SA_Runner -->|"SA Token"| K8sAuth
+    SA_Runner -->|"⚠ unauthenticated"| ModelRegAuth
 
     %% Styling
-    style SA fill:#4a90e2,stroke:#333,color:#fff
-    style InitPod fill:#6baed6,stroke:#333
-    style AutoMLPod fill:#6baed6,stroke:#333
-    style AutoRAGPod fill:#6baed6,stroke:#333
-    style FTPod fill:#6baed6,stroke:#333
+    style SA_Runner fill:#4a90e2,stroke:#333,color:#fff
+    style SA_Init fill:#4a90e2,stroke:#333,color:#fff
+    style CR_Pipeline fill:#f5a623,stroke:#333,color:#fff
+    style CRB_Pipeline fill:#f5a623,stroke:#333,color:#fff
 
-    style SecretRead fill:#f5a623,stroke:#333
-    style PVCManage fill:#f5a623,stroke:#333
-    style PodManage fill:#f5a623,stroke:#333
-    style KFPAccess fill:#f5a623,stroke:#333
+    style KFPResources fill:#7ed321,stroke:#333,color:#fff
+    style TrainingResources fill:#7ed321,stroke:#333,color:#fff
+    style SecretResources fill:#7ed321,stroke:#333,color:#fff
+    style PVCResources fill:#7ed321,stroke:#333,color:#fff
 
-    style S3Secret fill:#e8e8e8,stroke:#333
-    style HFToken fill:#e8e8e8,stroke:#333
-    style LLMCreds fill:#e8e8e8,stroke:#333
-    style K8sCreds fill:#e8e8e8,stroke:#333
-    style OCIPull fill:#e8e8e8,stroke:#333
-    style S3Conn fill:#e8e8e8,stroke:#333
+    style S3Creds fill:#e1d5e7,stroke:#9673a6
+    style LlamaCreds fill:#e1d5e7,stroke:#9673a6
+    style HFCreds fill:#e1d5e7,stroke:#9673a6
+    style K8sCreds fill:#e1d5e7,stroke:#9673a6
+    style OCICreds fill:#e1d5e7,stroke:#9673a6
+    style LLMCreds fill:#e1d5e7,stroke:#9673a6
 
-    style S3Auth fill:#7ed321,stroke:#333
-    style HFAuth fill:#7ed321,stroke:#333
-    style LlamaAuth fill:#7ed321,stroke:#333
-    style RegAuth fill:#7ed321,stroke:#333
-    style OCIAuth fill:#7ed321,stroke:#333
+    style SDGFlow fill:#dae8fc,stroke:#6c8ebf
+    style SDGPrompt fill:#dae8fc,stroke:#6c8ebf
+
+    style ModelRegAuth fill:#ffe6cc,stroke:#d79b00,stroke-width:3px

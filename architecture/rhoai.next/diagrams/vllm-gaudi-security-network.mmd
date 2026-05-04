@@ -1,66 +1,66 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client<br/>Data Scientist"]
+        Client["External Client"]
     end
 
-    subgraph AuthProxy["INGRESS (Pod-level Auth Proxy)"]
-        KRBAC["kube-rbac-proxy Sidecar<br/>8443/TCP<br/>TLS 1.3 Termination<br/>Bearer Token Validation"]
+    subgraph Ingress["INGRESS (Platform Gateway)"]
+        Gateway["KServe Gateway<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ (SIMPLE)<br/>HTTPRoute / Gateway API"]
     end
 
-    subgraph Application["APPLICATION (Pod-internal)"]
+    subgraph AuthBoundary["AUTH SIDECAR (Pod Security Boundary)"]
+        RBACProxy["kube-rbac-proxy<br/>8443/TCP → 8000/TCP<br/>TLS termination<br/>Bearer JWT + K8s RBAC"]
+    end
+
+    subgraph Application["APPLICATION (Container: odh-vllm-gaudi-rhel9)"]
         direction TB
-        vLLM["vLLM OpenAI API Server<br/>8000/TCP HTTP (plaintext)<br/>UID 2000 (non-root)<br/>Container: odh-vllm-gaudi-rhel9"]
 
-        subgraph PluginLayer["vllm-gaudi Plugin"]
-            Runner["HPUModelRunner<br/>Forward Pass, KV Cache,<br/>Graph Compilation"]
-            Worker["HPUWorker<br/>Device Init, Memory Profiling"]
+        APIServer["vLLM API Server<br/>8000/TCP HTTP (plaintext)<br/>OpenAI-compatible API<br/>⚠ FIPS DISABLED"]
+
+        subgraph Runtime["Inference Runtime"]
+            HPUWorker["HPUWorker /<br/>HPUModelRunner"]
+            GaudiDevice["Intel Gaudi HPU<br/>SynapseAI v1.23.0"]
         end
 
-        HPU["Intel Gaudi HPU<br/>(Gaudi2 / Gaudi3)"]
+        APIServer -->|in-process| HPUWorker
+        HPUWorker -->|SynapseAI HAL| GaudiDevice
     end
 
-    subgraph Distributed["CLUSTER-INTERNAL (Plaintext, Intra-cluster)"]
-        Ray["Ray Cluster<br/>6379/TCP<br/>TCP Plaintext"]
-        HCCL["HCCL Peer HPUs<br/>RDMA/TCP Plaintext<br/>All-reduce, All-gather"]
-        NIXL["NIXL Peer Nodes<br/>RDMA/TCP Plaintext<br/>KV Cache Transfer"]
-        Peers["HPUWorker Peers<br/>Rank 1..N<br/>TCP Dynamic Ports"]
+    subgraph InterWorker["INTER-WORKER (In-Cluster, Plaintext)"]
+        HCCL["HCCL Peer Workers<br/>Dynamic ports<br/>Plaintext<br/>No auth"]
+        NIXL["NIXL Side Channel<br/>Side channel port + dp_rank<br/>HTTP plaintext<br/>No auth"]
+        Ray["Ray Head Node<br/>6379/TCP<br/>Ray protocol<br/>No auth"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        HF["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>HF_TOKEN Bearer"]
-        S3["Model Storage (S3)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
+        S3["S3 / MinIO<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM / Access Key"]
+        HFHub["Hugging Face Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
     end
 
-    %% Ingress Flow
-    Client -->|"HTTPS/8443<br/>TLS 1.3<br/>Bearer Token"| KRBAC
-    KRBAC -->|"HTTP/8000<br/>localhost (plaintext)<br/>Pre-authenticated"| vLLM
+    %% Ingress flows
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer JWT"| Gateway
+    Gateway -->|"HTTPS/8443<br/>TLS<br/>ServiceAccount Token"| RBACProxy
+    RBACProxy -->|"HTTP/8000<br/>localhost (plaintext)<br/>No auth (validated)"| APIServer
 
-    %% Internal Flow
-    vLLM -->|"Plugin entry points"| Runner
-    Runner -->|"In-process"| HPU
-    Worker -->|"In-process"| HPU
+    %% Inter-worker flows
+    HPUWorker -->|"HCCL<br/>Dynamic ports<br/>Plaintext"| HCCL
+    HPUWorker -.->|"HTTP<br/>Plaintext<br/>KV cache coord"| NIXL
+    HPUWorker -.->|"Ray/6379<br/>Multi-node"| Ray
 
-    %% Distributed Flow
-    Worker -->|"TCP/6379<br/>Plaintext"| Ray
-    Ray -->|"TCP/Dynamic<br/>Plaintext"| Peers
-    Worker -->|"RDMA/TCP<br/>Plaintext"| HCCL
-    Worker -.->|"RDMA/TCP<br/>Plaintext (optional)"| NIXL
-
-    %% Egress Flow
-    Runner -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HF
-    Runner -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    %% Egress flows
+    HPUWorker -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    HPUWorker -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef authproxy fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef auth fill:#f8cecc,stroke:#b85450,stroke-width:2px
     classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef distributed fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef hardware fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef interworker fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef externalservice fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
 
     class Client external
-    class KRBAC authproxy
-    class vLLM,Runner,Worker application
-    class HPU hardware
-    class Ray,HCCL,NIXL,Peers distributed
-    class HF,S3 externalservice
+    class Gateway ingress
+    class RBACProxy auth
+    class APIServer,HPUWorker,GaudiDevice application
+    class HCCL,NIXL,Ray interworker
+    class S3,HFHub externalservice

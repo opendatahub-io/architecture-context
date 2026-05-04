@@ -3,61 +3,59 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (DMZ)"]
-        Gateway["RHOAI Gateway<br/>HTTPRoute / OpenShift Route<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ (SIMPLE)"]
+    subgraph Ingress["INGRESS (DMZ) — KServe Managed"]
+        Gateway["KServe Gateway / Istio Ingress<br/>443/TCP → 8000/8033<br/>TLS 1.2+<br/>Bearer Token / OAuth"]
     end
 
-    subgraph Pod["POD BOUNDARY (InferenceService Pod)"]
+    subgraph ServiceMesh["SERVICE MESH (mTLS STRICT)"]
         direction TB
 
-        KubeRBACProxy["kube-rbac-proxy<br/>(Sidecar - injected by platform)<br/>Listen: 8443/TCP HTTPS<br/>Auth: SubjectAccessReview"]
+        subgraph NS_User["Namespace: user-namespace"]
+            Sidecar["Istio Sidecar Proxy<br/>mTLS STRICT<br/>Auto-injected"]
 
-        subgraph Container["vLLM CUDA Container (UID 2000, non-root)"]
-            direction TB
-            HTTPServer["vLLM HTTP Server<br/>8000/TCP HTTP<br/>/v1/completions<br/>/v1/chat/completions<br/>/v1/models, /health"]
-            GRPCServer["vllm_tgis_adapter<br/>8033/TCP gRPC<br/>TGIS GenerationService"]
-            Engine["vLLM Inference Engine<br/>Python 3 / RHEL 9<br/>RHAIIS base 3.2.2"]
-            GPU["NVIDIA GPU<br/>CUDA Runtime"]
-
-            HTTPServer --> Engine
-            GRPCServer -->|"in-process"| Engine
-            Engine -->|"CUDA API"| GPU
+            subgraph Container["vLLM CUDA Container (USER 2000)"]
+                direction TB
+                TGISAdapter["vllm_tgis_adapter<br/>8033/TCP gRPC<br/>TGIS GenerationService"]
+                VLLMServer["vLLM HTTP Server<br/>8000/TCP HTTP<br/>/v1/completions<br/>/v1/chat/completions<br/>/v1/models, /health"]
+                GPURuntime["NVIDIA GPU (CUDA)<br/>nvidia.com/gpu<br/>Model VRAM"]
+            end
         end
-
-        KubeRBACProxy -->|"HTTP/8000<br/>localhost<br/>No encryption"| HTTPServer
-        KubeRBACProxy -->|"gRPC/8033<br/>localhost<br/>No encryption"| GRPCServer
     end
 
-    subgraph ExternalServices["EGRESS - EXTERNAL SERVICES"]
-        S3["S3 / Object Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM / access key"]
-        HFHub["Hugging Face Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        S3["Model Storage (S3)<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
+        HFHub["Hugging Face Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
+        PVC["Model Storage (PVC)<br/>Filesystem mount<br/>No network"]
     end
 
-    subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>Scrapes 8000/TCP HTTP"]
-    end
-
-    %% Flows
+    %% External to Ingress
     Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token / OAuth"| Gateway
-    Gateway -->|"HTTPS/8443<br/>TLS<br/>ServiceAccount Token"| KubeRBACProxy
-    Engine -->|"HTTPS/443<br/>TLS 1.2+<br/>IAM credentials"| S3
-    Engine -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
-    Prometheus -->|"HTTP/8000<br/>No encryption"| HTTPServer
+
+    %% Ingress to Service Mesh
+    Gateway -->|"HTTP/8000 or gRPC/8033<br/>mTLS STRICT<br/>Service Identity"| Sidecar
+
+    %% Sidecar to Container (localhost)
+    Sidecar -->|"HTTP/8000<br/>localhost (no encryption)"| VLLMServer
+    Sidecar -->|"gRPC/8033<br/>localhost (no encryption)"| TGISAdapter
+
+    %% Internal container flows
+    TGISAdapter -->|"HTTP/8000<br/>localhost bridge"| VLLMServer
+    VLLMServer -->|"CUDA calls"| GPURuntime
+
+    %% Egress
+    VLLMServer -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM / SA"| S3
+    VLLMServer -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
+    VLLMServer -->|"Filesystem<br/>No network"| PVC
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef pod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef container fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef proxy fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef container fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef monitoring fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef gpu fill:#76b900,stroke:#333,stroke-width:2px,color:#fff
 
     class Client external
     class Gateway ingress
-    class KubeRBACProxy proxy
-    class HTTPServer,GRPCServer,Engine container
-    class GPU gpu
-    class S3,HFHub externalservice
-    class Prometheus monitoring
+    class Sidecar servicemesh
+    class TGISAdapter,VLLMServer,GPURuntime container
+    class S3,HFHub,PVC externalservice

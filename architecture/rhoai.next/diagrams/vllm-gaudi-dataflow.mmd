@@ -1,39 +1,47 @@
 sequenceDiagram
     participant Client as External Client
-    participant KRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.3
-    participant vLLM as vLLM OpenAI API Server<br/>8000/TCP HTTP
-    participant Runner as HPUModelRunner
-    participant HPU as Intel Gaudi HPU<br/>(Gaudi2/Gaudi3)
-    participant S3 as Model Storage<br/>(S3/HuggingFace/PVC)
-    participant Ray as Ray Head<br/>6379/TCP
-    participant Peer as HPUWorker Peers<br/>(Rank 1..N)
-    participant HCCL as HCCL Peer HPUs<br/>RDMA/TCP
+    participant GW as KServe Gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant RBAC as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
+    participant API as vLLM API Server<br/>8000/TCP HTTP
+    participant Worker as HPUWorker<br/>(in-process)
+    participant Gaudi as Intel Gaudi Device<br/>SynapseAI HAL
+    participant S3 as S3/MinIO Storage<br/>443/TCP HTTPS
+    participant HF as Hugging Face Hub<br/>443/TCP HTTPS
 
-    Note over Client, HCCL: Flow 1: Model Inference Request
+    Note over Client, Gaudi: Flow 1: Model Inference Request
 
-    Client->>KRBAC: POST /v1/chat/completions<br/>Auth: Bearer Token
-    KRBAC->>KRBAC: Validate token against<br/>Kubernetes API Server
-    KRBAC->>vLLM: Forward (HTTP localhost)<br/>Pre-authenticated
-    vLLM->>Runner: Schedule inference batch<br/>(bucketed shapes)
-    Runner->>HPU: Execute compiled graph<br/>(attention + FFN)
-    HPU-->>Runner: Token logits
-    Runner-->>vLLM: Generated tokens
-    vLLM-->>KRBAC: JSON Response
-    KRBAC-->>Client: HTTPS Response<br/>TLS 1.3
+    Client->>GW: POST /v1/chat/completions<br/>Auth: Bearer Token (JWT)
+    GW->>RBAC: Forward (HTTPS/8443)<br/>TLS, ServiceAccount Token
+    RBAC->>API: Forward (HTTP/8000)<br/>localhost, no auth
+    API->>Worker: In-process call<br/>Schedule inference
+    Worker->>Gaudi: Execute model forward<br/>SynapseAI graph compilation
+    Gaudi-->>Worker: Inference result<br/>Token logits
+    Worker-->>API: Generated tokens
+    API-->>RBAC: JSON response
+    RBAC-->>GW: HTTPS response
+    GW-->>Client: Completion response
 
-    Note over Client, HCCL: Flow 2: Distributed Multi-HPU Inference
+    Note over Worker, Gaudi: Flow 2: Multi-Card Tensor Parallelism
 
-    Runner->>Ray: Register worker (Rank 0)<br/>TCP 6379
-    Ray->>Peer: Initialize workers (Rank 1..N)<br/>TCP dynamic
-    Runner->>HCCL: All-reduce gradients<br/>RDMA/TCP
-    Peer->>HCCL: All-gather activations<br/>RDMA/TCP
-    HCCL-->>Runner: Synchronized tensors
-    HCCL-->>Peer: Synchronized tensors
+    participant W0 as HPUWorker Rank 0
+    participant WN as HPUWorker Rank N
 
-    Note over Client, HCCL: Flow 3: Model Weight Loading (Startup)
+    W0->>WN: HCCL all-reduce<br/>Dynamic port, plaintext
+    WN->>W0: Collective result<br/>HCCL protocol
 
-    Runner->>S3: Download model weights<br/>HTTPS 443/TCP<br/>Auth: HF_TOKEN or AWS IAM
-    S3-->>Runner: Model artifacts<br/>(safetensors/bin)
-    Runner->>Runner: Apply quantization<br/>(FP8/GPTQ/AWQ/INC)
-    Runner->>HPU: Transfer weights to<br/>HPU device memory
-    Note right of HPU: Compile execution graphs<br/>for bucketed shapes
+    Note over Worker, S3: Flow 3: Model Loading (Startup)
+
+    Worker->>S3: GET model weights<br/>HTTPS/443, AWS IAM / Access Key
+    S3-->>Worker: Model artifacts
+    Worker->>HF: GET tokenizer/config<br/>HTTPS/443, Bearer Token (optional)
+    HF-->>Worker: Model config files
+
+    Note over Worker, Gaudi: Flow 4: KV Cache Disaggregation (NIXL)
+
+    participant Prefill as Prefill Instance
+    participant Decode as Decode Instance
+    participant SideCh as NIXL Side Channel<br/>HTTP, plaintext
+
+    Prefill->>SideCh: KV cache metadata<br/>Side channel port + dp_rank
+    SideCh->>Decode: Transfer coordination
+    Prefill->>Decode: KV cache data<br/>NIXL / RDMA, direct memory

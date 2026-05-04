@@ -1,7 +1,7 @@
 # RHOAI.NEXT unknown - Component Architectures
 
 Source: architecture/rhoai.next/component-map.json
-Date: 2026-05-01
+Date: 2026-05-04
 
 ## Components
 

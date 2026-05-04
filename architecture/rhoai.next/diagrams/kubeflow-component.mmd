@@ -1,64 +1,77 @@
 graph TB
-    subgraph "Kubeflow Notebook Controllers"
-        subgraph "notebook-controller (Upstream)"
-            KFController["KF Notebook Controller<br/>Go Operator (controller-runtime)<br/>:8080 metrics, :8081 health"]
-            KFCuller["Culling Reconciler<br/>Idle detection & auto-stop"]
-            KFController --- KFCuller
+    subgraph KubeflowControllers["Kubeflow Notebook Controllers (Dual-Controller Architecture)"]
+        direction TB
+
+        subgraph NotebookController["notebook-controller (Upstream Kubeflow)"]
+            NC_Main["Controller Manager<br/>Go Operator"]
+            NC_Culling["Culling Controller<br/>Idle Detection"]
+            NC_Main --- NC_Culling
         end
 
-        subgraph "odh-notebook-controller (RHOAI Extension)"
-            ODHController["ODH Notebook Controller<br/>Go Operator (controller-runtime)<br/>:8080 metrics, :8081 health, :8443 webhook"]
-            MutatingWH["Mutating Webhook<br/>/mutate-notebook-v1<br/>:8443/TCP HTTPS"]
-            ValidatingWH["Validating Webhook<br/>/validate-notebook-v1<br/>:8443/TCP HTTPS"]
-            ODHController --- MutatingWH
-            ODHController --- ValidatingWH
+        subgraph ODHController["odh-notebook-controller (RHOAI Extension)"]
+            ODH_Main["Controller Manager<br/>Go Operator"]
+            ODH_MutWebhook["Mutating Webhook<br/>8443/TCP"]
+            ODH_ValWebhook["Validating Webhook<br/>8443/TCP"]
+            ODH_Main --- ODH_MutWebhook
+            ODH_Main --- ODH_ValWebhook
         end
+
+        subgraph CommonLib["common (Shared Library)"]
+            Helpers["Reconciliation Helpers<br/>Deployment, Service,<br/>StatefulSet, VirtualService"]
+        end
+
+        NotebookController -.->|uses| CommonLib
+        ODHController -.->|uses| CommonLib
     end
 
-    User["User / ODH Dashboard"] -->|"kubectl create Notebook"| K8sAPI["Kubernetes API<br/>443/TCP HTTPS"]
-    K8sAPI -->|"admission webhook"| MutatingWH
-    K8sAPI -->|"admission webhook"| ValidatingWH
+    %% CRD
+    User["Data Scientist / User"] -->|creates| NotebookCR["Notebook CR<br/>kubeflow.org/v1"]
 
-    %% CRDs
-    NotebookCR["Notebook CR<br/>kubeflow.org/v1"]
-    K8sAPI -->|"stores"| NotebookCR
-    NotebookCR -->|"watched by"| KFController
-    NotebookCR -->|"watched by"| ODHController
+    %% Upstream controller watches
+    NotebookCR -->|watched by| NC_Main
+    NC_Main -->|creates| StatefulSet["StatefulSet<br/>Notebook Pod"]
+    NC_Main -->|creates| Service["ClusterIP Service<br/>80/TCP to 8888"]
+    NC_Main -->|"creates (optional)"| VirtualService["Istio VirtualService<br/>when USE_ISTIO=true"]
 
-    %% KF Controller creates
-    KFController -->|"creates"| StatefulSet["StatefulSet<br/>(notebook pod)"]
-    KFController -->|"creates"| SvcNB["Service<br/>{name}:80→8888"]
-    KFController -.->|"creates (optional)"| VirtualService["VirtualService<br/>(Istio overlay only)"]
+    %% Culling flow
+    NC_Culling -->|polls /api/kernels<br/>/api/terminals| StatefulSet
+    NC_Culling -->|sets stop annotation| NotebookCR
 
-    %% ODH Controller creates
-    ODHController -->|"creates"| HTTPRoute["HTTPRoute<br/>nb-{ns}-{name}<br/>Path: /notebook/{ns}/{name}"]
-    ODHController -->|"creates"| RefGrant["ReferenceGrant<br/>(cross-namespace auth)"]
-    ODHController -->|"creates"| NetPol["NetworkPolicy<br/>(ingress restriction)"]
-    ODHController -->|"creates"| KRBPSvc["kube-rbac-proxy Service<br/>{name}-kube-rbac-proxy:8443"]
-    ODHController -->|"creates"| CRBSA["ClusterRoleBinding<br/>system:auth-delegator"]
+    %% ODH controller watches
+    NotebookCR -->|watched by| ODH_Main
 
-    %% Culler
-    KFCuller -->|"polls :8888"| StatefulSet
-    KFCuller -->|"scales to 0"| StatefulSet
+    %% Webhook intercepts
+    NotebookCR -.->|mutated by| ODH_MutWebhook
+    NotebookCR -.->|validated by| ODH_ValWebhook
 
-    %% Reconciliation lock
-    MutatingWH -.->|"sets stop-notebook lock"| NotebookCR
-    ODHController -.->|"removes lock after init"| NotebookCR
+    %% ODH creates resources
+    ODH_Main -->|creates| HTTPRoute["HTTPRoute<br/>Gateway API"]
+    ODH_Main -->|creates| RefGrant["ReferenceGrant<br/>Cross-Namespace"]
+    ODH_Main -->|creates| NetPol["NetworkPolicy<br/>Per Notebook"]
+    ODH_Main -->|injects| KubeRBACProxy["kube-rbac-proxy<br/>Sidecar 8443/TCP"]
 
-    %% Gateway
-    HTTPRoute -->|"parentRef"| Gateway["data-science-gateway<br/>(openshift-ingress)"]
+    %% Integrations
+    ODH_MutWebhook -->|injects| DSPASecret["DSPA Pipeline Secret"]
+    ODH_MutWebhook -->|injects| MLflowEnv["MLflow Env Vars"]
+    ODH_MutWebhook -->|mounts| FeastConfig["Feast ConfigMap"]
 
-    %% Styles
-    style KFController fill:#4a90e2,stroke:#333,color:#fff
-    style KFCuller fill:#4a90e2,stroke:#333,color:#fff
-    style ODHController fill:#7ed321,stroke:#333,color:#fff
-    style MutatingWH fill:#7ed321,stroke:#333,color:#fff
-    style ValidatingWH fill:#7ed321,stroke:#333,color:#fff
+    %% External access
+    UserBrowser["User Browser"] -->|HTTPS/443| Gateway["data-science-gateway<br/>Gateway API"]
+    Gateway -->|8443/TCP| KubeRBACProxy
+    KubeRBACProxy -->|8888/TCP| StatefulSet
+
+    %% Styling
+    style NC_Main fill:#4a90e2,stroke:#333,color:#fff
+    style NC_Culling fill:#4a90e2,stroke:#333,color:#fff
+    style ODH_Main fill:#7ed321,stroke:#333,color:#fff
+    style ODH_MutWebhook fill:#7ed321,stroke:#333,color:#fff
+    style ODH_ValWebhook fill:#7ed321,stroke:#333,color:#fff
+    style Helpers fill:#9b9b9b,stroke:#333,color:#fff
     style NotebookCR fill:#f5a623,stroke:#333,color:#fff
-    style StatefulSet fill:#9b59b6,stroke:#333,color:#fff
-    style HTTPRoute fill:#e74c3c,stroke:#333,color:#fff
+    style StatefulSet fill:#bd10e0,stroke:#333,color:#fff
+    style HTTPRoute fill:#50e3c2,stroke:#333
+    style RefGrant fill:#50e3c2,stroke:#333
+    style NetPol fill:#50e3c2,stroke:#333
+    style KubeRBACProxy fill:#d0021b,stroke:#333,color:#fff
     style Gateway fill:#e8e8e8,stroke:#333
-    style NetPol fill:#e74c3c,stroke:#333,color:#fff
-    style KRBPSvc fill:#e74c3c,stroke:#333,color:#fff
-    style K8sAPI fill:#e8e8e8,stroke:#333
-    style VirtualService fill:#cccccc,stroke:#999,stroke-dasharray: 5 5
+    style VirtualService fill:#e8e8e8,stroke:#333

@@ -1,66 +1,65 @@
 sequenceDiagram
-    participant Client as External Client
-    participant Gateway as KServe Gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant Istio as Istio Sidecar<br/>15006/TCP mTLS
-    participant HTTP as AutoGluon HTTP Server<br/>8080/TCP HTTP
-    participant GRPC as AutoGluon gRPC Server<br/>8081/TCP gRPC
-    participant Factory as Predictor Factory
-    participant Tabular as TabularPredictor<br/>(in-process)
-    participant TimeSeries as TimeSeriesPredictor<br/>(in-process)
-    participant Storage as kserve-storage<br/>(in-process)
-    participant S3 as S3/GCS Storage<br/>443/TCP HTTPS
+    participant Controller as KServe Controller
+    participant Storage as Model Storage<br/>443/TCP HTTPS TLS 1.2+
+    participant Server as AutoGluon Server<br/>8080/TCP HTTP, 8081/TCP gRPC
+    participant Factory as PredictorFactory<br/>(in-process)
+    participant Predictor as AutoGluon Predictor<br/>(in-process)
+    participant Client as Client / KServe Router
+    participant Prom as Prometheus
 
-    Note over Client,S3: Flow 1: Model Loading from Storage (startup)
-    rect rgb(240, 248, 255)
-        Storage->>S3: Download model artifacts<br/>HTTPS/443, TLS 1.2+<br/>AWS IAM / GCP SA credentials
-        S3-->>Storage: Model files
-        Storage->>Factory: Write to /mnt/models
-        Factory->>Factory: Auto-detect predictor type<br/>(try TimeSeriesPredictor first,<br/>fallback to TabularPredictor)
-        alt TimeSeriesPredictor detected
-            Factory->>TimeSeries: Load model
-        else TabularPredictor detected
-            Factory->>Tabular: Load model
-        end
-    end
+    Note over Controller,Server: Flow 1: Model Loading at Startup
 
-    Note over Client,S3: Flow 2: Tabular Inference (V2 Open Inference Protocol)
-    rect rgb(240, 255, 240)
-        Client->>Gateway: POST /v2/models/{name}/infer<br/>Auth: Bearer Token or mTLS
-        Gateway->>Istio: Forward request<br/>mTLS STRICT
-        Istio->>HTTP: HTTP/8080<br/>plaintext (within mesh)
-        HTTP->>Factory: Route to model
-        Factory->>Tabular: predict(payload)<br/>tensor inputs → DataFrame
-        Tabular-->>Factory: Prediction result
-        Factory-->>HTTP: InferResponse (tensors)
-        HTTP-->>Istio: JSON Response
-        Istio-->>Gateway: mTLS
-        Gateway-->>Client: HTTPS Response
-    end
+    Controller->>Server: Create Pod<br/>(InferenceService CR)
+    activate Server
+    Server->>Storage: Download model artifacts<br/>kserve_storage.Storage.download()<br/>HTTPS/443 TLS 1.2+<br/>Auth: AWS IAM / storage-config
+    Storage-->>Server: Model files (to local filesystem)
+    Server->>Factory: Load model from directory
+    Factory->>Factory: Auto-detect predictor type<br/>(try TimeSeriesPredictor first,<br/>fallback to TabularPredictor)
+    Factory-->>Server: AutoGluonDetectedModel ready
 
-    Note over Client,S3: Flow 3: Time Series Forecasting (V1 REST)
-    rect rgb(255, 248, 240)
-        Client->>Gateway: POST /v1/models/{name}:predict<br/>Auth: Bearer Token or mTLS
-        Gateway->>Istio: Forward request<br/>mTLS STRICT
-        Istio->>HTTP: HTTP/8080<br/>plaintext (within mesh)
-        HTTP->>Factory: Route to model
-        Factory->>TimeSeries: predict(payload)<br/>JSON instances → TimeSeriesDataFrame
-        TimeSeries-->>Factory: Forecast result
-        Factory-->>HTTP: JSON predictions
-        HTTP-->>Istio: JSON Response
-        Istio-->>Gateway: mTLS
-        Gateway-->>Client: HTTPS Response
-    end
+    Note over Client,Predictor: Flow 2: v1 Tabular Inference
 
-    Note over Client,S3: Flow 4: gRPC Inference (V2 Protocol)
-    rect rgb(248, 240, 255)
-        Client->>Gateway: gRPC ModelInfer<br/>Auth: Bearer Token or mTLS
-        Gateway->>Istio: Forward request<br/>mTLS STRICT
-        Istio->>GRPC: gRPC/8081<br/>plaintext (within mesh)
-        GRPC->>Factory: Route to model
-        Factory->>Tabular: predict(payload)
-        Tabular-->>Factory: Prediction result
-        Factory-->>GRPC: InferResponse (protobuf)
-        GRPC-->>Istio: gRPC Response
-        Istio-->>Gateway: mTLS
-        Gateway-->>Client: gRPC Response
-    end
+    Client->>Server: POST /v1/models/{name}:predict<br/>HTTP/8080 plaintext<br/>JSON payload: {"instances": [...]}
+    activate Server
+    Server->>Predictor: preprocess → DataFrame
+    Predictor->>Predictor: TabularPredictor.predict()<br/>or predict_proba()
+    Predictor-->>Server: predictions array
+    Server-->>Client: JSON response<br/>{"predictions": [...]}
+    deactivate Server
+
+    Note over Client,Predictor: Flow 3: v2 Tensor Inference
+
+    Client->>Server: POST /v2/models/{name}/infer<br/>HTTP/8080 plaintext<br/>InferRequest (tensor-per-feature)
+    activate Server
+    Server->>Predictor: preprocess → map tensors to DataFrame
+    Predictor->>Predictor: TabularPredictor.predict()
+    Predictor-->>Server: InferResponse (output tensors)
+    Server-->>Client: InferResponse JSON
+    deactivate Server
+
+    Note over Client,Predictor: Flow 4: v1 Time Series Inference
+
+    Client->>Server: POST /v1/models/{name}:predict<br/>HTTP/8080 plaintext<br/>JSON: {"instances": [history],<br/>"known_covariates": [...]}
+    activate Server
+    Server->>Predictor: preprocess → TimeSeriesDataFrame
+    Predictor->>Predictor: TimeSeriesPredictor.predict()
+    Predictor-->>Server: forecast DataFrame
+    Server-->>Client: JSON response<br/>{"predictions": {...}}
+    deactivate Server
+
+    Note over Client,Predictor: Flow 5: gRPC Inference
+
+    Client->>Server: ModelInfer RPC<br/>gRPC/8081 plaintext<br/>InferRequest (protobuf)
+    activate Server
+    Server->>Predictor: preprocess → DataFrame
+    Predictor->>Predictor: predict()
+    Predictor-->>Server: InferResponse (protobuf)
+    Server-->>Client: InferResponse
+    deactivate Server
+
+    Note over Prom,Server: Flow 6: Metrics Scrape
+
+    Prom->>Server: GET /metrics<br/>HTTP/8080 plaintext
+    Server-->>Prom: Prometheus metrics<br/>request_preprocess_seconds<br/>request_predict_seconds<br/>request_postprocess_seconds<br/>request_explain_seconds
+
+    deactivate Server

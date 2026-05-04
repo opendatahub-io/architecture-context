@@ -1,67 +1,66 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and deploys ML models for inference"
-        mlEngineer = person "ML Engineer" "Manages model serving infrastructure and runtimes"
+        dataScientist = person "Data Scientist" "Creates and deploys AutoGluon ML models for tabular and time series prediction"
+        mlEngineer = person "ML Engineer" "Manages KServe InferenceService configurations and serving runtimes"
 
-        autogluonServer = softwareSystem "KServe AutoGluon Server" "Serves AutoGluon TabularPredictor and TimeSeriesPredictor models via REST (v1/v2) and gRPC inference APIs" {
-            httpServer = container "HTTP Server" "FastAPI/Uvicorn HTTP server exposing v1 REST and v2 Open Inference Protocol endpoints" "Python (FastAPI)" "Service"
-            grpcServer = container "gRPC Server" "gRPC inference endpoint implementing v2 Open Inference Protocol" "Python (grpcio)" "Service"
-            predictorFactory = container "Predictor Factory" "Auto-detects model type (Tabular vs TimeSeries) and delegates inference" "Python" "Component"
-            tabularPredictor = container "Tabular Predictor" "AutoGluon TabularPredictor for classification, regression, and quantile regression" "Python (autogluon.tabular 1.5.0+rhaiv.2)" "Component"
-            timeSeriesPredictor = container "TimeSeries Predictor" "AutoGluon TimeSeriesPredictor for time series forecasting" "Python (autogluon.timeseries 1.5.0+rhaiv.2)" "Component"
-            modelRepository = container "Model Repository" "Manages multiple models loaded from /mnt/models directory" "Python" "Component"
-            storageLib = container "kserve-storage" "Downloads model artifacts from S3, GCS, PVC, or generic URI" "Python (boto3, google-cloud-storage)" "Library"
+        autogluonServer = softwareSystem "KServe AutoGluon Server" "Serves AutoGluon TabularPredictor and TimeSeriesPredictor models via REST and gRPC inference APIs" {
+            restServer = container "REST Server" "FastAPI/Uvicorn HTTP server exposing v1 and v2 (Open Inference Protocol) endpoints" "Python/FastAPI" "8080/TCP"
+            grpcServer = container "gRPC Server" "gRPC inference server for v2 Open Inference Protocol" "Python/grpcio" "8081/TCP"
+            autoDetect = container "Predictor Auto-Detection" "Auto-detects model type (TabularPredictor vs TimeSeriesPredictor) from saved model directory" "Python"
+            tabularModel = container "Tabular Model" "Wraps AutoGluon TabularPredictor for classification, regression, and quantile prediction" "Python/AutoGluon"
+            timeSeriesModel = container "Time Series Model" "Wraps AutoGluon TimeSeriesPredictor for time series forecasting" "Python/AutoGluon"
+            modelRepo = container "Model Repository" "Manages model loading/unloading and storage download" "Python/KServe SDK"
         }
 
-        kserveController = softwareSystem "KServe Controller" "Manages InferenceService lifecycle and deploys model serving pods" "Internal RHOAI"
-        storageInitializer = softwareSystem "Storage Initializer" "Init container that downloads model artifacts to /mnt/models before server starts" "Internal RHOAI"
-        istio = softwareSystem "Istio Service Mesh" "Provides mTLS enforcement, traffic routing, and service identity" "External"
-        knative = softwareSystem "Knative Serving" "Provides serverless autoscaling and revision management" "External"
-        prometheus = softwareSystem "Prometheus" "Collects metrics from model serving pods" "Internal RHOAI"
-        s3Storage = softwareSystem "S3-Compatible Storage" "Stores ML model artifacts" "External"
-        gcsStorage = softwareSystem "GCS Storage" "Stores ML model artifacts" "External"
-        huggingfaceHub = softwareSystem "HuggingFace Hub" "Hosts pre-trained models and tokenizers" "External"
+        kserveController = softwareSystem "KServe Controller" "Manages InferenceService CRDs and creates serving pods" "Internal RHOAI"
+        kserveRouter = softwareSystem "KServe Router" "Routes inference traffic to model server pods" "Internal RHOAI"
+        kserveIngress = softwareSystem "KServe Ingress Layer" "TLS termination, auth (Istio Gateway / kube-rbac-proxy / OpenShift Route)" "Internal RHOAI"
 
-        # Relationships - External users
-        dataScientist -> autogluonServer "Sends inference requests via" "HTTPS/443"
-        mlEngineer -> kserveController "Creates InferenceService CR via" "kubectl"
+        s3Storage = softwareSystem "S3-compatible Storage" "Model artifact storage (AWS S3, MinIO, etc.)" "External"
+        huggingfaceHub = softwareSystem "HuggingFace Hub" "Public/private model repository" "External"
+        gcsAzure = softwareSystem "GCS / Azure Blob" "Alternative cloud model storage" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal Platform"
 
-        # Relationships - Internal
-        httpServer -> predictorFactory "Routes inference requests to"
-        grpcServer -> predictorFactory "Routes gRPC inference to"
-        predictorFactory -> tabularPredictor "Delegates tabular inference to"
-        predictorFactory -> timeSeriesPredictor "Delegates time series inference to"
-        modelRepository -> predictorFactory "Provides loaded models to"
-        storageLib -> s3Storage "Downloads model artifacts from" "HTTPS/443"
-        storageLib -> gcsStorage "Downloads model artifacts from" "HTTPS/443"
+        # Relationships
+        dataScientist -> kserveController "Creates InferenceService CR via kubectl/dashboard"
+        mlEngineer -> kserveController "Configures serving runtimes and InferenceService"
+        kserveController -> autogluonServer "Creates pod with autogluon-server image"
 
-        # Relationships - Platform
-        kserveController -> autogluonServer "Deploys and manages pods for" "CRD (InferenceService)"
-        storageInitializer -> autogluonServer "Downloads model artifacts to /mnt/models" "Shared Volume"
-        istio -> autogluonServer "Enforces mTLS and routes traffic" "mTLS/15006"
-        knative -> autogluonServer "Provides autoscaling for" "Knative Service"
-        prometheus -> autogluonServer "Scrapes metrics from" "HTTP/8080"
+        dataScientist -> kserveIngress "Sends inference requests"
+        kserveIngress -> kserveRouter "Routes after TLS termination and auth" "HTTP/gRPC"
+        kserveRouter -> autogluonServer "Forwards inference requests" "HTTP/8080, gRPC/8081"
 
-        # Relationships - External services
-        autogluonServer -> s3Storage "Downloads model artifacts" "HTTPS/443"
-        autogluonServer -> gcsStorage "Downloads model artifacts" "HTTPS/443"
-        autogluonServer -> huggingfaceHub "Downloads models and tokenizers" "HTTPS/443"
+        autogluonServer -> s3Storage "Downloads model artifacts at startup" "HTTPS/443 AWS IAM"
+        autogluonServer -> huggingfaceHub "Downloads model artifacts" "HTTPS/443 Bearer Token"
+        autogluonServer -> gcsAzure "Downloads model artifacts (if configured)" "HTTPS/443 SA/SAS"
+
+        prometheus -> autogluonServer "Scrapes /metrics endpoint" "HTTP/8080"
+
+        # Internal container relationships
+        restServer -> autoDetect "Delegates inference"
+        grpcServer -> autoDetect "Delegates inference"
+        autoDetect -> tabularModel "Routes tabular requests"
+        autoDetect -> timeSeriesModel "Routes time series requests"
+        modelRepo -> s3Storage "Downloads via kserve-storage"
+        modelRepo -> huggingfaceHub "Downloads via kserve-storage"
     }
 
     views {
         systemContext autogluonServer "SystemContext" {
             include *
             autoLayout
+            description "System context showing KServe AutoGluon Server in the RHOAI ecosystem"
         }
 
         container autogluonServer "Containers" {
             include *
             autoLayout
+            description "Container view showing internal structure of the AutoGluon Server"
         }
 
         styles {
             element "Software System" {
-                background #438DD5
+                background #438dd5
                 color #ffffff
             }
             element "External" {
@@ -69,27 +68,21 @@ workspace {
                 color #ffffff
             }
             element "Internal RHOAI" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
             element "Person" {
-                shape person
-                background #08427B
+                background #08427b
                 color #ffffff
+                shape Person
             }
             element "Container" {
-                background #438DD5
+                background #438dd5
                 color #ffffff
-            }
-            element "Component" {
-                background #85BBF0
-                color #000000
-            }
-            element "Service" {
-                shape hexagon
-            }
-            element "Library" {
-                shape component
             }
         }
     }

@@ -1,34 +1,49 @@
 workspace {
     model {
-        user = person "Data Scientist / Application" "Sends text generation requests via gRPC API"
+        dataScientist = person "Data Scientist" "Deploys and queries ML models for text generation"
+        application = person "Application" "Upstream application consuming inference API"
 
-        tgis = softwareSystem "Text Generation Inference Server (TGIS)" "High-performance LLM serving with batching, quantization, and multi-GPU tensor parallelism" {
-            launcher = container "text-generation-launcher" "Orchestrates lifecycle of shard processes and router; handles tokenizer prep and config resolution" "Rust CLI Binary"
-            router = container "text-generation-router" "Client-facing gRPC/HTTP server; request batching, queuing, validation, metrics, health checks" "Rust Service"
-            shard = container "text-generation-server" "Per-GPU model inference shard; loads weights, runs forward passes, manages KV cache, quantization, flash/paged attention" "Python gRPC Service"
+        tgis = softwareSystem "Text Generation Inference Server (TGIS)" "High-performance text generation inference server with dynamic batching, tensor parallelism, and multiple inference backends" {
+            launcher = container "text-generation-launcher" "Process supervisor that spawns shards and router, handles signals and health polling" "Rust 1.77.2"
+            router = container "text-generation-router" "gRPC/HTTP server with continuous batching, request validation, tokenization, and TLS termination" "Rust 1.77.2" {
+                grpcServer = component "gRPC Server" "fmaas.GenerationService (Generate, GenerateStream, Tokenize, ModelInfo)" "Tonic gRPC"
+                httpServer = component "HTTP Server" "/health, /metrics endpoints" "Hyper HTTP"
+                batcher = component "Continuous Batcher" "Dynamic batch formation with queue jumping, prefill weight limits" "Rust"
+                validator = component "Request Validator" "Input validation and tokenization" "Rust"
+                tlsTerminator = component "TLS Terminator" "TLS/mTLS termination via rustls + OpenSSL" "rustls 0.22.4"
+            }
+            client = container "text-generation-client" "gRPC client for router-to-shard communication over Unix domain sockets" "Rust 1.77.2"
+            shards = container "text-generation-server" "Model inference backend: loads weights, manages KV cache, executes forward passes on GPUs" "Python 3.11" {
+                inferenceEngine = component "Inference Engine" "Pluggable backends: hf_transformers, tgis_native, ibm_fms, hf_accelerate, hf_optimum_ort" "Python"
+                kvCache = component "KV Cache Manager" "Paged attention / standard KV cache for memory efficiency" "Python/CUDA"
+                modelLoader = component "Model Loader" "Loads model weights from PVC or HuggingFace Hub" "Python"
+            }
         }
 
-        kserve = softwareSystem "KServe" "Manages InferenceService CRs and ServingRuntime lifecycle" "Internal RHOAI"
-        gpuOperator = softwareSystem "NVIDIA GPU Operator" "Provides nvidia.com/gpu resources and CUDA drivers on worker nodes" "Infrastructure"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal"
-        k8s = softwareSystem "Kubernetes" "Container orchestration, probes, scheduling" "Infrastructure"
-        hfHub = softwareSystem "HuggingFace Hub" "Model weight and tokenizer file hosting" "External"
-        modelStorage = softwareSystem "Shared Model PVC" "Pre-cached model weight storage" "Internal"
+        kserve = softwareSystem "KServe" "Serverless ML inference platform managing TGIS as an InferenceService runtime" "Internal RHOAI"
+        kubelet = softwareSystem "Kubernetes Kubelet" "Node agent performing health probes" "Kubernetes"
+        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and alerting" "Internal"
+        otel = softwareSystem "OpenTelemetry Collector" "Distributed tracing collection" "Internal"
+        hfHub = softwareSystem "HuggingFace Hub" "Model weight and tokenizer repository" "External"
+        pvc = softwareSystem "Persistent Volume (PVC)" "Persistent storage for model weights" "Kubernetes"
+        gpu = softwareSystem "NVIDIA GPU (CUDA 12.1)" "GPU compute for model inference" "Hardware"
 
-        # External relationships
-        user -> tgis "Sends Generate/GenerateStream/Tokenize/ModelInfo requests" "gRPC/8033 (Optional TLS)"
-        kserve -> tgis "Manages as ServingRuntime container" "Container Image / CR"
-        prometheus -> tgis "Scrapes metrics" "HTTP/3000"
-        k8s -> tgis "Liveness/readiness probes" "HTTP/3000 GET /health"
-        tgis -> hfHub "Downloads model weights (if not pre-cached)" "HTTPS/443"
-        tgis -> modelStorage "Loads pre-cached model weights" "Filesystem mount"
-        tgis -> gpuOperator "Uses GPU compute resources" "CUDA runtime"
+        # Relationships
+        dataScientist -> kserve "Deploys InferenceService" "kubectl / Dashboard"
+        application -> tgis "Sends inference requests" "gRPC/8033 TLS/mTLS"
+        kserve -> tgis "Manages as serving runtime container"
+        kubelet -> tgis "Health probes" "HTTP/3000"
+        prometheus -> tgis "Scrapes metrics" "HTTP/3000 /metrics"
+        tgis -> otel "Exports traces" "gRPC (configurable)"
+        tgis -> hfHub "Downloads model weights" "HTTPS/443"
+        tgis -> pvc "Reads model weights" "Volume mount"
+        tgis -> gpu "Executes inference" "CUDA"
 
-        # Internal container relationships
-        launcher -> shard "Spawns N processes (1 per GPU)" "Process fork"
-        launcher -> router "Starts after all shards ready" "Process spawn"
-        router -> shard "Batch inference requests" "gRPC over UDS"
-        shard -> shard "NCCL/GLOO tensor parallel sync" "TCP/29500 (intra-pod)"
+        # Internal relationships
+        launcher -> router "Spawns and monitors"
+        launcher -> shards "Spawns and monitors"
+        router -> client "Delegates inference calls"
+        client -> shards "gRPC over UDS" "plaintext"
     }
 
     views {
@@ -42,11 +57,17 @@ workspace {
             autoLayout
         }
 
+        component router "RouterComponents" {
+            include *
+            autoLayout
+        }
+
+        component shards "ShardComponents" {
+            include *
+            autoLayout
+        }
+
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -56,20 +77,20 @@ workspace {
                 color #ffffff
             }
             element "Internal" {
-                background #85BBF0
+                background #4a90e2
                 color #ffffff
             }
-            element "Infrastructure" {
-                background #F5A623
+            element "Kubernetes" {
+                background #326ce5
+                color #ffffff
+            }
+            element "Hardware" {
+                background #76b900
                 color #ffffff
             }
             element "Person" {
-                background #08427B
-                color #ffffff
-                shape person
-            }
-            element "Container" {
-                background #438DD5
+                shape Person
+                background #08427b
                 color #ffffff
             }
         }

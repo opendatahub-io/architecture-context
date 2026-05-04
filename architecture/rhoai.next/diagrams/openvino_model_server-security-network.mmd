@@ -3,68 +3,86 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph PlatformIngress["PLATFORM INGRESS (KServe-managed)"]
-        Gateway["KServe Gateway<br/>443/TCP<br/>TLS Termination<br/>kube-rbac-proxy (3.x)<br/>oauth-proxy (2.x)"]
+    subgraph ProxyLayer["PLATFORM PROXY LAYER (Auth Boundary)"]
+        KubeRBAC["kube-rbac-proxy Sidecar<br/>8443/TCP<br/>TLS 1.2+ termination<br/>TokenReview + SubjectAccessReview"]
     end
 
-    subgraph InferencePod["INFERENCE POD (OVMS Container)"]
+    subgraph OVMSPod["OVMS POD (No Internal TLS)"]
         direction TB
 
-        subgraph RESTLayer["REST API Layer"]
-            DrogonHTTP["Drogon HTTP Server<br/>REST port/TCP (default 8080)<br/>HTTP (configurable TLS)<br/>Bearer Token (optional)"]
+        subgraph RESTServer["REST Server (Drogon)"]
+            REST["HTTP/1.1 Plaintext<br/>configurable/TCP<br/>Auth: API key (v3 only, optional)"]
+            TFSv1Route["/v1/models/* — No auth"]
+            KServev2Route["/v2/* — No auth"]
+            OpenAIv3Route["/v3/* — API key optional"]
+            MetricsRoute["/metrics — No auth"]
         end
 
-        subgraph GRPCLayer["gRPC API Layer"]
-            GRPCServer["gRPC Server<br/>gRPC port/TCP (default 8085)<br/>gRPC/HTTP2<br/>No built-in auth"]
+        subgraph GRPCServer["gRPC Server"]
+            GRPC["gRPC HTTP/2 Plaintext<br/>configurable/TCP<br/>InsecureServerCredentials<br/>Auth: None"]
         end
 
-        subgraph InternalModules["Internal Processing"]
-            APIHandler["HttpRestApiHandler<br/>(API key validation)"]
-            ModelMgr["Model Manager"]
-            MediaPipe["MediaPipe Executor"]
-            OpenVINO["OpenVINO Runtime"]
+        subgraph InferenceEngine["Inference Engine"]
+            OVRuntime["OpenVINO Runtime<br/>CPU / GPU / NPU"]
         end
+
+        NginxMTLS["nginx-mtls-auth (Optional)<br/>443/TCP mTLS<br/>Client cert required"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        S3["Amazon S3<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM Credentials"]
-        GCS["Google Cloud Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ADC"]
-        AzureBlob["Azure Blob Storage<br/>*.blob.core.windows.net<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Connection String/SAS"]
-        AzureFile["Azure File Shares<br/>*.file.core.windows.net<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Connection String/SAS"]
-        HuggingFace["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>HF_TOKEN (optional)"]
+    subgraph IstioMesh["ISTIO SERVICE MESH (Optional)"]
+        Envoy["Envoy Sidecar<br/>mTLS pod-to-pod"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES (Model Storage)"]
+        S3["Amazon S3<br/>s3.amazonaws.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS IAM"]
+        GCS["Google Cloud Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: GCP Service Account"]
+        Azure["Azure Blob Storage<br/>*.blob.core.windows.net<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Connection String"]
+        HuggingFace["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: HF_TOKEN Bearer"]
     end
 
     subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>HTTP scrape"]
+        Prometheus["Prometheus<br/>Scrapes /metrics<br/>HTTP plaintext"]
     end
 
     %% Flows
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Gateway
-    Gateway -->|"HTTP/REST port<br/>No encryption (in-mesh)<br/>Auth passthrough"| DrogonHTTP
-    Gateway -->|"gRPC/gRPC port<br/>HTTP2<br/>Auth passthrough"| GRPCServer
-    DrogonHTTP --> APIHandler
-    APIHandler --> ModelMgr
-    APIHandler --> MediaPipe
-    GRPCServer --> ModelMgr
-    MediaPipe --> OpenVINO
-    ModelMgr --> OpenVINO
-    Prometheus -->|"HTTP/REST port<br/>/metrics<br/>Unauthenticated"| DrogonHTTP
+    Client -->|"HTTPS/8443<br/>TLS 1.2+<br/>K8s Bearer Token"| KubeRBAC
+    KubeRBAC -->|"HTTP (localhost)<br/>Plaintext<br/>No auth (trusted)"| REST
+    Client -.->|"gRPC HTTP/2<br/>Plaintext<br/>No auth"| GRPC
 
-    ModelMgr -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    ModelMgr -->|"HTTPS/443<br/>TLS 1.2+<br/>ADC"| GCS
-    ModelMgr -->|"HTTPS/443<br/>TLS 1.2+<br/>Conn String"| AzureBlob
-    ModelMgr -->|"HTTPS/443<br/>TLS 1.2+<br/>Conn String"| AzureFile
-    ModelMgr -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HuggingFace
+    REST --> TFSv1Route
+    REST --> KServev2Route
+    REST --> OpenAIv3Route
+    REST --> MetricsRoute
+
+    TFSv1Route --> OVRuntime
+    KServev2Route --> OVRuntime
+    OpenAIv3Route --> OVRuntime
+    GRPC --> OVRuntime
+
+    OVRuntime -->|"HTTPS/443<br/>TLS 1.2+<br/>IAM credentials"| S3
+    OVRuntime -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP SA JSON"| GCS
+    OVRuntime -->|"HTTPS/443<br/>TLS 1.2+<br/>Connection string"| Azure
+    OVRuntime -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN Bearer"| HuggingFace
+
+    Prometheus -->|"HTTP<br/>Plaintext<br/>Scrape /metrics"| MetricsRoute
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef pod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef proxy fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef ovmspod fill:#dbeafe,stroke:#3b82f6,stroke-width:2px
+    classDef restsvr fill:#e0f2fe,stroke:#0284c7
+    classDef grpcsvr fill:#e0f2fe,stroke:#0284c7
+    classDef engine fill:#d1fae5,stroke:#10b981
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef monitoring fill:#f3e8ff,stroke:#9333ea
+    classDef istio fill:#fecaca,stroke:#dc2626,stroke-dasharray:5 5
 
     class Client external
-    class Gateway ingress
-    class DrogonHTTP,GRPCServer,APIHandler,ModelMgr,MediaPipe,OpenVINO pod
-    class S3,GCS,AzureBlob,AzureFile,HuggingFace externalservice
+    class KubeRBAC proxy
+    class REST,TFSv1Route,KServev2Route,OpenAIv3Route,MetricsRoute restsvr
+    class GRPC grpcsvr
+    class OVRuntime engine
+    class S3,GCS,Azure,HuggingFace externalservice
     class Prometheus monitoring
+    class Envoy istio
+    class NginxMTLS proxy

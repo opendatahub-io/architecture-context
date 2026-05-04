@@ -1,71 +1,62 @@
 sequenceDiagram
-    autonumber
-
-    participant vLLM as vLLM Pod<br/>5557/TCP ZMQ PUB
-    participant ZMQ as ZMQ Subscriber<br/>(kvevents)
-    participant Pool as KV Events Pool<br/>(sharded workers)
+    participant VLLMPod as vLLM/SGLang Pod<br/>5557/TCP ZMQ PUB
+    participant ZMQSub as ZMQ Subscriber<br/>5557/TCP ZMQ SUB
+    participant Pool as kvevents.Pool<br/>Sharded Workers
     participant Adapter as Engine Adapter<br/>(vLLM/SGLang)
-    participant Index as KV Block Index<br/>(LRU/Ristretto/Redis)
-    participant Scheduler as llm-d-inference-scheduler<br/>(embeds library)
-    participant Indexer as KV-Cache Indexer<br/>(pkg/kvcache)
-    participant TokenPool as Tokenization Pool
-    participant UDS as UDS Tokenizer<br/>(gRPC over UDS)
-    participant Processor as Token Processor<br/>(FNV-64a hash)
-    participant Scorer as KV Block Scorer
+    participant Index as kvblock.Index<br/>(InMemory/Redis)
+    participant EPP as llm-d EPP<br/>(Host Scheduler)
+    participant Indexer as KV-Cache Indexer<br/>ScoreTokens API
+    participant TokenProc as TokenProcessor<br/>FNV-64a
+    participant UdsClient as UDS Tokenizer Client<br/>gRPC over UDS
+    participant UdsServer as UDS Tokenizer Server<br/>Python gRPC Sidecar
+    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
+    participant FSBackend as llmd_fs_backend<br/>Python/C++/CUDA
+    participant Storage as Shared Storage<br/>(NFS/PVC)
 
     rect rgb(230, 245, 255)
-        Note over vLLM,Index: Flow 1: KV-Event Ingestion (Write Path)
-        vLLM->>ZMQ: ZMQ PUB 5557/TCP<br/>[topic, seqno, msgpack payload]
-        ZMQ->>Pool: Route to worker<br/>(FNV-1a hash of pod ID)
-        Pool->>Adapter: Parse event<br/>(msgpack decode)
-        Adapter-->>Pool: BlockStored / BlockRemoved<br/>/ AllBlocksCleared
-        Pool->>Index: Add/Evict block<br/>(hash → pod location)
+        Note over VLLMPod,Index: Flow 1: KV-Event Ingestion (Write Path)
+        VLLMPod->>ZMQSub: ZMQ PUB (msgpack)<br/>5557/TCP, No encryption
+        ZMQSub->>Pool: Go channel (in-process)
+        Note right of Pool: FNV-1a hash of pod ID<br/>→ deterministic worker
+        Pool->>Adapter: Dispatch to worker<br/>msgpack decode
+        Adapter->>Index: Add(engineKey, requestKey, pod)<br/>or Evict(engineKey)
     end
 
     rect rgb(230, 255, 230)
-        Note over Scheduler,Scorer: Flow 2: Pod Scoring (Read Path)
-        Scheduler->>Indexer: GetPodScores(request)<br/>(in-process or gRPC)
-        Indexer->>TokenPool: Tokenize prompt
-        TokenPool->>UDS: gRPC Tokenize()<br/>(Unix Domain Socket)
-        UDS-->>TokenPool: Token IDs + offsets
-        TokenPool-->>Indexer: Tokens
-        Indexer->>Processor: Compute block keys<br/>(CBOR + FNV-64a chain)
-        Processor-->>Indexer: Block hashes
-        Indexer->>Index: Lookup block locations
-        Index-->>Indexer: Pod → block mappings
-        Indexer->>Scorer: Score(pods, blocks)
-        Scorer-->>Indexer: Scored pod list
-        Indexer-->>Scheduler: Pod scores<br/>(cache-aware ranking)
+        Note over EPP,TokenProc: Flow 2: Pod Scoring (Read Path)
+        EPP->>Indexer: ScoreTokens(tokens, model, pods)<br/>Go API (in-process)
+        Indexer->>TokenProc: ComputeBlockKeys(tokens)<br/>FNV-64a hash chunks
+        TokenProc-->>Indexer: []BlockKey
+        Indexer->>Index: Lookup(blockKeys)
+        Index-->>Indexer: map[pod]matchedBlocks
+        Indexer->>Indexer: Score(matches, totalBlocks)
+        Indexer-->>EPP: map[string]float64<br/>(pod → cache-hit score)
     end
 
-    rect rgb(255, 243, 224)
-        Note over vLLM,Index: Flow 3: KV-Cache Offloading (Storage Path)
-        participant Storage as Shared Storage<br/>(NFS/PVC)
-        participant FSMgr as FS Backend Manager
-        participant CppEng as C++ storage_offload<br/>(async I/O + GDS)
+    rect rgb(255, 245, 230)
+        Note over EPP,UdsServer: Flow 3: Tokenization (Sidecar)
+        EPP->>UdsClient: Tokenize(prompt, model)
+        UdsClient->>UdsServer: gRPC over UDS<br/>/tmp/tokenizer/tokenizer-uds.socket<br/>No encryption (local IPC)
+        Note right of UdsServer: vLLM OpenAIServingRender<br/>(CPU mode)
+        UdsServer-->>UdsClient: TokenIDs[]
+        UdsClient-->>EPP: TokenIDs[]
 
-        vLLM->>FSMgr: OffloadingSpec lookup
-        FSMgr->>Storage: stat() check<br/>(POSIX filesystem)
-        Storage-->>FSMgr: File exists/not
-        vLLM->>CppEng: Transfer blocks
-        CppEng->>Storage: Read/Write<br/>(POSIX or GPU-Direct)
-        Storage-->>CppEng: KV-cache data
+        Note over UdsServer,HFHub: First-time tokenizer init
+        UdsServer->>HFHub: Download tokenizer<br/>HTTPS 443/TCP, TLS 1.2+
+        HFHub-->>UdsServer: Tokenizer model files
     end
 
     rect rgb(255, 230, 230)
-        Note over vLLM,Index: Flow 4: PVC Eviction
-        participant PVC as PVC Mount
-        participant Act as Activator<br/>(statvfs polling)
-        participant Crawl as N Crawlers<br/>(hex-based LB)
-        participant Del as Deleter<br/>(xargs rm)
+        Note over VLLMPod,Storage: Flow 4: KV-Cache Offloading (fs_backend)
+        VLLMPod->>FSBackend: OffloadingConnector API<br/>(Python/C++ in-process)
+        FSBackend->>Storage: POSIX write<br/>GPU → Host → Disk
+        Note right of FSBackend: C++/CUDA handles<br/>GPU-to-host copies
+        Storage-->>FSBackend: ACK
+        FSBackend-->>VLLMPod: Offload complete
 
-        Act->>PVC: statvfs() O(1)
-        PVC-->>Act: Disk usage %
-        Note over Act: Usage > 85% threshold
-        Act->>Crawl: Start scanning
-        Crawl->>PVC: scandir() by hex range
-        PVC-->>Crawl: Eligible files<br/>(atime > 60min)
-        Crawl->>Del: Queue files (IPC)
-        Del->>PVC: xargs -0 rm -f<br/>(batch delete)
-        Note over Act: Stop when < 70%
+        Note over VLLMPod,Storage: KV-Cache Restore
+        VLLMPod->>FSBackend: Restore request
+        FSBackend->>Storage: POSIX read
+        Storage-->>FSBackend: KV-cache blocks
+        FSBackend-->>VLLMPod: Blocks loaded to GPU
     end

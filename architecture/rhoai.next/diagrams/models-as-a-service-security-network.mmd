@@ -1,63 +1,92 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client"]
+        Client["External Client / Data Scientist"]
     end
 
-    subgraph Ingress["INGRESS (Gateway API - openshift-ingress namespace)"]
-        Gateway["maas-default-gateway<br/>80/TCP HTTP + 443/TCP HTTPS<br/>TLS Terminate (OpenShift cert)<br/>Host: maas.$$CLUSTER_DOMAIN$$<br/>Default: deny-unconfigured-models"]
+    subgraph Ingress["INGRESS (Gateway - DMZ)"]
+        Gateway["maas-default-gateway<br/>80/TCP HTTP, 443/TCP HTTPS<br/>TLS Terminate<br/>Host: maas.CLUSTER_DOMAIN"]
+        DefaultAuth["gateway-default-auth<br/>Deny unconfigured → 401/403"]
+        DefaultDeny["gateway-default-deny<br/>0 tokens/min unconfigured"]
+        Gateway --- DefaultAuth
+        Gateway --- DefaultDeny
     end
 
-    subgraph AuthZ["AUTHENTICATION & AUTHORIZATION"]
-        Authorino["Kuadrant Authorino<br/>5001/TCP gRPC<br/>mTLS (Istio)<br/>AuthPolicy evaluation"]
-        Limitador["Kuadrant Limitador<br/>8081/TCP gRPC<br/>mTLS (Istio)<br/>TokenRateLimitPolicy"]
+    subgraph ExtProc["EXT-PROC (Gateway Sidecar)"]
+        BBR["payload-processing (BBR)<br/>NS: openshift-ingress<br/>SA: payload-processing<br/>9004/TCP gRPC, 9005/TCP metrics<br/>TLS SIMPLE"]
     end
 
-    subgraph Processing["REQUEST PROCESSING (openshift-ingress namespace)"]
-        BBR["payload-processing BBR<br/>SA: payload-processing<br/>9004/TCP gRPC ext_proc<br/>TLS (DestinationRule SIMPLE)<br/>9005/TCP metrics"]
+    subgraph AuthLayer["AUTH LAYER (Kuadrant / Authorino)"]
+        Authorino["Authorino<br/>Auth Methods:<br/>1. API key (sk-oai-*) → callback<br/>2. K8s TokenReview<br/>3. OIDC JWT validation"]
+        LimitadorSvc["Limitador<br/>Token rate limiting<br/>Counter: auth.identity.userid<br/>Distributed HA"]
     end
 
-    subgraph Application["APPLICATION (opendatahub namespace)"]
-        MaaSAPI["maas-api<br/>SA: maas-api<br/>8080/TCP HTTP or 8443/TCP HTTPS<br/>TLS 1.2+ (OpenShift serving cert)<br/>Authorino callbacks via NetworkPolicy"]
-        Controller["maas-controller<br/>SA: maas-controller<br/>8080/TCP metrics<br/>8081/TCP health probes"]
-    end
+    subgraph ServiceMesh["SERVICE MESH (Trusted - Internal)"]
+        direction TB
 
-    subgraph InternalServices["INTERNAL SERVICES"]
-        KServe["KServe Model Pods<br/>8000/TCP HTTP/HTTPS<br/>Cluster-internal<br/>Auth header stripped by Authorino"]
+        subgraph NS_ODH["Namespace: opendatahub"]
+            MaaSAPI["maas-api<br/>SA: maas-api<br/>8080/TCP HTTP, 8443/TCP HTTPS<br/>TLS 1.2+ (service-ca cert)<br/>Cert: maas-api-serving-cert"]
+            Controller["maas-controller<br/>SA: maas-controller-manager<br/>8080/TCP metrics, 8081/TCP health<br/>No external endpoints"]
+        end
+
         PostgreSQL["PostgreSQL<br/>5432/TCP<br/>Auth: maas-db-config Secret"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+<br/>ServiceAccount token"]
+    end
+
+    subgraph Backends["BACKEND MODEL SERVICES"]
+        KServe["KServe InferenceService<br/>NS: user-namespace<br/>HTTPS<br/>Auth: Bearer (stripped at gateway)"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        ExtProviders["External Model Providers<br/>OpenAI, Anthropic, etc.<br/>443/TCP HTTPS<br/>TLS 1.2+ (Istio origination)<br/>API key from credentialRef Secret"]
+        ExtLLM["External LLM Providers<br/>(api.openai.com, etc.)<br/>443/TCP HTTPS<br/>TLS SIMPLE (DestinationRule)<br/>Auth: Provider API key<br/>(injected by BBR from Secret)"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>Auth: ServiceAccount token"]
     end
 
-    %% Flows
-    Client -->|"HTTPS/443<br/>TLS (terminate)<br/>Bearer: sk-oai-* / OCP token / OIDC"| Gateway
-    Gateway -->|"gRPC/5001<br/>mTLS (Istio)<br/>Service Identity"| Authorino
-    Gateway -->|"gRPC/9004<br/>TLS SIMPLE<br/>ext_proc pipeline"| BBR
-    Gateway -->|"gRPC/8081<br/>mTLS (Istio)<br/>Token quota check"| Limitador
-    Authorino -->|"HTTP/8080<br/>No encryption<br/>NetworkPolicy-restricted"| MaaSAPI
-    Gateway -->|"HTTP(S)/8000<br/>Cluster-internal<br/>Auth header stripped"| KServe
-    Gateway -->|"HTTPS/443<br/>TLS 1.2+ origination<br/>Injected API key"| ExtProviders
-    MaaSAPI -->|"TCP/5432<br/>DB credentials<br/>from Secret"| PostgreSQL
-    MaaSAPI -->|"HTTPS/8000<br/>TLS InsecureSkipVerify<br/>Bearer passthrough"| KServe
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    MaaSAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    BBR -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token (read CRDs)"| K8sAPI
+    %% External → Gateway
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>API key OR K8s token OR OIDC JWT"| Gateway
+
+    %% Gateway → BBR
+    Gateway -->|"gRPC/9004<br/>TLS SIMPLE<br/>insecureSkipVerify"| BBR
+
+    %% Gateway → Authorino
+    Gateway -->|"Auth enforcement<br/>Per-model AuthPolicy"| Authorino
+
+    %% Authorino → maas-api (callbacks)
+    Authorino -->|"HTTPS/8443<br/>TLS 1.2+<br/>NetworkPolicy restricted<br/>/internal/v1/api-keys/validate<br/>/internal/v1/subscriptions/select"| MaaSAPI
+
+    %% Authorino → K8s API (TokenReview)
+    Authorino -->|"HTTPS/443<br/>TLS<br/>TokenReview"| K8sAPI
+
+    %% Gateway → Limitador
+    Gateway -->|"Rate limit check<br/>TokenRateLimitPolicy"| LimitadorSvc
+
+    %% Gateway → Backends
+    Gateway -->|"HTTPS<br/>TLS<br/>Auth header stripped"| KServe
+    Gateway -->|"HTTPS/443<br/>TLS SIMPLE<br/>Provider API key injected"| ExtLLM
+
+    %% maas-api → PostgreSQL
+    MaaSAPI -->|"PostgreSQL/5432<br/>DB credentials<br/>API key CRUD"| PostgreSQL
+
+    %% maas-api → K8s API
+    MaaSAPI -->|"HTTPS/443<br/>TLS<br/>SA token<br/>SAR, TokenReview"| K8sAPI
+
+    %% Controller → K8s API
+    Controller -->|"HTTPS/443<br/>TLS<br/>SA token<br/>CRD CRUD, SSA Apply"| K8sAPI
+
+    %% BBR → K8s API
+    BBR -->|"HTTPS/443<br/>TLS<br/>SA token<br/>ExternalModel, Secrets"| K8sAPI
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef authz fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef processing fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef internal fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef auth fill:#e6d5f7,stroke:#9673a6,stroke-width:2px
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef backend fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef extproc fill:#ffe0cc,stroke:#cc7a00,stroke-width:2px
 
     class Client external
-    class Gateway ingress
-    class Authorino,Limitador authz
-    class BBR processing
-    class MaaSAPI,Controller application
-    class KServe,PostgreSQL,K8sAPI internal
-    class ExtProviders externalservice
+    class Gateway,DefaultAuth,DefaultDeny ingress
+    class BBR extproc
+    class Authorino,LimitadorSvc auth
+    class MaaSAPI,Controller,PostgreSQL servicemesh
+    class KServe backend
+    class ExtLLM,K8sAPI externalservice

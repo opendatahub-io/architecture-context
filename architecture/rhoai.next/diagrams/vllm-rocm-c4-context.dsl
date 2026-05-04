@@ -1,37 +1,38 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Sends inference requests to deployed LLM models"
+        dataScientist = person "Data Scientist" "Deploys and queries LLM models for inference"
+        application = person "Application" "Sends inference requests to deployed models"
 
-        vllmRocm = softwareSystem "vllm-rocm" "GPU-accelerated vLLM inference runtime for AMD ROCm GPUs with TGIS adapter" {
-            adapter = container "vllm_tgis_adapter" "Dual-protocol entrypoint providing OpenAI HTTP and TGIS gRPC APIs" "Python Module"
-            vllmEngine = container "vLLM Engine" "High-performance LLM inference with PagedAttention and continuous batching" "Python / C++ / ROCm"
-            httpApi = container "OpenAI HTTP API" "OpenAI-compatible REST endpoints for completions, chat, models, health" "HTTP Server, Port 8000"
-            grpcApi = container "TGIS gRPC API" "Text Generation Inference Server gRPC protocol for KServe integration" "gRPC Server, Port 8033"
+        vllmRocm = softwareSystem "vllm-rocm" "GPU-accelerated LLM inference runtime for AMD ROCm, exposing OpenAI-compatible HTTP and TGIS gRPC APIs" {
+            vllmEngine = container "vLLM Engine" "High-performance LLM inference engine with PagedAttention" "Python / ROCm"
+            tgisAdapter = container "TGIS Adapter" "Wraps vLLM to expose TGIS gRPC protocol alongside OpenAI HTTP API" "Python"
+            openaiApi = container "OpenAI HTTP API" "REST API for text/chat completions" "HTTP/8000"
+            tgisGrpc = container "TGIS gRPC Service" "GenerationService for model serving" "gRPC/8033"
         }
 
-        kserve = softwareSystem "KServe" "Serverless inference platform managing ServingRuntime and InferenceService CRs" "Internal RHOAI"
-        platformIngress = softwareSystem "Platform Ingress" "Gateway API with kube-rbac-proxy for TLS termination and auth enforcement" "Internal RHOAI"
-        modelStorageS3 = softwareSystem "S3-Compatible Storage" "Object storage for LLM model weights" "External"
-        modelStoragePVC = softwareSystem "PersistentVolumeClaim" "Kubernetes volume for local model weight storage" "Internal Kubernetes"
+        kserve = softwareSystem "KServe" "Deploys and manages inference services via ServingRuntime CRs" "Internal RHOAI"
+        modelStorageS3 = softwareSystem "S3 Storage" "S3-compatible object storage for model weights" "External"
+        modelStoragePVC = softwareSystem "PVC Storage" "Persistent volume for pre-cached model weights" "Internal"
+        amdGpu = softwareSystem "AMD ROCm GPU" "Hardware GPU accelerator for inference computation" "Infrastructure"
         huggingFaceHub = softwareSystem "Hugging Face Hub" "Public model and tokenizer repository" "External"
-        amdGpu = softwareSystem "AMD ROCm GPU" "Hardware GPU accelerator for inference compute" "Hardware"
-        rhaiisRegistry = softwareSystem "RHAIIS Base Image Registry" "registry.redhat.io providing vllm-rocm-rhel9 base image" "External"
-        konflux = softwareSystem "Konflux CI/CD" "Tekton-based build pipeline in rhoai-tenant namespace" "Internal Build"
+        rhaiisBase = softwareSystem "RHAIIS Base Image" "Red Hat AI Infrastructure Services vLLM ROCm base image" "External"
 
-        user -> platformIngress "Sends inference requests" "HTTPS"
-        platformIngress -> vllmRocm "Routes requests after auth" "HTTP/8000, gRPC/8033"
-        kserve -> vllmRocm "Deploys and orchestrates via ServingRuntime CR"
-        vllmRocm -> modelStorageS3 "Downloads model weights" "HTTPS/443, TLS 1.2+, IAM"
-        vllmRocm -> modelStoragePVC "Reads model weights" "Filesystem"
-        vllmRocm -> huggingFaceHub "Downloads models/tokenizers" "HTTPS/443, TLS 1.2+"
-        vllmRocm -> amdGpu "GPU compute for inference" "HIP/ROCm"
-        konflux -> rhaiisRegistry "Pulls base image during build" "HTTPS/443"
-        konflux -> vllmRocm "Builds container image" "Tekton PipelineRun"
+        # Relationships
+        dataScientist -> kserve "Creates InferenceService CR via kubectl/dashboard"
+        application -> vllmRocm "Sends inference requests" "HTTPS (via KServe ingress)"
 
-        adapter -> httpApi "Serves"
-        adapter -> grpcApi "Serves"
-        adapter -> vllmEngine "Delegates inference"
-        vllmEngine -> amdGpu "GPU kernels" "HIP/ROCm"
+        kserve -> vllmRocm "Deploys as ServingRuntime container and routes traffic"
+
+        tgisAdapter -> vllmEngine "Wraps and delegates inference"
+        tgisAdapter -> openaiApi "Exposes" "HTTP/8000"
+        tgisAdapter -> tgisGrpc "Exposes" "gRPC/8033"
+
+        vllmEngine -> amdGpu "Runs inference computation" "PCIe/ROCm"
+        vllmEngine -> modelStorageS3 "Downloads model weights" "HTTPS/443"
+        vllmEngine -> modelStoragePVC "Reads model weights" "Filesystem"
+        vllmEngine -> huggingFaceHub "Downloads weights/tokenizer (optional)" "HTTPS/443"
+
+        vllmRocm -> rhaiisBase "Built on base image" "Container Image v3.2.1"
     }
 
     views {
@@ -54,28 +55,22 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal Kubernetes" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Internal Build" {
-                background #9b59b6
-                color #ffffff
-            }
-            element "Hardware" {
-                background #f5a623
+            element "Infrastructure" {
+                background #e74c3c
                 color #ffffff
             }
             element "Person" {
                 shape Person
-                background #08427b
+                background #4a90e2
                 color #ffffff
             }
             element "Software System" {
-                shape RoundedBox
+                background #4a90e2
+                color #ffffff
             }
             element "Container" {
-                shape RoundedBox
+                background #438dd5
+                color #ffffff
             }
         }
     }

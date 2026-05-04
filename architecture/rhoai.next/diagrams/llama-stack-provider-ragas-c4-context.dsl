@@ -1,43 +1,34 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Submits evaluation jobs against LLM benchmarks"
+        user = person "Data Scientist" "Runs RAG evaluation jobs against LLM-generated outputs"
 
-        llamaStackProviderRagas = softwareSystem "llama-stack-provider-ragas" "Out-of-tree Llama Stack evaluation provider implementing Ragas-based LLM evaluation with inline and remote execution modes" {
-            inlineProvider = container "Inline Eval Provider" "Runs Ragas evaluation in-process within Llama Stack server" "Python Library"
-            remoteProvider = container "Remote Eval Provider" "Submits Ragas evaluation as Kubeflow Pipeline runs" "Python Library"
-            inlineWrappers = container "Inline Wrappers" "Adapts Llama Stack inference API to Ragas BaseRagasLLM/BaseRagasEmbeddings" "Python Adapter"
-            remoteWrappers = container "Remote Wrappers" "Adapts Llama Stack HTTP client to Ragas interfaces for KFP execution" "Python Adapter"
-            kfpPipeline = container "KFP Pipeline" "Two-step pipeline: retrieve dataset then run Ragas evaluation" "Kubeflow Pipeline"
-            compatLayer = container "Compatibility Layer" "Backward compatibility between llama_stack and llama_stack_api packages" "Python Module"
+        llamaStackProviderRagas = softwareSystem "Llama Stack Provider Ragas" "Out-of-tree Llama Stack Eval provider implementing Ragas metrics for RAG evaluation via inline and remote execution modes" {
+            inlineProvider = container "Ragas Inline Provider" "Runs Ragas evaluation in-process within the Llama Stack server using async wrappers" "Python Library (Llama Stack Plugin)"
+            remoteProvider = container "Ragas Remote Provider" "Submits Ragas evaluations as Kubeflow Pipeline runs and retrieves results from S3" "Python Library (Llama Stack Plugin)"
+            kfpComponents = container "KFP Pipeline Components" "Two-step pipeline: data retrieval from Llama Stack and Ragas evaluation execution" "Python (KFP DSL)"
+            compatLayer = container "Compatibility Layer" "Bridges legacy llama_stack and newer llama_stack_api import paths" "Python Module"
         }
 
-        llamaStack = softwareSystem "Llama Stack Server" "Meta's Llama Stack platform hosting eval, inference, datasetio APIs" "Internal"
-        kubeflowPipelines = softwareSystem "Kubeflow Pipelines (DSP)" "Pipeline orchestration platform on OpenShift" "Internal RHOAI"
-        s3Storage = softwareSystem "S3-compatible Storage" "Object storage for evaluation results" "External"
-        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for ConfigMap reads and auth" "Infrastructure"
-        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Provides ConfigMap for base image resolution" "Internal RHOAI"
-        ollama = softwareSystem "Ollama" "LLM inference and embedding backend" "External"
+        llamaStackServer = softwareSystem "Llama Stack Server" "Hosts provider plugins and exposes Eval API on 8321/TCP" "Internal"
+        kfp = softwareSystem "Kubeflow Pipelines (DSP)" "Orchestrates containerized evaluation pipeline runs" "Internal RHOAI"
+        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Manages trustyai-service-operator-config ConfigMap with base image references" "Internal RHOAI"
+        s3 = softwareSystem "S3 Object Storage" "Stores evaluation result JSONL files" "External"
+        k8sApi = softwareSystem "Kubernetes API" "Provides ConfigMap access and kubeconfig token extraction" "External"
+        ollama = softwareSystem "Ollama" "Inference backend for sample/dev distribution" "External (dev only)"
 
-        // User interactions
-        dataScientist -> llamaStack "Submits evaluation jobs" "HTTP/8321"
-        llamaStack -> llamaStackProviderRagas "Routes eval requests to provider" "Python Plugin API"
+        # User interactions
+        user -> llamaStackServer "Submits evaluation jobs via Eval API" "HTTP/8321"
 
-        // Internal container relationships
-        inlineProvider -> inlineWrappers "Uses for Ragas LLM/Embeddings adaptation"
-        remoteProvider -> remoteWrappers "Uses in KFP pods"
-        remoteProvider -> kfpPipeline "Constructs and submits"
-        inlineProvider -> compatLayer "Imports compatibility shims"
-        remoteProvider -> compatLayer "Imports compatibility shims"
-
-        // External interactions
-        inlineProvider -> llamaStack "Calls inference/datasetio APIs" "In-process Python"
-        remoteProvider -> kubeflowPipelines "Submits pipeline runs, polls status" "HTTPS/443 Bearer Token"
-        remoteProvider -> s3Storage "Fetches evaluation results" "HTTPS/443 AWS IAM"
-        kfpPipeline -> llamaStack "Retrieves datasets, calls inference" "HTTP/8321"
-        kfpPipeline -> s3Storage "Writes evaluation results (JSONL)" "HTTPS/443 AWS IAM"
-        remoteProvider -> k8sAPI "Reads ConfigMaps, loads kubeconfig" "HTTPS/443 SA Token"
-        remoteProvider -> trustyaiOperator "Reads base image config" "via ConfigMap"
-        llamaStack -> ollama "Inference and embeddings" "HTTP/11434"
+        # System relationships
+        llamaStackServer -> llamaStackProviderRagas "Delegates eval requests to provider plugin" "In-process"
+        inlineProvider -> llamaStackServer "Calls Inference API (LLM + Embeddings) and DatasetIO" "In-process"
+        remoteProvider -> kfp "Submits pipeline runs, polls status, cancels runs" "HTTPS/443, Bearer Token"
+        remoteProvider -> s3 "Reads evaluation results" "HTTPS/443, AWS IAM"
+        remoteProvider -> k8sApi "Reads ConfigMap for base image, extracts kubeconfig token" "HTTPS/6443, Bearer Token"
+        kfpComponents -> llamaStackServer "Retrieves datasets and runs inference" "HTTP/8321"
+        kfpComponents -> s3 "Writes evaluation results (JSONL)" "HTTPS/443, AWS IAM"
+        llamaStackProviderRagas -> trustyaiOperator "Reads ragas-provider-image from ConfigMap" "HTTPS/6443 via K8s API"
+        llamaStackServer -> ollama "Inference backend (dev distribution)" "HTTP/11434"
     }
 
     views {
@@ -57,28 +48,27 @@ workspace {
                 color #ffffff
             }
             element "Internal" {
-                background #438dd5
-                color #ffffff
-            }
-            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Infrastructure" {
-                background #d6b656
+            element "Internal RHOAI" {
+                background #4a90e2
                 color #ffffff
             }
+            element "External (dev only)" {
+                background #cccccc
+                color #333333
+            }
             element "Person" {
-                shape Person
+                shape person
                 background #08427b
                 color #ffffff
             }
             element "Software System" {
-                shape RoundedBox
+                shape roundedbox
             }
             element "Container" {
-                background #438dd5
-                color #ffffff
+                shape roundedbox
             }
         }
     }

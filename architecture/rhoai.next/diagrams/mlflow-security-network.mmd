@@ -1,94 +1,88 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Browser["User Browser<br/>OAuth/OIDC"]
-        MLPod["ML Workload Pod<br/>Bearer Token (K8s SA)"]
-        OTELApp["OTEL-instrumented App<br/>Bearer Token"]
+        Client["MLflow SDK / Browser<br/>Data Scientist"]
     end
 
-    subgraph Ingress["INGRESS (Platform-Managed)"]
-        Gateway["Platform Gateway<br/>HTTPRoute (Gateway API)<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ SIMPLE"]
+    subgraph Ingress["INGRESS (Platform Gateway)"]
+        Gateway["ODH Data Science Gateway<br/>HTTPRoute: /mlflow<br/>443/TCP → 5000/TCP<br/>TLS 1.2+ (SIMPLE)<br/>Token passthrough"]
     end
 
-    subgraph AuthProxy["AUTH PROXY (Trust Boundary)"]
-        KubeRBAC["kube-rbac-proxy<br/>(Sidecar Container)<br/>8443/TCP → 5000/TCP<br/>TLS termination<br/>K8s SA Token validation"]
-    end
-
-    subgraph Application["APPLICATION (Pod-Internal, Trusted)"]
+    subgraph Application["APPLICATION (MLflow Server)"]
         direction TB
 
-        subgraph ServerCore["MLflow Server - 5000/TCP HTTP (plaintext, pod-local)"]
-            direction TB
-            AuthProvider["kubernetes-namespaced<br/>Auth Provider<br/>Workspace resolution"]
-            AuthMW["Auth Middleware<br/>READ/USE/EDIT/MANAGE"]
-            SecurityMW["Security Middleware<br/>CORS + Host validation<br/>DNS rebinding protection"]
-            Flask["Flask REST/Protobuf API"]
-            FastAPI["FastAPI<br/>(Jobs, Gateway, OTLP)"]
+        subgraph SecurityChain["Security Middleware"]
+            K8sAuth["kubernetes-auth plugin<br/>Bearer Token validation<br/>SelfSubjectAccessReview<br/>Default: NO_PERMISSIONS"]
+            CORS["CORS / Origin Validation<br/>block_cross_origin_state_changes<br/>MLFLOW_SERVER_CORS_ALLOWED_ORIGINS"]
+            WorkspaceMixin["workspace_aware_mixin<br/>Query-scoped tenant isolation"]
         end
 
-        subgraph Unauthenticated["Unauthenticated Endpoints"]
-            Health["GET /health"]
-            Version["GET /version"]
+        subgraph ServiceEndpoints["Service Endpoints"]
+            FlaskAPI["Flask REST API<br/>Tracking + Model Registry<br/>/api/2.0/mlflow/*"]
+            FastAPIEndpoints["FastAPI Endpoints<br/>Gateway + Traces + Jobs<br/>/gateway/*, /v1/traces"]
+            UIServing["React UI + Static Files<br/>/ + /static-files/*<br/>No auth required"]
         end
+
+        K8sAuth --> CORS
+        CORS --> WorkspaceMixin
+        WorkspaceMixin --> FlaskAPI
+        WorkspaceMixin --> FastAPIEndpoints
     end
 
-    subgraph EgressServices["EGRESS - External Services"]
-        PG["PostgreSQL<br/>5432/TCP<br/>PostgreSQL wire<br/>TLS 1.2+<br/>Username/Password"]
-        S3["S3 / MinIO<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM / Access Key"]
-        Azure["Azure Blob Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Azure credentials"]
-        GCS["Google Cloud Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>GCP SA"]
-        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (SA)"]
+    subgraph K8sCluster["KUBERNETES API (Trusted)"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+<br/>SA token auth"]
     end
 
-    subgraph LLMProviders["EGRESS - AI Gateway Providers"]
-        OpenAI["OpenAI API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key (encrypted DB)"]
-        Anthropic["Anthropic API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key (encrypted DB)"]
-        Gemini["Google Gemini API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key (encrypted DB)"]
-        Mistral["Mistral API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key (encrypted DB)"]
+    subgraph DataStores["DATA STORES"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS optional<br/>Username/password"]
+        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM credentials"]
     end
 
-    subgraph FederationZone["MODULE FEDERATION"]
-        Dashboard["RHOAI Dashboard<br/>(Federation Host)"]
-        FedBundle["MLflow remoteEntry.js<br/>Experiment/Prompt/Run<br/>Wrappers"]
+    subgraph LLMProviders["AI GATEWAY LLM PROVIDERS (External)"]
+        OpenAI["OpenAI API<br/>443/TCP HTTPS TLS 1.2+<br/>API key (KEK-encrypted)"]
+        Anthropic["Anthropic API<br/>443/TCP HTTPS TLS 1.2+<br/>API key (KEK-encrypted)"]
+        Gemini["Google Gemini API<br/>443/TCP HTTPS TLS 1.2+<br/>API key (KEK-encrypted)"]
+        Mistral["Mistral API<br/>443/TCP HTTPS TLS 1.2+<br/>API key (KEK-encrypted)"]
     end
 
-    %% Ingress flows
-    Browser -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth/OIDC"| Gateway
-    MLPod -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Gateway
-    OTELApp -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Gateway
-    Gateway -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer Token (K8s SA)"| KubeRBAC
-    KubeRBAC -->|"HTTP/5000<br/>Plaintext (pod-local)<br/>Validated token forwarded"| ServerCore
+    subgraph Monitoring["MONITORING"]
+        Prometheus["Prometheus<br/>Scrapes 5000/TCP HTTP<br/>No auth"]
+    end
 
-    %% Egress flows
-    Flask -->|"PostgreSQL/5432<br/>TLS 1.2+<br/>Username/Password"| PG
-    Flask -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    Flask -->|"HTTPS/443<br/>TLS 1.2+<br/>Azure creds"| Azure
-    Flask -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP SA"| GCS
-    FastAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| K8sAPI
+    %% Flows
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (K8s SA)<br/>X-MLFLOW-WORKSPACE header"| Gateway
+    Gateway -->|"HTTP/5000<br/>No encryption (cluster-internal)<br/>Bearer Token forwarded"| K8sAuth
+    Gateway -->|"HTTP/5000<br/>No auth"| UIServing
 
-    %% AI Gateway flows
-    FastAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| OpenAI
-    FastAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| Anthropic
-    FastAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| Gemini
-    FastAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| Mistral
+    K8sAuth -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>SelfSubjectAccessReview"| K8sAPI
+    K8sAuth -->|"HTTPS/443<br/>Namespace list/watch<br/>MLflowConfig watch"| K8sAPI
 
-    %% Module Federation
-    Dashboard -->|"HTTPS/443<br/>loads remoteEntry.js"| FedBundle
+    FlaskAPI -->|"TCP/5432<br/>TLS optional<br/>DB credentials"| PostgreSQL
+    FlaskAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS credentials"| S3
+    FastAPIEndpoints -->|"TCP/5432<br/>TLS optional<br/>DB credentials"| PostgreSQL
+    FastAPIEndpoints -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS credentials"| S3
+
+    FastAPIEndpoints -->|"HTTPS/443<br/>API key (AES-256-GCM)"| OpenAI
+    FastAPIEndpoints -->|"HTTPS/443<br/>API key (AES-256-GCM)"| Anthropic
+    FastAPIEndpoints -->|"HTTPS/443<br/>API key (AES-256-GCM)"| Gemini
+    FastAPIEndpoints -->|"HTTPS/443<br/>API key (AES-256-GCM)"| Mistral
+
+    Prometheus -.->|"HTTP/5000<br/>No auth<br/>/metrics"| FlaskAPI
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef authproxy fill:#f8cecc,stroke:#b85450,stroke-width:2px
     classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef llmprovider fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef federation fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef unauth fill:#f5f5f5,stroke:#666,stroke-width:1px,stroke-dasharray: 5 5
+    classDef security fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef k8s fill:#e1f5fe,stroke:#0277bd,stroke-width:2px
+    classDef datastore fill:#e8eaf6,stroke:#283593,stroke-width:2px
+    classDef llmprovider fill:#fce4ec,stroke:#c62828,stroke-width:2px
+    classDef monitoring fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
 
-    class Browser,MLPod,OTELApp external
+    class Client external
     class Gateway ingress
-    class KubeRBAC authproxy
-    class AuthProvider,AuthMW,SecurityMW,Flask,FastAPI application
-    class Health,Version unauth
-    class PG,S3,Azure,GCS,K8sAPI egress
+    class K8sAuth,CORS,WorkspaceMixin security
+    class FlaskAPI,FastAPIEndpoints,UIServing application
+    class K8sAPI k8s
+    class PostgreSQL,S3 datastore
     class OpenAI,Anthropic,Gemini,Mistral llmprovider
-    class Dashboard,FedBundle federation
+    class Prometheus monitoring

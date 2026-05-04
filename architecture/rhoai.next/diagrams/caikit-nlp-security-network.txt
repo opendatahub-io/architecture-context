@@ -1,129 +1,114 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                   │
 │                                                                          │
-│  [Client Application]                                                    │
+│  [Client / Data Scientist / Application]                                 │
 │         │                                                                │
-│         │ Port: 8085/TCP (gRPC) or 8080/TCP (HTTP)                      │
-│         │ Protocol: gRPC or HTTP                                         │
-│         │ Encryption: Configurable TLS                                   │
-│         │ Auth: None (runtime-level, enforced externally)                │
+│         │ Port: 8080/TCP (HTTP) or 8085/TCP (gRPC)                      │
+│         │ Protocol: HTTP or gRPC                                         │
+│         │ Encryption: None (plaintext in-cluster)                        │
+│         │ Auth: Delegated to platform (kube-rbac-proxy / KServe /       │
+│         │       Gateway API)                                             │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  PLATFORM LAYER (RHOAI - Managed by KServe/ModelMesh)                   │
+│  PLATFORM INGRESS (Managed by KServe / Gateway API)                     │
 │                                                                          │
-│  [kube-rbac-proxy Sidecar] (RHOAI 3.x)                                 │
-│  - Purpose: Authentication enforcement                                   │
-│  - Auth: Token validation / RBAC                                         │
+│  [KServe InferenceService / Gateway API / kube-rbac-proxy]              │
+│  - TLS Termination: Platform-managed                                     │
+│  - AuthN/AuthZ: Platform-level (Bearer token, mTLS, etc.)              │
 │         │                                                                │
-│         │ Port: 8085/TCP (gRPC) or 8080/TCP (HTTP)                      │
-│         │ Protocol: gRPC or HTTP                                         │
-│         │ Encryption: Configurable TLS (RUNTIME_TLS_SERVER_KEY/CERT)    │
-│         │ Auth: Validated by sidecar                                     │
+│         │ Port: 8080/TCP (HTTP) or 8085/TCP (gRPC)                      │
+│         │ Protocol: HTTP or gRPC                                         │
+│         │ Encryption: None (plaintext in-cluster)                        │
+│         │ Auth: None (already validated at ingress)                      │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  CAIKIT RUNTIME (Inference Container)                                    │
+│  INTERNAL (Cluster Network - Trusted)                                    │
 │                                                                          │
-│  [Caikit gRPC Server]                                                    │
-│  - Port: 8085/TCP                                                        │
-│  - Protocol: gRPC                                                        │
-│  - Encryption: TLS via RUNTIME_TLS_SERVER_KEY, RUNTIME_TLS_SERVER_CERT  │
-│  - Client mTLS: Optional via RUNTIME_TLS_CLIENT_CERT                    │
-│  - Namespace: {model-serving-namespace}                                  │
+│  [caikit Runtime Container]                                              │
+│  - Namespace: (user namespace, operator-configured)                      │
+│  - ServiceAccount: (platform-managed)                                    │
+│  - Image: ubi9/ubi-minimal based                                         │
+│  - User: caikit (UID 1001, non-root)                                    │
+│  - Env: RUNTIME_LIBRARY=caikit_nlp                                      │
 │                                                                          │
-│  [Caikit HTTP REST Gateway]                                              │
-│  - Port: 8080/TCP                                                        │
-│  - Protocol: HTTP                                                        │
-│  - Encryption: Configurable TLS                                          │
-│  - Endpoints: /api/v1/task/{text-generation,embedding,rerank,...}        │
-│  - Additional: /openapi.json, /swagger                                   │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  caikit-nlp Library (in-process)                                │    │
+│  │                                                                  │    │
+│  │  [TextGeneration]     - Local HuggingFace inference              │    │
+│  │  [TextGenerationTGIS] - Remote TGIS inference                    │    │
+│  │  [PeftPromptTuning]   - Local training                           │    │
+│  │  [PeftPromptTuningTGIS] - Remote TGIS inference                  │    │
+│  │  [EmbeddingModule]    - Sentence embeddings                      │    │
+│  │  [CrossEncoderModule] - Cross-encoder reranking                  │    │
+│  │  [SequenceClassification] - Text classification                  │    │
+│  │  [FilteredSpanClassification] - Span classification              │    │
+│  │  [RegexSentenceSplitter] - Tokenization                          │    │
+│  │  [TGISAutoFinder]     - Model discovery                          │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
 │                                                                          │
-│  [caikit-nlp Library]                                                    │
-│  - Loaded as RUNTIME_LIBRARY=caikit_nlp                                  │
-│  - Modules: TextGeneration, TextGenerationTGIS, PeftPromptTuning,       │
-│             PeftPromptTuningTGIS, EmbeddingModule, CrossEncoderModule,   │
-│             SequenceClassification, FilteredSpanClassification,          │
-│             RegexSentenceSplitter                                        │
-│  - In-process: No network traffic between library and runtime            │
+│  Services Exposed:                                                       │
+│  - ClusterIP: 8080/TCP (HTTP, plaintext, no auth)                       │
+│  - ClusterIP: 8085/TCP (gRPC, plaintext, no auth)                       │
 │         │                                                                │
-│         ├─── [TGISGenerationClient] ──────────────────────────┐         │
-│         │    (for TextGenerationTGIS, PeftPromptTuningTGIS)    │         │
-│         │                                                      │         │
-│         │    Port: Configurable (e.g., 8033/TCP, 8034/TCP)     │         │
-│         │    Protocol: gRPC                                     │         │
-│         │    Encryption: Optional TLS/mTLS                      │         │
-│         │      - ca_cert_file (CA certificate)                  │         │
-│         │      - client_cert_file (client cert for mTLS)        │         │
-│         │      - client_key_file (client key for mTLS)          │         │
-│         │    Auth: Optional mTLS (certificate-based)            │         │
-│         │                                                      ▼         │
+│         │ EGRESS CONNECTIONS                                             │
 │         │                                                                │
-│         ├─── [PeftPromptTuning - Distributed Training] ──────┐          │
-│         │    Port: 29550/TCP                                   │          │
-│         │    Protocol: TCP (torchrun elastic launch)           │          │
-│         │    Encryption: PLAINTEXT                              │          │
-│         │    Auth: None                                         │          │
-│         │    Scope: Pod-to-pod within training job              │          │
-│         │                                                      ▼          │
+│         ├──── Port: configurable (default 8033/TCP)                      │
+│         │     Protocol: gRPC (generation_pb2)                            │
+│         │     Encryption: TLS (optional, configurable)                   │
+│         │     Auth: mTLS (optional, configurable via cert files)         │
+│         │     ▼                                                          │
 │         │                                                                │
-│         └─── [HuggingFace Hub Download] ─────────────────────┐          │
-│              Port: 443/TCP                                     │          │
-│              Protocol: HTTPS                                    │          │
-│              Encryption: TLS 1.2+                               │          │
-│              Auth: API token (optional)                         │          │
-│              Default: DISABLED (allow_downloads=false)          │          │
-│                                                                ▼          │
+│         │  [TGIS Server]                                                 │
+│         │  - Purpose: Remote text generation inference                   │
+│         │  - TLS Config: ca_cert_file, client_cert_file, client_key_file│
+│         │                                                                │
+│         │                                                                │
+│         └──── Port: 443/TCP                                              │
+│               Protocol: HTTPS                                            │
+│               Encryption: TLS 1.2+                                       │
+│               Auth: Token (optional, HuggingFace API token)             │
+│               ▼                                                          │
+│                                                                          │
+│            [HuggingFace Hub - huggingface.co]                            │
+│            - Purpose: Model and tokenizer downloads                      │
+│            - Condition: Only when allow_downloads=true                    │
+│                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  EGRESS DESTINATIONS                                                     │
+│  INTERNAL TRAINING TRAFFIC (Multi-GPU)                                   │
 │                                                                          │
-│  [TGIS Backend - Text Generation Inference Server]                      │
-│  - Port: Configurable (e.g., 8033/TCP, 8034/TCP)                       │
-│  - Protocol: gRPC                                                        │
-│  - Encryption: Optional TLS/mTLS                                         │
-│  - Purpose: Remote text generation, streaming, tokenization              │
-│  - Services: Generate, GenerateStream, Tokenize                          │
+│  [caikit Runtime Pod] ←──── Port: 29550/TCP (configurable)              │
+│                              Protocol: TCP (PyTorch Distributed)         │
+│                              Encryption: None                            │
+│                              Auth: None                                  │
+│                              Purpose: Multi-GPU coordination (torchrun)  │
+│                     ────→ [caikit Runtime Pod (other rank)]              │
 │                                                                          │
-│  [HuggingFace Hub - huggingface.co]                                     │
-│  - Port: 443/TCP                                                         │
-│  - Protocol: HTTPS                                                       │
-│  - Encryption: TLS 1.2+                                                  │
-│  - Purpose: Model and tokenizer download (when enabled)                  │
-│  - Default: DISABLED                                                     │
-│                                                                          │
-│  [PyTorch Distributed Peers]                                             │
-│  - Port: 29550/TCP                                                       │
-│  - Protocol: TCP                                                         │
-│  - Encryption: PLAINTEXT                                                 │
-│  - Purpose: Multi-GPU distributed PEFT training coordination             │
-│  - Scope: Pod-to-pod within Kubernetes cluster                           │
 └─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- No RBAC defined — caikit-nlp is a Python library, not a Kubernetes operator.
-- Authentication is enforced externally by kube-rbac-proxy sidecars in RHOAI 3.x.
-
-TLS Configuration:
-- Server TLS (gRPC + HTTP):
-  - RUNTIME_TLS_SERVER_KEY: TLS private key (file path, manual provisioning)
-  - RUNTIME_TLS_SERVER_CERT: TLS certificate (file path, manual provisioning)
-  - RUNTIME_TLS_CLIENT_CERT: Client cert for mutual TLS (file path, optional)
-  - No auto-rotation configured
-
-- TGIS Backend TLS (per-connection):
-  - ca_cert_file: CA certificate for TLS verification
-  - client_cert_file: Client certificate for mTLS
-  - client_key_file: Client private key for mTLS
-  - Configured via caikit config YAML per TGIS connection
+- No Kubernetes RBAC resources defined (caikit-nlp is a Python library)
+- Auth/AuthZ delegated entirely to platform layer (KServe, Gateway API, kube-rbac-proxy)
 
 Secrets:
-- RUNTIME_TLS_SERVER_KEY (file path) - Server TLS private key, manual provisioning, no auto-rotate
-- RUNTIME_TLS_SERVER_CERT (file path) - Server TLS certificate, manual provisioning, no auto-rotate
-- RUNTIME_TLS_CLIENT_CERT (file path) - Client mTLS certificate, manual provisioning, no auto-rotate
-- ca_cert_file (config) - TGIS backend CA cert, manual provisioning, no auto-rotate
-- client_cert_file (config) - TGIS backend client cert, manual provisioning, no auto-rotate
-- client_key_file (config) - TGIS backend client key, manual provisioning, no auto-rotate
+- TGIS CA cert (File: ca_cert_file) - TLS verification for TGIS connections
+  Provisioned by: Manual / platform operator | Auto-Rotate: No
+- TGIS client cert (File: client_cert_file) - mTLS client authentication to TGIS
+  Provisioned by: Manual / platform operator | Auto-Rotate: No
+- TGIS client key (File: client_key_file) - mTLS client key for TGIS connections
+  Provisioned by: Manual / platform operator | Auto-Rotate: No
 
-Security Notes:
-- Model downloads from HuggingFace Hub are DISABLED by default (allow_downloads=false)
-- Distributed training traffic (29550/TCP) is PLAINTEXT — relies on network isolation
-- No in-library authentication — all auth enforced by platform (kube-rbac-proxy sidecar)
-- Container image: odh-caikit-nlp-rhel9 (built via Konflux)
+Authentication & Authorization:
+- HTTP/gRPC endpoints (All methods): Auth delegated to platform
+  Enforcement: kube-rbac-proxy / KServe / Gateway API
+- TGIS backend connection (gRPC): mTLS optional, configurable
+  Enforcement: TGIS server, certificate-based
+
+FIPS Compliance:
+- Python library on UBI9 base image - inherits FIPS from base image OpenSSL
+- No custom crypto operations detected
+- TLS delegated to grpcio (system OpenSSL)
+
+Container Security:
+- Base image: ubi9/ubi-minimal
+- Non-root user: caikit (UID 1001)
+- No CMD set (designed as base image for ServingRuntime)

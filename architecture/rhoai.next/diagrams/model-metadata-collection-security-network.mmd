@@ -1,58 +1,65 @@
 graph TB
-    subgraph BuildTime["BUILD-TIME ENVIRONMENT (CI/CD Pipeline)"]
+    subgraph BuildTime["CI/CD BUILD ENVIRONMENT (Build-Time Only)"]
+        direction TB
+        Extractor["model-extractor<br/>(Go CLI — NOT shipped)<br/>CGO_ENABLED=0<br/>Pure-Go crypto"]
+    end
+
+    subgraph ExternalAPIs["EXTERNAL SERVICES (Build-Time Egress)"]
+        direction TB
+        HF["HuggingFace API<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Bearer Token (optional)"]
+        RHReg["OCI Registry<br/>registry.redhat.io<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: None (public)"]
+        AccReg["OCI Registry<br/>registry.access.redhat.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: None (public)"]
+    end
+
+    subgraph ContainerBuild["CONTAINER BUILD & PUSH"]
+        direction TB
+        Konflux["Konflux Pipeline<br/>hermetic: true<br/>Multi-arch: x86_64, ppc64le,<br/>s390x, arm64"]
+        GHA["GitHub Actions<br/>(ODH upstream)"]
+    end
+
+    subgraph Registry["CONTAINER REGISTRY"]
+        QuayRHOAI["quay.io/rhoai/<br/>odh-model-metadata-collection"]
+        QuayODH["quay.io/opendatahub/<br/>odh-model-metadata-collection"]
+    end
+
+    subgraph Runtime["RUNTIME (On-Cluster — ZERO Network Surface)"]
         direction TB
 
-        Extractor["model-extractor CLI<br/>Go 1.24<br/>Not shipped in container<br/>Max 5 concurrent jobs"]
-        Report["metadata-report CLI<br/>Go 1.24<br/>Not shipped in container"]
-        Artifacts["Generated Artifacts<br/>(checked into repo)<br/>models-catalog.yaml<br/>validated-models-catalog.yaml<br/>redhat-mcp-servers-catalog.yaml"]
-
-        Extractor -->|"File I/O<br/>No network"| Artifacts
-        Report -->|"File I/O<br/>No network"| Artifacts
-    end
-
-    subgraph ExternalAPIs["EXTERNAL SERVICES (Outbound from CI/CD only)"]
-        HF["HuggingFace API<br/>huggingface.co<br/>GET /api/collections<br/>GET /api/models/{id}<br/>GET /{id}/raw/main/README.md"]
-        OCI["OCI Container Registry<br/>registry.redhat.io<br/>GET /v2/{repo}/manifests/{tag}<br/>GET /v2/{repo}/blobs/{digest}"]
-    end
-
-    subgraph ContainerBuild["CONTAINER BUILD"]
-        Dockerfile["Dockerfile.konflux<br/>Base: ubi9-minimal<br/>Copies YAML files individually<br/>No Go binaries included"]
-    end
-
-    subgraph Runtime["RUNTIME ENVIRONMENT (Kubernetes Cluster)"]
-        direction TB
-
-        subgraph DataContainer["odh-model-metadata-collection Container"]
-            direction TB
-            ContainerInfo["Image: odh-model-metadata-collection-rhel9<br/>User: UID 1001 (non-root)<br/>CMD: sleep infinity<br/>No network listeners"]
-            DataVol["/app/data/<br/>Catalog YAML Files"]
-            BenchVol["/app/benchmarks/<br/>Benchmark Data"]
+        subgraph DataPod["Data Container Pod"]
+            DC["odh-model-metadata-collection<br/>UBI9-minimal | UID 1001<br/>Process: sleep infinity<br/>No binary | No listeners<br/>No ingress | No egress"]
+            DataVol["/app/data<br/>Catalog YAML Files"]
+            DC --- DataVol
         end
 
-        Dashboard["RHOAI Dashboard<br/>(Consumer)"]
+        Dashboard["RHOAI Dashboard<br/>Volume mount consumer"]
+        Operator["rhods-operator<br/>Deployment orchestrator"]
     end
 
-    %% Build-time network flows
-    Extractor -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer HF_TOKEN (optional)"| HF
-    Extractor -->|"HTTPS/443<br/>TLS 1.2+<br/>No Auth (public)"| OCI
+    %% Build-time flows
+    Extractor -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer HF_TOKEN (opt.)"| HF
+    Extractor -->|"HTTPS/443<br/>TLS 1.2+<br/>OCI Registry v2"| RHReg
+    Extractor -->|"HTTPS/443<br/>TLS 1.2+<br/>OCI Registry v2"| AccReg
 
-    %% Build pipeline
-    Artifacts -->|"copied into image"| Dockerfile
-    Dockerfile -->|"produces"| ContainerInfo
+    %% Build & push flows
+    Extractor -->|"generates<br/>catalog YAML"| Konflux
+    Extractor -->|"generates<br/>catalog YAML"| GHA
+    Konflux -->|"HTTPS/443<br/>Quay credentials"| QuayRHOAI
+    GHA -->|"HTTPS/443<br/>Quay credentials"| QuayODH
 
-    %% Runtime data access
-    DataVol -->|"Volume Mount<br/>Filesystem<br/>No encryption<br/>K8s volume access"| Dashboard
+    %% Runtime flows (no network!)
+    DataVol -->|"Volume mount<br/>Filesystem only<br/>Pod-level RBAC"| Dashboard
+    Operator -->|"K8s API<br/>Deployment lifecycle"| DataPod
 
     %% Styling
-    classDef buildtime fill:#dbeafe,stroke:#3b82f6,stroke-width:2px,color:#1e3a5f
-    classDef external fill:#fff2cc,stroke:#d6b656,stroke-width:2px,color:#5a4a00
-    classDef build fill:#ffe6cc,stroke:#d79b00,stroke-width:2px,color:#5a3500
-    classDef runtime fill:#d5e8d4,stroke:#82b366,stroke-width:2px,color:#2d5016
-    classDef container fill:#e8f5e9,stroke:#4caf50,stroke-width:2px,color:#1b5e20
-    classDef consumer fill:#e1bee7,stroke:#9c27b0,stroke-width:2px,color:#4a148c
+    classDef buildtime fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef external fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef registry fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef runtime fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef zerosurface fill:#e1d5e7,stroke:#9673a6,stroke-width:3px
 
-    class Extractor,Report,Artifacts buildtime
-    class HF,OCI external
-    class Dockerfile build
-    class ContainerInfo,DataVol,BenchVol container
-    class Dashboard consumer
+    class Extractor buildtime
+    class HF,RHReg,AccReg external
+    class Konflux,GHA buildtime
+    class QuayRHOAI,QuayODH registry
+    class DC zerosurface
+    class DataVol,Dashboard,Operator runtime

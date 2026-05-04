@@ -1,35 +1,39 @@
 sequenceDiagram
     participant Client as External Client
-    participant Gateway as data-science-gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant MLflow as MLflow Server<br/>8443/TCP HTTPS (uvicorn SSL)
+    participant Gateway as data-science-gateway<br/>(Envoy)<br/>443/TCP HTTPS
+    participant MLflow as MLflow Server<br/>8443/TCP HTTPS<br/>(service-ca TLS)
     participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant DB as PostgreSQL / MySQL<br/>5432/TCP or 3306/TCP
-    participant S3 as S3-compatible Storage<br/>443/TCP or 9000/TCP
+    participant DB as PostgreSQL/MySQL<br/>5432/3306/TCP
+    participant S3 as S3-compatible Storage<br/>443/9000/TCP
+    participant Operator as MLflow Operator<br/>controller-runtime
 
-    Note over Client,S3: Flow 1: External Client → MLflow API via Gateway
+    rect rgb(240, 248, 255)
+        Note over Client,MLflow: Flow 1: External User Access via Gateway
+        Client->>Gateway: POST /mlflow/api/2.0/mlflow/experiments/list<br/>HTTPS TLS 1.2+<br/>Auth: Platform OIDC/OAuth
+        Gateway->>MLflow: Forward to /api/2.0/mlflow/experiments/list<br/>HTTPS 8443/TCP (re-encrypted, service-ca)<br/>Forwarded user identity
+        MLflow->>K8sAPI: SelfSubjectAccessReview<br/>HTTPS 6443/TCP TLS 1.2+<br/>Auth: Impersonated user token
+        K8sAPI-->>MLflow: Authorization decision<br/>(check mlflow.kubeflow.org/experiments)
+        MLflow-->>Gateway: JSON Response
+        Gateway-->>Client: JSON Response
+    end
 
-    Client->>Gateway: HTTPS/443<br/>Platform auth (gateway-level)
-    Gateway->>MLflow: HTTPS/8443<br/>TLS (service-ca cert)<br/>Forwarded Bearer Token
-    MLflow->>K8sAPI: HTTPS/6443<br/>SelfSubjectAccessReview<br/>ServiceAccount Token
-    K8sAPI-->>MLflow: Allow/Deny
-    MLflow->>DB: TCP/5432 or TCP/3306<br/>TLS (optional, via CA bundle)<br/>Connection string credentials
-    DB-->>MLflow: Query results
-    MLflow-->>Gateway: JSON Response
-    Gateway-->>Client: JSON Response
+    rect rgb(255, 248, 240)
+        Note over MLflow,DB: Flow 2: Backend Store Access
+        MLflow->>DB: SQL query (experiments, runs, models)<br/>PostgreSQL 5432/TCP or MySQL 3306/TCP<br/>TLS (optional, via combined CA bundle)<br/>Auth: Connection string credentials
+        DB-->>MLflow: Query results
+    end
 
-    Note over Client,S3: Flow 2: MLflow Artifact Upload via Serve-Artifacts
+    rect rgb(240, 255, 240)
+        Note over MLflow,S3: Flow 3: Artifact Storage Access
+        MLflow->>S3: PUT/GET model artifacts<br/>HTTPS 443/TCP or HTTP 9000/TCP<br/>TLS (via combined CA bundle)<br/>Auth: AWS IAM credentials (envFrom secret)
+        S3-->>MLflow: Artifact data
+    end
 
-    Client->>Gateway: HTTPS/443<br/>Artifact upload request
-    Gateway->>MLflow: HTTPS/8443<br/>TLS (service-ca cert)<br/>Kubernetes Bearer Token
-    MLflow->>K8sAPI: HTTPS/6443<br/>SelfSubjectAccessReview
-    K8sAPI-->>MLflow: Allow
-    MLflow->>S3: HTTPS/443 or HTTP/9000<br/>TLS (via CA bundle)<br/>AWS IAM credentials (envFrom Secret)
-    S3-->>MLflow: Upload acknowledgement
-    MLflow-->>Gateway: Success response
-    Gateway-->>Client: Success response
-
-    Note over Client,S3: Flow 3: Prometheus Metrics Scraping
-
-    participant Prometheus as Prometheus
-    Prometheus->>MLflow: HTTPS/8443<br/>TLS (service-ca cert, verified via<br/>openshift-service-ca.crt ConfigMap)<br/>Bearer Token (ServiceAccount)
-    MLflow-->>Prometheus: Metrics response
+    rect rgb(248, 240, 255)
+        Note over Operator,K8sAPI: Flow 4: Operator Reconciliation
+        Operator->>K8sAPI: Watch MLflow CRs<br/>HTTPS 6443/TCP TLS 1.2+<br/>Auth: ServiceAccount Bearer Token
+        K8sAPI-->>Operator: MLflow CR change event
+        Note over Operator: Render Helm chart in-process
+        Operator->>K8sAPI: Server-Side Apply<br/>(Deployment, Service, HTTPRoute,<br/>NetworkPolicy, RBAC, ServiceMonitor)<br/>HTTPS 6443/TCP TLS 1.2+
+        K8sAPI-->>Operator: Apply result
+    end

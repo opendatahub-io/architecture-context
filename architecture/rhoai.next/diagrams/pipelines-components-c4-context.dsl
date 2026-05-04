@@ -1,50 +1,52 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and runs AI/ML pipelines for training, fine-tuning, and evaluation"
-        mlEngineer = person "ML Engineer" "Configures pipeline parameters, manages model lifecycle"
-        platformAdmin = person "Platform Admin" "Deploys DSPA, manages secrets and storage"
+        dataScientist = person "Data Scientist" "Creates and runs AI/ML pipelines for model training, evaluation, and deployment on RHOAI"
+        platformAdmin = person "Platform Admin" "Deploys and manages the RHOAI platform and pipeline infrastructure"
 
-        pipelinesComponents = softwareSystem "Pipelines Components" "Reusable KFP v2 component library and pre-composed pipelines for AI/ML workflows" {
-            componentLibrary = container "KFP Component Library" "Reusable pipeline steps: data processing, training, evaluation, deployment" "Python / KFP v2"
-            pipelineDefinitions = container "Pre-Composed Pipelines" "Multi-step workflows: AutoML, AutoRAG, LoRA/OSFT/SFT fine-tuning" "Python / KFP v2"
-            initContainer = container "Managed Pipeline Init Container" "Compiles and stages managed pipelines for KFP API server discovery" "Python Init Container"
-            automlRuntime = container "AutoML Runtime Image" "Pre-built environment with AutoGluon, PyTorch for AutoML execution" "Container Image (odh-automl)"
-            autoragRuntime = container "AutoRAG Runtime Image" "Pre-built environment with Docling, LangChain, ChromaDB for RAG optimization" "Container Image (odh-autorag)"
-            cicdTooling = container "CI/CD Tooling" "Validation, compilation, base image governance, metadata enforcement" "Python Scripts"
+        pipelinesComponents = softwareSystem "pipelines-components" "Centralized library of reusable KFP components and managed pipelines for AI/ML workflows" {
+            initContainer = container "odh-pipelines-components" "Compiles managed pipeline definitions to YAML and stages them for KFP API Server" "Python 3.11 Init Container" "UBI9"
+            kfpLibrary = container "kfp-components" "Reusable KFP pipeline components: data processing, training, evaluation, deployment" "Python Library"
+            automlImage = container "odh-automl" "Runtime image with AutoGluon for tabular/time-series AutoML components" "Container Image" "Runtime"
+            autoragImage = container "odh-autorag" "Runtime image with ai4rag, Docling, Llama Stack for RAG optimization components" "Container Image" "Runtime"
         }
 
-        dspa = softwareSystem "Data Science Pipelines Application" "KFP runtime environment on RHOAI clusters" "Internal RHOAI"
-        kfpServer = softwareSystem "KFP API Server" "Kubeflow Pipelines API server for pipeline execution" "Internal RHOAI"
-        modelRegistry = softwareSystem "Kubeflow Model Registry" "Model metadata storage with version and provenance tracking" "Internal RHOAI"
-        s3Storage = softwareSystem "S3-Compatible Object Storage" "Dataset storage, training data, model artifacts (MinIO/Ceph/AWS)" "External"
-        hfHub = softwareSystem "Hugging Face Hub" "Model and dataset repository for ML community" "External"
-        llamaStack = softwareSystem "Llama Stack API" "Embedding generation, vector I/O, and LLM inference" "External"
-        k8sAPI = softwareSystem "Kubernetes API" "Cluster API for secrets, PVCs, pod scheduling" "Infrastructure"
-        ociRegistry = softwareSystem "OCI Container Registry" "Container and model artifact registry" "External"
-        konflux = softwareSystem "Konflux Build System" "Multi-arch container image builds with hermetic dependency prefetch" "Internal Red Hat"
-        pypiMirror = softwareSystem "Red Hat PyPI Mirror" "Curated Python package mirror for RHOAI builds" "Internal Red Hat"
+        kfpServer = softwareSystem "KFP API Server" "Kubeflow Pipelines server that serves and orchestrates pipeline runs" "Internal RHOAI"
+        argoWorkflows = softwareSystem "Argo Workflows" "Workflow engine that executes pipeline steps as Kubernetes pods" "Internal RHOAI"
+        kubeflowTrainer = softwareSystem "Kubeflow Trainer" "Kubernetes-native distributed training operator (ClusterTrainingRuntime)" "Internal RHOAI"
+        modelRegistry = softwareSystem "Kubeflow Model Registry" "Model versioning, metadata storage, and provenance tracking" "Internal RHOAI"
+        llamaStack = softwareSystem "Llama Stack" "Vector store, embedding, and inference API for RAG workflows" "Internal/External"
 
-        # User interactions
-        dataScientist -> pipelinesComponents "Imports components, submits pipelines" "Python / KFP SDK"
-        mlEngineer -> pipelinesComponents "Configures pipeline parameters, reviews results" "Python / KFP SDK"
-        platformAdmin -> dspa "Deploys and configures DSPA" "kubectl / Operator"
+        awsS3 = softwareSystem "AWS S3" "Object storage for datasets, documents, and model artifacts" "External"
+        huggingFace = softwareSystem "HuggingFace Hub" "Public repository for ML datasets and pre-trained models" "External"
+        llmEndpoints = softwareSystem "OpenAI-compatible LLM Endpoints" "Chat completion and embedding APIs for RAG optimization and SDG" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API for TrainingJob submission, pod monitoring, namespace operations" "Infrastructure"
 
-        # Internal component relationships
-        pipelineDefinitions -> componentLibrary "Composes components into workflows"
-        initContainer -> kfpServer "Copies compiled pipeline YAMLs" "Filesystem (shared volume)"
-        cicdTooling -> componentLibrary "Validates, compiles, governs" "Python Scripts"
-        cicdTooling -> pipelineDefinitions "Validates metadata, compiles" "Python Scripts"
+        rhoaiConnections = softwareSystem "RHOAI Connections" "Credential management for S3, HuggingFace, LLM, and Llama Stack secrets" "Internal RHOAI"
 
-        # External system interactions
-        pipelinesComponents -> dspa "Runs pipelines on" "KFP API / HTTPS/443"
-        pipelinesComponents -> s3Storage "Downloads/uploads datasets and models" "HTTPS/443 / AWS IAM"
-        pipelinesComponents -> hfHub "Downloads models and datasets" "HTTPS/443 / Bearer Token"
-        pipelinesComponents -> llamaStack "Generates embeddings, LLM inference" "HTTPS/443 / API Key"
-        pipelinesComponents -> modelRegistry "Registers trained models with provenance" "HTTPS/443 / Bearer Token"
-        pipelinesComponents -> k8sAPI "Reads secrets, provisions PVCs" "HTTPS/6443 / SA Token"
-        pipelinesComponents -> ociRegistry "Downloads model artifacts" "HTTPS/443 / Registry Creds"
-        konflux -> pipelinesComponents "Builds container images" "Tekton Pipeline"
-        konflux -> pypiMirror "Fetches Python dependencies" "HTTPS/443"
+        # Relationships - User to system
+        dataScientist -> kfpServer "Submits pipeline runs via UI/SDK"
+        platformAdmin -> pipelinesComponents "Deploys init container with platform operator"
+
+        # Relationships - Init container flow
+        initContainer -> kfpServer "Stages compiled managed pipeline YAMLs via shared volume" "Filesystem"
+
+        # Relationships - Pipeline execution
+        kfpServer -> argoWorkflows "Creates Argo Workflows for pipeline execution"
+        argoWorkflows -> kfpLibrary "Runs pipeline step components as pods"
+        argoWorkflows -> automlImage "Uses as runtime image for AutoML steps"
+        argoWorkflows -> autoragImage "Uses as runtime image for AutoRAG steps"
+
+        # Relationships - External service egress
+        kfpLibrary -> awsS3 "Uploads/downloads datasets, documents, model artifacts" "HTTPS/443, TLS 1.2+, AWS IAM"
+        kfpLibrary -> huggingFace "Downloads datasets and pre-trained models" "HTTPS/443, TLS 1.2+, HF_TOKEN"
+        kfpLibrary -> llmEndpoints "Chat completions and embeddings for RAG/SDG" "HTTPS, TLS 1.2+, API key"
+        kfpLibrary -> llamaStack "Vector store CRUD, embeddings, inference for RAG" "HTTP(S), API key"
+        kfpLibrary -> kubernetesAPI "Submits TrainingJob CRs, monitors pods" "HTTPS/443, TLS 1.2+, SA token"
+        kfpLibrary -> modelRegistry "Registers trained models with metadata" "HTTP/8080, plaintext, no auth"
+
+        # Relationships - Internal platform
+        kubeflowTrainer -> kubernetesAPI "Creates and manages training worker pods"
+        rhoaiConnections -> kfpLibrary "Injects S3, HF, LLM, Llama Stack credentials as env vars" "Kubernetes Secrets"
     }
 
     views {
@@ -59,13 +61,8 @@ workspace {
         }
 
         styles {
-            element "Person" {
-                shape Person
-                background #08427b
-                color #ffffff
-            }
             element "Software System" {
-                background #1168bd
+                background #438dd5
                 color #ffffff
             }
             element "External" {
@@ -76,17 +73,30 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal Red Hat" {
-                background #cc0000
+            element "Internal/External" {
+                background #b8a042
                 color #ffffff
             }
             element "Infrastructure" {
-                background #555555
+                background #d45d3c
                 color #ffffff
             }
             element "Container" {
                 background #438dd5
                 color #ffffff
+            }
+            element "Runtime" {
+                background #f5a623
+                color #ffffff
+            }
+            element "UBI9" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Person" {
+                background #08427b
+                color #ffffff
+                shape person
             }
         }
     }

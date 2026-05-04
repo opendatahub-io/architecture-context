@@ -1,51 +1,49 @@
 sequenceDiagram
-    participant User as User / Data Scientist
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
-    participant WebhookSrv as Webhook Server<br/>9443/TCP HTTPS TLS
-    participant Controller as modelmesh-controller<br/>(Go Operator)
-    participant ModelMesh as ModelMesh Sidecar<br/>8033/TCP gRPC
-    participant etcd as etcd<br/>2379/TCP gRPC TLS
+    participant Client as External Client
+    participant OAuthProxy as oauth-proxy Sidecar<br/>8443/TCP HTTPS TLS
+    participant RESTProxy as REST Proxy Sidecar<br/>8008/TCP HTTP
+    participant ModelMesh as ModelMesh Container<br/>8033/TCP gRPC
+    participant Runtime as Runtime Container<br/>(Triton/MLServer/OVMS/TorchServe)
     participant Puller as Puller Sidecar<br/>8086/TCP gRPC
-    participant Storage as Model Storage<br/>443/TCP HTTPS
-    participant Client as Inference Client
-    participant OAuthProxy as oauth-proxy<br/>8443/TCP HTTPS
-    participant RESTProxy as REST Proxy<br/>HTTP
-    participant Runtime as Model Runtime<br/>(Triton/OVMS/MLServer)
+    participant etcd as etcd Cluster<br/>2379/TCP gRPC
+    participant Storage as S3/GCS/Azure/PVC<br/>443/TCP HTTPS
+    participant Controller as modelmesh-controller<br/>Operator
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
 
-    rect rgb(220, 235, 255)
-        Note over User,Storage: Flow 1: Model Registration (Predictor Creation)
-        User->>K8sAPI: POST Predictor CR<br/>Auth: Bearer Token
-        K8sAPI->>Controller: Watch event (Predictor)
-        Controller->>ModelMesh: gRPC SetVModel<br/>TLS optional, mTLS optional
-        ModelMesh->>etcd: Register model placement<br/>TLS optional, Username/Password
-        ModelMesh->>Puller: Download model<br/>gRPC 8086/TCP (pod-local)
-        Puller->>Storage: GET model artifacts<br/>HTTPS/443, Storage credentials
-        Storage-->>Puller: Model artifacts
-        Puller-->>ModelMesh: Model cached locally
-        Controller->>K8sAPI: Update Predictor status<br/>ServiceAccount token
-    end
+    Note over Client, etcd: Flow 1: gRPC Inference Request
+    Client->>ModelMesh: gRPC inference request<br/>8033/TCP, Optional TLS/mTLS
+    ModelMesh->>etcd: Check model placement/routing<br/>2379/TCP, Optional TLS/mTLS
+    etcd-->>ModelMesh: Model location & status
+    ModelMesh->>Runtime: Forward to runtime<br/>gRPC (localhost/UDS)
+    Runtime-->>ModelMesh: Prediction result
+    ModelMesh-->>Client: gRPC response
 
-    rect rgb(255, 235, 220)
-        Note over Client,Runtime: Flow 2: Model Inference Request (RHOAI)
-        Client->>OAuthProxy: HTTPS/8443<br/>TLS, OAuth token
-        OAuthProxy->>RESTProxy: HTTP (pod-local)<br/>No encryption
-        RESTProxy->>ModelMesh: gRPC/8033<br/>TLS optional
-        ModelMesh->>etcd: Routing lookup<br/>TLS optional, Username/Password
-        etcd-->>ModelMesh: Model location
-        ModelMesh->>Runtime: Inference request<br/>Unix socket / gRPC (pod-local)
-        Runtime-->>ModelMesh: Prediction result
-        ModelMesh-->>RESTProxy: gRPC response
-        RESTProxy-->>OAuthProxy: HTTP response
-        OAuthProxy-->>Client: HTTPS response
-    end
+    Note over Client, etcd: Flow 2: REST Inference via OAuth
+    Client->>OAuthProxy: HTTPS POST inference<br/>8443/TCP TLS, OAuth token
+    OAuthProxy->>OAuthProxy: Validate OAuth token<br/>SAR: get services in namespace
+    OAuthProxy->>RESTProxy: Forward (pre-authenticated)<br/>8008/TCP HTTP (localhost)
+    RESTProxy->>ModelMesh: Translate REST→gRPC<br/>8033/TCP, Optional TLS (localhost)
+    ModelMesh->>Runtime: Forward to runtime<br/>gRPC (localhost/UDS)
+    Runtime-->>ModelMesh: Prediction result
+    ModelMesh-->>RESTProxy: gRPC response
+    RESTProxy-->>OAuthProxy: HTTP response
+    OAuthProxy-->>Client: HTTPS JSON response
 
-    rect rgb(220, 255, 220)
-        Note over User,Controller: Flow 3: ServingRuntime Deployment
-        User->>K8sAPI: POST ServingRuntime CR<br/>Auth: Bearer Token
-        K8sAPI->>WebhookSrv: Validate SR spec<br/>HTTPS/9443, API server cert
-        WebhookSrv-->>K8sAPI: Validation result
-        K8sAPI->>Controller: Watch event (ServingRuntime)
-        Controller->>K8sAPI: Create Deployment<br/>ServiceAccount token
-        Controller->>K8sAPI: Create HPA<br/>ServiceAccount token
-        Controller->>K8sAPI: Copy etcd Secret<br/>ServiceAccount token
-    end
+    Note over Controller, Storage: Flow 3: Model Loading
+    Controller->>K8sAPI: Watch Predictor/InferenceService CRs<br/>443/TCP HTTPS, SA token
+    K8sAPI-->>Controller: New Predictor event
+    Controller->>ModelMesh: registerModel / setVModel<br/>8033/TCP gRPC, Optional TLS
+    ModelMesh->>etcd: Store model registration<br/>2379/TCP, credentials
+    ModelMesh->>Puller: Trigger model download<br/>8086/TCP gRPC
+    Puller->>Storage: Download model artifacts<br/>443/TCP HTTPS TLS, storage credentials
+    Storage-->>Puller: Model artifacts
+    Puller->>Runtime: Load model via adapter<br/>8085/TCP gRPC (localhost)
+    Runtime-->>ModelMesh: Model loaded confirmation
+
+    Note over Controller, K8sAPI: Flow 4: Controller Reconciliation
+    Controller->>K8sAPI: Read ServingRuntime spec<br/>443/TCP HTTPS, SA token
+    K8sAPI-->>Controller: ServingRuntime definition
+    Controller->>Controller: Render deployment template<br/>14-step transformation pipeline
+    Controller->>K8sAPI: Create/Update Deployment<br/>443/TCP HTTPS, SA token
+    Controller->>K8sAPI: Create/Update Service (headless)<br/>443/TCP HTTPS, SA token
+    Controller->>K8sAPI: Create/Update HPA (if enabled)<br/>443/TCP HTTPS, SA token

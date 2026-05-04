@@ -1,78 +1,62 @@
 sequenceDiagram
-    autonumber
-
     participant Client as External Client
-    participant KServe as KServe/ModelMesh
-    participant GRPC as Caikit gRPC Server<br/>8085/TCP
-    participant HTTP as Caikit HTTP Server<br/>8080/TCP
-    participant Wrapper as CaikitRuntimeServerWrapper
+    participant HTTP as HTTP Server (FastAPI)<br/>8080/TCP Optional TLS
+    participant GRPC as gRPC Server<br/>8085/TCP Optional TLS/mTLS
     participant Predict as GlobalPredictServicer
     participant Train as GlobalTrainServicer
-    participant MM as Model Manager
-    participant Module as Module.run() / Module.train()
+    participant ModelMgr as ModelManager
+    participant Model as LoadedModel<br/>(Module.run)
+    participant MMesh as Model Mesh Controller
+    participant MRServicer as ModelRuntimeServicer
+    participant Loader as CoreModelLoader
     participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant Metrics as Metrics Server<br/>8086/TCP
-    participant OTEL as OTEL Collector<br/>4317/TCP
-    participant Kubelet as Kubernetes kubelet
-    participant Probe as caikit-health-probe
 
     rect rgb(230, 245, 255)
-        Note over Client,Metrics: Flow 1: Model Inference (gRPC)
-        Client->>GRPC: gRPC Inference Request<br/>TLS/mTLS (configurable)
-        GRPC->>Wrapper: Route RPC
-        Wrapper->>Predict: Dispatch to GlobalPredictServicer
-        Predict->>MM: Retrieve loaded model
-        MM->>Module: Module.run()
-        Module-->>Predict: Prediction result
-        Predict->>Metrics: Record RPC metrics<br/>HTTP/8086 plaintext
-        Predict-->>Client: gRPC Response
+        Note over Client, Model: Flow 1: Model Inference (HTTP)
+        Client->>HTTP: POST /api/v1/{task}/{model_id}<br/>HTTP/HTTPS, Optional TLS
+        HTTP->>Predict: Route to servicer<br/>(in-process)
+        Predict->>ModelMgr: Retrieve loaded model<br/>(in-process)
+        ModelMgr->>Model: Module.run(request)<br/>(in-process)
+        Model-->>ModelMgr: Prediction result
+        ModelMgr-->>Predict: Result
+        Predict-->>HTTP: Response
+        HTTP-->>Client: JSON response or SSE stream<br/>HTTP/HTTPS
     end
 
     rect rgb(230, 255, 230)
-        Note over Client,Module: Flow 2: Model Inference (HTTP)
-        Client->>HTTP: POST /api/v1/task/{task_name}<br/>HTTP/HTTPS (configurable)
-        HTTP->>Predict: predict_model()
-        Predict->>MM: Retrieve loaded model
-        MM->>Module: Module.run()
-        Module-->>Predict: Prediction result
-        Predict-->>HTTP: JSON response
-        HTTP-->>Client: HTTP 200 JSON
+        Note over Client, Model: Flow 2: Model Inference (gRPC)
+        Client->>GRPC: {TaskName}Service RPC<br/>gRPC, Optional TLS/mTLS
+        GRPC->>Predict: CaikitRuntimeServerWrapper<br/>(interceptor routing)
+        Predict->>ModelMgr: Retrieve loaded model<br/>(in-process)
+        ModelMgr->>Model: Module.run(request)<br/>(in-process)
+        Model-->>ModelMgr: Prediction result
+        ModelMgr-->>Predict: Result
+        Predict-->>GRPC: gRPC response
+        GRPC-->>Client: gRPC response<br/>Optional TLS/mTLS
     end
 
     rect rgb(255, 245, 230)
-        Note over KServe,Module: Flow 3: Model Loading (ModelMesh)
-        KServe->>GRPC: loadModel<br/>unix:///tmp/mmesh/grpc.sock<br/>plaintext (pod-local)
-        GRPC->>MM: ModelRuntimeServicer.loadModel
-        MM->>MM: Locate model artifacts (local path)
-        MM->>Module: Module.load()
-        Module-->>MM: Model loaded
-        MM-->>KServe: Load success + model size
+        Note over MMesh, S3: Flow 3: Model Loading via Model Mesh
+        MMesh->>MRServicer: loadModel(modelId, modelPath)<br/>gRPC via Unix socket or 8085/TCP
+        MRServicer->>ModelMgr: load_model(model_id, path)<br/>(in-process)
+        ModelMgr->>Loader: load(model_path)<br/>(in-process)
+        Loader->>S3: Download model artifacts<br/>HTTPS/443, TLS, IAM Auth
+        S3-->>Loader: Model artifacts
+        Loader-->>ModelMgr: Loaded module instance
+        ModelMgr-->>MRServicer: Model ready
+        MRServicer-->>MMesh: LoadModelResponse(sizeInBytes)
     end
 
-    rect rgb(255, 230, 230)
-        Note over Client,S3: Flow 4: Training Job
-        Client->>GRPC: Training request<br/>gRPC 8085 or HTTP 8080
-        GRPC->>Train: GlobalTrainServicer
-        Train->>Module: Module.train() (thread/subprocess)
-        Module->>S3: Fetch training data<br/>HTTPS/443, TLS 1.2+<br/>AWS IAM credentials
-        S3-->>Module: Training data
-        Module->>S3: Save trained model<br/>HTTPS/443
-        Module-->>Train: Training complete
-        Train-->>Client: Training status
-    end
+    rect rgb(255, 230, 245)
+        Note over Client, Model: Flow 4: Training Job
+        Client->>HTTP: POST /api/v1/{module}/train<br/>HTTP/HTTPS, Optional TLS
+        HTTP->>Train: Route to servicer<br/>(in-process)
+        Train->>Model: Module.train(data) [async]<br/>(in-process, background thread)
+        Note right of Model: Training runs<br/>asynchronously
+        Model-->>Train: Training ID
+        Train-->>HTTP: Training ID + status
+        HTTP-->>Client: {"training_id": "...", "status": "RUNNING"}
 
-    rect rgb(245, 230, 255)
-        Note over Kubelet,GRPC: Flow 5: Health Probe
-        Kubelet->>Probe: Execute readiness/liveness check
-        Probe->>HTTP: GET /health<br/>HTTP/HTTPS (matches server config)
-        HTTP-->>Probe: Health status
-        Probe->>GRPC: grpc.health.v1.Health.Check<br/>gRPC (matches server config)
-        GRPC-->>Probe: SERVING status
-        Probe-->>Kubelet: Probe result (exit code)
-    end
-
-    rect rgb(240, 240, 240)
-        Note over GRPC,OTEL: Background: Telemetry
-        GRPC->>OTEL: Export trace spans<br/>gRPC/4317 or HTTP/4318<br/>TLS/mTLS (configurable)
-        Metrics->>Metrics: Expose /metrics<br/>HTTP/8086 plaintext
+        Client->>HTTP: GET /api/v1/training/status/{id}<br/>HTTP/HTTPS (polling)
+        HTTP-->>Client: {"status": "COMPLETED", "model_id": "..."}
     end

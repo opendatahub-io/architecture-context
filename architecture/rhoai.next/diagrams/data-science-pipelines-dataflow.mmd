@@ -1,54 +1,49 @@
 sequenceDiagram
-    participant User as User / KFP SDK
-    participant UI as Frontend UI<br/>3000/TCP
-    participant API as API Server<br/>8888/TCP REST<br/>8887/TCP gRPC
-    participant DB as MySQL/PostgreSQL<br/>3306/5432 TCP
-    participant ObjStore as MinIO / S3<br/>9000/443 TCP
+    participant User as User (SDK/UI)
+    participant API as API Server<br/>8888/TCP HTTP<br/>8887/TCP gRPC
+    participant DB as MySQL/PostgreSQL<br/>3306/5432/TCP
+    participant S3 as Object Store (S3)<br/>9000/TCP
     participant K8s as Kubernetes API<br/>443/TCP HTTPS
-    participant Argo as Argo Workflow<br/>Task Pod
-    participant Driver as Driver<br/>(init container)
-    participant MLMD as MLMD gRPC<br/>8080/TCP
-    participant Cache as Cache Server<br/>8443/TCP HTTPS
-    participant Launcher as Launcher<br/>(sidecar)
+    participant Argo as Argo Workflow<br/>Controller
+    participant Driver as Driver (sidecar)
+    participant MLMD as ML Metadata<br/>8080/TCP gRPC
+    participant Launcher as Launcher (sidecar)
     participant PA as Persistence Agent
+    participant SWC as Scheduled Workflow<br/>Controller
 
-    Note over User,PA: Flow 1: Pipeline Run Execution
+    Note over User,Launcher: Flow 1: Pipeline Submission and Execution
 
-    User->>UI: Browse pipelines / submit run
-    UI->>API: POST /apis/v2beta1/runs<br/>Bearer Token
-    API->>DB: Store run record<br/>Username/Password
-    API->>ObjStore: Store pipeline spec<br/>Access Key/Secret
-    API->>K8s: Create Argo Workflow CR<br/>ServiceAccount Token
-    K8s->>Argo: Schedule task pod
+    User->>API: POST /apis/v2beta1/runs<br/>HTTP 8888/TCP<br/>Auth: Bearer Token
+    API->>DB: Store run metadata<br/>SQL 3306/5432/TCP<br/>Auth: Username/Password
+    API->>S3: Store pipeline spec<br/>HTTP 9000/TCP<br/>Auth: AccessKey/SecretKey
+    API->>K8s: Submit Argo Workflow CR<br/>HTTPS 443/TCP<br/>Auth: SA Token
+    K8s->>Argo: Watch event (new Workflow)
+    Argo->>Driver: Execute driver step<br/>(Pod exec)
 
-    rect rgb(230, 245, 255)
-        Note over Argo,Launcher: Per-step execution in task pod
-        Argo->>Driver: Run as init container
-        Driver->>MLMD: Resolve upstream inputs<br/>gRPC 8080
-        Driver->>API: Cache lookup<br/>gRPC 8887
-        Driver-->>Argo: Pod spec patch (strategic merge)
+    Driver->>MLMD: Resolve inputs, record context<br/>gRPC 8080/TCP<br/>Encryption: Optional TLS
+    Driver->>API: Cache lookup (TaskService)<br/>gRPC 8887/TCP<br/>Encryption: Optional TLS
 
-        Argo->>Launcher: Run alongside user container
-        Launcher->>ObjStore: Download input artifacts<br/>HTTP 9000
-        Launcher->>Launcher: Execute user command
-        Launcher->>ObjStore: Upload output artifacts<br/>HTTP 9000
-        Launcher->>MLMD: Publish execution results<br/>gRPC 8080
-    end
+    Argo->>Launcher: Execute launcher in user container<br/>(Pod exec)
+    Launcher->>Launcher: Execute user code
+    Launcher->>S3: Upload artifacts<br/>HTTP 9000/TCP<br/>Auth: AccessKey/SecretKey
+    Launcher->>MLMD: Publish execution results<br/>gRPC 8080/TCP
 
-    PA->>K8s: Watch Argo Workflows<br/>HTTPS 443
-    PA->>API: Report workflow state<br/>gRPC 8887<br/>Projected SA Token
+    Note over User,SWC: Flow 2: Recurring Run Scheduling
 
-    Note over User,PA: Flow 2: Cache Hit (Step Skipping)
+    User->>API: POST /apis/v2beta1/recurringruns<br/>HTTP 8888/TCP<br/>Auth: Bearer Token
+    API->>K8s: Create ScheduledWorkflow CR<br/>HTTPS 443/TCP<br/>Auth: SA Token
+    SWC->>K8s: Watch ScheduledWorkflow CRs<br/>HTTPS 443/TCP<br/>Auth: SA Token
+    SWC->>API: CreateRun (on schedule trigger)<br/>gRPC 8887/TCP<br/>Auth: Projected SA Token (1h)
 
-    K8s->>Cache: MutatingWebhook intercept<br/>HTTPS 8443<br/>Webhook CA
-    Cache->>DB: Cache key lookup<br/>MySQL wire 3306
-    Cache-->>K8s: JSON Patch response<br/>(replace container with busybox)
+    Note over PA,API: Flow 3: Workflow Status Persistence
 
-    Note over User,PA: Flow 3: Scheduled Pipeline Execution
+    PA->>K8s: Watch Argo Workflows<br/>HTTPS 443/TCP<br/>Auth: SA Token
+    PA->>API: ReportWorkflow status<br/>gRPC 8887/TCP<br/>Auth: Projected SA Token (1h)
 
-    rect rgb(255, 245, 230)
-        Note over K8s,API: ScheduledWorkflow Controller
-        K8s->>K8s: ScheduledWorkflow CR informer
-        K8s->>API: gRPC CreateRun<br/>8887/TCP<br/>Projected SA Token
-        K8s->>K8s: Update ScheduledWorkflow status
-    end
+    Note over K8s,DB: Flow 4: Pipeline Step Caching (Webhook)
+
+    participant Cache as Cache Server<br/>443/TCP HTTPS
+
+    K8s->>Cache: Pod CREATE admission<br/>HTTPS 443/TCP<br/>Auth: K8s client cert
+    Cache->>DB: Lookup cache fingerprint<br/>SQL 3306/TCP<br/>Auth: Username/Password
+    Cache-->>K8s: AdmissionResponse<br/>(mutate to no-op if cached)

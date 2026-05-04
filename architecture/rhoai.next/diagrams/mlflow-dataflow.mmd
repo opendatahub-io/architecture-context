@@ -1,63 +1,75 @@
 sequenceDiagram
-    autonumber
+    participant Client as MLflow SDK / Browser
+    participant Gateway as ODH Gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant Auth as K8s Auth Plugin<br/>(in-process)
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant WP as Workspace Provider<br/>(in-process)
+    participant Server as MLflow Server<br/>5000/TCP HTTP
+    participant DB as PostgreSQL<br/>5432/TCP
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
 
-    participant MLPod as ML Workload Pod
-    participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
-    participant MLflow as MLflow Server<br/>5000/TCP HTTP
-    participant PG as PostgreSQL<br/>5432/TCP TLS 1.2+
-    participant S3 as S3 / MinIO<br/>443/TCP HTTPS
+    rect rgb(230, 245, 255)
+        Note over Client,S3: Flow 1: Experiment Tracking Request
+        Client->>Gateway: POST /mlflow/api/2.0/mlflow/runs/create<br/>Auth: Bearer Token (K8s SA)<br/>Header: X-MLFLOW-WORKSPACE
+        Gateway->>Server: HTTP/5000 (cluster-internal)<br/>Bearer Token forwarded
+        Server->>Auth: before_request hook
+        Auth->>K8sAPI: SelfSubjectAccessReview<br/>HTTPS/443, SA token
+        K8sAPI-->>Auth: allowed: true
+        Auth->>WP: resolve workspace
+        WP->>K8sAPI: Namespace list/watch<br/>HTTPS/443, SA token
+        K8sAPI-->>WP: namespace details
+        WP-->>Auth: workspace context set
+        Server->>DB: INSERT run record<br/>TCP/5432, DB credentials
+        DB-->>Server: run_id
+        Server->>S3: PUT artifact<br/>HTTPS/443, AWS credentials
+        S3-->>Server: 200 OK
+        Server-->>Gateway: JSON Response
+        Gateway-->>Client: HTTPS Response
+    end
 
-    Note over MLPod, S3: Flow 1: Experiment Tracking
+    rect rgb(255, 243, 224)
+        Note over Client,S3: Flow 2: AI Gateway LLM Invocation
+        Client->>Gateway: POST /mlflow/gateway/{endpoint}/invocations<br/>Auth: Bearer Token (K8s SA)
+        Gateway->>Server: HTTP/5000
+        Server->>Auth: before_request hook
+        Auth->>K8sAPI: SelfSubjectAccessReview<br/>HTTPS/443
+        K8sAPI-->>Auth: allowed: true
+        Server->>DB: SELECT provider config<br/>TCP/5432
+        DB-->>Server: KEK-encrypted config
+        Note over Server: Decrypt API key<br/>AES-256-GCM<br/>PBKDF2-HMAC-SHA256
+        Server->>Server: Route to provider<br/>(traffic split / fallback)
 
-    MLPod->>Proxy: POST /api/2.0/mlflow/runs/create<br/>HTTPS/8443, Bearer Token (K8s SA)
-    Proxy->>Proxy: Validate SA Token
-    Proxy->>MLflow: Forward request<br/>HTTP/5000 (pod-local, plaintext)
-    MLflow->>MLflow: Resolve workspace from<br/>X-MLFLOW-WORKSPACE header
-    MLflow->>PG: INSERT run record<br/>PostgreSQL/5432, TLS 1.2+<br/>Auth: Username/Password
-    PG-->>MLflow: Run ID
-    MLflow-->>Proxy: 200 OK (Run metadata)
-    Proxy-->>MLPod: 200 OK
+        alt OpenAI Provider
+            Server->>Gateway: POST api.openai.com/v1/chat/completions<br/>HTTPS/443, API key
+        else Anthropic Provider
+            Server->>Gateway: POST api.anthropic.com/v1/messages<br/>HTTPS/443, API key
+        end
+        Gateway-->>Server: LLM Response
+        Server-->>Gateway: JSON Response
+        Gateway-->>Client: HTTPS Response
+    end
 
-    MLPod->>Proxy: POST /api/2.0/mlflow/runs/log-batch<br/>HTTPS/8443, Bearer Token
-    Proxy->>MLflow: Forward request<br/>HTTP/5000
-    MLflow->>PG: INSERT metrics, params, tags<br/>PostgreSQL/5432, TLS 1.2+
-    MLflow->>S3: PUT artifact files<br/>HTTPS/443, AWS IAM / Access Key
-    S3-->>MLflow: 200 OK
-    PG-->>MLflow: OK
-    MLflow-->>Proxy: 200 OK
-    Proxy-->>MLPod: 200 OK
+    rect rgb(232, 245, 233)
+        Note over Client,S3: Flow 3: OTLP Trace Ingestion
+        Client->>Gateway: POST /mlflow/v1/traces<br/>Auth: Bearer Token<br/>Header: x-mlflow-experiment-id
+        Gateway->>Server: HTTP/5000
+        Server->>Auth: before_request hook
+        Auth->>K8sAPI: SelfSubjectAccessReview<br/>experiment-scoped
+        K8sAPI-->>Auth: allowed: true
+        Server->>DB: INSERT trace spans<br/>TCP/5432
+        DB-->>Server: trace_id
+        Server->>S3: PUT trace artifacts<br/>HTTPS/443
+        S3-->>Server: 200 OK
+        Server-->>Gateway: 200 OK
+        Gateway-->>Client: HTTPS 200
+    end
 
-    participant Browser as User Browser
-    participant Dashboard as RHOAI Dashboard<br/>443/TCP HTTPS
-    participant FedUI as MLflow Federated UI
-    participant MFAPI as MLflow API<br/>via Platform Gateway
-
-    Note over Browser, MFAPI: Flow 2: UI Embedding via Module Federation
-
-    Browser->>Dashboard: Navigate to Experiments<br/>HTTPS/443, OAuth/OIDC
-    Dashboard->>FedUI: Load remoteEntry.js<br/>HTTPS via Gateway, Bearer Token
-    FedUI-->>Dashboard: MlflowExperimentWrapper
-    Dashboard->>MFAPI: GET /api/2.0/mlflow/experiments/search<br/>HTTPS/443, Bearer Token
-    MFAPI-->>Dashboard: Experiment list (JSON)
-
-    participant OTELApp as OTEL-instrumented App
-    participant MLflowOTLP as MLflow /v1/traces<br/>5000/TCP HTTP
-
-    Note over OTELApp, PG: Flow 3: OTLP Trace Ingestion
-
-    OTELApp->>MLflowOTLP: POST /v1/traces<br/>HTTP/5000, Bearer Token<br/>Content-Type: application/x-protobuf
-    MLflowOTLP->>PG: INSERT trace spans<br/>PostgreSQL/5432, TLS 1.2+
-    PG-->>MLflowOTLP: OK
-    MLflowOTLP-->>OTELApp: 200 OK
-
-    participant Client as Client Application
-    participant GW as MLflow AI Gateway<br/>5000/TCP HTTP
-    participant LLM as LLM Provider<br/>(OpenAI/Anthropic)<br/>443/TCP HTTPS
-
-    Note over Client, LLM: Flow 4: AI Gateway LLM Proxy
-
-    Client->>GW: POST /gateway/chat/completions<br/>HTTP/5000, Bearer Token
-    GW->>GW: Decrypt provider API key<br/>(KEK envelope encryption)
-    GW->>LLM: POST /v1/chat/completions<br/>HTTPS/443, Provider API Key
-    LLM-->>GW: Streaming SSE response
-    GW-->>Client: Proxied SSE response
+    rect rgb(243, 229, 245)
+        Note over Client,S3: Flow 4: Workspace Resolution
+        Note over WP: Triggered on any API request
+        WP->>K8sAPI: GET /api/v1/namespaces<br/>HTTPS/443, SA token
+        K8sAPI-->>WP: namespace list
+        WP->>K8sAPI: GET mlflowconfigs.mlflow.kubeflow.org<br/>HTTPS/443, SA token
+        K8sAPI-->>WP: MLflowConfig (artifact overrides)
+        Note over WP: Set workspace context<br/>on SQLAlchemy query scope
+    end

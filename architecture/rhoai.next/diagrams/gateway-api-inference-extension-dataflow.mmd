@@ -1,48 +1,54 @@
 sequenceDiagram
     participant Client as External Client
-    participant Gateway as Gateway/Envoy Proxy<br/>443/TCP HTTPS
-    participant BBR as Body Based Router<br/>9004/TCP gRPC TLS
+    participant Gateway as Envoy Gateway<br/>443/TCP HTTPS
+    participant BBR as Body-Based Router<br/>9004/TCP gRPC TLS
     participant EPP as Endpoint Picker<br/>9002/TCP gRPC TLS
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant ModelPod as Model Server Pod<br/>(vLLM/SGLang/Triton)
-    participant Prometheus as Prometheus<br/>9090/TCP HTTP
+    participant ModelPod as Model Server Pod<br/>varies/TCP HTTP
 
-    Note over Client,ModelPod: Flow 1: Inference Request Processing
+    Note over Client,ModelPod: Flow 1: Inference Request with Body-Based Routing
 
-    Client->>Gateway: POST /v1/chat/completions<br/>HTTPS TLS 1.2+<br/>Auth: Gateway-defined
-    Gateway->>BBR: ext-proc ProcessingRequest<br/>gRPC/HTTP2 TLS<br/>Request headers + body
-    BBR->>BBR: Parse body, extract<br/>"model" field
-    BBR-->>Gateway: ProcessingResponse<br/>Add X-Gateway-Model-Name header
+    Client->>Gateway: POST /v1/completions<br/>HTTPS/443, TLS 1.2+<br/>Auth: Bearer Token / API Key
 
-    Note over Gateway,EPP: Gateway routes based on model header
+    Gateway->>BBR: ext-proc request (body)<br/>gRPC/9004, TLS (self-signed)
+    BBR->>K8sAPI: Watch ConfigMaps (bbr-managed)<br/>HTTPS/443, ServiceAccount Token
+    K8sAPI-->>BBR: Adapter→Base model mappings
+    BBR-->>Gateway: ext-proc response<br/>Inject: X-Gateway-Model-Name header
 
-    Gateway->>EPP: ext-proc ProcessingRequest<br/>gRPC/HTTP2 TLS<br/>Headers with model name
-    EPP->>EPP: Scheduling Pipeline:<br/>Filter → Score → Pick<br/>(KV cache, queue depth,<br/>prefix cache, LoRA)
-    EPP-->>Gateway: ProcessingResponse<br/>Set target-endpoint:<br/>pod-ip:port
+    Gateway->>EPP: ext-proc request (headers + body)<br/>gRPC/9002, TLS (self-signed)
 
-    Gateway->>ModelPod: Forward inference request<br/>HTTP/8000<br/>Cluster internal
+    Note over EPP: Scheduling Pipeline:<br/>1. Filter (prefix cache, SLO headroom)<br/>2. Score (KV cache, queue depth, LoRA affinity)<br/>3. Pick (max score / weighted random)
 
+    EPP-->>Gateway: ext-proc response<br/>Set: target endpoint address
+
+    Gateway->>ModelPod: Forward inference request<br/>HTTP/varies, per-gateway config
     ModelPod-->>Gateway: Inference response
-    Gateway-->>Client: JSON Response<br/>HTTPS TLS 1.2+
+    Gateway-->>Client: JSON Response<br/>HTTPS/443
 
-    Note over EPP,ModelPod: Flow 2: Metrics Collection (continuous)
+    Note over Client,ModelPod: Flow 2: Model Server Metrics Scraping (Background)
 
     loop Every 50ms (configurable)
-        EPP->>ModelPod: GET /metrics<br/>HTTP (configurable TLS)<br/>No auth
-        ModelPod-->>EPP: Prometheus metrics<br/>(kv_cache_usage, queue_depth,<br/>running_requests, lora_info)
+        EPP->>ModelPod: GET /metrics<br/>HTTP/HTTPS, InsecureSkipVerify=true
+        ModelPod-->>EPP: Prometheus metrics<br/>(KV cache util, queue depth,<br/>running requests, LoRA status)
+        Note over EPP: Update in-memory datastore<br/>for scheduling decisions
     end
 
-    Note over Prometheus,EPP: Flow 3: EPP Metrics Exposition
+    Note over Client,ModelPod: Flow 3: CRD Watches (Background)
 
-    Prometheus->>EPP: GET /metrics<br/>HTTP/9090<br/>Optional: Bearer Token<br/>(TokenReview + SubjectAccessReview)
-    EPP-->>Prometheus: EPP scheduling metrics
+    EPP->>K8sAPI: Watch InferencePool, InferenceObjective,<br/>InferenceModelRewrite, Pods<br/>HTTPS/443, ServiceAccount Token
+    K8sAPI-->>EPP: CRD/Pod change events
+    Note over EPP: Update pool config,<br/>endpoint registry,<br/>model rewrite rules
 
-    Note over BBR,K8sAPI: Flow 4: BBR ConfigMap Reconciliation
+    Note over Client,ModelPod: Flow 4: Latency Prediction (Optional)
 
-    BBR->>K8sAPI: Watch ConfigMaps<br/>label: bbr-managed=true<br/>HTTPS/443<br/>ServiceAccount token
-    K8sAPI-->>BBR: ConfigMap updates<br/>(adapter→base-model mappings)
+    opt Latency Predictor Enabled
+        EPP->>EPP: Collect request telemetry
+        Note right of EPP: Training Server (sidecar)<br/>HTTP/8000
+        Note right of EPP: Prediction Server (sidecar)<br/>HTTP/8001+
+    end
 
-    Note over EPP,K8sAPI: Flow 5: CRD Reconciliation (continuous)
+    Note over Client,ModelPod: Flow 5: Observability (Optional)
 
-    EPP->>K8sAPI: Watch InferencePool,<br/>InferenceObjective,<br/>InferenceModelRewrite, Pods<br/>HTTPS/443<br/>ServiceAccount token
-    K8sAPI-->>EPP: Resource events<br/>(create/update/delete)
+    opt Tracing Enabled
+        EPP-->>EPP: Export traces<br/>gRPC/4317 → OTLP Collector
+    end

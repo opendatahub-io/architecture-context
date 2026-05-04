@@ -1,97 +1,119 @@
 graph TB
-    subgraph ExternalClients["External Clients"]
-        Client[Inference Client]
+    subgraph External["External Traffic"]
+        Client[External Client]
     end
 
-    subgraph IngressLayer["Ingress Layer"]
-        Gateway["Gateway API<br/>(inference-gateway)<br/>80/TCP HTTP"]
-        Envoy["Envoy Proxy<br/>ext-proc filter"]
+    subgraph GatewayLayer["Gateway Layer"]
+        Gateway["Inference Gateway<br/>(Envoy)"]
+        HTTPRoute["HTTPRoute<br/>(backendRef → InferencePool)"]
+        Gateway -->|routes via| HTTPRoute
     end
 
     subgraph EPPComponent["EPP (Endpoint Picker)"]
-        ExtProc["gRPC ext-proc Server<br/>9002/TCP"]
-        HealthGRPC["gRPC Health<br/>9003/TCP"]
-        Metrics["Prometheus Metrics<br/>9090/TCP HTTP"]
-        ZMQ["ZMQ KV-Events SUB<br/>5557/TCP"]
+        direction TB
+        ExtProc["ext_proc gRPC Server<br/>9002/TCP"]
+        HealthGRPC["Health gRPC Server<br/>9003/TCP"]
+        MetricsHTTP["Metrics HTTP Server<br/>9090/TCP"]
+        ZMQSub["ZMQ Subscriber<br/>5557/TCP"]
 
         subgraph SchedulingPipeline["Scheduling Pipeline"]
-            Filters["Filters<br/>(ByLabel, PrefixCacheAffinity,<br/>SLOHeadroomTier)"]
-            Scorers["Scorers<br/>(ActiveRequest, KVCache,<br/>Latency, LoadAware,<br/>LoRAffinity, PrefixCache,<br/>SessionAffinity)"]
-            Pickers["Pickers<br/>(MaxScore, WeightedRandom)"]
+            Filters["Filters<br/>(plugin framework)"]
+            Scorers["Weighted Scorers<br/>(plugin framework)"]
+            Pickers["Pickers<br/>(plugin framework)"]
+            ProfileHandler["Profile Handler"]
+            Filters --> Scorers --> Pickers
+            ProfileHandler -->|selects profile| Filters
         end
 
-        ExtProc --> Filters
-        Filters --> Scorers
-        Scorers --> Pickers
+        subgraph Controllers["Controller-Runtime Reconcilers"]
+            PoolCtrl["InferencePool<br/>Reconciler"]
+            PodCtrl["Pod<br/>Reconciler"]
+            ObjCtrl["InferenceObjective<br/>Reconciler"]
+            RewriteCtrl["InferenceModelRewrite<br/>Reconciler"]
+        end
+
+        subgraph DataLayer["Data Layer"]
+            KVCacheIndex["KV Cache Index<br/>(llm-d-kv-cache)"]
+            EndpointStore["Endpoint<br/>Attribute Map"]
+        end
+
+        subgraph FlowControl["Flow Control (Experimental)"]
+            Admission["Admission Controller"]
+            PriorityBands["Priority Bands"]
+            Admission -->|uses| PriorityBands
+        end
+
+        ExtProc --> ProfileHandler
+        ZMQSub --> KVCacheIndex
     end
 
-    subgraph PDSidecar["PD Sidecar Proxy"]
-        Proxy["HTTP Reverse Proxy<br/>8000/TCP"]
-        subgraph Connectors["KV Transfer Connectors"]
-            NIXL["NIXL v2"]
+    subgraph SidecarComponent["P/D Routing Sidecar"]
+        direction TB
+        SidecarProxy["HTTP/HTTPS Proxy<br/>8000/TCP"]
+        subgraph Connectors["KV Connectors"]
+            NIXL["NIXL V2"]
             SharedStorage["Shared Storage"]
             SGLang["SGLang"]
         end
-        Proxy --> Connectors
+        SSRFAllowlist["SSRF Allowlist<br/>(InferencePool-based)"]
+        SidecarProxy --> Connectors
+        SidecarProxy --> SSRFAllowlist
     end
 
-    subgraph Tokenizer["UDS Tokenizer Sidecar"]
-        UDS["gRPC over UDS<br/>/tmp/tokenizer"]
+    subgraph TokenizerSidecar["UDS Tokenizer"]
+        Tokenizer["Tokenizer Service<br/>Unix Domain Socket"]
     end
 
-    subgraph ModelServers["Model Servers (vLLM)"]
-        Prefiller["Prefiller Instances"]
-        Decoder["Decoder Instances<br/>8001/TCP"]
-        ModelMetrics["Metrics Endpoint<br/>3000/TCP"]
+    subgraph ModelServers["vLLM Model Server Pods"]
+        vLLMPod["vLLM Pod"]
+        vLLMMetrics["Prometheus Metrics"]
+        vLLMKVEvents["KV Cache Events<br/>(ZMQ PUB 5556/TCP)"]
+        vLLMDecoder["Decoder<br/>8001/TCP"]
+        vLLMPrefiller["Prefiller<br/>configurable/TCP"]
     end
 
-    subgraph KubernetesAPI["Kubernetes API"]
-        K8sAPI["API Server<br/>443/TCP HTTPS"]
+    subgraph K8sServices["Kubernetes"]
+        K8sAPI["API Server<br/>443/TCP"]
         InferencePoolCR["InferencePool CR"]
         InferenceObjCR["InferenceObjective CR"]
         ModelRewriteCR["InferenceModelRewrite CR"]
-        PodResource["Pod Resources"]
     end
 
-    %% Request Flow
-    Client -->|HTTP| Gateway
-    Gateway --> Envoy
-    Envoy -->|gRPC ext-proc<br/>9002/TCP| ExtProc
-    Pickers -->|routing decision<br/>target endpoint header| Envoy
-    Envoy -->|routed request<br/>8000/TCP| Decoder
+    %% External flows
+    Client -->|HTTP/80| Gateway
+    Gateway -->|gRPC ext_proc<br/>9002/TCP| ExtProc
+    ExtProc -->|"routing decision<br/>target endpoint headers"| Gateway
+    Gateway -->|routed request| vLLMPod
+    Gateway -->|"routed request<br/>P/D mode"| SidecarProxy
 
-    %% PD Flow
-    Envoy -->|P/D request<br/>8000/TCP| Proxy
-    Proxy -->|prefill| Prefiller
-    Proxy -->|decode<br/>8001/TCP| Decoder
-
-    %% EPP Data Sources
-    ExtProc -->|watch CRDs| K8sAPI
+    %% EPP to dependencies
+    Controllers -->|watch| K8sAPI
     K8sAPI --- InferencePoolCR
     K8sAPI --- InferenceObjCR
     K8sAPI --- ModelRewriteCR
-    K8sAPI --- PodResource
-    ExtProc -->|scrape metrics<br/>3000/TCP| ModelMetrics
-    ZMQ -->|KV cache events| ModelServers
-    ExtProc -->|tokenize prompts| UDS
+    EPPComponent -->|scrape metrics| vLLMMetrics
+    ZMQSub -->|subscribe KV events| vLLMKVEvents
+    Tokenizer -->|tokenize prompts| ExtProc
+
+    %% Sidecar flows
+    SidecarProxy -->|prefill request| vLLMPrefiller
+    SidecarProxy -->|decode request| vLLMDecoder
+    SSRFAllowlist -->|watch| K8sAPI
+
+    %% Monitoring
+    Prometheus["Prometheus"] -->|scrape /metrics| MetricsHTTP
 
     %% Styling
     style ExtProc fill:#4a90e2,stroke:#333,color:#fff
-    style Proxy fill:#4a90e2,stroke:#333,color:#fff
-    style UDS fill:#4a90e2,stroke:#333,color:#fff
-    style Envoy fill:#e8a838,stroke:#333,color:#fff
-    style Gateway fill:#e8a838,stroke:#333,color:#fff
-    style K8sAPI fill:#999,stroke:#333,color:#fff
+    style HealthGRPC fill:#4a90e2,stroke:#333,color:#fff
+    style MetricsHTTP fill:#4a90e2,stroke:#333,color:#fff
+    style ZMQSub fill:#4a90e2,stroke:#333,color:#fff
+    style SidecarProxy fill:#50c878,stroke:#333,color:#fff
+    style Tokenizer fill:#9b59b6,stroke:#333,color:#fff
+    style Gateway fill:#f5a623,stroke:#333,color:#fff
+    style K8sAPI fill:#e8e8e8,stroke:#333
     style InferencePoolCR fill:#f5a623,stroke:#333
     style InferenceObjCR fill:#f5a623,stroke:#333
     style ModelRewriteCR fill:#f5a623,stroke:#333
-    style PodResource fill:#f5a623,stroke:#333
-    style Prefiller fill:#7ed321,stroke:#333
-    style Decoder fill:#7ed321,stroke:#333
-    style ModelMetrics fill:#7ed321,stroke:#333
-    style Filters fill:#d5e8d4,stroke:#82b366
-    style Scorers fill:#d5e8d4,stroke:#82b366
-    style Pickers fill:#d5e8d4,stroke:#82b366
-    style NIXL fill:#dae8fc,stroke:#6c8ebf
-    style SharedStorage fill:#dae8fc,stroke:#6c8ebf
-    style SGLang fill:#dae8fc,stroke:#6c8ebf
+    style vLLMPod fill:#e8e8e8,stroke:#333
+    style Prometheus fill:#e8e8e8,stroke:#333

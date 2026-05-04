@@ -1,68 +1,45 @@
 sequenceDiagram
-    participant Client as Inference Client
-    participant Gateway as Gateway API<br/>80/TCP HTTP
-    participant Envoy as Envoy Proxy<br/>ext-proc filter
-    participant EPP as EPP (Endpoint Picker)<br/>9002/TCP gRPC TLS
-    participant K8s as Kubernetes API<br/>443/TCP HTTPS
-    participant ModelMetrics as Model Server Metrics<br/>3000/TCP HTTP
-    participant UDS as UDS Tokenizer<br/>UDS gRPC
-    participant ModelServer as Selected Model Server<br/>8000/TCP HTTP
+    participant Client as External Client
+    participant Gateway as Inference Gateway<br/>(Envoy)<br/>80/TCP HTTP
+    participant EPP as EPP (Endpoint Picker)<br/>9002/TCP gRPC
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant vLLMMetrics as vLLM Metrics<br/>HTTP/HTTPS
+    participant vLLMKV as vLLM KV Events<br/>5556/TCP ZMQ
+    participant ModelServer as Model Server Pod<br/>8000/TCP
+    participant Sidecar as P/D Sidecar<br/>8000/TCP HTTP/HTTPS
+    participant Prefiller as Prefiller Pod<br/>configurable/TCP
+    participant Decoder as Local Decoder<br/>8001/TCP
 
-    Note over EPP,K8s: Background: EPP watches CRDs
-    EPP->>K8s: Watch InferencePool, Pod,<br/>InferenceObjective, InferenceModelRewrite
-    K8s-->>EPP: Stream CRD events<br/>SA Bearer token auth
+    Note over EPP,K8sAPI: Startup: Controller-Runtime Watches
+    EPP->>K8sAPI: Watch InferencePool, Pod,<br/>InferenceObjective, InferenceModelRewrite CRs<br/>(SA token auth, TLS 1.2+)
+    K8sAPI-->>EPP: CR events (add/update/delete)
 
-    Note over EPP,ModelMetrics: Background: EPP scrapes metrics (every 50ms)
-    EPP->>ModelMetrics: GET /metrics<br/>queue depth, KV cache, running requests
-    ModelMetrics-->>EPP: Prometheus metrics
+    Note over EPP,vLLMKV: Background: Metrics & KV Event Collection
+    EPP->>vLLMMetrics: Scrape Prometheus metrics<br/>(queue size, running reqs, KV cache %)<br/>Optional TLS
+    vLLMMetrics-->>EPP: Metric values
+    vLLMKV->>EPP: ZMQ PUB KV cache events<br/>(plaintext, 5556/TCP)
+    Note over EPP: Update KV cache index<br/>& endpoint attribute map
 
-    Note over Client,ModelServer: Flow 1: Inference Request Scheduling
-    Client->>Gateway: POST /v1/chat/completions
-    Gateway->>Envoy: Route via HTTPRoute
-    Envoy->>EPP: gRPC ext-proc ProcessingRequest<br/>(request headers + body)
-    EPP->>UDS: Tokenize prompt<br/>(gRPC over Unix Domain Socket)
-    UDS-->>EPP: Token IDs
-    Note over EPP: Run scheduling pipeline:<br/>1. Filters (ByLabel, SLOHeadroom)<br/>2. Scorers (KVCache, LoadAware,<br/>   PrefixCache, LoRA, Latency)<br/>3. Picker (MaxScore/WeightedRandom)
-    EPP-->>Envoy: ProcessingResponse<br/>(inject target-endpoint header)
-    Envoy->>ModelServer: Forward request to<br/>selected model server
-    ModelServer-->>Envoy: Inference response<br/>(streaming SSE)
-    Envoy-->>Gateway: Response
+    Note over Client,ModelServer: Flow 1: Standard Inference Request Routing
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTP/80
+    Gateway->>EPP: ext_proc ProcessingRequest<br/>gRPC bidirectional stream<br/>9002/TCP (Optional TLS)
+    Note over EPP: Run scheduling pipeline:<br/>1. Profile selection<br/>2. Filters (capacity, model match)<br/>3. Scorers (KV cache, load)<br/>4. Picker (select endpoint)
+    EPP-->>Gateway: ProcessingResponse<br/>Set target-endpoint header<br/>with selected pod IP:port
+    Gateway->>ModelServer: Forward request to<br/>selected model server<br/>HTTP/8000
+
+    Note over Client,Decoder: Flow 2: Disaggregated P/D Inference
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTP/80
+    Gateway->>EPP: ext_proc ProcessingRequest<br/>gRPC/9002
+    Note over EPP: Schedule with P/D profile:<br/>Select decode pod + prefill pod
+    EPP-->>Gateway: Set target-endpoint +<br/>x-prefill-host headers
+    Gateway->>Sidecar: Forward to decode pod's sidecar<br/>HTTP/HTTPS 8000/TCP (TLS 1.2+)
+    Sidecar->>Prefiller: Forward prefill request<br/>HTTP/HTTPS (SSRF validated)<br/>x-prefill-host target
+    Prefiller-->>Sidecar: Prefill response +<br/>KV cache transfer params
+    Sidecar->>Decoder: Decode request with<br/>KV cache reference<br/>HTTP/HTTPS 8001/TCP
+    Decoder-->>Sidecar: Streamed response
+    Sidecar-->>Gateway: Streamed response
     Gateway-->>Client: Streamed response
 
-    Note over Client,ModelServer: Flow 2: Disaggregated Prefill/Decode (NIXL v2)
-
-    participant PDSidecar as PD Sidecar Proxy<br/>8000/TCP HTTP/HTTPS
-    participant Prefiller as Prefiller Instance<br/>Dynamic port
-    participant Decoder as Local Decoder (vLLM)<br/>8001/TCP HTTP
-
-    Client->>Gateway: POST /v1/chat/completions
-    Gateway->>Envoy: Route via HTTPRoute
-    Envoy->>EPP: gRPC ext-proc
-    EPP-->>Envoy: Route to PD sidecar<br/>(prefiller + decoder headers)
-    Envoy->>PDSidecar: Forward with routing headers
-    PDSidecar->>Prefiller: Prefill request<br/>(HTTP/HTTPS, SSRF allowlist)
-    Prefiller-->>PDSidecar: Prefill response<br/>(kv_transfer_params)
-    PDSidecar->>Decoder: Decode request with<br/>kv_transfer_params<br/>8001/TCP localhost
-    Decoder-->>PDSidecar: Streamed tokens
-    PDSidecar-->>Envoy: Streamed response
-    Envoy-->>Gateway: Response
-    Gateway-->>Client: Streamed response
-
-    Note over Client,ModelServer: Flow 3: Encode/Prefill/Decode (E/P/D Multimodal)
-
-    participant Encoder as Encoder Instance<br/>Dynamic port
-
-    Client->>Gateway: POST /v1/chat/completions<br/>(multimodal content)
-    Gateway->>Envoy: Route via HTTPRoute
-    Envoy->>EPP: gRPC ext-proc
-    EPP-->>Envoy: Route to PD sidecar<br/>(encoder + prefiller + decoder headers)
-    Envoy->>PDSidecar: Forward with routing headers
-    PDSidecar->>Encoder: Encode request (fan-out)<br/>(HTTP/HTTPS, SSRF allowlist)
-    Encoder-->>PDSidecar: Encoded representations
-    PDSidecar->>Prefiller: Prefill with encoded data<br/>(HTTP/HTTPS, SSRF allowlist)
-    Prefiller-->>PDSidecar: Prefill response<br/>(kv_transfer_params)
-    PDSidecar->>Decoder: Decode request<br/>8001/TCP localhost
-    Decoder-->>PDSidecar: Streamed tokens
-    PDSidecar-->>Envoy: Streamed response
-    Envoy-->>Gateway: Response
-    Gateway-->>Client: Streamed response
+    Note over EPP,vLLMKV: Flow 3: KV Cache Event Subscription
+    vLLMKV->>EPP: KV cache block events<br/>ZMQ PUB/SUB 5556/TCP<br/>No encryption, No auth
+    Note over EPP: Index KV cache blocks<br/>for precise prefix<br/>cache scoring

@@ -1,106 +1,106 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User / KFP SDK"]
+        User["User<br/>(SDK / Dashboard UI)"]
     end
 
-    subgraph Ingress["INGRESS (DMZ)"]
-        Route["OpenShift Route<br/>443/TCP → 3000/TCP<br/>TLS Edge Termination"]
-        VirtualService["Istio VirtualService<br/>80/TCP via kubeflow-gateway<br/>mTLS (ISTIO_MUTUAL)"]
+    subgraph Ingress["INGRESS (Edge)"]
+        Route["OpenShift Route<br/>443/TCP → 8888/TCP<br/>TLS Edge Termination"]
+        VirtualService["Istio VirtualService<br/>(Multi-user variant)<br/>AuthorizationPolicy"]
     end
 
-    subgraph AppTier["APPLICATION TIER (mTLS in multi-user mode)"]
+    subgraph ClusterInternal["CLUSTER INTERNAL"]
         direction TB
 
-        subgraph FrontendZone["Frontend"]
-            FrontendUI["Frontend UI<br/>ml-pipeline-ui<br/>ClusterIP 80→3000/TCP<br/>No Auth (fronted by Istio/Route)"]
+        subgraph APILayer["API Layer"]
+            APIServer["API Server<br/>SA: ml-pipeline<br/>8888/TCP HTTP | 8887/TCP gRPC<br/>8443/TCP Webhook<br/>Auth: Bearer → TokenReview → SAR"]
         end
 
-        subgraph APIZone["API Layer"]
-            APIServer["API Server<br/>ml-pipeline<br/>8888/TCP REST | 8887/TCP gRPC<br/>8443/TCP Webhook<br/>Configurable TLS<br/>TokenReview + SubjectAccessReview"]
+        subgraph Controllers["Controllers & Agents"]
+            PA["Persistence Agent<br/>SA: ml-pipeline-persistenceagent<br/>Auth: Projected SA Token (1h)"]
+            SWC["Scheduled Workflow Controller<br/>SA: ml-pipeline-scheduledworkflow<br/>9090/TCP metrics<br/>Auth: Projected SA Token (1h)"]
+            CacheServer["Cache Server (Webhook)<br/>SA: kubeflow-pipelines-cache<br/>443→8443/TCP HTTPS<br/>TLS: webhook-server-tls"]
+            ViewerCtrl["Viewer Controller"]
         end
 
-        subgraph InternalZone["Internal Services"]
-            PersistenceAgent["Persistence Agent<br/>No listener<br/>SA: ml-pipeline-persistenceagent"]
-            ScheduledWF["Scheduled Workflow Ctrl<br/>9090/TCP metrics<br/>SA: ml-pipeline-scheduledworkflow"]
-            CacheServer["Cache Server<br/>cache-server<br/>ClusterIP 443→8443/TCP<br/>TLS (webhook cert)<br/>MutatingWebhookConfig"]
-            MetadataWriter["Metadata Writer<br/>No listener<br/>SA: kubeflow-pipelines-metadata-writer"]
-            VisualizationSvr["Visualization Server<br/>8888/TCP HTTP<br/>No Auth"]
+        subgraph PipelineRuntime["Pipeline Runtime (per step)"]
+            Driver["Driver (sidecar)<br/>SA: pipeline-runner<br/>FIPS: strictfipsruntime"]
+            Launcher["Launcher (sidecar)<br/>SA: pipeline-runner<br/>⚠ FIPS/non-FIPS dual binary"]
+            UserPod["User Container"]
         end
 
-        subgraph ExecutionZone["Pipeline Step Execution (per-pod)"]
-            Driver["Driver (init container)<br/>No listener<br/>SA: pipeline-runner"]
-            Launcher["Launcher (sidecar)<br/>No listener<br/>FIPS-compliant<br/>SA: pipeline-runner"]
+        subgraph UIServices["UI Services"]
+            PipelineUI["ML Pipeline UI<br/>3000/TCP HTTP<br/>No Auth"]
+            VizServer["Visualization Server<br/>8888/TCP HTTP<br/>No Auth"]
         end
     end
 
-    subgraph DataTier["DATA TIER"]
-        Database["MySQL / PostgreSQL<br/>3306/5432 TCP<br/>Wire protocol<br/>Configurable TLS<br/>Username/Password"]
-        MLMD["ML Metadata (MLMD)<br/>metadata-grpc-service<br/>8080/TCP gRPC<br/>Configurable TLS<br/>None or mTLS"]
+    subgraph PlatformServices["PLATFORM SERVICES"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS<br/>SA Token Auth"]
+        ArgoCtrl["Argo Workflow Controller<br/>v3.7.11<br/>Watches Workflow CRDs"]
+        MLMD["ML Metadata (MLMD)<br/>8080/TCP gRPC<br/>Optional TLS<br/>No Auth"]
+        MetadataEnvoy["Metadata Envoy<br/>9090/TCP HTTP"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        ObjectStore["MinIO / S3 / GCS<br/>9000/443 TCP<br/>HTTP/HTTPS<br/>Access Key/Secret or IAM"]
-        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS<br/>ServiceAccount Token"]
-        ArgoWF["Argo Workflows v3.7.11<br/>CRD Watch + Create"]
+    subgraph DataStores["DATA STORES"]
+        DB["MySQL/PostgreSQL<br/>3306/5432/TCP<br/>SQL wire protocol<br/>Optional TLS<br/>Auth: Username/Password"]
+        S3["Object Store (MinIO/SeaweedFS)<br/>9000/TCP HTTP<br/>Optional TLS<br/>Auth: AccessKey/SecretKey"]
     end
 
-    subgraph InfraServices["INFRASTRUCTURE"]
-        Istio["Istio Service Mesh<br/>mTLS STRICT<br/>AuthorizationPolicy"]
-        CertManager["cert-manager<br/>Webhook TLS certs"]
-        DSPA["DSPA Operator<br/>Lifecycle management"]
-    end
+    %% External to Ingress
+    User -->|"HTTPS/443<br/>TLS Edge"| Route
+    User -->|"HTTP/8888<br/>Istio AuthZ"| VirtualService
 
-    %% External flows
-    User -->|"HTTPS/443<br/>TLS Edge<br/>Bearer Token"| Route
-    User -->|"HTTP/gRPC<br/>Bearer Token"| VirtualService
+    %% Ingress to API
+    Route -->|"HTTP/8888"| APIServer
+    VirtualService -->|"HTTP/8888"| APIServer
 
-    %% Ingress to Frontend
-    Route -->|"HTTP/3000<br/>mTLS (Istio)"| FrontendUI
-    VirtualService -->|"HTTP/3000<br/>mTLS"| FrontendUI
+    %% API Server connections
+    APIServer -->|"SQL/3306-5432<br/>Optional TLS<br/>User/Pass"| DB
+    APIServer -->|"HTTP/9000<br/>Optional TLS<br/>AccessKey"| S3
+    APIServer -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
+    APIServer -->|"gRPC/8080<br/>Optional TLS"| MLMD
 
-    %% Frontend to API
-    FrontendUI -->|"REST/8888<br/>Configurable TLS<br/>Proxied Token"| APIServer
+    %% K8s Admission to Cache
+    K8sAPI -->|"HTTPS/443<br/>TLS<br/>K8s Client Cert"| CacheServer
+    CacheServer -->|"SQL/3306<br/>Optional TLS<br/>User/Pass"| DB
 
-    %% API to Data Tier
-    APIServer -->|"MySQL/PG wire<br/>3306/5432<br/>Configurable TLS<br/>User/Pass"| Database
-    APIServer -->|"gRPC/8080<br/>Configurable TLS"| MLMD
+    %% Controllers to API Server
+    PA -->|"gRPC/8887<br/>Optional TLS<br/>Projected SA Token"| APIServer
+    SWC -->|"gRPC/8887<br/>Optional TLS<br/>Projected SA Token"| APIServer
 
-    %% API to External
-    APIServer -->|"HTTP(S)/9000/443<br/>Access Key/Secret"| ObjectStore
-    APIServer -->|"HTTPS/443<br/>SA Token"| K8sAPI
+    %% Controllers to K8s
+    PA -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
+    SWC -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
 
-    %% Internal services to API
-    PersistenceAgent -->|"gRPC/8887<br/>Projected SA Token"| APIServer
-    ScheduledWF -->|"gRPC/8887<br/>Projected SA Token"| APIServer
+    %% Argo spawns sidecars
+    ArgoCtrl -->|"Pod exec"| Driver
+    ArgoCtrl -->|"Pod exec"| Launcher
 
-    %% Cache server
-    K8sAPI -->|"HTTPS/8443<br/>Webhook CA"| CacheServer
-    CacheServer -->|"MySQL wire/3306<br/>User/Pass"| Database
+    %% Driver connections
+    Driver -->|"gRPC/8080<br/>Optional TLS"| MLMD
+    Driver -->|"gRPC/8887<br/>Optional TLS"| APIServer
+    Driver -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
 
-    %% Execution flows
-    Driver -->|"gRPC/8080"| MLMD
-    Driver -->|"gRPC/8887<br/>SA Token"| APIServer
-    Driver -->|"HTTPS/443<br/>SA Token"| K8sAPI
-    Launcher -->|"gRPC/8080"| MLMD
-    Launcher -->|"HTTP(S)/9000/443<br/>Access Key/Secret"| ObjectStore
-
-    %% Metadata writer
-    MetadataWriter -->|"gRPC/8080"| MLMD
-
-    %% Persistence Agent watches
-    PersistenceAgent -->|"HTTPS/443<br/>SA Token"| K8sAPI
+    %% Launcher connections
+    Launcher -->|"HTTP/9000<br/>Optional TLS<br/>AccessKey"| S3
+    Launcher -->|"gRPC/8080<br/>Optional TLS"| MLMD
+    Launcher --> UserPod
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef apptier fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef datatier fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef infra fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef apiLayer fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef controller fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef runtime fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef datastore fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef ui fill:#f5f5f5,stroke:#666,stroke-width:1px
 
     class User external
     class Route,VirtualService ingress
-    class FrontendUI,APIServer,PersistenceAgent,ScheduledWF,CacheServer,MetadataWriter,VisualizationSvr,Driver,Launcher apptier
-    class Database,MLMD datatier
-    class ObjectStore,K8sAPI,ArgoWF externalservice
-    class Istio,CertManager,DSPA infra
+    class APIServer apiLayer
+    class PA,SWC,CacheServer,ViewerCtrl controller
+    class Driver,Launcher,UserPod runtime
+    class K8sAPI,ArgoCtrl,MLMD,MetadataEnvoy platform
+    class DB,S3 datastore
+    class PipelineUI,VizServer ui

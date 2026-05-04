@@ -1,52 +1,60 @@
 sequenceDiagram
     participant Client as External Client
-    participant KServeGW as KServe Gateway<br/>(Platform-managed)
-    participant DrogonHTTP as Drogon HTTP Server<br/>REST port/TCP
-    participant gRPCServer as gRPC Server<br/>gRPC port/TCP
-    participant APIHandler as HttpRestApiHandler<br/>(API Key Validation)
-    participant KFSImpl as KFSInferenceServiceImpl
-    participant MPExecutor as MediaPipe Graph<br/>Executor
-    participant LLMCalc as LLM Calculator<br/>(GenAiServable)
-    participant GenAI as OpenVINO GenAI<br/>Pipeline
-    participant ModelMgr as Model Manager
-    participant ModelInst as ModelInstance<br/>(OpenVINO Runtime)
-    participant CloudSDK as Cloud SDK<br/>(S3/GCS/Azure)
-    participant CloudStore as Cloud Storage<br/>443/TCP HTTPS
+    participant KubeRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS 1.2+
+    participant REST as OVMS REST Server<br/>(Drogon HTTP)<br/>configurable/TCP
+    participant GRPC as OVMS gRPC Server<br/>(HTTP/2)<br/>configurable/TCP
+    participant Handler as HttpRestApiHandler
+    participant MediaPipe as MediaPipe Graph<br/>Executor
+    participant ModelMgr as ModelManager
+    participant ModelInst as ModelInstance
+    participant CBPipeline as ContinuousBatching<br/>Pipeline
+    participant OVRuntime as OpenVINO Runtime<br/>2026.0
+    participant OVGenAI as OpenVINO GenAI<br/>2026.0
+    participant S3 as Cloud Storage<br/>(S3/GCS/Azure)<br/>443/TCP HTTPS
 
-    Note over Client,CloudStore: Flow 1: REST - OpenAI Chat Completions (Streaming)
-    Client->>KServeGW: POST /v1/chat/completions<br/>Auth: Bearer Token
-    KServeGW->>DrogonHTTP: Forward request<br/>(Platform routing)
-    DrogonHTTP->>APIHandler: Route to handler<br/>(API key validation)
-    APIHandler->>MPExecutor: Dispatch to MediaPipe<br/>graph
-    MPExecutor->>LLMCalc: Execute LLM Calculator
-    LLMCalc->>GenAI: ContinuousBatchingPipeline<br/>or LLMPipeline
-    GenAI-->>LLMCalc: Generated tokens (streaming)
-    LLMCalc-->>MPExecutor: Token stream
-    MPExecutor-->>DrogonHTTP: SSE stream
-    DrogonHTTP-->>Client: data: {"choices":[...]}<br/>HTTP SSE
+    Note over Client,S3: Flow 1: REST Inference Request (KServe v2)
+    Client->>KubeRBAC: POST /v2/models/{model}/infer<br/>Auth: K8s Bearer Token<br/>HTTPS/8443
+    KubeRBAC->>REST: Forward (HTTP localhost)<br/>Token validated via TokenReview
+    REST->>Handler: Route to KServe v2 handler
+    Handler->>ModelMgr: getModelInstance(model, version)
+    ModelMgr->>ModelInst: infer(request)
+    ModelInst->>OVRuntime: InferRequest::infer()
+    OVRuntime-->>ModelInst: Inference result (tensors)
+    ModelInst-->>Handler: Inference response
+    Handler-->>REST: JSON response
+    REST-->>KubeRBAC: HTTP 200 OK
+    KubeRBAC-->>Client: HTTPS response
 
-    Note over Client,CloudStore: Flow 2: gRPC - KServe v2 Inference
-    Client->>gRPCServer: ModelInfer RPC<br/>gRPC/HTTP2
-    gRPCServer->>KFSImpl: Dispatch to<br/>KFSInferenceServiceImpl
-    KFSImpl->>ModelMgr: Get model instance
-    ModelMgr->>ModelInst: Execute inference<br/>(OpenVINO Runtime)
-    ModelInst-->>KFSImpl: Inference result
-    KFSImpl-->>gRPCServer: ModelInferResponse
-    gRPCServer-->>Client: gRPC response
+    Note over Client,S3: Flow 2: LLM Chat Completions (Streaming SSE)
+    Client->>REST: POST /v3/chat/completions<br/>Auth: API key (optional)<br/>stream: true
+    REST->>Handler: Route to OpenAI v3 handler
+    Handler->>Handler: isAuthorized() check API key
+    Handler->>MediaPipe: Execute LLM calculator graph
+    MediaPipe->>CBPipeline: Schedule generation request
+    loop Continuous Batching (token by token)
+        CBPipeline->>OVGenAI: Generate next token(s)
+        OVGenAI-->>CBPipeline: Token(s)
+        CBPipeline-->>MediaPipe: Token callback
+        MediaPipe-->>Handler: Partial response
+        Handler-->>REST: SSE data chunk
+        REST-->>Client: text/event-stream chunk
+    end
+    REST-->>Client: SSE [DONE]
 
-    Note over Client,CloudStore: Flow 3: Model Loading from Cloud Storage
-    ModelMgr->>CloudSDK: getFilesystem(s3://, gs://, az://)
-    CloudSDK->>CloudStore: Download model artifacts<br/>HTTPS/443, TLS 1.2+<br/>Auth: IAM/SAS/ADC
-    CloudStore-->>CloudSDK: Model files
-    CloudSDK-->>ModelMgr: Local model cache
-    ModelMgr->>ModelInst: Compile model<br/>(OpenVINO Core)
+    Note over Client,S3: Flow 3: gRPC Inference (KServe ModelInfer)
+    Client->>GRPC: ModelInfer RPC<br/>gRPC (HTTP/2)<br/>InsecureServerCredentials
+    GRPC->>ModelMgr: getModelInstance(model, version)
+    ModelMgr->>ModelInst: infer(request)
+    ModelInst->>OVRuntime: InferRequest::infer()
+    OVRuntime-->>ModelInst: Inference result
+    ModelInst-->>GRPC: InferResponse protobuf
+    GRPC-->>Client: gRPC response
 
-    Note over Client,CloudStore: Flow 4: DAG Pipeline Inference
-    Client->>DrogonHTTP: POST /v1/models/{dag}:predict
-    DrogonHTTP->>APIHandler: Route + auth
-    APIHandler->>ModelMgr: EntryNode
-    ModelMgr->>ModelInst: DLNode (inference)
-    Note right of ModelInst: CustomNode (dlopen)<br/>executes user library
-    ModelInst-->>ModelMgr: ExitNode result
-    ModelMgr-->>DrogonHTTP: Response
-    DrogonHTTP-->>Client: JSON prediction
+    Note over Client,S3: Flow 4: Model Loading from Cloud Storage
+    ModelMgr->>ModelMgr: Config watcher thread<br/>(poll interval: file_system_poll_wait_seconds)
+    ModelMgr->>S3: HTTPS GET model artifacts<br/>Auth: IAM/ServiceAccount/ConnString<br/>TLS 1.2+
+    S3-->>ModelMgr: Model files (binary)
+    ModelMgr->>ModelMgr: Write to local cache
+    ModelMgr->>OVRuntime: Core::compile_model()
+    OVRuntime-->>ModelMgr: Compiled model ready
+    ModelMgr->>ModelMgr: Update model version map

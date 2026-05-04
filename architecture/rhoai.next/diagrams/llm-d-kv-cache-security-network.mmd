@@ -1,76 +1,70 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
-        ModelScope["ModelScope API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
+        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: HF Token (optional)"]
+        ModelScope["ModelScope<br/>modelscope.cn<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: None"]
     end
 
-    subgraph Ingress["INGRESS (Edge TLS)"]
-        Route["OpenShift Route<br/>443/TCP → 8080/TCP<br/>TLS Edge termination"]
-    end
-
-    subgraph ClusterInternal["CLUSTER INTERNAL (No encryption)"]
+    subgraph ClusterInternal["CLUSTER INTERNAL (No Service Mesh)"]
         direction TB
 
-        subgraph ManagerPod["KV-Cache Manager Pod"]
+        subgraph EPPPod["EPP Pod (llm-d inference scheduler)"]
             direction TB
-            Manager["KV-Cache Manager<br/>(Go Container)<br/>8080/TCP HTTP<br/>50051/TCP gRPC"]
-            TokenizerSidecar["UDS Tokenizer Sidecar<br/>(Python Container)<br/>8082/TCP HTTP health<br/>UDS: /tmp/tokenizer/*.socket"]
-            Manager -->|"gRPC over UDS<br/>No encryption<br/>Pod-local trust"| TokenizerSidecar
+            EPP["llm-d EPP Process<br/>Embeds: KV-Cache Indexer (Go lib)"]
+            UDSTokenizer["UDS Tokenizer Service<br/>Image: odh-llm-d-kv-cache-rhel9<br/>Health: 8082/TCP HTTP<br/>vLLM CPU-mode renderer"]
+            EPP -->|"gRPC over UDS<br/>/tmp/tokenizer/tokenizer-uds.socket<br/>No encryption (local IPC)<br/>Auth: FS perms 0o700"| UDSTokenizer
         end
 
-        subgraph VLLMPods["vLLM Inference Pods"]
-            vLLM["vLLM Engine<br/>5557/TCP ZMQ PUB"]
-            FSBackend["FS Backend Plugin<br/>(in-process)"]
+        subgraph VLLMPods["vLLM / SGLang Inference Pods"]
+            direction TB
+            VLLMEngine["vLLM Inference Engine<br/>ZMQ PUB: 5557/TCP<br/>Protocol: msgpack"]
+            FSBackend["llmd_fs_backend<br/>Python/C++/CUDA Plugin<br/>OffloadingConnector API"]
+            PVCEvictor["PVC Evictor Sidecar<br/>Threshold: 85% -> 70%<br/>N crawlers + activator + deleter"]
         end
 
-        subgraph OptionalServices["Optional Services"]
-            Redis["Redis / Valkey<br/>6379/TCP RESP<br/>No encryption"]
+        subgraph Storage["SHARED STORAGE"]
+            SharedFS["NFS / PVC Mount<br/>/tmp/shared-kv<br/>POSIX I/O"]
         end
 
-        subgraph StorageLayer["Storage Layer"]
-            SharedPVC["Shared Storage<br/>(NFS/PVC)<br/>POSIX permissions"]
-            EvictorPod["PVC Evictor Pod<br/>No network ports<br/>POSIX filesystem only"]
+        subgraph Observability["OBSERVABILITY (Optional)"]
+            Prometheus["Prometheus<br/>HTTP metrics scrape<br/>No auth"]
+            OTLP["OTLP Collector<br/>4317/TCP gRPC<br/>No encryption<br/>No auth"]
         end
 
-        subgraph K8sControl["Kubernetes Control Plane"]
-            K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS + SA Token"]
-        end
-    end
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: SA Bearer Token"]
 
-    subgraph Observability["OBSERVABILITY"]
-        OTLP["OTLP Collector<br/>4317/TCP gRPC<br/>No encryption"]
-        Prometheus["Prometheus<br/>Scrapes 8080/TCP HTTP<br/>No encryption"]
+        RedisInternal["Redis / Valkey (optional)<br/>6379/TCP<br/>Optional TLS (rediss://)"]
     end
 
     %% External flows
-    TokenizerSidecar -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
-    TokenizerSidecar -.->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| ModelScope
+    UDSTokenizer -->|"HTTPS/443<br/>TLS 1.2+<br/>HF Token"| HFHub
+    UDSTokenizer -.->|"HTTPS/443<br/>TLS 1.2+<br/>No auth"| ModelScope
 
-    %% Ingress flow
-    Route -->|"HTTP/8080<br/>No encryption"| Manager
+    %% ZMQ flow (no encryption!)
+    VLLMEngine -->|"ZMQ PUB/SUB 5557/TCP<br/>msgpack serialization<br/>NO ENCRYPTION<br/>NO AUTH"| EPP
 
-    %% Internal flows
-    vLLM -->|"ZMQ/5557<br/>No encryption<br/>No auth"| Manager
-    Manager -.->|"RESP/6379<br/>No encryption<br/>No auth"| Redis
-    Manager -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
-    FSBackend -->|"POSIX/GDS<br/>No encryption<br/>POSIX perms"| SharedPVC
-    EvictorPod -->|"POSIX fs<br/>No encryption<br/>POSIX perms"| SharedPVC
+    %% Storage flows
+    FSBackend -->|"POSIX I/O<br/>No encryption<br/>FS permissions"| SharedFS
+    PVCEvictor -->|"POSIX I/O<br/>File deletion"| SharedFS
 
-    %% Observability flows
-    Manager -->|"gRPC/4317<br/>No encryption"| OTLP
-    Prometheus -->|"HTTP/8080<br/>scrape"| Manager
+    %% Optional flows
+    EPP -.->|"HTTP metrics<br/>No auth"| Prometheus
+    EPP -.->|"gRPC/4317<br/>OTLP traces"| OTLP
+    EPP -.->|"HTTPS/443<br/>SA Bearer Token<br/>Pod watch"| K8sAPI
+    EPP -.->|"Redis/6379<br/>Optional TLS"| RedisInternal
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef epp fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef vllm fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef observability fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef k8s fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef observability fill:#e1d5e7,stroke:#9673a6,stroke-width:1px,stroke-dasharray: 5 5
+    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef k8s fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
 
     class HFHub,ModelScope external
-    class Route ingress
-    class Manager,TokenizerSidecar,vLLM,FSBackend,Redis internal
-    class SharedPVC,EvictorPod storage
-    class OTLP,Prometheus observability
-    class K8sAPI k8s
+    class EPP,UDSTokenizer epp
+    class VLLMEngine warning
+    class FSBackend,PVCEvictor vllm
+    class SharedFS storage
+    class Prometheus,OTLP observability
+    class K8sAPI,RedisInternal k8s

@@ -1,74 +1,103 @@
 graph TB
-    subgraph Cluster["CLUSTER INTERNAL (Kubernetes)"]
+    subgraph Platform["PIPELINE ORCHESTRATION (Platform Layer)"]
+        direction TB
+        KFP["KFP API Server<br/>SA: ds-pipeline-{dsp}"]
+        Argo["Argo Workflow Controller"]
+        KFP -->|creates workflows| Argo
+    end
+
+    subgraph InitZone["INIT CONTAINER (Startup Only)"]
+        Init["odh-pipelines-components<br/>Image: UBI9/python-311<br/>No network access<br/>Filesystem only"]
+    end
+
+    Init -->|"/config/managed-pipelines<br/>(shared volume, no network)"| KFP
+
+    subgraph PipelineSteps["PIPELINE STEP PODS (Ephemeral)"]
         direction TB
 
-        subgraph InitFlow["Init Container Flow"]
-            InitContainer["Init Container<br/>(pipelines-components)<br/>SA: DSPA pipeline runner<br/>No network ports"]
-            KFPServer["KFP API Server<br/>Reads from shared volume"]
+        subgraph DataProc["Data Processing"]
+            DL["dataset_download<br/>automl_data_loader<br/>text_extraction"]
+            SDG["sdg<br/>(Synthetic Data Gen)"]
         end
 
-        subgraph TaskPods["KFP Task Pods (Ephemeral Batch Jobs)"]
-            direction TB
-            AutoMLPod["AutoML Task Pod<br/>Image: odh-automl<br/>SA: DSPA pipeline runner<br/>GPU: nvidia.com/gpu"]
-            AutoRAGPod["AutoRAG Task Pod<br/>Image: odh-autorag<br/>SA: DSPA pipeline runner"]
-            FTPod["Fine-Tuning Task Pod<br/>SA: DSPA pipeline runner<br/>GPU: nvidia.com/gpu<br/>PVC: 50Gi nfs-csi RWX"]
+        subgraph FineTune["Fine-Tuning Control Plane"]
+            TrainCtrl["train_model<br/>(LoRA / OSFT / SFT)<br/>SA: pipeline-runner"]
         end
 
-        subgraph Storage["Cluster Storage"]
-            SharedVolume["Shared Volume<br/>/config/managed-pipelines/"]
-            PVC["Shared PVC<br/>50Gi nfs-csi RWX<br/>(fine-tuning)<br/>12Gi RWO (AutoML)"]
+        subgraph AutoRAGSteps["AutoRAG Steps"]
+            RAGComps["documents_discovery<br/>documents_indexing<br/>text_extraction<br/>rag_templates_optimization"]
+        end
+
+        subgraph DeploySteps["Deployment"]
+            RegComp["kubeflow_model_registry"]
         end
     end
 
-    subgraph PlatformServices["INTERNAL PLATFORM SERVICES"]
-        ModelRegistry["Kubeflow Model Registry<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (K8s SA)"]
-        KFPArtifact["KFP Artifact Store<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token (auto-mounted)"]
+    Argo -->|schedules| DataProc
+    Argo -->|schedules| FineTune
+    Argo -->|schedules| AutoRAGSteps
+    Argo -->|schedules| DeploySteps
+
+    subgraph TrainingZone["TRAINING WORKER PODS (GPU)"]
+        Workers["Training Workers<br/>Multi-GPU / Multi-Node<br/>Created by Kubeflow Trainer"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        S3["S3 Storage<br/>(MinIO/Ceph/AWS)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM Credentials"]
-        HFHub["Hugging Face Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (HF_TOKEN)"]
-        LlamaStack["Llama Stack API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key"]
-        LLMAPI["LLM API<br/>(OpenAI-compatible)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key"]
-        OCIRegistry["OCI Container Registry<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Registry Credentials"]
-        WandB["W&B / MLflow<br/>(optional)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key"]
+    TrainCtrl -->|"POST TrainingJob CR<br/>HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+
+    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
+        S3["AWS S3<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM Credentials"]
+        HF["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
+        LlamaStack["Llama Stack API<br/>configurable/TCP<br/>HTTP/HTTPS<br/>API Key"]
+        LLMAPI["OpenAI-compatible LLM<br/>configurable/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token / API Key"]
     end
 
-    %% Init container flow (filesystem only)
-    InitContainer -->|"Filesystem<br/>Copy compiled YAMLs"| SharedVolume
-    SharedVolume -->|"Filesystem<br/>Pipeline discovery"| KFPServer
+    subgraph InternalServices["INTERNAL SERVICES"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token / RBAC"]
+        ModelReg["Model Registry<br/>8080/TCP HTTP<br/>⚠ PLAINTEXT<br/>⚠ NO AUTH"]
+    end
 
-    %% Task pod to cluster storage
-    AutoMLPod -->|"Filesystem<br/>R/W dataset & models"| PVC
-    AutoRAGPod -->|"Filesystem<br/>R/W documents"| PVC
-    FTPod -->|"Filesystem<br/>R/W training data"| PVC
+    subgraph Storage["SHARED STORAGE"]
+        PVC_RWX["PVC (RWX, 50Gi, nfs-csi)<br/>Fine-tuning workspace"]
+        PVC_RWO["PVC (RWO, 12Gi)<br/>AutoML workspace"]
+    end
 
-    %% Task pod to platform services
-    FTPod -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| ModelRegistry
-    AutoMLPod -->|"HTTPS/443<br/>SA Token"| KFPArtifact
-    AutoRAGPod -->|"HTTPS/443<br/>SA Token"| KFPArtifact
-    FTPod -->|"HTTPS/6443<br/>SA Token"| K8sAPI
-    AutoMLPod -->|"HTTPS/6443<br/>SA Token"| K8sAPI
+    %% Data Processing egress
+    DL -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM<br/>⚠ SSL fallback"| S3
+    DL -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HF
+    SDG -->|"HTTPS/configurable<br/>TLS 1.2+<br/>LLM_API_KEY"| LLMAPI
 
-    %% Task pod to external services
-    AutoMLPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    AutoRAGPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    FTPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    FTPod -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
-    AutoRAGPod -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| LlamaStack
-    AutoRAGPod -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| LLMAPI
-    FTPod -->|"HTTPS/443<br/>TLS 1.2+<br/>Registry Creds"| OCIRegistry
-    FTPod -.->|"HTTPS/443<br/>TLS 1.2+<br/>API Key (optional)"| WandB
+    %% AutoRAG egress
+    RAGComps -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM<br/>⚠ SSL fallback"| S3
+    RAGComps -->|"HTTP(S)/configurable<br/>TLS optional<br/>API Key<br/>⚠ SSL fallback"| LlamaStack
+    RAGComps -->|"HTTPS/configurable<br/>TLS 1.2+<br/>Bearer Token"| LLMAPI
+
+    %% Training
+    K8sAPI -->|creates| Workers
+    Workers -->|"read/write"| PVC_RWX
+    TrainCtrl -->|"read/write"| PVC_RWX
+
+    %% Deployment
+    RegComp -->|"HTTP/8080<br/>⚠ PLAINTEXT<br/>⚠ NO AUTH"| ModelReg
+
+    %% Storage
+    DL -->|write datasets| PVC_RWX
+    DL -->|write datasets| PVC_RWO
 
     %% Styling
-    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef external fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef platform fill:#b8e6ff,stroke:#4a90e2,stroke-width:2px
+    classDef init fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    classDef pipeline fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef training fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef internal fill:#e8f5e9,stroke:#82b366,stroke-width:2px
     classDef storage fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef initflow fill:#f5f5f5,stroke:#666,stroke-width:1px
+    classDef warning fill:#ffe6cc,stroke:#d79b00,stroke-width:3px
 
-    class InitContainer,AutoMLPod,AutoRAGPod,FTPod cluster
-    class KFPServer,ModelRegistry,KFPArtifact,K8sAPI platform
-    class S3,HFHub,LlamaStack,LLMAPI,OCIRegistry,WandB external
-    class SharedVolume,PVC storage
+    class KFP,Argo platform
+    class Init init
+    class DL,SDG,TrainCtrl,RAGComps,RegComp pipeline
+    class Workers training
+    class S3,HF,LlamaStack,LLMAPI external
+    class K8sAPI internal
+    class ModelReg warning
+    class PVC_RWX,PVC_RWO storage

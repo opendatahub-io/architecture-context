@@ -1,62 +1,61 @@
 sequenceDiagram
+    autonumber
+
     participant User as User / kubectl
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant Webhook as Webhook Server<br/>9443/TCP TLS
-    participant ISCtrl as InferenceService<br/>Reconciler
-    participant LLMCtrl as LLMInferenceService<br/>Reconciler
-    participant GWCtrl as Gateway<br/>Reconciler
-    participant NIMCtrl as NIM Account<br/>Reconciler
-    participant CMCtrl as ConfigMap<br/>Reconciler
-    participant SecCtrl as Secret<br/>Reconciler
-    participant NVIDIA as NVIDIA NGC API<br/>443/TCP HTTPS
-    participant ModelReg as Model Registry<br/>HTTP/HTTPS
+    participant Webhook as Webhook Server<br/>9443/TCP HTTPS
+    participant OMC as odh-model-controller<br/>Operator
+    participant Route as OpenShift Route<br/>443/TCP HTTPS
+    participant NGC as NVIDIA NGC API<br/>443/TCP HTTPS
+    participant NVCR as nvcr.io Registry<br/>443/TCP HTTPS
     participant Dashboard as RHOAI Dashboard
-    participant ServingAPI as model-serving-api<br/>8443/TCP HTTPS
+    participant MSA as model-serving-api<br/>8443/TCP HTTPS
+    participant ModelReg as Model Registry<br/>HTTPS
 
-    Note over User,SecCtrl: Flow 1: InferenceService Deployment
-    User->>K8sAPI: POST InferenceService<br/>Auth: User token
-    K8sAPI->>Webhook: Mutate/Validate<br/>TLS (admission cert)
-    Webhook-->>K8sAPI: Admission Response
-    K8sAPI-->>User: InferenceService Created
-    K8sAPI->>ISCtrl: Watch Event (ISVC)
-    ISCtrl->>K8sAPI: Create OpenShift Route<br/>Auth: SA token
-    ISCtrl->>K8sAPI: Create ClusterRoleBinding<br/>Auth: SA token
-    ISCtrl->>K8sAPI: Create ServiceMonitor<br/>Auth: SA token
-    ISCtrl->>K8sAPI: Create NetworkPolicy<br/>Auth: SA token
-    ISCtrl->>K8sAPI: Create KEDA TriggerAuth<br/>Auth: SA token
-    ISCtrl->>ModelReg: Sync model metadata<br/>Auth: Bearer Token
-    ModelReg-->>ISCtrl: Model labels/annotations
+    rect rgb(230, 240, 255)
+        Note over User,Route: Flow 1: InferenceService Deployment
+        User->>K8sAPI: POST InferenceService CR<br/>Auth: Bearer Token
+        K8sAPI->>Webhook: Admission webhook call<br/>TLS (cert injection)
+        Webhook-->>K8sAPI: Admit (validate name ≤53 chars)
+        K8sAPI-->>User: InferenceService created
+        OMC->>K8sAPI: Watch event received
+        OMC->>K8sAPI: Create Route, Service,<br/>ServiceMonitor, KEDA TriggerAuth,<br/>ClusterRoleBinding<br/>Auth: SA Token
+        K8sAPI-->>OMC: Resources created
+        OMC->>ModelReg: Sync ISVC metadata<br/>Auth: Bearer Token, TLS 1.2+
+        ModelReg-->>OMC: Metadata synced
+        Note over Route: External clients access<br/>model via Route (TLS edge/reencrypt)
+    end
 
-    Note over User,SecCtrl: Flow 2: NIM Account Provisioning
-    User->>K8sAPI: POST NIM Account<br/>Auth: User token
-    K8sAPI->>Webhook: Validate (singleton)<br/>TLS (admission cert)
-    Webhook-->>K8sAPI: Admission Response
-    K8sAPI->>NIMCtrl: Watch Event (Account)
-    NIMCtrl->>NVIDIA: POST authn.nvidia.com<br/>Auth: Basic Auth (API key)
-    NVIDIA-->>NIMCtrl: NGC Token
-    NIMCtrl->>NVIDIA: GET api.ngc.nvidia.com<br/>Auth: Bearer Token (NGC)
-    NVIDIA-->>NIMCtrl: Runtime catalog + model data
-    NIMCtrl->>NVIDIA: HEAD nvcr.io manifest<br/>Auth: Bearer Token
-    NVIDIA-->>NIMCtrl: Image validation
-    NIMCtrl->>K8sAPI: Create ConfigMap<br/>Auth: SA token
-    NIMCtrl->>K8sAPI: Create OpenShift Template<br/>Auth: SA token
-    NIMCtrl->>K8sAPI: Create Pull Secret<br/>Auth: SA token
+    rect rgb(255, 243, 224)
+        Note over User,NVCR: Flow 2: NIM Account Provisioning
+        User->>K8sAPI: POST NIM Account CR<br/>Auth: Bearer Token
+        K8sAPI->>Webhook: Validate singleton<br/>TLS (cert injection)
+        Webhook-->>K8sAPI: Admit (one Account per ns)
+        OMC->>K8sAPI: Watch event received
+        OMC->>NGC: Validate NGC API key<br/>Auth: NGC API Key (Bearer)
+        NGC-->>OMC: API key valid
+        OMC->>NVCR: Get pull token<br/>Auth: NGC API Key (Basic)
+        NVCR-->>OMC: Pull token
+        OMC->>K8sAPI: Create Secret (ngc-secret),<br/>ConfigMap, Template<br/>Auth: SA Token
+        K8sAPI-->>OMC: Resources created
+    end
 
-    Note over User,SecCtrl: Flow 3: Gateway Authentication Bootstrap
-    K8sAPI->>GWCtrl: Watch Event (Gateway)
-    GWCtrl->>K8sAPI: Create EnvoyFilter<br/>(Authorino TLS termination)<br/>Auth: SA token
-    GWCtrl->>K8sAPI: Create AuthPolicy<br/>(Kuadrant authentication)<br/>Auth: SA token
+    rect rgb(232, 245, 233)
+        Note over Dashboard,MSA: Flow 3: Gateway Discovery (Dashboard)
+        Dashboard->>MSA: GET /api/v1/gateways<br/>Auth: Bearer Token, TLS 1.2+ (FIPS)
+        MSA->>K8sAPI: SelfSubjectAccessReview<br/>(user's Bearer Token)
+        K8sAPI-->>MSA: Access review result
+        MSA->>K8sAPI: List Gateways<br/>Auth: SA Token
+        K8sAPI-->>MSA: Gateway list
+        MSA-->>Dashboard: Filtered gateways<br/>(per-user RBAC)
+    end
 
-    Note over User,SecCtrl: Flow 4: CA Certificate Aggregation
-    K8sAPI->>CMCtrl: Watch Event (odh-trusted-ca-bundle)
-    K8sAPI->>CMCtrl: Watch Event (openshift-service-ca.crt)
-    CMCtrl->>K8sAPI: Create/Update<br/>odh-kserve-custom-ca-bundle<br/>Auth: SA token
-    CMCtrl->>K8sAPI: Delete storage-config<br/>(force regeneration)<br/>Auth: SA token
-
-    Note over Dashboard,ServingAPI: Flow 5: Gateway Discovery (Dashboard)
-    Dashboard->>ServingAPI: GET /api/v1/gateways<br/>Auth: Bearer Token (user)
-    ServingAPI->>K8sAPI: SelfSubjectAccessReview<br/>(impersonated user check)
-    K8sAPI-->>ServingAPI: RBAC result
-    ServingAPI->>K8sAPI: List Gateways<br/>Auth: SA token
-    K8sAPI-->>ServingAPI: Gateway resources
-    ServingAPI-->>Dashboard: Filtered Gateway listeners
+    rect rgb(243, 229, 245)
+        Note over OMC,K8sAPI: Flow 4: LLM Auth Policy Management
+        Note over OMC: LLMInferenceService watch triggered
+        OMC->>K8sAPI: Create AuthPolicy<br/>for HTTPRoute<br/>Auth: SA Token
+        K8sAPI-->>OMC: AuthPolicy created
+        OMC->>K8sAPI: Create EnvoyFilter<br/>for Gateway (Authorino TLS)<br/>Auth: SA Token
+        K8sAPI-->>OMC: EnvoyFilter created
+        Note over OMC: Kuadrant/Authorino enforce<br/>auth on live traffic via mTLS
+    end

@@ -1,43 +1,37 @@
 workspace {
     model {
-        client = person "Client / Data Scientist" "Sends inference requests and manages model lifecycle"
+        datascientist = person "Data Scientist" "Creates and deploys ML models for inference"
+        platformadmin = person "Platform Admin" "Manages RHOAI platform and model serving infrastructure"
 
-        modelmesh = softwareSystem "ModelMesh" "Distributed LRU cache and routing layer for high-scale, high-density model serving" {
-            modelMeshApi = container "ModelMeshApi" "External-facing gRPC API for model management and inference proxying" "Java gRPC Server, port 8033"
-            sidecarModelMesh = container "SidecarModelMesh" "Core distributed LRU cache engine with model placement and routing" "Java Service"
-            vModelManager = container "VModelManager" "Virtual model abstraction layer with zero-downtime transitions" "Java Service"
-            litelinks = container "Litelinks Service" "Inter-instance Thrift RPC for model forwarding" "Thrift/TCP, port 8080"
-            prometheusServer = container "Prometheus Metrics Server" "Custom Netty-based HTTP server for metrics" "HTTPS, port 2112"
-            preStopServer = container "PreStop Server" "Kubernetes preStop lifecycle hook handler" "HTTP, port 8089"
+        modelmesh = softwareSystem "ModelMesh" "Distributed LRU cache for model serving — manages model lifecycle, routes inference requests, coordinates placement across instances" {
+            cacheManager = container "Cache Manager" "Distributed LRU cache with eviction policies and model placement decisions" "Java 21 / ConcurrentLinkedHashMap"
+            requestRouter = container "Request Router" "Routes inference requests to correct instance where model is loaded" "Java 21 / gRPC"
+            grpcServer = container "gRPC API Server" "External API for model management (register/unregister/status) and inference proxying" "Java 21 / Netty / gRPC" "8033/TCP"
+            vmodelManager = container "VModel Manager" "Zero-downtime model updates via virtual model mapping layer" "Java 21"
+            metricsServer = container "Metrics Server" "Prometheus metrics endpoint with custom optimized counters/gauges/histograms" "Java 21 / Netty" "2112/TCP HTTPS"
+            payloadProcessor = container "Payload Processor" "Extensible observation of inference payloads for logging/auditing" "Java 21"
         }
 
-        modelRuntime = softwareSystem "Model Runtime" "Colocated model server (Triton, MLServer, custom) that loads and serves ML models" "Internal Pod"
-        modelmeshServing = softwareSystem "modelmesh-serving Controller" "Kubernetes operator managing ServingRuntime and InferenceService CRDs" "Internal RHOAI"
-        etcd = softwareSystem "etcd" "Distributed KV store for model registry, instance registry, leader election, and dynamic config" "Internal Platform"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring system" "Internal Platform"
-        kubernetesApi = softwareSystem "Kubernetes API" "ConfigMap file watch and Downward API for pod metadata" "Internal Platform"
+        modelmeshServing = softwareSystem "modelmesh-serving Controller" "Kubernetes controller that deploys ModelMesh sidecar into ServingRuntime pods, manages CRDs (InferenceService, ServingRuntime)" "Internal RHOAI"
+        runtimeAdapter = softwareSystem "modelmesh-runtime-adapter" "Adapter sidecar implementing ModelRuntime gRPC API, bridges to specific model server formats" "Internal RHOAI"
+        modelRuntime = softwareSystem "Model Runtime" "Model server (Triton, MLServer, or custom) that loads and serves ML models" "Internal RHOAI"
+        etcd = softwareSystem "etcd" "Distributed KV store for model registry, instance coordination, leader election, and dynamic configuration" "Infrastructure"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Infrastructure"
+        statsd = softwareSystem "StatsD Collector" "Alternative metrics emission backend" "Infrastructure"
+        remotePayloadProc = softwareSystem "Remote Payload Processor" "External HTTP endpoint for inference payload logging/auditing" "External"
+        rhoaiGateway = softwareSystem "RHOAI Gateway" "External ingress gateway for model serving traffic" "Internal RHOAI"
 
-        zookeeper = softwareSystem "ZooKeeper" "Legacy alternative KV-store backend" "External (optional)"
-        payloadProcessor = softwareSystem "Payload Processor" "External HTTP endpoint for payload logging/auditing" "External (optional)"
-        statsd = softwareSystem "StatsD Server" "Alternative metrics reporting backend" "External (optional)"
-
-        # External relationships
-        client -> modelmesh "Sends gRPC inference requests and model management RPCs" "gRPC/HTTP2, port 8033, TLS + mTLS (optional)"
-        modelmeshServing -> modelmesh "Deploys and configures ModelMesh sidecar containers" "Kubernetes API"
-
-        # Internal container relationships
-        modelMeshApi -> sidecarModelMesh "Routes requests" "in-process Java method call"
-        sidecarModelMesh -> vModelManager "Resolves virtual models" "in-process Java method call"
-        sidecarModelMesh -> litelinks "Forwards inference to remote instances" "Thrift/TCP, port 8080, TLS + mTLS (optional)"
-
-        # Integration relationships
-        modelmesh -> modelRuntime "Manages model lifecycle and forwards inference" "gRPC, port 8085 or UDS, plaintext"
-        modelmesh -> etcd "Persists model/instance/vmodel records, leader election, dynamic config" "gRPC, port 2379, TLS (optional)"
-        modelmesh -> zookeeper "Alternative KV-store backend" "ZooKeeper protocol, port 2181, TLS (optional)"
-        modelmesh -> payloadProcessor "Optional payload logging to external endpoint" "HTTP/HTTPS, configurable port"
-        modelmesh -> statsd "Optional metrics reporting" "StatsD/UDP, port 8125"
-        prometheus -> modelmesh "Scrapes model serving metrics" "HTTPS, port 2112, TLS (self-signed)"
-        kubernetesApi -> modelmesh "Provides ConfigMap updates and pod metadata" "File system watch, Downward API"
+        datascientist -> modelmesh "Sends inference requests" "gRPC/8033"
+        platformadmin -> modelmeshServing "Manages ServingRuntimes and InferenceServices" "kubectl/API"
+        modelmeshServing -> modelmesh "Deploys sidecar, registers/unregisters models" "gRPC/8033 TLS"
+        rhoaiGateway -> modelmesh "Routes external inference traffic" "gRPC/8033 TLS"
+        modelmesh -> etcd "Model records, leader election, dynamic config" "gRPC/2379 TLS optional"
+        modelmesh -> runtimeAdapter "Load/unload/size/status operations" "gRPC/8085 or UDS"
+        runtimeAdapter -> modelRuntime "Translates ModelRuntime API calls" "Native API"
+        modelmesh -> modelmesh "Inter-instance inference forwarding" "Thrift+gRPC/8033 TLS mTLS"
+        prometheus -> modelmesh "Scrapes metrics" "HTTPS/2112 self-signed"
+        modelmesh -> statsd "Emits metrics (alternative)" "UDP/8126 StatsD"
+        modelmesh -> remotePayloadProc "Sends inference payloads for logging" "HTTP/HTTPS configurable"
     }
 
     views {
@@ -52,30 +46,26 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
-            element "Internal Pod" {
-                background #7ed321
+            element "Infrastructure" {
+                background #999999
                 color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal Platform" {
-                background #85bbf0
-                color #ffffff
-            }
-            element "External (optional)" {
-                background #999999
+            element "External" {
+                background #f5a623
                 color #ffffff
             }
             element "Person" {
-                background #08427b
+                shape Person
+                background #4a90e2
                 color #ffffff
-                shape person
+            }
+            element "Software System" {
+                background #4a90e2
+                color #ffffff
             }
             element "Container" {
                 background #438dd5

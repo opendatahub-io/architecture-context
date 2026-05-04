@@ -1,251 +1,224 @@
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                        │
-│                                                                              │
-│  [Client / API Consumer]                                                     │
-│         │                                                                    │
-│         │ Port: 8321/TCP                                                     │
-│         │ Protocol: HTTP/HTTPS                                               │
-│         │ Encryption: Configurable TLS 1.2+ (optional mTLS)                  │
-│         │ Auth: Bearer Token (JWT via JWKS or Token Introspection)           │
-│         │ Streaming: SSE (text/event-stream) for chat/agent endpoints        │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  APPLICATION BOUNDARY                                                        │
-│                                                                              │
-│  [Llama Stack Server - FastAPI/Uvicorn]                                      │
-│  - Listen Port: 8321/TCP (external + internal)                               │
-│  - TLS Termination: Uvicorn-native (configurable TLS 1.2+, optional mTLS)   │
-│  - Public endpoints (no auth): /v1/health, /v1/version, /docs, /openapi.json│
-│                                                                              │
-│  ┌─ Authentication Middleware ──────────────────────────────────────────┐    │
-│  │  Strategy 1: OAuth2 JWT (JWKS)                                       │    │
-│  │  - Fetches JWKS from IdP, caches with recheck period                │    │
-│  │  - Validates Bearer token signature + claims                         │    │
-│  │  Strategy 2: RFC 7662 Token Introspection                           │    │
-│  │  - POST to introspection endpoint with HTTP Basic Auth              │    │
-│  │  Strategy 3: Custom Auth Endpoint                                    │    │
-│  │  - Delegates to external auth service via HTTPS                      │    │
-│  └──────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-│  ┌─ Quota Middleware ───────────────────────────────────────────────────┐    │
-│  │  - Per-client rate limiting via persistent KV store (SQLite)        │    │
-│  │  - Default: 100 req/day anonymous, 1000 req/day authenticated      │    │
-│  │  - Configurable per deployment                                      │    │
-│  └──────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-│  ┌─ Access Control Engine (ABAC) ───────────────────────────────────────┐   │
-│  │  - Cedar-inspired policy language                                    │   │
-│  │  - Actions: CREATE, READ, UPDATE, DELETE                            │   │
-│  │  - Resources: type::identifier (e.g., model::llama-3)              │   │
-│  │  - Conditions: user is owner, user with <val> in <attr>            │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-│  ┌─ Provider Router ───────────────────────────────────────────────────┐    │
-│  │  Routes API calls to provider implementations by resource ID        │    │
-│  │  Supports multiple providers per API surface simultaneously         │    │
-│  └──────────────────────────────────────────────────────────────────────┘    │
-│         │                                                                    │
-│         │ (outbound connections to configured providers)                     │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  EGRESS — Authentication / Identity                                          │
-│                                                                              │
-│  [OAuth2 Identity Provider - JWKS URI]                                       │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: None (public JWKS endpoint)                                         │
-│  - Purpose: Fetch JSON Web Key Set for JWT signature validation              │
-│                                                                              │
-│  [Token Introspection Endpoint]                                              │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: HTTP Basic Auth (client_id/client_secret)                           │
-│  - Purpose: RFC 7662 token introspection                                     │
-│                                                                              │
-│  [Custom Auth Endpoint]                                                      │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: None (passes Bearer token for validation)                           │
-│  - Purpose: External token validation                                        │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  EGRESS — Inference Backends                                                 │
-│                                                                              │
-│  [vLLM Server]                                                               │
-│  - Port: 8000/TCP                                                            │
-│  - Protocol: HTTP/HTTPS                                                      │
-│  - Encryption: Configurable                                                  │
-│  - Auth: API Key (Bearer)                                                    │
-│  - Purpose: Primary LLM inference backend for RHOAI                         │
-│                                                                              │
-│  [Ollama Server]                                                             │
-│  - Port: 11434/TCP                                                           │
-│  - Protocol: HTTP                                                            │
-│  - Encryption: plaintext                                                     │
-│  - Auth: None                                                                │
-│  - Purpose: Local development inference backend                              │
-│                                                                              │
-│  [TGI / HuggingFace Inference]                                               │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: API Key (Bearer)                                                    │
-│  - Purpose: HuggingFace Text Generation Inference                            │
-│                                                                              │
-│  [Cloud Inference APIs]                                                      │
-│  - OpenAI API:       443/TCP  HTTPS  TLS 1.2+  API Key (Bearer)            │
-│  - Anthropic API:    443/TCP  HTTPS  TLS 1.2+  API Key (Bearer)            │
-│  - Google Gemini:    443/TCP  HTTPS  TLS 1.2+  API Key (Bearer)            │
-│  - AWS Bedrock:      443/TCP  HTTPS  TLS 1.2+  AWS IAM credentials         │
-│  - NVIDIA NIM:       443/TCP  HTTPS  TLS 1.2+  API Key (Bearer)            │
-│  - Together.ai:      443/TCP  HTTPS  TLS 1.2+  API Key (Bearer)            │
-│  - Fireworks:        443/TCP  HTTPS  TLS 1.2+  API Key (Bearer)            │
-│  - Groq:             443/TCP  HTTPS  TLS 1.2+  API Key (Bearer)            │
-│  - SambaNova:        443/TCP  HTTPS  TLS 1.2+  API Key (Bearer)            │
-│  - Cerebras:         443/TCP  HTTPS  TLS 1.2+  API Key (Bearer)            │
-│  - Databricks:       443/TCP  HTTPS  TLS 1.2+  API Key (Bearer)            │
-│  - RunPod:           443/TCP  HTTPS  TLS 1.2+  API Key (Bearer)            │
-│  - IBM WatsonX:      443/TCP  HTTPS  TLS 1.2+  API Key (Bearer)            │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  EGRESS — Vector Stores                                                      │
-│                                                                              │
-│  [PostgreSQL pgvector]                                                       │
-│  - Port: 5432/TCP                                                            │
-│  - Protocol: TCP (SQL)                                                       │
-│  - Encryption: Configurable TLS                                              │
-│  - Auth: Username/Password                                                   │
-│  - Purpose: Vector storage for RAG                                           │
-│                                                                              │
-│  [ChromaDB]                                                                  │
-│  - Port: 8000/TCP                                                            │
-│  - Protocol: HTTP/HTTPS                                                      │
-│  - Encryption: Configurable                                                  │
-│  - Auth: API Key or None                                                     │
-│  - Purpose: Vector storage for RAG                                           │
-│                                                                              │
-│  [Qdrant]                                                                    │
-│  - Port: 6333/TCP                                                            │
-│  - Protocol: HTTP/gRPC                                                       │
-│  - Encryption: Configurable                                                  │
-│  - Auth: API Key or None                                                     │
-│  - Purpose: Vector storage for RAG                                           │
-│                                                                              │
-│  [Milvus]                                                                    │
-│  - Port: 19530/TCP                                                           │
-│  - Protocol: gRPC                                                            │
-│  - Encryption: Configurable                                                  │
-│  - Auth: Token or None                                                       │
-│  - Purpose: Vector storage for RAG                                           │
-│                                                                              │
-│  [Weaviate]                                                                  │
-│  - Port: 8080/TCP                                                            │
-│  - Protocol: HTTP/HTTPS                                                      │
-│  - Encryption: Configurable                                                  │
-│  - Auth: API Key or None                                                     │
-│  - Purpose: Vector storage for RAG                                           │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  EGRESS — Tool & Search APIs                                                 │
-│                                                                              │
-│  [Brave Search API]                                                          │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: API Key (Bearer)                                                    │
-│  - Purpose: Web search tool for agents                                       │
-│                                                                              │
-│  [Tavily Search API]                                                         │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: API Key (Bearer)                                                    │
-│  - Purpose: Web search tool for agents                                       │
-│                                                                              │
-│  [Bing Search API]                                                           │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: API Key (Bearer)                                                    │
-│  - Purpose: Web search tool for agents                                       │
-│                                                                              │
-│  [Wolfram Alpha API]                                                         │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: API Key                                                             │
-│  - Purpose: Computation tool for agents                                      │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  EGRESS — Observability & Storage                                            │
-│                                                                              │
-│  [OTLP Collector]                                                            │
-│  - Port: 4318/TCP                                                            │
-│  - Protocol: HTTP                                                            │
-│  - Encryption: Configurable                                                  │
-│  - Auth: None                                                                │
-│  - Purpose: OpenTelemetry trace and metrics export                           │
-│                                                                              │
-│  [HuggingFace Hub]                                                           │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: API Key (Bearer)                                                    │
-│  - Purpose: Model downloads and metadata                                     │
-│                                                                              │
-│  [SQLite (local)]                                                            │
-│  - Protocol: File I/O                                                        │
-│  - Encryption: N/A (local filesystem)                                        │
-│  - Auth: N/A                                                                 │
-│  - Purpose: Metadata store, quota tracking, inference history                │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Client / Application]                                                  │
+│         │                                                                │
+│         │ Port: 8321/TCP                                                 │
+│         │ Protocol: HTTP/HTTPS                                           │
+│         │ Encryption: Configurable TLS (TLS 1.2+)                        │
+│         │ Auth: Bearer Token (OAuth2 JWT or Custom)                      │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  LLAMA STACK SERVER (Port 8321)                                         │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │ Middleware Stack                                                  │    │
+│  │                                                                   │    │
+│  │ [1. Authentication Middleware]                                     │    │
+│  │   - Validates Bearer tokens via:                                  │    │
+│  │     a) JWKS URI (JWT public key verification)                     │    │
+│  │     b) RFC 7662 Token Introspection                               │    │
+│  │     c) Custom auth endpoint delegation                            │    │
+│  │   - Extracts claims: sub, groups, team, project, tenant, ns       │    │
+│  │   - Maps claims to access attributes (roles, teams, projects)     │    │
+│  │         │                                                         │    │
+│  │ [2. Access Control Middleware]                                     │    │
+│  │   - Cedar-inspired ABAC policy evaluation                         │    │
+│  │   - permit/forbid rules with principal, action, resource          │    │
+│  │   - Conditions: when/unless with attribute matching               │    │
+│  │   - First match wins; default deny                                │    │
+│  │         │                                                         │    │
+│  │ [3. Quota Middleware]                                              │    │
+│  │   - Per-client rate limiting                                      │    │
+│  │   - Authenticated: 1000 req/day (configurable)                    │    │
+│  │   - Anonymous: 100 req/day (configurable)                         │    │
+│  │   - Counters persisted in SQLite KV store                         │    │
+│  │         │                                                         │    │
+│  │ [4. Tracing Middleware]                                            │    │
+│  │   - W3C TraceContext propagation                                  │    │
+│  │   - OpenTelemetry span creation                                   │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │ API Routers                                                       │    │
+│  │  Inference | Agents | Safety | Vector IO | Eval | Tools |         │    │
+│  │  Post-Training | Telemetry | Scoring | Datasets | Providers       │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │ Provider Registry                                                 │    │
+│  │  [Inline Providers] - in-process, no network isolation            │    │
+│  │  [Remote Providers] - HTTP adapters to external services          │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS - LLM INFERENCE BACKENDS                                        │
+│                                                                          │
+│  [vLLM Inference Server]                                                 │
+│  - Port: 8000/TCP (configurable)                                         │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Encryption: Configurable (tls_verify flag)                            │
+│  - Auth: Bearer Token (api_token)                                        │
+│  - Purpose: Primary LLM inference for RHOAI                             │
+│                                                                          │
+│  [Ollama Server]                                                         │
+│  - Port: 11434/TCP (configurable)                                        │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: None (local deployment)                                   │
+│  - Auth: None                                                            │
+│  - Purpose: Local LLM inference                                          │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS - CLOUD LLM PROVIDERS (all 443/TCP HTTPS TLS 1.2+)             │
+│                                                                          │
+│  [OpenAI API]         Auth: Bearer Token (API key)                       │
+│  [Anthropic API]      Auth: Bearer Token (API key)                       │
+│  [AWS Bedrock]        Auth: AWS IAM credentials                          │
+│  [NVIDIA NIM]         Auth: Bearer Token (API key)                       │
+│  [Fireworks API]      Auth: Bearer Token (API key)                       │
+│  [Together API]       Auth: Bearer Token (API key)                       │
+│  [Groq API]           Auth: Bearer Token (API key)                       │
+│  [SambaNova API]      Auth: Bearer Token (API key)                       │
+│  [Gemini API]         Auth: Bearer Token (API key)                       │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS - VECTOR DATABASES                                               │
+│                                                                          │
+│  [PostgreSQL/pgvector]                                                   │
+│  - Port: 5432/TCP                                                        │
+│  - Protocol: PostgreSQL                                                  │
+│  - Encryption: Configurable TLS                                          │
+│  - Auth: Username/Password                                               │
+│                                                                          │
+│  [ChromaDB]                                                              │
+│  - Port: configurable                                                    │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Encryption: Configurable                                              │
+│  - Auth: None                                                            │
+│                                                                          │
+│  [Qdrant]                                                                │
+│  - Port: configurable                                                    │
+│  - Protocol: HTTP/gRPC                                                   │
+│  - Encryption: Configurable                                              │
+│  - Auth: API key                                                         │
+│                                                                          │
+│  [Milvus]                                                                │
+│  - Port: configurable                                                    │
+│  - Protocol: gRPC                                                        │
+│  - Encryption: Configurable                                              │
+│  - Auth: Token                                                           │
+│                                                                          │
+│  [Weaviate]                                                              │
+│  - Port: configurable                                                    │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Encryption: Configurable                                              │
+│  - Auth: API key                                                         │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS - DATA STORES                                                    │
+│                                                                          │
+│  [SQLite]                                                                │
+│  - Access: File I/O (local)                                              │
+│  - Purpose: Default persistence (registry, agents, traces, quotas)       │
+│  - No network exposure                                                   │
+│                                                                          │
+│  [Redis]                                                                 │
+│  - Port: 6379/TCP                                                        │
+│  - Protocol: Redis                                                       │
+│  - Encryption: Configurable TLS                                          │
+│  - Auth: Password                                                        │
+│                                                                          │
+│  [MongoDB]                                                               │
+│  - Port: 27017/TCP                                                       │
+│  - Protocol: MongoDB                                                     │
+│  - Encryption: Configurable TLS                                          │
+│  - Auth: Username/Password                                               │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS - AUTH & IDENTITY                                                │
+│                                                                          │
+│  [OIDC Provider / JWKS Endpoint]                                         │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: None (public keys)                                              │
+│  - Purpose: JWT public key retrieval for token verification              │
+│                                                                          │
+│  [Token Introspection Endpoint]                                          │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Client credentials (RFC 7662)                                   │
+│  - Purpose: Token validation via introspection                           │
+│                                                                          │
+│  [Custom Auth Endpoint]                                                  │
+│  - Port: configurable                                                    │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: Configurable                                              │
+│  - Auth: None (sends token for validation)                               │
+│  - Purpose: Delegated authentication to external service                 │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS - AGENT TOOLS                                                    │
+│                                                                          │
+│  [Brave Search API]    Port: 443/TCP  HTTPS TLS 1.2+  Auth: API key     │
+│  [Tavily Search API]   Port: 443/TCP  HTTPS TLS 1.2+  Auth: API key     │
+│  [Wolfram Alpha API]   Port: 443/TCP  HTTPS TLS 1.2+  Auth: API key     │
+│  [HuggingFace Hub]     Port: 443/TCP  HTTPS TLS 1.2+  Auth: HF Token    │
+│  [MCP Servers]         Port: configurable  HTTP/HTTPS  Auth: varies      │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS - OBSERVABILITY                                                  │
+│                                                                          │
+│  [OpenTelemetry Collector]                                               │
+│  - Port: configurable                                                    │
+│  - Protocol: OTLP HTTP                                                   │
+│  - Encryption: Configurable                                              │
+│  - Auth: None                                                            │
+│  - Purpose: Distributed tracing export                                   │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 
-Application-Level Access Control (ABAC — No Kubernetes RBAC):
-──────────────────────────────────────────────────────────────
-- Policy Engine: Cedar-inspired attribute-based access control
-- Actions: CREATE, READ, UPDATE, DELETE
-- Resource Types: model, shield, vector_db, dataset, toolgroup, scoring_fn, benchmark
-- Resource Qualification: type::identifier (e.g., model::llama-3)
-- Conditions:
-  - "user is owner" — resource creator has full access
-  - "user with <value> in <attribute>" — attribute-based matching
-  - "user in owners <attribute>" — ownership group membership
-- Default: Permit (when no access control policies configured)
+APPLICATION-LEVEL ACCESS CONTROL (No Kubernetes RBAC):
 
-Authentication Configuration:
-──────────────────────────────
-- Strategy 1 — OAuth2 JWT (JWKS):
-  - Provider: Configurable JWKS URI
-  - Token format: JWT Bearer
-  - Validation: Signature verification via cached JWKS
-  - Claims extraction: Subject, roles, custom attributes
-  - Key caching: Yes (configurable recheck period)
+  Authentication Providers:
+  - OAuth2 JWT: Validates via JWKS URI or RFC 7662 introspection
+    - Claim extraction: sub, groups, team, project, tenant, namespace
+    - Configurable audience, issuer, TLS verification
+  - Custom: Delegates to external HTTP endpoint
+    - Sends token + request context; receives principal + attributes
 
-- Strategy 2 — Token Introspection (RFC 7662):
-  - Provider: Configurable introspection endpoint
-  - Auth to IdP: HTTP Basic (client_id / client_secret)
-  - Response: Active/inactive + user attributes
+  Access Control Model (Cedar-inspired ABAC):
+  - permit/forbid rules evaluated in order (first match wins)
+  - Scoped by: principal, actions (CRUD), resource (type-qualified)
+  - Conditions: when/unless clauses
+    - Attribute matching: "user with X in roles"
+    - Ownership checks: "user is owner"
+    - Group membership: "user in owners teams"
+  - Default: DENY (if no rules match)
 
-- Strategy 3 — Custom Auth Provider:
-  - Delegates to arbitrary HTTPS endpoint
-  - Passes Bearer token for external validation
-  - Extracts user attributes from response
-
-Quota / Rate Limiting:
-──────────────────────
-- Anonymous clients: 100 requests/day (configurable)
-- Authenticated clients: 1000 requests/day (configurable)
-- Tracking: Persistent KV store (SQLite by default)
-- Scope: Per-client (identified by user principal)
+  Rate Limiting:
+  - Authenticated clients: 1000 req/day (default)
+  - Anonymous clients: 100 req/day (default, identified by IP)
+  - Counter storage: SQLite KV backend
 
 Secrets:
-────────
-- TLS certificate (tls_certfile)         — File path — HTTPS server certificate — Manual/cert-manager — No auto-rotate
-- TLS private key (tls_keyfile)          — File path — HTTPS server private key — Manual/cert-manager — No auto-rotate
-- TLS CA certificate (tls_cafile)        — File path — CA cert for mTLS client verification — Manual/cert-manager — No auto-rotate
-- Provider API keys                      — Environment variable — Auth to remote inference providers — Manual — No auto-rotate
-- OAuth2 introspection client_secret     — Config field — Token introspection endpoint auth — Manual — No auto-rotate
+  - TLS certificate (PEM file) - HTTPS server encryption
+    Provisioned by: Manual / cert-manager | Auto-rotate: No
+  - TLS private key (PEM file) - HTTPS server encryption
+    Provisioned by: Manual / cert-manager | Auto-rotate: No
+  - TLS CA certificate (PEM file) - Mutual TLS client verification
+    Provisioned by: Manual / cert-manager | Auto-rotate: No
+  - Provider API keys (env var) - Auth to remote providers (OpenAI, Anthropic, etc.)
+    Provisioned by: Manual | Auto-rotate: No
+  - OAuth2 client secret (YAML config) - Token introspection authentication
+    Provisioned by: Manual | Auto-rotate: No
+  - Database passwords (env var / config) - PostgreSQL, Redis, MongoDB auth
+    Provisioned by: Manual | Auto-rotate: No
+
+FIPS Compliance Notes:
+  - Pure Python service; FIPS depends on UBI base image OpenSSL
+  - python-jose uses pure-Python RSA/ECDSA (bypasses FIPS OpenSSL)
+  - hashlib.md5 uses usedforsecurity=False (FIPS-compliant per PEP 456)
+  - Risk: JWT validation via python-jose may not use FIPS-validated crypto
+  - Recommendation: Migrate to PyJWT with cryptography backend

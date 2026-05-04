@@ -1,70 +1,44 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and deploys LLM inference workloads on Intel Gaudi hardware"
+        user = person "Data Scientist" "Deploys and queries LLM models on Gaudi hardware via RHOAI"
 
-        vllmGaudi = softwareSystem "vllm-gaudi" "vLLM hardware plugin enabling high-performance LLM inference on Intel Gaudi accelerators" {
-            apiServer = container "vLLM OpenAI API Server" "OpenAI-compatible HTTP API for completions, chat, embeddings" "Python / vLLM 0.16.0" "Port 8000/TCP"
-            hpuPlatform = container "HpuPlatform" "Registers HPU as out-of-tree platform in vLLM's plugin framework" "Python Plugin"
-            hpuWorker = container "HPUWorker" "Manages HPU device init, memory profiling, distributed communication" "Python"
-            hpuModelRunner = container "HPUModelRunner" "Core model execution: forward passes, KV cache, attention, graph compilation" "Python (~6600 lines)"
-            extensionModule = container "Extension Module" "Configuration framework with 150+ feature flags, hardware detection, bucketing, profiling" "Python"
-            attentionBackends = container "Attention Backends" "Standard, MLA, Unified, Unified-MLA attention implementations" "Python (~4000+ lines)"
-            quantizationEngine = container "Quantization Engine" "FP8, INC, GPTQ, AWQ, Compressed-Tensors, ModelOpt quantization support" "Python"
-            distributedComm = container "Distributed Communication" "HPU communicator (HCCL), NIXL KV transfer, data parallel MoE" "Python"
+        vllmGaudi = softwareSystem "vLLM Gaudi" "HPU plugin for vLLM enabling high-performance LLM inference on Intel Gaudi accelerators" {
+            apiServer = container "vLLM API Server" "OpenAI-compatible REST API server (port 8000)" "Python / vLLM v0.16.0"
+            hpuPlatform = container "HpuPlatform Plugin" "Core platform plugin — device detection, attention backend selection, config validation" "Python Plugin"
+            attentionBackends = container "HPU Attention Backends" "HPUAttention, MLA, UnifiedAttention, UnifiedMLA — optimized for Gaudi FusedSDPA" "Python"
+            customOps = container "HPU Custom Ops" "FusedMoE, FP8, GPTQ, AWQ, LayerNorm, RotaryEmbedding, CompressedTensors, Mamba ops" "Python / Habana"
+            modelOverrides = container "HPU Model Overrides" "Gaudi-optimized forward passes for 12+ architectures (DeepSeek, Qwen, Gemma, Pixtral, etc.)" "Python"
+            hpuWorker = container "HPUWorker / HPUModelRunner" "Worker lifecycle, memory profiling, KV cache allocation, async execution" "Python"
+            communicator = container "HpuCommunicator" "HCCL-based all-reduce, all-gather, reduce-scatter for distributed inference" "Python / HCCL"
+            extensionSystem = container "Extension System" "Dynamic config, feature flags, bucketing, profiling, defragmentation" "Python"
         }
 
-        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Authentication and authorization sidecar proxy" "Platform-injected"
-        kserve = softwareSystem "KServe" "Model serving orchestration via ServingRuntime CRDs" "Internal RHOAI"
-        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "User interface for selecting and managing serving runtimes" "Internal RHOAI"
-        modelRegistry = softwareSystem "Model Registry" "Stores container image references for model serving" "Internal RHOAI"
-        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator managing deployments" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Kubernetes inference serving platform — manages InferenceService lifecycle" "Internal RHOAI"
+        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "Web console for selecting serving runtimes and deploying models" "Internal RHOAI"
+        rhoaiController = softwareSystem "RHOAI Model Controller" "Manages InferenceService lifecycle and scaling" "Internal RHOAI"
+        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Sidecar for TLS termination and Kubernetes RBAC enforcement" "Internal RHOAI"
 
-        vllm = softwareSystem "vLLM (upstream)" "Core LLM inference engine providing the plugin framework" "External" {
-            tags "External"
-        }
-        synapseAI = softwareSystem "Intel Gaudi SynapseAI" "Habana device drivers, graph compiler, and runtime libraries (v1.23.0)" "External" {
-            tags "External"
-        }
-        pytorchHPU = softwareSystem "PyTorch (Habana fork)" "PyTorch with HPU backend support (v2.9.0)" "External" {
-            tags "External"
-        }
-        ray = softwareSystem "Ray" "Distributed computing framework for multi-device inference" "External" {
-            tags "External"
-        }
-        huggingFace = softwareSystem "HuggingFace Hub" "Model weight and tokenizer downloads" "External" {
-            tags "External"
-        }
-        s3Storage = softwareSystem "S3 Storage" "Model artifact storage (AWS S3, MinIO, or compatible)" "External" {
-            tags "External"
-        }
+        synapseAI = softwareSystem "Intel SynapseAI Runtime" "Habana device drivers, graph compiler, TPC kernels (v1.23.0)" "External Hardware"
+        pytorch = softwareSystem "PyTorch for Gaudi" "Deep learning framework with HPU backend (v2.9.0)" "External"
+        ray = softwareSystem "Ray" "Distributed execution framework for multi-card/multi-node inference" "External"
 
-        # User relationships
-        user -> rhoaiDashboard "Selects vLLM-Gaudi runtime for Intel Gaudi workloads"
-        user -> vllmGaudi "Sends inference requests via HTTPS"
+        s3 = softwareSystem "S3 / MinIO" "Object storage for ML model weights" "External"
+        huggingFace = softwareSystem "Hugging Face Hub" "Model registry for downloading model weights and tokenizers" "External"
 
-        # Platform relationships
-        kserve -> vllmGaudi "Deploys container image as InferenceService"
-        rhodsOperator -> kserve "Manages KServe deployment"
-        rhoaiDashboard -> kserve "Triggers model serving deployments"
-        modelRegistry -> kserve "Provides container image references"
-        kubeRbacProxy -> vllmGaudi "Proxies authenticated requests" "HTTPS 8443 → HTTP 8000"
+        user -> rhoaiDashboard "Selects vllm-gaudi serving runtime"
+        user -> kserve "Creates InferenceService via kubectl/API"
+        user -> vllmGaudi "Sends inference requests" "HTTPS/443"
 
-        # Internal container relationships
-        apiServer -> hpuPlatform "Loads via plugin entry points"
-        hpuPlatform -> hpuWorker "Registers HPU workers"
-        hpuPlatform -> extensionModule "Loads configuration"
-        hpuWorker -> hpuModelRunner "Executes model inference"
-        hpuModelRunner -> attentionBackends "Selects attention implementation"
-        hpuModelRunner -> quantizationEngine "Applies quantization"
-        hpuWorker -> distributedComm "Coordinates distributed inference"
+        kserve -> vllmGaudi "Routes inference traffic" "HTTP/8000"
+        rhoaiDashboard -> kserve "Configures serving runtimes"
+        rhoaiController -> kserve "Manages InferenceService lifecycle"
+        kubeRbacProxy -> vllmGaudi "Forwards authenticated requests" "HTTP/8000 (localhost)"
 
-        # External dependency relationships
-        vllmGaudi -> vllm "Plugin framework (v0.16.0)" "Python entry points"
-        vllmGaudi -> synapseAI "Device drivers and graph compiler" "Shared libraries"
-        vllmGaudi -> pytorchHPU "Tensor operations on HPU" "Python library"
-        vllmGaudi -> ray "Multi-HPU worker coordination" "TCP/6379"
-        vllmGaudi -> huggingFace "Downloads model weights" "HTTPS/443, HF_TOKEN"
-        vllmGaudi -> s3Storage "Downloads model artifacts" "HTTPS/443, AWS IAM"
+        vllmGaudi -> synapseAI "Executes model inference on Gaudi devices" "SynapseAI HAL"
+        vllmGaudi -> pytorch "Deep learning operations" "In-process"
+        vllmGaudi -> ray "Distributed worker management" "Ray/6379"
+        vllmGaudi -> s3 "Downloads model weights" "HTTPS/443"
+        vllmGaudi -> huggingFace "Downloads models and tokenizers" "HTTPS/443"
     }
 
     views {
@@ -83,16 +57,15 @@ workspace {
                 background #999999
                 color #ffffff
             }
+            element "External Hardware" {
+                background #9b59b6
+                color #ffffff
+            }
             element "Internal RHOAI" {
                 background #7ed321
-                color #ffffff
-            }
-            element "Platform-injected" {
-                background #f5a623
-                color #ffffff
             }
             element "Person" {
-                shape person
+                shape Person
                 background #4a90e2
                 color #ffffff
             }

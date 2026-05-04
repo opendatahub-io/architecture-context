@@ -1,46 +1,49 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Defines RAG templates, search spaces, and benchmark data for optimization"
-        mlEngineer = person "ML Engineer" "Integrates ai4rag into ML pipelines and production workflows"
+        dataScientist = person "Data Scientist / ML Engineer" "Imports ai4rag into notebooks or pipelines to optimize RAG configurations"
 
-        ai4rag = softwareSystem "ai4rag" "RAG hyperparameter optimization engine using GAM-based search" {
-            experiment = container "AI4RAGExperiment" "Top-level orchestrator managing the full optimization lifecycle" "Python Class"
-            mps = container "ModelsPreSelector" "Pre-selection engine that evaluates model pairs on a data sample before full HPO" "Python Class"
-            gamOptimizer = container "GAMOptimizer" "Primary optimizer using Generalized Additive Models to predict optimal configurations" "Python Class (pygam)"
-            randomOptimizer = container "RandomOptimizer" "Fallback optimizer that performs random search over parameter space" "Python Class"
-            searchSpace = container "AI4RAGSearchSpace" "Constraint-aware combinatorial search space with pruning rules" "Python Class"
-            simpleRAG = container "SimpleRAG" "Default RAG template: chunking → embedding → retrieval → generation" "Python Class"
-            evaluator = container "UnitxtEvaluator" "Evaluation engine for answer_correctness, faithfulness, context_correctness" "Python Class (unitxt)"
-            chromaLocal = container "ChromaDB (In-memory)" "In-memory vector store for models pre-selection and local development" "Python (langchain-chroma)"
-            localHandler = container "LocalEventHandler" "Writes JSON experiment artifacts to disk" "Python Class"
-            kfpHandler = container "KFPEventHandler" "Accumulates results in memory for Kubeflow Pipelines integration" "Python Class"
+        ai4rag = softwareSystem "ai4rag" "Provider-agnostic Python library for hyperparameter optimization of RAG pipelines" {
+            experiment = container "Experiment Orchestrator" "Manages end-to-end RAG optimization workflow — MPS, HPO loop, evaluation" "Python Module (ai4rag.core.experiment)"
+            hpo = container "HPO Engine" "GAM-based surrogate optimizer and random search baseline" "Python Module (ai4rag.core.hpo)"
+            ragPipeline = container "RAG Pipeline" "Chunking, embedding, retrieval, vector stores, and RAG templates" "Python Module (ai4rag.rag)"
+            searchSpace = container "Search Space Manager" "Parameter definitions, constraints, and Llama Stack auto-discovery" "Python Module (ai4rag.search_space)"
+            evaluator = container "Evaluator" "RAG evaluation using Unitxt for correctness, faithfulness, and context metrics" "Python Module (ai4rag.evaluator)"
+            eventHandlers = container "Event Handlers" "Local filesystem (JSON) and Kubeflow Pipelines metadata event handlers" "Python Module (ai4rag.utils.event_handler)"
         }
 
-        llamaStack = softwareSystem "Llama Stack Server" "Backend server providing embeddings, vector stores (Milvus/Qdrant), and chat completions" "External"
-        openaiAPI = softwareSystem "OpenAI-compatible API" "Alternative backend for embeddings and chat completions" "External"
-        kubeflowPipelines = softwareSystem "Kubeflow Pipelines" "ML pipeline orchestration platform" "Internal RHOAI"
+        llamaStack = softwareSystem "Llama Stack Server" "Backend for foundation models, embeddings, and vector store operations" "External"
+        openaiAPI = softwareSystem "OpenAI-Compatible API" "Alternative backend for foundation model chat completions and embeddings" "External"
+        chromaDB = softwareSystem "ChromaDB" "In-memory vector store for local development and MPS evaluation" "External Library"
 
-        # User interactions
-        dataScientist -> ai4rag "Defines search space and runs optimization experiments" "Python API"
-        mlEngineer -> ai4rag "Integrates into KFP pipelines via KFPEventHandler" "Python API"
+        # External libraries (in-process)
+        unitxt = softwareSystem "Unitxt" "RAG evaluation metrics framework with confidence intervals" "External Library"
+        langchain = softwareSystem "LangChain" "Document abstraction and text splitting (recursive, character, token)" "External Library"
+        pygam = softwareSystem "pygam (LinearGAM)" "Generalized Additive Models for surrogate-based HPO" "External Library"
+        scikitlearn = softwareSystem "scikit-learn" "LabelEncoder for categorical parameter encoding" "External Library"
+        kfp = softwareSystem "Kubeflow Pipelines" "ML pipeline orchestration — receives experiment metadata via KFPEventHandler" "Internal Platform"
 
-        # Internal container relationships
-        experiment -> mps "Phase 1: pre-select model pairs" "In-process"
-        experiment -> gamOptimizer "Phase 2: optimize hyperparameters" "In-process"
-        experiment -> randomOptimizer "Phase 2: random search fallback" "In-process"
-        gamOptimizer -> searchSpace "Select next parameter node" "In-process"
-        randomOptimizer -> searchSpace "Sample random node" "In-process"
-        gamOptimizer -> simpleRAG "Run RAG evaluation" "In-process"
-        gamOptimizer -> evaluator "Evaluate results" "In-process"
-        mps -> evaluator "Evaluate pre-selection results" "In-process"
-        mps -> chromaLocal "Temporary vector storage" "In-process"
-        gamOptimizer -> localHandler "Emit experiment events" "In-process"
-        gamOptimizer -> kfpHandler "Emit experiment events" "In-process"
+        # Relationships
+        dataScientist -> ai4rag "Imports and configures RAG optimization experiments" "Python API"
 
-        # External integrations
-        ai4rag -> llamaStack "Embeddings, VectorIO, Chat Completions, Models List" "HTTP/HTTPS, API Key"
-        ai4rag -> openaiAPI "Embeddings, Chat Completions (alternative)" "HTTP/HTTPS, API Key"
-        kfpHandler -> kubeflowPipelines "Stream experiment status and results" "Python SDK"
+        experiment -> hpo "Requests next parameter suggestion and reports observations" "In-process"
+        experiment -> ragPipeline "Configures and executes index → retrieve → generate pipeline" "In-process"
+        experiment -> searchSpace "Defines and samples parameter configurations" "In-process"
+        experiment -> evaluator "Evaluates RAG answers against ground truth" "In-process"
+        experiment -> eventHandlers "Emits PatternPayload and EvaluationRecord events" "In-process"
+
+        ragPipeline -> llamaStack "Chat completions, embeddings, vector store CRUD, vector IO" "HTTP/HTTPS, API Key"
+        ragPipeline -> openaiAPI "Chat completions and embeddings (alternative backend)" "HTTPS, API Key"
+        ragPipeline -> chromaDB "In-memory vector store operations" "In-process"
+        ragPipeline -> langchain "Document chunking with recursive/character/token splitters" "In-process"
+
+        searchSpace -> llamaStack "Auto-discover available models (models.list)" "HTTP/HTTPS, API Key"
+
+        evaluator -> unitxt "Compute answer correctness, faithfulness, context correctness" "In-process"
+
+        hpo -> pygam "Train GAM surrogate model for guided parameter exploration" "In-process"
+        hpo -> scikitlearn "Encode categorical parameters for GAM input" "In-process"
+
+        eventHandlers -> kfp "Stream experiment results as pipeline metadata" "In-process (KFPEventHandler)"
     }
 
     views {
@@ -55,26 +58,31 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "External Library" {
+                background #bbbbbb
+                color #333333
+                shape RoundedBox
+            }
+            element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
             element "Person" {
+                background #4a90e2
+                color #ffffff
                 shape Person
-                background #08427B
+            }
+            element "Software System" {
+                background #438dd5
                 color #ffffff
             }
             element "Container" {
-                background #438DD5
-                color #ffffff
+                background #85bbf0
+                color #333333
             }
         }
     }

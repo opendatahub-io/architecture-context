@@ -1,65 +1,71 @@
 sequenceDiagram
     participant Client as External Client
     participant Server as Llama Stack Server<br/>8321/TCP HTTP/HTTPS
-    participant Auth as Authentication Middleware<br/>JWT/OAuth2
-    participant Quota as Quota Middleware
-    participant ABAC as Access Control (ABAC)
-    participant Router as Provider Router
-    participant IdP as OAuth2 IdP<br/>443/TCP HTTPS
-    participant SQLite as SQLite KV Store<br/>File I/O
-    participant vLLM as vLLM Server<br/>8000/TCP HTTP
-    participant VectorDB as Vector DB (pgvector)<br/>5432/TCP
-    participant Safety as Safety Provider<br/>(inline)
-    participant Search as Brave Search API<br/>443/TCP HTTPS
+    participant AuthMW as Authentication MW<br/>(OAuth2 JWT / Custom)
+    participant ACMW as Access Control MW<br/>(Cedar ABAC)
+    participant QuotaMW as Quota MW
+    participant OIDC as OIDC Provider<br/>443/TCP HTTPS
+    participant InfRouter as Inference Router
+    participant AgentProv as Agent Provider<br/>(in-process)
+    participant vLLM as vLLM Backend<br/>8000/TCP HTTP/HTTPS
+    participant RAGTool as RAG Tool Runtime<br/>(in-process)
+    participant PgVector as PostgreSQL pgvector<br/>5432/TCP
+    participant SafetyRouter as Safety Router
+    participant OTel as OTel Collector<br/>OTLP HTTP
 
-    Note over Client,Search: Flow 1: Chat Completion (Inference)
-    Client->>Server: POST /v1/inference/chat-completion<br/>Auth: Bearer JWT
-    Server->>Auth: Validate token
-    Auth->>IdP: GET /.well-known/jwks.json<br/>TLS 1.2+
-    IdP-->>Auth: JWKS keys (cached)
-    Auth-->>Server: User attributes extracted
-    Server->>Quota: Check rate limit
-    Quota->>SQLite: Read/increment counter
-    SQLite-->>Quota: Quota OK (< 1000/day)
-    Quota-->>Server: Allowed
-    Server->>ABAC: Check resource access<br/>model::llama-3
-    ABAC-->>Server: Permit
-    Server->>Router: Route to inference provider
-    Router->>vLLM: POST /v1/chat/completions<br/>Auth: API Key (Bearer)
-    vLLM-->>Router: Completion result (SSE stream)
-    Router-->>Server: Stream tokens
-    Server-->>Client: text/event-stream (SSE)<br/>Configurable TLS
+    Note over Client,OTel: Flow 1: Chat Completion Request
 
-    Note over Client,Search: Flow 2: RAG Query (Vector I/O)
-    Client->>Server: POST /v1/vector-io/query<br/>Auth: Bearer JWT
-    Server->>Auth: Validate token
-    Auth-->>Server: OK
-    Server->>Quota: Check rate limit
-    Quota-->>Server: Allowed
-    Server->>ABAC: Check resource access<br/>vector_db::my-docs
-    ABAC-->>Server: Permit
-    Server->>Router: Route to vector IO provider
-    Router->>vLLM: POST /v1/embeddings<br/>Generate query embedding
-    vLLM-->>Router: Embedding vector
-    Router->>VectorDB: SELECT similarity query<br/>Auth: Username/Password<br/>Configurable TLS
-    VectorDB-->>Router: Matching chunks
-    Router-->>Server: Query results
-    Server-->>Client: JSON response
+    Client->>Server: POST /v1/inference/chat-completion<br/>Auth: Bearer <JWT>
+    Server->>AuthMW: Validate token
+    AuthMW->>OIDC: GET /.well-known/jwks.json<br/>HTTPS/443, TLS 1.2+
+    OIDC-->>AuthMW: JWKS public keys
+    AuthMW->>AuthMW: Verify JWT signature<br/>Extract claims (sub, groups, roles)
+    AuthMW->>ACMW: Pass authenticated request<br/>with principal attributes
+    ACMW->>ACMW: Evaluate Cedar policies<br/>permit/forbid rules
+    ACMW->>QuotaMW: Authorized request
+    QuotaMW->>QuotaMW: Check rate limit<br/>(1000 req/day authenticated)
+    QuotaMW->>InfRouter: Route to inference provider
+    InfRouter->>vLLM: POST /v1/chat/completions<br/>HTTP/HTTPS, Bearer Token
+    vLLM-->>InfRouter: Completion response (SSE stream)
+    InfRouter-->>Server: Stream response
+    Server->>OTel: Export trace spans<br/>OTLP HTTP
+    Server-->>Client: SSE stream response<br/>HTTP/HTTPS, Configurable TLS
 
-    Note over Client,Search: Flow 3: Agent Turn with Tool Use
-    Client->>Server: POST /v1/agents/{id}/session/{sid}/turn<br/>Auth: Bearer JWT
-    Server->>Auth: Validate token
-    Auth-->>Server: OK
-    Server->>Router: Route to agent provider
-    Router->>Safety: Run input shield<br/>(inline check)
-    Safety-->>Router: Safe
-    Router->>vLLM: POST /v1/chat/completions<br/>with tool definitions
-    vLLM-->>Router: tool_call: brave_search("query")
-    Router->>Search: GET /search?q=query<br/>Auth: API Key<br/>TLS 1.2+
-    Search-->>Router: Search results
-    Router->>vLLM: POST /v1/chat/completions<br/>with tool results
-    vLLM-->>Router: Final response
-    Router->>Safety: Run output shield<br/>(inline check)
-    Safety-->>Router: Safe
-    Router-->>Server: Stream agent response
-    Server-->>Client: text/event-stream (SSE)
+    Note over Client,OTel: Flow 2: Agent Turn with RAG Tool Use
+
+    Client->>Server: POST /v1/agents/{id}/turn<br/>Auth: Bearer <JWT>
+    Server->>AuthMW: Validate token
+    AuthMW-->>ACMW: Authenticated
+    ACMW-->>QuotaMW: Authorized
+    QuotaMW->>AgentProv: Route to agent provider
+
+    AgentProv->>InfRouter: Initial chat-completion<br/>(in-process call)
+    InfRouter->>vLLM: POST /v1/chat/completions<br/>HTTP/HTTPS, Bearer Token
+    vLLM-->>InfRouter: Response with tool_call<br/>(RAG query needed)
+    InfRouter-->>AgentProv: Tool call response
+
+    AgentProv->>RAGTool: Execute RAG query<br/>(in-process)
+    RAGTool->>PgVector: SELECT with vector similarity<br/>TCP/5432, Configurable TLS<br/>Auth: Username/Password
+    PgVector-->>RAGTool: Relevant documents
+    RAGTool-->>AgentProv: RAG context
+
+    AgentProv->>InfRouter: Chat-completion with context<br/>(in-process call)
+    InfRouter->>vLLM: POST /v1/chat/completions<br/>HTTP/HTTPS, Bearer Token
+    vLLM-->>InfRouter: Final response
+    InfRouter-->>AgentProv: Completion
+
+    AgentProv-->>Server: Agent turn result
+    Server->>OTel: Export trace spans
+    Server-->>Client: SSE stream response
+
+    Note over Client,OTel: Flow 3: Safety Shield Execution
+
+    Client->>Server: POST /v1/safety/run-shield<br/>Auth: Bearer <JWT>
+    Server->>AuthMW: Validate token
+    AuthMW-->>ACMW: Authenticated
+    ACMW-->>QuotaMW: Authorized
+    QuotaMW->>SafetyRouter: Route to safety provider
+    SafetyRouter->>vLLM: Inference request (Llama Guard)<br/>HTTP/HTTPS, Bearer Token
+    vLLM-->>SafetyRouter: Safety classification
+    SafetyRouter-->>Server: Shield result (safe/unsafe)
+    Server-->>Client: Shield response<br/>HTTP/HTTPS

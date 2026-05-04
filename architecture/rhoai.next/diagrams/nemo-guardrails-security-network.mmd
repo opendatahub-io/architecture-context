@@ -1,58 +1,83 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["Client Application<br/>No built-in auth required"]
+        Client["Client / Platform User"]
     end
 
-    subgraph ClusterInternal["CLUSTER INTERNAL (Platform Managed)"]
+    subgraph Ingress["PLATFORM INGRESS (DMZ)"]
+        IngressCtrl["Platform Ingress Controller<br/>Gateway API / OpenShift Route<br/>TLS Termination<br/>kube-rbac-proxy / AuthPolicy"]
+    end
+
+    subgraph ClusterInternal["CLUSTER INTERNAL"]
         direction TB
 
-        subgraph NemoNS["Namespace: {platform-namespace}"]
-            Server["NeMo Guardrails Server<br/>Service: nemo-guardrails (ClusterIP)<br/>Port: 8000/TCP HTTP<br/>Image: odh-nemo-guardrails (UBI9)<br/>No built-in auth/authz"]
-            ConfigMap["ConfigMap<br/>config.yaml + rails.co<br/>Mounted at /app/config/"]
-            Secrets["Secrets (Opaque)<br/>OPENAI_API_KEY<br/>ANTHROPIC_API_KEY<br/>AZURE_OPENAI_API_KEY<br/>COHERE_API_KEY"]
+        subgraph NemoService["NeMo Guardrails Service"]
+            Server["nemo-guardrails-server<br/>ClusterIP 8000/TCP HTTP<br/>No built-in auth<br/>FastAPI/Uvicorn on UBI9"]
+
+            subgraph RailsPipelines["Rails Pipelines"]
+                InputRails["Input Rails<br/>(content safety, jailbreak,<br/>topic, PII/SDD)"]
+                OutputRails["Output Rails<br/>(content safety, hallucination,<br/>SDD, topic)"]
+            end
+
+            subgraph LocalLibs["In-Process Libraries"]
+                Presidio["Presidio<br/>(PII Detection)"]
+                SpaCy["spaCy + en_core_web_lg<br/>(NLP/NER)"]
+                FastEmbed["FastEmbed<br/>(Local Embeddings)"]
+                AnnoyIdx["Annoy Index<br/>(ANN Search)"]
+            end
         end
+
+        ActionsServer["Actions Server (optional)<br/>8001/TCP HTTP<br/>No auth"]
     end
 
     subgraph LLMProviders["EGRESS - LLM PROVIDERS (Encrypted)"]
-        direction TB
-        vLLM["vLLM Runtime (RHOAI Primary)<br/>443/TCP or custom<br/>HTTPS TLS 1.2+<br/>Bearer Token"]
-        OpenAI["OpenAI API<br/>api.openai.com<br/>443/TCP HTTPS TLS 1.2+<br/>Bearer Token"]
-        AzureOAI["Azure OpenAI<br/>{resource}.openai.azure.com<br/>443/TCP HTTPS TLS 1.2+<br/>api-key header"]
-        NIM["NVIDIA NIM<br/>443/TCP or custom<br/>HTTPS TLS 1.2+<br/>Bearer Token"]
-        AnthropicAPI["Anthropic API<br/>api.anthropic.com<br/>443/TCP HTTPS TLS 1.2+<br/>Bearer Token"]
-        CohereAPI["Cohere API<br/>api.cohere.com<br/>443/TCP HTTPS TLS 1.2+<br/>Bearer Token"]
+        OpenAI["OpenAI API<br/>api.openai.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer Token"]
+        NIM["NVIDIA NIM<br/>integrate.api.nvidia.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer Token"]
+        Anthropic["Anthropic API<br/>api.anthropic.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: x-api-key"]
+        Azure["Azure OpenAI<br/>*.openai.azure.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: api-key header"]
+        Cohere["Cohere API<br/>api.cohere.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer Token"]
+        Vertex["Google Vertex AI<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: GCP credentials"]
     end
 
-    subgraph Observability["EGRESS - OBSERVABILITY (Configurable)"]
-        OTEL["OpenTelemetry Collector<br/>4317/TCP gRPC or 4318/TCP HTTP<br/>TLS 1.2+ (configurable)<br/>No auth<br/>Conditional: OTEL_EXPORTER_OTLP_ENDPOINT"]
+    subgraph InfraServices["EGRESS - INFRASTRUCTURE (Optional)"]
+        Redis["Redis<br/>6379/TCP<br/>Redis protocol<br/>Optional TLS<br/>Auth: user/pass"]
+        OTel["OpenTelemetry Collector<br/>4317/TCP gRPC OTLP<br/>Optional TLS<br/>Auth: None"]
     end
 
-    %% Flows
-    Client -->|"HTTP/8000<br/>No encryption (TLS terminated externally)<br/>Header forwarding: X-*, Authorization"| Server
-    ConfigMap -.->|"Volume mount"| Server
-    Secrets -.->|"Env vars"| Server
+    %% External → Ingress
+    Client -->|"HTTPS<br/>TLS (platform-managed)<br/>Bearer Token"| IngressCtrl
 
-    Server -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token<br/>X-* headers forwarded<br/>(auth tokens redacted)"| vLLM
-    Server -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| OpenAI
-    Server -->|"HTTPS/443<br/>TLS 1.2+<br/>api-key header"| AzureOAI
+    %% Ingress → Service
+    IngressCtrl -->|"HTTP/8000<br/>No encryption (cluster-internal)<br/>Auth header forwarded"| Server
+
+    %% Internal flows
+    Server --> InputRails
+    Server --> OutputRails
+    InputRails --> LocalLibs
+    OutputRails --> LocalLibs
+
+    %% Egress to LLM providers
+    Server -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (forwarded or env var)"| OpenAI
     Server -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| NIM
-    Server -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| AnthropicAPI
-    Server -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| CohereAPI
+    Server -->|"HTTPS/443<br/>TLS 1.2+<br/>x-api-key"| Anthropic
+    Server -->|"HTTPS/443<br/>TLS 1.2+<br/>api-key header"| Azure
+    Server -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Cohere
+    Server -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP creds"| Vertex
 
-    Server -->|"OTLP gRPC/4317<br/>or HTTP/4318<br/>TLS configurable"| OTEL
+    %% Egress to infrastructure
+    Server -.->|"6379/TCP<br/>Redis protocol<br/>Optional TLS"| Redis
+    Server -.->|"4317/TCP<br/>gRPC OTLP<br/>Optional TLS"| OTel
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef server fill:#4a90e2,stroke:#333,stroke-width:3px,color:#fff
-    classDef config fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef secret fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef llmprovider fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef observability fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef llmprovider fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef infra fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef locallib fill:#e8e8e8,stroke:#999
 
     class Client external
-    class Server server
-    class ConfigMap config
-    class Secrets secret
-    class vLLM,OpenAI,AzureOAI,NIM,AnthropicAPI,CohereAPI llmprovider
-    class OTEL observability
+    class IngressCtrl ingress
+    class Server,InputRails,OutputRails,ActionsServer internal
+    class Presidio,SpaCy,FastEmbed,AnnoyIdx locallib
+    class OpenAI,NIM,Anthropic,Azure,Cohere,Vertex llmprovider
+    class Redis,OTel infra

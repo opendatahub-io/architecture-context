@@ -1,42 +1,52 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Deploys and queries LLM models for inference"
-        application = person "Application" "Client application consuming LLM inference API"
+        dataScientist = person "Data Scientist" "Deploys and queries LLM models on CPU hardware"
+        mlEngineer = person "ML Engineer" "Configures serving runtimes and manages model deployments"
 
-        vllmCpu = softwareSystem "vLLM-CPU" "CPU-optimized LLM inference server providing OpenAI-compatible API" {
-            apiServer = container "OpenAI API Server" "FastAPI/Uvicorn HTTP server with modular API routers" "Python (FastAPI)" "Web Server"
-            grpcServer = container "gRPC Server" "Alternative gRPC entrypoint for inference" "Python (grpc.aio)" "Service"
-            authMiddleware = container "Authentication Middleware" "API key validation for /v1/* endpoints" "Python" "Middleware"
-            asyncEngine = container "AsyncLLM Engine (V1)" "Asynchronous inference engine with PagedAttention, continuous batching, KV cache" "Python" "Engine"
-            modelExecutor = container "Model Executor" "CPU-optimized model execution with native C/C++ kernels" "Python + C/C++" "Compute"
-            prometheusInstr = container "Prometheus Instrumentator" "Metrics collection and /metrics endpoint" "Python" "Monitoring"
+        vllmCpu = softwareSystem "vLLM CPU" "CPU-only LLM inference serving engine with OpenAI-compatible API (ppc64le, s390x)" {
+            apiServer = container "vllm-openai" "OpenAI-compatible HTTP API server with 40+ endpoints" "Python/FastAPI" "Service"
+            grpcServer = container "gRPC Server" "LLM inference via gRPC protocol" "Python/grpcio" "Service"
+            v1Engine = container "V1 Engine (EngineCore)" "Core inference loop: scheduler, KV cache, batch management" "Python" "Library"
+            cpuRunner = container "CPU Model Runner" "CPU-specific model execution adapting GPU runner for CPU tensors" "Python/PyTorch" "Library"
+            cpuPlatform = container "CPU Platform" "Architecture detection (x86, ARM, PPC64LE, S390X) and feature support" "Python" "Library"
+            inputProcessor = container "Input Processor" "Tokenization and request preprocessing" "Python/transformers" "Library"
+            outputProcessor = container "Output Processor" "Detokenization and response streaming (SSE/JSON)" "Python" "Library"
         }
 
-        kserve = softwareSystem "KServe" "Kubernetes model serving platform managing ServingRuntime CRDs" "Internal RHOAI"
-        huggingFaceHub = softwareSystem "Hugging Face Hub" "Model weights and tokenizer artifact repository" "External"
-        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for model artifacts via tensorizer" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring platform" "Internal RHOAI"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing backend" "External"
+        kserve = softwareSystem "KServe" "Serverless ML inference platform managing InferenceService lifecycle" "Internal RHOAI"
+        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "User interface for configuring serving runtimes" "Internal RHOAI"
+        modelController = softwareSystem "Model Mesh / Controller" "Manages model serving pod lifecycle" "Internal RHOAI"
 
-        # External relationships
-        application -> vllmCpu "Sends inference requests" "HTTPS/443 (via KServe)"
-        dataScientist -> kserve "Deploys InferenceService with vLLM-CPU ServingRuntime" "kubectl"
-        kserve -> vllmCpu "Deploys and routes traffic" "HTTP/8000"
-        vllmCpu -> huggingFaceHub "Downloads model weights and tokenizers" "HTTPS/443"
-        vllmCpu -> s3Storage "Loads models via tensorizer" "HTTPS/443"
-        prometheus -> vllmCpu "Scrapes metrics" "HTTP/8000"
-        vllmCpu -> otelCollector "Exports tracing spans" "gRPC/HTTP (optional)"
+        huggingFace = softwareSystem "HuggingFace Hub" "Model weight and tokenizer repository" "External"
+        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for model artifacts" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
+        otlpCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing collection" "External"
+        rhStats = softwareSystem "Red Hat Stats" "Usage statistics reporting service" "External"
 
-        # Internal container relationships
-        application -> apiServer "POST /v1/chat/completions, /v1/completions, /v1/responses, /v1/messages" "HTTP/8000"
-        application -> grpcServer "gRPC inference calls" "gRPC/50051"
-        apiServer -> authMiddleware "Validates API key" "in-process"
-        authMiddleware -> asyncEngine "Submits inference request" "in-process async"
-        grpcServer -> asyncEngine "Submits inference request" "in-process async"
-        asyncEngine -> modelExecutor "Executes model forward pass" "in-process"
-        asyncEngine -> huggingFaceHub "Downloads model artifacts" "HTTPS/443 (HF_TOKEN)"
-        asyncEngine -> s3Storage "Downloads model via tensorizer" "HTTPS/443 (AWS IAM)"
-        prometheus -> prometheusInstr "Scrapes /metrics" "HTTP/8000"
+        pytorch = softwareSystem "PyTorch" "Deep learning framework for CPU tensor computation" "External"
+
+        # Relationships
+        dataScientist -> vllmCpu "Sends inference requests via" "HTTP(S)/8000, gRPC/50051"
+        mlEngineer -> rhoaiDashboard "Configures serving runtimes via" "HTTPS"
+
+        rhoaiDashboard -> kserve "Creates InferenceService referencing vLLM image" "Kubernetes API"
+        kserve -> vllmCpu "Deploys and manages as InferenceService runtime" "Container orchestration"
+        modelController -> vllmCpu "Manages pod lifecycle" "Kubernetes API"
+
+        vllmCpu -> huggingFace "Downloads model weights and configs" "HTTPS/443, Bearer HF_TOKEN"
+        vllmCpu -> s3Storage "Loads model weights from object storage" "HTTPS/443, AWS IAM"
+        vllmCpu -> prometheus "Exposes metrics for scraping" "HTTP/8000"
+        vllmCpu -> otlpCollector "Exports distributed traces" "gRPC/HTTP (configurable)"
+        vllmCpu -> rhStats "Reports usage statistics" "HTTPS/443"
+        vllmCpu -> pytorch "Executes model inference on CPU" "In-process"
+
+        # Container relationships
+        apiServer -> inputProcessor "Forwards parsed requests"
+        grpcServer -> inputProcessor "Forwards parsed requests"
+        inputProcessor -> v1Engine "Submits tokenized requests"
+        v1Engine -> cpuRunner "Dispatches model execution"
+        cpuRunner -> outputProcessor "Returns inference results"
+        cpuPlatform -> cpuRunner "Provides arch-specific config"
     }
 
     views {
@@ -59,24 +69,18 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
+            element "Service" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Library" {
+                background #f5a623
+                color #ffffff
+            }
             element "Person" {
-                shape person
                 background #08427b
                 color #ffffff
-            }
-            element "Software System" {
-                background #1168bd
-                color #ffffff
-            }
-            element "Container" {
-                background #438dd5
-                color #ffffff
-            }
-            element "Web Server" {
-                shape WebBrowser
-            }
-            element "Middleware" {
-                shape Component
+                shape person
             }
         }
     }

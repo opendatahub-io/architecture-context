@@ -1,31 +1,46 @@
 sequenceDiagram
     participant Client as External Client
-    participant KServe as KServe Ingress<br/>443/TCP HTTPS TLS 1.2+
-    participant AuthMW as AuthenticationMiddleware<br/>API Key Validation
-    participant API as OpenAI API Server<br/>8000/TCP HTTP
-    participant Engine as AsyncLLM Engine (V1)<br/>PagedAttention
-    participant Executor as Model Executor<br/>CPU (C/C++ kernels)
-    participant HFHub as Hugging Face Hub<br/>443/TCP HTTPS
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant KServe as KServe Gateway
+    participant API as vLLM API Server<br/>8000/TCP HTTP(S)
+    participant Input as InputProcessor<br/>Tokenizer
+    participant Engine as EngineCore<br/>Scheduler + KV Cache
+    participant Runner as CPU Model Runner<br/>PyTorch CPU
+    participant Output as OutputProcessor<br/>Detokenizer
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant Prom as Prometheus<br/>8000/TCP HTTP
+    participant OTLP as OTLP Collector<br/>gRPC/HTTP
 
-    Note over Engine,HFHub: Flow 2: Model Loading at Startup
-    Engine->>HFHub: GET model weights + tokenizer<br/>Auth: Bearer Token (HF_TOKEN)<br/>TLS 1.2+
-    HFHub-->>Engine: Model artifacts
-    Engine->>Engine: Load model into CPU memory<br/>Initialize KV Cache
-
-    Note over Client,Executor: Flow 1: Chat Completion Request
+    rect rgb(230, 245, 255)
+    Note over Client,Output: Flow 1: Inference Request Processing
     Client->>KServe: POST /v1/chat/completions<br/>Auth: Bearer Token
-    KServe->>AuthMW: Forward request<br/>HTTP 8000/TCP
-    AuthMW->>AuthMW: Validate API Key<br/>(VLLM_API_KEY)
-    AuthMW->>API: Authenticated request
-    API->>Engine: Submit inference request<br/>(async, in-process)
-    Engine->>Executor: Execute model forward pass<br/>(in-process, Python/C++)
-    Executor-->>Engine: Token logits
-    Engine->>Engine: Sample tokens<br/>PagedAttention + Continuous Batching
-    Engine-->>API: Generated tokens (streaming)
-    API-->>KServe: SSE stream response<br/>HTTP chunked
-    KServe-->>Client: JSON/SSE response<br/>HTTPS
+    KServe->>API: Forward request<br/>HTTP(S)/8000
+    API->>API: AuthenticationMiddleware<br/>SHA256 hash + constant-time compare
+    API->>Input: Parse & validate request<br/>(Pydantic)
+    Input->>Input: Tokenize input text<br/>(HF transformers)
+    Input->>Engine: Submit tokenized request
+    Engine->>Engine: Schedule batch<br/>Manage KV cache pages
+    Engine->>Runner: Execute model forward pass
+    Runner->>Runner: PyTorch CPU inference<br/>(OpenMP threads)
+    Runner-->>Engine: Output token logits
+    Engine-->>Output: Scheduled output tokens
+    Output-->>API: Detokenized text<br/>(streaming SSE or JSON)
+    API-->>KServe: HTTP(S) response
+    KServe-->>Client: JSON / SSE stream
+    end
 
-    Note over Client,S3: Alternative: S3 Model Loading
-    Engine->>S3: GET model via tensorizer<br/>Auth: AWS IAM (S3_ACCESS_KEY_ID)<br/>TLS 1.2+
-    S3-->>Engine: Model artifacts
+    rect rgb(255, 243, 224)
+    Note over API,HF: Flow 2: Model Loading (startup)
+    API->>HF: GET model config<br/>HTTPS/443, Bearer HF_TOKEN
+    HF-->>API: Model configuration
+    API->>HF: Download model weights<br/>HTTPS/443, Bearer HF_TOKEN
+    HF-->>API: Model weight files (safetensors)
+    API->>Runner: Load weights into CPU memory<br/>(File I/O → PyTorch tensors)
+    Runner->>Runner: Initialize model parameters<br/>in CPU RAM
+    end
+
+    rect rgb(232, 245, 233)
+    Note over API,OTLP: Flow 3: Observability
+    Prom->>API: GET /metrics<br/>HTTP/8000
+    API-->>Prom: Prometheus metrics<br/>(request latency, throughput, queue depth)
+    API->>OTLP: Export traces<br/>gRPC (insecure) or HTTP
+    end

@@ -1,29 +1,31 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Sends inference requests to deployed models via REST API"
+        dataScientist = person "Data Scientist" "Sends inference requests to deployed ML models via REST API"
+        mlPipeline = person "ML Pipeline" "Automated pipeline that invokes model inference via REST"
 
-        restProxy = softwareSystem "rest-proxy" "Stateless sidecar that translates KServe V2 REST requests into gRPC V2 Predict Protocol calls" {
-            httpListener = container "HTTP Listener" "Accepts REST requests on port 8008 with optional TLS" "Go net/http"
-            customJsonMarshaler = container "CustomJSONPb Marshaler" "Handles KServe V2 tensor serialization: nested arrays, base64 BYTES, raw output contents, typed parameters" "Go Library"
-            grpcGateway = container "grpc-gateway" "Auto-generated HTTP-to-gRPC reverse proxy from protobuf service definitions" "grpc-gateway v2.15.0"
-            grpcClient = container "gRPC Client" "Connects to upstream gRPC inference service on localhost:8033" "google.golang.org/grpc v1.56.3"
+        restProxy = softwareSystem "rest-proxy" "gRPC-to-REST reverse proxy that translates KServe V2 REST API requests into gRPC V2 Predict Protocol calls" {
+            httpListener = container "HTTP Listener" "Receives KServe V2 REST API requests on port 8008" "Go HTTP Server"
+            grpcGateway = container "gRPC-Gateway" "Auto-generated REST-to-gRPC translation layer from grpc_predict_v2.proto" "grpc-ecosystem/grpc-gateway v2.15.0"
+            customMarshaler = container "Custom Marshaler" "Handles JSON tensor data marshalling: multi-dimensional arrays, base64 BYTES, raw byte content" "Go"
+            grpcClient = container "gRPC Client" "Sends translated gRPC requests to ModelMesh on port 8033" "google.golang.org/grpc v1.56.3"
         }
 
-        modelMesh = softwareSystem "ModelMesh Serving" "Multi-model serving platform providing gRPC V2 Predict Protocol inference" "Internal RHOAI"
-        kserveV2 = softwareSystem "KServe V2 Predict Protocol" "Open standard for model inference REST and gRPC APIs" "Specification"
-        certManager = softwareSystem "cert-manager" "Provisions and rotates TLS certificates" "External"
+        modelMesh = softwareSystem "ModelMesh Serving" "gRPC-based multi-model serving infrastructure that hosts and serves ML models" "Internal RHOAI"
+        modelMeshOperator = softwareSystem "ModelMesh Operator" "Deploys and manages ModelMesh pods, injects rest-proxy as sidecar via model-serving-config ConfigMap" "Internal RHOAI"
+        kserveProtocol = softwareSystem "KServe V2 Protocol" "Standardized ML inference protocol (REST and gRPC variants) defined by grpc_predict_v2.proto" "External Standard"
 
         # Relationships
-        user -> restProxy "Sends inference/metadata requests" "HTTP/HTTPS 8008/TCP"
-        restProxy -> modelMesh "Forwards as gRPC calls" "gRPC 8033/TCP (localhost)"
-        restProxy -> kserveV2 "Implements specification" ""
-        certManager -> restProxy "Provisions TLS certificates" "TLS cert/key files"
+        dataScientist -> restProxy "Sends inference requests" "HTTP/HTTPS 8008/TCP"
+        mlPipeline -> restProxy "Invokes model inference" "HTTP/HTTPS 8008/TCP"
+        restProxy -> modelMesh "Forwards translated gRPC inference calls" "gRPC 8033/TCP (localhost)"
+        modelMeshOperator -> restProxy "Deploys as sidecar container" "ConfigMap restProxy.image"
+        restProxy -> kserveProtocol "Implements V2 REST API specification"
 
         # Internal container relationships
-        httpListener -> customJsonMarshaler "Passes raw JSON body"
-        customJsonMarshaler -> grpcGateway "Decoded protobuf messages"
-        grpcGateway -> grpcClient "gRPC method invocations"
-        grpcClient -> modelMesh "gRPC V2 Predict Protocol" "gRPC 8033/TCP"
+        httpListener -> grpcGateway "Routes REST requests"
+        grpcGateway -> customMarshaler "Marshals/unmarshals tensor data"
+        grpcGateway -> grpcClient "Sends gRPC calls"
+        grpcClient -> modelMesh "gRPC ModelInfer / ModelMetadata RPCs" "gRPC 8033/TCP"
     }
 
     views {
@@ -38,30 +40,26 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
             element "Person" {
-                background #f5a623
-                color #ffffff
                 shape Person
+                background #08427b
+                color #ffffff
             }
-            element "Container" {
-                background #4a90e2
+            element "Software System" {
+                background #1168bd
                 color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "External" {
+            element "External Standard" {
                 background #999999
                 color #ffffff
             }
-            element "Specification" {
-                background #e8e8e8
-                color #333333
+            element "Container" {
+                background #438dd5
+                color #ffffff
             }
         }
     }

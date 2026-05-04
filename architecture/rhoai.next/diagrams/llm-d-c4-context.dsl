@@ -1,69 +1,62 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Deploys and manages ML models for inference"
-        appDeveloper = person "Application Developer" "Builds applications that consume LLM inference APIs"
+        user = person "Data Scientist / ML Engineer" "Deploys and serves LLM models for inference"
+        client = person "API Consumer" "Sends inference requests to deployed models"
 
-        llmd = softwareSystem "llm-d" "Kubernetes-native distributed inference serving stack for large language models" {
-            proxyLayer = container "Gateway / Envoy Proxy" "Accepts client requests, consults EPP via ext-proc for routing decisions" "Envoy / Gateway API" "Port 80/TCP"
-            epp = container "Endpoint Picker (EPP)" "Scheduling brain: Filter → Score → Pick pipeline with flow control, prefix cache affinity, and P/D disaggregation" "Go Service (llm-d-inference-scheduler v0.7.0)"
-            inferencePool = container "InferencePool CRD" "Kubernetes CRD for endpoint discovery and gateway integration, namespace-scoped" "Kubernetes Custom Resource"
-            modelServer = container "Model Server (vLLM)" "Executes LLM inference on accelerator hardware, serves OpenAI-compatible API" "Python (vLLM / SGLang)" "Port 8000/TCP"
-            routingSidecar = container "Routing Sidecar" "Orchestrates prefill/decode disaggregation flow" "Go Service (v0.7.1)" "Port 8000/TCP"
-            nixlTransfer = container "NIXL Transfer" "GPU-to-GPU KV cache transfer via RDMA (GPUDirect)" "C++ Library (v0.10.0)" "Port 5600/TCP"
-            lmcache = container "LMCache" "Hierarchical KV cache offloading across storage tiers" "Python (v0.3.14)"
+        llmd = softwareSystem "llm-d" "Kubernetes-native distributed inference serving stack providing optimized container images, deployment recipes, and orchestration patterns for production-scale LLM serving" {
+            cudaImage = container "llm-d-cuda" "Multi-stage CUDA vLLM image with NIXL, UCX, NVSHMEM, DeepEP, DeepGEMM, FlashInfer, LMCache, OTEL" "Container Image"
+            cpuImage = container "llm-d-cpu" "CPU-only vLLM image with NIXL/UCX" "Container Image"
+            hpuImage = container "llm-d-hpu" "Intel Gaudi vLLM image with NIXL" "Container Image"
+            rocmImage = container "llm-d-rocm" "AMD ROCm vLLM image with RIXL/UCX" "Container Image"
+            deploymentRecipes = container "Deployment Recipes" "Kustomize bases/overlays for single-host, P/D disaggregation, wide-EP topologies" "Kustomize"
+            gatewayRecipes = container "Gateway Recipes" "Gateway API configurations for Istio, kgateway, agentgateway, GKE" "Kustomize/YAML"
+            schedulerValues = container "Scheduler Values" "Helm values for EPP plugin chains, scoring profiles" "Helm Values"
         }
 
-        // External systems
-        gatewayAPI = softwareSystem "Kubernetes Gateway API" "Standard L7 networking for Kubernetes" "External"
-        agentgateway = softwareSystem "agentgateway" "Preferred gateway implementation for llm-d" "External"
-        istio = softwareSystem "Istio" "Service mesh and ingress gateway" "External"
-        gkeGateway = softwareSystem "GKE Gateway" "Google Cloud managed load balancer" "External Cloud"
+        vllm = softwareSystem "vLLM" "High-throughput LLM serving engine with OpenAI-compatible API" "External"
+        epp = softwareSystem "llm-d-inference-scheduler (EPP)" "Endpoint Picker extension for intelligent load balancing via Gateway ext_proc" "Internal llm-d"
+        routingSidecar = softwareSystem "llm-d-routing-sidecar" "Prefill/decode coordination sidecar for disaggregated serving" "Internal llm-d"
+        wva = softwareSystem "Workload Variant Autoscaler" "SLO-aware autoscaling for model server instances" "Internal llm-d"
+        nixl = softwareSystem "NIXL" "High-performance KV cache transfer library for disaggregated serving" "External"
+        gatewayAPI = softwareSystem "Kubernetes Gateway API" "Standard API for ingress and traffic routing" "External"
+        inferenceGateway = softwareSystem "K8s Inference Gateway Extension" "InferencePool, InferenceObjective, EndpointPickerConfig CRDs" "External"
+        istio = softwareSystem "Istio" "Service mesh and Gateway API provider with ext_proc support" "External"
+        agentgateway = softwareSystem "agentgateway (kgateway)" "Alternative Gateway API provider" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
+        grafana = softwareSystem "Grafana" "Metrics visualization dashboards" "External"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed trace collection" "External"
+        jaeger = softwareSystem "Jaeger" "Distributed trace visualization" "External"
+        huggingface = softwareSystem "HuggingFace Hub" "Model weight repository" "External"
+        lws = softwareSystem "LeaderWorkerSet Controller" "Multi-node workload management for expert parallelism" "External"
+        certManager = softwareSystem "cert-manager" "Certificate management" "External"
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster orchestration, pod lifecycle, CRD management" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and alerting (GKE Managed / OCP UWM / Self-managed)" "External"
-        jaeger = softwareSystem "Jaeger" "Distributed tracing backend via OpenTelemetry" "External"
-        grafana = softwareSystem "Grafana" "Metrics dashboards and visualization" "External"
+        # User interactions
+        user -> llmd "Deploys models using Kustomize recipes and Helm values"
+        client -> llmd "Sends inference requests via Gateway"
 
-        containerRegistry = softwareSystem "Container Registry" "ghcr.io/llm-d - Container image storage" "External"
-        modelStorage = softwareSystem "Model Storage" "S3, GCS, PVC - Model artifact storage" "External"
-        githubActions = softwareSystem "GitHub Actions" "CI/CD pipeline with 55 workflows, Trivy scanning, DCO enforcement" "External"
+        # Internal relationships
+        llmd -> vllm "Bundles as model serving engine inside container images"
+        llmd -> epp "Configures via Helm values for request routing"
+        llmd -> routingSidecar "Deploys as init container on decode pods for P/D disaggregation"
+        llmd -> nixl "Bundles for KV cache transfer between prefill/decode instances" "RDMA/TCP port 5600"
+        llmd -> gatewayAPI "Configures Gateway and HTTPRoute CRDs" "Kubernetes API"
+        llmd -> inferenceGateway "Configures InferencePool and InferenceObjective CRDs" "Kubernetes API"
+        llmd -> wva "Configures for workload autoscaling" "Kubernetes API"
 
-        // Internal ODH/RHOAI systems
-        odhDashboard = softwareSystem "ODH Dashboard" "Web UI for managing ML workloads" "Internal RHOAI"
-        dsPipelines = softwareSystem "Data Science Pipelines" "ML pipeline orchestration" "Internal RHOAI"
+        # External dependencies
+        llmd -> istio "Uses as Gateway API provider" "Kubernetes API"
+        llmd -> agentgateway "Uses as alternative Gateway API provider" "Kubernetes API"
+        llmd -> lws "Uses for multi-node expert parallelism" "Kubernetes API"
+        llmd -> huggingface "Downloads model weights at startup" "HTTPS port 443"
+        llmd -> otelCollector "Exports distributed traces" "gRPC OTLP port 4317"
+        llmd -> prometheus "Exposes metrics for scraping" "HTTP port 8000"
 
-        // Relationships - User interactions
-        appDeveloper -> llmd "Sends OpenAI-compatible inference requests" "HTTP/80"
-        dataScientist -> llmd "Deploys models via Kustomize/Helm guides" "kubectl / kustomize"
+        # Observability chain
+        prometheus -> grafana "Provides data for dashboards"
+        otelCollector -> jaeger "Forwards traces for visualization"
 
-        // Internal container relationships
-        proxyLayer -> epp "Consults for every routing decision" "ext-proc gRPC (FULL_DUPLEX_STREAMED)"
-        epp -> inferencePool "Discovers available endpoints" "Kubernetes API (watch/list)"
-        inferencePool -> modelServer "Label-based pod discovery" "llm-d.ai/inference-serving selector"
-        proxyLayer -> modelServer "Forwards requests to selected endpoint" "HTTP/8000"
-        proxyLayer -> routingSidecar "Forwards P/D requests" "HTTP/8000"
-        routingSidecar -> modelServer "Prefill request (max_tokens=1)" "HTTP/8000"
-        modelServer -> nixlTransfer "KV cache block transfer" "RDMA/5600 (GPUDirect)"
-        nixlTransfer -> modelServer "KV blocks to decode worker" "RDMA/5600"
-        modelServer -> lmcache "Tiered cache offloading" "Memory/Disk/Network"
-
-        // External dependencies
-        llmd -> gatewayAPI "Uses for standard L7 networking" "Kubernetes Gateway CRDs"
-        proxyLayer -> agentgateway "Preferred gateway implementation" "Gateway API"
-        proxyLayer -> istio "Alternative gateway (IngressGateway)" "Gateway API"
-        proxyLayer -> gkeGateway "Cloud-managed gateway option" "Gateway API"
-        epp -> k8sAPI "Watches pods, CRDs, services" "Kubernetes API"
-        epp -> prometheus "Polls model server metrics" "HTTP scrape"
-        modelServer -> prometheus "Exposes metrics" "HTTP/9002,9090"
-        modelServer -> jaeger "Sends traces" "OTLP"
-        prometheus -> grafana "Visualizes metrics" "PromQL"
-        modelServer -> containerRegistry "Pulls container images" "HTTPS/443"
-        modelServer -> modelStorage "Downloads model artifacts" "HTTPS/NFS"
-        llmd -> githubActions "CI/CD builds, tests, security scanning" "GitHub Events"
-
-        // Internal integrations
-        odhDashboard -> llmd "UI management of inference services" "Kubernetes API"
-        dsPipelines -> llmd "Auto-deploys trained models" "Kubernetes API"
+        # EPP integration
+        epp -> llmd "Routes requests to selected backend" "gRPC ext_proc port 9002"
     }
 
     views {
@@ -82,26 +75,25 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "External Cloud" {
-                background #4285f4
-                color #ffffff
-            }
-            element "Internal RHOAI" {
+            element "Internal llm-d" {
                 background #7ed321
+                color #000000
+            }
+            element "Container Image" {
+                background #4a90e2
                 color #ffffff
             }
-            element "Person" {
-                shape Person
-                background #08427b
-                color #ffffff
+            element "Kustomize" {
+                background #f5a623
+                color #000000
             }
-            element "Software System" {
-                background #1168bd
-                color #ffffff
+            element "Helm Values" {
+                background #f5a623
+                color #000000
             }
-            element "Container" {
-                background #438dd5
-                color #ffffff
+            element "Kustomize/YAML" {
+                background #f5a623
+                color #000000
             }
         }
     }

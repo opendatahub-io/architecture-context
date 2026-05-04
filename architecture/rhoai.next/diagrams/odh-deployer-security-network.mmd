@@ -1,85 +1,102 @@
 graph TB
-    subgraph Deployer["DEPLOYER (One-shot Init Container)"]
-        DeploySH["deploy.sh<br/>ubi8/ubi-minimal<br/>oc CLI + openssl"]
+    subgraph External["EXTERNAL (Untrusted)"]
+        User["Admin / SRE User"]
     end
 
-    subgraph APIServer["OPENSHIFT API SERVER"]
-        K8sAPI["kube-apiserver<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+    subgraph Ingress["INGRESS (OpenShift Routes - reencrypt TLS)"]
+        PromRoute["Prometheus Route<br/>443/TCP → 9091/TCP<br/>reencrypt TLS<br/>OAuth + SAR"]
+        AMRoute["Alertmanager Route<br/>443/TCP → 10443/TCP<br/>reencrypt TLS<br/>OAuth + SAR"]
+        DashRoute["Dashboard Route<br/>443/TCP → 8443/TCP<br/>reencrypt TLS<br/>Probe Target"]
     end
 
-    subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-operator)<br/>NetworkPolicy: ingress from labeled NS only"]
-        RHODSOp["rhods-operator<br/>SA: rhods-operator<br/>Metrics: 8383/TCP HTTP"]
+    subgraph Deployer["DEPLOYMENT INITIATOR"]
+        DeployPod["deploy.sh Container<br/>UBI8-minimal + oc CLI<br/>SA Token Auth"]
     end
 
-    subgraph AppsNS["APPLICATION NAMESPACE (redhat-ods-applications)<br/>NetworkPolicy: ingress on 8443,8080,8081,5432,8082,8099,8181/TCP"]
-        Dashboard["rhods-dashboard<br/>8443/TCP HTTPS<br/>TLS Reencrypt Route"]
-        NBC["odh-notebook-controller<br/>8080/TCP HTTP<br/>No Auth"]
-        ModelCtrl["odh-model-controller<br/>8080/TCP HTTP<br/>No Auth"]
-        MMCtrl["modelmesh-controller<br/>8080/TCP HTTP<br/>No Auth"]
-        DSPOCtrl["data-science-pipelines-operator<br/>8080/TCP HTTP<br/>No Auth"]
-    end
-
-    subgraph MonNS["MONITORING NAMESPACE (redhat-ods-monitoring)<br/>NetworkPolicy: ingress on 443,9115,8443,9091,10443/TCP"]
+    subgraph NSMonitoring["NAMESPACE: redhat-ods-monitoring<br/>Network Policy: opendatahub.io/generated-namespace=true"]
         direction TB
-        Prom["Prometheus + oauth-proxy<br/>9091/TCP HTTPS (OAuth)<br/>9090/TCP HTTP (/metrics skip-auth)<br/>SA: prometheus<br/>TLS: serving cert"]
-        AM["Alertmanager + oauth-proxy<br/>443→10443/TCP HTTPS (OAuth)<br/>9093/TCP HTTP (health)<br/>TLS: serving cert"]
-        BB["Blackbox Exporter + oauth-proxy<br/>9114/TCP HTTPS (OAuth)<br/>9115/TCP HTTP (health)<br/>TLS: reuses prometheus-tls"]
+
+        subgraph PromStack["Prometheus Stack"]
+            OAuthProm["OAuth Proxy<br/>9091/TCP HTTPS<br/>TLS serving cert<br/>SAR enforcement"]
+            Prom["Prometheus<br/>9090/TCP HTTP<br/>UID:1000 GID:2000<br/>/metrics unauthenticated"]
+            OAuthProm -->|"localhost"| Prom
+        end
+
+        subgraph AMStack["Alertmanager Stack"]
+            OAuthAM["OAuth Proxy<br/>10443/TCP HTTPS<br/>TLS serving cert<br/>SAR enforcement"]
+            AM["Alertmanager<br/>9093/TCP HTTP"]
+            OAuthAM -->|"localhost"| AM
+        end
+
+        BB["Blackbox Exporter<br/>9114/TCP HTTPS<br/>Bearer Token"]
+
+        Prom -->|"9093/TCP HTTP<br/>loopback"| AM
+        Prom -->|"9114/TCP HTTPS<br/>Bearer Token"| BB
     end
 
-    subgraph ClusterMon["CLUSTER MONITORING (openshift-monitoring)"]
-        ClusterProm["prometheus-k8s<br/>9091/TCP HTTPS<br/>TLS service CA"]
+    subgraph NSApps["NAMESPACE: redhat-ods-applications<br/>Network Policy: opendatahub.io/generated-namespace=true<br/>SCC: anyuid granted"]
+        Dashboard["RHODS Dashboard<br/>8443/TCP HTTPS"]
+        NBC["ODH Notebook Controller<br/>8080/TCP HTTP"]
+        KFNBC["KF Notebook Controller<br/>8080/TCP HTTP"]
+        ModelCtrl["ODH Model Controller<br/>8080/TCP HTTP"]
+        MMesh["ModelMesh Controller<br/>8080/TCP HTTP"]
+        DSPO["DSPO<br/>8080/TCP HTTP"]
     end
 
-    subgraph External["EXTERNAL SERVICES (Managed Mode Only)"]
-        PD["PagerDuty API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Service key"]
-        DMS["Dead Man's Snitch<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: URL-based"]
-        SMTP["SMTP Server<br/>Configurable port<br/>TLS (smtp_require_tls)<br/>Auth: SMTP credentials"]
+    subgraph NSOperator["NAMESPACE: redhat-ods-operator<br/>Network Policy Protected"]
+        Operator["RHODS Operator<br/>8383/TCP HTTP"]
     end
 
-    subgraph Ingress["EXTERNAL ACCESS (OpenShift Routes)"]
-        DashRoute["Dashboard Route<br/>Reencrypt TLS"]
-        PromRoute["Prometheus Route<br/>Reencrypt TLS"]
-        AMRoute["Alertmanager Route<br/>Reencrypt TLS"]
+    subgraph ClusterServices["CLUSTER SERVICES"]
+        ClusterProm["OpenShift Cluster Prometheus<br/>openshift-monitoring<br/>9091/TCP HTTPS<br/>TLS (service CA)"]
+        K8sAPI["OpenShift API Server<br/>443/TCP HTTPS TLS 1.2+"]
     end
 
-    %% Deployer flows
-    DeploySH -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    K8sAPI -->|"Watch events<br/>TLS 1.2+<br/>Operator SA"| RHODSOp
+    subgraph ExternalServices["EXTERNAL SERVICES (Managed Only)"]
+        PD["PagerDuty API<br/>443/TCP HTTPS TLS 1.2+<br/>Service Key"]
+        DMS["Dead Man's Snitch<br/>443/TCP HTTPS TLS 1.2+<br/>URL Token"]
+        SMTP["SMTP Server<br/>STARTTLS<br/>Username/Password"]
+    end
 
-    %% Monitoring scraping
-    Prom -->|"HTTPS/9091<br/>TLS service CA<br/>Bearer token (SA)"| ClusterProm
-    Prom -->|"HTTP/8080<br/>No encryption<br/>No auth"| NBC
-    Prom -->|"HTTP/8080<br/>No encryption<br/>No auth"| ModelCtrl
-    Prom -->|"HTTP/8080<br/>No encryption<br/>No auth"| MMCtrl
-    Prom -->|"HTTP/8080<br/>No encryption<br/>No auth"| DSPOCtrl
-    Prom -->|"HTTP/8383<br/>No encryption<br/>No auth"| RHODSOp
-    BB -->|"HTTPS/8443<br/>TLS<br/>Bearer token (SA)"| Dashboard
+    %% Deployment flow
+    DeployPod -->|"443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token"| K8sAPI
 
-    %% Alerting
-    AM -->|"HTTPS/443<br/>TLS 1.2+<br/>Service key"| PD
-    AM -->|"HTTPS/443<br/>TLS 1.2+<br/>No auth"| DMS
-    AM -->|"SMTP/TLS<br/>SMTP credentials"| SMTP
+    %% Ingress flows
+    User -->|"HTTPS/443<br/>TLS reencrypt<br/>OAuth"| PromRoute
+    User -->|"HTTPS/443<br/>TLS reencrypt<br/>OAuth"| AMRoute
+    PromRoute -->|"9091/TCP HTTPS"| OAuthProm
+    AMRoute -->|"10443/TCP HTTPS"| OAuthAM
 
-    %% Routes
-    DashRoute -->|Reencrypt| Dashboard
-    PromRoute -->|Reencrypt| Prom
-    AMRoute -->|Reencrypt| AM
+    %% Prometheus scrapes
+    Prom -->|"9091/TCP HTTPS<br/>TLS (service CA)<br/>Bearer Token (SA)"| ClusterProm
+    Prom -->|"8080/TCP HTTP<br/>No Auth"| NBC
+    Prom -->|"8080/TCP HTTP<br/>No Auth"| KFNBC
+    Prom -->|"8080/TCP HTTP<br/>No Auth"| ModelCtrl
+    Prom -->|"8080/TCP HTTP<br/>No Auth"| MMesh
+    Prom -->|"8080/TCP HTTP<br/>No Auth"| DSPO
+    Prom -->|"8383/TCP HTTP<br/>No Auth"| Operator
+    BB -->|"8443/TCP HTTPS<br/>Bearer Token (SA)"| Dashboard
+
+    %% Alert notifications (managed only)
+    AM -.->|"443/TCP HTTPS<br/>TLS 1.2+<br/>Service Key"| PD
+    AM -.->|"443/TCP HTTPS<br/>TLS 1.2+<br/>URL Token"| DMS
+    AM -.->|"SMTP<br/>STARTTLS<br/>User/Pass"| SMTP
 
     %% Styling
-    classDef deployer fill:#4a90e2,stroke:#333,color:#fff,stroke-width:2px
-    classDef apiserver fill:#e8e8e8,stroke:#333,stroke-width:2px
-    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef apps fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef monitoring fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef clustermon fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef external fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef deployer fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef monitoring fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef apps fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef cluster fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
-    class DeploySH deployer
-    class K8sAPI apiserver
-    class RHODSOp operator
-    class Dashboard,NBC,ModelCtrl,MMCtrl,DSPOCtrl apps
-    class Prom,AM,BB monitoring
-    class ClusterProm clustermon
-    class PD,DMS,SMTP external
-    class DashRoute,PromRoute,AMRoute ingress
+    class User external
+    class PromRoute,AMRoute,DashRoute ingress
+    class DeployPod deployer
+    class OAuthProm,Prom,OAuthAM,AM,BB monitoring
+    class Dashboard,NBC,KFNBC,ModelCtrl,MMesh,DSPO apps
+    class Operator operator
+    class ClusterProm,K8sAPI cluster
+    class PD,DMS,SMTP externalservice
