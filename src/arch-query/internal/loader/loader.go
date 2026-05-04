@@ -9,7 +9,7 @@ import (
 	"github.com/jctanner/arch-query/internal/types"
 )
 
-func LoadVersion(fsys fs.FS, version string) (*types.VersionData, error) {
+func LoadVersion(fsys fs.FS, overlayFS fs.FS, version string) (*types.VersionData, error) {
 	resolved, err := ResolveVersion(fsys, version)
 	if err != nil {
 		return nil, err
@@ -41,7 +41,10 @@ func LoadVersion(fsys fs.FS, version string) (*types.VersionData, error) {
 	platformPath := resolved + "/PLATFORM.md"
 	platform, _ := markdown.ParsePlatformDoc(fsys, platformPath)
 
-	overlays, _ := overlay.LoadOverlays(fsys, "overlays")
+	var overlays []*types.OverlayDoc
+	if overlayFS != nil {
+		overlays, _ = overlay.LoadOverlays(overlayFS)
+	}
 
 	data := &types.VersionData{
 		Version: types.VersionInfo{

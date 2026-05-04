@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 
 	"github.com/jctanner/arch-query/internal/loader"
 	"github.com/spf13/cobra"
@@ -15,6 +16,7 @@ var (
 	versionArg string
 
 	archFS       fs.FS
+	overlayFS    fs.FS
 	archSymlinks map[string]string
 
 	embeddedFS *embed.FS
@@ -31,11 +33,12 @@ var rootCmd = &cobra.Command{
 markdown documentation. It replaces filesystem exploration (ls, grep, cat)
 with purpose-built subcommands that return concise, structured results.`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		resolved, symlinks, err := resolveFS(baseDir)
+		resolved, oFS, symlinks, err := resolveFS(baseDir)
 		if err != nil {
 			return err
 		}
 		archFS = resolved
+		overlayFS = oFS
 		archSymlinks = symlinks
 
 		if versionArg != "" {
@@ -47,23 +50,33 @@ with purpose-built subcommands that return concise, structured results.`,
 	},
 }
 
-func resolveFS(baseDir string) (fs.FS, map[string]string, error) {
+func resolveFS(baseDir string) (fs.FS, fs.FS, map[string]string, error) {
 	if info, err := os.Stat(baseDir); err == nil && info.IsDir() {
 		fsys := os.DirFS(baseDir)
 		symlinks := loader.LoadSymlinksFromDisk(baseDir)
-		return fsys, symlinks, nil
+
+		// Overlays live as a sibling of the architecture dir (../overlays/)
+		parentDir := filepath.Dir(baseDir)
+		overlayDir := filepath.Join(parentDir, "overlays")
+		var oFS fs.FS
+		if info, err := os.Stat(overlayDir); err == nil && info.IsDir() {
+			oFS = os.DirFS(overlayDir)
+		}
+		return fsys, oFS, symlinks, nil
 	}
 
 	if embeddedFS != nil {
 		sub, err := fs.Sub(embeddedFS, "_embedded/architecture")
 		if err != nil {
-			return nil, nil, fmt.Errorf("embedded architecture data is corrupt: %w", err)
+			return nil, nil, nil, fmt.Errorf("embedded architecture data is corrupt: %w", err)
 		}
 		symlinks := loader.LoadSymlinksFromFS(sub)
-		return sub, symlinks, nil
+		// In embedded mode, overlays are staged at _embedded/architecture/overlays/
+		overlaysSub, _ := fs.Sub(embeddedFS, "_embedded/architecture/overlays")
+		return sub, overlaysSub, symlinks, nil
 	}
 
-	return nil, nil, fmt.Errorf("no architecture data: %s not found and no embedded data available", baseDir)
+	return nil, nil, nil, fmt.Errorf("no architecture data: %s not found and no embedded data available", baseDir)
 }
 
 func Execute() {

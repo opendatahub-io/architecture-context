@@ -36,7 +36,7 @@ Examples:
 			version = loader.DefaultVersion(versions)
 		}
 
-		data, err := loader.LoadVersion(archFS, version)
+		data, err := loader.LoadVersion(archFS, overlayFS, version)
 		if err != nil {
 			return fmt.Errorf("loading version %s: %w", version, err)
 		}

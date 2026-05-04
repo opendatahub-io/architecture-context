@@ -9,8 +9,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func LoadOverlays(fsys fs.FS, overlaysDir string) ([]*types.OverlayDoc, error) {
-	entries, err := fs.ReadDir(fsys, overlaysDir)
+func LoadOverlays(fsys fs.FS) ([]*types.OverlayDoc, error) {
+	entries, err := fs.ReadDir(fsys, ".")
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
@@ -23,7 +23,7 @@ func LoadOverlays(fsys fs.FS, overlaysDir string) ([]*types.OverlayDoc, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") || e.Name() == "README.md" {
 			continue
 		}
-		o, err := parseOverlayFile(fsys, overlaysDir+"/"+e.Name())
+		o, err := parseOverlayFile(fsys, e.Name())
 		if err != nil {
 			continue
 		}
