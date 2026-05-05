@@ -19,6 +19,10 @@ var versionsCmd = &cobra.Command{
 			return fmt.Errorf("discovering versions: %w", err)
 		}
 
+		if outputFormat == OutputJSON {
+			return output.JSON(os.Stdout, versions)
+		}
+
 		defaultVer := loader.DefaultVersion(versions)
 		fmt.Printf("%d versions available:\n\n", len(versions))
 
@@ -40,5 +44,6 @@ var versionsCmd = &cobra.Command{
 }
 
 func init() {
+	addOutputFlag(versionsCmd, OutputText, OutputJSON)
 	rootCmd.AddCommand(versionsCmd)
 }

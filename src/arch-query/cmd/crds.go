@@ -38,6 +38,9 @@ var crdsCmd = &cobra.Command{
 						fmt.Printf("%s has no CRDs.\n", k)
 						return nil
 					}
+					if outputFormat == OutputJSON {
+						return output.JSON(os.Stdout, doc.CRDs)
+					}
 					fmt.Printf("%s CRDs:\n", k)
 					tw := output.NewTabWriter(os.Stdout)
 					for _, crd := range doc.CRDs {
@@ -51,9 +54,12 @@ var crdsCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		// All CRDs across all components
 		type crdEntry struct {
-			group, version, kind, scope, source string
+			Group   string `json:"group"`
+			Version string `json:"version"`
+			Kind    string `json:"kind"`
+			Scope   string `json:"scope"`
+			Source  string `json:"source"`
 		}
 		var all []crdEntry
 		for k, doc := range data.Components {
@@ -62,16 +68,20 @@ var crdsCmd = &cobra.Command{
 			}
 		}
 		sort.Slice(all, func(i, j int) bool {
-			if all[i].group != all[j].group {
-				return all[i].group < all[j].group
+			if all[i].Group != all[j].Group {
+				return all[i].Group < all[j].Group
 			}
-			return all[i].kind < all[j].kind
+			return all[i].Kind < all[j].Kind
 		})
+
+		if outputFormat == OutputJSON {
+			return output.JSON(os.Stdout, all)
+		}
 
 		fmt.Printf("%d CRDs across %s:\n", len(all), version)
 		tw := output.NewTabWriter(os.Stdout)
 		for _, c := range all {
-			fmt.Fprintf(tw, "  %s/%s\t%s\t%s\t%s\n", c.group, c.version, c.kind, c.source, c.scope)
+			fmt.Fprintf(tw, "  %s/%s\t%s\t%s\t%s\n", c.Group, c.Version, c.Kind, c.Source, c.Scope)
 		}
 		tw.Flush()
 		return nil
@@ -79,5 +89,6 @@ var crdsCmd = &cobra.Command{
 }
 
 func init() {
+	addOutputFlag(crdsCmd, OutputText, OutputJSON)
 	rootCmd.AddCommand(crdsCmd)
 }

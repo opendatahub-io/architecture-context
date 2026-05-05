@@ -68,6 +68,7 @@ arch-query diff --all rhoai-3.3 rhoai-3.4
 |------|---------|-------------|
 | `--base-dir` | `./architecture` | Path to the architecture directory |
 | `--version` | `rhoai.next` | Version to query |
+| `--output`, `-o` | `text` | Output format: `text`, `json`, `raw` |
 
 ## Subcommands
 
@@ -97,10 +98,12 @@ $ arch-query list --version rhoai-3.3
 
 ### component
 
-Show a full fact sheet for a component: metadata, CRDs, services, ingress, egress, HTTP endpoints, and dependencies.
+Show a full fact sheet for a component: metadata, CRDs, services, ingress, egress, HTTP endpoints, and dependencies. Use `--output json` for machine-readable output or `--output raw` for the unprocessed markdown source.
 
 ```
 $ arch-query component odh-dashboard
+$ arch-query component odh-dashboard -o json
+$ arch-query component odh-dashboard -o raw
 # odh-dashboard
 Purpose:         Web-based management console for RHOAI...
 Type:            Frontend + BFF (Backend-for-Frontend)
@@ -303,7 +306,7 @@ Overlay files in `architecture/overlays/` use YAML frontmatter (id, title, statu
 src/arch-query/
   main.go                          # entrypoint
   cmd/                             # cobra subcommands
-    root.go                        # global flags (--base-dir, --version)
+    root.go                        # global flags (--base-dir, --version, --output)
     versions.go, list.go           # inventory queries
     component.go, search.go        # component lookup
     exists.go, deps.go             # dependency analysis

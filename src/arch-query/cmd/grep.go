@@ -47,25 +47,36 @@ Examples:
 		}
 		sort.Strings(keys)
 
-		found := false
+		results := make(map[string][]grepHit)
 		for _, k := range keys {
 			doc := data.Components[k]
 			hits := grepComponent(term, doc)
-			if len(hits) == 0 {
+			if len(hits) > 0 {
+				results[k] = hits
+			}
+		}
+
+		if len(results) == 0 {
+			fmt.Fprintf(os.Stderr, "No references to %q found in %s.\n", term, version)
+			return nil
+		}
+
+		if outputFormat == OutputJSON {
+			return output.JSON(os.Stdout, results)
+		}
+
+		for _, k := range keys {
+			hits, ok := results[k]
+			if !ok {
 				continue
 			}
-			found = true
 			fmt.Printf("%s:\n", k)
 			tw := output.NewTabWriter(os.Stdout)
 			for _, h := range hits {
-				fmt.Fprintf(tw, "  [%s]\t%s\n", h.field, h.value)
+				fmt.Fprintf(tw, "  [%s]\t%s\n", h.Field, h.Value)
 			}
 			tw.Flush()
 			fmt.Println()
-		}
-
-		if !found {
-			fmt.Fprintf(os.Stderr, "No references to %q found in %s.\n", term, version)
 		}
 
 		return nil
@@ -73,8 +84,8 @@ Examples:
 }
 
 type grepHit struct {
-	field string
-	value string
+	Field string `json:"field"`
+	Value string `json:"value"`
 }
 
 func grepComponent(term string, doc *types.ComponentDoc) []grepHit {
@@ -143,7 +154,6 @@ func grepComponent(term string, doc *types.ComponentDoc) []grepHit {
 		}
 	}
 
-	// Search raw sections for anything the structured parse missed
 	for section, content := range doc.RawSections {
 		if len(hits) > 0 {
 			break
@@ -182,5 +192,6 @@ func truncate(s string, n int) string {
 }
 
 func init() {
+	addOutputFlag(grepCmd, OutputText, OutputJSON)
 	rootCmd.AddCommand(grepCmd)
 }

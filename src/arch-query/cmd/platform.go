@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 
 	"github.com/jctanner/arch-query/internal/loader"
@@ -22,6 +23,16 @@ var platformCmd = &cobra.Command{
 			version = loader.DefaultVersion(versions)
 		}
 
+		if outputFormat == OutputRaw {
+			path := version + "/PLATFORM.md"
+			raw, err := fs.ReadFile(archFS, path)
+			if err != nil {
+				return fmt.Errorf("reading %s: %w", path, err)
+			}
+			fmt.Print(string(raw))
+			return nil
+		}
+
 		data, err := loader.LoadVersion(archFS, overlayFS, version)
 		if err != nil {
 			return fmt.Errorf("loading version %s: %w", version, err)
@@ -34,6 +45,11 @@ var platformCmd = &cobra.Command{
 		}
 
 		p := data.Platform
+
+		if outputFormat == OutputJSON {
+			return output.JSON(os.Stdout, p)
+		}
+
 		fmt.Printf("# Platform: %s\n\n", version)
 
 		if p.Metadata != nil {
@@ -66,5 +82,6 @@ var platformCmd = &cobra.Command{
 }
 
 func init() {
+	addOutputFlag(platformCmd, OutputText, OutputJSON, OutputRaw)
 	rootCmd.AddCommand(platformCmd)
 }

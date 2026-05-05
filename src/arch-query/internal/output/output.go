@@ -1,6 +1,7 @@
 package output
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -17,6 +18,15 @@ func SectionHeader(w io.Writer, title string) {
 
 func KeyValue(w io.Writer, key, value string) {
 	fmt.Fprintf(w, "%-16s %s\n", key+":", value)
+}
+
+func JSON(w io.Writer, v any) error {
+	buf, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshalling JSON: %w", err)
+	}
+	fmt.Fprintln(w, string(buf))
+	return nil
 }
 
 func Indent(s string, prefix string) string {

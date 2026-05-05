@@ -7,6 +7,7 @@ import (
 
 	"github.com/jctanner/arch-query/internal/loader"
 	"github.com/jctanner/arch-query/internal/output"
+	"github.com/jctanner/arch-query/internal/types"
 	"github.com/spf13/cobra"
 )
 
@@ -33,19 +34,20 @@ var overlaysCmd = &cobra.Command{
 			return nil
 		}
 
-		active := 0
+		var active []*types.OverlayDoc
 		for _, o := range data.Overlays {
 			if o.Status == "active" {
-				active++
+				active = append(active, o)
 			}
 		}
 
-		fmt.Printf("%d active overlays:\n\n", active)
+		if outputFormat == OutputJSON {
+			return output.JSON(os.Stdout, active)
+		}
+
+		fmt.Printf("%d active overlays:\n\n", len(active))
 		tw := output.NewTabWriter(os.Stdout)
-		for _, o := range data.Overlays {
-			if o.Status != "active" {
-				continue
-			}
+		for _, o := range active {
 			affects := strings.Join(o.Affects, ", ")
 			releases := strings.Join(o.Release, ", ")
 			fmt.Fprintf(tw, "  %s\t%s\treleases: %s\taffects: %s\n", o.ID, o.Title, releases, affects)
@@ -53,10 +55,7 @@ var overlaysCmd = &cobra.Command{
 		tw.Flush()
 
 		fmt.Println()
-		for _, o := range data.Overlays {
-			if o.Status != "active" {
-				continue
-			}
+		for _, o := range active {
 			fmt.Printf("[%s] %s\n", o.ID, o.Title)
 			if o.Fact != "" {
 				fmt.Printf("  %s\n", firstLine(o.Fact))
@@ -77,5 +76,6 @@ func firstLine(s string) string {
 }
 
 func init() {
+	addOutputFlag(overlaysCmd, OutputText, OutputJSON)
 	rootCmd.AddCommand(overlaysCmd)
 }

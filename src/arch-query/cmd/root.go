@@ -6,14 +6,22 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jctanner/arch-query/internal/loader"
 	"github.com/spf13/cobra"
 )
 
+const (
+	OutputText = "text"
+	OutputJSON = "json"
+	OutputRaw  = "raw"
+)
+
 var (
-	baseDir    string
-	versionArg string
+	baseDir      string
+	versionArg   string
+	outputFormat string
 
 	archFS       fs.FS
 	overlayFS    fs.FS
@@ -21,6 +29,26 @@ var (
 
 	embeddedFS *embed.FS
 )
+
+func addOutputFlag(cmd *cobra.Command, formats ...string) {
+	cmd.Flags().StringVarP(&outputFormat, "output", "o", OutputText,
+		"Output format: "+strings.Join(formats, ", "))
+
+	allowed := make(map[string]bool, len(formats))
+	for _, f := range formats {
+		allowed[f] = true
+	}
+	existing := cmd.PreRunE
+	cmd.PreRunE = func(cmd *cobra.Command, args []string) error {
+		if !allowed[outputFormat] {
+			return fmt.Errorf("invalid output format %q: must be %s", outputFormat, strings.Join(formats, ", "))
+		}
+		if existing != nil {
+			return existing(cmd, args)
+		}
+		return nil
+	}
+}
 
 func SetEmbeddedFS(efs *embed.FS) {
 	embeddedFS = efs
