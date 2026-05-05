@@ -6,6 +6,7 @@ type ComponentDoc struct {
 	Metadata map[string]string
 
 	Repository string
+	Branch     string
 	Version    string
 	Languages  string
 	DeployType string

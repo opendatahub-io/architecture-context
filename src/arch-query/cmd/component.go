@@ -65,6 +65,7 @@ var componentCmd = &cobra.Command{
 		output.KeyValue(os.Stdout, "Purpose", doc.Purpose)
 		output.KeyValue(os.Stdout, "Type", doc.DeployType)
 		output.KeyValue(os.Stdout, "Repository", doc.Repository)
+		output.KeyValue(os.Stdout, "Branch", doc.Branch)
 		output.KeyValue(os.Stdout, "Languages", doc.Languages)
 		output.KeyValue(os.Stdout, "Version", doc.Version)
 
