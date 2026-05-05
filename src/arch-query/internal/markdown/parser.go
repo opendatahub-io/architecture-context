@@ -40,6 +40,7 @@ func ParseComponentDoc(fsys fs.FS, path string) (*types.ComponentDoc, error) {
 	if sec, ok := findSection(sections, "Metadata"); ok {
 		doc.Metadata = ParseMetadata(sec.lines)
 		doc.Repository = doc.Metadata["Repository"]
+		doc.Branch = doc.Metadata["Branch"]
 		doc.Version = doc.Metadata["Version"]
 		doc.Languages = doc.Metadata["Languages"]
 		doc.DeployType = doc.Metadata["Deployment Type"]
