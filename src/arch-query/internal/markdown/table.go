@@ -39,12 +39,8 @@ func isSeparatorRow(line string) bool {
 
 func splitTableRow(line string) []string {
 	line = strings.TrimSpace(line)
-	if strings.HasPrefix(line, "|") {
-		line = line[1:]
-	}
-	if strings.HasSuffix(line, "|") {
-		line = line[:len(line)-1]
-	}
+	line = strings.TrimPrefix(line, "|")
+	line = strings.TrimSuffix(line, "|")
 	parts := strings.Split(line, "|")
 	cells := make([]string, len(parts))
 	for i, p := range parts {

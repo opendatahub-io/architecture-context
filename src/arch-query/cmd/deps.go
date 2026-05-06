@@ -121,9 +121,6 @@ var depsCmd = &cobra.Command{
 	},
 }
 
-func containsIgnoreCase(s, substr string) bool {
-	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
-}
 
 func init() {
 	addOutputFlag(depsCmd, OutputText, OutputJSON)
