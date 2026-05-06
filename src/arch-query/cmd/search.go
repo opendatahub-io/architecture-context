@@ -32,8 +32,8 @@ var searchCmd = &cobra.Command{
 		}
 
 		type match struct {
-			key     string
-			purpose string
+			Name    string `json:"name"`
+			Purpose string `json:"purpose"`
 		}
 		var matches []match
 
@@ -42,10 +42,10 @@ var searchCmd = &cobra.Command{
 				strings.Contains(strings.ToLower(doc.Name), term) ||
 				strings.Contains(strings.ToLower(doc.Purpose), term) {
 				purpose := doc.Purpose
-				if len(purpose) > 70 {
+				if outputFormat != OutputJSON && len(purpose) > 70 {
 					purpose = purpose[:67] + "..."
 				}
-				matches = append(matches, match{key: key, purpose: purpose})
+				matches = append(matches, match{Name: key, Purpose: purpose})
 			}
 		}
 
@@ -54,10 +54,14 @@ var searchCmd = &cobra.Command{
 			return nil
 		}
 
+		if outputFormat == OutputJSON {
+			return output.JSON(os.Stdout, matches)
+		}
+
 		fmt.Printf("Found %d components matching %q:\n", len(matches), term)
 		tw := output.NewTabWriter(os.Stdout)
 		for _, m := range matches {
-			fmt.Fprintf(tw, "  %s\t%s\n", m.key, m.purpose)
+			fmt.Fprintf(tw, "  %s\t%s\n", m.Name, m.Purpose)
 		}
 		tw.Flush()
 		return nil
@@ -65,5 +69,6 @@ var searchCmd = &cobra.Command{
 }
 
 func init() {
+	addOutputFlag(searchCmd, OutputText, OutputJSON)
 	rootCmd.AddCommand(searchCmd)
 }

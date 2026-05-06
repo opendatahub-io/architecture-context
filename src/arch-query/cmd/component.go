@@ -11,8 +11,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var componentRaw bool
-
 var componentCmd = &cobra.Command{
 	Use:   "component <name>",
 	Short: "Show component fact sheet",
@@ -29,16 +27,6 @@ var componentCmd = &cobra.Command{
 			version = loader.DefaultVersion(versions)
 		}
 
-		if componentRaw {
-			path := version + "/" + name + ".md"
-			data, err := fs.ReadFile(archFS, path)
-			if err != nil {
-				return fmt.Errorf("reading %s: %w", path, err)
-			}
-			fmt.Print(string(data))
-			return nil
-		}
-
 		data, err := loader.LoadVersion(archFS, overlayFS, version)
 		if err != nil {
 			return fmt.Errorf("loading version %s: %w", version, err)
@@ -46,7 +34,6 @@ var componentCmd = &cobra.Command{
 
 		doc, ok := data.Components[name]
 		if !ok {
-			// Try case-insensitive lookup
 			for k, v := range data.Components {
 				if strings.EqualFold(k, name) {
 					doc = v
@@ -59,6 +46,20 @@ var componentCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Component %q not found in %s.\n", name, version)
 			fmt.Fprintf(os.Stderr, "Use 'arch-query search %s' to find similar components.\n", name)
 			os.Exit(1)
+		}
+
+		if outputFormat == OutputRaw {
+			path := version + "/" + doc.FileName
+			raw, err := fs.ReadFile(archFS, path)
+			if err != nil {
+				return fmt.Errorf("reading %s: %w", path, err)
+			}
+			fmt.Print(string(raw))
+			return nil
+		}
+
+		if outputFormat == OutputJSON {
+			return output.JSON(os.Stdout, doc)
 		}
 
 		fmt.Printf("# %s\n", doc.Name)
@@ -149,6 +150,6 @@ var componentCmd = &cobra.Command{
 }
 
 func init() {
-	componentCmd.Flags().BoolVar(&componentRaw, "raw", false, "Print the full raw markdown instead of the parsed fact sheet")
+	addOutputFlag(componentCmd, OutputText, OutputJSON, OutputRaw)
 	rootCmd.AddCommand(componentCmd)
 }

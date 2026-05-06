@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/jctanner/arch-query/internal/loader"
+	"github.com/jctanner/arch-query/internal/output"
 	"github.com/jctanner/arch-query/internal/types"
 	"github.com/spf13/cobra"
 )
@@ -45,6 +46,49 @@ var depsCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
+		type reverseDep struct {
+			Component string `json:"component"`
+			Purpose   string `json:"purpose"`
+		}
+		var reverse []reverseDep
+		for k, other := range data.Components {
+			if strings.EqualFold(k, docKey) {
+				continue
+			}
+			found := false
+			for _, d := range other.ExternalDeps {
+				if strings.EqualFold(d.Component, docKey) {
+					reverse = append(reverse, reverseDep{k, d.Purpose})
+					found = true
+					break
+				}
+			}
+			if found {
+				continue
+			}
+			for _, d := range other.InternalDeps {
+				if strings.EqualFold(d.Component, docKey) {
+					reverse = append(reverse, reverseDep{k, d.Purpose})
+					break
+				}
+			}
+		}
+
+		if outputFormat == OutputJSON {
+			result := struct {
+				Component    string            `json:"component"`
+				ExternalDeps []types.Dependency `json:"external_deps,omitempty"`
+				InternalDeps []types.Dependency `json:"internal_deps,omitempty"`
+				Reverse      []reverseDep       `json:"reverse_deps,omitempty"`
+			}{
+				Component:    docKey,
+				ExternalDeps: doc.ExternalDeps,
+				InternalDeps: doc.InternalDeps,
+				Reverse:      reverse,
+			}
+			return output.JSON(os.Stdout, result)
+		}
+
 		fmt.Printf("%s depends on:\n", docKey)
 		if len(doc.ExternalDeps) > 0 {
 			for _, d := range doc.ExternalDeps {
@@ -65,27 +109,11 @@ var depsCmd = &cobra.Command{
 		}
 
 		fmt.Printf("\n%s is used by:\n", docKey)
-		found := false
-		for k, other := range data.Components {
-			if strings.EqualFold(k, docKey) {
-				continue
+		if len(reverse) > 0 {
+			for _, r := range reverse {
+				fmt.Printf("  %s - %s\n", r.Component, r.Purpose)
 			}
-			for _, d := range other.ExternalDeps {
-				if containsIgnoreCase(d.Component, docKey) {
-					fmt.Printf("  %s - %s\n", k, d.Purpose)
-					found = true
-					break
-				}
-			}
-			for _, d := range other.InternalDeps {
-				if containsIgnoreCase(d.Component, docKey) {
-					fmt.Printf("  %s - %s\n", k, d.Purpose)
-					found = true
-					break
-				}
-			}
-		}
-		if !found {
+		} else {
 			fmt.Println("  (no reverse dependencies found in docs)")
 		}
 
@@ -98,5 +126,6 @@ func containsIgnoreCase(s, substr string) bool {
 }
 
 func init() {
+	addOutputFlag(depsCmd, OutputText, OutputJSON)
 	rootCmd.AddCommand(depsCmd)
 }

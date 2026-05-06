@@ -12,6 +12,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type portEntry struct {
+	Port     string `json:"port"`
+	Protocol string `json:"protocol"`
+	Source   string `json:"source"`
+}
+
 var portsCmd = &cobra.Command{
 	Use:   "ports [component]",
 	Short: "List ports, optionally filtered by component",
@@ -35,6 +41,9 @@ var portsCmd = &cobra.Command{
 			name := strings.ToLower(args[0])
 			for k, doc := range data.Components {
 				if strings.EqualFold(k, name) {
+					if outputFormat == OutputJSON {
+						return output.JSON(os.Stdout, collectPorts(doc))
+					}
 					printComponentPorts(k, doc)
 					return nil
 				}
@@ -49,6 +58,18 @@ var portsCmd = &cobra.Command{
 		}
 		sort.Strings(keys)
 
+		if outputFormat == OutputJSON {
+			result := make(map[string][]portEntry)
+			for _, k := range keys {
+				doc := data.Components[k]
+				ports := collectPorts(doc)
+				if len(ports) > 0 {
+					result[k] = ports
+				}
+			}
+			return output.JSON(os.Stdout, result)
+		}
+
 		for _, k := range keys {
 			doc := data.Components[k]
 			if len(doc.Services) == 0 && len(doc.Endpoints) == 0 && len(doc.GRPCServices) == 0 && len(doc.Egresses) == 0 {
@@ -61,26 +82,28 @@ var portsCmd = &cobra.Command{
 	},
 }
 
-func printComponentPorts(name string, doc *types.ComponentDoc) {
-	fmt.Printf("%s:\n", name)
-	tw := output.NewTabWriter(os.Stdout)
+func collectPorts(doc *types.ComponentDoc) []portEntry {
+	var ports []portEntry
 	seen := make(map[string]bool)
-
 	for _, svc := range doc.Services {
 		key := svc.Port + "/" + svc.Protocol
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
-		fmt.Fprintf(tw, "  %s\t%s\t%s\n", svc.Port, svc.Protocol, svc.Name)
+		ports = append(ports, portEntry{svc.Port, svc.Protocol, svc.Name})
 	}
 	for _, ep := range doc.Endpoints {
-		key := ep.Port + "/HTTP"
+		proto := ep.Protocol
+		if proto == "" {
+			proto = "HTTP"
+		}
+		key := ep.Port + "/" + proto
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
-		fmt.Fprintf(tw, "  %s\tHTTP\t%s\n", ep.Port, ep.Purpose)
+		ports = append(ports, portEntry{ep.Port, proto, ep.Purpose})
 	}
 	for _, g := range doc.GRPCServices {
 		key := g.Port + "/gRPC"
@@ -88,7 +111,24 @@ func printComponentPorts(name string, doc *types.ComponentDoc) {
 			continue
 		}
 		seen[key] = true
-		fmt.Fprintf(tw, "  %s\tgRPC\t%s\n", g.Port, g.Service)
+		ports = append(ports, portEntry{g.Port, "gRPC", g.Service})
+	}
+	for _, eg := range doc.Egresses {
+		key := eg.Port + "/" + eg.Protocol + "/egress"
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		ports = append(ports, portEntry{eg.Port, eg.Protocol, eg.Purpose})
+	}
+	return ports
+}
+
+func printComponentPorts(name string, doc *types.ComponentDoc) {
+	fmt.Printf("%s:\n", name)
+	tw := output.NewTabWriter(os.Stdout)
+	for _, p := range collectPorts(doc) {
+		fmt.Fprintf(tw, "  %s\t%s\t%s\n", p.Port, p.Protocol, p.Source)
 	}
 	tw.Flush()
 
@@ -109,5 +149,6 @@ func printComponentPorts(name string, doc *types.ComponentDoc) {
 }
 
 func init() {
+	addOutputFlag(portsCmd, OutputText, OutputJSON)
 	rootCmd.AddCommand(portsCmd)
 }

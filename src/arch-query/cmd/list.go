@@ -36,6 +36,24 @@ var listCmd = &cobra.Command{
 		}
 		sort.Strings(keys)
 
+		if outputFormat == OutputJSON {
+			type listEntry struct {
+				Name       string `json:"name"`
+				DeployType string `json:"deploy_type,omitempty"`
+				Purpose    string `json:"purpose,omitempty"`
+			}
+			entries := make([]listEntry, 0, len(keys))
+			for _, k := range keys {
+				doc := data.Components[k]
+				entries = append(entries, listEntry{
+					Name:       k,
+					DeployType: doc.DeployType,
+					Purpose:    doc.Purpose,
+				})
+			}
+			return output.JSON(os.Stdout, entries)
+		}
+
 		if namesOnly {
 			for _, k := range keys {
 				fmt.Println(k)
@@ -63,6 +81,7 @@ var listCmd = &cobra.Command{
 }
 
 func init() {
+	addOutputFlag(listCmd, OutputText, OutputJSON)
 	listCmd.Flags().BoolVar(&namesOnly, "names-only", false, "Print component names only, one per line")
 	rootCmd.AddCommand(listCmd)
 }
