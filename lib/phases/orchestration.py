@@ -7,14 +7,13 @@ from pathlib import Path
 
 from lib.cli import resolve_org_dir
 from lib.fetch import load_platform_config
-
-from lib.phases.fetch import run_fetch_phase
-from lib.phases.manifest import run_manifest_phase
-from lib.phases.discover import run_discover_components_phase
 from lib.phases.architecture import run_generate_architecture_phase
 from lib.phases.collect import run_collect_architectures_phase
-from lib.phases.platform import run_generate_platform_architecture_phase
 from lib.phases.diagrams import run_generate_diagrams_phase
+from lib.phases.discover import run_discover_components_phase
+from lib.phases.fetch import run_fetch_phase
+from lib.phases.manifest import run_manifest_phase
+from lib.phases.platform import run_generate_platform_architecture_phase
 
 
 async def run_all_phases(args) -> None:
@@ -26,7 +25,11 @@ async def run_all_phases(args) -> None:
     org = args.org
     if not org:
         orgs = platform_config.get("orgs", [])
-        org = orgs[0] if orgs else ("opendatahub-io" if args.platform == "odh" else "red-hat-data-services")
+        org = orgs[0] if orgs else (
+            "opendatahub-io"
+            if args.platform == "odh"
+            else "red-hat-data-services"
+        )
 
     # Resolve suffix: CLI --suffix > config suffix > branch fallback
     suffix = getattr(args, 'suffix', None)
@@ -38,7 +41,8 @@ async def run_all_phases(args) -> None:
     if not suffix and branch:
         suffix = branch
 
-    # Determine target version: explicit --version > extracted from --branch > auto-detect
+    # Determine target version:
+    # explicit --version > extracted from --branch > auto-detect
     target_version = getattr(args, 'version', None)
     if not target_version and args.platform.startswith("rhoai") and branch:
         version_match = re.search(r'rhoai-([0-9][0-9a-zA-Z._-]*)', branch)
@@ -112,10 +116,18 @@ async def run_all_phases(args) -> None:
         arch_dir.mkdir(parents=True, exist_ok=True)
         print(f"\nPre-created architecture directory: {arch_dir}\n")
     else:
-        # For ODH or when no specific version, try to detect from operator Makefile
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
+        # For ODH or when no specific version,
+        # try to detect from operator Makefile
+        scripts_dir = (
+            Path(__file__).resolve().parent.parent.parent / "scripts"
+        )
+        sys.path.insert(0, str(scripts_dir))
         from collect_architectures import get_version_from_makefile
-        operator_name = "opendatahub-operator" if args.platform == "odh" else "rhods-operator"
+        operator_name = (
+            "opendatahub-operator"
+            if args.platform == "odh"
+            else "rhods-operator"
+        )
         org_dir = resolve_org_dir(org, suffix=suffix, branch=branch)
         operator_dir = Path("checkouts") / org_dir / operator_name
         if operator_dir.exists():
@@ -163,8 +175,12 @@ async def run_all_phases(args) -> None:
     print("\n" + "=" * 80)
     print("ALL PHASES COMPLETED SUCCESSFULLY!")
     print("=" * 80)
-    print(f"\nResults:")
-    print(f"  - Component architectures: checkouts/{resolve_org_dir(org, suffix=suffix, branch=branch)}/*/GENERATED_ARCHITECTURE.md")
+    print("\nResults:")
+    org_dir = resolve_org_dir(org, suffix=suffix, branch=branch)
+    print(
+        f"  - Component architectures: "
+        f"checkouts/{org_dir}/*/GENERATED_ARCHITECTURE.md"
+    )
     print(f"  - Organized architectures: architecture/{args.platform}-*/")
     print(f"  - Platform documents: architecture/{args.platform}-*/PLATFORM.md")
     print(f"  - Diagrams: architecture/{args.platform}-*/diagrams/")

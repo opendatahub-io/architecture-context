@@ -1,11 +1,11 @@
 """Component discovery utilities for reading/writing component maps."""
 
-import json
 import fnmatch
+import json
 import subprocess
-from pathlib import Path
-from typing import Dict, List, Optional, Any
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 from lib.manifest_parser import ComponentInfo
 
@@ -36,7 +36,8 @@ def write_component_map(
 
     The discover-components skill writes additional fields beyond ComponentInfo
     (type, architecturally_significant, consumer_count, consumers, discovered_via,
-    referenced_by, shipped). Those are preserved in JSON but not mapped to ComponentInfo.
+    referenced_by, shipped). Those are preserved in JSON but
+    not mapped to ComponentInfo.
 
     Args:
         platform: Platform name (e.g., "rhoai-3.4", "odh")
@@ -119,7 +120,16 @@ def read_component_map(
 
     # Handle both dict and list formats
     if isinstance(raw_components, list):
-        items = [(comp.get("key", comp.get("repo_name", f"unknown-{i}")), comp) for i, comp in enumerate(raw_components)]
+        items = [
+            (
+                comp.get(
+                    "key",
+                    comp.get("repo_name", f"unknown-{i}"),
+                ),
+                comp,
+            )
+            for i, comp in enumerate(raw_components)
+        ]
     else:
         items = raw_components.items()
 
@@ -130,7 +140,11 @@ def read_component_map(
             repo_name=comp_data.get("repo_name"),
             ref=comp_data.get("ref"),
             source_folder=comp_data.get("source_folder"),
-            checkout_path=Path(comp_data["checkout_path"]) if comp_data.get("checkout_path") else None,
+            checkout_path=(
+                Path(comp_data["checkout_path"])
+                if comp_data.get("checkout_path")
+                else None
+            ),
             has_architecture=comp_data.get("has_architecture", False),
             repo_url=comp_data.get("repo_url"),
             checkout_branch=comp_data.get("checkout_branch"),
@@ -204,7 +218,12 @@ def apply_platform_overrides(
                     del components[key]
                     break
         if excluded:
-            print(f"  Excluded {len(excluded)} component(s) via platforms.yaml: {', '.join(sorted(excluded))}")
+            names = ", ".join(sorted(excluded))
+            print(
+                f"  Excluded {len(excluded)}"
+                f" component(s) via platforms.yaml:"
+                f" {names}"
+            )
 
     # 2. Apply overrides to existing components
     overrides = platform_config.get("component_overrides", {})

@@ -57,7 +57,13 @@ def check_mmdc_available() -> bool:
     return shutil.which('mmdc') is not None
 
 
-def generate_png(mmd_file: Path, png_file: Path, width: int, chrome_path: str, force: bool = False) -> bool:
+def generate_png(
+    mmd_file: Path,
+    png_file: Path,
+    width: int,
+    chrome_path: str,
+    force: bool = False,
+) -> bool:
     """
     Generate PNG from Mermaid diagram.
 
@@ -104,7 +110,12 @@ def generate_png(mmd_file: Path, png_file: Path, width: int, chrome_path: str, f
         return False
 
 
-def process_directory(directory: Path, width: int, chrome_path: str, force: bool = False) -> tuple[int, int, int]:
+def process_directory(
+    directory: Path,
+    width: int,
+    chrome_path: str,
+    force: bool = False,
+) -> tuple[int, int, int]:
     """
     Process all .mmd files in a directory.
 
@@ -131,9 +142,9 @@ def process_directory(directory: Path, width: int, chrome_path: str, force: bool
     print(f"{mode_str} PNGs for {len(mmd_files)} Mermaid diagram(s)...")
     print(f"Width: {width}px, Chrome: {chrome_path}")
     if not force:
-        print(f"Mode: Incremental (skip up-to-date PNGs)")
+        print("Mode: Incremental (skip up-to-date PNGs)")
     else:
-        print(f"Mode: Force (regenerate all PNGs)")
+        print("Mode: Force (regenerate all PNGs)")
     print()
 
     for mmd_file in sorted(mmd_files):
@@ -191,7 +202,10 @@ def main():
     # Check if mmdc is available
     if not check_mmdc_available():
         print("Error: mmdc (Mermaid CLI) not found", file=sys.stderr)
-        print("Install with: npm install -g @mermaid-js/mermaid-cli", file=sys.stderr)
+        print(
+            "Install with: npm install -g @mermaid-js/mermaid-cli",
+            file=sys.stderr,
+        )
         return 1
 
     # Find Chrome executable
@@ -214,7 +228,9 @@ def main():
 
     if args.path.is_dir():
         # Process directory
-        successful, failed, skipped = process_directory(args.path, args.width, chrome_path, args.force)
+        successful, failed, skipped = process_directory(
+            args.path, args.width, chrome_path, args.force,
+        )
     elif args.path.suffix == '.mmd':
         # Process single file
         png_file = args.path.with_suffix('.png')
@@ -244,12 +260,16 @@ def main():
                 failed = 1
                 skipped = 0
     else:
-        print(f"Error: Path must be a directory or .mmd file: {args.path}", file=sys.stderr)
+        print(
+            f"Error: Path must be a directory or .mmd file:"
+            f" {args.path}",
+            file=sys.stderr,
+        )
         return 1
 
     # Summary
     print(f"\n{'='*60}")
-    print(f"✅ PNG generation complete!")
+    print("✅ PNG generation complete!")
     print(f"{'='*60}")
     print(f"Successful: {successful}")
     print(f"Failed: {failed}")

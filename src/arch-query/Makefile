@@ -1,4 +1,4 @@
-.PHONY: build build-embedded test clean clean-embedded smoke smoke-embedded
+.PHONY: build build-embedded test clean clean-embedded smoke smoke-embedded lint lint-fix
 
 BINARY    := arch-query
 BUILD_DIR := ../../bin
@@ -62,3 +62,9 @@ smoke-embedded: build-embedded
 	cd /tmp && $(CURDIR)/$(BUILD_DIR)/$(BINARY) search vllm
 	@echo "---"
 	cd /tmp && $(CURDIR)/$(BUILD_DIR)/$(BINARY) --version current-ga list --names-only | wc -l
+
+lint:
+	golangci-lint run ./...
+
+lint-fix:
+	golangci-lint run --fix ./...

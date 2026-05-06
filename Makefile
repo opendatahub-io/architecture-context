@@ -1,4 +1,4 @@
-.PHONY: build build-embedded test clean
+.PHONY: build build-embedded test clean lint lint-python lint-go
 
 build:
 	$(MAKE) -C src/arch-query build
@@ -11,3 +11,11 @@ test:
 
 clean:
 	$(MAKE) -C src/arch-query clean
+
+lint: lint-python lint-go
+
+lint-python:
+	uv run ruff check .
+
+lint-go:
+	$(MAKE) -C src/arch-query lint

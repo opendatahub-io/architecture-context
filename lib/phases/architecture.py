@@ -2,8 +2,12 @@
 
 from pathlib import Path
 
-from lib.component_discovery import read_component_map, apply_platform_overrides
-from lib.agent_runner import run_agents_concurrently, get_model_display_name, format_duration
+from lib.agent_runner import (
+    format_duration,
+    get_model_display_name,
+    run_agents_concurrently,
+)
+from lib.component_discovery import apply_platform_overrides, read_component_map
 from lib.fetch import load_platform_config
 
 
@@ -20,7 +24,7 @@ async def run_generate_architecture_phase(args) -> None:
     if components is None:
         print(f"ERROR: No component-map.json found for platform '{args.platform}'")
         print(f"Expected: {architecture_dir}/{args.platform}/component-map.json")
-        print(f"\nRun discover-components first:")
+        print("\nRun discover-components first:")
         print(f"  uv run main.py discover-components --platform={args.platform}")
         return
 
@@ -33,7 +37,11 @@ async def run_generate_architecture_phase(args) -> None:
         )
 
     # Derive distribution from platform (strip version suffix)
-    distribution = args.platform.split("-")[0] if "-" in args.platform else args.platform
+    distribution = (
+        args.platform.split("-")[0]
+        if "-" in args.platform
+        else args.platform
+    )
 
     if not components:
         print("No components found with checkouts")
@@ -59,12 +67,24 @@ async def run_generate_architecture_phase(args) -> None:
     tier_filter = getattr(args, 'tier', 'all')
     if tier_filter == 'significant':
         before = len(components)
-        components = {k: v for k, v in components.items() if v.architecturally_significant}
-        print(f"Tier filter 'significant': {before} -> {len(components)} components")
+        components = {
+            k: v for k, v in components.items()
+            if v.architecturally_significant
+        }
+        print(
+            f"Tier filter 'significant': "
+            f"{before} -> {len(components)} components"
+        )
     elif tier_filter == 'core':
         before = len(components)
-        components = {k: v for k, v in components.items() if v.tier in ('core_platform', 'optional_platform')}
-        print(f"Tier filter 'core': {before} -> {len(components)} components")
+        components = {
+            k: v for k, v in components.items()
+            if v.tier in ('core_platform', 'optional_platform')
+        }
+        print(
+            f"Tier filter 'core': "
+            f"{before} -> {len(components)} components"
+        )
 
     # Refresh has_architecture from filesystem (component-map may be stale)
     for component in components.values():
@@ -82,7 +102,8 @@ async def run_generate_architecture_phase(args) -> None:
                 component.has_architecture = False  # Update status
         print()
 
-    # Filter to components missing architecture (unless --force, which already deleted them)
+    # Filter to components missing architecture
+    # (unless --force, which already deleted them)
     missing_arch = [c for c in components.values() if not c.has_architecture]
     has_arch = [c for c in components.values() if c.has_architecture]
 
@@ -169,9 +190,16 @@ async def run_generate_architecture_phase(args) -> None:
             recovered.append(results[i])
 
     if recovered:
-        print(f"\nRecovered {len(recovered)} agent(s) that crashed after writing output:")
+        print(
+            f"\nRecovered {len(recovered)} agent(s)"
+            " that crashed after writing output:"
+        )
         for r in recovered:
-            print(f"  ~ {r['name']}: crashed ({r.get('error', '')[:80]}) but output file exists")
+            err = r.get('error', '')[:80]
+            print(
+                f"  ~ {r['name']}: crashed ({err})"
+                " but output file exists"
+            )
 
     # Summary
     successful = [r for r in results if isinstance(r, dict) and r.get("success")]
@@ -207,7 +235,10 @@ async def run_generate_architecture_phase(args) -> None:
         if not arch_file.exists():
             continue
         elapsed = result.get("duration_seconds", 0)
-        duration_line = f"\n---\n*Generated in {format_duration(elapsed)} ({elapsed:.0f}s total)*\n"
+        duration_line = (
+            f"\n---\n*Generated in {format_duration(elapsed)}"
+            f" ({elapsed:.0f}s total)*\n"
+        )
         with open(arch_file, 'a') as f:
             f.write(duration_line)
 

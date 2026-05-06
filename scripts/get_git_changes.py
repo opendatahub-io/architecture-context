@@ -25,7 +25,8 @@ def get_version_from_makefile(makefile_path: Path) -> Optional[str]:
         content = makefile_path.read_text()
         # Match: VERSION = 3.3.0, VERSION ?= 3.3.0, VERSION := 3.3.0
         # Allow leading whitespace (for indented blocks like ifeq)
-        # Capture version number (non-whitespace, non-comment) and ignore trailing comments
+        # Capture version number (non-whitespace, non-comment)
+        # and ignore trailing comments
         match = re.search(r'^\s*VERSION\s*[\?:]?=\s*([^\s#]+)', content, re.MULTILINE)
         if match:
             version = match.group(1).strip()
@@ -135,7 +136,11 @@ def get_remote_url(repo_path: Path) -> str:
         return "unknown"
 
 
-def get_recent_commits(repo_path: Path, since: str = "3 months ago", limit: int = 20) -> list[str]:
+def get_recent_commits(
+    repo_path: Path,
+    since: str = "3 months ago",
+    limit: int = 20,
+) -> list[str]:
     """
     Get recent commit messages from a git repository.
 
@@ -217,13 +222,22 @@ def main():
         '--format',
         choices=['text', 'count', 'metadata', 'json'],
         default='text',
-        help='Output format: text (commit list), count (number only), metadata (human-readable), or json (JSON output)'
+        help=(
+            'Output format: text (commit list),'
+            ' count (number only),'
+            ' metadata (human-readable),'
+            ' or json (JSON output)'
+        )
     )
 
     args = parser.parse_args()
 
     if not args.repo_path.exists():
-        print(f"Error: Repository path does not exist: {args.repo_path}", file=sys.stderr)
+        print(
+            f"Error: Repository path does not exist:"
+            f" {args.repo_path}",
+            file=sys.stderr,
+        )
         return 1
 
     if not (args.repo_path / '.git').exists():

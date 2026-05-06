@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
+from lib.agent_runner import get_model_display_name, run_agents_concurrently
 from lib.component_discovery import get_component_map_metadata
-from lib.agent_runner import run_agents_concurrently, get_model_display_name
 
 
 async def run_generate_platform_architecture_phase(args) -> None:
@@ -16,7 +16,7 @@ async def run_generate_platform_architecture_phase(args) -> None:
 
     if not architecture_dir.exists():
         print(f"Error: Architecture directory does not exist: {architecture_dir}")
-        print(f"Run 'collect-architectures' first to organize component files")
+        print("Run 'collect-architectures' first to organize component files")
         return
 
     # Determine which directories to scan
@@ -24,7 +24,11 @@ async def run_generate_platform_architecture_phase(args) -> None:
         candidate = architecture_dir / args.platform
         if not candidate.is_dir():
             print(f"No directory found: {candidate}")
-            available = [p.name for p in sorted(architecture_dir.iterdir()) if p.is_dir()]
+            available = [
+                p.name
+                for p in sorted(architecture_dir.iterdir())
+                if p.is_dir()
+            ]
             print(f"Available: {', '.join(available)}")
             return
         scan_dirs = [candidate]
@@ -56,7 +60,11 @@ async def run_generate_platform_architecture_phase(args) -> None:
             for comp_file in component_files:
                 if comp_file.stat().st_mtime > platform_mtime:
                     needs_generation = True
-                    print(f"  Deleting stale PLATFORM.md for {item.name} (component files updated)")
+                    print(
+                        f"  Deleting stale PLATFORM.md"
+                        f" for {item.name}"
+                        f" (component files updated)"
+                    )
                     platform_md.unlink()
                     has_platform_md = False
                     break
@@ -70,7 +78,7 @@ async def run_generate_platform_architecture_phase(args) -> None:
         })
 
     if not platform_dirs:
-        print(f"No platform directories with component files found")
+        print("No platform directories with component files found")
         return
 
     needs_generation = [p for p in platform_dirs if p['needs_generation']]
@@ -95,7 +103,10 @@ async def run_generate_platform_architecture_phase(args) -> None:
     model_display = get_model_display_name(args.model)
     jobs = []
     for p in sorted(needs_generation, key=lambda x: x['name']):
-        metadata = get_component_map_metadata(p['name'], architecture_dir=str(architecture_dir))
+        metadata = get_component_map_metadata(
+            p['name'],
+            architecture_dir=str(architecture_dir),
+        )
         distribution = p['name'].split("-")[0] if "-" in p['name'] else p['name']
         version = metadata.get("version", "unknown") if metadata else "unknown"
         platform_dir_path = str(p['path'].resolve())

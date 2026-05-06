@@ -67,7 +67,7 @@ class AgentProgress:
             padding=(0, 1), min_width=60,
         )
         table.add_column(ratio=1)
-        table.add_row(f"━" * 60)
+        table.add_row("━" * 60)
         table.add_row(f" Progress: {done}/{self.total}  {bar}  {pct}%")
 
         running_names = list(self.running.keys())
@@ -83,7 +83,7 @@ class AgentProgress:
         if self.failed:
             status_parts.append(f"Failed: {self.failed}")
         table.add_row(f" {' | '.join(status_parts)}")
-        table.add_row(f"━" * 60)
+        table.add_row("━" * 60)
 
         return table
 

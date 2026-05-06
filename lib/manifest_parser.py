@@ -1,11 +1,10 @@
 """Parse opendatahub-operator get_all_manifests.sh script for component info."""
 
-import re
 import json
+import re
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Any
-from dataclasses import dataclass, field, asdict
-
+from typing import Any, Dict, List, Optional
 
 # Repos that are utilities/build-support, not platform components
 EXCLUDED_REPOS = {
@@ -49,7 +48,8 @@ def parse_manifest_array(content: str, array_name: str) -> Dict[str, ComponentIn
 
     Args:
         content: Content of get_all_manifests.sh script
-        array_name: Name of array to parse (ODH_COMPONENT_MANIFESTS or RHOAI_COMPONENT_MANIFESTS)
+        array_name: Name of array to parse
+            (ODH_COMPONENT_MANIFESTS or RHOAI_COMPONENT_MANIFESTS)
 
     Returns:
         Dict mapping component key to ComponentInfo
@@ -97,7 +97,8 @@ def find_component_checkouts(
 
     Args:
         components: Dict of parsed components
-        checkouts_dir: Base directory containing checkouts (should include org directory)
+        checkouts_dir: Base directory containing checkouts
+            (should include org directory)
 
     Returns:
         Dict of only components that have a matching checkout directory
@@ -106,7 +107,8 @@ def find_component_checkouts(
 
     for key, component in components.items():
         # Construct expected checkout path
-        # checkouts_dir is like: checkouts/opendatahub-io or checkouts/red-hat-data-services.rhoai-2.14
+        # checkouts_dir is like: checkouts/opendatahub-io
+        # or checkouts/red-hat-data-services.rhoai-2.14
         # We just append the repo name
         checkout_path = checkouts_dir / component.repo_name
 
@@ -136,13 +138,17 @@ def process_manifest_script(
     Args:
         script_path: Path to the get_all_manifests.sh script
                     Examples:
-                    - checkouts/opendatahub-io/opendatahub-operator/get_all_manifests.sh
-                    - checkouts/red-hat-data-services.rhoai-2.14/opendatahub-operator/get_all_manifests.sh
+                    - checkouts/opendatahub-io/
+                      opendatahub-operator/get_all_manifests.sh
+                    - checkouts/red-hat-data-services.rhoai-2.14/
+                      opendatahub-operator/get_all_manifests.sh
         platform: Platform type - "odh" or "rhoai"
-        checkouts_dir: Base checkouts directory (auto-detected from script_path if not provided)
+        checkouts_dir: Base checkouts directory
+            (auto-detected from script_path if not provided)
 
     Returns:
-        Dict of component key -> ComponentInfo (only for components with existing checkouts)
+        Dict of component key -> ComponentInfo
+        (only for components with existing checkouts)
 
     Raises:
         FileNotFoundError: If script_path does not exist
@@ -157,8 +163,12 @@ def process_manifest_script(
 
     # Auto-detect checkouts directory from script path if not provided
     if checkouts_dir is None:
-        # script_path is like: checkouts/opendatahub-io/opendatahub-operator/get_all_manifests.sh
-        # or: checkouts/red-hat-data-services.rhoai-2.14/opendatahub-operator/get_all_manifests.sh
+        # script_path is like:
+        #   checkouts/opendatahub-io/
+        #     opendatahub-operator/get_all_manifests.sh
+        # or:
+        #   checkouts/red-hat-data-services.rhoai-2.14/
+        #     opendatahub-operator/get_all_manifests.sh
         parts = path.parts
         if "checkouts" in parts:
             checkouts_idx = parts.index("checkouts")
@@ -172,10 +182,14 @@ def process_manifest_script(
 
     content = path.read_text()
 
-    # Determine which array to parse (try platform-specific first, then fall back to generic)
+    # Determine which array to parse
+    # (try platform-specific first, then fall back to generic)
     # Newer scripts (3.3+) use ODH_COMPONENT_MANIFESTS / RHOAI_COMPONENT_MANIFESTS
     # Older scripts (2.25) use COMPONENT_MANIFESTS
-    array_name = "ODH_COMPONENT_MANIFESTS" if platform == "odh" else "RHOAI_COMPONENT_MANIFESTS"
+    if platform == "odh":
+        array_name = "ODH_COMPONENT_MANIFESTS"
+    else:
+        array_name = "RHOAI_COMPONENT_MANIFESTS"
 
     # Parse the array
     components = parse_manifest_array(content, array_name)
@@ -239,7 +253,8 @@ def discover_adjacent_components(
     existing_components dict (matched by repo_name) and aren't in EXCLUDED_REPOS.
 
     Args:
-        checkouts_dir: Path to the org checkout directory (e.g. checkouts/red-hat-data-services.rhoai-3.4-ea.1)
+        checkouts_dir: Path to the org checkout directory
+            (e.g. checkouts/red-hat-data-services.rhoai-3.4-ea.1)
         existing_components: Already-discovered components from manifest parsing
         org: GitHub org name (e.g. "red-hat-data-services")
 
@@ -308,11 +323,16 @@ def display_component_summary(
     """
     print(f"Processing manifest script: {script_path}")
     print(f"Using checkouts directory: {checkouts_dir}")
-    print(f"Parsing array: {'ODH_COMPONENT_MANIFESTS' if platform == 'odh' else 'RHOAI_COMPONENT_MANIFESTS'}")
+    arr = (
+        "ODH_COMPONENT_MANIFESTS"
+        if platform == "odh"
+        else "RHOAI_COMPONENT_MANIFESTS"
+    )
+    print(f"Parsing array: {arr}")
     print()
 
     if not components:
-        print(f"No components found with checkouts")
+        print("No components found with checkouts")
         return
 
     # Count components by architecture status

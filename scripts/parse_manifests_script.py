@@ -117,7 +117,10 @@ def parse_manifests_script(
     content = script_path.read_text()
 
     # Determine which array to parse
-    array_name = "ODH_COMPONENT_MANIFESTS" if platform == "odh" else "RHOAI_COMPONENT_MANIFESTS"
+    if platform == "odh":
+        array_name = "ODH_COMPONENT_MANIFESTS"
+    else:
+        array_name = "RHOAI_COMPONENT_MANIFESTS"
 
     # Parse the array
     components = parse_manifest_array(content, array_name)
@@ -165,9 +168,18 @@ def main():
 
     # Auto-detect manifest script if not provided
     if args.manifest_script is None:
-        operator_name = "opendatahub-operator" if args.platform == "odh" else "rhods-operator"
-        repo_org = "opendatahub-io" if args.platform == "odh" else "red-hat-data-services"
-        args.manifest_script = args.checkouts_dir / repo_org / operator_name / "get_all_manifests.sh"
+        if args.platform == "odh":
+            operator_name = "opendatahub-operator"
+            repo_org = "opendatahub-io"
+        else:
+            operator_name = "rhods-operator"
+            repo_org = "red-hat-data-services"
+        args.manifest_script = (
+            args.checkouts_dir
+            / repo_org
+            / operator_name
+            / "get_all_manifests.sh"
+        )
 
     # Parse the script
     try:
@@ -191,7 +203,7 @@ def main():
 
     if not components:
         if args.filter_missing:
-            print(f"No components need analysis - all have GENERATED_ARCHITECTURE.md")
+            print("No components need analysis - all have GENERATED_ARCHITECTURE.md")
         else:
             print(f"No component checkouts found for {args.platform.upper()}")
             print(f"Expected in: {args.checkouts_dir}")
@@ -203,12 +215,21 @@ def main():
         analyzed = sum(1 for c in components.values() if c.has_architecture)
         missing = len(components) - analyzed
 
-        print(f"Found {len(components)} {args.platform.upper()} component(s) with checkouts:")
+        platform_upper = args.platform.upper()
+        print(
+            f"Found {len(components)}"
+            f" {platform_upper} component(s)"
+            f" with checkouts:"
+        )
         print(f"  Analyzed: {analyzed}, Missing: {missing}\n")
 
         for key, component in sorted(components.items()):
             status = "✓" if component.has_architecture else "✗"
-            print(f"  {status} {key:25s} {component.repo_name:40s} ({component.checkout_path})")
+            print(
+                f"  {status} {key:25s}"
+                f" {component.repo_name:40s}"
+                f" ({component.checkout_path})"
+            )
 
     elif args.format == 'paths':
         # Just output checkout paths (for use in scripts)

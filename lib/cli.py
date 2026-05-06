@@ -11,9 +11,14 @@ def resolve_org_dir(org: str, suffix: str = None, branch: str = None) -> str:
     return org
 
 
-def resolve_script_path(platform: str, org: str = None, branch: str = None,
-                        suffix: str = None,
-                        checkouts_dir: str = "checkouts", script_path: str = None) -> str:
+def resolve_script_path(
+    platform: str,
+    org: str = None,
+    branch: str = None,
+    suffix: str = None,
+    checkouts_dir: str = "checkouts",
+    script_path: str = None,
+) -> str:
     """
     Resolve the path to get_all_manifests.sh.
 
@@ -74,11 +79,18 @@ def parse_args():
     )
     fetch_parser.add_argument(
         "--suffix",
-        help="Suffix for the org directory (e.g., --suffix=head -> <org>.head/). Defaults to branch name when --branch is set."
+        help=(
+            "Suffix for the org directory"
+            " (e.g., --suffix=head -> <org>.head/)."
+            " Defaults to branch name when --branch is set."
+        ),
     )
     fetch_parser.add_argument(
         "--exclude",
-        help="Comma-separated glob patterns to exclude repos (merged with platforms.yaml excludes)"
+        help=(
+            "Comma-separated glob patterns to exclude"
+            " repos (merged with platforms.yaml excludes)"
+        ),
     )
     fetch_parser.add_argument(
         "--pull",
@@ -106,20 +118,35 @@ def parse_args():
     )
     manifest_parser.add_argument(
         "--suffix",
-        help="Directory suffix for the org checkout (e.g., --suffix=head -> <org>.head/). Defaults to branch name when --branch is set."
+        help=(
+            "Directory suffix for the org checkout"
+            " (e.g., --suffix=head -> <org>.head/)."
+            " Defaults to branch name when"
+            " --branch is set."
+        ),
     )
     manifest_parser.add_argument(
         "--checkouts-dir",
         default="checkouts",
-        help="Base directory containing cloned repositories (default: checkouts)"
+        help=(
+            "Base directory containing cloned"
+            " repositories (default: checkouts)"
+        ),
     )
     manifest_parser.add_argument(
         "--script-path",
-        help="Override path to get_all_manifests.sh script (auto-detected if not provided)"
+        help=(
+            "Override path to get_all_manifests.sh"
+            " script (auto-detected if not provided)"
+        ),
     )
     manifest_parser.add_argument(
         "--version",
-        help="Explicit version label (e.g., 2.14). Overrides auto-detection from branch name or Makefile."
+        help=(
+            "Explicit version label (e.g., 2.14)."
+            " Overrides auto-detection from branch"
+            " name or Makefile."
+        ),
     )
     manifest_parser.add_argument(
         "--format",
@@ -131,20 +158,35 @@ def parse_args():
     # Phase 2b: Discover components
     discover_parser = subparsers.add_parser(
         "discover-components",
-        help="Discover components by exploring breadcrumbs (installers, operators, dependencies)"
+        help=(
+            "Discover components by exploring"
+            " breadcrumbs (installers, operators,"
+            " dependencies)"
+        ),
     )
     discover_parser.add_argument(
         "--platform",
         required=True,
-        help="Platform identifier from platforms.yaml (e.g., 'odh', 'rhoai-3.4')"
+        help=(
+            "Platform identifier from platforms.yaml"
+            " (e.g., 'odh', 'rhoai-3.4')"
+        ),
     )
     discover_parser.add_argument(
         "--checkouts-dir",
-        help="Directory containing cloned repositories (auto-detected from platforms.yaml if not set)"
+        help=(
+            "Directory containing cloned repositories"
+            " (auto-detected from platforms.yaml"
+            " if not set)"
+        ),
     )
     discover_parser.add_argument(
         "--entry-repo",
-        help="Starting point repository (e.g., 'opendatahub-operator', 'rhods-operator')"
+        help=(
+            "Starting point repository"
+            " (e.g., 'opendatahub-operator',"
+            " 'rhods-operator')"
+        ),
     )
     discover_parser.add_argument(
         "--architecture-dir",
@@ -164,7 +206,11 @@ def parse_args():
         "--model",
         choices=["sonnet", "opus", "haiku"],
         default="opus",
-        help="Claude model to use for discovery (default: opus — discovery explores many repos and needs large context)"
+        help=(
+            "Claude model to use for discovery"
+            " (default: opus -- discovery explores"
+            " many repos and needs large context)"
+        ),
     )
 
     # Phase 3: Generate architecture
@@ -175,12 +221,21 @@ def parse_args():
     generate_arch_parser.add_argument(
         "--platform",
         required=True,
-        help="Platform identifier matching architecture/<platform>/component-map.json (e.g., 'rhoai', 'rhoai-3.4')"
+        help=(
+            "Platform identifier matching"
+            " architecture/<platform>/"
+            "component-map.json"
+            " (e.g., 'rhoai', 'rhoai-3.4')"
+        ),
     )
     generate_arch_parser.add_argument(
         "--architecture-dir",
         default="architecture",
-        help="Base architecture directory containing component-map.json files (default: architecture)"
+        help=(
+            "Base architecture directory containing"
+            " component-map.json files"
+            " (default: architecture)"
+        ),
     )
     generate_arch_parser.add_argument(
         "--max-concurrent",
@@ -195,7 +250,10 @@ def parse_args():
     )
     generate_arch_parser.add_argument(
         "--component",
-        help="Only process this specific component (e.g., 'operator', 'kserve', 'mlflow')"
+        help=(
+            "Only process this specific component"
+            " (e.g., 'operator', 'kserve', 'mlflow')"
+        ),
     )
     generate_arch_parser.add_argument(
         "--force",
@@ -204,7 +262,11 @@ def parse_args():
     )
     generate_arch_parser.add_argument(
         "--version",
-        help="Explicit version label (e.g., 2.14). Overrides auto-detection from branch name or Makefile."
+        help=(
+            "Explicit version label (e.g., 2.14)."
+            " Overrides auto-detection from branch"
+            " name or Makefile."
+        ),
     )
     generate_arch_parser.add_argument(
         "--model",
@@ -216,18 +278,32 @@ def parse_args():
         "--tier",
         choices=["all", "significant", "core"],
         default="all",
-        help="Which components to process: all (default), significant (architecturally_significant only), core (core/optional platform tiers only)"
+        help=(
+            "Which components to process: all"
+            " (default), significant"
+            " (architecturally_significant only),"
+            " core (core/optional platform"
+            " tiers only)"
+        ),
     )
 
     # Phase 4: Collect architectures
     collect_parser = subparsers.add_parser(
         "collect-architectures",
-        help="Collect and organize GENERATED_ARCHITECTURE.md files into architecture/ directory"
+        help=(
+            "Collect and organize"
+            " GENERATED_ARCHITECTURE.md files into"
+            " architecture/ directory"
+        ),
     )
     collect_parser.add_argument(
         "--architecture-dir",
         default="architecture",
-        help="Base architecture directory containing component-map.json files (default: architecture)"
+        help=(
+            "Base architecture directory containing"
+            " component-map.json files"
+            " (default: architecture)"
+        ),
     )
     collect_parser.add_argument(
         "--platform",
@@ -272,7 +348,11 @@ def parse_args():
         "--model",
         choices=["sonnet", "opus", "haiku"],
         default="opus",
-        help="Claude model to use (default: opus — platform aggregation needs large context)"
+        help=(
+            "Claude model to use (default: opus --"
+            " platform aggregation needs"
+            " large context)"
+        ),
     )
 
     # Phase 6: Generate diagrams
@@ -306,7 +386,11 @@ def parse_args():
     )
     diagrams_parser.add_argument(
         "--component",
-        help="Only process this specific component (e.g., 'kserve', 'odh-dashboard', 'platform' for PLATFORM.md)"
+        help=(
+            "Only process this specific component"
+            " (e.g., 'kserve', 'odh-dashboard',"
+            " 'platform' for PLATFORM.md)"
+        ),
     )
     diagrams_parser.add_argument(
         "--force-regenerate",
@@ -340,7 +424,12 @@ def parse_args():
     )
     all_parser.add_argument(
         "--suffix",
-        help="Directory suffix for the org checkout (e.g., --suffix=head -> <org>.head/). Defaults to branch name when --branch is set."
+        help=(
+            "Directory suffix for the org checkout"
+            " (e.g., --suffix=head -> <org>.head/)."
+            " Defaults to branch name when"
+            " --branch is set."
+        ),
     )
     all_parser.add_argument(
         "--max-concurrent",
@@ -350,7 +439,11 @@ def parse_args():
     )
     all_parser.add_argument(
         "--version",
-        help="Explicit version label (e.g., 2.14). Overrides auto-detection from branch name or Makefile."
+        help=(
+            "Explicit version label (e.g., 2.14)."
+            " Overrides auto-detection from branch"
+            " name or Makefile."
+        ),
     )
     all_parser.add_argument(
         "--model",
@@ -362,7 +455,11 @@ def parse_args():
         "--tier",
         choices=["all", "significant", "core"],
         default="all",
-        help="Which components to generate architecture for: all (default), significant, core"
+        help=(
+            "Which components to generate"
+            " architecture for: all (default),"
+            " significant, core"
+        ),
     )
 
     return parser.parse_args()

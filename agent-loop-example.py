@@ -1,9 +1,8 @@
-import os
 import asyncio
-from pathlib import Path
+import os
 
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from dotenv import load_dotenv
-from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
 
 # Load environment variables from .env file
 load_dotenv()
@@ -17,7 +16,8 @@ load_dotenv()
 # And authenticate with GCP first, for example:
 # gcloud auth application-default login
 #
-# Docs: Claude Code / Agent SDK support Vertex auth via standard Google Cloud credentials.
+# Docs: Claude Code / Agent SDK support Vertex auth
+# via standard Google Cloud credentials.
 
 
 def require_env(name: str) -> str:

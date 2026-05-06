@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import time
 import asyncio
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 
 if TYPE_CHECKING:
     from lib.progress import AgentProgress
@@ -135,7 +135,10 @@ async def run_agent(
                 silence = time.monotonic() - last_activity
                 elapsed = time.monotonic() - start_time
                 if silence >= 30:
-                    print(f"[{name}] ... still running ({format_duration(elapsed)} elapsed)")
+                    print(
+                        f"[{name}] ... still running "
+                        f"({format_duration(elapsed)} elapsed)"
+                    )
 
         heartbeat_task = asyncio.create_task(_heartbeat())
 
@@ -159,7 +162,12 @@ async def run_agent(
             progress.agent_completed(name, success=True)
         _log(f"Completed: {name} ({format_duration(elapsed)})")
 
-        return {"name": name, "success": True, "log_file": str(log_file), "duration_seconds": elapsed}
+        return {
+            "name": name,
+            "success": True,
+            "log_file": str(log_file),
+            "duration_seconds": elapsed,
+        }
 
     except BaseException as e:
         # Catch BaseException (not just Exception) because the Claude Code CLI
@@ -180,7 +188,13 @@ async def run_agent(
             log.write(f"\n\n{'=' * 60}\n")
             log.write(f"ERROR: {e}\n")
 
-        return {"name": name, "success": False, "error": str(e), "log_file": str(log_file), "duration_seconds": elapsed}
+        return {
+            "name": name,
+            "success": False,
+            "error": str(e),
+            "log_file": str(log_file),
+            "duration_seconds": elapsed,
+        }
 
     finally:
         if heartbeat_task:

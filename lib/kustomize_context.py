@@ -1,9 +1,9 @@
 """Kustomize overlay context extraction from operator source."""
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
-from dataclasses import dataclass
 
 
 @dataclass
@@ -53,11 +53,17 @@ def _parse_overlay_paths(content: str) -> Dict[str, str]:
         var_name = map_match.group(1)
         map_body = map_match.group(2)
         # Only keep maps whose values look like filesystem paths (not display strings)
-        entry_pattern = r'cluster\.(SelfManagedRhoai|ManagedRhoai|OpenDataHub)\s*:\s*"([^"]*)"'
-        entries = {m.group(1): m.group(2) for m in re.finditer(entry_pattern, map_body)}
+        entry_pattern = (
+            r'cluster\.(SelfManagedRhoai|ManagedRhoai'
+            r'|OpenDataHub)\s*:\s*"([^"]*)"'
+        )
+        entries = {
+            m.group(1): m.group(2)
+            for m in re.finditer(entry_pattern, map_body)
+        }
         if not entries:
             continue
-        # Heuristic: if all values contain spaces they are display strings, skip
+        # Heuristic: all values contain spaces => display strings
         if all(' ' in v for v in entries.values()):
             continue
         for platform, path in entries.items():
@@ -102,11 +108,17 @@ def _parse_kustomize_vars(content: str) -> Dict[str, str]:
     for map_match in re.finditer(map_pattern, content, re.DOTALL):
         var_name = map_match.group(1)
         map_body = map_match.group(2)
-        entry_pattern = r'cluster\.(SelfManagedRhoai|ManagedRhoai|OpenDataHub)\s*:\s*"([^"]*)"'
-        entries = {m.group(1): m.group(2) for m in re.finditer(entry_pattern, map_body)}
+        entry_pattern = (
+            r'cluster\.(SelfManagedRhoai|ManagedRhoai'
+            r'|OpenDataHub)\s*:\s*"([^"]*)"'
+        )
+        entries = {
+            m.group(1): m.group(2)
+            for m in re.finditer(entry_pattern, map_body)
+        }
         if not entries:
             continue
-        # Keep only maps whose values are display strings (contain spaces)
+        # Keep only maps whose values are display strings
         if not all(' ' in v for v in entries.values()):
             continue
         for platform, value in entries.items():

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Repository processing and analysis tool."""
 
-import sys
 import asyncio
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv

@@ -1,12 +1,11 @@
 """Phase 2b: Discover components via breadcrumb exploration."""
 
+import json
 from pathlib import Path
 
-import json
-
-from lib.fetch import load_platform_config
-from lib.component_discovery import get_component_map_metadata
 from lib.agent_runner import run_agent
+from lib.component_discovery import get_component_map_metadata
+from lib.fetch import load_platform_config
 
 
 def _apply_map_overrides(map_file: Path, platform_config: dict) -> None:
@@ -75,7 +74,9 @@ async def run_discover_components_phase(args) -> None:
     print("PHASE 2B: Discovering platform components")
     print("=" * 60 + "\n")
 
-    architecture_dir = str(Path(getattr(args, 'architecture_dir', 'architecture')).resolve())
+    architecture_dir = str(
+        Path(getattr(args, 'architecture_dir', 'architecture')).resolve()
+    )
     map_file = Path(architecture_dir) / args.platform / "component-map.json"
     force = getattr(args, 'force', False)
 
@@ -100,7 +101,11 @@ async def run_discover_components_phase(args) -> None:
 
             for entry in platform_config.get("extra_orgs", []):
                 org_name = entry.get("org") if isinstance(entry, dict) else entry
-                org_suffix = (entry.get("suffix") if isinstance(entry, dict) else None) or suffix
+                org_suffix = (
+                    entry.get("suffix")
+                    if isinstance(entry, dict)
+                    else None
+                ) or suffix
                 checkouts_dirs.append(f"checkouts/{org_name}.{org_suffix}")
 
             for entry in platform_config.get("extra_repos", []):
@@ -114,10 +119,16 @@ async def run_discover_components_phase(args) -> None:
                 for d in checkouts_dirs:
                     print(f"  - {d}")
             else:
-                print(f"Error: no orgs defined for platform '{args.platform}' in platforms.yaml")
+                print(
+                    f"Error: no orgs defined for platform"
+                    f" '{args.platform}' in platforms.yaml"
+                )
                 return
         except (FileNotFoundError, KeyError) as e:
-            print(f"Error: --checkouts-dir is required (could not resolve from platforms.yaml: {e})")
+            print(
+                f"Error: --checkouts-dir is required"
+                f" (could not resolve from platforms.yaml: {e})"
+            )
             return
 
     print(f"Platform: {args.platform}")
@@ -132,19 +143,35 @@ async def run_discover_components_phase(args) -> None:
         config_excludes = platform_config.get("exclude_repos", [])
         if config_excludes:
             combined = ",".join(config_excludes)
-            exclude_patterns = f"{exclude_patterns},{combined}" if exclude_patterns else combined
+            exclude_patterns = (
+                f"{exclude_patterns},{combined}"
+                if exclude_patterns
+                else combined
+            )
 
-    exclude_part = f" --exclude={exclude_patterns}" if exclude_patterns else ""
-    entry_part = f" --entry-repo={args.entry_repo}" if getattr(args, 'entry_repo', None) else ""
-    checkouts_parts = " ".join(f"--checkouts-dir={d}" for d in checkouts_dirs)
+    exclude_part = (
+        f" --exclude={exclude_patterns}"
+        if exclude_patterns else ""
+    )
+    entry_part = (
+        f" --entry-repo={args.entry_repo}"
+        if getattr(args, 'entry_repo', None) else ""
+    )
+    checkouts_parts = " ".join(
+        f"--checkouts-dir={d}" for d in checkouts_dirs
+    )
 
-    prompt = f"/discover-components --platform={args.platform} {checkouts_parts}{entry_part}{exclude_part} --architecture-dir={architecture_dir}"
+    prompt = (
+        f"/discover-components --platform={args.platform}"
+        f" {checkouts_parts}{entry_part}{exclude_part}"
+        f" --architecture-dir={architecture_dir}"
+    )
 
     log_dir = Path("logs/discover-components")
     log_dir.mkdir(parents=True, exist_ok=True)
 
     model = getattr(args, 'model', 'opus')
-    print(f"Running component discovery with Skills enabled (SDK)...")
+    print("Running component discovery with Skills enabled (SDK)...")
     print(f"Model: {model}")
     print(f"Log directory: {log_dir}\n")
 
@@ -172,11 +199,18 @@ async def run_discover_components_phase(args) -> None:
 
             metadata = get_component_map_metadata(args.platform, architecture_dir)
             if metadata:
-                print(f"\nDiscovery summary:")
+                print("\nDiscovery summary:")
                 print(f"  Method: {metadata.get('discovery_method', 'N/A')}")
-                print(f"  Total repos scanned: {metadata.get('total_repos_scanned', 'N/A')}")
-                print(f"  Components discovered: {metadata.get('components_discovered', 'N/A')}")
-                print(f"  Components excluded: {metadata.get('components_excluded', 'N/A')}")
+                repos = metadata.get('total_repos_scanned', 'N/A')
+                discovered = metadata.get(
+                    'components_discovered', 'N/A',
+                )
+                excluded = metadata.get(
+                    'components_excluded', 'N/A',
+                )
+                print(f"  Total repos scanned: {repos}")
+                print(f"  Components discovered: {discovered}")
+                print(f"  Components excluded: {excluded}")
         else:
             print("Component map not found (agent may have failed)")
     else:

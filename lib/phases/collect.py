@@ -4,7 +4,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from lib.component_discovery import read_component_map, get_component_map_metadata
+from lib.component_discovery import get_component_map_metadata, read_component_map
 
 
 def _discover_platform_maps(architecture_dir: Path) -> list[tuple[str, Path]]:
@@ -78,8 +78,8 @@ async def run_collect_architectures_phase(args) -> None:
         print(f"No component-map.json files found in {architecture_dir}/")
         if platform_filter:
             print(f"  (filtered to platform: {platform_filter})")
-        print(f"\nRun discover-components first:")
-        print(f"  uv run main.py discover-components --platform=<platform>")
+        print("\nRun discover-components first:")
+        print("  uv run main.py discover-components --platform=<platform>")
         return
 
     print(f"Found {len(platform_maps)} platform(s) with component maps:")
@@ -89,13 +89,17 @@ async def run_collect_architectures_phase(args) -> None:
     total_collected = 0
 
     for platform_key, map_file in platform_maps:
-        metadata = get_component_map_metadata(platform_key, architecture_dir=str(architecture_dir)) or {}
+        metadata = get_component_map_metadata(
+            platform_key,
+            architecture_dir=str(architecture_dir),
+        ) or {}
         version = version_filter or metadata.get("version", "unknown")
-        platform_name = platform_key.split("-")[0] if "-" in platform_key else platform_key
-
         print(f"\nProcessing {platform_key} (version {version})...")
 
-        components = read_component_map(platform_key, architecture_dir=str(architecture_dir))
+        components = read_component_map(
+            platform_key,
+            architecture_dir=str(architecture_dir),
+        )
         if not components:
             print(f"  No components in {map_file}")
             continue
@@ -114,8 +118,11 @@ async def run_collect_architectures_phase(args) -> None:
                     break
 
         if not found:
-            print(f"  No GENERATED_ARCHITECTURE.md files found")
-            print(f"  Run: uv run main.py generate-architecture --platform={platform_key}")
+            print("  No GENERATED_ARCHITECTURE.md files found")
+            print(
+            "  Run: uv run main.py generate-architecture"
+            f" --platform={platform_key}"
+        )
             continue
 
         print(f"  Found {len(found)} architecture file(s)")
@@ -153,11 +160,21 @@ async def run_collect_architectures_phase(args) -> None:
 
         if missing_by_tier:
             total_missing = sum(len(v) for v in missing_by_tier.values())
-            print(f"\n  {total_missing} component(s) with checkouts but no architecture:")
+            print(
+                f"\n  {total_missing} component(s) with"
+                " checkouts but no architecture:"
+            )
             for tier in sorted(missing_by_tier):
                 keys = missing_by_tier[tier]
-                sig_marker = " *" if tier in ("core_platform", "optional_platform") else ""
-                print(f"    [{tier}]{sig_marker} ({len(keys)}): {', '.join(keys)}")
+                sig_marker = (
+                    " *"
+                    if tier in ("core_platform", "optional_platform")
+                    else ""
+                )
+                print(
+                    f"    [{tier}]{sig_marker}"
+                    f" ({len(keys)}): {', '.join(keys)}"
+                )
 
     print("\n" + "=" * 60)
     if total_collected:

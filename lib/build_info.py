@@ -1,9 +1,10 @@
 """Build and deployment metadata extraction from RHOAI-Build-Config."""
 
-import yaml
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
-from dataclasses import dataclass
+
+import yaml
 
 
 @dataclass
@@ -16,7 +17,8 @@ class BuildInfo:
     image_count: int  # Total number of container images shipped
     supported_architectures: List[str]  # CPU architectures (e.g. ["amd64", "arm64"])
     min_kube_version: str  # Minimum Kubernetes version (e.g. "1.25.0")
-    operator_features: Dict[str, str]  # OLM feature annotations (e.g. {"fips-compliant": "true"})
+    # OLM feature annotations (e.g. {"fips-compliant": "true"})
+    operator_features: Dict[str, str]
     image_to_repo: Dict[str, str]  # Container image name -> source git repo URL
 
 
@@ -71,7 +73,10 @@ def get_build_info(checkouts_dir: Path) -> Optional[BuildInfo]:
             # Extract supported architectures from labels
             # e.g. "operatorframework.io/arch.amd64: supported"
             for label, value in metadata.get("labels", {}).items():
-                if label.startswith("operatorframework.io/arch.") and value == "supported":
+                if (
+                    label.startswith("operatorframework.io/arch.")
+                    and value == "supported"
+                ):
                     arch = label.split(".")[-1]
                     supported_architectures.append(arch)
 
@@ -104,7 +109,11 @@ def get_build_info(checkouts_dir: Path) -> Optional[BuildInfo]:
                     repo_url = comp.get("source", {}).get("git", {}).get("url", "")
                     if image and repo_url:
                         # Use image name without tag/digest as key
-                        image_name = image.split("@")[0].split(":")[-1] if "@" in image else image
+                        image_name = (
+                            image.split("@")[0].split(":")[-1]
+                            if "@" in image
+                            else image
+                        )
                         # Extract repo name from URL
                         repo_name = repo_url.rstrip("/").split("/")[-1]
                         image_to_repo[image_name] = repo_name
@@ -139,7 +148,10 @@ def format_build_info_context(build_info: BuildInfo) -> str:
     if build_info.ocp_versions:
         lines.append(f"Supported OCP versions: {', '.join(build_info.ocp_versions)}")
     if build_info.supported_architectures:
-        lines.append(f"Supported CPU architectures: {', '.join(build_info.supported_architectures)}")
+        archs = ", ".join(build_info.supported_architectures)
+        lines.append(
+            f"Supported CPU architectures: {archs}"
+        )
     if build_info.min_kube_version:
         lines.append(f"Minimum Kubernetes version: {build_info.min_kube_version}")
     if build_info.image_count:
@@ -155,7 +167,12 @@ def format_build_info_context(build_info: BuildInfo) -> str:
         # Summarize: group by repo, show count of images per repo
         from collections import Counter
         repo_counts = Counter(build_info.image_to_repo.values())
-        lines.append(f"Source repositories producing container images ({len(repo_counts)} repos -> {len(build_info.image_to_repo)} images):")
+        num_repos = len(repo_counts)
+        num_images = len(build_info.image_to_repo)
+        lines.append(
+            f"Source repositories producing container images"
+            f" ({num_repos} repos -> {num_images} images):"
+        )
         for repo, count in sorted(repo_counts.items()):
             lines.append(f"  {repo}: {count} image(s)")
     return "\n".join(lines)
@@ -173,13 +190,22 @@ def get_supported_ocp_versions(checkouts_dir: Path) -> List[str]:
         List of OCP version strings (e.g. ["v4.19", "v4.20", "v4.21"]),
         or empty list if the file is not found or cannot be parsed.
     """
-    build_config_path = checkouts_dir / "RHOAI-Build-Config" / "config" / "build-config.yaml"
+    build_config_path = (
+        checkouts_dir
+        / "RHOAI-Build-Config"
+        / "config"
+        / "build-config.yaml"
+    )
     if not build_config_path.exists():
         return []
 
     try:
         data = yaml.safe_load(build_config_path.read_text())
-        versions = data.get("config", {}).get("supported-ocp-versions", {}).get("release", [])
+        versions = (
+            data.get("config", {})
+            .get("supported-ocp-versions", {})
+            .get("release", [])
+        )
         return [str(v) for v in versions]
     except Exception:
         return []

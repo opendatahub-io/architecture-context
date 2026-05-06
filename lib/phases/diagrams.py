@@ -22,7 +22,10 @@ async def run_generate_diagrams_phase(args) -> None:
         candidate = architecture_dir / args.platform
         if not candidate.is_dir():
             print(f"No directory found: {candidate}")
-            available = [p.name for p in sorted(architecture_dir.iterdir()) if p.is_dir()]
+            available = [
+                p.name for p in sorted(architecture_dir.iterdir())
+                if p.is_dir()
+            ]
             print(f"Available: {', '.join(available)}")
             return
         scan_dirs = [candidate]
@@ -63,13 +66,20 @@ async def run_generate_diagrams_phase(args) -> None:
                 txt_files = list(diagrams_dir.glob(f"{component_name}-*.txt"))
                 png_files = list(diagrams_dir.glob(f"{component_name}-*.png"))
                 all_diagram_files = mmd_files + dsl_files + txt_files + png_files
-                has_diagrams = len(mmd_files) > 0 or len(dsl_files) > 0 or len(txt_files) > 0
+                has_diagrams = (
+                    len(mmd_files) > 0
+                    or len(dsl_files) > 0
+                    or len(txt_files) > 0
+                )
 
             needs_generation = False
             if not has_diagrams:
                 needs_generation = True
             elif args.force_regenerate:
-                print(f"  Deleting existing diagrams for {component_name} (--force-regenerate)")
+                print(
+                    f"  Deleting existing diagrams for"
+                    f" {component_name} (--force-regenerate)"
+                )
                 for diagram_file in all_diagram_files:
                     diagram_file.unlink()
                 needs_generation = True
@@ -78,7 +88,10 @@ async def run_generate_diagrams_phase(args) -> None:
                 md_mtime = md_file.stat().st_mtime
                 oldest_diagram_mtime = min(f.stat().st_mtime for f in all_diagram_files)
                 if md_mtime > oldest_diagram_mtime:
-                    print(f"  Deleting stale diagrams for {component_name} (source file updated)")
+                    print(
+                        f"  Deleting stale diagrams for"
+                        f" {component_name} (source file updated)"
+                    )
                     for diagram_file in all_diagram_files:
                         diagram_file.unlink()
                     needs_generation = True
@@ -111,7 +124,10 @@ async def run_generate_diagrams_phase(args) -> None:
 
     # Filter to files that need diagrams
     needs_generation = [j for j in diagram_jobs if j['needs_generation']]
-    already_has = [j for j in diagram_jobs if j['has_diagrams'] and not args.force_regenerate]
+    already_has = [
+        j for j in diagram_jobs
+        if j['has_diagrams'] and not args.force_regenerate
+    ]
 
     print(f"Found {len(diagram_jobs)} architecture file(s):")
     print(f"  Already has diagrams: {len(already_has)}")
@@ -130,14 +146,25 @@ async def run_generate_diagrams_phase(args) -> None:
             print("Use --force-regenerate to regenerate existing diagrams")
         return
 
-    # Separate PLATFORM files from component files — different skills, different priority
-    platform_jobs_data = [j for j in needs_generation if j['component_name'] == 'platform']
-    component_jobs_data = [j for j in needs_generation if j['component_name'] != 'platform']
+    # Separate PLATFORM files from component files
+    # (different skills, different priority)
+    platform_jobs_data = [
+        j for j in needs_generation
+        if j['component_name'] == 'platform'
+    ]
+    component_jobs_data = [
+        j for j in needs_generation
+        if j['component_name'] != 'platform'
+    ]
 
     def _build_jobs(items, skill):
         jobs = []
         for j in sorted(items, key=lambda x: (x['dir_name'], x['component_name'])):
-            arch_flag = 'platform-file' if skill == 'generate-platform-diagrams' else 'architecture'
+            arch_flag = (
+                'platform-file'
+                if skill == 'generate-platform-diagrams'
+                else 'architecture'
+            )
             md_path = j['md_file'].resolve()
             out_path = j['diagrams_dir'].resolve()
             prompt = (
@@ -204,7 +231,8 @@ async def run_generate_diagrams_phase(args) -> None:
     if component_jobs:
         print("\n--- Phase 6b: Component diagrams ---\n")
         component_results = await run_agents_concurrently(
-            component_jobs, log_dir, args.model, args.max_concurrent, enable_skills=True,
+            component_jobs, log_dir, args.model,
+            args.max_concurrent, enable_skills=True,
         )
         all_results.extend(component_results)
         all_jobs.extend(component_jobs)

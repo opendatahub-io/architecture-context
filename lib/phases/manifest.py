@@ -2,12 +2,12 @@
 
 from pathlib import Path
 
-from lib.manifest_parser import (
-    process_manifest_script,
-    display_component_summary,
-    components_to_json,
-)
 from lib.cli import resolve_script_path
+from lib.manifest_parser import (
+    components_to_json,
+    display_component_summary,
+    process_manifest_script,
+)
 
 
 async def run_manifest_phase(args) -> None:

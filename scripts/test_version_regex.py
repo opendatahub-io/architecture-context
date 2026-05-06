@@ -51,7 +51,7 @@ for test_input, expected in test_cases:
     else:
         print(f"✗ FAIL: '{test_input}'")
         print(f"        Expected: '{expected}'")
-        print(f"        Got:      No match")
+        print("        Got:      No match")
         all_passed = False
     print()
 

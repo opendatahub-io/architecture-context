@@ -1,8 +1,8 @@
 """Phase 1: Fetch/clone repositories using gh-org-clone."""
 
+import asyncio
 import os
 import shutil
-import asyncio
 from pathlib import Path
 
 import yaml
@@ -51,7 +51,10 @@ def load_platform_config(platform: str, config_path: str = "platforms.yaml") -> 
 
     if platform not in config:
         available = ", ".join(sorted(config.keys()))
-        raise KeyError(f"Platform '{platform}' not found in {config_path}. Available: {available}")
+        raise KeyError(
+            f"Platform '{platform}' not found in"
+            f" {config_path}. Available: {available}"
+        )
 
     return config[platform]
 
@@ -123,7 +126,10 @@ async def _ensure_gh_org_clone() -> str:
         raise RuntimeError(f"Failed to build gh-org-clone: {stderr.decode()}")
 
     if not local_gh_org_clone.exists():
-        raise RuntimeError(f"Build succeeded but binary not found at {local_gh_org_clone}")
+        raise RuntimeError(
+            f"Build succeeded but binary not found"
+            f" at {local_gh_org_clone}"
+        )
 
     print(f"Successfully built and installed gh-org-clone to {local_gh_org_clone}")
 
@@ -162,13 +168,19 @@ async def _pull_existing_repos(checkouts_dir: Path, org: str, suffix: str = None
         return
 
     env = _prepare_env()
-    repos = sorted(p for p in org_path.iterdir() if p.is_dir() and (p / ".git").exists())
+    repos = sorted(
+        p for p in org_path.iterdir()
+        if p.is_dir() and (p / ".git").exists()
+    )
 
     if not repos:
         return
 
     total = len(repos)
-    print(f"\nPulling {total} existing repos in {org_dir} ({max_concurrent} concurrent)...")
+    print(
+        f"\nPulling {total} existing repos in"
+        f" {org_dir} ({max_concurrent} concurrent)..."
+    )
 
     sem = asyncio.Semaphore(max_concurrent)
     done = 0
@@ -238,7 +250,10 @@ async def _clone_org(
     returncode = await proc.wait()
 
     if returncode != 0:
-        raise RuntimeError(f"gh-org-clone failed with exit code {returncode} for org {org}")
+        raise RuntimeError(
+            f"gh-org-clone failed with exit code"
+            f" {returncode} for org {org}"
+        )
 
     print(f"Successfully cloned repositories from {org}")
 
@@ -369,13 +384,18 @@ async def fetch_repositories(
         for entry in extra_orgs:
             org_name = entry.get("org") if isinstance(entry, dict) else entry
             org_branch = entry.get("branch") if isinstance(entry, dict) else None
-            org_suffix = (entry.get("suffix") if isinstance(entry, dict) else None) or suffix
+            org_suffix = (
+                entry.get("suffix")
+                if isinstance(entry, dict)
+                else None
+            ) or suffix
             await _clone_org(gh_org_clone_cmd, org_name, checkouts_path,
                              branch=org_branch, suffix=org_suffix, exclude=exclude_str)
             if pull:
                 await _pull_existing_repos(checkouts_path, org_name, suffix=org_suffix)
 
-        # Clone individual extra repos — per-entry overrides, falling back to platform suffix
+        # Clone individual extra repos -- per-entry overrides,
+        # falling back to platform suffix
         extra_repos = config.get("extra_repos", [])
         if extra_repos:
             print(f"\nCloning {len(extra_repos)} extra repo(s)...")

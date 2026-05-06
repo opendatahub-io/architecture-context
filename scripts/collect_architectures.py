@@ -41,7 +41,8 @@ def get_version_from_makefile(makefile_path: Path) -> Optional[str]:
         content = makefile_path.read_text()
         # Match: VERSION = 3.3.0, VERSION ?= 3.3.0, VERSION := 3.3.0
         # Allow leading whitespace (for indented blocks like ifeq)
-        # Capture version number (non-whitespace, non-comment) and ignore trailing comments
+        # Capture version number (non-whitespace, non-comment)
+        # and ignore trailing comments
         match = re.search(r'^\s*VERSION\s*[\?:]?=\s*([^\s#]+)', content, re.MULTILINE)
         if match:
             version = match.group(1).strip()
@@ -92,7 +93,11 @@ def get_version_from_git(operator_dir: Path) -> Optional[str]:
     return None
 
 
-def detect_platform_version(platform_name: str, checkout_dir: Path, operator_name: str) -> Optional[str]:
+def detect_platform_version(
+    platform_name: str,
+    checkout_dir: Path,
+    operator_name: str,
+) -> Optional[str]:
     """
     Detect platform version from operator repository.
 
@@ -133,7 +138,7 @@ def detect_platform_version(platform_name: str, checkout_dir: Path, operator_nam
         print(f"  ✓ Found version in Makefile: {version}")
         return version
     else:
-        print(f"    (Makefile VERSION not found or not readable)")
+        print("    (Makefile VERSION not found or not readable)")
 
     # Try VERSION file
     print(f"  Checking VERSION file in: {operator_dir}")
@@ -142,7 +147,7 @@ def detect_platform_version(platform_name: str, checkout_dir: Path, operator_nam
         print(f"  ✓ Found version in VERSION file: {version}")
         return version
     else:
-        print(f"    (VERSION file not found)")
+        print("    (VERSION file not found)")
 
     # Try git describe (fallback)
     print(f"  Checking git describe in: {operator_dir}")
@@ -151,9 +156,9 @@ def detect_platform_version(platform_name: str, checkout_dir: Path, operator_nam
         print(f"  ✓ Found version from git describe: {version}")
         return version
     else:
-        print(f"    (git describe failed)")
+        print("    (git describe failed)")
 
-    print(f"  ⚠ Could not determine version, using 'unknown'")
+    print("  ⚠ Could not determine version, using 'unknown'")
     return "unknown"
 
 
@@ -208,11 +213,18 @@ def create_index_readme(output_dir: Path, platform: Platform, components: list[s
     """Create README.md index file for a platform-version directory"""
     readme_path = output_dir / 'README.md'
 
+    date_result = subprocess.run(
+        ['date', '+%Y-%m-%d'],
+        capture_output=True,
+        text=True,
+    )
+    date_str = date_result.stdout.strip()
+
     content = f"""# {platform.name.upper()} {platform.version} - Component Architectures
 
 Generated from: {platform.checkout_dir}
 Platform version from: {platform.operator_dir}
-Date: {subprocess.run(['date', '+%Y-%m-%d'], capture_output=True, text=True).stdout.strip()}
+Date: {date_str}
 
 ## Components
 
@@ -223,26 +235,33 @@ Date: {subprocess.run(['date', '+%Y-%m-%d'], capture_output=True, text=True).std
     for component in sorted(components):
         content += f"| {component} | [{component}.md](./{component}.md) |\n"
 
+    dist = platform.name
+    ver = platform.version
+    first_comp = components[0] if components else 'COMPONENT'
+
     content += f"""
 ## Summary
 
 - **Platform**: {platform.name.upper()}
-- **Version**: {platform.version}
+- **Version**: {ver}
 - **Components**: {len(components)}
 - **Source**: {platform.checkout_dir}
 
 ## Using These Files
 
-These are individual component architecture summaries. To create a platform-level view:
+These are individual component architecture summaries. \
+To create a platform-level view:
 
 ```bash
-/aggregate-platform-architecture --distribution={platform.name} --version={platform.version}
+/aggregate-platform-architecture \\
+  --distribution={dist} --version={ver}
 ```
 
 To generate diagrams from a component:
 
 ```bash
-/generate-architecture-diagrams --architecture=./{components[0] if components else 'COMPONENT'}.md
+/generate-architecture-diagrams \\
+  --architecture=./{first_comp}.md
 ```
 """
 
@@ -250,7 +269,12 @@ To generate diagrams from a component:
     print(f"  Created index: {readme_path}")
 
 
-def collect_architectures(checkouts_dir: Path, output_dir: Path, platform_filter: Optional[str] = None, version_filter: Optional[str] = None) -> dict:
+def collect_architectures(
+    checkouts_dir: Path,
+    output_dir: Path,
+    platform_filter: Optional[str] = None,
+    version_filter: Optional[str] = None,
+) -> dict:
     """
     Main collection function.
 
@@ -303,8 +327,14 @@ def collect_architectures(checkouts_dir: Path, output_dir: Path, platform_filter
         arch_files = find_architecture_files(platform)
 
         if not arch_files:
-            print(f"  ⚠️  No GENERATED_ARCHITECTURE.md files found for {platform.name.upper()}")
-            print(f"     Run /repo-to-architecture-summary on component repositories first")
+            print(
+                f"  No GENERATED_ARCHITECTURE.md files"
+                f" found for {platform.name.upper()}"
+            )
+            print(
+                "     Run /repo-to-architecture-summary"
+                " on component repositories first"
+            )
             continue
 
         print(f"  Found {len(arch_files)} component(s)")
@@ -365,23 +395,36 @@ def print_summary(summary: dict, checkouts_dir: Path, output_dir: Path):
         print("\nDirectory structure created:")
         for platform_info in summary['platforms']:
             print(f"  - {platform_info['output_dir']}/")
-            print(f"      README.md")
+            print("      README.md")
             for component in sorted(platform_info['components']):
                 print(f"      {component}.md")
 
         print("\nNext steps:")
         print(f"  1. Review collected architectures in {output_dir}/")
         for platform_info in summary['platforms']:
-            print(f"  2. Generate platform-level view: "
-                  f"/aggregate-platform-architecture --distribution={platform_info['name']} "
-                  f"--version={platform_info['version']}")
+            pname = platform_info['name']
+            pver = platform_info['version']
+            print(
+                f"  2. Generate platform-level view: "
+                f"/aggregate-platform-architecture"
+                f" --distribution={pname}"
+                f" --version={pver}"
+            )
             break  # Just show one example
         for platform_info in summary['platforms']:
             if platform_info['components']:
-                first_component = platform_info['components'][0]
-                print(f"  3. Generate diagrams: "
-                      f"/generate-architecture-diagrams "
-                      f"--architecture={output_dir}/{platform_info['name']}-{platform_info['version']}/{first_component}.md")
+                first_comp = platform_info['components'][0]
+                pname = platform_info['name']
+                pver = platform_info['version']
+                arch_path = (
+                    f"{output_dir}/{pname}-{pver}"
+                    f"/{first_comp}.md"
+                )
+                print(
+                    f"  3. Generate diagrams: "
+                    f"/generate-architecture-diagrams"
+                    f" --architecture={arch_path}"
+                )
                 break
     else:
         print("\n⚠️  No platforms processed. See warnings above.")
@@ -389,7 +432,10 @@ def print_summary(summary: dict, checkouts_dir: Path, output_dir: Path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Collect and organize component architecture files by platform and version'
+        description=(
+            'Collect and organize component architecture'
+            ' files by platform and version'
+        )
     )
     parser.add_argument(
         '--checkouts-dir',
