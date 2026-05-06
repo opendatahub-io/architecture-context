@@ -72,7 +72,7 @@ var portsCmd = &cobra.Command{
 
 		for _, k := range keys {
 			doc := data.Components[k]
-			if len(doc.Services) == 0 && len(doc.Endpoints) == 0 && len(doc.GRPCServices) == 0 {
+			if len(doc.Services) == 0 && len(doc.Endpoints) == 0 && len(doc.GRPCServices) == 0 && len(doc.Egresses) == 0 {
 				continue
 			}
 			printComponentPorts(k, doc)
@@ -119,6 +119,21 @@ func printComponentPorts(name string, doc *types.ComponentDoc) {
 		fmt.Fprintf(tw, "  %s\t%s\t%s\n", p.Port, p.Protocol, p.Source)
 	}
 	tw.Flush()
+
+	if len(doc.Egresses) > 0 {
+		fmt.Println("  egress:")
+		tw2 := output.NewTabWriter(os.Stdout)
+		seenEgress := make(map[string]bool)
+		for _, eg := range doc.Egresses {
+			key := eg.Port + "/" + eg.Protocol
+			if seenEgress[key] {
+				continue
+			}
+			seenEgress[key] = true
+			fmt.Fprintf(tw2, "    %s\t%s\t%s\n", eg.Port, eg.Protocol, eg.Purpose)
+		}
+		tw2.Flush()
+	}
 }
 
 func init() {

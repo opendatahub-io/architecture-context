@@ -6,6 +6,7 @@ type ComponentDoc struct {
 	Metadata map[string]string `json:"metadata,omitempty"`
 
 	Repository string `json:"repository,omitempty"`
+	Branch     string `json:"branch,omitempty"`
 	Version    string `json:"version,omitempty"`
 	Languages  string `json:"languages,omitempty"`
 	DeployType string `json:"deploy_type,omitempty"`
