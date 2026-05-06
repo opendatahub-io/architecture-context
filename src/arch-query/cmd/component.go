@@ -27,16 +27,6 @@ var componentCmd = &cobra.Command{
 			version = loader.DefaultVersion(versions)
 		}
 
-		if outputFormat == OutputRaw {
-			path := version + "/" + name + ".md"
-			raw, err := fs.ReadFile(archFS, path)
-			if err != nil {
-				return fmt.Errorf("reading %s: %w", path, err)
-			}
-			fmt.Print(string(raw))
-			return nil
-		}
-
 		data, err := loader.LoadVersion(archFS, overlayFS, version)
 		if err != nil {
 			return fmt.Errorf("loading version %s: %w", version, err)
@@ -56,6 +46,16 @@ var componentCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Component %q not found in %s.\n", name, version)
 			fmt.Fprintf(os.Stderr, "Use 'arch-query search %s' to find similar components.\n", name)
 			os.Exit(1)
+		}
+
+		if outputFormat == OutputRaw {
+			path := version + "/" + doc.FileName
+			raw, err := fs.ReadFile(archFS, path)
+			if err != nil {
+				return fmt.Errorf("reading %s: %w", path, err)
+			}
+			fmt.Print(string(raw))
+			return nil
 		}
 
 		if outputFormat == OutputJSON {

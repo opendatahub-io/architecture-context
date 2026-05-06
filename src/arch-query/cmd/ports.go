@@ -94,12 +94,16 @@ func collectPorts(doc *types.ComponentDoc) []portEntry {
 		ports = append(ports, portEntry{svc.Port, svc.Protocol, svc.Name})
 	}
 	for _, ep := range doc.Endpoints {
-		key := ep.Port + "/HTTP"
+		proto := ep.Protocol
+		if proto == "" {
+			proto = "HTTP"
+		}
+		key := ep.Port + "/" + proto
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
-		ports = append(ports, portEntry{ep.Port, "HTTP", ep.Purpose})
+		ports = append(ports, portEntry{ep.Port, proto, ep.Purpose})
 	}
 	for _, g := range doc.GRPCServices {
 		key := g.Port + "/gRPC"
@@ -108,6 +112,14 @@ func collectPorts(doc *types.ComponentDoc) []portEntry {
 		}
 		seen[key] = true
 		ports = append(ports, portEntry{g.Port, "gRPC", g.Service})
+	}
+	for _, eg := range doc.Egresses {
+		key := eg.Port + "/" + eg.Protocol + "/egress"
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		ports = append(ports, portEntry{eg.Port, eg.Protocol, eg.Purpose})
 	}
 	return ports
 }
