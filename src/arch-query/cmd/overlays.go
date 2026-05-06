@@ -30,6 +30,9 @@ var overlaysCmd = &cobra.Command{
 		}
 
 		if len(data.Overlays) == 0 {
+			if outputFormat == OutputJSON {
+				return output.JSON(os.Stdout, []*types.OverlayDoc{})
+			}
 			fmt.Println("No overlays found.")
 			return nil
 		}

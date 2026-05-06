@@ -35,6 +35,9 @@ var crdsCmd = &cobra.Command{
 			for k, doc := range data.Components {
 				if strings.EqualFold(k, name) {
 					if len(doc.CRDs) == 0 {
+						if outputFormat == OutputJSON {
+							return output.JSON(os.Stdout, []any{})
+						}
 						fmt.Printf("%s has no CRDs.\n", k)
 						return nil
 					}

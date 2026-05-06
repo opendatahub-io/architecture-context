@@ -100,7 +100,7 @@ $ arch-query list --version rhoai-3.3
 
 Show a full fact sheet for a component: metadata, CRDs, services, ingress, egress, HTTP endpoints, and dependencies. Use `--output json` for machine-readable output or `--output raw` for the unprocessed markdown source.
 
-```
+```text
 $ arch-query component odh-dashboard
 $ arch-query component odh-dashboard -o json
 $ arch-query component odh-dashboard -o raw

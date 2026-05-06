@@ -57,6 +57,9 @@ Examples:
 		}
 
 		if len(results) == 0 {
+			if outputFormat == OutputJSON {
+				return output.JSON(os.Stdout, map[string][]grepHit{})
+			}
 			fmt.Fprintf(os.Stderr, "No references to %q found in %s.\n", term, version)
 			return nil
 		}

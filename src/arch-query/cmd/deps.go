@@ -55,14 +55,19 @@ var depsCmd = &cobra.Command{
 			if strings.EqualFold(k, docKey) {
 				continue
 			}
+			found := false
 			for _, d := range other.ExternalDeps {
-				if containsIgnoreCase(d.Component, docKey) {
+				if strings.EqualFold(d.Component, docKey) {
 					reverse = append(reverse, reverseDep{k, d.Purpose})
+					found = true
 					break
 				}
 			}
+			if found {
+				continue
+			}
 			for _, d := range other.InternalDeps {
-				if containsIgnoreCase(d.Component, docKey) {
+				if strings.EqualFold(d.Component, docKey) {
 					reverse = append(reverse, reverseDep{k, d.Purpose})
 					break
 				}
