@@ -1,9 +1,11 @@
 """Phase 4: Collect and organize architecture files using component-map.json."""
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
 
+from lib.build_info import get_full_build_info
 from lib.component_discovery import get_component_map_metadata, read_component_map
 
 
@@ -164,6 +166,26 @@ async def run_collect_architectures_phase(args) -> None:
                         f"    contracts/schemas/{comp_key}/"
                         f" ({len(schema_files)} schemas)"
                     )
+
+        # Generate build-info.json from RHOAI-Build-Config
+        checkouts_dirs = metadata.get("checkouts_dirs", [])
+        bi = None
+        for cdir in checkouts_dirs:
+            cpath = Path(cdir)
+            if not cpath.exists():
+                # Try resolving to local checkouts/ by using the dir name
+                cpath = Path("checkouts") / cpath.name
+            if cpath.exists():
+                bi = get_full_build_info(cpath)
+                if bi:
+                    break
+        if bi:
+            bi_path = output_dir / "build-info.json"
+            bi_path.write_text(json.dumps(bi, indent=2) + "\n")
+            print(
+                f"    build-info.json"
+                f" ({len(bi['images'])} images)"
+            )
 
         # Create index
         _create_index_readme(

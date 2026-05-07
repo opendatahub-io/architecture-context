@@ -135,6 +135,8 @@ var excludedFiles = map[string]bool{
 	"PLATFORM.md":           true,
 	"README.md":             true,
 	"RHOAI-Build-Config.md": true,
+	"build-info.json":       true,
+	"component-map.json":    true,
 }
 
 func isExcludedFile(name string) bool {

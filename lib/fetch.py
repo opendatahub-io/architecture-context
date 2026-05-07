@@ -186,7 +186,10 @@ async def _ensure_arch_analyzer() -> str:
         )
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
-            raise RuntimeError(f"Failed to clone architecture-analyzer: {stderr.decode()}")
+            raise RuntimeError(
+                "Failed to clone architecture-analyzer:"
+                f" {stderr.decode()}"
+            )
         print("Clone successful")
     else:
         print(f"Using existing clone at {clone_dir}")

@@ -243,6 +243,16 @@ Examples:
 			"arch_components":    archComponents,
 		}
 
+		if data.BuildInfo != nil {
+			summary["product_version"] = data.BuildInfo.ProductVersion
+			summary["supported_ocp_versions"] = data.BuildInfo.SupportedOCPVersions
+			summary["supported_architectures"] = data.BuildInfo.SupportedArchitectures
+			summary["min_kube_version"] = data.BuildInfo.MinKubeVersion
+			summary["operator_features"] = data.BuildInfo.OperatorFeatures
+			summary["image_count"] = len(data.BuildInfo.Images)
+			summary["images"] = data.BuildInfo.Images
+		}
+
 		return output.JSON(os.Stdout, summary)
 	},
 }

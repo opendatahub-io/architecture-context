@@ -44,11 +44,16 @@ async def run_all_phases(args) -> None:
 
     # Determine target version:
     # explicit --version > extracted from --branch > auto-detect
+    # Skip extraction when the platform name already contains the version
+    # (e.g., platform="rhoai-2.25" with branch="rhoai-2.25" would produce
+    # a doubled directory like "rhoai-2.25-2.25")
     target_version = getattr(args, 'version', None)
     if not target_version and args.platform.startswith("rhoai") and branch:
         version_match = re.search(r'rhoai-([0-9][0-9a-zA-Z._-]*)', branch)
         if version_match:
-            target_version = version_match.group(1)
+            extracted = version_match.group(1)
+            if not args.platform.endswith(f"-{extracted}"):
+                target_version = extracted
 
     print("\n" + "=" * 80)
     print("RUNNING ALL PHASES")
@@ -123,33 +128,45 @@ async def run_all_phases(args) -> None:
     await run_generate_architecture_phase(generate_arch_args)
 
     # Pre-create architecture directory structure before collect phase
-    # This ensures the directory exists even if collect hasn't run yet
+    # This ensures the directory exists even if collect hasn't run yet.
+    # When target_version is set, the collect dir is {platform}-{version}.
+    # Otherwise, discover already created architecture/{platform}/.
     if target_version:
         arch_dir = Path("architecture") / f"{args.platform}-{target_version}"
         arch_dir.mkdir(parents=True, exist_ok=True)
         print(f"\nPre-created architecture directory: {arch_dir}\n")
     else:
-        # For ODH or when no specific version,
-        # try to detect from operator Makefile
-        scripts_dir = (
-            Path(__file__).resolve().parent.parent.parent / "scripts"
-        )
-        sys.path.insert(0, str(scripts_dir))
-        from collect_architectures import get_version_from_makefile
-        operator_name = (
-            "opendatahub-operator"
-            if args.platform == "odh"
-            else "rhods-operator"
-        )
-        org_dir = resolve_org_dir(org, suffix=suffix, branch=branch)
-        operator_dir = Path("checkouts") / org_dir / operator_name
-        if operator_dir.exists():
-            makefile_path = operator_dir / "Makefile"
-            version = get_version_from_makefile(makefile_path)
-            if version:
-                arch_dir = Path("architecture") / f"{args.platform}-{version}"
-                arch_dir.mkdir(parents=True, exist_ok=True)
-                print(f"\nPre-created architecture directory: {arch_dir}\n")
+        # The discover phase creates architecture/{platform}/.
+        # For bare platforms (e.g., "rhoai", "odh") we try to detect the
+        # version from the operator Makefile so collect can copy files into
+        # a versioned directory.
+        arch_dir = Path("architecture") / args.platform
+        if not arch_dir.exists():
+            scripts_dir = (
+                Path(__file__).resolve().parent.parent.parent / "scripts"
+            )
+            sys.path.insert(0, str(scripts_dir))
+            from collect_architectures import get_version_from_makefile
+            operator_name = (
+                "opendatahub-operator"
+                if args.platform == "odh"
+                else "rhods-operator"
+            )
+            org_dir = resolve_org_dir(org, suffix=suffix, branch=branch)
+            operator_dir = Path("checkouts") / org_dir / operator_name
+            if operator_dir.exists():
+                makefile_path = operator_dir / "Makefile"
+                version = get_version_from_makefile(makefile_path)
+                if version:
+                    arch_dir = (
+                        Path("architecture")
+                        / f"{args.platform}-{version}"
+                    )
+                    arch_dir.mkdir(parents=True, exist_ok=True)
+                    print(
+                        f"\nPre-created architecture directory:"
+                        f" {arch_dir}\n"
+                    )
 
     # Phase 4: Collect architectures into organized structure
     # Filter to specific version if branch was provided

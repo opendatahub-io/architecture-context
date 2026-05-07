@@ -153,6 +153,25 @@ type PlatformDoc struct {
 	Components []PlatformComponent `json:"components,omitempty"`
 }
 
+type ContainerImage struct {
+	Name          string `json:"name"`
+	Repository    string `json:"repository"`
+	ProductionRef string `json:"production_ref,omitempty"`
+	StagingRef    string `json:"staging_ref,omitempty"`
+	SourceRepo    string `json:"source_repo,omitempty"`
+	SourceCommit  string `json:"source_commit,omitempty"`
+	Category      string `json:"category"`
+}
+
+type BuildInfo struct {
+	ProductVersion         string            `json:"product_version"`
+	SupportedOCPVersions   []string          `json:"supported_ocp_versions,omitempty"`
+	SupportedArchitectures []string          `json:"supported_architectures,omitempty"`
+	MinKubeVersion         string            `json:"min_kube_version,omitempty"`
+	OperatorFeatures       map[string]string `json:"operator_features,omitempty"`
+	Images                 []ContainerImage  `json:"images,omitempty"`
+}
+
 type OverlayDoc struct {
 	ID           string   `yaml:"id" json:"id"`
 	Title        string   `yaml:"title" json:"title"`
@@ -183,4 +202,5 @@ type VersionData struct {
 	Components map[string]*ComponentDoc `json:"components,omitempty"`
 	Platform   *PlatformDoc             `json:"platform,omitempty"`
 	Overlays   []*OverlayDoc            `json:"overlays,omitempty"`
+	BuildInfo  *BuildInfo               `json:"build_info,omitempty"`
 }

@@ -1,5 +1,6 @@
 """Build and deployment metadata extraction from RHOAI-Build-Config."""
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -176,6 +177,158 @@ def format_build_info_context(build_info: BuildInfo) -> str:
         for repo, count in sorted(repo_counts.items()):
             lines.append(f"  {repo}: {count} image(s)")
     return "\n".join(lines)
+
+
+def get_full_build_info(checkouts_dir: Path) -> Optional[dict]:
+    """
+    Extract complete build and image inventory from RHOAI-Build-Config.
+
+    Parses all bundle source files, correlates image data across them,
+    and returns a JSON-serializable dict with the full image inventory.
+
+    Returns None when the bundle/ directory doesn't exist (e.g. next branch).
+    """
+    build_config_dir = checkouts_dir / "RHOAI-Build-Config"
+    if not build_config_dir.exists():
+        return None
+
+    bundle_dir = build_config_dir / "bundle"
+    if not bundle_dir.exists():
+        return None
+
+    csv_path = bundle_dir / "manifests" / "rhods-operator.clusterserviceversion.yaml"
+    if not csv_path.exists():
+        return None
+
+    # --- Reuse existing parsers for metadata ---
+    basic = get_build_info(checkouts_dir)
+    ocp_versions = get_supported_ocp_versions(checkouts_dir)
+
+    product_version = basic.product_version if basic else ""
+    supported_architectures = basic.supported_architectures if basic else []
+    min_kube_version = basic.min_kube_version if basic else ""
+    operator_features = basic.operator_features if basic else {}
+
+    # --- Parse bundle_build_args.map for source repos + commits ---
+    build_args: Dict[str, str] = {}
+    args_path = bundle_dir / "bundle_build_args.map"
+    if args_path.exists():
+        for line in args_path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            build_args[key.strip()] = value.strip()
+
+    # --- Parse bundle-patch.yaml for staging (quay.io) refs ---
+    staging_refs: Dict[str, str] = {}
+    bundle_patch_path = bundle_dir / "bundle-patch.yaml"
+    if bundle_patch_path.exists():
+        try:
+            data = yaml.safe_load(bundle_patch_path.read_text())
+            for img in data.get("patch", {}).get("relatedImages", []):
+                name = img.get("name", "")
+                value = img.get("value", "")
+                if name and value:
+                    staging_refs[name] = value
+        except Exception:
+            pass
+
+    # --- Parse additional-images-patch.yaml to identify infrastructure images ---
+    infrastructure_names: set = set()
+    additional_path = bundle_dir / "additional-images-patch.yaml"
+    if additional_path.exists():
+        try:
+            data = yaml.safe_load(additional_path.read_text())
+            for img in data.get("additionalImages", []):
+                name = img.get("name", "")
+                if name:
+                    infrastructure_names.add(name)
+        except Exception:
+            pass
+
+    # --- Parse CSV for production (registry.redhat.io) RELATED_IMAGE refs ---
+    csv_images: List[dict] = []
+    try:
+        csv_data = yaml.safe_load(csv_path.read_text())
+        containers = (
+            csv_data.get("spec", {})
+            .get("install", {})
+            .get("spec", {})
+            .get("deployments", [])
+        )
+        for deployment in containers:
+            for container in (
+                deployment.get("spec", {})
+                .get("template", {})
+                .get("spec", {})
+                .get("containers", [])
+            ):
+                for env in container.get("env", []):
+                    name = env.get("name", "")
+                    value = env.get("value", "")
+                    if name.startswith("RELATED_IMAGE_") and value:
+                        csv_images.append({"name": name, "production_ref": value})
+    except Exception:
+        pass
+
+    # --- Correlate across files ---
+    images = []
+    seen_names: set = set()
+
+    for entry in csv_images:
+        name = entry["name"]
+        if name in seen_names:
+            continue
+        seen_names.add(name)
+
+        production_ref = entry["production_ref"]
+
+        # Extract repository from production ref
+        # e.g. "registry.redhat.io/rhoai/img@sha256:..."
+        repository = ""
+        ref_match = re.match(r'^[^/]+/(.+?)[@:]', production_ref)
+        if ref_match:
+            repository = ref_match.group(1)
+
+        # Match staging ref by RELATED_IMAGE name
+        staging_ref = staging_refs.get(name, "")
+
+        # Derive build-args key stem: RELATED_IMAGE_ODH_DASHBOARD_IMAGE -> ODH_DASHBOARD
+        stem = name
+        if stem.startswith("RELATED_IMAGE_"):
+            stem = stem[len("RELATED_IMAGE_"):]
+        if stem.endswith("_IMAGE"):
+            stem = stem[:-len("_IMAGE")]
+
+        source_repo = build_args.get(f"{stem}_GIT_URL", "")
+        source_commit = build_args.get(f"{stem}_GIT_COMMIT", "")
+
+        category = "infrastructure" if name in infrastructure_names else "component"
+
+        image_entry = {
+            "name": name,
+            "repository": repository,
+            "production_ref": production_ref,
+            "category": category,
+        }
+        if staging_ref:
+            image_entry["staging_ref"] = staging_ref
+        if source_repo:
+            image_entry["source_repo"] = source_repo
+        if source_commit:
+            image_entry["source_commit"] = source_commit
+
+        images.append(image_entry)
+
+    return {
+        "product_version": product_version,
+        "supported_ocp_versions": ocp_versions,
+        "supported_architectures": supported_architectures,
+        "min_kube_version": min_kube_version,
+        "operator_features": operator_features,
+        "images": images,
+    }
 
 
 def get_supported_ocp_versions(checkouts_dir: Path) -> List[str]:

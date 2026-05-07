@@ -56,6 +56,20 @@ Examples:
 			}
 		}
 
+		// Search build-info images
+		if data.BuildInfo != nil {
+			var imageHits []grepHit
+			for _, img := range data.BuildInfo.Images {
+				if matchAny(term, img.Name, img.Repository, img.ProductionRef, img.StagingRef, img.SourceRepo, img.SourceCommit) {
+					imageHits = append(imageHits, grepHit{"image", fmt.Sprintf("%s (%s) %s", img.Name, img.Category, img.Repository)})
+				}
+			}
+			if len(imageHits) > 0 {
+				results["[build-info]"] = imageHits
+				keys = append(keys, "[build-info]")
+			}
+		}
+
 		if len(results) == 0 {
 			if outputFormat == OutputJSON {
 				return output.JSON(os.Stdout, map[string][]grepHit{})

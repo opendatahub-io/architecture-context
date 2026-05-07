@@ -1,6 +1,7 @@
 package loader
 
 import (
+	"encoding/json"
 	"io/fs"
 	"strings"
 
@@ -71,6 +72,8 @@ func LoadVersion(fsys fs.FS, overlayFS fs.FS, version string) (*types.VersionDat
 		overlays, _ = overlay.LoadOverlays(overlayFS)
 	}
 
+	buildInfo := loadBuildInfo(fsys, resolved)
+
 	data := &types.VersionData{
 		Version: types.VersionInfo{
 			Name:           version,
@@ -80,9 +83,23 @@ func LoadVersion(fsys fs.FS, overlayFS fs.FS, version string) (*types.VersionDat
 		Components: components,
 		Platform:   platform,
 		Overlays:   overlays,
+		BuildInfo:  buildInfo,
 	}
 
 	return data, nil
+}
+
+func loadBuildInfo(fsys fs.FS, versionDir string) *types.BuildInfo {
+	path := versionDir + "/build-info.json"
+	raw, err := fs.ReadFile(fsys, path)
+	if err != nil {
+		return nil
+	}
+	var bi types.BuildInfo
+	if err := json.Unmarshal(raw, &bi); err != nil {
+		return nil
+	}
+	return &bi
 }
 
 // mergeJSON supplements a markdown-parsed doc with arch-analyzer JSON data.

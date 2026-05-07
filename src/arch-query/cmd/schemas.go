@@ -128,7 +128,7 @@ Examples:
 				if err := json.Unmarshal(data, &pretty); err == nil {
 					enc := json.NewEncoder(os.Stdout)
 					enc.SetIndent("", "  ")
-					enc.Encode(pretty)
+					_ = enc.Encode(pretty)
 				} else {
 					os.Stdout.Write(data)
 				}
