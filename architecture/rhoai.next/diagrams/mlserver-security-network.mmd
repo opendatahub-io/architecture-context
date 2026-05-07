@@ -3,65 +3,74 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph PlatformIngress["PLATFORM INGRESS (KServe-Managed)"]
-        KServeIngress["KServe InferenceService<br/>Istio Gateway / Gateway API<br/>443/TCP HTTPS<br/>TLS Termination<br/>AuthN: kube-rbac-proxy / oauth-proxy"]
+    subgraph Ingress["INGRESS (KServe-Managed, TLS Terminated)"]
+        Gateway["KServe Ingress<br/>Istio Gateway / Gateway API<br/>443/TCP → 8080/8081<br/>TLS Termination<br/>AuthN: kube-rbac-proxy / oauth-proxy"]
     end
 
-    subgraph PodNetwork["POD NETWORK (MLServer Container - Plaintext)"]
+    subgraph Pod["POD NETWORK (KServe InferenceService Pod - Plaintext)"]
         direction TB
 
-        RESTServer["REST Server (FastAPI/Uvicorn)<br/>8080/TCP HTTP<br/>Encryption: NONE<br/>Auth: NONE<br/>V2 Inference Protocol"]
+        subgraph Servers["Listening Services"]
+            REST["REST Server<br/>8080/TCP HTTP (plaintext)<br/>FastAPI/Uvicorn<br/>No Auth"]
+            gRPC["gRPC Server<br/>8081/TCP gRPC (plaintext)<br/>add_insecure_port()<br/>No Auth"]
+            Metrics["Metrics Server<br/>8082/TCP HTTP (plaintext)<br/>Prometheus format<br/>No Auth"]
+        end
 
-        GRPCServer["gRPC Server (grpcio)<br/>8081/TCP gRPC<br/>Encryption: NONE (insecure_port)<br/>Auth: NONE<br/>V2 Inference Protocol"]
+        subgraph SecurityControls["Security Controls (Application-Level)"]
+            TrustedRT["Trusted Runtimes Allowlist<br/>/etc/mlserver/trusted-runtimes.json<br/>PRODUCTION mode<br/>Blocks untrusted implementations"]
+            CORSBlock["CORS Validation<br/>Wildcards blocked in production<br/>Regex origins blocked"]
+            EnvBlock["Environment Injection Block<br/>environment_tarball rejected<br/>environment_path rejected"]
+        end
 
-        MetricsServer["Metrics Server<br/>8082/TCP HTTP<br/>Encryption: NONE<br/>Auth: NONE<br/>/metrics endpoint"]
+        subgraph ModelLayer["Model Layer"]
+            DataPlane["DataPlane Handler"]
+            Models["ML Model Runtimes<br/>sklearn, xgboost, lgbm, onnx"]
+            Storage["/mnt/models<br/>Read-only Volume Mount<br/>PVC or S3 (via KServe)"]
+        end
 
-        ModelAgent["KServe Model Agent (sidecar)<br/>→ 8080/TCP HTTP<br/>Model load/unload lifecycle"]
-
-        TrustedRuntimes["Trusted Runtimes Allowlist<br/>/etc/mlserver/trusted-runtimes.json<br/>PRODUCTION mode enforcement"]
+        subgraph Workers["Parallel Workers (Optional)"]
+            IPC["multiprocessing.Queue<br/>Pickle IPC<br/>Pod-internal only"]
+        end
     end
 
-    subgraph Egress["EGRESS (Outbound)"]
-        KafkaBrokers["Kafka Brokers<br/>9092/TCP<br/>Protocol: TCP<br/>Encryption: None (configurable)<br/>Auth: None"]
-        OTelCollector["OpenTelemetry Collector<br/>Configurable Port<br/>Protocol: gRPC<br/>Encryption: None (insecure=True)<br/>Auth: None"]
+    subgraph PlatformServices["PLATFORM SERVICES (Cluster-Internal)"]
+        KServeAgent["KServe Model Agent<br/>(sidecar in same pod)"]
+        Prometheus["Prometheus<br/>Metrics Scraping"]
+        OTELCollector["OpenTelemetry Collector<br/>gRPC (insecure=True)"]
     end
 
-    subgraph Volumes["FILESYSTEM / VOLUMES"]
-        ModelStorage["/mnt/models<br/>Model Artifacts<br/>PVC or S3-backed<br/>Read-only"]
-        SANamespace["/var/run/secrets/.../namespace<br/>ServiceAccount<br/>Read-only"]
-    end
-
-    subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>Scrapes /metrics<br/>8082/TCP HTTP"]
+    subgraph ExternalServices["EXTERNAL SERVICES (Optional)"]
+        Kafka["Kafka Brokers<br/>9092/TCP<br/>TCP (no encryption default)<br/>No Auth"]
     end
 
     %% Flows
-    Client -->|"HTTPS/443<br/>TLS<br/>Bearer/OAuth"| KServeIngress
-    KServeIngress -->|"HTTP/8080<br/>Plaintext<br/>Post-TLS-termination"| RESTServer
-    KServeIngress -->|"gRPC/8081<br/>Plaintext<br/>Post-TLS-termination"| GRPCServer
-    ModelAgent -->|"HTTP/8080<br/>Plaintext<br/>load/unload"| RESTServer
-    RESTServer -->|"gRPC<br/>insecure=True"| OTelCollector
-    GRPCServer -->|"gRPC<br/>insecure=True"| OTelCollector
-    RESTServer -.->|"TCP/9092"| KafkaBrokers
-    Prometheus -->|"HTTP/8082<br/>Plaintext"| MetricsServer
-    ModelStorage -.->|"Local FS<br/>Read-only"| RESTServer
-    SANamespace -.->|"Local FS<br/>Read-only"| RESTServer
-    TrustedRuntimes -.->|"Validates runtime<br/>implementations"| RESTServer
-    TrustedRuntimes -.->|"Validates runtime<br/>implementations"| GRPCServer
+    Client -->|"HTTPS/443<br/>TLS<br/>Bearer Token"| Gateway
+    Gateway -->|"HTTP/8080 (plaintext)<br/>No Auth<br/>(TLS terminated)"| REST
+    Gateway -->|"gRPC/8081 (plaintext)<br/>No Auth<br/>(TLS terminated)"| gRPC
+
+    REST --> DataPlane
+    gRPC --> DataPlane
+    DataPlane -->|validates| TrustedRT
+    DataPlane --> Models
+    Models -->|reads| Storage
+
+    KServeAgent -->|"HTTP/8080<br/>load/unload<br/>Pod-internal"| REST
+    Prometheus -->|"HTTP/8082<br/>GET /metrics<br/>Cluster-internal"| Metrics
+    REST -.->|"gRPC<br/>OTLP traces<br/>insecure=True"| OTELCollector
+    gRPC -.->|"gRPC<br/>OTLP traces<br/>insecure=True"| OTELCollector
+    REST <-.->|"TCP/9092<br/>No encryption<br/>Async inference"| Kafka
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef podnetwork fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef volumes fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef monitoring fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef pod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef security fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class Client external
-    class KServeIngress ingress
-    class RESTServer,GRPCServer,MetricsServer,ModelAgent podnetwork
-    class TrustedRuntimes security
-    class KafkaBrokers,OTelCollector egress
-    class ModelStorage,SANamespace volumes
-    class Prometheus monitoring
+    class Gateway ingress
+    class REST,gRPC,Metrics,DataPlane,Models,Storage,IPC pod
+    class TrustedRT,CORSBlock,EnvBlock security
+    class KServeAgent,Prometheus,OTELCollector platform
+    class Kafka externalservice

@@ -1,71 +1,80 @@
 workspace {
     model {
-        datascientist = person "Data Scientist / Developer" "Builds AI applications using Llama Stack APIs"
-        platformOp = person "Platform Operator" "Deploys and configures Llama Stack distributions"
+        developer = person "AI Developer" "Builds AI applications using Llama Stack APIs"
+        datascientist = person "Data Scientist" "Deploys and evaluates ML models"
+        operator = person "Platform Operator" "Configures and manages Llama Stack distributions"
 
         llamaStack = softwareSystem "Llama Stack" "Standardized API server for building and deploying generative AI applications with pluggable provider backends" {
-            server = container "Llama Stack Server" "HTTP API server exposing unified AI/ML APIs (inference, agents, safety, RAG, eval, tools)" "Python FastAPI/Uvicorn" "Service"
-            authMiddleware = container "Authentication Middleware" "Validates OAuth2 JWT tokens or delegates to custom auth endpoints" "ASGI Middleware"
-            accessControl = container "Access Control Engine" "Cedar-inspired ABAC policy evaluation (permit/forbid rules)" "Python Module"
-            quotaMiddleware = container "Quota Middleware" "Per-client rate limiting (1000/day auth, 100/day anon)" "ASGI Middleware"
-            distributionSystem = container "Distribution System" "Composes provider configurations into deployable stacks via YAML templates" "Python Module"
-            providerRegistry = container "Provider Registry" "Registry of inline (in-process) and remote (HTTP adapter) provider implementations" "Python Module"
-            cli = container "CLI (llama)" "Command-line interface for building, configuring, and running distributions" "Python CLI"
-            ui = container "Llama Stack UI" "Web-based log viewer and chat playground" "TypeScript Next.js"
+            server = container "Llama Stack Server" "HTTP API server exposing unified AI/ML APIs" "Python FastAPI/Uvicorn, Port 8321"
+            authMiddleware = container "Authentication Middleware" "OAuth2 JWT and Custom auth with Cedar-inspired ABAC" "ASGI Middleware"
+            distributionSystem = container "Distribution System" "Composes provider configurations into deployable stacks" "Python Framework"
+            providerRegistry = container "Provider Registry" "Registry of inline and remote provider implementations" "Python Module"
+            accessControl = container "Access Control Engine" "Cedar-inspired attribute-based access control for API resources" "Python Module"
+            cli = container "Llama CLI" "Command-line interface for building, configuring, and running distributions" "Python CLI"
+            ui = container "Llama Stack UI" "Web-based log viewer and playground for chat completions" "TypeScript Next.js"
         }
 
-        vllm = softwareSystem "vLLM" "High-performance LLM inference server (primary RHOAI backend)" "Internal RHOAI"
-        ollama = softwareSystem "Ollama" "Local LLM inference server" "External"
+        vllm = softwareSystem "vLLM" "LLM inference backend (OpenAI-compatible API)" "Internal RHOAI"
+        ollama = softwareSystem "Ollama" "Local LLM inference backend" "External"
+        openai = softwareSystem "OpenAI API" "Remote inference provider" "External Cloud"
+        anthropic = softwareSystem "Anthropic API" "Remote inference provider" "External Cloud"
+        bedrock = softwareSystem "AWS Bedrock" "Remote inference and safety provider" "External Cloud"
+        nvidia = softwareSystem "NVIDIA NIM" "Remote inference, eval, and post-training" "External Cloud"
+        huggingface = softwareSystem "HuggingFace Hub" "Dataset loading and model download" "External Cloud"
 
-        openai = softwareSystem "OpenAI API" "Cloud LLM inference provider" "External Cloud"
-        anthropic = softwareSystem "Anthropic API" "Cloud LLM inference provider" "External Cloud"
-        bedrock = softwareSystem "AWS Bedrock" "Cloud LLM inference and safety provider" "External Cloud"
-        nvidiaNim = softwareSystem "NVIDIA NIM" "Cloud inference, eval, and post-training" "External Cloud"
+        pgvector = softwareSystem "PostgreSQL/pgvector" "Vector storage for RAG" "Internal/External"
+        chromadb = softwareSystem "ChromaDB" "Vector storage for RAG" "Internal/External"
+        qdrant = softwareSystem "Qdrant" "Vector storage for RAG" "Internal/External"
+        redis = softwareSystem "Redis" "KV store backend" "Internal/External"
+        mongodb = softwareSystem "MongoDB" "KV store backend" "Internal/External"
+        sqlite = softwareSystem "SQLite" "Default persistence (registry, agents, traces)" "Embedded"
 
-        pgvector = softwareSystem "PostgreSQL/pgvector" "Vector database for RAG" "Internal"
-        chromadb = softwareSystem "ChromaDB" "Vector database for RAG" "External"
-        qdrant = softwareSystem "Qdrant" "Vector database for RAG" "External"
+        oidcProvider = softwareSystem "OIDC Provider" "JWT public key retrieval (Keycloak, etc.)" "Internal RHOAI"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing export" "Internal RHOAI"
+        braveSearch = softwareSystem "Brave Search" "Web search tool for agents" "External Cloud"
+        tavilySearch = softwareSystem "Tavily Search" "Web search tool for agents" "External Cloud"
+        wolframAlpha = softwareSystem "Wolfram Alpha" "Computation tool for agents" "External Cloud"
+        mcpServers = softwareSystem "MCP Servers" "External tool integration via Model Context Protocol" "External"
 
-        redis = softwareSystem "Redis" "KV store backend" "External"
-        mongodb = softwareSystem "MongoDB" "KV store backend" "External"
-        sqlite = softwareSystem "SQLite" "Default local persistence" "Internal"
+        # User relationships
+        developer -> llamaStack "Builds AI apps via REST API" "HTTPS/8321"
+        datascientist -> llamaStack "Deploys/evaluates models via API" "HTTPS/8321"
+        operator -> llamaStack "Configures distributions via CLI" "CLI"
 
-        oidcProvider = softwareSystem "OIDC Provider" "Identity provider (Keycloak, etc.) for JWT validation" "External"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing backend" "Internal"
-        hfHub = softwareSystem "HuggingFace Hub" "Model and dataset registry" "External"
-        braveSearch = softwareSystem "Brave Search" "Web search tool for agents" "External"
-
-        # User interactions
-        datascientist -> llamaStack "Sends inference, agent, and safety requests via REST API" "HTTPS/8321"
-        platformOp -> llamaStack "Configures distributions and deploys stacks" "CLI / YAML"
-        ui -> server "Provides chat playground and log viewing" "HTTP/8321"
-
-        # Server internal flows
-        server -> authMiddleware "Validates incoming requests"
+        # Internal container relationships
+        server -> authMiddleware "Authenticates requests"
         authMiddleware -> accessControl "Evaluates ABAC policies"
-        accessControl -> quotaMiddleware "Checks rate limits"
-        distributionSystem -> providerRegistry "Configures providers at startup"
-        cli -> server "Builds, configures, and launches server"
+        server -> distributionSystem "Routes to providers"
+        distributionSystem -> providerRegistry "Resolves providers"
+        ui -> server "REST API calls" "HTTPS/8321"
+        cli -> distributionSystem "Manages distributions"
 
-        # External dependencies
-        llamaStack -> vllm "LLM inference requests" "HTTP/HTTPS 8000/TCP"
-        llamaStack -> ollama "Local LLM inference" "HTTP 11434/TCP"
+        # Inference provider relationships
+        llamaStack -> vllm "LLM inference (primary RHOAI backend)" "HTTP/HTTPS 8000"
+        llamaStack -> ollama "Local LLM inference" "HTTP/11434"
         llamaStack -> openai "Remote inference" "HTTPS/443"
         llamaStack -> anthropic "Remote inference" "HTTPS/443"
         llamaStack -> bedrock "Remote inference/safety" "HTTPS/443"
-        llamaStack -> nvidiaNim "Remote inference/eval" "HTTPS/443"
+        llamaStack -> nvidia "Remote inference/eval" "HTTPS/443"
 
+        # Data store relationships
         llamaStack -> pgvector "Vector storage for RAG" "PostgreSQL/5432"
         llamaStack -> chromadb "Vector storage for RAG" "HTTP/HTTPS"
         llamaStack -> qdrant "Vector storage for RAG" "HTTP/gRPC"
-        llamaStack -> redis "KV store backend" "Redis/6379"
-        llamaStack -> mongodb "KV store backend" "MongoDB/27017"
+        llamaStack -> redis "KV store" "Redis/6379"
+        llamaStack -> mongodb "KV store" "MongoDB/27017"
         llamaStack -> sqlite "Default persistence" "File I/O"
 
-        llamaStack -> oidcProvider "JWT public key retrieval" "HTTPS/443"
-        llamaStack -> otelCollector "Trace span export" "OTLP HTTP"
-        llamaStack -> hfHub "Model/dataset downloads" "HTTPS/443"
-        llamaStack -> braveSearch "Web search for agents" "HTTPS/443"
+        # Auth and observability
+        llamaStack -> oidcProvider "JWT validation (JWKS)" "HTTPS/443"
+        llamaStack -> otelCollector "Telemetry export" "HTTP OTLP"
+        llamaStack -> huggingface "Dataset/model downloads" "HTTPS/443"
+
+        # Tool relationships
+        llamaStack -> braveSearch "Web search tool" "HTTPS/443"
+        llamaStack -> tavilySearch "Web search tool" "HTTPS/443"
+        llamaStack -> wolframAlpha "Computation tool" "HTTPS/443"
+        llamaStack -> mcpServers "External tool integration" "HTTP/HTTPS SSE"
     }
 
     views {
@@ -80,13 +89,12 @@ workspace {
         }
 
         styles {
-            element "Person" {
-                shape person
-                background #08427b
+            element "Software System" {
+                background #438DD5
                 color #ffffff
             }
-            element "Software System" {
-                background #1168bd
+            element "Internal RHOAI" {
+                background #7ed321
                 color #ffffff
             }
             element "External" {
@@ -94,23 +102,25 @@ workspace {
                 color #ffffff
             }
             element "External Cloud" {
-                background #775599
+                background #e67e22
                 color #ffffff
             }
-            element "Internal RHOAI" {
-                background #7ed321
+            element "Internal/External" {
+                background #3498db
                 color #ffffff
             }
-            element "Internal" {
-                background #438dd5
+            element "Embedded" {
+                background #95a5a6
                 color #ffffff
+            }
+            element "Person" {
+                background #08427B
+                color #ffffff
+                shape person
             }
             element "Container" {
-                background #438dd5
+                background #438DD5
                 color #ffffff
-            }
-            element "Service" {
-                shape hexagon
             }
         }
     }

@@ -1,61 +1,82 @@
 sequenceDiagram
-    participant Admin as Platform Administrator
-    participant CLI as kubectl-odh<br/>(odh-cli binary)
-    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
-    participant DSC as DataScienceCluster<br/>(singleton CR)
-    participant DSCI as DSCInitialization<br/>(singleton CR)
-    participant OLM as OLM Resources<br/>(Subscriptions/CSVs)
+    participant Admin as Platform Admin
+    participant CLI as kubectl-odh<br/>(odh-cli)
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant DSC as DataScienceCluster<br/>Singleton CR
+    participant OLM as OLM<br/>Subscriptions/CSVs
     participant Workloads as Workload CRs<br/>(Notebooks, ISVCs, etc.)
     participant FS as Local Filesystem
-    participant GitHub as GitHub<br/>443/TCP HTTPS
+    participant GH as GitHub<br/>raw.githubusercontent.com<br/>443/TCP HTTPS
 
-    Note over Admin,GitHub: Flow 1: Lint / Upgrade Readiness Assessment
+    rect rgb(230, 245, 255)
+        Note over Admin,Workloads: Flow 1: Lint / Upgrade Readiness Assessment (37 checks)
+        Admin->>CLI: kubectl odh lint [--checks=...] [--json]
+        CLI->>K8s: GET DataScienceCluster (singleton)<br/>Auth: Bearer Token
+        K8s-->>CLI: DSC spec + status (version detection)
+        CLI->>K8s: GET DSCInitialization (singleton)<br/>Auth: Bearer Token
+        K8s-->>CLI: DSCI (namespace, ServiceMesh state)
+        CLI->>K8s: LIST Subscriptions, CSVs<br/>Auth: Bearer Token
+        K8s-->>CLI: OLM operator status (cert-manager, servicemesh)
+        CLI->>K8s: LIST PackageManifests<br/>Auth: Bearer Token
+        K8s-->>CLI: Catalog availability (Service Mesh v3)
+        CLI->>K8s: LIST Notebooks, InferenceServices,<br/>ServingRuntimes, DSPAs, RayClusters,<br/>PyTorchJobs, GuardrailsOrchestrators,<br/>LlamaStackDistributions, LLMInferenceServices<br/>Auth: Bearer Token
+        K8s-->>CLI: Workload resources (all namespaces)
+        CLI->>K8s: LIST ClusterQueues, LocalQueues<br/>Auth: Bearer Token
+        K8s-->>CLI: Kueue resources (data integrity check)
+        CLI->>K8s: GET ClusterVersion<br/>Auth: Bearer Token
+        K8s-->>CLI: OpenShift version
+        CLI-->>Admin: DiagnosticResult[]\n(conditions, impact levels, impacted objects)\nFormats: table | JSON | YAML
+    end
 
-    Admin->>CLI: kubectl odh lint [--checks=...]
-    CLI->>K8sAPI: GET DataScienceCluster<br/>Bearer Token
-    K8sAPI-->>CLI: DSC spec + status
-    CLI->>K8sAPI: GET DSCInitialization<br/>Bearer Token
-    K8sAPI-->>CLI: DSCI spec + status
-    CLI->>K8sAPI: LIST Subscriptions, CSVs<br/>Bearer Token
-    K8sAPI-->>CLI: OLM operator states
-    CLI->>K8sAPI: LIST Notebooks, InferenceServices,<br/>ServingRuntimes, DSPAs, RayClusters,<br/>PyTorchJobs, ClusterQueues, etc.<br/>Bearer Token
-    K8sAPI-->>CLI: Workload resources
-    Note over CLI: Execute 37 checks<br/>5 groups (dependency, service,<br/>platform, component, workload)<br/>Version-aware gating
-    CLI-->>Admin: DiagnosticResults<br/>(table/JSON/YAML)<br/>Impact: Prohibited > Blocking > Advisory
+    rect rgb(232, 245, 233)
+        Note over Admin,FS: Flow 2: Backup Workloads (Concurrent Pipeline)
+        Admin->>CLI: kubectl odh backup [--workload-type=...] [--namespace=...]
+        CLI->>K8s: LIST target workloads (Discovery stage)<br/>Auth: Bearer Token
+        K8s-->>CLI: Workload resources
+        par Dependency Resolution (parallel workers)
+            CLI->>K8s: GET ConfigMaps referenced by Notebooks<br/>Auth: Bearer Token
+            K8s-->>CLI: ConfigMap data
+            CLI->>K8s: GET Secrets referenced by Notebooks<br/>Auth: Bearer Token
+            K8s-->>CLI: Secret metadata
+            CLI->>K8s: GET PVCs referenced by Notebooks<br/>Auth: Bearer Token
+            K8s-->>CLI: PVC specs
+            CLI->>K8s: GET DSPA external dependencies<br/>(9 JQ paths: storage, DB, CA, custom)<br/>Auth: Bearer Token
+            K8s-->>CLI: DSPA dependency resources
+        end
+        CLI->>FS: Write YAML files (workloads + dependencies)
+        CLI-->>Admin: Backup complete (file paths)
+    end
 
-    Note over Admin,GitHub: Flow 2: Backup Workloads
+    rect rgb(255, 243, 224)
+        Note over Admin,K8s: Flow 3: Migration - Kueue to RHBOK (Two-Phase)
+        Admin->>CLI: kubectl odh migrate prepare kueue-to-rhbok
+        CLI->>K8s: GET ClusterQueues, LocalQueues, ConfigMaps<br/>Auth: Bearer Token
+        K8s-->>CLI: Current Kueue resources
+        CLI->>FS: Write backup YAML files
+        CLI-->>Admin: Prepare complete (step progress tree)
 
-    Admin->>CLI: kubectl odh backup [--namespace=...]
-    CLI->>K8sAPI: Discovery: LIST workloads<br/>Bearer Token
-    K8sAPI-->>CLI: Discovered resources
-    Note over CLI: Concurrent pipeline<br/>(Discovery → Resolver → Writer)
-    CLI->>K8sAPI: Resolve dependencies<br/>(ConfigMaps, Secrets, PVCs)<br/>Bearer Token
-    K8sAPI-->>CLI: Dependency resources
-    CLI->>FS: Write YAML files<br/>(organized by namespace/type)
-    CLI-->>Admin: Backup summary
+        Admin->>CLI: kubectl odh migrate run kueue-to-rhbok [--dry-run]
+        CLI->>K8s: CREATE Subscription (RHBOK operator)<br/>Auth: Bearer Token
+        K8s-->>CLI: Subscription created
+        CLI->>K8s: PATCH ConfigMaps (add reconciliation-prevention annotation)<br/>Auth: Bearer Token
+        K8s-->>CLI: ConfigMaps annotated
+        CLI->>K8s: PATCH DataScienceCluster (managementState)<br/>Auth: Bearer Token
+        K8s-->>CLI: DSC patched
+        CLI->>K8s: GET ClusterQueues, LocalQueues (verify preserved)<br/>Auth: Bearer Token
+        K8s-->>CLI: Resources verified
+        CLI-->>Admin: Migration complete (step progress tree)
+    end
 
-    Note over Admin,GitHub: Flow 3: Migration (Kueue → RHBOK)
-
-    Admin->>CLI: kubectl odh migrate prepare kueue-to-rhbok
-    CLI->>K8sAPI: GET ClusterQueues, LocalQueues,<br/>ConfigMaps<br/>Bearer Token
-    K8sAPI-->>CLI: Current resources
-    CLI->>FS: Write backup YAML files
-    CLI-->>Admin: Prepare complete
-
-    Admin->>CLI: kubectl odh migrate run kueue-to-rhbok
-    CLI->>K8sAPI: CREATE OLM Subscription (RHBOK)<br/>Bearer Token
-    K8sAPI-->>CLI: Subscription created
-    CLI->>K8sAPI: PATCH ConfigMaps<br/>(reconciliation annotation)<br/>Bearer Token
-    K8sAPI-->>CLI: ConfigMaps annotated
-    CLI->>K8sAPI: PATCH DataScienceCluster<br/>(managementState)<br/>Bearer Token
-    K8sAPI-->>CLI: DSC patched
-    CLI->>K8sAPI: Verify resources preserved<br/>Bearer Token
-    K8sAPI-->>CLI: Verification results
-    CLI-->>Admin: Migration result<br/>(step-by-step progress)
-
-    Note over Admin,GitHub: Flow 4: Dependency Manifest Refresh (optional)
-
-    Admin->>CLI: kubectl odh deps --refresh
-    CLI->>GitHub: GET odh-gitops/values.yaml<br/>HTTPS/443 TLS 1.2+<br/>No auth (public)
-    GitHub-->>CLI: Dependency manifest YAML
-    CLI-->>Admin: Dependency status table
+    rect rgb(243, 229, 245)
+        Note over Admin,GH: Flow 4: Dependency Check
+        Admin->>CLI: kubectl odh deps [--refresh]
+        opt --refresh flag
+            CLI->>GH: GET odh-gitops/values.yaml<br/>HTTPS/443, No Auth
+            GH-->>CLI: Dependency manifest YAML
+        end
+        CLI->>K8s: LIST Subscriptions, CSVs<br/>Auth: Bearer Token
+        K8s-->>CLI: Installed operators
+        CLI->>K8s: LIST CRDs<br/>Auth: Bearer Token
+        K8s-->>CLI: Available CRDs
+        CLI-->>Admin: Dependency status (installed/missing/version)
+    end

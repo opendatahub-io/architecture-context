@@ -1,31 +1,44 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and manages distributed ML training jobs via kubectl or notebooks"
+        dataScientist = person "Data Scientist" "Creates and manages distributed ML training jobs via kubectl or ODH Dashboard"
 
-        trainingOperator = softwareSystem "Kubeflow Training Operator" "Manages lifecycle of distributed training jobs across 6 ML frameworks (PyTorch, TF, MPI, JAX, XGBoost, Paddle)" {
-            controller = container "Training Operator Controller" "Reconciles 6 training CRDs, creates Pods/Services/RBAC per framework" "Go Operator (controller-runtime)"
-            webhookServer = container "Webhook Server" "Validates training job specs at admission time" "HTTPS 9443, TLS (cert-controller)"
-            certController = container "cert-controller" "Generates and rotates webhook TLS certificates" "Go Library (open-policy-agent/cert-controller)"
-            kubectlDelivery = container "kubectl-delivery" "Init container delivering kubectl binary to MPI launcher pods" "Container Image"
+        trainingOperator = softwareSystem "Kubeflow Training Operator" "Kubernetes operator managing distributed training jobs across 6 ML frameworks (PyTorch, TensorFlow, MPI, JAX, XGBoost, PaddlePaddle)" {
+            controller = container "Training Operator Controller" "Reconciles 6 CRD types, creates Pods/Services/RBAC per framework, manages job lifecycle" "Go Operator (controller-runtime)"
+            webhookServer = container "Webhook Server" "Validates PyTorchJob, TFJob, JAXJob, XGBoostJob, PaddleJob at admission time" "HTTPS 9443/TCP"
+            certController = container "cert-controller" "Generates and rotates webhook TLS certificates" "Embedded library (open-policy-agent/cert-controller)"
         }
 
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform" "External"
-        volcano = softwareSystem "Volcano" "Gang scheduler for coordinated pod scheduling" "External Optional"
-        schedulerPlugins = softwareSystem "scheduler-plugins" "Alternative gang scheduler via PodGroup CRD" "External Optional"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
-        rhodsOperator = softwareSystem "RHODS/ODH Operator" "Platform operator that deploys training-operator" "Internal ODH"
+        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform providing API server, scheduler, and DNS" "External" {
+            apiServer = container "API Server" "REST API for cluster resource management" "HTTPS 443/TCP"
+            dns = container "CoreDNS" "Cluster DNS for headless service resolution" "UDP 53"
+            scheduler = container "Default Scheduler" "Pod scheduling" "Internal"
+        }
 
-        dataScientist -> trainingOperator "Creates PyTorchJob/TFJob/MPIJob/JAXJob/XGBoostJob/PaddleJob via kubectl" "HTTPS/443"
-        trainingOperator -> kubernetes "CRUD for Pods, Services, ConfigMaps, RBAC resources" "HTTPS/443"
-        trainingOperator -> volcano "Creates PodGroup CRs for gang scheduling" "HTTPS/443"
-        trainingOperator -> schedulerPlugins "Creates PodGroup CRs for alternative gang scheduling" "HTTPS/443"
-        prometheus -> trainingOperator "Scrapes operator metrics via PodMonitor" "HTTP/8080"
-        rhodsOperator -> trainingOperator "Deploys via Kustomize manifests (rhoai overlay)" "Kustomize"
-        kubernetes -> trainingOperator "Sends webhook validation requests" "HTTPS/9443"
+        volcano = softwareSystem "Volcano" "Optional gang scheduler for coordinated pod scheduling via PodGroup CRD" "External Optional"
+        schedulerPlugins = softwareSystem "scheduler-plugins" "Optional alternative gang scheduler via PodGroup CRD" "External Optional"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring via PodMonitor" "External Optional"
+        certManager = softwareSystem "cert-controller Library" "Webhook certificate generation and rotation" "External"
+        rhodsOperator = softwareSystem "rhods-operator / opendatahub-operator" "Platform operator that deploys training-operator via Kustomize manifests" "Internal RHOAI"
+        kueue = softwareSystem "Kueue" "Optional job queueing system (ManagedBy field integration)" "External Optional"
 
-        controller -> webhookServer "Runs webhook handlers within same process" ""
-        certController -> webhookServer "Provisions TLS certificate" ""
-        kubectlDelivery -> controller "Delivers kubectl binary to MPI launcher pods" "Init container volume"
+        # User interactions
+        dataScientist -> trainingOperator "Creates PyTorchJob/TFJob/MPIJob/JAXJob/XGBoostJob/PaddleJob" "kubectl / HTTPS 443"
+
+        # Operator interactions
+        trainingOperator -> kubernetes "CRD reconciliation, Pod/Service/ConfigMap/RBAC CRUD" "HTTPS/443, SA Token"
+        trainingOperator -> volcano "Creates PodGroup CRs for gang scheduling" "HTTPS/443, SA Token"
+        trainingOperator -> schedulerPlugins "Creates PodGroup CRs for gang scheduling" "HTTPS/443, SA Token"
+
+        # Monitoring
+        prometheus -> trainingOperator "Scrapes operator metrics (jobs created/deleted/succeeded/failed)" "HTTP/8080"
+
+        # Deployment
+        rhodsOperator -> trainingOperator "Deploys via manifests/rhoai Kustomize overlay" "Kustomize"
+
+        # Container-level interactions
+        controller -> apiServer "Watch CRDs, create Pods/Services/ConfigMaps" "HTTPS/443, TLS 1.2+, SA Token"
+        apiServer -> webhookServer "Admission validation requests" "HTTPS/9443, TLS (self-signed), API server client cert"
+        certController -> webhookServer "Provides TLS certificates" "Secret mount"
     }
 
     views {
@@ -45,21 +58,22 @@ workspace {
                 color #ffffff
             }
             element "External Optional" {
-                background #bbbbbb
-                color #ffffff
+                background #cccccc
+                color #333333
+                shape RoundedBox
             }
-            element "Internal ODH" {
+            element "Internal RHOAI" {
                 background #7ed321
-                color #ffffff
-            }
-            element "Person" {
-                shape person
-                background #4a90e2
                 color #ffffff
             }
             element "Software System" {
                 background #4a90e2
                 color #ffffff
+            }
+            element "Person" {
+                background #08427b
+                color #ffffff
+                shape Person
             }
             element "Container" {
                 background #438dd5

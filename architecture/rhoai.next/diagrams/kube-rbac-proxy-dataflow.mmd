@@ -1,41 +1,35 @@
 sequenceDiagram
-    participant Client as External Client<br/>(in-cluster service)
+    participant Client as External Client<br/>(In-Cluster Service)
     participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
     participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS
     participant Upstream as Upstream Application<br/>(localhost) HTTP
 
-    Note over Client, Upstream: Flow 1: Authenticated Request Proxying
-
-    Client->>Proxy: HTTPS :8443<br/>Auth: Bearer Token / Client Cert / OIDC JWT
-    Note right of Proxy: Path allow-list check<br/>(--ignore-paths bypass)
-
-    alt Bearer Token Authentication
+    rect rgb(230, 245, 255)
+        Note over Client,Upstream: Flow 1: Authenticated Request Proxying
+        Client->>Proxy: HTTPS Request (8443/TCP)<br/>Auth: Bearer Token / Client Cert / OIDC JWT
+        Note over Proxy: Path Filter: check --ignore-paths
+        Note over Proxy: AuthN: TokenReview / x509 / OIDC
         Proxy->>K8sAPI: POST /apis/authentication.k8s.io/v1/tokenreviews<br/>Auth: ServiceAccount Token
-        K8sAPI-->>Proxy: TokenReview Response<br/>(authenticated user info, 2min cache)
-    else OIDC JWT Authentication
-        Note right of Proxy: Validate JWT locally<br/>using cached JWKS keys
-    else x509 Client Certificate
-        Note right of Proxy: Validate client cert<br/>against --client-ca-file
+        K8sAPI-->>Proxy: TokenReview Response<br/>(user info, groups)
+        Note over Proxy: AuthZ: SubjectAccessReview
+        Proxy->>K8sAPI: POST /apis/authorization.k8s.io/v1/subjectaccessreviews<br/>Auth: ServiceAccount Token
+        K8sAPI-->>Proxy: SubjectAccessReview Response<br/>(allowed: true/false)
+        Note over Proxy: Inject auth headers<br/>(X-Remote-User, X-Remote-Group)
+        Proxy->>Upstream: Forward Request (localhost)<br/>HTTP/HTTPS/h2c
+        Upstream-->>Proxy: Response
+        Proxy-->>Client: HTTPS Response (8443/TCP)
     end
-
-    Proxy->>K8sAPI: POST /apis/authorization.k8s.io/v1/subjectaccessreviews<br/>Auth: ServiceAccount Token
-    K8sAPI-->>Proxy: SubjectAccessReview Response<br/>(allowed / denied)
-
-    alt Authorized
-        Note right of Proxy: Inject auth headers<br/>(X-Remote-User, X-Remote-Group, X-Remote-Extra-*)
-        Proxy->>Upstream: HTTP request (localhost)<br/>+ injected auth headers
-        Upstream-->>Proxy: HTTP response
-        Proxy-->>Client: HTTPS response :8443
-    else Denied
-        Proxy-->>Client: 403 Forbidden
-    end
-
-    Note over Client, Upstream: Flow 2: Prometheus Metrics Scraping
 
     participant Prom as Prometheus<br/>(openshift-monitoring)<br/>prometheus-k8s SA
 
-    Prom->>Proxy: GET /metrics HTTPS :8443<br/>Auth: Bearer Token (prometheus-k8s SA)
-    Note right of Proxy: Hardcoded authorizer:<br/>unconditional allow for<br/>system:serviceaccount:<br/>openshift-monitoring:prometheus-k8s
-    Proxy->>Upstream: GET /metrics (localhost HTTP)
-    Upstream-->>Proxy: Metrics response (Prometheus format)
-    Proxy-->>Prom: HTTPS response :8443
+    rect rgb(255, 245, 230)
+        Note over Prom,Upstream: Flow 2: Prometheus Metrics Scraping
+        Prom->>Proxy: GET /metrics (8443/TCP HTTPS)<br/>Auth: Bearer Token (prometheus-k8s SA)
+        Note over Proxy: AuthN: TokenReview
+        Proxy->>K8sAPI: POST tokenreviews<br/>Auth: ServiceAccount Token
+        K8sAPI-->>Proxy: TokenReview Response<br/>(system:serviceaccount:openshift-monitoring:prometheus-k8s)
+        Note over Proxy: Hardcoded Authorizer:<br/>ALLOW prometheus-k8s SA<br/>on GET /metrics
+        Proxy->>Upstream: GET /metrics (localhost)<br/>HTTP (no auth)
+        Upstream-->>Proxy: Metrics Response<br/>(Prometheus format)
+        Proxy-->>Prom: HTTPS Response (8443/TCP)
+    end

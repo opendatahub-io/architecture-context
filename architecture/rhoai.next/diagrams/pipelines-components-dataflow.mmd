@@ -3,77 +3,79 @@ sequenceDiagram
 
     participant User as Data Scientist
     participant KFP as KFP API Server
-    participant Argo as Argo Workflows
-    participant Init as odh-pipelines-components<br/>(Init Container)
-    participant DL as dataset_download<br/>Component
-    participant Train as train_model<br/>Component (LoRA/OSFT/SFT)
-    participant Eval as universal_llm_evaluator<br/>Component
-    participant Deploy as kubeflow_model_registry<br/>Component
-    participant S3 as AWS S3<br/>443/TCP HTTPS
+    participant InitC as Init Container<br/>(odh-pipelines-components)
+    participant SharedVol as Shared Volume<br/>(/config/managed-pipelines)
+    participant ArgoWF as Argo Workflow<br/>(Pipeline Runner)
     participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant K8s as Kubernetes API<br/>443/TCP HTTPS
-    participant TrainerPods as Training Worker Pods<br/>(GPU)
-    participant PVC as PVC Workspace<br/>(Filesystem)
+    participant S3 as AWS S3<br/>443/TCP HTTPS
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Trainer as Training Workers<br/>(GPU Pods)
+    participant PVC as PVC Workspace<br/>(ReadWriteMany)
     participant ModelReg as Model Registry<br/>8080/TCP HTTP
-    participant vLLM as vLLM<br/>(Local Inference)
+    participant LlamaStack as Llama Stack API<br/>HTTP/HTTPS
+    participant vLLM as vLLM<br/>(Local GPU)
 
-    rect rgb(230, 240, 255)
-        Note over Init,KFP: Flow 1: Managed Pipeline Staging (Platform Startup)
-        Init->>Init: generate_managed_pipelines.py<br/>Compiles pipeline.py → YAML
-        Init->>KFP: Copy YAMLs to /config/managed-pipelines<br/>(shared volume mount)
+    rect rgb(240, 248, 255)
+        Note over InitC,SharedVol: Flow 1: Managed Pipeline Staging (Platform Startup)
+        InitC->>InitC: generate_managed_pipelines.py<br/>Compile pipeline.py → YAML
+        InitC->>SharedVol: Copy compiled YAMLs<br/>+ managed-pipelines.json manifest
+        KFP->>SharedVol: Read managed pipeline YAMLs<br/>Serve to users
     end
 
-    rect rgb(230, 255, 230)
+    rect rgb(255, 248, 240)
         Note over User,ModelReg: Flow 2: Fine-Tuning Pipeline (LoRA/OSFT/SFT)
-        User->>KFP: Submit fine-tuning pipeline run
-        KFP->>Argo: Create Argo Workflow
+        User->>KFP: Submit fine-tuning pipeline
+        KFP->>ArgoWF: Create Argo Workflow
 
-        Argo->>DL: Step 1: Download Dataset
-        DL->>HF: GET dataset<br/>HTTPS/443, TLS 1.2+<br/>Auth: HF_TOKEN (optional)
-        HF-->>DL: Dataset files
-        DL->>S3: GET dataset (alternative)<br/>HTTPS/443, TLS 1.2+<br/>Auth: AWS IAM
-        S3-->>DL: Dataset files
-        DL->>PVC: Write to /data
+        ArgoWF->>HF: GET dataset (HF_TOKEN)<br/>HTTPS TLS 1.2+
+        HF-->>ArgoWF: Dataset files
+        ArgoWF->>S3: GET dataset (AWS IAM)<br/>HTTPS TLS 1.2+
+        S3-->>ArgoWF: Dataset files
+        ArgoWF->>PVC: Write preprocessed data
 
-        Argo->>Train: Step 2: Submit Training Job
-        Train->>K8s: POST TrainingJob CR<br/>HTTPS/443, TLS 1.2+<br/>Auth: ServiceAccount token
-        K8s->>TrainerPods: Schedule GPU worker pods
-        TrainerPods->>PVC: Read dataset, write checkpoints
-        TrainerPods-->>Train: Stream logs + completion status
+        ArgoWF->>K8sAPI: POST TrainingJob CR<br/>ServiceAccount token
+        K8sAPI->>Trainer: Schedule GPU worker pods
+        Trainer->>PVC: Read training data
+        Trainer->>Trainer: Train model (LoRA/OSFT/SFT)
+        Trainer->>PVC: Write model checkpoints
+        Trainer-->>ArgoWF: Training complete
 
-        Argo->>Eval: Step 3: Evaluate Model
-        Eval->>PVC: Load trained model
-        Eval->>vLLM: Local GPU inference
-        vLLM-->>Eval: Benchmark results (MMLU, GSM8K, etc.)
+        ArgoWF->>vLLM: Load model for evaluation
+        vLLM-->>ArgoWF: Evaluation metrics (MMLU, GSM8K, etc.)
 
-        Argo->>Deploy: Step 4: Register Model
-        Deploy->>ModelReg: POST model metadata<br/>HTTP/8080, plaintext<br/>Auth: None
-        ModelReg-->>Deploy: Model version ID
+        ArgoWF->>ModelReg: POST model metadata<br/>HTTP/8080 (plaintext, no auth)
+        ModelReg-->>ArgoWF: Model version registered
     end
 
-    rect rgb(255, 245, 230)
-        Note over User,S3: Flow 3: AutoRAG Optimization Pipeline
-        User->>KFP: Submit AutoRAG pipeline run
-        KFP->>Argo: Create Argo Workflow
+    rect rgb(240, 255, 240)
+        Note over User,LlamaStack: Flow 3: AutoRAG Optimization Pipeline
+        User->>KFP: Submit AutoRAG pipeline
+        KFP->>ArgoWF: Create Argo Workflow
 
-        Note right of Argo: Steps: test_data_loader →<br/>documents_discovery →<br/>text_extraction →<br/>search_space_preparation →<br/>rag_templates_optimization →<br/>leaderboard_evaluation
+        ArgoWF->>S3: LIST + GET documents<br/>AWS IAM, HTTPS TLS 1.2+
+        S3-->>ArgoWF: Documents (PDF, DOCX, etc.)
+        ArgoWF->>ArgoWF: Docling text extraction<br/>(local processing)
 
-        Argo->>S3: Load test data + discover documents<br/>HTTPS/443, AWS IAM
-        S3-->>Argo: JSON test data + document list
-        Argo->>S3: Download documents for extraction<br/>HTTPS/443, AWS IAM
-        S3-->>Argo: Document files (PDF, DOCX, etc.)
+        ArgoWF->>LlamaStack: POST search space models<br/>API key auth, TLS
+        LlamaStack-->>ArgoWF: Available models list
+
+        ArgoWF->>LlamaStack: POST vector store indexing<br/>+ RAG inference calls
+        LlamaStack-->>ArgoWF: Optimization results
+
+        ArgoWF->>ArgoWF: Leaderboard evaluation<br/>(local pattern.json scoring)
     end
 
-    rect rgb(255, 230, 230)
-        Note over User,S3: Flow 4: AutoML Tabular Training Pipeline
-        User->>KFP: Submit AutoML pipeline run
-        KFP->>Argo: Create Argo Workflow
+    rect rgb(255, 255, 240)
+        Note over User,PVC: Flow 4: AutoML Tabular Training Pipeline
+        User->>KFP: Submit AutoML pipeline
+        KFP->>ArgoWF: Create Argo Workflow
 
-        Note right of Argo: Steps: automl_data_loader →<br/>autogluon_models_training →<br/>leaderboard_evaluation
+        ArgoWF->>S3: GET CSV data (streaming)<br/>AWS IAM, HTTPS TLS 1.2+
+        S3-->>ArgoWF: CSV data stream
+        ArgoWF->>PVC: Write train/test splits
 
-        Argo->>S3: Stream CSV data<br/>HTTPS/443, AWS IAM
-        S3-->>Argo: CSV dataset
-        Argo->>PVC: Write train/test splits
-        Note right of Argo: AutoGluon training<br/>(local computation)
-        Argo->>PVC: Write model metrics
+        ArgoWF->>ArgoWF: AutoGluon model training<br/>(local CPU processing)
+        ArgoWF->>PVC: Write trained models + metrics
+
+        ArgoWF->>ArgoWF: Leaderboard evaluation<br/>(model comparison)
     end

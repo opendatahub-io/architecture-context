@@ -1,65 +1,70 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client"]
+        Client["Client / KServe Gateway"]
     end
 
-    subgraph Ingress["INGRESS (Managed by KServe)"]
-        KServeGW["KServe InferenceService Gateway<br/>HTTPRoute/Route → vLLM<br/>TLS managed by KServe/Istio"]
-    end
-
-    subgraph ClusterInternal["CLUSTER INTERNAL"]
+    subgraph ServiceLayer["SERVICE LAYER (ClusterIP - Internal)"]
         direction TB
 
-        subgraph VllmPod["vLLM CPU Pod"]
-            HTTPServer["vllm-openai<br/>ClusterIP 8000/TCP<br/>HTTP(S) - Configurable TLS<br/>Bearer API Key on /v1/* only<br/>⚠️ 20+ unauthenticated endpoints"]
-            GRPCServer["vllm-grpc<br/>ClusterIP 50051/TCP<br/>gRPC - No encryption<br/>No auth"]
-            MetricsEP["Prometheus Metrics<br/>8000/TCP (shared)<br/>HTTP - No auth"]
+        subgraph MainService["vLLM OpenAI API Server"]
+            API["vllm-openai<br/>8000/TCP HTTP(S)<br/>Configurable TLS<br/>UBI 9 Base Image"]
+            AuthMW["AuthenticationMiddleware<br/>SHA256 + constant-time compare<br/>/v1/* paths only"]
         end
 
-        subgraph Optional["Optional Distributed (No Encryption)"]
-            Gloo["Gloo Backend<br/>TCP - No encryption"]
-            Ray["Ray Cluster<br/>6379/TCP - No encryption"]
+        subgraph GRPCService["vLLM gRPC Server"]
+            GRPC["vllm-grpc<br/>50051/TCP gRPC<br/>No encryption<br/>No auth"]
         end
 
-        Prometheus["Prometheus<br/>Metrics Collection"]
+        subgraph Metrics["Prometheus Metrics"]
+            MetricsEP["prometheus-metrics<br/>8000/TCP HTTP<br/>No auth<br/>Scraped by Prometheus"]
+        end
     end
 
-    subgraph EgressServices["EGRESS (External Services)"]
-        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS 1.2+<br/>Bearer HF_TOKEN"]
-        S3["S3-Compatible Storage<br/>443/TCP HTTPS TLS 1.2+<br/>AWS IAM credentials"]
-        OTLPCol["OTLP Collector<br/>gRPC/HTTP Configurable<br/>⚠️ Insecure by default"]
-        RHStats["Red Hat Stats<br/>console.redhat.com<br/>443/TCP HTTPS TLS 1.2+<br/>No auth"]
+    subgraph Egress["EGRESS (Outbound)"]
+        HF["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer HF_TOKEN"]
+        OTLP["OTLP Collector<br/>Configurable port<br/>gRPC (insecure default)<br/>No auth"]
+        RHStats["Red Hat Stats<br/>console.redhat.com<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+        S3["S3-Compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
     end
 
-    %% External flows
-    Client -->|"HTTP(S)/8000<br/>Configurable TLS<br/>Bearer API Key"| KServeGW
-    KServeGW -->|"HTTP(S)/8000<br/>Configurable TLS<br/>Bearer forwarded"| HTTPServer
-    Client -->|"gRPC/50051<br/>No encryption<br/>No auth"| GRPCServer
+    subgraph Distributed["DISTRIBUTED (Optional)"]
+        Gloo["Gloo Backend<br/>TCP (no encryption)<br/>Tensor Parallelism"]
+        Ray["Ray Cluster<br/>6379/TCP<br/>Ray Protocol"]
+    end
 
-    %% Internal flows
-    HTTPServer -.->|"TCP"| Gloo
-    HTTPServer -.->|"Ray/6379"| Ray
-    Prometheus -->|"HTTP/8000<br/>Scrape"| MetricsEP
+    subgraph BuildTime["BUILD-TIME ONLY"]
+        DevPI["IBM DevPI<br/>wheels.developerfirst.ibm.com<br/>443/TCP HTTPS<br/>ppc64le wheels"]
+    end
+
+    %% Inbound flows
+    Client -->|"HTTP(S)/8000<br/>Configurable TLS<br/>Bearer API Key (/v1/*)"| API
+    API --> AuthMW
+    Client -->|"gRPC/50051<br/>No encryption<br/>No auth"| GRPC
 
     %% Egress flows
-    HTTPServer -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer HF_TOKEN"| HFHub
-    HTTPServer -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    HTTPServer -->|"gRPC/HTTP<br/>⚠️ Insecure default"| OTLPCol
-    HTTPServer -->|"HTTPS/443<br/>TLS 1.2+"| RHStats
+    API -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer HF_TOKEN"| HF
+    API -->|"gRPC (insecure)<br/>Configurable port"| OTLP
+    API -->|"HTTPS/443<br/>TLS 1.2+"| RHStats
+    API -->|"HTTPS/443<br/>AWS IAM"| S3
+
+    %% Distributed flows
+    API -.->|"TCP<br/>No encryption"| Gloo
+    API -.->|"Ray/6379<br/>No encryption"| Ray
+
+    %% Prometheus scrape
+    MetricsEP -.->|"HTTP/8000<br/>Scraped"| API
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef warning fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef egresssvc fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef danger fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef service fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef auth fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef distributed fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef buildtime fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
-    class KServeGW ingress
-    class HTTPServer,MetricsEP internal
-    class GRPCServer danger
-    class Gloo,Ray warning
-    class Prometheus internal
-    class HFHub,S3,RHStats egresssvc
-    class OTLPCol danger
+    class API,GRPC,MetricsEP service
+    class AuthMW auth
+    class HF,OTLP,RHStats,S3 egress
+    class Gloo,Ray distributed
+    class DevPI buildtime

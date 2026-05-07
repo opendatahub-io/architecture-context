@@ -1,56 +1,58 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Deploys and queries LLM inference services"
-        mlEngineer = person "ML Engineer" "Converts models and configures serving runtimes"
+        datascientist = person "Data Scientist" "Deploys and queries LLM inference services"
+        sre = person "SRE / Platform Admin" "Monitors and manages platform components"
 
-        caikitTgiServing = softwareSystem "Caikit-TGIS-Serving" "Container image providing LLM inference by combining Caikit AI toolkit runtime with TGIS backend" {
-            caikitRuntime = container "Caikit Runtime" "Provides HTTP/gRPC inference APIs, model management, and health probes. Translates requests to TGIS backend calls." "Python (caikit 0.28.1)" "transformer-container"
-            tgisBackend = container "TGIS Backend" "GPU-accelerated text generation inference server. Loads model weights and performs inference." "Text Generation Inference Server" "kserve-container"
-            convertUtility = container "convert.py" "Converts HuggingFace models to Caikit format" "Python CLI"
+        caikitTgisSrv = softwareSystem "Caikit-TGIS-Serving" "KServe ServingRuntime container image combining Caikit AI toolkit with TGIS backend for LLM inference" {
+            caikitRuntime = container "Caikit Runtime" "Runs caikit.runtime, provides HTTP/gRPC inference APIs, manages model lifecycle, proxies to TGIS" "Python 3.11 (caikit 0.28.1, caikit-nlp 0.5.14)" "transformer-container"
+            tgisBackend = container "TGIS Backend" "GPU-accelerated text generation inference server, loads model weights" "TGIS Container" "kserve-container"
+            convertUtility = container "convert.py" "Converts HuggingFace models to Caikit format" "Python CLI Utility" "Offline Tool"
         }
 
-        kserve = softwareSystem "KServe" "Orchestrates model serving lifecycle, networking, and storage access via ServingRuntime and InferenceService CRDs" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Orchestrates model serving lifecycle via ServingRuntime and InferenceService CRDs" "Internal RHOAI"
         knative = softwareSystem "Knative Serving" "Provides serverless autoscaling, revision management, and traffic routing" "Internal RHOAI"
-        istio = softwareSystem "Istio Service Mesh" "Provides mTLS, traffic management, ingress gateway, and authorization policies" "Internal RHOAI"
-        openshiftServiceMesh = softwareSystem "OpenShift Service Mesh (Maistra)" "Manages Istio control plane on OpenShift" "Internal RHOAI"
-        prometheus = softwareSystem "Prometheus" "User Workload Monitoring for metrics collection" "Internal OpenShift"
-        authorino = softwareSystem "Authorino" "Token-based authorization for inference endpoints (optional)" "Internal RHOAI"
+        istio = softwareSystem "Istio Service Mesh" "Provides mTLS, traffic policies, PeerAuthentication, and ingress gateway" "Internal RHOAI"
+        osmesh = softwareSystem "OpenShift Service Mesh (Maistra)" "Manages Istio control plane on OpenShift" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus (User Workload Monitoring)" "Scrapes Caikit runtime metrics via ServiceMonitor" "Internal OpenShift"
+        authorino = softwareSystem "Authorino" "Optional token-based authorization for inference endpoints" "Internal RHOAI"
 
-        s3Storage = softwareSystem "S3-compatible Storage" "Model artifact storage (AWS S3 / MinIO)" "External"
-        huggingFaceHub = softwareSystem "HuggingFace Hub" "Public model weight repository (dev only)" "External"
+        s3storage = softwareSystem "S3-Compatible Storage" "Model artifact storage (AWS S3 / MinIO)" "External"
+        huggingface = softwareSystem "HuggingFace Hub" "Model weight downloads (development only)" "External"
 
         # User interactions
-        dataScientist -> caikitTgiServing "Sends inference requests (HTTP/gRPC)" "HTTPS/443"
-        mlEngineer -> convertUtility "Converts HuggingFace models to Caikit format" "CLI"
-        mlEngineer -> kserve "Creates InferenceService / ServingRuntime CRs" "kubectl"
+        datascientist -> kserve "Creates InferenceService CR via kubectl/ODH Dashboard"
+        datascientist -> caikitTgisSrv "Sends inference requests (HTTP POST / gRPC)"
+        sre -> prometheus "Monitors Caikit runtime metrics"
 
         # Internal container communication
-        caikitRuntime -> tgisBackend "Delegates inference" "gRPC/8033 (localhost)"
+        caikitRuntime -> tgisBackend "Delegates inference via gRPC" "gRPC/8033 (localhost, plaintext)"
 
         # Platform dependencies
-        caikitTgiServing -> kserve "Consumed as ServingRuntime container image" "CRD"
-        caikitTgiServing -> knative "Serverless scaling and routing" "Platform"
-        caikitTgiServing -> istio "mTLS, ingress, authorization" "Sidecar"
-        istio -> openshiftServiceMesh "Managed by" "Control plane"
-        prometheus -> caikitTgiServing "Scrapes runtime metrics" "HTTP/8086 PERMISSIVE"
-        authorino -> caikitTgiServing "Token authorization (optional)" "Policy"
+        caikitTgisSrv -> kserve "Consumed as ServingRuntime" "CRD"
+        caikitTgisSrv -> knative "Autoscaling and routing" "Platform"
+        caikitTgisSrv -> istio "mTLS, ingress, traffic policies" "Sidecar"
+        istio -> osmesh "Managed by" "Control Plane"
 
         # External service dependencies
-        tgisBackend -> s3Storage "Downloads model artifacts" "HTTPS/443"
-        tgisBackend -> huggingFaceHub "Downloads model weights (dev only)" "HTTPS/443"
+        tgisBackend -> s3storage "Downloads model artifacts" "HTTPS/443, TLS 1.2+, IAM Auth"
+        tgisBackend -> huggingface "Downloads model weights (dev)" "HTTPS/443"
+
+        # Monitoring
+        prometheus -> caikitRuntime "Scrapes metrics" "HTTP/8086, PERMISSIVE mTLS"
+
+        # Optional
+        authorino -> caikitTgisSrv "Enforces token auth" "Optional"
     }
 
     views {
-        systemContext caikitTgiServing "SystemContext" {
+        systemContext caikitTgisSrv "SystemContext" {
             include *
             autoLayout
-            description "System context showing caikit-tgis-serving in the RHOAI platform ecosystem"
         }
 
-        container caikitTgiServing "Containers" {
+        container caikitTgisSrv "Containers" {
             include *
             autoLayout
-            description "Container view showing Caikit runtime and TGIS backend in multi-container pod"
         }
 
         styles {
@@ -72,10 +74,16 @@ workspace {
                 color #ffffff
             }
             element "Software System" {
-                shape RoundedBox
+                background #1168BD
+                color #ffffff
             }
             element "Container" {
-                shape RoundedBox
+                background #438DD5
+                color #ffffff
+            }
+            element "Offline Tool" {
+                background #e8e8e8
+                color #333333
             }
         }
     }

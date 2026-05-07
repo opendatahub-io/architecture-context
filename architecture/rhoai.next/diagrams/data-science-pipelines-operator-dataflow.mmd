@@ -1,7 +1,7 @@
 sequenceDiagram
     participant User as User / Dashboard
     participant Route as OpenShift Route<br/>443/TCP HTTPS<br/>TLS Reencrypt
-    participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS (service-ca)
     participant API as ds-pipeline-api-server<br/>8888/TCP HTTP/HTTPS
     participant DB as MariaDB<br/>3306/TCP MySQL
     participant S3 as S3 Object Store<br/>9000 or 443/TCP
@@ -9,46 +9,51 @@ sequenceDiagram
     participant Argo as Argo Workflow Controller
     participant Pod as Pipeline Pod<br/>(launcher/driver)
     participant MLMD as ds-pipeline-metadata-grpc<br/>8080/TCP gRPC
-    participant Envoy as ds-pipeline-metadata-envoy<br/>9090/TCP gRPC
+    participant Envoy as MLMD Envoy<br/>9090/TCP gRPC
+    participant MDRoute as MLMD Route<br/>443/TCP HTTPS
+    participant OCI as OCI Registry<br/>443/TCP HTTPS
 
-    rect rgb(230, 245, 255)
-        Note over User,S3: Flow 1: Pipeline Run Execution
-        User->>Route: POST /apis/v2beta1/runs<br/>Auth: Bearer Token
-        Route->>Proxy: Forward (TLS Reencrypt)
-        Proxy->>Proxy: SubjectAccessReview<br/>(DSPA subresource 'api')
-        Proxy->>API: Proxy upstream<br/>TLS (when PodToPodTLS)
-        API->>DB: Store run metadata<br/>MySQL TLS (when PodToPodTLS)<br/>Auth: Password (Secret)
-        API->>S3: Store pipeline spec<br/>HTTP/HTTPS<br/>Auth: AccessKey/SecretKey
-        API->>K8s: Create ScheduledWorkflow CR<br/>HTTPS TLS<br/>Auth: ServiceAccount token
-        K8s-->>Argo: Watch ScheduledWorkflow
-        Argo->>K8s: Create Workflow CR<br/>HTTPS TLS<br/>Auth: ServiceAccount token
-        Argo->>Pod: Launch pipeline step pods
-        Pod->>MLMD: Record lineage<br/>gRPC mTLS (when PodToPodTLS)
-        Pod->>S3: Upload/download artifacts<br/>HTTP/HTTPS<br/>Auth: AccessKey/SecretKey
-        Pod-->>Argo: Step completion
-        Argo-->>API: Workflow status update<br/>(via PersistenceAgent)
-    end
+    Note over User,S3: Flow 1: Pipeline Run Execution
+    User->>Route: POST /apis/v2beta1/runs<br/>HTTPS/443
+    Route->>Proxy: TLS Reencrypt
+    Proxy->>Proxy: SubjectAccessReview<br/>(DSPA api subresource)
+    Proxy->>API: Forward request<br/>HTTP 8888 (or HTTPS w/ PodToPodTLS)
+    API->>DB: Store run metadata<br/>MySQL/3306, TLS (configurable)<br/>Auth: Password (Secret)
+    DB-->>API: OK
+    API->>S3: Store/retrieve artifacts<br/>HTTP(S)/9000 or 443<br/>Auth: AccessKey/SecretKey
+    S3-->>API: Artifacts
+    API->>K8s: Create Workflow CR<br/>HTTPS/443, SA Token
+    K8s-->>API: Created
+    API-->>Proxy: Run created response
+    Proxy-->>Route: Forward
+    Route-->>User: JSON Response
 
-    rect rgb(255, 245, 230)
-        Note over User,DB: Flow 2: MLMD Lineage Query (Dashboard)
-        User->>Route: GET MLMD lineage<br/>Auth: Bearer Token
-        Route->>Proxy: Forward (TLS Reencrypt)
-        Proxy->>Proxy: SubjectAccessReview
-        Proxy->>Envoy: Proxy upstream<br/>plaintext (localhost)
-        Envoy->>MLMD: gRPC query<br/>TLS (when PodToPodTLS)
-        MLMD->>DB: Query lineage data<br/>MySQL TLS<br/>Auth: Password (Secret)
-        DB-->>MLMD: Lineage results
-        MLMD-->>Envoy: gRPC response
-        Envoy-->>Proxy: Response
-        Proxy-->>Route: Response
-        Route-->>User: JSON/gRPC Response
-    end
+    Note over Argo,S3: Flow 1 (continued): Pipeline Execution
+    Argo->>K8s: Watch Workflow CRs<br/>HTTPS/443, SA Token
+    K8s-->>Argo: Workflow event
+    Argo->>K8s: Create Pipeline Pod<br/>HTTPS/443, SA Token
+    Pod->>MLMD: Log execution/artifact lineage<br/>gRPC/8080, mTLS (PodToPodTLS)
+    MLMD->>DB: Store lineage<br/>MySQL/3306, TLS
+    Pod->>S3: Upload artifacts<br/>HTTP(S), AccessKey/SecretKey
+    Pod->>API: Report status<br/>HTTP(S)/8888
 
-    rect rgb(230, 255, 230)
-        Note over API,S3: Flow 3: Managed Pipelines Import
-        Note right of API: DSPO Controller reconciliation
-        API->>S3: Fetch managed-pipelines.json<br/>from OCI registry (443/TCP HTTPS)
-        Note right of API: Validate pipeline names<br/>against manifest
-        Note right of API: init-managed-pipelines<br/>extracts OCI image layers
-        API->>API: Import pipelines from<br/>/config/managed-pipelines/ volume
-    end
+    Note over User,DB: Flow 2: MLMD Lineage Query (Dashboard)
+    User->>MDRoute: Query lineage<br/>HTTPS/443
+    MDRoute->>Proxy: TLS Reencrypt
+    Proxy->>Proxy: SubjectAccessReview
+    Proxy->>Envoy: Forward<br/>HTTP/9090 (localhost)
+    Envoy->>MLMD: gRPC request<br/>gRPC/8080, TLS (PodToPodTLS)
+    MLMD->>DB: Query lineage data<br/>MySQL/3306, TLS
+    DB-->>MLMD: Results
+    MLMD-->>Envoy: gRPC response
+    Envoy-->>Proxy: Response
+    Proxy-->>MDRoute: Forward
+    MDRoute-->>User: Lineage data
+
+    Note over API,OCI: Flow 3: Managed Pipelines Import
+    Note right of API: During DSPA reconciliation
+    API->>OCI: Fetch managed-pipelines.json<br/>HTTPS/443, Registry auth
+    OCI-->>API: Pipeline manifest
+    API->>API: Validate pipeline names<br/>against manifest
+    Note right of API: init-managed-pipelines extracts<br/>pipelines from OCI image layer<br/>into shared volume
+    API->>API: Import pipelines from<br/>/config/managed-pipelines/

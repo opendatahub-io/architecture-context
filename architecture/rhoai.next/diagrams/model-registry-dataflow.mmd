@@ -1,86 +1,61 @@
 sequenceDiagram
     autonumber
 
-    %% Flow 1: Model Registration via REST API
+    participant Client as Client<br/>(Dashboard/CLI)
+    participant IstioGW as Istio Gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant BFF as UI BFF<br/>8080/TCP HTTP
+    participant Proxy as model-registry (proxy)<br/>8080/TCP HTTP
+    participant Catalog as model-catalog-server<br/>8080/TCP HTTP
+    participant DB as MySQL/PostgreSQL<br/>3306/5432/TCP
+    participant CatalogDB as PostgreSQL (catalog)<br/>5432/TCP
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Controller as model-registry-controller<br/>8081/TCP
+    participant CSI as CSI Storage Initializer
+    participant Storage as Model Storage<br/>(S3/GCS/OCI)
+    participant HF as Hugging Face API<br/>443/TCP HTTPS
+
     rect rgb(230, 245, 255)
-        Note over Client,DB: Flow 1: Model Registration via REST API
-        participant Client as Client<br/>(Dashboard/CLI)
-        participant IstioGW as Istio Gateway<br/>443/TCP HTTPS<br/>TLS 1.2+
-        participant MR as model-registry<br/>(proxy)<br/>8080/TCP HTTP
-        participant DB as MySQL/PostgreSQL<br/>3306/5432/TCP
-
-        Client->>IstioGW: POST /api/model_registry/v1alpha3/registered_models<br/>HTTPS, Platform Auth
-        IstioGW->>MR: Forward request<br/>HTTP, Istio mTLS
-        MR->>DB: INSERT registered_model<br/>DB protocol, Optional TLS<br/>Auth: Username/password
-        DB-->>MR: Model record
-        MR-->>IstioGW: 201 Created (JSON)
-        IstioGW-->>Client: Response
+        Note over Client, DB: Flow 1: Model Registration via REST API
+        Client->>IstioGW: POST /api/model_registry/v1alpha3/registered_models<br/>Auth: Platform auth
+        IstioGW->>Proxy: Forward (Istio mTLS)<br/>ISTIO_MUTUAL
+        Proxy->>DB: INSERT registered_model<br/>Auth: Username/password
+        DB-->>Proxy: Success
+        Proxy-->>IstioGW: 201 Created (JSON)
+        IstioGW-->>Client: Model registered
     end
 
-    %% Flow 2: InferenceService Reconciliation
-    rect rgb(255, 243, 224)
-        Note over KServe,MR: Flow 2: InferenceService Reconciliation
-        participant KServe as KServe
-        participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-        participant Controller as controller-manager<br/>8081/TCP Health<br/>8443/TCP Metrics
-
-        KServe->>K8sAPI: Create InferenceService CR<br/>HTTPS, TLS, ServiceAccount
-        K8sAPI-->>Controller: Watch event (ISVC created)<br/>HTTPS, TLS, ServiceAccount
-        Controller->>MR: POST /api/.../inference_services<br/>HTTP 8080/TCP<br/>Auth: Bearer Token
-        MR->>DB: INSERT inference_service
-        DB-->>MR: Record created
-        MR-->>Controller: 201 Created
-        Controller->>K8sAPI: PATCH ISVC (add labels + finalizer)<br/>HTTPS, TLS, ServiceAccount
+    rect rgb(255, 245, 230)
+        Note over Controller, DB: Flow 2: InferenceService Reconciliation
+        K8sAPI->>Controller: Watch event: InferenceService created<br/>Auth: ServiceAccount token
+        Controller->>Proxy: POST /api/model_registry/v1alpha3/inference_services<br/>Auth: Bearer Token
+        Proxy->>DB: INSERT inference_service
+        DB-->>Proxy: Success
+        Proxy-->>Controller: 201 Created
+        Controller->>K8sAPI: PATCH InferenceService labels/finalizers<br/>Auth: ServiceAccount token
     end
 
-    %% Flow 3: Model Download via CSI
-    rect rgb(232, 245, 233)
-        Note over KServeInit,ModelStore: Flow 3: Model Download via CSI Storage Initializer
-        participant KServeInit as KServe Init Container<br/>(storage-initializer)
-        participant ModelStore as Model Storage<br/>(S3/GCS/OCI)<br/>443/TCP HTTPS
-
-        KServeInit->>MR: GET model-registry://model/version<br/>HTTP 8080/TCP, No Auth
-        MR->>DB: SELECT model_artifact<br/>DB protocol
-        DB-->>MR: Artifact URI (s3://bucket/model)
-        MR-->>KServeInit: Resolved storage URI
-        KServeInit->>ModelStore: Download model artifacts<br/>HTTPS 443/TCP, TLS 1.2+<br/>Auth: Storage credentials
-        ModelStore-->>KServeInit: Model files
+    rect rgb(230, 255, 230)
+        Note over CSI, Storage: Flow 3: Model Download via CSI Storage Initializer
+        CSI->>Proxy: GET model artifact URI<br/>model-registry://model/version
+        Proxy->>DB: SELECT artifact_uri
+        DB-->>Proxy: s3://bucket/model.tar.gz
+        Proxy-->>CSI: Resolved storage URI
+        CSI->>Storage: Download model artifacts<br/>Auth: Storage credentials (TLS 1.2+)
+        Storage-->>CSI: Model files
     end
 
-    %% Flow 4: Async Model Upload
-    rect rgb(243, 229, 245)
-        Note over AsyncJob,OCIReg: Flow 4: Async Model Upload Job
-        participant AsyncJob as async-upload-job<br/>(Python)
-        participant S3 as S3 Storage<br/>443/TCP HTTPS
-        participant OCIReg as OCI Registry<br/>443/TCP HTTPS
-
-        AsyncJob->>S3: Download model files<br/>HTTPS, TLS 1.2+<br/>Auth: AWS credentials
-        S3-->>AsyncJob: Model artifacts
-        AsyncJob->>OCIReg: Push model as OCI artifact<br/>HTTPS 443/TCP, TLS 1.2+<br/>Auth: Registry credentials
-        OCIReg-->>AsyncJob: Push confirmation
-        AsyncJob->>MR: POST /api/.../model_artifacts<br/>HTTP 8080/TCP<br/>Auth: Bearer Token (optional)
-        MR-->>AsyncJob: Artifact registered
-    end
-
-    %% Flow 5: UI Model Browsing
-    rect rgb(255, 249, 230)
-        Note over Browser,Catalog: Flow 5: UI Model Browsing
-        participant Browser as Browser
-        participant BFF as UI BFF<br/>8080/TCP HTTP
-        participant Catalog as model-catalog-server<br/>8080/TCP HTTP
-
-        Browser->>BFF: GET /api/v1/model_registry/{name}/registered_models<br/>HTTP/HTTPS, User token
-        BFF->>MR: GET /api/model_registry/v1alpha3/registered_models<br/>HTTP 8080/TCP, Forwarded token
-        MR-->>BFF: Model list (JSON)
-        BFF-->>Browser: Proxied response
-
-        Browser->>BFF: GET /api/v1/catalog/models<br/>HTTP/HTTPS, User token
-        BFF->>Catalog: GET /api/model_catalog/v1alpha1/catalog_models<br/>HTTP 8080/TCP, Forwarded token
-        Catalog-->>BFF: Catalog models (JSON)
-        BFF-->>Browser: Proxied response
-
-        Browser->>BFF: GET /api/v1/namespaces<br/>User token
-        BFF->>K8sAPI: List namespaces<br/>HTTPS 443/TCP, User token
-        K8sAPI-->>BFF: Namespace list
-        BFF-->>Browser: Accessible namespaces
+    rect rgb(255, 230, 245)
+        Note over Client, CatalogDB: Flow 5: UI Model Browsing
+        Client->>BFF: GET /api/v1/model_registry/myregistry/registered_models<br/>Auth: User token
+        BFF->>Proxy: GET /api/model_registry/v1alpha3/registered_models<br/>Auth: Forwarded token
+        Proxy->>DB: SELECT registered_models
+        DB-->>Proxy: Model list
+        Proxy-->>BFF: JSON response
+        BFF->>Catalog: GET /api/model_catalog/v1alpha1/catalog_models<br/>Auth: Forwarded token
+        Catalog->>CatalogDB: SELECT catalog_models
+        CatalogDB-->>Catalog: Catalog data
+        Catalog->>HF: GET model metadata<br/>Auth: API key (optional)
+        HF-->>Catalog: Model metadata
+        Catalog-->>BFF: Catalog models
+        BFF-->>Client: Combined UI response
     end

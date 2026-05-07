@@ -1,73 +1,106 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
         User["User / kubectl"]
-        Dashboard["RHOAI Dashboard"]
-        Client["External Client<br/>(inference consumer)"]
+        Client["Inference Client"]
     end
 
-    subgraph Ingress["INGRESS (External Model Access)"]
-        Route["Per-ISVC OpenShift Route<br/>443/TCP<br/>TLS Edge/Reencrypt<br/>Optional AuthPolicy"]
+    subgraph K8sControl["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token / SA Token"]
     end
 
-    subgraph ClusterInternal["CLUSTER INTERNAL (Kubernetes Network)"]
+    subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-applications)"]
         direction TB
 
-        subgraph NS_ODH["Namespace: opendatahub"]
-            OMC["odh-model-controller<br/>SA: odh-model-controller<br/>Ports: 8080(metrics), 8081(health),<br/>9443(webhooks HTTPS)"]
-            MSA["model-serving-api<br/>SA: model-serving-api<br/>Port: 8443(HTTPS FIPS),<br/>9090(metrics HTTPS)"]
+        subgraph ControllerPod["odh-model-controller"]
+            Controller["Controller Manager<br/>SA: odh-model-controller<br/>FIPS: strictfipsruntime"]
+            WebhookSrv["Webhook Server<br/>9443/TCP HTTPS<br/>TLS (cert injection)"]
+            MetricsCtrl["Metrics<br/>8080/TCP HTTP/HTTPS<br/>authn/authz filter"]
+            HealthCtrl["Health Probes<br/>8081/TCP HTTP"]
         end
 
-        subgraph Services["ClusterIP Services"]
-            SvcMSA["model-serving-api<br/>443→8443 HTTPS<br/>Bearer Token"]
-            SvcMetrics["metrics-service<br/>8443 HTTPS<br/>authn/authz"]
-            SvcWebhook["webhook-service<br/>443→9443 HTTPS<br/>cert injection"]
+        subgraph APIPod["model-serving-api"]
+            APIServer["API Server<br/>8443/TCP HTTPS<br/>TLS 1.2+ FIPS ciphers<br/>ECDHE+AES-GCM<br/>P-256, P-384"]
+            MetricsAPI["Metrics<br/>9090/TCP HTTPS<br/>TLS 1.2+"]
         end
-
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token / User Token"]
     end
 
-    subgraph ExternalEgress["EXTERNAL SERVICES (Egress)"]
+    subgraph Services["SERVICES (ClusterIP)"]
+        SvcAPI["model-serving-api<br/>443 → 8443/TCP"]
+        SvcWebhook["webhook-service<br/>443 → 9443/TCP"]
+        SvcMetrics["metrics-service<br/>8443 → 8443/TCP"]
+        SvcAPIMetrics["api-metrics<br/>9090 → 9090/TCP"]
+    end
+
+    subgraph UserNS["USER NAMESPACE (per InferenceService)"]
+        ISVCRoute["OpenShift Route<br/>{isvc}.{ns}.{domain}<br/>443/TCP HTTPS<br/>TLS Edge/Reencrypt"]
+    end
+
+    subgraph PlatformDeps["PLATFORM DEPENDENCIES (Internal)"]
+        Dashboard["RHOAI Dashboard"]
+        Prometheus["Prometheus<br/>(scrapes ServiceMonitors)"]
+        KServe["KServe Controller"]
+        Kuadrant["Kuadrant / Authorino"]
+    end
+
+    subgraph NVIDIAEgress["NVIDIA SERVICES (External Egress)"]
         NGC["api.ngc.nvidia.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>NGC API Key (Bearer)"]
         NVCR["nvcr.io<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>NGC API Key (Basic)"]
-        AuthnNV["authn.nvidia.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Token Exchange"]
-        ModelReg["Model Registry API<br/>Configurable Port<br/>HTTPS/HTTP<br/>Bearer Token"]
+        AuthN["authn.nvidia.com<br/>443/TCP HTTPS<br/>TLS 1.2+"]
     end
 
-    %% External to Ingress
-    Client -->|"HTTPS/443<br/>TLS Edge/Reencrypt<br/>Optional Auth"| Route
+    subgraph OptionalEgress["OPTIONAL EGRESS"]
+        ModelReg["Model Registry<br/>Configurable port<br/>HTTP/HTTPS<br/>Bearer Token"]
+    end
 
-    %% External to Cluster
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| K8sAPI
-    Dashboard -->|"HTTPS/443<br/>TLS 1.2+ (FIPS)<br/>Bearer Token"| SvcMSA
+    %% External → K8s
+    User -->|"HTTPS/443<br/>Bearer Token"| K8sAPI
+    Client -->|"HTTPS/443<br/>TLS Edge/Reencrypt"| ISVCRoute
 
-    %% Service routing
-    SvcMSA -.->|"8443"| MSA
-    SvcMetrics -.->|"8443"| OMC
-    SvcWebhook -.->|"9443"| OMC
+    %% K8s → Webhooks
+    K8sAPI -->|"HTTPS/9443<br/>TLS cert injection<br/>Mutate+Validate"| WebhookSrv
 
-    %% Internal flows
-    K8sAPI -->|"HTTPS/9443<br/>TLS cert injection<br/>Admission"| OMC
-    OMC -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    MSA -->|"HTTPS/443<br/>TLS 1.2+<br/>User Token (SSAR)"| K8sAPI
-    MSA -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token (list)"| K8sAPI
+    %% Controller → K8s
+    Controller -->|"HTTPS/443<br/>SA Token<br/>CRUD: Routes, Secrets,<br/>ServiceMonitors, AuthPolicies,<br/>EnvoyFilters, Templates"| K8sAPI
 
-    %% Egress
-    OMC -->|"HTTPS/443<br/>TLS 1.2+<br/>NGC API Key"| NGC
-    OMC -->|"HTTPS/443<br/>TLS 1.2+<br/>NGC Basic Auth"| NVCR
-    OMC -->|"HTTPS/443<br/>TLS 1.2+"| AuthnNV
-    OMC -->|"HTTPS<br/>TLS 1.2+ (optional)<br/>Bearer Token"| ModelReg
+    %% API Server flows
+    Dashboard -->|"HTTPS/443<br/>TLS 1.2+ FIPS<br/>Bearer Token"| SvcAPI
+    SvcAPI --> APIServer
+    APIServer -->|"HTTPS/443<br/>User Bearer + SA Token<br/>SSAR + List Gateways"| K8sAPI
+
+    %% Services routing
+    SvcWebhook --> WebhookSrv
+    SvcMetrics --> MetricsCtrl
+
+    %% Monitoring
+    Prometheus -->|"scrapes"| SvcMetrics
+    Prometheus -->|"scrapes"| SvcAPIMetrics
+    SvcAPIMetrics --> MetricsAPI
+
+    %% NIM Egress
+    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>NGC Key (Bearer)"| NGC
+    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>NGC Key (Basic)"| NVCR
+    Controller -->|"HTTPS/443<br/>TLS 1.2+"| AuthN
+
+    %% Optional Egress
+    Controller -->|"HTTP/HTTPS<br/>Bearer Token<br/>Optional TLS"| ModelReg
+
+    %% Platform interactions (CRD watches)
+    KServe -.->|"CRD events"| Controller
+    Kuadrant -.->|"Auth enforcement"| ISVCRoute
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef k8s fill:#326ce5,stroke:#fff,stroke-width:2px,color:#fff
+    classDef operator fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    classDef service fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef clusterinternal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef service fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef k8s fill:#e0e0e0,stroke:#424242,stroke-width:2px
+    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef platform fill:#e8e8e8,stroke:#666,stroke-width:1px
 
-    class User,Dashboard,Client external
-    class Route ingress
-    class OMC,MSA clusterinternal
-    class SvcMSA,SvcMetrics,SvcWebhook service
+    class User,Client external
     class K8sAPI k8s
-    class NGC,NVCR,AuthnNV,ModelReg externalservice
+    class Controller,WebhookSrv,MetricsCtrl,HealthCtrl,APIServer,MetricsAPI operator
+    class SvcAPI,SvcWebhook,SvcMetrics,SvcAPIMetrics service
+    class ISVCRoute ingress
+    class NGC,NVCR,AuthN,ModelReg egress
+    class Dashboard,Prometheus,KServe,Kuadrant platform

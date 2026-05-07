@@ -1,33 +1,45 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Creates and runs ML pipelines via Data Science Pipelines"
+        dataScientist = person "Data Scientist" "Creates and runs ML pipelines via Data Science Pipelines"
+        dspOperator = person "DSP Operator" "Deploys and configures Argo Workflows via data-science-pipelines-operator"
 
-        argoWorkflows = softwareSystem "Argo Workflows" "Kubernetes-native workflow engine for ML pipeline execution in RHOAI" {
-            workflowController = container "workflow-controller" "Watches Workflow CRDs, orchestrates pod creation, DAG/step scheduling, cron scheduling, artifact GC, workflow archival" "Go Controller (client-go informers)"
-            argoexec = container "argoexec" "Runs as sidecar/init in workflow pods; manages artifact I/O, parameter extraction, container lifecycle via emissary pattern" "Go Executor (sidecar)"
+        argoWorkflows = softwareSystem "Argo Workflows" "Kubernetes-native workflow execution engine for Data Science Pipelines in RHOAI" {
+            workflowController = container "workflow-controller" "Watches Workflow CRDs, orchestrates pod creation, DAG/step scheduling, cron scheduling, artifact GC, workflow archival" "Go (client-go informers)" {
+                cronController = component "Cron Controller" "Schedules workflows from CronWorkflow CRs" "Go"
+                gcController = component "Artifact GC Controller" "Manages artifact garbage collection" "Go"
+                archiver = component "Workflow Archiver" "Persists completed workflows to SQL database" "Go (upper/db)"
+                leaderElection = component "Leader Election" "Lease-based HA coordination" "Go (client-go)"
+            }
+            argoexec = container "argoexec" "Executor sidecar/init container in workflow pods; manages artifact I/O, parameter extraction, container lifecycle via emissary pattern" "Go (emissary pattern)"
         }
 
-        dspOperator = softwareSystem "Data Science Pipelines Operator" "Deploys and configures Argo Workflows controller and executor images" "Internal RHOAI"
-        kubernetes = softwareSystem "Kubernetes API Server" "Container orchestration platform, CRD storage, RBAC enforcement" "External"
-        s3 = softwareSystem "S3 / Minio" "Artifact storage for pipeline step inputs and outputs" "External"
+        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform and API server" "External"
+        dspOperatorSystem = softwareSystem "Data Science Pipelines Operator" "Deploys and configures Argo Workflows controller and executor images" "Internal RHOAI"
+        s3Storage = softwareSystem "S3 / Minio" "Pipeline artifact storage (upload/download)" "External"
         postgresql = softwareSystem "PostgreSQL" "Optional workflow archive and node status offloading" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
         gcs = softwareSystem "Google Cloud Storage" "Alternative artifact storage backend" "External"
         azureBlob = softwareSystem "Azure Blob Storage" "Alternative artifact storage backend" "External"
+        gitRepos = softwareSystem "Git Repositories" "Git-based artifact cloning" "External"
+        hdfs = softwareSystem "HDFS" "Hadoop-based artifact storage" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal RHOAI"
 
         # Relationships
-        user -> dspOperator "Creates pipeline runs via DSP API"
-        dspOperator -> argoWorkflows "Deploys controller, creates Workflow CRs"
-        dspOperator -> kubernetes "Manages deployments"
+        dataScientist -> dspOperatorSystem "Submits pipeline runs via"
+        dspOperator -> dspOperatorSystem "Configures pipeline infrastructure"
+        dspOperatorSystem -> argoWorkflows "Deploys and creates Workflow CRs"
+        argoWorkflows -> kubernetes "CRUD on Pods, Workflows, ConfigMaps, Secrets" "HTTPS/443, SA Bearer Token"
+        argoWorkflows -> s3Storage "Upload/download pipeline artifacts" "S3 API HTTPS/443, AccessKey/SecretKey"
+        argoWorkflows -> postgresql "Archive completed workflows" "PostgreSQL/5432, Secret credentials"
+        argoWorkflows -> gcs "Upload/download artifacts (alternative)" "HTTPS/443, ServiceAccountKey"
+        argoWorkflows -> azureBlob "Upload/download artifacts (alternative)" "HTTPS/443, SharedKey/SAS"
+        argoWorkflows -> gitRepos "Clone git-based artifacts" "SSH/22 or HTTPS/443"
+        argoWorkflows -> hdfs "HDFS artifact operations" "Hadoop RPC/9000, Kerberos"
+        prometheus -> argoWorkflows "Scrapes metrics" "HTTP/9090"
 
-        workflowController -> kubernetes "CRUD on Pods, Workflows, ConfigMaps, Secrets" "HTTPS/443 TLS 1.2+ SA Bearer"
-        workflowController -> postgresql "Archive workflows, offload node status" "PostgreSQL/5432 TLS configurable"
-        workflowController -> prometheus "Exposes metrics" "HTTP/9090"
-
-        argoexec -> s3 "Upload/download pipeline artifacts" "HTTPS/443 S3 API"
-        argoexec -> kubernetes "Patch WorkflowTaskResult, read Secrets" "HTTPS/443 TLS 1.2+ SA Bearer"
-        argoexec -> gcs "Upload/download artifacts (alternative)" "HTTPS/443"
-        argoexec -> azureBlob "Upload/download artifacts (alternative)" "HTTPS/443"
+        workflowController -> kubernetes "Watch/create/update Workflows, Pods, CRDs" "HTTPS/443"
+        argoexec -> kubernetes "Patch WorkflowTaskResult, read Secrets" "HTTPS/443"
+        argoexec -> s3Storage "Artifact upload/download" "S3 API HTTPS/443"
+        archiver -> postgresql "Store workflow JSON" "PostgreSQL/5432"
     }
 
     views {
@@ -41,11 +53,12 @@ workspace {
             autoLayout
         }
 
+        component workflowController "ControllerComponents" {
+            include *
+            autoLayout
+        }
+
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -54,14 +67,22 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Container" {
-                background #438DD5
+            element "Software System" {
+                background #4a90e2
                 color #ffffff
             }
-            element "Person" {
-                background #08427B
+            element "Container" {
+                background #438dd5
                 color #ffffff
-                shape person
+            }
+            element "Component" {
+                background #85bbf0
+                color #000000
+            }
+            element "Person" {
+                background #9b59b6
+                color #ffffff
+                shape Person
             }
         }
     }

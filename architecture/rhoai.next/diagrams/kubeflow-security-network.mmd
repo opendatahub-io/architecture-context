@@ -1,94 +1,80 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["Data Scientist / User Browser"]
+        User["User / Browser / Dashboard"]
     end
 
-    subgraph Ingress["INGRESS (Gateway API)"]
-        Gateway["data-science-gateway<br/>Namespace: openshift-ingress<br/>443/TCP → 8443 or 8888<br/>TLS 1.2+"]
+    subgraph Ingress["INGRESS (Gateway API - TLS Termination)"]
+        Gateway["data-science-gateway<br/>Namespace: openshift-ingress<br/>443/TCP → backend<br/>TLS 1.2+ SIMPLE"]
     end
 
-    subgraph ControllerNS["CONTROLLER NAMESPACE (opendatahub)"]
+    subgraph ClusterInternal["CLUSTER INTERNAL (NetworkPolicy Enforced)"]
         direction TB
 
-        KFCtrl["notebook-controller<br/>SA: notebook-controller-service-account<br/>Ports: 8080 (metrics), 8081 (health)"]
+        subgraph NS_Controller["Namespace: opendatahub"]
+            direction TB
+            NBCtrl["notebook-controller<br/>SA: notebook-controller-service-account<br/>Metrics: 8080/TCP, Health: 8081/TCP"]
+            ODHCtrl["odh-notebook-controller<br/>SA: odh-notebook-controller-manager<br/>Metrics: 8080/TCP, Health: 8081/TCP"]
+            WebhookSvc["Webhook Service<br/>443→8443/TCP<br/>TLS: OpenShift Service CA"]
+        end
 
-        ODHCtrl["odh-notebook-controller<br/>SA: odh-notebook-controller-manager<br/>Ports: 8080, 8081, 8443 (webhook)<br/>GOMEMLIMIT: 3600MiB"]
-
-        WebhookSvc["Webhook Service<br/>443/TCP → 8443/TCP<br/>TLS: OpenShift Service CA<br/>/mutate-notebook-v1<br/>/validate-notebook-v1"]
-
-        HTTPRouteCR["HTTPRoute CR<br/>nb-{ns}-{notebook}<br/>ParentRef: data-science-gateway<br/>BackendRef: cross-namespace"]
+        subgraph NS_User["Namespace: {user-namespace}"]
+            direction TB
+            KRBP["kube-rbac-proxy sidecar<br/>8443/TCP HTTPS<br/>TLS: per-notebook cert<br/>Auth: TokenReview + SAR"]
+            NotebookPod["Notebook Pod (Jupyter)<br/>8888/TCP HTTP<br/>Image: ImageStream-resolved<br/>fsGroup: 100"]
+            NetPol["NetworkPolicy<br/>Ingress: controller→8888<br/>Ingress: gateway→8443"]
+        end
     end
 
-    subgraph NotebookNS["NOTEBOOK NAMESPACE ({user-namespace})"]
-        direction TB
-
-        KRBP["kube-rbac-proxy Sidecar<br/>8443/TCP (HTTPS, per-notebook TLS)<br/>8444/TCP (health)<br/>Auth: TokenReview + SAR<br/>Policy: get on notebooks"]
-
-        NotebookPod["Notebook Pod (Jupyter)<br/>8888/TCP HTTP<br/>StatefulSet (0 or 1 replica)<br/>fsGroup: 100"]
-
-        NetPolicy["NetworkPolicy<br/>ctrl-nb-{notebook}-np<br/>Allow: controller→8888<br/>Allow: gateway→8443/8888"]
-
-        RefGrant["ReferenceGrant<br/>nb-{ns}-{notebook}<br/>Allows cross-namespace<br/>HTTPRoute→Service"]
+    subgraph K8sServices["KUBERNETES SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
     end
 
-    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>TokenReview, SAR"]
-
-        ServiceCA["OpenShift Service CA<br/>TLS cert injection"]
-    end
-
-    subgraph PlatformDeps["INTERNAL PLATFORM DEPENDENCIES"]
-        DSPA["Data Science Pipelines Operator<br/>DSPA CRD<br/>Pipeline secret injection"]
-        MLflow["MLflow Operator<br/>ClusterRole binding<br/>Tracking integration"]
-        Feast["Feast<br/>ConfigMap mount<br/>/opt/app-root/src/feast-config"]
-        ImageStreams["OpenShift ImageStreams<br/>Image resolution"]
+    subgraph PlatformServices["PLATFORM SERVICES (Optional)"]
+        DSPA["DSPA Service<br/>HTTP (in-cluster)<br/>SA Token Auth"]
+        ImageStreams["OpenShift ImageStreams<br/>6443/TCP HTTPS<br/>SA Token Auth"]
     end
 
     %% External → Ingress
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>No Auth (Gateway level)"| Gateway
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>No auth (deferred)"| Gateway
 
-    %% Ingress → Notebook (Auth path)
-    Gateway -->|"HTTPS/8443<br/>TLS (per-notebook cert)<br/>Auth: kube-rbac-proxy"| KRBP
+    %% Ingress → Auth path
+    Gateway -->|"HTTPS/8443<br/>TLS (notebook cert)<br/>via HTTPRoute"| KRBP
 
-    %% kube-rbac-proxy → API (auth check)
-    KRBP -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token<br/>TokenReview + SAR"| K8sAPI
+    %% Auth verification
+    KRBP -->|"HTTPS/6443<br/>TLS 1.2+<br/>TokenReview + SAR"| K8sAPI
 
-    %% kube-rbac-proxy → Notebook (proxy)
-    KRBP -->|"HTTP/8888<br/>No encryption (localhost)<br/>Pre-authenticated"| NotebookPod
+    %% Auth proxy → Notebook
+    KRBP -->|"HTTP/8888<br/>localhost<br/>No auth (verified upstream)"| NotebookPod
 
-    %% Controllers → API
-    KFCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token<br/>StatefulSet, Service CRUD"| K8sAPI
-    ODHCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token<br/>HTTPRoute, NetworkPolicy,<br/>Secret, ConfigMap CRUD"| K8sAPI
+    %% Controller → K8s API
+    NBCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    ODHCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+
+    %% K8s API → Webhook
+    K8sAPI -->|"HTTPS/443→8443<br/>TLS (Service CA)<br/>API server cert"| WebhookSvc
 
     %% Culling
-    KFCtrl -->|"HTTP/8888<br/>No encryption<br/>No Auth<br/>/api/kernels, /api/terminals"| NotebookPod
-
-    %% Webhook
-    K8sAPI -->|"HTTPS/443→8443<br/>TLS (Service CA)<br/>API TLS client cert"| WebhookSvc
-
-    %% Service CA
-    ServiceCA -.->|"cert injection"| WebhookSvc
-    ServiceCA -.->|"cert injection"| KRBP
+    NBCtrl -->|"HTTP/8888<br/>No encryption<br/>polls /api/kernels"| NotebookPod
 
     %% Platform integrations
-    ODHCtrl -.->|"HTTPS/6443<br/>Read DSPA CR"| DSPA
-    ODHCtrl -.->|"ClusterRole bind"| MLflow
-    ODHCtrl -.->|"ConfigMap mount"| Feast
-    ODHCtrl -.->|"HTTPS/6443<br/>Image resolution"| ImageStreams
+    ODHCtrl -.->|"HTTPS/6443<br/>SA Token"| DSPA
+    ODHCtrl -.->|"HTTPS/6443<br/>SA Token"| ImageStreams
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef controller fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef notebook fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef controlplane fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef platform fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
     classDef security fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef notebook fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef k8s fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef netpol fill:#f0f0f0,stroke:#666,stroke-width:1px,stroke-dasharray: 5 5
 
     class User external
     class Gateway ingress
-    class KFCtrl,ODHCtrl,WebhookSvc,HTTPRouteCR controller
-    class NotebookPod,NetPolicy,RefGrant notebook
-    class K8sAPI,ServiceCA controlplane
-    class DSPA,MLflow,Feast,ImageStreams platform
+    class NBCtrl,ODHCtrl,WebhookSvc controller
     class KRBP security
+    class NotebookPod notebook
+    class K8sAPI k8s
+    class DSPA,ImageStreams platform
+    class NetPol netpol

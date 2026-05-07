@@ -1,82 +1,89 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["Data Scientist / kubectl"]
+        User["Data Scientist / User"]
     end
 
     subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>RBAC AuthZ"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token / Client Cert / SA Token"]
     end
 
     subgraph OperatorNS["OPERATOR NAMESPACE (opendatahub)"]
         direction TB
-
         subgraph OperatorPod["Training Operator Pod"]
-            Controller["Controller<br/>SA: training-operator<br/>FIPS: strictfipsruntime"]
-            WebhookSrv["Webhook Server<br/>9443/TCP HTTPS<br/>TLS (cert-controller)"]
-            Metrics["Metrics<br/>8080/TCP HTTP"]
-            Probes["Health Probes<br/>8081/TCP HTTP"]
+            Controller["Training Operator Controller<br/>SA: training-operator<br/>FIPS: strictfipsruntime"]
+
+            subgraph Ports["Listening Ports"]
+                Webhook["Webhook Server<br/>9443/TCP HTTPS<br/>TLS (self-signed cert)<br/>5 validating webhooks"]
+                Metrics["Metrics<br/>8080/TCP HTTP<br/>No auth"]
+                Health["Health/Ready<br/>8081/TCP HTTP<br/>No auth"]
+            end
         end
 
-        WebhookSvc["Service: kubeflow-training-operator<br/>ClusterIP 443→9443"]
+        WebhookSvc["Service: kubeflow-training-operator<br/>ClusterIP<br/>443→9443 (webhook)"]
+        WebhookSecret["Secret: kubeflow-training-operator-webhook-cert<br/>kubernetes.io/tls<br/>Provisioned by: cert-controller<br/>Auto-rotate: Yes"]
     end
 
-    subgraph JobNS["JOB NAMESPACE (user-namespace)"]
+    subgraph JobNS["JOB NAMESPACES (user namespaces)"]
         direction TB
 
-        subgraph StandardJob["Standard Job (PyTorch/TF/JAX/XGBoost/Paddle)"]
-            MasterPod["Master Pod<br/>headless svc DNS"]
-            WorkerPods["Worker Pods<br/>headless svc DNS"]
+        subgraph StandardJobs["PyTorch / TF / JAX / XGBoost / Paddle Jobs"]
+            MasterPod["Master/Chief Pod<br/>Headless Service DNS"]
+            WorkerPods["Worker Pods (0..N)<br/>Direct pod-to-pod TCP<br/>No encryption"]
         end
 
-        subgraph MPIJobGroup["MPI Job"]
-            LauncherPod["Launcher Pod<br/>SA: jobName-launcher<br/>kubectl-delivery init"]
+        subgraph MPIJobs["MPI Jobs (different pattern)"]
+            LauncherPod["Launcher Pod<br/>SA: {jobName}-launcher<br/>Init: kubectl-delivery"]
             MPIWorkers["MPI Worker Pods"]
+            MPIRbac["Per-job RBAC:<br/>SA + Role + RoleBinding<br/>pods/exec on specific pods"]
         end
     end
 
     subgraph OptionalIntegrations["OPTIONAL INTEGRATIONS"]
-        Volcano["Volcano Scheduler<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token"]
-        SchedPlugins["scheduler-plugins<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token"]
-        Prometheus["Prometheus<br/>PodMonitor<br/>8080/TCP HTTP"]
+        Volcano["Volcano Scheduler<br/>PodGroup CRD<br/>scheduling.volcano.sh"]
+        SchedPlugins["scheduler-plugins<br/>PodGroup CRD<br/>scheduling.x-k8s.io"]
+        Prometheus["Prometheus<br/>PodMonitor scrape"]
     end
 
     %% External flows
     User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| K8sAPI
 
-    %% Webhook flow
-    K8sAPI -->|"HTTPS/9443<br/>TLS (self-signed)<br/>API server client cert<br/>Fail policy"| WebhookSvc
-    WebhookSvc --> WebhookSrv
+    %% API Server to Webhook
+    K8sAPI -->|"HTTPS/9443<br/>TLS (self-signed)<br/>API server client cert<br/>Admission validation"| WebhookSvc
+    WebhookSvc --> Webhook
 
-    %% Controller to API
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>CRUD: Pods, Services,<br/>CMs, SA, RBAC"| K8sAPI
+    %% Controller to API Server
+    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>CRD reconciliation + Pod/Service CRUD"| K8sAPI
 
     %% Controller creates job resources
-    Controller -.->|"creates"| MasterPod
-    Controller -.->|"creates"| WorkerPods
-    Controller -.->|"creates"| LauncherPod
-    Controller -.->|"creates"| MPIWorkers
+    Controller -->|"Creates pods,<br/>headless services,<br/>env vars"| StandardJobs
+    Controller -->|"Creates pods,<br/>SA, Role, RoleBinding,<br/>ConfigMap"| MPIJobs
 
-    %% Pod-to-pod communication
-    WorkerPods -->|"TCP (framework ports)<br/>No encryption<br/>Headless svc DNS"| MasterPod
+    %% Standard job communication
+    WorkerPods -->|"TCP (per config)<br/>No encryption<br/>Headless Service DNS"| MasterPod
 
-    %% MPI launcher flow
-    LauncherPod -->|"HTTPS/443<br/>TLS 1.2+<br/>Per-job SA Token<br/>pods/exec RBAC"| K8sAPI
-    K8sAPI -->|"kubectl exec<br/>pod-specific RBAC"| MPIWorkers
+    %% MPI job communication
+    LauncherPod -->|"HTTPS/443<br/>TLS 1.2+<br/>Per-job SA Token<br/>kubectl exec (pods/exec RBAC)"| K8sAPI
+    K8sAPI -->|"Kubernetes exec<br/>TLS 1.2+"| MPIWorkers
 
     %% Optional integrations
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>PodGroup CRUD"| Volcano
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>PodGroup CRUD"| SchedPlugins
-    Prometheus -->|"HTTP/8080<br/>No auth<br/>PodMonitor"| Metrics
+    Controller -.->|"HTTPS/443<br/>SA Token<br/>PodGroup CRUD"| Volcano
+    Controller -.->|"HTTPS/443<br/>SA Token<br/>PodGroup CRUD"| SchedPlugins
+    Prometheus -.->|"HTTP/8080<br/>No encryption<br/>No auth"| Metrics
+
+    %% TLS cert
+    WebhookSecret -.->|"Mounted as TLS cert"| Webhook
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef controlplane fill:#e6f3ff,stroke:#4a90e2,stroke-width:2px
     classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef jobns fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef optional fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef optional fill:#f0f0f0,stroke:#999,stroke-width:1px,stroke-dasharray: 5 5
+    classDef secret fill:#ffe6e6,stroke:#cc0000,stroke-width:1px
 
     class User external
     class K8sAPI controlplane
-    class Controller,WebhookSrv,Metrics,Probes,WebhookSvc operator
-    class MasterPod,WorkerPods,LauncherPod,MPIWorkers jobns
+    class Controller,Webhook,Metrics,Health,WebhookSvc operator
+    class MasterPod,WorkerPods,LauncherPod,MPIWorkers,MPIRbac jobns
     class Volcano,SchedPlugins,Prometheus optional
+    class WebhookSecret secret

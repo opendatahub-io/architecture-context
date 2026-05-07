@@ -1,44 +1,47 @@
 sequenceDiagram
     participant User as Data Scientist
     participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant Webhook as Webhook Server<br/>9443/TCP HTTPS TLS
-    participant Controller as trainer-controller-manager<br/>(controller-runtime)
+    participant Webhook as Trainer Webhook<br/>9443/TCP HTTPS TLS
+    participant Controller as trainer-controller-manager<br/>(TrainJob Reconciler)
     participant JobSet as JobSet Controller
-    participant TrainPod as Training Pod (rank 0)<br/>28080/TCP HTTP
+    participant TrainingPod as Training Pods<br/>(rank 0)
     participant MPIWorker as MPI Worker Pods<br/>2222/TCP SSH
 
-    Note over User, MPIWorker: Flow 1: TrainJob Reconciliation
+    Note over User,MPIWorker: Flow 1: TrainJob Reconciliation
 
-    User->>K8sAPI: kubectl create TrainJob<br/>HTTPS/443, Bearer Token/OIDC
-    K8sAPI->>Webhook: POST /validate-trainer-...-trainjob<br/>HTTPS/9443, API server client cert
+    User->>K8sAPI: kubectl apply TrainJob<br/>Auth: Bearer Token / OIDC
+    K8sAPI->>Webhook: POST /validate-...-trainjob<br/>TLS (auto-rotated cert)
     Webhook-->>K8sAPI: Admission Response (allow/deny)
     K8sAPI-->>User: TrainJob created
 
-    K8sAPI--)Controller: Watch event: TrainJob created
-    Controller->>K8sAPI: GET TrainJob, TrainingRuntime<br/>HTTPS/443, ServiceAccount token
+    K8sAPI->>Controller: Watch event: TrainJob created
+    Controller->>K8sAPI: GET TrainJob, TrainingRuntime/ClusterTrainingRuntime<br/>Auth: ServiceAccount token
     K8sAPI-->>Controller: Runtime spec resolved
 
-    Controller->>K8sAPI: CREATE/PATCH JobSet<br/>HTTPS/443, ServiceAccount token
-    Controller->>K8sAPI: CREATE NetworkPolicy (RHAI)<br/>HTTPS/443, ServiceAccount token
-    Controller->>K8sAPI: UPDATE TrainJob/status<br/>HTTPS/443, ServiceAccount token
+    Controller->>K8sAPI: CREATE/PATCH JobSet<br/>Auth: ServiceAccount token
+    Controller->>K8sAPI: CREATE NetworkPolicy (RHAI)<br/>Auth: ServiceAccount token
+    Controller->>K8sAPI: UPDATE TrainJob/status<br/>Auth: ServiceAccount token
 
-    JobSet--)K8sAPI: Watch event: JobSet
-    JobSet->>K8sAPI: CREATE Jobs/Pods
+    K8sAPI->>JobSet: Watch event: JobSet created
+    JobSet->>K8sAPI: CREATE Jobs & Pods
+    K8sAPI-->>Controller: JobSet status update
 
-    Note over Controller, TrainPod: Flow 2: RHAI Progression Tracking
+    Note over User,MPIWorker: Flow 2: RHAI Progression Tracking
 
     loop Every reconciliation cycle
-        Controller->>K8sAPI: LIST Pods (training job)<br/>HTTPS/443, ServiceAccount token
-        K8sAPI-->>Controller: Pod list with IPs
-        Controller->>TrainPod: GET /metrics<br/>HTTP/28080, plaintext, No auth
-        TrainPod-->>Controller: Training metrics (JSON)
-        Controller->>K8sAPI: PATCH TrainJob annotations<br/>HTTPS/443, ServiceAccount token
+        Controller->>K8sAPI: LIST Pods (label selector)<br/>Auth: ServiceAccount token
+        K8sAPI-->>Controller: Pod list (find rank-0 pod)
+        Controller->>TrainingPod: GET /metrics<br/>28080/TCP HTTP plaintext<br/>No Auth (NetworkPolicy restricted)
+        TrainingPod-->>Controller: Prometheus metrics<br/>(training progress)
+        Controller->>K8sAPI: PATCH TrainJob annotations<br/>(progress data)<br/>Auth: ServiceAccount token
     end
 
-    Note over Controller, MPIWorker: Flow 3: MPI Distributed Training Setup
+    Note over User,MPIWorker: Flow 3: MPI Distributed Training Setup
 
-    Controller->>K8sAPI: CREATE Secret (SSH key pair)<br/>HTTPS/443, ServiceAccount token
-    Controller->>K8sAPI: CREATE ConfigMap (hostfile)<br/>HTTPS/443, ServiceAccount token
-    Note over TrainPod, MPIWorker: MPI launcher initiates distributed training
-    TrainPod->>MPIWorker: SSH connection<br/>SSH/2222, RSA key pair auth
-    MPIWorker-->>TrainPod: Training results
+    Controller->>K8sAPI: CREATE Secret (SSH key pair)<br/>Auth: ServiceAccount token
+    Controller->>K8sAPI: CREATE ConfigMap (MPI hostfile)<br/>Auth: ServiceAccount token
+    K8sAPI-->>Controller: Resources created
+
+    Note over TrainingPod,MPIWorker: MPI Communication
+    TrainingPod->>MPIWorker: SSH connection<br/>2222/TCP SSH<br/>Auth: RSA key pair
+    MPIWorker-->>TrainingPod: Training coordination

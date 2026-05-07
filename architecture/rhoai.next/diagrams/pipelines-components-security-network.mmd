@@ -1,103 +1,78 @@
 graph TB
-    subgraph Platform["PIPELINE ORCHESTRATION (Platform Layer)"]
+    subgraph InitContainer["INIT CONTAINER (Platform Startup - No Network)"]
         direction TB
-        KFP["KFP API Server<br/>SA: ds-pipeline-{dsp}"]
-        Argo["Argo Workflow Controller"]
-        KFP -->|creates workflows| Argo
+        InitPod["odh-pipelines-components<br/>Image: ubi9/python-311<br/>Port: N/A (filesystem only)"]
+        SharedVol["Shared Volume<br/>/config/managed-pipelines"]
+        InitPod -->|"Filesystem<br/>No network"| SharedVol
     end
 
-    subgraph InitZone["INIT CONTAINER (Startup Only)"]
-        Init["odh-pipelines-components<br/>Image: UBI9/python-311<br/>No network access<br/>Filesystem only"]
-    end
-
-    Init -->|"/config/managed-pipelines<br/>(shared volume, no network)"| KFP
-
-    subgraph PipelineSteps["PIPELINE STEP PODS (Ephemeral)"]
+    subgraph PipelineRuntime["PIPELINE RUNTIME (Ephemeral Argo Workflow Pods)"]
         direction TB
 
-        subgraph DataProc["Data Processing"]
-            DL["dataset_download<br/>automl_data_loader<br/>text_extraction"]
-            SDG["sdg<br/>(Synthetic Data Gen)"]
+        subgraph PipelinePods["Namespace: {user-namespace}<br/>SA: pipeline-runner"]
+            GeneralPod["General Components<br/>Image: python:3.11"]
+            AutoMLPod["AutoML Components<br/>Image: odh-automl<br/>(AutoGluon, pandas)"]
+            AutoRAGPod["AutoRAG Components<br/>Image: odh-autorag<br/>(ai4rag, Docling)"]
         end
 
-        subgraph FineTune["Fine-Tuning Control Plane"]
-            TrainCtrl["train_model<br/>(LoRA / OSFT / SFT)<br/>SA: pipeline-runner"]
+        subgraph LocalProcessing["LOCAL (No Network)"]
+            vLLM["vLLM GPU Inference"]
+            LMEval["lm-eval Benchmarks"]
+            Docling["Docling Text Extraction"]
+            ChromaDB["ChromaDB In-Memory"]
         end
 
-        subgraph AutoRAGSteps["AutoRAG Steps"]
-            RAGComps["documents_discovery<br/>documents_indexing<br/>text_extraction<br/>rag_templates_optimization"]
-        end
-
-        subgraph DeploySteps["Deployment"]
-            RegComp["kubeflow_model_registry"]
+        subgraph Storage["PERSISTENT STORAGE"]
+            PVC_RWX["PVC ReadWriteMany<br/>50Gi nfs-csi<br/>(Fine-tuning)"]
+            PVC_RWO["PVC ReadWriteOnce<br/>12Gi<br/>(AutoML)"]
         end
     end
 
-    Argo -->|schedules| DataProc
-    Argo -->|schedules| FineTune
-    Argo -->|schedules| AutoRAGSteps
-    Argo -->|schedules| DeploySteps
-
-    subgraph TrainingZone["TRAINING WORKER PODS (GPU)"]
-        Workers["Training Workers<br/>Multi-GPU / Multi-Node<br/>Created by Kubeflow Trainer"]
+    subgraph K8sInternal["KUBERNETES INTERNAL"]
+        KFPAPI["KFP API Server"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token"]
+        ModelReg["Kubeflow Model Registry<br/>8080/TCP HTTP<br/>⚠ plaintext, no auth"]
+        TrainerPods["Training Worker Pods<br/>(GPU, multi-node)"]
     end
 
-    TrainCtrl -->|"POST TrainingJob CR<br/>HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-
-    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        S3["AWS S3<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM Credentials"]
-        HF["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
-        LlamaStack["Llama Stack API<br/>configurable/TCP<br/>HTTP/HTTPS<br/>API Key"]
-        LLMAPI["OpenAI-compatible LLM<br/>configurable/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token / API Key"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        S3["AWS S3<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM<br/>⚠ verify=False fallback"]
+        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
+        LlamaStack["Llama Stack API<br/>configurable/TCP<br/>HTTP/HTTPS<br/>API Key<br/>⚠ verify=False fallback"]
+        LLMAPI["LLM API Endpoint<br/>configurable/TCP<br/>HTTPS TLS 1.2+<br/>API Key"]
+        OpenAICompat["OpenAI-compat Endpoints<br/>configurable/TCP<br/>HTTPS TLS<br/>Bearer Token<br/>⚠ verify=False fallback"]
     end
 
-    subgraph InternalServices["INTERNAL SERVICES"]
-        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token / RBAC"]
-        ModelReg["Model Registry<br/>8080/TCP HTTP<br/>⚠ PLAINTEXT<br/>⚠ NO AUTH"]
-    end
+    %% Init container flow
+    SharedVol -->|"Filesystem"| KFPAPI
 
-    subgraph Storage["SHARED STORAGE"]
-        PVC_RWX["PVC (RWX, 50Gi, nfs-csi)<br/>Fine-tuning workspace"]
-        PVC_RWO["PVC (RWO, 12Gi)<br/>AutoML workspace"]
-    end
+    %% Pipeline pod egress
+    GeneralPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    GeneralPod -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HFHub
+    GeneralPod -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    GeneralPod -->|"HTTP/8080<br/>plaintext<br/>no auth"| ModelReg
+    GeneralPod -->|"HTTPS<br/>TLS 1.2+<br/>LLM_API_KEY"| LLMAPI
 
-    %% Data Processing egress
-    DL -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM<br/>⚠ SSL fallback"| S3
-    DL -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HF
-    SDG -->|"HTTPS/configurable<br/>TLS 1.2+<br/>LLM_API_KEY"| LLMAPI
+    AutoMLPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
 
-    %% AutoRAG egress
-    RAGComps -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM<br/>⚠ SSL fallback"| S3
-    RAGComps -->|"HTTP(S)/configurable<br/>TLS optional<br/>API Key<br/>⚠ SSL fallback"| LlamaStack
-    RAGComps -->|"HTTPS/configurable<br/>TLS 1.2+<br/>Bearer Token"| LLMAPI
+    AutoRAGPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    AutoRAGPod -->|"HTTP/HTTPS<br/>API Key"| LlamaStack
+    AutoRAGPod -->|"HTTPS<br/>Bearer Token"| OpenAICompat
 
-    %% Training
-    K8sAPI -->|creates| Workers
-    Workers -->|"read/write"| PVC_RWX
-    TrainCtrl -->|"read/write"| PVC_RWX
-
-    %% Deployment
-    RegComp -->|"HTTP/8080<br/>⚠ PLAINTEXT<br/>⚠ NO AUTH"| ModelReg
-
-    %% Storage
-    DL -->|write datasets| PVC_RWX
-    DL -->|write datasets| PVC_RWO
+    K8sAPI -->|"Schedule"| TrainerPods
 
     %% Styling
-    classDef platform fill:#b8e6ff,stroke:#4a90e2,stroke-width:2px
     classDef init fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
     classDef pipeline fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef training fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef internal fill:#e8f5e9,stroke:#82b366,stroke-width:2px
+    classDef k8sinternal fill:#7ed321,stroke:#333,stroke-width:2px
+    classDef external fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef warning fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef storage fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef warning fill:#ffe6cc,stroke:#d79b00,stroke-width:3px
 
-    class KFP,Argo platform
-    class Init init
-    class DL,SDG,TrainCtrl,RAGComps,RegComp pipeline
-    class Workers training
-    class S3,HF,LlamaStack,LLMAPI external
-    class K8sAPI internal
+    class InitPod,SharedVol init
+    class GeneralPod,AutoMLPod,AutoRAGPod pipeline
+    class KFPAPI,K8sAPI,TrainerPods k8sinternal
     class ModelReg warning
+    class S3,HFHub,LlamaStack,LLMAPI,OpenAICompat external
     class PVC_RWX,PVC_RWO storage
+    class vLLM,LMEval,Docling,ChromaDB pipeline

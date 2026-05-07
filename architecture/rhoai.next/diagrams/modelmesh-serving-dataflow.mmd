@@ -1,49 +1,51 @@
 sequenceDiagram
+    autonumber
+
     participant Client as External Client
-    participant OAuthProxy as oauth-proxy Sidecar<br/>8443/TCP HTTPS TLS
-    participant RESTProxy as REST Proxy Sidecar<br/>8008/TCP HTTP
-    participant ModelMesh as ModelMesh Container<br/>8033/TCP gRPC
-    participant Runtime as Runtime Container<br/>(Triton/MLServer/OVMS/TorchServe)
-    participant Puller as Puller Sidecar<br/>8086/TCP gRPC
-    participant etcd as etcd Cluster<br/>2379/TCP gRPC
-    participant Storage as S3/GCS/Azure/PVC<br/>443/TCP HTTPS
-    participant Controller as modelmesh-controller<br/>Operator
+    participant OAuthProxy as OAuth Proxy<br/>8443/TCP HTTPS TLS
+    participant RESTProxy as REST Proxy<br/>8008/TCP HTTP
+    participant MM as ModelMesh<br/>8033/TCP gRPC
+    participant Runtime as Runtime Container<br/>(Triton/MLServer/OVMS)
+    participant etcd as etcd<br/>2379/TCP gRPC
+    participant Controller as modelmesh-controller
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Puller as Puller Sidecar<br/>8086/TCP gRPC
+    participant Storage as External Storage<br/>S3/GCS/Azure 443/TCP
 
-    Note over Client, etcd: Flow 1: gRPC Inference Request
-    Client->>ModelMesh: gRPC inference request<br/>8033/TCP, Optional TLS/mTLS
-    ModelMesh->>etcd: Check model placement/routing<br/>2379/TCP, Optional TLS/mTLS
-    etcd-->>ModelMesh: Model location & status
-    ModelMesh->>Runtime: Forward to runtime<br/>gRPC (localhost/UDS)
-    Runtime-->>ModelMesh: Prediction result
-    ModelMesh-->>Client: gRPC response
+    Note over Client,MM: Flow 1: gRPC Inference Request
+    Client->>MM: gRPC inference request<br/>8033/TCP, Optional TLS/mTLS
+    MM->>Runtime: Forward to runtime<br/>gRPC (localhost/UDS)
+    Runtime-->>MM: Inference result
+    MM->>etcd: Update model state<br/>2379/TCP, Optional TLS/mTLS
+    MM-->>Client: gRPC response
 
-    Note over Client, etcd: Flow 2: REST Inference via OAuth
-    Client->>OAuthProxy: HTTPS POST inference<br/>8443/TCP TLS, OAuth token
-    OAuthProxy->>OAuthProxy: Validate OAuth token<br/>SAR: get services in namespace
+    Note over Client,RESTProxy: Flow 2: REST Inference Request (via OAuth)
+    Client->>OAuthProxy: HTTPS POST /v2/models/:predict<br/>8443/TCP TLS, OAuth token
+    OAuthProxy->>OAuthProxy: Validate OAuth token<br/>SAR: get services
     OAuthProxy->>RESTProxy: Forward (pre-authenticated)<br/>8008/TCP HTTP (localhost)
-    RESTProxy->>ModelMesh: Translate REST→gRPC<br/>8033/TCP, Optional TLS (localhost)
-    ModelMesh->>Runtime: Forward to runtime<br/>gRPC (localhost/UDS)
-    Runtime-->>ModelMesh: Prediction result
-    ModelMesh-->>RESTProxy: gRPC response
+    RESTProxy->>MM: Translate REST→gRPC<br/>8033/TCP, Optional TLS
+    MM->>Runtime: Forward to runtime<br/>gRPC (localhost/UDS)
+    Runtime-->>MM: Inference result
+    MM-->>RESTProxy: gRPC response
     RESTProxy-->>OAuthProxy: HTTP response
-    OAuthProxy-->>Client: HTTPS JSON response
+    OAuthProxy-->>Client: HTTPS response
 
-    Note over Controller, Storage: Flow 3: Model Loading
-    Controller->>K8sAPI: Watch Predictor/InferenceService CRs<br/>443/TCP HTTPS, SA token
-    K8sAPI-->>Controller: New Predictor event
-    Controller->>ModelMesh: registerModel / setVModel<br/>8033/TCP gRPC, Optional TLS
-    ModelMesh->>etcd: Store model registration<br/>2379/TCP, credentials
-    ModelMesh->>Puller: Trigger model download<br/>8086/TCP gRPC
-    Puller->>Storage: Download model artifacts<br/>443/TCP HTTPS TLS, storage credentials
+    Note over Controller,Storage: Flow 3: Model Loading
+    Controller->>K8sAPI: Watch Predictor CR changes<br/>443/TCP HTTPS, SA token
+    Controller->>MM: registerModel / setVModel<br/>8033/TCP gRPC, Optional TLS
+    MM->>etcd: Store model metadata<br/>2379/TCP gRPC
+    MM->>Puller: Trigger model download<br/>8086/TCP gRPC
+    Puller->>Storage: Download model artifacts<br/>443/TCP HTTPS, Storage creds
     Storage-->>Puller: Model artifacts
-    Puller->>Runtime: Load model via adapter<br/>8085/TCP gRPC (localhost)
-    Runtime-->>ModelMesh: Model loaded confirmation
+    Puller->>Runtime: Load model via adapter<br/>8085/TCP or UDS
+    Runtime-->>MM: Model loaded confirmation
 
-    Note over Controller, K8sAPI: Flow 4: Controller Reconciliation
-    Controller->>K8sAPI: Read ServingRuntime spec<br/>443/TCP HTTPS, SA token
-    K8sAPI-->>Controller: ServingRuntime definition
-    Controller->>Controller: Render deployment template<br/>14-step transformation pipeline
+    Note over Controller,K8sAPI: Flow 4: Controller Reconciliation
+    Controller->>K8sAPI: Watch CRDs (ServingRuntime, Predictor)<br/>443/TCP HTTPS, SA token
     Controller->>K8sAPI: Create/Update Deployment<br/>443/TCP HTTPS, SA token
-    Controller->>K8sAPI: Create/Update Service (headless)<br/>443/TCP HTTPS, SA token
-    Controller->>K8sAPI: Create/Update HPA (if enabled)<br/>443/TCP HTTPS, SA token
+    Controller->>K8sAPI: Create/Update Service<br/>443/TCP HTTPS, SA token
+    Controller->>K8sAPI: Manage HPA, ConfigMaps, Secrets<br/>443/TCP HTTPS, SA token
+
+    Note over etcd,Controller: Flow 5: Event-Driven Reconciliation
+    etcd-->>Controller: Model/VModel state change event<br/>(ModelMesh Event Stream watcher)
+    Controller->>Controller: Convert to GenericEvent<br/>Trigger Predictor reconcile

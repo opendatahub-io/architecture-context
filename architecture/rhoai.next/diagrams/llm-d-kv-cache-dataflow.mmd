@@ -1,62 +1,48 @@
 sequenceDiagram
-    participant VLLMPod as vLLM/SGLang Pod<br/>5557/TCP ZMQ PUB
-    participant ZMQSub as ZMQ Subscriber<br/>5557/TCP ZMQ SUB
-    participant Pool as kvevents.Pool<br/>Sharded Workers
-    participant Adapter as Engine Adapter<br/>(vLLM/SGLang)
+    participant vLLM as vLLM/SGLang Pod<br/>5557/TCP ZMQ PUB
+    participant ZMQ as ZMQ Subscriber<br/>5557/TCP ZMQ SUB
+    participant Pool as kvevents.Pool<br/>Sharded Workers (4x)
+    participant Adapter as EngineAdapter<br/>(vLLM/SGLang)
     participant Index as kvblock.Index<br/>(InMemory/Redis)
-    participant EPP as llm-d EPP<br/>(Host Scheduler)
-    participant Indexer as KV-Cache Indexer<br/>ScoreTokens API
+    participant EPP as Host Scheduler (EPP)
+    participant Indexer as kvcache.Indexer
     participant TokenProc as TokenProcessor<br/>FNV-64a
-    participant UdsClient as UDS Tokenizer Client<br/>gRPC over UDS
-    participant UdsServer as UDS Tokenizer Server<br/>Python gRPC Sidecar
-    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
-    participant FSBackend as llmd_fs_backend<br/>Python/C++/CUDA
-    participant Storage as Shared Storage<br/>(NFS/PVC)
+    participant Scorer as KVBlockScorer
+    participant TokenClient as UdsTokenizer Client<br/>gRPC over UDS
+    participant TokenServer as UDS Tokenizer Server<br/>Python gRPC
+    participant Render as vLLM OpenAIServingRender<br/>CPU mode
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
 
-    rect rgb(230, 245, 255)
-        Note over VLLMPod,Index: Flow 1: KV-Event Ingestion (Write Path)
-        VLLMPod->>ZMQSub: ZMQ PUB (msgpack)<br/>5557/TCP, No encryption
-        ZMQSub->>Pool: Go channel (in-process)
-        Note right of Pool: FNV-1a hash of pod ID<br/>→ deterministic worker
-        Pool->>Adapter: Dispatch to worker<br/>msgpack decode
-        Adapter->>Index: Add(engineKey, requestKey, pod)<br/>or Evict(engineKey)
-    end
+    Note over vLLM, Index: Flow 1: KV-Event Ingestion (Write Path)
+    vLLM->>ZMQ: BlockStored/BlockRemoved/AllBlocksCleared<br/>ZMQ msgpack, no encryption
+    ZMQ->>Pool: Dispatch to worker<br/>FNV-1a(podID) → worker shard
+    Pool->>Adapter: Decode msgpack message
+    Adapter->>Adapter: Extract engine key + token chunk
+    Adapter->>Index: Add(engineKey, requestKey, podID)<br/>or Evict(engineKey, podID)
 
-    rect rgb(230, 255, 230)
-        Note over EPP,TokenProc: Flow 2: Pod Scoring (Read Path)
-        EPP->>Indexer: ScoreTokens(tokens, model, pods)<br/>Go API (in-process)
-        Indexer->>TokenProc: ComputeBlockKeys(tokens)<br/>FNV-64a hash chunks
-        TokenProc-->>Indexer: []BlockKey
-        Indexer->>Index: Lookup(blockKeys)
-        Index-->>Indexer: map[pod]matchedBlocks
-        Indexer->>Indexer: Score(matches, totalBlocks)
-        Indexer-->>EPP: map[string]float64<br/>(pod → cache-hit score)
-    end
+    Note over EPP, Scorer: Flow 2: Pod Scoring (Read Path)
+    EPP->>Indexer: ScoreTokens(modelID, tokens, podIDs)
+    Indexer->>TokenProc: ComputeBlockKeys(tokens, blockSize)
+    TokenProc->>TokenProc: FNV-64a hash per block
+    Indexer->>Index: Lookup(requestKeys)
+    Index-->>Indexer: blockKey → []podIDs
+    Indexer->>Scorer: Score(podCacheHits)
+    Scorer-->>Indexer: map[podID]float64
+    Indexer-->>EPP: Scored pod rankings
 
-    rect rgb(255, 245, 230)
-        Note over EPP,UdsServer: Flow 3: Tokenization (Sidecar)
-        EPP->>UdsClient: Tokenize(prompt, model)
-        UdsClient->>UdsServer: gRPC over UDS<br/>/tmp/tokenizer/tokenizer-uds.socket<br/>No encryption (local IPC)
-        Note right of UdsServer: vLLM OpenAIServingRender<br/>(CPU mode)
-        UdsServer-->>UdsClient: TokenIDs[]
-        UdsClient-->>EPP: TokenIDs[]
+    Note over TokenClient, HF: Flow 3: Tokenization (Sidecar)
+    EPP->>TokenClient: Tokenize(prompt, modelID)
+    TokenClient->>TokenServer: gRPC TokenizeRequest<br/>UDS /tmp/tokenizer/tokenizer-uds.socket
+    TokenServer->>Render: apply_chat_template()
+    Note right of TokenServer: First call downloads<br/>tokenizer model
+    TokenServer-->>HF: GET model tokenizer files<br/>HTTPS 443, HF Token (optional)
+    HF-->>TokenServer: Tokenizer artifacts
+    Render-->>TokenServer: Token IDs
+    TokenServer-->>TokenClient: gRPC TokenizeResponse
+    TokenClient-->>EPP: []int32 token IDs
 
-        Note over UdsServer,HFHub: First-time tokenizer init
-        UdsServer->>HFHub: Download tokenizer<br/>HTTPS 443/TCP, TLS 1.2+
-        HFHub-->>UdsServer: Tokenizer model files
-    end
-
-    rect rgb(255, 230, 230)
-        Note over VLLMPod,Storage: Flow 4: KV-Cache Offloading (fs_backend)
-        VLLMPod->>FSBackend: OffloadingConnector API<br/>(Python/C++ in-process)
-        FSBackend->>Storage: POSIX write<br/>GPU → Host → Disk
-        Note right of FSBackend: C++/CUDA handles<br/>GPU-to-host copies
-        Storage-->>FSBackend: ACK
-        FSBackend-->>VLLMPod: Offload complete
-
-        Note over VLLMPod,Storage: KV-Cache Restore
-        VLLMPod->>FSBackend: Restore request
-        FSBackend->>Storage: POSIX read
-        Storage-->>FSBackend: KV-cache blocks
-        FSBackend-->>VLLMPod: Blocks loaded to GPU
-    end
+    Note over vLLM, Index: Flow 4: KV-Cache Offloading (fs_backend)
+    vLLM->>vLLM: OffloadingConnector.start_store()
+    Note right of vLLM: llmd_fs_backend plugin<br/>GPU → Host → Storage
+    vLLM->>vLLM: CUDA memcpy D2H (GPU→CPU)
+    vLLM->>vLLM: POSIX write to NFS/PVC<br/>or NIXL object store

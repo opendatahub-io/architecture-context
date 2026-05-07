@@ -1,77 +1,75 @@
 graph TB
-    subgraph KubeflowControllers["Kubeflow Notebook Controllers (Dual-Controller Architecture)"]
+    subgraph KubeflowControllers["Kubeflow Notebook Controllers"]
         direction TB
 
-        subgraph NotebookController["notebook-controller (Upstream Kubeflow)"]
-            NC_Main["Controller Manager<br/>Go Operator"]
-            NC_Culling["Culling Controller<br/>Idle Detection"]
-            NC_Main --- NC_Culling
+        subgraph NotebookCtrl["notebook-controller (upstream)"]
+            NC_Main[Notebook Controller<br/>Reconciler]
+            NC_Culler[Culling Controller<br/>Reconciler]
+            NC_Metrics[Metrics Server<br/>:8080]
+            NC_Health[Health Probes<br/>:8081]
         end
 
-        subgraph ODHController["odh-notebook-controller (RHOAI Extension)"]
-            ODH_Main["Controller Manager<br/>Go Operator"]
-            ODH_MutWebhook["Mutating Webhook<br/>8443/TCP"]
-            ODH_ValWebhook["Validating Webhook<br/>8443/TCP"]
-            ODH_Main --- ODH_MutWebhook
-            ODH_Main --- ODH_ValWebhook
+        subgraph ODHCtrl["odh-notebook-controller (RHOAI)"]
+            ODH_Main[ODH Notebook Controller<br/>Reconciler]
+            ODH_MutWebhook[Mutating Webhook<br/>:8443/mutate-notebook-v1]
+            ODH_ValWebhook[Validating Webhook<br/>:8443/validate-notebook-v1]
+            ODH_Metrics[Metrics Server<br/>:8080]
+            ODH_Health[Health Probes<br/>:8081]
         end
 
-        subgraph CommonLib["common (Shared Library)"]
-            Helpers["Reconciliation Helpers<br/>Deployment, Service,<br/>StatefulSet, VirtualService"]
+        subgraph CommonLib["common library"]
+            Common[Reconcile Helpers<br/>Deployment, Service,<br/>StatefulSet, VirtualService]
         end
 
-        NotebookController -.->|uses| CommonLib
-        ODHController -.->|uses| CommonLib
+        NC_Main -.->|uses| Common
+        ODH_Main -.->|uses| Common
     end
 
     %% CRD
-    User["Data Scientist / User"] -->|creates| NotebookCR["Notebook CR<br/>kubeflow.org/v1"]
+    User[User / Dashboard] -->|creates/updates| NotebookCR["Notebook CR<br/>kubeflow.org/v1"]
 
-    %% Upstream controller watches
+    %% Webhook flow
+    NotebookCR -->|admission| ODH_MutWebhook
+    NotebookCR -->|admission| ODH_ValWebhook
+
+    %% Controller watches
     NotebookCR -->|watched by| NC_Main
-    NC_Main -->|creates| StatefulSet["StatefulSet<br/>Notebook Pod"]
-    NC_Main -->|creates| Service["ClusterIP Service<br/>80/TCP to 8888"]
-    NC_Main -->|"creates (optional)"| VirtualService["Istio VirtualService<br/>when USE_ISTIO=true"]
+    NotebookCR -->|watched by| ODH_Main
+    NotebookCR -->|watched by| NC_Culler
+
+    %% notebook-controller creates
+    NC_Main -->|creates| StatefulSet[StatefulSet]
+    NC_Main -->|creates| SVC_NB["Service<br/>{notebook-name}"]
+    NC_Main -->|creates optional| VS["VirtualService<br/>(Istio mode)"]
+
+    %% odh-notebook-controller creates
+    ODH_Main -->|creates| HTTPRoute["HTTPRoute<br/>nb-{ns}-{name}"]
+    ODH_Main -->|creates| RefGrant["ReferenceGrant<br/>(cross-namespace)"]
+    ODH_Main -->|creates| NetPol["NetworkPolicy<br/>(per notebook)"]
+    ODH_Main -->|injects| KRBP["kube-rbac-proxy<br/>sidecar (8443)"]
+    ODH_Main -->|creates| DSPASecret["ds-pipeline-config<br/>Secret"]
 
     %% Culling flow
-    NC_Culling -->|polls /api/kernels<br/>/api/terminals| StatefulSet
-    NC_Culling -->|sets stop annotation| NotebookCR
-
-    %% ODH controller watches
-    NotebookCR -->|watched by| ODH_Main
-
-    %% Webhook intercepts
-    NotebookCR -.->|mutated by| ODH_MutWebhook
-    NotebookCR -.->|validated by| ODH_ValWebhook
-
-    %% ODH creates resources
-    ODH_Main -->|creates| HTTPRoute["HTTPRoute<br/>Gateway API"]
-    ODH_Main -->|creates| RefGrant["ReferenceGrant<br/>Cross-Namespace"]
-    ODH_Main -->|creates| NetPol["NetworkPolicy<br/>Per Notebook"]
-    ODH_Main -->|injects| KubeRBACProxy["kube-rbac-proxy<br/>Sidecar 8443/TCP"]
-
-    %% Integrations
-    ODH_MutWebhook -->|injects| DSPASecret["DSPA Pipeline Secret"]
-    ODH_MutWebhook -->|injects| MLflowEnv["MLflow Env Vars"]
-    ODH_MutWebhook -->|mounts| FeastConfig["Feast ConfigMap"]
+    NC_Culler -->|polls /api/kernels<br/>/api/terminals| SVC_NB
 
     %% External access
-    UserBrowser["User Browser"] -->|HTTPS/443| Gateway["data-science-gateway<br/>Gateway API"]
-    Gateway -->|8443/TCP| KubeRBACProxy
-    KubeRBACProxy -->|8888/TCP| StatefulSet
+    Gateway["Gateway<br/>data-science-gateway<br/>443/TCP"] -->|routes via| HTTPRoute
+    HTTPRoute -->|backend ref| KRBP
+    KRBP -->|authenticated| SVC_NB
 
     %% Styling
-    style NC_Main fill:#4a90e2,stroke:#333,color:#fff
-    style NC_Culling fill:#4a90e2,stroke:#333,color:#fff
-    style ODH_Main fill:#7ed321,stroke:#333,color:#fff
-    style ODH_MutWebhook fill:#7ed321,stroke:#333,color:#fff
-    style ODH_ValWebhook fill:#7ed321,stroke:#333,color:#fff
-    style Helpers fill:#9b9b9b,stroke:#333,color:#fff
-    style NotebookCR fill:#f5a623,stroke:#333,color:#fff
-    style StatefulSet fill:#bd10e0,stroke:#333,color:#fff
-    style HTTPRoute fill:#50e3c2,stroke:#333
-    style RefGrant fill:#50e3c2,stroke:#333
-    style NetPol fill:#50e3c2,stroke:#333
-    style KubeRBACProxy fill:#d0021b,stroke:#333,color:#fff
-    style Gateway fill:#e8e8e8,stroke:#333
-    style VirtualService fill:#e8e8e8,stroke:#333
+    style NC_Main fill:#4a90e2,color:#fff
+    style NC_Culler fill:#4a90e2,color:#fff
+    style ODH_Main fill:#e86826,color:#fff
+    style ODH_MutWebhook fill:#e86826,color:#fff
+    style ODH_ValWebhook fill:#e86826,color:#fff
+    style Common fill:#7ed321,color:#fff
+    style NotebookCR fill:#f5a623,color:#fff
+    style StatefulSet fill:#b8d4e3
+    style SVC_NB fill:#b8d4e3
+    style HTTPRoute fill:#f0c8a8
+    style RefGrant fill:#f0c8a8
+    style NetPol fill:#f0c8a8
+    style KRBP fill:#d35400,color:#fff
+    style Gateway fill:#8e44ad,color:#fff
+    style User fill:#ecf0f1,stroke:#333

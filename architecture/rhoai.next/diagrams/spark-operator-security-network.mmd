@@ -7,83 +7,82 @@ graph TB
         K8sAPI["Kubernetes API Server<br/>6443/TCP<br/>TLS 1.2+<br/>Bearer / client cert / SA token"]
     end
 
-    subgraph OperatorNS["OPERATOR NAMESPACE<br/>(redhat-ods-applications / opendatahub)"]
+    subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-applications)"]
         direction TB
 
-        Webhook["spark-operator-webhook<br/>SA: spark-operator-webhook<br/>9443/TCP HTTPS (self-signed TLS)<br/>8080/TCP metrics (HTTP)<br/>8081/TCP probes (HTTP)<br/>HTTP/2 disabled (CVE-2023-44487)"]
+        WebhookSvc["spark-operator-webhook-svc<br/>ClusterIP 443→9443/TCP<br/>TLS (self-signed)<br/>HTTP/2 DISABLED"]
 
-        Controller["spark-operator-controller<br/>SA: spark-operator-controller<br/>8080/TCP metrics (HTTP)<br/>8081/TCP probes (HTTP)"]
+        subgraph WebhookDeploy["Webhook Deployment"]
+            Webhook["spark-operator-webhook<br/>SA: spark-operator-webhook<br/>Endpoints:<br/>/mutate-*, /validate-*<br/>/mutate--v1-pod"]
+        end
 
-        SparkSubmit["spark-submit<br/>(local process exec)"]
+        subgraph ControllerDeploy["Controller Deployment"]
+            Controller["spark-operator-controller<br/>SA: spark-operator-controller<br/>8080/TCP metrics (HTTP, no auth)<br/>8081/TCP health (HTTP, no auth)"]
+        end
 
-        WebhookSvc["spark-operator-webhook-svc<br/>ClusterIP 443→9443<br/>HTTPS"]
+        WebhookSvc --> Webhook
     end
 
-    subgraph UserNS["USER NAMESPACE (NetworkPolicy protected)"]
+    subgraph UserNS["USER NAMESPACES (Spark Workloads)"]
         direction TB
 
-        Driver["Spark Driver Pod<br/>SA: spark-operator-spark<br/>Mutated by webhook (25+ ops)"]
+        DriverPod["Spark Driver Pod<br/>SA: spark-operator-spark<br/>7078/TCP driver-rpc (plaintext)<br/>7079/TCP block-mgr (plaintext)<br/>4040/TCP spark-ui (plaintext)"]
 
-        Executors["Spark Executor Pods<br/>Mutated by webhook"]
+        ExecutorPods["Spark Executor Pods<br/>7078/TCP, 7079/TCP (plaintext)"]
 
-        ConnectServer["Spark Connect Server<br/>15002/TCP gRPC<br/>7078/TCP RPC<br/>7079/TCP BlockMgr<br/>4040/TCP WebUI"]
-
-        UISvc["{app}-ui-svc<br/>ClusterIP 4040/TCP<br/>HTTP, no auth"]
+        ConnectServer["Spark Connect Server<br/>(optional)<br/>15002/TCP gRPC (plaintext)<br/>7078, 7079, 4040/TCP"]
     end
 
     subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>PodMonitor scraping"]
+        Prometheus["Prometheus<br/>PodMonitor<br/>HTTP/8080 (no auth)"]
     end
 
-    subgraph BatchSchedulers["BATCH SCHEDULERS (Optional)"]
-        Volcano["Volcano<br/>(PodGroup CRDs)"]
-        KubeSched["kube-scheduler plugins<br/>(PodGroup CRDs)"]
-        Yunikorn["Yunikorn<br/>(annotation-based)"]
+    subgraph OptionalServices["OPTIONAL SERVICES"]
+        CertManager["cert-manager<br/>(optional TLS issuance)"]
+        Volcano["Volcano Scheduler<br/>(PodGroup CRDs)"]
+        Yunikorn["Yunikorn Scheduler<br/>(annotation-based)"]
     end
 
-    %% External → Control Plane
+    %% External flows
     User -->|"HTTPS/6443<br/>TLS 1.2+<br/>Bearer token"| K8sAPI
 
-    %% API Server → Webhook (admission)
-    K8sAPI -->|"HTTPS/9443<br/>TLS (self-signed)<br/>API server client cert"| WebhookSvc
-    WebhookSvc --> Webhook
+    %% API server to webhook
+    K8sAPI -->|"HTTPS/9443<br/>TLS (self-signed)<br/>API server client cert<br/>HTTP/1.1 only"| WebhookSvc
 
-    %% Controller → API Server
-    Controller -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token (Bearer)"| K8sAPI
+    %% Webhook to API server
+    Webhook -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
 
-    %% Controller → spark-submit
-    Controller -->|"Process exec<br/>No network"| SparkSubmit
-    SparkSubmit -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    %% Controller to API server
+    Controller -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token<br/>CRUD: pods, svcs, CRDs"| K8sAPI
 
-    %% Driver ↔ Executors
-    Driver -->|"HTTP/7078 driver-rpc<br/>HTTP/7079 block-mgr<br/>No encryption<br/>No auth"| Executors
+    %% Controller creates workloads (via API server)
+    Controller -.->|"spark-submit<br/>(local exec)"| DriverPod
 
-    %% Driver → API Server
-    Driver -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    %% Driver-Executor communication
+    DriverPod <-->|"HTTP/7078, 7079<br/>Plaintext<br/>No auth"| ExecutorPods
 
     %% Connect server
-    ConnectServer -->|"HTTP/7078, 7079<br/>No encryption"| Executors
+    User -->|"gRPC/15002<br/>Plaintext"| ConnectServer
+    ConnectServer <-->|"HTTP/7078, 7079<br/>Plaintext"| ExecutorPods
 
     %% Monitoring
     Prometheus -->|"HTTP/8080<br/>No encryption<br/>No auth"| Controller
-    Prometheus -->|"HTTP/8080<br/>No encryption<br/>No auth"| Webhook
 
-    %% Batch schedulers (via K8s API)
-    Controller -.->|"PodGroup CRDs<br/>via K8s API"| Volcano
-    Controller -.->|"PodGroup CRDs<br/>via K8s API"| KubeSched
-    Controller -.->|"Pod annotations<br/>No network"| Yunikorn
+    %% Optional services
+    CertManager -.->|"K8s API<br/>TLS cert issuance"| Webhook
+    Controller -.->|"K8s API<br/>PodGroup CRDs"| Volcano
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef userns fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef monitoring fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef scheduler fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef operatorns fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef userns fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef optional fill:#f8cecc,stroke:#b85450,stroke-width:1px,stroke-dasharray: 5 5
 
     class User external
     class K8sAPI controlplane
-    class Webhook,Controller,SparkSubmit,WebhookSvc operator
-    class Driver,Executors,ConnectServer,UISvc userns
+    class Webhook,Controller,WebhookSvc operatorns
+    class DriverPod,ExecutorPods,ConnectServer userns
     class Prometheus monitoring
-    class Volcano,KubeSched,Yunikorn scheduler
+    class CertManager,Volcano,Yunikorn optional

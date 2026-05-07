@@ -1,62 +1,74 @@
 sequenceDiagram
     participant Client as External Client
-    participant HTTP as HTTP Server (FastAPI)<br/>8080/TCP Optional TLS
-    participant GRPC as gRPC Server<br/>8085/TCP Optional TLS/mTLS
-    participant Predict as GlobalPredictServicer
-    participant Train as GlobalTrainServicer
+    participant HTTPServer as HTTP Server (FastAPI)<br/>8080/TCP HTTP/HTTPS
+    participant gRPCServer as gRPC Server<br/>8085/TCP gRPC
+    participant PredictSvc as GlobalPredictServicer
+    participant TrainSvc as GlobalTrainServicer
     participant ModelMgr as ModelManager
-    participant Model as LoadedModel<br/>(Module.run)
-    participant MMesh as Model Mesh Controller
-    participant MRServicer as ModelRuntimeServicer
-    participant Loader as CoreModelLoader
+    participant LoadedModel as LoadedModel<br/>(Module.run)
+    participant ModelMesh as Model Mesh Sidecar<br/>Unix socket / 8085/TCP
+    participant ModelLoader as CoreModelLoader
     participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant FS as Local Filesystem
+    participant Prometheus as Prometheus<br/>8086/TCP HTTP
+    participant OTEL as OTEL Collector<br/>4317/TCP gRPC
 
-    rect rgb(230, 245, 255)
-        Note over Client, Model: Flow 1: Model Inference (HTTP)
-        Client->>HTTP: POST /api/v1/{task}/{model_id}<br/>HTTP/HTTPS, Optional TLS
-        HTTP->>Predict: Route to servicer<br/>(in-process)
-        Predict->>ModelMgr: Retrieve loaded model<br/>(in-process)
-        ModelMgr->>Model: Module.run(request)<br/>(in-process)
-        Model-->>ModelMgr: Prediction result
-        ModelMgr-->>Predict: Result
-        Predict-->>HTTP: Response
-        HTTP-->>Client: JSON response or SSE stream<br/>HTTP/HTTPS
+    Note over Client, OTEL: Flow 1: HTTP Inference (Unary or SSE Streaming)
+
+    Client->>HTTPServer: POST /api/v1/{task}/{model_id}<br/>Optional TLS/mTLS
+    HTTPServer->>PredictSvc: route request (in-process)
+    PredictSvc->>ModelMgr: retrieve_model(model_id)
+    ModelMgr->>LoadedModel: Module.run(input)
+    LoadedModel-->>ModelMgr: prediction result
+    ModelMgr-->>PredictSvc: result
+    PredictSvc-->>HTTPServer: response
+    HTTPServer-->>Client: JSON response or SSE stream<br/>Optional TLS
+
+    Note over Client, OTEL: Flow 2: gRPC Inference
+
+    Client->>gRPCServer: {TaskName}Service.{TaskName}Predict<br/>Optional TLS/mTLS
+    gRPCServer->>PredictSvc: CaikitRuntimeServerWrapper<br/>dynamic RPC routing
+    PredictSvc->>ModelMgr: retrieve_model(model_id)
+    ModelMgr->>LoadedModel: Module.run(input)
+    LoadedModel-->>ModelMgr: prediction result
+    ModelMgr-->>PredictSvc: result
+    PredictSvc-->>gRPCServer: response proto
+    gRPCServer-->>Client: gRPC response<br/>Optional TLS/mTLS
+
+    Note over Client, OTEL: Flow 3: Model Loading via Model Mesh
+
+    ModelMesh->>gRPCServer: loadModel(model_id, model_path)<br/>gRPC (Unix socket or 8085/TCP)
+    gRPCServer->>ModelMgr: ModelRuntimeServicer.loadModel
+    ModelMgr->>ModelLoader: load_model(model_path)
+    alt Local model path
+        ModelLoader->>FS: Read model artifacts<br/>Local I/O
+        FS-->>ModelLoader: model files
+    else S3 model path
+        ModelLoader->>S3: GET model artifacts<br/>HTTPS/443, TLS, IAM auth
+        S3-->>ModelLoader: model files
     end
+    ModelLoader-->>ModelMgr: loaded Module instance
+    ModelMgr-->>gRPCServer: LoadModelResponse(size)
+    gRPCServer-->>ModelMesh: success + model size
 
-    rect rgb(230, 255, 230)
-        Note over Client, Model: Flow 2: Model Inference (gRPC)
-        Client->>GRPC: {TaskName}Service RPC<br/>gRPC, Optional TLS/mTLS
-        GRPC->>Predict: CaikitRuntimeServerWrapper<br/>(interceptor routing)
-        Predict->>ModelMgr: Retrieve loaded model<br/>(in-process)
-        ModelMgr->>Model: Module.run(request)<br/>(in-process)
-        Model-->>ModelMgr: Prediction result
-        ModelMgr-->>Predict: Result
-        Predict-->>GRPC: gRPC response
-        GRPC-->>Client: gRPC response<br/>Optional TLS/mTLS
-    end
+    Note over Client, OTEL: Flow 4: Training Job
 
-    rect rgb(255, 245, 230)
-        Note over MMesh, S3: Flow 3: Model Loading via Model Mesh
-        MMesh->>MRServicer: loadModel(modelId, modelPath)<br/>gRPC via Unix socket or 8085/TCP
-        MRServicer->>ModelMgr: load_model(model_id, path)<br/>(in-process)
-        ModelMgr->>Loader: load(model_path)<br/>(in-process)
-        Loader->>S3: Download model artifacts<br/>HTTPS/443, TLS, IAM Auth
-        S3-->>Loader: Model artifacts
-        Loader-->>ModelMgr: Loaded module instance
-        ModelMgr-->>MRServicer: Model ready
-        MRServicer-->>MMesh: LoadModelResponse(sizeInBytes)
-    end
+    Client->>HTTPServer: POST /api/v1/{module}/train<br/>Optional TLS/mTLS (multipart form)
+    HTTPServer->>TrainSvc: route training request
+    TrainSvc->>LoadedModel: Module.train(data) [async]
+    LoadedModel->>FS: Save training output<br/>Local filesystem
+    FS-->>LoadedModel: saved
+    LoadedModel-->>TrainSvc: training_id
+    TrainSvc-->>HTTPServer: training_id
+    HTTPServer-->>Client: {training_id: "..."}
 
-    rect rgb(255, 230, 245)
-        Note over Client, Model: Flow 4: Training Job
-        Client->>HTTP: POST /api/v1/{module}/train<br/>HTTP/HTTPS, Optional TLS
-        HTTP->>Train: Route to servicer<br/>(in-process)
-        Train->>Model: Module.train(data) [async]<br/>(in-process, background thread)
-        Note right of Model: Training runs<br/>asynchronously
-        Model-->>Train: Training ID
-        Train-->>HTTP: Training ID + status
-        HTTP-->>Client: {"training_id": "...", "status": "RUNNING"}
+    Client->>HTTPServer: GET /api/v1/training/status<br/>Optional TLS/mTLS
+    HTTPServer-->>Client: {status: "COMPLETED"}
 
-        Client->>HTTP: GET /api/v1/training/status/{id}<br/>HTTP/HTTPS (polling)
-        HTTP-->>Client: {"status": "COMPLETED", "model_id": "..."}
-    end
+    Note over Client, OTEL: Observability (continuous)
+
+    Prometheus->>gRPCServer: GET /metrics<br/>8086/TCP HTTP (plaintext)
+    gRPCServer-->>Prometheus: Prometheus metrics
+
+    gRPCServer->>OTEL: Push traces<br/>4317/TCP gRPC, Optional TLS/mTLS
+    HTTPServer->>OTEL: Push traces<br/>4317/TCP gRPC, Optional TLS/mTLS

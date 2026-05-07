@@ -1,65 +1,72 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Creates model registries and manages ML model metadata"
+        dataScientist = person "Data Scientist" "Creates and manages ML model registries and accesses model catalog"
         platformAdmin = person "Platform Admin" "Deploys and configures the Model Registry Operator via RHOAI platform"
 
-        modelRegistryOperator = softwareSystem "Model Registry Operator" "Kubernetes operator that manages Model Registry and Model Catalog instances on Red Hat OpenShift AI" {
-            controller = container "ModelRegistryReconciler" "Reconciles ModelRegistry CRs to deploy registry instances with database, auth, and networking" "Go (controller-runtime)"
-            catalogController = container "ModelCatalogReconciler" "Manages centralized model catalog with metadata from ConfigMaps and init containers" "Go (controller-runtime)"
-            webhookServer = container "Webhook Server" "Validates and mutates ModelRegistry CRs; handles v1alpha1→v1beta1 migration" "Go (9443/TCP HTTPS)"
-            migrationManager = container "Storage Version Migration" "Manages CRD storage version migration from v1alpha1 to v1beta1" "Go"
+        modelRegistryOperator = softwareSystem "Model Registry Operator" "Kubernetes operator that manages the lifecycle of Model Registry and Model Catalog instances on RHOAI" {
+            mrReconciler = container "ModelRegistry Reconciler" "Watches ModelRegistry CRs and deploys registry instances with REST API, database, auth proxy, RBAC, and networking" "Go (controller-runtime)"
+            mcReconciler = container "ModelCatalog Reconciler" "Deploys centralized model catalog with metadata from ConfigMaps and init containers" "Go (controller-runtime)"
+            webhook = container "Admission Webhook" "Validates and mutates ModelRegistry CRs; handles v1alpha1→v1beta1 migration" "Go (9443/TCP HTTPS)"
+            storageMigration = container "Storage Migration" "Manages CRD storage version migration from v1alpha1 to v1beta1" "Go"
         }
 
-        registryInstance = softwareSystem "Model Registry Instance" "Deployed data plane: REST API with kube-rbac-proxy auth and PostgreSQL/MySQL backing store" {
-            kubeRbacProxy = container "kube-rbac-proxy" "Authentication sidecar enforcing SubjectAccessReview-based authorization" "Go (8443/TCP HTTPS)"
-            restAPI = container "Model Registry REST API" "Serves model metadata CRUD operations" "Go/Python (8080/TCP HTTP)"
-            database = container "PostgreSQL / MySQL" "Backing store for model registry metadata" "PostgreSQL 16 / MySQL (5432/TCP or 3306/TCP)"
+        registryInstance = softwareSystem "Model Registry Instance" "Deployed REST API service for ML model metadata storage" {
+            restContainer = container "Model Registry REST" "REST API for model metadata operations" "Go (8080/TCP HTTP)"
+            kubeRbacProxy = container "kube-rbac-proxy" "Authentication enforcement sidecar using SubjectAccessReview" "Go (8443/TCP HTTPS)"
         }
 
-        catalogInstance = softwareSystem "Model Catalog" "Centralized catalog of ML models with curated metadata" {
-            catalogProxy = container "kube-rbac-proxy (Catalog)" "Authentication sidecar for catalog access" "Go (8443/TCP HTTPS)"
-            catalogAPI = container "Model Catalog REST API" "Serves catalog model metadata" "Go/Python (8080/TCP HTTP)"
-            catalogDB = container "Catalog PostgreSQL" "Backing store for catalog data" "PostgreSQL 16 (5432/TCP)"
+        catalogInstance = softwareSystem "Model Catalog Instance" "Centralized catalog of available ML models with metadata" {
+            catalogContainer = container "Model Catalog" "Catalog API with init containers for model metadata" "Go (8080/TCP HTTP)"
+            catalogProxy = container "kube-rbac-proxy (Catalog)" "Authentication enforcement sidecar for catalog" "Go (8443/TCP HTTPS)"
         }
 
-        # External systems
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for resource management and RBAC" "External"
-        certManager = softwareSystem "cert-manager" "X.509 certificate management for webhook TLS" "External"
-        openshiftRouter = softwareSystem "OpenShift Router" "Ingress controller providing Route-based external access" "External"
-        servingCertSigner = softwareSystem "OpenShift serving-cert-signer" "Provisions TLS certificates for kube-rbac-proxy via service annotations" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
+        postgresql = softwareSystem "PostgreSQL" "Backing store for model registry and catalog metadata" "Database"
+        mysql = softwareSystem "MySQL" "Alternative backing store for model registry metadata" "Database"
 
-        # Internal ODH/RHOAI systems
-        platformOperator = softwareSystem "RHOAI Platform Operator" "Deploys and manages the Model Registry Operator via kustomize overlays" "Internal RHOAI"
-        platformCRDs = softwareSystem "Platform CRDs" "ModelRegistry Component CR and Auth CR for cross-component integration" "Internal RHOAI"
+        openshiftRouter = softwareSystem "OpenShift Router" "Ingress controller exposing Routes for external access" "Infrastructure"
+        certManager = softwareSystem "cert-manager" "TLS certificate management for webhook server" "Infrastructure"
+        servingCertSigner = softwareSystem "OpenShift serving-cert-signer" "TLS certificate provisioning for kube-rbac-proxy services" "Infrastructure"
+        prometheus = softwareSystem "Prometheus" "Metrics collection via ServiceMonitor" "Monitoring"
+
+        rhoaiPlatformOperator = softwareSystem "RHOAI Platform Operator" "Deploys Model Registry Operator via kustomize overlays" "Internal RHOAI"
+        platformModelRegistryCR = softwareSystem "Platform ModelRegistry CR" "components.platform.opendatahub.io/ModelRegistry for catalog owner reference" "Internal RHOAI"
+        platformAuthCR = softwareSystem "Platform Auth CR" "services.platform.opendatahub.io/Auth for admin group configuration" "Internal RHOAI"
+        openshiftIngressConfig = softwareSystem "OpenShift Ingress Config" "config.openshift.io/Ingress for cluster domain discovery" "Infrastructure"
+
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API for resource management and auth delegation" "Infrastructure"
 
         # Relationships
-        user -> openshiftRouter "Accesses model registries and catalog via HTTPS/443"
-        platformAdmin -> k8sAPI "Creates ModelRegistry CRs via kubectl"
-        platformOperator -> modelRegistryOperator "Deploys operator via kustomize overlays"
+        dataScientist -> openshiftRouter "Creates ModelRegistry CRs, queries model registry and catalog APIs" "HTTPS/443"
+        platformAdmin -> rhoaiPlatformOperator "Configures RHOAI platform" "HTTPS"
 
-        modelRegistryOperator -> k8sAPI "Reconciles resources, watches CRDs" "HTTPS/443 SA Token"
-        modelRegistryOperator -> registryInstance "Creates and manages" "K8s API"
-        modelRegistryOperator -> catalogInstance "Creates and manages" "K8s API"
+        rhoaiPlatformOperator -> modelRegistryOperator "Deploys via kustomize overlay" "Kubernetes API"
 
-        controller -> webhookServer "Validated by"
-        controller -> migrationManager "Triggers storage migration"
-        catalogController -> platformCRDs "Watches ModelRegistry Component CR and Auth CR" "K8s API"
+        mrReconciler -> k8sAPI "Creates Deployments, Services, Routes, RBAC, NetworkPolicies" "HTTPS/443 SA Token"
+        mcReconciler -> k8sAPI "Creates catalog Deployment, Service, Route, RBAC" "HTTPS/443 SA Token"
+        mcReconciler -> platformModelRegistryCR "Watches for catalog owner reference" "K8s API Watch"
+        mcReconciler -> platformAuthCR "Reads admin groups for catalog RBAC" "K8s API Watch"
+        mrReconciler -> openshiftIngressConfig "Reads cluster domain for Route hostnames" "K8s API"
+        webhook -> k8sAPI "Webhook admission, OAuth→kube-rbac-proxy migration" "HTTPS/9443"
 
-        openshiftRouter -> kubeRbacProxy "Routes traffic" "HTTPS/8443 TLS reencrypt"
-        kubeRbacProxy -> k8sAPI "SubjectAccessReview" "HTTPS/443"
-        kubeRbacProxy -> restAPI "Forwards authorized requests" "HTTP/8080 localhost"
-        restAPI -> database "Reads/writes metadata" "TCP/5432 or 3306"
+        storageMigration -> k8sAPI "Creates StorageVersionMigration CRs" "HTTPS/443"
 
-        openshiftRouter -> catalogProxy "Routes catalog traffic" "HTTPS/8443 TLS reencrypt"
-        catalogProxy -> k8sAPI "SubjectAccessReview" "HTTPS/443"
-        catalogProxy -> catalogAPI "Forwards authorized requests" "HTTP/8080 localhost"
-        catalogAPI -> catalogDB "Reads/writes catalog data" "TCP/5432"
+        openshiftRouter -> kubeRbacProxy "Forwards requests (TLS reencrypt)" "HTTPS/8443"
+        openshiftRouter -> catalogProxy "Forwards catalog requests (TLS reencrypt)" "HTTPS/8443"
 
-        certManager -> modelRegistryOperator "Provisions webhook TLS cert"
-        servingCertSigner -> registryInstance "Provisions kube-rbac-proxy TLS certs"
-        servingCertSigner -> catalogInstance "Provisions catalog kube-rbac-proxy TLS cert"
-        prometheus -> modelRegistryOperator "Scrapes metrics" "HTTPS/8443 Bearer Token"
+        kubeRbacProxy -> k8sAPI "SubjectAccessReview for auth" "HTTPS/443"
+        kubeRbacProxy -> restContainer "Forwards authenticated requests" "HTTP/8080 localhost"
+        catalogProxy -> k8sAPI "SubjectAccessReview for auth" "HTTPS/443"
+        catalogProxy -> catalogContainer "Forwards authenticated requests" "HTTP/8080 localhost"
+
+        restContainer -> postgresql "Stores/retrieves model metadata" "TCP/5432 Password"
+        restContainer -> mysql "Alternative metadata storage" "TCP/3306 Password"
+        catalogContainer -> postgresql "Stores/retrieves catalog data" "TCP/5432 Password"
+
+        certManager -> modelRegistryOperator "Provisions webhook TLS certificates" "Self-signed"
+        servingCertSigner -> registryInstance "Provisions kube-rbac-proxy TLS certificates" "Annotation-driven"
+        servingCertSigner -> catalogInstance "Provisions catalog proxy TLS certificates" "Annotation-driven"
+
+        prometheus -> modelRegistryOperator "Scrapes operator metrics" "HTTPS/8443 Bearer Token"
     }
 
     views {
@@ -84,7 +91,11 @@ workspace {
         }
 
         styles {
-            element "External" {
+            element "Software System" {
+                background #438DD5
+                color #ffffff
+            }
+            element "Infrastructure" {
                 background #999999
                 color #ffffff
             }
@@ -92,17 +103,22 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Person" {
-                shape person
-                background #4a90e2
+            element "Database" {
+                background #bd10e0
+                color #ffffff
+                shape Cylinder
+            }
+            element "Monitoring" {
+                background #f5a623
                 color #ffffff
             }
-            element "Software System" {
-                background #4a90e2
+            element "Person" {
+                background #08427B
                 color #ffffff
+                shape Person
             }
             element "Container" {
-                background #438dd5
+                background #438DD5
                 color #ffffff
             }
         }

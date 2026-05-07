@@ -1,46 +1,56 @@
 sequenceDiagram
-    participant Client as External Client
-    participant KServe as KServe Gateway
-    participant API as vLLM API Server<br/>8000/TCP HTTP(S)
+    participant Client as Client / KServe Gateway
+    participant API as vLLM OpenAI Server<br/>8000/TCP HTTP(S)
+    participant Auth as AuthenticationMiddleware<br/>SHA256 Constant-Time
     participant Input as InputProcessor<br/>Tokenizer
-    participant Engine as EngineCore<br/>Scheduler + KV Cache
+    participant Core as EngineCore<br/>Scheduler + KV Cache
     participant Runner as CPU Model Runner<br/>PyTorch CPU
     participant Output as OutputProcessor<br/>Detokenizer
-    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant Prom as Prometheus<br/>8000/TCP HTTP
-    participant OTLP as OTLP Collector<br/>gRPC/HTTP
 
-    rect rgb(230, 245, 255)
     Note over Client,Output: Flow 1: Inference Request Processing
-    Client->>KServe: POST /v1/chat/completions<br/>Auth: Bearer Token
-    KServe->>API: Forward request<br/>HTTP(S)/8000
-    API->>API: AuthenticationMiddleware<br/>SHA256 hash + constant-time compare
-    API->>Input: Parse & validate request<br/>(Pydantic)
-    Input->>Input: Tokenize input text<br/>(HF transformers)
-    Input->>Engine: Submit tokenized request
-    Engine->>Engine: Schedule batch<br/>Manage KV cache pages
-    Engine->>Runner: Execute model forward pass
-    Runner->>Runner: PyTorch CPU inference<br/>(OpenMP threads)
-    Runner-->>Engine: Output token logits
-    Engine-->>Output: Scheduled output tokens
-    Output-->>API: Detokenized text<br/>(streaming SSE or JSON)
-    API-->>KServe: HTTP(S) response
-    KServe-->>Client: JSON / SSE stream
+
+    Client->>API: POST /v1/chat/completions<br/>Auth: Bearer API Key
+    API->>Auth: Validate token<br/>SHA256 hash compare
+    Auth-->>API: 200 OK / 401 Unauthorized
+
+    API->>Input: Parse & preprocess request
+    Input->>Input: Tokenize text<br/>(HuggingFace transformers)
+    Input->>Core: Tokenized input + params
+
+    Core->>Core: Schedule request<br/>Continuous batching<br/>KV cache allocation
+    Core->>Runner: Execute batch<br/>CPU tensors
+    Runner->>Runner: PyTorch forward pass<br/>CPU backend
+
+    Runner-->>Core: Logits / tokens
+    Core-->>Output: Generated tokens
+
+    alt Streaming (SSE)
+        loop Token by token
+            Output-->>API: Token chunk
+            API-->>Client: data: {"choices":[...]}
+        end
+        API-->>Client: data: [DONE]
+    else Non-streaming
+        Output-->>API: Complete response
+        API-->>Client: JSON response
     end
 
-    rect rgb(255, 243, 224)
-    Note over API,HF: Flow 2: Model Loading (startup)
-    API->>HF: GET model config<br/>HTTPS/443, Bearer HF_TOKEN
-    HF-->>API: Model configuration
-    API->>HF: Download model weights<br/>HTTPS/443, Bearer HF_TOKEN
-    HF-->>API: Model weight files (safetensors)
-    API->>Runner: Load weights into CPU memory<br/>(File I/O → PyTorch tensors)
-    Runner->>Runner: Initialize model parameters<br/>in CPU RAM
-    end
+    Note over Client,Output: Flow 2: Model Loading (Startup)
 
-    rect rgb(232, 245, 233)
-    Note over API,OTLP: Flow 3: Observability
-    Prom->>API: GET /metrics<br/>HTTP/8000
-    API-->>Prom: Prometheus metrics<br/>(request latency, throughput, queue depth)
-    API->>OTLP: Export traces<br/>gRPC (insecure) or HTTP
-    end
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant Disk as Local Disk<br/>Model Cache
+
+    API->>HF: GET model config + weights<br/>Auth: Bearer HF_TOKEN<br/>TLS 1.2+
+    HF-->>API: Model artifacts
+    API->>Disk: Cache model files
+    Disk->>Runner: Load weights into CPU memory<br/>PyTorch parameter loader
+
+    Note over Client,Output: Flow 3: Observability
+
+    participant Prom as Prometheus Scraper
+    participant OTLP as OTLP Collector
+
+    Prom->>API: GET /metrics<br/>8000/TCP HTTP
+    API-->>Prom: Prometheus metrics
+
+    API->>OTLP: Export traces<br/>gRPC (insecure default)

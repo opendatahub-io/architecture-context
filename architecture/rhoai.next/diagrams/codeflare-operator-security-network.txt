@@ -1,135 +1,120 @@
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                        │
-│                                                                              │
-│  [User Browser]                                                              │
-│         │                                                                    │
-│         │ Port: 443/TCP                                                      │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS 1.2+                                               │
-│         │ Auth: None (redirects to OpenShift OAuth)                          │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (OpenShift Routes)                                                  │
-│                                                                              │
-│  [OpenShift Router]                                                          │
-│  ┌───────────────────────────────┬───────────────────────────────────┐       │
-│  │ ray-dashboard-{cluster}       │ rayclient-{cluster}               │       │
-│  │ - Port: 443/TCP (external)    │ - Port: 443/TCP (external)        │       │
-│  │ - TLS Mode: Reencrypt         │ - TLS Mode: Passthrough           │       │
-│  │ - Backend: oauth-proxy:8443   │ - Backend: ray-head:10001         │       │
-│  └───────────────┬───────────────┴───────────────┬───────────────────┘       │
-│                  │                                │                           │
-│                  │ Port: 8443/TCP                  │ Port: 10001/TCP           │
-│                  │ Protocol: HTTPS                 │ Protocol: gRPC            │
-│                  │ Encryption: TLS                 │ Encryption: mTLS          │
-│                  │ Auth: OpenShift OAuth token      │ Auth: Client certificate  │
-│                  ▼                                ▼                           │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  OPERATOR NAMESPACE (opendatahub)                                            │
-│                                                                              │
-│  [CodeFlare Operator Manager]                                                │
-│  - Namespace: opendatahub                                                    │
-│  - ServiceAccount: controller-manager                                        │
-│  - Ports:                                                                    │
-│    - 8081/TCP (healthz/readyz, HTTP, no auth)                                │
-│    - 8080/TCP (metrics, HTTP, no auth)                                       │
-│    - 9443/TCP (webhooks, HTTPS, cert-controller TLS)                         │
-│         │                                                                    │
-│         │ Port: 443/TCP                                                      │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS 1.2+                                               │
-│         │ Auth: ServiceAccount token                                         │
-│         ▼                                                                    │
-│  [Kubernetes API Server]                                                     │
-│  - CRUD: Secrets, Services, Routes, NetworkPolicies,                         │
-│    ClusterRoleBindings, CRDs, Pods, ServiceAccounts                          │
-│                                                                              │
-│  Services:                                                                   │
-│  ┌──────────────────────────────────────────────────────────────────┐        │
-│  │ codeflare-operator-webhook-service                               │        │
-│  │ - Type: ClusterIP                                                │        │
-│  │ - Port: 443/TCP → 9443/TCP                                      │        │
-│  │ - Protocol: HTTPS                                                │        │
-│  │ - Encryption: TLS (cert-controller managed)                      │        │
-│  │ - Auth: Kubernetes API server                                    │        │
-│  ├──────────────────────────────────────────────────────────────────┤        │
-│  │ codeflare-operator-manager-metrics                               │        │
-│  │ - Type: ClusterIP                                                │        │
-│  │ - Port: 8080/TCP                                                 │        │
-│  │ - Protocol: HTTP                                                 │        │
-│  │ - Encryption: None                                               │        │
-│  │ - Auth: None                                                     │        │
-│  └──────────────────────────────────────────────────────────────────┘        │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  USER NAMESPACE ({user-namespace})                                           │
-│                                                                              │
-│  [RayCluster Head Pod]                                                       │
-│  - ServiceAccount: {cluster}-oauth-proxy                                     │
-│  - Containers:                                                               │
-│    - ray-head (user container)                                               │
-│      - Port 8265/TCP (dashboard, HTTP)                                       │
-│      - Port 10001/TCP (client, gRPC, mTLS)                                   │
-│      - Port 8080/TCP (metrics, HTTP)                                         │
-│    - oauth-proxy (injected sidecar)                                          │
-│      - Port 8443/TCP (HTTPS, TLS serving cert)                               │
-│      - Auth: OpenShift OAuth provider                                        │
-│  - Init containers:                                                          │
-│    - create-cert (generates TLS cert via OpenSSL, signed by cluster CA)      │
-│                                                                              │
-│  [RayCluster Worker Pods]                                                    │
-│  - Init containers:                                                          │
-│    - create-cert (generates TLS cert via OpenSSL, signed by cluster CA)      │
-│  - Port 10001/TCP (gRPC, mTLS)                                               │
-│                                                                              │
-│  Services:                                                                   │
-│  ┌──────────────────────────────────────────────────────────────────┐        │
-│  │ {cluster}-oauth                                                  │        │
-│  │ - Type: ClusterIP                                                │        │
-│  │ - Port: 443/TCP → oauth-proxy                                    │        │
-│  │ - Protocol: HTTPS                                                │        │
-│  │ - Encryption: TLS (OpenShift serving cert)                       │        │
-│  │ - Auth: OAuth proxy                                              │        │
-│  └──────────────────────────────────────────────────────────────────┘        │
-│                                                                              │
-│  NetworkPolicy Enforcement:                                                  │
-│  ┌──────────────────────────────────────────────────────────────────┐        │
-│  │ Worker Pods: FULLY ISOLATED                                      │        │
-│  │ - Only pods with same ray.io/cluster label can reach workers     │        │
-│  ├──────────────────────────────────────────────────────────────────┤        │
-│  │ Head Pod: LAYERED ACCESS                                         │        │
-│  │ - Same-cluster pods: full access (any port)                      │        │
-│  │ - Same-namespace pods: 10001/TCP, 8265/TCP                       │        │
-│  │ - KubeRay operator namespace: 8265/TCP, 10001/TCP                │        │
-│  │ - openshift-monitoring: 8080/TCP (metrics scraping)              │        │
-│  │ - All sources: 8443/TCP (OAuth), 10001/TCP (mTLS secured)       │        │
-│  └──────────────────────────────────────────────────────────────────┘        │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES                                                           │
-│                                                                              │
-│  [Kubernetes API Server]                                                     │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: ServiceAccount token                                                │
-│  - Purpose: CRUD on Secrets, Services, Routes, NetworkPolicies, CRBs, CRDs  │
-│                                                                              │
-│  [OpenShift OAuth Server]                                                    │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: OAuth flow                                                          │
-│  - Purpose: User authentication for Ray Dashboard access                     │
-│                                                                              │
-│  [OpenShift config.openshift.io API]                                         │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: ServiceAccount token                                                │
-│  - Purpose: Read cluster Ingress configuration for domain discovery          │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [User Browser]                                                          │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: None (redirects to OpenShift OAuth)                      │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift Router)                                             │
+│                                                                          │
+│  [ray-dashboard-{cluster} Route]                                         │
+│  - Type: Route (reencrypt)                                               │
+│  - Port: 443/TCP (external) → 8443/TCP (oauth-proxy)                   │
+│  - TLS: Reencrypt (terminates + re-encrypts to backend)                 │
+│                                                                          │
+│  [rayclient-{cluster} Route]                                             │
+│  - Type: Route (passthrough)                                             │
+│  - Port: 443/TCP → 10001/TCP (ray head)                                │
+│  - TLS: Passthrough (end-to-end mTLS)                                   │
+│         │                                                                │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE (e.g., opendatahub)                                 │
+│                                                                          │
+│  [CodeFlare Operator Manager]                                            │
+│  - ServiceAccount: controller-manager                                    │
+│  - Probes: :8081/TCP (healthz, readyz)                                  │
+│  - Metrics: :8080/TCP HTTP (no auth, scraped by Prometheus)             │
+│  - Webhook: :9443/TCP HTTPS (cert-controller managed TLS)               │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token                                     │
+│         ▼                                                                │
+│  [Kubernetes API Server]                                                 │
+│  - CRUD: Secrets, Services, Routes, NetworkPolicies,                    │
+│          ClusterRoleBindings, ServiceAccounts, Ingresses                 │
+│  - Watch: RayCluster CRs, DSCInitialization CRs                        │
+│  - Read: config.openshift.io Ingress (cluster domain)                   │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  USER NAMESPACE (per RayCluster)                                        │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────┐        │
+│  │  [Ray Head Pod]                                              │        │
+│  │                                                               │        │
+│  │  ┌──────────────────────┐  ┌────────────────────────────┐   │        │
+│  │  │ oauth-proxy sidecar  │  │ Ray Head Container         │   │        │
+│  │  │ Port: 8443/TCP HTTPS │  │ Dashboard: 8265/TCP HTTP   │   │        │
+│  │  │ Auth: OpenShift OAuth│  │ Client: 10001/TCP gRPC     │   │        │
+│  │  │ TLS: OpenShift       │  │ mTLS: per-pod cert         │   │        │
+│  │  │   serving cert       │  │   (signed by cluster CA)   │   │        │
+│  │  └──────────┬───────────┘  └────────────────────────────┘   │        │
+│  │             │ localhost                                       │        │
+│  │             └──→ 8265/TCP (no auth, proxied)                 │        │
+│  │                                                               │        │
+│  │  Init Container: mTLS cert gen (OpenSSL)                     │        │
+│  │  - Mounts CA from ca-secret-{cluster}                        │        │
+│  │  - Generates server cert with SANs                           │        │
+│  └─────────────────────────────────────────────────────────────┘        │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────┐        │
+│  │  [Ray Worker Pods]                                           │        │
+│  │  Port: 10001/TCP gRPC                                        │        │
+│  │  mTLS: per-pod cert (signed by cluster CA)                   │        │
+│  │  NetworkPolicy: ONLY same ray.io/cluster label               │        │
+│  │                                                               │        │
+│  │  Init Container: mTLS cert gen (OpenSSL)                     │        │
+│  └─────────────────────────────────────────────────────────────┘        │
+│                                                                          │
+│  [NetworkPolicy - Head Pod Ingress Rules]                                │
+│  - Same ray.io/cluster pods → All ports                                 │
+│  - Same namespace pods → 10001/TCP, 8265/TCP                            │
+│  - KubeRay operator namespace → 8265/TCP, 10001/TCP                     │
+│  - openshift-monitoring → 8080/TCP (metrics)                             │
+│  - All sources → 8443/TCP (OAuth), 10001/TCP (mTLS secured)            │
+│                                                                          │
+│  [NetworkPolicy - Worker Pod Ingress Rules]                              │
+│  - Same ray.io/cluster pods → All ports                                 │
+│  - All other traffic → DENIED                                            │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES                                                       │
+│                                                                          │
+│  [OpenShift OAuth Server]                                                │
+│  - Port: 443/TCP HTTPS, TLS 1.2+                                       │
+│  - Purpose: User authentication for Ray Dashboard                       │
+│  - Auth: OAuth token exchange                                            │
+│                                                                          │
+│  [OpenShift Serving Cert Signer]                                         │
+│  - Purpose: Generates TLS certs for oauth service                       │
+│  - Triggered by: service.beta.openshift.io/serving-cert-secret-name     │
+│                                                                          │
+│  [Prometheus / OpenShift Monitoring]                                     │
+│  - Port: 8080/TCP HTTP (operator metrics)                               │
+│  - Namespace: openshift-monitoring                                       │
+│  - Auth: None (NetworkPolicy allows)                                     │
+│                                                                          │
+│  [KubeRay Operator]                                                      │
+│  - Creates RayCluster CRs                                                │
+│  - Namespace access allowed by NetworkPolicy                            │
+│                                                                          │
+│  [cert-controller (OPA)]                                                 │
+│  - Manages webhook TLS cert rotation                                    │
+│  - Secret: codeflare-operator-webhook-server-cert                       │
+│                                                                          │
+│  [Kueue] (optional)                                                      │
+│  - AppWrapper quota management                                           │
+│  - CRD integration                                                       │
+│                                                                          │
+│  [opendatahub-operator / rhods-operator]                                │
+│  - DSCInitialization CR (namespace discovery)                            │
+└─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
 - ClusterRole: manager-role
@@ -139,40 +124,47 @@ RBAC Summary:
     kubeflow.org, networking.k8s.io, ray.io, rbac.authorization.k8s.io,
     route.openshift.io, scheduling.sigs.k8s.io, scheduling.x-k8s.io,
     workload.codeflare.dev
-  - Key Resources: pods, services, secrets, serviceaccounts, deployments,
-    rayclusters, appwrappers, networkpolicies, routes, clusterrolebindings,
-    ingresses, jobs, pytorchjobs, jobsets, podgroups
-  - Verbs: get, list, watch, create, update, patch, delete
-
-- ClusterRoleBinding: manager-rolebinding
-  - ServiceAccount: controller-manager (operator namespace)
-
-- Per-RayCluster ClusterRoleBinding: {cluster}-{ns}-auth
-  - Role: system:auth-delegator
-  - ServiceAccount: {cluster}-oauth-proxy
+  - Resources: pods, services, secrets, serviceaccounts, events, nodes,
+    deployments, statefulsets, jobs, ingresses, networkpolicies,
+    rayclusters, rayjobs, routes, clusterrolebindings,
+    mutatingwebhookconfigurations, validatingwebhookconfigurations,
+    customresourcedefinitions, tokenreviews, subjectaccessreviews,
+    dscinitializations, pytorchjobs, jobsets, podgroups, appwrappers
+  - Verbs: get, list, watch, create, update, patch, delete (varies by resource)
 
 - Role: leader-election-role (namespace-scoped)
   - Resources: configmaps, leases, events
+  - Verbs: get, list, watch, create, update, patch, delete
 
-Webhook Configuration:
-- MutatingWebhookConfiguration:
-  - /mutate-ray-io-v1-raycluster (RayCluster mutation)
-  - /mutate-workload-codeflare-dev-v1beta2-appwrapper (AppWrapper mutation)
-- ValidatingWebhookConfiguration:
-  - /validate-ray-io-v1-raycluster (RayCluster validation)
-  - /validate-workload-codeflare-dev-v1beta2-appwrapper (AppWrapper validation)
-- Port: 9443/TCP, HTTPS, cert-controller managed certificates
+- Per-RayCluster: {cluster}-{ns}-auth ClusterRoleBinding
+  - Role: system:auth-delegator
+  - ServiceAccount: {cluster}-oauth-proxy
 
 Secrets:
-- codeflare-operator-webhook-server-cert (kubernetes.io/tls) - Webhook TLS, cert-controller (OPA), auto-rotate
-- {cluster}-oauth-config (Opaque) - OAuth cookie secret (SHA1 hash), operator-created, no auto-rotate
-- {cluster}-proxy-tls-secret (kubernetes.io/tls) - OAuth proxy TLS, OpenShift serving cert, auto-rotate
-- ca-secret-{cluster} (Opaque) - mTLS CA key+cert (RSA 2048-bit, self-signed, 1yr), operator-created, no auto-rotate
-- codeflare-operator-config (ConfigMap) - Operator config (KubeRay/AppWrapper settings), auto-created if missing
+- codeflare-operator-webhook-server-cert (kubernetes.io/tls)
+  - Purpose: Webhook server TLS certificate
+  - Provisioned by: cert-controller (OPA)
+  - Auto-rotate: Yes
 
-Crypto Notes:
-- FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, dynamic linking
-- SHA1 used for cookie secret generation (not cryptographic security, but flaggable)
-- RSA 2048-bit self-signed CA per RayCluster with 1-year validity
-- OpenSSL CLI used in init containers for per-pod cert generation
-- Certificate rotation requires RayCluster recreation
+- {cluster}-oauth-config (Opaque)
+  - Purpose: OAuth proxy cookie secret (SHA1 hash of cluster name + salt)
+  - Provisioned by: Operator controller
+  - Auto-rotate: No
+  - Note: Uses SHA1 (deprecated) for cookie generation
+
+- {cluster}-proxy-tls-secret (kubernetes.io/tls)
+  - Purpose: OAuth proxy TLS serving certificate
+  - Provisioned by: OpenShift serving cert annotation
+  - Auto-rotate: Yes
+
+- ca-secret-{cluster} (Opaque)
+  - Purpose: CA private key + certificate for mTLS (Ray head/workers)
+  - Provisioned by: Operator (RSA 2048-bit, self-signed, 1-year validity)
+  - Auto-rotate: No (requires RayCluster recreation)
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- Linking: Dynamic (uses OpenSSL via ubi9 base image)
+- Crypto: stdlib crypto/rand, crypto/rsa, crypto/x509 (FIPS-compliant with strictfipsruntime)
+- Risk: SHA1 used for cookie secret generation (not cryptographic security)
+- Init containers: OpenSSL CLI for per-pod certificate generation

@@ -1,39 +1,37 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Deploys and queries LLM models for inference"
-        application = person "Application Client" "Sends inference requests via OpenAI-compatible or TGIS gRPC API"
+        dataScientist = person "Data Scientist" "Deploys and queries ML models for inference"
+        applicationDev = person "Application Developer" "Integrates inference APIs into applications"
 
-        vllm = softwareSystem "vLLM CUDA Runtime" "GPU-accelerated LLM inference runtime with dual-protocol support (OpenAI HTTP + TGIS gRPC)" {
-            vllmEngine = container "vLLM Inference Engine" "Serves OpenAI-compatible HTTP API for text/chat completions" "Python / CUDA" "Component"
-            tgisAdapter = container "vllm_tgis_adapter" "gRPC-to-HTTP bridge exposing TGIS GenerationService protocol" "Python" "Component"
-            cudaRuntime = container "CUDA Runtime" "GPU computation for model inference" "NVIDIA CUDA" "Component"
+        vllm = softwareSystem "vLLM CUDA Runtime" "GPU-accelerated LLM inference runtime with dual-protocol support (OpenAI HTTP + TGIS gRPC), packaged as RHOAI container image" {
+            vllmEngine = container "vLLM HTTP Server" "OpenAI-compatible inference engine with GPU acceleration" "Python / CUDA" "Port 8000/TCP"
+            tgisAdapter = container "vllm_tgis_adapter" "gRPC-to-HTTP bridge implementing TGIS GenerationService protocol" "Python" "Port 8033/TCP"
         }
 
-        kserve = softwareSystem "KServe" "Manages model serving lifecycle via ServingRuntime and InferenceService CRs" "Internal Platform"
+        kserve = softwareSystem "KServe" "Model serving platform that manages ServingRuntime and InferenceService lifecycle" "Internal RHOAI"
         istio = softwareSystem "Istio Service Mesh" "Provides mTLS, traffic management, and ingress gateway" "Internal Platform"
-        nvidiaPlugin = softwareSystem "NVIDIA GPU Device Plugin" "Allocates GPU resources to inference pods" "Internal Platform"
-        modelRegistry = softwareSystem "Model Storage" "Stores LLM model weights (S3, PVC, or Hugging Face Hub)" "External"
-        huggingFace = softwareSystem "Hugging Face Hub" "Public model and tokenizer repository" "External"
-        konflux = softwareSystem "Konflux Build System" "Multi-arch container image builds and vulnerability scanning" "External"
-        rhaiis = softwareSystem "RHAIIS Base Image" "Provides pre-built vLLM engine, CUDA runtime, Python env, and TGIS adapter" "External"
+        gpuPlugin = softwareSystem "NVIDIA GPU Device Plugin" "Allocates GPU resources to pods via nvidia.com/gpu resource requests" "External"
+        rhaiis = softwareSystem "RHAIIS Base Image" "Pre-built vLLM CUDA base image (registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.2.2) providing runtime, CUDA libs, and TGIS adapter" "External"
+        s3 = softwareSystem "S3 Storage" "Object storage for LLM model weights" "External"
+        pvc = softwareSystem "PVC Storage" "Persistent volume for local model weights" "External"
+        huggingFace = softwareSystem "Hugging Face Hub" "Model registry for downloading weights and tokenizer configs" "External"
+        konflux = softwareSystem "Konflux Build System" "Multi-arch container image build and vulnerability scanning pipeline" "External"
 
-        # Relationships
-        application -> kserve "Sends inference requests" "HTTPS/443"
-        dataScientist -> kserve "Creates InferenceService CRs" "kubectl / API"
-        kserve -> vllm "Deploys as inference container in ServingRuntime pods"
-        kserve -> istio "Uses for traffic routing and mTLS"
-        istio -> vllm "Forwards requests with mTLS" "HTTP/8000, gRPC/8033"
+        dataScientist -> kserve "Creates InferenceService CR via kubectl/dashboard"
+        applicationDev -> vllm "Sends inference requests" "HTTPS/443"
 
-        vllm -> modelRegistry "Downloads model weights at startup" "HTTPS/443"
-        vllm -> huggingFace "Downloads models and tokenizer configs" "HTTPS/443"
-        vllm -> nvidiaPlugin "Requests GPU resources" "nvidia.com/gpu"
+        kserve -> vllm "Deploys and manages as ServingRuntime container"
+        istio -> vllm "Injects sidecar for mTLS and traffic management"
+        gpuPlugin -> vllm "Allocates NVIDIA GPU resources"
+        rhaiis -> vllm "Provides base container image with vLLM + CUDA + TGIS adapter"
 
-        rhaiis -> vllm "Provides base image with all runtime components" "Container inheritance"
-        konflux -> vllm "Builds multi-arch container image" "Tekton pipeline"
+        vllm -> s3 "Downloads model weights at startup" "HTTPS/443 TLS 1.2+ IAM"
+        vllm -> pvc "Reads model weights from volume mount" "Filesystem"
+        vllm -> huggingFace "Downloads model weights and tokenizer configs" "HTTPS/443 TLS 1.2+"
 
-        # Internal container relationships
+        konflux -> vllm "Builds multi-arch container image (amd64/arm64)"
+
         tgisAdapter -> vllmEngine "Bridges gRPC to HTTP" "HTTP/8000 localhost"
-        vllmEngine -> cudaRuntime "Runs inference computations" "CUDA API"
     }
 
     views {
@@ -48,25 +46,29 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal Platform" {
+            element "Internal RHOAI" {
                 background #7ed321
+                color #ffffff
+            }
+            element "Internal Platform" {
+                background #4a90e2
                 color #ffffff
             }
             element "Person" {
                 shape person
-                background #08427B
+                background #08427b
                 color #ffffff
             }
-            element "Component" {
-                background #4a90e2
+            element "Software System" {
+                background #1168bd
+                color #ffffff
+            }
+            element "Container" {
+                background #438dd5
                 color #ffffff
             }
         }

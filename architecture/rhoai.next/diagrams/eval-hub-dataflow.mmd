@@ -1,53 +1,74 @@
 sequenceDiagram
-    participant Client as Client<br/>(Dashboard / API User)
-    participant EvalHub as eval-hub API<br/>8080/TCP HTTPS TLS 1.2+
+    participant Client as Client<br/>(Dashboard / API)
+    participant EvalHub as eval-hub API<br/>8080/TCP HTTPS
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant InitC as eval-runtime-init<br/>(Init Container)
+    participant InitContainer as eval-runtime-init<br/>(Init Container)
     participant S3 as S3 Object Storage<br/>443/TCP HTTPS
     participant Adapter as Evaluation Adapter<br/>(Lighteval / lm-eval / etc.)
     participant Sidecar as eval-runtime-sidecar<br/>8080/TCP localhost
-    participant MLflow as MLflow Tracking Server<br/>HTTPS
+    participant MLflow as MLflow Tracking<br/>HTTPS
     participant OCI as OCI Registry<br/>443/TCP HTTPS
 
-    Note over Client,OCI: Flow 1: Evaluation Job Execution (Kubernetes)
+    Note over Client,OCI: Flow 1: Evaluation Job Creation & Execution
 
-    Client->>EvalHub: POST /api/v1/evaluations/jobs<br/>Auth: Bearer Token (K8s SA)
+    Client->>EvalHub: POST /api/v1/evaluations/jobs<br/>Auth: Bearer Token (K8s)
+    activate EvalHub
+
     EvalHub->>K8sAPI: TokenReview<br/>Auth: ServiceAccount Token
-    K8sAPI-->>EvalHub: TokenReview Response (authenticated identity)
-    EvalHub->>K8sAPI: SubjectAccessReview<br/>Resource: trustyai.opendatahub.io/evaluations:create
-    K8sAPI-->>EvalHub: SAR Response (authorized)
-    EvalHub->>K8sAPI: Create ConfigMap (job.json + sidecar_config.json)<br/>Auth: ServiceAccount Token
+    K8sAPI-->>EvalHub: TokenReview Response (authenticated user)
+
+    EvalHub->>K8sAPI: SubjectAccessReview<br/>trustyai.opendatahub.io/evaluations:create
+    K8sAPI-->>EvalHub: SAR Response (allowed/denied)
+
+    EvalHub->>K8sAPI: Create ConfigMap<br/>(job.json + sidecar_config.json)
     K8sAPI-->>EvalHub: ConfigMap created
+
     EvalHub->>K8sAPI: Create Batch Job<br/>(init + sidecar + adapter containers)
     K8sAPI-->>EvalHub: Job created
-    EvalHub-->>Client: 201 Created (job ID + status)
 
-    Note over InitC,S3: Init Container Phase
-    InitC->>S3: Download test data<br/>Auth: AWS IAM credentials (from Secret)
-    S3-->>InitC: Test data files
+    EvalHub-->>Client: 201 Created (job_id)
+    deactivate EvalHub
+
+    Note over InitContainer,S3: Job Pod Startup Phase
+
+    rect rgb(255, 248, 230)
+        InitContainer->>S3: Download test data<br/>Auth: AWS IAM credentials
+        S3-->>InitContainer: Test data files
+        Note over InitContainer: Init complete, adapter starts
+    end
 
     Note over Adapter,OCI: Evaluation Execution Phase
-    Adapter->>Sidecar: POST /api/v1/evaluations/jobs/{id}/events<br/>HTTP localhost (plaintext, pod-local)
-    Sidecar->>EvalHub: Forward status event<br/>Auth: ServiceAccount Token, TLS 1.2+
-    EvalHub-->>Sidecar: 200 OK
-    Sidecar-->>Adapter: 200 OK
 
-    Adapter->>Sidecar: POST /api/2.0/mlflow/runs/create<br/>HTTP localhost
-    Sidecar->>MLflow: Forward MLflow request<br/>Auth: Projected SA Token, TLS 1.2+
-    MLflow-->>Sidecar: Run created
-    Sidecar-->>Adapter: Run created
+    rect rgb(230, 245, 255)
+        Adapter->>Sidecar: POST /api/v1/evaluations/jobs/{id}/events<br/>HTTP localhost:8080 (plaintext, pod-local)
+        activate Sidecar
+        Sidecar->>EvalHub: Forward request<br/>Auth: ServiceAccount Token injected<br/>TLS 1.2+
+        EvalHub-->>Sidecar: Response
+        Sidecar-->>Adapter: Response
+        deactivate Sidecar
 
-    Adapter->>Sidecar: PUT /v2/{repo}/blobs/uploads<br/>HTTP localhost
-    Sidecar->>OCI: Push artifact<br/>Auth: Bearer Token (challenge-response), TLS 1.2+
-    OCI-->>Sidecar: Upload complete
-    Sidecar-->>Adapter: Upload complete
+        Adapter->>Sidecar: POST /api/2.0/mlflow/runs/create<br/>HTTP localhost:8080
+        activate Sidecar
+        Sidecar->>MLflow: Forward request<br/>Auth: Projected SA Token<br/>TLS 1.2+
+        MLflow-->>Sidecar: Run created
+        Sidecar-->>Adapter: Response
+        deactivate Sidecar
+
+        Adapter->>Sidecar: PUT /v2/{repo}/blobs/uploads<br/>HTTP localhost:8080
+        activate Sidecar
+        Sidecar->>OCI: Forward request<br/>Auth: Bearer Token (challenge-response)<br/>TLS 1.2+
+        OCI-->>Sidecar: Upload complete
+        Sidecar-->>Adapter: Response
+        deactivate Sidecar
+    end
 
     Note over Client,EvalHub: Flow 2: Authentication & Authorization Detail
 
-    Client->>EvalHub: GET /api/v1/evaluations/jobs<br/>Auth: Bearer Token + X-Tenant header
+    Client->>EvalHub: GET /api/v1/evaluations/jobs<br/>Auth: Bearer Token
+    activate EvalHub
     EvalHub->>K8sAPI: TokenReview (cached 2min)
-    K8sAPI-->>EvalHub: Identity (user, groups)
-    EvalHub->>K8sAPI: SAR: can user GET trustyai.opendatahub.io/evaluations<br/>in namespace from X-Tenant? (cached 5min allow / 30s deny)
-    K8sAPI-->>EvalHub: Allowed
-    EvalHub->>EvalHub: Query storage with tenant scoping
-    EvalHub-->>Client: 200 OK (filtered job list)
+    K8sAPI-->>EvalHub: User identity
+    EvalHub->>K8sAPI: SAR (allow cache 5min, deny cache 30s)<br/>Namespace from X-Tenant header
+    K8sAPI-->>EvalHub: Authorized
+    EvalHub-->>Client: 200 OK (job list)
+    deactivate EvalHub

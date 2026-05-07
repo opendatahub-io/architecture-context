@@ -1,61 +1,54 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates model references, policies, subscriptions; uses API keys for inference"
-        platformAdmin = person "Platform Admin" "Configures Tenant, manages ExternalModels, monitors platform"
+        aiEngineer = person "AI Engineer" "Creates API keys, manages model access, sends inference requests"
+        platformAdmin = person "Platform Admin" "Configures Tenants, MaaSAuthPolicies, MaaSSubscriptions, ExternalModels"
 
-        maas = softwareSystem "Models as a Service (MaaS)" "Kubernetes-native platform for managed AI/ML model access with auth, rate limiting, and multi-provider support" {
+        maas = softwareSystem "Models as a Service (MaaS)" "Kubernetes-native platform for managed AI/ML model access with authentication, authorization, and rate limiting" {
             controller = container "maas-controller" "Manages CRD lifecycle, deploys platform infrastructure via kustomize, creates Kuadrant policies and Istio resources" "Go Operator (controller-runtime)"
-            api = container "maas-api" "API key management, model discovery, subscription selection, Authorino callbacks" "Go HTTP Service (Gin)"
-            bbr = container "payload-processing (BBR)" "Envoy ext-proc for model extraction, provider resolution, API translation, credential injection" "Go gRPC Service"
-            db = container "PostgreSQL" "API key storage (SHA-256 hashed), management, cleanup" "PostgreSQL" "Database"
+            api = container "maas-api" "API key management, model discovery, Authorino authentication callbacks" "Go HTTP Service (Gin)"
+            bbr = container "payload-processing (BBR)" "Envoy external processor for model routing, API translation, and credential injection" "Go gRPC Service (ext-proc)"
+            cronJob = container "API Key Cleanup CronJob" "Periodically deletes expired ephemeral API keys" "Kubernetes CronJob"
         }
 
-        gateway = softwareSystem "MaaS Gateway" "Gateway API ingress (maas-default-gateway) for model endpoints" "Infrastructure"
-        kuadrant = softwareSystem "Kuadrant" "API gateway policy engine: AuthPolicy, TokenRateLimitPolicy, RateLimitPolicy" "External"
-        authorino = softwareSystem "Authorino" "Authentication and authorization: API keys, OIDC, Kubernetes tokens" "External"
+        kuadrant = softwareSystem "Kuadrant" "API gateway policy engine providing AuthPolicy and TokenRateLimitPolicy" "External"
+        authorino = softwareSystem "Authorino" "Authentication and authorization service (API keys, OIDC, K8s tokens)" "External"
         limitador = softwareSystem "Limitador" "Distributed token-based rate limiting" "External"
-        kserve = softwareSystem "KServe" "Internal ML model serving (LLMInferenceService)" "Internal RHOAI"
-        istio = softwareSystem "Istio" "Service mesh: ServiceEntry, DestinationRule, EnvoyFilter, Telemetry" "External"
-        gatewayAPI = softwareSystem "Gateway API" "Traffic routing: Gateway, HTTPRoute" "External"
-        openshift = softwareSystem "OpenShift" "Platform: Gateway controller, serving certs, Routes, Authentication" "External"
-        extLLM = softwareSystem "External LLM Providers" "Third-party LLM APIs: OpenAI, Anthropic, etc." "External"
-        rhoaiOperator = softwareSystem "RHOAI Operator" "Platform operator enables modelsAsService component" "Internal RHOAI"
-        prometheus = softwareSystem "Prometheus / User Workload Monitoring" "Metrics collection and alerting" "External"
-        perses = softwareSystem "Perses" "Dashboard deployment (Grafana alternative)" "External"
+        gatewayAPI = softwareSystem "Gateway API" "Traffic routing via Gateway and HTTPRoute resources" "External"
+        istio = softwareSystem "Istio" "Service mesh for mTLS, ServiceEntry, DestinationRule, EnvoyFilter" "External"
+        kserve = softwareSystem "KServe" "Model serving platform for LLMInferenceService" "Internal RHOAI"
+        postgresql = softwareSystem "PostgreSQL" "API key storage and management database" "External"
+        openshift = softwareSystem "OpenShift" "Container platform providing Gateway controller, serving certs, Routes" "External"
+        extLLM = softwareSystem "External LLM Providers" "Third-party model APIs (OpenAI, Anthropic, etc.)" "External"
+        odhOperator = softwareSystem "ODH/RHODS Operator" "Platform operator that enables modelsAsService component via DataScienceCluster" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus" "Metrics collection via ServiceMonitors and PodMonitors" "External"
+        perses = softwareSystem "Perses" "Dashboard deployment (optional)" "External"
 
         # User interactions
-        user -> maas "Creates MaaSAuthPolicy, MaaSSubscription, API keys via kubectl/API"
-        user -> gateway "Sends inference requests with API key or token" "HTTPS/443"
-        platformAdmin -> maas "Configures Tenant, creates ExternalModel, MaaSModelRef" "kubectl"
+        aiEngineer -> maas "Sends inference requests, manages API keys" "HTTPS/443"
+        platformAdmin -> maas "Configures Tenants, policies, subscriptions" "kubectl/oc"
 
-        # Internal relationships
-        controller -> api "Deploys via kustomize (Tenant reconciler)"
-        controller -> bbr "Deploys via kustomize (Tenant reconciler)"
-        api -> db "Stores and retrieves API keys" "PostgreSQL/5432"
+        # Internal container interactions
+        controller -> api "Deploys via kustomize SSA" "Kubernetes API/443"
+        controller -> bbr "Deploys via kustomize SSA" "Kubernetes API/443"
+        controller -> cronJob "Deploys via kustomize SSA" "Kubernetes API/443"
+        cronJob -> api "Cleanup expired keys" "HTTP/8080"
+        authorino -> api "Validate API key, select subscription" "HTTPS/8443"
 
-        # Gateway flow
-        gateway -> bbr "Envoy ext-proc for request transformation" "gRPC/9004"
-        gateway -> authorino "Request authentication and authorization"
-        gateway -> limitador "Token rate limit enforcement"
-        gateway -> kserve "Forward inference to internal models" "HTTPS"
-        gateway -> extLLM "Forward inference to external providers" "HTTPS/443"
+        # MaaS to external systems
+        maas -> kuadrant "Creates AuthPolicy, TokenRateLimitPolicy" "Kubernetes API"
+        maas -> authorino "Relies on for auth enforcement" "AuthPolicy"
+        maas -> limitador "Relies on for rate limiting" "TokenRateLimitPolicy"
+        maas -> gatewayAPI "Creates Gateway, HTTPRoute resources" "Kubernetes API"
+        maas -> istio "Creates ServiceEntry, DestinationRule, EnvoyFilter" "Kubernetes API"
+        maas -> kserve "Watches LLMInferenceService, probes models" "Kubernetes API + HTTPS"
+        maas -> postgresql "Stores hashed API keys" "PostgreSQL/5432"
+        maas -> openshift "Uses Gateway controller, service-ca certs, auth config" "Kubernetes API"
+        maas -> extLLM "Routes inference to external providers" "HTTPS/443"
+        maas -> prometheus "Exposes metrics" "HTTP/8080,9005,15090"
+        maas -> perses "Deploys dashboards (optional)" "Kubernetes API"
 
-        # Auth callbacks
-        authorino -> api "API key validation, subscription selection callbacks" "HTTPS/8443"
-
-        # Controller integrations
-        controller -> kuadrant "Creates aggregated AuthPolicy and TokenRateLimitPolicy per model" "Kubernetes API"
-        controller -> istio "Creates ServiceEntry, DestinationRule, EnvoyFilter for external models" "Kubernetes API"
-        controller -> gatewayAPI "Manages HTTPRoutes per model, validates Gateway" "Kubernetes API"
-        controller -> openshift "Discovers service account issuer URL for OIDC" "HTTPS/443"
-
-        # Platform dependencies
-        rhoaiOperator -> maas "Enables modelsAsService component via DataScienceCluster"
-        maas -> prometheus "Exposes controller, BBR, and gateway metrics" "HTTP/8080, 9005, 15090"
-        maas -> perses "Deploys dashboards (graceful if CRD missing)" "Kubernetes API"
-
-        # BBR integrations
-        bbr -> extLLM "Injects provider credentials, translates API formats"
+        # Platform integration
+        odhOperator -> maas "Enables via DataScienceCluster CR"
     }
 
     views {
@@ -70,29 +63,25 @@ workspace {
         }
 
         styles {
+            element "Software System" {
+                background #1168bd
+                color #ffffff
+            }
+            element "Person" {
+                shape person
+                background #08427b
+                color #ffffff
+            }
+            element "Container" {
+                background #438dd5
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
-                color #ffffff
-            }
-            element "Infrastructure" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Database" {
-                shape Cylinder
-                background #f5a623
-            }
-            element "Person" {
-                shape Person
-                background #08427b
-                color #ffffff
-            }
-            element "Software System" {
-                background #1168bd
                 color #ffffff
             }
         }

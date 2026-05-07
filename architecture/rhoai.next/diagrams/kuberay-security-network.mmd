@@ -1,89 +1,75 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["External User / Data Scientist"]
+        User["User / Data Scientist"]
     end
 
-    subgraph PlatformNS["INGRESS - Platform Namespace (redhat-ods-applications)"]
-        Gateway["data-science-gateway<br/>(Envoy / Gateway API)<br/>HTTPRoute: /ray/{ns}/{cluster}/*<br/>TLS 1.2+ termination"]
+    subgraph Ingress["INGRESS (DMZ)"]
+        Gateway["data-science-gateway (Envoy)<br/>Namespace: redhat-ods-applications<br/>443/TCP → 8443/TCP<br/>TLS SIMPLE (Gateway-terminated)<br/>HTTPRoute: /ray/{ns}/{cluster}/*"]
     end
 
-    subgraph UserNS["RAY CLUSTER - User Namespace (NetworkPolicy Protected)"]
+    subgraph ClusterInternal["CLUSTER INTERNAL (NetworkPolicy Enforced)"]
         direction TB
 
-        subgraph AuthLayer["Authentication Layer"]
-            AuthProxy["kube-rbac-proxy / oauth-proxy<br/>8443/TCP HTTPS<br/>TLS: self-signed RSA 2048<br/>AuthZ: SubjectAccessReview"]
+        subgraph OperatorNS["Namespace: opendatahub"]
+            Operator["KubeRay Operator<br/>SA: kuberay-operator<br/>Metrics: 8080/TCP HTTP<br/>Health: 8082/TCP HTTP<br/>Webhook: 9443/TCP HTTPS"]
         end
 
-        subgraph HeadPodGroup["Ray Head Pod"]
-            Dashboard["Ray Dashboard<br/>8265/TCP HTTP"]
-            GCS["GCS Server<br/>6379/TCP"]
-            ClientPort["Client Port<br/>10001/TCP"]
-            Serve["Ray Serve<br/>8000/TCP"]
-            Metrics["Metrics<br/>8080/TCP"]
-        end
+        subgraph ClusterNS["Namespace: {user-namespace}"]
+            subgraph HeadPodBox["Head Pod (NetworkPolicy protected)"]
+                AuthProxy["Auth Proxy Sidecar<br/>(kube-rbac-proxy / oauth-proxy)<br/>8443/TCP HTTPS<br/>TLS: self-signed RSA 2048<br/>Auth: SubjectAccessReview / OAuth"]
+                RayDashboard["Ray Dashboard<br/>8265/TCP HTTP"]
+                RayServe["Ray Serve Proxy<br/>8000/TCP HTTP"]
+                GCS["GCS Server<br/>6379/TCP"]
+                RayClient["Ray Client<br/>10001/TCP"]
+            end
 
-        subgraph WorkerPodsGroup["Ray Worker Pods"]
-            WorkerClient["Client Port<br/>10001/TCP"]
-            WorkerServe["Ray Serve<br/>8000/TCP"]
-            WorkerMetrics["Metrics<br/>8080/TCP"]
-        end
+            WorkerPods["Worker Pods<br/>gRPC/TCP various ports<br/>mTLS: cert-manager<br/>Cert: ray-worker-secret-{cluster}<br/>90-day, 15-day renewal"]
 
-        subgraph NetworkPolicies["NetworkPolicy Rules"]
-            NP["Head: intra-cluster all ports<br/>Head: ns-local 10001, 8265<br/>Head: operator ns health checks<br/>Head: gateway ns → 8443<br/>Workers: intra-cluster only"]
+            RefGrant["ReferenceGrant<br/>(cross-namespace auth)"]
         end
-    end
-
-    subgraph OperatorNS["OPERATOR NAMESPACE (opendatahub)"]
-        Operator["KubeRay Operator<br/>SA: kuberay-operator<br/>8080/TCP metrics (HTTP)<br/>8082/TCP probes (HTTP)<br/>9443/TCP webhooks (HTTPS)"]
     end
 
     subgraph PlatformServices["PLATFORM SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: SA Token"]
-        CertMgr["cert-manager<br/>CRD: Issuer, Certificate<br/>Auth: SA Token"]
-        OAuth["OpenShift OAuth API<br/>443/TCP HTTPS TLS 1.2+<br/>config.openshift.io"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: ServiceAccount Token"]
+        CertManager["cert-manager<br/>443/TCP (via K8s API)<br/>Issuer + Certificate CRDs"]
+        OAuth["OpenShift OAuth<br/>443/TCP HTTPS<br/>Auth config for proxy"]
         Prometheus["Prometheus<br/>Scrape: 8080/TCP HTTP"]
     end
 
     %% External → Ingress
     User -->|"HTTPS/443<br/>TLS 1.2+<br/>Session cookie"| Gateway
 
-    %% Ingress → Auth Layer
+    %% Ingress → Cluster
     Gateway -->|"HTTPS/8443<br/>TLS (self-signed)<br/>SubjectAccessReview"| AuthProxy
+    Gateway -.->|"authorized by"| RefGrant
 
-    %% Auth Layer → Dashboard
-    AuthProxy -->|"HTTP/8265<br/>localhost (no TLS)<br/>No auth"| Dashboard
+    %% Auth Proxy → Dashboard (loopback)
+    AuthProxy -->|"HTTP/8265<br/>None (loopback)<br/>No auth"| RayDashboard
 
-    %% Head ↔ Workers (mTLS)
-    GCS ---|"gRPC + TCP<br/>mTLS (cert-manager)<br/>Per-cluster CA<br/>90-day certs"| WorkerClient
+    %% Head → Workers (mTLS)
+    RayDashboard -->|"gRPC/TCP<br/>mTLS (cert-manager)<br/>Per-cluster CA RSA 4096"| WorkerPods
 
-    %% Operator → Platform Services
+    %% Operator → Platform
     Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| CertMgr
+    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| CertManager
     Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| OAuth
+    Prometheus -->|"HTTP/8080<br/>No auth"| Operator
 
-    %% Operator → Ray Cluster
-    Operator -.->|"HTTP/8265<br/>No TLS<br/>Health checks"| Dashboard
-
-    %% Prometheus scraping
-    Prometheus -.->|"HTTP/8080<br/>No auth"| Metrics
-    Prometheus -.->|"HTTP/8080<br/>No auth"| Operator
-
-    %% K8s API → Operator Webhooks
-    K8sAPI -->|"HTTPS/9443<br/>serving-cert TLS<br/>Admission control"| Operator
+    %% Operator → Ray Dashboard
+    Operator -->|"HTTP/8265<br/>No encryption<br/>Cluster-internal"| RayDashboard
+    Operator -->|"HTTP/8000<br/>No encryption<br/>Health checks"| RayServe
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef auth fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef clusterinternal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef platform fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef netpol fill:#f8cecc,stroke:#b85450,stroke-width:1px,stroke-dasharray: 5 5
+    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef authproxy fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class User external
     class Gateway ingress
-    class AuthProxy auth
-    class Dashboard,GCS,ClientPort,Serve,Metrics,WorkerClient,WorkerServe,WorkerMetrics servicemesh
     class Operator operator
-    class K8sAPI,CertMgr,OAuth,Prometheus platform
-    class NP netpol
+    class AuthProxy authproxy
+    class RayDashboard,RayServe,GCS,RayClient,WorkerPods clusterinternal
+    class K8sAPI,CertManager,OAuth,Prometheus platform

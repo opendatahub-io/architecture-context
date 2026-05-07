@@ -1,52 +1,53 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Submits training jobs and inference workloads to Kubernetes"
-        admin = person "Cluster Admin" "Configures resource quotas, queues, and scheduling policies"
+        user = person "Data Scientist" "Creates and submits ML training jobs and batch workloads"
+        clusterAdmin = person "Cluster Admin" "Configures ClusterQueues, ResourceFlavors, quotas"
 
-        kueue = softwareSystem "Kueue" "Kubernetes-native job queueing system managing admission, scheduling, preemption, and quota enforcement" {
-            controllerManager = container "Kueue Controller Manager" "controller-runtime based operator with core controllers, scheduler, webhook server, and job framework plugins" "Go Operator"
-            webhookServer = container "Webhook Server" "Validates and mutates job and queue CRDs on creation/update" "Go (port 9443/TCP TLS)"
-            scheduler = container "Scheduler" "Continuous scheduling loop evaluating pending workloads against quotas, flavors, priorities, and preemption" "Go (in-process Runnable)"
-            jobFramework = container "Job Framework" "Plugin architecture integrating batch/v1 Jobs, JobSets, Kubeflow jobs, Ray jobs, AppWrappers, Pods" "Go Plugins"
-            multiKueue = container "MultiKueue Subsystem" "Multi-cluster workload federation with remote cluster client management" "Go (feature-gated, disabled in RHOAI)"
-            provisioningCtrl = container "Provisioning Controller" "Creates ProvisioningRequest CRs for cluster autoscaler integration" "Go Controller"
-            tasCtrl = container "TAS Controllers" "Topology-Aware Scheduling for pod placement within topology domains" "Go Controllers"
+        kueue = softwareSystem "Kueue" "Kubernetes-native job queueing system managing admission, scheduling, preemption, and fair sharing" {
+            controllerManager = container "Kueue Controller Manager" "controller-runtime based operator managing job queueing, admission, scheduling, preemption, and workload lifecycle" "Go Operator"
+            webhookServer = container "Webhook Server" "Validates and mutates job and Kueue resource specs" "Go (port 9443/TCP HTTPS)"
+            scheduler = container "Scheduler" "Continuous scheduling loop evaluating pending workloads against quotas, priorities, flavors, and fair sharing" "Go (in-process)"
+            jobFramework = container "Job Framework" "Plugin architecture integrating batch/v1, JobSet, Kubeflow, Ray, AppWrapper, Pod, Deployment, StatefulSet job types" "Go"
+            multiKueueCtrl = container "MultiKueue Controller" "Federates workloads to remote clusters via kubeconfig" "Go (optional)"
+            provisioningCtrl = container "Provisioning Controller" "Creates ProvisioningRequests for cluster autoscaler node provisioning" "Go (optional)"
         }
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Central API for cluster resource management" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API for all CRD CRUD, job management, and webhook registration" "External"
         trainingOperator = softwareSystem "Training Operator (Kubeflow)" "Manages PyTorchJob, TFJob, MPIJob, PaddleJob, XGBoostJob CRDs" "Internal RHOAI"
-        rayOperator = softwareSystem "KubeRay Operator" "Manages RayJob and RayCluster CRDs" "Internal RHOAI"
-        jobsetController = softwareSystem "JobSet Controller" "Manages JobSet CRDs for multi-job coordination" "Internal RHOAI"
-        codeflare = softwareSystem "CodeFlare Operator" "Manages AppWrapper CRDs for batch workload grouping" "Internal RHOAI"
-        certManager = softwareSystem "cert-manager" "External certificate management (optional alternative to internal certs)" "External"
-        clusterAutoscaler = softwareSystem "Cluster Autoscaler" "Reads ProvisioningRequests and provisions nodes via cloud APIs" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and alerting" "Internal RHOAI"
-        rhoaiOperator = softwareSystem "RHOAI Operator" "Platform operator that deploys Kueue via kustomize manifests" "Internal RHOAI"
-        remoteCluster = softwareSystem "Remote Worker Cluster" "Target cluster for MultiKueue workload federation" "External"
+        rayOperator = softwareSystem "Ray Operator (KubeRay)" "Manages RayJob and RayCluster CRDs" "Internal RHOAI"
+        jobSetController = softwareSystem "JobSet Controller" "Manages JobSet CRDs for multi-job coordination" "Internal RHOAI"
+        codeflare = softwareSystem "CodeFlare (AppWrapper)" "Manages AppWrapper batch workloads" "Internal RHOAI"
+        rhoaiOperator = softwareSystem "RHOAI Operator" "Platform operator deploying Kueue via kustomize manifests" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and alerting" "External"
+        certManager = softwareSystem "cert-manager" "External certificate management (optional alternative)" "External"
+        clusterAutoscaler = softwareSystem "Cluster Autoscaler" "Processes ProvisioningRequests to provision nodes" "External"
+        remoteCluster = softwareSystem "Remote Kubernetes Cluster" "Worker cluster for MultiKueue federation" "External"
 
-        # User interactions
-        user -> kueue "Submits jobs (kubectl create)" "HTTPS/6443"
-        admin -> kueue "Configures ClusterQueues, LocalQueues, ResourceFlavors" "HTTPS/6443"
+        # User relationships
+        user -> kueue "Submits jobs to LocalQueues via kubectl/API"
+        clusterAdmin -> kueue "Configures ClusterQueues, ResourceFlavors, quotas"
 
-        # Kueue → Kubernetes
-        kueue -> k8sAPI "All controller reconciliation, CRD CRUD, webhook registration, watch resources" "HTTPS/6443 TLS 1.2+ SA token"
-
-        # Platform deploys Kueue
-        rhoaiOperator -> kueue "Deploys via kustomize manifests" "Kustomize"
-
-        # Job framework integrations
-        kueue -> trainingOperator "Watches/manages Kubeflow training job CRDs" "HTTPS/6443"
-        kueue -> rayOperator "Watches/manages RayJob and RayCluster CRDs" "HTTPS/6443"
-        kueue -> jobsetController "Watches/manages JobSet CRDs" "HTTPS/6443"
-        kueue -> codeflare "Watches/manages AppWrapper CRDs" "HTTPS/6443"
+        # Kueue internal relationships
+        controllerManager -> webhookServer "Hosts webhook endpoints"
+        controllerManager -> scheduler "Runs scheduler loop"
+        controllerManager -> jobFramework "Manages job integrations"
+        controllerManager -> multiKueueCtrl "Federates workloads (optional)"
+        controllerManager -> provisioningCtrl "Requests node provisioning (optional)"
 
         # External integrations
-        kueue -> certManager "TLS certificate management (optional)" "HTTPS"
-        kueue -> clusterAutoscaler "Creates ProvisioningRequest CRs" "HTTPS/6443"
-        kueue -> remoteCluster "MultiKueue workload federation (disabled in RHOAI)" "HTTPS/6443 TLS 1.2+"
-
-        # Monitoring
+        kueue -> k8sAPI "CRD CRUD, job lifecycle, webhook registration" "HTTPS/6443 TLS 1.2+ SA token"
+        kueue -> trainingOperator "Watches/manages Kubeflow training job CRDs" "CRD Watch"
+        kueue -> rayOperator "Watches/manages Ray job and cluster CRDs" "CRD Watch"
+        kueue -> jobSetController "Watches/manages JobSet CRDs" "CRD Watch"
+        kueue -> codeflare "Watches/manages AppWrapper CRDs" "CRD Watch"
+        rhoaiOperator -> kueue "Deploys and configures Kueue" "Kustomize manifests"
         prometheus -> kueue "Scrapes metrics" "HTTPS/8443 Bearer Token"
+        certManager -> kueue "Provides TLS certificates (optional)" "Certificate CRD"
+        kueue -> clusterAutoscaler "Creates ProvisioningRequests" "CRD/6443"
+        kueue -> remoteCluster "Federates workloads (MultiKueue)" "HTTPS/6443 Kubeconfig"
+
+        # K8s API webhook flow
+        k8sAPI -> webhookServer "Webhook calls for admission" "HTTPS/9443 TLS"
     }
 
     views {
@@ -61,21 +62,21 @@ workspace {
         }
 
         styles {
-            element "Person" {
-                shape Person
-                background #08427b
-                color #ffffff
-            }
-            element "Software System" {
-                background #1168bd
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
+                color #ffffff
+            }
+            element "Person" {
+                shape Person
+                background #4a90e2
+                color #ffffff
+            }
+            element "Software System" {
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {

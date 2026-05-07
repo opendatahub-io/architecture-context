@@ -1,54 +1,42 @@
 sequenceDiagram
-    autonumber
-
     participant User as User / Data Scientist
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
     participant Operator as KubeRay Operator
     participant CertMgr as cert-manager API<br/>443/TCP HTTPS
     participant Gateway as data-science-gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant AuthProxy as kube-rbac-proxy sidecar<br/>8443/TCP HTTPS TLS
+    participant AuthProxy as kube-rbac-proxy<br/>8443/TCP HTTPS
     participant Dashboard as Ray Dashboard<br/>8265/TCP HTTP
-    participant Head as Ray Head Pod
-    participant Workers as Ray Worker Pods
+    participant HeadPod as Ray Head Pod
+    participant Workers as Ray Workers
     participant ServeSvc as Serve Service<br/>8000/TCP HTTP
 
-    rect rgb(230, 245, 255)
-        Note over User,Dashboard: Flow 1: RayCluster Creation & Dashboard Access (OpenShift/RHOAI)
+    Note over User, ServeSvc: Flow 1: RayCluster Creation & Dashboard Access (OpenShift/RHOAI)
+    User->>K8sAPI: 1. Create RayCluster CR<br/>Auth: Bearer Token
+    K8sAPI-->>Operator: Watch event
+    Operator->>K8sAPI: 2. Create Head Pod, Worker Pods,<br/>Services, RBAC<br/>Auth: ServiceAccount Token
+    Operator->>CertMgr: 3. Create Issuer + Certificates<br/>for mTLS<br/>Auth: ServiceAccount Token
+    CertMgr-->>Operator: Certificates issued
 
-        User->>K8sAPI: kubectl apply RayCluster CR<br/>Auth: Bearer Token
-        K8sAPI->>Operator: Watch event (RayCluster created)
-        Operator->>K8sAPI: Create head pod, worker pods,<br/>services, RBAC, NetworkPolicies<br/>Auth: ServiceAccount Token
-        Operator->>CertMgr: Create Issuer + Certificates<br/>(mTLS: CA 10yr, node 90d)<br/>Auth: ServiceAccount Token
-        Operator->>K8sAPI: Create HTTPRoute, ReferenceGrant,<br/>auth proxy secrets
-        Note over Operator: Authentication Controller creates<br/>HTTPRoute in platform namespace
+    Note over User, ServeSvc: Dashboard Access via Gateway
+    User->>Gateway: 4. GET /ray/{ns}/{cluster}/<br/>Auth: Session cookie
+    Gateway->>AuthProxy: 5. Forward request<br/>TLS (self-signed)<br/>Auth: SubjectAccessReview
+    AuthProxy->>Dashboard: 6. Proxy to localhost<br/>HTTP (loopback)<br/>No auth
+    Dashboard-->>AuthProxy: Dashboard response
+    AuthProxy-->>Gateway: Response
+    Gateway-->>User: Dashboard UI
 
-        User->>Gateway: GET /ray/{ns}/{cluster}/<br/>Auth: Session cookie
-        Gateway->>AuthProxy: Forward request<br/>8443/TCP HTTPS (self-signed TLS)<br/>Auth: SubjectAccessReview
-        AuthProxy->>Dashboard: Proxy to localhost<br/>8265/TCP HTTP (loopback, no auth)
-        Dashboard-->>AuthProxy: Dashboard HTML response
-        AuthProxy-->>Gateway: Response
-        Gateway-->>User: Dashboard UI
-    end
+    Note over User, ServeSvc: Flow 2: RayJob Submission (HTTP Mode)
+    User->>K8sAPI: Create RayJob CR
+    K8sAPI-->>Operator: Watch event
+    Operator->>Dashboard: 1. POST /api/jobs/<br/>HTTP (cluster-internal)<br/>No auth
+    Dashboard->>HeadPod: Schedule job
+    HeadPod->>Workers: 2. Distribute tasks<br/>gRPC, mTLS (if enabled)
+    Workers-->>HeadPod: Task results
+    Operator->>Dashboard: 3. GET /api/jobs/{id}<br/>Poll status
 
-    rect rgb(255, 245, 230)
-        Note over Operator,Workers: Flow 2: RayJob Submission (HTTP Mode)
-
-        Operator->>Dashboard: POST /api/jobs/<br/>8265/TCP HTTP (cluster-internal, no auth)
-        Dashboard->>Head: Schedule job execution
-        Head->>Workers: Distribute tasks<br/>gRPC (mTLS if enabled)
-        Workers-->>Head: Task results
-        Operator->>Dashboard: GET /api/jobs/{id}<br/>Poll status (cluster-internal)
-        Dashboard-->>Operator: Job status (SUCCEEDED/FAILED)
-    end
-
-    rect rgb(230, 255, 230)
-        Note over Operator,ServeSvc: Flow 3: RayService Zero-Downtime Upgrade (Blue-Green)
-
-        Operator->>Dashboard: PUT /api/serve/applications/<br/>8265/TCP HTTP (pending cluster)
-        Note over Operator: Push Serve config to pending cluster
-        Operator->>ServeSvc: GET /health (HTTP proxy)<br/>8000/TCP HTTP
-        Note over Operator: Monitor application health
-        ServeSvc-->>Operator: Health status (HEALTHY)
-        Operator->>K8sAPI: Update Service selector<br/>(switch active → pending)<br/>Auth: ServiceAccount Token
-        Note over Operator: Atomic traffic cutover<br/>Old cluster deleted after switch
-    end
+    Note over User, ServeSvc: Flow 3: RayService Zero-Downtime Upgrade
+    Operator->>Dashboard: 1. PUT Serve config<br/>on pending cluster<br/>8265/TCP HTTP
+    Operator->>ServeSvc: 2. Health check<br/>8000/TCP HTTP
+    ServeSvc-->>Operator: Health status
+    Operator->>K8sAPI: 3. Switch Service selector<br/>active ↔ pending<br/>443/TCP HTTPS
+    User->>ServeSvc: 4. Client traffic<br/>8000/TCP HTTP<br/>Seamless cutover

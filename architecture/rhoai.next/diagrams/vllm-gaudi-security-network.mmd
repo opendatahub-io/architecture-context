@@ -3,64 +3,73 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (Platform Gateway)"]
-        Gateway["KServe Gateway<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ (SIMPLE)<br/>HTTPRoute / Gateway API"]
+    subgraph Ingress["INGRESS (DMZ)"]
+        KServeGW["KServe Gateway<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ (SIMPLE)<br/>Platform Auth"]
     end
 
-    subgraph AuthBoundary["AUTH SIDECAR (Pod Security Boundary)"]
-        RBACProxy["kube-rbac-proxy<br/>8443/TCP → 8000/TCP<br/>TLS termination<br/>Bearer JWT + K8s RBAC"]
-    end
-
-    subgraph Application["APPLICATION (Container: odh-vllm-gaudi-rhel9)"]
+    subgraph Pod["POD BOUNDARY (InferenceService Pod)"]
         direction TB
 
-        APIServer["vLLM API Server<br/>8000/TCP HTTP (plaintext)<br/>OpenAI-compatible API<br/>⚠ FIPS DISABLED"]
+        RBAC["kube-rbac-proxy sidecar<br/>8443/TCP → 8000/TCP<br/>TLS → HTTP<br/>JWT validation"]
 
-        subgraph Runtime["Inference Runtime"]
-            HPUWorker["HPUWorker /<br/>HPUModelRunner"]
-            GaudiDevice["Intel Gaudi HPU<br/>SynapseAI v1.23.0"]
+        subgraph Container["Container: odh-vllm-gaudi-rhel9"]
+            API["vLLM API Server<br/>:8000/TCP HTTP<br/>Endpoints: /v1/completions,<br/>/v1/chat/completions,<br/>/v1/models, /v1/embeddings"]
+            Health["/health, /metrics<br/>:8000/TCP HTTP<br/>Unauthenticated"]
+            Worker["HPUWorker / HPUModelRunner<br/>In-process<br/>SynapseAI HAL"]
+        end
+    end
+
+    subgraph IntraCluster["INTRA-CLUSTER (Plaintext)"]
+        direction TB
+
+        subgraph HCCL_Zone["Tensor Parallelism"]
+            Worker0["HPUWorker Rank 0"]
+            WorkerN["HPUWorker Rank N"]
         end
 
-        APIServer -->|in-process| HPUWorker
-        HPUWorker -->|SynapseAI HAL| GaudiDevice
+        subgraph NIXL_Zone["KV Cache Disaggregation"]
+            Prefill["Prefill Instance"]
+            NixlChan["NIXL Side Channel<br/>HTTP, Plaintext"]
+            Decode["Decode Instance"]
+        end
+
+        Ray["Ray Head<br/>6379/TCP<br/>Plaintext"]
     end
 
-    subgraph InterWorker["INTER-WORKER (In-Cluster, Plaintext)"]
-        HCCL["HCCL Peer Workers<br/>Dynamic ports<br/>Plaintext<br/>No auth"]
-        NIXL["NIXL Side Channel<br/>Side channel port + dp_rank<br/>HTTP plaintext<br/>No auth"]
-        Ray["Ray Head Node<br/>6379/TCP<br/>Ray protocol<br/>No auth"]
-    end
-
-    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
+    subgraph ExternalSvc["EXTERNAL SERVICES (Egress)"]
         S3["S3 / MinIO<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM / Access Key"]
-        HFHub["Hugging Face Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
+        HF["Hugging Face Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
     end
 
-    %% Ingress flows
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer JWT"| Gateway
-    Gateway -->|"HTTPS/8443<br/>TLS<br/>ServiceAccount Token"| RBACProxy
-    RBACProxy -->|"HTTP/8000<br/>localhost (plaintext)<br/>No auth (validated)"| APIServer
+    %% Flows - External to Pod
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (JWT)"| KServeGW
+    KServeGW -->|"HTTPS/8443<br/>TLS<br/>SA Token"| RBAC
+    RBAC -->|"HTTP/8000<br/>localhost<br/>No auth"| API
 
-    %% Inter-worker flows
-    HPUWorker -->|"HCCL<br/>Dynamic ports<br/>Plaintext"| HCCL
-    HPUWorker -.->|"HTTP<br/>Plaintext<br/>KV cache coord"| NIXL
-    HPUWorker -.->|"Ray/6379<br/>Multi-node"| Ray
+    %% Internal pod flows
+    API --> Worker
+
+    %% Intra-cluster flows
+    Worker0 <-->|"HCCL<br/>Dynamic port<br/>Plaintext<br/>No auth"| WorkerN
+    Prefill -->|"HTTP<br/>Plaintext<br/>No auth"| NixlChan
+    Prefill -->|"NIXL/RDMA<br/>Plaintext<br/>No auth"| Decode
+    Worker -->|"Ray protocol<br/>Plaintext"| Ray
 
     %% Egress flows
-    HPUWorker -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    HPUWorker -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
+    API -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    API -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HF
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef auth fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef interworker fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef externalservice fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef pod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef container fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef intracluster fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef warning fill:#ff6666,stroke:#cc0000,stroke-width:2px,color:#fff
 
     class Client external
-    class Gateway ingress
-    class RBACProxy auth
-    class APIServer,HPUWorker,GaudiDevice application
-    class HCCL,NIXL,Ray interworker
-    class S3,HFHub externalservice
+    class KServeGW ingress
+    class RBAC,API,Health,Worker pod
+    class S3,HF externalservice
+    class Worker0,WorkerN,Prefill,NixlChan,Decode,Ray intracluster

@@ -1,0 +1,40 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as data-science-gateway<br/>(Envoy)
+    participant EPP as llm-d-inference-scheduler<br/>(EPP ext_proc)
+    participant Prefill as vLLM Prefill Pod
+    participant Sidecar as llm-d-routing-sidecar
+    participant KVCache as KV Cache<br/>(NIXL / shared storage)
+    participant Decode as vLLM Decode Pod
+    participant WVA as Workload Variant<br/>Autoscaler
+
+    Note over Client,WVA: Workflow 4: LLM Inference with Disaggregated P/D (llm-d)
+
+    Client->>Gateway: POST /v1/chat/completions<br/>(OpenAI-compatible, HTTPS/443)
+
+    Gateway->>EPP: ext_proc filter invocation<br/>(gRPC)
+    EPP->>EPP: Score endpoints:<br/>- KV cache prefix match<br/>- Queue depth<br/>- LoRA adapter availability
+    EPP-->>Gateway: Target headers<br/>(selected prefill pod)
+
+    Gateway->>Prefill: Route request to<br/>prefill pod (mTLS)
+    Prefill->>Prefill: Execute prefill phase<br/>(compute KV cache for prompt)
+
+    Prefill->>KVCache: Transfer KV cache<br/>(NIXL V2 protocol)
+    Prefill->>Sidecar: Signal prefill complete
+
+    Sidecar->>Sidecar: Coordinate decode handoff
+    Sidecar->>Decode: Route to decode pod<br/>with KV cache ref
+
+    Decode->>KVCache: Load KV cache
+    loop Token generation
+        Decode->>Decode: Generate next token
+        Decode-->>Client: SSE stream token<br/>(Server-Sent Events)
+    end
+
+    Decode-->>Client: Stream complete<br/>(final response)
+
+    Note over WVA,EPP: Background: Traffic-aware autoscaling
+
+    WVA->>EPP: Scrape EPP metrics<br/>(queue depth, latency)
+    WVA->>WVA: Evaluate scaling policy<br/>per InferencePool
+    WVA->>WVA: Scale prefill/decode pools<br/>independently via HPA

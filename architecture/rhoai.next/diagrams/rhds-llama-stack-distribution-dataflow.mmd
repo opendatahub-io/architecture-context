@@ -1,50 +1,62 @@
 sequenceDiagram
-    participant Client as External Client
-    participant LLS as Llama Stack Server<br/>8321/TCP HTTP
-    participant vLLM as vLLM Server<br/>Configurable HTTP/HTTPS
+    participant Client as Client
+    participant Ingress as Platform Ingress<br/>(TLS + Auth)
+    participant LS as Llama Stack Server<br/>8321/TCP HTTP
+    participant vLLM as vLLM Server<br/>HTTP/HTTPS
     participant PG as PostgreSQL<br/>5432/TCP
-    participant Milvus as Milvus<br/>Configurable HTTP/gRPC
-    participant vLLMEmb as vLLM Embedding<br/>Configurable HTTP/HTTPS
+    participant Milvus as Milvus<br/>HTTP/gRPC
+    participant FMS as TrustyAI FMS<br/>Orchestrator
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
     participant LMEval as LMEval Job
-    participant FMS as TrustyAI FMS<br/>Configurable HTTP/HTTPS
 
     rect rgb(230, 245, 255)
         Note over Client,PG: Flow 1: Inference Request (vLLM Backend)
-        Client->>LLS: POST /v1/chat/completions<br/>HTTP/8321 (no app auth)
-        LLS->>vLLM: Forward inference request<br/>HTTP/HTTPS (VLLM_TLS_VERIFY)<br/>Auth: Bearer Token (VLLM_API_TOKEN)
-        vLLM-->>LLS: Inference response
-        LLS->>PG: Store inference log (async)<br/>PostgreSQL/5432<br/>Auth: username/password
-        LLS-->>Client: JSON Response
+        Client->>Ingress: POST /v1/chat/completions<br/>Auth: Platform-enforced
+        Ingress->>LS: Forward (TLS terminated)<br/>HTTP 8321/TCP
+        LS->>vLLM: POST inference request<br/>HTTP/HTTPS, Bearer Token (VLLM_API_TOKEN)
+        vLLM-->>LS: Inference response (streaming/non-streaming)
+        LS->>PG: Async write inference log<br/>PostgreSQL/5432, Username/password
+        LS-->>Ingress: JSON Response
+        Ingress-->>Client: JSON Response (TLS)
     end
 
     rect rgb(230, 255, 230)
-        Note over Client,vLLMEmb: Flow 2: RAG Query with Vector Search
-        Client->>LLS: POST /v1/vector-io/query<br/>HTTP/8321
-        LLS->>Milvus: Vector similarity search<br/>HTTP/gRPC (configurable mTLS)<br/>Auth: Token (MILVUS_TOKEN)
-        Milvus-->>LLS: Matching vectors
-        LLS->>vLLMEmb: Generate embedding<br/>HTTP/HTTPS (configurable)<br/>Auth: Bearer Token
-        vLLMEmb-->>LLS: Embedding vector
-        LLS->>vLLM: Inference with context<br/>HTTP/HTTPS<br/>Auth: Bearer Token (VLLM_API_TOKEN)
-        vLLM-->>LLS: Augmented response
-        LLS->>PG: Store conversation state<br/>PostgreSQL/5432
-        LLS-->>Client: RAG Response
+        Note over Client,Milvus: Flow 2: RAG Query with Vector Search
+        Client->>Ingress: POST /v1/chat/completions<br/>(with RAG context)
+        Ingress->>LS: Forward HTTP 8321/TCP
+        LS->>Milvus: Vector similarity search<br/>HTTP/gRPC, Token (MILVUS_TOKEN)
+        Milvus-->>LS: Matching document chunks
+        LS->>vLLM: Generate embeddings<br/>HTTP/HTTPS, Bearer Token
+        vLLM-->>LS: Embedding vectors
+        LS->>vLLM: Inference with context<br/>HTTP/HTTPS, Bearer Token
+        vLLM-->>LS: Augmented response
+        LS->>PG: Store conversation state<br/>PostgreSQL/5432
+        LS-->>Ingress: JSON Response
+        Ingress-->>Client: JSON Response (TLS)
     end
 
     rect rgb(255, 245, 230)
         Note over Client,LMEval: Flow 3: Model Evaluation (TrustyAI LMEval)
-        Client->>LLS: POST /v1/eval/run<br/>HTTP/8321
-        LLS->>K8sAPI: Create LMEval Job<br/>HTTPS/443 TLS 1.2+<br/>Auth: ServiceAccount Token
-        K8sAPI-->>LLS: Job created
-        LMEval->>vLLM: Evaluate model<br/>HTTP (configurable)
-        vLLM-->>LMEval: Evaluation results
-        LLS-->>Client: Evaluation status
+        Client->>Ingress: POST /v1/eval/run
+        Ingress->>LS: Forward HTTP 8321/TCP
+        LS->>K8sAPI: Create LMEval Job<br/>HTTPS/443, ServiceAccount Token
+        K8sAPI-->>LS: Job created
+        Note over LMEval: Job runs asynchronously
+        LMEval->>vLLM: Evaluation queries<br/>HTTP
+        vLLM-->>LMEval: Responses
+        LMEval-->>K8sAPI: Job complete + results
+        LS->>K8sAPI: Poll job status<br/>HTTPS/443
+        K8sAPI-->>LS: Results
+        LS-->>Ingress: Evaluation results
+        Ingress-->>Client: JSON Response (TLS)
     end
 
     rect rgb(255, 230, 230)
         Note over Client,FMS: Flow 4: Safety Shield Evaluation
-        Client->>LLS: POST /v1/safety/run_shield<br/>HTTP/8321
-        LLS->>FMS: Evaluate content safety<br/>HTTP/HTTPS (FMS_SSL_CERT_PATH)<br/>Auth: None
-        FMS-->>LLS: Shield evaluation result
-        LLS-->>Client: Safety response
+        Client->>Ingress: POST /v1/safety/run_shield
+        Ingress->>LS: Forward HTTP 8321/TCP
+        LS->>FMS: Evaluate content safety<br/>HTTP/HTTPS (FMS_SSL_CERT_PATH)
+        FMS-->>LS: Safety verdict (pass/fail + details)
+        LS-->>Ingress: Safety response
+        Ingress-->>Client: JSON Response (TLS)
     end

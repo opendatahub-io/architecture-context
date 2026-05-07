@@ -3,104 +3,101 @@ graph TB
         User["User<br/>(SDK / Dashboard UI)"]
     end
 
-    subgraph Ingress["INGRESS (Edge)"]
-        Route["OpenShift Route<br/>443/TCP → 8888/TCP<br/>TLS Edge Termination"]
-        VirtualService["Istio VirtualService<br/>(Multi-user variant)<br/>AuthorizationPolicy"]
+    subgraph Ingress["INGRESS (DMZ)"]
+        Route["OpenShift Route<br/>443/TCP → 8888/TCP<br/>TLS Edge Termination<br/>OAuth"]
+        VirtualService["Istio VirtualService<br/>8888/TCP<br/>AuthorizationPolicy<br/>(multi-user mode)"]
     end
 
-    subgraph ClusterInternal["CLUSTER INTERNAL"]
+    subgraph ClusterServices["INTERNAL SERVICES (Cluster Network)"]
         direction TB
 
         subgraph APILayer["API Layer"]
-            APIServer["API Server<br/>SA: ml-pipeline<br/>8888/TCP HTTP | 8887/TCP gRPC<br/>8443/TCP Webhook<br/>Auth: Bearer → TokenReview → SAR"]
+            APIServer["API Server (ml-pipeline)<br/>SA: ml-pipeline<br/>8888/TCP HTTP | 8887/TCP gRPC | 8443/TCP Webhook<br/>Auth: Bearer Token + SubjectAccessReview<br/>FIPS: strictfipsruntime + OpenSSL 3.5.1"]
         end
 
-        subgraph Controllers["Controllers & Agents"]
-            PA["Persistence Agent<br/>SA: ml-pipeline-persistenceagent<br/>Auth: Projected SA Token (1h)"]
-            SWC["Scheduled Workflow Controller<br/>SA: ml-pipeline-scheduledworkflow<br/>9090/TCP metrics<br/>Auth: Projected SA Token (1h)"]
-            CacheServer["Cache Server (Webhook)<br/>SA: kubeflow-pipelines-cache<br/>443→8443/TCP HTTPS<br/>TLS: webhook-server-tls"]
-            ViewerCtrl["Viewer Controller"]
+        subgraph Controllers["Controller Services"]
+            PersistenceAgent["Persistence Agent<br/>SA: ml-pipeline-persistenceagent<br/>Auth: Projected SA Token (1h)<br/>FIPS: strictfipsruntime"]
+            SWController["Scheduled Workflow Controller<br/>SA: ml-pipeline-scheduledworkflow<br/>9090/TCP metrics<br/>Auth: Projected SA Token (1h)<br/>FIPS: strictfipsruntime"]
+            CacheServer["Cache Server<br/>SA: kubeflow-pipelines-cache<br/>443/TCP → 8443/TCP HTTPS<br/>Auth: K8s client cert (webhook)<br/>TLS: webhook-server-tls cert"]
+            ViewerCtrl["Viewer Controller<br/>Manages Tensorboard<br/>Deployments + Services"]
         end
 
-        subgraph PipelineRuntime["Pipeline Runtime (per step)"]
-            Driver["Driver (sidecar)<br/>SA: pipeline-runner<br/>FIPS: strictfipsruntime"]
-            Launcher["Launcher (sidecar)<br/>SA: pipeline-runner<br/>⚠ FIPS/non-FIPS dual binary"]
-            UserPod["User Container"]
+        subgraph RuntimePods["Runtime Pipeline Pods"]
+            Driver["Driver (sidecar)<br/>Go CLI<br/>FIPS: strictfipsruntime"]
+            Launcher["Launcher (sidecar)<br/>Go CLI<br/>FIPS: dual binary<br/>(launcher-v2 / launcher-v2-fips)"]
+        end
+
+        subgraph MetadataServices["Metadata Services"]
+            MLMD["ML Metadata<br/>metadata-grpc-service<br/>8080/TCP gRPC<br/>Optional TLS | No Auth"]
+            MetadataEnvoy["Metadata Envoy<br/>metadata-envoy-service<br/>9090/TCP HTTP<br/>No Encryption | No Auth"]
         end
 
         subgraph UIServices["UI Services"]
-            PipelineUI["ML Pipeline UI<br/>3000/TCP HTTP<br/>No Auth"]
-            VizServer["Visualization Server<br/>8888/TCP HTTP<br/>No Auth"]
+            PipelineUI["Pipeline UI<br/>ml-pipeline-ui<br/>3000/TCP HTTP<br/>No Auth"]
+            VizServer["Visualization Server<br/>ml-pipeline-visualizationserver<br/>8888/TCP HTTP<br/>No Auth"]
         end
+
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS | SA Token<br/>TokenReview + SubjectAccessReview"]
+        ArgoWF["Argo Workflow Controller<br/>Watches Workflow CRDs"]
     end
 
-    subgraph PlatformServices["PLATFORM SERVICES"]
-        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS<br/>SA Token Auth"]
-        ArgoCtrl["Argo Workflow Controller<br/>v3.7.11<br/>Watches Workflow CRDs"]
-        MLMD["ML Metadata (MLMD)<br/>8080/TCP gRPC<br/>Optional TLS<br/>No Auth"]
-        MetadataEnvoy["Metadata Envoy<br/>9090/TCP HTTP"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        Database["MySQL/PostgreSQL<br/>3306/5432/TCP<br/>SQL wire protocol<br/>Optional TLS<br/>Auth: Username/Password"]
+        ObjectStore["S3-compatible Store<br/>(MinIO/SeaweedFS)<br/>9000/TCP HTTP<br/>Optional TLS<br/>Auth: AccessKey/SecretKey"]
     end
 
-    subgraph DataStores["DATA STORES"]
-        DB["MySQL/PostgreSQL<br/>3306/5432/TCP<br/>SQL wire protocol<br/>Optional TLS<br/>Auth: Username/Password"]
-        S3["Object Store (MinIO/SeaweedFS)<br/>9000/TCP HTTP<br/>Optional TLS<br/>Auth: AccessKey/SecretKey"]
-    end
-
-    %% External to Ingress
+    %% External → Ingress
     User -->|"HTTPS/443<br/>TLS Edge"| Route
     User -->|"HTTP/8888<br/>Istio AuthZ"| VirtualService
 
-    %% Ingress to API
-    Route -->|"HTTP/8888"| APIServer
-    VirtualService -->|"HTTP/8888"| APIServer
+    %% Ingress → API
+    Route -->|"HTTP/8888<br/>Optional TLS"| APIServer
+    VirtualService -->|"HTTP/8888<br/>Optional TLS"| APIServer
 
-    %% API Server connections
-    APIServer -->|"SQL/3306-5432<br/>Optional TLS<br/>User/Pass"| DB
-    APIServer -->|"HTTP/9000<br/>Optional TLS<br/>AccessKey"| S3
+    %% API → Dependencies
+    APIServer -->|"SQL/3306 or 5432<br/>Optional TLS<br/>Username/Password"| Database
+    APIServer -->|"HTTP/9000<br/>Optional TLS<br/>AccessKey/SecretKey"| ObjectStore
     APIServer -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
-    APIServer -->|"gRPC/8080<br/>Optional TLS"| MLMD
 
-    %% K8s Admission to Cache
-    K8sAPI -->|"HTTPS/443<br/>TLS<br/>K8s Client Cert"| CacheServer
-    CacheServer -->|"SQL/3306<br/>Optional TLS<br/>User/Pass"| DB
+    %% Controllers → API
+    PersistenceAgent -->|"gRPC/8887<br/>Optional TLS<br/>Projected SA Token (1h)"| APIServer
+    SWController -->|"gRPC/8887<br/>Optional TLS<br/>Projected SA Token (1h)"| APIServer
 
-    %% Controllers to API Server
-    PA -->|"gRPC/8887<br/>Optional TLS<br/>Projected SA Token"| APIServer
-    SWC -->|"gRPC/8887<br/>Optional TLS<br/>Projected SA Token"| APIServer
+    %% Controllers → K8s
+    PersistenceAgent -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
+    SWController -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
 
-    %% Controllers to K8s
-    PA -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
-    SWC -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
+    %% Cache webhook
+    K8sAPI -->|"HTTPS/443<br/>TLS<br/>K8s client cert"| CacheServer
+    CacheServer -->|"SQL/3306<br/>Optional TLS<br/>Username/Password"| Database
 
-    %% Argo spawns sidecars
-    ArgoCtrl -->|"Pod exec"| Driver
-    ArgoCtrl -->|"Pod exec"| Launcher
+    %% Argo → Runtime
+    K8sAPI -->|"Watch"| ArgoWF
+    APIServer -->|"Submit Workflow CR"| K8sAPI
+    ArgoWF -->|"Pod exec"| Driver
+    ArgoWF -->|"Pod exec"| Launcher
 
-    %% Driver connections
+    %% Runtime → Services
     Driver -->|"gRPC/8080<br/>Optional TLS"| MLMD
     Driver -->|"gRPC/8887<br/>Optional TLS"| APIServer
-    Driver -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
-
-    %% Launcher connections
-    Launcher -->|"HTTP/9000<br/>Optional TLS<br/>AccessKey"| S3
     Launcher -->|"gRPC/8080<br/>Optional TLS"| MLMD
-    Launcher --> UserPod
+    Launcher -->|"HTTP/9000<br/>Optional TLS<br/>AccessKey/SecretKey"| ObjectStore
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef apiLayer fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef controller fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef runtime fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef datastore fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef ui fill:#f5f5f5,stroke:#666,stroke-width:1px
+    classDef api fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    classDef controller fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef runtime fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef metadata fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef k8s fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class User external
     class Route,VirtualService ingress
-    class APIServer apiLayer
-    class PA,SWC,CacheServer,ViewerCtrl controller
-    class Driver,Launcher,UserPod runtime
-    class K8sAPI,ArgoCtrl,MLMD,MetadataEnvoy platform
-    class DB,S3 datastore
-    class PipelineUI,VizServer ui
+    class APIServer api
+    class PersistenceAgent,SWController,CacheServer,ViewerCtrl controller
+    class Driver,Launcher runtime
+    class MLMD,MetadataEnvoy,PipelineUI,VizServer metadata
+    class Database,ObjectStore externalservice
+    class K8sAPI,ArgoWF k8s

@@ -3,64 +3,62 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (KServe-Managed)"]
+    subgraph Ingress["INGRESS (KServe-managed)"]
         KServeRoute["KServe Route / HTTPRoute<br/>443/TCP → 8033/TCP<br/>TLS 1.2+ (SIMPLE/MUTUAL)<br/>Managed by KServe InferenceService"]
     end
 
-    subgraph TGISPod["TGIS POD (Internal)"]
+    subgraph TGISPod["TGIS CONTAINER (Single Pod)"]
         direction TB
 
-        Router["text-generation-router (Rust)<br/>gRPC: 8033/TCP | HTTP: 3000/TCP<br/>TLS: rustls 0.22.4 + OpenSSL<br/>mTLS: Optional client CA verification"]
-
-        subgraph Shards["Python Inference Shards"]
-            direction LR
-            Shard0["Shard 0<br/>UDS: /tmp/tgs-0<br/>GPU 0"]
-            Shard1["Shard 1<br/>UDS: /tmp/tgs-1<br/>GPU 1"]
-            ShardN["Shard N<br/>UDS: /tmp/tgs-N<br/>GPU N"]
+        subgraph RouterLayer["Router Layer"]
+            GRPCEndpoint["gRPC Endpoint<br/>8033/TCP<br/>TLS/mTLS (rustls 0.22.4)<br/>fmaas.GenerationService"]
+            HTTPEndpoint["HTTP Endpoint<br/>3000/TCP<br/>Configurable TLS<br/>/health, /metrics"]
         end
 
-        NCCLComm["NCCL Communication<br/>29500/TCP plaintext<br/>allreduce over NVLink/PCIe"]
+        subgraph ShardLayer["Inference Shards"]
+            direction LR
+            Shard0["Python Shard 0<br/>UDS /tmp/tgs-0<br/>plaintext<br/>GPU 0"]
+            Shard1["Python Shard 1<br/>UDS /tmp/tgs-1<br/>plaintext<br/>GPU 1"]
+            ShardN["Python Shard N<br/>UDS /tmp/tgs-N<br/>plaintext<br/>GPU N"]
+        end
+
+        subgraph NCCLLayer["NCCL Communication"]
+            NCCLBus["NCCL allreduce<br/>29500/TCP<br/>plaintext<br/>Tensor parallelism"]
+        end
     end
 
     subgraph Monitoring["MONITORING (Internal)"]
-        Kubelet["Kubernetes Kubelet<br/>HTTP Probes"]
-        Prometheus["Prometheus / OCP Monitoring<br/>HTTP /metrics scrape"]
-        OTel["OpenTelemetry Collector<br/>gRPC (configurable)"]
+        Kubelet["Kubernetes Kubelet<br/>Health probes"]
+        Prometheus["Prometheus<br/>Metrics scrape"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS 1.2+<br/>HF Token (optional)"]
-    end
-
-    subgraph Storage["STORAGE"]
-        PVC["PVC (models-pvc)<br/>/shared_model_storage<br/>Persistent model weights"]
+        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>HF Token (optional)"]
+        OTel["OpenTelemetry Collector<br/>configurable port<br/>gRPC<br/>configurable encryption"]
+        PVC["PVC<br/>/shared_model_storage<br/>Volume mount"]
     end
 
     %% External flows
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Configurable auth"| KServeRoute
-    KServeRoute -->|"gRPC/8033<br/>TLS/mTLS<br/>Client certs (optional)"| Router
-
-    %% Internal pod flows
-    Router -->|"gRPC over UDS<br/>plaintext (local)<br/>No auth"| Shard0
-    Router -->|"gRPC over UDS<br/>plaintext (local)<br/>No auth"| Shard1
-    Router -->|"gRPC over UDS<br/>plaintext (local)<br/>No auth"| ShardN
-
-    Shard0 <-->|"NCCL/29500<br/>plaintext"| NCCLComm
-    Shard1 <-->|"NCCL/29500<br/>plaintext"| NCCLComm
-    ShardN <-->|"NCCL/29500<br/>plaintext"| NCCLComm
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer/mTLS"| KServeRoute
+    KServeRoute -->|"gRPC/8033<br/>TLS/mTLS<br/>Client cert (optional)"| GRPCEndpoint
 
     %% Monitoring flows
-    Kubelet -->|"HTTP/3000<br/>No TLS<br/>No auth"| Router
-    Prometheus -->|"HTTP/3000<br/>No TLS<br/>No auth"| Router
-    Router -->|"gRPC<br/>configurable"| OTel
+    Kubelet -->|"HTTP/3000<br/>No TLS<br/>No auth"| HTTPEndpoint
+    Prometheus -->|"HTTP/3000<br/>No TLS<br/>No auth"| HTTPEndpoint
 
-    %% External service flows
+    %% Internal flows (within pod)
+    GRPCEndpoint -->|"UDS gRPC<br/>plaintext<br/>No auth"| Shard0
+    GRPCEndpoint -->|"UDS gRPC<br/>plaintext<br/>No auth"| Shard1
+    GRPCEndpoint -->|"UDS gRPC<br/>plaintext<br/>No auth"| ShardN
+
+    Shard0 -->|"29500/TCP<br/>NCCL plaintext"| NCCLBus
+    Shard1 -->|"NCCL"| NCCLBus
+    ShardN -->|"NCCL"| NCCLBus
+
+    %% Egress flows
     Shard0 -->|"HTTPS/443<br/>TLS 1.2+<br/>HF Token"| HFHub
-
-    %% Storage
-    Shard0 -.-|"Volume mount"| PVC
-    Shard1 -.-|"Volume mount"| PVC
-    ShardN -.-|"Volume mount"| PVC
+    GRPCEndpoint -->|"gRPC<br/>configurable"| OTel
+    Shard0 -.->|"Volume mount"| PVC
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
@@ -68,11 +66,10 @@ graph TB
     classDef tgispod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef storage fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
     class KServeRoute ingress
-    class Router,Shard0,Shard1,ShardN,NCCLComm tgispod
-    class Kubelet,Prometheus,OTel monitoring
-    class HFHub externalservice
-    class PVC storage
+    class GRPCEndpoint,HTTPEndpoint,Shard0,Shard1,ShardN,NCCLBus tgispod
+    class Kubelet,Prometheus monitoring
+    class HFHub,OTel,PVC externalservice

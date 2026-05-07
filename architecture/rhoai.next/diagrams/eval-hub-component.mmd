@@ -1,70 +1,99 @@
 graph TB
-    subgraph EvalHub["Eval Hub Service"]
+    subgraph EvalHub["Eval Hub Platform"]
         direction TB
-        API["eval-hub API Server<br/>Go REST API<br/>8080/TCP"]
-        AuthN["AuthN Middleware<br/>K8s TokenReview"]
-        AuthZ["AuthZ Middleware<br/>K8s SubjectAccessReview"]
-        Storage["Storage Layer<br/>SQLite / PostgreSQL"]
-        RuntimeK8s["K8s Runtime<br/>Batch Job Creator"]
-        RuntimeLocal["Local Runtime<br/>Shell Subprocess"]
-        ConfigWatcher["Config Watcher<br/>fsnotify + debounce"]
-        Metrics["Prometheus Metrics<br/>/metrics"]
-        OTEL["OpenTelemetry<br/>Tracing + Metrics"]
 
-        API -->|validates| AuthN
-        AuthN -->|authorizes| AuthZ
-        AuthZ -->|queries| Storage
-        AuthZ -->|dispatches| RuntimeK8s
-        AuthZ -->|dispatches| RuntimeLocal
-        API --> Metrics
-        API --> OTEL
-        ConfigWatcher -->|reloads providers/collections| API
+        subgraph CoreService["eval-hub (Go REST API)"]
+            Server["HTTP Server<br/>8080/TCP"]
+            AuthN["AuthN Middleware<br/>K8s TokenReview"]
+            AuthZ["AuthZ Middleware<br/>K8s SAR"]
+            Handlers["API Handlers<br/>/api/v1/evaluations/*"]
+            StorageLayer["Storage Layer<br/>SQLite / PostgreSQL"]
+            RuntimeLayer["Runtime Layer<br/>K8s / Local"]
+            ConfigWatcher["Config Watcher<br/>fsnotify + debounce"]
+            Metrics["Prometheus Metrics<br/>/metrics"]
+            OTEL["OTEL Exporter<br/>Traces + Metrics"]
+
+            Server --> AuthN
+            AuthN --> AuthZ
+            AuthZ --> Handlers
+            Handlers --> StorageLayer
+            Handlers --> RuntimeLayer
+            ConfigWatcher -->|hot-reload| Handlers
+            Server --> Metrics
+            Server --> OTEL
+        end
+
+        subgraph JobPod["Evaluation Job Pod (per benchmark)"]
+            direction LR
+            InitContainer["eval-runtime-init<br/>S3 Data Downloader"]
+            Sidecar["eval-runtime-sidecar<br/>HTTP Reverse Proxy<br/>8080/TCP localhost"]
+            Adapter["Evaluation Adapter<br/>Lighteval / lm-eval / Garak / etc."]
+
+            InitContainer -->|downloads data| Adapter
+            Adapter -->|localhost:8080| Sidecar
+        end
+
+        subgraph MCPServer["evalhub-mcp (Optional)"]
+            MCP["MCP Server<br/>stdio / HTTP 3001/TCP"]
+            MCPClient["EvalHub REST Client<br/>pkg/evalhubclient"]
+            MCP --> MCPClient
+        end
     end
 
-    subgraph JobPod["Evaluation Job Pod"]
-        direction TB
-        InitContainer["eval-runtime-init<br/>S3 Data Downloader"]
-        Sidecar["eval-runtime-sidecar<br/>HTTP Reverse Proxy<br/>8080/TCP (localhost)"]
-        Adapter["Evaluation Adapter<br/>(Lighteval / lm-eval / Garak / etc.)"]
+    %% External actors
+    Client["Client<br/>(Dashboard / API / CLI)"]
+    AIAgent["AI Agent<br/>(MCP Consumer)"]
 
-        InitContainer -.->|completes before| Adapter
-        Adapter -->|localhost:8080| Sidecar
-    end
+    %% External dependencies
+    K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS"]
+    MLflow["MLflow Tracking Server<br/>HTTPS"]
+    PostgreSQL["PostgreSQL<br/>5432/TCP"]
+    S3["S3 Object Storage<br/>443/TCP HTTPS"]
+    OCIRegistry["OCI Registry<br/>443/TCP HTTPS"]
+    OTELCollector["OTEL Collector<br/>4317/TCP gRPC"]
 
-    subgraph MCP["MCP Server"]
-        MCPServer["evalhub-mcp<br/>stdio / HTTP 3001/TCP"]
-    end
+    %% Client flows
+    Client -->|"HTTPS 8080<br/>Bearer Token"| Server
+    AIAgent -->|"stdio / HTTP 3001"| MCP
+    MCPClient -->|"HTTPS 8080<br/>Bearer Token"| Server
 
-    Client["Client<br/>(Dashboard / API User)"] -->|"HTTPS 8080/TCP<br/>Bearer Token"| API
-    MCPServer -->|"REST API<br/>Bearer Token"| API
+    %% Core service egress
+    AuthN -->|TokenReview| K8sAPI
+    AuthZ -->|SubjectAccessReview| K8sAPI
+    RuntimeLayer -->|"Create Job/ConfigMap"| K8sAPI
+    StorageLayer -->|"5432/TCP"| PostgreSQL
+    Handlers -->|"Experiment tracking"| MLflow
+    OTEL -->|"OTLP gRPC"| OTELCollector
 
-    RuntimeK8s -->|"creates Job + ConfigMap"| K8sAPI["Kubernetes API<br/>443/TCP"]
-    API -->|"TokenReview + SAR"| K8sAPI
+    %% Job pod egress
+    InitContainer -->|"Download test data"| S3
+    Sidecar -->|"Status updates"| Server
+    Sidecar -->|"Run tracking"| MLflow
+    Sidecar -->|"Artifact push"| OCIRegistry
 
-    Sidecar -->|"HTTPS<br/>SA Token"| API
-    Sidecar -->|"HTTPS<br/>Projected SA Token"| MLflow["MLflow Tracking Server"]
-    Sidecar -->|"HTTPS<br/>Bearer Token"| OCIRegistry["OCI Registry"]
-    InitContainer -->|"HTTPS<br/>AWS IAM"| S3["S3 Object Storage"]
-    Storage -->|"TCP 5432"| PostgreSQL["PostgreSQL"]
-
-    ConfigWatcher -.->|watches| ConfigMaps["Provider/Collection<br/>ConfigMaps"]
-
-    style API fill:#4a90e2,stroke:#333,color:#fff
-    style AuthN fill:#4a90e2,stroke:#333,color:#fff
-    style AuthZ fill:#4a90e2,stroke:#333,color:#fff
-    style Storage fill:#4a90e2,stroke:#333,color:#fff
-    style RuntimeK8s fill:#4a90e2,stroke:#333,color:#fff
-    style RuntimeLocal fill:#4a90e2,stroke:#333,color:#fff
-    style ConfigWatcher fill:#4a90e2,stroke:#333,color:#fff
-    style Metrics fill:#4a90e2,stroke:#333,color:#fff
-    style OTEL fill:#4a90e2,stroke:#333,color:#fff
-    style Sidecar fill:#50c878,stroke:#333,color:#fff
-    style InitContainer fill:#50c878,stroke:#333,color:#fff
-    style Adapter fill:#50c878,stroke:#333,color:#fff
-    style MCPServer fill:#9b59b6,stroke:#333,color:#fff
-    style K8sAPI fill:#e8e8e8,stroke:#333
-    style MLflow fill:#e8e8e8,stroke:#333
-    style OCIRegistry fill:#e8e8e8,stroke:#333
-    style S3 fill:#e8e8e8,stroke:#333
-    style PostgreSQL fill:#e8e8e8,stroke:#333
-    style Client fill:#f5a623,stroke:#333,color:#fff
+    %% Styling
+    style CoreService fill:#4a90e2,stroke:#2a6cb5,color:#fff
+    style JobPod fill:#f5a623,stroke:#d4891a,color:#fff
+    style MCPServer fill:#9b59b6,stroke:#7d3c98,color:#fff
+    style Server fill:#3478c6,stroke:#2a6cb5,color:#fff
+    style AuthN fill:#3478c6,stroke:#2a6cb5,color:#fff
+    style AuthZ fill:#3478c6,stroke:#2a6cb5,color:#fff
+    style Handlers fill:#3478c6,stroke:#2a6cb5,color:#fff
+    style StorageLayer fill:#3478c6,stroke:#2a6cb5,color:#fff
+    style RuntimeLayer fill:#3478c6,stroke:#2a6cb5,color:#fff
+    style ConfigWatcher fill:#3478c6,stroke:#2a6cb5,color:#fff
+    style Metrics fill:#3478c6,stroke:#2a6cb5,color:#fff
+    style OTEL fill:#3478c6,stroke:#2a6cb5,color:#fff
+    style InitContainer fill:#e8a317,stroke:#d4891a,color:#fff
+    style Sidecar fill:#e8a317,stroke:#d4891a,color:#fff
+    style Adapter fill:#e8a317,stroke:#d4891a,color:#fff
+    style MCP fill:#8e44ad,stroke:#7d3c98,color:#fff
+    style MCPClient fill:#8e44ad,stroke:#7d3c98,color:#fff
+    style Client fill:#2ecc71,stroke:#27ae60,color:#fff
+    style AIAgent fill:#2ecc71,stroke:#27ae60,color:#fff
+    style K8sAPI fill:#95a5a6,stroke:#7f8c8d,color:#fff
+    style MLflow fill:#95a5a6,stroke:#7f8c8d,color:#fff
+    style PostgreSQL fill:#95a5a6,stroke:#7f8c8d,color:#fff
+    style S3 fill:#95a5a6,stroke:#7f8c8d,color:#fff
+    style OCIRegistry fill:#95a5a6,stroke:#7f8c8d,color:#fff
+    style OTELCollector fill:#95a5a6,stroke:#7f8c8d,color:#fff

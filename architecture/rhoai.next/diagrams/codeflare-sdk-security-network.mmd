@@ -1,85 +1,61 @@
 graph TB
     subgraph UserEnv["USER ENVIRONMENT (Jupyter Notebook / Workbench)"]
-        SDK["CodeFlare SDK<br/>Python Client Library<br/>Auth: Bearer Token / KubeConfig<br/>CA Trust: CF_SDK_CA_CERT_PATH"]
+        SDK["CodeFlare SDK<br/>(Python Library)<br/>Runs in user's process<br/>Uses user's K8s credentials"]
     end
 
-    subgraph ControlPlane["KUBERNETES CONTROL PLANE (Trusted)"]
-        direction TB
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>AuthN: Bearer Token / KubeConfig<br/>AuthZ: RBAC"]
-
-        subgraph Operators["Cluster Operators"]
-            KubeRay["KubeRay Operator<br/>Reconciles RayCluster CRs"]
-            CFOperator["CodeFlare Operator<br/>Reconciles AppWrapper CRs"]
-            KueueCtrl["Kueue Controller<br/>Manages LocalQueue Scheduling"]
-        end
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token / RBAC"]
     end
 
-    subgraph RayCluster["RAY CLUSTER (Namespace-scoped)"]
-        direction TB
-        RayHead["Ray Head Pod<br/>{name}-head-svc"]
+    subgraph Ingress["OPENSHIFT INGRESS"]
+        DashRoute["ray-dashboard Route<br/>443/TCP HTTPS<br/>TLS edge/passthrough<br/>OpenShift OAuth"]
+        ClientRoute["{name}-ingress Route<br/>10001/TCP<br/>TLS passthrough<br/>mTLS (optional)"]
+    end
 
-        subgraph Ports["Exposed Ports"]
-            GCS["6379/TCP<br/>GCS Protocol<br/>Encryption: None"]
-            Dashboard["8265/TCP<br/>HTTP<br/>Encryption: TLS (optional)"]
-            ClientPort["10001/TCP<br/>Ray Client<br/>Encryption: mTLS (optional)"]
+    subgraph RayCluster["RAY CLUSTER (Namespace: user-namespace)"]
+        direction TB
+
+        subgraph HeadSvc["{name}-head-svc - ClusterIP"]
+            HeadGCS["Port 6379/TCP<br/>GCS (internal)<br/>No encryption"]
+            HeadDash["Port 8265/TCP<br/>Ray Dashboard<br/>HTTP, TLS optional<br/>Bearer Token (OCP)"]
+            HeadClient["Port 10001/TCP<br/>Ray Client<br/>TLS optional, mTLS optional"]
         end
 
-        RayWorkers["Ray Worker Pods<br/>Connected via GCS 6379/TCP"]
+        RayHead["Ray Head Pod<br/>ray:2.35.0<br/>Mounts: odh-trusted-ca-bundle"]
+        RayWorkers["Ray Worker Pods<br/>ray:2.35.0<br/>Mounts: odh-trusted-ca-bundle"]
+
+        RayHead --- HeadSvc
+        RayHead -->|"Ray internal<br/>None / mTLS"| RayWorkers
     end
 
-    subgraph IngressLayer["INGRESS (External Access)"]
-        direction TB
-        DashRoute["OpenShift Route<br/>ray-dashboard-{name}<br/>443/TCP → 8265/TCP<br/>TLS: edge/passthrough<br/>Auth: OpenShift OAuth"]
-        ClientRoute["OpenShift Route<br/>{name}-ingress<br/>10001/TCP passthrough<br/>Auth: mTLS cert (optional)"]
-        K8sIngress["K8s Ingress (vanilla)<br/>ray-dashboard-{name}<br/>80/443 → 8265/TCP"]
+    subgraph Operators["PLATFORM OPERATORS"]
+        KubeRay["KubeRay Operator<br/>Reconciles RayCluster"]
+        CFOp["CodeFlare Operator<br/>Reconciles AppWrapper"]
+        KueueCtrl["Kueue Controller<br/>Manages LocalQueues"]
     end
 
-    subgraph Secrets["SECRETS"]
-        CASec["{cluster-name}-ca-secret-*<br/>Opaque: ca.crt, ca.key<br/>Provisioned by: KubeRay<br/>No auto-rotation"]
-    end
+    %% Flows
+    SDK -->|"HTTPS/6443<br/>TLS 1.2+<br/>Bearer Token<br/>CRD CRUD operations"| K8sAPI
+    SDK -->|"HTTPS/443<br/>TLS<br/>Bearer Token<br/>Job submission"| DashRoute
+    SDK -.->|"Ray/10001<br/>mTLS (optional)<br/>Client cert<br/>Interactive use"| ClientRoute
 
-    %% SDK to K8s API
-    SDK -->|"HTTPS/6443<br/>TLS 1.2+<br/>Bearer Token<br/>CRD CRUD: RayCluster, AppWrapper,<br/>LocalQueue, Route, Secret, Ingress"| K8sAPI
+    DashRoute -->|"HTTP/8265<br/>Forward"| HeadDash
+    ClientRoute -->|"Ray/10001<br/>Passthrough"| HeadClient
 
-    %% Operators reconcile
-    K8sAPI --> KubeRay
-    K8sAPI --> CFOperator
-    K8sAPI --> KueueCtrl
-
-    %% KubeRay creates pods
-    KubeRay -->|"Creates pods"| RayHead
-    KubeRay -->|"Creates pods"| RayWorkers
-
-    %% Ray internal
-    RayHead --- GCS
-    RayHead --- Dashboard
-    RayHead --- ClientPort
-    RayHead -->|"GCS 6379/TCP<br/>No encryption"| RayWorkers
-
-    %% Ingress to Ray
-    DashRoute -->|"8265/TCP<br/>TLS terminated"| Dashboard
-    ClientRoute -->|"10001/TCP<br/>passthrough"| ClientPort
-    K8sIngress -->|"8265/TCP"| Dashboard
-
-    %% SDK direct connections
-    SDK -->|"HTTP(S)/8265<br/>TLS (via Route)<br/>Bearer Token (OpenShift)"| DashRoute
-    SDK -->|"Ray Protocol/10001<br/>mTLS (optional)<br/>Client cert"| ClientRoute
-
-    %% Secrets
-    KubeRay -->|"Provisions"| CASec
-    SDK -->|"Reads CA secret<br/>for cert generation"| CASec
+    K8sAPI -->|"Reconcile"| KubeRay
+    K8sAPI -->|"Reconcile"| CFOp
+    K8sAPI -->|"Schedule"| KueueCtrl
 
     %% Styling
-    classDef userenv fill:#dbeafe,stroke:#3b82f6,stroke-width:2px
-    classDef controlplane fill:#f3f4f6,stroke:#6b7280,stroke-width:2px
-    classDef raycluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef userenv fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef controlplane fill:#fff2cc,stroke:#d6b656,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef secret fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef operator fill:#e8e8e8,stroke:#666
+    classDef raycluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef operators fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef risk fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class SDK userenv
     class K8sAPI controlplane
-    class KubeRay,CFOperator,KueueCtrl operator
-    class RayHead,RayWorkers,GCS,Dashboard,ClientPort raycluster
-    class DashRoute,ClientRoute,K8sIngress ingress
-    class CASec secret
+    class DashRoute,ClientRoute ingress
+    class RayHead,RayWorkers,HeadGCS,HeadDash,HeadClient raycluster
+    class KubeRay,CFOp,KueueCtrl operators

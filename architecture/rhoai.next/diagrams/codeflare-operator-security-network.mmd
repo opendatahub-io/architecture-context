@@ -3,83 +3,79 @@ graph TB
         User["User Browser"]
     end
 
-    subgraph Ingress["INGRESS (OpenShift Routes)"]
-        direction LR
-        DashboardRoute["ray-dashboard-{cluster}<br/>Route (Reencrypt)<br/>443/TCP → 8443/TCP<br/>TLS 1.2+"]
-        ClientRoute["rayclient-{cluster}<br/>Route (Passthrough)<br/>443/TCP → 10001/TCP<br/>mTLS"]
+    subgraph Ingress["INGRESS (OpenShift Router)"]
+        DashRoute["ray-dashboard-{cluster} Route<br/>443/TCP → 8443/TCP<br/>TLS Reencrypt"]
+        ClientRoute["rayclient-{cluster} Route<br/>443/TCP → 10001/TCP<br/>TLS Passthrough"]
     end
 
     subgraph OperatorNS["OPERATOR NAMESPACE (opendatahub)"]
         direction TB
-
-        Operator["CodeFlare Operator Manager<br/>SA: controller-manager"]
-
-        subgraph OperatorPorts["Operator Ports"]
-            Health["8081/TCP healthz/readyz<br/>HTTP, No Auth"]
-            Metrics["8080/TCP metrics<br/>HTTP, No Auth"]
-            Webhooks["9443/TCP webhooks<br/>HTTPS, cert-controller TLS<br/>Auth: K8s API Server"]
-        end
+        Operator["CodeFlare Operator Manager<br/>SA: controller-manager<br/>Probes: 8081/TCP<br/>Metrics: 8080/TCP HTTP<br/>Webhook: 9443/TCP HTTPS"]
     end
 
-    subgraph UserNS["USER NAMESPACE ({user-namespace})"]
+    subgraph UserNS["USER NAMESPACE (per RayCluster)"]
         direction TB
 
-        subgraph HeadPod["RayCluster Head Pod<br/>SA: {cluster}-oauth-proxy"]
-            OAuthProxy["oauth-proxy sidecar<br/>8443/TCP HTTPS<br/>OpenShift OAuth"]
-            RayHead["ray-head container<br/>8265/TCP dashboard (HTTP)<br/>10001/TCP client (gRPC/mTLS)<br/>8080/TCP metrics (HTTP)"]
-            InitCert1["init: create-cert<br/>OpenSSL cert generation"]
+        subgraph HeadPod["Ray Head Pod"]
+            OAuthProxy["oauth-proxy sidecar<br/>8443/TCP HTTPS<br/>OpenShift OAuth<br/>TLS: serving cert"]
+            RayHead["Ray Head Container<br/>Dashboard: 8265/TCP HTTP<br/>Client: 10001/TCP gRPC<br/>mTLS: per-pod cert"]
         end
 
-        subgraph WorkerPods["RayCluster Worker Pods"]
-            RayWorker["ray-worker container<br/>10001/TCP (gRPC/mTLS)"]
-            InitCert2["init: create-cert<br/>OpenSSL cert generation"]
+        subgraph WorkerPods["Ray Worker Pods"]
+            RayWorker["Ray Worker Container<br/>10001/TCP gRPC<br/>mTLS: per-pod cert<br/>NetworkPolicy: same cluster only"]
         end
 
-        OAuthSvc["{cluster}-oauth Service<br/>ClusterIP 443→oauth-proxy<br/>HTTPS, OpenShift serving cert"]
-
-        subgraph NetPol["NetworkPolicy Enforcement"]
-            NPWorker["Workers: ISOLATED<br/>Only same ray.io/cluster pods"]
-            NPHead["Head: LAYERED ACCESS<br/>Same-cluster: all ports<br/>Same-ns: 10001, 8265<br/>KubeRay ns: 8265, 10001<br/>Monitoring: 8080<br/>All: 8443, 10001 (secured)"]
-        end
+        NetPolHead["NetworkPolicy (Head)<br/>same-cluster: all ports<br/>same-ns: 10001, 8265<br/>KubeRay ns: 8265, 10001<br/>monitoring: 8080<br/>all: 8443 (OAuth), 10001 (mTLS)"]
+        NetPolWorker["NetworkPolicy (Worker)<br/>same ray.io/cluster: all<br/>all other: DENIED"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
+    subgraph PlatformServices["PLATFORM SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+"]
         OAuthServer["OpenShift OAuth Server<br/>443/TCP HTTPS<br/>TLS 1.2+"]
-        IngressConfig["OpenShift Ingress Config<br/>config.openshift.io<br/>443/TCP HTTPS"]
-        Prometheus["OpenShift Monitoring<br/>Prometheus<br/>8080/TCP HTTP"]
+        ServingCert["OpenShift Serving<br/>Cert Signer"]
+        Prometheus["Prometheus<br/>openshift-monitoring<br/>8080/TCP HTTP"]
+        KubeRay["KubeRay Operator"]
+        CertCtrl["cert-controller (OPA)<br/>Webhook cert rotation"]
+        ODHOp["opendatahub-operator<br/>DSCInitialization CR"]
+        Kueue["Kueue (optional)<br/>Quota management"]
     end
 
     %% External flows
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth redirect"| DashboardRoute
+    User -->|"HTTPS/443<br/>TLS 1.2+"| DashRoute
     User -->|"HTTPS/443<br/>TLS 1.2+<br/>Client cert"| ClientRoute
 
-    DashboardRoute -->|"HTTPS/8443<br/>TLS reencrypt<br/>OAuth token"| OAuthProxy
-    ClientRoute -->|"gRPC/10001<br/>mTLS passthrough<br/>Client certificate"| RayHead
+    %% Ingress to pods
+    DashRoute -->|"HTTPS/8443<br/>TLS reencrypt<br/>OAuth token"| OAuthProxy
+    ClientRoute -->|"gRPC/10001<br/>TLS passthrough<br/>mTLS"| RayHead
 
-    OAuthProxy -->|"HTTP/8265<br/>localhost<br/>No auth (proxied)"| RayHead
-
-    %% mTLS between Ray nodes
-    RayHead <-->|"gRPC/10001<br/>mTLS<br/>Per-pod certs"| RayWorker
+    %% Internal pod flows
+    OAuthProxy -->|"HTTP/8265<br/>localhost<br/>no auth"| RayHead
+    RayHead -->|"gRPC/10001<br/>mTLS<br/>per-pod certs"| RayWorker
+    RayWorker -->|"gRPC/10001<br/>mTLS<br/>per-pod certs"| RayHead
 
     %% Operator flows
     Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| IngressConfig
-    OAuthProxy -->|"HTTPS/443<br/>OAuth flow"| OAuthServer
-    K8sAPI -->|"HTTPS/9443<br/>Webhook calls<br/>cert-controller TLS"| Webhooks
-    Prometheus -->|"HTTP/8080<br/>ServiceMonitor"| Metrics
+    K8sAPI -->|"HTTPS/9443<br/>TLS<br/>Webhook calls"| Operator
+
+    %% Platform service flows
+    OAuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth exchange"| OAuthServer
+    ServingCert -.->|"Generates TLS cert<br/>for oauth service"| OAuthProxy
+    CertCtrl -.->|"Rotates webhook<br/>TLS cert"| Operator
+    Prometheus -->|"HTTP/8080<br/>ServiceMonitor"| Operator
+    KubeRay -.->|"Creates<br/>RayCluster CRs"| K8sAPI
+    ODHOp -.->|"DSCInitialization<br/>namespace discovery"| K8sAPI
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef operatorns fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef userns fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef netpol fill:#f8cecc,stroke:#b85450,stroke-width:1px
+    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef netpol fill:#f8cecc,stroke:#b85450,stroke-width:1px,stroke-dasharray: 5 5
 
     class User external
-    class DashboardRoute,ClientRoute ingress
-    class Operator,Health,Metrics,Webhooks operatorns
-    class OAuthProxy,RayHead,InitCert1,RayWorker,InitCert2,OAuthSvc userns
-    class K8sAPI,OAuthServer,IngressConfig,Prometheus externalservice
-    class NPWorker,NPHead netpol
+    class DashRoute,ClientRoute ingress
+    class Operator operator
+    class OAuthProxy,RayHead,RayWorker userns
+    class K8sAPI,OAuthServer,ServingCert,Prometheus,KubeRay,CertCtrl,ODHOp,Kueue platform
+    class NetPolHead,NetPolWorker netpol

@@ -1,86 +1,78 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["Data Scientist / MLOps<br/>kubectl"]
+        User["Data Scientist /<br/>Platform Admin"]
     end
 
-    subgraph K8sAPI["KUBERNETES API SERVER"]
-        APIServer["kube-apiserver<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>RBAC AuthZ"]
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
     end
 
-    subgraph WVAController["WVA CONTROLLER (Trusted)"]
+    subgraph WVANamespace["WVA CONTROLLER NAMESPACE"]
         direction TB
 
-        subgraph WVAPod["WVA Controller Manager Pod<br/>SA: controller-manager<br/>NS: system"]
-            MetricsEndpoint["/metrics<br/>8443/TCP HTTPS<br/>TLS (self-signed/CM)<br/>Bearer Token + authn/authz"]
-            HealthEndpoint["/healthz /readyz<br/>8081/TCP HTTP<br/>No auth (probes)"]
-            SatEngine["Saturation Engine"]
-            SFZEngine["Scale-From-Zero Engine"]
-        end
-    end
-
-    subgraph ClusterServices["CLUSTER SERVICES"]
-        direction TB
-
-        subgraph NS_Monitoring["Namespace: openshift-monitoring"]
-            Prometheus["Prometheus / Thanos Querier<br/>thanos-querier.openshift-monitoring.svc<br/>9091/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (cluster-monitoring-view)"]
+        subgraph WVAController["WVA Controller Manager<br/>SA: controller-manager"]
+            direction LR
+            MetricsEP["/metrics<br/>8443/TCP HTTPS<br/>TLS (self-signed/cert-mgr)<br/>Bearer Token + authn/authz"]
+            HealthEP["/healthz, /readyz<br/>8081/TCP HTTP<br/>No Auth"]
         end
 
-        subgraph NS_EPP["Namespace: varies"]
-            EPP["EPP Pods (Endpoint Picker)<br/>configurable/TCP HTTPS<br/>TLS<br/>Bearer Token (epp-metrics-token)"]
-        end
+        MetricsSvc["controller-manager-metrics-service<br/>ClusterIP 8443/TCP<br/>Internal Only"]
     end
 
-    subgraph WorkloadNS["WORKLOAD NAMESPACES"]
-        Deployments["Deployments / LWS<br/>(vLLM inference servers)"]
-        ConfigMaps["ConfigMaps<br/>saturation-scaling-config<br/>model-scale-to-zero-config"]
-        InferencePool["InferencePool CR<br/>(Gateway API)"]
-        VACR["VariantAutoscaling CR<br/>llmd.ai/v1alpha1"]
+    subgraph Monitoring["MONITORING NAMESPACE<br/>(openshift-monitoring)"]
+        Prometheus["Prometheus / Thanos Querier<br/>9091/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (SA token)"]
+        vLLM["vLLM Inference Servers<br/>Scraped by Prometheus"]
     end
 
-    subgraph MetricsConsumers["METRICS CONSUMERS"]
-        PromScraper["Prometheus Scraper<br/>(via ServiceMonitor)"]
-        HPAKEDA["HPA / KEDA<br/>Scales workloads via K8s API"]
+    subgraph UserNamespaces["USER NAMESPACES"]
+        EPP["EPP Pods<br/>Endpoint Picker<br/>configurable/TCP HTTPS<br/>Bearer Token (EPP token)"]
+        Deployments["Deployments / LWS<br/>Scale targets"]
     end
 
-    %% External → K8s
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>kubeconfig auth"| APIServer
+    subgraph AutoscalerLayer["EXTERNAL AUTOSCALERS"]
+        HPA["HPA / KEDA<br/>Reads wva_desired_ratio<br/>from Prometheus"]
+    end
 
-    %% K8s ↔ WVA
-    APIServer -->|"Watch events<br/>TLS 1.2+<br/>SA token"| WVAPod
+    %% User to K8s
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>kubeconfig"| K8sAPI
 
-    %% WVA → Prometheus
-    SatEngine -->|"HTTPS/9091<br/>TLS 1.2+<br/>Bearer Token (SA)<br/>PromQL queries"| Prometheus
+    %% K8s to WVA (watch events)
+    K8sAPI -->|"Watch: VA, ConfigMap,<br/>Deployment, InferencePool<br/>TLS 1.2+ / SA Token"| WVAController
 
-    %% WVA → EPP
-    SFZEngine -->|"HTTPS/configurable<br/>TLS<br/>Bearer Token<br/>(epp-metrics-token)"| EPP
+    %% WVA to Prometheus
+    WVAController -->|"HTTPS/9091<br/>TLS 1.2+<br/>Bearer Token (SA)<br/>PromQL queries"| Prometheus
 
-    %% WVA → K8s API
-    WVAPod -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>CR status, scale, leases"| APIServer
+    %% Prometheus scrapes vLLM
+    Prometheus -->|"Scrape vLLM metrics"| vLLM
 
-    %% WVA → Workloads (scale-from-zero)
-    SFZEngine -.->|"Scale 0→1<br/>via K8s API<br/>/scale subresource"| Deployments
+    %% WVA to EPP
+    WVAController -->|"HTTPS/configurable<br/>TLS<br/>Bearer Token (EPP token)<br/>flow_control_queue_size"| EPP
 
-    %% Metrics flow
-    PromScraper -->|"HTTPS/8443<br/>TLS<br/>Bearer Token + authn/authz"| MetricsEndpoint
-    PromScraper -->|"wva_desired_replicas<br/>wva_desired_ratio"| HPAKEDA
-    HPAKEDA -->|"HTTPS/443<br/>Scale Deployment/LWS"| APIServer
+    %% WVA to K8s API
+    WVAController -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>VA status, scale sub"| K8sAPI
 
-    %% K8s watches
-    APIServer -.->|"Watch"| VACR
-    APIServer -.->|"Watch"| ConfigMaps
-    APIServer -.->|"Watch"| InferencePool
+    %% WVA scale-from-zero direct
+    WVAController -->|"HTTPS/443<br/>Scale 0→1<br/>SA Token"| Deployments
+
+    %% Prometheus scrapes WVA
+    Prometheus -->|"HTTPS/8443<br/>TLS<br/>Bearer Token<br/>metrics-reader-role"| MetricsSvc
+    MetricsSvc -->|"proxy"| MetricsEP
+
+    %% HPA reads from Prometheus, scales via K8s
+    HPA -->|"HTTPS/9091<br/>Read wva_desired_ratio"| Prometheus
+    HPA -->|"HTTPS/443<br/>Scale Deployment/LWS"| K8sAPI
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef apiserver fill:#dbeafe,stroke:#3b82f6,stroke-width:2px
-    classDef controller fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef clusterservice fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef workload fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef consumer fill:#e8d5f5,stroke:#7c3aed,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef wva fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef monitoring fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef userns fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef autoscaler fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class User external
-    class APIServer apiserver
-    class MetricsEndpoint,HealthEndpoint,SatEngine,SFZEngine controller
-    class Prometheus,EPP clusterservice
-    class Deployments,ConfigMaps,InferencePool,VACR workload
-    class PromScraper,HPAKEDA consumer
+    class K8sAPI controlplane
+    class WVAController,MetricsSvc,MetricsEP,HealthEP wva
+    class Prometheus,vLLM monitoring
+    class EPP,Deployments userns
+    class HPA autoscaler

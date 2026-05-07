@@ -1,51 +1,62 @@
 sequenceDiagram
-    participant User as Data Scientist / Admin
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
+    participant Admin as Platform Admin
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS1.2+
     participant Operator as llama-stack-k8s-operator<br/>controller-runtime
-    participant Kustomize as Kustomize Pipeline<br/>Plugin Transforms
+    participant Kustomize as Kustomize Pipeline<br/>(in-process)
     participant LlamaServer as Llama Stack Server<br/>8321/TCP HTTP
-    participant IngressCtrl as OpenShift Ingress<br/>Controller
+    participant ODHConfig as odh-trusted-ca-bundle<br/>ConfigMap
+    participant UserCM as User ConfigMaps<br/>(caBundle, userConfig)
+    participant IngressCtrl as Ingress Controller<br/>80/TCP HTTP
     participant Client as External Client
 
-    Note over User,LlamaServer: Flow 1: LlamaStackDistribution Reconciliation
+    Note over Admin, LlamaServer: Flow 1: LlamaStackDistribution Reconciliation
 
-    User->>K8sAPI: kubectl apply LlamaStackDistribution CR
-    K8sAPI-->>Operator: Watch event (CR change)
-    Operator->>K8sAPI: Read operator-config ConfigMap<br/>(feature flags, image overrides)
-    K8sAPI-->>Operator: Config data
+    Admin->>K8sAPI: Create/Update LlamaStackDistribution CR
+    K8sAPI-->>Operator: Watch event (controller-runtime)
+    Operator->>K8sAPI: Get LlamaStackDistribution CR<br/>Bearer Token (ServiceAccount)
 
-    Operator->>Kustomize: Render base manifests
-    Kustomize->>Kustomize: Apply plugins:<br/>1. Name prefix<br/>2. Namespace<br/>3. Field mutation<br/>4. NetworkPolicy transform
-    Kustomize-->>Operator: Rendered resources
+    Operator->>Operator: Check feature flags<br/>(llama-stack-operator-config)
 
-    Operator->>K8sAPI: Create/Update Deployment,<br/>Service, SA, PVC, NP,<br/>PDB, HPA, RoleBinding
-    K8sAPI-->>Operator: Resource status
+    opt CA Bundle Aggregation (Flow 3)
+        Operator->>UserCM: DirectGet user caBundle ConfigMap<br/>Kubernetes API / TLS 1.2+
+        UserCM-->>Operator: CA certificates (PEM)
+        Operator->>ODHConfig: DirectGet odh-trusted-ca-bundle<br/>Kubernetes API / TLS 1.2+
+        ODHConfig-->>Operator: ODH trusted CA certs (PEM)
+        Operator->>Operator: Validate X.509 certs<br/>(max 10MB, max 1000 certs)
+        Operator->>K8sAPI: Create/Update {instance}-ca-bundle ConfigMap
+    end
 
-    Note over Operator,LlamaServer: Status probing (after pod ready)
+    Operator->>Kustomize: Render manifests from base YAML
+    Kustomize->>Kustomize: Apply plugins:<br/>NamePrefix → Namespace →<br/>FieldMutator → NetworkPolicy
+    Kustomize-->>Operator: Rendered Kubernetes resources
 
-    Operator->>LlamaServer: GET /v1/health (8321/TCP HTTP)
+    Operator->>K8sAPI: Apply Deployment (SSA)
+    Operator->>K8sAPI: Apply Service (SSA)
+    Operator->>K8sAPI: Apply ServiceAccount (SSA)
+    Operator->>K8sAPI: Apply PVC (create only)
+    Operator->>K8sAPI: Apply NetworkPolicy (SSA)
+    Operator->>K8sAPI: Apply PDB (SSA)
+    Operator->>K8sAPI: Apply HPA (SSA)
+    Operator->>K8sAPI: Apply RoleBinding (SSA)
+
+    opt exposeRoute=true
+        Operator->>K8sAPI: Apply Ingress (SSA)
+    end
+
+    Note over Operator, LlamaServer: Status Probing
+
+    Operator->>LlamaServer: GET /v1/health<br/>HTTP 8321/TCP (plaintext)
     LlamaServer-->>Operator: Health status
-    Operator->>LlamaServer: GET /v1/providers (8321/TCP HTTP)
+    Operator->>LlamaServer: GET /v1/providers<br/>HTTP 8321/TCP (plaintext)
     LlamaServer-->>Operator: Provider info
-    Operator->>LlamaServer: GET /v1/version (8321/TCP HTTP)
+    Operator->>LlamaServer: GET /v1/version<br/>HTTP 8321/TCP (plaintext)
     LlamaServer-->>Operator: Version info
 
     Operator->>K8sAPI: Update CR status<br/>(health, providers, version)
 
-    Note over User,LlamaServer: Flow 2: CA Bundle Aggregation
+    Note over Client, LlamaServer: Flow 2: External Client Access (exposeRoute=true)
 
-    Operator->>K8sAPI: Read user CA bundle ConfigMap<br/>(DirectClient, uncached)
-    K8sAPI-->>Operator: User CA certificates
-    Operator->>K8sAPI: Read odh-trusted-ca-bundle<br/>(DirectClient, uncached)
-    K8sAPI-->>Operator: ODH CA certificates
-    Operator->>Operator: Validate PEM/X.509 certs<br/>(10MB max, 1000 cert limit)
-    Operator->>K8sAPI: Create/Update managed<br/>{instance}-ca-bundle ConfigMap
-    Note over LlamaServer: CA bundle mounted at<br/>/etc/ssl/certs/ca-bundle/<br/>SSL_CERT_FILE set
-
-    Note over Client,LlamaServer: Flow 3: External Client Access (exposeRoute=true)
-
-    Operator->>K8sAPI: Create Ingress resource
-    Client->>IngressCtrl: HTTP request (80/TCP)
-    IngressCtrl->>LlamaServer: Forward to {instance}-service<br/>(8321/TCP HTTP)
+    Client->>IngressCtrl: HTTP request<br/>80/TCP
+    IngressCtrl->>LlamaServer: Forward to {instance}-service<br/>8321/TCP HTTP
     LlamaServer-->>IngressCtrl: Response
     IngressCtrl-->>Client: HTTP response

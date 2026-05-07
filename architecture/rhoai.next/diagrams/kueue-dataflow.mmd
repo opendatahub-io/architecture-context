@@ -1,47 +1,47 @@
 sequenceDiagram
-    participant User as User / CI Pipeline
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+
-    participant Webhook as Kueue Webhook<br/>9443/TCP HTTPS<br/>TLS (internal certs)
-    participant JobCtrl as Kueue Job Controller
+    participant User as User / Data Scientist
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
+    participant Webhook as Kueue Webhook Server<br/>9443/TCP HTTPS TLS
     participant Cache as Kueue Cache/Queue<br/>(in-process)
-    participant Scheduler as Kueue Scheduler<br/>(scheduling loop)
-    participant ProvCtrl as Provisioning Controller
-    participant Autoscaler as Cluster Autoscaler
+    participant Scheduler as Kueue Scheduler<br/>(in-process loop)
+    participant JobCtrl as Kueue Job Controller<br/>(in-process)
+    participant RemoteAPI as Remote Cluster API<br/>6443/TCP HTTPS TLS 1.2+
     participant CloudAPI as Cloud Provider API<br/>443/TCP HTTPS
-    participant RemoteAPI as Remote Cluster API<br/>6443/TCP HTTPS
-    participant MKReconciler as MultiKueue Reconciler
 
-    Note over User,Scheduler: Flow 1: Job Admission
+    Note over User,JobCtrl: Flow 1: Job Admission
 
-    User->>K8sAPI: 1. Create Job/PyTorchJob/RayJob<br/>Auth: User credentials
-    K8sAPI->>Webhook: 2. Admission webhook call<br/>Auth: API server auth
-    Webhook->>K8sAPI: 3. Validate/Mutate response<br/>Auth: ServiceAccount token
-    Note over Webhook: Job created in suspended state
+    User->>K8sAPI: Create Job (suspended=true)<br/>Auth: User credentials
+    K8sAPI->>Webhook: POST /mutate-batch-v1-job<br/>HTTPS/9443, TLS internal certs
+    Webhook->>Webhook: Set managedBy label<br/>Validate queue-name
+    Webhook-->>K8sAPI: Mutated Job spec
+    K8sAPI-->>User: Job created (suspended)
 
-    JobCtrl->>K8sAPI: Watch job resources
+    Note over Cache,Scheduler: Async reconciliation
+
+    K8sAPI->>JobCtrl: Watch event: Job created
     JobCtrl->>K8sAPI: Create Workload CR<br/>Auth: ServiceAccount token
-    JobCtrl->>Cache: Enqueue Workload
+    K8sAPI->>Cache: Watch event: Workload created
+    Cache->>Cache: Update cluster queue state
 
-    Scheduler->>Cache: 4. Snapshot cache state
-    Note over Scheduler: Evaluate pending workloads<br/>Assign flavors<br/>Check quotas & borrowing limits<br/>Consider preemption
-    Scheduler->>K8sAPI: 5. Admit Workload<br/>(update status with admission)<br/>Auth: ServiceAccount token
-    JobCtrl->>K8sAPI: 6. Unsuspend Job<br/>(set suspend=false)<br/>Auth: ServiceAccount token
-    Note over K8sAPI: Job pods start running
+    Scheduler->>Cache: Take snapshot
+    Scheduler->>Scheduler: Evaluate pending workloads<br/>Check quotas, priorities, flavors
+    Scheduler->>K8sAPI: Admit Workload<br/>(set admission status)<br/>Auth: ServiceAccount token
+    K8sAPI->>JobCtrl: Watch event: Workload admitted
+    JobCtrl->>K8sAPI: Unsuspend Job<br/>(set suspended=false)<br/>Auth: ServiceAccount token
+    K8sAPI-->>User: Job running
 
-    Note over ProvCtrl,CloudAPI: Flow 3: Provisioning Request
+    Note over K8sAPI,RemoteAPI: Flow 2: MultiKueue Federation (optional)
 
-    ProvCtrl->>K8sAPI: 1. Create ProvisioningRequest CR<br/>Auth: ServiceAccount token
-    Autoscaler->>K8sAPI: 2. Read ProvisioningRequest<br/>Auth: Autoscaler SA
-    Autoscaler->>CloudAPI: 3. Provision nodes<br/>Auth: Cloud credentials<br/>443/TCP HTTPS TLS 1.2+
-    CloudAPI-->>Autoscaler: Nodes provisioned
-    Autoscaler->>K8sAPI: Update PR status
-    ProvCtrl->>K8sAPI: 4. Sync PR status → AdmissionCheck<br/>Auth: ServiceAccount token
-    Note over ProvCtrl: Admission check passes<br/>Workload can be admitted
+    K8sAPI->>JobCtrl: Watch: Workload with MultiKueue check
+    JobCtrl->>RemoteAPI: Create remote Workload<br/>Auth: Kubeconfig credentials
+    RemoteAPI-->>JobCtrl: Remote admission status
+    JobCtrl->>K8sAPI: Sync status to local Workload<br/>Auth: ServiceAccount token
 
-    Note over MKReconciler,RemoteAPI: Flow 2: MultiKueue Federation
+    Note over K8sAPI,CloudAPI: Flow 3: Provisioning Request (optional)
 
-    MKReconciler->>RemoteAPI: 1. Connect to remote cluster<br/>Auth: Kubeconfig auth<br/>TLS 1.2+
-    MKReconciler->>RemoteAPI: 2. Create remote Workload<br/>Auth: Kubeconfig auth
-    Note over RemoteAPI: Remote Kueue admits workload
-    RemoteAPI-->>MKReconciler: 3. Workload admitted remotely
-    MKReconciler->>K8sAPI: 4. Sync status to local cluster<br/>Auth: ServiceAccount token
+    K8sAPI->>JobCtrl: Workload needs ProvisioningRequest
+    JobCtrl->>K8sAPI: Create ProvisioningRequest CR<br/>Auth: ServiceAccount token
+    K8sAPI->>CloudAPI: Cluster autoscaler provisions nodes<br/>Auth: Cloud credentials
+    CloudAPI-->>K8sAPI: Nodes provisioned
+    K8sAPI->>JobCtrl: ProvisioningRequest fulfilled
+    JobCtrl->>K8sAPI: Update AdmissionCheck → Ready<br/>Auth: ServiceAccount token

@@ -1,57 +1,87 @@
 sequenceDiagram
     participant Client as External Client<br/>(via KServe Ingress)
+    participant KServeAgent as KServe Model Agent
     participant REST as REST Server<br/>8080/TCP HTTP
     participant gRPC as gRPC Server<br/>8081/TCP gRPC
     participant DP as DataPlane Handler
-    participant AB as Adaptive Batcher<br/>(optional)
-    participant Cache as Response Cache<br/>(optional)
+    participant Batcher as Adaptive Batcher
+    participant Cache as Response Cache
+    participant Registry as Model Registry
     participant Model as MLModel Runtime<br/>(sklearn/xgboost/lgbm/onnx)
+    participant Dispatcher as Dispatcher
     participant Worker as Worker Process<br/>(multiprocessing)
-    participant Kafka as Kafka Server<br/>9092/TCP
-    participant KafkaBroker as Kafka Brokers
-    participant Metrics as Metrics Server<br/>8082/TCP
-    participant Prom as Prometheus
-    participant OTel as OTel Collector
+    participant Storage as /mnt/models<br/>(PVC/S3 Volume)
+    participant Kafka as Kafka Brokers<br/>9092/TCP
+    participant Prom as Prometheus<br/>8082/TCP
+    participant OTEL as OTel Collector<br/>gRPC
 
-    Note over Client,Model: Flow 1: REST Inference Request
-    Client->>REST: POST /v2/models/{name}/infer<br/>HTTP (plaintext, pod-internal)
+    Note over Client, OTEL: Flow 1: REST Inference Request (Single Worker)
+
+    Client->>REST: POST /v2/models/{name}/infer<br/>HTTP 8080/TCP (plaintext)
     REST->>DP: Route to DataPlane handler
-    DP->>Cache: Check response cache (if enabled)
-    Cache-->>DP: Cache miss
-    DP->>AB: Queue request (if batching enabled)
-    AB->>Model: Batched predict() call
-    Model-->>AB: Prediction result
-    AB-->>DP: Individual response (UUID-matched)
-    DP->>Cache: Store in cache
+    DP->>Cache: Check response cache (optional)
+    alt Cache Hit
+        Cache-->>DP: Cached response
+    else Cache Miss
+        DP->>Model: model.predict(request)
+        Model-->>DP: InferenceResponse
+        DP->>Cache: Store in cache (optional)
+    end
     DP-->>REST: InferenceResponse
-    REST-->>Client: JSON Response (HTTP 200)
+    REST-->>Client: JSON Response<br/>HTTP 200
 
-    Note over Client,Model: Flow 2: gRPC Streaming Inference
-    Client->>gRPC: ModelStreamInfer<br/>gRPC (plaintext, pod-internal)
-    gRPC->>DP: InferenceServicer handler
-    DP->>Model: predict_stream() async iterator
-    loop Streaming responses
-        Model-->>DP: Partial result
-        DP-->>gRPC: Stream response chunk
-        gRPC-->>Client: gRPC stream message
+    REST->>Prom: Update metrics counters<br/>(model_infer_request_success/failure/duration)
+    REST->>OTEL: Export trace span<br/>OTLP gRPC (insecure)
+
+    Note over Client, OTEL: Flow 2: gRPC Streaming Inference
+
+    Client->>gRPC: ModelStreamInfer (bidirectional)<br/>gRPC 8081/TCP (plaintext)
+    gRPC->>DP: Stream to DataPlane handler
+    DP->>Model: model.predict_stream(request)
+    loop Streaming Response
+        Model-->>DP: Partial InferenceResponse
+        DP-->>gRPC: Stream chunk
+        gRPC-->>Client: gRPC stream response
     end
 
-    Note over Worker,Model: Flow 3: Parallel Worker Inference
-    DP->>Worker: Dispatch via multiprocessing.Queue<br/>(Pickle/IPC)
-    Worker->>Model: predict() in worker process<br/>(bypasses GIL)
-    Model-->>Worker: Prediction result
-    Worker-->>DP: Response via Queue<br/>(Pickle/IPC)
+    Note over Client, OTEL: Flow 3: Parallel Worker Inference
 
-    Note over Kafka,KafkaBroker: Flow 4: Kafka Async Inference
-    KafkaBroker->>Kafka: Consume from input topic<br/>9092/TCP
-    Kafka->>DP: DataPlane.infer()
-    DP->>Model: predict()
-    Model-->>DP: Prediction result
-    DP-->>Kafka: Response
-    Kafka->>KafkaBroker: Produce to output topic<br/>9092/TCP
+    Client->>REST: POST /v2/models/{name}/infer<br/>HTTP 8080/TCP
+    REST->>DP: Route to DataPlane handler
+    DP->>Dispatcher: Dispatch to worker pool
+    Dispatcher->>Worker: multiprocessing.Queue<br/>(Pickle serialization, IPC)
+    Worker->>Model: model.predict() in worker process
+    Model-->>Worker: InferenceResponse
+    Worker-->>Dispatcher: Response via Queue (IPC)
+    Dispatcher-->>DP: Aggregated response
+    DP-->>REST: InferenceResponse
+    REST-->>Client: JSON Response
 
-    Note over Metrics,OTel: Observability Flows
-    Prom->>Metrics: GET /metrics<br/>8082/TCP HTTP
-    Metrics-->>Prom: Prometheus metrics<br/>(request counts, latencies, batch queue)
-    REST->>OTel: OTLP traces<br/>gRPC (insecure)
-    gRPC->>OTel: OTLP traces<br/>gRPC (insecure)
+    Note over Client, OTEL: Flow 4: Kafka Async Inference
+
+    Kafka->>Kafka: Input topic message
+    Note right of Kafka: KafkaServer consumes<br/>from input topic
+    Kafka->>DP: Inference request (deserialized)
+    DP->>Model: model.predict(request)
+    Model-->>DP: InferenceResponse
+    DP->>Kafka: Produce to output topic<br/>9092/TCP
+
+    Note over Client, OTEL: Flow 5: Model Lifecycle (Load/Unload)
+
+    KServeAgent->>REST: POST /v2/repository/models/{name}/load<br/>HTTP 8080/TCP
+    REST->>DP: Load model request
+    DP->>Registry: Register model
+    Registry->>Registry: Validate against trusted-runtimes.json
+    Registry->>Storage: Read model artifacts from /mnt/models
+    Storage-->>Registry: Model files
+    Registry->>Model: Instantiate MLModel runtime
+    Model->>Model: model.load()
+    Model-->>Registry: Model ready
+    Registry-->>DP: Model loaded
+    DP-->>REST: Load success
+    REST-->>KServeAgent: HTTP 200
+
+    Note over Client, OTEL: Prometheus Metrics Scraping
+
+    Prom->>REST: GET /metrics<br/>HTTP 8082/TCP
+    REST-->>Prom: Prometheus metrics<br/>(request counts, latencies, batch queue)

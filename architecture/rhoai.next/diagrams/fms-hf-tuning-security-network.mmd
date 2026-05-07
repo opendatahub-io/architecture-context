@@ -1,58 +1,62 @@
 graph TB
     subgraph ControlPlane["KUBERNETES CONTROL PLANE (Trusted)"]
-        KFTO["Kubeflow Training Operator<br/>Creates PyTorchJob CRs"]
+        KFTO["Kubeflow Training Operator<br/>Manages PyTorchJob CR<br/>ServiceAccount RBAC"]
     end
 
-    subgraph TrainingPods["TRAINING JOB PODS (Namespace-scoped)"]
+    subgraph TrainingPods["TRAINING JOB PODS (Internal - Pod Mesh)"]
         direction TB
 
-        subgraph Master["PyTorchJob Pod - Master (Worker 0)"]
-            AccLaunch["accelerate_launch.py<br/>Image: quay.io/modh/fms-hf-tuning<br/>GPU: NVIDIA CUDA 12.1<br/>Env: HF_TOKEN (Bearer)"]
+        subgraph Worker0["Worker 0 (Master)"]
+            Container0["FMS HF Tuning Container<br/>Image: quay.io/modh/fms-hf-tuning<br/>Base: UBI 9<br/>CUDA 12.1, cuDNN 9.6<br/>Entry: accelerate_launch.py"]
         end
 
-        subgraph WorkerN["PyTorchJob Pod - Worker 1..N"]
-            Worker["Same image & config<br/>Port 29500/TCP rendezvous"]
+        subgraph WorkerN["Worker 1..N"]
+            ContainerN["FMS HF Tuning Container<br/>FSDP Distributed Workers<br/>Same image & config"]
         end
     end
 
-    subgraph Storage["STORAGE (PVC - Internal)"]
-        PVCIn["/data/input (ReadOnly)<br/>Training datasets<br/>JSON, JSONL, Parquet, Arrow"]
-        PVCOut["/data/output (ReadWrite)<br/>Model checkpoints<br/>safetensors format"]
-        PVCModels["/data/models (ReadWrite)<br/>Cached model weights"]
+    subgraph Storage["STORAGE (Internal - Volume Mounts)"]
+        PVC["PersistentVolumeClaim<br/>/data/input (read)<br/>/data/output (write)<br/>/data/models (cache)<br/>POSIX permissions"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Bearer Token"]
-        MLflow["MLflow Server<br/>(optional)<br/>HTTP/HTTPS configurable<br/>Auth: URI-based"]
-        Aim["Aim Server<br/>(optional)<br/>HTTP/HTTPS configurable<br/>Auth: None"]
-        ClearML["ClearML Server<br/>(optional)<br/>HTTPS TLS 1.2+<br/>Auth: API key"]
+        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (HF_TOKEN)"]
+        MLflow["MLflow Server<br/>configurable port<br/>HTTP/HTTPS<br/>URI-based auth"]
+        Aim["Aim Server<br/>configurable port<br/>HTTP/HTTPS<br/>No auth"]
+        ClearML["ClearML Server<br/>configurable port<br/>HTTPS TLS 1.2+<br/>API key auth"]
+    end
+
+    subgraph QueueMgmt["QUEUE MANAGEMENT"]
+        Kueue["Kueue<br/>Job scheduling<br/>kueue.x-k8s.io/queue-name"]
     end
 
     %% Control plane flows
-    KFTO -->|"Kubernetes API<br/>TLS 1.2+<br/>Auth: ServiceAccount"| AccLaunch
+    KFTO -->|"Kubernetes API<br/>TLS 1.2+<br/>ServiceAccount token"| Container0
+    KFTO -->|"Kubernetes API<br/>TLS 1.2+<br/>ServiceAccount token"| ContainerN
+    Kueue -.->|"Kubernetes API<br/>Queue scheduling"| KFTO
 
-    %% Inter-worker communication
-    AccLaunch <-->|"⚠️ 29500/TCP<br/>c10d static rendezvous<br/>PLAINTEXT<br/>Auth: None<br/>FSDP gradient sync"| Worker
+    %% Inter-worker FSDP (SECURITY RISK)
+    Container0 <-->|"29500/TCP<br/>c10d static rendezvous<br/>⚠️ PLAINTEXT<br/>Gradient sync (all-reduce)<br/>Requires NetworkPolicy"| ContainerN
 
-    %% Storage flows
-    AccLaunch -->|"Filesystem<br/>POSIX permissions"| PVCIn
-    AccLaunch -->|"Filesystem<br/>POSIX permissions"| PVCOut
-    AccLaunch -->|"Filesystem<br/>POSIX permissions"| PVCModels
+    %% Storage access
+    Container0 -->|"Filesystem<br/>POSIX permissions"| PVC
+    ContainerN -->|"Filesystem<br/>POSIX permissions"| PVC
 
     %% External egress
-    AccLaunch -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (HF_TOKEN)"| HFHub
-    AccLaunch -.->|"HTTP/HTTPS<br/>configurable<br/>URI-based auth"| MLflow
-    AccLaunch -.->|"HTTP/HTTPS<br/>configurable"| Aim
-    AccLaunch -.->|"HTTPS<br/>TLS 1.2+<br/>API key"| ClearML
+    Container0 -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
+    Container0 -->|"HTTP/HTTPS<br/>configurable<br/>URI-based"| MLflow
+    Container0 -->|"HTTP/HTTPS<br/>configurable<br/>No auth"| Aim
+    Container0 -->|"HTTPS<br/>TLS 1.2+<br/>API key"| ClearML
 
     %% Styling
-    classDef controlplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef trainingpod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef storage fill:#e8e8e8,stroke:#666,stroke-width:2px
-    classDef external fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef controlplane fill:#dbeafe,stroke:#3b82f6,stroke-width:2px
+    classDef training fill:#d1fae5,stroke:#10b981,stroke-width:2px
+    classDef storage fill:#fef3c7,stroke:#f59e0b,stroke-width:2px
+    classDef external fill:#fee2e2,stroke:#ef4444,stroke-width:2px
+    classDef queue fill:#e0e7ff,stroke:#6366f1,stroke-width:2px
 
     class KFTO controlplane
-    class AccLaunch,Worker trainingpod
-    class PVCIn,PVCOut,PVCModels storage
+    class Container0,ContainerN training
+    class PVC storage
     class HFHub,MLflow,Aim,ClearML external
+    class Kueue queue

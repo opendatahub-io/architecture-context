@@ -1,74 +1,86 @@
 workspace {
     model {
-        user = person "Data Scientist" "Runs RAG evaluation jobs against LLM-generated outputs"
+        datascientist = person "Data Scientist" "Runs RAG evaluation benchmarks against LLM applications"
+        mlEngineer = person "ML Engineer" "Configures evaluation pipelines and reviews metrics"
 
-        llamaStackProviderRagas = softwareSystem "Llama Stack Provider Ragas" "Out-of-tree Llama Stack Eval provider implementing Ragas metrics for RAG evaluation via inline and remote execution modes" {
-            inlineProvider = container "Ragas Inline Provider" "Runs Ragas evaluation in-process within the Llama Stack server using async wrappers" "Python Library (Llama Stack Plugin)"
-            remoteProvider = container "Ragas Remote Provider" "Submits Ragas evaluations as Kubeflow Pipeline runs and retrieves results from S3" "Python Library (Llama Stack Plugin)"
-            kfpComponents = container "KFP Pipeline Components" "Two-step pipeline: data retrieval from Llama Stack and Ragas evaluation execution" "Python (KFP DSL)"
-            compatLayer = container "Compatibility Layer" "Bridges legacy llama_stack and newer llama_stack_api import paths" "Python Module"
+        llamaStackServer = softwareSystem "Llama Stack Server" "Standardized LLM application framework hosting inference and evaluation APIs" {
+            evalRouter = container "Eval API Router" "Routes /alpha/eval/* requests to registered provider" "Python / Llama Stack Framework"
+
+            ragasInlineProvider = container "Ragas Inline Provider" "Runs Ragas evaluation in-process with LLM/Embedding wrappers" "Python Plugin" "inline::trustyai_ragas"
+            ragasRemoteProvider = container "Ragas Remote Provider" "Submits evaluation as KFP pipeline and retrieves results from S3" "Python Plugin" "remote::trustyai_ragas"
+
+            compatLayer = container "Compatibility Layer" "Bridges llama_stack and llama_stack_api import paths" "Python Module"
+
+            inferenceAPI = container "Inference API" "Provides LLM completions and embedding generation" "Llama Stack Provider"
+            datasetioAPI = container "DatasetIO API" "Manages evaluation datasets" "Llama Stack Provider"
         }
 
-        llamaStackServer = softwareSystem "Llama Stack Server" "Hosts provider plugins and exposes Eval API on 8321/TCP" "Internal"
-        kfp = softwareSystem "Kubeflow Pipelines (DSP)" "Orchestrates containerized evaluation pipeline runs" "Internal RHOAI"
-        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Manages trustyai-service-operator-config ConfigMap with base image references" "Internal RHOAI"
-        s3 = softwareSystem "S3 Object Storage" "Stores evaluation result JSONL files" "External"
-        k8sApi = softwareSystem "Kubernetes API" "Provides ConfigMap access and kubeconfig token extraction" "External"
-        ollama = softwareSystem "Ollama" "Inference backend for sample/dev distribution" "External (dev only)"
+        kfp = softwareSystem "Kubeflow Pipelines (DSP)" "Orchestrates containerized ML pipeline runs on OpenShift" "External"
+        s3 = softwareSystem "S3-compatible Object Storage" "Stores evaluation result JSONL files" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Provides ConfigMap and token access" "External"
+        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Manages trustyai-service-operator-config ConfigMap with base image reference" "Internal RHOAI"
+        ollama = softwareSystem "Ollama" "Local inference backend (development only)" "External Dev"
 
         # User interactions
-        user -> llamaStackServer "Submits evaluation jobs via Eval API" "HTTP/8321"
+        datascientist -> llamaStackServer "Submits evaluation jobs via Eval API" "HTTP/8321"
+        mlEngineer -> llamaStackServer "Configures and monitors evaluation pipelines" "HTTP/8321"
 
-        # System relationships
-        llamaStackServer -> llamaStackProviderRagas "Delegates eval requests to provider plugin" "In-process"
-        inlineProvider -> llamaStackServer "Calls Inference API (LLM + Embeddings) and DatasetIO" "In-process"
-        remoteProvider -> kfp "Submits pipeline runs, polls status, cancels runs" "HTTPS/443, Bearer Token"
-        remoteProvider -> s3 "Reads evaluation results" "HTTPS/443, AWS IAM"
-        remoteProvider -> k8sApi "Reads ConfigMap for base image, extracts kubeconfig token" "HTTPS/6443, Bearer Token"
-        kfpComponents -> llamaStackServer "Retrieves datasets and runs inference" "HTTP/8321"
-        kfpComponents -> s3 "Writes evaluation results (JSONL)" "HTTPS/443, AWS IAM"
-        llamaStackProviderRagas -> trustyaiOperator "Reads ragas-provider-image from ConfigMap" "HTTPS/6443 via K8s API"
-        llamaStackServer -> ollama "Inference backend (dev distribution)" "HTTP/11434"
+        # Internal container relationships
+        evalRouter -> ragasInlineProvider "Routes inline eval requests"
+        evalRouter -> ragasRemoteProvider "Routes remote eval requests"
+        ragasInlineProvider -> compatLayer "Uses"
+        ragasRemoteProvider -> compatLayer "Uses"
+        ragasInlineProvider -> inferenceAPI "LLM completions + embeddings (in-process)"
+        ragasInlineProvider -> datasetioAPI "Loads evaluation dataset rows (in-process)"
+
+        # External relationships
+        ragasRemoteProvider -> kfp "Submits pipeline runs, checks status, cancels" "HTTPS/443 Bearer Token"
+        ragasRemoteProvider -> s3 "Reads evaluation results" "HTTPS/443 AWS IAM"
+        ragasRemoteProvider -> k8sAPI "Reads ConfigMap for base image, extracts kubeconfig token" "HTTPS/6443 Bearer Token"
+
+        kfp -> llamaStackServer "KFP pods fetch data and run inference" "HTTP/8321"
+        kfp -> s3 "KFP pods write evaluation results" "HTTPS/443 AWS IAM"
+
+        trustyaiOperator -> k8sAPI "Manages trustyai-service-operator-config ConfigMap"
+        llamaStackServer -> ollama "Inference requests (dev distribution)" "HTTP/11434"
     }
 
     views {
-        systemContext llamaStackProviderRagas "SystemContext" {
+        systemContext llamaStackServer "SystemContext" {
             include *
             autoLayout
         }
 
-        container llamaStackProviderRagas "Containers" {
+        container llamaStackServer "Containers" {
             include *
             autoLayout
         }
 
         styles {
+            element "Software System" {
+                background #438dd5
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal" {
-                background #7ed321
-                color #ffffff
-            }
-            element "Internal RHOAI" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "External (dev only)" {
+            element "External Dev" {
                 background #cccccc
                 color #333333
+            }
+            element "Internal RHOAI" {
+                background #7ed321
+                color #ffffff
             }
             element "Person" {
                 shape person
                 background #08427b
                 color #ffffff
             }
-            element "Software System" {
-                shape roundedbox
-            }
             element "Container" {
-                shape roundedbox
+                background #438dd5
+                color #ffffff
             }
         }
     }

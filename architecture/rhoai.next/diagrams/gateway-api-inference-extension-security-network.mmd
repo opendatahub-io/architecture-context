@@ -4,77 +4,76 @@ graph TB
     end
 
     subgraph GatewayLayer["GATEWAY LAYER (TLS Termination)"]
-        Gateway["Envoy-Compatible Gateway<br/>443/TCP → internal<br/>TLS 1.2+<br/>Bearer Token / API Key"]
+        Gateway["Envoy-compatible Gateway<br/>(Envoy Gateway / kgateway / Istio / GKE)<br/>443/TCP → internal routing<br/>TLS 1.2+ termination<br/>HTTPRoute → InferencePool backendRef"]
     end
 
-    subgraph IGW_Internal["INFERENCE GATEWAY EXTENSION (Cluster Internal)"]
+    subgraph ExtProc["EXT-PROC SERVICES (ClusterIP — Internal Only)"]
         direction TB
 
-        subgraph BBR_Zone["BBR Service"]
-            BBR["Body-Based Router<br/>SA: {bbr-name}-{release}<br/>9004/TCP gRPC TLS (self-signed)<br/>9005/TCP health (plaintext)<br/>9090/TCP metrics (Bearer RBAC)"]
+        subgraph NS_Release["Namespace: {release-namespace}"]
+            BBR["Body-Based Router (BBR)<br/>SA: {bbr-name}-{release}<br/>9004/TCP gRPC TLS (self-signed)<br/>9005/TCP gRPC health (plaintext)<br/>9090/TCP HTTP metrics (RBAC)"]
+
+            EPP["Endpoint Picker (EPP)<br/>SA: {epp-name}<br/>9002/TCP gRPC TLS (self-signed/custom)<br/>9003/TCP gRPC health (plaintext)<br/>9090/TCP HTTP metrics (RBAC)<br/>9090/TCP pprof (no auth)"]
         end
 
-        subgraph EPP_Zone["EPP Service"]
-            EPP["Endpoint Picker<br/>SA: {epp-name}<br/>9002/TCP gRPC TLS (self-signed/custom)<br/>9003/TCP health (plaintext)<br/>9090/TCP metrics (Bearer RBAC)"]
-
-            subgraph Sidecars["Optional Sidecars"]
-                Training["Latency Training<br/>8000/TCP HTTP<br/>No Auth"]
-                Prediction["Latency Prediction<br/>8001+/TCP HTTP<br/>No Auth"]
-            end
+        subgraph Sidecars["EPP Pod Sidecars (optional)"]
+            Training["Latency Training Server<br/>8000/TCP HTTP<br/>No encryption, No auth"]
+            Prediction["Latency Prediction Server<br/>8001+/TCP HTTP<br/>No encryption, No auth"]
         end
     end
 
-    subgraph ModelServers["MODEL SERVERS (Cluster Internal)"]
-        Models["vLLM / SGLang / Triton<br/>varies/TCP HTTP<br/>⚠ InsecureSkipVerify=true"]
+    subgraph ModelLayer["MODEL SERVER LAYER"]
+        ModelServers["Model Server Pods<br/>(vLLM / SGLang / Triton)<br/>Namespace: {pool-namespace}<br/>varies/TCP inference<br/>varies/TCP /metrics"]
     end
 
-    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS, SA Token"]
+    subgraph K8sControl["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS<br/>Auth: ServiceAccount Token"]
     end
 
-    subgraph Observability["OBSERVABILITY (Optional)"]
-        Prometheus["Prometheus<br/>Scrapes 9090/TCP HTTP<br/>Bearer Token RBAC"]
-        OTLP["OTLP Collector<br/>4317/TCP gRPC<br/>No Encryption"]
+    subgraph OptionalServices["OPTIONAL EXTERNAL SERVICES"]
+        Prometheus["Prometheus<br/>Scrapes 9090/TCP<br/>HTTP, Bearer Token RBAC"]
+        OTLP["OTLP Collector<br/>4317/TCP gRPC<br/>No encryption, No auth"]
     end
 
     %% External → Gateway
     Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token / API Key"| Gateway
 
-    %% Gateway → ext-proc chain
-    Gateway -->|"gRPC/9004<br/>TLS (self-signed)<br/>No client auth"| BBR
-    Gateway -->|"gRPC/9002<br/>TLS (self-signed/custom)<br/>No client auth"| EPP
+    %% Gateway → ext-proc
+    Gateway -->|"gRPC/9004<br/>TLS (self-signed)<br/>No auth (proxy-local)"| BBR
+    Gateway -->|"gRPC/9002<br/>TLS (self-signed/custom)<br/>No auth (proxy-local)"| EPP
 
-    %% EPP → Model servers (metrics)
-    EPP -->|"HTTP/varies<br/>⚠ InsecureSkipVerify=true<br/>No Auth"| Models
+    %% Gateway → Model Servers (after ext-proc response)
+    Gateway -->|"HTTP/gRPC<br/>per-gateway config<br/>Routed to EPP-selected endpoint"| ModelServers
 
-    %% EPP → K8s API
-    EPP -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
-    BBR -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
+    %% EPP → Model Servers (metrics)
+    EPP -->|"HTTP(S)/varies<br/>InsecureSkipVerify=true<br/>No auth"| ModelServers
 
-    %% Gateway → Model servers (data plane)
-    Gateway -->|"HTTP/varies<br/>per-gateway config"| Models
+    %% EPP/BBR → K8s API
+    EPP -->|"HTTPS/443<br/>TLS<br/>SA Token<br/>Watches: InferencePool,<br/>InferenceObjective,<br/>InferenceModelRewrite,<br/>Pods, Leases"| K8sAPI
+    BBR -->|"HTTPS/443<br/>TLS<br/>SA Token<br/>Watches: ConfigMaps"| K8sAPI
 
-    %% EPP sidecars
-    EPP -->|"HTTP/8000<br/>No TLS, No Auth"| Training
-    EPP -->|"HTTP/8001+<br/>No TLS, No Auth"| Prediction
+    %% EPP → Sidecars
+    EPP -.->|"HTTP/8000<br/>plaintext"| Training
+    EPP -.->|"HTTP/8001+<br/>plaintext"| Prediction
 
-    %% Observability
-    Prometheus -->|"HTTP/9090<br/>Bearer Token RBAC"| EPP
-    Prometheus -->|"HTTP/9090<br/>Bearer Token RBAC"| BBR
-    EPP -.->|"gRPC/4317<br/>No Encryption"| OTLP
+    %% Monitoring
+    Prometheus -.->|"HTTP/9090<br/>Bearer Token"| EPP
+    Prometheus -.->|"HTTP/9090<br/>Bearer Token"| BBR
+    EPP -.->|"gRPC/4317<br/>plaintext"| OTLP
+    BBR -.->|"gRPC/4317<br/>plaintext"| OTLP
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef gateway fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef modelserver fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef controlplane fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef observability fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef extproc fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef modelserver fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef k8s fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef optional fill:#e1d5e7,stroke:#9673a6,stroke-width:1px,stroke-dasharray:5
 
     class Client external
     class Gateway gateway
-    class BBR,EPP,Training,Prediction internal
-    class Models modelserver
-    class K8sAPI controlplane
-    class Prometheus,OTLP observability
+    class BBR,EPP extproc
+    class Training,Prediction extproc
+    class ModelServers modelserver
+    class K8sAPI k8s
+    class Prometheus,OTLP optional

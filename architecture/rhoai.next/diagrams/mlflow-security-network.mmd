@@ -1,88 +1,81 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["MLflow SDK / Browser<br/>Data Scientist"]
+        Client["MLflow SDK / Browser<br/>OTel Instrumented App"]
     end
 
-    subgraph Ingress["INGRESS (Platform Gateway)"]
-        Gateway["ODH Data Science Gateway<br/>HTTPRoute: /mlflow<br/>443/TCP → 5000/TCP<br/>TLS 1.2+ (SIMPLE)<br/>Token passthrough"]
+    subgraph Ingress["INGRESS (DMZ)"]
+        Gateway["ODH Data Science Gateway<br/>HTTPRoute: /mlflow<br/>443/TCP → 5000/TCP<br/>TLS 1.2+ (SIMPLE)<br/>Bearer Token forwarded"]
     end
 
-    subgraph Application["APPLICATION (MLflow Server)"]
+    subgraph Application["APPLICATION (Cluster-Internal)"]
         direction TB
 
         subgraph SecurityChain["Security Middleware"]
-            K8sAuth["kubernetes-auth plugin<br/>Bearer Token validation<br/>SelfSubjectAccessReview<br/>Default: NO_PERMISSIONS"]
-            CORS["CORS / Origin Validation<br/>block_cross_origin_state_changes<br/>MLFLOW_SERVER_CORS_ALLOWED_ORIGINS"]
-            WorkspaceMixin["workspace_aware_mixin<br/>Query-scoped tenant isolation"]
+            K8sAuth["kubernetes-auth plugin<br/>SelfSubjectAccessReview<br/>Bearer Token validation"]
+            CORSEnforce["CORS Enforcement<br/>block_cross_origin_state_changes"]
+            WSIsolation["Workspace Isolation<br/>workspace_aware_mixin<br/>Request-scoped context"]
         end
 
-        subgraph ServiceEndpoints["Service Endpoints"]
-            FlaskAPI["Flask REST API<br/>Tracking + Model Registry<br/>/api/2.0/mlflow/*"]
-            FastAPIEndpoints["FastAPI Endpoints<br/>Gateway + Traces + Jobs<br/>/gateway/*, /v1/traces"]
-            UIServing["React UI + Static Files<br/>/ + /static-files/*<br/>No auth required"]
+        subgraph MLflowSvc["MLflow Server (ClusterIP:5000)"]
+            direction LR
+            Flask["Flask WSGI<br/>Tracking + Registry APIs"]
+            FastAPI["FastAPI ASGI<br/>Gateway + OTLP + Jobs"]
+            ReactUI["React UI<br/>Static Files"]
         end
 
-        K8sAuth --> CORS
-        CORS --> WorkspaceMixin
-        WorkspaceMixin --> FlaskAPI
-        WorkspaceMixin --> FastAPIEndpoints
+        subgraph KEKMgmt["Secrets Management"]
+            KEK["AES-256-GCM<br/>PBKDF2-HMAC-SHA256<br/>600K iterations"]
+        end
     end
 
-    subgraph K8sCluster["KUBERNETES API (Trusted)"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+<br/>SA token auth"]
+    subgraph ControlPlane["CONTROL PLANE (Kubernetes)"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+<br/>SA Token Auth"]
+        MLflowConfigCR["MLflowConfig CRD<br/>mlflow.kubeflow.org/v1alpha1<br/>Namespaced"]
     end
 
-    subgraph DataStores["DATA STORES"]
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS optional<br/>Username/password"]
-        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM credentials"]
+    subgraph DataLayer["DATA LAYER"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS optional<br/>Username/Password"]
+        S3["S3-compatible Storage<br/>443/TCP HTTPS TLS 1.2+<br/>AWS IAM credentials"]
     end
 
-    subgraph LLMProviders["AI GATEWAY LLM PROVIDERS (External)"]
+    subgraph ExternalAPIs["EXTERNAL SERVICES (AI Gateway)"]
         OpenAI["OpenAI API<br/>443/TCP HTTPS TLS 1.2+<br/>API key (KEK-encrypted)"]
         Anthropic["Anthropic API<br/>443/TCP HTTPS TLS 1.2+<br/>API key (KEK-encrypted)"]
-        Gemini["Google Gemini API<br/>443/TCP HTTPS TLS 1.2+<br/>API key (KEK-encrypted)"]
+        Gemini["Gemini API<br/>443/TCP HTTPS TLS 1.2+<br/>API key (KEK-encrypted)"]
         Mistral["Mistral API<br/>443/TCP HTTPS TLS 1.2+<br/>API key (KEK-encrypted)"]
-    end
-
-    subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>Scrapes 5000/TCP HTTP<br/>No auth"]
     end
 
     %% Flows
     Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (K8s SA)<br/>X-MLFLOW-WORKSPACE header"| Gateway
     Gateway -->|"HTTP/5000<br/>No encryption (cluster-internal)<br/>Bearer Token forwarded"| K8sAuth
-    Gateway -->|"HTTP/5000<br/>No auth"| UIServing
+    K8sAuth -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    K8sAuth --> CORSEnforce
+    CORSEnforce --> WSIsolation
+    WSIsolation --> MLflowSvc
+    WSIsolation -->|"HTTPS/443<br/>SA Token"| K8sAPI
+    K8sAPI -.-> MLflowConfigCR
 
-    K8sAuth -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>SelfSubjectAccessReview"| K8sAPI
-    K8sAuth -->|"HTTPS/443<br/>Namespace list/watch<br/>MLflowConfig watch"| K8sAPI
+    MLflowSvc -->|"TCP/5432<br/>TLS optional<br/>DB credentials"| PostgreSQL
+    MLflowSvc -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
 
-    FlaskAPI -->|"TCP/5432<br/>TLS optional<br/>DB credentials"| PostgreSQL
-    FlaskAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS credentials"| S3
-    FastAPIEndpoints -->|"TCP/5432<br/>TLS optional<br/>DB credentials"| PostgreSQL
-    FastAPIEndpoints -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS credentials"| S3
-
-    FastAPIEndpoints -->|"HTTPS/443<br/>API key (AES-256-GCM)"| OpenAI
-    FastAPIEndpoints -->|"HTTPS/443<br/>API key (AES-256-GCM)"| Anthropic
-    FastAPIEndpoints -->|"HTTPS/443<br/>API key (AES-256-GCM)"| Gemini
-    FastAPIEndpoints -->|"HTTPS/443<br/>API key (AES-256-GCM)"| Mistral
-
-    Prometheus -.->|"HTTP/5000<br/>No auth<br/>/metrics"| FlaskAPI
+    FastAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>KEK-decrypted API key"| OpenAI
+    FastAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>KEK-decrypted API key"| Anthropic
+    FastAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>KEK-decrypted API key"| Gemini
+    FastAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>KEK-decrypted API key"| Mistral
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef security fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    classDef k8s fill:#e1f5fe,stroke:#0277bd,stroke-width:2px
-    classDef datastore fill:#e8eaf6,stroke:#283593,stroke-width:2px
-    classDef llmprovider fill:#fce4ec,stroke:#c62828,stroke-width:2px
-    classDef monitoring fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
+    classDef security fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef datalayer fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef externalapi fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class Client external
     class Gateway ingress
-    class K8sAuth,CORS,WorkspaceMixin security
-    class FlaskAPI,FastAPIEndpoints,UIServing application
-    class K8sAPI k8s
-    class PostgreSQL,S3 datastore
-    class OpenAI,Anthropic,Gemini,Mistral llmprovider
-    class Prometheus monitoring
+    class K8sAuth,CORSEnforce,WSIsolation security
+    class Flask,FastAPI,ReactUI,KEK application
+    class K8sAPI,MLflowConfigCR controlplane
+    class PostgreSQL,S3 datalayer
+    class OpenAI,Anthropic,Gemini,Mistral externalapi

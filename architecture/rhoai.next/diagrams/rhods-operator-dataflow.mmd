@@ -1,31 +1,31 @@
 sequenceDiagram
-    autonumber
-
-    participant User as User/Client
-    participant Router as OpenShift Router<br/>443/TCP HTTPS
-    participant Envoy as Gateway (Envoy)<br/>443/TCP TLS Terminate
+    participant Client as External Client
+    participant Router as OpenShift Router<br/>443/TCP HTTPS TLS 1.2+
+    participant Envoy as Gateway (Envoy)<br/>443/TCP HTTPS TLS Terminate
     participant EF as EnvoyFilter<br/>ext_authz
-    participant KAP as kube-auth-proxy<br/>8443/TCP HTTPS
+    participant AuthProxy as kube-auth-proxy<br/>8443/TCP HTTPS
     participant OAuth as OAuth/OIDC Provider<br/>443/TCP HTTPS
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
     participant Upstream as Upstream Component<br/>(via HTTPRoute)
 
-    Note over User,Upstream: Flow 1: Platform Ingress Authentication (Gateway API)
+    Note over Client,Upstream: Flow 1: Platform Ingress Authentication (Gateway API)
 
-    User->>Router: HTTPS/443<br/>TLS 1.2+
+    Client->>Router: HTTPS/443 (TLS 1.2+)<br/>No initial auth
     Router->>Envoy: HTTPS/443<br/>TLS termination
-    Envoy->>EF: ext_authz check<br/>(internal)
-    EF->>KAP: HTTPS/8443<br/>Bearer Token check
-    KAP->>OAuth: HTTPS/443<br/>OAuth2 client creds<br/>TLS 1.2+
-    OAuth-->>KAP: Token validated
-    KAP->>K8sAPI: HTTPS/443<br/>TokenReview<br/>ServiceAccount token
-    K8sAPI-->>KAP: Review result
-    KAP-->>EF: Auth decision
-    EF-->>Envoy: Authorized
-    Envoy->>Upstream: Forward request<br/>(via HTTPRoute)<br/>Auth headers forwarded
+    Envoy->>EF: ext_authz check
+    EF->>AuthProxy: HTTPS/8443<br/>Bearer Token check
+    AuthProxy->>OAuth: HTTPS/443 (TLS 1.2+)<br/>OAuth2 client credentials
+    OAuth-->>AuthProxy: Token validation response
+    AuthProxy->>K8sAPI: HTTPS/443 (TLS 1.2+)<br/>TokenReview (SA token)
+    K8sAPI-->>AuthProxy: TokenReview result
+    AuthProxy-->>EF: Auth decision
+    EF-->>Envoy: ext_authz response
+    Envoy->>Upstream: Forward request<br/>Forwarded auth headers
     Upstream-->>Envoy: Response
     Envoy-->>Router: Response
-    Router-->>User: HTTPS Response
+    Router-->>Client: HTTPS Response
+
+    Note over Client,Upstream: Flow 2: Component Deployment via DSC
 
     participant Admin as Platform Admin
     participant Webhook as DSC Webhook<br/>9443/TCP HTTPS
@@ -33,36 +33,31 @@ sequenceDiagram
     participant CompCtrl as Component Controller
     participant Manifests as Kustomize Manifests<br/>/opt/manifests-template
 
-    Note over Admin,Manifests: Flow 2: Component Deployment via DSC
+    Admin->>K8sAPI: HTTPS/443 (TLS 1.2+)<br/>Bearer Token (kubeconfig)<br/>Create/Update DSC
+    K8sAPI->>Webhook: HTTPS/9443<br/>mTLS (API server cert)<br/>Admission Review
+    Webhook-->>K8sAPI: Admit/Reject
+    K8sAPI-->>Admin: DSC created/updated
+    K8sAPI->>DSCCtrl: Watch notification
+    DSCCtrl->>DSCCtrl: Create Component CR<br/>(e.g., Dashboard)
+    DSCCtrl->>K8sAPI: HTTPS/443<br/>SA Bearer Token<br/>Create Component CR
+    K8sAPI->>CompCtrl: Watch notification
+    CompCtrl->>Manifests: Read manifests<br/>(filesystem)
+    CompCtrl->>K8sAPI: HTTPS/443<br/>SA Bearer Token<br/>Apply manifests
 
-    Admin->>K8sAPI: kubectl apply DSC<br/>HTTPS/443, Bearer Token
-    K8sAPI->>Webhook: Validate DSC<br/>HTTPS/9443, mTLS
-    Webhook-->>K8sAPI: Admission allowed
-    K8sAPI-->>Admin: DSC created
-    K8sAPI->>DSCCtrl: Watch event (DSC)
-    DSCCtrl->>K8sAPI: Create Component CR<br/>(e.g., Dashboard, KServe)
-    K8sAPI->>CompCtrl: Watch event (Component CR)
-    CompCtrl->>Manifests: Read kustomize manifests<br/>(filesystem)
-    Manifests-->>CompCtrl: Rendered manifests
-    CompCtrl->>K8sAPI: Apply manifests<br/>HTTPS/443<br/>ServiceAccount Bearer Token
-    K8sAPI-->>CompCtrl: Resources created
+    Note over Client,Upstream: Flow 3: Monitoring Metrics Collection
 
-    participant OTel as OTel Collector<br/>(TargetAllocator)
+    participant OTelCol as OTel Collector<br/>(TargetAllocator)
     participant Pods as Component Pods<br/>(scrape=true)
-    participant Prom as MonitoringStack<br/>(Prometheus)
+    participant MonStack as MonitoringStack<br/>(Prometheus)
     participant Thanos as ThanosQuerier<br/>10901/TCP gRPC
     participant NSProxy as Namespace Proxy<br/>8443/TCP HTTPS
-    participant Dashboard as Dashboard/UI
+    participant Prom as Prometheus<br/>9090/TCP HTTPS
 
-    Note over OTel,Dashboard: Flow 3: Monitoring Metrics Collection
-
-    OTel->>Pods: Scrape metrics<br/>HTTP (varies)<br/>monitoring.opendatahub.io/scrape=true
-    Pods-->>OTel: Metrics data
-    OTel->>Prom: OTLP HTTP/4318<br/>TLS
-    Thanos->>Prom: gRPC/10901<br/>TLS<br/>Federated query
-    Prom-->>Thanos: Metrics response
-    Dashboard->>NSProxy: HTTPS/8443<br/>Bearer Token
-    NSProxy->>NSProxy: kube-rbac-proxy<br/>SubjectAccessReview
+    OTelCol->>Pods: HTTP (varies)<br/>Scrape metrics
+    Pods-->>OTelCol: Metrics data
+    OTelCol->>MonStack: OTLP HTTP/4318<br/>TLS
+    Thanos->>MonStack: gRPC/10901<br/>TLS<br/>Federated query
+    Client->>NSProxy: HTTPS/8443<br/>kube-rbac-proxy<br/>Bearer Token
     NSProxy->>Prom: HTTPS/9090<br/>TLS (service-CA)
-    Prom-->>NSProxy: Metrics
-    NSProxy-->>Dashboard: Authorized metrics
+    Prom-->>NSProxy: Metrics response
+    NSProxy-->>Client: Authorized metrics

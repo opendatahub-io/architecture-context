@@ -1,70 +1,70 @@
 graph TB
-    subgraph External["EXTERNAL (Untrusted)"]
-        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: HF Token (optional)"]
-        ModelScope["ModelScope<br/>modelscope.cn<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: None"]
+    subgraph External["EXTERNAL SERVICES (Untrusted)"]
+        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: HF Token (optional)"]
+        ModelScope["ModelScope (optional)<br/>modelscope.cn<br/>443/TCP HTTPS TLS 1.2+"]
+        OTLPCollector["OTLP Collector (optional)<br/>4317/TCP gRPC<br/>No encryption"]
     end
 
-    subgraph ClusterInternal["CLUSTER INTERNAL (No Service Mesh)"]
+    subgraph ClusterServices["CLUSTER SERVICES (Internal)"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: ServiceAccount Bearer"]
+        Redis["Redis / Valkey (optional)<br/>6379/TCP<br/>Optional TLS (rediss://)"]
+        Prometheus["Prometheus (optional)<br/>HTTP scrape<br/>No encryption"]
+    end
+
+    subgraph InferenceNS["INFERENCE NAMESPACE (Pod-to-Pod)"]
         direction TB
 
-        subgraph EPPPod["EPP Pod (llm-d inference scheduler)"]
-            direction TB
-            EPP["llm-d EPP Process<br/>Embeds: KV-Cache Indexer (Go lib)"]
-            UDSTokenizer["UDS Tokenizer Service<br/>Image: odh-llm-d-kv-cache-rhel9<br/>Health: 8082/TCP HTTP<br/>vLLM CPU-mode renderer"]
-            EPP -->|"gRPC over UDS<br/>/tmp/tokenizer/tokenizer-uds.socket<br/>No encryption (local IPC)<br/>Auth: FS perms 0o700"| UDSTokenizer
+        subgraph InferencePods["vLLM / SGLang Inference Pods"]
+            vLLMEngine["vLLM/SGLang Engine<br/>ZMQ PUB :5557/TCP"]
         end
 
-        subgraph VLLMPods["vLLM / SGLang Inference Pods"]
-            direction TB
-            VLLMEngine["vLLM Inference Engine<br/>ZMQ PUB: 5557/TCP<br/>Protocol: msgpack"]
-            FSBackend["llmd_fs_backend<br/>Python/C++/CUDA Plugin<br/>OffloadingConnector API"]
-            PVCEvictor["PVC Evictor Sidecar<br/>Threshold: 85% -> 70%<br/>N crawlers + activator + deleter"]
+        subgraph EPPPod["EPP Pod (Inference Scheduler)"]
+            ZMQSub["ZMQ Subscriber<br/>SUB :5557/TCP<br/>⚠️ No encryption"]
+            IndexerLib["KV-Cache Indexer<br/>(embedded Go library)"]
+            TokenClient["Tokenization Client<br/>gRPC over UDS"]
+            TokenizerSidecar["UDS Tokenizer Sidecar<br/>Image: odh-llm-d-kv-cache-rhel9<br/>Health: :8082/TCP HTTP<br/>gRPC: UDS socket (0o700)"]
+
+            ZMQSub -->|in-process<br/>Go channels| IndexerLib
+            IndexerLib -->|in-process| TokenClient
+            TokenClient -->|UDS socket<br/>/tmp/tokenizer/tokenizer-uds.socket<br/>gRPC, no encryption<br/>FS permissions 0o700| TokenizerSidecar
         end
 
-        subgraph Storage["SHARED STORAGE"]
-            SharedFS["NFS / PVC Mount<br/>/tmp/shared-kv<br/>POSIX I/O"]
+        subgraph vLLMPod["vLLM Pod (with sidecars)"]
+            FSBackend["llmd_fs_backend<br/>(OffloadingConnector plugin)<br/>C++/CUDA"]
+            PVCEvictor["PVC Evictor<br/>N crawlers + activator + deleter<br/>Threshold: 85% → 70%"]
+            SharedPVC["Shared Storage PVC<br/>/tmp/shared-kv"]
+
+            FSBackend -->|POSIX I/O<br/>No encryption| SharedPVC
+            PVCEvictor -->|evicts old blocks<br/>POSIX I/O| SharedPVC
         end
 
-        subgraph Observability["OBSERVABILITY (Optional)"]
-            Prometheus["Prometheus<br/>HTTP metrics scrape<br/>No auth"]
-            OTLP["OTLP Collector<br/>4317/TCP gRPC<br/>No encryption<br/>No auth"]
+        subgraph HelmServices["KV-Cache Manager (Helm)"]
+            KVHTTP["HTTP Service<br/>:8080/TCP ClusterIP"]
+            KVZMQ["ZMQ Service<br/>:5557/TCP ClusterIP"]
         end
-
-        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: SA Bearer Token"]
-
-        RedisInternal["Redis / Valkey (optional)<br/>6379/TCP<br/>Optional TLS (rediss://)"]
     end
 
-    %% External flows
-    UDSTokenizer -->|"HTTPS/443<br/>TLS 1.2+<br/>HF Token"| HFHub
-    UDSTokenizer -.->|"HTTPS/443<br/>TLS 1.2+<br/>No auth"| ModelScope
-
-    %% ZMQ flow (no encryption!)
-    VLLMEngine -->|"ZMQ PUB/SUB 5557/TCP<br/>msgpack serialization<br/>NO ENCRYPTION<br/>NO AUTH"| EPP
-
-    %% Storage flows
-    FSBackend -->|"POSIX I/O<br/>No encryption<br/>FS permissions"| SharedFS
-    PVCEvictor -->|"POSIX I/O<br/>File deletion"| SharedFS
-
-    %% Optional flows
-    EPP -.->|"HTTP metrics<br/>No auth"| Prometheus
-    EPP -.->|"gRPC/4317<br/>OTLP traces"| OTLP
-    EPP -.->|"HTTPS/443<br/>SA Bearer Token<br/>Pod watch"| K8sAPI
-    EPP -.->|"Redis/6379<br/>Optional TLS"| RedisInternal
+    %% Network flows
+    vLLMEngine -->|ZMQ PUB/SUB 5557/TCP<br/>msgpack, ⚠️ NO encryption<br/>⚠️ NO authentication| ZMQSub
+    TokenizerSidecar -->|HTTPS 443/TCP<br/>TLS 1.2+, HF Token| HFHub
+    TokenizerSidecar -.->|HTTPS 443/TCP<br/>TLS 1.2+| ModelScope
+    IndexerLib -.->|Redis 6379/TCP<br/>Optional TLS| Redis
+    IndexerLib -.->|HTTPS 443/TCP<br/>Bearer token| K8sAPI
+    IndexerLib -.->|gRPC 4317/TCP| OTLPCollector
+    IndexerLib -.->|HTTP metrics| Prometheus
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef epp fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef vllm fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef observability fill:#e1d5e7,stroke:#9673a6,stroke-width:1px,stroke-dasharray: 5 5
+    classDef cluster fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef inference fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef k8s fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef epp fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef storage fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
 
-    class HFHub,ModelScope external
-    class EPP,UDSTokenizer epp
-    class VLLMEngine warning
-    class FSBackend,PVCEvictor vllm
-    class SharedFS storage
-    class Prometheus,OTLP observability
-    class K8sAPI,RedisInternal k8s
+    class HFHub,ModelScope,OTLPCollector external
+    class K8sAPI,Redis,Prometheus cluster
+    class vLLMEngine inference
+    class ZMQSub warning
+    class IndexerLib,TokenClient,TokenizerSidecar epp
+    class FSBackend,PVCEvictor,SharedPVC storage
+    class KVHTTP,KVZMQ inference

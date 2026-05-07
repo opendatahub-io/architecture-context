@@ -3,30 +3,38 @@ sequenceDiagram
     participant Router as OpenShift Router<br/>443/TCP HTTPS
     participant OAuth as OAuth Proxy Sidecar<br/>8443/TCP TLS
     participant Dashboard as Ray Head Dashboard<br/>8265/TCP HTTP
-    participant Operator as CodeFlare Operator<br/>(manager)
+    participant Operator as CodeFlare Operator<br/>controller-runtime
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant CASecret as CA Secret
-    participant InitCont as Init Container<br/>(head/worker)
-    participant RayHead as Ray Head<br/>10001/TCP gRPC
-    participant RayWorker as Ray Worker<br/>10001/TCP gRPC
+    participant InitCont as Init Container<br/>(OpenSSL)
+    participant CACert as CA Secret<br/>(per-cluster)
+    participant RayHead as Ray Head Node<br/>10001/TCP gRPC
+    participant RayWorker as Ray Worker Node<br/>10001/TCP gRPC
 
-    Note over User,Dashboard: Flow 1: RayCluster OAuth Dashboard Access (OpenShift)
-    User->>Router: GET /dashboard<br/>HTTPS/443, TLS 1.2+
-    Router->>OAuth: Forward (Reencrypt)<br/>HTTPS/8443, TLS
-    Note right of OAuth: Validates OpenShift<br/>OAuth token
-    OAuth->>Dashboard: Proxy request<br/>HTTP/8265 (localhost)
-    Dashboard-->>OAuth: Dashboard HTML
-    OAuth-->>Router: Response (TLS)
-    Router-->>User: Dashboard page (HTTPS)
+    Note over User,Dashboard: Flow 1: OAuth Dashboard Access (OpenShift)
+    User->>Router: GET /dashboard<br/>HTTPS TLS 1.2+
+    Router->>OAuth: Forward (reencrypt)<br/>HTTPS TLS
+    OAuth->>OAuth: Validate OpenShift OAuth token
+    OAuth->>Dashboard: Proxy request<br/>HTTP localhost:8265
+    Dashboard-->>OAuth: Dashboard response
+    OAuth-->>Router: HTTPS response
+    Router-->>User: Dashboard HTML
 
-    Note over Operator,RayWorker: Flow 2: RayCluster mTLS Certificate Bootstrap
-    Operator->>K8sAPI: Create CA Secret<br/>HTTPS/443, SA token
-    K8sAPI-->>Operator: Secret created
-    Operator->>CASecret: Store RSA 2048-bit CA<br/>self-signed, 1yr validity
-    Note right of InitCont: Pod starts with<br/>CA secret volume mount
-    InitCont->>InitCont: Generate server cert<br/>via OpenSSL CLI<br/>signed by cluster CA
-    RayHead->>RayWorker: gRPC communication<br/>10001/TCP, mTLS<br/>per-pod certificates
-    RayWorker-->>RayHead: Response (mTLS)
+    Note over Operator,CACert: Flow 2: mTLS Certificate Bootstrap
+    Operator->>K8sAPI: Watch RayCluster CRs<br/>ServiceAccount token
+    K8sAPI-->>Operator: RayCluster created/updated
+    Operator->>Operator: Generate RSA 2048-bit CA<br/>(crypto/x509, self-signed, 1yr)
+    Operator->>K8sAPI: Create CA Secret<br/>ca-secret-{cluster}
+    Note over InitCont,CACert: Pod admission (webhook injects init containers)
+    InitCont->>CACert: Mount CA cert + key<br/>volume mount
+    InitCont->>InitCont: OpenSSL: generate server cert<br/>signed by cluster CA with SANs
+    InitCont-->>RayHead: Server cert ready<br/>in shared volume
 
-    Note over RayHead,RayWorker: Flow 3: Network Policy Enforcement
-    Note right of RayHead: NetworkPolicy rules:<br/>1. Same-cluster pods: full access<br/>2. Same-namespace: 10001, 8265<br/>3. KubeRay ns: 8265, 10001<br/>4. openshift-monitoring: 8080<br/>5. All sources: 8443 (OAuth),<br/>   10001 (mTLS secured)
+    Note over RayHead,RayWorker: Flow 3: mTLS Ray Communication
+    RayHead->>RayWorker: gRPC 10001/TCP<br/>mTLS (per-pod certs)
+    RayWorker->>RayHead: gRPC 10001/TCP<br/>mTLS (per-pod certs)
+
+    Note over Operator,K8sAPI: Flow 4: Network Policy Enforcement
+    Operator->>K8sAPI: Create NetworkPolicy (head)<br/>allow same-cluster, namespace, monitoring
+    Operator->>K8sAPI: Create NetworkPolicy (worker)<br/>allow same ray.io/cluster label only
+    Operator->>K8sAPI: Create Route (dashboard)<br/>reencrypt TLS
+    Operator->>K8sAPI: Create Route (rayclient)<br/>passthrough TLS

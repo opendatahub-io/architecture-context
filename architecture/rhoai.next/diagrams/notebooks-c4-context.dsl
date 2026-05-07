@@ -1,65 +1,71 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Creates and uses workbenches for interactive data science, model development, and pipeline authoring"
-        mlEngineer = person "ML Engineer" "Deploys and manages ML pipelines that use runtime images"
+        dataScientist = person "Data Scientist" "Creates and uses interactive workbenches for ML/AI development"
+        mlEngineer = person "ML Engineer" "Builds and deploys ML pipelines using Elyra"
+        platformAdmin = person "Platform Admin" "Manages RHOAI platform and image lifecycle"
 
-        notebooks = softwareSystem "Notebooks (Workbench & Runtime Images)" "Container image factory producing pre-built workbench IDEs (Jupyter, RStudio, code-server) and pipeline runtime environments for data science workflows" {
-            jupyterImages = container "Jupyter Workbench Images" "Interactive JupyterLab environments with data science libraries (minimal, datascience, pytorch, tensorflow, trustyai, llmcompressor variants)" "Container Images"
-            codeserverImage = container "Code-Server Workbench Image" "VS Code-based development environment with nginx proxy" "Container Image"
-            rstudioImages = container "RStudio Workbench Images" "RStudio Server IDE for R and Python (CPU and CUDA variants)" "Container Images"
-            runtimeImages = container "Pipeline Runtime Images" "Minimal execution environments for Elyra pipeline node execution" "Container Images"
-            baseImages = container "Base Images" "Foundation layers providing UBI9, Python 3.12, and accelerator libraries (CPU/CUDA/ROCm)" "Container Images"
-            imagestreamManifests = container "ImageStream Manifests" "Kustomize definitions that register images with OpenShift for platform discovery" "Kustomize YAML"
-            buildTooling = container "Build Tooling" "Lock file generators, dependency management, Konflux pipeline integration" "Python/Bash/Tekton"
+        notebooks = softwareSystem "Notebooks (Workbench & Runtime Images)" "Pre-built container images for interactive data science workbenches and pipeline runtimes" {
+            jupyterMinimal = container "jupyter-minimal" "Foundation Jupyter workbench with minimal dependencies" "Container Image (CPU/CUDA/ROCm)"
+            jupyterDatascience = container "jupyter-datascience" "Data science workbench with pandas, sklearn, mongocli (FIPS)" "Container Image (CPU)"
+            jupyterPytorch = container "jupyter-pytorch" "GPU-accelerated PyTorch deep learning workbench" "Container Image (CUDA/ROCm)"
+            jupyterTensorflow = container "jupyter-tensorflow" "GPU-accelerated TensorFlow deep learning workbench" "Container Image (CUDA/ROCm)"
+            jupyterTrustyai = container "jupyter-trustyai" "AI explainability and fairness analysis workbench" "Container Image (CPU)"
+            jupyterLlmcompressor = container "jupyter-pytorch-llmcompressor" "LLM compression and quantization workbench" "Container Image (CUDA)"
+            codeserver = container "code-server" "VS Code-based workbench with nginx proxy" "Container Image (CPU)"
+            rstudio = container "rstudio" "RStudio Server IDE for R and Python" "Container Image (CPU/CUDA)"
+            runtimeMinimal = container "runtime-minimal" "Minimal pipeline runtime for Elyra nodes" "Container Image (CPU)"
+            runtimeDatascience = container "runtime-datascience" "Pipeline runtime with data science libraries" "Container Image (CPU)"
+            runtimePytorch = container "runtime-pytorch" "GPU-accelerated PyTorch pipeline runtime" "Container Image (CUDA/ROCm)"
+            runtimeTensorflow = container "runtime-tensorflow" "GPU-accelerated TensorFlow pipeline runtime" "Container Image (CUDA/ROCm)"
+            runtimeLlmcompressor = container "runtime-pytorch-llmcompressor" "LLM compression pipeline runtime" "Container Image (CUDA)"
+            imagestreamManifests = container "ImageStream Manifests" "Kustomize manifests registering images with the platform" "Kustomize YAML"
+            buildTooling = container "Build Tooling" "Lock file generators, Konflux pipeline integration" "Python/Bash Scripts"
         }
 
-        // Platform components (internal)
         odhNotebookController = softwareSystem "ODH Notebook Controller" "Creates StatefulSets from ImageStream references; manages notebook pod lifecycle" "Internal RHOAI"
-        odhDashboard = softwareSystem "ODH Dashboard" "Web UI for managing data science projects; reads ImageStream annotations to present workbench catalog" "Internal RHOAI"
-        rhodsOperator = softwareSystem "rhods-operator" "Platform operator that applies kustomize manifests to create/update ImageStreams on cluster" "Internal RHOAI"
-        odhOperator = softwareSystem "opendatahub-operator" "ODH platform operator (upstream equivalent of rhods-operator)" "Internal ODH"
-        elyraPipeline = softwareSystem "Elyra Pipeline Engine" "Pipeline execution engine that selects runtime images for notebook node execution" "Internal RHOAI"
+        odhDashboard = softwareSystem "ODH Dashboard" "Reads ImageStream annotations to present available workbench images to users" "Internal RHOAI"
+        rhodsOperator = softwareSystem "rhods-operator" "Applies kustomize manifests to create ImageStream resources on the cluster" "Internal RHOAI"
+        elyra = softwareSystem "Elyra Pipeline Engine" "Uses runtime ImageStream annotations for pipeline node execution environment" "Internal RHOAI"
+        openshiftImageStream = softwareSystem "OpenShift ImageStream" "Tracks container image references and tags" "OpenShift Platform"
+        openshiftAPI = softwareSystem "OpenShift API Server" "Kubernetes/OpenShift API for resource management" "OpenShift Platform"
+        containerRegistry = softwareSystem "Container Registry" "registry.redhat.io (RHOAI) / quay.io (ODH) for image storage" "External"
+        konfluxBuild = softwareSystem "Konflux Build System" "Hermetic CI/CD pipeline with 102 Tekton PipelineRuns" "External"
+        pypi = softwareSystem "PyPI / Package Registries" "Python package repositories for user-initiated installs" "External"
+        s3 = softwareSystem "S3-Compatible Storage" "Object storage for data access from notebooks" "External"
+        gitRepos = softwareSystem "Git Repositories" "Source code and notebook repositories" "External"
+        mongodb = softwareSystem "MongoDB" "Document database accessed via mongocli" "External"
 
-        // External systems
-        containerRegistry = softwareSystem "Container Registry" "registry.redhat.io (RHOAI) and quay.io (ODH) hosting built container images" "External"
-        konflux = softwareSystem "Konflux Build System" "CI/CD platform running 102 Tekton PipelineRuns for hermetic multi-arch container builds" "External"
-        openshiftAPI = softwareSystem "OpenShift API" "Kubernetes API server for cluster resource management (ImageStreams, StatefulSets)" "External"
-        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for data access from notebooks" "External"
-        pypi = softwareSystem "PyPI / Package Registries" "Python package index for user-initiated pip install at runtime" "External"
-        gitRepos = softwareSystem "Git Repositories" "Source code and notebook repositories cloned by users" "External"
+        # Relationships - Users
+        dataScientist -> notebooks "Uses workbenches via Dashboard UI"
+        mlEngineer -> notebooks "Runs pipelines using runtime images"
+        platformAdmin -> rhodsOperator "Manages platform deployment"
 
-        // Relationships
-        datascientist -> odhDashboard "Selects workbench image and creates notebook" "HTTPS/443"
-        datascientist -> notebooks "Uses workbench IDE for interactive data science" "HTTPS/443 via platform gateway"
-        mlEngineer -> elyraPipeline "Submits pipelines that use runtime images"
+        # Relationships - Build & Deploy
+        konfluxBuild -> containerRegistry "Pushes built images" "HTTPS/443"
+        rhodsOperator -> openshiftAPI "Applies kustomize manifests" "HTTPS/6443"
+        rhodsOperator -> openshiftImageStream "Creates ImageStream resources"
+        odhDashboard -> openshiftImageStream "Reads image annotations" "HTTPS/6443"
+        odhNotebookController -> openshiftAPI "Creates StatefulSets" "HTTPS/6443"
+        openshiftImageStream -> containerRegistry "References images" "HTTPS/443"
 
-        konflux -> notebooks "Builds container images hermetically" "Tekton PipelineRuns"
-        konflux -> containerRegistry "Pushes built images" "HTTPS/443"
+        # Relationships - Runtime
+        dataScientist -> odhDashboard "Selects workbench image" "HTTPS/443"
+        odhDashboard -> odhNotebookController "Triggers workbench creation"
+        odhNotebookController -> notebooks "Creates notebook pods from images"
+        elyra -> notebooks "Runs pipeline nodes using runtime images"
 
-        rhodsOperator -> notebooks "Applies kustomize manifests" "HTTPS/6443"
-        rhodsOperator -> openshiftAPI "Creates ImageStream resources" "HTTPS/6443"
-        odhOperator -> notebooks "Applies kustomize manifests (ODH)" "HTTPS/6443"
+        # Relationships - Egress
+        notebooks -> pypi "User pip install" "HTTPS/443"
+        notebooks -> s3 "Data access" "HTTPS/443"
+        notebooks -> gitRepos "Clone repositories" "HTTPS/443"
+        notebooks -> mongodb "Database queries" "TCP/27017"
 
-        odhDashboard -> openshiftAPI "Reads ImageStream annotations for workbench catalog" "HTTPS/6443"
-        odhNotebookController -> openshiftAPI "Creates StatefulSets + kube-rbac-proxy sidecars" "HTTPS/6443"
-        openshiftAPI -> containerRegistry "Pulls workbench/runtime images" "HTTPS/443"
-
-        elyraPipeline -> notebooks "Uses runtime images for pipeline node execution"
-
-        notebooks -> s3Storage "Data access from notebooks" "HTTPS/443"
-        notebooks -> pypi "User-initiated pip install" "HTTPS/443"
-        notebooks -> gitRepos "Clone user notebooks and source" "HTTPS/443"
-
-        // Internal container relationships
-        baseImages -> jupyterImages "Base layer for"
-        baseImages -> codeserverImage "Base layer for"
-        baseImages -> rstudioImages "Base layer for"
-        baseImages -> runtimeImages "Base layer for"
-        buildTooling -> baseImages "Manages dependencies for"
-        imagestreamManifests -> jupyterImages "Registers"
-        imagestreamManifests -> codeserverImage "Registers"
-        imagestreamManifests -> rstudioImages "Registers"
-        imagestreamManifests -> runtimeImages "Registers"
+        # Internal image hierarchy
+        jupyterMinimal -> jupyterDatascience "Base for"
+        jupyterDatascience -> jupyterPytorch "Base for"
+        jupyterDatascience -> jupyterTensorflow "Base for"
+        jupyterDatascience -> jupyterTrustyai "Base for"
+        jupyterPytorch -> jupyterLlmcompressor "Base for"
     }
 
     views {
@@ -82,22 +88,20 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal ODH" {
+            element "OpenShift Platform" {
+                background #ee0000
+                color #ffffff
+            }
+            element "Person" {
+                shape Person
                 background #4a90e2
                 color #ffffff
             }
             element "Software System" {
-                background #438dd5
-                color #ffffff
+                shape RoundedBox
             }
             element "Container" {
-                background #85bbf0
-                color #000000
-            }
-            element "Person" {
-                background #08427b
-                color #ffffff
-                shape Person
+                shape RoundedBox
             }
         }
     }

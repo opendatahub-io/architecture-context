@@ -1,42 +1,44 @@
 sequenceDiagram
     participant Client as ML Model / Client
-    participant Route as OpenShift Route<br/>443/TCP HTTPS TLS
+    participant Route as OpenShift Route<br/>443/TCP HTTPS TLS edge
     participant FS as Feature Server<br/>6566/TCP HTTP/HTTPS
     participant SecMgr as SecurityManager<br/>(in-process)
-    participant Redis as Online Store (Redis)<br/>6379/TCP
-    participant BQ as Offline Store (BigQuery)<br/>443/TCP HTTPS
-    participant Registry as Registry<br/>6001/TCP gRPC
-    participant Operator as Feast Operator
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant CronJob as Materialization CronJob
+    participant Online as Online Store<br/>(Redis 6379/TCP)
+    participant Offline as Offline Store<br/>(BigQuery 443/TCP)
+    participant Operator as Feast Operator<br/>8081/TCP
+    participant Registry as Registry REST<br/>8001/TCP
+    participant K8sAPI as Kubernetes API<br/>6443/TCP
 
-    Note over Client,Redis: Flow 1: Online Feature Retrieval
+    Note over Client,Online: Flow 1: Online Feature Retrieval
     Client->>Route: POST /get-online-features<br/>Auth: Bearer Token (OIDC/K8s)
-    Route->>FS: Forward (TLS edge termination)
-    FS->>SecMgr: Validate token & check<br/>Permission: READ_ONLINE
+    Route->>FS: Forward (TLS terminated)<br/>6566/TCP
+    FS->>SecMgr: Check permissions<br/>READ_ONLINE policy
     SecMgr-->>FS: Authorized
-    FS->>Redis: GET feature values<br/>Auth: Password, TLS optional
-    Redis-->>FS: Feature values
+    FS->>Online: Read features<br/>TCP 6379, Password auth
+    Online-->>FS: Feature values
     FS-->>Route: JSON Response
     Route-->>Client: Feature values
 
-    Note over CronJob,Redis: Flow 2: Feature Materialization (CronJob)
-    CronJob->>FS: kubectl exec<br/>Auth: ServiceAccount RBAC
-    FS->>BQ: Query historical features<br/>Auth: GCP credentials, TLS 1.2+
-    BQ-->>FS: Feature data (batch)
-    FS->>Redis: Write materialized features<br/>Auth: Password, TLS optional
-    Redis-->>FS: ACK
+    Note over Client,Online: Flow 2: Feature Materialization (CronJob)
+    Note right of Operator: CronJob triggers on schedule
+    Operator->>FS: kubectl exec into pod<br/>ServiceAccount RBAC
+    FS->>Offline: Read historical features<br/>HTTPS 443, GCP credentials
+    Offline-->>FS: Feature data
+    FS->>Online: Write materialized features<br/>TCP 6379, Password auth
+    Online-->>FS: Write confirmed
 
-    Note over Client,Redis: Flow 3: Feature Push
+    Note over Client,Online: Flow 3: Feature Push (with offline batching)
     Client->>Route: POST /push<br/>Auth: Bearer Token
-    Route->>FS: Forward
-    FS->>SecMgr: Check Permission:<br/>WRITE_ONLINE / WRITE_OFFLINE
+    Route->>FS: Forward<br/>6566/TCP
+    FS->>SecMgr: Check permissions<br/>WRITE_ONLINE / WRITE_OFFLINE
     SecMgr-->>FS: Authorized
-    FS->>Redis: Write to online store<br/>(immediate)
-    FS->>BQ: Write to offline store<br/>(batched, background)
+    FS->>Online: Write features immediately
+    Online-->>FS: Confirmed
+    Note right of FS: Background thread batches<br/>offline writes (size + time flush)
+    FS->>Offline: Batch write (async)<br/>HTTPS 443
 
     Note over Operator,K8sAPI: Flow 4: Operator Auto-Access RBAC
-    Operator->>FS: GET /api/v1/permissions<br/>Port: 8001/TCP<br/>Auth: Intra-communication JWT
-    FS-->>Operator: Permission policies
-    Operator->>K8sAPI: Create/Update RBAC resources<br/>Auth: ServiceAccount token
-    K8sAPI-->>Operator: RBAC resources created
+    Operator->>Registry: GET /api/v1/permissions<br/>8001/TCP, Intra-comm JWT
+    Registry-->>Operator: Permission policies
+    Operator->>K8sAPI: Create/Update RBAC resources<br/>6443/TCP HTTPS, SA token
+    K8sAPI-->>Operator: RBAC applied

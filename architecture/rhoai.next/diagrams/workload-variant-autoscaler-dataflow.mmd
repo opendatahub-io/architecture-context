@@ -2,49 +2,52 @@ sequenceDiagram
     participant User as Data Scientist
     participant K8s as Kubernetes API<br/>443/TCP HTTPS
     participant VAR as VA Reconciler
-    participant CMR as ConfigMap Reconciler
     participant SatEng as Saturation Engine<br/>30s polling
-    participant SFZEng as Scale-From-Zero Engine<br/>100ms polling
-    participant Cache as Decision Cache<br/>(in-memory)
     participant Prom as Prometheus / Thanos<br/>9091/TCP HTTPS TLS 1.2+
-    participant EPP as EPP Pods<br/>HTTPS TLS
-    participant Actuator as Actuator
-    participant Metrics as /metrics endpoint<br/>8443/TCP HTTPS TLS
+    participant vLLM as vLLM Servers
+    participant Cache as Decision Cache<br/>In-Memory
+    participant Act as Actuator
+    participant Metrics as /metrics Endpoint<br/>8443/TCP HTTPS
     participant HPA as HPA / KEDA
-    participant Workload as Deployment / LWS<br/>(vLLM servers)
+    participant Deploy as Deployments / LWS
 
-    Note over User,Workload: Flow 1: Saturation-Based Autoscaling Loop
+    Note over User,Deploy: Flow 1: Saturation-Based Autoscaling Loop
 
     User->>K8s: Create VariantAutoscaling CR
-    K8s-->>VAR: Watch event (VA created)
-    K8s-->>CMR: Watch event (ConfigMap)
-    CMR-->>SatEng: Apply config (thresholds, analyzer)
+    K8s->>VAR: Watch event (VA created)
+    VAR->>VAR: Register variant for optimization
 
     loop Every 30 seconds
-        SatEng->>Prom: PromQL: kv_cache_usage_perc,<br/>num_requests_waiting, cache_config_info<br/>Auth: Bearer Token (SA)
-        Prom-->>SatEng: vLLM metrics response
-        SatEng->>SatEng: Run analyzer (V1/V2/Queueing)
-        SatEng->>Cache: Store VariantDecision
-        Cache->>VAR: GenericEvent trigger
-        VAR->>K8s: Patch VA status<br/>Auth: SA token
-        VAR->>Actuator: Emit scaling decision
-        Actuator->>Metrics: Update wva_desired_replicas,<br/>wva_desired_ratio
+        SatEng->>Prom: PromQL query (KV cache, queue depth, tokens)<br/>Auth: Bearer Token (SA token)
+        Prom->>vLLM: Scrape vllm:kv_cache_usage_perc,<br/>num_requests_waiting, cache_config_info
+        vLLM-->>Prom: Metrics response
+        Prom-->>SatEng: Query results (HTTPS response)
+        SatEng->>SatEng: Analyze saturation (V1/V2/Queueing)
+        SatEng->>SatEng: Run CostAware/GreedyByScore optimizer
+        SatEng->>Cache: Write VariantDecision
+        Cache->>VAR: Trigger via GenericEvent channel
+        VAR->>K8s: Patch VA status (desired replicas)<br/>Auth: SA token
+        VAR->>Act: Emit scaling metrics
+        Act->>Metrics: Update wva_desired_replicas,<br/>wva_desired_ratio, wva_current_replicas
     end
 
     Prom->>Metrics: Scrape /metrics<br/>Auth: Bearer Token
-    HPA->>Prom: Query wva_desired_ratio<br/>Auth: SA token
+    HPA->>Prom: Read wva_desired_ratio<br/>Auth: SA token
     HPA->>K8s: Scale Deployment/LWS<br/>Auth: SA token
-    K8s->>Workload: Update replicas
+    K8s->>Deploy: Update replicas
 
-    Note over User,Workload: Flow 2: Scale-From-Zero Detection
+    Note over User,Deploy: Flow 2: Scale-From-Zero Detection
+
+    participant SFZ as Scale-From-Zero Engine<br/>100ms polling
+    participant EPP as EPP Pods<br/>Endpoint Picker
 
     loop Every 100ms
-        SFZEng->>EPP: GET flow_control_queue_size<br/>Auth: Bearer Token (EPP metrics token)
-        EPP-->>SFZEng: Queue metrics response
+        SFZ->>EPP: Scrape flow_control_queue_size<br/>Auth: Bearer Token (EPP metrics token)
+        EPP-->>SFZ: Queue metrics response
         alt Pending requests for idle variant (replicas=0)
-            SFZEng->>K8s: Scale subresource 0→1<br/>Auth: SA token
-            K8s->>Workload: Create first replica
-            SFZEng->>Cache: Store decision + trigger
-            Cache->>VAR: GenericEvent trigger
+            SFZ->>K8s: Scale subresource 0→1<br/>Auth: SA token
+            K8s->>Deploy: Set replicas=1
+            SFZ->>Cache: Write decision + trigger channel
+            Cache->>VAR: Trigger reconciliation
         end
     end

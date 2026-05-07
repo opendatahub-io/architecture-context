@@ -1,52 +1,48 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and runs AI/ML pipelines for model training, evaluation, and deployment on RHOAI"
-        platformAdmin = person "Platform Admin" "Deploys and manages the RHOAI platform and pipeline infrastructure"
+        dataScientist = person "Data Scientist" "Creates and runs AI/ML pipelines for training, evaluation, and deployment"
+        platformAdmin = person "Platform Admin" "Deploys and manages RHOAI platform"
 
-        pipelinesComponents = softwareSystem "pipelines-components" "Centralized library of reusable KFP components and managed pipelines for AI/ML workflows" {
-            initContainer = container "odh-pipelines-components" "Compiles managed pipeline definitions to YAML and stages them for KFP API Server" "Python 3.11 Init Container" "UBI9"
-            kfpLibrary = container "kfp-components" "Reusable KFP pipeline components: data processing, training, evaluation, deployment" "Python Library"
-            automlImage = container "odh-automl" "Runtime image with AutoGluon for tabular/time-series AutoML components" "Container Image" "Runtime"
-            autoragImage = container "odh-autorag" "Runtime image with ai4rag, Docling, Llama Stack for RAG optimization components" "Container Image" "Runtime"
+        pipelinesComponents = softwareSystem "pipelines-components" "Reusable KFP component library and managed pipelines for AI/ML workflows on RHOAI" {
+            initContainer = container "odh-pipelines-components" "Compiles managed pipeline definitions to YAML and stages to shared volume at startup" "Python Init Container"
+            kfpLibrary = container "kfp-components" "Installable Python package of 25+ reusable KFP components organized by category" "Python Library"
+            automlImage = container "odh-automl" "Runtime image with AutoGluon for tabular and time-series AutoML" "Container Image"
+            autoragImage = container "odh-autorag" "Runtime image with ai4rag, Docling, and Llama Stack for RAG optimization" "Container Image"
+            scripts = container "scripts" "Validation, scaffolding, and generation utilities for component/pipeline development" "Python Scripts"
         }
 
-        kfpServer = softwareSystem "KFP API Server" "Kubeflow Pipelines server that serves and orchestrates pipeline runs" "Internal RHOAI"
-        argoWorkflows = softwareSystem "Argo Workflows" "Workflow engine that executes pipeline steps as Kubernetes pods" "Internal RHOAI"
-        kubeflowTrainer = softwareSystem "Kubeflow Trainer" "Kubernetes-native distributed training operator (ClusterTrainingRuntime)" "Internal RHOAI"
-        modelRegistry = softwareSystem "Kubeflow Model Registry" "Model versioning, metadata storage, and provenance tracking" "Internal RHOAI"
-        llamaStack = softwareSystem "Llama Stack" "Vector store, embedding, and inference API for RAG workflows" "Internal/External"
+        kfpApiServer = softwareSystem "KFP API Server" "Kubeflow Pipelines API server that serves managed pipelines and orchestrates Argo Workflows" "Internal RHOAI"
+        kubeflowModelRegistry = softwareSystem "Kubeflow Model Registry" "Model versioning, metadata storage, and provenance tracking" "Internal RHOAI"
+        kubeflowTrainer = softwareSystem "Kubeflow Trainer" "Kubernetes-native distributed training job submission and monitoring (ClusterTrainingRuntime)" "Internal RHOAI"
+        rhoaiConnections = softwareSystem "RHOAI Connections API" "Platform-managed Kubernetes Secrets for service credentials" "Internal RHOAI"
+        llamaStack = softwareSystem "Llama Stack" "Vector store indexing and inference API for RAG workflows" "Internal RHOAI"
 
-        awsS3 = softwareSystem "AWS S3" "Object storage for datasets, documents, and model artifacts" "External"
-        huggingFace = softwareSystem "HuggingFace Hub" "Public repository for ML datasets and pre-trained models" "External"
-        llmEndpoints = softwareSystem "OpenAI-compatible LLM Endpoints" "Chat completion and embedding APIs for RAG optimization and SDG" "External"
-        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API for TrainingJob submission, pod monitoring, namespace operations" "Infrastructure"
+        awsS3 = softwareSystem "AWS S3" "Data lake for datasets (CSV, JSON, documents) and model artifacts" "External"
+        huggingFaceHub = softwareSystem "HuggingFace Hub" "Public/gated dataset and model repository" "External"
+        llmApi = softwareSystem "LLM API Endpoint" "OpenAI-compatible inference endpoints for chat and embeddings" "External"
+        kubernetesApi = softwareSystem "Kubernetes API" "Cluster API for TrainingJob submission and pod management" "External"
 
-        rhoaiConnections = softwareSystem "RHOAI Connections" "Credential management for S3, HuggingFace, LLM, and Llama Stack secrets" "Internal RHOAI"
+        # Relationships - User interactions
+        dataScientist -> kfpApiServer "Submits pipelines via KFP UI/SDK"
+        platformAdmin -> pipelinesComponents "Deploys as part of RHOAI platform"
 
-        # Relationships - User to system
-        dataScientist -> kfpServer "Submits pipeline runs via UI/SDK"
-        platformAdmin -> pipelinesComponents "Deploys init container with platform operator"
+        # Relationships - Init container
+        initContainer -> kfpApiServer "Stages compiled managed pipeline YAMLs to shared volume" "Filesystem"
 
-        # Relationships - Init container flow
-        initContainer -> kfpServer "Stages compiled managed pipeline YAMLs via shared volume" "Filesystem"
+        # Relationships - Component library interactions
+        kfpLibrary -> awsS3 "Downloads/uploads datasets and model artifacts" "HTTPS/443"
+        kfpLibrary -> huggingFaceHub "Downloads public/gated datasets and models" "HTTPS/443"
+        kfpLibrary -> llamaStack "Vector store CRUD, embeddings, RAG inference" "HTTP/HTTPS"
+        kfpLibrary -> llmApi "Chat completions and embeddings for SDG and RAG" "HTTPS"
+        kfpLibrary -> kubeflowModelRegistry "Registers models with metadata and provenance" "HTTP/8080"
+        kfpLibrary -> kubeflowTrainer "Submits distributed training jobs (LoRA/OSFT/SFT)" "HTTPS/443"
+        kfpLibrary -> kubernetesApi "Training job submission, pod monitoring" "HTTPS/443"
+        kfpLibrary -> rhoaiConnections "Reads service credentials from Kubernetes Secrets" "Kubernetes API"
 
-        # Relationships - Pipeline execution
-        kfpServer -> argoWorkflows "Creates Argo Workflows for pipeline execution"
-        argoWorkflows -> kfpLibrary "Runs pipeline step components as pods"
-        argoWorkflows -> automlImage "Uses as runtime image for AutoML steps"
-        argoWorkflows -> autoragImage "Uses as runtime image for AutoRAG steps"
-
-        # Relationships - External service egress
-        kfpLibrary -> awsS3 "Uploads/downloads datasets, documents, model artifacts" "HTTPS/443, TLS 1.2+, AWS IAM"
-        kfpLibrary -> huggingFace "Downloads datasets and pre-trained models" "HTTPS/443, TLS 1.2+, HF_TOKEN"
-        kfpLibrary -> llmEndpoints "Chat completions and embeddings for RAG/SDG" "HTTPS, TLS 1.2+, API key"
-        kfpLibrary -> llamaStack "Vector store CRUD, embeddings, inference for RAG" "HTTP(S), API key"
-        kfpLibrary -> kubernetesAPI "Submits TrainingJob CRs, monitors pods" "HTTPS/443, TLS 1.2+, SA token"
-        kfpLibrary -> modelRegistry "Registers trained models with metadata" "HTTP/8080, plaintext, no auth"
-
-        # Relationships - Internal platform
-        kubeflowTrainer -> kubernetesAPI "Creates and manages training worker pods"
-        rhoaiConnections -> kfpLibrary "Injects S3, HF, LLM, Llama Stack credentials as env vars" "Kubernetes Secrets"
+        # Relationships - Runtime images
+        automlImage -> awsS3 "Loads tabular/time-series data" "HTTPS/443"
+        autoragImage -> awsS3 "Loads documents for RAG" "HTTPS/443"
+        autoragImage -> llamaStack "Vector store and inference for RAG optimization" "HTTP/HTTPS"
     }
 
     views {
@@ -61,10 +57,6 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -73,24 +65,12 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal/External" {
-                background #b8a042
-                color #ffffff
-            }
-            element "Infrastructure" {
-                background #d45d3c
+            element "Software System" {
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {
                 background #438dd5
-                color #ffffff
-            }
-            element "Runtime" {
-                background #f5a623
-                color #ffffff
-            }
-            element "UBI9" {
-                background #4a90e2
                 color #ffffff
             }
             element "Person" {

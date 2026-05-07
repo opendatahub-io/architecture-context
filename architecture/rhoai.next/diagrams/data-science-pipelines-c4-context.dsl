@@ -1,121 +1,98 @@
 workspace {
     model {
-        user = person "Data Scientist" "Defines, submits, and monitors ML pipelines via KFP Python SDK or Dashboard UI"
+        datascientist = person "Data Scientist" "Defines and submits ML pipelines via KFP Python SDK or Dashboard UI"
+        platformadmin = person "Platform Admin" "Deploys and configures DSP via DSPO operator"
 
-        dataSciencePipelines = softwareSystem "Data Science Pipelines" "KFP v2 backend providing ML pipeline definition, scheduling, execution, caching, and artifact management on Kubernetes" {
-            apiServer = container "API Server" "Central REST/gRPC API for pipeline CRUD, run submission, artifact access, and webhook validation" "Go Service" "8888/TCP HTTP, 8887/TCP gRPC, 8443/TCP Webhook"
-            persistenceAgent = container "Persistence Agent" "Watches Argo Workflows and syncs execution status back to the API server database" "Go Service"
-            scheduledWorkflowController = container "Scheduled Workflow Controller" "Reconciles ScheduledWorkflow CRDs to trigger pipeline runs on cron/periodic schedules" "Go Controller" "9090/TCP metrics"
-            cacheServer = container "Cache Server" "Mutating admission webhook that intercepts pod creation to reuse cached pipeline step outputs" "Go Webhook" "443/TCP HTTPS"
-            viewerController = container "Viewer Controller" "Reconciles Viewer CRDs to create Tensorboard Deployments and Services" "Go Controller"
+        dsp = softwareSystem "Data Science Pipelines" "Kubeflow Pipelines v2 — ML pipeline definition, scheduling, execution, caching, and artifact management" {
+            apiserver = container "API Server" "Central REST/gRPC API for pipeline CRUD, run submission, artifact access, and webhook validation" "Go Service" "8888/TCP HTTP, 8887/TCP gRPC, 8443/TCP Webhook"
             driver = container "Driver" "Pre-execution sidecar that resolves inputs, checks cache, and patches pod specs in Argo Workflow steps" "Go CLI (sidecar)"
-            launcher = container "Launcher" "In-container executor that runs user code, manages artifact I/O, and publishes execution results to MLMD" "Go CLI (sidecar)"
+            launcher = container "Launcher" "In-container sidecar that executes user code, manages artifact I/O, and publishes results to MLMD" "Go CLI (sidecar)"
+            persistenceagent = container "Persistence Agent" "Watches Argo Workflows and syncs execution status back to API server database" "Go Service"
+            swcontroller = container "Scheduled Workflow Controller" "Reconciles ScheduledWorkflow CRDs to trigger pipeline runs on cron/periodic schedules" "Go Controller" "9090/TCP metrics"
+            cacheserver = container "Cache Server" "Mutating admission webhook that intercepts pod creation to reuse cached pipeline step outputs" "Go Webhook" "443/TCP HTTPS"
+            viewercontroller = container "Viewer Controller" "Reconciles Viewer CRDs to create Tensorboard Deployments and Services" "Go Controller"
         }
 
-        argoWorkflows = softwareSystem "Argo Workflows" "Pipeline execution engine — submits and manages workflow DAGs" "External" {
-            tags "External"
-        }
+        argoworkflows = softwareSystem "Argo Workflows" "Pipeline execution engine — submits and manages workflow DAGs" "External"
+        database = softwareSystem "MySQL / PostgreSQL" "Persistent storage for pipelines, runs, experiments, tasks, cache" "External"
+        objectstore = softwareSystem "S3-compatible Object Store" "Artifact storage and pipeline spec persistence (MinIO/SeaweedFS)" "External"
+        mlmd = softwareSystem "ML Metadata (MLMD)" "Execution lineage, artifact metadata, and pipeline context tracking" "External"
+        kubernetes = softwareSystem "Kubernetes API" "Container orchestration, CRD storage, RBAC" "External"
+        certmanager = softwareSystem "cert-manager" "Optional TLS certificate management for webhook and API server" "External"
 
-        database = softwareSystem "MySQL / PostgreSQL" "Pipeline, run, experiment, and cache metadata persistence" "External" {
-            tags "External"
-        }
+        dspo = softwareSystem "DSPO (Data Science Pipelines Operator)" "Deploys and configures all DSP sub-components on RHOAI" "Internal RHOAI"
+        dashboard = softwareSystem "RHOAI Dashboard" "UI for pipeline management and run visualization" "Internal RHOAI"
+        workbench = softwareSystem "Workbench (Notebooks)" "Users submit pipelines via kfp Python SDK from notebooks" "Internal RHOAI"
+        modelregistry = softwareSystem "Model Registry" "Pipeline-to-model lineage tracking (proposed integration)" "Internal RHOAI"
 
-        objectStore = softwareSystem "S3-compatible Object Store" "Pipeline spec and artifact storage (MinIO/SeaweedFS)" "External" {
-            tags "External"
-        }
+        # User interactions
+        datascientist -> dsp "Creates and manages pipelines via REST/gRPC" "HTTP/gRPC"
+        datascientist -> workbench "Develops pipelines in Jupyter notebooks" "HTTPS"
+        platformadmin -> dspo "Deploys DSP components" "kubectl/YAML"
 
-        mlmd = softwareSystem "ML Metadata (MLMD)" "Execution lineage, artifact metadata, and pipeline context tracking" "External" {
-            tags "External"
-        }
+        # Internal container interactions
+        apiserver -> database "Stores pipeline/run/experiment metadata" "SQL/3306 or 5432"
+        apiserver -> objectstore "Stores pipeline specs and artifacts" "HTTP/9000"
+        apiserver -> kubernetes "Submits Argo Workflows, manages CRDs, RBAC checks" "HTTPS/443"
+        apiserver -> mlmd "Queries execution metadata" "gRPC/8080"
 
-        kubernetes = softwareSystem "Kubernetes API" "Container orchestration, CRD storage, RBAC" "External" {
-            tags "External"
-        }
+        persistenceagent -> kubernetes "Watches Argo Workflow status" "HTTPS/443"
+        persistenceagent -> apiserver "Reports workflow status" "gRPC/8887"
 
-        certManager = softwareSystem "cert-manager" "Optional TLS certificate management for webhook and API server" "External" {
-            tags "External"
-        }
+        swcontroller -> kubernetes "Watches ScheduledWorkflow CRDs" "HTTPS/443"
+        swcontroller -> apiserver "Creates pipeline runs on schedule" "gRPC/8887"
 
-        dspo = softwareSystem "DSPO" "Data Science Pipelines Operator — deploys and configures all DSP components on RHOAI" "Internal RHOAI" {
-            tags "Internal"
-        }
+        cacheserver -> database "Checks cache entries" "SQL/3306"
 
-        dashboard = softwareSystem "RHOAI Dashboard" "UI for pipeline management and run visualization" "Internal RHOAI" {
-            tags "Internal"
-        }
+        driver -> mlmd "Records execution context, resolves upstream outputs" "gRPC/8080"
+        driver -> apiserver "Cache lookup/recording" "gRPC/8887"
 
-        workbench = softwareSystem "Workbench (Notebooks)" "Users submit pipelines via KFP Python SDK from notebooks" "Internal RHOAI" {
-            tags "Internal"
-        }
-
-        modelRegistry = softwareSystem "Model Registry" "Pipeline-to-model lineage tracking (integration proposal)" "Internal RHOAI" {
-            tags "Internal"
-        }
-
-        # User relationships
-        user -> dataSciencePipelines "Submits pipelines and monitors runs" "REST/gRPC"
-        user -> workbench "Develops pipelines in notebooks" "KFP Python SDK"
-        user -> dashboard "Manages pipelines via UI" "HTTPS"
-
-        # Internal container relationships
-        apiServer -> database "Stores pipeline/run/experiment metadata" "SQL/3306-5432"
-        apiServer -> objectStore "Stores pipeline specs and artifacts" "HTTP/9000"
-        apiServer -> mlmd "Queries execution lineage" "gRPC/8080"
-        apiServer -> kubernetes "Submits Argo Workflows, manages CRDs, RBAC checks" "HTTPS/443"
-        persistenceAgent -> apiServer "Reports workflow status" "gRPC/8887"
-        persistenceAgent -> kubernetes "Watches Argo Workflows" "HTTPS/443"
-        scheduledWorkflowController -> apiServer "Triggers scheduled runs" "gRPC/8887"
-        scheduledWorkflowController -> kubernetes "Watches ScheduledWorkflow CRDs" "HTTPS/443"
-        cacheServer -> database "Looks up cache fingerprints" "SQL/3306"
-        driver -> mlmd "Records execution context" "gRPC/8080"
-        driver -> apiServer "Cache lookup via TaskService" "gRPC/8887"
-        driver -> kubernetes "Reads ConfigMaps/Secrets, manages PVCs" "HTTPS/443"
-        launcher -> objectStore "Uploads/downloads artifacts" "HTTP/9000"
+        launcher -> objectstore "Uploads/downloads artifacts" "HTTP/9000"
         launcher -> mlmd "Publishes execution results" "gRPC/8080"
 
-        # External system relationships
-        dataSciencePipelines -> argoWorkflows "Submits and monitors Workflow DAGs" "CRD Watch + Create"
-        dataSciencePipelines -> database "Persists all metadata" "SQL/3306-5432"
-        dataSciencePipelines -> objectStore "Stores artifacts and pipeline specs" "HTTP/9000"
-        dataSciencePipelines -> mlmd "Records execution lineage" "gRPC/8080"
-        dataSciencePipelines -> kubernetes "CRD management, pod lifecycle, RBAC" "HTTPS/443"
-        dataSciencePipelines -> certManager "Optional TLS certificate provisioning" "CRD"
+        # External system interactions
+        dsp -> argoworkflows "Uses for pipeline execution DAGs" "CRD Watch + Create"
+        dsp -> database "Pipeline and cache metadata persistence" "SQL/3306 or 5432"
+        dsp -> objectstore "Artifact storage and pipeline spec persistence" "HTTP/9000"
+        dsp -> mlmd "Execution lineage and artifact metadata" "gRPC/8080"
+        dsp -> kubernetes "CRD management, pod lifecycle, RBAC" "HTTPS/443"
+        dsp -> certmanager "Optional TLS certificate provisioning" "CRD"
 
-        # Internal RHOAI relationships
-        dspo -> dataSciencePipelines "Deploys and configures all DSP components"
-        dashboard -> dataSciencePipelines "Pipeline management and visualization" "REST/8888"
-        workbench -> dataSciencePipelines "Pipeline submission from notebooks" "gRPC+REST/8887-8888"
-        dataSciencePipelines -> modelRegistry "Pipeline-to-model lineage (proposed)" "TBD"
+        # Internal RHOAI interactions
+        dspo -> dsp "Deploys and configures all DSP components" "Deployment owner"
+        dashboard -> dsp "Pipeline management and run visualization" "REST/8888"
+        workbench -> dsp "Pipeline compilation, submission, and management" "HTTP+gRPC/8888+8887"
+        modelregistry -> dsp "Pipeline-to-model lineage tracking" "Integration (proposed)"
     }
 
     views {
-        systemContext dataSciencePipelines "SystemContext" {
+        systemContext dsp "SystemContext" {
             include *
             autoLayout
         }
 
-        container dataSciencePipelines "Containers" {
+        container dsp "Containers" {
             include *
             autoLayout
         }
 
         styles {
-            element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal" {
+            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
             element "Person" {
-                background #08427b
+                background #4a90e2
                 color #ffffff
                 shape person
+            }
+            element "Software System" {
+                background #1168bd
+                color #ffffff
             }
             element "Container" {
                 background #438dd5

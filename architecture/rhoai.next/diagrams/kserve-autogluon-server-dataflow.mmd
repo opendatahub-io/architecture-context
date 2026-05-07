@@ -1,65 +1,39 @@
 sequenceDiagram
     participant Controller as KServe Controller
-    participant Storage as Model Storage<br/>443/TCP HTTPS TLS 1.2+
-    participant Server as AutoGluon Server<br/>8080/TCP HTTP, 8081/TCP gRPC
-    participant Factory as PredictorFactory<br/>(in-process)
+    participant Storage as Model Storage<br/>S3/GCS/HF<br/>443/TCP HTTPS
+    participant Server as AutoGluon Server<br/>8080/TCP HTTP<br/>8081/TCP gRPC
     participant Predictor as AutoGluon Predictor<br/>(in-process)
     participant Client as Client / KServe Router
     participant Prom as Prometheus
 
-    Note over Controller,Server: Flow 1: Model Loading at Startup
+    Note over Controller,Server: Flow 1: Model Loading (Startup)
+    Controller->>Server: Create Pod with autogluon-server image<br/>ServiceAccount credentials
+    Server->>Storage: kserve_storage.Storage.download()<br/>HTTPS/443, TLS 1.2+<br/>Auth: AWS IAM / storage-config secret
+    Storage-->>Server: Model artifacts (TabularPredictor or TimeSeriesPredictor)
+    Server->>Server: Auto-detect model type<br/>(try TimeSeriesPredictor, fallback TabularPredictor)
+    Server->>Predictor: Load AutoGluon predictor<br/>from local filesystem
 
-    Controller->>Server: Create Pod<br/>(InferenceService CR)
-    activate Server
-    Server->>Storage: Download model artifacts<br/>kserve_storage.Storage.download()<br/>HTTPS/443 TLS 1.2+<br/>Auth: AWS IAM / storage-config
-    Storage-->>Server: Model files (to local filesystem)
-    Server->>Factory: Load model from directory
-    Factory->>Factory: Auto-detect predictor type<br/>(try TimeSeriesPredictor first,<br/>fallback to TabularPredictor)
-    Factory-->>Server: AutoGluonDetectedModel ready
-
-    Note over Client,Predictor: Flow 2: v1 Tabular Inference
-
-    Client->>Server: POST /v1/models/{name}:predict<br/>HTTP/8080 plaintext<br/>JSON payload: {"instances": [...]}
-    activate Server
-    Server->>Predictor: preprocess → DataFrame
-    Predictor->>Predictor: TabularPredictor.predict()<br/>or predict_proba()
-    Predictor-->>Server: predictions array
+    Note over Client,Server: Flow 2: v1 REST Inference
+    Client->>Server: POST /v1/models/{model_name}:predict<br/>HTTP/8080, JSON payload
+    Server->>Server: Parse v1 JSON request<br/>(instances format)
+    Server->>Predictor: TabularPredictor.predict()<br/>or TimeSeriesPredictor.predict()
+    Predictor-->>Server: Prediction result (DataFrame)
     Server-->>Client: JSON response<br/>{"predictions": [...]}
-    deactivate Server
 
-    Note over Client,Predictor: Flow 3: v2 Tensor Inference
+    Note over Client,Server: Flow 3: v2 Open Inference Protocol (REST)
+    Client->>Server: POST /v2/models/{model_name}/infer<br/>HTTP/8080, tensor payload
+    Server->>Server: Map v2 tensors → DataFrame<br/>(feature name resolution, dtype mapping)
+    Server->>Predictor: TabularPredictor.predict()<br/>(v2 only for tabular)
+    Predictor-->>Server: Prediction result
+    Server-->>Client: v2 InferResponse<br/>(tensor format)
 
-    Client->>Server: POST /v2/models/{name}/infer<br/>HTTP/8080 plaintext<br/>InferRequest (tensor-per-feature)
-    activate Server
-    Server->>Predictor: preprocess → map tensors to DataFrame
-    Predictor->>Predictor: TabularPredictor.predict()
-    Predictor-->>Server: InferResponse (output tensors)
-    Server-->>Client: InferResponse JSON
-    deactivate Server
+    Note over Client,Server: Flow 4: v2 gRPC Inference
+    Client->>Server: ModelInfer RPC<br/>gRPC/8081, tensor payload
+    Server->>Server: Map v2 tensors → DataFrame
+    Server->>Predictor: TabularPredictor.predict()
+    Predictor-->>Server: Prediction result
+    Server-->>Client: ModelInferResponse<br/>(gRPC tensor)
 
-    Note over Client,Predictor: Flow 4: v1 Time Series Inference
-
-    Client->>Server: POST /v1/models/{name}:predict<br/>HTTP/8080 plaintext<br/>JSON: {"instances": [history],<br/>"known_covariates": [...]}
-    activate Server
-    Server->>Predictor: preprocess → TimeSeriesDataFrame
-    Predictor->>Predictor: TimeSeriesPredictor.predict()
-    Predictor-->>Server: forecast DataFrame
-    Server-->>Client: JSON response<br/>{"predictions": {...}}
-    deactivate Server
-
-    Note over Client,Predictor: Flow 5: gRPC Inference
-
-    Client->>Server: ModelInfer RPC<br/>gRPC/8081 plaintext<br/>InferRequest (protobuf)
-    activate Server
-    Server->>Predictor: preprocess → DataFrame
-    Predictor->>Predictor: predict()
-    Predictor-->>Server: InferResponse (protobuf)
-    Server-->>Client: InferResponse
-    deactivate Server
-
-    Note over Prom,Server: Flow 6: Metrics Scrape
-
-    Prom->>Server: GET /metrics<br/>HTTP/8080 plaintext
-    Server-->>Prom: Prometheus metrics<br/>request_preprocess_seconds<br/>request_predict_seconds<br/>request_postprocess_seconds<br/>request_explain_seconds
-
-    deactivate Server
+    Note over Prom,Server: Flow 5: Metrics Scrape
+    Prom->>Server: GET /metrics<br/>HTTP/8080
+    Server-->>Prom: Prometheus metrics<br/>(preprocess, predict, postprocess,<br/>explain duration histograms)

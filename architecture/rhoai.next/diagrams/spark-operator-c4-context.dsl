@@ -3,47 +3,43 @@ workspace {
         user = person "Data Scientist" "Creates and manages Spark applications on Kubernetes"
 
         sparkOperator = softwareSystem "Spark Operator" "Kubernetes operator that automates lifecycle management of Apache Spark applications, scheduled jobs, and Spark Connect servers" {
-            controller = container "spark-operator controller" "Reconciles SparkApplication, ScheduledSparkApplication, and SparkConnect CRDs; manages Spark driver/executor pod lifecycle, services, ingresses, and monitoring" "Go Operator (controller-runtime)"
-            webhook = container "spark-operator webhook" "Validates and defaults SparkApplication/ScheduledSparkApplication CRs; mutates Spark pods to inject operator-managed configuration (25+ mutations)" "Go Admission Webhook Server"
-            certProvider = container "Certificate Provider" "Generates and rotates self-signed TLS certificates for webhook server" "Go Library"
-            schedulerRegistry = container "Batch Scheduler Registry" "Extensible factory-pattern registry for Volcano, Yunikorn, and kube-scheduler plugin integration" "Go Library"
+            controller = container "Spark Operator Controller" "Reconciles SparkApplication, ScheduledSparkApplication, and SparkConnect CRDs; manages Spark driver/executor pod lifecycle, services, ingresses, and monitoring" "Go Operator (controller-runtime)" {
+                saController = component "SparkApplication Controller" "13+ state machine for Spark job lifecycle: submission, retries, suspension, TTL cleanup" "Go Controller"
+                ssaController = component "ScheduledSparkApplication Controller" "Cron-based scheduling with concurrency policies and history management" "Go Controller"
+                scController = component "SparkConnect Controller" "Manages persistent Spark Connect server pods and services" "Go Controller"
+                mwhController = component "MutatingWebhookConfig Controller" "Synchronizes CA bundle in MutatingWebhookConfiguration" "Go Controller"
+                vwhController = component "ValidatingWebhookConfig Controller" "Synchronizes CA bundle in ValidatingWebhookConfiguration" "Go Controller"
+                certProvider = component "Certificate Provider" "Generates/rotates self-signed TLS certs or integrates with cert-manager" "Go Library"
+                schedulerRegistry = component "Batch Scheduler Registry" "Extensible factory for Volcano, Yunikorn, kube-scheduler plugin integration" "Go Library"
+            }
+
+            webhook = container "Spark Operator Webhook" "Validates and defaults SparkApplication and ScheduledSparkApplication CRs; mutates Spark pods with 25+ configuration injections" "Go Admission Webhook Server" {
+                saDefaulter = component "SparkApplication Defaulter" "Sets default values on SparkApplication CRs" "Go Webhook"
+                saValidator = component "SparkApplication Validator" "Validates SparkApplication CRs" "Go Webhook"
+                ssaDefaulter = component "ScheduledSparkApplication Defaulter" "Sets default values on ScheduledSparkApplication CRs" "Go Webhook"
+                ssaValidator = component "ScheduledSparkApplication Validator" "Validates ScheduledSparkApplication CRs" "Go Webhook"
+                podMutator = component "Spark Pod Mutator" "Applies 25+ mutations to driver/executor pods: env, volumes, ports, init containers, GPU, Prometheus, security, scheduling, DNS" "Go Webhook"
+            }
         }
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Core Kubernetes API for all cluster interactions" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal Platform"
-        rhodsOperator = softwareSystem "rhods-operator / opendatahub-operator" "Platform operator that deploys spark-operator via kustomize overlays" "Internal Platform"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for resource management and admission webhook callbacks" "External"
+        prometheus = softwareSystem "Prometheus" "Monitoring system that scrapes operator metrics" "Internal Platform"
+        rhodsOperator = softwareSystem "RHOAI Operator (rhods-operator)" "Platform operator that deploys spark-operator via kustomize overlays" "Internal Platform"
+        certManager = softwareSystem "cert-manager" "Optional TLS certificate issuance and rotation" "External"
+        volcano = softwareSystem "Volcano Scheduler" "Optional batch scheduler using PodGroup CRDs for gang scheduling" "External"
+        kubeSchedulerPlugins = softwareSystem "kube-scheduler plugins" "Optional coarse-grained scheduling via PodGroup CRDs" "External"
+        yunikorn = softwareSystem "Yunikorn Scheduler" "Optional annotation-based batch scheduler with memory overhead calculations" "External"
 
-        volcano = softwareSystem "Volcano Scheduler" "Batch scheduling system for Kubernetes with PodGroup support" "External Optional"
-        kubeSchedulerPlugins = softwareSystem "kube-scheduler plugins" "Scheduler plugins with PodGroup API for coarse-grained scheduling" "External Optional"
-        yunikorn = softwareSystem "Yunikorn Scheduler" "Apache Yunikorn unified scheduler with annotation-based task groups" "External Optional"
-        certManager = softwareSystem "cert-manager" "Certificate management for Kubernetes (optional, alternative to internal cert generation)" "External Optional"
-
-        sparkDriver = softwareSystem "Spark Driver Pod" "Runs Spark driver process, manages executor lifecycle" "Managed Workload"
-        sparkExecutors = softwareSystem "Spark Executor Pods" "Run Spark tasks, communicate with driver via RPC" "Managed Workload"
-
-        # Relationships
-        user -> sparkOperator "Creates SparkApplication/ScheduledSparkApplication/SparkConnect CRs via kubectl" "HTTPS/6443"
-        rhodsOperator -> sparkOperator "Deploys via kustomize overlays" "Kustomize"
-
-        controller -> k8sAPI "CRUD on pods, services, configmaps, ingresses, CRDs, events" "HTTPS/6443"
-        controller -> sparkDriver "Creates via spark-submit, monitors lifecycle" "Process exec + K8s API"
-        controller -> schedulerRegistry "Creates PodGroups for batch scheduling" "Internal"
-
-        webhook -> k8sAPI "Receives admission webhook callbacks" "HTTPS/9443"
-        webhook -> certProvider "Obtains TLS certificates" "Internal"
-
-        k8sAPI -> webhook "Admission webhook requests (validate, default, mutate)" "HTTPS/9443"
-
-        sparkDriver -> sparkExecutors "Spark RPC and Block Manager" "HTTP/7078, 7079"
-        sparkDriver -> k8sAPI "Request executor pods, report status" "HTTPS/6443"
-
-        prometheus -> sparkOperator "Scrapes /metrics endpoint via PodMonitor" "HTTP/8080"
-
-        controller -> volcano "Creates/deletes Volcano PodGroup CRs" "HTTPS/6443 via K8s API"
-        controller -> kubeSchedulerPlugins "Creates/deletes scheduler-plugins PodGroups" "HTTPS/6443 via K8s API"
-        controller -> yunikorn "Injects task-group annotations on pods" "Pod annotations"
-
-        sparkOperator -> certManager "Optionally delegates certificate issuance" "HTTPS/6443 via K8s API"
+        // Relationships
+        user -> sparkOperator "Creates SparkApplication, ScheduledSparkApplication, SparkConnect CRs" "kubectl / HTTPS"
+        sparkOperator -> k8sAPI "CRUD on pods, services, configmaps, ingresses, CRDs, events" "HTTPS/6443"
+        k8sAPI -> sparkOperator "Admission webhook callbacks for CR validation and pod mutation" "HTTPS/9443"
+        prometheus -> sparkOperator "Scrapes operator metrics" "HTTP/8080"
+        rhodsOperator -> sparkOperator "Deploys and manages operator lifecycle" "Kustomize"
+        sparkOperator -> certManager "Optional: TLS certificate issuance" "HTTPS/6443 via K8s API"
+        sparkOperator -> volcano "Creates/deletes Volcano PodGroups" "HTTPS/6443 via K8s API"
+        sparkOperator -> kubeSchedulerPlugins "Creates/deletes scheduler-plugins PodGroups" "HTTPS/6443 via K8s API"
+        sparkOperator -> yunikorn "Sets task-group annotations on pods" "N/A (annotation injection)"
     }
 
     views {
@@ -57,36 +53,41 @@ workspace {
             autoLayout
         }
 
+        component controller "ControllerComponents" {
+            include *
+            autoLayout
+        }
+
+        component webhook "WebhookComponents" {
+            include *
+            autoLayout
+        }
+
         styles {
+            element "Software System" {
+                background #438dd5
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
-            }
-            element "External Optional" {
-                background #bbbbbb
-                color #ffffff
-                shape RoundedBox
             }
             element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
-            element "Managed Workload" {
-                background #f5a623
-                color #ffffff
-            }
             element "Person" {
-                background #4a90e2
-                color #ffffff
                 shape Person
-            }
-            element "Software System" {
-                background #4a90e2
+                background #08427b
                 color #ffffff
             }
             element "Container" {
                 background #438dd5
                 color #ffffff
+            }
+            element "Component" {
+                background #85bbf0
+                color #000000
             }
         }
     }

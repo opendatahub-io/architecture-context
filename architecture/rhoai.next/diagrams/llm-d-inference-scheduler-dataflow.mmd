@@ -1,45 +1,46 @@
 sequenceDiagram
     participant Client as External Client
-    participant Gateway as Inference Gateway<br/>(Envoy)<br/>80/TCP HTTP
+    participant Gateway as Gateway / Envoy<br/>80/TCP HTTP
     participant EPP as EPP (Endpoint Picker)<br/>9002/TCP gRPC
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant vLLMMetrics as vLLM Metrics<br/>HTTP/HTTPS
-    participant vLLMKV as vLLM KV Events<br/>5556/TCP ZMQ
-    participant ModelServer as Model Server Pod<br/>8000/TCP
-    participant Sidecar as P/D Sidecar<br/>8000/TCP HTTP/HTTPS
-    participant Prefiller as Prefiller Pod<br/>configurable/TCP
-    participant Decoder as Local Decoder<br/>8001/TCP
+    participant vLLMMetrics as vLLM Pods (Metrics)<br/>HTTP scraping
+    participant vLLMZMQ as vLLM Pods (KV Events)<br/>5556/TCP ZMQ
+    participant Tokenizer as UDS Tokenizer<br/>Unix Domain Socket
+    participant Sidecar as P/D Sidecar<br/>8000/TCP HTTP/S
+    participant Prefiller as Prefiller Pod<br/>HTTP/HTTPS
+    participant Decoder as Decoder Pod<br/>8001/TCP HTTP/S
 
-    Note over EPP,K8sAPI: Startup: Controller-Runtime Watches
-    EPP->>K8sAPI: Watch InferencePool, Pod,<br/>InferenceObjective, InferenceModelRewrite CRs<br/>(SA token auth, TLS 1.2+)
+    Note over EPP,K8sAPI: Initialization & Continuous Watch
+    EPP->>K8sAPI: Watch InferencePool, Pod, InferenceObjective,<br/>InferenceModelRewrite CRs (SA token auth)
     K8sAPI-->>EPP: CR events (add/update/delete)
+    EPP->>vLLMMetrics: Periodic: Scrape Prometheus metrics<br/>(queue depth, KV cache %, LoRA info)
+    vLLMMetrics-->>EPP: Metrics response
+    EPP->>vLLMZMQ: Subscribe: KV cache block events<br/>(ZMQ PUB/SUB, no auth)
+    vLLMZMQ-->>EPP: Real-time KV cache events
 
-    Note over EPP,vLLMKV: Background: Metrics & KV Event Collection
-    EPP->>vLLMMetrics: Scrape Prometheus metrics<br/>(queue size, running reqs, KV cache %)<br/>Optional TLS
-    vLLMMetrics-->>EPP: Metric values
-    vLLMKV->>EPP: ZMQ PUB KV cache events<br/>(plaintext, 5556/TCP)
-    Note over EPP: Update KV cache index<br/>& endpoint attribute map
-
-    Note over Client,ModelServer: Flow 1: Standard Inference Request Routing
-    Client->>Gateway: POST /v1/chat/completions<br/>HTTP/80
-    Gateway->>EPP: ext_proc ProcessingRequest<br/>gRPC bidirectional stream<br/>9002/TCP (Optional TLS)
-    Note over EPP: Run scheduling pipeline:<br/>1. Profile selection<br/>2. Filters (capacity, model match)<br/>3. Scorers (KV cache, load)<br/>4. Picker (select endpoint)
-    EPP-->>Gateway: ProcessingResponse<br/>Set target-endpoint header<br/>with selected pod IP:port
-    Gateway->>ModelServer: Forward request to<br/>selected model server<br/>HTTP/8000
+    Note over Client,Decoder: Flow 1: Standard Inference Request Routing
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTP/80 (no auth)
+    Gateway->>EPP: ext_proc ProcessingRequest<br/>gRPC streaming (9002/TCP)
+    EPP->>Tokenizer: Tokenize prompt<br/>(gRPC over UDS)
+    Tokenizer-->>EPP: Token IDs
+    Note over EPP: Scheduling Pipeline:<br/>1. Filters (admission, model match)<br/>2. Scorers (prefix cache, load, KV util)<br/>3. Picker (max score)
+    EPP-->>Gateway: ProcessingResponse<br/>Set target-pod header
+    Gateway->>Decoder: Forward to selected pod<br/>HTTP/8000
 
     Note over Client,Decoder: Flow 2: Disaggregated P/D Inference
     Client->>Gateway: POST /v1/chat/completions<br/>HTTP/80
-    Gateway->>EPP: ext_proc ProcessingRequest<br/>gRPC/9002
-    Note over EPP: Schedule with P/D profile:<br/>Select decode pod + prefill pod
-    EPP-->>Gateway: Set target-endpoint +<br/>x-prefill-host headers
-    Gateway->>Sidecar: Forward to decode pod's sidecar<br/>HTTP/HTTPS 8000/TCP (TLS 1.2+)
-    Sidecar->>Prefiller: Forward prefill request<br/>HTTP/HTTPS (SSRF validated)<br/>x-prefill-host target
-    Prefiller-->>Sidecar: Prefill response +<br/>KV cache transfer params
-    Sidecar->>Decoder: Decode request with<br/>KV cache reference<br/>HTTP/HTTPS 8001/TCP
-    Decoder-->>Sidecar: Streamed response
+    Gateway->>EPP: ext_proc ProcessingRequest
+    Note over EPP: Scheduling: Select prefill + decode pods<br/>Set x-prefill-host, x-decode-host headers
+    EPP-->>Gateway: ProcessingResponse<br/>(target = decode pod with sidecar)
+    Gateway->>Sidecar: Forward to decode pod sidecar<br/>HTTP/HTTPS 8000/TCP
+    Sidecar->>Prefiller: Forward prefill request<br/>HTTP/HTTPS (SSRF validated)
+    Prefiller-->>Sidecar: Prefill response + KV cache params
+    Note over Sidecar: KV Cache Transfer<br/>(NIXL V2 / Shared Storage / SGLang)
+    Sidecar->>Decoder: Decode request with KV params<br/>HTTP/HTTPS 8001/TCP
+    Decoder-->>Sidecar: Streaming response
     Sidecar-->>Gateway: Streamed response
     Gateway-->>Client: Streamed response
 
-    Note over EPP,vLLMKV: Flow 3: KV Cache Event Subscription
-    vLLMKV->>EPP: KV cache block events<br/>ZMQ PUB/SUB 5556/TCP<br/>No encryption, No auth
-    Note over EPP: Index KV cache blocks<br/>for precise prefix<br/>cache scoring
+    Note over Client,Decoder: Flow 3: KV Cache Event Tracking
+    vLLMZMQ->>EPP: KV cache block stored/evicted events<br/>ZMQ PUB/SUB 5556/TCP (no encryption)
+    Note over EPP: Update KV Cache Index<br/>(prefix matching for scorer plugin)

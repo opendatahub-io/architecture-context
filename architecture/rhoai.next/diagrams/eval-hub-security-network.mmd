@@ -1,72 +1,73 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["Client<br/>(Dashboard / API User)"]
+        Client["Client<br/>(Dashboard / API / CLI)"]
     end
 
-    subgraph ControlPlane["CONTROL PLANE (RHOAI Namespace)"]
-        direction TB
-        EvalHubSvc["eval-hub API Server<br/>Service: eval-hub (ClusterIP)<br/>8080/TCP<br/>TLS 1.2-1.3 (FIPS)<br/>AuthN: K8s TokenReview (2min cache)<br/>AuthZ: K8s SAR (5min/30s cache)<br/>SA: eval-hub<br/>Image: rhoai/odh-eval-hub-rhel9"]
+    subgraph Ingress["INGRESS (Platform-Managed)"]
+        Route["HTTPRoute / Route<br/>(managed by rhods-operator)<br/>TLS termination"]
     end
 
-    subgraph EvalNamespace["EVALUATION NAMESPACE (User Workload)"]
+    subgraph ControlPlane["CONTROL PLANE NAMESPACE (Internal)"]
+        direction TB
+        EvalHub["eval-hub API Service<br/>ClusterIP 8080/TCP<br/>TLS 1.2-1.3<br/>FIPS: strictfipsruntime<br/>AuthN: K8s TokenReview (2min cache)<br/>AuthZ: K8s SAR (5min/30s cache)<br/>Multi-tenant: X-Tenant header"]
+    end
+
+    subgraph EvalNamespace["EVALUATION NAMESPACE (Per-Tenant)"]
         direction TB
 
-        subgraph JobPod["Batch Job Pod"]
+        subgraph JobPod["Evaluation Job Pod (Batch Job)"]
             direction TB
-            Init["eval-runtime-init<br/>(Init Container)<br/>S3 data downloader"]
-            AdapterC["Evaluation Adapter<br/>(Lighteval / lm-eval /<br/>Garak / GuideLLM / IBM CLEAR)"]
-            SidecarC["eval-runtime-sidecar<br/>(Native Sidecar, KEP-753)<br/>RestartPolicy: Always<br/>8080/TCP localhost<br/>SA: evalhub-instance-ns-job"]
+            Init["eval-runtime-init<br/>(Init Container)<br/>SA: {instance}-{ns}-job"]
+            Adapter["Evaluation Adapter<br/>(Lighteval / lm-eval / Garak)<br/>Provider-specific image"]
+            SidecarProxy["eval-runtime-sidecar<br/>(Native Sidecar, KEP-753)<br/>RestartPolicy: Always<br/>Startup: 30x2s probe"]
+            Adapter -->|"HTTP/8080<br/>plaintext<br/>pod-local only<br/>No auth"| SidecarProxy
         end
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        direction TB
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>plaintext (in-cluster)<br/>Connection String Auth"]
-        MLflow["MLflow Tracking Server<br/>HTTPS (configurable port)<br/>TLS 1.2+ (custom CA)<br/>Bearer Token (projected SA)"]
-        S3["S3 Object Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM Credentials"]
-        OCI["OCI Registry<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (Docker config)"]
-        OTEL["OTEL Collector<br/>4317/TCP gRPC or 4318/TCP HTTP<br/>configurable encryption<br/>No Auth"]
+    subgraph K8sServices["KUBERNETES SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+        ServiceCA["OpenShift Service CA<br/>ConfigMap: service-ca.crt"]
     end
 
-    %% Client to eval-hub
-    Client -->|"HTTPS/8080<br/>TLS 1.2-1.3 (FIPS)<br/>Bearer Token + X-Tenant"| EvalHubSvc
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>plaintext (in-cluster)<br/>Connection string auth"]
+        MLflow["MLflow Tracking Server<br/>HTTPS (configurable port)<br/>TLS 1.2+ (custom CA)<br/>Bearer Token (rotated)"]
+        S3["S3 Object Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM credentials"]
+        OCI["OCI Registry<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (challenge-response)"]
+        OTELCol["OTEL Collector<br/>4317/TCP gRPC<br/>configurable encryption"]
+    end
 
-    %% eval-hub to K8s API
-    EvalHubSvc -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>TokenReview + SAR"| K8sAPI
+    %% Client to service
+    Client -->|"HTTPS/8080<br/>TLS 1.2-1.3<br/>Bearer Token (K8s SA)"| Route
+    Route -->|"platform-managed<br/>routing"| EvalHub
 
-    %% eval-hub to PostgreSQL
-    EvalHubSvc -->|"TCP/5432<br/>plaintext<br/>Connection String"| PostgreSQL
+    %% eval-hub egress
+    EvalHub -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>TokenReview + SAR + Jobs + ConfigMaps"| K8sAPI
+    EvalHub -->|"HTTPS<br/>TLS 1.2+<br/>Bearer Token (file)<br/>Experiment tracking"| MLflow
+    EvalHub -->|"TCP/5432<br/>plaintext<br/>Conn string<br/>Evaluation data"| PostgreSQL
+    EvalHub -->|"gRPC/4317<br/>configurable<br/>Traces + metrics"| OTELCol
 
-    %% eval-hub to OTEL
-    EvalHubSvc -.->|"gRPC/4317 or HTTP/4318<br/>OTLP<br/>No Auth"| OTEL
+    %% Job pod flows
+    Init -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM<br/>Test data download"| S3
+    SidecarProxy -->|"HTTPS/8080<br/>TLS 1.2+<br/>SA Token (injected)<br/>Status updates"| EvalHub
+    SidecarProxy -->|"HTTPS<br/>TLS 1.2+<br/>Projected SA Token<br/>Run tracking"| MLflow
+    SidecarProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer (Docker config)<br/>Artifact push"| OCI
 
-    %% eval-hub creates Job
-    EvalHubSvc -->|"HTTPS/443<br/>Create Batch Job + ConfigMap<br/>SA Token"| K8sAPI
-
-    %% Init container to S3
-    Init -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM (from Secret)"| S3
-
-    %% Adapter to Sidecar (pod-local)
-    AdapterC -->|"HTTP/8080<br/>plaintext (localhost)<br/>No Auth"| SidecarC
-
-    %% Sidecar to eval-hub
-    SidecarC -->|"HTTPS/8080<br/>TLS 1.2+ (service-ca.crt)<br/>SA Token"| EvalHubSvc
-
-    %% Sidecar to MLflow
-    SidecarC -->|"HTTPS<br/>TLS 1.2+ (custom CA)<br/>Projected SA Token"| MLflow
-
-    %% Sidecar to OCI
-    SidecarC -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (challenge-response)"| OCI
+    %% CA trust
+    ServiceCA -.->|"CA cert bundle"| EvalHub
+    ServiceCA -.->|"CA cert bundle"| SidecarProxy
 
     %% Styling
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef controlplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef evalnamespace fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef jobpod fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px,color:#333
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px,color:#333
+    classDef controlplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px,color:#333
+    classDef evalns fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px,color:#333
+    classDef k8sservice fill:#e1d5e7,stroke:#9673a6,stroke-width:2px,color:#333
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px,color:#333
 
     class Client external
-    class EvalHubSvc controlplane
-    class Init,AdapterC,SidecarC jobpod
-    class K8sAPI,PostgreSQL,MLflow,S3,OCI,OTEL externalservice
+    class Route ingress
+    class EvalHub controlplane
+    class Init,Adapter,SidecarProxy evalns
+    class K8sAPI,ServiceCA k8sservice
+    class PostgreSQL,MLflow,S3,OCI,OTELCol externalservice

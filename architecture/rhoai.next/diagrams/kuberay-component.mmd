@@ -1,81 +1,83 @@
 graph TB
     subgraph KubeRayOperator["KubeRay Operator (ray-operator)"]
         direction TB
-
-        subgraph CoreControllers["Core Controllers"]
+        subgraph Controllers["Controllers"]
             RayClusterCtrl["RayCluster Controller<br/>Reconciles RayCluster CRs"]
             RayJobCtrl["RayJob Controller<br/>Reconciles RayJob CRs"]
             RayServiceCtrl["RayService Controller<br/>Reconciles RayService CRs"]
+            AuthCtrl["Authentication Controller<br/>OAuth/OIDC proxy, HTTPRoutes,<br/>ReferenceGrants"]
+            MTLSCtrl["MTLS Controller<br/>cert-manager Issuers &amp; Certs"]
+            NetPolCtrl["NetworkPolicy Controller<br/>Per-cluster network isolation"]
         end
 
-        subgraph SecurityControllers["Security Controllers (RHOAI)"]
-            AuthCtrl["Authentication Controller<br/>OAuth/OIDC proxy, HTTPRoutes,<br/>ReferenceGrants, ServiceAccounts"]
-            MTLSCtrl["MTLS Controller<br/>cert-manager Issuers &<br/>Certificates for mTLS"]
-            NetPolCtrl["NetworkPolicy Controller<br/>Per-cluster NetworkPolicies"]
+        subgraph Webhooks["Webhooks (9443/TCP TLS)"]
+            MutatingWH["Mutating Webhook<br/>Defaults annotations on OpenShift"]
+            ValidatingWH["Validating Webhook<br/>Validates name &amp; worker groups"]
         end
 
-        subgraph Webhooks["Admission Webhooks (9443/TCP)"]
-            MutatingWH["Mutating Webhook<br/>Defaults RayCluster annotations"]
-            ValidatingWH["Validating Webhook<br/>Validates name format &<br/>worker group uniqueness"]
+        subgraph Probes["Health &amp; Metrics"]
+            Metrics["Metrics<br/>8080/TCP"]
+            Health["Health/Ready<br/>8082/TCP"]
         end
-
-        RayClusterCtrl --> AuthCtrl
-        RayClusterCtrl --> MTLSCtrl
-        RayClusterCtrl --> NetPolCtrl
     end
 
     %% CRDs
-    User["User / Data Scientist"] -->|kubectl apply| RayClusterCR["RayCluster CR<br/>(ray.io/v1)"]
-    User -->|kubectl apply| RayJobCR["RayJob CR<br/>(ray.io/v1)"]
-    User -->|kubectl apply| RayServiceCR["RayService CR<br/>(ray.io/v1)"]
+    User[User / Data Scientist] -->|"kubectl create"| RayClusterCR["RayCluster CR<br/>(ray.io/v1)"]
+    User -->|"kubectl create"| RayJobCR["RayJob CR<br/>(ray.io/v1)"]
+    User -->|"kubectl create"| RayServiceCR["RayService CR<br/>(ray.io/v1)"]
 
-    RayClusterCR -->|watched by| RayClusterCtrl
-    RayJobCR -->|watched by| RayJobCtrl
-    RayServiceCR -->|watched by| RayServiceCtrl
+    RayClusterCR -->|"watched by"| RayClusterCtrl
+    RayJobCR -->|"watched by"| RayJobCtrl
+    RayServiceCR -->|"watched by"| RayServiceCtrl
+    RayClusterCR -->|"watched by"| AuthCtrl
+    RayClusterCR -->|"watched by"| MTLSCtrl
+    RayClusterCR -->|"watched by"| NetPolCtrl
 
-    %% Created Resources
-    RayClusterCtrl -->|creates| HeadPod["Ray Head Pod<br/>(with optional auth sidecar)"]
-    RayClusterCtrl -->|creates| WorkerPods["Ray Worker Pods"]
-    RayClusterCtrl -->|creates| HeadSvc["{cluster}-head-svc<br/>ClusterIP"]
-    RayJobCtrl -->|creates ephemeral| RayClusterCR
-    RayJobCtrl -->|submits job via| RayDashboard["Ray Dashboard API<br/>8265/TCP"]
-    RayServiceCtrl -->|manages| ActiveCluster["Active RayCluster"]
-    RayServiceCtrl -->|creates| PendingCluster["Pending RayCluster<br/>(blue-green upgrade)"]
-    RayServiceCtrl -->|manages| ServeSvc["{cluster}-serve<br/>8000/TCP"]
+    %% Resources created
+    RayClusterCtrl -->|"creates"| HeadPod["Head Pod<br/>8265 dashboard<br/>6379 GCS<br/>10001 client"]
+    RayClusterCtrl -->|"creates"| WorkerPods["Worker Pods"]
+    RayClusterCtrl -->|"creates"| HeadSvc["Head Service<br/>(ClusterIP)"]
+    RayClusterCtrl -->|"creates"| ServeSvc["Serve Service<br/>8000/TCP"]
+    RayJobCtrl -->|"creates ephemeral"| RayClusterCR
+    RayJobCtrl -->|"submits via"| Dashboard["Ray Dashboard API<br/>8265/TCP"]
+    RayServiceCtrl -->|"manages active/pending"| RayClusterCR
 
-    AuthCtrl -->|creates in platform ns| HTTPRoute["HTTPRoute<br/>/ray/{ns}/{cluster}/*"]
-    AuthCtrl -->|creates| RefGrant["ReferenceGrant<br/>(cross-namespace)"]
-    MTLSCtrl -->|creates| Issuer["cert-manager Issuer<br/>(per-cluster CA)"]
-    MTLSCtrl -->|creates| Certs["TLS Certificates<br/>(head + worker, 90d)"]
-    NetPolCtrl -->|creates| NetPol["NetworkPolicy<br/>(per-cluster isolation)"]
+    AuthCtrl -->|"creates"| HTTPRoute["HTTPRoute<br/>(in platform namespace)"]
+    AuthCtrl -->|"creates"| RefGrant["ReferenceGrant<br/>(in cluster namespace)"]
+    AuthCtrl -->|"injects"| AuthProxy["OAuth/kube-rbac-proxy<br/>sidecar (8443/TCP)"]
+    MTLSCtrl -->|"creates"| Issuer["cert-manager Issuer"]
+    MTLSCtrl -->|"creates"| Certs["TLS Certificates<br/>(head + worker)"]
+    NetPolCtrl -->|"creates"| NetPol["NetworkPolicies<br/>(per-cluster)"]
 
-    %% External Dependencies
-    RayClusterCtrl -->|depends on| K8sAPI["Kubernetes API<br/>443/TCP"]
-    AuthCtrl -->|reads config| OAuthConfig["OpenShift OAuth<br/>config.openshift.io"]
-    HTTPRoute -->|parent ref| Gateway["data-science-gateway<br/>(shared Gateway)"]
-    MTLSCtrl -->|depends on| CertManager["cert-manager"]
+    %% Webhook validation
+    RayClusterCR -->|"admission"| MutatingWH
+    RayClusterCR -->|"admission"| ValidatingWH
 
-    %% Webhook flow
-    K8sAPI -->|admission request| MutatingWH
-    K8sAPI -->|admission request| ValidatingWH
+    %% External dependencies
+    HTTPRoute -->|"parent ref"| Gateway["data-science-gateway<br/>(Gateway API)"]
+    Issuer -->|"managed by"| CertManager["cert-manager"]
+    Metrics -->|"scraped by"| Prometheus["Prometheus"]
 
     %% Styling
-    style KubeRayOperator fill:#e8f4fd,stroke:#4a90e2,stroke-width:2px
-    style CoreControllers fill:#d5e8d4,stroke:#82b366,stroke-width:1px
-    style SecurityControllers fill:#fff2cc,stroke:#d6b656,stroke-width:1px
-    style Webhooks fill:#f8cecc,stroke:#b85450,stroke-width:1px
+    style KubeRayOperator fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style Controllers fill:#e8f5e9,stroke:#2e7d32
+    style Webhooks fill:#fff3e0,stroke:#e65100
+    style Probes fill:#f3e5f5,stroke:#6a1b9a
     style RayClusterCtrl fill:#4a90e2,color:#fff
     style RayJobCtrl fill:#4a90e2,color:#fff
     style RayServiceCtrl fill:#4a90e2,color:#fff
-    style AuthCtrl fill:#f5a623,color:#fff
-    style MTLSCtrl fill:#f5a623,color:#fff
-    style NetPolCtrl fill:#f5a623,color:#fff
-    style MutatingWH fill:#e06666,color:#fff
-    style ValidatingWH fill:#e06666,color:#fff
-    style RayClusterCR fill:#b4a7d6,stroke:#674ea7
-    style RayJobCR fill:#b4a7d6,stroke:#674ea7
-    style RayServiceCR fill:#b4a7d6,stroke:#674ea7
-    style Gateway fill:#999,stroke:#333
-    style CertManager fill:#999,stroke:#333
-    style K8sAPI fill:#999,stroke:#333
-    style OAuthConfig fill:#999,stroke:#333
+    style AuthCtrl fill:#4a90e2,color:#fff
+    style MTLSCtrl fill:#4a90e2,color:#fff
+    style NetPolCtrl fill:#4a90e2,color:#fff
+    style MutatingWH fill:#f5a623,color:#fff
+    style ValidatingWH fill:#f5a623,color:#fff
+    style RayClusterCR fill:#ff9800,color:#fff
+    style RayJobCR fill:#ff9800,color:#fff
+    style RayServiceCR fill:#ff9800,color:#fff
+    style Gateway fill:#e8e8e8,stroke:#333
+    style CertManager fill:#e8e8e8,stroke:#333
+    style Prometheus fill:#e8e8e8,stroke:#333
+    style HeadPod fill:#7ed321
+    style WorkerPods fill:#7ed321
+    style HTTPRoute fill:#7ed321
+    style NetPol fill:#7ed321

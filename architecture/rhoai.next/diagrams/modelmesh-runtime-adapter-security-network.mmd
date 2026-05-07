@@ -1,74 +1,67 @@
 graph TB
-    subgraph ClusterInternal["CLUSTER-INTERNAL (ModelMesh Control Plane)"]
-        ModelMesh["ModelMesh<br/>gRPC Client"]
-        MMController["ModelMesh Controller<br/>(reads ConfigMap only)"]
+    subgraph External["EXTERNAL CLOUD SERVICES (Untrusted)"]
+        S3["S3 / IBM COS<br/>*.s3.amazonaws.com<br/>TLS 1.2+<br/>Static Credentials"]
+        GCS["Google Cloud Storage<br/>storage.googleapis.com<br/>TLS 1.2+<br/>Service Account"]
+        Azure["Azure Blob Storage<br/>*.blob.core.windows.net<br/>TLS 1.2+<br/>Service Principal"]
+        HTTP["HTTP/HTTPS Server<br/>Configurable Endpoint<br/>TLS 1.2+ (optional mTLS)<br/>Custom Headers / Client Cert"]
     end
 
-    subgraph PodBoundary["MODEL SERVER POD (Trust Boundary: localhost)"]
+    subgraph ClusterInternal["CLUSTER-INTERNAL"]
+        ModelMesh["ModelMesh<br/>(gRPC Client)"]
+        MMController["ModelMesh Controller<br/>(ConfigMap reference only)"]
+    end
+
+    subgraph PodBoundary["MODEL SERVER POD (Trusted Pod-Internal, plaintext)"]
         direction TB
 
-        subgraph PullerZone["Sidecar: model-serving-puller"]
-            Puller["model-serving-puller<br/>8084/TCP gRPC plaintext<br/>FIPS: strictfipsruntime<br/>No Auth"]
-            Pullman["pullman storage framework<br/>S3/GCS/Azure/HTTP/PVC<br/>Path traversal: securejoin"]
+        subgraph PullerContainer["Sidecar: model-serving-puller"]
+            Puller["model-serving-puller<br/>:8084/TCP gRPC<br/>plaintext, No Auth<br/>pullman storage framework"]
         end
 
-        subgraph AdapterZone["Sidecar: Runtime Adapter"]
-            Adapter["runtime-adapter<br/>8085/TCP gRPC plaintext<br/>FIPS: strictfipsruntime<br/>No Auth"]
+        subgraph AdapterContainer["Sidecar: Runtime Adapter (one of four)"]
+            Adapter["Runtime Adapter<br/>:8085/TCP gRPC<br/>plaintext, No Auth<br/>Optional embedded puller"]
         end
 
-        subgraph RuntimeZone["Container: Model Runtime"]
-            TritonRT["Triton: 8001/TCP gRPC"]
-            OVMSRT["OVMS: 8001/TCP HTTP"]
-            MLServerRT["MLServer: 8001/TCP gRPC"]
-            TorchServeRT["TorchServe: 7071/TCP mgmt<br/>7070/TCP infer gRPC"]
+        subgraph RuntimeContainer["Container: Model Runtime (one of four)"]
+            Triton["Triton<br/>:8001/TCP gRPC"]
+            OVMS["OVMS<br/>:8001/TCP HTTP"]
+            MLServer["MLServer<br/>:8001/TCP gRPC"]
+            TorchServeMgmt["TorchServe Mgmt<br/>:7071/TCP gRPC"]
+            TorchServeInfer["TorchServe Infer<br/>:7070/TCP gRPC"]
         end
 
-        subgraph Volumes["Volume Mounts"]
-            ModelsVol["/models (emptyDir)<br/>Shared model storage"]
-            SecretVol["/storage-config (Secret)<br/>Cloud credentials"]
-        end
-    end
-
-    subgraph ExternalStorage["EXTERNAL SERVICES (TLS 1.2+)"]
-        S3["S3 / IBM COS<br/>443/TCP HTTPS<br/>Auth: access_key + secret_key<br/>Optional: custom CA bundle"]
-        GCS["Google Cloud Storage<br/>443/TCP HTTPS<br/>Auth: SA private_key + client_email"]
-        AzureBlob["Azure Blob Storage<br/>443/TCP HTTPS<br/>Auth: SP client_id + client_secret<br/>or connection_string"]
-        HTTPServer["HTTP/HTTPS Server<br/>80-443/TCP<br/>Auth: custom headers or mTLS<br/>client_certificate + client_key"]
+        Secret["storage-config Secret<br/>Mounted: /storage-config<br/>Cloud credentials (S3/GCS/Azure/HTTP)"]
     end
 
     %% Cluster-internal flows
-    ModelMesh -->|"gRPC/8084 plaintext<br/>No Auth"| Puller
-    ModelMesh -->|"gRPC/8085 plaintext<br/>No Auth<br/>(embedded puller mode)"| Adapter
-    MMController -.->|"ConfigMap read<br/>storageHelperImage"| PodBoundary
+    ModelMesh -->|"gRPC :8084<br/>plaintext<br/>No Auth"| Puller
+    ModelMesh -->|"gRPC :8085<br/>plaintext<br/>No Auth"| Adapter
+    MMController -.->|"ConfigMap ref<br/>storageHelperImage"| PodBoundary
 
     %% Pod-internal flows
-    Puller -->|"gRPC/8085<br/>plaintext localhost"| Adapter
-    Pullman -->|reads| SecretVol
-    Pullman -->|writes| ModelsVol
+    Puller -->|"gRPC :8085<br/>plaintext<br/>No Auth"| Adapter
+    Adapter -->|"gRPC :8001<br/>plaintext"| Triton
+    Adapter -->|"HTTP :8001<br/>plaintext"| OVMS
+    Adapter -->|"gRPC :8001<br/>plaintext"| MLServer
+    Adapter -->|"gRPC :7071<br/>plaintext"| TorchServeMgmt
+    Adapter -->|"gRPC :7070<br/>plaintext"| TorchServeInfer
+    Secret -.->|"credentials"| Puller
 
-    %% Adapter to runtime flows (all plaintext localhost)
-    Adapter -->|"gRPC/8001<br/>plaintext"| TritonRT
-    Adapter -->|"HTTP/8001<br/>plaintext"| OVMSRT
-    Adapter -->|"gRPC/8001<br/>plaintext"| MLServerRT
-    Adapter -->|"gRPC/7071+7070<br/>plaintext"| TorchServeRT
-
-    %% External egress flows
-    Pullman -->|"HTTPS/443<br/>TLS 1.2+<br/>Static credentials"| S3
-    Pullman -->|"HTTPS/443<br/>TLS 1.2+<br/>SA credentials"| GCS
-    Pullman -->|"HTTPS/443<br/>TLS 1.2+<br/>SP credentials"| AzureBlob
-    Pullman -->|"HTTPS/443<br/>TLS 1.2+ (optional mTLS)<br/>Custom headers/certs"| HTTPServer
+    %% External egress
+    Puller -->|"HTTPS :443<br/>TLS 1.2+<br/>Access Key + Secret"| S3
+    Puller -->|"HTTPS :443<br/>TLS 1.2+<br/>SA private_key"| GCS
+    Puller -->|"HTTPS :443<br/>TLS 1.2+<br/>Client ID + Secret"| Azure
+    Puller -->|"HTTP/S :80/443<br/>TLS 1.2+ / mTLS<br/>Custom Headers"| HTTP
 
     %% Styling
-    classDef external fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef clusterinternal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef podinternal fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef runtime fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef pod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef secret fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef volume fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef runtime fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
-    class ModelMesh,MMController clusterinternal
-    class Puller,Pullman,Adapter podinternal
-    class TritonRT,OVMSRT,MLServerRT,TorchServeRT runtime
-    class S3,GCS,AzureBlob,HTTPServer external
-    class SecretVol secret
-    class ModelsVol volume
+    class S3,GCS,Azure,HTTP external
+    class ModelMesh,MMController cluster
+    class Puller,Adapter pod
+    class Secret secret
+    class Triton,OVMS,MLServer,TorchServeMgmt,TorchServeInfer runtime

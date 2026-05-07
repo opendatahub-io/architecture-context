@@ -4,91 +4,72 @@ graph TB
     end
 
     subgraph Ingress["INGRESS (Gateway API)"]
-        Gateway["Gateway<br/>(Istio / agentgateway / GKE)<br/>80/TCP HTTP<br/>TLS: Provider-dependent<br/>Auth: Provider-dependent"]
+        Gateway["Gateway CR<br/>Istio / agentgateway / GKE<br/>80/TCP HTTP<br/>TLS: Provider-dependent<br/>Auth: Provider-dependent"]
     end
 
-    subgraph ControlPlane["CONTROL PLANE (Cluster Internal)"]
-        EPP["llm-d-inference-scheduler (EPP)<br/>9002/TCP gRPC ext_proc<br/>8081/TCP HTTP<br/>No Encryption<br/>Plugin chains: scoring, filtering"]
+    subgraph ControlPlane["CONTROL PLANE (Inference Routing)"]
+        EPP["llm-d-inference-scheduler (EPP)<br/>9002/TCP gRPC ext_proc<br/>8081/TCP HTTP<br/>No encryption, No auth<br/>Consumes: InferencePool,<br/>InferenceObjective, EndpointPickerConfig"]
     end
 
-    subgraph DataPlane["DATA PLANE (Pod Network)"]
+    subgraph DataPlane["DATA PLANE (Model Serving — No Encryption, No Auth)"]
         direction TB
 
-        subgraph DecodeNS["Decode Path"]
-            RoutingSidecar["Routing Sidecar<br/>(P/D mode only)<br/>8000/TCP HTTP<br/>Init container<br/>No Encryption"]
-            DecodeVLLM["vLLM Decode Server<br/>8000/TCP or 8200/TCP HTTP<br/>UID: 2000 GID: 0<br/>automountSAToken: false<br/>No Encryption / No Auth"]
+        subgraph Standard["Standard Topology"]
+            vLLM["vLLM Model Server<br/>8000/TCP HTTP (plaintext)<br/>Endpoints: /v1/chat/completions,<br/>/v1/completions, /v1/models,<br/>/health, /metrics<br/>UID: 2000, GID: 0<br/>SA: automountServiceAccountToken: false"]
         end
 
-        subgraph PrefillNS["Prefill Path"]
-            PrefillVLLM["vLLM Prefill Server<br/>8000/TCP HTTP<br/>5600/TCP NIXL<br/>No Encryption / No Auth"]
+        subgraph PD["P/D Disaggregation Topology"]
+            PrefillVLLM["Prefill vLLM<br/>8000/TCP HTTP<br/>5600/TCP NIXL"]
+            DecodePod["Decode Pod"]
+            Sidecar["routing-sidecar<br/>8000/TCP HTTP (front)"]
+            DecodeVLLM["Decode vLLM<br/>8200/TCP HTTP (back)<br/>5600/TCP NIXL"]
+            Sidecar --> DecodeVLLM
         end
 
-        subgraph WideEPNS["Wide EP Path (Multi-Node)"]
-            LeaderPod["Leader vLLM Pod<br/>5555/TCP vLLM DP RPC<br/>5600/TCP NIXL"]
-            WorkerPods["Worker vLLM Pods<br/>(LeaderWorkerSet)<br/>IB/RoCE RDMA"]
+        subgraph WideEP["Wide EP Topology (LeaderWorkerSet)"]
+            Leader["Leader Pod<br/>5555/TCP vLLM DP RPC"]
+            Workers["Worker Pod(s)<br/>IB/RoCE RDMA (L2)<br/>5600/TCP NIXL"]
+            Leader <-->|"NVSHMEM/NCCL<br/>RDMA (L2, no encryption)"| Workers
         end
     end
 
-    subgraph Observability["OBSERVABILITY PLANE"]
-        Prometheus["Prometheus<br/>9090/TCP HTTP<br/>Optional TLS<br/>Scrapes /metrics"]
-        OTEL["OTEL Collector<br/>4317/TCP gRPC OTLP<br/>No Encryption"]
-        Jaeger["Jaeger<br/>16686/TCP HTTP<br/>Trace UI"]
-        Grafana["Grafana<br/>Dashboards"]
+    subgraph Observability["OBSERVABILITY"]
+        Prometheus["Prometheus<br/>9090/TCP HTTP<br/>Optional TLS"]
+        OTELCollector["OTEL Collector<br/>4317/TCP gRPC OTLP<br/>No encryption"]
+        Jaeger["Jaeger<br/>16686/TCP HTTP"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        HF["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: HF_TOKEN"]
-        RDMAFabric["RDMA/IB Fabric<br/>InfiniBand / RoCE<br/>L2 Transport<br/>No Encryption"]
+        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: HF_TOKEN"]
+        RDMA["RDMA/IB Fabric<br/>L2 Transport<br/>No encryption, No auth"]
     end
 
-    %% External to Ingress
-    Client -->|"HTTP/80<br/>Provider-dependent TLS & Auth"| Gateway
-
-    %% Ingress to Control Plane
-    Gateway -->|"gRPC/9002<br/>ext_proc<br/>No Encryption"| EPP
-
-    %% Control Plane to Data Plane
-    EPP -.->|"Selects backend"| DecodeVLLM
-    EPP -.->|"Selects backend"| PrefillVLLM
-
-    %% Gateway to Data Plane (after EPP selection)
-    Gateway -->|"HTTP/8000<br/>No Encryption"| RoutingSidecar
-    Gateway -->|"HTTP/8000<br/>No Encryption"| DecodeVLLM
-    Gateway -->|"HTTP/8000<br/>No Encryption"| PrefillVLLM
-
-    %% Within Data Plane
-    RoutingSidecar -->|"HTTP/8200<br/>No Encryption"| DecodeVLLM
-    PrefillVLLM -->|"NIXL/5600<br/>RDMA/TCP<br/>No Encryption (L2)"| DecodeVLLM
-    LeaderPod -->|"vLLM DP RPC/5555<br/>No Encryption"| WorkerPods
-    LeaderPod -->|"NIXL/5600<br/>RDMA/TCP (L2)"| WorkerPods
-    LeaderPod -->|"NVSHMEM/NCCL<br/>IB/RoCE RDMA (L2)"| WorkerPods
+    %% Traffic flows
+    Client -->|"HTTP/80<br/>Plaintext (provider-dependent TLS)"| Gateway
+    Gateway -->|"gRPC/9002<br/>ext_proc<br/>No encryption"| EPP
+    EPP -->|"HTTP/8000<br/>No encryption<br/>No auth"| vLLM
+    EPP -->|"HTTP/8000<br/>No encryption"| PrefillVLLM
+    EPP -->|"HTTP/8000<br/>No encryption"| Sidecar
+    PrefillVLLM -->|"NIXL/5600<br/>RDMA/TCP<br/>No encryption (L2)"| DecodeVLLM
 
     %% Egress
-    DecodeVLLM -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HF
-    PrefillVLLM -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HF
-    PrefillVLLM -->|"RDMA<br/>L2 No Encryption"| RDMAFabric
-    DecodeVLLM -->|"RDMA<br/>L2 No Encryption"| RDMAFabric
-
-    %% Observability
-    DecodeVLLM -.->|"OTLP gRPC/4317"| OTEL
-    PrefillVLLM -.->|"OTLP gRPC/4317"| OTEL
-    EPP -.->|"OTLP gRPC/4317"| OTEL
-    OTEL -.->|"traces"| Jaeger
-    Prometheus -.->|"scrape /metrics<br/>HTTP/8000"| DecodeVLLM
-    Prometheus -.->|"scrape /metrics<br/>HTTP/8000"| PrefillVLLM
-    Prometheus -.->|"data source"| Grafana
+    vLLM -->|"HTTP/8000<br/>metrics scrape"| Prometheus
+    vLLM -->|"gRPC/4317<br/>OTLP traces"| OTELCollector
+    OTELCollector --> Jaeger
+    vLLM -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HFHub
+    Leader -->|"NIXL/5600 + NVSHMEM<br/>RDMA (L2)"| RDMA
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef dataplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef observability fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef controlplane fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef dataplane fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef observability fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
 
     class Client external
     class Gateway ingress
     class EPP controlplane
-    class RoutingSidecar,DecodeVLLM,PrefillVLLM,LeaderPod,WorkerPods dataplane
-    class Prometheus,OTEL,Jaeger,Grafana observability
-    class HF,RDMAFabric externalservice
+    class vLLM,PrefillVLLM,DecodeVLLM,Sidecar,Leader,Workers dataplane
+    class Prometheus,OTELCollector,Jaeger observability
+    class HFHub,RDMA externalservice

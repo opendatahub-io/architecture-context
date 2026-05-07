@@ -4,74 +4,81 @@ graph TB
     end
 
     subgraph Ingress["INGRESS (Optional - Gateway API)"]
-        HTTPRoute["Gateway API HTTPRoute<br/>/v1/batches, /v1/files<br/>TLS: Depends on Gateway"]
+        HTTPRoute["HTTPRoute<br/>/v1/batches, /v1/files<br/>TLS depends on Gateway"]
     end
 
-    subgraph ClusterServices["CLUSTER SERVICES (Internal)"]
+    subgraph Cluster["CLUSTER NETWORK (Internal)"]
         direction TB
 
-        subgraph ApiserverSvc["Service: batch-gateway-apiserver (ClusterIP)"]
-            Apiserver["batch-gateway-apiserver<br/>Ports: service.port (API), 8081 (observability)<br/>SA: {release}-batch-gateway-apiserver<br/>TLS 1.2+ (optional)"]
-        end
+        subgraph NS_BG["Namespace: batch-gateway"]
+            direction TB
 
-        subgraph ProcessorDeploy["Deployment: batch-gateway-processor"]
-            Processor["batch-gateway-processor<br/>Port: configurable addr (observability)<br/>SA: {release}-batch-gateway-processor<br/>Workers: num_workers"]
-        end
+            Apiserver["batch-gateway-apiserver<br/>SA: {release}-batch-gateway-apiserver<br/>Port: configurable (HTTP/HTTPS)<br/>Observability: 8081/TCP<br/>TLS 1.2+ (optional)<br/>Security Headers: CSP, HSTS, X-Frame-Options"]
 
-        subgraph GCDeploy["Deployment: batch-gateway-gc"]
-            GCPod["batch-gateway-gc<br/>No ports (no listener)<br/>SA: {release}-batch-gateway-gc"]
+            Processor["batch-gateway-processor<br/>SA: {release}-batch-gateway-processor<br/>No inbound service<br/>Global concurrency: 100<br/>Per-model concurrency: 10<br/>Graceful shutdown: 30s"]
+
+            GC["batch-gateway-gc<br/>SA: {release}-batch-gateway-gc<br/>No network listener<br/>Periodic cleanup"]
         end
     end
 
-    subgraph BackendServices["BACKEND SERVICES (Egress)"]
-        PG["PostgreSQL<br/>5432/TCP<br/>TLS (configurable)<br/>Auth: Connection URL"]
-        Redis["Redis / Valkey<br/>6379/TCP<br/>TLS / mTLS (configurable)<br/>Auth: Connection URL"]
-        S3["S3 Storage<br/>443/TCP HTTPS<br/>TLS<br/>Auth: AWS Credentials"]
-        InferenceGW["LLM Inference Gateway<br/>(llm-d / vLLM)<br/>Configurable Port<br/>TLS 1.2+ (configurable)<br/>Auth: Bearer Token"]
+    subgraph BackendServices["BACKEND SERVICES"]
+        direction TB
+
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS (configurable)<br/>Auth: Connection URL<br/>(username/password)"]
+
+        Redis["Redis / Valkey<br/>6379/TCP<br/>TLS / mTLS (configurable)<br/>Auth: Connection URL<br/>Lua scripts for atomicity"]
+
+        S3["S3-Compatible Storage<br/>(MinIO / AWS S3)<br/>443/TCP HTTPS<br/>TLS<br/>Auth: AWS credentials<br/>(access key/secret key)"]
     end
 
-    subgraph Observability["OBSERVABILITY"]
-        Prometheus["Prometheus<br/>ServiceMonitor + PodMonitor"]
-        OTel["OpenTelemetry Collector<br/>4317/TCP OTLP/gRPC"]
-        Grafana["Grafana<br/>Dashboards via ConfigMap"]
+    subgraph InferenceLayer["INFERENCE LAYER"]
+        LLM["LLM Inference Gateway<br/>(llm-d / vLLM)<br/>Configurable port<br/>HTTP/HTTPS TLS 1.2+<br/>Auth: Bearer token (API key)<br/>CA cert + client certs supported"]
     end
 
-    %% External → Ingress → Apiserver
-    Client -->|"HTTP/HTTPS<br/>TLS 1.2+ (optional)<br/>Header: X-MaaS-Username<br/>No authn (upstream proxy)"| HTTPRoute
-    HTTPRoute -->|"HTTP/HTTPS<br/>service.port"| Apiserver
+    subgraph Observability["OBSERVABILITY (Optional)"]
+        OTel["OpenTelemetry Collector<br/>4317/TCP OTLP/gRPC<br/>Plaintext or TLS"]
+        Prometheus["Prometheus<br/>Scrape: 8081/TCP (apiserver)<br/>Scrape: processor addr<br/>HTTP, no encryption"]
+        CertManager["cert-manager<br/>Certificate CRD<br/>Auto-rotation"]
+    end
 
-    %% Apiserver → Backend
-    Apiserver -->|"TCP/5432<br/>TLS (configurable)<br/>pgx v5 pool"| PG
-    Apiserver -->|"TCP/6379<br/>TLS/mTLS<br/>go-redis v9"| Redis
-    Apiserver -->|"HTTPS/443<br/>TLS<br/>AWS SDK v2"| S3
+    %% External flows
+    Client -->|"HTTP/HTTPS<br/>TLS 1.2+ (optional)<br/>Auth: Tenant header<br/>(X-MaaS-Username)<br/>No authn - upstream proxy"| HTTPRoute
+    HTTPRoute -->|"service.port<br/>HTTP/HTTPS"| Apiserver
 
-    %% Processor → Backend
-    Processor -->|"TCP/5432<br/>TLS (configurable)"| PG
-    Processor -->|"TCP/6379<br/>TLS/mTLS"| Redis
-    Processor -->|"HTTPS/443<br/>TLS"| S3
-    Processor -->|"HTTP/HTTPS<br/>TLS 1.2+<br/>Bearer Token<br/>CA cert + client certs"| InferenceGW
+    %% Apiserver egress
+    Apiserver -->|"TCP/5432<br/>TLS (configurable)<br/>Connection URL"| PostgreSQL
+    Apiserver -->|"TCP/6379<br/>TLS/mTLS (configurable)<br/>Connection URL"| Redis
+    Apiserver -->|"HTTPS/443<br/>TLS<br/>AWS credentials"| S3
 
-    %% GC → Backend
-    GCPod -->|"TCP/5432<br/>TLS (configurable)"| PG
-    GCPod -->|"TCP/6379<br/>TLS/mTLS"| Redis
-    GCPod -->|"HTTPS/443<br/>TLS"| S3
+    %% Processor egress
+    Processor -->|"TCP/5432<br/>TLS (configurable)<br/>Connection URL"| PostgreSQL
+    Processor -->|"TCP/6379<br/>TLS/mTLS (configurable)<br/>Connection URL"| Redis
+    Processor -->|"HTTPS/443<br/>TLS<br/>AWS credentials"| S3
+    Processor -->|"HTTP/HTTPS<br/>TLS 1.2+<br/>Bearer token"| LLM
+
+    %% GC egress
+    GC -->|"TCP/5432<br/>TLS<br/>Connection URL"| PostgreSQL
+    GC -->|"HTTPS/443<br/>TLS<br/>AWS credentials"| S3
 
     %% Observability
-    Prometheus -.->|"HTTP/8081<br/>No auth<br/>/metrics"| Apiserver
-    Prometheus -.->|"HTTP<br/>No auth<br/>/metrics"| Processor
-    Apiserver -.->|"gRPC/4317<br/>OTLP"| OTel
-    Processor -.->|"gRPC/4317<br/>OTLP"| OTel
-    GCPod -.->|"gRPC/4317<br/>OTLP"| OTel
+    Apiserver -.->|"OTLP/gRPC<br/>4317/TCP"| OTel
+    Processor -.->|"OTLP/gRPC<br/>4317/TCP"| OTel
+    GC -.->|"OTLP/gRPC<br/>4317/TCP"| OTel
+    Prometheus -.->|"HTTP scrape<br/>8081/TCP"| Apiserver
+    Prometheus -.->|"HTTP scrape<br/>processor addr"| Processor
+    CertManager -.->|"Certificate CRD"| Apiserver
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef clusterservice fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef backend fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef observability fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef inference fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef observability fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
 
     class Client external
     class HTTPRoute ingress
-    class Apiserver,Processor,GCPod clusterservice
-    class PG,Redis,S3,InferenceGW backend
-    class Prometheus,OTel,Grafana observability
+    class Apiserver,Processor,GC cluster
+    class PostgreSQL,Redis,S3 backend
+    class LLM inference
+    class OTel,Prometheus,CertManager observability

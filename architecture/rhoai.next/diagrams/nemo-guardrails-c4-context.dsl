@@ -1,51 +1,46 @@
 workspace {
     model {
-        user = person "Data Scientist / Application Developer" "Sends prompts to LLM-based applications with safety guardrails"
-        platformAdmin = person "Platform Admin" "Configures guardrail policies and Colang flows via ConfigMaps"
+        user = person "Data Scientist / Application" "Sends prompts to LLM-based systems with safety guardrails"
 
-        nemoGuardrails = softwareSystem "NeMo Guardrails" "Programmable guardrails toolkit for adding safety, security, and content moderation to LLM-based conversational systems" {
-            server = container "NeMo Guardrails Server" "OpenAI-compatible REST API server for guardrail-protected LLM interactions" "Python/FastAPI/Uvicorn, Port 8000"
-            llmRailsEngine = container "LLMRails Engine" "Core engine managing Colang runtimes, LLM calls, and rail execution pipelines" "Python Module"
-            ioRailsEngine = container "IORails Engine" "Optimized inference path for input/output-only content safety rails" "Python Module"
-            guardrailsWrapper = container "Guardrails Wrapper" "Top-level interface auto-selecting IORails or LLMRails based on configuration" "Python Module"
-            colangRuntime = container "Colang Runtime" "Domain-specific language runtime (v1.0/v2.x) for conversational flow control" "Python Module"
+        nemoGuardrails = softwareSystem "NeMo Guardrails" "Programmable guardrails toolkit for LLM safety, security, and content moderation" {
+            server = container "Guardrails Server" "OpenAI-compatible REST API for guardrail-protected LLM interactions" "Python FastAPI/Uvicorn, Port 8000"
+            guardrailsWrapper = container "Guardrails Wrapper" "Auto-selects IORails or LLMRails engine based on configuration" "Python Module"
+            llmRailsEngine = container "LLMRails Engine" "Full Colang runtime with dialog management, KB retrieval, flow control" "Python Module"
+            ioRailsEngine = container "IORails Engine" "Optimized inference path for input/output content safety checks" "Python Module (fork-specific)"
+            colangRuntime = container "Colang Runtime" "Domain-specific language runtime for conversational flow control (v1.0, v2.x)" "Python Module"
             guardrailLibrary = container "Guardrail Library" "28 guardrail type implementations (content safety, jailbreak, PII, hallucination, etc.)" "Python Modules"
-            knowledgeBase = container "Knowledge Base" "Embedding-based document search using Annoy ANN index" "Python Module"
-            actionsServer = container "Actions Server" "Optional standalone server for executing guardrail actions remotely" "Python/FastAPI, Port 8001"
+            knowledgeBase = container "Knowledge Base" "Embedding-based document search using Annoy approximate nearest neighbor index" "Python Module"
+            actionsServer = container "Actions Server" "Optional standalone server for executing guardrail actions remotely" "Python FastAPI, Port 8001"
         }
 
         openai = softwareSystem "OpenAI API" "LLM inference and embeddings" "External"
-        nim = softwareSystem "NVIDIA NIM" "LLM inference via NVIDIA endpoints" "External"
-        anthropic = softwareSystem "Anthropic API" "LLM inference for chat completions" "External"
-        azureOpenai = softwareSystem "Azure OpenAI" "LLM inference (Azure-hosted models)" "External"
+        nvidianm = softwareSystem "NVIDIA NIM" "LLM inference and jailbreak detection" "External"
+        anthropic = softwareSystem "Anthropic API" "LLM inference" "External"
+        azureOpenAI = softwareSystem "Azure OpenAI" "LLM inference (Azure-hosted)" "External"
         cohere = softwareSystem "Cohere API" "LLM inference and embeddings" "External"
-        vertexAi = softwareSystem "Google Vertex AI" "Embeddings and content moderation" "External"
-        redis = softwareSystem "Redis" "Thread/conversation state persistence" "External Infrastructure"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Trace export for distributed observability" "External Infrastructure"
-        platformIngress = softwareSystem "Platform Ingress" "Gateway API / OpenShift Route with TLS termination and auth" "Internal RHOAI"
+        vertexAI = softwareSystem "Google Vertex AI" "Embeddings and content moderation" "External"
+        redis = softwareSystem "Redis" "Thread/conversation state persistence" "External Optional"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed trace export" "External Optional"
+        platformIngress = softwareSystem "Platform Ingress" "TLS termination, authentication, and routing (Gateway API / kube-rbac-proxy)" "Internal RHOAI"
 
-        # User interactions
-        user -> platformIngress "Sends LLM requests with Bearer token" "HTTPS/443"
-        platformIngress -> nemoGuardrails "Forwards requests with auth header" "HTTP/8000"
-        platformAdmin -> nemoGuardrails "Configures guardrail policies via ConfigMaps" "Kubernetes API"
-
-        # Internal container relationships
-        server -> guardrailsWrapper "Routes requests to appropriate engine"
-        guardrailsWrapper -> llmRailsEngine "Complex flows with dialog management"
-        guardrailsWrapper -> ioRailsEngine "Simple I/O-only content safety checks"
-        llmRailsEngine -> colangRuntime "Executes Colang flow definitions"
-        llmRailsEngine -> guardrailLibrary "Applies configured guardrail checks"
-        llmRailsEngine -> knowledgeBase "Retrieves relevant documents for context"
-
-        # External dependencies
-        nemoGuardrails -> openai "LLM inference, embeddings, guardrail evaluation" "HTTPS/443, Bearer Token"
-        nemoGuardrails -> nim "LLM inference, jailbreak detection" "HTTPS/443, Bearer Token"
+        user -> platformIngress "Sends requests via HTTPS/443"
+        platformIngress -> nemoGuardrails "Forwards to HTTP/8000 with auth header passthrough"
+        nemoGuardrails -> openai "LLM inference, embeddings" "HTTPS/443, Bearer Token"
+        nemoGuardrails -> nvidianm "LLM inference, jailbreak detection" "HTTPS/443, Bearer Token"
         nemoGuardrails -> anthropic "LLM inference" "HTTPS/443, x-api-key"
-        nemoGuardrails -> azureOpenai "LLM inference" "HTTPS/443, api-key header"
-        nemoGuardrails -> cohere "LLM inference and embeddings" "HTTPS/443, Bearer Token"
-        nemoGuardrails -> vertexAi "Embeddings and content moderation" "HTTPS/443, GCP credentials"
-        nemoGuardrails -> redis "Thread/session persistence" "TCP/6379, username/password"
+        nemoGuardrails -> azureOpenAI "LLM inference" "HTTPS/443, api-key"
+        nemoGuardrails -> cohere "LLM inference, embeddings" "HTTPS/443, Bearer Token"
+        nemoGuardrails -> vertexAI "Embeddings, content moderation" "HTTPS/443, GCP credentials"
+        nemoGuardrails -> redis "Thread persistence" "TCP/6379, Optional TLS"
         nemoGuardrails -> otelCollector "Trace export" "gRPC/4317 OTLP"
+
+        server -> guardrailsWrapper "Routes requests"
+        guardrailsWrapper -> llmRailsEngine "Full flow processing"
+        guardrailsWrapper -> ioRailsEngine "I/O-only processing"
+        llmRailsEngine -> colangRuntime "Executes Colang flows"
+        llmRailsEngine -> guardrailLibrary "Applies guardrail checks"
+        ioRailsEngine -> guardrailLibrary "Applies I/O rails"
+        llmRailsEngine -> knowledgeBase "Retrieves relevant documents"
     }
 
     views {
@@ -64,9 +59,10 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "External Infrastructure" {
-                background #6c8ebf
+            element "External Optional" {
+                background #bbbbbb
                 color #ffffff
+                shape RoundedBox
             }
             element "Internal RHOAI" {
                 background #7ed321
@@ -75,6 +71,14 @@ workspace {
             element "Person" {
                 shape Person
                 background #4a90e2
+                color #ffffff
+            }
+            element "Software System" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Container" {
+                background #438dd5
                 color #ffffff
             }
         }

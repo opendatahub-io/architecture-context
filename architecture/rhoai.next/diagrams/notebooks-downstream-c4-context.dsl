@@ -1,54 +1,52 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and uses interactive workbenches for ML/data science work"
-        developer = person "Developer" "Submits PRs to build new workbench image versions"
+        dataScientist = person "Data Scientist" "Creates and uses interactive workbenches for ML/AI development"
+        developer = person "Developer" "Contributes code and Dockerfiles to notebooks-downstream repo"
 
-        notebooksDownstream = softwareSystem "Notebooks-Downstream" "Builds and publishes ~35 container images for interactive data science workbenches and pipeline runtimes" {
-            jupyterImages = container "Jupyter Notebook Images" "JupyterLab workbenches: Minimal, Data Science, PyTorch, TensorFlow, TrustYAI (CPU/CUDA/ROCm)" "Container Images"
-            codeServerImage = container "Code Server Image" "VS Code (code-server v4.98.0) in browser with NGINX proxy and supervisord" "Container Image"
-            rstudioImages = container "RStudio Server Images" "RStudio Server 2024.12.1 with R 4.4.3 (C9S and RHEL9 variants)" "Container Images"
-            runtimeImages = container "Pipeline Runtime Images" "Headless Python environments for Elyra/DSP pipeline step execution" "Container Images"
-            buildSystem = container "Build System" "Makefile + Tekton/Konflux pipelines for multi-arch image builds" "Build Tooling"
-            kustomizeManifests = container "Kustomize Manifests" "ImageStream definitions with versioned image digest references (N through N-5)" "Kubernetes Manifests"
+        notebooksDownstream = softwareSystem "Notebooks-Downstream" "Builds and publishes ~35 container images for interactive data science workbenches (Jupyter, RStudio, code-server) and pipeline runtimes for RHOAI" {
+            jupyterImages = container "Jupyter Notebook Images" "JupyterLab-based workbenches with variants for CPU, CUDA 12.6.3, and ROCm 6.2.4 across Python 3.11/3.12" "Container Image (UBI 9)"
+            codeServerImage = container "Code Server Image" "VS Code (code-server v4.98.0) in browser with NGINX proxy and supervisord" "Container Image (UBI 9)"
+            rstudioImages = container "RStudio Server Images" "RStudio Server 2024.12.1 with R 4.4.3, NGINX proxy, supervisord; C9S and RHEL9 variants" "Container Image (UBI 9 / C9S / RHEL 9)"
+            runtimeImages = container "Pipeline Runtime Images" "Headless Python environments for Elyra/DSP pipeline step execution" "Container Image (UBI 9)"
+            buildSystem = container "Build System" "Makefile + Tekton/Konflux CI/CD pipelines for multi-arch image builds" "Make, Tekton, Go"
+            kustomizeManifests = container "Kustomize Manifests" "ImageStream definitions with 6 tagged versions (N through N-5) and SHA256 digest pinning" "Kustomize YAML"
         }
 
-        notebookController = softwareSystem "ODH Notebook Controller" "Launches workbench images as StatefulSets, injects auth sidecars, manages pod lifecycle" "Internal ODH"
-        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "Reads ImageStream annotations to display available workbench types to users" "Internal ODH"
-        rhodsOperator = softwareSystem "rhods-operator" "Applies kustomize manifests to create/update ImageStreams on cluster" "Internal ODH"
-        dsPipelines = softwareSystem "Data Science Pipelines / Elyra" "Executes notebook-based pipeline steps using runtime images" "Internal ODH"
-        kubeflowTraining = softwareSystem "Kubeflow Training Operator" "Distributed training job submission (SDK bundled in images)" "Internal ODH"
+        notebookController = softwareSystem "ODH Notebook Controller" "Launches workbench images as StatefulSet pods, injects auth sidecars, manages routing" "Internal RHOAI"
+        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "Web UI for selecting and managing workbenches; reads ImageStream annotations" "Internal RHOAI"
+        rhodsOperator = softwareSystem "rhods-operator" "Applies kustomize manifests to create/update ImageStreams on cluster" "Internal RHOAI"
+        dsPipelines = softwareSystem "Data Science Pipelines (Elyra)" "Pipeline orchestrator that uses runtime images for notebook-based pipeline steps" "Internal RHOAI"
+        kubeflowTraining = softwareSystem "Kubeflow Training Operator" "Distributed training job management; SDK bundled in datascience images" "Internal RHOAI"
 
         quayRegistry = softwareSystem "quay.io/modh" "Container image registry for built workbench and runtime images" "External"
-        openShiftAPI = softwareSystem "OpenShift API Server" "Kubernetes API for cluster operations" "External"
-        nvidiaRuntime = softwareSystem "NVIDIA Container Runtime" "GPU passthrough for CUDA workbenches" "External"
-        amdROCm = softwareSystem "AMD ROCm Runtime" "GPU passthrough for AMD GPU workbenches" "External"
-        konflux = softwareSystem "Konflux / Tekton" "CI/CD platform running multi-arch image builds on PRs" "External"
-        pypi = softwareSystem "PyPI" "Python Package Index for dependency installation" "External"
-        ubi9 = softwareSystem "Red Hat UBI 9" "Base operating system image for all UBI9-based workbenches" "External"
+        openshiftAPI = softwareSystem "OpenShift API Server" "Kubernetes API for cluster operations" "External"
+        nvidiaRuntime = softwareSystem "NVIDIA Container Runtime" "GPU passthrough for CUDA images via env vars" "External"
+        amdRuntime = softwareSystem "AMD ROCm Runtime" "GPU passthrough for ROCm images via device plugin" "External"
+        konflux = softwareSystem "Konflux / Tekton" "CI/CD platform triggering multi-arch builds on PRs via PipelineRuns" "External"
+        github = softwareSystem "GitHub" "Source code hosting and PR-based development workflow" "External"
 
-        # User interactions
-        dataScientist -> rhoaiDashboard "Selects workbench type" "HTTPS/443"
-        dataScientist -> notebooksDownstream "Uses workbench (via ingress)" "HTTPS/443 → HTTP/8888"
-        developer -> konflux "Submits PR triggering build" "HTTPS/443"
+        # Relationships - Users
+        dataScientist -> rhoaiDashboard "Selects workbench type" "HTTPS/443, OAuth2/OIDC"
+        dataScientist -> jupyterImages "Uses for interactive development" "HTTPS/443 via HTTPRoute → HTTP/8888"
+        dataScientist -> codeServerImage "Uses VS Code in browser" "HTTPS/443 via HTTPRoute → HTTP/8787"
+        dataScientist -> rstudioImages "Uses R IDE in browser" "HTTPS/443 via HTTPRoute → HTTP/8787"
+        developer -> github "Submits PRs with Dockerfile changes" "HTTPS/443"
 
-        # Platform interactions
-        notebookController -> notebooksDownstream "Launches images as StatefulSets" "K8s API/6443"
-        rhoaiDashboard -> notebooksDownstream "Reads ImageStream annotations" "K8s API/6443"
-        rhodsOperator -> notebooksDownstream "Applies kustomize manifests" "K8s API/6443"
-        dsPipelines -> notebooksDownstream "Runs pipeline steps with runtime images"
-        kubeflowTraining -> notebooksDownstream "Training SDK bundled in images"
+        # Relationships - Internal Platform
+        notebookController -> jupyterImages "Launches as StatefulSets" "ImageStream reference"
+        notebookController -> codeServerImage "Launches as StatefulSets" "ImageStream reference"
+        notebookController -> rstudioImages "Launches as StatefulSets" "ImageStream reference"
+        rhoaiDashboard -> kustomizeManifests "Reads ImageStream annotations for workbench UI" "K8s API/6443"
+        rhodsOperator -> kustomizeManifests "Applies to create/update ImageStreams" "HTTPS/6443"
+        dsPipelines -> runtimeImages "Executes pipeline steps" "Image reference"
+        kubeflowTraining -> jupyterImages "SDK bundled for distributed training submission" "In-image SDK"
 
-        # Build and registry
-        konflux -> notebooksDownstream "Builds multi-arch images" "Tekton PipelineRun"
-        notebooksDownstream -> quayRegistry "Pushes built images" "HTTPS/443"
-        notebookController -> quayRegistry "Pulls workbench images" "HTTPS/443"
-
-        # External dependencies
-        notebooksDownstream -> ubi9 "Base OS layer"
-        notebooksDownstream -> pypi "Python package installation (build-time)" "HTTPS/443"
-        notebooksDownstream -> nvidiaRuntime "GPU passthrough (CUDA images)"
-        notebooksDownstream -> amdROCm "GPU passthrough (ROCm images)"
-        notebooksDownstream -> openShiftAPI "oc CLI commands from workbenches" "HTTPS/6443"
+        # Relationships - External
+        buildSystem -> quayRegistry "Pushes built images" "HTTPS/443"
+        konflux -> buildSystem "Triggers multi-arch builds on PRs" "Tekton PipelineRun"
+        jupyterImages -> openshiftAPI "oc CLI from workbenches" "HTTPS/6443, Bearer Token"
+        jupyterImages -> nvidiaRuntime "GPU compute (CUDA images)" "Container runtime hook"
+        jupyterImages -> amdRuntime "GPU compute (ROCm images)" "Container runtime hook"
     }
 
     views {
@@ -67,30 +65,22 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal ODH" {
+            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
             element "Person" {
-                shape person
+                shape Person
                 background #4a90e2
                 color #ffffff
             }
-            element "Container Image" {
-                background #d5e8d4
-                color #333333
+            element "Container Image (UBI 9)" {
+                background #438dd5
+                color #ffffff
             }
-            element "Container Images" {
-                background #d5e8d4
-                color #333333
-            }
-            element "Build Tooling" {
-                background #f8cecc
-                color #333333
-            }
-            element "Kubernetes Manifests" {
-                background #dae8fc
-                color #333333
+            element "Container Image (UBI 9 / C9S / RHEL 9)" {
+                background #438dd5
+                color #ffffff
             }
         }
     }

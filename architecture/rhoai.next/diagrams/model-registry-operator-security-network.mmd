@@ -1,75 +1,84 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["User / API Client"]
+        Client["API Client / Data Scientist"]
     end
 
-    subgraph Ingress["INGRESS (OpenShift Routes)"]
-        RegistryRoute["Registry Route<br/>{name}-https<br/>443/TCP → 8443/TCP<br/>TLS reencrypt"]
+    subgraph Ingress["INGRESS (OpenShift Router)"]
+        RegistryRoute["Registry Route<br/>{registry-name}-https<br/>443/TCP → 8443/TCP<br/>TLS reencrypt"]
         CatalogRoute["Catalog Route<br/>model-catalog-https<br/>443/TCP → 8443/TCP<br/>TLS reencrypt"]
     end
 
-    subgraph AuthLayer["AUTH LAYER (kube-rbac-proxy sidecars)"]
+    subgraph AuthLayer["AUTH ENFORCEMENT (kube-rbac-proxy)"]
         direction TB
-        RegistryProxy["kube-rbac-proxy (Registry)<br/>8443/TCP HTTPS<br/>TLS: OpenShift serving cert<br/>Auth: SubjectAccessReview<br/>Policy: GET services/{name}"]
-        CatalogProxy["kube-rbac-proxy (Catalog)<br/>8443/TCP HTTPS<br/>TLS: OpenShift serving cert<br/>Auth: SubjectAccessReview<br/>Policy: GET services/model-catalog"]
+        RegistryProxy["kube-rbac-proxy<br/>(Registry)<br/>8443/TCP HTTPS<br/>TLS: OpenShift serving cert<br/>Auth: SubjectAccessReview<br/>Policy: GET services/{name}"]
+        CatalogProxy["kube-rbac-proxy<br/>(Catalog)<br/>8443/TCP HTTPS<br/>TLS: OpenShift serving cert<br/>Auth: SubjectAccessReview<br/>Policy: GET services/model-catalog"]
     end
 
     subgraph AppLayer["APPLICATION LAYER"]
         direction TB
-        RegistryREST["Model Registry REST<br/>8080/TCP HTTP (localhost)<br/>Liveness: /readyz/isDirty<br/>Readiness: /readyz/health"]
-        CatalogREST["Model Catalog REST<br/>8080/TCP HTTP (localhost)<br/>Init: catalog-data, benchmark-data"]
+
+        subgraph RegistryPod["Registry Pod"]
+            RegistryREST["Model Registry REST<br/>8080/TCP HTTP<br/>SA: {registry-name}"]
+        end
+
+        subgraph CatalogPod["Catalog Pod"]
+            CatalogApp["Model Catalog<br/>8080/TCP HTTP<br/>SA: model-catalog<br/>Init: catalog-data, benchmark-data"]
+        end
     end
 
-    subgraph DataLayer["DATA LAYER"]
+    subgraph DataLayer["DATA LAYER (NetworkPolicy Protected)"]
         direction TB
-        RegistryDB["Registry PostgreSQL<br/>5432/TCP<br/>NetworkPolicy: label-matched ingress only<br/>Credentials: auto-generated Secret"]
-        CatalogDB["Catalog PostgreSQL<br/>5432/TCP<br/>NetworkPolicy: catalog pods only<br/>Credentials: auto-generated Secret"]
+        RegistryDB["Registry PostgreSQL<br/>{registry-name}-postgres<br/>5432/TCP<br/>NP: ingress only from registry pods"]
+        CatalogDB["Catalog PostgreSQL<br/>model-catalog-postgres<br/>5432/TCP<br/>NP: ingress only from catalog pods"]
     end
 
-    subgraph ExternalDB["EXTERNAL DATABASES (Optional)"]
-        ExtPostgres["External PostgreSQL<br/>5432/TCP<br/>SSL: configurable sslMode<br/>Auth: user-provided Secret"]
-        ExtMySQL["External MySQL<br/>3306/TCP<br/>SSL: cert/key/CA configurable<br/>Auth: user-provided Secret"]
+    subgraph ExternalDB["EXTERNAL DATA (Optional)"]
+        ExtPostgres["External PostgreSQL<br/>5432/TCP<br/>SSL: configurable<br/>Auth: Password via Secret"]
+        ExtMySQL["External MySQL<br/>3306/TCP<br/>SSL: cert/key/CA<br/>Auth: Password via Secret"]
     end
 
     subgraph ControlPlane["OPERATOR CONTROL PLANE"]
-        Operator["Model Registry Operator<br/>SA: controller-manager<br/>Metrics: 8443/TCP HTTPS<br/>Health: 8081/TCP HTTP<br/>Webhook: 9443/TCP HTTPS"]
+        Operator["Model Registry Operator<br/>SA: controller-manager<br/>8081/TCP probes<br/>8443/TCP metrics (HTTPS)<br/>9443/TCP webhook (HTTPS)"]
     end
 
-    subgraph K8sServices["KUBERNETES SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS<br/>Auth: SA Token"]
-        CertMgr["cert-manager<br/>Webhook TLS provisioning"]
-        ServingCert["OpenShift serving-cert-signer<br/>kube-rbac-proxy TLS"]
-        Prometheus["Prometheus<br/>Scrapes 8443/TCP HTTPS<br/>Auth: Bearer Token"]
+    subgraph K8sPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["K8s API Server<br/>443/TCP HTTPS TLS 1.2+"]
     end
 
-    %% External to Ingress
+    subgraph CertProviders["CERTIFICATE PROVIDERS"]
+        CertMgr["cert-manager<br/>Self-signed Issuer"]
+        ServingCert["OpenShift<br/>serving-cert-signer"]
+    end
+
+    %% External → Ingress
     Client -->|"HTTPS/443<br/>TLS<br/>Bearer Token"| RegistryRoute
     Client -->|"HTTPS/443<br/>TLS<br/>Bearer Token"| CatalogRoute
 
-    %% Ingress to Auth
-    RegistryRoute -->|"HTTPS/8443<br/>TLS reencrypt<br/>Bearer forwarded"| RegistryProxy
-    CatalogRoute -->|"HTTPS/8443<br/>TLS reencrypt<br/>Bearer forwarded"| CatalogProxy
+    %% Ingress → Auth
+    RegistryRoute -->|"HTTPS/8443<br/>TLS reencrypt<br/>Token forwarded"| RegistryProxy
+    CatalogRoute -->|"HTTPS/8443<br/>TLS reencrypt<br/>Token forwarded"| CatalogProxy
 
-    %% Auth to K8s API (SAR check)
-    RegistryProxy -->|"HTTPS/443<br/>TLS<br/>SA Token (SAR)"| K8sAPI
-    CatalogProxy -->|"HTTPS/443<br/>TLS<br/>SA Token (SAR)"| K8sAPI
+    %% Auth → K8s API (SAR)
+    RegistryProxy -->|"HTTPS/443<br/>TLS<br/>SubjectAccessReview"| K8sAPI
+    CatalogProxy -->|"HTTPS/443<br/>TLS<br/>SubjectAccessReview"| K8sAPI
 
-    %% Auth to App (localhost)
-    RegistryProxy -->|"HTTP/8080<br/>None (localhost)<br/>No auth"| RegistryREST
-    CatalogProxy -->|"HTTP/8080<br/>None (localhost)<br/>No auth"| CatalogREST
+    %% Auth → App (loopback)
+    RegistryProxy -->|"HTTP/8080<br/>localhost<br/>No auth"| RegistryREST
+    CatalogProxy -->|"HTTP/8080<br/>localhost<br/>No auth"| CatalogApp
 
-    %% App to Data
+    %% App → Data
     RegistryREST -->|"TCP/5432<br/>Optional SSL<br/>Password"| RegistryDB
-    RegistryREST -.->|"TCP/5432 SSL<br/>or TCP/3306 SSL"| ExtPostgres
-    RegistryREST -.->|"TCP/3306<br/>Optional SSL"| ExtMySQL
-    CatalogREST -->|"TCP/5432<br/>Password"| CatalogDB
+    RegistryREST -.->|"TCP/5432 or 3306<br/>Optional SSL<br/>Password"| ExtPostgres
+    RegistryREST -.->|"TCP/3306<br/>Optional SSL<br/>Password"| ExtMySQL
+    CatalogApp -->|"TCP/5432<br/>Password"| CatalogDB
 
-    %% Operator flows
+    %% Operator → K8s API
     Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    CertMgr -.->|"provisions"| Operator
-    ServingCert -.->|"provisions"| RegistryProxy
-    ServingCert -.->|"provisions"| CatalogProxy
-    Prometheus -->|"HTTPS/8443<br/>TLS self-signed<br/>Bearer Token"| Operator
+
+    %% Cert providers
+    CertMgr -.->|"TLS cert"| Operator
+    ServingCert -.->|"TLS cert"| RegistryProxy
+    ServingCert -.->|"TLS cert"| CatalogProxy
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
@@ -77,15 +86,17 @@ graph TB
     classDef auth fill:#fff2cc,stroke:#d6b656,stroke-width:2px
     classDef app fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef data fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef extdb fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef controlplane fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef k8s fill:#e8e8e8,stroke:#666,stroke-width:2px
+    classDef extdata fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef control fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef k8s fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef certs fill:#f5f5f5,stroke:#666,stroke-dasharray:5 5
 
     class Client external
     class RegistryRoute,CatalogRoute ingress
     class RegistryProxy,CatalogProxy auth
-    class RegistryREST,CatalogREST app
+    class RegistryREST,CatalogApp app
     class RegistryDB,CatalogDB data
-    class ExtPostgres,ExtMySQL extdb
-    class Operator controlplane
-    class K8sAPI,CertMgr,ServingCert,Prometheus k8s
+    class ExtPostgres,ExtMySQL extdata
+    class Operator control
+    class K8sAPI k8s
+    class CertMgr,ServingCert certs
