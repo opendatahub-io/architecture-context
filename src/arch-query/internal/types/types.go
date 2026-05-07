@@ -25,6 +25,13 @@ type ComponentDoc struct {
 	Egresses     []Egress        `json:"egresses,omitempty"`
 	RBACRoles    []RBACRole      `json:"rbac_roles,omitempty"`
 
+	ControllerWatches []ControllerWatch `json:"controller_watches,omitempty"`
+	NetworkPolicies   []NetworkPolicy   `json:"network_policies,omitempty"`
+	Dockerfiles       []Dockerfile      `json:"dockerfiles,omitempty"`
+
+	CommitSHA       string `json:"commit_sha,omitempty"`
+	AnalyzerVersion string `json:"analyzer_version,omitempty"`
+
 	RawSections map[string]string `json:"-"`
 }
 
@@ -106,6 +113,29 @@ type RBACRole struct {
 	APIGroup  string `json:"api_group"`
 	Resources string `json:"resources"`
 	Verbs     string `json:"verbs"`
+}
+
+type ControllerWatch struct {
+	Type       string `json:"type"`
+	GVK        string `json:"gvk"`
+	Controller string `json:"controller"`
+	Source     string `json:"source,omitempty"`
+}
+
+type NetworkPolicy struct {
+	Name        string            `json:"name"`
+	Source      string            `json:"source,omitempty"`
+	PodSelector map[string]string `json:"pod_selector,omitempty"`
+	PolicyTypes []string          `json:"policy_types,omitempty"`
+}
+
+type Dockerfile struct {
+	Path         string   `json:"path"`
+	BaseImage    string   `json:"base_image"`
+	Stages       int      `json:"stages"`
+	User         string   `json:"user,omitempty"`
+	ExposedPorts []int    `json:"exposed_ports,omitempty"`
+	Issues       []string `json:"issues,omitempty"`
 }
 
 type PlatformComponent struct {

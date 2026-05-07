@@ -157,6 +157,31 @@ func grepComponent(term string, doc *types.ComponentDoc) []grepHit {
 		}
 	}
 
+	for _, w := range doc.ControllerWatches {
+		if matchAny(term, w.GVK, w.Controller, w.Type, w.Source) {
+			hits = append(hits, grepHit{"watch", fmt.Sprintf("%s %s (controller: %s)", w.Type, w.GVK, w.Controller)})
+		}
+	}
+
+	for _, np := range doc.NetworkPolicies {
+		vals := []string{np.Name, np.Source}
+		for _, v := range np.PodSelector {
+			vals = append(vals, v)
+		}
+		vals = append(vals, np.PolicyTypes...)
+		if matchAny(term, vals...) {
+			hits = append(hits, grepHit{"netpol", fmt.Sprintf("%s [%s]", np.Name, strings.Join(np.PolicyTypes, ","))})
+		}
+	}
+
+	for _, df := range doc.Dockerfiles {
+		vals := []string{df.Path, df.BaseImage, df.User}
+		vals = append(vals, df.Issues...)
+		if matchAny(term, vals...) {
+			hits = append(hits, grepHit{"dockerfile", fmt.Sprintf("%s (base: %s, stages: %d)", df.Path, df.BaseImage, df.Stages)})
+		}
+	}
+
 	for section, content := range doc.RawSections {
 		if len(hits) > 0 {
 			break
