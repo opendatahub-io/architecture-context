@@ -3,8 +3,52 @@
 from pathlib import Path
 
 from lib.agent_runner import get_model_display_name, run_agents_concurrently
-from lib.component_discovery import get_component_map_metadata
-from lib.fetch import _ensure_arch_query
+from lib.fetch import _ensure_arch_query, load_platform_config
+
+
+def _resolve_version(dir_name: str, args) -> str:
+    """Resolve a human-readable version string for a platform directory.
+
+    Precedence:
+    1. Explicit args.version (from orchestrator or CLI)
+    2. platforms.yaml ``version`` field (optional override)
+    3. platforms.yaml ``branch`` field (distribution prefix stripped)
+    4. Version extracted from the directory name (e.g., rhoai-3.4 → 3.4)
+    5. The directory name itself
+    """
+    explicit = getattr(args, "version", None)
+    if explicit:
+        return explicit
+
+    platform_key = getattr(args, "platform", None) or dir_name
+    distribution = dir_name.split("-")[0] if "-" in dir_name else dir_name
+
+    # Try platforms.yaml for optional version or branch fields
+    try:
+        config = load_platform_config(platform_key)
+        if config.get("version"):
+            return config["version"]
+        branch = config.get("branch", "")
+        if branch:
+            return _strip_distribution_prefix(branch, distribution)
+    except (FileNotFoundError, KeyError):
+        pass
+
+    # Extract version portion from directory name
+    # e.g., "rhoai-3.4" → "3.4", "rhoai-3.5-ea.1" → "3.5-ea.1"
+    return _strip_distribution_prefix(dir_name, distribution)
+
+
+def _strip_distribution_prefix(name: str, distribution: str) -> str:
+    """Strip a distribution prefix from a version string.
+
+    ``_strip_distribution_prefix("rhoai-3.4", "rhoai")`` → ``"3.4"``
+    ``_strip_distribution_prefix("odh", "odh")``         → ``"odh"``
+    """
+    prefix = distribution + "-"
+    if name.startswith(prefix) and len(name) > len(prefix):
+        return name[len(prefix):]
+    return name
 
 
 async def run_generate_platform_architecture_phase(args) -> None:
@@ -107,12 +151,8 @@ async def run_generate_platform_architecture_phase(args) -> None:
     model_display = get_model_display_name(args.model)
     jobs = []
     for p in sorted(needs_generation, key=lambda x: x['name']):
-        metadata = get_component_map_metadata(
-            p['name'],
-            architecture_dir=str(architecture_dir),
-        )
         distribution = p['name'].split("-")[0] if "-" in p['name'] else p['name']
-        version = metadata.get("version", "unknown") if metadata else "unknown"
+        version = _resolve_version(p['name'], args)
         platform_dir_path = str(p['path'].resolve())
 
         prompt = (
