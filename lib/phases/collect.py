@@ -169,6 +169,10 @@ async def run_collect_architectures_phase(args) -> None:
 
         # Generate build-info.json from RHOAI-Build-Config
         checkouts_dirs = metadata.get("checkouts_dirs", [])
+        if not checkouts_dirs:
+            primary = metadata.get("checkouts_dir", "")
+            if primary:
+                checkouts_dirs = [primary]
         bi = None
         for cdir in checkouts_dirs:
             cpath = Path(cdir)
