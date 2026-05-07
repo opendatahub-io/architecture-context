@@ -228,16 +228,41 @@ async def run_agents_concurrently(
     Returns:
         List of result dicts (or Exceptions) in the same order as jobs
     """
+    total = len(jobs)
+
+    # Single job: skip the progress panel — just run directly with heartbeat
+    if total == 1:
+        job = jobs[0]
+        try:
+            result = await run_agent(
+                job["name"], job["cwd"], job["prompt"], log_dir, model,
+                enable_skills=enable_skills,
+            )
+        except BaseException as e:
+            if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                raise
+            result = {
+                "name": job["name"],
+                "success": False,
+                "error": str(e),
+                "log_file": str(
+                    log_dir / f"{job['name'].replace('/', '_')}.log"
+                ),
+                "duration_seconds": 0,
+            }
+        return [result]
+
     from lib.progress import AgentProgress
 
     semaphore = asyncio.Semaphore(max_concurrent)
-    total = len(jobs)
     progress = AgentProgress(total, max_concurrent)
 
     async def _run(index: int, job: dict):
         if semaphore.locked():
-            progress.log(f"[{job['name']}] queued ({index + 1}/{total}), "
-                         f"waiting for slot ...")
+            progress.log(
+                f"[{job['name']}] queued ({index + 1}/{total}), "
+                f"waiting for slot ..."
+            )
         try:
             async with semaphore:
                 return await run_agent(
@@ -254,7 +279,9 @@ async def run_agents_concurrently(
                 "name": job["name"],
                 "success": False,
                 "error": str(e),
-                "log_file": str(log_dir / f"{job['name'].replace('/', '_')}.log"),
+                "log_file": str(
+                    log_dir / f"{job['name'].replace('/', '_')}.log"
+                ),
                 "duration_seconds": 0,
             }
 

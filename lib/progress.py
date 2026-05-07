@@ -25,6 +25,9 @@ class AgentProgress:
 
     Uses rich.live.Live to pin a progress panel at the bottom of the terminal.
     Agent output printed via log() scrolls above it.
+
+    Implements ``__rich__`` so that ``Live`` calls ``_render()`` on every
+    refresh tick, keeping the elapsed timer accurate.
     """
 
     def __init__(self, total: int, max_concurrent: int):
@@ -36,11 +39,14 @@ class AgentProgress:
         self.completion_times: list[float] = []
         self.start_time = time.monotonic()
         self.live = Live(
-            self._render(),
+            self,
             console=console,
             refresh_per_second=1,
             vertical_overflow="visible",
         )
+
+    def __rich__(self):
+        return self._render()
 
     def _estimate_eta(self) -> str:
         if not self.completion_times:
@@ -95,7 +101,6 @@ class AgentProgress:
 
     def agent_started(self, name: str):
         self.running[name] = time.monotonic()
-        self.live.update(self._render())
 
     def agent_completed(self, name: str, success: bool):
         start = self.running.pop(name, self.start_time)
@@ -105,7 +110,6 @@ class AgentProgress:
         else:
             self.failed += 1
         self.completion_times.append(duration)
-        self.live.update(self._render())
 
     def log(self, msg: str):
         """Print a message that scrolls above the progress panel."""
