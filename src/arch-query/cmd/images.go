@@ -11,7 +11,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var imageCategoryFilter string
+var (
+	imageCategoryFilter string
+	imageShowRefs       bool
+)
 
 var imagesCmd = &cobra.Command{
 	Use:   "images [filter]",
@@ -25,6 +28,7 @@ and source repo fields.
 Examples:
   arch-query images
   arch-query images dashboard
+  arch-query images --refs
   arch-query images --category infrastructure
   arch-query images --version rhoai-3.4 kserve`,
 	Args: cobra.MaximumNArgs(1),
@@ -113,22 +117,64 @@ Examples:
 		}
 		fmt.Println(":")
 
-		tw := output.NewTabWriter(os.Stdout)
-		fmt.Fprintf(tw, "  NAME\tREPOSITORY\tCATEGORY\tSOURCE\n")
-		for _, img := range results {
-			source := img.SourceRepo
-			if source == "" {
-				source = "-"
+		if imageShowRefs {
+			for _, img := range results {
+				fmt.Printf("\n  %s  [%s]\n", img.Name, img.Category)
+				fmt.Printf("    production: %s\n", refOrDash(img.ProductionRef))
+				fmt.Printf("    staging:    %s\n", refOrDash(img.StagingRef))
+				if img.SourceRepo != "" {
+					fmt.Printf("    source:     %s @ %s\n", img.SourceRepo, shortSHA(img.SourceCommit))
+				}
 			}
-			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", img.Name, img.Repository, img.Category, source)
+		} else {
+			tw := output.NewTabWriter(os.Stdout)
+			fmt.Fprintf(tw, "  NAME\tREPOSITORY\tPROD DIGEST\tCATEGORY\tSOURCE\n")
+			for _, img := range results {
+				source := img.SourceRepo
+				if source == "" {
+					source = "-"
+				}
+				fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n",
+					img.Name, img.Repository, shortDigest(img.ProductionRef), img.Category, source)
+			}
+			tw.Flush()
 		}
-		tw.Flush()
 		return nil
 	},
 }
 
+func shortDigest(ref string) string {
+	idx := strings.Index(ref, "sha256:")
+	if idx < 0 {
+		return "-"
+	}
+	digest := ref[idx:]
+	if len(digest) > 19 {
+		return digest[:19] + "..."
+	}
+	return digest
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	if sha == "" {
+		return "-"
+	}
+	return sha
+}
+
+func refOrDash(ref string) string {
+	if ref == "" {
+		return "-"
+	}
+	return ref
+}
+
 func init() {
 	imagesCmd.Flags().StringVar(&imageCategoryFilter, "category", "", "Filter by category (component, infrastructure)")
+	imagesCmd.Flags().BoolVar(&imageShowRefs, "refs", false, "Show full image references (production, staging, source)")
 	addOutputFlag(imagesCmd, OutputText, OutputJSON)
 	rootCmd.AddCommand(imagesCmd)
 }

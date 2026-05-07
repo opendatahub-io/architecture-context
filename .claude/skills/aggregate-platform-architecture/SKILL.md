@@ -46,9 +46,19 @@ If `arch-query` is not available, fall back to reading component files directly 
 
 ### Step 2: Identify Patterns and Relationships
 
-Using the JSON data from Step 1, analyze cross-cutting patterns:
+Using the JSON data from Step 1, analyze cross-cutting patterns.
 
-1. **Dependency graph**: From `internal_deps`, build a graph of which components depend on which. Identify central components (most dependents pointing to them) and leaf components.
+First, generate the deterministic dependency tree:
+
+```bash
+arch-query deps --base-dir={architecture_base_dir} --version={version_dir_name}
+```
+
+This produces a tree-list showing how the operator deploys and connects all components, with relationship annotations (deploys, CRD watch, manages, API, etc.). Use this output verbatim as the dependency graph in the "Component Relationships > Dependency Graph" section of PLATFORM.md — do NOT generate your own ASCII diagram or box-style graph. The tree-list format with `|--` prefixes and parenthetical annotations is the canonical format.
+
+Then analyze from the JSON data:
+
+1. **Central components**: From the tree + `internal_deps`, identify components with the most reverse dependencies (other components pointing at them).
 
 2. **Integration patterns**: From `internal_deps` and `services`, identify recurring integration patterns (e.g., CRD-based orchestration, gRPC service mesh, REST API composition).
 

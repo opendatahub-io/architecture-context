@@ -20,7 +20,8 @@
 ### Dependency Graph
 
 ```
-[Text-based visualization showing which components depend on others]
+[Output from `arch-query deps --tree`: tree-list with |-- prefixes and (annotation) suffixes.
+ Do NOT replace this with a box/arrow diagram — use the tree-list format exactly.]
 ```
 
 ### Central Components
