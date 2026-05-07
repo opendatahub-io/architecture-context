@@ -1,0 +1,83 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["External Client"]
+    end
+
+    subgraph Ingress["INGRESS (Gateway Layer)"]
+        Gateway["Gateway Controller<br/>(Envoy / Istio / AgentGateway)<br/>80/TCP → 8000/TCP<br/>TLS: Configurable (off by default)<br/>Auth: Configurable (off by default)"]
+        HTTPRoute["HTTPRoute<br/>(per InferenceModel)<br/>model → InferencePool mapping"]
+    end
+
+    subgraph ControlPlane["CONTROL PLANE (Routing)"]
+        EPP["llm-d Router (EPP)<br/>llm-d-inference-scheduler<br/>9002/TCP gRPC ext-proc<br/>No encryption<br/>SA: llm-d-inference-scheduler"]
+    end
+
+    subgraph DataPlane["DATA PLANE (Model Serving)"]
+        direction TB
+
+        subgraph NS_Deploy["Namespace: {deployment-namespace}"]
+            DecodePod["Decode Pod (vLLM)<br/>SA: sa<br/>Image: ghcr.io/llm-d/llm-d-cuda<br/>8000/TCP HTTP (no TLS)<br/>label: llm-d.ai/role=decode"]
+            PrefillPod["Prefill Pod (vLLM)<br/>SA: sa<br/>Image: ghcr.io/llm-d/llm-d-cuda<br/>8000/TCP HTTP (no TLS)<br/>label: llm-d.ai/role=prefill"]
+        end
+    end
+
+    subgraph Observability["OBSERVABILITY"]
+        Prometheus["Prometheus<br/>9090/TCP HTTP/HTTPS<br/>TLS: Optional (prometheus-web-tls)"]
+        OTel["OpenTelemetry Collector<br/>4317/TCP gRPC OTLP<br/>TLS: Optional"]
+    end
+
+    subgraph K8sControl["KUBERNETES CONTROL"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: SA token"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
+        HF["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: HF_TOKEN bearer"]
+        GHCR["Container Registry<br/>ghcr.io<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Registry token"]
+    end
+
+    %% Ingress flows
+    Client -->|"HTTP/80<br/>No TLS (configurable)<br/>No auth (configurable)"| Gateway
+    HTTPRoute -.->|"routes"| Gateway
+
+    %% Gateway → Control Plane
+    Gateway -->|"gRPC ext-proc/9002<br/>No encryption<br/>No auth"| EPP
+
+    %% Control Plane → K8s
+    EPP -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token (RBAC)"| K8sAPI
+
+    %% Control Plane → Data Plane (metrics scrape)
+    EPP -->|"HTTP/8000<br/>No encryption<br/>Metrics scrape"| DecodePod
+
+    %% Gateway → Data Plane
+    Gateway -->|"HTTP/8000<br/>No encryption<br/>No auth"| DecodePod
+
+    %% P/D Disaggregation
+    DecodePod -->|"HTTP/8000<br/>Prefill delegation"| PrefillPod
+    PrefillPod -->|"RDMA (NIXL/UCX/UCCL)<br/>GPU-to-GPU direct<br/>Transport-level encryption<br/>No auth"| DecodePod
+
+    %% Observability
+    Prometheus -->|"HTTP/8000<br/>Scrape /metrics"| DecodePod
+    Prometheus -->|"HTTP/8000<br/>Scrape /metrics"| PrefillPod
+    DecodePod -->|"gRPC OTLP/4317<br/>Optional TLS"| OTel
+    PrefillPod -->|"gRPC OTLP/4317<br/>Optional TLS"| OTel
+
+    %% Egress
+    DecodePod -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN bearer"| HF
+    PrefillPod -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN bearer"| HF
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef dataplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef observability fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef k8s fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
+
+    class Client external
+    class Gateway,HTTPRoute ingress
+    class EPP controlplane
+    class DecodePod,PrefillPod dataplane
+    class Prometheus,OTel observability
+    class K8sAPI k8s
+    class HF,GHCR externalservice

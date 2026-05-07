@@ -1,0 +1,138 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Inference Client]                                                      │
+│         │                                                                │
+│         │ Port: 443/TCP (via platform ingress)                           │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token (optional, depends on config)               │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Platform-Managed)                                              │
+│                                                                          │
+│  [HTTPRoute / OpenShift Route]                                           │
+│  - Port: 443/TCP (external) → 8443/TCP (pod)                           │
+│  - TLS Mode: SIMPLE (TLS termination at ingress, re-encrypt to pod)    │
+│  - Managed by: KServe Controller                                        │
+│  - Host: model-specific hostname                                        │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token                                             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  POD (Inference Pod - created by KServe Controller)                      │
+│                                                                          │
+│  [kube-rbac-proxy Sidecar]                                               │
+│  - Port: 8443/TCP (external-facing, TLS)                                │
+│  - Purpose: Authentication & authorization enforcement                   │
+│  - Auth: SubjectAccessReview (validates Bearer Token)                    │
+│  - Injected by: RHOAI platform operator                                  │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (localhost / loopback)                         │
+│         │ Auth: None (pre-authorized by kube-rbac-proxy)                 │
+│         ▼                                                                │
+│  [autogluonserver Container]                                             │
+│  - Namespace: {user-namespace}                                           │
+│  - Image: registry.redhat.io/rhoai/odh-kserve-autogluon-server-rhel9   │
+│  - User: 1001 (non-root)                                                │
+│  - HTTP Port: 8080/TCP (REST v1 + v2)                                   │
+│  - gRPC Port: 8081/TCP (v2 gRPC inference protocol)                     │
+│  - Model Dir: /mnt/models (from init container volume)                   │
+│  - Base Image: UBI9 (registry.redhat.io/rhai/base-image-cpu-rhel9)      │
+│                                                                          │
+│  HTTP Endpoints:                                                         │
+│    POST /v1/models/{name}:predict    (tabular + time series)            │
+│    POST /v2/models/{name}/infer      (tabular only, tensor)             │
+│    GET  /v1/models/{name}            (model metadata)                   │
+│    GET  /v2/models/{name}            (v2 model metadata)                │
+│    GET  /v2/models/{name}/ready      (readiness)                        │
+│    GET  /                            (liveness probe)                   │
+│    GET  /metrics                     (Prometheus)                       │
+│                                                                          │
+│  gRPC Endpoints:                                                         │
+│    GRPCInferenceService              (8081/TCP, KServe v2 gRPC)         │
+│         │                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INIT CONTAINER (Pod Init Phase)                                         │
+│                                                                          │
+│  [Storage Initializer]                                                   │
+│  - Purpose: Download model artifacts before server starts                │
+│  - Output: /mnt/models (shared volume with server container)             │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: AWS IAM / GCP SA / Azure credentials                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                              │
+│                                                                          │
+│  [S3-Compatible Storage]                                                 │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: AWS IAM credentials (from storage-config Secret)                │
+│  - Purpose: Model artifact download                                      │
+│                                                                          │
+│  [Google Cloud Storage (GCS)]                                            │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: GCP Service Account                                             │
+│  - Purpose: Model artifact download                                      │
+│                                                                          │
+│  [Azure Blob Storage]                                                    │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Azure credentials                                               │
+│  - Purpose: Model artifact download                                      │
+│                                                                          │
+│  [Hugging Face Hub]                                                      │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: HF Token (optional)                                             │
+│  - Purpose: Chronos model/tokenizer download (time series)               │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- N/A — The autogluon server runs as a model serving container, not an
+  operator. It has no direct Kubernetes API interaction. RBAC for the
+  inference pods is managed by the KServe controller.
+
+Authentication & Authorization:
+- kube-rbac-proxy sidecar:
+  - Listens on 8443/TCP (HTTPS, TLS 1.2+)
+  - Forwards authenticated requests to 8080/TCP (HTTP, localhost)
+  - Validates Bearer Tokens via SubjectAccessReview
+  - Injected by RHOAI platform operator
+- /metrics endpoint:
+  - No authentication (internal scraping by Prometheus)
+  - Access controlled via NetworkPolicy
+
+Secrets:
+- (storage credentials) [Opaque]
+  - Purpose: S3/GCS/Azure credentials for model download
+  - Provisioned by: User / platform admin
+  - Auto-Rotate: No
+  - Used by: Storage Initializer init container
+
+FIPS Compliance:
+- Python service — no Go binary compilation
+- Uses UBI9 system Python with OpenSSL (FIPS-capable)
+- cryptography==46.0.7 with OpenSSL backend
+- No non-FIPS crypto detected in application code
+- TLS termination handled by platform ingress, not by this component
+
+Build Hermeticity:
+- autogluon-all-requirements.txt: 130+ pinned deps from RHOAI internal PyPI
+- Konflux pipeline: hermetic=true with Hermeto pip prefetch
+- Base image: UBI9 (OS packages from trusted base)
+- No rpms.lock.yaml (OS deps from base image)
+- Multi-arch: x86_64, ppc64le, s390x, arm64

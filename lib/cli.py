@@ -438,6 +438,12 @@ def parse_args():
         help="Regenerate diagrams even if they already exist"
     )
     diagrams_parser.add_argument(
+        "--export-png",
+        action="store_true",
+        default=False,
+        help="Export Mermaid diagrams to PNG (requires mmdc + Chrome; off by default)"
+    )
+    diagrams_parser.add_argument(
         "--model",
         choices=["sonnet", "opus", "haiku"],
         default="opus",
@@ -511,6 +517,12 @@ def parse_args():
         action="store_true",
         default=False,
         help="Skip diagram generation phase"
+    )
+    all_parser.add_argument(
+        "--export-png",
+        action="store_true",
+        default=False,
+        help="Export Mermaid diagrams to PNG (requires mmdc + Chrome; off by default)"
     )
 
     return parser.parse_args()

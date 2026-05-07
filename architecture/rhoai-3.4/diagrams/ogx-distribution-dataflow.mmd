@@ -1,0 +1,62 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Ingress as Platform Ingress<br/>(Gateway API)<br/>443/TCP TLS
+    participant LlamaStack as Llama Stack Server<br/>8321/TCP HTTP
+    participant Auth as OAuth2/OIDC Provider<br/>443/TCP HTTPS
+    participant vLLM as vLLM Inference<br/>HTTP/HTTPS
+    participant vLLMEmbed as vLLM Embedding<br/>HTTP/HTTPS
+    participant PG as PostgreSQL<br/>5432/TCP
+    participant TrustyAI as TrustyAI FMS<br/>HTTP/HTTPS
+    participant VectorDB as Vector DB<br/>(Milvus/pgvector/Qdrant)
+    participant Kubeflow as Kubeflow Pipelines<br/>HTTP/HTTPS
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+
+    Note over Client,S3: Flow 1: Inference Request (OpenAI-compatible)
+    Client->>Ingress: POST /v1/chat/completions<br/>TLS 1.2+, Bearer JWT
+    Ingress->>LlamaStack: HTTP 8321<br/>(TLS terminated at ingress)
+    LlamaStack->>Auth: GET /.well-known/jwks.json<br/>HTTPS/443, TLS 1.2+
+    Auth-->>LlamaStack: JWKS keys
+    Note over LlamaStack: Validate JWT signature
+    LlamaStack->>vLLM: POST /v1/chat/completions<br/>API Token auth
+    vLLM-->>LlamaStack: Completion response
+    LlamaStack->>PG: INSERT inference log<br/>5432/TCP, Username/Password
+    PG-->>LlamaStack: OK
+    LlamaStack-->>Ingress: JSON response
+    Ingress-->>Client: JSON response (TLS)
+
+    Note over Client,S3: Flow 2: RAG with Vector Store
+    Client->>Ingress: POST /v1/vector_io/query<br/>TLS 1.2+, Bearer JWT
+    Ingress->>LlamaStack: HTTP 8321
+    LlamaStack->>vLLMEmbed: POST /v1/embeddings<br/>API Token auth
+    vLLMEmbed-->>LlamaStack: Embedding vector
+    LlamaStack->>VectorDB: Similarity search<br/>(HTTP/gRPC/SQL, configurable auth)
+    VectorDB-->>LlamaStack: Relevant documents
+    LlamaStack->>vLLM: POST /v1/chat/completions<br/>with context, API Token
+    vLLM-->>LlamaStack: Augmented response
+    LlamaStack-->>Ingress: JSON response
+    Ingress-->>Client: JSON response (TLS)
+
+    Note over Client,S3: Flow 3: Safety-Guarded Inference
+    Client->>Ingress: POST /v1/inference/chat<br/>TLS 1.2+, Bearer JWT
+    Ingress->>LlamaStack: HTTP 8321
+    LlamaStack->>TrustyAI: POST safety check (input)<br/>configurable encryption
+    TrustyAI-->>LlamaStack: Safety verdict
+    Note over LlamaStack: If safe, proceed
+    LlamaStack->>vLLM: POST /v1/chat/completions<br/>API Token
+    vLLM-->>LlamaStack: Completion
+    LlamaStack->>TrustyAI: POST safety check (output)<br/>configurable encryption
+    TrustyAI-->>LlamaStack: Safety verdict
+    LlamaStack-->>Ingress: Filtered response
+    Ingress-->>Client: JSON response (TLS)
+
+    Note over Client,S3: Flow 4: Model Evaluation via Kubeflow
+    Client->>Ingress: POST /v1/eval/run<br/>TLS 1.2+, Bearer JWT
+    Ingress->>LlamaStack: HTTP 8321
+    LlamaStack->>Kubeflow: Submit pipeline run<br/>API Token auth
+    Kubeflow->>S3: Read/Write artifacts<br/>HTTPS/443, AWS IAM
+    S3-->>Kubeflow: Artifacts
+    Kubeflow-->>LlamaStack: Pipeline result
+    LlamaStack->>PG: Store eval results<br/>5432/TCP
+    PG-->>LlamaStack: OK
+    LlamaStack-->>Ingress: Evaluation results
+    Ingress-->>Client: JSON response (TLS)

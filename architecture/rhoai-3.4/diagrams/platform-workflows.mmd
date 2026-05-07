@@ -1,0 +1,173 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as odh-dashboard
+    participant KubeflowCtrl as Kubeflow Notebook<br/>Controller
+    participant Notebook as Notebook Pod<br/>(StatefulSet)
+    participant DSPAPI as DS Pipelines<br/>API Server
+    participant Argo as Argo Workflow<br/>Controller
+    participant S3 as Object Storage<br/>(S3)
+
+    Note over User,S3: Workflow 1: Notebook Development → Pipeline Execution
+
+    User->>Dashboard: Login via Gateway OAuth2/OIDC<br/>(kube-auth-proxy validates)
+    Dashboard-->>User: Show projects and workbenches
+    User->>Dashboard: Create project, launch notebook workbench
+    Dashboard->>KubeflowCtrl: Create Notebook CR in user namespace
+
+    KubeflowCtrl->>Notebook: Create StatefulSet + Service
+    KubeflowCtrl->>KubeflowCtrl: Create HTTPRoute (cross-ns)<br/>+ ReferenceGrant<br/>+ inject kube-rbac-proxy sidecar
+
+    User->>Notebook: Access via Gateway HTTPRoute<br/>(OAuth2 + kube-rbac-proxy)
+    Notebook->>S3: Download training data<br/>(HTTPS, AWS IAM or static creds)
+    Note over Notebook: Develop ML code,<br/>define KFP pipeline<br/>using kfp SDK
+    Notebook->>S3: Upload model artifacts
+
+    User->>DSPAPI: Submit pipeline via kfp SDK<br/>(Bearer token forwarding)
+    DSPAPI->>S3: Store pipeline definition<br/>(SeaweedFS/MinIO)
+    DSPAPI->>Argo: Create Argo Workflow
+    Argo->>Argo: Execute pipeline steps as container pods
+    Argo-->>DSPAPI: Report step completion<br/>(persistence agent)
+    DSPAPI-->>User: Pipeline run complete
+
+---
+
+sequenceDiagram
+    participant User as User / Model Registry
+    participant Dashboard as odh-dashboard
+    participant LLMCtrl as llmisvc-controller<br/>-manager
+    participant ODHModel as odh-model-controller
+    participant Gateway as Platform Gateway<br/>(Envoy)
+    participant EPP as gateway-api-inference<br/>-extension (EPP)
+    participant vLLM as vLLM Pod<br/>(+ scheduler sidecar)
+    participant Client as External Client
+
+    Note over User,Client: Workflow 2: LLM Model Serving (KServe + llm-d)
+
+    User->>Dashboard: Create LLMInferenceService CR<br/>(specify model, runtime, resources)
+    Dashboard->>LLMCtrl: LLMInferenceService CR created
+
+    LLMCtrl->>LLMCtrl: Apply LLMInferenceServiceConfig template
+    LLMCtrl->>vLLM: Create InferencePool + Deployment<br/>(vLLM container + scheduler sidecar<br/>+ optional KV cache sidecar)
+    LLMCtrl->>LLMCtrl: Create TLS certs, ConfigMaps, Services
+
+    ODHModel->>ODHModel: Watch InferenceService (delta processing)
+    ODHModel->>Gateway: Create HTTPRoute for model endpoint
+    ODHModel->>ODHModel: Create ServiceMonitor,<br/>KEDA TriggerAuthentication,<br/>Envoy filters
+
+    Note over vLLM: Pull runtime image from<br/>container registry (quay.io)
+    vLLM->>vLLM: Download model from S3<br/>(AWS IAM auth)
+    vLLM->>vLLM: Load model into GPU memory
+
+    Client->>Gateway: POST predict endpoint<br/>(HTTPS/443, TLS 1.3)
+    Gateway->>EPP: ext_proc filter invocation
+    EPP->>vLLM: Scrape model server metrics
+    Note over EPP: Select optimal pod:<br/>load-aware routing,<br/>prefix-cache-aware,<br/>SLO-based deadline ordering
+    EPP-->>Gateway: Route to selected pod
+    Gateway->>vLLM: Forward request<br/>(HTTP, optional pod-to-pod TLS)
+    vLLM->>vLLM: Run inference on GPU
+    vLLM-->>Gateway: Prediction response
+    Gateway-->>Client: JSON response<br/>(HTTPS/443)
+
+---
+
+sequenceDiagram
+    participant User as API Consumer
+    participant Gateway as Platform Gateway<br/>(Envoy)
+    participant Authorino as Kuadrant / Authorino
+    participant BBR as AI Gateway Payload<br/>Processing (BBR)
+    participant MaaSAPI as MaaS API
+    participant MaaSCtrl as MaaS Controller
+    participant Provider as External AI Provider<br/>(Anthropic, Azure,<br/>Vertex, Bedrock)
+
+    Note over User,Provider: Workflow 3: Models as a Service (Multi-Provider)
+
+    MaaSCtrl->>MaaSCtrl: Reconcile Tenant CR
+    MaaSCtrl->>MaaSAPI: Deploy maas-api instance
+    MaaSCtrl->>BBR: Deploy payload-processing
+    MaaSCtrl->>Authorino: Deploy Authorino + AuthPolicies
+    MaaSCtrl->>MaaSCtrl: Deploy Perses dashboards
+
+    User->>MaaSAPI: Create ExternalModel CR<br/>(map model name → provider)
+    User->>MaaSAPI: Create MaaSAuthPolicy<br/>(API key or OIDC rules)
+
+    User->>Gateway: POST OpenAI-compatible request<br/>(HTTPS/443, API key in header)
+    Gateway->>Authorino: ext_authz evaluation
+    Note over Authorino: Priority evaluation:<br/>1. API key<br/>2. OpenShift token<br/>3. External OIDC JWT<br/>+ OPA Rego rules
+    Authorino->>MaaSAPI: Validate subscription
+    Authorino-->>Gateway: Auth OK<br/>(strip Authorization header)
+
+    Gateway->>BBR: ext_proc body parsing
+    Note over BBR: Resolve model → provider mapping<br/>Inject API keys from K8s Secrets<br/>Translate OpenAI → provider format<br/>(e.g., OpenAI → Anthropic Messages API)
+    BBR-->>Gateway: Transformed request
+
+    Gateway->>Provider: Forward to external provider<br/>(HTTPS/443, provider API key)
+    Provider-->>Gateway: Provider-native response
+    Gateway->>BBR: ext_proc response translation
+    BBR-->>Gateway: OpenAI-compatible response
+    Gateway-->>User: Unified OpenAI response<br/>(HTTPS/443)
+
+---
+
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as odh-dashboard /<br/>codeflare-sdk
+    participant KubeRay as KubeRay Operator
+    participant AuthCtrl as KubeRay Authentication<br/>Controller
+    participant Gateway as Platform Gateway<br/>(Envoy)
+    participant Head as RayCluster<br/>Head Pod
+    participant Workers as RayCluster<br/>Worker Pods
+
+    Note over User,Workers: Workflow 4: Distributed Training with KubeRay
+
+    User->>Dashboard: Submit RayJob or RayCluster CR<br/>(specify resources, image, script)
+    Dashboard->>KubeRay: Create RayCluster CR in user namespace
+
+    KubeRay->>KubeRay: Validate AuthenticationReady condition
+    KubeRay->>Head: Create head pod + Service<br/>(inject mTLS certs if enabled)
+    KubeRay->>Workers: Create worker pods<br/>(autoscaler manages count)
+
+    AuthCtrl->>Gateway: Create HTTPRoute in platform NS<br/>(cross-namespace reference)
+    AuthCtrl->>AuthCtrl: Create ReferenceGrant in user NS<br/>(reference counting for shared grants)
+    AuthCtrl->>AuthCtrl: Create kube-rbac-proxy RBAC
+
+    Head->>Workers: Coordinate distributed training<br/>(Ray internal gRPC)
+    Workers->>Workers: Execute training tasks<br/>(GPU-accelerated)
+
+    User->>Gateway: Access Ray Dashboard<br/>(HTTPS/443, OAuth2 + kube-rbac-proxy)
+    Gateway->>Head: Forward to Ray Dashboard<br/>(HTTP/8265)
+    Head-->>User: Training progress, metrics,<br/>resource utilization
+
+---
+
+sequenceDiagram
+    participant User as ML Engineer
+    participant Dashboard as odh-dashboard
+    participant TrustyAI as TrustyAI Service<br/>Operator
+    participant LMEvalPod as LMEval Pod<br/>(driver + evaluator)
+    participant ModelEndpoint as Model Endpoint<br/>(KServe)
+    participant MLflow as MLflow
+    participant Guardrails as FMS Guardrails<br/>Orchestrator
+    participant Client as Inference Client
+
+    Note over User,Client: Workflow 5: Model Evaluation and Guardrails
+
+    User->>Dashboard: Create LMEvalJob CR<br/>(specify model, tasks, batch size)
+    Dashboard->>TrustyAI: LMEvalJob CR created
+
+    TrustyAI->>LMEvalPod: Create evaluation pod:<br/>driver init container +<br/>lm-eval main container +<br/>optional GPU sidecar
+    LMEvalPod->>ModelEndpoint: Run evaluation harness<br/>against model endpoint
+    LMEvalPod->>TrustyAI: Report progress via<br/>driver HTTP API (port 18080)
+    Note over LMEvalPod: Execute lm-evaluation-harness<br/>tasks (accuracy, perplexity, etc.)
+
+    LMEvalPod-->>TrustyAI: Evaluation complete
+    TrustyAI->>TrustyAI: Write results to<br/>LMEvalJob CR status
+    TrustyAI->>MLflow: Log evaluation metrics<br/>(optional)
+
+    Note over Guardrails,Client: At serving time (independent flow)
+
+    Client->>Guardrails: Inference request<br/>(intercepted by orchestrator)
+    Guardrails->>Guardrails: Call guardrails detectors:<br/>NeMo, regex, built-in rules<br/>(input safety check)
+    Guardrails->>ModelEndpoint: Forward safe request
+    ModelEndpoint-->>Guardrails: Model response
+    Guardrails->>Guardrails: Output safety check<br/>(NeMo, regex, built-in rules)
+    Guardrails-->>Client: Safe response<br/>(or blocked with reason)

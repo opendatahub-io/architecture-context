@@ -1,0 +1,160 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]                                                           │
+│         │                                                                    │
+│         │ Port: 80/TCP (configurable to 443/TCP)                             │
+│         │ Protocol: HTTP (configurable HTTPS)                                │
+│         │ Encryption: None (configurable TLS at Gateway)                     │
+│         │ Auth: None (configurable at Gateway level)                         │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway Layer)                                                     │
+│                                                                              │
+│  [Gateway Controller (Envoy / Istio / AgentGateway)]                         │
+│  - CRD: Gateway (gateway.networking.k8s.io/v1)                              │
+│  - Port: 80/TCP (external) → 8000/TCP (internal to model servers)           │
+│  - TLS Termination: Configurable (not enabled by default)                    │
+│  - Auth: Configurable (not enabled by default)                               │
+│                                                                              │
+│  [HTTPRoute (per InferenceModel)]                                            │
+│  - CRD: HTTPRoute (gateway.networking.k8s.io/v1)                            │
+│  - Routes model-specific paths to InferencePool                              │
+│         │                                                                    │
+│         │ Port: 9002/TCP                                                     │
+│         │ Protocol: gRPC (ext-proc)                                          │
+│         │ Encryption: None                                                   │
+│         │ Auth: None                                                         │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE (Routing / Scheduling)                                        │
+│                                                                              │
+│  [llm-d Router / EPP (llm-d-inference-scheduler)]                            │
+│  - Namespace: {deployment-namespace}                                         │
+│  - ServiceAccount: llm-d-inference-scheduler SA                              │
+│  - Port: 9002/TCP (gRPC ext-proc, inbound from Gateway proxy)               │
+│  - Watches: InferencePool, InferenceModel CRDs                               │
+│  - Scrapes: model server /metrics endpoints for scheduling decisions         │
+│         │                                                                    │
+│         │ Port: 6443/TCP                                                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: ServiceAccount token (RBAC-bound)                            │
+│         ▼                                                                    │
+│  [Kubernetes API Server]                                                     │
+│  - Purpose: Pod/endpoint discovery, CRD watches                              │
+│  - Auth: ServiceAccount token (least privilege)                              │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  DATA PLANE (Model Serving)                                                  │
+│                                                                              │
+│  [Model Server Pod (vLLM) - Decode Role]                                     │
+│  - Namespace: {deployment-namespace}                                         │
+│  - ServiceAccount: sa (guides/recipes/modelserver/common/sa.yaml)            │
+│  - Image: ghcr.io/llm-d/llm-d-cuda (or -rocm, -hpu, -cpu)                  │
+│  - Port: 8000/TCP (HTTP, vLLM OpenAI-compatible API)                         │
+│  - Endpoints:                                                                │
+│    - POST /v1/completions         (inference - no auth by default)           │
+│    - POST /v1/chat/completions    (inference - no auth by default)           │
+│    - GET  /v1/models              (model listing - open)                     │
+│    - GET  /health                 (liveness/readiness - open)                │
+│    - GET  /metrics                (Prometheus - open)                        │
+│  - Encryption: None (TLS delegated to Gateway)                               │
+│  - Auth: None (delegated to Gateway)                                         │
+│         │                                                                    │
+│         │ RDMA (NIXL over UCX/UCCL)                                          │
+│         │ Protocol: InfiniBand / RoCE / TCP-X / EFA                          │
+│         │ Encryption: Transport-level                                        │
+│         │ Auth: None                                                         │
+│         ▼                                                                    │
+│  [Model Server Pod (vLLM) - Prefill Role]                                    │
+│  - Same configuration as Decode pod                                          │
+│  - Port: 8000/TCP (HTTP, receives prefill delegation)                        │
+│  - KV cache: Transferred via RDMA GPU-to-GPU (NIXL)                         │
+│  - Label: llm-d.ai/role=prefill                                             │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  OBSERVABILITY                                                               │
+│                                                                              │
+│  [Prometheus]                                                                │
+│  - Port: 9090/TCP (HTTP/HTTPS)                                              │
+│  - Scrapes model server /metrics on 8000/TCP                                 │
+│  - PodMonitor configured via Kustomize component                             │
+│  - TLS: Optional (prometheus-web-tls secret, 10-year cert validity)          │
+│                                                                              │
+│  [Grafana]                                                                   │
+│  - Dashboards for inference performance metrics                              │
+│                                                                              │
+│  [OpenTelemetry Collector]                                                   │
+│  - Port: 4317/TCP (gRPC OTLP)                                               │
+│  - Encryption: Optional TLS                                                  │
+│  - Auth: None                                                                │
+│  - Purpose: Distributed tracing from vLLM and EPP                            │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                                  │
+│                                                                              │
+│  [HuggingFace Hub - huggingface.co]                                          │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: HF_TOKEN bearer token                                              │
+│  - Purpose: Model weight downloads at container startup                      │
+│                                                                              │
+│  [Container Registry - ghcr.io]                                              │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: Registry authentication                                             │
+│  - Purpose: Container image pulls                                            │
+│                                                                              │
+│  [Build-Time Registries (CI only)]                                           │
+│  - GitHub (vLLM fork, NIXL, UCX sources): 443/TCP HTTPS                     │
+│  - PyPI / wheels.vllm.ai: 443/TCP HTTPS                                     │
+│  - sccache S3 bucket: 443/TCP HTTPS, AWS IAM                                │
+│  - NVIDIA registry (nvcr.io): 443/TCP HTTPS, registry token                 │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole (defined in llm-d-inference-scheduler Helm chart):
+  - API Groups: inference.networking.x-k8s.io
+  - Resources: inferencepools, inferencemodels
+  - Verbs: get, list, watch
+- ClusterRole (defined in llm-d-inference-scheduler Helm chart):
+  - API Groups: ""
+  - Resources: pods, endpoints
+  - Verbs: get, list, watch
+- Model server ServiceAccount:
+  - Namespace: {deployment-namespace}
+  - Minimal RBAC (no cluster roles)
+
+Secrets:
+- hf-token (Opaque) - HuggingFace API token, manual provisioning, no auto-rotation
+- prometheus-web-tls (kubernetes.io/tls) - TLS certs for Prometheus HTTPS, script-provisioned, 10-year validity
+
+Authentication & Authorization:
+- /v1/completions: No auth by default (configurable at Gateway level)
+- /v1/chat/completions: No auth by default (configurable at Gateway level)
+- /health: Open (no auth)
+- /metrics: Open (Prometheus scrape)
+
+FIPS Compliance:
+- No Go binaries (Python/C++ runtime)
+- Inherits FIPS from host OS when running on RHEL/UBI 9 base with FIPS-enabled OpenShift
+- Python ssl module backed by system OpenSSL
+- No FIPS-incompatible crypto libraries detected
+- No custom cipher suite restrictions found
+
+Build Hermeticity:
+- No Konflux Dockerfiles on main branch (expected on rhoai-2.25 downstream branch)
+- No rpms.lock.yaml, artifacts.lock.yaml, or Hermeto prefetch
+- Partial reproducibility via constraints.txt (PyTorch pin) and common-versions (git SHA pins)
+- Internet-fetching build (not hermetic)
+
+Network Security Notes:
+- vLLM model server exposes HTTP on 8000/TCP with NO encryption (TLS delegated to Gateway)
+- EPP ext-proc gRPC on 9002/TCP with NO encryption
+- RDMA traffic (NIXL/UCX) between prefill/decode pods has transport-level encryption only
+- Gateway is the single TLS termination point (when configured)
+- No mTLS or service mesh configuration in this repo (can be added at platform level)

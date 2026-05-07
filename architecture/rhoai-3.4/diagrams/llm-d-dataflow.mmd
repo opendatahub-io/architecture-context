@@ -1,0 +1,44 @@
+sequenceDiagram
+    participant Client as External Client
+    participant GW as Gateway API<br/>80/TCP HTTP
+    participant EPP as llm-d Inference Scheduler<br/>(EPP) 8081/TCP HTTP
+    participant Sidecar as Routing Sidecar<br/>8000/TCP HTTP
+    participant Prefill as Prefill Pod (vLLM)<br/>8000/TCP HTTP
+    participant Decode as Decode Pod (vLLM)<br/>8200/TCP HTTP
+    participant NIXL as NIXL KV-Cache<br/>5600/TCP RDMA
+    participant LWS as LWS Worker Pods<br/>5555/TCP gRPC
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+
+    Note over Client,Decode: Flow 1: Optimized Baseline Inference
+    Client->>GW: POST /v1/chat/completions<br/>HTTP 80/TCP
+    GW->>EPP: ExtProc routing decision<br/>HTTP 8081/TCP
+    EPP->>Decode: Route to decode pod<br/>HTTP 8000/TCP
+    Decode-->>GW: Inference response
+    GW-->>Client: JSON response
+
+    Note over Client,NIXL: Flow 2: Prefill/Decode Disaggregation
+    Client->>GW: POST /v1/chat/completions<br/>HTTP 80/TCP
+    GW->>EPP: ExtProc routing decision<br/>HTTP 8081/TCP
+    EPP->>Sidecar: Route to prefill sidecar<br/>HTTP 8000/TCP
+    Sidecar->>Prefill: Forward to vLLM prefill<br/>HTTP 8000/TCP (local)
+    Prefill->>NIXL: KV-cache transfer to decode<br/>RDMA/TCP 5600/TCP
+    NIXL->>Decode: KV-cache blocks delivered
+    EPP->>Sidecar: Route to decode sidecar<br/>HTTP 8000/TCP
+    Sidecar->>Decode: Forward to vLLM decode<br/>HTTP 8200/TCP (local)
+    Decode-->>GW: Inference response
+    GW-->>Client: JSON response
+
+    Note over Client,LWS: Flow 3: Wide Expert-Parallelism (Multi-Node)
+    Client->>GW: POST /v1/chat/completions<br/>HTTP 80/TCP
+    GW->>EPP: ExtProc routing decision<br/>HTTP 8081/TCP
+    EPP->>Sidecar: Route to LWS leader sidecar<br/>HTTP 8000/TCP
+    Sidecar->>Decode: Forward to leader pod
+    Decode->>LWS: Data-parallel RPC coordination<br/>gRPC 5555/TCP
+    LWS->>LWS: GPU all-to-all (NVSHMEM)<br/>InfiniBand/RoCE RDMA
+    Decode->>NIXL: KV-cache transfer (NIXL)<br/>RDMA/TCP 5600/TCP
+    Decode-->>GW: Inference response
+    GW-->>Client: JSON response
+
+    Note over Decode,HF: Model Loading (Startup)
+    Decode->>HF: Download model weights<br/>HTTPS 443/TCP, Bearer HF_TOKEN
+    HF-->>Decode: Model artifacts

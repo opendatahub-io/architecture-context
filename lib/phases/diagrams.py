@@ -157,6 +157,8 @@ async def run_generate_diagrams_phase(args) -> None:
         if j['component_name'] != 'platform'
     ]
 
+    export_png = getattr(args, 'export_png', False)
+
     def _build_jobs(items, skill):
         jobs = []
         for j in sorted(items, key=lambda x: (x['dir_name'], x['component_name'])):
@@ -172,6 +174,8 @@ async def run_generate_diagrams_phase(args) -> None:
                 f" --{arch_flag}={md_path}"
                 f" --output-dir={out_path}"
             )
+            if export_png:
+                prompt += " --export-png"
             jobs.append({
                 "name": f"{j['dir_name']}/{j['component_name']}",
                 "cwd": ".",

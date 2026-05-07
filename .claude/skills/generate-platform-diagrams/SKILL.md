@@ -15,6 +15,7 @@ Required/optional arguments:
 - `--platform-file=<path>` (default: auto-detect from current directory or ./architecture/)
 - `--output-dir=<path>` (default: ./diagrams relative to platform file)
 - `--formats=<comma-separated>` (default: all) - Options: dependency, network, workflow, security, maturity, observability
+- `--export-png` (optional) - Export Mermaid diagrams to PNG using mmdc + Chrome. Off by default.
 
 Examples:
 ```bash
@@ -765,9 +766,11 @@ To regenerate after platform changes:
 
 ---
 
-### Step 5a: Generate PNG Files from Mermaid Diagrams
+### Step 5a: Generate PNG Files from Mermaid Diagrams (only if `--export-png` is passed)
 
-Convert all `.mmd` files to high-resolution PNG images:
+**Skip this step entirely unless `--export-png` was passed as an argument.**
+
+If `--export-png` was passed, convert all `.mmd` files to high-resolution PNG images:
 
 ```bash
 python scripts/generate_diagram_pngs.py {output-dir} --width=3000
@@ -792,19 +795,19 @@ Source: {platform-file}
 Output directory: {output-dir}/
 
 Diagrams created:
-- platform-dependency-graph.mmd + .png (Component dependencies)
-- platform-network-topology.mmd + .png (Network architecture - visual)
+- platform-dependency-graph.mmd (Component dependencies)
+- platform-network-topology.mmd (Network architecture - visual)
 - platform-network-topology.txt (Network architecture - precise/SAR)
-- platform-workflows.mmd + .png (Cross-component flows)
-- platform-security-overview.mmd + .png (RBAC, auth, TLS, container security)
-- platform-observability.mmd + .png (Prometheus, health probes, tracing)
-- platform-maturity.mmd + .png (Health metrics, deployment readiness)
+- platform-workflows.mmd (Cross-component flows)
+- platform-security-overview.mmd (RBAC, auth, TLS, container security)
+- platform-observability.mmd (Prometheus, health probes, tracing)
+- platform-maturity.mmd (Health metrics, deployment readiness)
 - README.md (Index and usage guide)
 
 Next steps:
 1. Review diagrams in {output-dir}/
 2. Use platform-network-topology.txt (ASCII) for Security Architecture Review submissions
-3. Use PNG files directly in presentations and documentation
+3. Embed .mmd source in markdown or view at https://mermaid.live
 4. Share with Architecture Council for platform-level discussions
 ```
 
@@ -816,7 +819,7 @@ Next steps:
   - **Mermaid**: Visual, color-coded trust zones, great for presentations
   - **ASCII**: Precise text format, no ambiguity, required for SAR submissions
   - Both contain the same information, just different representations
-- Mermaid diagrams can be embedded directly in documentation or rendered to PNG
+- Mermaid diagrams can be embedded directly in documentation or rendered to PNG with `--export-png`
 - ASCII diagrams are precise and unambiguous for security reviews
 - Regenerate after running `/aggregate-platform-architecture` with updated component data
 

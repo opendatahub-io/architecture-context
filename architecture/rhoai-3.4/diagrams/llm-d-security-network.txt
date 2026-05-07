@@ -1,0 +1,157 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 80/TCP                                                   │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None                                               │
+│         │ Auth: Platform-dependent (Gateway provider)                    │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway API)                                                  │
+│                                                                          │
+│  [Gateway API (Istio / AgentGateway)]                                   │
+│  - Kind: Gateway (gateway.networking.k8s.io/v1)                         │
+│  - Port: 80/TCP (external) → 8081/TCP (EPP)                            │
+│  - TLS Termination: None (upstream configurable)                        │
+│  - AuthN: Provider-specific (Istio RequestAuthentication or external)   │
+│  - Service Type: ClusterIP                                               │
+│         │                                                                │
+│         │ Port: 8081/TCP                                                 │
+│         │ Protocol: HTTP (ExtProc)                                       │
+│         │ Encryption: None                                               │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  ROUTING LAYER (Cluster-Internal, Plaintext)                            │
+│                                                                          │
+│  [llm-d Inference Scheduler (EPP) v0.8.0]                               │
+│  - Port: 8081/TCP (ExtProc from Gateway)                                │
+│  - Port: 9090/TCP (Prometheus metrics)                                   │
+│  - Namespace: deployment-specific                                        │
+│  - ServiceAccount: (Helm-managed)                                        │
+│  - Routing: Prefix-cache scoring, queue-aware, latency-based            │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None                                               │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+│  [llm-d Routing Sidecar v0.7.1] (P/D mode only)                        │
+│  - Port: 8000/TCP (ingress from EPP)                                    │
+│  - Port: 8200/TCP (egress to vLLM backend)                              │
+│  - Purpose: P/D disaggregation coordination                             │
+│         │                                                                │
+│         │ Port: 8200/TCP (P/D mode) or 8000/TCP (baseline)              │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None                                               │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MODEL SERVER LAYER (Cluster-Internal, Plaintext)                       │
+│                                                                          │
+│  [vLLM Model Server (llm-d-cuda / llm-d-cpu / llm-d-hpu / llm-d-rocm)]│
+│  - Port: 8000/TCP (API - default mode)                                  │
+│  - Port: 8200/TCP (API - P/D decode mode, behind sidecar)              │
+│  - Port: 5600/TCP (NIXL KV-cache RDMA/TCP transfer)                    │
+│  - Port: 5556/TCP (ZMQ event port - prefix-cache indexing)             │
+│  - Port: 5555/TCP (gRPC DP RPC - wide-EP coordination)                 │
+│  - ServiceAccount: sa (automountServiceAccountToken: false)              │
+│  - OpenShift: dropped ALL capabilities, readOnlyRootFilesystem, non-root│
+│  - Endpoints: /v1/completions, /v1/chat/completions, /v1/models,        │
+│               /health, /metrics                                          │
+│         │                                                                │
+│         │ Peer-to-Peer Connections:                                      │
+│         │                                                                │
+│         ├──── Port: 5600/TCP                                             │
+│         │     Protocol: RDMA/TCP (NIXL)                                  │
+│         │     Encryption: None                                           │
+│         │     Auth: None                                                 │
+│         │     Purpose: KV-cache block transfer (prefill → decode)       │
+│         │                                                                │
+│         ├──── Port: 5555/TCP                                             │
+│         │     Protocol: gRPC                                             │
+│         │     Encryption: None                                           │
+│         │     Auth: None                                                 │
+│         │     Purpose: Data-parallel RPC (LWS leader ↔ workers)        │
+│         │                                                                │
+│         ├──── InfiniBand/RoCE                                            │
+│         │     Protocol: RDMA (NVSHMEM/NCCL)                              │
+│         │     Encryption: None                                           │
+│         │     Auth: None                                                 │
+│         │     Purpose: GPU-to-GPU all-to-all (wide expert parallelism)  │
+│         │                                                                │
+│         ├──── Port: 5556/TCP                                             │
+│         │     Protocol: ZMQ                                              │
+│         │     Encryption: None                                           │
+│         │     Auth: None                                                 │
+│         │     Purpose: KV-cache state indexing (precise prefix cache)   │
+│         │                                                                │
+│         │ Outbound Connections:                                          │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MONITORING LAYER                                                        │
+│                                                                          │
+│  [Prometheus (via PodMonitor)]                                           │
+│  - Scrapes: Model server /metrics (8000/TCP, HTTP)                      │
+│  - Scrapes: EPP metrics (9090/TCP, HTTP)                                │
+│  - Scrapes: WVA metrics (8443/TCP, HTTPS, TLS)                          │
+│                                                                          │
+│  [OpenTelemetry Collector] (optional)                                    │
+│  - Port: 4317/TCP                                                        │
+│  - Protocol: gRPC (OTLP)                                                │
+│  - Encryption: None                                                      │
+│  - Source: vLLM, EPP, routing sidecar                                    │
+│                                                                          │
+│  [Workload Variant Autoscaler (WVA)]                                    │
+│  - Port: 8443/TCP                                                        │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS                                                       │
+│  - Purpose: SLO-aware autoscaling with Prometheus metrics                │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [HuggingFace Hub - huggingface.co]                                     │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: HF_TOKEN Bearer token                                          │
+│  - Purpose: Model weight and tokenizer downloads at pod startup          │
+│                                                                          │
+│  [NVIDIA NGC - nvcr.io] (build-time only)                               │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Purpose: CUDA base image source                                       │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No ClusterRoles defined by this repository
+- ServiceAccount: sa (automountServiceAccountToken: false)
+- Minimal RBAC exposure by design
+- WVA creates RoleBindings for metrics-reader access to Prometheus
+
+Secrets:
+- hf-token (Opaque) - HuggingFace API token for model downloads
+  Provisioned: Manual (user-provided), Auto-Rotate: No
+- prometheus-web-tls (kubernetes.io/tls) - TLS certs for Prometheus HTTPS
+  Provisioned: Script-generated (self-signed), Auto-Rotate: No
+- controller-manager-token (Opaque) - WVA controller auth token
+  Provisioned: Manual, Auto-Rotate: No
+
+Pod Security (OpenShift):
+- SecurityContext: runAsNonRoot, readOnlyRootFilesystem
+- Capabilities: drop ALL
+- Pod-level security contexts defined in OpenShift-specific gateway patches
+
+Network Security Notes:
+- ENTIRE inference data path is unencrypted HTTP within cluster
+- No mTLS, no network policies defined in upstream manifests
+- Security relies on Kubernetes network isolation (namespace, NetworkPolicy)
+- Platform operator expected to add:
+  - Network policies for pod-to-pod restrictions
+  - Gateway-level authentication (Istio RequestAuthentication, etc.)
+  - kube-rbac-proxy sidecars for metrics endpoints (RHOAI integration)
+  - Service mesh mTLS if required by deployment environment

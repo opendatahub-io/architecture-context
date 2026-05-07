@@ -1,0 +1,77 @@
+sequenceDiagram
+    participant User as Data Scientist<br/>(Jupyter Notebook / Script)
+    participant SDK as CodeFlare SDK<br/>(Python Client)
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant KubeRay as KubeRay Operator
+    participant Kueue as Kueue Controller
+    participant Dashboard as Ray Dashboard<br/>443/TCP HTTPS (via Route/HTTPRoute)
+    participant RayHead as Ray Head Pod<br/>10001/TCP gRPC mTLS
+
+    Note over User,RayHead: Flow 1: Interactive Cluster Lifecycle
+
+    User->>SDK: Cluster(ClusterConfiguration(...))
+    SDK->>K8sAPI: List LocalQueues (kueue.x-k8s.io/v1beta1)<br/>Auth: Bearer Token
+    K8sAPI-->>SDK: LocalQueue list (validate queue exists)
+
+    User->>SDK: cluster.apply()
+    SDK->>K8sAPI: Server-Side Apply RayCluster CR (ray.io/v1)<br/>Field Manager: codeflare-sdk<br/>Auth: Bearer Token
+    K8sAPI-->>SDK: RayCluster created/updated
+    K8sAPI->>KubeRay: Watch event: RayCluster created
+    KubeRay->>K8sAPI: Create head pod, worker pods, services<br/>Auth: Service Account
+
+    opt Kueue Integration
+        K8sAPI->>Kueue: Watch event: RayCluster with queue label
+        Kueue->>K8sAPI: Create Workload, manage admission
+    end
+
+    User->>SDK: cluster.wait_ready()
+    loop Poll until ready
+        SDK->>K8sAPI: Get RayCluster status<br/>Auth: Bearer Token
+        K8sAPI-->>SDK: RayCluster status (Ready/Suspended/Failed)
+    end
+
+    SDK->>K8sAPI: Read CA Secret ({cluster}-ca-secret-*)<br/>Auth: Bearer Token
+    K8sAPI-->>SDK: CA cert + private key
+    SDK->>SDK: Generate client TLS cert<br/>(RSA 3072-bit, SHA-256, SAN entries)
+
+    SDK->>K8sAPI: List HTTPRoutes (gateway.networking.k8s.io/v1)<br/>by label ray.io/cluster-name<br/>Auth: Bearer Token
+    K8sAPI-->>SDK: HTTPRoute with Gateway ref
+    SDK->>K8sAPI: Get Gateway hostname<br/>Auth: Bearer Token
+    K8sAPI-->>SDK: Gateway hostname
+
+    loop Dashboard readiness check
+        SDK->>Dashboard: GET https://{host}/ray/{ns}/{name}<br/>Auth: Bearer Token
+        Dashboard-->>SDK: 200 OK
+    end
+
+    User->>RayHead: ray.init(address, runtime_env)<br/>gRPC mTLS (client cert)
+    RayHead-->>User: Connected to Ray cluster
+
+    Note over User,RayHead: Flow 2: RayJob Submission
+
+    User->>SDK: RayJob(RayJobConfiguration(...))
+    User->>SDK: rayjob.submit()
+
+    opt Local files to upload
+        SDK->>SDK: Zip working directory, base64-encode
+        SDK->>K8sAPI: Create Secret ({job}-files)<br/>with ownerRef to RayJob<br/>Auth: Bearer Token
+    end
+
+    SDK->>K8sAPI: Create RayJob CR (ray.io/v1)<br/>Auth: Bearer Token
+    K8sAPI-->>SDK: RayJob created
+    K8sAPI->>KubeRay: Watch event: RayJob created
+
+    alt Ephemeral Cluster
+        KubeRay->>K8sAPI: Create RayCluster from embedded spec
+    else Existing Cluster
+        KubeRay->>K8sAPI: Select cluster via clusterSelector
+    end
+
+    KubeRay->>RayHead: Submit job to Ray Dashboard<br/>HTTP 8265/TCP (in-cluster)
+    RayHead-->>KubeRay: Job submitted
+
+    loop Status polling
+        User->>SDK: rayjob.status()
+        SDK->>K8sAPI: Get RayJob status<br/>Auth: Bearer Token
+        K8sAPI-->>SDK: RayJob status (Running/Succeeded/Failed)
+    end

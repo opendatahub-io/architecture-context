@@ -1,0 +1,45 @@
+sequenceDiagram
+    participant vLLM as vLLM Pod<br/>ZMQ PUB 5557/TCP
+    participant ZMQ as ZMQ Subscriber<br/>5557/TCP
+    participant Pool as KV-Events Pool<br/>(Sharded Workers)
+    participant Adapter as Engine Adapter<br/>(vLLM/SGLang)
+    participant Index as Block Index<br/>(InMemory/Redis)
+    participant EPP as Inference Scheduler<br/>(EPP)
+    participant Indexer as KV-Cache Indexer
+    participant TokenProc as Token Processor
+    participant Scorer as KVBlock Scorer
+    participant K8s as Kubernetes API<br/>443/TCP HTTPS
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant Tokenizer as UDS Tokenizer<br/>Unix Socket gRPC
+    participant GPU as GPU Memory
+    participant Staging as CPU Staging Buffer
+    participant Storage as Shared Storage<br/>(PVC / S3)
+
+    Note over vLLM, Index: Flow 1: KV-Event Ingestion (Write Path)
+    vLLM->>ZMQ: BlockStored / BlockRemoved / AllBlocksCleared<br/>ZMQ PUB/SUB 5557/TCP, No Auth
+    ZMQ->>Pool: Route by FNV-1a(pod_id)<br/>Go channels (in-process)
+    Pool->>Adapter: Parse engine-specific event<br/>Function call
+    Pool->>Index: Update block index<br/>Function call or Redis 6379/TCP
+
+    Note over EPP, Scorer: Flow 2: Pod Scoring (Read Path)
+    EPP->>Indexer: ScoreTokens(prompt, model)<br/>Function call (library embed)
+    Indexer->>TokenProc: Hash prompt tokens<br/>Function call
+    Indexer->>Index: Lookup matching blocks<br/>Function call or Redis 6379/TCP
+    Indexer->>Scorer: Compute per-pod scores<br/>Function call
+    Scorer-->>Indexer: Scored pod list
+    Indexer-->>EPP: Pod scores (sorted)
+
+    Note over GPU, Storage: Flow 3: KV-Cache Offloading (FS Backend)
+    GPU->>Staging: CUDA memcpy (async)<br/>In-process
+    Staging->>Storage: Write KV blocks<br/>POSIX I/O or HTTPS/443 (S3)<br/>No Auth or AWS IAM
+
+    Note over K8s, ZMQ: Flow 4: Pod Auto-Discovery
+    K8s-->>Pool: Pod watch events<br/>HTTPS/443, ServiceAccount token
+    Pool->>ZMQ: Create/remove subscriber<br/>per discovered pod
+    ZMQ->>vLLM: ZMQ CONNECT 5557/TCP
+
+    Note over Tokenizer, HF: Flow 5: Tokenizer Model Loading
+    Tokenizer->>HF: Download tokenizer<br/>HTTPS/443, HF_TOKEN Bearer
+    HF-->>Tokenizer: Tokenizer model files
+    Indexer->>Tokenizer: Tokenize prompt<br/>gRPC via Unix Domain Socket
+    Tokenizer-->>Indexer: Token IDs

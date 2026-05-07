@@ -1,0 +1,44 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Envoy Gateway<br/>80/TCP HTTP
+    participant BBR as Body-Based Router<br/>9004/TCP gRPC TLS
+    participant EPP as Endpoint Picker Proxy<br/>9002/TCP gRPC TLS
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant ModelServer as Model Server Pod<br/>(vLLM/SGLang/Triton)
+    participant TrainingSrv as Latency Training Server<br/>8000/TCP HTTP
+    participant PredSrv as Latency Prediction Server<br/>8001/TCP HTTP
+
+    Note over Client,ModelServer: Flow 1: Inference Request Processing (EPP only)
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTP/80
+    Gateway->>EPP: ext-proc bidirectional stream<br/>gRPC/9002 TLS (optional)
+    Note right of EPP: Scheduling pipeline:<br/>1. Filter (saturated endpoints)<br/>2. Score (KV cache, queue depth,<br/>   LoRA affinity, latency)<br/>3. Pick (optimal endpoint)
+    EPP->>ModelServer: Scrape /metrics<br/>HTTP (KV cache, queue depth)
+    ModelServer-->>EPP: Prometheus metrics
+    EPP-->>Gateway: ext-proc response<br/>Set x-gateway-destination-endpoint header
+    Gateway->>ModelServer: Forward request to selected pod<br/>HTTP (configurable port)
+    ModelServer-->>Gateway: Inference response
+    Gateway-->>Client: HTTP response
+
+    Note over Client,ModelServer: Flow 2: Body-Based Routing (BBR + EPP)
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTP/80 (model in body)
+    Gateway->>BBR: ext-proc stream (early filter)<br/>gRPC/9004 TLS (SIMPLE)
+    Note right of BBR: Parses request body<br/>Extracts "model" field<br/>Resolves LoRA → base model
+    BBR-->>Gateway: Set routing headers<br/>(x-gateway-model-name)
+    Gateway->>EPP: ext-proc stream (re-routed)<br/>gRPC/9002 TLS (optional)
+    EPP-->>Gateway: Select endpoint<br/>Set x-gateway-destination-endpoint
+    Gateway->>ModelServer: Forward to selected pod
+    ModelServer-->>Gateway: Inference response
+    Gateway-->>Client: HTTP response
+
+    Note over EPP,PredSrv: Flow 3: Latency-Aware Scheduling (Optional)
+    EPP->>TrainingSrv: POST latency samples<br/>HTTP/8000 (async, coalesced)
+    Note right of TrainingSrv: Trains XGBoost model<br/>on TTFT/TPOT data
+    TrainingSrv->>TrainingSrv: Save model to shared PVC
+    PredSrv->>PredSrv: Sync model from shared PVC<br/>(every 30s)
+    EPP->>PredSrv: POST /predict<br/>HTTP/8001
+    PredSrv-->>EPP: Predicted latency<br/>(TTFT, TPOT estimates)
+    Note right of EPP: predicted-latency-scorer<br/>uses predictions for<br/>SLO-aware scheduling
+
+    Note over EPP,K8sAPI: Background: CRD Reconciliation
+    K8sAPI-->>EPP: Watch events<br/>InferencePool, Pod,<br/>InferenceObjective,<br/>InferenceModelRewrite
+    K8sAPI-->>BBR: Watch events<br/>ConfigMaps (bbr-managed)

@@ -1,0 +1,89 @@
+sequenceDiagram
+    participant User as User Code
+    participant Exp as AI4RAGExperiment
+    participant MPS as ModelsPreSelector
+    participant SS as AI4RAGSearchSpace
+    participant GAM as GAMOptimizer
+    participant Chunker as LangChainChunker
+    participant Embed as Embedding Model<br/>(LS / OpenAI)
+    participant VS as Vector Store<br/>(LS / Chroma)
+    participant Retriever as Retriever
+    participant FM as Foundation Model<br/>(LS / OpenAI)
+    participant Eval as UnitxtEvaluator
+    participant LS as Llama Stack Server<br/>HTTPS / API Key
+    participant Handler as EventHandler<br/>(Local / KFP)
+
+    Note over User,Handler: Flow 1: RAG Optimization Experiment
+
+    User->>Exp: search(benchmark_data, search_space)
+    activate Exp
+
+    Note over Exp,MPS: Phase 1: Model Pre-Selection
+    Exp->>MPS: select_models(data_sample)
+    activate MPS
+    MPS->>Chunker: chunk(documents)
+    Chunker-->>MPS: chunks[]
+    MPS->>Embed: embed(chunks)
+    Embed->>LS: POST /embeddings<br/>HTTPS, API Key
+    LS-->>Embed: vectors[]
+    Embed-->>MPS: embeddings
+    MPS->>VS: insert(embeddings)
+    Note over VS: ChromaDB in-memory<br/>(for pre-selection)
+    MPS->>Retriever: query(questions)
+    Retriever->>VS: similarity_search()
+    VS-->>Retriever: contexts[]
+    MPS->>FM: generate(context + question)
+    FM->>LS: POST /chat/completions<br/>HTTPS, API Key
+    LS-->>FM: answer
+    FM-->>MPS: response
+    MPS->>Eval: evaluate(predictions, ground_truth)
+    Eval-->>MPS: scores{faithfulness, correctness}
+    MPS-->>Exp: filtered_models[]
+    deactivate MPS
+
+    Note over Exp,GAM: Phase 2: HPO Iterations
+    Exp->>SS: prepare_search_space(filtered_models)
+    SS->>LS: GET /models/list<br/>HTTPS, API Key
+    LS-->>SS: available_models[]
+    SS-->>Exp: valid_combinations[]
+
+    loop For each HPO iteration
+        Exp->>GAM: suggest_next(observations)
+        GAM-->>Exp: next_params
+
+        Note over Exp,FM: Phase 3: RAG Pattern Evaluation
+        Exp->>Chunker: chunk(documents, params)
+        Chunker-->>Exp: chunks[]
+        Exp->>Embed: embed(chunks)
+        Embed->>LS: POST /embeddings<br/>HTTPS, API Key
+        LS-->>Embed: vectors[]
+        Embed-->>Exp: embeddings
+        Exp->>VS: create_store + insert
+        VS->>LS: POST /vector_stores/create<br/>HTTPS, API Key
+        LS-->>VS: store_id
+        VS->>LS: POST /vector_io/insert<br/>HTTPS, API Key
+        LS-->>VS: ok
+
+        par Parallel query execution (ThreadPool, max=10)
+            Exp->>Retriever: query(question)
+            Retriever->>VS: similarity_search()
+            VS->>LS: POST /vector_io/query<br/>HTTPS, API Key
+            LS-->>VS: results[]
+            VS-->>Retriever: contexts[]
+            Retriever-->>Exp: context
+            Exp->>FM: generate(context + question)
+            FM->>LS: POST /chat/completions<br/>HTTPS, API Key
+            LS-->>FM: answer
+            FM-->>Exp: response
+        end
+
+        Exp->>Eval: evaluate(all_predictions, ground_truth)
+        Eval-->>Exp: scores + confidence_intervals
+
+        Exp->>GAM: update(params, score)
+        Exp->>Handler: on_pattern_evaluated(payload)
+    end
+
+    Exp->>Handler: on_experiment_completed(results)
+    Handler-->>User: results (JSON files / KFP outputs)
+    deactivate Exp

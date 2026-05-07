@@ -1,0 +1,186 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Clients["External Clients<br/>(Data Scientists, API Consumers)"]
+    end
+
+    subgraph Ingress["INGRESS — Gateway API (DMZ)"]
+        direction TB
+        GW["data-science-gateway<br/>GatewayClass + Gateway<br/>HTTPS Listeners (443/TCP)"]
+        EnvoyProxy["Envoy Proxy<br/>ext_authz + Lua EnvoyFilter"]
+        KubeAuthProxy["kube-auth-proxy<br/>OAuth2/OIDC validation<br/>Injects: x-forwarded-access-token,<br/>x-auth-request-user,<br/>x-auth-request-groups"]
+        LegacyRedirect["Legacy nginx Redirect<br/>OpenShift Routes<br/>301 → Gateway hostname"]
+    end
+
+    subgraph LegacyIngress["LEGACY INGRESS (Serverless Mode)"]
+        IstioGW["Istio Gateway<br/>VirtualService routing"]
+        KnativeRoute["Knative Serving<br/>Route + Revision"]
+    end
+
+    subgraph PlatformNS["PLATFORM NAMESPACE — opendatahub / redhat-ods-applications"]
+        direction TB
+
+        subgraph PlatformControllers["Platform Controllers"]
+            Dashboard["odh-dashboard<br/>SA: odh-dashboard<br/>kube-rbac-proxy sidecar<br/>8080/TCP"]
+            KServeCtrl["kserve-controller-manager<br/>SA: kserve-controller-manager<br/>Webhooks: 9443/TCP"]
+            LLMISVCCtrl["llmisvc-controller-manager<br/>SA: kserve-controller-manager<br/>Webhooks: 9443/TCP"]
+            ODHModelCtrl["odh-model-controller<br/>SA: odh-model-controller<br/>kube-rbac-proxy sidecar"]
+            KubeflowCtrl["Kubeflow Notebook Controller<br/>SA: notebook-controller<br/>Mutating webhook"]
+            DSPO["DS Pipelines Operator<br/>SA: data-science-pipelines-operator"]
+            KubeRayOp["KubeRay Operator<br/>SA: kuberay-operator<br/>Mutating webhook"]
+            TrainingOp["Training Operator<br/>SA: training-operator"]
+            TrainerOp["Kubeflow Trainer<br/>SA: kubeflow-trainer"]
+        end
+
+        subgraph Observability["Observability Stack"]
+            MonStack["MonitoringStack<br/>Prometheus + Alertmanager"]
+            OTelCollector["OpenTelemetry Collector<br/>metrics + traces"]
+            Tempo["Tempo<br/>TempoMonolithic/TempoStack"]
+            Perses["Perses Dashboards"]
+        end
+
+        subgraph GatewayInfra["Gateway Infrastructure"]
+            HTTPRoutes["HTTPRoutes<br/>(notebooks, dashboard,<br/>model endpoints, Ray UI,<br/>MLflow UI, Feast UI,<br/>pipelines UI)"]
+        end
+    end
+
+    subgraph OperatorNS["OPERATOR NAMESPACE — redhat-ods-operator"]
+        RhodsOp["rhods-operator<br/>SA: rhods-operator<br/>OLM-managed"]
+    end
+
+    subgraph UserNS["USER NAMESPACES — dynamic per-project"]
+        direction TB
+        NotebookPods["Notebook StatefulSets<br/>kube-rbac-proxy sidecar"]
+        PipelineRuns["PipelineRun pods<br/>Argo Workflow steps"]
+        RayPods["RayCluster pods<br/>(head + workers)"]
+        TrainPods["TrainJob / PyTorchJob pods"]
+        ISVCPods["InferenceService pods<br/>(vLLM, OpenVINO, MLServer)"]
+        RefGrants["ReferenceGrants<br/>(cross-namespace HTTPRoute refs)"]
+    end
+
+    subgraph DSPNamespace["DSP NAMESPACE"]
+        DSPAPI["DSP API Server"]
+        ArgoWF["Argo Workflow Controller"]
+        MLMD["ML Metadata (gRPC)"]
+        DSPDB["MariaDB / PostgreSQL"]
+        DSPStorage["SeaweedFS / MinIO"]
+    end
+
+    subgraph ModelRegNS["MODEL REGISTRY NAMESPACE"]
+        ModelRegServer["Model Registry REST<br/>8080/TCP"]
+        ModelRegProxy["Model Registry Proxy"]
+        ModelRegDB["PostgreSQL"]
+    end
+
+    subgraph MaaSNS["MAAS NAMESPACE"]
+        MaaSAPI["MaaS API"]
+        MaaSPayload["AI Gateway Payload<br/>Processing (BBR + EPP)"]
+        AuthorinoSvc["Authorino<br/>API key + OIDC + OCP token"]
+    end
+
+    subgraph Egress["EGRESS — External Services"]
+        S3["Object Storage (S3)<br/>HTTPS/443<br/>AWS IAM / static creds"]
+        ContainerReg["Container Registry<br/>(quay.io, registry.redhat.io)<br/>HTTPS/443<br/>Pull secrets"]
+        ExternalAI["External AI Providers<br/>(Anthropic, Azure, Vertex, Bedrock)<br/>HTTPS/443<br/>API keys from Secrets"]
+        K8sAPI["OpenShift / Kubernetes API<br/>HTTPS/443<br/>ServiceAccount tokens"]
+    end
+
+    %% External to Ingress
+    Clients -->|"HTTPS/443<br/>TLS 1.3"| GW
+    Clients -->|"HTTPS/443<br/>(legacy URLs)"| LegacyRedirect
+    LegacyRedirect -->|"301 redirect"| GW
+
+    %% Gateway chain
+    GW --> EnvoyProxy
+    EnvoyProxy -->|"ext_authz"| KubeAuthProxy
+    KubeAuthProxy -->|"OAuth2/OIDC<br/>validated"| EnvoyProxy
+    EnvoyProxy -->|"routes via<br/>HTTPRoutes"| HTTPRoutes
+
+    %% Legacy Serverless path
+    Clients -->|"HTTPS/443<br/>(Serverless mode)"| IstioGW
+    IstioGW -->|"VirtualService<br/>mTLS STRICT"| KnativeRoute
+    KnativeRoute -->|"Knative Route"| ISVCPods
+
+    %% HTTPRoutes to components
+    HTTPRoutes -->|"HTTP/8080"| Dashboard
+    HTTPRoutes -->|"cross-ns ref"| NotebookPods
+    HTTPRoutes -->|"cross-ns ref"| ISVCPods
+    HTTPRoutes -->|"cross-ns ref"| RayPods
+    HTTPRoutes -->|"cross-ns ref"| DSPAPI
+
+    %% Platform controller to user workloads
+    KubeflowCtrl -->|"creates StatefulSet<br/>+ HTTPRoute + sidecar"| NotebookPods
+    KServeCtrl -->|"creates predictor pods"| ISVCPods
+    LLMISVCCtrl -->|"creates InferencePool<br/>+ vLLM Deployment"| ISVCPods
+    KubeRayOp -->|"creates head + workers"| RayPods
+    TrainingOp -->|"creates training pods"| TrainPods
+    TrainerOp -->|"creates TrainJob pods"| TrainPods
+    DSPO -->|"creates DSP stack"| DSPAPI
+
+    %% ODH Model Controller bridge
+    ODHModelCtrl -->|"creates HTTPRoute<br/>ServiceMonitor, KEDA"| ISVCPods
+
+    %% Cross-namespace grants
+    RefGrants -.->|"permits cross-ns<br/>backend refs"| HTTPRoutes
+
+    %% MaaS flow
+    MaaSPayload -->|"ext_proc<br/>body translation"| EnvoyProxy
+    AuthorinoSvc -->|"auth evaluation"| EnvoyProxy
+    MaaSPayload -->|"HTTPS/443<br/>API keys"| ExternalAI
+
+    %% Model Registry access
+    Dashboard -->|"REST/8080<br/>model catalog"| ModelRegServer
+    KServeCtrl -->|"watches<br/>InferenceService"| ModelRegServer
+    ModelRegServer -->|"SQL"| ModelRegDB
+
+    %% DSP internal
+    DSPAPI -->|"submits workflows"| ArgoWF
+    DSPAPI -->|"gRPC<br/>metadata"| MLMD
+    DSPAPI -->|"SQL"| DSPDB
+    DSPAPI -->|"object storage"| DSPStorage
+    ArgoWF -->|"creates step pods"| PipelineRuns
+
+    %% Observability
+    MonStack -->|"scrapes ServiceMonitors"| Dashboard
+    MonStack -->|"scrapes ServiceMonitors"| KServeCtrl
+    MonStack -->|"scrapes ServiceMonitors"| ISVCPods
+    MonStack -->|"scrapes ServiceMonitors"| DSPAPI
+    OTelCollector -->|"traces"| Tempo
+
+    %% Operator deploys platform
+    RhodsOp -->|"reconciles all<br/>platform components"| PlatformControllers
+
+    %% All controllers to K8s API
+    RhodsOp -->|"HTTPS/443<br/>SA token"| K8sAPI
+    Dashboard -->|"HTTPS/443<br/>SA token"| K8sAPI
+    KServeCtrl -->|"HTTPS/443<br/>SA token"| K8sAPI
+
+    %% Egress from workloads
+    ISVCPods -->|"HTTPS/443<br/>model artifacts"| S3
+    NotebookPods -->|"HTTPS/443<br/>training data"| S3
+    PipelineRuns -->|"HTTPS/443<br/>pipeline artifacts"| S3
+    ISVCPods -->|"HTTPS/443<br/>runtime images"| ContainerReg
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef legacy fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef operator fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef user fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef egress fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef observability fill:#fff2cc,stroke:#d6b656,stroke-width:1px
+    classDef maas fill:#e6f3ff,stroke:#4a86c8,stroke-width:2px
+    classDef dsp fill:#e8f5e9,stroke:#66bb6a,stroke-width:2px
+    classDef modelreg fill:#fce4ec,stroke:#e57373,stroke-width:2px
+
+    class Clients external
+    class GW,EnvoyProxy,KubeAuthProxy,LegacyRedirect ingress
+    class IstioGW,KnativeRoute legacy
+    class Dashboard,KServeCtrl,LLMISVCCtrl,ODHModelCtrl,KubeflowCtrl,DSPO,KubeRayOp,TrainingOp,TrainerOp,HTTPRoutes platform
+    class RhodsOp operator
+    class NotebookPods,PipelineRuns,RayPods,TrainPods,ISVCPods,RefGrants user
+    class S3,ContainerReg,ExternalAI,K8sAPI egress
+    class MonStack,OTelCollector,Tempo,Perses observability
+    class MaaSAPI,MaaSPayload,AuthorinoSvc maas
+    class DSPAPI,ArgoWF,MLMD,DSPDB,DSPStorage dsp
+    class ModelRegServer,ModelRegProxy,ModelRegDB modelreg

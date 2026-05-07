@@ -1,0 +1,47 @@
+sequenceDiagram
+    autonumber
+
+    participant Client as External Client
+    participant GW as Gateway Controller<br/>(Envoy/Istio/AgentGateway)<br/>80/TCP HTTP
+    participant EPP as llm-d Router (EPP)<br/>9002/TCP gRPC ext-proc
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant Decode as Decode Pod (vLLM)<br/>8000/TCP HTTP
+    participant Prefill as Prefill Pod (vLLM)<br/>8000/TCP HTTP
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant OTel as OTel Collector<br/>4317/TCP gRPC
+    participant Prom as Prometheus<br/>9090/TCP HTTP
+
+    Note over Client,Decode: Flow 1: Optimized Baseline Inference Request
+
+    Client->>GW: POST /v1/chat/completions<br/>HTTP/80 (configurable TLS)
+    GW->>EPP: ext-proc gRPC/9002<br/>"Which endpoint?"
+    EPP->>K8s: Watch InferencePool/InferenceModel<br/>HTTPS/6443, SA token
+    EPP->>Decode: GET /metrics (KV-cache, queue depth)<br/>HTTP/8000
+    Decode-->>EPP: Metrics response
+    EPP-->>GW: Selected endpoint address<br/>gRPC ext-proc response
+    GW->>Decode: Forward inference request<br/>HTTP/8000
+    Decode-->>GW: Inference response (JSON/SSE stream)
+    GW-->>Client: Response<br/>HTTP/80
+
+    Note over Client,Prefill: Flow 2: Prefill/Decode Disaggregated Inference
+
+    Client->>GW: POST /v1/chat/completions<br/>HTTP/80
+    GW->>EPP: ext-proc gRPC/9002
+    EPP-->>GW: Route to Decode pod (P/D sidecar)
+    GW->>Decode: Forward to Decode pod<br/>HTTP/8000
+    Note over Decode,Prefill: P/D sidecar orchestrates prefill delegation
+    Decode->>Prefill: Prefill request<br/>HTTP/8000
+    Prefill->>Decode: KV cache transfer<br/>RDMA (NIXL/UCX/UCCL)<br/>GPU-to-GPU direct
+    Decode-->>GW: Decode response (tokens)
+    GW-->>Client: Streaming response
+
+    Note over Client,HF: Flow 3: Model Loading & Startup
+
+    Decode->>HF: Download model weights<br/>HTTPS/443, HF_TOKEN bearer
+    HF-->>Decode: Model artifacts
+
+    Note over Decode,OTel: Observability Flows
+
+    Decode->>OTel: Export traces<br/>gRPC OTLP/4317 (optional TLS)
+    Prom->>Decode: Scrape /metrics<br/>HTTP/8000
+    Decode-->>Prom: Prometheus metrics

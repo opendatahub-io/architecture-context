@@ -1,0 +1,157 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  CLUSTER-INTERNAL (No Ingress — Accessed Only by EPP Within Cluster)        │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │  KV-CACHE MANAGER POD (StatefulSet)                                    │  │
+│  │                                                                        │  │
+│  │  [kv-cache-manager container]                                          │  │
+│  │  - Image: ghcr.io/llm-d/llm-d-kv-cache                               │  │
+│  │  - Ports:                                                              │  │
+│  │    - 8080/TCP  HTTP  (scoring API + metrics)                           │  │
+│  │    - 50051/TCP gRPC  (IndexerService - GetPodScores)                   │  │
+│  │    - 5557/TCP  ZMQ   (PUB/SUB KV-Events)                              │  │
+│  │  - Auth: None (all endpoints open, cluster-internal only)              │  │
+│  │  - Encryption: None (plaintext HTTP, gRPC, ZMQ)                        │  │
+│  │  - ServiceAccount: operator-controller-manager                         │  │
+│  │                                                                        │  │
+│  │  [uds-tokenizer container] (sidecar)                                   │  │
+│  │  - Image: llm-d-uds-tokenizer                                         │  │
+│  │  - Ports:                                                              │  │
+│  │    - 8082/TCP  HTTP  (health check /healthz)                           │  │
+│  │    - Unix socket     gRPC (TokenizationService)                        │  │
+│  │  - Auth: None                                                          │  │
+│  │  - Encryption: None                                                    │  │
+│  │  - Scope: Pod-local only (UDS not network-accessible)                  │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│         │              │               │               ▲                     │
+│         │              │               │               │                     │
+│  ┌──────┴──────┐ ┌─────┴──────┐ ┌──────┴──────┐ ┌─────┴──────┐             │
+│  │ Scoring API │ │ gRPC API   │ │ ZMQ SUB     │ │ K8s Watch  │             │
+│  │ 8080/TCP    │ │ 50051/TCP  │ │ 5557/TCP    │ │ 443/TCP    │             │
+│  │ HTTP        │ │ gRPC       │ │ ZMQ         │ │ HTTPS      │             │
+│  │ No Encrypt  │ │ No Encrypt │ │ No Encrypt  │ │ TLS 1.2+   │             │
+│  │ No Auth     │ │ No Auth    │ │ No Auth     │ │ SA Token   │             │
+│  └──────┬──────┘ └─────┬──────┘ └──────┬──────┘ └─────┬──────┘             │
+│         │              │               │               │                     │
+│         ▼              ▼               ▼               │                     │
+│  ┌─────────────────────────────────────────────────────┴───────────────────┐ │
+│  │  CONSUMERS & SOURCES                                                    │ │
+│  │                                                                         │ │
+│  │  [llm-d Inference Scheduler (EPP)]                                      │ │
+│  │  - Interaction: Library embed (in-process) OR HTTP/gRPC (network)       │ │
+│  │  - Port: 8080/TCP (HTTP) or 50051/TCP (gRPC)                           │ │
+│  │  - Protocol: HTTP or gRPC                                               │ │
+│  │  - Encryption: None                                                     │ │
+│  │  - Auth: None                                                           │ │
+│  │  - Purpose: Cache-aware routing — calls ScoreTokens for pod selection   │ │
+│  │                                                                         │ │
+│  │  [vLLM Model Server Pods]                                               │ │
+│  │  - Port: 5557/TCP                                                       │ │
+│  │  - Protocol: ZMQ PUB/SUB                                                │ │
+│  │  - Encryption: None                                                     │ │
+│  │  - Auth: None                                                           │ │
+│  │  - Purpose: Emit KV-Events (BlockStored, BlockRemoved, AllBlocksCleared)│ │
+│  │                                                                         │ │
+│  │  [SGLang Model Server Pods] (alternative engine)                        │ │
+│  │  - Port: 5557/TCP                                                       │ │
+│  │  - Protocol: ZMQ PUB/SUB                                                │ │
+│  │  - Encryption: None                                                     │ │
+│  │  - Auth: None                                                           │ │
+│  │  - Purpose: Same event format as vLLM                                   │ │
+│  │                                                                         │ │
+│  │  [Prometheus]                                                           │ │
+│  │  - Port: 8080/TCP                                                       │ │
+│  │  - Protocol: HTTP                                                       │ │
+│  │  - Encryption: None                                                     │ │
+│  │  - Auth: None                                                           │ │
+│  │  - Purpose: Scrape /metrics endpoint                                    │ │
+│  └─────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────────┐  │
+│  │  OPTIONAL INTERNAL SERVICES                                             │  │
+│  │                                                                         │  │
+│  │  [Redis / Valkey]                                                       │  │
+│  │  - Port: 6379/TCP                                                       │  │
+│  │  - Protocol: Redis wire protocol                                        │  │
+│  │  - Encryption: None (optional TLS)                                      │  │
+│  │  - Auth: Optional (URL-encoded credentials)                             │  │
+│  │  - Purpose: Distributed block index backend                             │  │
+│  │                                                                         │  │
+│  │  [OpenTelemetry Collector]                                              │  │
+│  │  - Port: 4317/TCP                                                       │  │
+│  │  - Protocol: gRPC (OTLP)                                               │  │
+│  │  - Encryption: None                                                     │  │
+│  │  - Auth: None                                                           │  │
+│  │  - Purpose: Distributed tracing export                                  │  │
+│  │                                                                         │  │
+│  │  [Shared Filesystem (PVC)]                                              │  │
+│  │  - Protocol: POSIX I/O (filesystem mount)                               │  │
+│  │  - Encryption: N/A (kernel-level)                                       │  │
+│  │  - Auth: N/A (filesystem permissions)                                   │  │
+│  │  - Purpose: KV-cache block storage, eviction target                     │  │
+│  └─────────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                    │
+│                                                                              │
+│  [Kubernetes API Server]                                                     │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: ServiceAccount token (operator-controller-manager)                  │
+│  - Purpose: Pod watch/list for auto-discovery of model server pods           │
+│  - RBAC: Role kv-cache-manager → pods: get, list, watch                     │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                           │
+│                                                                              │
+│  [HuggingFace Hub - huggingface.co]                                          │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: HF_TOKEN (Bearer)                                                   │
+│  - Purpose: Tokenizer model downloads                                        │
+│                                                                              │
+│  [S3-Compatible Object Store] (optional)                                     │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: AWS IAM / access key                                                │
+│  - Purpose: Object store backend for FS connector (via NIXL)                 │
+│                                                                              │
+│  [ModelScope] (optional alternative to HuggingFace)                          │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: None                                                                │
+│  - Purpose: Alternative model download source                                │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- Role: kv-cache-manager (namespace-scoped or ClusterRole)
+  - API Groups: ""
+  - Resources: pods
+  - Verbs: get, list, watch
+  - Binding: kv-cache-manager → operator-controller-manager SA
+  - Scope: Namespace-scoped if podNamespace set; ClusterRole if watching all namespaces
+
+Secrets:
+- vllm-p2p-secrets (Opaque) - HuggingFace API token for model/tokenizer downloads
+  - Provisioned by: Manual (Helm values)
+  - Auto-rotate: No
+
+FIPS Notes:
+- Go binary: No GOEXPERIMENT=strictfipsruntime, no CGO_ENABLED=1 for FIPS crypto
+- Python components: python:3.12-slim base (Debian), no FIPS-validated crypto
+- hashlib.md5 used in FS backend obj_backend.py for S3 key sharding (non-cryptographic but FIPS gap)
+- All internal protocols are plaintext (HTTP, gRPC, ZMQ) — relies on network isolation
+- UBI9 runtime base provides OpenSSL for system-level TLS
+
+Security Observations:
+- No authentication on any scoring API endpoint (relies on cluster network isolation)
+- No encryption on internal protocols (HTTP, gRPC, ZMQ all plaintext)
+- No ingress resources — component is cluster-internal only
+- UDS tokenizer uses Unix Domain Socket (pod-local, not network-accessible)
+- ZMQ PUB/SUB has no authentication or authorization
+- Pod auto-discovery uses least-privilege RBAC (pods: get, list, watch only)

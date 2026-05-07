@@ -1,0 +1,52 @@
+sequenceDiagram
+    participant Client as Inference Client
+    participant RBAC as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
+    participant Server as autogluonserver<br/>8080/TCP HTTP
+    participant AG as AutoGluon Engine<br/>(in-process)
+    participant StorageInit as Storage Initializer<br/>(init container)
+    participant Cloud as Cloud Storage<br/>S3/GCS/Azure<br/>443/TCP HTTPS
+
+    Note over StorageInit,Cloud: Flow 2: Model Loading (Pod Init Phase)
+    StorageInit->>Cloud: Download model artifacts<br/>HTTPS/443, TLS 1.2+<br/>AWS IAM / GCP SA / Azure creds
+    Cloud-->>StorageInit: Model artifacts
+    StorageInit->>StorageInit: Write to /mnt/models
+
+    Note over Server,AG: Server Startup
+    Server->>Server: ensure_autogluon_runtime_paths()<br/>Find writable CWD for non-root
+    Server->>AG: PredictorDetect: try TimeSeriesPredictor.load()<br/>then TabularPredictor.load()
+    AG-->>Server: Model loaded (tabular or timeseries)
+    Server->>Server: ModelServer.start()<br/>FastAPI + Uvicorn on 8080
+
+    Note over Client,AG: Flow 1: Tabular Inference (v1 JSON)
+    Client->>RBAC: POST /v1/models/{name}:predict<br/>HTTPS/8443, TLS 1.2+<br/>Auth: Bearer Token
+    RBAC->>RBAC: SubjectAccessReview<br/>Validate token
+    RBAC->>Server: POST /v1/models/{name}:predict<br/>HTTP/8080 (localhost)<br/>Pre-authorized
+    Server->>Server: Parse JSON instances<br/>Build DataFrame
+    Server->>AG: TabularPredictor.predict(df)<br/>or predict_proba(df)
+    AG-->>Server: Predictions array
+    Server-->>RBAC: JSON response<br/>{"predictions": [...]}
+    RBAC-->>Client: JSON response<br/>HTTPS/8443
+
+    Note over Client,AG: Flow 1b: Tabular Inference (v2 Tensor)
+    Client->>RBAC: POST /v2/models/{name}/infer<br/>HTTPS/8443, TLS 1.2+<br/>Auth: Bearer Token
+    RBAC->>Server: Forward (pre-authorized)
+    Server->>Server: Map tensor inputs to DataFrame columns<br/>Validate shapes [batch] or [batch,1]
+    Server->>AG: TabularPredictor.predict(df)
+    AG-->>Server: Predictions
+    Server->>Server: Map to v2 InferResponse<br/>Auto-detect output datatype
+    Server-->>RBAC: v2 InferResponse
+    RBAC-->>Client: v2 InferResponse
+
+    Note over Client,AG: Flow 3: Time Series Inference (v1 JSON only)
+    Client->>RBAC: POST /v1/models/{name}:predict<br/>HTTPS/8443, TLS 1.2+<br/>Auth: Bearer Token
+    RBAC->>Server: Forward (pre-authorized)
+    Server->>Server: ensure_autogluon_runtime_paths()<br/>Parse JSON with item_id, timestamp, target
+    Server->>AG: TimeSeriesPredictor.predict(ts_df,<br/>known_covariates, use_cache=False)
+    AG-->>Server: Forecast DataFrame
+    Server->>Server: Convert to JSON (mean + quantiles)
+    Server-->>RBAC: JSON response
+    RBAC-->>Client: JSON response
+
+    Note over Client,Server: Monitoring
+    Client->>Server: GET /metrics<br/>HTTP/8080 (internal)
+    Server-->>Client: Prometheus metrics<br/>inference latency, request count

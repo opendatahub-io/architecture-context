@@ -200,7 +200,8 @@ async def run_all_phases(args) -> None:
             max_concurrent=max_concurrent,
             limit=None,
             force_regenerate=False,
-            model=getattr(args, 'model', 'opus')
+            export_png=getattr(args, 'export_png', False),
+            model=getattr(args, 'model', 'opus'),
         )
         await run_generate_diagrams_phase(diagrams_args)
 

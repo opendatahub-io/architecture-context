@@ -1,0 +1,119 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 8080/TCP (HTTP) or 8085/TCP (gRPC)                      │
+│         │ Protocol: HTTP / gRPC                                          │
+│         │ Encryption: None (runtime-dependent)                           │
+│         │ Auth: None (delegated to platform)                             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MODEL SERVING PLATFORM (Trust Boundary)                                │
+│                                                                          │
+│  [KServe / ModelMesh]                                                    │
+│  - Manages pod deployment, routing, and ingress                         │
+│  - Provides TLS termination and authentication via kube-rbac-proxy      │
+│  - External port varies (typically 443/TCP HTTPS)                       │
+│         │                                                                │
+│         │ Port: 8080/TCP (HTTP) and 8085/TCP (gRPC)                     │
+│         │ Protocol: HTTP / gRPC                                          │
+│         │ Encryption: None (pod-internal)                                │
+│         │ Auth: Platform-enforced (kube-rbac-proxy)                      │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  POD-INTERNAL (Trusted - same pod)                                      │
+│                                                                          │
+│  [Caikit Runtime]                                                        │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: {model-serving-sa}                                    │
+│  - HTTP Server: 0.0.0.0:8080                                            │
+│  - gRPC Server: 0.0.0.0:8085                                            │
+│         │                                                                │
+│         │ In-process (Python library call)                               │
+│         │ No network hop                                                 │
+│         ▼                                                                │
+│  [caikit-nlp Module]                                                     │
+│  - Text Generation (local or remote TGIS)                               │
+│  - Embedding (sentence-transformers)                                     │
+│  - Reranking (cross-encoder)                                             │
+│  - Classification (sequence/token)                                       │
+│  - Tokenization                                                          │
+│         │                                                                │
+│         ├─── (Local inference path)                                      │
+│         │    │                                                           │
+│         │    │ In-process (PyTorch)                                      │
+│         │    │ No network hop                                            │
+│         │    ▼                                                           │
+│         │  [Local PyTorch Model]                                         │
+│         │  - GPU/CPU memory                                              │
+│         │  - HuggingFace Transformers / sentence-transformers            │
+│         │                                                                │
+│         ├─── (Remote inference path)                                     │
+│         │    │                                                           │
+│         │    │ Port: configurable (e.g., 8033, 8034)/TCP                │
+│         │    │ Protocol: gRPC                                            │
+│         │    │ Encryption: Optional TLS (ca_cert, client_cert,          │
+│         │    │             client_key configurable)                      │
+│         │    │ Auth: None / mTLS                                         │
+│         │    ▼                                                           │
+│         │  [TGIS Backend]                                                │
+│         │  - Text Generation Inference Server                            │
+│         │  - Separate pod/service                                        │
+│         │                                                                │
+│         └─── (Distributed training path - optional)                     │
+│              │                                                           │
+│              │ Port: 29550/TCP                                           │
+│              │ Protocol: TCP (gloo/nccl)                                 │
+│              │ Encryption: None                                          │
+│              │ Auth: None                                                │
+│              ▼                                                           │
+│            [PyTorch Distributed Peers]                                   │
+│            - localhost only (torchrun elastic)                            │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [HuggingFace Hub - huggingface.co]                                     │
+│  - Purpose: Model/tokenizer downloads (when allow_downloads=true)       │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: None / HuggingFace Token                                        │
+│  - Default: Downloads DISABLED (allow_downloads: false)                  │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No Kubernetes RBAC defined by caikit-nlp
+- RBAC is managed by the model serving platform (KServe/ModelMesh)
+- Pod runs under the ServiceAccount provided by the deployment platform
+
+Secrets:
+- TGIS TLS certs (TLS certificates) - mTLS with TGIS backend
+  - ca_cert_file: CA certificate for TGIS server verification
+  - client_cert_file: Client certificate for mTLS
+  - client_key_file: Client private key for mTLS
+  - Provisioned by: Manual / platform config
+  - Auto-Rotate: No
+
+Authentication & Authorization:
+- HTTP API (8080): No auth implemented by caikit-nlp
+- gRPC API (8085): No auth implemented by caikit-nlp
+- Auth enforcement delegated to model serving platform:
+  - KServe: kube-rbac-proxy sidecar
+  - ModelMesh: Platform-level auth
+- TGIS Backend: Optional mTLS (configurable per connection)
+
+Security Controls:
+- Model downloads disabled by default (allow_downloads: false)
+- trust_remote_code defaults to false for sentence-transformers
+- Path validation in PEFT config prevents directory traversal
+- No direct crypto imports - relies on system OpenSSL (UBI 9)
+- FIPS compliance inherited from UBI 9 base image
+
+Build Hermeticity:
+- WARNING: No lock files found (no rpms.lock.yaml, no pip lock file)
+- pip install without --require-hashes
+- No Hermeto/cachi2 prefetch integration
+- Dependencies resolved at build time from PyPI (non-hermetic)

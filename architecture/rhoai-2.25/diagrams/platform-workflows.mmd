@@ -1,0 +1,231 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as ODH Dashboard
+    participant K8sAPI as K8s API Server
+    participant RhodsOp as rhods-operator
+    participant KServeCtrl as KServe Controller
+    participant Knative as Knative Serving
+    participant ODHModelCtrl as odh-model-controller
+    participant AuthorinoSvc as Authorino
+    participant S3 as S3 Storage
+    participant ISVCPod as ISVC Pod
+    participant TrustyAISvc as TrustyAI
+    participant Client as External Client
+    participant Gateway as OpenShift Route
+
+    Note over User,Client: Workflow 1: Model Serving (KServe Serverless)
+
+    User->>Dashboard: Login via OpenShift OAuth
+    Dashboard-->>User: Show Data Science Projects
+    User->>Dashboard: Create InferenceService via UI
+    Dashboard->>K8sAPI: POST InferenceService CR<br/>(Bearer token passthrough)
+
+    K8sAPI->>RhodsOp: Webhook: mutate ISVC<br/>(HardwareProfile GPU injection)
+    RhodsOp-->>K8sAPI: Mutated ISVC with resources
+
+    K8sAPI->>KServeCtrl: Watch: new InferenceService
+    KServeCtrl->>K8sAPI: Create Knative Service<br/>(autoscaling config)
+    K8sAPI->>Knative: Reconcile Knative Service
+    Knative->>K8sAPI: Create Pod with revision
+
+    K8sAPI->>KServeCtrl: Webhook: mutate Pod
+    Note over KServeCtrl: Inject storage-initializer<br/>init container +<br/>kserve-agent sidecar
+
+    K8sAPI->>ISVCPod: Start init container
+    ISVCPod->>S3: Download model artifacts<br/>(HTTPS/443, AWS IAM)
+    Note over ISVCPod: Model loaded, runtime ready
+
+    K8sAPI->>ODHModelCtrl: Watch: InferenceService ready
+    ODHModelCtrl->>K8sAPI: Create Route + NetworkPolicy
+    ODHModelCtrl->>K8sAPI: Create ServiceMonitor
+    ODHModelCtrl->>AuthorinoSvc: Create AuthConfig<br/>(if mesh enabled)
+
+    K8sAPI->>TrustyAISvc: Watch: ISVC (if TrustyAI enabled)
+    TrustyAISvc->>K8sAPI: Patch ISVC with<br/>payload logging sidecar
+
+    Note over Gateway,ISVCPod: Model endpoint ready for inference
+    Client->>Gateway: POST predict<br/>(HTTPS/443, TLS)
+    Gateway->>ISVCPod: Forward request<br/>(mTLS if mesh enabled)
+    ISVCPod-->>Gateway: Prediction result
+    Gateway-->>Client: JSON response (HTTPS)
+
+    User->>Dashboard: View model metrics
+    Dashboard->>K8sAPI: Query ISVC status + metrics
+    Dashboard-->>User: Model health + latency
+
+%% --- Workflow 2 separator ---
+
+sequenceDiagram
+    participant User2 as Data Scientist
+    participant KServeCtrl2 as KServe Controller
+    participant K8sAPI2 as K8s API Server
+    participant GatewayAPI as Gateway API
+    participant Envoy as Envoy Gateway
+    participant EPP as llm-d EPP
+    participant KVCache as llm-d KV-Cache
+    participant DecodePod as Decode Worker (vLLM)
+    participant PrefillPod as Prefill Worker (vLLM)
+    participant RoutingSidecar as Routing Sidecar
+    participant Client2 as External Client
+
+    Note over User2,Client2: Workflow 2: LLM Inference (Disaggregated P/D via llm-d) [New in 2.25]
+
+    User2->>K8sAPI2: Create LLMInferenceService CR
+    K8sAPI2->>KServeCtrl2: Watch: new LLMInferenceService
+
+    KServeCtrl2->>K8sAPI2: Create InferencePool
+    KServeCtrl2->>K8sAPI2: Create InferenceModel
+    KServeCtrl2->>K8sAPI2: Create Deployments<br/>(prefill + decode workers)
+    KServeCtrl2->>K8sAPI2: Create Gateway HTTPRoute
+    KServeCtrl2->>K8sAPI2: Create EPP StatefulSet
+
+    Note over EPP: EPP connects to pods via<br/>ZMQ for KV-cache events
+
+    EPP->>KVCache: Subscribe to KV-cache<br/>state updates (ZMQ)
+
+    Client2->>Envoy: POST /v1/chat/completions<br/>(HTTPS/443)
+    Envoy->>EPP: ext-proc gRPC call<br/>(select backend)
+
+    Note over EPP: Plugin pipeline:<br/>1. Filter by role labels<br/>2. Score by KV-cache prefix<br/>3. Score by load<br/>4. Select optimal pod
+
+    alt Cache hit on decode pod
+        EPP-->>Envoy: Route to decode pod<br/>(direct)
+        Envoy->>DecodePod: Forward request
+        DecodePod-->>Client2: Stream response
+    else Cache miss - P/D split needed
+        EPP-->>Envoy: Route to decode pod +<br/>x-prefiller-host-port header
+        Envoy->>DecodePod: Forward request
+        DecodePod->>RoutingSidecar: Intercept request
+        RoutingSidecar->>PrefillPod: Forward to prefiller<br/>(NIXL v2 protocol)
+        PrefillPod->>PrefillPod: Compute KV-cache blocks
+        PrefillPod->>DecodePod: Transfer KV-cache<br/>(RDMA/NIXL)
+        DecodePod->>DecodePod: Decode with transferred cache
+        DecodePod-->>Client2: Stream response (SSE)
+    end
+
+%% --- Workflow 3 separator ---
+
+sequenceDiagram
+    participant User3 as Data Scientist
+    participant Dashboard3 as ODH Dashboard
+    participant DSPAPI as DSP API Server
+    participant MariaDB as MariaDB
+    participant ArgoCtrl as Argo Controller
+    participant DriverPod as DSP Driver
+    participant LauncherPod as DSP Launcher
+    participant MLMD as ML Metadata
+    participant PersistAgent as Persistence Agent
+    participant S3_3 as S3 Storage
+
+    Note over User3,S3_3: Workflow 3: ML Pipeline Execution
+
+    User3->>Dashboard3: Create pipeline run via UI
+    Dashboard3->>DSPAPI: Submit pipeline run<br/>(Bearer token passthrough)
+
+    DSPAPI->>MariaDB: Validate + store pipeline def
+    DSPAPI->>ArgoCtrl: Create Argo Workflow CR
+
+    ArgoCtrl->>ArgoCtrl: Schedule workflow pods
+
+    loop For each pipeline step
+        ArgoCtrl->>DriverPod: Create driver container
+        DriverPod->>MLMD: Check pipeline cache<br/>(skip if cached)
+        DriverPod->>DriverPod: Resolve inputs,<br/>generate pod specs
+        DriverPod->>LauncherPod: Create launcher container
+
+        LauncherPod->>LauncherPod: Execute user code
+        LauncherPod->>S3_3: Upload artifacts<br/>(HTTPS/443)
+        LauncherPod->>MLMD: Publish metadata +<br/>artifact references
+    end
+
+    PersistAgent->>ArgoCtrl: Watch Argo Workflow status
+    PersistAgent->>DSPAPI: Sync status back<br/>to API server
+
+    User3->>Dashboard3: View pipeline run results
+    Dashboard3->>DSPAPI: Query run status + artifacts
+    Dashboard3-->>User3: Pipeline results + artifact links
+
+%% --- Workflow 4 separator ---
+
+sequenceDiagram
+    participant User4 as Data Scientist
+    participant Notebook as Jupyter Notebook
+    participant CodeFlareSDK as CodeFlare SDK
+    participant K8sAPI4 as K8s API Server
+    participant RhodsOp4 as rhods-operator
+    participant Kueue4 as Kueue
+    participant KubeRay4 as KubeRay Operator
+    participant CodeFlareOp4 as CodeFlare Operator
+    participant RayHead as Ray Head Pod
+    participant RayWorker as Ray Worker Pods
+    participant TrainingOp4 as Training Operator
+
+    Note over User4,TrainingOp4: Workflow 4: Distributed Training with Quota Management
+
+    User4->>Notebook: Write training code
+    Notebook->>CodeFlareSDK: Create RayCluster/RayJob<br/>(with Kueue local queue label)
+    CodeFlareSDK->>K8sAPI4: POST RayCluster CR
+
+    K8sAPI4->>RhodsOp4: Webhook: validate Kueue<br/>queue-name label
+    RhodsOp4-->>K8sAPI4: Validated
+
+    K8sAPI4->>Kueue4: Watch: new workload
+    Kueue4->>Kueue4: Create Workload object<br/>Evaluate quota against<br/>ClusterQueue
+
+    alt Quota available
+        Kueue4->>K8sAPI4: Admit workload<br/>(set admission status)
+        K8sAPI4->>KubeRay4: Watch: admitted RayCluster
+        KubeRay4->>K8sAPI4: Create head + worker pods
+
+        K8sAPI4->>CodeFlareOp4: Webhook: mutate pods
+        Note over CodeFlareOp4: Inject oauth-proxy sidecar<br/>Generate mTLS certificates<br/>Create NetworkPolicies<br/>Create Route for dashboard
+
+        RayHead->>RayWorker: Establish Ray cluster<br/>(mTLS, self-signed CA)
+        Note over RayHead,RayWorker: Distributed training running
+    else Quota exhausted
+        Kueue4->>Kueue4: Queue workload<br/>(pending admission)
+        Note over Kueue4: Workload waits for<br/>quota availability
+    end
+
+    Note over User4,TrainingOp4: Alternative: PyTorchJob / MPIJob path
+
+    User4->>K8sAPI4: Create PyTorchJob CR
+    K8sAPI4->>Kueue4: Evaluate quota
+    Kueue4->>K8sAPI4: Admit workload
+    K8sAPI4->>TrainingOp4: Watch: admitted PyTorchJob
+    TrainingOp4->>K8sAPI4: Create launcher +<br/>worker pods<br/>(gang scheduling)
+
+%% --- Workflow 5 separator ---
+
+sequenceDiagram
+    participant User5 as Data Scientist
+    participant Dashboard5 as ODH Dashboard
+    participant ModelRegAPI as Model Registry API
+    participant MLMD5 as ML Metadata Backend
+    participant S3_5 as S3 / OCI Storage
+    participant K8sAPI5 as K8s API Server
+    participant CSIInit as CSI Storage Initializer
+    participant ModelRegCtrl as Model Registry Controller
+    participant KServe5 as KServe
+
+    Note over User5,KServe5: Workflow 5: Model Registry to Serving
+
+    User5->>Dashboard5: Register model in<br/>Model Registry UI
+    Dashboard5->>ModelRegAPI: POST model version<br/>(storage URI, metadata)
+    ModelRegAPI->>MLMD5: Store model metadata +<br/>artifact references
+    ModelRegAPI-->>Dashboard5: Model registered
+
+    User5->>Dashboard5: Deploy model from registry
+    Dashboard5->>K8sAPI5: Create InferenceService<br/>(storageUri: model-registry://...)
+
+    K8sAPI5->>CSIInit: CSI volume mount triggered
+    CSIInit->>ModelRegAPI: Resolve model-registry:// URI
+    ModelRegAPI-->>CSIInit: S3 path + credentials
+    CSIInit->>S3_5: Download model artifact<br/>(HTTPS/443)
+    Note over CSIInit: Model available on<br/>CSI ephemeral volume
+
+    K8sAPI5->>ModelRegCtrl: Watch: ISVC with<br/>registry labels
+    ModelRegCtrl->>ModelRegAPI: Fetch model metadata
+    ModelRegCtrl->>K8sAPI5: Reconcile ISVC labels<br/>(lineage tracking)
+
+    K8sAPI5->>KServe5: Normal ISVC reconciliation<br/>(Workflow 1 continues)
