@@ -358,6 +358,33 @@ def collect_architectures(
                 summary['files_created'].append(str(prompt_target))
                 print(f"    ✓ prompts/{component_name}.md")
 
+            # Copy arch-analyzer JSON if present
+            json_file = arch_file.parent / "component-architecture.json"
+            if json_file.exists():
+                json_target = platform_output_dir / f"{component_name}.json"
+                shutil.copy2(json_file, json_target)
+                summary['files_created'].append(str(json_target))
+                print(f"    ✓ {component_name}.json")
+
+            # Copy CRD schemas if present
+            schemas_dir = arch_file.parent / "contracts" / "schemas"
+            if schemas_dir.exists():
+                schema_files = list(schemas_dir.rglob("*.json"))
+                if schema_files:
+                    target_schemas = (
+                        platform_output_dir / "contracts"
+                        / "schemas" / component_name
+                    )
+                    target_schemas.mkdir(parents=True, exist_ok=True)
+                    for schema_file in schema_files:
+                        schema_target = target_schemas / schema_file.name
+                        shutil.copy2(schema_file, schema_target)
+                        summary['files_created'].append(str(schema_target))
+                    print(
+                        f"    ✓ contracts/schemas/{component_name}/"
+                        f" ({len(schema_files)} schemas)"
+                    )
+
         # Create index
         create_index_readme(platform_output_dir, platform, components)
         summary['files_created'].append(str(platform_output_dir / 'README.md'))
