@@ -4,6 +4,7 @@ from pathlib import Path
 
 from lib.agent_runner import get_model_display_name, run_agents_concurrently
 from lib.component_discovery import get_component_map_metadata
+from lib.fetch import _ensure_arch_query
 
 
 async def run_generate_platform_architecture_phase(args) -> None:
@@ -98,6 +99,9 @@ async def run_generate_platform_architecture_phase(args) -> None:
     if not needs_generation:
         print("All platforms already have PLATFORM.md!")
         return
+
+    # Ensure arch-query is built so skills can call it
+    await _ensure_arch_query()
 
     # Prepare agent jobs
     model_display = get_model_display_name(args.model)

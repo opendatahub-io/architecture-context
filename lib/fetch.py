@@ -139,6 +139,134 @@ async def _ensure_gh_org_clone() -> str:
     return str(local_gh_org_clone)
 
 
+async def _ensure_arch_analyzer() -> str:
+    """
+    Ensure arch-analyzer is available, installing it if necessary.
+
+    Returns:
+        Path to the arch-analyzer executable
+    """
+    arch_analyzer_name = "arch-analyzer"
+
+    # First check if it's already in PATH
+    arch_analyzer_path = shutil.which(arch_analyzer_name)
+    if arch_analyzer_path:
+        print(f"Found {arch_analyzer_name} in PATH: {arch_analyzer_path}")
+        return arch_analyzer_name
+
+    # Check if it's already installed in ./bin
+    local_bin = Path("bin").absolute()
+    local_arch_analyzer = local_bin / arch_analyzer_name
+    if local_arch_analyzer.exists():
+        print(f"Found {arch_analyzer_name} in ./bin: {local_arch_analyzer}")
+        os.environ["PATH"] = f"{local_bin}:{os.environ.get('PATH', '')}"
+        return str(local_arch_analyzer)
+
+    # Not found - need to clone and build
+    print(f"{arch_analyzer_name} not found in PATH or ./bin")
+    print("Installing arch-analyzer from https://github.com/ugiordan/architecture-analyzer")
+
+    tmp_dir = Path("tmp").absolute()
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    clone_dir = tmp_dir / "architecture-analyzer"
+
+    env = _prepare_env()
+
+    # Clone the repository if not already present
+    if not clone_dir.exists():
+        print(f"Cloning to {clone_dir}...")
+        proc = await asyncio.create_subprocess_exec(
+            "git", "clone",
+            "https://github.com/ugiordan/architecture-analyzer",
+            str(clone_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"Failed to clone architecture-analyzer: {stderr.decode()}")
+        print("Clone successful")
+    else:
+        print(f"Using existing clone at {clone_dir}")
+
+    # Build the project
+    print("Building arch-analyzer...")
+    local_bin.mkdir(parents=True, exist_ok=True)
+    proc = await asyncio.create_subprocess_exec(
+        "go", "build", "-o", str(local_arch_analyzer), "./cmd/arch-analyzer",
+        cwd=str(clone_dir),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(f"Failed to build arch-analyzer: {stderr.decode()}")
+
+    if not local_arch_analyzer.exists():
+        raise RuntimeError(
+            f"Build succeeded but binary not found"
+            f" at {local_arch_analyzer}"
+        )
+
+    print(f"Successfully built and installed arch-analyzer to {local_arch_analyzer}")
+
+    os.environ["PATH"] = f"{local_bin}:{os.environ.get('PATH', '')}"
+
+    return str(local_arch_analyzer)
+
+
+async def _ensure_arch_query() -> str:
+    """
+    Ensure arch-query is available, building from in-repo source if necessary.
+
+    Returns:
+        Path to the arch-query executable
+    """
+    name = "arch-query"
+
+    path = shutil.which(name)
+    if path:
+        print(f"Found {name} in PATH: {path}")
+        return name
+
+    local_bin = Path("bin").absolute()
+    local_binary = local_bin / name
+    if local_binary.exists():
+        print(f"Found {name} in ./bin: {local_binary}")
+        os.environ["PATH"] = f"{local_bin}:{os.environ.get('PATH', '')}"
+        return str(local_binary)
+
+    print(f"{name} not found in PATH or ./bin — building from src/arch-query")
+    src_dir = Path("src/arch-query").absolute()
+    if not src_dir.exists():
+        raise RuntimeError(f"Source directory not found: {src_dir}")
+
+    local_bin.mkdir(parents=True, exist_ok=True)
+    env = _prepare_env()
+    proc = await asyncio.create_subprocess_exec(
+        "go", "build", "-o", str(local_binary), ".",
+        cwd=str(src_dir),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(f"Failed to build {name}: {stderr.decode()}")
+
+    if not local_binary.exists():
+        raise RuntimeError(
+            f"Build succeeded but binary not found at {local_binary}"
+        )
+
+    print(f"Successfully built {name} to {local_binary}")
+    os.environ["PATH"] = f"{local_bin}:{os.environ.get('PATH', '')}"
+    return str(local_binary)
+
+
 async def _pull_one_repo(repo_path: Path, env: dict) -> str:
     """Pull a single repo. Returns a status line."""
     proc = await asyncio.create_subprocess_exec(

@@ -1,12 +1,12 @@
 ---
 name: aggregate-platform-architecture
 description: Combine multiple component architecture summaries into a platform-level architecture document. Use after generating component summaries to create a wholistic platform view.
-allowed-tools: Read, Glob, Grep, Write, Bash(ls *), Bash(find *), Bash(python *)
+allowed-tools: Read, Glob, Grep, Write, Bash(ls *), Bash(find *), Bash(python *), Bash(*/arch-query *)
 ---
 
 # Aggregate Platform Architecture
 
-Combine component architecture summaries into a comprehensive platform-level architecture document.
+Combine component architecture summaries into a comprehensive platform-level architecture document focused on synthesis and cross-cutting analysis.
 
 ## Arguments
 
@@ -25,149 +25,89 @@ When invoked by the orchestrator, all arguments are provided on the command line
 
 **IMPORTANT - TOOL USAGE**:
 - Do NOT call `ToolSearch`. You already have access to: Bash, Read, Write, Glob, Grep.
+- Use `arch-query` via Bash for structured data extraction — do NOT manually read and parse component markdown files.
 - When reading multiple files, use **parallel tool calls** — issue multiple Read calls in a single turn rather than one at a time.
 
-### Step 1: Discover Component Summaries
+### Step 1: Load Structured Data via arch-query
 
-List all `.md` files in the platform directory, excluding `README.md` and `PLATFORM.md`:
+Extract all structured platform data in a single command:
 
 ```bash
-find {platform_dir} -maxdepth 1 -name "*.md" -type f ! -name "README.md" ! -name "PLATFORM.md" | sort
+arch-query platform-summary --base-dir={architecture_base_dir} --version={version_dir_name} --output json
 ```
 
-Where `{platform_dir}` is the value of `--platform-dir`.
+Where:
+- `{architecture_base_dir}` is the parent of `{platform_dir}` (e.g., if `--platform-dir=/data/architecture/rhoai.next`, use `--base-dir=/data/architecture`)
+- `{version_dir_name}` is the directory name (e.g., `rhoai.next`)
 
-If no files found, output an error and stop:
+This returns a single JSON object containing all components, CRDs, services, endpoints, dependencies, RBAC, controller watches, network policies, and dockerfiles — already aggregated across all components. You do NOT need to read individual component files to get this data.
+
+If `arch-query` is not available, fall back to reading component files directly (see Fallback section below).
+
+### Step 2: Identify Patterns and Relationships
+
+Using the JSON data from Step 1, analyze cross-cutting patterns:
+
+1. **Dependency graph**: From `internal_deps`, build a graph of which components depend on which. Identify central components (most dependents pointing to them) and leaf components.
+
+2. **Integration patterns**: From `internal_deps` and `services`, identify recurring integration patterns (e.g., CRD-based orchestration, gRPC service mesh, REST API composition).
+
+3. **Namespace topology**: From component metadata and services, determine how components are deployed across namespaces.
+
+4. **Authentication patterns**: From component metadata, identify which auth mechanisms are used and by which components (Bearer tokens, mTLS, kube-rbac-proxy, etc.).
+
+5. **Container security patterns**: From `dockerfiles` data, identify common patterns (non-root execution, FIPS compliance, UBI base images, capability drops).
+
+6. **HA patterns**: From component metadata, identify replication and leader election patterns.
+
+### Step 3: Read Architectural Analysis Sections
+
+For synthesis that requires the free-form prose from component docs, selectively read the "Architectural Analysis" sections from key components. Use `arch-query component <name> --base-dir={architecture_base_dir} --output raw` to read specific components, or grep for analysis sections:
+
+```bash
+grep -l "Architectural Analysis" {platform_dir}/*.md
 ```
-No component architecture files found in {platform_dir}.
-Run collect-architectures first.
-```
 
-### Step 2: Read Component Summaries
+Then read only those sections from the most architecturally significant components (operators, controllers, core services). Do NOT read every component file — focus on components identified as central in Step 2.
 
-Read every component `.md` file found in Step 1. Use parallel Read calls for efficiency.
+### Step 4: Synthesize Data Flows
 
-For each file, extract:
-1. Component name from the H1 heading
-2. Metadata (distribution, version, deployment type)
-3. All structured table data
+Identify 3-5 key platform workflows by tracing dependency chains and service interactions from the structured data. For each workflow:
+1. Start from a user-facing entry point (dashboard, API, CLI)
+2. Trace through internal dependencies and services
+3. Document the component chain with actions at each step
 
-### Step 3: Extract Structured Data
-
-From each component markdown, parse:
-- **Metadata**: Language, repository URL (from the Metadata section of each component)
-- **Dependencies**: "### Internal Platform Dependencies" tables
-- **Network Services**: "### Services" tables
-- **Security**: RBAC tables, secrets, auth policies
-- **TLS Configuration**: TLS details from Security sections (port, TLS type, certificate source)
-- **Container Security**: Security context patterns (non-root, FIPS, capabilities, base images)
-- **Integration Points**: "## Integration Points" tables
-- **APIs**: CRDs, HTTP endpoints, gRPC services (all three types)
-- **Ingress/Egress**: Network architecture tables
-- **Monitoring**: Prometheus metrics endpoints (port, path, auth), health probes (liveness/readiness/startup URLs), distributed tracing configuration
-- **Sub-Component Details**: When present, extract the sub-component inventory (component name, intent, Dockerfile, port, language) — these represent multiple deployable artifacts within a single repo (BFF sidecars, cmd/ binaries, build variants)
-- **Deployment Manifests**: When present, extract kustomize structure (base/overlay paths), parameterization sources (params.env, configMapGenerator), and distribution variants (ODH vs RHOAI differences)
-- **Architectural Analysis**: When present, capture the free-form architectural observations — design patterns, risks, trade-offs, and notable findings that the agent synthesized during component analysis
-
-### Step 4: Build Dependency Graph
-
-Analyze component dependencies to understand relationships:
-1. Create a list of all components found
-2. For each component, list what it depends on (from "Internal Platform Dependencies")
-3. Identify central components (most dependencies pointing to them)
-4. Identify leaf components (few/no dependents)
-
-### Step 5: Aggregate Network Architecture
-
-Combine network information:
-1. Merge all services tables (deduplicate if same service appears in multiple components)
-2. List all ingress points (external entry points to the platform)
-3. List all egress destinations (external services the platform calls)
-4. Identify service mesh configuration (mTLS modes, peer authentication)
-
-### Step 5a: Aggregate Monitoring & Observability
-
-Combine observability information:
-1. Merge all Prometheus metrics endpoint tables (component, port, path, auth)
-2. Merge health probe information (liveness, readiness, startup URLs per component)
-3. Merge distributed tracing configuration (protocol, collector destination)
-
-### Step 6: Aggregate Security
-
-Combine security information:
-1. Merge all RBAC tables (cluster roles, role bindings)
-2. List all secrets used across components
-3. Identify authentication patterns (Bearer tokens, mTLS, kube-rbac-proxy, etc.)
-4. Summarize authorization policies
-5. Aggregate per-component TLS configuration (port, TLS type, certificate source)
-6. Identify container security patterns (non-root execution, FIPS compliance, UBI base images, capability drops, read-only filesystems)
-
-### Step 6a: Aggregate Deployment Details
-
-Combine deployment information:
-1. High availability configuration per component (replicas, leader election, stateless scaling)
-2. Disconnected/air-gapped support details (RELATED_IMAGE pattern, OLM relatedImages, digest pinning)
-3. Multi-architecture support matrix (which architectures each component supports, exceptions)
-
-### Step 6b: Aggregate Sub-Component Architecture
-
-For components with Sub-Component Details sections:
-1. Build a platform-wide sub-component inventory showing which repos produce multiple deployable artifacts
-2. Aggregate the total container image count (sum of Konflux Dockerfiles across all components)
-3. Identify architectural patterns across sub-components (e.g., BFF sidecar pattern, multi-binary cmd/ pattern)
-
-### Step 6c: Aggregate Deployment Manifest Patterns
-
-For components with Deployment Manifests sections:
-1. Identify common kustomize patterns across the platform (configMapGenerator + params.env, overlays, namespace prefixing)
-2. Aggregate distribution variant information — which components have ODH vs RHOAI differences and what diverges
-3. Document the manifest consumption pipeline: component repos → `get_all_manifests.sh` → operator `./opt/manifests/` → cluster deployment
-
-### Step 6d: Synthesize Architectural Analysis
-
-For components with Architectural Analysis sections:
-1. Read each component's free-form analysis and identify cross-cutting themes (shared patterns, common risks, recurring design decisions)
-2. Synthesize platform-level observations that emerge from reading all component analyses together
-3. Note architectural tensions or inconsistencies across components (e.g., different auth approaches for similar services)
-
-### Step 7: Synthesize Platform Architecture
+### Step 5: Write PLATFORM.md
 
 Follow the template exactly as defined in [platform template](references/platform-template.md). Read that file before writing.
 
 **Structural rules:**
 - Use exactly the section headings and table column headers from the template — do not rename, reorder, number, or add sections
-- If a section has no data, keep the heading and empty table header row, omit data rows
+- If a section has no data, keep the heading and write "None identified." as the content
 - The H1 must be `# Platform: [Distribution Name] [Version]`
 - The `## Version-Specific Changes ([version])` section heading includes the version in parentheses
 
-**Precision requirements for table values:**
-- **Port numbers**: `8443/TCP`, `9090/TCP` (not "HTTPS port")
-- **Protocols**: `HTTP`, `HTTPS`, `gRPC` (not "network")
-- **Encryption**: `TLS 1.3`, `TLS 1.2+`, `mTLS`, `plaintext` (not "encrypted")
-- **Authentication**: `Bearer Token (JWT)`, `kube-rbac-proxy (SAR)`, `mTLS` (not "authenticated")
+**What PLATFORM.md is NOT:**
+- It is NOT a flat dump of per-component data. All CRDs, endpoints, services, RBAC, secrets, TLS config, Prometheus endpoints, and health probes are queryable via `arch-query` and the component `.md`/`.json` files.
+- PLATFORM.md focuses on **synthesis**: patterns, relationships, workflows, architectural analysis, and cross-cutting observations that only emerge from reading all components together.
 
-### Step 8: Write Output File
-
-Write the output file using the filename from the `--output` flag (default: `PLATFORM.md`). The file goes in `{platform_dir}` — i.e., `{platform_dir}/PLATFORM.md`.
-
-**Important**: Populate the "Generated By" field in the Metadata section:
+**Populate the "Generated By" field in the Metadata section:**
 - If `--generated-by` was provided, use that exact string followed by ` on YYYY-MM-DD` (use `date +%Y-%m-%d` to get the date)
 - Otherwise, use your model name (e.g., "Claude Opus 4.6") followed by ` on YYYY-MM-DD`
-- Example: `**Generated By**: Claude Opus 4.6 on 2026-03-13`
 
-**Important**: Use `--distribution` and `--version` arguments (if provided) for the H1 heading and Metadata fields. If not provided, derive distribution from the directory name and set version to `unknown`.
+Write the output file to `{platform_dir}/{output_filename}`.
 
-### Step 8a: Validate Output
+### Step 6: Validate Output
 
-After writing, run the validation script to catch template conformance errors:
+After writing, run the validation script:
 
 ```bash
 python ${CLAUDE_SKILL_DIR}/scripts/validate_platform.py {platform_dir}/PLATFORM.md
 ```
 
-If validation fails, read the errors, fix the markdown, re-write the file, and re-validate. Do not proceed to Step 9 until validation passes. Warnings (e.g., extra sections) are informational — fix if straightforward, otherwise note in the report.
+If validation fails, read the errors, fix the markdown, re-write the file, and re-validate. Do not proceed to Step 7 until validation passes.
 
-### Step 9: Report Results
+### Step 7: Report Results
 
 Output a summary:
 
@@ -181,22 +121,26 @@ Components analyzed: {count}
 File created: {platform_dir}/PLATFORM.md
 
 Summary:
-- {N} components aggregated
-- {N} sub-components inventoried
-- {N} CRDs documented
-- {N} namespaces identified
-- {N} external dependencies found
-- {N} internal integrations mapped
-- {N} gRPC services documented
-- {N} Prometheus endpoints cataloged
-- {N} kustomize patterns identified
-- {N} languages represented
+- {N} components analyzed
+- {N} integration patterns identified
+- {N} key workflows documented
+- {N} namespaces mapped
+- {N} security patterns identified
 ```
+
+## Fallback: Without arch-query
+
+If `arch-query` is not available (command not found), fall back to reading component files:
+
+1. List `.md` files: `find {platform_dir} -maxdepth 1 -name "*.md" -type f ! -name "README.md" ! -name "PLATFORM.md" | sort`
+2. Read component files using parallel Read calls
+3. Extract structured data from markdown tables
+4. Continue from Step 2
+
+This is slower but produces the same result.
 
 ## Notes
 
-- This skill parses markdown tables to extract structured data from component summaries
-- The aggregation focuses on platform-level relationships, not repeating all component details
-- The output is optimized for generating platform-wide diagrams
-- Pay attention to cross-component integration patterns
-- Accuracy > speed — this is a source of truth document
+- PLATFORM.md is a synthesis document, not a data dump. Per-component data lives in the component `.md` and `.json` files and is queryable via `arch-query`.
+- The aggregation focuses on platform-level relationships, patterns, and analysis.
+- Accuracy > speed — this is a source of truth document.

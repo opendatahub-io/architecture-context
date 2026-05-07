@@ -14,6 +14,7 @@ from lib.phases.discover import run_discover_components_phase
 from lib.phases.fetch import run_fetch_phase
 from lib.phases.manifest import run_manifest_phase
 from lib.phases.platform import run_generate_platform_architecture_phase
+from lib.phases.static_analysis import run_static_analysis_phase
 
 
 async def run_all_phases(args) -> None:
@@ -69,6 +70,7 @@ async def run_all_phases(args) -> None:
         branch=branch,
         suffix=suffix,
         exclude=None,
+        pull=getattr(args, 'pull', False),
     )
     await run_fetch_phase(fetch_args)
 
@@ -94,6 +96,17 @@ async def run_all_phases(args) -> None:
         model=getattr(args, 'model', 'opus'),
     )
     await run_discover_components_phase(discover_args)
+
+    # Phase 2c: Static analysis (arch-analyzer)
+    static_analysis_args = Namespace(
+        platform=args.platform,
+        architecture_dir="architecture",
+        max_concurrent=10,
+        component=None,
+        force=False,
+        skip_schemas=False,
+    )
+    await run_static_analysis_phase(static_analysis_args)
 
     # Phase 3: Generate component architectures
     max_concurrent = getattr(args, 'max_concurrent', 5)
@@ -195,6 +208,8 @@ async def main(args) -> None:
         await run_manifest_phase(args)
     elif args.command == "discover-components":
         await run_discover_components_phase(args)
+    elif args.command == "static-analysis":
+        await run_static_analysis_phase(args)
     elif args.command == "generate-architecture":
         await run_generate_architecture_phase(args)
     elif args.command == "collect-architectures":

@@ -138,6 +138,33 @@ async def run_collect_architectures_phase(args) -> None:
             collected_names.append(comp_key)
             print(f"    {comp_key}.md")
 
+            # Copy arch-analyzer JSON if present
+            json_file = arch_file.parent / "component-architecture.json"
+            if json_file.exists():
+                json_target = output_dir / f"{comp_key}.json"
+                shutil.copy2(json_file, json_target)
+                print(f"    {comp_key}.json")
+
+            # Copy CRD schemas if present
+            schemas_dir = arch_file.parent / "contracts" / "schemas"
+            if schemas_dir.exists():
+                schema_files = list(schemas_dir.rglob("*.json"))
+                if schema_files:
+                    target_schemas = (
+                        output_dir / "contracts"
+                        / "schemas" / comp_key
+                    )
+                    target_schemas.mkdir(parents=True, exist_ok=True)
+                    for schema_file in schema_files:
+                        shutil.copy2(
+                            schema_file,
+                            target_schemas / schema_file.name,
+                        )
+                    print(
+                        f"    contracts/schemas/{comp_key}/"
+                        f" ({len(schema_files)} schemas)"
+                    )
+
         # Create index
         _create_index_readme(
             output_dir, platform_key, version, collected_names,

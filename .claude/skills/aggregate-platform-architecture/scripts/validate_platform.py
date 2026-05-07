@@ -9,14 +9,11 @@ from pathlib import Path
 REQUIRED_H2_SECTIONS = [
     "Metadata",
     "Platform Overview",
-    "Component Inventory",
     "Component Relationships",
     "Platform Network Architecture",
     "Platform Security",
-    "Platform APIs",
     "Data Flows",
     "Deployment Architecture",
-    "Monitoring & Observability",
     "Platform Maturity",
     "Platform Architectural Analysis",
 ]
@@ -29,21 +26,11 @@ REQUIRED_H3_SUBSECTIONS = {
     ],
     "Platform Network Architecture": [
         "Namespaces",
-        "External Ingress Points",
-        "External Egress Dependencies",
         "Internal Service Mesh",
     ],
     "Platform Security": [
-        "RBAC Summary",
-        "Secrets Inventory",
         "Authentication Mechanisms",
-        "TLS Configuration",
         "Container Security",
-    ],
-    "Platform APIs": [
-        "Custom Resource Definitions",
-        "Public HTTP Endpoints",
-        "gRPC Services",
     ],
     "Data Flows": [
         "Key Platform Workflows",
@@ -51,16 +38,10 @@ REQUIRED_H3_SUBSECTIONS = {
     "Deployment Architecture": [
         "Deployment Topology",
         "Resource Summary",
-        "Sub-Component Inventory",
         "Deployment Manifest Patterns",
         "High Availability",
         "Disconnected Support",
         "Multi-Architecture Support",
-    ],
-    "Monitoring & Observability": [
-        "Prometheus Endpoints",
-        "Health Probes",
-        "Distributed Tracing",
     ],
 }
 
@@ -72,38 +53,15 @@ REQUIRED_METADATA_FIELDS = [
 ]
 
 EXPECTED_TABLE_HEADERS = {
-    "Component Inventory": ["Component", "Type", "Language", "Repository", "Version", "Purpose"],
     "Integration Patterns": ["Pattern", "Components Using", "Description"],
     "Namespaces": ["Namespace", "Purpose", "Components"],
-    "External Ingress Points": [
-        "Component", "Ingress Type", "Hosts", "Port", "Protocol", "Encryption", "Purpose",
-    ],
-    "External Egress Dependencies": [
-        "Component", "Destination", "Port", "Protocol", "Encryption", "Purpose",
-    ],
     "Internal Service Mesh": ["Setting", "Value", "Components Using"],
-    "RBAC Summary": ["Component", "ClusterRole", "Key Resources", "Key Verbs"],
-    "Secrets Inventory": ["Component", "Secret Name", "Type", "Purpose"],
     "Authentication Mechanisms": ["Pattern", "Components Using", "Enforcement Point"],
-    "TLS Configuration": ["Component", "Port", "TLS Type", "Certificate Source"],
     "Container Security": ["Pattern", "Components Using", "Description"],
-    "Custom Resource Definitions": ["Component", "API Group", "Kind", "Scope", "Purpose"],
-    "Public HTTP Endpoints": [
-        "Component", "Path", "Method", "Port", "Protocol", "Auth", "Purpose",
-    ],
-    "gRPC Services": [
-        "Component", "Service", "Port", "Protocol", "Encryption", "Auth", "Purpose",
-    ],
-    "Sub-Component Inventory": [
-        "Repository", "Component", "Intent", "Dockerfile", "Port", "Language",
-    ],
     "Kustomize Patterns": ["Pattern", "Components Using", "Description"],
     "Distribution Variants": ["Component", "ODH Path", "RHOAI Path", "Key Differences"],
     "High Availability": ["Component", "Replicas", "HA Mechanism"],
     "Multi-Architecture Support": ["Architecture", "Support Level", "Notes"],
-    "Prometheus Endpoints": ["Component", "Port", "Path", "Auth"],
-    "Health Probes": ["Component", "Liveness", "Readiness", "Startup"],
-    "Distributed Tracing": ["Component", "Protocol", "Destination"],
     "Version-Specific Changes": ["Component", "Changes"],
 }
 

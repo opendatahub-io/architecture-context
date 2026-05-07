@@ -15,12 +15,6 @@
 
 [2-3 paragraphs summarizing: what the platform does, how it is deployed (operator model, OLM), ingress architecture, and security posture]
 
-## Component Inventory
-
-| Component | Type | Language | Repository | Version | Purpose |
-|-----------|------|----------|------------|---------|---------|
-| [name] | [Operator / Service / Frontend / Controller / Container Images / etc.] | [Go / Python / Rust / Java / TypeScript / C++ / etc.] | [org/repo-name] | [version] | [short purpose] |
-
 ## Component Relationships
 
 ### Dependency Graph
@@ -47,18 +41,6 @@
 |-----------|---------|------------|
 | [namespace] | [purpose] | [components deployed here] |
 
-### External Ingress Points
-
-| Component | Ingress Type | Hosts | Port | Protocol | Encryption | Purpose |
-|-----------|--------------|-------|------|----------|------------|---------|
-| [component] | [HTTPRoute (Gateway API) / Route (OpenShift) / Ingress] | [hosts] | [443/TCP] | [HTTPS] | [TLS 1.3] | [purpose] |
-
-### External Egress Dependencies
-
-| Component | Destination | Port | Protocol | Encryption | Purpose |
-|-----------|-------------|------|----------|------------|---------|
-| [component] | [destination] | [443/TCP] | [HTTPS] | [TLS 1.2+] | [purpose] |
-
 ### Internal Service Mesh
 
 | Setting | Value | Components Using |
@@ -67,55 +49,17 @@
 
 ## Platform Security
 
-### RBAC Summary
-
-| Component | ClusterRole | Key Resources | Key Verbs |
-|-----------|-------------|---------------|-----------|
-| [component] | [role name] | [resources] | [verbs] |
-
-### Secrets Inventory
-
-| Component | Secret Name | Type | Purpose |
-|-----------|-------------|------|---------|
-| [component] | [secret] | [kubernetes.io/tls / Opaque] | [purpose] |
-
 ### Authentication Mechanisms
 
 | Pattern | Components Using | Enforcement Point |
 |---------|------------------|-------------------|
 | [auth pattern] | [components] | [enforcement point] |
 
-### TLS Configuration
-
-| Component | Port | TLS Type | Certificate Source |
-|-----------|------|----------|-------------------|
-| [component] | [9443/TCP] | [Server TLS / mTLS] | [OpenShift service-ca / cert-manager / self-signed] |
-
 ### Container Security
 
 | Pattern | Components Using | Description |
 |---------|------------------|-------------|
 | [pattern name] | [component list] | [description] |
-
-## Platform APIs
-
-### Custom Resource Definitions
-
-| Component | API Group | Kind | Scope | Purpose |
-|-----------|-----------|------|-------|---------|
-| [component] | [group] | [kind] | [Namespaced/Cluster] | [purpose] |
-
-### Public HTTP Endpoints
-
-| Component | Path | Method | Port | Protocol | Auth | Purpose |
-|-----------|------|--------|------|----------|------|---------|
-| [component] | [endpoint] | [GET/POST/CRUD] | [8080/TCP] | [HTTP/HTTPS] | [auth mechanism] | [purpose] |
-
-### gRPC Services
-
-| Component | Service | Port | Protocol | Encryption | Auth | Purpose |
-|-----------|---------|------|----------|------------|------|---------|
-| [component] | [service.proto name] | [8033/TCP] | [gRPC] | [TLS / mTLS / plaintext] | [auth mechanism] | [purpose] |
 
 ## Data Flows
 
@@ -136,12 +80,6 @@
 ### Resource Summary
 
 [Aggregate resource counts: operators, gateway infrastructure, webhook servers, container images]
-
-### Sub-Component Inventory
-
-| Repository | Component | Intent | Dockerfile | Port | Language |
-|------------|-----------|--------|------------|------|----------|
-| [org/repo] | [component-name] | [Primary service / Sidecar module / Build variant / Utility image / Optional module] | [Dockerfile.konflux.suffix] | [port/TCP] | [Go / Python / TypeScript] |
 
 ### Deployment Manifest Patterns
 
@@ -176,26 +114,6 @@
 | Architecture | Support Level | Notes |
 |--------------|---------------|-------|
 | [amd64 / arm64 / ppc64le / s390x] | [Full / Partial / None] | [exceptions or limitations] |
-
-## Monitoring & Observability
-
-### Prometheus Endpoints
-
-| Component | Port | Path | Auth |
-|-----------|------|------|------|
-| [component] | [8080/TCP] | [metrics path] | [None / Bearer Token / kube-rbac-proxy] |
-
-### Health Probes
-
-| Component | Liveness | Readiness | Startup |
-|-----------|----------|-----------|---------|
-| [component] | [probe endpoint] | [probe endpoint] | [—] |
-
-### Distributed Tracing
-
-| Component | Protocol | Destination |
-|-----------|----------|-------------|
-| [component] | [OTLP (gRPC) / OTLP (HTTP)] | [configurable collector] |
 
 ## Platform Maturity
 

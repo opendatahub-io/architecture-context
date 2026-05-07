@@ -213,6 +213,46 @@ def parse_args():
         ),
     )
 
+    # Phase 2c: Static analysis (arch-analyzer)
+    static_analysis_parser = subparsers.add_parser(
+        "static-analysis",
+        help="Run arch-analyzer static analysis on component repositories"
+    )
+    static_analysis_parser.add_argument(
+        "--platform",
+        required=True,
+        help=(
+            "Platform identifier matching"
+            " architecture/<platform>/"
+            "component-map.json"
+        ),
+    )
+    static_analysis_parser.add_argument(
+        "--architecture-dir",
+        default="architecture",
+        help="Base architecture directory (default: architecture)"
+    )
+    static_analysis_parser.add_argument(
+        "--max-concurrent",
+        type=int,
+        default=10,
+        help="Maximum concurrent analyses (default: 10)"
+    )
+    static_analysis_parser.add_argument(
+        "--component",
+        help="Only analyze this specific component"
+    )
+    static_analysis_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-analyze even if output already exists"
+    )
+    static_analysis_parser.add_argument(
+        "--skip-schemas",
+        action="store_true",
+        help="Skip CRD schema extraction (run extract only)"
+    )
+
     # Phase 3: Generate architecture
     generate_arch_parser = subparsers.add_parser(
         "generate-architecture",
@@ -460,6 +500,11 @@ def parse_args():
             " architecture for: all (default),"
             " significant, core"
         ),
+    )
+    all_parser.add_argument(
+        "--pull",
+        action="store_true",
+        help="Pull latest changes in existing repos during fetch phase"
     )
 
     return parser.parse_args()
