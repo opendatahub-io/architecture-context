@@ -173,17 +173,19 @@ async def run_all_phases(args) -> None:
     await run_generate_platform_architecture_phase(platform_arch_args)
 
     # Phase 6: Generate diagrams
-    # Use target_version to filter to specific version if branch was provided
-    diagrams_args = Namespace(
-        architecture_dir="architecture",
-        platform=args.platform,
-        version=target_version,  # Filter to specific version from branch
-        max_concurrent=max_concurrent,
-        limit=None,
-        force_regenerate=False,
-        model=getattr(args, 'model', 'opus')
-    )
-    await run_generate_diagrams_phase(diagrams_args)
+    if getattr(args, 'no_diagrams', False):
+        print("\nSkipping Phase 6 (diagram generation) — --no-diagrams\n")
+    else:
+        diagrams_args = Namespace(
+            architecture_dir="architecture",
+            platform=args.platform,
+            version=target_version,
+            max_concurrent=max_concurrent,
+            limit=None,
+            force_regenerate=False,
+            model=getattr(args, 'model', 'opus')
+        )
+        await run_generate_diagrams_phase(diagrams_args)
 
     print("\n" + "=" * 80)
     print("ALL PHASES COMPLETED SUCCESSFULLY!")

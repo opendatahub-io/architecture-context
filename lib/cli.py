@@ -506,5 +506,11 @@ def parse_args():
         action="store_true",
         help="Pull latest changes in existing repos during fetch phase"
     )
+    all_parser.add_argument(
+        "--no-diagrams",
+        action="store_true",
+        default=False,
+        help="Skip diagram generation phase"
+    )
 
     return parser.parse_args()
