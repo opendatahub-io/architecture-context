@@ -1,20 +1,16 @@
-# RHOAI 3.3 - Component Architectures
+# RHOAI-3.3 unknown - Component Architectures
 
-Generated from: checkouts/red-hat-data-services.rhoai-3.3
-Platform version from: checkouts/red-hat-data-services.rhoai-3.3/rhods-operator
-Date: 2026-03-19
+Source: architecture/rhoai-3.3/component-map.json
+Date: 2026-05-07
 
 ## Components
 
-| Component Repository | Architecture File |
-|----------------------|-------------------|
-| MLServer | [MLServer.md](./MLServer.md) |
-| NeMo-Guardrails | [NeMo-Guardrails.md](./NeMo-Guardrails.md) |
-| RHOAI-Build-Config | [RHOAI-Build-Config.md](./RHOAI-Build-Config.md) |
+| Component | Architecture File |
+|-----------|-------------------|
 | argo-workflows | [argo-workflows.md](./argo-workflows.md) |
+| codeflare-sdk | [codeflare-sdk.md](./codeflare-sdk.md) |
 | data-science-pipelines | [data-science-pipelines.md](./data-science-pipelines.md) |
 | data-science-pipelines-operator | [data-science-pipelines-operator.md](./data-science-pipelines-operator.md) |
-| distributed-workloads | [distributed-workloads.md](./distributed-workloads.md) |
 | feast | [feast.md](./feast.md) |
 | fms-guardrails-orchestrator | [fms-guardrails-orchestrator.md](./fms-guardrails-orchestrator.md) |
 | guardrails-detectors | [guardrails-detectors.md](./guardrails-detectors.md) |
@@ -23,23 +19,30 @@ Date: 2026-03-19
 | kube-auth-proxy | [kube-auth-proxy.md](./kube-auth-proxy.md) |
 | kubeflow | [kubeflow.md](./kubeflow.md) |
 | kuberay | [kuberay.md](./kuberay.md) |
-| llama-stack-distribution | [llama-stack-distribution.md](./llama-stack-distribution.md) |
-| llama-stack-k8s-operator | [llama-stack-k8s-operator.md](./llama-stack-k8s-operator.md) |
 | llama-stack-provider-ragas | [llama-stack-provider-ragas.md](./llama-stack-provider-ragas.md) |
 | llama-stack-provider-trustyai-garak | [llama-stack-provider-trustyai-garak.md](./llama-stack-provider-trustyai-garak.md) |
+| llm-d | [llm-d.md](./llm-d.md) |
 | llm-d-inference-scheduler | [llm-d-inference-scheduler.md](./llm-d-inference-scheduler.md) |
+| llm-d-kv-cache | [llm-d-kv-cache.md](./llm-d-kv-cache.md) |
+| llm-d-routing-sidecar | [llm-d-routing-sidecar.md](./llm-d-routing-sidecar.md) |
+| llm-d-workload-variant-autoscaler | [llm-d-workload-variant-autoscaler.md](./llm-d-workload-variant-autoscaler.md) |
 | lm-evaluation-harness | [lm-evaluation-harness.md](./lm-evaluation-harness.md) |
 | ml-metadata | [ml-metadata.md](./ml-metadata.md) |
 | mlflow | [mlflow.md](./mlflow.md) |
 | mlflow-operator | [mlflow-operator.md](./mlflow-operator.md) |
+| mlserver | [mlserver.md](./mlserver.md) |
 | model-metadata-collection | [model-metadata-collection.md](./model-metadata-collection.md) |
 | model-registry | [model-registry.md](./model-registry.md) |
 | model-registry-operator | [model-registry-operator.md](./model-registry-operator.md) |
 | models-as-a-service | [models-as-a-service.md](./models-as-a-service.md) |
+| nemo-guardrails | [nemo-guardrails.md](./nemo-guardrails.md) |
 | notebooks | [notebooks.md](./notebooks.md) |
+| odh-cli | [odh-cli.md](./odh-cli.md) |
 | odh-dashboard | [odh-dashboard.md](./odh-dashboard.md) |
 | odh-model-controller | [odh-model-controller.md](./odh-model-controller.md) |
-| openvino_model_server | [openvino_model_server.md](./openvino_model_server.md) |
+| ogx-distribution | [ogx-distribution.md](./ogx-distribution.md) |
+| ogx-k8s-operator | [ogx-k8s-operator.md](./ogx-k8s-operator.md) |
+| openvino-model-server | [openvino-model-server.md](./openvino-model-server.md) |
 | rhods-operator | [rhods-operator.md](./rhods-operator.md) |
 | trainer | [trainer.md](./trainer.md) |
 | training-operator | [training-operator.md](./training-operator.md) |
@@ -51,21 +54,6 @@ Date: 2026-03-19
 
 ## Summary
 
-- **Platform**: RHOAI
-- **Version**: 3.3
-- **Components**: 40
-- **Source**: checkouts/red-hat-data-services.rhoai-3.3
-
-## Using These Files
-
-These are individual component architecture summaries. To create a platform-level view:
-
-```bash
-/aggregate-platform-architecture --distribution=rhoai --version=3.3
-```
-
-To generate diagrams from a component:
-
-```bash
-/generate-architecture-diagrams --architecture=./odh-dashboard.md
-```
+- **Platform**: RHOAI-3.3
+- **Version**: unknown
+- **Components**: 44
