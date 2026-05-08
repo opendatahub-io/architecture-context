@@ -1,7 +1,7 @@
-# RHOAI-3.5-EA.1 3.5-ea.1 - Component Architectures
+# RHOAI-3.5-EA.1 unknown - Component Architectures
 
 Source: architecture/rhoai-3.5-ea.1/component-map.json
-Date: 2026-05-04
+Date: 2026-05-07
 
 ## Components
 
@@ -12,6 +12,7 @@ Date: 2026-05-04
 | ai-gateway-payload-processing | [ai-gateway-payload-processing.md](./ai-gateway-payload-processing.md) |
 | ai4rag | [ai4rag.md](./ai4rag.md) |
 | argo-workflows | [argo-workflows.md](./argo-workflows.md) |
+| batch-gateway | [batch-gateway.md](./batch-gateway.md) |
 | codeflare-sdk | [codeflare-sdk.md](./codeflare-sdk.md) |
 | data-science-pipelines | [data-science-pipelines.md](./data-science-pipelines.md) |
 | data-science-pipelines-operator | [data-science-pipelines-operator.md](./data-science-pipelines-operator.md) |
@@ -45,9 +46,11 @@ Date: 2026-05-04
 | odh-cli | [odh-cli.md](./odh-cli.md) |
 | odh-dashboard | [odh-dashboard.md](./odh-dashboard.md) |
 | odh-model-controller | [odh-model-controller.md](./odh-model-controller.md) |
+| ogx-distribution | [ogx-distribution.md](./ogx-distribution.md) |
 | ogx-k8s-operator | [ogx-k8s-operator.md](./ogx-k8s-operator.md) |
 | openvino_model_server | [openvino_model_server.md](./openvino_model_server.md) |
 | pipelines-components | [pipelines-components.md](./pipelines-components.md) |
+| rhaii-cluster-validation | [rhaii-cluster-validation.md](./rhaii-cluster-validation.md) |
 | rhods-operator | [rhods-operator.md](./rhods-operator.md) |
 | spark-operator | [spark-operator.md](./spark-operator.md) |
 | trainer | [trainer.md](./trainer.md) |
@@ -62,5 +65,5 @@ Date: 2026-05-04
 ## Summary
 
 - **Platform**: RHOAI-3.5-EA.1
-- **Version**: 3.5-ea.1
-- **Components**: 51
+- **Version**: unknown
+- **Components**: 54
