@@ -24,6 +24,18 @@ def _resolve_rg() -> str:
 _RG_BIN = _resolve_rg()
 
 
+def _safe_join(root: Path, untrusted: str) -> Path | None:
+    """Join root with an untrusted relative path, rejecting traversal."""
+    if Path(untrusted).is_absolute():
+        return None
+    resolved = (root / untrusted).resolve()
+    try:
+        resolved.relative_to(root.resolve())
+    except ValueError:
+        return None
+    return resolved
+
+
 @dataclass
 class WebhookEntry:
     name: str
@@ -347,13 +359,16 @@ def _find_conversion_go_file(repo_path: Path, group: str, resource: str) -> str 
         return None
 
     resource_stem = resource.rstrip("s") if resource else ""
+    group_stem = group.split(".")[0] if group else ""
     for f in result.stdout.strip().split("\n"):
         if not f:
             continue
-        if resource_stem and resource_stem in f.lower():
+        lower = f.lower()
+        if resource_stem and resource_stem in lower:
             return f
-    files = result.stdout.strip().split("\n")
-    return files[0] if files and files[0] else None
+        if group_stem and group_stem in lower:
+            return f
+    return None
 
 
 def merge_discovered_webhooks(
@@ -498,12 +513,12 @@ def assign_overlays(
 def map_go_handlers(
     checkout_base: Path,
     component_repos: dict[str, Path],
-) -> dict[str, list[dict]]:
+) -> dict[tuple[str, str], list[dict]]:
     """Map webhook paths to Go handler files via kubebuilder markers.
 
-    Returns: {webhook_path: [{type, file, repo, line}]}
+    Returns: {(repo_name, webhook_path): [{type, file, repo, line}]}
     """
-    handler_map: dict[str, list[dict]] = {}
+    handler_map: dict[tuple[str, str], list[dict]] = {}
 
     for _component, repo_path in component_repos.items():
         if not repo_path.exists():
@@ -530,8 +545,9 @@ def map_go_handlers(
                 file_path = match.group(1)
                 line_num = int(match.group(2))
                 webhook_path = match.group(3)
+                key = (repo_path.name, webhook_path)
 
-                handler_map.setdefault(webhook_path, []).append({
+                handler_map.setdefault(key, []).append({
                     "type": "kubebuilder_marker",
                     "file": file_path,
                     "repo": repo_path.name,
@@ -540,7 +556,7 @@ def map_go_handlers(
 
                 go_handler = _find_handler_in_file(repo_path / file_path)
                 if go_handler:
-                    handler_map[webhook_path].append({
+                    handler_map[key].append({
                         "type": "go_handler",
                         "file": file_path,
                         "repo": repo_path.name,
@@ -571,20 +587,29 @@ def _find_handler_in_file(go_file: Path) -> int | None:
 
 def assign_go_handlers(
     webhooks: list[WebhookEntry],
-    handler_map: dict[str, list[dict]],
+    handler_map: dict[tuple[str, str], list[dict]],
 ) -> None:
     """Enrich webhooks with Go handler source information."""
     for wh in webhooks:
         if not wh.path:
             continue
-        handlers = handler_map.get(wh.path, [])
-        for h in handlers:
-            already = any(
-                s.get("file") == h["file"] and s.get("type") == h["type"]
-                for s in wh.sources
+        for key, handlers in handler_map.items():
+            repo_name, webhook_path = key
+            if webhook_path != wh.path:
+                continue
+            repo_match = any(
+                s.get("repo") == repo_name for s in wh.sources
             )
-            if not already:
-                wh.sources.append(h)
+            component_match = repo_name in wh.component or wh.component in repo_name
+            if not repo_match and not component_match:
+                continue
+            for h in handlers:
+                already = any(
+                    s.get("file") == h["file"] and s.get("type") == h["type"]
+                    for s in wh.sources
+                )
+                if not already:
+                    wh.sources.append(h)
 
 
 def extract_go_patterns(
@@ -610,8 +635,8 @@ def extract_go_patterns(
             if not repo_path:
                 continue
 
-            go_file = repo_path / handler["file"]
-            if not go_file.exists():
+            go_file = _safe_join(repo_path, handler["file"])
+            if not go_file or not go_file.exists():
                 continue
 
             try:
@@ -927,13 +952,16 @@ def enrich_component_json(
     path_map = {wh.path: wh for wh in component_webhooks if wh.path}
 
     existing_names = set()
+    existing_paths = set()
     for existing in existing_webhooks:
         wh_name = existing.get("name", "")
+        wh_path = existing.get("path", "")
         existing_names.add(wh_name)
+        if wh_path:
+            existing_paths.add(wh_path)
 
         enriched = component_wh_map.get(wh_name)
         if not enriched:
-            wh_path = existing.get("path", "")
             enriched = path_map.get(wh_path)
         if not enriched:
             continue
@@ -955,8 +983,12 @@ def enrich_component_json(
     for wh in component_webhooks:
         if wh.name in existing_names:
             continue
+        if wh.path and wh.path in existing_paths:
+            continue
         existing_webhooks.append(wh.to_dict())
         existing_names.add(wh.name)
+        if wh.path:
+            existing_paths.add(wh.path)
 
     data["webhooks"] = existing_webhooks
 
@@ -1133,8 +1165,8 @@ async def run_webhook_agent_analysis(
                 repo_path = component_repos.get(wh.component)
             if not repo_path:
                 continue
-            full_path = repo_path / file_path
-            if not full_path.exists():
+            full_path = _safe_join(repo_path, file_path)
+            if not full_path or not full_path.exists():
                 continue
 
             key = (str(repo_path), file_path)
