@@ -255,7 +255,7 @@ def discover_conversion_webhooks(
             try:
                 import yaml
                 content = yaml.safe_load(full_path.read_text())
-            except Exception:
+            except (yaml.YAMLError, OSError):
                 continue
 
             if not isinstance(content, dict):
@@ -426,7 +426,7 @@ def _find_webhook_resources_in_kustomization(
     try:
         import yaml
         content = yaml.safe_load(kust_file.read_text())
-    except Exception:
+    except (yaml.YAMLError, OSError):
         return webhook_files
 
     if not content:
@@ -488,7 +488,7 @@ def map_go_handlers(
     """
     handler_map: dict[str, list[dict]] = {}
 
-    for component, repo_path in component_repos.items():
+    for _component, repo_path in component_repos.items():
         if not repo_path.exists():
             continue
 
@@ -586,7 +586,7 @@ def extract_go_patterns(
             repo_name = handler.get("repo", "")
             repo_path = component_repos.get(wh.component)
             if not repo_path:
-                for comp, path in component_repos.items():
+                for _comp, path in component_repos.items():
                     if path.name == repo_name:
                         repo_path = path
                         break
@@ -1071,7 +1071,7 @@ async def run_webhook_agent_analysis(
             if not file_path:
                 continue
             repo_path = None
-            for comp, path in component_repos.items():
+            for _comp, path in component_repos.items():
                 if path.name == repo_name:
                     repo_path = path
                     break
