@@ -5,6 +5,8 @@ from pathlib import Path
 from lib.component_discovery import read_component_map
 from lib.fetch import load_platform_config
 from lib.webhook_analyzer import (
+    _assign_go_handlers,
+    _assign_overlays,
     build_cross_cutting_map,
     build_webhook_ref_maps,
     collect_webhooks,
@@ -19,12 +21,12 @@ from lib.webhook_analyzer import (
     resolve_overlays,
     run_webhook_agent_analysis,
     write_platform_webhooks,
-    _assign_go_handlers,
-    _assign_overlays,
 )
 
 
-def _resolve_version_dir(architecture_dir: str, platform: str, version: str = None) -> str | None:
+def _resolve_version_dir(
+    architecture_dir: str, platform: str, version: str = None,
+) -> str | None:
     """Find the versioned directory for this platform."""
     arch_path = Path(architecture_dir)
 
@@ -60,12 +62,19 @@ def _find_operator_checkout(
     if not checkouts.exists():
         return None
 
-    operator_name = "opendatahub-operator" if platform.startswith("odh") else "rhods-operator"
+    if platform.startswith("odh"):
+        operator_name = "opendatahub-operator"
+    else:
+        operator_name = "rhods-operator"
 
     for org_dir in sorted(checkouts.iterdir()):
         if not org_dir.is_dir():
             continue
-        if platform.replace("rhoai", "") in org_dir.name or "red-hat-data-services" in org_dir.name:
+        match = (
+            platform.replace("rhoai", "") in org_dir.name
+            or "red-hat-data-services" in org_dir.name
+        )
+        if match:
             candidate = org_dir / operator_name
             if candidate.exists():
                 return candidate
@@ -137,7 +146,8 @@ async def run_webhook_inventory_phase(args) -> None:
     # Step 1: Collect webhooks from architecture JSON files
     print("\n--- Step 1: Collecting webhooks from component JSONs ---")
     webhooks = collect_webhooks(architecture_dir, platform_version)
-    print(f"Found {len(webhooks)} webhooks across {len({w.component for w in webhooks})} components")
+    comp_count = len({w.component for w in webhooks})
+    print(f"Found {len(webhooks)} webhooks across {comp_count} components")
 
     if not webhooks:
         print("No webhooks found. Skipping remaining steps.")
@@ -163,8 +173,12 @@ async def run_webhook_inventory_phase(args) -> None:
         before = len(webhooks)
         webhooks = merge_discovered_webhooks(webhooks, discovered)
         added = len(webhooks) - before
-        print(f"Discovered {len(discovered)} webhooks from Go markers, {added} new (not in arch-analyzer)")
-        print(f"Total webhooks: {len(webhooks)} across {len({w.component for w in webhooks})} components")
+        print(
+            f"Discovered {len(discovered)} webhooks from Go markers,"
+            f" {added} new (not in arch-analyzer)"
+        )
+        comp_count = len({w.component for w in webhooks})
+        print(f"Total webhooks: {len(webhooks)} across {comp_count} components")
     else:
         print("WARNING: No component checkouts, skipping Go discovery")
 
@@ -175,7 +189,8 @@ async def run_webhook_inventory_phase(args) -> None:
         webhooks = merge_discovered_webhooks(webhooks, conversion)
         conv_added = len(webhooks) - before
         print(f"Discovered {len(conversion)} conversion webhooks, {conv_added} new")
-        print(f"Total webhooks: {len(webhooks)} across {len({w.component for w in webhooks})} components")
+        comp_count = len({w.component for w in webhooks})
+        print(f"Total webhooks: {len(webhooks)} across {comp_count} components")
 
     # Step 3: Resolve overlay membership
     print("\n--- Step 3: Resolving kustomize overlays ---")
@@ -189,7 +204,8 @@ async def run_webhook_inventory_phase(args) -> None:
             f"{name} ({len(files)} files)"
             for name, files in overlay_map.items()
         ]
-        print(f"Overlays found: {', '.join(overlays_found) if overlays_found else 'none'}")
+        found = ", ".join(overlays_found) if overlays_found else "none"
+        print(f"Overlays found: {found}")
     else:
         print("WARNING: No operator checkout found, skipping overlay resolution")
 

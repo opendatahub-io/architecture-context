@@ -1,4 +1,4 @@
-"""Webhook analysis: collect, overlay resolution, Go handler mapping, cross-cutting concerns."""
+"""Webhook analysis: collect, overlay, Go handler mapping."""
 
 import json
 import re
@@ -62,7 +62,7 @@ _OPERATOR_COMPONENTS = {"rhods-operator", "opendatahub-operator"}
 
 
 def _is_prefetched(wh_dict: dict) -> bool:
-    """Check if a webhook entry comes from prefetched-manifests (belongs to another component)."""
+    """Check if a webhook comes from prefetched-manifests."""
     source = wh_dict.get("source", "")
     if "prefetched-manifests" in source or "prefetched_manifests" in source:
         return True
@@ -128,7 +128,10 @@ def collect_webhooks(
             webhooks.append(entry)
 
     if skipped:
-        print(f"  Skipped {skipped} prefetched-manifest webhooks from operator components")
+        print(
+            f"  Skipped {skipped} prefetched-manifest webhooks"
+            " from operator components"
+        )
 
     return webhooks
 
@@ -176,7 +179,8 @@ def discover_webhooks_from_go(
             go_file = file_match.group(1) if file_match else ""
             go_line = int(file_match.group(2)) if file_match else 0
 
-            wh_type = "mutating" if fields.get("mutating", "").lower() == "true" else "validating"
+            is_mutating = fields.get("mutating", "").lower() == "true"
+            wh_type = "mutating" if is_mutating else "validating"
 
             rules = []
             groups = [g for g in fields.get("groups", "").split(";") if g]
@@ -191,9 +195,12 @@ def discover_webhooks_from_go(
                     "operations": operations,
                 })
 
-            sources = [
-                {"type": "kubebuilder_marker", "file": go_file, "repo": repo_path.name, "line": go_line},
-            ]
+            sources = [{
+                "type": "kubebuilder_marker",
+                "file": go_file,
+                "repo": repo_path.name,
+                "line": go_line,
+            }]
 
             discovered.append(WebhookEntry(
                 name=fields.get("name", ""),
@@ -270,15 +277,18 @@ def discover_conversion_webhooks(
                 continue
             seen_crd_names.add(crd_name)
             wh_config = conv.get("webhook", {})
-            path = wh_config.get("clientConfig", {}).get("service", {}).get("path", "/convert")
+            client_cfg = wh_config.get("clientConfig", {})
+            path = client_cfg.get("service", {}).get("path", "/convert")
             versions = wh_config.get("conversionReviewVersions", [])
 
             resource = crd_name.split(".")[0] if crd_name else ""
             group = ".".join(crd_name.split(".")[1:]) if "." in crd_name else ""
 
-            sources = [
-                {"type": "crd_conversion_patch", "file": file_path, "repo": repo_path.name},
-            ]
+            sources = [{
+                "type": "crd_conversion_patch",
+                "file": file_path,
+                "repo": repo_path.name,
+            }]
 
             go_file = _find_conversion_go_file(repo_path, group, resource)
             if go_file:
@@ -286,8 +296,12 @@ def discover_conversion_webhooks(
                     "type": "go_handler", "file": go_file, "repo": repo_path.name,
                 })
 
+            conv_name = (
+                f"conversion.{crd_name}" if crd_name
+                else f"conversion.{file_path}"
+            )
             discovered.append(WebhookEntry(
-                name=f"conversion.{crd_name}" if crd_name else f"conversion.{file_path}",
+                name=conv_name,
                 component=component,
                 type="conversion",
                 path=path,
@@ -527,8 +541,12 @@ def _find_handler_in_file(go_file: Path) -> int | None:
     except OSError:
         return None
 
+    handler_re = (
+        r"^func\s+\(.*\)\s+"
+        r"(Handle|Default|ValidateCreate|ValidateUpdate)\b"
+    )
     for i, line in enumerate(content.split("\n"), 1):
-        if re.match(r"^func\s+\(.*\)\s+(Handle|Default|ValidateCreate|ValidateUpdate)\b", line):
+        if re.match(handler_re, line):
             return i
     return None
 
@@ -646,7 +664,10 @@ def _extract_enable_conditions(
         condition_body = match.group(1).strip()
         enabled = re.findall(r'IsEnabled\((\w+(?:\.\w+)*)\)', condition_body)
         if enabled:
-            components = [e.split(".")[-1].replace("ComponentName", "") for e in enabled]
+            components = [
+                e.split(".")[-1].replace("ComponentName", "")
+                for e in enabled
+            ]
             wh.enable_condition = " OR ".join(
                 f"{c} component enabled" for c in components
             )
@@ -694,7 +715,10 @@ def build_cross_cutting_map(
                         if idx + 1 < len(parts):
                             handler_dirs.add(parts[idx + 1])
 
-        concern_name = "-".join(handler_dirs) if handler_dirs else path.strip("/").replace("/", "-")
+        if handler_dirs:
+            concern_name = "-".join(handler_dirs)
+        else:
+            concern_name = path.strip("/").replace("/", "-")
         if concern_name in seen_concerns:
             continue
         seen_concerns.add(concern_name)
@@ -709,7 +733,10 @@ def build_cross_cutting_map(
     for wh in webhooks:
         if wh.cross_cutting_concerns:
             for concern_name in wh.cross_cutting_concerns:
-                existing = next((c for c in concerns if c["name"] == concern_name), None)
+                existing = next(
+                    (c for c in concerns if c["name"] == concern_name),
+                    None,
+                )
                 if not existing:
                     affected_resources = set()
                     for rule in wh.rules:
@@ -916,12 +943,17 @@ def enrich_component_markdown(
     except OSError:
         return
 
-    section = _build_webhook_markdown_section(comp_webhooks, platform_refs, external_refs)
+    section = _build_webhook_markdown_section(
+        comp_webhooks, platform_refs, external_refs,
+    )
     if section:
         content = _insert_or_replace_section(
             content, "## Admission Webhooks", section,
-            before=["## Data Flows", "## Integration Points",
-                    "## Architectural Analysis", "## Recent Changes", "## Source References"],
+            before=[
+                "## Data Flows", "## Integration Points",
+                "## Architectural Analysis",
+                "## Recent Changes", "## Source References",
+            ],
         )
 
     md_path.write_text(content)
@@ -933,7 +965,7 @@ def _insert_or_replace_section(
     section: str,
     before: list[str],
 ) -> str:
-    """Insert or replace a markdown section, placing it before the first matching heading."""
+    """Insert or replace a markdown section."""
     if heading in content:
         start_idx = content.index(heading)
         end_idx = len(content)
@@ -986,7 +1018,10 @@ def _build_webhook_markdown_section(
     if platform_refs:
         lines.append("### Platform Webhooks")
         lines.append("")
-        lines.append("The following webhooks are defined by the platform operator and apply to this component's resource types:")
+        lines.append(
+            "The following webhooks are defined by the platform"
+            " operator and apply to this component's resource types:"
+        )
         lines.append("")
         lines.append("| Webhook | Defined By |")
         lines.append("|---------|-----------|")
@@ -997,7 +1032,10 @@ def _build_webhook_markdown_section(
     if external_refs:
         lines.append("### External Webhooks")
         lines.append("")
-        lines.append("The following webhooks from peer components intercept this component's resource types:")
+        lines.append(
+            "The following webhooks from peer components"
+            " intercept this component's resource types:"
+        )
         lines.append("")
         lines.append("| Webhook | Defined By |")
         lines.append("|---------|-----------|")
@@ -1068,7 +1106,9 @@ async def run_webhook_agent_analysis(
             pass
 
         if file_lines > 500:
-            prompt = _build_large_file_prompt(go_file, webhook_names, output_file, full_path)
+            prompt = _build_large_file_prompt(
+                go_file, webhook_names, output_file, full_path,
+            )
         else:
             prompt = _build_analysis_prompt(go_file, webhook_names, output_file)
 
@@ -1131,7 +1171,8 @@ def _parse_json_from_log(log_file: Path) -> dict | None:
     except OSError:
         return None
 
-    for match in re.finditer(r'\{[^{}]*"purpose"[^{}]*"data_read"[^{}]*\[.*?\]\s*\}', content, re.DOTALL):
+    pattern = r'\{[^{}]*"purpose"[^{}]*"data_read"[^{}]*\[.*?\]\s*\}'
+    for match in re.finditer(pattern, content, re.DOTALL):
         try:
             return json.loads(match.group(0))
         except json.JSONDecodeError:
@@ -1146,26 +1187,42 @@ def _parse_json_from_log(log_file: Path) -> dict | None:
     return None
 
 
-def _build_analysis_prompt(go_file: str, webhook_names: str, output_file: str) -> str:
-    return f"""Read `{go_file}` and write a JSON file to `{output_file}`.
+def _extraction_instructions() -> str:
+    purpose = (
+        "One or two sentences. What does this webhook do"
+        " and why? Be specific about the business logic."
+    )
+    data_read = (
+        "Kubernetes resources fetched via"
+        " client.Get/List/APIReader during webhook"
+        " execution. Just kind and group."
+    )
+    return (
+        "Extract:\n\n"
+        f"1. **purpose**: {purpose}\n\n"
+        f"2. **data_read**: {data_read}\n\n"
+        "Write ONLY this JSON — no other files:\n"
+        "```json\n"
+        "{{\n"
+        '  "purpose": "...",\n'
+        '  "data_read": [\n'
+        '    {{"kind": "...", "group": "..."}}\n'
+        "  ]\n"
+        "}}\n"
+        "```"
+    )
 
-This handler implements: {webhook_names}
 
-Extract:
-
-1. **purpose**: One or two sentences. What does this webhook do and why? Be specific about the business logic — not just "validates X" but what it validates, what it mutates, what it enforces, and for which resource types.
-
-2. **data_read**: Kubernetes resources fetched via client.Get/List/APIReader during webhook execution. Just kind and group. Skip env vars, request fields, and in-memory state.
-
-Write ONLY this JSON — no other files, no explanation:
-```json
-{{
-  "purpose": "...",
-  "data_read": [
-    {{"kind": "...", "group": "..."}}
-  ]
-}}
-```"""
+def _build_analysis_prompt(
+    go_file: str, webhook_names: str, output_file: str,
+) -> str:
+    instructions = _extraction_instructions()
+    return (
+        f"Read `{go_file}` and write a JSON file"
+        f" to `{output_file}`.\n\n"
+        f"This handler implements: {webhook_names}\n\n"
+        f"{instructions}"
+    )
 
 
 def _build_large_file_prompt(
@@ -1195,39 +1252,29 @@ def _build_large_file_prompt(
             start = max(0, i - 1)
             end = min(len(lines), i + 2)
             for j in range(start, end):
-                if j not in [l[0] for l in key_lines]:
+                if j not in [kl[0] for kl in key_lines]:
                     key_lines.append((j, lines[j]))
 
     key_lines.sort(key=lambda x: x[0])
-    excerpt = "\n".join(f"{num + 1}: {line}" for num, line in key_lines[:200])
-
-    return f"""Analyze the webhook handler in `{go_file}` (large file, {len(lines)} lines).
-Write a JSON file to `{output_file}`.
-
-This handler implements: {webhook_names}
-
-Key lines extracted from the file:
-```go
-{excerpt}
-```
-
-If you need more context, read specific line ranges from `{go_file}` using the Read tool with offset/limit.
-
-Extract:
-
-1. **purpose**: One or two sentences. What does this webhook do and why? Be specific about the business logic — not just "validates X" but what it validates, what it mutates, what it enforces, and for which resource types.
-
-2. **data_read**: Kubernetes resources fetched via client.Get/List/APIReader during webhook execution. Just kind and group. Skip env vars, request fields, and in-memory state.
-
-Write ONLY this JSON — no other files, no explanation:
-```json
-{{
-  "purpose": "...",
-  "data_read": [
-    {{"kind": "...", "group": "..."}}
-  ]
-}}
-```"""
+    excerpt = "\n".join(
+        f"{num + 1}: {line}" for num, line in key_lines[:200]
+    )
+    line_count = len(lines)
+    instructions = _extraction_instructions()
+    read_hint = (
+        f"If you need more context, read specific line"
+        f" ranges from `{go_file}` using the Read tool."
+    )
+    return (
+        f"Analyze the webhook handler in `{go_file}`"
+        f" (large file, {line_count} lines).\n"
+        f"Write a JSON file to `{output_file}`.\n\n"
+        f"This handler implements: {webhook_names}\n\n"
+        f"Key lines extracted from the file:\n"
+        f"```go\n{excerpt}\n```\n\n"
+        f"{read_hint}\n\n"
+        f"{instructions}"
+    )
 
 
 def write_platform_webhooks(

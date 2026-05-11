@@ -115,7 +115,7 @@ Examples:
 			}
 			var entries []jsonEntry
 			for _, tw := range all {
-				entries = append(entries, jsonEntry{Component: tw.Component, Webhook: tw.Webhook})
+				entries = append(entries, jsonEntry(tw))
 			}
 			return output.JSON(os.Stdout, entries)
 		}

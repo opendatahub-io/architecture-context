@@ -330,7 +330,7 @@ def parse_args():
     # Phase 4b: Webhook inventory
     webhook_parser = subparsers.add_parser(
         "webhook-inventory",
-        help="Build webhook inventory with overlay resolution and cross-cutting analysis"
+        help="Build webhook inventory with overlay resolution"
     )
     webhook_parser.add_argument(
         "--platform",
