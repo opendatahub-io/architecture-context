@@ -108,6 +108,9 @@ func loadBuildInfo(fsys fs.FS, versionDir string) *types.BuildInfo {
 func mergeJSON(dst, src *types.ComponentDoc) {
 	// Always set JSON-only fields
 	dst.ControllerWatches = src.ControllerWatches
+	dst.Webhooks = src.Webhooks
+	dst.PlatformWebhooks = src.PlatformWebhooks
+	dst.ExternalWebhooks = src.ExternalWebhooks
 	dst.NetworkPolicies = src.NetworkPolicies
 	dst.Dockerfiles = src.Dockerfiles
 	dst.CommitSHA = src.CommitSHA

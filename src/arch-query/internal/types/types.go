@@ -26,6 +26,9 @@ type ComponentDoc struct {
 	RBACRoles    []RBACRole      `json:"rbac_roles,omitempty"`
 
 	ControllerWatches []ControllerWatch `json:"controller_watches,omitempty"`
+	Webhooks          []Webhook         `json:"webhooks,omitempty"`
+	PlatformWebhooks  []WebhookRef      `json:"platform_webhooks,omitempty"`
+	ExternalWebhooks  []WebhookRef      `json:"external_webhooks,omitempty"`
 	NetworkPolicies   []NetworkPolicy   `json:"network_policies,omitempty"`
 	Dockerfiles       []Dockerfile      `json:"dockerfiles,omitempty"`
 
@@ -120,6 +123,50 @@ type ControllerWatch struct {
 	GVK        string `json:"gvk"`
 	Controller string `json:"controller"`
 	Source     string `json:"source,omitempty"`
+}
+
+type WebhookRule struct {
+	APIGroups   []string `json:"api_groups"`
+	APIVersions []string `json:"api_versions"`
+	Resources   []string `json:"resources"`
+	Operations  []string `json:"operations"`
+}
+
+type WebhookSource struct {
+	Type string `json:"type"`
+	File string `json:"file"`
+	Repo string `json:"repo,omitempty"`
+	Line int    `json:"line,omitempty"`
+	Note string `json:"note,omitempty"`
+}
+
+type WebhookDataRead struct {
+	Kind  string `json:"kind"`
+	Group string `json:"group,omitempty"`
+	Usage string `json:"usage,omitempty"`
+}
+
+type Webhook struct {
+	Name          string          `json:"name"`
+	Type          string          `json:"type"`
+	ServiceRef    string          `json:"service_ref,omitempty"`
+	Path          string          `json:"path"`
+	Port          int             `json:"port,omitempty"`
+	FailurePolicy string          `json:"failure_policy,omitempty"`
+	SideEffects   string          `json:"side_effects,omitempty"`
+	Rules         []WebhookRule   `json:"rules,omitempty"`
+	Sources       []WebhookSource `json:"sources,omitempty"`
+
+	Overlays             []string          `json:"overlays,omitempty"`
+	EnableCondition      string            `json:"enable_condition,omitempty"`
+	Purpose              string            `json:"purpose,omitempty"`
+	DataRead             []WebhookDataRead `json:"data_read,omitempty"`
+	CrossCuttingConcerns []string          `json:"cross_cutting_concerns,omitempty"`
+}
+
+type WebhookRef struct {
+	Component string `json:"component"`
+	Webhook   string `json:"webhook"`
 }
 
 type NetworkPolicy struct {
