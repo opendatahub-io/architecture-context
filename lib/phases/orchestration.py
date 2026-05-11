@@ -185,6 +185,8 @@ async def run_all_phases(args) -> None:
         version=target_version,
         component=None,
         force=False,
+        model=getattr(args, 'model', 'sonnet'),
+        max_concurrent=getattr(args, 'max_concurrent', 5),
     )
     await run_webhook_inventory_phase(webhook_args)
 

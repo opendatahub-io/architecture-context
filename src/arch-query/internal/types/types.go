@@ -126,8 +126,8 @@ type ControllerWatch struct {
 }
 
 type WebhookRule struct {
-	APIGroups   []string `json:"api_groups"`
-	APIVersions []string `json:"api_versions"`
+	APIGroups   []string `json:"apiGroups"`
+	APIVersions []string `json:"apiVersions"`
 	Resources   []string `json:"resources"`
 	Operations  []string `json:"operations"`
 }

@@ -81,8 +81,7 @@ Examples:
 					return nil
 				}
 			}
-			fmt.Fprintf(os.Stderr, "Component %q not found in %s.\n", name, version)
-			os.Exit(1)
+			return fmt.Errorf("component %q not found in %s", name, version)
 		}
 
 		type taggedWebhook struct {

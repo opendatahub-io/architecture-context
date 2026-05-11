@@ -3,6 +3,7 @@
 import json
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -456,7 +457,7 @@ def _find_webhook_resources_in_kustomization(
     return webhook_files
 
 
-def _assign_overlays(
+def assign_overlays(
     webhooks: list[WebhookEntry],
     overlay_map: dict[str, list[str]],
 ) -> None:
@@ -551,7 +552,7 @@ def _find_handler_in_file(go_file: Path) -> int | None:
     return None
 
 
-def _assign_go_handlers(
+def assign_go_handlers(
     webhooks: list[WebhookEntry],
     handler_map: dict[str, list[dict]],
 ) -> None:
@@ -1096,7 +1097,12 @@ async def run_webhook_agent_analysis(
     for (repo_dir, go_file), wh_group in handler_groups.items():
         webhook_names = ", ".join(wh.name for wh in wh_group)
         safe_name = go_file.replace("/", "_").replace(".go", "")
-        output_file = f"/tmp/webhook-analysis-{safe_name}.json"
+        tmp = tempfile.NamedTemporaryFile(
+            delete=False, suffix=".json",
+            prefix=f"webhook-analysis-{safe_name}-",
+        )
+        tmp.close()
+        output_file = tmp.name
 
         full_path = Path(repo_dir) / go_file
         file_lines = 0
@@ -1127,7 +1133,7 @@ async def run_webhook_agent_analysis(
     )
 
     analyzed = 0
-    for job, result in zip(jobs, results):
+    for job, result in zip(jobs, results, strict=True):
         if isinstance(result, Exception):
             continue
         if isinstance(result, dict) and not result.get("success"):

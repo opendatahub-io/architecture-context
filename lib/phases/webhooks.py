@@ -5,8 +5,8 @@ from pathlib import Path
 from lib.component_discovery import read_component_map
 from lib.fetch import load_platform_config
 from lib.webhook_analyzer import (
-    _assign_go_handlers,
-    _assign_overlays,
+    assign_go_handlers,
+    assign_overlays,
     build_cross_cutting_map,
     build_webhook_ref_maps,
     collect_webhooks,
@@ -25,7 +25,7 @@ from lib.webhook_analyzer import (
 
 
 def _resolve_version_dir(
-    architecture_dir: str, platform: str, version: str = None,
+    architecture_dir: str, platform: str, version: str | None = None,
 ) -> str | None:
     """Find the versioned directory for this platform."""
     arch_path = Path(architecture_dir)
@@ -199,7 +199,7 @@ async def run_webhook_inventory_phase(args) -> None:
     if operator_checkout:
         print(f"Operator checkout: {operator_checkout}")
         overlay_map = resolve_overlays(operator_checkout)
-        _assign_overlays(webhooks, overlay_map)
+        assign_overlays(webhooks, overlay_map)
         overlays_found = [
             f"{name} ({len(files)} files)"
             for name, files in overlay_map.items()
@@ -213,7 +213,7 @@ async def run_webhook_inventory_phase(args) -> None:
     print("\n--- Step 4: Mapping Go handlers ---")
     if component_repos:
         handler_map = map_go_handlers(Path(checkouts_dir), component_repos)
-        _assign_go_handlers(webhooks, handler_map)
+        assign_go_handlers(webhooks, handler_map)
         mapped_count = sum(
             1 for wh in webhooks
             if any(s.get("type") == "go_handler" for s in wh.sources)
