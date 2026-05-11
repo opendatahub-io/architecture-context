@@ -2,12 +2,26 @@
 
 import json
 import re
+import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+def _resolve_rg() -> str:
+    """Resolve ripgrep binary path once."""
+    path = shutil.which("rg")
+    if not path:
+        raise RuntimeError(
+            "ripgrep (rg) is required but not found on PATH"
+        )
+    return path
+
+
+_RG_BIN = _resolve_rg()
 
 
 @dataclass
@@ -154,7 +168,7 @@ def discover_webhooks_from_go(
     for component, repo_path in component_repos.items():
         try:
             result = subprocess.run(
-                ["rg", "-n", r"\+kubebuilder:webhook:", "--glob", "*.go",
+                [_RG_BIN, "-n", r"\+kubebuilder:webhook:", "--glob", "*.go",
                  "--no-heading"],
                 cwd=str(repo_path),
                 capture_output=True, text=True, timeout=30,
@@ -236,7 +250,7 @@ def discover_conversion_webhooks(
 
         try:
             result = subprocess.run(
-                ["rg", "-l", "strategy: Webhook", "--glob", "*.yaml",
+                [_RG_BIN, "-l", "strategy: Webhook", "--glob", "*.yaml",
                  "--glob", "*.yml", "--glob", "!vendor/*",
                  "--glob", "!test/*", "--glob", "!install/*"],
                 cwd=str(repo_path),
@@ -322,7 +336,7 @@ def _find_conversion_go_file(repo_path: Path, group: str, resource: str) -> str 
     """Find the Go conversion implementation file for a CRD."""
     try:
         result = subprocess.run(
-            ["rg", "-l", r"ConvertTo\b|ConvertFrom\b", "--glob", "*.go",
+            [_RG_BIN, "-l", r"ConvertTo\b|ConvertFrom\b", "--glob", "*.go",
              "--glob", "!vendor/*", "--glob", "!*_test.go"],
             cwd=str(repo_path),
             capture_output=True, text=True, timeout=15,
@@ -471,8 +485,11 @@ def assign_overlays(
 
         for overlay_name, overlay_files in overlay_map.items():
             for msrc in manifest_sources:
+                msrc_parts = Path(msrc).parts
                 for ofile in overlay_files:
-                    if msrc in ofile or ofile in msrc:
+                    ofile_parts = Path(ofile).parts
+                    if (msrc_parts == ofile_parts[-len(msrc_parts):]
+                            or ofile_parts == msrc_parts[-len(ofile_parts):]):
                         if overlay_name not in wh.overlays:
                             wh.overlays.append(overlay_name)
                         break
@@ -494,7 +511,7 @@ def map_go_handlers(
 
         try:
             result = subprocess.run(
-                ["rg", "-n", r"\+kubebuilder:webhook:", "--glob", "*.go",
+                [_RG_BIN, "-n", r"\+kubebuilder:webhook:", "--glob", "*.go",
                  "--no-heading"],
                 cwd=str(repo_path),
                 capture_output=True, text=True, timeout=30,
@@ -749,15 +766,28 @@ def build_cross_cutting_map(
                         "affected_types": sorted(affected_resources),
                         "affected_components": [wh.component],
                     })
-                elif wh.name not in existing["webhooks"]:
-                    existing["webhooks"].append(wh.name)
+                else:
+                    if wh.name not in existing["webhooks"]:
+                        existing["webhooks"].append(wh.name)
+                    if wh.component not in existing["affected_components"]:
+                        existing["affected_components"].append(wh.component)
+                        existing["affected_components"].sort()
+                    new_types = set()
+                    for rule in wh.rules:
+                        for res in rule.get("resources", []):
+                            new_types.add(res)
+                    current = set(existing["affected_types"])
+                    if new_types - current:
+                        existing["affected_types"] = sorted(
+                            current | new_types
+                        )
 
     return concerns
 
 
 def build_webhook_ref_maps(
     webhooks: list[WebhookEntry],
-    component_crds: dict[str, set[str]],
+    component_crds: dict[str, set[tuple[str, str]]],
 ) -> tuple[dict[str, list[dict]], dict[str, list[dict]]]:
     """Find webhooks from other components that intercept each component's types.
 
@@ -768,10 +798,10 @@ def build_webhook_ref_maps(
     Returns:
         (platform_map, external_map) — each is {component: [{component, webhook}]}
     """
-    resource_to_component: dict[str, set[str]] = {}
+    resource_to_component: dict[tuple[str, str], set[str]] = {}
     for comp, crds in component_crds.items():
-        for crd in crds:
-            resource_to_component.setdefault(crd, set()).add(comp)
+        for crd_key in crds:
+            resource_to_component.setdefault(crd_key, set()).add(comp)
 
     platform_map: dict[str, list[dict]] = {}
     external_map: dict[str, list[dict]] = {}
@@ -779,16 +809,26 @@ def build_webhook_ref_maps(
     for wh in webhooks:
         is_platform = wh.component in _OPERATOR_COMPONENTS
         for rule in wh.rules:
+            groups = rule.get("apiGroups", []) or [""]
             for res in rule.get("resources", []):
-                owning_components = resource_to_component.get(res, set())
-                for owning_comp in owning_components:
-                    if owning_comp == wh.component:
-                        continue
-                    ref = {"component": wh.component, "webhook": wh.name}
-                    target = platform_map if is_platform else external_map
-                    existing = target.setdefault(owning_comp, [])
-                    if ref not in existing:
-                        existing.append(ref)
+                for group in groups:
+                    key = (group, res)
+                    owning_components = resource_to_component.get(
+                        key, set(),
+                    )
+                    for owning_comp in owning_components:
+                        if owning_comp == wh.component:
+                            continue
+                        ref = {
+                            "component": wh.component,
+                            "webhook": wh.name,
+                        }
+                        target = (
+                            platform_map if is_platform else external_map
+                        )
+                        existing = target.setdefault(owning_comp, [])
+                        if ref not in existing:
+                            existing.append(ref)
 
     return platform_map, external_map
 
@@ -797,14 +837,14 @@ def load_component_crds(
     architecture_dir: str,
     platform_version: str,
     webhooks: list[WebhookEntry] | None = None,
-) -> dict[str, set[str]]:
-    """Load CRD resource names per component from architecture JSONs.
+) -> dict[str, set[tuple[str, str]]]:
+    """Load CRD (group, resource) pairs per component from architecture JSONs.
 
     Also derives type ownership from component webhooks — if a component
     defines a webhook targeting a resource type, it owns that type.
     """
     version_dir = Path(architecture_dir) / platform_version
-    component_crds: dict[str, set[str]] = {}
+    component_crds: dict[str, set[tuple[str, str]]] = {}
 
     if not version_dir.exists():
         return component_crds
@@ -818,22 +858,23 @@ def load_component_crds(
             continue
 
         component = json_file.stem
-        crds = set()
+        crds: set[tuple[str, str]] = set()
+
+        for crd in data.get("crds", []):
+            group = crd.get("group", "")
+            res = crd.get("resource", "")
+            kind = crd.get("kind", "")
+            if res:
+                crds.add((group, res))
+            if kind:
+                crds.add((group, kind.lower() + "s"))
+                crds.add((group, kind.lower()))
 
         for api_type in data.get("api_types", []):
             kind = api_type.get("kind", "")
             if kind:
-                plural = kind.lower() + "s"
-                crds.add(plural)
-                crds.add(kind.lower())
-
-        for crd in data.get("crds", []):
-            res = crd.get("resource", "")
-            if res:
-                crds.add(res)
-            kind = crd.get("kind", "")
-            if kind:
-                crds.add(kind.lower() + "s")
+                crds.add(("", kind.lower() + "s"))
+                crds.add(("", kind.lower()))
 
         if crds:
             component_crds[component] = crds
@@ -843,8 +884,12 @@ def load_component_crds(
             if wh.component in _OPERATOR_COMPONENTS:
                 continue
             for rule in wh.rules:
+                groups = rule.get("apiGroups", []) or [""]
                 for res in rule.get("resources", []):
-                    component_crds.setdefault(wh.component, set()).add(res)
+                    for group in groups:
+                        component_crds.setdefault(
+                            wh.component, set(),
+                        ).add((group, res))
 
     return component_crds
 
@@ -987,6 +1032,11 @@ def _insert_or_replace_section(
 
 
 
+def _md_cell(text: str) -> str:
+    """Sanitize text for use in a markdown table cell."""
+    return re.sub(r"\s+", " ", text).replace("|", r"\|").strip()
+
+
 def _build_webhook_markdown_section(
     webhooks: list[WebhookEntry],
     platform_refs: list[dict],
@@ -1013,7 +1063,11 @@ def _build_webhook_markdown_section(
                 resources.extend(rule.get("resources", []))
             res_str = ", ".join(resources) if resources else ""
             purpose = wh.purpose or ""
-            lines.append(f"| {wh.name} | {wh.type} | {res_str} | {purpose} |")
+            name = _md_cell(wh.name)
+            wh_type = _md_cell(wh.type)
+            res_str = _md_cell(res_str)
+            purpose = _md_cell(purpose)
+            lines.append(f"| {name} | {wh_type} | {res_str} | {purpose} |")
         lines.append("")
 
     if platform_refs:
@@ -1134,34 +1188,35 @@ async def run_webhook_agent_analysis(
 
     analyzed = 0
     for job, result in zip(jobs, results, strict=True):
-        if isinstance(result, Exception):
-            continue
-        if isinstance(result, dict) and not result.get("success"):
-            continue
-
         output_file = Path(job["_output_file"])
-        analysis = None
-        if output_file.exists():
-            try:
-                analysis = json.loads(output_file.read_text())
-            except (json.JSONDecodeError, OSError):
-                pass
-            finally:
-                output_file.unlink(missing_ok=True)
+        try:
+            if isinstance(result, Exception):
+                continue
+            if isinstance(result, dict) and not result.get("success"):
+                continue
 
-        if analysis is None:
-            log_file = log_dir / f"{job['name'].replace('/', '_')}.log"
-            analysis = _parse_json_from_log(log_file)
+            analysis = None
+            if output_file.exists():
+                try:
+                    analysis = json.loads(output_file.read_text())
+                except (json.JSONDecodeError, OSError):
+                    pass
 
-        if analysis is None:
-            continue
+            if analysis is None:
+                log_file = log_dir / f"{job['name'].replace('/', '_')}.log"
+                analysis = _parse_json_from_log(log_file)
 
-        for wh in job["_webhooks"]:
-            if not wh.purpose:
-                wh.purpose = analysis.get("purpose", "")
-            for dep in analysis.get("data_read", []):
-                if not any(d.get("kind") == dep.get("kind") for d in wh.data_read):
-                    wh.data_read.append(dep)
+            if analysis is None:
+                continue
+
+            for wh in job["_webhooks"]:
+                if not wh.purpose:
+                    wh.purpose = analysis.get("purpose", "")
+                for dep in analysis.get("data_read", []):
+                    if not any(d.get("kind") == dep.get("kind") for d in wh.data_read):
+                        wh.data_read.append(dep)
+        finally:
+            output_file.unlink(missing_ok=True)
 
         analyzed += 1
 
