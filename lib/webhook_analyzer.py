@@ -1115,7 +1115,9 @@ def _build_webhook_markdown_section(
         lines.append("| Webhook | Defined By |")
         lines.append("|---------|-----------|")
         for ref in platform_refs:
-            lines.append(f"| {ref['webhook']} | {ref['component']} |")
+            wh = _md_cell(ref.get('webhook', ''))
+            comp = _md_cell(ref.get('component', ''))
+            lines.append(f"| {wh} | {comp} |")
         lines.append("")
 
     if external_refs:
@@ -1129,7 +1131,9 @@ def _build_webhook_markdown_section(
         lines.append("| Webhook | Defined By |")
         lines.append("|---------|-----------|")
         for ref in external_refs:
-            lines.append(f"| {ref['webhook']} | {ref['component']} |")
+            wh = _md_cell(ref.get('webhook', ''))
+            comp = _md_cell(ref.get('component', ''))
+            lines.append(f"| {wh} | {comp} |")
         lines.append("")
 
     return "\n".join(lines)
