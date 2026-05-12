@@ -364,9 +364,9 @@ def _find_conversion_go_file(repo_path: Path, group: str, resource: str) -> str 
         if not f:
             continue
         lower = f.lower()
-        if resource_stem and resource_stem in lower:
-            return f
-        if group_stem and group_stem in lower:
+        resource_match = not resource_stem or resource_stem in lower
+        group_match = not group_stem or group_stem in lower
+        if resource_match and group_match:
             return f
     return None
 
@@ -377,15 +377,22 @@ def merge_discovered_webhooks(
 ) -> list[WebhookEntry]:
     """Merge Go-discovered webhooks into existing list, filling gaps."""
     existing_names = set()
+    existing_paths = set()
     for wh in existing:
         existing_names.add((wh.component, wh.name))
+        if wh.path:
+            existing_paths.add((wh.component, wh.path))
 
     added = 0
     for wh in discovered:
         if (wh.component, wh.name) in existing_names:
             continue
+        if wh.path and (wh.component, wh.path) in existing_paths:
+            continue
         existing.append(wh)
         existing_names.add((wh.component, wh.name))
+        if wh.path:
+            existing_paths.add((wh.component, wh.path))
         added += 1
 
     return existing
@@ -466,6 +473,11 @@ def _find_webhook_resources_in_kustomization(
         res_str = str(res)
         res_path = (kust_dir / res_str).resolve()
 
+        try:
+            res_path.relative_to(repo_root.resolve())
+        except ValueError:
+            continue
+
         if "webhook" in res_str.lower():
             if res_path.is_file():
                 try:
@@ -520,7 +532,7 @@ def map_go_handlers(
     """
     handler_map: dict[tuple[str, str], list[dict]] = {}
 
-    for _component, repo_path in component_repos.items():
+    for component, repo_path in component_repos.items():
         if not repo_path.exists():
             continue
 
@@ -545,7 +557,7 @@ def map_go_handlers(
                 file_path = match.group(1)
                 line_num = int(match.group(2))
                 webhook_path = match.group(3)
-                key = (repo_path.name, webhook_path)
+                key = (component, webhook_path)
 
                 handler_map.setdefault(key, []).append({
                     "type": "kubebuilder_marker",
@@ -593,23 +605,13 @@ def assign_go_handlers(
     for wh in webhooks:
         if not wh.path:
             continue
-        for key, handlers in handler_map.items():
-            repo_name, webhook_path = key
-            if webhook_path != wh.path:
-                continue
-            repo_match = any(
-                s.get("repo") == repo_name for s in wh.sources
+        for h in handler_map.get((wh.component, wh.path), []):
+            already = any(
+                s.get("file") == h["file"] and s.get("type") == h["type"]
+                for s in wh.sources
             )
-            component_match = repo_name in wh.component or wh.component in repo_name
-            if not repo_match and not component_match:
-                continue
-            for h in handlers:
-                already = any(
-                    s.get("file") == h["file"] and s.get("type") == h["type"]
-                    for s in wh.sources
-                )
-                if not already:
-                    wh.sources.append(h)
+            if not already:
+                wh.sources.append(h)
 
 
 def extract_go_patterns(
@@ -1238,13 +1240,19 @@ async def run_webhook_agent_analysis(
                 log_file = log_dir / f"{job['name'].replace('/', '_')}.log"
                 analysis = _parse_json_from_log(log_file)
 
-            if analysis is None:
+            if not isinstance(analysis, dict):
                 continue
+
+            purpose = str(analysis.get("purpose", ""))
+            data_read = analysis.get("data_read", [])
+            if not isinstance(data_read, list):
+                data_read = []
+            data_read = [d for d in data_read if isinstance(d, dict)]
 
             for wh in job["_webhooks"]:
                 if not wh.purpose:
-                    wh.purpose = analysis.get("purpose", "")
-                for dep in analysis.get("data_read", []):
+                    wh.purpose = purpose
+                for dep in data_read:
                     if not any(d.get("kind") == dep.get("kind") for d in wh.data_read):
                         wh.data_read.append(dep)
         finally:
