@@ -327,6 +327,47 @@ def parse_args():
         ),
     )
 
+    # Phase 4b: Webhook inventory
+    webhook_parser = subparsers.add_parser(
+        "webhook-inventory",
+        help="Build webhook inventory with overlay resolution"
+    )
+    webhook_parser.add_argument(
+        "--platform",
+        required=True,
+        help="Platform identifier (e.g., 'rhoai-3.4', 'odh')"
+    )
+    webhook_parser.add_argument(
+        "--architecture-dir",
+        default="architecture",
+        help="Base architecture directory (default: architecture)"
+    )
+    webhook_parser.add_argument(
+        "--version",
+        help="Specific version to analyze (default: auto-detect)"
+    )
+    webhook_parser.add_argument(
+        "--component",
+        help="Only analyze this specific component"
+    )
+    webhook_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Regenerate even if webhooks.json already exists"
+    )
+    webhook_parser.add_argument(
+        "--model",
+        choices=["sonnet", "opus", "haiku"],
+        default="sonnet",
+        help="Claude model for webhook handler analysis (default: sonnet)"
+    )
+    webhook_parser.add_argument(
+        "--max-concurrent",
+        type=int,
+        default=5,
+        help="Maximum concurrent analysis agents (default: 5)"
+    )
+
     # Phase 4: Collect architectures
     collect_parser = subparsers.add_parser(
         "collect-architectures",

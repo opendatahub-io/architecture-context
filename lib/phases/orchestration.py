@@ -15,6 +15,7 @@ from lib.phases.fetch import run_fetch_phase
 from lib.phases.manifest import run_manifest_phase
 from lib.phases.platform import run_generate_platform_architecture_phase
 from lib.phases.static_analysis import run_static_analysis_phase
+from lib.phases.webhooks import run_webhook_inventory_phase
 
 
 async def run_all_phases(args) -> None:
@@ -177,6 +178,18 @@ async def run_all_phases(args) -> None:
     )
     await run_collect_architectures_phase(collect_args)
 
+    # Phase 4b: Webhook inventory
+    webhook_args = Namespace(
+        platform=args.platform,
+        architecture_dir="architecture",
+        version=target_version,
+        component=None,
+        force=False,
+        model=getattr(args, 'model', 'sonnet'),
+        max_concurrent=getattr(args, 'max_concurrent', 5),
+    )
+    await run_webhook_inventory_phase(webhook_args)
+
     # Phase 5: Generate platform-level architecture
     # Use target_version to filter to specific version if branch was provided
     platform_arch_args = Namespace(
@@ -230,6 +243,8 @@ async def main(args) -> None:
         await run_discover_components_phase(args)
     elif args.command == "static-analysis":
         await run_static_analysis_phase(args)
+    elif args.command == "webhook-inventory":
+        await run_webhook_inventory_phase(args)
     elif args.command == "generate-architecture":
         await run_generate_architecture_phase(args)
     elif args.command == "collect-architectures":

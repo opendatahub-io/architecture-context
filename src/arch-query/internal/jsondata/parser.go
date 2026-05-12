@@ -63,6 +63,49 @@ type rawJSON struct {
 		Source string `json:"source"`
 	} `json:"http_endpoints"`
 
+	Webhooks []struct {
+		Name          string `json:"name"`
+		Type          string `json:"type"`
+		ServiceRef    string `json:"service_ref"`
+		Path          string `json:"path"`
+		Port          int    `json:"port"`
+		FailurePolicy string `json:"failure_policy"`
+		SideEffects   string `json:"side_effects"`
+		Rules         []struct {
+			APIGroups   []string `json:"apiGroups"`
+			APIVersions []string `json:"apiVersions"`
+			Resources   []string `json:"resources"`
+			Operations  []string `json:"operations"`
+		} `json:"rules"`
+		Source  string `json:"source"`
+		Sources []struct {
+			Type string `json:"type"`
+			File string `json:"file"`
+			Repo string `json:"repo"`
+			Line int    `json:"line"`
+			Note string `json:"note"`
+		} `json:"sources"`
+		Overlays             []string `json:"overlays"`
+		EnableCondition      string   `json:"enable_condition"`
+		Purpose              string   `json:"purpose"`
+		DataRead             []struct {
+			Kind  string `json:"kind"`
+			Group string `json:"group"`
+			Usage string `json:"usage"`
+		} `json:"data_read"`
+		CrossCuttingConcerns []string `json:"cross_cutting_concerns"`
+	} `json:"webhooks"`
+
+	PlatformWebhooks []struct {
+		Component string `json:"component"`
+		Webhook   string `json:"webhook"`
+	} `json:"platform_webhooks"`
+
+	ExternalWebhooks []struct {
+		Component string `json:"component"`
+		Webhook   string `json:"webhook"`
+	} `json:"external_webhooks"`
+
 	Dockerfiles []struct {
 		Path         string   `json:"path"`
 		BaseImage    string   `json:"base_image"`
@@ -136,6 +179,68 @@ func ParseComponentJSON(fsys fs.FS, path string) (*types.ComponentDoc, error) {
 			GVK:        w.GVK,
 			Controller: w.Controller,
 			Source:     w.Source,
+		})
+	}
+
+	// Webhooks
+	for _, wh := range raw.Webhooks {
+		w := types.Webhook{
+			Name:          wh.Name,
+			Type:          wh.Type,
+			ServiceRef:    wh.ServiceRef,
+			Path:          wh.Path,
+			Port:          wh.Port,
+			FailurePolicy: wh.FailurePolicy,
+			SideEffects:   wh.SideEffects,
+		}
+		for _, r := range wh.Rules {
+			w.Rules = append(w.Rules, types.WebhookRule{
+				APIGroups:   r.APIGroups,
+				APIVersions: r.APIVersions,
+				Resources:   r.Resources,
+				Operations:  r.Operations,
+			})
+		}
+		if len(wh.Sources) > 0 {
+			for _, s := range wh.Sources {
+				w.Sources = append(w.Sources, types.WebhookSource{
+					Type: s.Type,
+					File: s.File,
+					Repo: s.Repo,
+					Line: s.Line,
+					Note: s.Note,
+				})
+			}
+		} else if wh.Source != "" {
+			w.Sources = []types.WebhookSource{
+				{Type: "webhook_manifest", File: wh.Source},
+			}
+		}
+		w.Overlays = wh.Overlays
+		w.EnableCondition = wh.EnableCondition
+		w.Purpose = wh.Purpose
+		for _, dr := range wh.DataRead {
+			w.DataRead = append(w.DataRead, types.WebhookDataRead{
+				Kind:  dr.Kind,
+				Group: dr.Group,
+				Usage: dr.Usage,
+			})
+		}
+		w.CrossCuttingConcerns = wh.CrossCuttingConcerns
+		doc.Webhooks = append(doc.Webhooks, w)
+	}
+
+	// Platform and external webhook refs
+	for _, ref := range raw.PlatformWebhooks {
+		doc.PlatformWebhooks = append(doc.PlatformWebhooks, types.WebhookRef{
+			Component: ref.Component,
+			Webhook:   ref.Webhook,
+		})
+	}
+	for _, ref := range raw.ExternalWebhooks {
+		doc.ExternalWebhooks = append(doc.ExternalWebhooks, types.WebhookRef{
+			Component: ref.Component,
+			Webhook:   ref.Webhook,
 		})
 	}
 
