@@ -1344,6 +1344,7 @@ def _build_large_file_prompt(
 
     lines = content.split("\n")
     key_lines = []
+    seen_line_nums: set[int] = set()
 
     for i, line in enumerate(lines):
         stripped = line.strip()
@@ -1357,8 +1358,9 @@ def _build_large_file_prompt(
             start = max(0, i - 1)
             end = min(len(lines), i + 2)
             for j in range(start, end):
-                if j not in [kl[0] for kl in key_lines]:
+                if j not in seen_line_nums:
                     key_lines.append((j, lines[j]))
+                    seen_line_nums.add(j)
 
     key_lines.sort(key=lambda x: x[0])
     excerpt = "\n".join(
