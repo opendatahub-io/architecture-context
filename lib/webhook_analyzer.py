@@ -12,7 +12,7 @@ from typing import Any
 
 
 def _resolve_rg() -> str:
-    """Resolve ripgrep binary path once."""
+    """Resolve ripgrep binary path, raising only when actually called."""
     path = shutil.which("rg")
     if not path:
         raise RuntimeError(
@@ -21,7 +21,15 @@ def _resolve_rg() -> str:
     return path
 
 
-_RG_BIN = _resolve_rg()
+_RG_BIN: str | None = None
+
+
+def _rg() -> str:
+    """Lazy accessor for the ripgrep binary path."""
+    global _RG_BIN
+    if _RG_BIN is None:
+        _RG_BIN = _resolve_rg()
+    return _RG_BIN
 
 
 def _safe_join(root: Path, untrusted: str) -> Path | None:
@@ -180,7 +188,7 @@ def discover_webhooks_from_go(
     for component, repo_path in component_repos.items():
         try:
             result = subprocess.run(
-                [_RG_BIN, "-n", r"\+kubebuilder:webhook:", "--glob", "*.go",
+                [_rg(), "-n", r"\+kubebuilder:webhook:", "--glob", "*.go",
                  "--no-heading"],
                 cwd=str(repo_path),
                 capture_output=True, text=True, timeout=30,
@@ -262,7 +270,7 @@ def discover_conversion_webhooks(
 
         try:
             result = subprocess.run(
-                [_RG_BIN, "-l", "strategy: Webhook", "--glob", "*.yaml",
+                [_rg(), "-l", "strategy: Webhook", "--glob", "*.yaml",
                  "--glob", "*.yml", "--glob", "!vendor/*",
                  "--glob", "!test/*", "--glob", "!install/*"],
                 cwd=str(repo_path),
@@ -348,7 +356,7 @@ def _find_conversion_go_file(repo_path: Path, group: str, resource: str) -> str 
     """Find the Go conversion implementation file for a CRD."""
     try:
         result = subprocess.run(
-            [_RG_BIN, "-l", r"ConvertTo\b|ConvertFrom\b", "--glob", "*.go",
+            [_rg(), "-l", r"ConvertTo\b|ConvertFrom\b", "--glob", "*.go",
              "--glob", "!vendor/*", "--glob", "!*_test.go"],
             cwd=str(repo_path),
             capture_output=True, text=True, timeout=15,
@@ -538,7 +546,7 @@ def map_go_handlers(
 
         try:
             result = subprocess.run(
-                [_RG_BIN, "-n", r"\+kubebuilder:webhook:", "--glob", "*.go",
+                [_rg(), "-n", r"\+kubebuilder:webhook:", "--glob", "*.go",
                  "--no-heading"],
                 cwd=str(repo_path),
                 capture_output=True, text=True, timeout=30,

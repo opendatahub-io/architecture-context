@@ -212,6 +212,7 @@ async def run_all_phases(args) -> None:
             version=target_version,
             max_concurrent=max_concurrent,
             limit=None,
+            component=None,
             force_regenerate=False,
             export_png=getattr(args, 'export_png', False),
             model=getattr(args, 'model', 'opus'),
