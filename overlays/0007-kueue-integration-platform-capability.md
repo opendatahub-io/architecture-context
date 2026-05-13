@@ -18,6 +18,7 @@ release:
   - "next"
 provenance:
   - https://github.com/red-hat-data-services/rhods-operator/tree/rhoai-2.25/internal/webhook/kueue
+  - https://github.com/opendatahub-io/opendatahub-operator/pull/3263
 author: Luca Burgazzoli
 superseded_by: null
 ---
