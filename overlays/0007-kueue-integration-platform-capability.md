@@ -25,7 +25,7 @@ superseded_by: null
 
 ## Fact
 
-**Kueue integration** is a platform capability that provides fair-share quota management and job queueing for AI/ML workloads. When enabled via DataScienceCluster and configured on namespaces, the platform enforces that all supported workloads — Notebooks, PyTorchJobs, RayJobs, RayClusters, and InferenceServices — carry a queue assignment. This enables hierarchical resource quotas, workload prioritization, and preemption across teams. Kueue itself is installed via the Red Hat build of Kueue Operator. When used together with HardwareProfile (see overlay 0005), queue assignment is automatic via the "Queue" scheduling type. In RHOAI 2.25 / 3.3, queue assignment enforcement is implemented via a validating webhook in rhods-operator; in RHOAI 3.4 and next, the validating webhook has been removed and the platform no longer enforces queue assignment at admission time. This capability is GA since RHOAI 2.25 (= RHOAI 3.3) and continues through 3.4 and next.
+**Kueue integration** is a platform capability that provides fair-share quota management and job queueing for AI/ML workloads. When enabled via DataScienceCluster and configured on namespaces, the platform enforces that all supported workloads — Notebooks, PyTorchJobs, RayJobs, RayClusters, and InferenceServices — carry a queue assignment. This enables hierarchical resource quotas, workload prioritization, and preemption across teams. Kueue itself is installed via the Red Hat build of Kueue Operator. When used together with HardwareProfile (see overlay 0005), queue assignment is automatic via the "Queue" scheduling type. In RHOAI 2.25 / 3.3, queue assignment enforcement is implemented via a validating webhook in rhods-operator; in RHOAI 3.4 and next, the validating webhook has been removed and the platform no longer enforces queue assignment at admission time — however, workloads still require a `kueue.x-k8s.io/queue-name` label to be admitted by Kueue for scheduling. This capability is GA since RHOAI 2.25 (= RHOAI 3.3) and continues through 3.4 and next.
 
 ## Impact on Strategies
 
@@ -35,7 +35,7 @@ superseded_by: null
 - Integrates with **HardwareProfile** (overlay 0005): when a HardwareProfile uses "Queue" scheduling type, queue assignment is injected automatically — strategies should document this dependency chain when both capabilities are active
 - The RHOAI-specific enforcement is separate from Kueue's own admission control — the platform provides mandatory queue assignment policy while Kueue handles workload suspension, quota accounting, and fair-share scheduling
 - Version mapping: RHOAI 2.25 = RHOAI 3.3; this capability is present in both versioning schemes and continues through 3.4 and next
-- Implementation: in RHOAI 2.25 / 3.3, validating webhook in rhods-operator (`/validate-kueue`); removed in 3.4 and next with no replacement — queue assignment is no longer enforced at admission time by the platform
+- Implementation: in RHOAI 2.25 / 3.3, validating webhook in rhods-operator (`/validate-kueue`); removed in 3.4 and next — the platform no longer enforces queue assignment at admission time, but Kueue still requires the `kueue.x-k8s.io/queue-name` label on workloads for scheduling
 
 ## Context
 
