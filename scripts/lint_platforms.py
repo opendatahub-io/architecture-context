@@ -100,7 +100,7 @@ def _check_extra_repos(value, errors):
             f" got {type(value).__name__}"
         )
         return
-    allowed = {"org", "repo", "branch", "suffix", "exclude_files"}
+    allowed = {"org", "repo", "branch", "suffix", "exclude_files", "protocol"}
     for i, entry in enumerate(value):
         if not isinstance(entry, dict):
             errors.append(
@@ -127,6 +127,13 @@ def _check_extra_repos(value, errors):
             if opt in entry and not isinstance(entry[opt], str):
                 errors.append(
                     f"'extra_repos[{i}].{opt}' must be a string"
+                )
+        if "protocol" in entry:
+            proto = entry["protocol"]
+            if proto not in ("https", "ssh"):
+                errors.append(
+                    f"'extra_repos[{i}].protocol' must be"
+                    f" 'https' or 'ssh', got '{proto}'"
                 )
         if "exclude_files" in entry:
             _check_exclude_patterns(

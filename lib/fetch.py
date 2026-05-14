@@ -28,14 +28,7 @@ def _prepare_env() -> dict:
     Returns:
         Dictionary of environment variables to pass to subprocess
     """
-    env = os.environ.copy()
-
-    # GITHUB_TOKEN is already in env if loaded from .env file
-    # Just ensure it's present for subprocess calls
-    if "GITHUB_TOKEN" in env:
-        _log("Using GITHUB_TOKEN from environment")
-
-    return env
+    return os.environ.copy()
 
 
 def load_platform_config(platform: str, config_path: str = "platforms.yaml") -> dict:
@@ -450,6 +443,7 @@ async def _clone_repo(
     suffix: str = None,
     pull: bool = False,
     exclude_files: list = None,
+    protocol: str = "https",
 ) -> None:
     """Clone an individual repository."""
     org_dir = f"{org}.{suffix}" if suffix else org
@@ -480,7 +474,10 @@ async def _clone_repo(
             _apply_exclude_files(repo_path, exclude_files, repo)
         return
 
-    clone_url = f"https://github.com/{org}/{repo}.git"
+    if protocol == "ssh":
+        clone_url = f"git@github.com:{org}/{repo}.git"
+    else:
+        clone_url = f"https://github.com/{org}/{repo}.git"
     _log(f"  Cloning {org}/{repo}...")
 
     repo_path.parent.mkdir(parents=True, exist_ok=True)
@@ -544,18 +541,10 @@ async def fetch_repositories(
     _log_file = open(log_path, "w")  # noqa: SIM115
     _log(f"fetch started at {datetime.now(timezone.utc).isoformat()}")
 
-    if platform and "GITHUB_TOKEN" not in os.environ:
-        raise RuntimeError(
-            "GITHUB_TOKEN is not set. The fetch phase requires a"
-            " GitHub token to list org repositories (including"
-            " private ones) and avoid API rate limits.\n\n"
-            "  export GITHUB_TOKEN=ghp_..."
-        )
-    if not platform and "GITHUB_TOKEN" not in os.environ:
+    if "GITHUB_TOKEN" not in os.environ:
         _log(
-            "WARNING: GITHUB_TOKEN is not set. Private repos"
-            " will not be visible and API rate limits will"
-            " be restricted to 60 requests/hour."
+            "WARNING: GITHUB_TOKEN is not set. API rate limits"
+            " will be restricted to 60 requests/hour."
         )
 
     gh_org_clone_cmd = await _ensure_gh_org_clone()
@@ -623,7 +612,8 @@ async def fetch_repositories(
                 platform_org_dirs.add(org_dir_name)
                 await _clone_repo(checkouts_path, entry["org"], entry["repo"],
                                   branch=repo_branch, suffix=repo_suffix, pull=pull,
-                                  exclude_files=entry.get("exclude_files"))
+                                  exclude_files=entry.get("exclude_files"),
+                                  protocol=entry.get("protocol", "https"))
 
         # Apply platform-wide post_checkout exclude_files rules
         post_checkout = config.get("post_checkout", [])
