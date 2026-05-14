@@ -58,8 +58,21 @@ def normalize_key(key):
     return key
 
 
+KNOWN_MAPPINGS = {
+    "ovms": "openvino_model_server",
+    "related-image-rh-distribution": "rhds-llama-stack-distribution",
+    "related-image-odh-llamastack-operator": "llama-stack-k8s-operator",
+}
+
+
 def find_repo(name, repo_sets):
     """Try to match an image key to a repo."""
+    if name in KNOWN_MAPPINGS:
+        mapped = KNOWN_MAPPINGS[name]
+        for repos in repo_sets:
+            if mapped in repos:
+                return mapped, "known_mapping"
+
     for repos in repo_sets:
         if name in repos:
             return name, "direct"

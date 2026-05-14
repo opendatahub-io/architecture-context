@@ -56,3 +56,13 @@
 - ❌ Exclude: `RHOAI-Build-Config` (build infrastructure, not a deployed component)
 - ❌ Exclude: `must-gather` (diagnostic support tool)
 - ❌ Exclude: `konflux-central` (CI/CD infrastructure)
+
+**Common mistake #6:** Excluding repos matched by RELATED_IMAGE or catalog parsing
+
+**Why this is wrong:**
+- If `parse_related_images.py` matches a repo, the operator deploys that repo's container image as an operand
+- If `parse_catalog_images.py` matches a repo, the image is in the OLM catalog's `relatedImages` — it ships in the product
+- Reclassifying these as "infrastructure_utility", "covered_by_X", or "deprecated" contradicts the authoritative signal
+- Example: `kube-rbac-proxy` was matched by RELATED_IMAGE (5 consumers!) but excluded as "infrastructure_utility" — it's a security-critical sidecar proxy that runs in every component
+
+**Rule:** Script matches are binding. If the script says it's shipped, include it. The only exception is build infrastructure repos like `RHOAI-Build-Config`.

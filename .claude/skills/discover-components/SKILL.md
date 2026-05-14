@@ -196,6 +196,8 @@ The script scans `internal/controller/components/*/*_support.go` for `imageParam
 
 For each matched repo in the output, if not already in the component list, add as `discovered_via: "operator_operand"`, `referenced_by: ["{operator-name}"]`. Use the tier already assigned in Step 2a if the repo was classified there; otherwise default to `tier: "payload_component"`.
 
+**Binding rule:** Any repo matched by `parse_related_images.py` MUST be included as a component. Do NOT override these matches by reclassifying the repo as excluded. The script identifies operands that the operator ships — if the operator references a container image built from a repo, that repo is a shipped component regardless of whether it looks like "infrastructure" or a "utility." The only exception is build infrastructure repos like `RHOAI-Build-Config` itself.
+
 **5.1b: Discover operands via OLM catalog relatedImages (RHOAI).** RHOAI has a build config repo (`RHOAI-Build-Config`) containing OLM catalog YAML with `relatedImages` sections — the authoritative list of every container image shipped in each version.
 
 Run the helper script to parse the catalog and match images to repos:
@@ -220,6 +222,8 @@ Output is JSON with:
 - `variant_groups`: images that are build variants of the same component
 
 For each matched repo, if not already in the component list, add as `discovered_via: "container_image"`, `referenced_by: ["rhods-operator"]`. Use the tier already assigned in Step 2a if the repo was classified there; otherwise default to `tier: "payload_component"`. Do NOT add `RHOAI-Build-Config` itself as a component — it is build infrastructure, not a shipped component. Unmatched images that are clearly third-party (`ubi-*`, `ose-*`, `postgresql-*`, `etcd`) should be ignored. Other unmatched images may represent components without source repos in the checkouts — note them but don't block on them.
+
+**Binding rule:** Any repo matched by `parse_catalog_images.py` MUST be included as a component. Do NOT override these matches by reclassifying the repo as excluded. The OLM catalog's `relatedImages` is the authoritative list of container images shipped in the product — if a repo's image is in the catalog, the repo is a shipped component regardless of whether it looks like "infrastructure," a "utility," or "covered by" another component. The only exception is build infrastructure repos like `RHOAI-Build-Config` itself.
 
 **5.2: Scan `go.mod` for shared libraries.** Scan `go.mod` (or equivalent) of each discovered `core_platform` and `optional_platform` component. Look for first-party dependencies (same GitHub org) that match repos in the checkouts directory. This is how shared libraries like `library-go`, `api`, `client-go` get discovered.
 

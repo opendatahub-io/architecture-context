@@ -60,6 +60,9 @@ KNOWN_MAPPINGS = {
     "pipeline-runtime-tensorflow": "notebooks-downstream",
     "training": "notebooks-downstream",
     "th06": "notebooks-downstream",
+    "kube-auth-proxy": "kube-rbac-proxy",
+    "openvino-servingruntime": "openvino_model_server",
+    "openvino-model-server": "openvino_model_server",
 }
 
 VARIANT_SUFFIXES = re.compile(
