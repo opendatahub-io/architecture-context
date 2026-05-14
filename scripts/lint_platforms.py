@@ -100,6 +100,7 @@ def _check_extra_repos(value, errors):
             f" got {type(value).__name__}"
         )
         return
+    allowed = {"org", "repo", "branch", "suffix", "exclude_files"}
     for i, entry in enumerate(value):
         if not isinstance(entry, dict):
             errors.append(
@@ -107,6 +108,12 @@ def _check_extra_repos(value, errors):
                 f" got {type(entry).__name__}"
             )
             continue
+        unknown = set(entry.keys()) - allowed
+        if unknown:
+            errors.append(
+                f"'extra_repos[{i}]': unrecognized keys:"
+                f" {', '.join(sorted(unknown))}"
+            )
         for req in ("org", "repo"):
             if req not in entry:
                 errors.append(
@@ -247,8 +254,12 @@ def main() -> int:
         print(f"platforms.yaml not found: {PLATFORMS_FILE}")
         return 1
 
-    with open(PLATFORMS_FILE) as f:
-        data = yaml.safe_load(f)
+    try:
+        with open(PLATFORMS_FILE, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        print(f"invalid YAML in {PLATFORMS_FILE}: {e}")
+        return 1
 
     if not isinstance(data, dict):
         print("platforms.yaml root must be a YAML mapping")
