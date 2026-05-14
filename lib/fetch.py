@@ -1,6 +1,7 @@
 """Phase 1: Fetch/clone repositories using gh-org-clone."""
 
 import asyncio
+import fnmatch
 import os
 import shutil
 from pathlib import Path
@@ -389,6 +390,48 @@ async def _clone_org(
     print(f"Successfully cloned repositories from {org}")
 
 
+def _apply_exclude_files(repo_path: Path, patterns: list, repo_name: str) -> None:
+    """Remove files/directories matching glob patterns from a cloned repo."""
+    if repo_path.is_symlink():
+        raise ValueError(
+            f"exclude_files for {repo_name}: repo path is a symlink"
+        )
+    if not (repo_path / ".git").is_dir():
+        raise ValueError(
+            f"exclude_files for {repo_name}: not a git checkout"
+        )
+    if isinstance(patterns, str) or not isinstance(patterns, list):
+        raise ValueError(
+            f"exclude_files for {repo_name} must be a list of"
+            " glob patterns, not a bare string"
+        )
+    resolved_root = repo_path.resolve()
+    for pattern in patterns:
+        if ".." in pattern or pattern.startswith("/"):
+            print(f"  exclude_files [{repo_name}]: REJECTED unsafe pattern: {pattern}")
+            continue
+        matches = sorted(repo_path.glob(pattern))
+        if not matches:
+            continue
+        for match in matches:
+            resolved = match.resolve()
+            if resolved != resolved_root and not str(resolved).startswith(
+                str(resolved_root) + os.sep
+            ):
+                print(
+                    f"  exclude_files [{repo_name}]:"
+                    f" SKIPPED {match} (escapes repo root)"
+                )
+                continue
+            rel = match.relative_to(repo_path)
+            if match.is_dir():
+                shutil.rmtree(match)
+                print(f"  exclude_files [{repo_name}]: removed directory {rel}/")
+            elif match.exists():
+                match.unlink()
+                print(f"  exclude_files [{repo_name}]: removed {rel}")
+
+
 async def _clone_repo(
     checkouts_dir: Path,
     org: str,
@@ -396,6 +439,7 @@ async def _clone_repo(
     branch: str = None,
     suffix: str = None,
     pull: bool = False,
+    exclude_files: list = None,
 ) -> None:
     """Clone an individual repository."""
     org_dir = f"{org}.{suffix}" if suffix else org
@@ -422,6 +466,8 @@ async def _clone_repo(
                 print(f"  {org}/{repo}: pull failed ({stderr.decode().strip()})")
         else:
             print(f"  Skipped {org}/{repo} (already exists)")
+        if exclude_files:
+            _apply_exclude_files(repo_path, exclude_files, repo)
         return
 
     clone_url = f"https://github.com/{org}/{repo}.git"
@@ -450,6 +496,8 @@ async def _clone_repo(
             print(f"  Skipped {org}/{repo} (branch '{branch}' not found)")
         else:
             print(f"  Failed to clone {org}/{repo}")
+    elif exclude_files:
+        _apply_exclude_files(repo_path, exclude_files, repo)
 
 
 async def fetch_repositories(
@@ -502,9 +550,13 @@ async def fetch_repositories(
             all_excludes.extend(exclude.split(","))
         exclude_str = ",".join(all_excludes) if all_excludes else None
 
+        platform_org_dirs = set()
+
         # Clone primary orgs (with branch + suffix)
         orgs = config.get("orgs", [])
         for cfg_org in orgs:
+            org_dir_name = f"{cfg_org}.{suffix}" if suffix else cfg_org
+            platform_org_dirs.add(org_dir_name)
             await _clone_org(gh_org_clone_cmd, cfg_org, checkouts_path,
                              branch=branch, suffix=suffix, exclude=exclude_str)
             if pull:
@@ -520,6 +572,8 @@ async def fetch_repositories(
                 if isinstance(entry, dict)
                 else None
             ) or suffix
+            org_dir_name = f"{org_name}.{org_suffix}" if org_suffix else org_name
+            platform_org_dirs.add(org_dir_name)
             await _clone_org(gh_org_clone_cmd, org_name, checkouts_path,
                              branch=org_branch, suffix=org_suffix, exclude=exclude_str)
             if pull:
@@ -533,8 +587,35 @@ async def fetch_repositories(
             for entry in extra_repos:
                 repo_branch = entry.get("branch")
                 repo_suffix = entry.get("suffix") or suffix
+                org_dir_name = (
+                    f"{entry['org']}.{repo_suffix}" if repo_suffix else entry["org"]
+                )
+                platform_org_dirs.add(org_dir_name)
                 await _clone_repo(checkouts_path, entry["org"], entry["repo"],
-                                  branch=repo_branch, suffix=repo_suffix, pull=pull)
+                                  branch=repo_branch, suffix=repo_suffix, pull=pull,
+                                  exclude_files=entry.get("exclude_files"))
+
+        # Apply platform-wide post_checkout exclude_files rules
+        post_checkout = config.get("post_checkout", [])
+        if post_checkout:
+            for i, rule in enumerate(post_checkout):
+                if "repo" not in rule or "exclude_files" not in rule:
+                    raise ValueError(
+                        f"post_checkout[{i}]: each entry must have"
+                        " 'repo' and 'exclude_files' keys"
+                    )
+            for org_dir_name in sorted(platform_org_dirs):
+                org_dir = checkouts_path / org_dir_name
+                if not org_dir.is_dir():
+                    continue
+                for repo_dir in sorted(org_dir.iterdir()):
+                    if not repo_dir.is_dir():
+                        continue
+                    for rule in post_checkout:
+                        if fnmatch.fnmatch(repo_dir.name, rule["repo"]):
+                            _apply_exclude_files(
+                                repo_dir, rule["exclude_files"], repo_dir.name,
+                            )
 
     elif org:
         # Direct org mode (original behavior)
