@@ -218,6 +218,35 @@ _No external ingress. All communication is cluster-internal via headless service
 
 _The repository has RPM-level locks (rpms.lock.yaml with rpms.in.yaml referencing ubi.repo) and Go module locks (go.sum). The rpms.in.yaml specifies three architectures (x86_64, ppc64le, aarch64) and references the Konflux Dockerfile. No Hermeto/cachi2 prefetch integration is present in the Dockerfile._
 
+## Admission Webhooks
+
+This component defines 5 webhook(s) (0 mutating, 5 validating).
+
+| Name | Type | Target Resources | Purpose |
+|------|------|-----------------|---------|
+| validator.pytorchjob.training-operator.kubeflow.org | validating | pytorchjobs | Validates PyTorchJob resources on create and update, enforcing naming conventions (DNS-1035), replica spec constraints (Master must have exactly 1 replica, Worker at least 1), required 'pytorch' default container with a non-empty image, elastic policy consistency (NProcPerNode deprecation and mutual exclusion), and RunPolicy validity. |
+| validator.xgboostjob.training-operator.kubeflow.org | validating | xgboostjobs | Validates XGBoostJob resources on create and update, ensuring the job name is a valid DNS-1035 label, that replica specs contain only valid types (Master/Worker), that exactly one Master replica exists, and that every replica spec includes at least one container named 'xgboost' with a defined image. |
+| validator.tfjob.training-operator.kubeflow.org | validating | tfjobs | Validates TFJob resources on create and update, enforcing that the job name is a valid DNS-1035 label, that TFReplicaSpecs are present with at least one container named 'tensorflow' per replica that has an image defined, and that at most one Chief or Master replica type exists. |
+| validator.jaxjob.training-operator.kubeflow.org | validating | jaxjobs | Validates JAXJob resources on create and update, ensuring the job name is a valid DNS-1035 label, that jaxReplicaSpecs are present and only use the 'Worker' replica type, that each replica spec has containers with images defined, and that at least one container is named 'jax'. |
+| validator.paddlejob.training-operator.kubeflow.org | validating | paddlejobs | Validates PaddleJob resources on create and update, ensuring the job name is a valid DNS-1035 label, replica types are limited to Master and Worker, each replica spec has containers with images defined, and at least one container is named 'paddle'. On updates, it also validates RunPolicy immutability constraints. |
+
+### External Webhooks
+
+The following webhooks from peer components intercept this component's resource types:
+
+| Webhook | Defined By |
+|---------|-----------|
+| mmpijob.kb.io | kueue |
+| vmpijob.kb.io | kueue |
+| mpytorchjob.kb.io | kueue |
+| vpytorchjob.kb.io | kueue |
+| mtfjob.kb.io | kueue |
+| vtfjob.kb.io | kueue |
+| mxgboostjob.kb.io | kueue |
+| vxgboostjob.kb.io | kueue |
+| mpaddlejob.kb.io | kueue |
+| vpaddlejob.kb.io | kueue |
+
 ## Data Flows
 
 ### Flow 1: Distributed PyTorch Training Job Lifecycle

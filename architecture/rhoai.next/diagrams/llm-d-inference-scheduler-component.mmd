@@ -1,128 +1,103 @@
 graph TB
-    subgraph External["External Clients"]
-        Client[Client / Application]
-    end
-
-    subgraph GatewayLayer["Gateway Layer"]
-        Gateway["Gateway<br/>(gateway.networking.k8s.io)"]
-        HTTPRoute["HTTPRoute<br/>→ InferencePool backendRef"]
-        Envoy["Envoy Proxy<br/>ext_proc filter"]
-        Gateway --> HTTPRoute
-        HTTPRoute --> Envoy
-    end
-
-    subgraph EPPComponent["EPP (Endpoint Picker)"]
+    subgraph "llm-d Inference Scheduler"
         direction TB
-        ExtProc["ext_proc gRPC Server<br/>9002/TCP"]
-        HealthGRPC["gRPC Health Server<br/>9003/TCP"]
-        MetricsHTTP["Metrics Endpoint<br/>9090/TCP HTTP"]
 
-        subgraph SchedulingPipeline["Scheduling Pipeline"]
-            ProfileHandler["Profile Handler"]
-            Filters["Filters<br/>(admission, model match)"]
-            Scorers["Scorers<br/>(prefix cache, load, KV util)"]
-            Pickers["Pickers<br/>(max score, random)"]
-            ProfileHandler --> Filters --> Scorers --> Pickers
+        subgraph EPP["EPP (Endpoint Picker)"]
+            direction TB
+            ExtProcServer["ext_proc gRPC Server<br/>9002/TCP"]
+            HealthServer["gRPC Health Server<br/>9003/TCP"]
+            MetricsServer["Prometheus Metrics<br/>9090/TCP"]
+
+            subgraph SchedulingPipeline["Scheduling Pipeline"]
+                Filters["Filters"]
+                Scorers["Scorers"]
+                Pickers["Pickers"]
+                ProfileHandler["Profile Handler"]
+                ProfileHandler --> Filters
+                Filters --> Scorers
+                Scorers --> Pickers
+            end
+
+            subgraph Controllers["Controller-Runtime Reconcilers"]
+                PoolReconciler["InferencePool<br/>Reconciler"]
+                PodReconciler["Pod<br/>Reconciler"]
+                ObjectiveReconciler["InferenceObjective<br/>Reconciler"]
+                RewriteReconciler["InferenceModelRewrite<br/>Reconciler"]
+            end
+
+            subgraph DataLayer["Data Layer"]
+                MetricsScraper["Metrics Scraper<br/>(HTTP)"]
+                KVEventSub["KV Cache Event<br/>Subscriber (ZMQ)"]
+                KVCacheIndex["KV Cache Index<br/>(llm-d-kv-cache)"]
+                KVEventSub --> KVCacheIndex
+            end
+
+            subgraph FlowControl["Flow Control (Experimental)"]
+                AdmissionCtrl["Admission Controller"]
+                PriorityBands["Priority Bands"]
+                FairnessPolicy["Fairness Policy"]
+                AdmissionCtrl --> PriorityBands
+                AdmissionCtrl --> FairnessPolicy
+            end
+
+            ExtProcServer --> ProfileHandler
+            Controllers --> DataLayer
         end
 
-        subgraph Controllers["Controller-Runtime Reconcilers"]
-            PoolCtrl["InferencePool<br/>Reconciler"]
-            PodCtrl["Pod<br/>Reconciler"]
-            ObjCtrl["InferenceObjective<br/>Reconciler"]
-            RewriteCtrl["InferenceModelRewrite<br/>Reconciler"]
+        subgraph Sidecar["P/D Routing Sidecar"]
+            direction TB
+            SidecarProxy["HTTP/HTTPS Proxy<br/>8000/TCP"]
+            PDOrchestrator["P/D Orchestrator"]
+            EPDOrchestrator["E/P/D Orchestrator"]
+            SSRFAllowlist["SSRF Allowlist<br/>(InferencePool-based)"]
+
+            subgraph KVConnectors["KV Connectors"]
+                NIXLV2["NIXL V2"]
+                SharedStorage["Shared Storage"]
+                SGLang["SGLang"]
+            end
+
+            SidecarProxy --> PDOrchestrator
+            SidecarProxy --> EPDOrchestrator
+            PDOrchestrator --> KVConnectors
         end
 
-        subgraph DataLayer["Data Layer"]
-            MetricsScraper["Metrics Scraper<br/>(HTTP polling)"]
-            ZMQSubscriber["ZMQ Subscriber<br/>5557/TCP"]
-            KVCacheIndex["KV Cache Index<br/>(in-process)"]
-            MetricsScraper --> KVCacheIndex
-            ZMQSubscriber --> KVCacheIndex
-        end
-
-        subgraph FlowControl["Flow Control (Experimental)"]
-            AdmissionCtrl["Admission Controller"]
-            PriorityQueues["Priority Queues<br/>(bands, fairness, ordering)"]
-            SaturationDetector["Saturation Detector"]
-            AdmissionCtrl --> PriorityQueues
-            PriorityQueues --> SaturationDetector
-        end
-
-        ExtProc --> ProfileHandler
-        Controllers --> SchedulingPipeline
-        DataLayer --> SchedulingPipeline
-        FlowControl --> SchedulingPipeline
+        UDSTokenizer["UDS Tokenizer<br/>(Sidecar Container)<br/>Unix Domain Socket"]
     end
 
-    subgraph SidecarComponent["P/D Routing Sidecar"]
-        direction TB
-        SidecarProxy["HTTP/HTTPS Proxy<br/>8000/TCP"]
-        SSRFAllowlist["SSRF Allowlist<br/>(InferencePool-based)"]
-        subgraph Connectors["KV Connectors"]
-            NIXL["NIXL V2"]
-            SharedStorage["Shared Storage"]
-            SGLang["SGLang"]
-        end
-        SidecarProxy --> SSRFAllowlist
-        SidecarProxy --> Connectors
-    end
+    %% External Inputs
+    Client["Client"] -->|HTTP/80| Gateway
+    Gateway["Gateway (Envoy)"] -->|gRPC ext_proc<br/>9002/TCP| ExtProcServer
 
-    subgraph ModelServers["Model Server Pods (vLLM)"]
-        Prefiller["Prefiller Pod"]
-        Decoder["Decoder Pod<br/>8001/TCP"]
-        Encoder["Encoder Pod<br/>(E/P/D)"]
-    end
+    %% EPP to external
+    Controllers -->|HTTPS/443<br/>SA token| K8sAPI["Kubernetes API Server"]
+    MetricsScraper -->|HTTP/HTTPS| ModelServers["vLLM Model Servers"]
+    KVEventSub -->|ZMQ PUB/SUB<br/>5556/TCP| ModelServers
+    UDSTokenizer -.->|gRPC over UDS| ExtProcServer
 
-    subgraph UDSTokenizerSidecar["UDS Tokenizer Sidecar"]
-        Tokenizer["Tokenizer<br/>Unix Domain Socket"]
-    end
+    %% EPP routing decision
+    ExtProcServer -->|gRPC response<br/>target endpoint| Gateway
+    Gateway -->|HTTP/8000| SidecarProxy
 
-    subgraph K8sServices["Kubernetes Services"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS"]
-    end
+    %% Sidecar to model servers
+    SidecarProxy -->|HTTP/HTTPS| PrefillerPod["Prefiller Pod"]
+    SidecarProxy -->|HTTP/HTTPS<br/>8001/TCP| DecoderPod["Local Decoder (vLLM)"]
+    SidecarProxy -->|HTTP/HTTPS| EncoderPod["Encoder Pod<br/>(E/P/D)"]
 
-    subgraph Observability["Observability"]
-        Prometheus["Prometheus<br/>(ServiceMonitor)"]
-        OTelCollector["OpenTelemetry Collector<br/>4317/TCP gRPC"]
-    end
-
-    %% External flows
-    Client -->|"HTTP/80"| Gateway
-    Envoy -->|"gRPC ext_proc<br/>9002/TCP"| ExtProc
-    Envoy -->|"Routed request<br/>8000/TCP"| SidecarProxy
-    Envoy -->|"Direct route<br/>(non-P/D)"| Decoder
-
-    %% EPP dependencies
-    Controllers -->|"Watch CRDs<br/>443/TCP HTTPS"| K8sAPI
-    MetricsScraper -->|"HTTP scraping"| ModelServers
-    ZMQSubscriber -->|"ZMQ PUB/SUB<br/>5556/TCP"| ModelServers
-    Tokenizer -.->|"UDS gRPC"| ExtProc
-
-    %% Sidecar flows
-    SidecarProxy -->|"Prefill request"| Prefiller
-    SidecarProxy -->|"Decode request<br/>8001/TCP"| Decoder
-    SidecarProxy -->|"Encode request<br/>(E/P/D)"| Encoder
-    SSRFAllowlist -->|"Watch InferencePool<br/>443/TCP"| K8sAPI
-
-    %% Observability
-    MetricsHTTP -.->|"Scrape /metrics<br/>9090/TCP"| Prometheus
-    ExtProc -.->|"OTLP traces<br/>4317/TCP"| OTelCollector
+    %% Monitoring
+    Prometheus["Prometheus"] -->|HTTP/9090| MetricsServer
+    OTelCollector["OpenTelemetry<br/>Collector"] -.->|gRPC/4317| EPP
 
     %% Styling
-    style ExtProc fill:#4a90e2,stroke:#333,color:#fff
-    style HealthGRPC fill:#4a90e2,stroke:#333,color:#fff
-    style MetricsHTTP fill:#4a90e2,stroke:#333,color:#fff
-    style SidecarProxy fill:#4a90e2,stroke:#333,color:#fff
-    style ProfileHandler fill:#6c5ce7,stroke:#333,color:#fff
-    style Filters fill:#6c5ce7,stroke:#333,color:#fff
-    style Scorers fill:#6c5ce7,stroke:#333,color:#fff
-    style Pickers fill:#6c5ce7,stroke:#333,color:#fff
-    style Envoy fill:#f5a623,stroke:#333,color:#fff
-    style Gateway fill:#f5a623,stroke:#333,color:#fff
-    style K8sAPI fill:#e8e8e8,stroke:#333
-    style Prometheus fill:#e8e8e8,stroke:#333
-    style OTelCollector fill:#e8e8e8,stroke:#333
-    style Prefiller fill:#7ed321,stroke:#333,color:#fff
-    style Decoder fill:#7ed321,stroke:#333,color:#fff
-    style Encoder fill:#7ed321,stroke:#333,color:#fff
-    style Tokenizer fill:#00b894,stroke:#333,color:#fff
+    style EPP fill:#4a90e2,stroke:#2c5f8f,color:#fff
+    style Sidecar fill:#7ed321,stroke:#4a8f14,color:#fff
+    style UDSTokenizer fill:#9b59b6,stroke:#6c3c80,color:#fff
+    style Gateway fill:#f5a623,stroke:#c4841c
+    style K8sAPI fill:#e8e8e8,stroke:#999
+    style ModelServers fill:#e8e8e8,stroke:#999
+    style PrefillerPod fill:#e8e8e8,stroke:#999
+    style DecoderPod fill:#e8e8e8,stroke:#999
+    style EncoderPod fill:#e8e8e8,stroke:#999
+    style Client fill:#f9f9f9,stroke:#999
+    style Prometheus fill:#e8e8e8,stroke:#999
+    style OTelCollector fill:#e8e8e8,stroke:#999

@@ -1,46 +1,41 @@
 workspace {
     model {
-        user = person "Data Scientist / Application" "Sends inference requests to deployed LLM models"
+        dataScientist = person "Data Scientist" "Creates and deploys LLM inference workloads"
+        mlEngineer = person "ML Engineer" "Manages model serving infrastructure and runtimes"
 
-        vllmSpyre = softwareSystem "vLLM Spyre" "IBM Spyre-accelerated vLLM inference runtime with TGIS gRPC adapter for high-performance LLM inference on RHEL 9" {
-            tgisAdapter = container "vllm_tgis_adapter" "Python entrypoint bridging vLLM with gRPC TGIS protocol and OpenAI-compatible HTTP API" "Python"
-            httpApi = container "HTTP API Server" "OpenAI-compatible REST API for text/chat completions" "uvicorn, Port 8000/TCP"
-            grpcApi = container "gRPC TGIS Server" "IBM Text Generation Inference Server protocol endpoint" "gRPC, Port 8033/TCP"
-            vllmEngine = container "vLLM Inference Engine" "Core inference engine with IBM Spyre hardware acceleration" "Python/C++"
+        vllmSpyre = softwareSystem "vLLM Spyre" "IBM Spyre-accelerated vLLM inference runtime with TGIS gRPC adapter for high-performance LLM serving on RHEL 9" {
+            httpApi = container "HTTP API Server" "OpenAI-compatible REST API for text/chat completions" "Python (uvicorn)" "8000/TCP"
+            grpcApi = container "gRPC TGIS Server" "IBM Text Generation Inference Server protocol for KServe model serving" "Python (gRPC)" "8033/TCP"
+            vllmEngine = container "vLLM Inference Engine" "Core inference engine with IBM Spyre hardware acceleration" "Python"
+            tgisAdapter = container "vllm_tgis_adapter" "Entrypoint module bridging vLLM with TGIS gRPC protocol" "Python"
         }
 
-        kserve = softwareSystem "KServe" "Kubernetes-native model serving platform managing InferenceService lifecycle" "Internal RHOAI"
-        servingRuntime = softwareSystem "ServingRuntime CR" "Custom resource defining model serving runtime configuration" "Internal RHOAI"
-        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator managing ServingRuntime lifecycle and image versions" "Internal RHOAI"
-        platformIngress = softwareSystem "Platform Ingress" "kube-rbac-proxy / Gateway API / OAuth proxy providing AuthN/AuthZ" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Standardized serverless ML inference platform — deploys vllm-spyre as InferenceService runtime" "Internal RHOAI"
+        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator — manages ServingRuntime CRs and image lifecycle" "Internal RHOAI"
+        servingRuntime = softwareSystem "ServingRuntime CR" "Custom resource referencing vllm-spyre container image for KServe deployments" "Internal RHOAI"
 
-        spyreHW = softwareSystem "IBM Spyre Accelerator" "Hardware AI accelerator card for inference workloads" "External Hardware"
-        s3Storage = softwareSystem "S3 Storage" "Object storage for model weights and artifacts" "External"
-        huggingFace = softwareSystem "Hugging Face Hub" "Model repository for downloading weights and tokenizers" "External"
-        rhaiisBase = softwareSystem "RHAIIS Base Image" "Pre-built base image containing vLLM, Spyre drivers, TGIS adapter on UBI9" "External - Red Hat"
+        s3Storage = softwareSystem "S3-compatible Storage" "Object storage for model weights and artifacts" "External"
+        huggingFace = softwareSystem "Hugging Face Hub" "Public model repository for weights and tokenizers" "External"
+        spyreHardware = softwareSystem "IBM Spyre Accelerator" "Hardware AI accelerator card for inference workloads" "External Hardware"
 
-        # User interactions
-        user -> platformIngress "Sends inference requests" "HTTPS/443, TLS, Bearer Token / OAuth"
-        platformIngress -> vllmSpyre "Forwards authenticated requests" "HTTP/8000, gRPC/8033, Plaintext in-cluster"
+        # Relationships
+        dataScientist -> kserve "Creates InferenceService via kubectl/dashboard"
+        mlEngineer -> rhodsOperator "Configures ServingRuntime CRs"
 
-        # Internal container interactions
-        tgisAdapter -> httpApi "Serves HTTP requests"
-        tgisAdapter -> grpcApi "Serves gRPC requests"
-        httpApi -> vllmEngine "Processes inference"
-        grpcApi -> vllmEngine "Processes inference"
-
-        # External dependencies
-        vllmEngine -> spyreHW "Executes inference" "Hardware interface (PCIe)"
-        vllmEngine -> s3Storage "Downloads model weights at startup" "HTTPS/443, TLS 1.2+, AWS IAM"
-        vllmEngine -> huggingFace "Downloads models/tokenizers" "HTTPS/443, TLS 1.2+, Bearer Token"
-
-        # Platform management
+        kserve -> vllmSpyre "Deploys as model serving runtime container" "HTTP/8000, gRPC/8033"
         rhodsOperator -> servingRuntime "Manages lifecycle"
         servingRuntime -> vllmSpyre "References container image"
-        kserve -> vllmSpyre "Deploys as InferenceService runtime"
 
-        # Base image
-        rhaiisBase -> vllmSpyre "Provides base layer" "Container image inheritance"
+        vllmSpyre -> spyreHardware "Executes inference" "Hardware interface"
+        vllmSpyre -> s3Storage "Downloads model weights at startup" "HTTPS/443, TLS 1.2+, AWS IAM"
+        vllmSpyre -> huggingFace "Downloads model weights/tokenizers" "HTTPS/443, TLS 1.2+, Bearer Token"
+
+        # Internal relationships
+        tgisAdapter -> httpApi "Manages"
+        tgisAdapter -> grpcApi "Manages"
+        httpApi -> vllmEngine "Delegates inference"
+        grpcApi -> vllmEngine "Delegates inference"
+        vllmEngine -> spyreHardware "Hardware acceleration"
     }
 
     views {
@@ -60,29 +55,25 @@ workspace {
                 color #ffffff
             }
             element "External Hardware" {
-                background #e74c3c
-                color #ffffff
-            }
-            element "External - Red Hat" {
-                background #cc0000
+                background #e8563a
                 color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
                 color #000000
             }
+            element "Person" {
+                shape Person
+                background #4a90e2
+                color #ffffff
+            }
             element "Software System" {
                 background #4a90e2
                 color #ffffff
             }
             element "Container" {
-                background #5ba3f5
+                background #438dd5
                 color #ffffff
-            }
-            element "Person" {
-                background #08427b
-                color #ffffff
-                shape person
             }
         }
     }

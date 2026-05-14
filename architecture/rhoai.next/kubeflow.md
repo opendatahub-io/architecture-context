@@ -301,6 +301,25 @@ The two controllers run as separate Deployments but operate on the same `Noteboo
 
 _This is the `main` branch. Downstream release branches (e.g., `rhoai-3.4`) are expected to add `rpms.lock.yaml` and Hermeto prefetch integration. Container image hermeticity is partially achieved via digest-pinned base images in Dockerfile.konflux files._
 
+## Admission Webhooks
+
+This component defines 3 webhook(s) (1 mutating, 1 validating, 1 conversion).
+
+| Name | Type | Target Resources | Purpose |
+|------|------|-----------------|---------|
+| notebooks-validation.opendatahub.io | validating |  | Validates Notebook update requests to prevent removal of the MLflow instance annotation while a notebook is running, because removing it deletes the RoleBinding immediately while environment variables persist until pod restart, creating a broken state where the MLflow client has credentials but no permissions. |
+| notebooks.opendatahub.io | mutating |  | Mutating admission webhook for Kubeflow Notebook CRs that enriches notebook pods on create/update: it injects a reconciliation-lock annotation, resolves container images from OpenShift ImageStreams, mounts CA certificate bundles and pipeline-runtime-images ConfigMaps, syncs and mounts Elyra pipeline configuration secrets from DSPA, injects a kube-rbac-proxy authentication sidecar, injects cluster-wide proxy and MLflow tracking environment variables, and blocks pod-template-changing mutations on running (non-stopped) notebooks to prevent unintended pod restarts. |
+| conversion.notebooks.kubeflow.org | conversion | notebooks |  |
+
+### Platform Webhooks
+
+The following webhooks are defined by the platform operator and apply to this component's resource types:
+
+| Webhook | Defined By |
+|---------|-----------|
+| connection-notebook.opendatahub.io | rhods-operator |
+| hardwareprofile-notebook-injector.opendatahub.io | rhods-operator |
+
 ## Data Flows
 
 ### Flow 1: Notebook Creation and Access (Auth-Enabled)

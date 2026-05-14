@@ -1,68 +1,63 @@
 sequenceDiagram
     participant Client as MLflow SDK / Browser
     participant Gateway as ODH Gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant Auth as K8s Auth Plugin<br/>before_request handler
+    participant MLflow as MLflow Server<br/>5000/TCP HTTP
+    participant AuthPlugin as K8s Auth Plugin<br/>(in-process)
+    participant WsProvider as Workspace Provider<br/>(in-process)
     participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS
-    participant WS as Workspace Provider<br/>namespace mapping
-    participant Server as MLflow Server<br/>5000/TCP HTTP
     participant DB as PostgreSQL<br/>5432/TCP
     participant S3 as S3 Storage<br/>443/TCP HTTPS
-
-    Note over Client,S3: Flow 1: User Experiment Tracking Request
-
-    Client->>Gateway: POST /mlflow/api/2.0/mlflow/runs/create<br/>Auth: Bearer Token (K8s SA)<br/>Header: X-MLFLOW-WORKSPACE
-    Gateway->>Server: HTTP/5000 Forward<br/>Bearer Token forwarded
-    Server->>Auth: before_request hook
-    Auth->>K8sAPI: SelfSubjectAccessReview<br/>TLS 1.2+ / SA token
-    K8sAPI-->>Auth: Allowed/Denied
-    Auth->>WS: Resolve workspace from header
-    WS->>K8sAPI: Namespace validation<br/>TLS 1.2+ / SA token
-    K8sAPI-->>WS: Namespace exists
-    WS-->>Server: Workspace context set
-    Server->>DB: INSERT run record<br/>Workspace-scoped query
-    DB-->>Server: Run ID
-    Server->>S3: PUT artifact<br/>AWS credentials / TLS 1.2+
-    S3-->>Server: OK
-    Server-->>Gateway: JSON Response (Run metadata)
-    Gateway-->>Client: HTTPS Response
-
-    Note over Client,S3: Flow 2: AI Gateway LLM Invocation
-
     participant LLM as LLM Provider<br/>443/TCP HTTPS
 
-    Client->>Gateway: POST /mlflow/gateway/{endpoint}/mlflow/invocations<br/>Auth: Bearer Token (K8s SA)
-    Gateway->>Server: HTTP/5000 Forward
-    Server->>Auth: before_request hook
-    Auth->>K8sAPI: SelfSubjectAccessReview
-    K8sAPI-->>Auth: Allowed
-    Server->>DB: SELECT provider config<br/>KEK-encrypted credentials
-    DB-->>Server: Encrypted config
-    Note over Server: Decrypt API key<br/>AES-256-GCM + PBKDF2<br/>600K iterations
-    Server->>LLM: POST /v1/chat/completions<br/>TLS 1.2+ / Decrypted API key
-    LLM-->>Server: LLM Response (streaming)
-    Server-->>Gateway: Proxied Response
+    Note over Client,S3: Flow 1: Experiment Tracking Request
+
+    Client->>Gateway: POST /mlflow/api/2.0/mlflow/runs/create<br/>Auth: Bearer Token (K8s SA)<br/>Header: X-MLFLOW-WORKSPACE
+    Gateway->>MLflow: HTTP/5000 Forward<br/>Bearer Token forwarded
+    MLflow->>AuthPlugin: before_request hook
+    AuthPlugin->>K8sAPI: POST SelfSubjectAccessReview<br/>Auth: SA token<br/>TLS 1.2+
+    K8sAPI-->>AuthPlugin: Allowed/Denied
+    AuthPlugin->>WsProvider: Resolve workspace from header
+    WsProvider->>K8sAPI: GET namespace / MLflowConfig<br/>TLS 1.2+
+    K8sAPI-->>WsProvider: Namespace + config
+    WsProvider-->>MLflow: Workspace context set
+    MLflow->>DB: INSERT run record<br/>Auth: DB credentials
+    DB-->>MLflow: Run ID
+    MLflow-->>Gateway: 200 OK + Run metadata
     Gateway-->>Client: HTTPS Response
 
-    Note over Client,S3: Flow 3: OTLP Trace Ingestion
+    Note over Client,S3: Flow 2: Artifact Upload
 
-    participant App as Instrumented Application
+    Client->>Gateway: POST /mlflow/api/2.0/mlflow/runs/log-artifact<br/>Auth: Bearer Token
+    Gateway->>MLflow: HTTP/5000 Forward
+    MLflow->>AuthPlugin: Auth check
+    AuthPlugin->>K8sAPI: SelfSubjectAccessReview
+    K8sAPI-->>AuthPlugin: Allowed
+    MLflow->>S3: PUT artifact<br/>Auth: AWS IAM credentials<br/>TLS 1.2+
+    S3-->>MLflow: 200 OK
+    MLflow->>DB: UPDATE artifact location
+    MLflow-->>Gateway: 200 OK
+    Gateway-->>Client: HTTPS Response
 
-    App->>Gateway: POST /mlflow/v1/traces<br/>OTLP/HTTP protobuf<br/>Auth: Bearer Token + x-mlflow-experiment-id
-    Gateway->>Server: HTTP/5000 Forward
-    Server->>Auth: Validate token + experiment scope
-    Auth->>K8sAPI: SelfSubjectAccessReview
-    K8sAPI-->>Auth: Allowed
-    Server->>DB: INSERT trace spans<br/>Workspace-scoped
-    DB-->>Server: Trace ID
-    Server->>S3: PUT trace artifacts<br/>AWS credentials / TLS 1.2+
-    S3-->>Server: OK
-    Server-->>Gateway: 200 OK
-    Gateway-->>App: HTTPS Response
+    Note over Client,LLM: Flow 3: AI Gateway LLM Invocation
 
-    Note over Client,S3: Flow 4: Workspace Resolution (Background)
+    Client->>Gateway: POST /mlflow/gateway/openai/v1/chat/completions<br/>Auth: Bearer Token
+    Gateway->>MLflow: HTTP/5000 Forward
+    MLflow->>AuthPlugin: Auth check
+    AuthPlugin->>K8sAPI: SelfSubjectAccessReview
+    K8sAPI-->>AuthPlugin: Allowed
+    MLflow->>DB: SELECT provider config<br/>Decrypt API key (AES-256-GCM KEK)
+    DB-->>MLflow: Encrypted provider config
+    MLflow->>LLM: POST /v1/chat/completions<br/>Auth: API key (KEK-decrypted)<br/>TLS 1.2+
+    LLM-->>MLflow: Chat completion response
+    MLflow-->>Gateway: 200 OK + LLM response
+    Gateway-->>Client: HTTPS Response
 
-    WS->>K8sAPI: LIST/WATCH namespaces<br/>TLS 1.2+ / SA token
-    K8sAPI-->>WS: Namespace list (cached)
-    WS->>K8sAPI: WATCH MLflowConfig CRDs<br/>TLS 1.2+ / SA token
-    K8sAPI-->>WS: MLflowConfig updates
-    Note over WS: Map namespace → workspace<br/>Apply per-namespace artifact overrides
+    Note over Client,S3: Flow 4: OTLP Trace Ingestion
+
+    Client->>MLflow: POST /v1/traces<br/>Auth: Bearer Token<br/>Header: x-mlflow-experiment-id<br/>Content-Type: application/x-protobuf
+    MLflow->>AuthPlugin: Auth check (experiment-scoped)
+    AuthPlugin->>K8sAPI: SelfSubjectAccessReview
+    K8sAPI-->>AuthPlugin: Allowed
+    MLflow->>DB: INSERT trace spans
+    MLflow->>S3: PUT trace artifacts<br/>TLS 1.2+
+    MLflow-->>Client: 200 OK

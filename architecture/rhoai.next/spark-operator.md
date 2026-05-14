@@ -230,6 +230,33 @@ _Note: The binary is built with CGO_ENABLED=0 (static linking), which means it d
 
 _The rpms.lock.yaml file is present on the main branch, indicating mature Konflux integration. Python dependencies are hash-pinned. Go dependencies are locked via go.sum. Dockerfile.konflux comments reference cachi2 prefetch for Java and tini RPMs._
 
+## Admission Webhooks
+
+This component defines 6 webhook(s) (3 mutating, 2 validating, 1 conversion).
+
+| Name | Type | Target Resources | Purpose |
+|------|------|-----------------|---------|
+| mutate-pod.sparkoperator.k8s.io | mutating | pods | Mutating admission webhook that intercepts Pod create/update requests in Spark job namespaces, looks up the owning SparkApplication CR by the pod's spark-app-name label, and patches the pod spec with Spark-specific configuration (volumes, volume mounts, env vars, config maps, owner references, memory limits, affinity, tolerations, node selectors, DNS config, scheduler name, priority class, security contexts, sidecar/init containers, GPU resources, host networking, termination grace period, lifecycle hooks, host aliases, container ports, and Prometheus monitoring config) derived from the SparkApplication spec, differentiating between driver and executor pods. |
+| mutate-scheduledsparkapplication.sparkoperator.k8s.io | mutating | scheduledsparkapplications |  |
+| mutate-sparkapplication.sparkoperator.k8s.io | mutating | sparkapplications | Mutating admission webhook that sets default values on SparkApplication resources when they are created or updated. It only applies defaults when the application is in a 'New' or 'Invalidating' state, delegating to the operator's scheme-level defaulting logic to populate unset fields with sensible defaults. |
+| validate-scheduledsparkapplication.sparkoperator.k8s.io | validating | scheduledsparkapplications | Validates ScheduledSparkApplication resources on create and update, ensuring the metadata.name is a valid DNS-1035 label so that downstream resources like Services and child SparkApplications can be created without naming conflicts. The validate method for deeper business-logic checks is stubbed out (TODO). |
+| validate-sparkapplication.sparkoperator.k8s.io | validating | sparkapplications | Validates SparkApplication resources on create and update by enforcing that the name is DNS-1035 compliant, the spec has no conflicting node selectors or duplicate driver ingress options, pod templates require Spark >= 3.0.0, and optionally checks that requested resources fit within the namespace's ResourceQuotas. |
+| conversion.sparkapplications.sparkoperator.k8s.io | conversion | sparkapplications |  |
+
+### External Webhooks
+
+The following webhooks from peer components intercept this component's resource types:
+
+| Webhook | Defined By |
+|---------|-----------|
+| inferenceservice.kserve-webhook-server.pod-mutator | kserve-autogluon-server |
+| inferenceservice.kserve-webhook-server.pod-mutator | kserve |
+| namespace.sidecar-injector.istio.io | llm-d-inference-scheduler |
+| object.sidecar-injector.istio.io | llm-d-inference-scheduler |
+| rev.namespace.sidecar-injector.istio.io | llm-d-inference-scheduler |
+| rev.object.sidecar-injector.istio.io | llm-d-inference-scheduler |
+| mutating.pod.odh-model-controller.opendatahub.io | odh-model-controller |
+
 ## Data Flows
 
 ### Flow 1: SparkApplication Submission and Execution

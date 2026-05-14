@@ -1,33 +1,46 @@
 sequenceDiagram
     participant Client as Client / Gateway
-    participant Sidecar as llm-d-routing-sidecar<br/>:8000/TCP HTTPS TLS 1.2+
+    participant Route as OpenShift Route<br/>443/TCP HTTPS
+    participant Sidecar as llm-d-routing-sidecar<br/>8000/TCP HTTPS TLS 1.2+
     participant Allowlist as AllowlistValidator<br/>(in-process)
-    participant Prefiller as Remote Prefiller Pod<br/>HTTP/HTTPS TLS 1.2+
-    participant Decoder as Local vLLM Decoder<br/>:8001/TCP HTTP/HTTPS
+    participant Prefiller as Remote vLLM Prefiller<br/>variable port HTTP/HTTPS
+    participant Decoder as Local vLLM Decoder<br/>8001/TCP HTTP/HTTPS
 
-    Note over Client,Decoder: Flow 1: Disaggregated Prefill/Decode (NIXL v2 Protocol)
+    Note over Client,Decoder: Flow 1: Disaggregated Prefill/Decode (NIXL v2)
 
-    Client->>Sidecar: POST /v1/chat/completions<br/>Header: x-prefiller-host-port: host:port<br/>HTTPS TLS 1.2+
-    Sidecar->>Allowlist: Validate prefill target host<br/>against InferencePool pod IPs
-    Allowlist-->>Sidecar: Allowed (or 403 Forbidden)
+    Client->>Route: POST /v1/chat/completions<br/>Header: x-prefiller-host-port: <host>:<port>
+    Route->>Sidecar: Forward (TLS edge termination)
 
-    Note over Sidecar: Construct prefill request:<br/>wrap body with kv_transfer_params<br/>set max_tokens=1, stream=false<br/>add remote_decode=true, engine_id
+    Sidecar->>Allowlist: Validate prefiller target host
+    Allowlist-->>Sidecar: Approved (host in InferencePool pod list)
 
-    Sidecar->>Prefiller: POST /v1/chat/completions<br/>Modified body with kv_transfer_params<br/>HTTP/HTTPS (optional TLS)
+    Note over Sidecar: Wrap request with kv_transfer_params<br/>Set max_tokens=1, stream=false<br/>Add remote_prefill=true, engine_id
+
+    Sidecar->>Prefiller: POST /v1/chat/completions<br/>Modified request (prefill phase)<br/>Optional TLS 1.2+
     Prefiller-->>Sidecar: Prefill response<br/>Contains: block_ids, engine_id,<br/>host, port for KV transfer
 
-    Note over Sidecar: Extract KV transfer params<br/>from prefill response.<br/>Construct decode request with<br/>remote_prefill=true + block/engine info
+    Note over Sidecar: Extract kv_transfer_params from response<br/>Construct decode request with<br/>remote_decode=true + prefill params
 
-    Sidecar->>Decoder: POST /v1/chat/completions<br/>Body with kv_transfer_params<br/>(remote_prefill=true)<br/>HTTP/HTTPS (optional TLS)
-    Decoder-->>Sidecar: Decode response (streamed)
-    Sidecar-->>Client: Streamed response<br/>HTTPS TLS 1.2+
+    Sidecar->>Decoder: POST /v1/chat/completions<br/>Decode request with kv_transfer_params<br/>Optional TLS 1.2+
+    Decoder-->>Sidecar: Streaming decode response
+    Sidecar-->>Route: Stream response
+    Route-->>Client: Streaming HTTPS response
 
     Note over Client,Decoder: Flow 2: Direct Passthrough (No Prefill Header)
 
-    Client->>Sidecar: POST /v1/chat/completions<br/>(no x-prefiller-host-port header)<br/>HTTPS TLS 1.2+
+    Client->>Route: POST /v1/chat/completions<br/>(no x-prefiller-host-port header)
+    Route->>Sidecar: Forward (TLS edge termination)
 
-    Note over Sidecar: No prefill header detected.<br/>Passthrough to local decoder.
+    Note over Sidecar: No prefill header detected<br/>Direct reverse proxy passthrough
 
-    Sidecar->>Decoder: Forward request as-is<br/>HTTP/HTTPS (optional TLS)
-    Decoder-->>Sidecar: Response (streamed)
-    Sidecar-->>Client: Streamed response<br/>HTTPS TLS 1.2+
+    Sidecar->>Decoder: Forward original request<br/>8001/TCP HTTP/HTTPS
+    Decoder-->>Sidecar: Response
+    Sidecar-->>Route: Forward response
+    Route-->>Client: HTTPS response
+
+    Note over Client,Decoder: Background: SSRF Allowlist Maintenance
+
+    loop Kubernetes Watch (continuous)
+        Allowlist->>Allowlist: Watch InferencePool CR<br/>(inference.networking.x-k8s.io/v1alpha2)
+        Note over Allowlist: Rebuild allowlist from<br/>pod IPs matching pool selector
+    end

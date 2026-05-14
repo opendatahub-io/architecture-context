@@ -1,4 +1,6 @@
 sequenceDiagram
+    autonumber
+
     participant User as User / Data Scientist
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
     participant Operator as KubeRay Operator
@@ -8,35 +10,58 @@ sequenceDiagram
     participant Dashboard as Ray Dashboard<br/>8265/TCP HTTP
     participant HeadPod as Ray Head Pod
     participant Workers as Ray Workers
-    participant ServeSvc as Serve Service<br/>8000/TCP HTTP
+    participant ServeSvc as Serve Service<br/>8000/TCP
 
-    Note over User, ServeSvc: Flow 1: RayCluster Creation & Dashboard Access (OpenShift/RHOAI)
-    User->>K8sAPI: 1. Create RayCluster CR<br/>Auth: Bearer Token
-    K8sAPI-->>Operator: Watch event
-    Operator->>K8sAPI: 2. Create Head Pod, Worker Pods,<br/>Services, RBAC<br/>Auth: ServiceAccount Token
-    Operator->>CertMgr: 3. Create Issuer + Certificates<br/>for mTLS<br/>Auth: ServiceAccount Token
-    CertMgr-->>Operator: Certificates issued
+    rect rgb(230, 245, 255)
+        Note over User,Dashboard: Flow 1: RayCluster Creation & Dashboard Access (OpenShift/RHOAI)
 
-    Note over User, ServeSvc: Dashboard Access via Gateway
-    User->>Gateway: 4. GET /ray/{ns}/{cluster}/<br/>Auth: Session cookie
-    Gateway->>AuthProxy: 5. Forward request<br/>TLS (self-signed)<br/>Auth: SubjectAccessReview
-    AuthProxy->>Dashboard: 6. Proxy to localhost<br/>HTTP (loopback)<br/>No auth
-    Dashboard-->>AuthProxy: Dashboard response
-    AuthProxy-->>Gateway: Response
-    Gateway-->>User: Dashboard UI
+        User->>K8sAPI: POST RayCluster CR<br/>Bearer Token
+        K8sAPI->>Operator: Watch event (RayCluster created)
+        Operator->>K8sAPI: Create Head Pod, Worker Pods,<br/>Services, RBAC<br/>ServiceAccount Token
+        Operator->>CertMgr: Create Issuer + Certificates<br/>(mTLS for head/workers)<br/>ServiceAccount Token
+        Operator->>K8sAPI: Create HTTPRoute, ReferenceGrant,<br/>Auth proxy sidecar, NetworkPolicy
 
-    Note over User, ServeSvc: Flow 2: RayJob Submission (HTTP Mode)
-    User->>K8sAPI: Create RayJob CR
-    K8sAPI-->>Operator: Watch event
-    Operator->>Dashboard: 1. POST /api/jobs/<br/>HTTP (cluster-internal)<br/>No auth
-    Dashboard->>HeadPod: Schedule job
-    HeadPod->>Workers: 2. Distribute tasks<br/>gRPC, mTLS (if enabled)
-    Workers-->>HeadPod: Task results
-    Operator->>Dashboard: 3. GET /api/jobs/{id}<br/>Poll status
+        Note over Gateway,Dashboard: External user accesses Ray Dashboard
+        User->>Gateway: GET /ray/{ns}/{cluster}/<br/>Session cookie
+        Gateway->>AuthProxy: Forward request<br/>8443/TCP HTTPS (self-signed TLS)
+        AuthProxy->>AuthProxy: SubjectAccessReview<br/>(get service/{cluster}-head-svc)
+        AuthProxy->>Dashboard: Proxy to localhost<br/>8265/TCP HTTP (loopback)
+        Dashboard-->>AuthProxy: Dashboard HTML
+        AuthProxy-->>Gateway: Response
+        Gateway-->>User: Dashboard UI
+    end
 
-    Note over User, ServeSvc: Flow 3: RayService Zero-Downtime Upgrade
-    Operator->>Dashboard: 1. PUT Serve config<br/>on pending cluster<br/>8265/TCP HTTP
-    Operator->>ServeSvc: 2. Health check<br/>8000/TCP HTTP
-    ServeSvc-->>Operator: Health status
-    Operator->>K8sAPI: 3. Switch Service selector<br/>active ↔ pending<br/>443/TCP HTTPS
-    User->>ServeSvc: 4. Client traffic<br/>8000/TCP HTTP<br/>Seamless cutover
+    rect rgb(255, 245, 230)
+        Note over Operator,Workers: Flow 2: RayJob Submission (HTTPMode)
+
+        User->>K8sAPI: POST RayJob CR<br/>Bearer Token
+        K8sAPI->>Operator: Watch event (RayJob created)
+        Operator->>K8sAPI: Create ephemeral RayCluster<br/>(if submissionMode: HTTPMode)
+        Operator->>Dashboard: POST /api/jobs/<br/>Submit job payload<br/>8265/TCP HTTP (cluster-internal)
+        Dashboard->>HeadPod: Schedule Ray tasks
+        HeadPod->>Workers: Distribute work<br/>gRPC, mTLS (if enabled)
+        Workers-->>HeadPod: Task results
+        Operator->>Dashboard: GET /api/jobs/{id}<br/>Poll job status<br/>8265/TCP HTTP
+        Dashboard-->>Operator: Job status (SUCCEEDED/FAILED)
+        Operator->>K8sAPI: Update RayJob status
+    end
+
+    rect rgb(230, 255, 230)
+        Note over Operator,ServeSvc: Flow 3: RayService Zero-Downtime Upgrade
+
+        User->>K8sAPI: Update RayService CR<br/>(new serveConfigV2)
+        K8sAPI->>Operator: Watch event (RayService updated)
+        Operator->>K8sAPI: Create pending RayCluster
+        Operator->>Dashboard: PUT /api/serve/applications/<br/>Push Serve config to pending cluster<br/>8265/TCP HTTP
+        Dashboard-->>Operator: Config applied
+
+        loop Health Check Loop
+            Operator->>ServeSvc: GET health check<br/>8000/TCP HTTP
+            ServeSvc-->>Operator: Application health status
+        end
+
+        Note over Operator: All apps healthy on pending cluster
+        Operator->>K8sAPI: Switch Service selector<br/>active ↔ pending<br/>ServiceAccount Token
+        Note over ServeSvc: Traffic atomically switches<br/>to new cluster
+        Operator->>K8sAPI: Delete old RayCluster
+    end

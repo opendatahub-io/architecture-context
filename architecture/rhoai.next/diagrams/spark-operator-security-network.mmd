@@ -4,21 +4,19 @@ graph TB
     end
 
     subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP<br/>TLS 1.2+<br/>Bearer / client cert / SA token"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer / client cert auth"]
     end
 
-    subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-applications)"]
+    subgraph OperatorNS["OPERATOR NAMESPACE<br/>(redhat-ods-applications / opendatahub)"]
         direction TB
 
-        WebhookSvc["spark-operator-webhook-svc<br/>ClusterIP 443→9443/TCP<br/>TLS (self-signed)<br/>HTTP/2 DISABLED"]
+        Controller["spark-operator-controller<br/>SA: spark-operator-controller<br/>Metrics: 8080/TCP HTTP<br/>Health: 8081/TCP HTTP"]
 
-        subgraph WebhookDeploy["Webhook Deployment"]
-            Webhook["spark-operator-webhook<br/>SA: spark-operator-webhook<br/>Endpoints:<br/>/mutate-*, /validate-*<br/>/mutate--v1-pod"]
-        end
+        WebhookSvc["spark-operator-webhook-svc<br/>ClusterIP 443/TCP → 9443/TCP<br/>TLS (self-signed CA)<br/>HTTP/2 DISABLED"]
 
-        subgraph ControllerDeploy["Controller Deployment"]
-            Controller["spark-operator-controller<br/>SA: spark-operator-controller<br/>8080/TCP metrics (HTTP, no auth)<br/>8081/TCP health (HTTP, no auth)"]
-        end
+        Webhook["spark-operator-webhook<br/>SA: spark-operator-webhook<br/>Metrics: 8080/TCP HTTP<br/>Health: 8081/TCP HTTP"]
+
+        SparkSubmit["spark-submit<br/>(local process exec)"]
 
         WebhookSvc --> Webhook
     end
@@ -26,63 +24,67 @@ graph TB
     subgraph UserNS["USER NAMESPACES (Spark Workloads)"]
         direction TB
 
-        DriverPod["Spark Driver Pod<br/>SA: spark-operator-spark<br/>7078/TCP driver-rpc (plaintext)<br/>7079/TCP block-mgr (plaintext)<br/>4040/TCP spark-ui (plaintext)"]
+        Driver["Spark Driver Pod<br/>SA: spark-operator-spark<br/>RPC: 7078/TCP HTTP<br/>Block Mgr: 7079/TCP HTTP"]
 
-        ExecutorPods["Spark Executor Pods<br/>7078/TCP, 7079/TCP (plaintext)"]
+        Executors["Spark Executor Pods<br/>Created by driver"]
 
-        ConnectServer["Spark Connect Server<br/>(optional)<br/>15002/TCP gRPC (plaintext)<br/>7078, 7079, 4040/TCP"]
+        UISvc["Spark Web UI<br/>{app}-ui-svc ClusterIP<br/>4040/TCP HTTP"]
+
+        ConnectSvc["Spark Connect Server<br/>{name}-server ClusterIP<br/>15002/TCP gRPC<br/>7078, 7079, 4040/TCP"]
+    end
+
+    subgraph Ingress["OPTIONAL INGRESS"]
+        IngressRes["Ingress Resource<br/>80/443 TCP<br/>Optional TLS SIMPLE"]
     end
 
     subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>PodMonitor<br/>HTTP/8080 (no auth)"]
+        Prometheus["Prometheus<br/>PodMonitor scraping<br/>HTTP no auth"]
     end
 
-    subgraph OptionalServices["OPTIONAL SERVICES"]
-        CertManager["cert-manager<br/>(optional TLS issuance)"]
-        Volcano["Volcano Scheduler<br/>(PodGroup CRDs)"]
-        Yunikorn["Yunikorn Scheduler<br/>(annotation-based)"]
-    end
-
-    %% External flows
+    %% External → Control Plane
     User -->|"HTTPS/6443<br/>TLS 1.2+<br/>Bearer token"| K8sAPI
 
-    %% API server to webhook
-    K8sAPI -->|"HTTPS/9443<br/>TLS (self-signed)<br/>API server client cert<br/>HTTP/1.1 only"| WebhookSvc
+    %% Control Plane → Webhook (admission)
+    K8sAPI -->|"HTTPS/9443<br/>TLS (self-signed)<br/>API server client cert<br/>(mTLS)"| WebhookSvc
 
-    %% Webhook to API server
-    Webhook -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    %% Controller → API
+    Controller -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token (Bearer)"| K8sAPI
 
-    %% Controller to API server
-    Controller -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token<br/>CRUD: pods, svcs, CRDs"| K8sAPI
+    %% Webhook → API (lookups)
+    Webhook -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token (Bearer)"| K8sAPI
 
-    %% Controller creates workloads (via API server)
-    Controller -.->|"spark-submit<br/>(local exec)"| DriverPod
+    %% Controller → spark-submit
+    Controller -->|"Process exec<br/>(no network)"| SparkSubmit
+    SparkSubmit -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
 
-    %% Driver-Executor communication
-    DriverPod <-->|"HTTP/7078, 7079<br/>Plaintext<br/>No auth"| ExecutorPods
+    %% Driver ↔ Executors
+    Driver -->|"HTTP/7078<br/>No encryption<br/>No auth"| Executors
+    Executors -->|"HTTP/7079<br/>No encryption<br/>No auth"| Driver
 
-    %% Connect server
-    User -->|"gRPC/15002<br/>Plaintext"| ConnectServer
-    ConnectServer <-->|"HTTP/7078, 7079<br/>Plaintext"| ExecutorPods
+    %% Driver → API
+    Driver -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+
+    %% User → Connect
+    User -.->|"gRPC/15002<br/>No encryption<br/>App-level auth"| ConnectSvc
+
+    %% Ingress
+    IngressRes -.->|"HTTP/4040"| UISvc
 
     %% Monitoring
     Prometheus -->|"HTTP/8080<br/>No encryption<br/>No auth"| Controller
-
-    %% Optional services
-    CertManager -.->|"K8s API<br/>TLS cert issuance"| Webhook
-    Controller -.->|"K8s API<br/>PodGroup CRDs"| Volcano
+    Prometheus -->|"HTTP/8080<br/>No encryption<br/>No auth"| Webhook
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef operatorns fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef userns fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef workload fill:#fff2cc,stroke:#d6b656,stroke-width:2px
     classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef optional fill:#f8cecc,stroke:#b85450,stroke-width:1px,stroke-dasharray: 5 5
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
 
     class User external
     class K8sAPI controlplane
-    class Webhook,Controller,WebhookSvc operatorns
-    class DriverPod,ExecutorPods,ConnectServer userns
+    class Controller,Webhook,WebhookSvc,SparkSubmit operator
+    class Driver,Executors,UISvc,ConnectSvc workload
     class Prometheus monitoring
-    class CertManager,Volcano,Yunikorn optional
+    class IngressRes ingress

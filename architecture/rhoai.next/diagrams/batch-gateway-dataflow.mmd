@@ -1,78 +1,60 @@
 sequenceDiagram
     participant Client as External Client
-    participant GW as Gateway API<br/>(HTTPRoute)
-    participant API as batch-gateway-apiserver<br/>API Port HTTP/HTTPS
+    participant API as Apiserver<br/>HTTP/HTTPS
     participant PG as PostgreSQL<br/>5432/TCP
     participant Redis as Redis/Valkey<br/>6379/TCP
-    participant FS as File Store<br/>(S3 :443 / FS)
-    participant Proc as batch-gateway-processor
-    participant LLM as LLM Inference Gateway<br/>(llm-d / vLLM)
-    participant GC as batch-gateway-gc
+    participant FS as File Store<br/>(S3/Filesystem)
+    participant Proc as Processor<br/>(Worker Pool)
+    participant LLM as Inference Gateway<br/>(llm-d / vLLM)
+    participant GC as Batch GC
 
-    Note over Client,LLM: Flow 1: Batch Job Submission and Execution
+    rect rgb(230, 245, 255)
+        Note over Client,FS: Flow 1: Batch Job Submission & Execution
+        Client->>API: POST /v1/files (multipart JSONL)<br/>Header: X-MaaS-Username
+        API->>API: Validate (max 200MB, 50K lines)<br/>LimitedCountingReader
+        API->>FS: Upload file content<br/>HTTPS/443 (S3) or local
+        API->>PG: Store file metadata<br/>TCP/5432 TLS
+        API-->>Client: 200 File object (file_id)
 
-    Client->>GW: POST /v1/files (multipart JSONL)<br/>Tenant: X-MaaS-Username
-    GW->>API: Forward request
-    API->>FS: Upload input file<br/>HTTPS/TLS (S3) or local FS
-    FS-->>API: File stored (file_id)
-    API->>PG: Store file metadata<br/>TCP/TLS
-    PG-->>API: Confirmed
-    API-->>Client: 200 OK {file_id}
+        Client->>API: POST /v1/batches<br/>Header: X-MaaS-Username
+        API->>PG: Create batch record<br/>TCP/5432 TLS
+        API->>Redis: Enqueue to priority queue<br/>(sorted set, SLO priority)<br/>TCP/6379 TLS
+        API-->>Client: 200 Batch object (batch_id, status=validating)
 
-    Client->>GW: POST /v1/batches<br/>{input_file_id, model, endpoint}<br/>Tenant: X-MaaS-Username
-    GW->>API: Forward request
-    API->>PG: Create batch record<br/>TCP/TLS
-    PG-->>API: Confirmed (batch_id)
-    API->>Redis: Enqueue to priority queue<br/>(sorted set, SLO priority)<br/>TCP/TLS
-    Redis-->>API: Enqueued
-    API-->>Client: 200 OK {batch_id, status: validating}
+        Proc->>Redis: BLMPop dequeue job<br/>(semaphore-driven polling)
+        Redis-->>Proc: Job payload
+        Proc->>FS: Download input JSONL<br/>HTTPS/443
+        Proc->>Redis: Update status: in_progress
 
-    Proc->>Redis: BLMPOP dequeue job<br/>(semaphore-driven polling)<br/>TCP/TLS
-    Redis-->>Proc: Job payload
-    Proc->>FS: Download input JSONL<br/>HTTPS/TLS (S3) or local
-    FS-->>Proc: Input file content
-    Proc->>Redis: Update status: in_progress<br/>TCP/TLS
+        loop For each line in JSONL (concurrency-controlled)
+            Proc->>LLM: POST inference request<br/>Bearer token auth<br/>HTTP/HTTPS TLS 1.2+
+            LLM-->>Proc: Inference response
+            Proc->>Redis: Update progress counter
+        end
 
-    loop For each request in JSONL (concurrent, semaphore-limited)
-        Proc->>LLM: POST /v1/chat/completions<br/>Auth: Bearer token<br/>HTTP/HTTPS TLS 1.2+
-        LLM-->>Proc: Inference response
-        Proc->>Redis: Update progress counter<br/>TCP/TLS
+        Proc->>FS: Upload output JSONL<br/>HTTPS/443
+        Proc->>FS: Upload error JSONL (if errors)<br/>HTTPS/443
+        Proc->>PG: Update batch: completed<br/>TCP/5432
+        Proc->>Redis: Final status update
     end
 
-    Proc->>FS: Upload output JSONL<br/>HTTPS/TLS (S3) or local
-    FS-->>Proc: Output file stored
-    Proc->>FS: Upload error JSONL (if any)<br/>HTTPS/TLS (S3) or local
-    Proc->>PG: Update batch status: completed<br/>Store output_file_id, error_file_id<br/>TCP/TLS
-    PG-->>Proc: Confirmed
+    rect rgb(255, 245, 230)
+        Note over Client,Redis: Flow 2: Batch Cancellation
+        Client->>API: POST /v1/batches/{id}/cancel<br/>Header: X-MaaS-Username
+        API->>Redis: Publish cancel event<br/>(list-based event channel)
+        API-->>Client: 200 Batch (status=cancelling)
+        Redis-->>Proc: Cancel event received<br/>(BLMPop listener)
+        Proc->>Proc: Cancel in-flight requests<br/>(context cancellation)
+        Proc->>FS: Upload partial output
+        Proc->>PG: Update batch: cancelled
+    end
 
-    Client->>GW: GET /v1/batches/{batch_id}<br/>Tenant: X-MaaS-Username
-    GW->>API: Forward request
-    API->>PG: Fetch batch record<br/>TCP/TLS
-    API->>Redis: Fetch live progress<br/>TCP/TLS
-    API-->>Client: 200 OK {status: completed, output_file_id}
-
-    Client->>GW: GET /v1/files/{output_file_id}/content<br/>Tenant: X-MaaS-Username
-    GW->>API: Forward request
-    API->>FS: Download output file
-    API-->>Client: 200 OK (JSONL stream)
-
-    Note over Client,LLM: Flow 2: Batch Cancellation
-
-    Client->>API: POST /v1/batches/{id}/cancel<br/>Tenant: X-MaaS-Username
-    API->>Redis: Publish cancel event<br/>(list-based event channel)<br/>TCP/TLS
-    Redis-->>API: Published
-    API-->>Client: 200 OK {status: cancelling}
-
-    Proc->>Redis: Receive cancel event<br/>(BLMPop listener)<br/>TCP/TLS
-    Proc->>Proc: Cancel in-flight requests<br/>(context cancellation)
-    Proc->>FS: Upload partial output JSONL
-    Proc->>PG: Update status: cancelled<br/>TCP/TLS
-
-    Note over GC,FS: Flow 3: Garbage Collection (periodic)
-
-    GC->>PG: Query expired batches/files<br/>TCP/TLS
-    PG-->>GC: Expired records
-    GC->>FS: Delete expired file content<br/>HTTPS/TLS (S3) or local
-    FS-->>GC: Deleted
-    GC->>PG: Delete expired metadata<br/>TCP/TLS
-    PG-->>GC: Confirmed
+    rect rgb(245, 255, 230)
+        Note over GC,FS: Flow 3: Garbage Collection
+        loop Periodic (configurable interval)
+            GC->>PG: Query expired batches/files<br/>TCP/5432
+            PG-->>GC: Expired records
+            GC->>FS: Delete expired file content<br/>HTTPS/443
+            GC->>PG: Delete expired metadata
+        end
+    end

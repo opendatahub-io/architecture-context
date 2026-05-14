@@ -1,57 +1,53 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and fine-tunes large language models using SFT"
-        mlEngineer = person "ML Engineer" "Configures distributed training jobs and monitors experiments"
+        dataScientist = person "Data Scientist" "Configures and launches fine-tuning jobs for large language models"
+        mlEngineer = person "ML Engineer" "Manages training infrastructure, monitors experiments"
 
         fmsHfTuning = softwareSystem "FMS HF Tuning" "Production-ready fine-tuning framework for LLMs using HuggingFace Transformers, TRL, and PyTorch FSDP" {
             accelerateLaunch = container "accelerate_launch.py" "Container entry point: JSON config parsing, multi-GPU auto-detection, FSDP defaults, vLLM post-processing" "Python CLI"
             sftTrainer = container "sft_trainer.py" "Core training orchestration: model loading, tokenization, dataset preparation, SFTTrainer initialization, model saving" "Python Library"
-            dataModule = container "Data Module" "Configurable data preprocessing pipeline: JSON/JSONL/Arrow/Parquet, chat templates, vision data, online data mixing" "Python Library"
+            dataModule = container "Data Module" "Configurable data preprocessing pipeline: JSON/JSONL/Arrow/Parquet/HF datasets with tokenization, chat templates, vision data, online data mixing" "Python Library"
             configModule = container "Config Module" "Hierarchical dataclass-based configuration for model, data, training, PEFT, acceleration, and tracker settings" "Python Library"
             trackersModule = container "Trackers Module" "Pluggable experiment tracking: Aim, MLflow, ClearML, HFResourceScanner, file-based JSONL logging" "Python Library"
-            trainerController = container "Trainer Controller" "Rule-driven training loop control using simpleeval for safe expression evaluation" "Python Library"
-            sumLossTrainer = container "Sum Loss SFT Trainer" "Custom SFTTrainer with sum-based loss reduction for consistent token weighting" "Python Library"
-            fmsRecommender = container "FMS Recommender" "Configuration optimization tool using FMSAdapter for optimized launch commands" "Python CLI"
+            trainerController = container "Trainer Controller" "Rule-driven training loop control using safe expression evaluation (simpleeval) for dynamic decisions" "Python Library"
+            sumLossTrainer = container "SumLoss SFTTrainer" "Custom SFTTrainer with sum-based loss reduction for consistent token weighting across gradient accumulation" "Python Library"
         }
 
-        kfto = softwareSystem "Kubeflow Training Operator" "Orchestrates distributed training jobs on Kubernetes via PyTorchJob CR" "Internal Platform"
+        kfto = softwareSystem "Kubeflow Training Operator" "Orchestrates distributed training jobs as PyTorchJobs on Kubernetes" "Internal Platform"
         kueue = softwareSystem "Kueue" "Queue-based scheduling for training jobs, prevents GPU resource contention" "Internal Platform"
-        hfHub = softwareSystem "HuggingFace Hub" "Model and dataset registry for downloading pre-trained models and tokenizers" "External"
-        hfDatasets = softwareSystem "HuggingFace Datasets" "Dataset registry for downloading training and validation datasets" "External"
-        mlflowServer = softwareSystem "MLflow Server" "Experiment tracking server for logging training metrics and run metadata" "External"
-        aimServer = softwareSystem "Aim Server" "Experiment tracking server for metrics and experiment metadata" "External"
-        clearmlServer = softwareSystem "ClearML Server" "Task management and experiment tracking server" "External"
-        fmsAcceleration = softwareSystem "FMS Acceleration Framework" "Hardware-optimized training plugins: QLoRA, fused LoRA, padding-free, ScatterMoE, ODM" "External Library"
-        nvidiaGpu = softwareSystem "NVIDIA GPU" "GPU compute via CUDA 12.1, cuDNN 9.6, NCCL 2.18.3" "Hardware"
-        pvStorage = softwareSystem "Persistent Volume Storage" "Input data, output models, and cached model storage" "Infrastructure"
-        vllm = softwareSystem "vLLM" "Inference engine consuming LoRA adapter checkpoints (safetensors)" "Internal Platform"
+        huggingfaceHub = softwareSystem "HuggingFace Hub" "Model registry for downloading pre-trained models, tokenizers, and datasets" "External"
+        fmsAcceleration = softwareSystem "FMS Acceleration Framework" "Hardware-optimized training plugins: QLoRA, fused LoRA, padding-free attention, ScatterMoE, ODM" "External Library"
+        mlflow = softwareSystem "MLflow Server" "Experiment tracking: logs training metrics, run metadata, hyperparameters" "External"
+        aim = softwareSystem "Aim Server" "Experiment tracking: logs training metrics, run hashes, experiment metadata" "External"
+        clearml = softwareSystem "ClearML Server" "Experiment tracking: logs training tasks, metrics, experiment metadata" "External"
+        vllm = softwareSystem "vLLM" "Inference engine consuming LoRA adapter checkpoints post-processed by FMS HF Tuning" "External"
+        persistentVolumes = softwareSystem "Persistent Volumes" "Kubernetes PVCs for input data, output models, and cached model storage" "Infrastructure"
+        nvidiaGPU = softwareSystem "NVIDIA GPU / CUDA" "GPU compute for training: CUDA 12.1, cuDNN 9.6, NCCL 2.18.3" "Infrastructure"
 
-        # User relationships
-        dataScientist -> fmsHfTuning "Submits fine-tuning jobs via PyTorchJob YAML"
-        mlEngineer -> fmsHfTuning "Configures training parameters and monitors experiments"
+        # Person relationships
+        dataScientist -> fmsHfTuning "Configures training via JSON config, launches as PyTorchJob"
+        mlEngineer -> mlflow "Monitors training experiments"
+        mlEngineer -> aim "Monitors training experiments"
 
-        # Internal container relationships
-        accelerateLaunch -> sftTrainer "Initializes training" "In-process"
-        accelerateLaunch -> configModule "Reads JSON config" "In-process"
-        sftTrainer -> dataModule "Processes training data" "In-process"
-        sftTrainer -> configModule "Reads training configuration" "In-process"
-        sftTrainer -> trackersModule "Registers experiment trackers" "In-process"
-        sftTrainer -> trainerController "Registers training loop callbacks" "In-process"
-        sftTrainer -> sumLossTrainer "Uses for loss computation" "In-process"
-        fmsRecommender -> accelerateLaunch "Generates optimized configs" "In-process"
-
-        # External relationships
+        # System relationships
         kfto -> fmsHfTuning "Creates and manages PyTorchJob pods" "Kubernetes API / TLS 1.2+"
-        kueue -> kfto "Schedules training jobs" "Kubernetes API / TLS 1.2+"
-        fmsHfTuning -> hfHub "Downloads pre-trained models and tokenizers" "HTTPS/443 / Bearer Token"
-        fmsHfTuning -> hfDatasets "Downloads training datasets" "HTTPS/443 / Bearer Token"
-        fmsHfTuning -> mlflowServer "Logs training metrics" "HTTP/HTTPS / URI-based"
-        fmsHfTuning -> aimServer "Logs training metrics" "HTTP/HTTPS"
-        fmsHfTuning -> clearmlServer "Logs training tasks" "HTTPS / API key"
-        fmsHfTuning -> fmsAcceleration "Uses acceleration plugins" "In-process"
-        fmsHfTuning -> nvidiaGpu "GPU compute for training" "PCIe/NVLink"
-        fmsHfTuning -> pvStorage "Reads input data, writes model checkpoints" "Filesystem"
-        fmsHfTuning -> vllm "Produces LoRA adapter checkpoints" "Filesystem (safetensors)"
+        kueue -> fmsHfTuning "Schedules training jobs via queue labels" "Kubernetes API / TLS 1.2+"
+        fmsHfTuning -> huggingfaceHub "Downloads pre-trained models and tokenizers" "HTTPS/443 / Bearer Token"
+        fmsHfTuning -> persistentVolumes "Reads input data, writes model checkpoints" "Filesystem"
+        fmsHfTuning -> nvidiaGPU "Executes training computations" "PCIe/NVLink"
+        fmsHfTuning -> mlflow "Logs training metrics and metadata" "HTTP/HTTPS / URI-based"
+        fmsHfTuning -> aim "Logs training metrics" "HTTP/HTTPS"
+        fmsHfTuning -> clearml "Logs training tasks and metrics" "HTTPS / API Key"
+        fmsHfTuning -> fmsAcceleration "Uses hardware acceleration plugins" "In-process Python"
+        fmsHfTuning -> vllm "Produces compatible LoRA adapter checkpoints" "Filesystem (safetensors)"
+
+        # Container relationships
+        accelerateLaunch -> sftTrainer "Launches training" "In-process"
+        sftTrainer -> dataModule "Loads and preprocesses data"
+        sftTrainer -> configModule "Reads configuration"
+        sftTrainer -> trackersModule "Logs experiment metrics"
+        sftTrainer -> trainerController "Dynamic training loop control"
+        sftTrainer -> sumLossTrainer "Custom loss computation"
     }
 
     views {
@@ -71,33 +67,21 @@ workspace {
                 color #ffffff
             }
             element "External Library" {
-                background #b0b0b0
+                background #b8b8b8
                 color #ffffff
             }
             element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
-            element "Hardware" {
-                background #f5a623
-                color #ffffff
-            }
             element "Infrastructure" {
-                background #d6b656
+                background #f5a623
                 color #ffffff
             }
             element "Person" {
                 background #4a90e2
                 color #ffffff
                 shape person
-            }
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Container" {
-                background #438dd5
-                color #ffffff
             }
         }
     }

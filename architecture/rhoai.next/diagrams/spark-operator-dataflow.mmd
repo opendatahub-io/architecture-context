@@ -3,54 +3,57 @@ sequenceDiagram
     participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
     participant Webhook as Webhook Server<br/>9443/TCP HTTPS TLS
     participant Controller as Spark Operator Controller<br/>8080/metrics 8081/health
-    participant SparkSubmit as spark-submit<br/>(local exec)
-    participant Driver as Spark Driver Pod<br/>7078/TCP, 7079/TCP
-    participant Executors as Spark Executor Pods
+    participant SparkSubmit as spark-submit<br/>(local process)
+    participant Driver as Spark Driver Pod<br/>7078/TCP RPC
+    participant Executors as Spark Executor Pods<br/>7079/TCP Block Mgr
     participant Prometheus as Prometheus<br/>8080/TCP HTTP
 
     Note over User,Prometheus: Flow 1: SparkApplication Submission and Execution
 
-    User->>K8sAPI: POST SparkApplication CR<br/>HTTPS/6443, Bearer token
-    K8sAPI->>Webhook: POST /validate-.../sparkapplication<br/>HTTPS/9443, API server client cert
-    Webhook-->>K8sAPI: Admission Response (validated + defaulted)
-    K8sAPI-->>User: CR Created
+    User->>K8sAPI: POST SparkApplication CR<br/>Auth: Bearer token / client cert
+    K8sAPI->>Webhook: POST /mutate-sparkapplication<br/>9443/TCP HTTPS TLS<br/>Auth: API server client cert
+    Webhook-->>K8sAPI: Defaulted SparkApplication
+    K8sAPI->>Webhook: POST /validate-sparkapplication<br/>9443/TCP HTTPS TLS<br/>Auth: API server client cert
+    Webhook-->>K8sAPI: Validation result
+    K8sAPI-->>User: SparkApplication created
 
-    K8sAPI->>Controller: Watch event: SparkApplication created
-    Controller->>SparkSubmit: Invoke spark-submit binary<br/>(local process exec)
-    SparkSubmit->>K8sAPI: Create Driver Pod<br/>HTTPS/6443, SA token
+    Controller->>K8sAPI: Watch SparkApplication<br/>6443/TCP HTTPS<br/>Auth: ServiceAccount token
+    K8sAPI-->>Controller: SparkApplication event
 
-    K8sAPI->>Webhook: POST /mutate--v1-pod<br/>HTTPS/9443, API server client cert
-    Note right of Webhook: 25+ mutations:<br/>env vars, volumes,<br/>ports, init containers,<br/>GPU, Prometheus agent,<br/>security context,<br/>scheduling, DNS
+    Controller->>SparkSubmit: Invoke spark-submit<br/>(local process exec)
+    SparkSubmit->>K8sAPI: Create Driver Pod<br/>6443/TCP HTTPS<br/>Auth: ServiceAccount token
 
-    Webhook-->>K8sAPI: Mutated Pod spec
+    K8sAPI->>Webhook: POST /mutate--v1-pod<br/>9443/TCP HTTPS TLS<br/>Auth: API server client cert
+    Note right of Webhook: Injects 25+ mutations:<br/>env vars, volumes, ports,<br/>init/sidecar containers,<br/>GPU, Prometheus, security,<br/>scheduling, DNS config
+    Webhook-->>K8sAPI: Mutated Driver Pod
 
-    Driver->>K8sAPI: Create Executor Pods<br/>HTTPS/6443, SA token
-    K8sAPI->>Webhook: POST /mutate--v1-pod (executors)<br/>HTTPS/9443, API server client cert
-    Webhook-->>K8sAPI: Mutated Executor Pod specs
+    Driver->>K8sAPI: Create Executor Pods<br/>6443/TCP HTTPS<br/>Auth: ServiceAccount token
+    K8sAPI->>Webhook: POST /mutate--v1-pod<br/>9443/TCP HTTPS TLS
+    Webhook-->>K8sAPI: Mutated Executor Pods
 
-    Driver->>Executors: Spark RPC<br/>7078/TCP, 7079/TCP (plaintext)
-    Executors-->>Driver: Task results<br/>Block Manager 7079/TCP
+    Driver->>Executors: Spark RPC<br/>7078/TCP HTTP (no encryption)
+    Executors->>Driver: Block transfer<br/>7079/TCP HTTP (no encryption)
 
-    Controller->>K8sAPI: Update SparkApplication status<br/>HTTPS/6443, SA token
+    Controller->>K8sAPI: Update SparkApplication status<br/>6443/TCP HTTPS<br/>Auth: ServiceAccount token
 
-    Note over User,Prometheus: Flow 2: ScheduledSparkApplication
+    Note over User,Prometheus: Flow 2: ScheduledSparkApplication Execution
 
-    Controller->>Controller: Cron trigger fires
-    Controller->>K8sAPI: Create child SparkApplication CR<br/>HTTPS/6443, SA token
+    User->>K8sAPI: POST ScheduledSparkApplication CR
+    Controller->>K8sAPI: Watch ScheduledSparkApplication
+    Note right of Controller: Cron trigger fires
+    Controller->>K8sAPI: Create child SparkApplication CR<br/>6443/TCP HTTPS<br/>Auth: ServiceAccount token
     Note right of Controller: Follows Flow 1 steps above
-    Controller->>K8sAPI: Enforce concurrency policy<br/>(Allow/Forbid/Replace)
-    Controller->>K8sAPI: Clean up old runs (history limit)
+    Controller->>K8sAPI: Enforce concurrency policy<br/>+ cleanup history
 
     Note over User,Prometheus: Flow 3: Spark Connect Server
 
-    User->>K8sAPI: POST SparkConnect CR<br/>HTTPS/6443, Bearer token
-    Controller->>K8sAPI: Create ConfigMap (executor template)<br/>HTTPS/6443, SA token
-    Controller->>K8sAPI: Create Server Pod + Service<br/>HTTPS/6443, SA token
-
-    User->>Driver: gRPC/HTTP2 Connect<br/>15002/TCP (plaintext)
-    Driver->>Executors: Spark RPC<br/>7078/TCP, 7079/TCP (plaintext)
+    User->>K8sAPI: POST SparkConnect CR
+    Controller->>K8sAPI: Create ConfigMap<br/>(executor template)
+    Controller->>K8sAPI: Create Server Pod
+    Controller->>K8sAPI: Create Server Service<br/>(ports: 7078, 7079, 4040, 15002)
+    User->>Driver: gRPC/HTTP2 connect<br/>15002/TCP (no encryption)
+    Driver->>Executors: Spark RPC<br/>7078/TCP, 7079/TCP
 
     Note over User,Prometheus: Monitoring
 
-    Prometheus->>Controller: GET /metrics<br/>HTTP/8080 (unauthenticated)
-    Controller-->>Prometheus: Prometheus metrics<br/>(app count, submit count,<br/>execution times, executor metrics)
+    Prometheus->>Controller: GET /metrics<br/>8080/TCP HTTP<br/>No auth

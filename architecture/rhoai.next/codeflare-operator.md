@@ -231,6 +231,31 @@ The operator includes an embedded AppWrapper controller (from the `project-codef
 
 _This is the `main` branch. Downstream release branches (e.g., `rhoai-X.Y`) likely add `rpms.lock.yaml` and Hermeto prefetch integration for full build hermeticity._
 
+## Admission Webhooks
+
+This component defines 6 webhook(s) (3 mutating, 3 validating).
+
+| Name | Type | Target Resources | Purpose |
+|------|------|-----------------|---------|
+| mappwrapper.kb.io | mutating | appwrappers |  |
+| mappwrapper.kb.io | mutating |  |  |
+| mraycluster.ray.openshift.ai | mutating | rayclusters | Mutates RayCluster resources to inject an OAuth proxy sidecar container for Ray Dashboard authentication and mTLS init containers, volumes, and environment variables for encrypted inter-node communication; validates on create and update that these injected components (OAuth proxy, TLS volumes, service account, cert init containers, env vars) have not been tampered with and that native ingress is not enabled. |
+| vappwrapper.kb.io | validating | appwrappers |  |
+| vappwrapper.kb.io | validating |  |  |
+| vraycluster.ray.openshift.ai | validating | rayclusters | Mutates RayCluster resources to inject an OAuth proxy sidecar container for Ray Dashboard authentication and mTLS init containers, volumes, and environment variables for encrypted inter-node communication; validates on create and update that these injected components (OAuth proxy, TLS volumes, service account, cert init containers, env vars) have not been tampered with and that native ingress is not enabled. |
+
+### External Webhooks
+
+The following webhooks from peer components intercept this component's resource types:
+
+| Webhook | Defined By |
+|---------|-----------|
+| mraycluster.kb.io | kuberay |
+| mraycluster.kb.io | kueue |
+| vraycluster.kb.io | kueue |
+| mappwrapper.kb.io | kueue |
+| vappwrapper.kb.io | kueue |
+
 ## Data Flows
 
 ### Flow 1: RayCluster OAuth Dashboard Access (OpenShift)

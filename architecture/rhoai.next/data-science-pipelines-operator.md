@@ -259,6 +259,15 @@ The operator is deployed by the platform operator (rhods-operator / opendatahub-
 
 _This is the `main` branch (upstream). The downstream release branches (e.g., `rhoai-3.x`) are expected to add `rpms.lock.yaml` and Hermeto prefetch integration during release hardening. Go module dependencies are hermetically locked via `go.sum`._
 
+## Admission Webhooks
+
+This component defines 2 webhook(s) (1 mutating, 1 validating).
+
+| Name | Type | Target Resources | Purpose |
+|------|------|-----------------|---------|
+| pipelineversions.pipelines.kubeflow.org | mutating | pipelineversions |  |
+| pipelineversions.pipelines.kubeflow.org | validating | pipelineversions |  |
+
 ## Data Flows
 
 ### Flow 1: Pipeline Run Execution

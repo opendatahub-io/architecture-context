@@ -1,59 +1,61 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Deploys and queries AutoGluon ML models for tabular and time series predictions"
-        sre = person "SRE / Platform Admin" "Monitors model server health and performance"
+        dataScientist = person "Data Scientist" "Deploys AutoGluon models via InferenceService CRs and sends inference requests"
+        mlEngineer = person "ML Engineer" "Trains AutoGluon TabularPredictor / TimeSeriesPredictor models and uploads to storage"
 
-        autogluonServer = softwareSystem "KServe AutoGluon Server" "KServe-compatible model server for serving AutoGluon TabularPredictor and TimeSeriesPredictor models via REST and gRPC" {
-            restServer = container "FastAPI REST Server" "Serves v1 and v2 (Open Inference Protocol) REST endpoints for inference, health, and metrics" "Python / FastAPI / uvicorn" "Port 8080/TCP"
-            grpcServer = container "gRPC Server" "Serves v2 Open Inference Protocol gRPC endpoints for tensor-based inference" "Python / grpcio" "Port 8081/TCP"
-            modelLayer = container "AutoGluon Model Layer" "Auto-detects and loads TabularPredictor or TimeSeriesPredictor, handles prediction and result formatting" "Python / AutoGluon"
+        autogluonServer = softwareSystem "kserve-autogluon-server" "KServe-compatible model server for serving AutoGluon TabularPredictor and TimeSeriesPredictor models via REST (v1/v2) and gRPC" {
+            restServer = container "FastAPI REST Server" "Serves v1 and v2 (Open Inference Protocol) REST endpoints for model inference, health checks, and metrics" "Python / FastAPI / uvicorn" "8080/TCP"
+            grpcServer = container "gRPC Inference Server" "Serves v2 tensor-based inference via gRPC" "Python / grpcio" "8081/TCP"
+            predictorFactory = container "Predictor Factory" "Auto-detects model type (tabular vs time series) and delegates to appropriate predictor implementation" "Python"
+            tabularModel = container "Tabular Model" "Wraps AutoGluon TabularPredictor for classification, regression, and quantile prediction with v1/v2 format translation" "Python / autogluon.tabular"
+            timeSeriesModel = container "Time Series Model" "Wraps AutoGluon TimeSeriesPredictor for forecasting with v1 JSON support" "Python / autogluon.timeseries"
             storageClient = container "Storage Client" "Downloads model artifacts from remote storage at startup" "Python / kserve-storage / boto3"
         }
 
-        kserveController = softwareSystem "KServe Controller" "Manages InferenceService CRDs and creates model server pods" "Internal RHOAI"
+        kserveController = softwareSystem "KServe Controller" "Manages InferenceService lifecycle, creates pods with serving runtime images" "Internal RHOAI"
         kserveRouter = softwareSystem "KServe Router" "Routes inference traffic to model server pods" "Internal RHOAI"
-        s3Storage = softwareSystem "S3-compatible Storage" "Stores model artifacts (TabularPredictor / TimeSeriesPredictor)" "External"
-        huggingfaceHub = softwareSystem "HuggingFace Hub" "Public/private model repository" "External"
-        gcsAzure = softwareSystem "GCS / Azure Blob" "Alternative cloud model storage" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal Platform"
+        ingressLayer = softwareSystem "KServe Ingress Layer" "Handles TLS termination, authentication, and authorization (kube-rbac-proxy / Istio / OpenShift Route)" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus" "Scrapes metrics from model server for monitoring" "Internal Platform"
+        s3Storage = softwareSystem "S3-compatible Storage" "Stores model artifacts (trained AutoGluon models)" "External"
+        huggingFaceHub = softwareSystem "HuggingFace Hub" "Hosts pretrained models for download" "External"
+        gcsAzure = softwareSystem "GCS / Azure Blob" "Alternative model artifact storage" "External"
 
         # Relationships
-        dataScientist -> autogluonServer "Sends inference requests via REST or gRPC"
-        sre -> prometheus "Monitors model server metrics"
+        dataScientist -> ingressLayer "Sends inference requests via" "HTTPS/443"
+        dataScientist -> kserveController "Creates InferenceService CR via" "kubectl / API"
+        mlEngineer -> s3Storage "Uploads trained models to" "HTTPS/443"
 
-        kserveController -> autogluonServer "Creates and manages pods via InferenceService CRD"
-        kserveRouter -> autogluonServer "Routes inference traffic" "HTTP/8080, gRPC/8081"
+        ingressLayer -> autogluonServer "Forwards requests to" "HTTP/8080, gRPC/8081"
+        kserveController -> autogluonServer "Creates pods with serving runtime image" "Kubernetes API"
+        kserveRouter -> autogluonServer "Routes inference traffic to" "HTTP/8080, gRPC/8081"
+        prometheus -> autogluonServer "Scrapes /metrics from" "HTTP/8080"
 
-        autogluonServer -> s3Storage "Downloads model artifacts at startup" "HTTPS/443, AWS IAM"
-        autogluonServer -> huggingfaceHub "Downloads model artifacts" "HTTPS/443, Bearer Token"
-        autogluonServer -> gcsAzure "Downloads model artifacts" "HTTPS/443, SA/SAS token"
-        prometheus -> autogluonServer "Scrapes /metrics endpoint" "HTTP/8080"
+        autogluonServer -> s3Storage "Downloads model artifacts from" "HTTPS/443, AWS IAM"
+        autogluonServer -> huggingFaceHub "Downloads models from" "HTTPS/443, Bearer Token"
+        autogluonServer -> gcsAzure "Downloads models from" "HTTPS/443, SA/SAS Token"
 
         # Internal container relationships
-        restServer -> modelLayer "Delegates inference requests"
-        grpcServer -> modelLayer "Delegates inference requests"
-        modelLayer -> storageClient "Triggers model download at startup"
-        storageClient -> s3Storage "Downloads model files" "HTTPS/443"
-        storageClient -> huggingfaceHub "Downloads model files" "HTTPS/443"
-        storageClient -> gcsAzure "Downloads model files" "HTTPS/443"
+        restServer -> predictorFactory "Delegates inference to"
+        grpcServer -> predictorFactory "Delegates inference to"
+        predictorFactory -> tabularModel "Routes tabular requests to"
+        predictorFactory -> timeSeriesModel "Routes time series requests to"
+        storageClient -> predictorFactory "Provides downloaded model to"
     }
 
     views {
         systemContext autogluonServer "SystemContext" {
             include *
             autoLayout
-            description "System context for KServe AutoGluon Server showing external actors and systems"
         }
 
         container autogluonServer "Containers" {
             include *
             autoLayout
-            description "Container view showing internal components of the AutoGluon Server"
         }
 
         styles {
             element "Software System" {
-                background #438DD5
+                background #438dd5
                 color #ffffff
             }
             element "External" {
@@ -65,16 +67,16 @@ workspace {
                 color #ffffff
             }
             element "Internal Platform" {
-                background #9b59b6
+                background #85bbf0
                 color #ffffff
             }
             element "Person" {
-                shape Person
-                background #08427B
+                shape person
+                background #08427b
                 color #ffffff
             }
             element "Container" {
-                background #438DD5
+                background #438dd5
                 color #ffffff
             }
         }

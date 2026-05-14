@@ -1,54 +1,57 @@
 sequenceDiagram
     participant Client as Client / Platform
-    participant GW as Platform Ingress<br/>TLS Termination
-    participant NG as NeMo Guardrails<br/>8000/TCP HTTP
+    participant Server as NeMo Guardrails Server<br/>8000/TCP HTTP
     participant InputRails as Input Rails Pipeline
+    participant Embeddings as Embedding Provider<br/>(local or HTTPS/443)
+    participant LLM as Upstream LLM Provider<br/>443/TCP HTTPS TLS 1.2+
     participant OutputRails as Output Rails Pipeline
-    participant Embed as Embedding Provider<br/>(local or 443/TCP)
-    participant LLM as LLM Provider<br/>443/TCP HTTPS TLS 1.2+
 
-    Note over Client,LLM: Flow 1: Chat Completion with Guardrails
+    Note over Client,OutputRails: Flow 1: Chat Completion with Guardrails
 
-    Client->>GW: POST /v1/chat/completions<br/>Authorization: Bearer Token
-    GW->>NG: Forward (HTTP/8000)<br/>Auth header preserved
+    Client->>Server: POST /v1/chat/completions<br/>Authorization: Bearer {token}
+    Server->>InputRails: Execute input rails<br/>(content safety, jailbreak, PII)
 
-    NG->>InputRails: Process input rails
-    InputRails->>Embed: Get embeddings<br/>(similarity checks)
-    Embed-->>InputRails: Vector embeddings
-    InputRails->>LLM: Content safety check<br/>HTTPS/443, Bearer Token
-    LLM-->>InputRails: Safety result
-    InputRails-->>NG: PASSED / BLOCKED
-
-    alt Input PASSED
-        NG->>LLM: Chat completion request<br/>HTTPS/443, Bearer Token
-        LLM-->>NG: LLM response
-
-        NG->>OutputRails: Process output rails
-        OutputRails->>LLM: Output safety check<br/>HTTPS/443, Bearer Token
-        LLM-->>OutputRails: Safety result
-        OutputRails-->>NG: PASSED / MODIFIED / BLOCKED
+    alt Embedding-based rail evaluation
+        InputRails->>Embeddings: Generate embeddings<br/>(FastEmbed local or API)
+        Embeddings-->>InputRails: Embedding vectors
+        InputRails->>InputRails: Annoy ANN similarity check
     end
 
-    NG-->>GW: JSON response
-    GW-->>Client: Response (TLS)
+    alt Input blocked
+        InputRails-->>Server: BLOCKED (rail violation)
+        Server-->>Client: 200 OK (blocked message)
+    else Input passed
+        InputRails-->>Server: PASSED
+        Server->>LLM: POST /v1/chat/completions<br/>Authorization: Bearer {forwarded token}<br/>TLS 1.2+
+        LLM-->>Server: Chat completion response
+        Server->>OutputRails: Execute output rails<br/>(hallucination, content safety)
 
-    Note over Client,LLM: Flow 2: Guardrail Check Only (No LLM Generation)
+        alt Output blocked/modified
+            OutputRails-->>Server: MODIFIED (sanitized response)
+        else Output passed
+            OutputRails-->>Server: PASSED
+        end
 
-    Client->>GW: POST /v1/guardrail/checks<br/>Authorization: Bearer Token
-    GW->>NG: Forward (HTTP/8000)
+        Server-->>Client: JSON response (completion or blocked)
+    end
 
-    NG->>InputRails: Validate messages against rails
-    InputRails->>LLM: Content safety model<br/>HTTPS/443, Bearer Token
-    LLM-->>InputRails: Validation result
-    InputRails-->>NG: RailsResult
+    Note over Client,OutputRails: Flow 2: Guardrail Check (No LLM Generation)
 
-    NG-->>GW: Status: PASSED / MODIFIED / BLOCKED
-    GW-->>Client: Validation result
+    Client->>Server: POST /v1/guardrail/checks<br/>Authorization: Bearer {token}
+    Server->>InputRails: Validate messages against rails<br/>(role-based routing)
 
-    Note over Client,LLM: Flow 3: Embedding-based Guardrail Evaluation
+    alt Content safety model needed
+        InputRails->>LLM: POST content safety check<br/>Bearer Token / API key<br/>HTTPS/443 TLS 1.2+
+        LLM-->>InputRails: Safety evaluation result
+    end
 
-    NG->>Embed: Generate embeddings<br/>(local FastEmbed or HTTPS/443)
-    Embed-->>NG: Embeddings
-    NG->>NG: Annoy Index lookup<br/>(nearest neighbor search)
-    NG->>LLM: Similarity-based rail evaluation<br/>HTTPS/443, Bearer Token
-    LLM-->>NG: Evaluation result
+    InputRails-->>Server: RailsResult<br/>(PASSED / MODIFIED / BLOCKED)
+    Server-->>Client: 200 OK {status, output}
+
+    Note over Client,OutputRails: Flow 3: Embedding-based Guardrail Evaluation
+
+    Server->>Embeddings: Generate embeddings<br/>(FastEmbed local or OpenAI/NIM API)
+    Embeddings-->>Server: Embedding vectors
+    Server->>Server: Annoy Index lookup<br/>(approximate nearest neighbor)
+    Server->>LLM: Similarity-based rail evaluation<br/>HTTPS/443 TLS 1.2+ Bearer Token
+    LLM-->>Server: Evaluation result

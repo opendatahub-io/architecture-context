@@ -1,75 +1,79 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["Client / Platform User"]
+        Client["Client / Platform Component"]
     end
 
-    subgraph Ingress["PLATFORM INGRESS (TLS Termination)"]
-        Gateway["Platform Gateway<br/>kube-rbac-proxy / Gateway API<br/>TLS Termination<br/>Platform AuthN/AuthZ"]
+    subgraph PlatformIngress["PLATFORM INGRESS (Trust Boundary)"]
+        Ingress["Platform Ingress<br/>(HTTPRoute / Gateway API / Route)<br/>Provisioned by rhods-operator<br/>Auth: kube-rbac-proxy / Gateway API"]
     end
 
-    subgraph ClusterInternal["CLUSTER-INTERNAL (Service Network)"]
+    subgraph ClusterInternal["CLUSTER INTERNAL (ClusterIP)"]
         direction TB
 
-        subgraph NGService["NeMo Guardrails Service"]
-            NGServer["NeMo Guardrails Server<br/>ClusterIP: 8000/TCP HTTP<br/>No built-in auth/TLS<br/>Auth header passthrough"]
+        subgraph ServiceLayer["Service: nemo-guardrails"]
+            Service["ClusterIP Service<br/>8000/TCP → 8000/TCP<br/>HTTP, No Encryption<br/>No built-in auth"]
         end
 
-        subgraph ActionsOpt["Optional"]
-            ActionsServer["Actions Server<br/>8001/TCP HTTP"]
-        end
+        subgraph PodLayer["Pod: nemo-guardrails-server"]
+            Server["FastAPI/Uvicorn Server<br/>Image: UBI9/python-312<br/>Port 8000/TCP (main)<br/>Port 8001/TCP (actions, optional)"]
 
-        subgraph LocalProcessing["In-Process Libraries"]
-            Presidio["Presidio<br/>(PII Detection)"]
-            SpaCy["spaCy + en_core_web_lg<br/>(NLP/NER)"]
-            FastEmbed["FastEmbed/ONNX<br/>(Local Embeddings)"]
-            LangChain["LangChain<br/>(LLM Abstraction)"]
+            subgraph Endpoints["Endpoints"]
+                ChatAPI["/v1/chat/completions POST"]
+                GuardrailAPI["/v1/guardrail/checks POST"]
+                ConfigsAPI["/v1/rails/configs GET"]
+                ModelsAPI["/v1/models GET"]
+                HealthAPI["/ GET (health)"]
+            end
+
+            subgraph InProcess["In-Process Libraries"]
+                Presidio["Presidio<br/>(PII detection)"]
+                SpaCy["spaCy<br/>(NLP/NER)"]
+                FastEmbed["FastEmbed<br/>(local embeddings)"]
+            end
         end
     end
 
-    subgraph ExternalLLM["EXTERNAL LLM PROVIDERS (Egress)"]
+    subgraph LLMProviders["EXTERNAL LLM PROVIDERS (Untrusted)"]
         OpenAI["OpenAI API<br/>api.openai.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer Token"]
         NIM["NVIDIA NIM<br/>integrate.api.nvidia.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer Token"]
-        Anthropic["Anthropic API<br/>api.anthropic.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: x-api-key"]
+        AnthropicAPI["Anthropic API<br/>api.anthropic.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: x-api-key"]
         AzureOAI["Azure OpenAI<br/>*.openai.azure.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: api-key"]
-        Cohere["Cohere API<br/>api.cohere.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer Token"]
+        CohereAPI["Cohere API<br/>api.cohere.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer Token"]
         VertexAI["Google Vertex AI<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: GCP credentials"]
     end
 
-    subgraph OptionalServices["OPTIONAL EXTERNAL SERVICES"]
-        Redis["Redis<br/>6379/TCP<br/>Redis Protocol<br/>Optional TLS<br/>Auth: user/pass"]
-        OTelCollector["OTel Collector<br/>4317/TCP gRPC OTLP<br/>Optional TLS<br/>Auth: None"]
+    subgraph InfraServices["INFRASTRUCTURE SERVICES (Optional)"]
+        Redis["Redis<br/>6379/TCP<br/>Redis protocol<br/>Optional TLS<br/>Auth: username/password"]
+        OTel["OpenTelemetry Collector<br/>4317/TCP gRPC (OTLP)<br/>Optional TLS<br/>Auth: None"]
     end
 
     %% Flows
-    Client -->|"HTTPS/443<br/>TLS (platform)<br/>Bearer Token"| Gateway
-    Gateway -->|"HTTP/8000<br/>Plaintext (cluster-internal)<br/>Auth header forwarded"| NGServer
+    Client -->|"HTTP/8000<br/>Authorization header<br/>No encryption (platform terminates TLS)"| Ingress
+    Ingress -->|"HTTP/8000<br/>Internal cluster network<br/>Auth enforced at platform level"| Service
+    Service --> Server
 
-    NGServer -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (forwarded)"| OpenAI
-    NGServer -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| NIM
-    NGServer -->|"HTTPS/443<br/>TLS 1.2+<br/>x-api-key"| Anthropic
-    NGServer -->|"HTTPS/443<br/>TLS 1.2+<br/>api-key"| AzureOAI
-    NGServer -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Cohere
-    NGServer -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP creds"| VertexAI
+    Server -->|"HTTPS/443 TLS 1.2+<br/>Bearer Token (forwarded or env var)"| OpenAI
+    Server -->|"HTTPS/443 TLS 1.2+<br/>Bearer Token"| NIM
+    Server -->|"HTTPS/443 TLS 1.2+<br/>x-api-key header"| AnthropicAPI
+    Server -->|"HTTPS/443 TLS 1.2+<br/>api-key header"| AzureOAI
+    Server -->|"HTTPS/443 TLS 1.2+<br/>Bearer Token"| CohereAPI
+    Server -->|"HTTPS/443 TLS 1.2+<br/>GCP credentials"| VertexAI
 
-    NGServer -.->|"Redis/6379<br/>Optional TLS<br/>user/pass"| Redis
-    NGServer -.->|"gRPC/4317 OTLP<br/>Optional TLS"| OTelCollector
-
-    NGServer --- Presidio
-    NGServer --- SpaCy
-    NGServer --- FastEmbed
-    NGServer --- LangChain
+    Server -.->|"Redis/6379<br/>Optional TLS<br/>username/password"| Redis
+    Server -.->|"gRPC OTLP/4317<br/>Optional TLS"| OTel
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef llmprovider fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef optional fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef locallib fill:#dae8fc,stroke:#6c8ebf,stroke-width:1px
+    classDef llmprovider fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef infra fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef inprocess fill:#dae8fc,stroke:#6c8ebf,stroke-width:1px
 
     class Client external
-    class Gateway ingress
-    class NGServer,ActionsServer internal
-    class OpenAI,NIM,Anthropic,AzureOAI,Cohere,VertexAI llmprovider
-    class Redis,OTelCollector optional
-    class Presidio,SpaCy,FastEmbed,LangChain locallib
+    class Ingress ingress
+    class Service,Server internal
+    class ChatAPI,GuardrailAPI,ConfigsAPI,ModelsAPI,HealthAPI internal
+    class OpenAI,NIM,AnthropicAPI,AzureOAI,CohereAPI,VertexAI llmprovider
+    class Redis,OTel infra
+    class Presidio,SpaCy,FastEmbed inprocess

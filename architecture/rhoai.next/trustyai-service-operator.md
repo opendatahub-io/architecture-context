@@ -332,6 +332,14 @@ The operator uses a modular architecture where each controller is independently 
 
 _Note: This analysis is on the `main` branch. Downstream release branches (e.g., `rhoai-3.x`) likely add `rpms.lock.yaml` and Hermeto prefetch integration during release hardening._
 
+## Admission Webhooks
+
+This component defines 1 webhook(s) (0 mutating, 0 validating, 1 conversion).
+
+| Name | Type | Target Resources | Purpose |
+|------|------|-----------------|---------|
+| conversion.trustyaiservices.trustyai.opendatahub.io | conversion | trustyaiservices |  |
+
 ## Data Flows
 
 ### Flow 1: TrustyAI Service Payload Processing

@@ -2,55 +2,60 @@ workspace {
     model {
         apiClient = person "API Client" "Application or user consuming OpenAI-compatible chat completion endpoints"
 
-        gateway = softwareSystem "vLLM Orchestrator Gateway" "Rust/axum HTTP gateway that provides route-based OpenAI-compatible chat completion endpoints with configurable detector-based content filtering" {
-            router = container "axum Router" "Dynamic route registration from YAML config; maps /{route}/v1/chat/completions to detector pipelines" "Rust/axum"
-            detectorInjector = container "Detector Injector" "Augments client request payload with configured detector specifications before forwarding" "Rust"
-            streamHandler = container "SSE Stream Handler" "Processes orchestrator SSE stream chunk-by-chunk, applying fallback logic per-chunk" "Rust/futures"
-            fallbackHandler = container "Fallback Handler" "Checks response for detections; replaces content with configured fallback message if detections found" "Rust"
-            tlsClient = container "mTLS Client Builder" "Constructs PKCS#12 identity from PEM cert/key via OpenSSL for native-tls transport" "Rust/openssl+native-tls"
+        vllmOrchestratorGateway = softwareSystem "vLLM Orchestrator Gateway" "HTTP gateway providing route-based OpenAI-compatible chat completion endpoints with configurable detector pipelines for content filtering" {
+            gatewayService = container "Gateway Service" "Rust binary using axum framework; dispatches requests by route, injects detector config, applies fallback messages" "Rust/axum"
+            configFile = container "YAML Configuration" "Defines orchestrator connection, detector definitions (input/output), and route-to-detector mappings with optional fallback messages" "YAML file mount"
         }
 
-        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "Performs content detection on chat completions using configured detector servers" "Internal TrustyAI"
-        detectors = softwareSystem "Content Detectors" "Detection servers (e.g., regex-detector) that analyze input/output for content safety" "Internal TrustyAI"
-        vllm = softwareSystem "vLLM Model Server" "LLM inference backend serving model predictions" "Internal TrustyAI"
-        certManager = softwareSystem "cert-manager" "Provisions and rotates TLS certificates for mTLS" "External Platform"
-        serviceCA = softwareSystem "service-ca-operator" "Provides CA certificates for internal service trust" "External Platform"
+        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "Performs content detection on chat completions using configured detectors; routes to model server for inference" "Internal TrustyAI"
+        contentDetectors = softwareSystem "Content Detectors" "Detection servers (e.g., regex-detector) that evaluate input/output content for policy violations" "Internal TrustyAI"
+        vllmModelServer = softwareSystem "vLLM Model Server" "LLM inference backend; provides chat completion responses" "Internal Platform"
+        certManager = softwareSystem "cert-manager" "Provisions and rotates TLS certificates for mTLS communication" "External Platform"
+        serviceCaOperator = softwareSystem "service-ca-operator" "Provides CA certificates for trusting internal service certificates" "External Platform"
+        platformOperator = softwareSystem "TrustyAI / RHOAI Operator" "Deploys and manages the gateway lifecycle, creates Kubernetes Service, mounts secrets and config" "Internal Platform"
 
-        apiClient -> gateway "POST /{route}/v1/chat/completions" "HTTP/8090, plaintext, Authorization passthrough"
-        gateway -> orchestrator "POST /api/v2/chat/completions-detection" "HTTP or HTTPS/8085, optional mTLS, forwarded Authorization"
-        orchestrator -> detectors "Invokes content detection" "Internal"
-        orchestrator -> vllm "Routes inference requests" "Internal"
-        certManager -> gateway "Provisions TLS cert/key" "Volume mount /etc/tls/private/"
-        serviceCA -> gateway "Provisions CA certificate" "Volume mount /etc/tls/ca/"
+        apiClient -> vllmOrchestratorGateway "POST /{route_name}/v1/chat/completions" "HTTP/8090, plaintext, Authorization passthrough"
+        vllmOrchestratorGateway -> orchestrator "POST /api/v2/chat/completions-detection" "HTTP(S)/8085, optional mTLS, Authorization forwarded"
+        orchestrator -> contentDetectors "Runs input/output detection" "Internal API"
+        orchestrator -> vllmModelServer "Forwards inference requests" "Internal API"
+        certManager -> vllmOrchestratorGateway "Provisions TLS cert/key" "kubernetes.io/tls secret mount"
+        serviceCaOperator -> vllmOrchestratorGateway "Provisions CA certificate" "Opaque secret mount"
+        platformOperator -> vllmOrchestratorGateway "Deploys and configures" "Kubernetes resources"
+
+        gatewayService -> configFile "Reads at startup" "File I/O"
     }
 
     views {
-        systemContext gateway "SystemContext" {
+        systemContext vllmOrchestratorGateway "SystemContext" {
             include *
             autoLayout
         }
 
-        container gateway "Containers" {
+        container vllmOrchestratorGateway "Containers" {
             include *
             autoLayout
         }
 
         styles {
-            element "Internal TrustyAI" {
-                background #7ed321
-                color #ffffff
-            }
             element "External Platform" {
                 background #999999
                 color #ffffff
             }
-            element "Person" {
-                shape Person
+            element "Internal TrustyAI" {
+                background #7ed321
+                color #ffffff
+            }
+            element "Internal Platform" {
                 background #4a90e2
                 color #ffffff
             }
+            element "Person" {
+                shape person
+                background #08427b
+                color #ffffff
+            }
             element "Software System" {
-                background #4a90e2
+                background #1168bd
                 color #ffffff
             }
             element "Container" {

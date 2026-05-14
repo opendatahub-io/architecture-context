@@ -1,60 +1,61 @@
 sequenceDiagram
     participant Client as External Client
-    participant KubeRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS 1.2+
-    participant REST as OVMS REST Server<br/>(Drogon HTTP)<br/>configurable/TCP
-    participant GRPC as OVMS gRPC Server<br/>(HTTP/2)<br/>configurable/TCP
+    participant KRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
+    participant REST as OVMS REST (Drogon)<br/>configurable/TCP HTTP
+    participant GRPC as OVMS gRPC<br/>configurable/TCP HTTP/2
     participant Handler as HttpRestApiHandler
-    participant MediaPipe as MediaPipe Graph<br/>Executor
-    participant ModelMgr as ModelManager
-    participant ModelInst as ModelInstance
-    participant CBPipeline as ContinuousBatching<br/>Pipeline
-    participant OVRuntime as OpenVINO Runtime<br/>2026.0
-    participant OVGenAI as OpenVINO GenAI<br/>2026.0
-    participant S3 as Cloud Storage<br/>(S3/GCS/Azure)<br/>443/TCP HTTPS
+    participant MPipe as MediaPipe Graph<br/>LLM Calculator
+    participant CBatch as ContinuousBatching<br/>Pipeline
+    participant MMgr as ModelManager
+    participant MInst as ModelInstance
+    participant OVRT as OpenVINO Runtime
+    participant GenAI as OpenVINO GenAI
+    participant S3 as S3/GCS/Azure/HF<br/>443/TCP HTTPS
 
-    Note over Client,S3: Flow 1: REST Inference Request (KServe v2)
-    Client->>KubeRBAC: POST /v2/models/{model}/infer<br/>Auth: K8s Bearer Token<br/>HTTPS/8443
-    KubeRBAC->>REST: Forward (HTTP localhost)<br/>Token validated via TokenReview
+    Note over Client, S3: Flow 1: REST Inference (KServe v2)
+    Client->>KRBAC: POST /v2/models/{model}/infer<br/>Auth: Kubernetes Bearer Token
+    KRBAC->>REST: Forward (localhost)<br/>No encryption
     REST->>Handler: Route to KServe v2 handler
-    Handler->>ModelMgr: getModelInstance(model, version)
-    ModelMgr->>ModelInst: infer(request)
-    ModelInst->>OVRuntime: InferRequest::infer()
-    OVRuntime-->>ModelInst: Inference result (tensors)
-    ModelInst-->>Handler: Inference response
+    Handler->>MMgr: getModelInstance(model, version)
+    MMgr->>MInst: infer(request)
+    MInst->>OVRT: compiledModel.infer()
+    OVRT-->>MInst: InferenceResult
+    MInst-->>MMgr: Response tensor
+    MMgr-->>Handler: Prediction result
     Handler-->>REST: JSON response
-    REST-->>KubeRBAC: HTTP 200 OK
-    KubeRBAC-->>Client: HTTPS response
+    REST-->>KRBAC: HTTP response
+    KRBAC-->>Client: HTTPS response
 
-    Note over Client,S3: Flow 2: LLM Chat Completions (Streaming SSE)
+    Note over Client, S3: Flow 2: LLM Chat Completions (Streaming SSE)
     Client->>REST: POST /v3/chat/completions<br/>Auth: API key (optional)<br/>stream: true
     REST->>Handler: Route to OpenAI v3 handler
-    Handler->>Handler: isAuthorized() check API key
-    Handler->>MediaPipe: Execute LLM calculator graph
-    MediaPipe->>CBPipeline: Schedule generation request
-    loop Continuous Batching (token by token)
-        CBPipeline->>OVGenAI: Generate next token(s)
-        OVGenAI-->>CBPipeline: Token(s)
-        CBPipeline-->>MediaPipe: Token callback
-        MediaPipe-->>Handler: Partial response
-        Handler-->>REST: SSE data chunk
+    Handler->>Handler: isAuthorized() check
+    Handler->>MPipe: Execute LLM graph
+    MPipe->>CBatch: Schedule generation
+    loop Continuous Batching - Token Generation
+        CBatch->>GenAI: generateToken()
+        GenAI-->>CBatch: Next token
+        CBatch-->>MPipe: Token output
+        MPipe-->>Handler: Partial result
+        Handler-->>REST: SSE: data: {"choices":[...]}
         REST-->>Client: text/event-stream chunk
     end
-    REST-->>Client: SSE [DONE]
+    REST-->>Client: SSE: data: [DONE]
 
-    Note over Client,S3: Flow 3: gRPC Inference (KServe ModelInfer)
-    Client->>GRPC: ModelInfer RPC<br/>gRPC (HTTP/2)<br/>InsecureServerCredentials
-    GRPC->>ModelMgr: getModelInstance(model, version)
-    ModelMgr->>ModelInst: infer(request)
-    ModelInst->>OVRuntime: InferRequest::infer()
-    OVRuntime-->>ModelInst: Inference result
-    ModelInst-->>GRPC: InferResponse protobuf
+    Note over Client, S3: Flow 3: gRPC Inference (KServe ModelInfer)
+    Client->>GRPC: ModelInfer RPC<br/>No auth (InsecureServerCredentials)
+    GRPC->>MMgr: KFSInferenceServiceImpl.ModelInfer()
+    MMgr->>MInst: infer(request)
+    MInst->>OVRT: compiledModel.infer()
+    OVRT-->>MInst: InferenceResult
+    MInst-->>MMgr: Response tensor
+    MMgr-->>GRPC: InferResponse proto
     GRPC-->>Client: gRPC response
 
-    Note over Client,S3: Flow 4: Model Loading from Cloud Storage
-    ModelMgr->>ModelMgr: Config watcher thread<br/>(poll interval: file_system_poll_wait_seconds)
-    ModelMgr->>S3: HTTPS GET model artifacts<br/>Auth: IAM/ServiceAccount/ConnString<br/>TLS 1.2+
-    S3-->>ModelMgr: Model files (binary)
-    ModelMgr->>ModelMgr: Write to local cache
-    ModelMgr->>OVRuntime: Core::compile_model()
-    OVRuntime-->>ModelMgr: Compiled model ready
-    ModelMgr->>ModelMgr: Update model version map
+    Note over Client, S3: Flow 4: Model Loading from Cloud Storage
+    MMgr->>MMgr: Config poll (file_system_poll_wait_seconds)
+    MMgr->>S3: GET model artifacts<br/>Auth: Cloud provider credentials<br/>Encryption: TLS 1.2+
+    S3-->>MMgr: Model files (IR XML + BIN / safetensors)
+    MMgr->>OVRT: ov::Core::compile_model()
+    OVRT-->>MMgr: Compiled model ready
+    MMgr->>MMgr: Update model version map

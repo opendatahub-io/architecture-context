@@ -1,34 +1,41 @@
 sequenceDiagram
-    participant User as External User
-    participant Gateway as data-science-gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant MLflow as MLflow Server<br/>8443/TCP HTTPS<br/>service-ca TLS
+    participant Client as External Client
+    participant Gateway as data-science-gateway<br/>443/TCP HTTPS<br/>TLS 1.2+
+    participant MLflow as MLflow Server<br/>8443/TCP HTTPS<br/>TLS (service-ca)
     participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant PG as PostgreSQL<br/>5432/TCP TLS optional
+    participant PG as PostgreSQL<br/>5432/TCP<br/>TLS (optional)
     participant S3 as S3-compatible Storage<br/>443/TCP HTTPS
 
-    Note over User,S3: Flow 1: External User Access via Gateway
-    User->>Gateway: HTTPS/443<br/>Platform auth (OIDC/OAuth)
-    Gateway->>MLflow: HTTPS/8443<br/>TLS (re-encrypted, service-ca)<br/>Forwarded user identity
-    MLflow->>K8sAPI: HTTPS/6443<br/>SelfSubjectAccessReview<br/>Impersonated user token
-    K8sAPI-->>MLflow: Authorization decision<br/>(experiments, datasets, registeredmodels)
-    MLflow-->>Gateway: API Response
-    Gateway-->>User: JSON Response
+    Note over Client,S3: Flow 1: External User Access via Gateway
+
+    Client->>Gateway: POST /mlflow/api/2.0/mlflow/runs/create<br/>Auth: OIDC/OAuth (platform auth)
+    Gateway->>MLflow: Forward to /api/2.0/mlflow/runs/create<br/>URL rewrite strips /mlflow prefix<br/>Re-encrypted TLS (service-ca cert)
+    MLflow->>K8sAPI: SelfSubjectAccessReview<br/>Check user permissions on<br/>mlflow.kubeflow.org/experiments
+    K8sAPI-->>MLflow: Allowed/Denied
+    alt Authorized
+        MLflow-->>Gateway: 200 OK + JSON Response
+    else Unauthorized
+        MLflow-->>Gateway: 403 Forbidden
+    end
+    Gateway-->>Client: Response
 
     Note over MLflow,PG: Flow 2: Backend Store Access
-    MLflow->>PG: PostgreSQL/5432 or MySQL/3306<br/>TLS optional (PGSSLMODE=verify-full)<br/>Connection string credentials
-    PG-->>MLflow: Query results<br/>(experiments, runs, models)
+
+    MLflow->>PG: SQL queries (experiments, runs, models)<br/>Auth: Connection string credentials<br/>TLS: PGSSLMODE=verify-full (when CA present)
+    PG-->>MLflow: Query results
 
     Note over MLflow,S3: Flow 3: Artifact Storage Access
-    MLflow->>S3: HTTPS/443 or HTTP/9000<br/>TLS via combined CA bundle<br/>AWS IAM credentials
-    S3-->>MLflow: Model artifacts, plots, files
 
-    participant Operator as MLflow Operator<br/>controller-runtime
-    participant Helm as Helm Chart<br/>(embedded)
+    MLflow->>S3: PUT/GET model artifacts<br/>Auth: AWS IAM credentials<br/>(envFrom secret or per-namespace<br/>mlflow-artifact-connection)
+    S3-->>MLflow: Artifact data
 
-    Note over Operator,K8sAPI: Flow 4: Operator Reconciliation
-    Operator->>K8sAPI: Watch MLflow CRs<br/>HTTPS/6443<br/>Bearer Token (SA)
-    K8sAPI-->>Operator: MLflow CR event
-    Operator->>Helm: Render templates<br/>(in-process)
-    Helm-->>Operator: Kubernetes manifests
-    Operator->>K8sAPI: Server-Side Apply<br/>HTTPS/6443<br/>Bearer Token (SA)
-    K8sAPI-->>Operator: Apply result
+    Note over MLflow,K8sAPI: Flow 4: Operator Reconciliation
+
+    participant Operator as MLflow Operator<br/>8081/TCP (health)<br/>8443/TCP (metrics)
+
+    Operator->>K8sAPI: Watch MLflow CRs<br/>Auth: Bearer Token (SA)
+    K8sAPI-->>Operator: MLflow CR event (create/update/delete)
+    Operator->>Operator: Render Helm chart<br/>(embedded, in-process)
+    Operator->>K8sAPI: Server-Side Apply<br/>Deployment, Service, PVC,<br/>NetworkPolicy, RBAC, HTTPRoute,<br/>ConsoleLink, ServiceMonitor
+    K8sAPI-->>Operator: Applied successfully
+    Operator->>K8sAPI: Update MLflow CR status<br/>(conditions, URL)

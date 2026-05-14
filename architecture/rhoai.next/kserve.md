@@ -456,6 +456,68 @@ In the RHOAI distribution, KServe is deployed by the rhods-operator/opendatahub-
 
 _This is a downstream release branch (red-hat-data-services/kserve main). The rpms.lock.yaml is present, indicating downstream release hardening. Go and Python dependency locks are comprehensive. No Hermeto artifact lock or prefetch integration is present — model artifacts are downloaded at runtime via storage-initializer rather than at build time._
 
+## Admission Webhooks
+
+This component defines 14 webhook(s) (2 mutating, 11 validating, 1 conversion).
+
+| Name | Type | Target Resources | Purpose |
+|------|------|-----------------|---------|
+| clusterservingruntime.kserve-webhook-server.validator | validating | clusterservingruntimes |  |
+| inferencegraph.kserve-webhook-server.validator | validating | inferencegraphs |  |
+| inferenceservice.kserve-webhook-server.defaulter | mutating | inferenceservices |  |
+| inferenceservice.kserve-webhook-server.pod-mutator | mutating | pods | Mutates Pods created for KServe InferenceServices by injecting storage initializer containers (for model downloading), credential volumes/env vars for accessing model storage, inference logger/batcher agent sidecars, metrics aggregator sidecars, GKE accelerator node selectors, and Istio CNI security contexts. |
+| inferenceservice.kserve-webhook-server.validator | validating | inferenceservices |  |
+| llminferenceservice.kserve-webhook-server.v1alpha1.validator | validating | llminferenceservices | Validates LLMInferenceService v1alpha1 resources on create and update, enforcing router/HTTPRoute cross-field constraints (e.g., refs vs inline spec mutual exclusivity, managed vs custom gateway compatibility), parallelism constraints (data/pipeline parallelism mutual exclusivity, required co-presence of data and dataLocal, positive values), scheduler config validity (replicas > 0, exactly one of inline or ref), scaling rules via delegation to v1alpha2, and immutability of total parallelism size on updates. |
+| llminferenceservice.kserve-webhook-server.v1alpha2.validator | validating | llminferenceservices | Validates LLMInferenceService resources on create and update, enforcing cross-field constraints on router/gateway/HTTPRoute configuration, parallelism settings (pipeline vs data parallelism, immutability of total parallelism size), scheduler config (inline vs ref exclusivity, replica bounds), and autoscaling rules (HPA/KEDA mutual exclusivity, actuator consistency between decode and prefill workloads, WVA variant cost format, KEDA idle replica semantics). |
+| llminferenceserviceconfig.kserve-webhook-server.v1alpha1.validator | validating | llminferenceserviceconfigs | Validates LLMInferenceServiceConfig resources on create and update, ensuring baseRefs is not set (recursive refs are disabled) and scheduler replicas are greater than zero. It also emits warnings when well-known configs are modified or deleted. |
+| llminferenceserviceconfig.kserve-webhook-server.v1alpha2.validator | validating | llminferenceserviceconfigs | Validates LLMInferenceServiceConfig resources on create and update by rejecting specs that include baseRefs (recursive refs are disabled), ensuring scheduler replicas are greater than zero, running any injected validation function, and emitting warnings when well-known configs are modified or deleted. |
+| localmodelcache.kserve-webhook-server.validator | validating |  |  |
+| servingruntime.kserve-webhook-server.validator | validating | servingruntimes | Validates ServingRuntime create/update requests by ensuring model format priorities are consistent within a runtime and unique across runtimes in the same namespace that share protocol versions, and by validating multi-node WorkerSpec constraints (GPU types, parallel sizes, container counts, blocked env vars). |
+| trainedmodel.kserve-webhook-server.validator | validating | trainedmodels |  |
+| localmodelnamespacecache.kserve-webhook-server.validator | validating | localmodelnamespacecaches | Validates LocalModelNamespaceCache resources on create, update, and delete. On create/update, it ensures all referenced node groups exist as LocalModelNodeGroup resources. On delete, it prevents removal if any InferenceService in the namespace still references the cache via its labels. |
+| conversion.llminferenceservices.serving.kserve.io | conversion | llminferenceservices |  |
+
+### Platform Webhooks
+
+The following webhooks are defined by the platform operator and apply to this component's resource types:
+
+| Webhook | Defined By |
+|---------|-----------|
+| connection-isvc.opendatahub.io | rhods-operator |
+| connection-llmisvc.opendatahub.io | rhods-operator |
+
+### External Webhooks
+
+The following webhooks from peer components intercept this component's resource types:
+
+| Webhook | Defined By |
+|---------|-----------|
+| clusterservingruntime.kserve-webhook-server.validator | kserve-autogluon-server |
+| inferencegraph.kserve-webhook-server.validator | kserve-autogluon-server |
+| inferenceservice.kserve-webhook-server.defaulter | kserve-autogluon-server |
+| inferenceservice.kserve-webhook-server.pod-mutator | kserve-autogluon-server |
+| inferenceservice.kserve-webhook-server.validator | kserve-autogluon-server |
+| llminferenceservice.kserve-webhook-server.v1alpha1.validator | kserve-autogluon-server |
+| llminferenceservice.kserve-webhook-server.v1alpha2.validator | kserve-autogluon-server |
+| llminferenceserviceconfig.kserve-webhook-server.v1alpha1.validator | kserve-autogluon-server |
+| llminferenceserviceconfig.kserve-webhook-server.v1alpha2.validator | kserve-autogluon-server |
+| localmodelcache.kserve-webhook-server.validator | kserve-autogluon-server |
+| servingruntime.kserve-webhook-server.validator | kserve-autogluon-server |
+| trainedmodel.kserve-webhook-server.validator | kserve-autogluon-server |
+| namespace.sidecar-injector.istio.io | llm-d-inference-scheduler |
+| object.sidecar-injector.istio.io | llm-d-inference-scheduler |
+| rev.namespace.sidecar-injector.istio.io | llm-d-inference-scheduler |
+| rev.object.sidecar-injector.istio.io | llm-d-inference-scheduler |
+| servingruntime.modelmesh-webhook-server.default | modelmesh-serving |
+| minferencegraph-v1alpha1.odh-model-controller.opendatahub.io | odh-model-controller |
+| minferenceservice-v1beta1.odh-model-controller.opendatahub.io | odh-model-controller |
+| mutating.pod.odh-model-controller.opendatahub.io | odh-model-controller |
+| validating.isvc.odh-model-controller.opendatahub.io | odh-model-controller |
+| vinferencegraph-v1alpha1.odh-model-controller.opendatahub.io | odh-model-controller |
+| mutate-pod.sparkoperator.k8s.io | spark-operator |
+| localmodelnamespacecache.kserve-webhook-server.validator | kserve-autogluon-server |
+| conversion.llminferenceservices.serving.kserve.io | kserve-autogluon-server |
+
 ## Data Flows
 
 ### Flow 1: InferenceService Model Serving Request

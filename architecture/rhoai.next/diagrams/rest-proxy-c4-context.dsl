@@ -2,21 +2,20 @@ workspace {
     model {
         client = person "ML Application / Client" "Sends REST inference requests using KServe V2 Predict Protocol"
 
-        restProxy = softwareSystem "rest-proxy" "gRPC-to-REST reverse proxy that translates KServe V2 REST requests into gRPC calls" {
-            httpListener = container "HTTP Listener" "Receives REST requests on port 8008" "Go HTTP Server"
-            grpcGateway = container "gRPC-Gateway" "Auto-generated REST-to-gRPC routing from protobuf definitions" "grpc-gateway v2.15.0"
-            customMarshaler = container "Custom Marshaler" "Handles tensor data marshalling: multi-dim arrays, base64 BYTES, numeric types" "Go"
-            grpcClient = container "gRPC Client" "Forwards translated requests to ModelMesh gRPC service" "google.golang.org/grpc v1.56.3"
+        restProxy = softwareSystem "rest-proxy" "gRPC-to-REST reverse proxy translating KServe V2 REST requests into gRPC calls for ModelMesh Serving" {
+            httpListener = container "HTTP Listener" "Accepts REST requests on port 8008, optional TLS" "Go net/http"
+            grpcGateway = container "gRPC-Gateway" "Auto-generated REST-to-gRPC routing from grpc_predict_v2.proto" "grpc-gateway v2.15.0"
+            customMarshaler = container "Custom Marshaler" "Transforms JSON tensors (nested arrays, base64 BYTES, multi-dimensional shapes) to/from protobuf tensor contents" "Go"
         }
 
-        modelMeshServing = softwareSystem "ModelMesh Serving" "gRPC-based model serving infrastructure that hosts ML models" "Internal RHOAI"
-        modelMeshOperator = softwareSystem "ModelMesh Serving Operator" "Deploys rest-proxy as sidecar via model-serving-config ConfigMap" "Internal RHOAI"
-        kserveProtocol = softwareSystem "KServe V2 Predict Protocol" "Standardized ML inference API specification" "External Standard"
+        modelMeshServing = softwareSystem "ModelMesh Serving" "gRPC-native model serving infrastructure that hosts and serves ML models" "Internal RHOAI"
+        modelMeshOperator = softwareSystem "ModelMesh Serving Operator" "Deploys and manages ModelMesh pods, injects rest-proxy as sidecar" "Internal RHOAI"
+        kserveV2Protocol = softwareSystem "KServe V2 Predict Protocol" "Standard ML inference protocol specification (protobuf)" "External Standard"
 
-        client -> restProxy "Sends inference requests" "HTTP(S)/8008"
-        restProxy -> modelMeshServing "Forwards as gRPC calls" "gRPC/8033 (localhost)"
-        modelMeshOperator -> restProxy "Deploys as sidecar container" "ConfigMap: restProxy.image"
-        restProxy -> kserveProtocol "Implements" "REST API conformance"
+        client -> restProxy "Sends inference & metadata requests" "HTTP(S)/8008"
+        restProxy -> modelMeshServing "Forwards translated gRPC inference calls" "gRPC/8033 (localhost)"
+        modelMeshOperator -> restProxy "Deploys as sidecar via model-serving-config ConfigMap" ""
+        restProxy -> kserveV2Protocol "Implements REST API specification" ""
     }
 
     views {
@@ -32,7 +31,7 @@ workspace {
 
         styles {
             element "Software System" {
-                background #438dd5
+                background #4a90e2
                 color #ffffff
             }
             element "Internal RHOAI" {
@@ -44,7 +43,7 @@ workspace {
                 color #ffffff
             }
             element "Person" {
-                shape person
+                shape Person
                 background #08427b
                 color #ffffff
             }

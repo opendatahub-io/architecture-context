@@ -1,79 +1,84 @@
 sequenceDiagram
-    participant User as Data Scientist<br/>(User Code)
-    participant Exp as AI4RAGExperiment<br/>.search()
-    participant SS as SearchSpace<br/>Manager
-    participant HPO as GAM Optimizer<br/>(or Random)
-    participant Chunker as LangChain<br/>Chunker
-    participant Embed as Embedding Model<br/>(LS/OpenAI)
-    participant VS as Vector Store<br/>(LS/Chroma)
-    participant Ret as Retriever
-    participant FM as Foundation Model<br/>(LS/OpenAI)
-    participant Eval as Unitxt<br/>Evaluator
-    participant LS as Llama Stack<br/>Server
-    participant EH as Event Handler<br/>(Local/KFP)
+    participant User as Data Scientist<br/>(Notebook / Pipeline)
+    participant Exp as AI4RAGExperiment<br/>Orchestrator
+    participant SS as SearchSpace<br/>Parameter Manager
+    participant MPS as ModelsPreSelector<br/>(Optional)
+    participant HPO as GAMOptimizer<br/>Surrogate HPO
+    participant Chunker as LangChainChunker<br/>Text Splitting
+    participant Embed as EmbeddingModel<br/>(LS / OpenAI)
+    participant VS as VectorStore<br/>(LS / Chroma)
+    participant Retriever as Retriever<br/>Vector/Hybrid Search
+    participant FM as FoundationModel<br/>(LS / OpenAI)
+    participant Eval as UnitxtEvaluator<br/>Metrics
+    participant LS as Llama Stack Server<br/>Configurable Port<br/>HTTP/HTTPS
+    participant EH as EventHandler<br/>(Local / KFP)
 
-    Note over User,EH: Flow 1: RAG Optimization Experiment
+    Note over User, EH: Flow 1: RAG Optimization Experiment
 
-    User->>Exp: search(rag_template, search_space, budget)
-    Exp->>SS: prepare_search_space()
-    SS->>LS: GET models.list()<br/>HTTP/HTTPS, API Key
-    LS-->>SS: Available models list
-    SS-->>Exp: Prepared search space<br/>(with constraints applied)
+    User->>Exp: search(rag_template, search_space,<br/>benchmark_data, n_iterations)
 
-    loop For each optimization iteration (budget)
-        Exp->>HPO: suggest_next_params()
-        HPO-->>Exp: Parameter configuration
-
-        Note over Exp,VS: Index Phase
-        Exp->>Chunker: chunk(documents)
-        Chunker-->>Exp: Document chunks
-        Exp->>Embed: embed(chunks)
-        Embed->>LS: POST embeddings API<br/>HTTP/HTTPS, API Key
-        LS-->>Embed: Embedding vectors
-        Embed-->>Exp: Embedded chunks
-        Exp->>VS: insert(chunks, embeddings)
-        VS->>LS: POST vector_io.insert<br/>HTTP/HTTPS, API Key
-        LS-->>VS: Insertion confirmed
-
-        Note over Exp,FM: Retrieve + Generate Phase
-        Exp->>Ret: retrieve(query)
-        Ret->>VS: similarity_search(query)
-        VS->>LS: POST vector_io.query<br/>HTTP/HTTPS, API Key
-        LS-->>VS: Relevant chunks
-        VS-->>Ret: Retrieved context
-        Ret-->>Exp: Context documents
-        Exp->>FM: generate(query, context)
-        FM->>LS: POST chat.completions<br/>HTTP/HTTPS, API Key
-        LS-->>FM: Generated answer
-        FM-->>Exp: RAG answer
-
-        Note over Exp,Eval: Evaluation Phase
-        Exp->>Eval: evaluate(answer, reference)
-        Eval-->>Exp: Metrics (correctness,<br/>faithfulness, context)<br/>with confidence intervals
-
-        Exp->>HPO: observe(params, score)
-        Exp->>EH: emit(evaluation_record)
+    rect rgb(240, 248, 255)
+        Note over Exp, LS: Optional: Models Pre-Selection Phase
+        Exp->>MPS: pre_select(search_space)
+        MPS->>LS: GET /models (models.list)<br/>API Key (Bearer)
+        LS-->>MPS: Available models list
+        loop For each model pair
+            MPS->>Embed: embed(benchmark_docs)
+            Embed->>LS: POST /embeddings<br/>API Key (Bearer)
+            LS-->>Embed: Embedding vectors
+            MPS->>VS: insert(chunks, embeddings)
+            MPS->>FM: chat(prompt + context)
+            FM->>LS: POST /chat/completions<br/>API Key (Bearer)
+            LS-->>FM: Generated answer
+            MPS->>Eval: evaluate(answer, ground_truth)
+            Eval-->>MPS: Metrics (correctness, faithfulness)
+        end
+        MPS-->>Exp: Top-N model pairs
     end
 
-    Exp-->>User: Best RAG Pattern<br/>(optimal parameters)
+    rect rgb(255, 248, 240)
+        Note over Exp, EH: Main Optimization Loop (n_iterations)
+        loop For each iteration
+            Exp->>HPO: suggest_next_params()
+            HPO->>SS: sample(constraints)
+            SS-->>HPO: Valid parameter set
+            HPO-->>Exp: Next hyperparameters<br/>(chunk_size, overlap, model, search_mode, ...)
 
-    Note over User,EH: Flow 2: Models Pre-Selection (MPS)
+            Note over Exp, VS: RAG Pipeline Execution
+            Exp->>Chunker: chunk(documents, chunk_size, overlap)
+            Chunker-->>Exp: Document chunks
 
-    User->>Exp: search(mps_config=...)
-    Exp->>SS: ModelsPreSelector.run()
-    SS->>LS: GET models.list()<br/>HTTP/HTTPS, API Key
-    LS-->>SS: All available models
+            Exp->>Embed: embed(chunks)
+            Embed->>LS: POST /embeddings<br/>HTTP/HTTPS, API Key
+            LS-->>Embed: Embedding vectors
+            Embed-->>Exp: Embedded chunks
 
-    loop For each model pair
-        SS->>Embed: embed(benchmark_docs)
-        Embed->>LS: POST embeddings<br/>HTTP/HTTPS, API Key
-        LS-->>Embed: Vectors
-        SS->>VS: insert into ChromaDB<br/>(in-memory)
-        SS->>FM: generate(query, context)
-        FM->>LS: POST chat.completions<br/>HTTP/HTTPS, API Key
-        LS-->>FM: Answer
-        SS->>Eval: evaluate(answer, ref)
-        Eval-->>SS: Score
+            Exp->>VS: insert(chunks, embeddings)
+            VS->>LS: POST /vector_io/insert<br/>HTTP/HTTPS, API Key
+            LS-->>VS: Confirmation
+
+            Exp->>Retriever: retrieve(query, top_k)
+            Retriever->>VS: query(embedding, top_k)
+            VS->>LS: POST /vector_io/query<br/>HTTP/HTTPS, API Key
+            LS-->>VS: Similar chunks
+            VS-->>Retriever: Retrieved context
+            Retriever-->>Exp: Relevant chunks
+
+            Exp->>FM: chat(prompt + context)
+            FM->>LS: POST /chat/completions<br/>HTTP/HTTPS, API Key
+            LS-->>FM: Generated answer
+            FM-->>Exp: RAG answer
+
+            Note over Exp, Eval: Evaluation
+            Exp->>Eval: evaluate(answer, ground_truth)
+            Eval-->>Exp: Metrics with confidence intervals<br/>(answer_correctness, faithfulness,<br/>context_correctness)
+
+            Exp->>HPO: update(params, score)
+            Note over HPO: GAM surrogate model updated
+
+            Exp->>EH: emit(iteration_results)
+            EH-->>Exp: Event recorded<br/>(JSON file or KFP metadata)
+        end
     end
 
-    SS-->>Exp: Top-N model pairs<br/>(reduced search space)
+    Exp-->>User: Optimal RAG Pattern<br/>(best hyperparameters + metrics)

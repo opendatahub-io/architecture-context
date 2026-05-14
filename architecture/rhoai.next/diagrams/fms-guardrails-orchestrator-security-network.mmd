@@ -1,71 +1,63 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client / Auth Proxy"]
+        Client["External Client / API Consumer"]
     end
 
-    subgraph GuardrailsService["GUARDRAILS ORCHESTRATOR SERVICE"]
+    subgraph GuardrailsService["GUARDRAILS SERVICE (ClusterIP — Internal)"]
         direction TB
-
-        subgraph APIServer["Guardrails Server"]
-            API["fms-guardrails-orchestr8<br/>Port: 8033/TCP<br/>HTTP or HTTPS<br/>TLS: rustls + ring (TLS 1.2+)<br/>mTLS: Optional (WebPkiClientVerifier)"]
+        subgraph APIServer["Guardrails Server :8033"]
+            Orchestrator["fms-guardrails-orchestr8<br/>Rust (axum + tokio)<br/>TLS: Optional rustls (ring)<br/>mTLS: Optional WebPkiClientVerifier<br/>Auth: Header passthrough only"]
         end
-
-        subgraph HealthSrv["Health Server"]
-            Health["Health Endpoint<br/>Port: 8034/TCP<br/>HTTP (No TLS)<br/>Auth: None"]
+        subgraph HealthSvr["Health Server :8034"]
+            Health["Health / Readiness<br/>No TLS, No Auth<br/>Open for K8s probes"]
         end
     end
 
-    subgraph gRPCUpstreams["gRPC UPSTREAMS (Optional TLS)"]
+    subgraph GenerationServices["UPSTREAM GENERATION SERVICES (Internal)"]
         direction TB
-        TGIS["TGIS<br/>Port: 8033/TCP<br/>gRPC<br/>Optional TLS<br/>Auth: None"]
-        CaikitNLP["Caikit NLP<br/>Port: 8085/TCP<br/>gRPC<br/>Optional TLS<br/>Auth: None"]
-        Chunkers["Caikit Chunkers<br/>Port: 8085/TCP<br/>gRPC<br/>Optional TLS<br/>Auth: None"]
+        TGIS["TGIS<br/>8033/TCP gRPC<br/>Optional TLS<br/>No Auth<br/>ginepro LB"]
+        CaikitNLP["Caikit NLP<br/>8085/TCP gRPC<br/>Optional TLS<br/>No Auth<br/>ginepro LB<br/>Retry: exp backoff 502-506"]
+        OpenAIvLLM["OpenAI / vLLM<br/>8080/TCP HTTP(S)<br/>Optional TLS<br/>Optional Bearer (api_token)"]
     end
 
-    subgraph HTTPUpstreams["HTTP UPSTREAMS (Optional TLS)"]
-        direction TB
-        Detectors["Detector Services<br/>HAP, PII, etc.<br/>Port: 8080/TCP API, 8081/TCP Health<br/>HTTP/HTTPS<br/>Auth: Optional Bearer"]
-        OpenAIBackend["OpenAI / vLLM<br/>Port: 8080/TCP<br/>HTTP/HTTPS<br/>Auth: Optional Bearer"]
+    subgraph ChunkerServices["UPSTREAM CHUNKER SERVICES (Internal)"]
+        Chunkers["Caikit Chunkers<br/>8085/TCP gRPC<br/>Optional TLS<br/>No Auth<br/>ginepro LB<br/>Unary + Bidi streaming"]
     end
 
-    subgraph Telemetry["TELEMETRY"]
-        OTLP["OTLP Collector<br/>Port: 4317/TCP gRPC<br/>Port: 4318/TCP HTTP<br/>Plaintext<br/>Auth: None"]
+    subgraph DetectorServices["UPSTREAM DETECTOR SERVICES (Internal)"]
+        Detectors["Detector Services<br/>(HAP, PII, etc.)<br/>API: 8080/TCP HTTP(S)<br/>Health: 8081/TCP<br/>Optional TLS<br/>Optional Bearer (api_token)"]
     end
 
-    K8sProbe["Kubernetes<br/>Liveness/Readiness<br/>Probes"]
+    subgraph Observability["OBSERVABILITY (Internal)"]
+        OTLP["OTLP Collector<br/>4317/TCP gRPC or 4318/TCP HTTP<br/>Plaintext<br/>No Auth"]
+    end
 
-    %% External to Orchestrator
-    Client -->|"HTTP/HTTPS 8033/TCP<br/>TLS 1.2+ (rustls/ring)<br/>Optional mTLS<br/>Header passthrough<br/>(X-Forwarded-Access-Token → Bearer)"| API
+    K8sProbes["Kubernetes Probes"] -->|"GET /health, /info<br/>8034/TCP<br/>No TLS, No Auth"| Health
 
-    %% Health probes
-    K8sProbe -->|"HTTP 8034/TCP<br/>No encryption<br/>No auth"| Health
+    %% Inbound flow
+    Client -->|"HTTP(S)/8033<br/>Optional TLS 1.2+ (rustls/ring)<br/>Optional mTLS<br/>Header passthrough<br/>(X-Forwarded-Access-Token → Bearer)"| Orchestrator
 
-    %% gRPC connections (ginepro LB)
-    API -->|"gRPC 8033/TCP<br/>Optional TLS<br/>ginepro DNS LB"| TGIS
-    API -->|"gRPC 8085/TCP<br/>Optional TLS<br/>ginepro DNS LB<br/>Retry: exp backoff 502-506"| CaikitNLP
-    API -->|"gRPC 8085/TCP<br/>Optional TLS<br/>ginepro DNS LB"| Chunkers
-
-    %% HTTP connections (reqwest)
-    API -->|"HTTP/HTTPS 8080/TCP<br/>Optional TLS<br/>Optional Bearer (api_token)"| Detectors
-    API -->|"HTTP/HTTPS 8080/TCP<br/>Optional TLS<br/>Optional Bearer (api_token)"| OpenAIBackend
-
-    %% Telemetry
-    API -.->|"gRPC/HTTP 4317|4318/TCP<br/>Plaintext<br/>Traces + Metrics"| OTLP
+    %% Outbound flows
+    Orchestrator -->|"gRPC/8033<br/>Optional TLS<br/>No Auth"| TGIS
+    Orchestrator -->|"gRPC/8085<br/>Optional TLS<br/>No Auth"| CaikitNLP
+    Orchestrator -->|"HTTP(S)/8080<br/>Optional TLS<br/>Optional Bearer"| OpenAIvLLM
+    Orchestrator -->|"gRPC/8085<br/>Optional TLS<br/>No Auth"| Chunkers
+    Orchestrator -->|"HTTP(S)/8080<br/>Optional TLS<br/>Optional Bearer"| Detectors
+    Orchestrator -.->|"gRPC or HTTP<br/>4317 or 4318<br/>Plaintext"| OTLP
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef service fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef health fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef grpc fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef http fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef telemetry fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef probe fill:#f5f5f5,stroke:#666,stroke-width:1px
+    classDef guardrails fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef generation fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef chunker fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef detector fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef observability fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef probe fill:#f5f5f5,stroke:#666,stroke-width:1px,stroke-dasharray: 5 5
 
     class Client external
-    class API service
-    class Health health
-    class TGIS,CaikitNLP,Chunkers grpc
-    class Detectors,OpenAIBackend http
-    class OTLP telemetry
-    class K8sProbe probe
+    class Orchestrator,Health guardrails
+    class TGIS,CaikitNLP,OpenAIvLLM generation
+    class Chunkers chunker
+    class Detectors detector
+    class OTLP observability
+    class K8sProbes probe

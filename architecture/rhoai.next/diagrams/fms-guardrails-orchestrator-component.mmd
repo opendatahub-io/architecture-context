@@ -1,79 +1,87 @@
 graph TB
-    subgraph Orchestrator["FMS Guardrails Orchestrator"]
+    subgraph "FMS Guardrails Orchestrator"
         direction TB
-        subgraph Servers["Dual-Server Architecture"]
-            GuardrailsServer["Guardrails Server<br/>Port 8033/TCP<br/>Axum + Tokio"]
-            HealthServer["Health Server<br/>Port 8034/TCP"]
+        subgraph "Guardrails Server :8033"
+            Router[Axum Router]
+            V1Handler["V1 Handlers<br/>(classification-with-gen)"]
+            V2DetHandler["V2 Detection Handlers<br/>(content, chat, context, generated)"]
+            V2GenHandler["V2 Generation-Detection Handlers<br/>(generation-detection, completions)"]
+            StreamHandler["Streaming Handlers<br/>(SSE, ND-JSON)"]
+            DetectionBatcher["DetectionBatcherManager<br/>(actor pattern)"]
+            CompletionState["CompletionState<br/>(DashMap, lock-free)"]
+
+            Router --> V1Handler
+            Router --> V2DetHandler
+            Router --> V2GenHandler
+            Router --> StreamHandler
+            StreamHandler --> DetectionBatcher
+            StreamHandler --> CompletionState
         end
 
-        subgraph Handlers["Request Handlers"]
-            V1Handlers["v1 API Handlers<br/>Classification with Generation<br/>Streaming Classification"]
-            V2Detection["v2 Detection Handlers<br/>Content, Chat, Context<br/>Generated, Stream-Content"]
-            V2GenDetect["v2 Generation-Detection<br/>Text Generation + Detection"]
-            OpenAIHandlers["OpenAI-Compatible Handlers<br/>Chat Completions Detection<br/>Text Completions Detection"]
+        subgraph "Health Server :8034"
+            HealthEndpoint["/health endpoint"]
+            InfoEndpoint["/info endpoint"]
         end
 
-        subgraph Pipeline["Detection Pipeline"]
-            DetectionBatcher["DetectionBatcherManager<br/>Actor Pattern"]
-            CompletionState["CompletionState<br/>DashMap (lock-free)"]
-            DetectionBatchStream["DetectionBatchStream<br/>Ordered Aggregation"]
+        subgraph "Client Layer"
+            GenClient["GenerationClient<br/>(unified TGIS/NLP abstraction)"]
+            ChunkerClient["ChunkerClient<br/>(gRPC via ginepro)"]
+            DetectorClient["DetectorClient<br/>(HTTP via reqwest)"]
+            OpenAIClient["OpenAIClient<br/>(HTTP via reqwest)"]
         end
 
-        subgraph Clients["Upstream Clients"]
-            GRPCClients["gRPC Clients<br/>ginepro LB"]
-            HTTPClients["HTTP Clients<br/>reqwest + rustls"]
+        subgraph "TLS Layer"
+            TLSConfig["rustls ServerConfig<br/>(ring crypto backend)"]
+            mTLS["WebPkiClientVerifier<br/>(optional mTLS)"]
         end
 
-        subgraph TLS["TLS Layer"]
-            RustlsTLS["rustls + ring<br/>TLS 1.2+<br/>Optional mTLS"]
-        end
-
-        GuardrailsServer --> V1Handlers
-        GuardrailsServer --> V2Detection
-        GuardrailsServer --> V2GenDetect
-        GuardrailsServer --> OpenAIHandlers
-        V1Handlers --> DetectionBatcher
-        V2GenDetect --> DetectionBatcher
-        OpenAIHandlers --> CompletionState
-        CompletionState --> DetectionBatcher
-        DetectionBatcher --> DetectionBatchStream
-        V1Handlers --> GRPCClients
-        V2GenDetect --> GRPCClients
-        OpenAIHandlers --> HTTPClients
-        V2Detection --> HTTPClients
+        V1Handler --> GenClient
+        V1Handler --> ChunkerClient
+        V1Handler --> DetectorClient
+        V2DetHandler --> ChunkerClient
+        V2DetHandler --> DetectorClient
+        V2GenHandler --> GenClient
+        V2GenHandler --> DetectorClient
+        V2GenHandler --> OpenAIClient
+        InfoEndpoint -->|health checks| GenClient
+        InfoEndpoint -->|health checks| DetectorClient
     end
 
-    Client[External Client] -->|HTTP/HTTPS<br/>8033/TCP| GuardrailsServer
-    K8sProbe[Kubernetes Probes] -->|HTTP<br/>8034/TCP| HealthServer
+    Client[External Client] -->|"POST /api/v1/* or /api/v2/*<br/>8033/TCP"| Router
+    K8sProbe[Kubernetes Probes] -->|"GET /health, /info<br/>8034/TCP"| HealthEndpoint
 
-    GRPCClients -->|gRPC<br/>8033/TCP| TGIS["TGIS<br/>Generation Server"]
-    GRPCClients -->|gRPC<br/>8085/TCP| CaikitNLP["Caikit NLP<br/>Generation + Tokenization"]
-    GRPCClients -->|gRPC<br/>8085/TCP| Chunkers["Caikit Chunkers<br/>Text Chunking"]
-    HTTPClients -->|HTTP/HTTPS<br/>8080/TCP| Detectors["Detector Services<br/>HAP, PII, etc."]
-    HTTPClients -->|HTTP/HTTPS<br/>8080/TCP| OpenAIBackend["OpenAI / vLLM<br/>Chat & Text Completions"]
+    GenClient -->|gRPC| TGIS["TGIS<br/>8033/TCP"]
+    GenClient -->|gRPC| CaikitNLP["Caikit NLP<br/>8085/TCP"]
+    ChunkerClient -->|gRPC| Chunkers["Caikit Chunkers<br/>8085/TCP"]
+    DetectorClient -->|HTTP/HTTPS| Detectors["Detector Services<br/>(HAP, PII, etc.)<br/>8080/TCP"]
+    OpenAIClient -->|HTTP/HTTPS| vLLM["OpenAI / vLLM<br/>8080/TCP"]
 
-    subgraph Telemetry["Observability"]
-        OTLPCollector["OTLP Collector<br/>4317/TCP gRPC<br/>4318/TCP HTTP"]
+    subgraph "Observability"
+        OTLP["OTLP Collector<br/>4317/TCP (gRPC)<br/>4318/TCP (HTTP)"]
     end
-    Orchestrator -->|traces + metrics| OTLPCollector
 
-    style GuardrailsServer fill:#4a90e2,stroke:#333,color:#fff
-    style HealthServer fill:#4a90e2,stroke:#333,color:#fff
-    style V1Handlers fill:#6baed6,stroke:#333
-    style V2Detection fill:#6baed6,stroke:#333
-    style V2GenDetect fill:#6baed6,stroke:#333
-    style OpenAIHandlers fill:#6baed6,stroke:#333
-    style DetectionBatcher fill:#9ecae1,stroke:#333
-    style CompletionState fill:#9ecae1,stroke:#333
-    style DetectionBatchStream fill:#9ecae1,stroke:#333
-    style GRPCClients fill:#c6dbef,stroke:#333
-    style HTTPClients fill:#c6dbef,stroke:#333
-    style RustlsTLS fill:#fdd0a2,stroke:#333
-    style Client fill:#f9f9f9,stroke:#999,stroke-width:2px
-    style K8sProbe fill:#f9f9f9,stroke:#999,stroke-width:2px
+    Router -.->|traces & metrics| OTLP
+
+    style Router fill:#4a90e2,stroke:#333
+    style V1Handler fill:#4a90e2,stroke:#333
+    style V2DetHandler fill:#4a90e2,stroke:#333
+    style V2GenHandler fill:#4a90e2,stroke:#333
+    style StreamHandler fill:#4a90e2,stroke:#333
+    style DetectionBatcher fill:#4a90e2,stroke:#333
+    style CompletionState fill:#4a90e2,stroke:#333
+    style HealthEndpoint fill:#4a90e2,stroke:#333
+    style InfoEndpoint fill:#4a90e2,stroke:#333
+    style GenClient fill:#6baed6,stroke:#333
+    style ChunkerClient fill:#6baed6,stroke:#333
+    style DetectorClient fill:#6baed6,stroke:#333
+    style OpenAIClient fill:#6baed6,stroke:#333
+    style TLSConfig fill:#9ecae1,stroke:#333
+    style mTLS fill:#9ecae1,stroke:#333
+    style Client fill:#f5a623,stroke:#333
+    style K8sProbe fill:#f5a623,stroke:#333
     style TGIS fill:#e8e8e8,stroke:#333
     style CaikitNLP fill:#e8e8e8,stroke:#333
     style Chunkers fill:#e8e8e8,stroke:#333
     style Detectors fill:#e8e8e8,stroke:#333
-    style OpenAIBackend fill:#e8e8e8,stroke:#333
-    style OTLPCollector fill:#fff2cc,stroke:#d6b656
+    style vLLM fill:#e8e8e8,stroke:#333
+    style OTLP fill:#d5e8d4,stroke:#333

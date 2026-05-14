@@ -1,78 +1,91 @@
 graph TB
-    subgraph InitContainer["INIT CONTAINER (Platform Startup - No Network)"]
-        direction TB
-        InitPod["odh-pipelines-components<br/>Image: ubi9/python-311<br/>Port: N/A (filesystem only)"]
-        SharedVol["Shared Volume<br/>/config/managed-pipelines"]
-        InitPod -->|"Filesystem<br/>No network"| SharedVol
+    subgraph External["EXTERNAL (Untrusted)"]
+        User["Data Scientist<br/>(Pipeline Submitter)"]
     end
 
-    subgraph PipelineRuntime["PIPELINE RUNTIME (Ephemeral Argo Workflow Pods)"]
+    subgraph Platform["PLATFORM (Trusted - Internal Cluster)"]
         direction TB
 
-        subgraph PipelinePods["Namespace: {user-namespace}<br/>SA: pipeline-runner"]
-            GeneralPod["General Components<br/>Image: python:3.11"]
-            AutoMLPod["AutoML Components<br/>Image: odh-automl<br/>(AutoGluon, pandas)"]
-            AutoRAGPod["AutoRAG Components<br/>Image: odh-autorag<br/>(ai4rag, Docling)"]
+        subgraph KFPNamespace["Namespace: dspa-*"]
+            KFPServer["KFP API Server<br/>Reads managed pipelines"]
+            InitContainer["odh-pipelines-components<br/>(Init Container)<br/>Image: UBI9/python-311"]
+            SharedVol["Shared Volume<br/>/config/managed-pipelines<br/>Filesystem"]
         end
 
-        subgraph LocalProcessing["LOCAL (No Network)"]
-            vLLM["vLLM GPU Inference"]
-            LMEval["lm-eval Benchmarks"]
-            Docling["Docling Text Extraction"]
-            ChromaDB["ChromaDB In-Memory"]
+        subgraph PipelineNS["Namespace: pipeline-runner"]
+            direction TB
+            DataProc["Data Processing Steps<br/>SA: pipeline-runner<br/>Ephemeral pods"]
+            TrainingSteps["Training Steps<br/>SA: pipeline-runner<br/>Ephemeral pods"]
+            EvalSteps["Evaluation Steps<br/>SA: pipeline-runner<br/>Ephemeral pods"]
+            DeploySteps["Deployment Steps<br/>SA: pipeline-runner<br/>Ephemeral pods"]
         end
 
-        subgraph Storage["PERSISTENT STORAGE"]
-            PVC_RWX["PVC ReadWriteMany<br/>50Gi nfs-csi<br/>(Fine-tuning)"]
-            PVC_RWO["PVC ReadWriteOnce<br/>12Gi<br/>(AutoML)"]
+        subgraph RuntimeNS["Runtime Pods"]
+            AutoMLPod["AutoML Pod<br/>Image: odh-automl<br/>base-image-cpu-rhel9"]
+            AutoRAGPod["AutoRAG Pod<br/>Image: odh-autorag<br/>base-image-cpu-rhel9"]
+            vLLMPod["vLLM Pod<br/>GPU-accelerated inference"]
         end
-    end
 
-    subgraph K8sInternal["KUBERNETES INTERNAL"]
-        KFPAPI["KFP API Server"]
-        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token"]
-        ModelReg["Kubeflow Model Registry<br/>8080/TCP HTTP<br/>⚠ plaintext, no auth"]
-        TrainerPods["Training Worker Pods<br/>(GPU, multi-node)"]
+        subgraph TrainerNS["Namespace: training"]
+            TrainerWorkers["Kubeflow Trainer<br/>Worker Pods<br/>Multi-GPU/Multi-node"]
+        end
+
+        subgraph InternalSvc["Internal Platform Services"]
+            K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+            ModelReg["Kubeflow Model Registry<br/>8080/TCP HTTP<br/>plaintext (no auth)"]
+            PVC["PVC Workspace<br/>50Gi RWX (nfs-csi)<br/>12Gi RWO (AutoML)"]
+        end
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        S3["AWS S3<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM<br/>⚠ verify=False fallback"]
+        S3["AWS S3<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM credentials"]
         HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
-        LlamaStack["Llama Stack API<br/>configurable/TCP<br/>HTTP/HTTPS<br/>API Key<br/>⚠ verify=False fallback"]
-        LLMAPI["LLM API Endpoint<br/>configurable/TCP<br/>HTTPS TLS 1.2+<br/>API Key"]
-        OpenAICompat["OpenAI-compat Endpoints<br/>configurable/TCP<br/>HTTPS TLS<br/>Bearer Token<br/>⚠ verify=False fallback"]
+        LlamaStack["Llama Stack API<br/>configurable/TCP<br/>HTTP/HTTPS<br/>API Key auth"]
+        LLMAPI["LLM API Endpoint<br/>configurable/TCP<br/>HTTPS TLS 1.2+<br/>API Key auth"]
+        OpenAICompat["OpenAI-compatible Endpoints<br/>configurable/TCP<br/>HTTPS TLS<br/>Bearer Token"]
     end
 
-    %% Init container flow
-    SharedVol -->|"Filesystem"| KFPAPI
+    %% Platform startup flow
+    InitContainer -->|"Filesystem<br/>Compiled YAMLs"| SharedVol
+    SharedVol -->|"Filesystem<br/>Read"| KFPServer
 
-    %% Pipeline pod egress
-    GeneralPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    GeneralPod -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HFHub
-    GeneralPod -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    GeneralPod -->|"HTTP/8080<br/>plaintext<br/>no auth"| ModelReg
-    GeneralPod -->|"HTTPS<br/>TLS 1.2+<br/>LLM_API_KEY"| LLMAPI
+    %% User interaction
+    User -->|"Submit pipeline"| KFPServer
 
-    AutoMLPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    %% Pipeline step → External egress
+    DataProc -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM creds"| S3
+    DataProc -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HFHub
+    DataProc -->|"Filesystem"| PVC
 
-    AutoRAGPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    AutoRAGPod -->|"HTTP/HTTPS<br/>API Key"| LlamaStack
+    %% Training flows
+    TrainingSteps -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    K8sAPI -->|"Creates"| TrainerWorkers
+    TrainerWorkers -->|"Filesystem<br/>Checkpoints"| PVC
+    TrainingSteps -.->|"runs on"| AutoMLPod
+    TrainingSteps -.->|"runs on"| AutoRAGPod
+
+    %% AutoRAG egress
+    AutoRAGPod -->|"HTTP/HTTPS<br/>API Key<br/>SSL fallback⚠️"| LlamaStack
     AutoRAGPod -->|"HTTPS<br/>Bearer Token"| OpenAICompat
 
-    K8sAPI -->|"Schedule"| TrainerPods
+    %% Evaluation
+    EvalSteps -->|"Local inference"| vLLMPod
+
+    %% Deployment
+    DeploySteps -->|"HTTP/8080<br/>plaintext<br/>No auth ⚠️"| ModelReg
+
+    %% SDG egress
+    DataProc -->|"HTTPS<br/>TLS 1.2+<br/>LLM_API_KEY"| LLMAPI
 
     %% Styling
-    classDef init fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
-    classDef pipeline fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef k8sinternal fill:#7ed321,stroke:#333,stroke-width:2px
-    classDef external fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
     classDef warning fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef storage fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef storage fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
 
-    class InitPod,SharedVol init
-    class GeneralPod,AutoMLPod,AutoRAGPod pipeline
-    class KFPAPI,K8sAPI,TrainerPods k8sinternal
+    class User external
+    class KFPServer,InitContainer,DataProc,TrainingSteps,EvalSteps,DeploySteps,AutoMLPod,AutoRAGPod,vLLMPod,TrainerWorkers platform
+    class S3,HFHub,LlamaStack,LLMAPI,OpenAICompat externalservice
     class ModelReg warning
-    class S3,HFHub,LlamaStack,LLMAPI,OpenAICompat external
-    class PVC_RWX,PVC_RWO storage
-    class vLLM,LMEval,Docling,ChromaDB pipeline
+    class SharedVol,PVC,K8sAPI storage

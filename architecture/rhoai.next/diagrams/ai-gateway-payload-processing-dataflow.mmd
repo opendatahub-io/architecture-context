@@ -1,75 +1,75 @@
 sequenceDiagram
     participant Client as External Client
     participant Gateway as Gateway API Gateway<br/>(Envoy Proxy)<br/>443/TCP HTTPS TLS 1.2+
-    participant ExtProc as Payload Processing<br/>ExtProc Server<br/>9004/TCP gRPC plaintext
-    participant ModelResolver as model-provider-resolver<br/>plugin
-    participant APITranslation as api-translation<br/>plugin
-    participant APIKeyInjection as apikey-injection<br/>plugin
-    participant NemoReq as nemo-request-guard<br/>plugin (optional)
-    participant NemoResp as nemo-response-guard<br/>plugin (optional)
+    participant ExtProc as Payload Processing<br/>(BBR ExtProc Host)<br/>9004/TCP gRPC plaintext
+    participant ModelRes as model-provider-resolver<br/>plugin
+    participant APITrans as api-translation<br/>plugin
+    participant APIKey as apikey-injection<br/>plugin
+    participant NemoReq as nemo-request-guard<br/>plugin
+    participant NemoResp as nemo-response-guard<br/>plugin
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
     participant NemoSvc as NeMo Guardrails<br/>HTTP plaintext
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant Provider as External LLM Provider<br/>(OpenAI/Anthropic/Azure/<br/>Bedrock/Vertex)<br/>443/TCP HTTPS
+    participant LLM as External LLM Provider<br/>443/TCP HTTPS TLS 1.2+
 
-    Note over K8sAPI,ExtProc: Flow 3: Background Reconciliation (continuous)
-    K8sAPI->>ModelResolver: Watch ExternalModel CRs<br/>HTTPS/443, SA Bearer token
-    ModelResolver->>ModelResolver: Update modelInfoStore<br/>(in-memory, RWMutex)
-    K8sAPI->>APIKeyInjection: Watch labeled Secrets<br/>HTTPS/443, SA Bearer token
-    APIKeyInjection->>APIKeyInjection: Update secretStore<br/>(in-memory, RWMutex)
+    Note over Client,LLM: Flow 1: External Model Inference Request
 
-    Note over Client,Provider: Flow 1: External Model Inference Request
-    Client->>Gateway: POST /v1/chat/completions<br/>HTTPS/443, TLS 1.2+<br/>Auth: Client token
-    Gateway->>ExtProc: gRPC ExtProc request body<br/>9004/TCP plaintext<br/>(via EnvoyFilter)
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTPS/443, TLS 1.2+, Client token
+    Gateway->>ExtProc: gRPC ExtProc request body<br/>9004/TCP, plaintext
 
-    rect rgb(230, 245, 255)
-        Note over ExtProc,APIKeyInjection: Plugin Pipeline Processing (CycleState)
-        ExtProc->>ModelResolver: ProcessRequest()
-        ModelResolver->>ModelResolver: Resolve model name →<br/>provider info from modelInfoStore
-        ModelResolver->>ModelResolver: Write provider/credentials<br/>to CycleState
+    Note over ExtProc,APIKey: Plugin Pipeline (via CycleState)
 
-        ExtProc->>APITranslation: ProcessRequest()
-        APITranslation->>APITranslation: Read provider type from CycleState
-        APITranslation->>APITranslation: Translate OpenAI format →<br/>provider-native format<br/>Rewrite :path header
+    ExtProc->>ModelRes: Process request
+    ModelRes->>ModelRes: Lookup model in<br/>in-memory modelInfoStore
+    ModelRes-->>ExtProc: CycleState: provider info,<br/>credential refs
 
-        ExtProc->>APIKeyInjection: ProcessRequest()
-        APIKeyInjection->>APIKeyInjection: Read credential ref from CycleState
-        APIKeyInjection->>APIKeyInjection: Lookup API key from secretStore
-        APIKeyInjection->>APIKeyInjection: Inject auth header<br/>(Authorization/x-api-key/api-key)
-    end
+    ExtProc->>APITrans: Process request
+    APITrans->>APITrans: Read CycleState provider info<br/>Translate OpenAI → provider format<br/>(Anthropic/Azure/Bedrock/Vertex)
+    APITrans-->>ExtProc: Mutated request body +<br/>:path header rewrite
+
+    ExtProc->>APIKey: Process request
+    APIKey->>APIKey: Read CycleState credential refs<br/>Lookup in-memory secretStore<br/>Inject auth header
+    APIKey-->>ExtProc: Authorization header added
 
     opt NeMo Guardrails Enabled
-        Note over ExtProc,NemoSvc: Flow 2: NeMo Input Guard Check
-        ExtProc->>NemoReq: ProcessRequest()
-        NemoReq->>NemoSvc: POST /v1/guardrail/checks<br/>HTTP plaintext
-        NemoSvc-->>NemoReq: Guard result (allow/block)
+        ExtProc->>NemoReq: Process request
+        NemoReq->>NemoSvc: POST /v1/guardrail/checks<br/>HTTP plaintext, No auth
+        NemoSvc-->>NemoReq: Allow / Block decision
         alt Request Blocked
-            NemoReq-->>ExtProc: ImmediateResponse (403 Forbidden)
+            NemoReq-->>ExtProc: 403 Forbidden
             ExtProc-->>Gateway: gRPC response: 403
             Gateway-->>Client: 403 Forbidden
         end
+        NemoReq-->>ExtProc: Request allowed
     end
 
-    ExtProc-->>Gateway: gRPC ExtProc response:<br/>mutated headers + body
-    Gateway->>Provider: Translated request<br/>HTTPS/443, TLS 1.2+<br/>Auth: Injected API key
-    Provider-->>Gateway: LLM response<br/>Provider-native format
-
+    ExtProc-->>Gateway: gRPC response:<br/>mutated headers + body
+    Gateway->>LLM: Translated request<br/>HTTPS/443, TLS 1.2+<br/>Provider-specific API key
+    LLM-->>Gateway: Provider response
     Gateway->>ExtProc: gRPC ExtProc response body
-    rect rgb(255, 243, 224)
-        Note over ExtProc,NemoResp: Response Processing
-        ExtProc->>APITranslation: ProcessResponse()
-        APITranslation->>APITranslation: Translate provider-native →<br/>OpenAI format<br/>Strip provider-specific fields
 
-        opt NeMo Guardrails Enabled
-            ExtProc->>NemoResp: ProcessResponse()
-            NemoResp->>NemoSvc: POST /v1/guardrail/checks<br/>HTTP plaintext
-            NemoSvc-->>NemoResp: Guard result (allow/block)
-            alt Response Blocked
-                NemoResp-->>ExtProc: ImmediateResponse (403)
-                ExtProc-->>Gateway: gRPC response: 403
-                Gateway-->>Client: 403 Forbidden
-            end
+    ExtProc->>APITrans: Process response
+    APITrans->>APITrans: Translate provider → OpenAI format<br/>Strip provider-specific fields
+    APITrans-->>ExtProc: Normalized response body
+
+    opt NeMo Guardrails Enabled
+        ExtProc->>NemoResp: Process response
+        NemoResp->>NemoSvc: POST /v1/guardrail/checks<br/>HTTP plaintext, No auth
+        NemoSvc-->>NemoResp: Allow / Block decision
+        alt Response Blocked
+            NemoResp-->>ExtProc: Blocked response
+            ExtProc-->>Gateway: gRPC response: blocked
+            Gateway-->>Client: Policy violation response
         end
+        NemoResp-->>ExtProc: Response allowed
     end
 
-    ExtProc-->>Gateway: gRPC ExtProc response:<br/>translated response body
-    Gateway-->>Client: OpenAI-format response<br/>HTTPS/443, TLS 1.2+
+    ExtProc-->>Gateway: gRPC response:<br/>mutated response body
+    Gateway-->>Client: JSON Response<br/>HTTPS/443, TLS 1.2+
+
+    Note over K8sAPI,ExtProc: Flow 2: ExternalModel/Secret Reconciliation (background)
+
+    K8sAPI-->>ModelRes: Watch events: ExternalModel CRs<br/>HTTPS/443, TLS 1.2+, SA Bearer token
+    ModelRes->>ModelRes: Update in-memory modelInfoStore<br/>(RWMutex synchronized)
+
+    K8sAPI-->>APIKey: Watch events: labeled Secrets<br/>HTTPS/443, TLS 1.2+, SA Bearer token
+    APIKey->>APIKey: Update in-memory secretStore<br/>(RWMutex synchronized)

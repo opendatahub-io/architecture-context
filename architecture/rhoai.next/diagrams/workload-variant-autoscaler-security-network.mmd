@@ -1,78 +1,73 @@
 graph TB
-    subgraph External["EXTERNAL (Untrusted)"]
-        User["Data Scientist /<br/>Platform Admin"]
-    end
-
-    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
-    end
-
-    subgraph WVANamespace["WVA CONTROLLER NAMESPACE"]
+    subgraph ClusterInternal["CLUSTER INTERNAL (Kubernetes Network)"]
         direction TB
 
-        subgraph WVAController["WVA Controller Manager<br/>SA: controller-manager"]
-            direction LR
-            MetricsEP["/metrics<br/>8443/TCP HTTPS<br/>TLS (self-signed/cert-mgr)<br/>Bearer Token + authn/authz"]
-            HealthEP["/healthz, /readyz<br/>8081/TCP HTTP<br/>No Auth"]
+        subgraph WVANamespace["WVA Controller Namespace"]
+            direction TB
+            WVA["WVA Controller Manager<br/>SA: controller-manager<br/>Image: llm-d-workload-variant-autoscaler:v0.6.0"]
+
+            subgraph Endpoints["Exposed Endpoints"]
+                Metrics["/metrics<br/>8443/TCP HTTPS<br/>TLS (self-signed/cert-mgr)<br/>Bearer Token + TokenReview/SAR"]
+                Health["/healthz + /readyz<br/>8081/TCP HTTP<br/>No Auth"]
+            end
+
+            subgraph Secrets["Secrets"]
+                PromCert["prometheus-client-cert<br/>(kubernetes.io/tls)<br/>Manual/cert-manager"]
+                EPPToken["epp-metrics-token<br/>(Opaque)<br/>Manual/SA token"]
+            end
+
+            MetricsSvc["controller-manager-metrics-service<br/>ClusterIP 8443/TCP<br/>HTTPS + Bearer Token"]
         end
 
-        MetricsSvc["controller-manager-metrics-service<br/>ClusterIP 8443/TCP<br/>Internal Only"]
+        subgraph MonitoringNS["Namespace: openshift-monitoring"]
+            Prometheus["Prometheus / Thanos Querier<br/>9091/TCP HTTPS<br/>TLS 1.2+"]
+        end
+
+        subgraph UserNS["User Namespaces"]
+            EPPPods["EPP Pods<br/>(Endpoint Picker)<br/>configurable/TCP HTTPS"]
+            vLLMPods["vLLM Inference Servers<br/>(metrics source)"]
+        end
+
+        subgraph K8sControl["Control Plane"]
+            K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+        end
+
+        subgraph ExternalAutoscalers["Autoscaler Namespace"]
+            HPAKEDA["HPA / KEDA<br/>(external autoscalers)"]
+        end
     end
 
-    subgraph Monitoring["MONITORING NAMESPACE<br/>(openshift-monitoring)"]
-        Prometheus["Prometheus / Thanos Querier<br/>9091/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (SA token)"]
-        vLLM["vLLM Inference Servers<br/>Scraped by Prometheus"]
-    end
+    %% Egress from WVA
+    WVA -->|"HTTPS/9091<br/>TLS 1.2+<br/>Bearer Token (SA)"| Prometheus
+    WVA -->|"HTTPS/configurable<br/>TLS<br/>Bearer Token (EPP token)"| EPPPods
+    WVA -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
 
-    subgraph UserNamespaces["USER NAMESPACES"]
-        EPP["EPP Pods<br/>Endpoint Picker<br/>configurable/TCP HTTPS<br/>Bearer Token (EPP token)"]
-        Deployments["Deployments / LWS<br/>Scale targets"]
-    end
+    %% vLLM → Prometheus (indirect)
+    vLLMPods -.->|"scraped by<br/>Prometheus"| Prometheus
 
-    subgraph AutoscalerLayer["EXTERNAL AUTOSCALERS"]
-        HPA["HPA / KEDA<br/>Reads wva_desired_ratio<br/>from Prometheus"]
-    end
+    %% Prometheus scraping WVA metrics
+    Prometheus -->|"HTTPS/8443<br/>TLS<br/>Bearer Token + SAR"| MetricsSvc
 
-    %% User to K8s
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>kubeconfig"| K8sAPI
+    %% HPA/KEDA flow
+    HPAKEDA -->|"reads wva_desired_ratio<br/>HTTPS/9091"| Prometheus
+    HPAKEDA -->|"scales pods<br/>HTTPS/443"| K8sAPI
 
-    %% K8s to WVA (watch events)
-    K8sAPI -->|"Watch: VA, ConfigMap,<br/>Deployment, InferencePool<br/>TLS 1.2+ / SA Token"| WVAController
-
-    %% WVA to Prometheus
-    WVAController -->|"HTTPS/9091<br/>TLS 1.2+<br/>Bearer Token (SA)<br/>PromQL queries"| Prometheus
-
-    %% Prometheus scrapes vLLM
-    Prometheus -->|"Scrape vLLM metrics"| vLLM
-
-    %% WVA to EPP
-    WVAController -->|"HTTPS/configurable<br/>TLS<br/>Bearer Token (EPP token)<br/>flow_control_queue_size"| EPP
-
-    %% WVA to K8s API
-    WVAController -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>VA status, scale sub"| K8sAPI
-
-    %% WVA scale-from-zero direct
-    WVAController -->|"HTTPS/443<br/>Scale 0→1<br/>SA Token"| Deployments
-
-    %% Prometheus scrapes WVA
-    Prometheus -->|"HTTPS/8443<br/>TLS<br/>Bearer Token<br/>metrics-reader-role"| MetricsSvc
-    MetricsSvc -->|"proxy"| MetricsEP
-
-    %% HPA reads from Prometheus, scales via K8s
-    HPA -->|"HTTPS/9091<br/>Read wva_desired_ratio"| Prometheus
-    HPA -->|"HTTPS/443<br/>Scale Deployment/LWS"| K8sAPI
+    %% NetworkPolicy annotation
+    NP["NetworkPolicy:<br/>allow-metrics-traffic<br/>Restricts /metrics to<br/>labeled namespaces"]
 
     %% Styling
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef wva fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef monitoring fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef userns fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef autoscaler fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef wvaStyle fill:#4a90e2,stroke:#2c5282,stroke-width:2px,color:#fff
+    classDef serviceStyle fill:#63b3ed,stroke:#2b6cb0,stroke-width:1px,color:#fff
+    classDef endpointStyle fill:#bee3f8,stroke:#2b6cb0,stroke-width:1px
+    classDef secretStyle fill:#fed7d7,stroke:#c53030,stroke-width:1px
+    classDef externalStyle fill:#e2e8f0,stroke:#718096,stroke-width:2px
+    classDef autoscalerStyle fill:#c6f6d5,stroke:#276749,stroke-width:1px
+    classDef npStyle fill:#fefcbf,stroke:#d69e2e,stroke-width:1px
 
-    class User external
-    class K8sAPI controlplane
-    class WVAController,MetricsSvc,MetricsEP,HealthEP wva
-    class Prometheus,vLLM monitoring
-    class EPP,Deployments userns
-    class HPA autoscaler
+    class WVA wvaStyle
+    class MetricsSvc serviceStyle
+    class Metrics,Health endpointStyle
+    class PromCert,EPPToken secretStyle
+    class Prometheus,EPPPods,vLLMPods,K8sAPI externalStyle
+    class HPAKEDA autoscalerStyle
+    class NP npStyle

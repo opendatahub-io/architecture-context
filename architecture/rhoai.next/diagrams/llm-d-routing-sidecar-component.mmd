@@ -1,44 +1,64 @@
 graph TB
-    subgraph Pod["Kubernetes Pod"]
-        subgraph Sidecar["llm-d-routing-sidecar"]
-            Proxy["HTTP Reverse Proxy<br/>:8000/TCP HTTPS"]
-            NIXLv2["NIXL v2 Connector<br/>(current)"]
-            NIXLv1["NIXL v1 Connector<br/>(deprecated)"]
-            LMCache["LMCache Connector<br/>(deprecated)"]
-            AllowlistValidator["AllowlistValidator<br/>SSRF Protection"]
-            TLSMgr["TLS Manager<br/>TLS 1.2+ / Self-signed RSA-4096"]
-            LRUCache["LRU Cache<br/>Prefiller proxy handlers<br/>capacity: 16"]
-        end
-
-        Decoder["vLLM Decoder<br/>(co-located)<br/>:8001/TCP"]
+    subgraph External["External Traffic"]
+        Client["Client / Gateway<br/>(Inference Request)"]
     end
 
-    Client["Client / Gateway"] -->|"POST /v1/chat/completions<br/>HTTPS :8000<br/>+ x-prefiller-host-port header"| Proxy
-    Proxy -->|"validate prefill target"| AllowlistValidator
-    AllowlistValidator -->|"watch"| InferencePoolCR["InferencePool CR<br/>inference.networking.x-k8s.io/v1alpha2"]
-    AllowlistValidator -->|"watch pods"| K8sAPI["Kubernetes API<br/>:443/TCP"]
+    subgraph Ingress["OpenShift Ingress"]
+        Route["OpenShift Route<br/>443/TCP HTTPS<br/>TLS Edge Termination"]
+    end
 
-    Proxy -->|"prefill request<br/>(max_tokens=1)"| NIXLv2
-    NIXLv2 -->|"via LRU cached handler"| LRUCache
-    LRUCache -->|"HTTP/HTTPS"| RemotePrefiller["Remote Prefiller Pod"]
+    subgraph Pod["Kubernetes Pod"]
+        subgraph Sidecar["llm-d-routing-sidecar"]
+            Proxy["HTTP Reverse Proxy<br/>8000/TCP HTTPS<br/>TLS 1.2+"]
+            Router{"Route Decision<br/>x-prefiller-host-port<br/>header present?"}
+            Allowlist["AllowlistValidator<br/>(SSRF Protection)"]
+            LRU["LRU Cache<br/>(Prefiller Proxies<br/>capacity: 16)"]
+            ConnNIXL["NIXL v2 Connector<br/>(Protocol Handler)"]
+        end
 
-    RemotePrefiller -->|"KV transfer params"| NIXLv2
-    NIXLv2 -->|"decode request<br/>+ kv_transfer_params"| Decoder
+        Decoder["vLLM Decoder<br/>8001/TCP<br/>HTTP/HTTPS"]
+    end
 
-    Proxy -->|"TLS config"| TLSMgr
-    Proxy -->|"passthrough<br/>(no prefill header)"| Decoder
+    subgraph RemoteWorkers["Remote Prefill Workers"]
+        Prefiller1["vLLM Prefiller Pod 1"]
+        Prefiller2["vLLM Prefiller Pod 2"]
+        PrefillerN["vLLM Prefiller Pod N"]
+    end
 
-    Decoder -->|"response<br/>(streamed through sidecar)"| Client
+    subgraph K8sControl["Kubernetes Control Plane"]
+        APIServer["Kubernetes API Server<br/>443/TCP HTTPS"]
+        InferencePool["InferencePool CR<br/>inference.networking.x-k8s.io/v1alpha2"]
+    end
 
-    style Proxy fill:#4a90e2,color:#fff
-    style AllowlistValidator fill:#4a90e2,color:#fff
-    style NIXLv2 fill:#4a90e2,color:#fff
-    style NIXLv1 fill:#999,color:#fff
-    style LMCache fill:#999,color:#fff
-    style TLSMgr fill:#4a90e2,color:#fff
-    style LRUCache fill:#4a90e2,color:#fff
-    style Decoder fill:#7ed321,color:#fff
-    style RemotePrefiller fill:#7ed321,color:#fff
-    style InferencePoolCR fill:#f5a623,color:#fff
-    style K8sAPI fill:#e8e8e8
-    style Client fill:#e8e8e8
+    %% External flow
+    Client -->|"POST /v1/chat/completions<br/>HTTPS"| Route
+    Route -->|"8080/TCP"| Proxy
+
+    %% Internal routing
+    Proxy --> Router
+    Router -->|"Header present"| Allowlist
+    Router -->|"No header<br/>(passthrough)"| Decoder
+
+    Allowlist -->|"Validated"| LRU
+    LRU --> ConnNIXL
+    ConnNIXL -->|"Prefill request<br/>(max_tokens=1)"| Prefiller1
+    ConnNIXL -->|"Decode request<br/>(with kv_transfer_params)"| Decoder
+
+    %% SSRF allowlist watches
+    Allowlist -.->|"Watch pods &<br/>InferencePool"| APIServer
+    APIServer -.->|"Pod IPs"| InferencePool
+
+    %% Styling
+    style Proxy fill:#4a90e2,stroke:#333,color:#fff
+    style Router fill:#f5a623,stroke:#333,color:#fff
+    style Allowlist fill:#e74c3c,stroke:#333,color:#fff
+    style ConnNIXL fill:#4a90e2,stroke:#333,color:#fff
+    style LRU fill:#4a90e2,stroke:#333,color:#fff
+    style Decoder fill:#7ed321,stroke:#333,color:#fff
+    style Prefiller1 fill:#9b59b6,stroke:#333,color:#fff
+    style Prefiller2 fill:#9b59b6,stroke:#333,color:#fff
+    style PrefillerN fill:#9b59b6,stroke:#333,color:#fff
+    style InferencePool fill:#f5a623,stroke:#333,color:#fff
+    style APIServer fill:#999,stroke:#333,color:#fff
+    style Route fill:#e67e22,stroke:#333,color:#fff
+    style Client fill:#f9f9f9,stroke:#999,stroke-width:2px

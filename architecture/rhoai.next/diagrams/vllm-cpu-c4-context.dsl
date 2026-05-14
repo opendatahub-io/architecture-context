@@ -1,65 +1,77 @@
 workspace {
     model {
-        user = person "Data Scientist / Application" "Sends inference requests to LLM models via OpenAI-compatible API"
+        dataScientist = person "Data Scientist" "Deploys and queries LLM models for inference"
+        mlEngineer = person "ML Engineer" "Configures serving runtimes and manages model deployments"
 
-        vllmCpu = softwareSystem "vLLM CPU" "CPU-only LLM inference serving engine for ppc64le and s390x architectures" {
-            apiServer = container "OpenAI API Server" "FastAPI-based HTTP server exposing OpenAI-compatible endpoints" "Python / FastAPI / uvicorn" "8000/TCP"
-            grpcServer = container "gRPC Server" "gRPC inference endpoint via smg-grpc-servicer" "Python / grpcio" "50051/TCP"
-            engineCore = container "V1 EngineCore" "Core inference loop: scheduling, KV cache management, continuous batching" "Python"
-            inputProcessor = container "Input Processor" "Tokenization and request preprocessing" "Python / HuggingFace transformers"
-            outputProcessor = container "Output Processor" "Detokenization and streaming response assembly" "Python"
-            cpuModelRunner = container "CPU Model Runner" "CPU-specific model execution wrapping PyTorch CPU backend" "Python / PyTorch"
-            cpuPlatform = container "CPU Platform" "Architecture detection (x86, ARM, PPC64LE, S390X) and dtype/feature support" "Python"
+        vllmCpu = softwareSystem "vLLM CPU" "CPU-only LLM inference serving engine with OpenAI-compatible API, supporting ppc64le and s390x architectures" {
+            apiServer = container "OpenAI API Server" "FastAPI/uvicorn HTTP server exposing OpenAI-compatible endpoints for chat completions, embeddings, and more" "Python (FastAPI)" "Service"
+            grpcServer = container "gRPC Server" "Alternative inference interface via gRPC protocol" "Python (grpcio)" "Service"
+            authMiddleware = container "Auth Middleware" "Bearer token validation with SHA256 hashing and constant-time comparison" "Python" "Security"
+            v1Engine = container "V1 EngineCore" "Core inference loop: scheduler, KV cache management, continuous batching, PagedAttention" "Python" "Engine"
+            cpuModelRunner = container "CPU Model Runner" "CPU-specific model execution wrapping GPU runner APIs for CPU tensors" "Python" "Runner"
+            cpuPlatform = container "CPU Platform" "Architecture detection (x86/ARM/PPC64LE/S390X), NUMA binding, OpenMP thread pinning" "Python" "Platform"
+            inputProcessor = container "Input Processor" "Request tokenization and multi-modal input processing" "Python" "Processor"
+            outputProcessor = container "Output Processor" "Incremental detokenization and streaming SSE/JSON output" "Python" "Processor"
         }
 
-        kserve = softwareSystem "KServe" "Kubernetes inference serving platform - deploys vLLM as InferenceService runtime" "Internal RHOAI"
-        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "User interface for configuring serving runtimes" "Internal RHOAI"
-        modelController = softwareSystem "Model Mesh / Model Controller" "Manages model serving pod lifecycle" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Kubernetes-native serverless ML inference platform managing InferenceService lifecycle" "Internal RHOAI"
+        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "User interface for configuring serving runtimes and model deployments" "Internal RHOAI"
+        modelController = softwareSystem "Model Mesh / Model Controller" "Orchestrates model serving pod lifecycle" "Internal RHOAI"
 
-        huggingface = softwareSystem "HuggingFace Hub" "Model weight and tokenizer repository" "External"
-        pytorch = softwareSystem "PyTorch" "Deep learning framework for CPU tensor computation" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal Platform"
-        otlpCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing collection" "Internal Platform"
-        s3Storage = softwareSystem "S3-Compatible Storage" "Optional model weight storage" "External"
-        glooBackend = softwareSystem "Gloo Distributed Backend" "Tensor/data parallelism communication" "External"
+        huggingfaceHub = softwareSystem "HuggingFace Hub" "Model repository hosting model weights, configs, and tokenizers" "External"
+        pytorch = softwareSystem "PyTorch" "Deep learning framework for CPU tensor computation and model execution" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring system" "External"
+        otlpCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing collection and export" "External"
+        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for model artifacts" "External"
         rayCluster = softwareSystem "Ray Cluster" "Optional distributed execution orchestration" "External"
 
-        # Relationships
-        user -> vllmCpu "Sends inference requests" "HTTP(S)/8000, gRPC/50051"
-        vllmCpu -> huggingface "Downloads model weights and configs" "HTTPS/443, Bearer HF_TOKEN"
-        vllmCpu -> pytorch "Executes model inference" "In-process"
-        vllmCpu -> s3Storage "Loads model artifacts (optional)" "HTTPS/443, AWS IAM"
-        vllmCpu -> otlpCollector "Exports distributed traces" "gRPC/OTLP"
-        vllmCpu -> glooBackend "Distributed parallelism (optional)" "TCP"
-        vllmCpu -> rayCluster "Distributed execution (optional)" "Ray/6379"
+        # Relationships - External
+        dataScientist -> vllmCpu "Sends inference requests" "HTTP(S)/8000, gRPC/50051"
+        mlEngineer -> rhoaiDashboard "Configures serving runtimes"
 
-        prometheus -> vllmCpu "Scrapes metrics" "HTTP/8000"
-        kserve -> vllmCpu "Deploys as InferenceService runtime" "Container Image"
-        rhoaiDashboard -> kserve "Configures serving runtimes" "Kubernetes API"
-        modelController -> vllmCpu "Manages pod lifecycle" "Kubernetes API"
+        # Relationships - Internal RHOAI
+        kserve -> vllmCpu "Deploys as InferenceService runtime container" "Kubernetes"
+        rhoaiDashboard -> kserve "Creates InferenceService CRs"
+        modelController -> vllmCpu "Manages pod lifecycle" "Kubernetes"
 
-        # Container relationships
-        apiServer -> inputProcessor "Forwards parsed requests"
-        grpcServer -> inputProcessor "Forwards parsed requests"
-        inputProcessor -> engineCore "Sends tokenized input"
-        engineCore -> cpuModelRunner "Schedules batch execution"
-        cpuModelRunner -> outputProcessor "Returns inference results"
-        outputProcessor -> apiServer "Sends streaming/complete response"
-        cpuPlatform -> cpuModelRunner "Provides arch-specific config"
+        # Relationships - Container level
+        dataScientist -> apiServer "POST /v1/chat/completions" "HTTP(S)/8000"
+        apiServer -> authMiddleware "Validates Bearer token"
+        apiServer -> inputProcessor "Processes request"
+        inputProcessor -> v1Engine "Submits tokens"
+        v1Engine -> cpuModelRunner "Executes model forward pass"
+        cpuModelRunner -> cpuPlatform "Gets platform capabilities"
+        v1Engine -> outputProcessor "Sends output tokens"
+        outputProcessor -> apiServer "Streams response"
+
+        # Relationships - External services
+        vllmCpu -> huggingfaceHub "Downloads model weights and configs" "HTTPS/443, Bearer HF_TOKEN"
+        vllmCpu -> pytorch "CPU tensor computation" "In-process"
+        vllmCpu -> prometheus "Exposes /metrics endpoint" "HTTP/8000"
+        vllmCpu -> otlpCollector "Exports traces" "gRPC (insecure default)"
+        vllmCpu -> s3Storage "Loads model weights" "HTTPS/443, AWS IAM"
+        vllmCpu -> rayCluster "Distributed execution" "Ray/6379"
     }
 
     views {
         systemContext vllmCpu "SystemContext" {
             include *
             autoLayout
+            description "vLLM CPU system context showing integration with RHOAI platform and external services"
         }
 
         container vllmCpu "Containers" {
             include *
             autoLayout
+            description "vLLM CPU internal container architecture showing V1 engine pipeline"
         }
 
         styles {
+            element "Software System" {
+                background #4a90e2
+                color #ffffff
+                shape RoundedBox
+            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -68,22 +80,38 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal Platform" {
-                background #4a90e2
+            element "Person" {
+                background #08427b
                 color #ffffff
-            }
-            element "Software System" {
-                background #1168bd
-                color #ffffff
+                shape Person
             }
             element "Container" {
                 background #438dd5
                 color #ffffff
             }
-            element "Person" {
-                background #08427b
+            element "Service" {
+                background #4a90e2
                 color #ffffff
-                shape Person
+            }
+            element "Engine" {
+                background #f5a623
+                color #ffffff
+            }
+            element "Runner" {
+                background #9b59b6
+                color #ffffff
+            }
+            element "Platform" {
+                background #9b59b6
+                color #ffffff
+            }
+            element "Processor" {
+                background #e67e22
+                color #ffffff
+            }
+            element "Security" {
+                background #e74c3c
+                color #ffffff
             }
         }
     }

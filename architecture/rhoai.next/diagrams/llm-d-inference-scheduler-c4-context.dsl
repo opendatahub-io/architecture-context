@@ -1,62 +1,43 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Deploys models and sends inference requests"
+        dataScientist = person "Data Scientist / ML Engineer" "Deploys and queries ML models via inference endpoints"
+        platformAdmin = person "Platform Admin" "Configures scheduling profiles, flow control policies, and InferencePool resources"
 
-        llmdScheduler = softwareSystem "llm-d Inference Scheduler" "Optimized routing for LLM inference workloads via Gateway API Inference Extension (GIE)" {
-            epp = container "EPP (Endpoint Picker)" "Main scheduling service: ext_proc gRPC server with pluggable filter/scorer/picker pipeline, controller-runtime reconcilers, flow control" "Go Service (controller-runtime)" {
-                extProcServer = component "ext_proc gRPC Server" "Receives routing callbacks from Envoy, returns endpoint selection" "gRPC Service"
-                schedulingPipeline = component "Scheduling Pipeline" "Filter → Score → Pick pipeline with configurable profiles" "Go Framework"
-                controllers = component "CRD Reconcilers" "Watch InferencePool, Pod, InferenceObjective, InferenceModelRewrite" "controller-runtime"
-                dataLayer = component "Data Layer" "DAG-based data collection from metrics, K8s, ZMQ sources" "Go Framework"
-                kvCacheIndex = component "KV Cache Index" "In-process prefix cache index from ZMQ events" "llm-d-kv-cache library"
-                flowControl = component "Flow Control" "Priority-based admission, fairness, saturation detection" "Go (Experimental)"
-                metricsEndpoint = component "Metrics Endpoint" "Prometheus metrics on /metrics" "HTTP Server"
-            }
-            sidecar = container "P/D Routing Sidecar" "Orchestrates disaggregated Prefill/Decode and E/P/D inference stages with KV cache transfer" "Go HTTP Proxy" {
-                sidecarProxy = component "HTTP/HTTPS Proxy" "Intercepts inference API calls, coordinates P/D stages" "Go HTTP Proxy"
-                nixlConnector = component "NIXL V2 Connector" "Direct memory KV cache transfer" "Go Plugin"
-                sharedStorageConnector = component "Shared Storage Connector" "KV transfer via intermediate storage" "Go Plugin"
-                sglangConnector = component "SGLang Connector" "Concurrent P/D via room-based coordination" "Go Plugin"
-                ssrfAllowlist = component "SSRF Allowlist" "Validates targets against InferencePool pod list" "Go Security"
-            }
-            udsTokenizer = container "UDS Tokenizer" "Tokenization sidecar for prompt tokenization via Unix Domain Socket" "External Image"
+        llmdScheduler = softwareSystem "llm-d Inference Scheduler" "Optimized routing and scheduling for LLM inference workloads via Gateway API Inference Extension" {
+            epp = container "EPP (Endpoint Picker)" "Main scheduling service: ext_proc gRPC server with pluggable filter/scorer/picker pipeline, controller-runtime reconcilers, flow control, and KV cache-aware scoring" "Go Service (controller-runtime)" "Primary"
+            sidecar = container "P/D Routing Sidecar" "HTTP proxy sidecar orchestrating disaggregated Prefill/Decode and Encode/Prefill/Decode inference stages with KV cache transfer" "Go HTTP Proxy" "Sidecar"
+            udsTokenizer = container "UDS Tokenizer" "Tokenization service for prompt analysis, communicates via Unix Domain Socket" "External Image (Sidecar Container)"
         }
 
-        envoyGateway = softwareSystem "Envoy Gateway" "Gateway API implementation with ext_proc filter for request routing" "External"
-        k8sAPI = softwareSystem "Kubernetes API Server" "Kubernetes control plane for CRD management and pod discovery" "External"
-        vllmServers = softwareSystem "vLLM Model Servers" "LLM inference engine pods serving predictions with KV cache" "Internal Platform"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing collection" "External"
-        gatewayAPI = softwareSystem "Gateway API CRDs" "HTTPRoute and Gateway resources for traffic routing" "External"
+        envoyGateway = softwareSystem "Envoy Gateway" "Kubernetes Gateway API implementation using Envoy proxy for traffic routing and ext_proc integration" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Kubernetes control plane API for CRD watches and resource management" "External"
+        gatewayAPIGIE = softwareSystem "Gateway API Inference Extension (GIE)" "Upstream K8s project defining InferencePool, InferenceObjective, InferenceModelRewrite CRDs" "External"
+        vllm = softwareSystem "vLLM Model Servers" "LLM inference engine providing model serving, Prometheus metrics, and KV cache events" "External"
+        prometheus = softwareSystem "Prometheus" "Monitoring system scraping EPP metrics via ServiceMonitor" "External"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing backend receiving OTLP traces" "External"
 
         # User interactions
-        user -> envoyGateway "Sends inference requests (HTTP)" "HTTP/80"
-        user -> k8sAPI "Creates InferenceService, InferencePool CRs" "kubectl"
+        dataScientist -> envoyGateway "Sends inference requests (POST /v1/chat/completions)" "HTTP/HTTPS"
+        platformAdmin -> k8sAPI "Manages InferencePool, InferenceObjective, InferenceModelRewrite CRs" "kubectl / HTTPS"
+        platformAdmin -> llmdScheduler "Configures scheduling via EndpointPickerConfig" "YAML config file"
 
-        # Envoy → EPP
-        envoyGateway -> epp "Sends ext_proc routing callbacks" "gRPC/9002"
-        epp -> envoyGateway "Returns endpoint selection (target-pod header)" "gRPC/9002"
+        # EPP interactions
+        envoyGateway -> epp "Sends ext_proc routing callbacks" "gRPC/9002 (Optional TLS)"
+        epp -> envoyGateway "Returns endpoint selection decisions" "gRPC/9002"
+        epp -> k8sAPI "Watches InferencePool, Pod, InferenceObjective, InferenceModelRewrite CRs" "HTTPS/443 (SA token)"
+        epp -> vllm "Scrapes Prometheus metrics (queue depth, KV cache %, LoRA info)" "HTTP/HTTPS (configurable port)"
+        epp -> vllm "Subscribes to real-time KV cache events" "ZMQ PUB/SUB/5556"
+        udsTokenizer -> epp "Provides prompt tokenization" "gRPC over Unix Domain Socket"
+        prometheus -> epp "Scrapes scheduling metrics" "HTTP/9090 (15s interval)"
+        epp -> otelCollector "Exports distributed traces" "gRPC OTLP/4317 (Optional)"
 
-        # Envoy → Model Servers
-        envoyGateway -> vllmServers "Routes inference requests to selected pod" "HTTP/8000"
-        envoyGateway -> sidecar "Routes P/D requests to sidecar" "HTTP/8000"
+        # Sidecar interactions
+        envoyGateway -> sidecar "Routes inference requests (after EPP decision)" "HTTP/HTTPS/8000 (TLS 1.2+)"
+        sidecar -> vllm "Forwards prefill/decode/encode requests" "HTTP/HTTPS (configurable ports)"
+        sidecar -> k8sAPI "Watches InferencePool for SSRF pod allowlist" "HTTPS/443 (SA token)"
 
-        # EPP dependencies
-        epp -> k8sAPI "Watches CRDs: InferencePool, Pod, InferenceObjective, InferenceModelRewrite" "HTTPS/443"
-        epp -> vllmServers "Scrapes Prometheus metrics (queue, KV cache, LoRA)" "HTTP(S)"
-        epp -> vllmServers "Subscribes to KV cache events" "ZMQ PUB/SUB/5556"
-        udsTokenizer -> epp "Provides prompt tokenization" "gRPC over UDS"
-
-        # Sidecar dependencies
-        sidecar -> vllmServers "Forwards prefill/decode/encode requests" "HTTP(S)/8001"
-        sidecar -> k8sAPI "Watches InferencePool for SSRF allowlist" "HTTPS/443"
-
-        # Observability
-        prometheus -> epp "Scrapes /metrics endpoint" "HTTP/9090"
-        epp -> otelCollector "Exports distributed traces" "gRPC OTLP/4317"
-
-        # Gateway API integration
-        gatewayAPI -> envoyGateway "HTTPRoute references InferencePool as backendRef" "CRD"
+        # Gateway API flow
+        envoyGateway -> vllm "Forwards routed requests to selected model server" "HTTP/8000"
     }
 
     views {
@@ -70,16 +51,6 @@ workspace {
             autoLayout
         }
 
-        component epp "EPP-Components" {
-            include *
-            autoLayout
-        }
-
-        component sidecar "Sidecar-Components" {
-            include *
-            autoLayout
-        }
-
         styles {
             element "Software System" {
                 background #438DD5
@@ -89,22 +60,20 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal Platform" {
-                background #7ed321
-                color #ffffff
-            }
             element "Person" {
                 background #08427B
                 color #ffffff
-                shape person
+                shape Person
             }
             element "Container" {
                 background #438DD5
                 color #ffffff
             }
-            element "Component" {
-                background #85BBF0
-                color #000000
+            element "Primary" {
+                background #4a90e2
+            }
+            element "Sidecar" {
+                background #7ed321
             }
         }
     }

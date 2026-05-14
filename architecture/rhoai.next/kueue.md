@@ -235,6 +235,65 @@ Kueue integrates with multiple job frameworks including batch/v1 Jobs, JobSets, 
 
 _This is the main branch; downstream release branches (e.g., rhoai-3.x) likely add rpms.lock.yaml and Hermeto prefetch integration for full build hermeticity._
 
+## Admission Webhooks
+
+This component defines 36 webhook(s) (17 mutating, 18 validating, 1 conversion).
+
+| Name | Type | Target Resources | Purpose |
+|------|------|-----------------|---------|
+| mdeployment.kb.io | mutating |  |  |
+| mjob.kb.io | mutating |  |  |
+| mpod.kb.io | mutating |  |  |
+| vcohort.kb.io | validating |  | Validates Cohort resources on create and update by checking the spec's fairSharing and resourceGroups fields against validation rules, ensuring cohort configurations are well-formed before being persisted. No mutations are performed (defaulting is a no-op). |
+| vdeployment.kb.io | validating |  |  |
+| vjob.kb.io | validating |  |  |
+| vpod.kb.io | validating |  |  |
+| mraycluster.kb.io | mutating | rayclusters | Mutates and validates Ray RayCluster resources for Kueue integration: the mutating webhook applies default local queue names, suspends jobs that should be managed by Kueue, and sets the managed-by field; the validating webhook rejects clusters that enable in-tree autoscaling, have more than 7 worker groups, use the reserved 'head' group name, or violate topology-aware scheduling or queue-name immutability constraints. |
+| vraycluster.kb.io | validating | rayclusters | Mutates and validates Ray RayCluster resources for Kueue integration: the mutating webhook applies default local queue names, suspends jobs that should be managed by Kueue, and sets the managed-by field; the validating webhook rejects clusters that enable in-tree autoscaling, have more than 7 worker groups, use the reserved 'head' group name, or violate topology-aware scheduling or queue-name immutability constraints. |
+| mmpijob.kb.io | mutating | mpijobs | Mutating and validating admission webhook for Kubeflow MPIJob resources managed by Kueue. The mutating webhook defaults the local queue label, suspends jobs that should be managed by Kueue (checking ancestor ownership and namespace selectors), and sets the managedBy field for MultiKueue; the validating webhook enforces queue-name consistency on create/update and validates topology-aware scheduling annotations on each replica spec. |
+| vmpijob.kb.io | validating | mpijobs | Mutating and validating admission webhook for Kubeflow MPIJob resources managed by Kueue. The mutating webhook defaults the local queue label, suspends jobs that should be managed by Kueue (checking ancestor ownership and namespace selectors), and sets the managedBy field for MultiKueue; the validating webhook enforces queue-name consistency on create/update and validates topology-aware scheduling annotations on each replica spec. |
+| mpytorchjob.kb.io | mutating | pytorchjobs |  |
+| vpytorchjob.kb.io | validating | pytorchjobs |  |
+| mtfjob.kb.io | mutating | tfjobs |  |
+| vtfjob.kb.io | validating | tfjobs |  |
+| mxgboostjob.kb.io | mutating | xgboostjobs |  |
+| vxgboostjob.kb.io | validating | xgboostjobs |  |
+| mpaddlejob.kb.io | mutating | paddlejobs |  |
+| vpaddlejob.kb.io | validating | paddlejobs |  |
+| mjobset.kb.io | mutating | jobsets | Mutating and validating webhook for JobSet resources in the Kueue scheduling system. The mutating webhook defaults the local queue name, suspends jobs that should be managed by Kueue (checking ancestor ownership chains and namespace selectors), and sets the managedBy field. The validating webhook ensures queue-name label consistency, validates topology-aware scheduling annotations on replicated job pod templates, and prevents immutable field changes on update. |
+| vjobset.kb.io | validating | jobsets | Mutating and validating webhook for JobSet resources in the Kueue scheduling system. The mutating webhook defaults the local queue name, suspends jobs that should be managed by Kueue (checking ancestor ownership chains and namespace selectors), and sets the managedBy field. The validating webhook ensures queue-name label consistency, validates topology-aware scheduling annotations on replicated job pod templates, and prevents immutable field changes on update. |
+| mstatefulset.kb.io | mutating | statefulsets | Mutating and validating webhook for StatefulSets integrated with Kueue job queueing. The mutating webhook propagates queue-name labels/annotations onto pod templates and suspends StatefulSets that should be managed by Kueue, while the validating webhook enforces queue-name immutability when pods are running, prevents pod spec changes while suspended, and restricts replica scaling to only scale-to-zero or scale-from-zero. |
+| vstatefulset.kb.io | validating | statefulsets | Mutating and validating webhook for StatefulSets integrated with Kueue job queueing. The mutating webhook propagates queue-name labels/annotations onto pod templates and suspends StatefulSets that should be managed by Kueue, while the validating webhook enforces queue-name immutability when pods are running, prevents pod spec changes while suspended, and restricts replica scaling to only scale-to-zero or scale-from-zero. |
+| mappwrapper.kb.io | mutating | appwrappers |  |
+| vappwrapper.kb.io | validating | appwrappers |  |
+| mleaderworkerset.kb.io | mutating | leaderworkersets | Provides mutating and validating admission control for LeaderWorkerSet resources integrated with Kueue. The mutating webhook applies default local queue labels, suspends workloads that Kueue should manage, and annotates leader/worker pod templates with suspension-by-parent and group-serving metadata. The validating webhook enforces queue name validity, topology-aware scheduling annotation correctness, and immutability of the queue name, priority class, and pod template specs on updates. |
+| vleaderworkerset.kb.io | validating | leaderworkersets | Provides mutating and validating admission control for LeaderWorkerSet resources integrated with Kueue. The mutating webhook applies default local queue labels, suspends workloads that Kueue should manage, and annotates leader/worker pod templates with suspension-by-parent and group-serving metadata. The validating webhook enforces queue name validity, topology-aware scheduling annotation correctness, and immutability of the queue name, priority class, and pod template specs on updates. |
+| mrayjob.kb.io | mutating | rayjobs | Provides mutating and validating admission control for KubeRay RayJob resources managed by Kueue. The mutating webhook defaults the local queue name, suspends jobs so Kueue controls admission, and sets the managedBy field; the validating webhook enforces that Kueue-managed RayJobs shut down their cluster after finishing, do not reference existing clusters or use autoscaling, have at most 7 worker groups with no group named "head", and carry valid topology-aware scheduling annotations. |
+| vrayjob.kb.io | validating | rayjobs | Provides mutating and validating admission control for KubeRay RayJob resources managed by Kueue. The mutating webhook defaults the local queue name, suspends jobs so Kueue controls admission, and sets the managedBy field; the validating webhook enforces that Kueue-managed RayJobs shut down their cluster after finishing, do not reference existing clusters or use autoscaling, have at most 7 worker groups with no group named "head", and carry valid topology-aware scheduling annotations. |
+| mresourceflavor.kb.io | mutating | resourceflavors | Mutating and validating webhook for Kueue ResourceFlavor resources. The mutating webhook ensures a 'ResourceInUse' finalizer is added on creation, while the validating webhook checks that nodeLabels, nodeTaints, and tolerations conform to Kubernetes labeling and taint rules (valid label names/values, unique taints by key+effect pair). |
+| vresourceflavor.kb.io | validating | resourceflavors | Mutating and validating webhook for Kueue ResourceFlavor resources. The mutating webhook ensures a 'ResourceInUse' finalizer is added on creation, while the validating webhook checks that nodeLabels, nodeTaints, and tolerations conform to Kubernetes labeling and taint rules (valid label names/values, unique taints by key+effect pair). |
+| mclusterqueue.kb.io | mutating | clusterqueues | Mutating webhook adds a ResourceInUse finalizer to new ClusterQueues, and validating webhook enforces structural correctness on create/update — checking resource group uniqueness, flavor quota validity, borrowing/lending limit constraints (e.g., lending ≤ nominal, limits nil when no cohort), admission check exclusivity, preemption policy consistency, namespace selector syntax, and fair sharing settings. |
+| vclusterqueue.kb.io | validating | clusterqueues | Mutating webhook adds a ResourceInUse finalizer to new ClusterQueues, and validating webhook enforces structural correctness on create/update — checking resource group uniqueness, flavor quota validity, borrowing/lending limit constraints (e.g., lending ≤ nominal, limits nil when no cohort), admission check exclusivity, preemption policy consistency, namespace selector syntax, and fair sharing settings. |
+| mworkload.kb.io | mutating | workloads | Mutating and validating webhook for Kueue Workload resources. The mutating webhook strips minCount from pod sets when the PartialAdmission feature gate is disabled, while the validating webhook enforces constraints on pod sets (e.g., reserved resource keys, at most one variable-count pod set), admission status immutability after quota reservation, reclaimable pod counts, and admission check pod-set updates. |
+| vworkload.kb.io | validating | workloads, workloads/status | Mutating and validating webhook for Kueue Workload resources. The mutating webhook strips minCount from pod sets when the PartialAdmission feature gate is disabled, while the validating webhook enforces constraints on pod sets (e.g., reserved resource keys, at most one variable-count pod set), admission status immutability after quota reservation, reclaimable pod counts, and admission check pod-set updates. |
+| conversion.resourceflavors.kueue.x-k8s.io | conversion | resourceflavors |  |
+
+### External Webhooks
+
+The following webhooks from peer components intercept this component's resource types:
+
+| Webhook | Defined By |
+|---------|-----------|
+| mappwrapper.kb.io | codeflare-operator |
+| mraycluster.ray.openshift.ai | codeflare-operator |
+| vappwrapper.kb.io | codeflare-operator |
+| vraycluster.ray.openshift.ai | codeflare-operator |
+| mraycluster.kb.io | kuberay |
+| validator.pytorchjob.training-operator.kubeflow.org | training-operator |
+| validator.xgboostjob.training-operator.kubeflow.org | training-operator |
+| validator.tfjob.training-operator.kubeflow.org | training-operator |
+| validator.paddlejob.training-operator.kubeflow.org | training-operator |
+
 ## Data Flows
 
 ### Flow 1: Job Admission

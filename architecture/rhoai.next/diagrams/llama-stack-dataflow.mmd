@@ -1,63 +1,60 @@
 sequenceDiagram
-    participant Client as API Client
+    participant Client as External Client
     participant Server as Llama Stack Server<br/>8321/TCP HTTP/HTTPS
-    participant Auth as AuthN Middleware<br/>(OAuth2 JWT / Custom)
+    participant Auth as AuthenticationMiddleware
     participant OIDC as OIDC Provider<br/>443/TCP HTTPS
-    participant Quota as Quota Middleware
-    participant ABAC as Access Control<br/>(Cedar ABAC)
-    participant Inference as Inference Router
-    participant Agent as Agent Provider
-    participant Safety as Safety Router
-    participant RAG as RAG Tool Runtime
+    participant Quota as QuotaMiddleware
+    participant ABAC as AccessControlMiddleware<br/>Cedar Policies
+    participant Router as InferenceRouter
+    participant AgentProv as Agent Provider
+    participant RAGTool as RAG Tool Runtime
+    participant SafetyRouter as SafetyRouter
     participant vLLM as vLLM Provider<br/>8000/TCP HTTP/HTTPS
-    participant VectorDB as pgvector<br/>5432/TCP PostgreSQL
-    participant SQLite as SQLite<br/>(Persistence)
+    participant pgvector as pgvector<br/>5432/TCP PostgreSQL
+    participant LlamaGuard as Llama Guard Model<br/>(via Inference Provider)
 
-    Note over Client,SQLite: Flow 1: Chat Completion Request
+    Note over Client,LlamaGuard: Flow 1: Chat Completion Request
 
-    Client->>Server: POST /v1/inference/chat-completion<br/>Auth: Bearer Token (JWT)
+    Client->>Server: POST /v1/inference/chat-completion<br/>Bearer Token (JWT)
     Server->>Auth: Validate token
     Auth->>OIDC: Fetch JWKS / Introspect token<br/>HTTPS/443 TLS 1.2+
     OIDC-->>Auth: Token claims (sub, groups, roles)
     Auth->>Quota: Check rate limit
-    Quota->>ABAC: Evaluate access policy
-    ABAC->>Inference: Route to provider
-    Inference->>vLLM: POST /v1/chat/completions<br/>Bearer Token, Configurable TLS
-    vLLM-->>Inference: Completion response (SSE stream)
-    Inference-->>Server: Stream tokens
-    Server-->>Client: SSE stream response<br/>HTTP/HTTPS
+    Quota->>ABAC: Evaluate Cedar policy<br/>(principal, action, resource)
+    ABAC->>Router: Route to provider
+    Router->>vLLM: POST /v1/chat/completions<br/>HTTP/HTTPS, Bearer Token
+    vLLM-->>Router: Completion response (streaming SSE)
+    Router-->>Server: Forward response
+    Server-->>Client: SSE stream<br/>HTTP/HTTPS 8321/TCP
 
-    Note over Client,SQLite: Flow 2: Agent Turn with Tool Use (RAG)
+    Note over Client,LlamaGuard: Flow 2: Agent Turn with Tool Use (RAG)
 
-    Client->>Server: POST /v1/agents/{id}/turn<br/>Auth: Bearer Token
+    Client->>Server: POST /v1/agents/{id}/turn<br/>Bearer Token
     Server->>Auth: Validate token
     Auth-->>Server: Authenticated
-    Server->>Agent: Create agent turn
-    Agent->>Inference: Initial chat-completion (in-process)
-    Inference->>vLLM: POST /v1/chat/completions<br/>Bearer Token
-    vLLM-->>Inference: Response with tool_call(rag_query)
-    Inference-->>Agent: Tool call detected
+    Server->>AgentProv: Process agent turn
+    AgentProv->>Router: Chat completion (initial)
+    Router->>vLLM: POST /v1/chat/completions<br/>8000/TCP
+    vLLM-->>Router: Response with tool_call (RAG query)
+    Router-->>AgentProv: Tool call detected
+    AgentProv->>RAGTool: Execute vector query
+    RAGTool->>pgvector: SELECT with vector similarity<br/>5432/TCP, Username/Password
+    pgvector-->>RAGTool: Relevant documents
+    RAGTool-->>AgentProv: RAG context
+    AgentProv->>Router: Chat completion (with RAG context)
+    Router->>vLLM: POST /v1/chat/completions<br/>8000/TCP (augmented prompt)
+    vLLM-->>Router: Final response
+    Router-->>AgentProv: Completion
+    AgentProv-->>Server: Agent turn result
+    Server-->>Client: SSE stream response<br/>8321/TCP
 
-    Agent->>RAG: Execute RAG query (in-process)
-    RAG->>VectorDB: SELECT with vector similarity<br/>5432/TCP, Configurable TLS, User/Pass
-    VectorDB-->>RAG: Relevant document chunks
-    RAG-->>Agent: RAG context
+    Note over Client,LlamaGuard: Flow 3: Safety Shield Execution
 
-    Agent->>Inference: Chat-completion with RAG context (in-process)
-    Inference->>vLLM: POST /v1/chat/completions<br/>+ retrieved context
-    vLLM-->>Inference: Final response
-    Inference-->>Agent: Completion
-    Agent->>SQLite: Persist session/turn
-    Agent-->>Server: Agent turn result
-    Server-->>Client: SSE stream response
-
-    Note over Client,SQLite: Flow 3: Safety Shield Execution
-
-    Client->>Server: POST /v1/safety/run-shield<br/>Auth: Bearer Token
+    Client->>Server: POST /v1/safety/run-shield<br/>Bearer Token
     Server->>Auth: Validate token
     Auth-->>Server: Authenticated
-    Server->>Safety: Route to safety provider
-    Safety->>vLLM: Inference with Llama Guard model<br/>Bearer Token
-    vLLM-->>Safety: Safety classification
-    Safety-->>Server: Shield result (safe/unsafe + violation)
-    Server-->>Client: Shield response
+    Server->>SafetyRouter: Run shield
+    SafetyRouter->>LlamaGuard: Inference request<br/>(Llama Guard model via provider)
+    LlamaGuard-->>SafetyRouter: Safety classification<br/>(safe/unsafe + category)
+    SafetyRouter-->>Server: Shield result
+    Server-->>Client: JSON response<br/>8321/TCP

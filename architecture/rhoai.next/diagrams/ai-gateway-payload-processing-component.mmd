@@ -5,7 +5,7 @@ graph TB
 
     subgraph GatewayAPI["Gateway API Data Plane"]
         Gateway["Gateway API Gateway<br/>(Envoy Proxy)<br/>443/TCP HTTPS"]
-        EnvoyFilter["Istio EnvoyFilter<br/>Attaches ExtProc"]
+        EnvoyFilter["Istio EnvoyFilter<br/>(attaches ExtProc)"]
         Gateway --- EnvoyFilter
     end
 
@@ -15,92 +15,92 @@ graph TB
         subgraph PluginPipeline["Plugin Pipeline (ordered)"]
             direction TB
             ModelExtractor["body-field-to-header<br/>(upstream plugin)<br/>Extracts model field →<br/>X-Gateway-Model-Name header"]
-            ModelResolver["model-provider-resolver<br/>(RequestProcessor)<br/>Resolves model name →<br/>provider/credentials via CycleState"]
-            APITranslation["api-translation<br/>(Request + ResponseProcessor)<br/>OpenAI ↔ Provider-native<br/>format translation"]
-            APIKeyInjection["apikey-injection<br/>(RequestProcessor)<br/>Injects provider auth<br/>headers from cached Secrets"]
+            ModelResolver["model-provider-resolver<br/>(RequestProcessor)<br/>Resolves model name →<br/>provider/credentials in CycleState"]
+            APITranslation["api-translation<br/>(Request + ResponseProcessor)<br/>OpenAI ↔ Provider format<br/>(Anthropic, Azure, Bedrock, Vertex)"]
+            APIKeyInjection["apikey-injection<br/>(RequestProcessor)<br/>Injects provider auth headers<br/>from cached Secrets"]
+            NemoRequest["nemo-request-guard<br/>(RequestProcessor)<br/>Input content policy enforcement"]
+            NemoResponse["nemo-response-guard<br/>(ResponseProcessor)<br/>Output content policy enforcement"]
 
             ModelExtractor --> ModelResolver
             ModelResolver --> APITranslation
             APITranslation --> APIKeyInjection
+            APIKeyInjection --> NemoRequest
+            NemoRequest --> NemoResponse
         end
 
-        subgraph OptionalGuards["Optional NeMo Guards"]
-            NemoRequest["nemo-request-guard<br/>(RequestProcessor)<br/>Input content moderation"]
-            NemoResponse["nemo-response-guard<br/>(ResponseProcessor)<br/>Output content moderation"]
-        end
-
-        subgraph Reconcilers["Controller-Runtime Reconcilers"]
-            ExternalModelReconciler["ExternalModel Reconciler<br/>Watches ExternalModel CRs"]
-            SecretReconciler["Secret Reconciler<br/>Watches labeled Secrets"]
-        end
-
-        subgraph InMemoryStores["In-Memory Stores (RWMutex)"]
-            ModelInfoStore["modelInfoStore<br/>model→provider mapping"]
-            SecretStore["secretStore<br/>API key cache"]
-        end
-
-        ExternalModelReconciler -->|populates| ModelInfoStore
-        SecretReconciler -->|populates| SecretStore
-        ModelResolver -->|reads| ModelInfoStore
-        APIKeyInjection -->|reads| SecretStore
-
+        CycleState["CycleState<br/>(per-request shared memory)"]
         HealthCheck["Health Check<br/>9005/TCP HTTP"]
     end
 
     subgraph CRDs["Custom Resource Definitions"]
-        ExternalModelCR["ExternalModel CR<br/>inference.opendatahub.io/v1alpha1<br/>Model → Provider mapping"]
-        ExternalProviderCR["ExternalProvider CR<br/>inference.opendatahub.io/v1alpha1<br/>Provider connection config"]
-        ExternalModelCR -.->|references| ExternalProviderCR
+        ExternalModel["ExternalModel CR<br/>inference.opendatahub.io/v1alpha1"]
+        ExternalProvider["ExternalProvider CR<br/>inference.opendatahub.io/v1alpha1"]
     end
 
     subgraph K8sResources["Kubernetes Resources"]
         K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS"]
-        LabeledSecrets["Labeled Secrets<br/>inference.networking.k8s.io/<br/>bbr-managed=true"]
+        Secrets["Labeled Secrets<br/>inference.networking.k8s.io/<br/>bbr-managed=true"]
     end
 
-    subgraph ExternalProviders["External LLM Providers"]
-        OpenAI["OpenAI API<br/>api.openai.com"]
-        Anthropic["Anthropic API<br/>api.anthropic.com"]
-        AzureOpenAI["Azure OpenAI API"]
-        Bedrock["AWS Bedrock API<br/>bedrock.amazonaws.com"]
-        VertexAI["Vertex AI API<br/>aiplatform.googleapis.com"]
+    subgraph LLMProviders["External LLM Providers (443/TCP HTTPS)"]
+        OpenAI["OpenAI<br/>api.openai.com"]
+        Anthropic["Anthropic<br/>api.anthropic.com"]
+        AzureOpenAI["Azure OpenAI"]
+        Bedrock["AWS Bedrock<br/>bedrock.amazonaws.com"]
+        VertexAI["Google Vertex AI<br/>aiplatform.googleapis.com"]
     end
 
-    NemoService["NeMo Guardrails Service<br/>(optional)<br/>HTTP /v1/guardrail/checks"]
+    NemoService["NeMo Guardrails Service<br/>HTTP (configurable port)<br/>/v1/guardrail/checks"]
 
-    %% Flows
-    Client -->|HTTPS/443<br/>TLS 1.2+| Gateway
-    EnvoyFilter -->|gRPC ExtProc/9004<br/>plaintext| PluginPipeline
-    NemoRequest -->|HTTP POST<br/>plaintext| NemoService
-    NemoResponse -->|HTTP POST<br/>plaintext| NemoService
+    %% Request flow
+    Client -->|"HTTPS/443"| Gateway
+    Gateway -->|"gRPC ExtProc/9004<br/>plaintext"| ModelExtractor
+    NemoResponse -->|"gRPC response/9004<br/>mutated request"| Gateway
 
-    ExternalModelReconciler -->|Watch/List<br/>HTTPS/443| K8sAPI
-    SecretReconciler -->|Watch/List<br/>HTTPS/443| K8sAPI
-    K8sAPI -.->|reconcile| ExternalModelCR
-    K8sAPI -.->|reconcile| LabeledSecrets
+    %% CRD watches
+    ModelResolver -->|"watches"| ExternalModel
+    ExternalModel -.->|"references"| ExternalProvider
+    ModelResolver -->|"controller-runtime<br/>watch/list"| K8sAPI
 
-    Gateway -->|HTTPS/443<br/>TLS 1.2+| OpenAI
-    Gateway -->|HTTPS/443<br/>TLS 1.2+| Anthropic
-    Gateway -->|HTTPS/443<br/>TLS 1.2+| AzureOpenAI
-    Gateway -->|HTTPS/443<br/>TLS 1.2+| Bedrock
-    Gateway -->|HTTPS/443<br/>TLS 1.2+| VertexAI
+    %% Secret watches
+    APIKeyInjection -->|"watches labeled"| Secrets
+    APIKeyInjection -->|"controller-runtime<br/>watch/list"| K8sAPI
+
+    %% CycleState sharing
+    ModelResolver -.->|"writes provider info"| CycleState
+    APITranslation -.->|"reads provider info"| CycleState
+    APIKeyInjection -.->|"reads credential refs"| CycleState
+
+    %% Egress to providers (via Envoy)
+    Gateway -->|"HTTPS/443"| OpenAI
+    Gateway -->|"HTTPS/443"| Anthropic
+    Gateway -->|"HTTPS/443"| AzureOpenAI
+    Gateway -->|"HTTPS/443"| Bedrock
+    Gateway -->|"HTTPS/443"| VertexAI
+
+    %% NeMo calls
+    NemoRequest -->|"HTTP POST"| NemoService
+    NemoResponse -->|"HTTP POST"| NemoService
 
     %% Styling
-    style PayloadProcessing fill:#e3f2fd,stroke:#1565c0,stroke-width:3px
-    style PluginPipeline fill:#bbdefb,stroke:#1976d2,stroke-width:2px
-    style OptionalGuards fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
-    style Reconcilers fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style InMemoryStores fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
-    style CRDs fill:#fff8e1,stroke:#f9a825,stroke-width:2px
-    style ExternalProviders fill:#fce4ec,stroke:#c62828,stroke-width:2px
-
-    style ModelExtractor fill:#90caf9,stroke:#1565c0
-    style ModelResolver fill:#64b5f6,stroke:#1565c0
-    style APITranslation fill:#42a5f5,stroke:#1565c0
-    style APIKeyInjection fill:#2196f3,stroke:#0d47a1,color:#fff
-    style NemoRequest fill:#ffcc80,stroke:#ef6c00
-    style NemoResponse fill:#ffcc80,stroke:#ef6c00
-    style Gateway fill:#e0e0e0,stroke:#616161,stroke-width:2px
-    style NemoService fill:#ffcc80,stroke:#ef6c00
-    style ExternalModelCR fill:#fff59d,stroke:#f9a825
-    style ExternalProviderCR fill:#fff59d,stroke:#f9a825
+    style PayloadProcessing fill:#4a90e2,stroke:#333,stroke-width:3px,color:#fff
+    style ModelExtractor fill:#6bb3f0,stroke:#333
+    style ModelResolver fill:#6bb3f0,stroke:#333
+    style APITranslation fill:#6bb3f0,stroke:#333
+    style APIKeyInjection fill:#6bb3f0,stroke:#333
+    style NemoRequest fill:#6bb3f0,stroke:#333
+    style NemoResponse fill:#6bb3f0,stroke:#333
+    style CycleState fill:#b8d4f0,stroke:#333
+    style HealthCheck fill:#b8d4f0,stroke:#333
+    style ExternalModel fill:#f5a623,stroke:#333
+    style ExternalProvider fill:#f5a623,stroke:#333
+    style Gateway fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    style EnvoyFilter fill:#ffe6cc,stroke:#d79b00
+    style OpenAI fill:#999,stroke:#333
+    style Anthropic fill:#999,stroke:#333
+    style AzureOpenAI fill:#999,stroke:#333
+    style Bedrock fill:#999,stroke:#333
+    style VertexAI fill:#999,stroke:#333
+    style NemoService fill:#7ed321,stroke:#333
+    style K8sAPI fill:#e8e8e8,stroke:#333
+    style Secrets fill:#e8e8e8,stroke:#333

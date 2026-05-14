@@ -1,38 +1,54 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and optimizes RAG pipelines using ai4rag in notebooks or scripts"
+        dataScientist = person "Data Scientist / ML Engineer" "Creates and optimizes RAG pipelines using notebooks or ML pipelines"
 
-        ai4rag = softwareSystem "ai4rag" "Optimization engine that finds optimal hyperparameter configurations for RAG pipelines" {
-            experiment = container "Experiment Orchestrator" "Manages end-to-end RAG optimization workflow with budget-based iteration" "Python Module"
-            hpo = container "HPO Engine" "GAM-based and random search hyperparameter optimization algorithms" "Python Module (pygam)"
-            ragPipeline = container "RAG Pipeline" "Template-based pipeline: chunking, embedding, retrieval, generation" "Python Module (LangChain)"
-            searchSpace = container "Search Space Manager" "Parameter definitions, constraint rules, Llama Stack auto-discovery" "Python Module (Pydantic)"
-            evaluator = container "Evaluator" "RAG evaluation with answer correctness, faithfulness, and context metrics" "Python Module (Unitxt)"
-            eventHandler = container "Event Handlers" "Streams experiment results to filesystem or KFP metadata" "Python Module"
+        ai4rag = softwareSystem "ai4rag" "Provider-agnostic Python library that automatically finds optimal hyperparameter configurations for RAG pipelines" {
+            experimentModule = container "ai4rag.core.experiment" "Orchestrates end-to-end RAG optimization workflow including Models Pre-Selection" "Python Module"
+            hpoModule = container "ai4rag.core.hpo" "Hyperparameter optimization algorithms: GAM-based surrogate optimizer and random search baseline" "Python Module"
+            ragModule = container "ai4rag.rag" "RAG pipeline components: chunking, embedding, retrieval, vector stores, and templates (index-retrieve-generate)" "Python Module"
+            searchSpaceModule = container "ai4rag.search_space" "Search space definition, parameter management, constraint rules, and Llama Stack auto-discovery" "Python Module"
+            evaluatorModule = container "ai4rag.evaluator" "RAG evaluation using Unitxt: answer correctness, faithfulness, context correctness with confidence intervals" "Python Module"
+            eventHandlerModule = container "ai4rag.utils.event_handler" "Event handler interfaces: LocalEventHandler (JSON to filesystem) and KFPEventHandler (pipeline metadata)" "Python Module"
         }
 
-        llamaStack = softwareSystem "Llama Stack Server" "Backend for foundation models, embeddings, and vector stores" "External"
-        openaiAPI = softwareSystem "OpenAI-compatible API" "Alternative backend for foundation models and embeddings" "External"
-        chromaDB = softwareSystem "ChromaDB" "In-memory vector store for local development and MPS phase" "External In-Process"
-        kfp = softwareSystem "Kubeflow Pipelines" "ML pipeline orchestration — receives experiment metadata" "Internal Platform"
+        llamaStack = softwareSystem "Llama Stack Server" "Backend for foundation models, embedding models, and vector stores" "External"
+        openaiApi = softwareSystem "OpenAI-Compatible API" "Alternative backend for foundation models and embeddings" "External"
+        chromaDB = softwareSystem "ChromaDB" "In-memory vector store for local development and Models Pre-Selection" "External - In-Process"
+        kubeflowPipelines = softwareSystem "Kubeflow Pipelines" "ML pipeline orchestration system for experiment metadata" "External"
 
-        # External relationships
-        dataScientist -> ai4rag "Imports library, defines search space, runs optimization experiments" "Python API"
-        ai4rag -> llamaStack "Chat completions, embeddings, vector store CRUD, model discovery" "HTTP/HTTPS, API Key"
-        ai4rag -> openaiAPI "Chat completions and embeddings (alternative backend)" "HTTPS, API Key"
-        ai4rag -> chromaDB "In-memory vector store operations" "In-process Python API"
-        ai4rag -> kfp "Streams experiment results as pipeline metadata" "KFPEventHandler"
+        # External library dependencies (in-process)
+        langchain = softwareSystem "LangChain" "Document abstraction and text splitting (recursive, character, token)" "Library"
+        unitxt = softwareSystem "Unitxt" "RAG evaluation metrics computation framework" "Library"
+        pygam = softwareSystem "pygam" "Generalized Additive Models for surrogate-based hyperparameter optimization" "Library"
+        scikitlearn = softwareSystem "scikit-learn" "LabelEncoder for categorical parameter encoding in GAM optimizer" "Library"
 
-        # Internal relationships
-        experiment -> hpo "Requests next parameter suggestions, reports observations"
-        experiment -> ragPipeline "Executes RAG template (index, retrieve, generate)"
-        experiment -> searchSpace "Prepares search space with constraints"
-        experiment -> evaluator "Evaluates RAG answers against references"
-        experiment -> eventHandler "Emits evaluation records and pattern payloads"
-        searchSpace -> llamaStack "Auto-discovers available models" "HTTP/HTTPS"
-        ragPipeline -> llamaStack "Embeddings, vector IO, chat completions" "HTTP/HTTPS"
-        ragPipeline -> openaiAPI "Embeddings, chat completions" "HTTPS"
-        ragPipeline -> chromaDB "Vector store insert/query" "In-process"
+        # User relationships
+        dataScientist -> ai4rag "Imports and configures, defines search space, runs optimization experiments" "Python API"
+
+        # ai4rag to external services
+        ai4rag -> llamaStack "Chat completions, embeddings, vector store CRUD, vector IO, model discovery" "HTTP/HTTPS, API Key (Bearer)"
+        ai4rag -> openaiApi "Chat completions, text embeddings (alternative backend)" "HTTPS, API Key (Bearer)"
+        ai4rag -> chromaDB "In-memory vector store for local dev and MPS" "In-process Python API"
+        ai4rag -> kubeflowPipelines "Streams experiment results as pipeline metadata" "In-process (KFPEventHandler)"
+
+        # ai4rag to library dependencies
+        ai4rag -> langchain "Document chunking and text splitting" "In-process Python API"
+        ai4rag -> unitxt "RAG evaluation metrics" "In-process Python API"
+        ai4rag -> pygam "Surrogate model for GAM-based HPO" "In-process Python API"
+        ai4rag -> scikitlearn "Categorical parameter encoding" "In-process Python API"
+
+        # Internal container relationships
+        experimentModule -> hpoModule "Requests next hyperparameters, updates with scores"
+        experimentModule -> ragModule "Executes RAG pipeline with suggested parameters"
+        experimentModule -> searchSpaceModule "Applies constraint rules, samples parameter space"
+        experimentModule -> evaluatorModule "Evaluates RAG pipeline results"
+        experimentModule -> eventHandlerModule "Emits iteration results and experiment events"
+        ragModule -> llamaStack "Embedding, chat, vector IO operations"
+        ragModule -> openaiApi "Embedding, chat operations (alternative)"
+        ragModule -> chromaDB "In-memory vector operations"
+        searchSpaceModule -> llamaStack "Auto-discovers available models and vector stores"
+        hpoModule -> pygam "Fits surrogate GAM model for optimization"
+        evaluatorModule -> unitxt "Computes evaluation metrics"
     }
 
     views {
@@ -51,25 +67,25 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "External In-Process" {
-                background #cccccc
-                color #333333
+            element "External - In-Process" {
+                background #bbbbbb
+                color #ffffff
             }
-            element "Internal Platform" {
+            element "Library" {
                 background #7ed321
                 color #ffffff
             }
             element "Person" {
-                background #9b59b6
+                background #08427b
                 color #ffffff
-                shape person
+                shape Person
             }
             element "Software System" {
-                background #4a90e2
+                background #1168bd
                 color #ffffff
             }
             element "Container" {
-                background #6ba5e7
+                background #438dd5
                 color #ffffff
             }
         }

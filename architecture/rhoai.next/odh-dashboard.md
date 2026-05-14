@@ -626,6 +626,16 @@ All traffic enters through kube-rbac-proxy (port 8443/HTTPS) which authenticates
 
 _Analyzing the main branch. The downstream release branches (e.g., rhoai-3.4) likely add rpms.lock.yaml and Hermeto prefetch integration for fully hermetic builds._
 
+## Admission Webhooks
+
+This component defines 3 webhook(s) (0 mutating, 2 validating, 1 conversion).
+
+| Name | Type | Target Resources | Purpose |
+|------|------|-----------------|---------|
+| vworkspace.kb.io | validating | workspaces | Validating webhook for Workspace resources on create and update. It fetches the referenced WorkspaceKind to verify it exists, then validates that the selected imageConfig and podConfig IDs are defined in that WorkspaceKind's allowed values, and that pod metadata labels/annotations are well-formed. |
+| vworkspacekind.kb.io | validating | workspacekinds | Validating webhook for WorkspaceKind resources that enforces structural correctness on create (pod metadata, env vars, imageConfig/podConfig values, redirect cycles, port references, defaults) and on update additionally prevents modification or removal of imageConfig/podConfig options that are actively in use by Workspace instances, while on delete it blocks deletion if any Workspaces still reference the WorkspaceKind or if a protection finalizer is present. |
+| conversion.workspacekinds.kubeflow.org | conversion | workspacekinds |  |
+
 ## Data Flows
 
 ### Flow 1: User Request to Dashboard UI

@@ -342,6 +342,47 @@ The controller also manages NVIDIA NIM integration, including API key validation
 
 _This is the `main` branch. Downstream release branches (e.g., `rhoai-3.x`) likely add `rpms.lock.yaml` and Hermeto prefetch integration for hermetic Konflux builds._
 
+## Admission Webhooks
+
+This component defines 6 webhook(s) (3 mutating, 3 validating).
+
+| Name | Type | Target Resources | Purpose |
+|------|------|-----------------|---------|
+| minferencegraph-v1alpha1.odh-model-controller.opendatahub.io | mutating | inferencegraphs | Validates InferenceGraph resources on create/update to ensure that serviceURL references in graph node steps use only cluster-internal hostnames and target services within the same namespace as the InferenceGraph, preventing cross-namespace references and public hostname usage for security. The mutating defaulter is a no-op placeholder. |
+| minferenceservice-v1beta1.odh-model-controller.opendatahub.io | mutating | inferenceservices | Validates that InferenceService resources are not created in the protected applications namespace (determined by the DSCInitialization CR) and enforces name-length constraints, while providing a no-op mutating defaulter. This prevents users from deploying inference services into the operator's own namespace. |
+| mutating.pod.odh-model-controller.opendatahub.io | mutating | pods | Mutates newly created Pods that have RAY_USE_TLS enabled on their kserve-container or worker-container by injecting TLS-related volumes, volume mounts, and an init container that copies Ray TLS certificates from a shared secret into the pod, enabling encrypted communication between Ray cluster nodes in KServe inference deployments. |
+| validating.isvc.odh-model-controller.opendatahub.io | validating | inferenceservices | Validates that InferenceService resources are not created in the protected applications namespace (determined by the DSCInitialization CR) and enforces name-length constraints, while providing a no-op mutating defaulter. This prevents users from deploying inference services into the operator's own namespace. |
+| validating.nim.account.odh-model-controller.opendatahub.io | validating | accounts | Validates NIM Account creation by enforcing a singleton constraint: only one Account resource is allowed per namespace. Updates and deletions are always permitted without additional validation. |
+| vinferencegraph-v1alpha1.odh-model-controller.opendatahub.io | validating | inferencegraphs | Validates InferenceGraph resources on create/update to ensure that serviceURL references in graph node steps use only cluster-internal hostnames and target services within the same namespace as the InferenceGraph, preventing cross-namespace references and public hostname usage for security. The mutating defaulter is a no-op placeholder. |
+
+### Platform Webhooks
+
+The following webhooks are defined by the platform operator and apply to this component's resource types:
+
+| Webhook | Defined By |
+|---------|-----------|
+| connection-isvc.opendatahub.io | rhods-operator |
+
+### External Webhooks
+
+The following webhooks from peer components intercept this component's resource types:
+
+| Webhook | Defined By |
+|---------|-----------|
+| inferencegraph.kserve-webhook-server.validator | kserve-autogluon-server |
+| inferenceservice.kserve-webhook-server.defaulter | kserve-autogluon-server |
+| inferenceservice.kserve-webhook-server.pod-mutator | kserve-autogluon-server |
+| inferenceservice.kserve-webhook-server.validator | kserve-autogluon-server |
+| inferencegraph.kserve-webhook-server.validator | kserve |
+| inferenceservice.kserve-webhook-server.defaulter | kserve |
+| inferenceservice.kserve-webhook-server.pod-mutator | kserve |
+| inferenceservice.kserve-webhook-server.validator | kserve |
+| namespace.sidecar-injector.istio.io | llm-d-inference-scheduler |
+| object.sidecar-injector.istio.io | llm-d-inference-scheduler |
+| rev.namespace.sidecar-injector.istio.io | llm-d-inference-scheduler |
+| rev.object.sidecar-injector.istio.io | llm-d-inference-scheduler |
+| mutate-pod.sparkoperator.k8s.io | spark-operator |
+
 ## Data Flows
 
 ### Flow 1: InferenceService Deployment

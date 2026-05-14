@@ -5,118 +5,135 @@
 │         │                                                                │
 │         │ Port: 8000/TCP                                                 │
 │         │ Protocol: HTTP(S)                                              │
-│         │ Encryption: Configurable TLS (--ssl-certfile/--ssl-keyfile)     │
-│         │ Auth: Bearer API Key (/v1/* paths only)                        │
-│         │       SHA256-hashed, constant-time compare                     │
-│         │       No auth on /health, /tokenize, /pause, /sleep, etc.      │
+│         │ Encryption: Configurable TLS (--ssl-certfile/--ssl-keyfile)    │
+│         │ Auth: Bearer API key (optional, SHA256 hashed)                 │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  SERVICE LAYER (Internal - ClusterIP)                                    │
+│  SERVICE BOUNDARY (vLLM Pod)                                            │
 │                                                                          │
-│  [vLLM OpenAI API Server]                                                │
-│  - Service: vllm-openai (ClusterIP)                                      │
-│  - Port: 8000/TCP                                                        │
-│  - Protocol: HTTP(S)                                                     │
-│  - TLS: Configurable (--ssl-certfile/--ssl-keyfile)                      │
-│  - TLS Refresh: --enable-ssl-refresh (watchfile async reload)            │
-│  - CORS: Default allows all origins (restrict in production!)            │
-│  - Auth Endpoints: /v1/* → Bearer Token required                         │
-│  - Open Endpoints: /health, /version, /load, /tokenize, /detokenize     │
-│  -                 /pause, /resume, /sleep, /wake_up                     │
-│  -                 /update_weights, /collective_rpc                      │
-│  -                 /reset_prefix_cache, /reset_mm_cache                  │
-│  -                 /start_profile, /stop_profile                         │
-│  - Image: registry.access.redhat.com/ubi9/ubi-minimal based             │
-│  - Architectures: ppc64le, s390x                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐     │
+│  │  [vLLM OpenAI API Server - FastAPI/uvicorn]                     │     │
+│  │  - Port: 8000/TCP (HTTP/HTTPS)                                  │     │
+│  │  - TLS: Configurable (--ssl-certfile, --ssl-keyfile)            │     │
+│  │  - TLS Refresh: async file watcher (--enable-ssl-refresh)       │     │
+│  │  - Cipher Suites: Configurable (--ssl-ciphers)                  │     │
+│  │  - Client Certs: Configurable (--ssl-cert-reqs)                 │     │
+│  │  - Auth: Bearer Token on /v1/* paths only                       │     │
+│  │  - Token Validation: SHA256 hash + constant-time compare        │     │
+│  │  - CORS: Defaults to allow-all (production: restrict!)          │     │
+│  │                                                                  │     │
+│  │  Authenticated Endpoints (/v1/*):                                │     │
+│  │    /v1/models, /v1/chat/completions, /v1/completions,           │     │
+│  │    /v1/messages, /v1/embeddings, /v1/responses,                 │     │
+│  │    /v1/load_lora_adapter, /v1/unload_lora_adapter,              │     │
+│  │    /v1/realtime (WebSocket), /v1/rerank                         │     │
+│  │                                                                  │     │
+│  │  UNAUTHENTICATED Endpoints (security risk in production):       │     │
+│  │    /health, /version, /load (read-only - low risk)              │     │
+│  │    /tokenize, /detokenize (data processing - medium risk)       │     │
+│  │    /pause, /resume, /sleep, /wake_up (operational - HIGH risk)  │     │
+│  │    /update_weights, /collective_rpc (mutation - CRITICAL risk)  │     │
+│  │    /reset_prefix_cache, /reset_mm_cache (cache flush - medium)  │     │
+│  │    /start_profile, /stop_profile (diagnostic - medium risk)     │     │
+│  │    /classify, /pooling, /score, /rerank (inference - low risk)  │     │
+│  └─────────────────────────────────────────────────────────────────┘     │
 │                                                                          │
-│  [vLLM gRPC Server]                                                      │
-│  - Service: vllm-grpc (ClusterIP)                                        │
-│  - Port: 50051/TCP                                                       │
-│  - Protocol: gRPC                                                        │
-│  - Encryption: None (configurable)                                       │
-│  - Auth: None                                                            │
+│  ┌─────────────────────────────────────────────────────────────────┐     │
+│  │  [gRPC Server - smg-grpc-servicer]                              │     │
+│  │  - Port: 50051/TCP                                               │     │
+│  │  - Protocol: gRPC                                                │     │
+│  │  - Encryption: None (configurable)                               │     │
+│  │  - Auth: None                                                    │     │
+│  │  - Service: VllmEngine                                           │     │
+│  └─────────────────────────────────────────────────────────────────┘     │
 │                                                                          │
-│  [Prometheus Metrics]                                                    │
-│  - Port: 8000/TCP (same as main service)                                 │
-│  - Protocol: HTTP                                                        │
-│  - Encryption: Same as main service                                      │
-│  - Auth: None                                                            │
+│  ┌─────────────────────────────────────────────────────────────────┐     │
+│  │  [Prometheus Metrics Endpoint]                                   │     │
+│  │  - Port: 8000/TCP (shared with API server)                      │     │
+│  │  - Protocol: HTTP                                                │     │
+│  │  - Encryption: Same as main service                              │     │
+│  │  - Auth: None                                                    │     │
+│  └─────────────────────────────────────────────────────────────────┘     │
 │         │                                                                │
-├─────────┼───────────────────────────────────────────────────────────────┤
-│  EGRESS │ (Outbound Connections)                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (Outbound Connections)                                          │
 │         │                                                                │
-│         ├──► [HuggingFace Hub - huggingface.co]                          │
-│         │    - Port: 443/TCP                                             │
-│         │    - Protocol: HTTPS                                           │
-│         │    - Encryption: TLS 1.2+                                      │
-│         │    - Auth: Bearer Token (HF_TOKEN env var)                     │
-│         │    - Purpose: Model weight and config downloads                │
-│         │    - Disabled if: HF_HUB_OFFLINE=1                             │
+│         ├──► [HuggingFace Hub - huggingface.co]                         │
+│         │    Port: 443/TCP                                               │
+│         │    Protocol: HTTPS                                             │
+│         │    Encryption: TLS 1.2+                                        │
+│         │    Auth: Bearer Token (HF_TOKEN env var)                       │
+│         │    Purpose: Model weight and config downloads                  │
+│         │    Note: Disabled when HF_HUB_OFFLINE=1                       │
 │         │                                                                │
 │         ├──► [OTLP Collector]                                            │
-│         │    - Port: Configurable                                        │
-│         │    - Protocol: gRPC (default insecure) or HTTP                 │
-│         │    - Encryption: Configurable (default: NONE)                  │
-│         │    - Auth: None                                                │
-│         │    - Purpose: OpenTelemetry trace export                       │
-│         │    - Note: Disabled on s390x                                   │
+│         │    Port: Configurable                                          │
+│         │    Protocol: gRPC or HTTP                                      │
+│         │    Encryption: Configurable (default: INSECURE)                │
+│         │    Auth: None                                                   │
+│         │    Purpose: OpenTelemetry trace export                         │
+│         │    Risk: Default insecure channel (FIPS non-compliant)         │
 │         │                                                                │
-│         ├──► [Red Hat Stats - console.redhat.com/api/rhaiis-stats]       │
-│         │    - Port: 443/TCP                                             │
-│         │    - Protocol: HTTPS                                           │
-│         │    - Encryption: TLS 1.2+                                      │
-│         │    - Auth: None                                                │
-│         │    - Purpose: Usage statistics reporting                       │
+│         ├──► [Red Hat Stats - console.redhat.com/api/rhaiis-stats]      │
+│         │    Port: 443/TCP                                               │
+│         │    Protocol: HTTPS                                             │
+│         │    Encryption: TLS 1.2+                                        │
+│         │    Auth: None                                                   │
+│         │    Purpose: Usage statistics reporting (UBI image only)        │
 │         │                                                                │
-│         ├──► [S3-Compatible Storage] (Optional)                          │
-│         │    - Port: 443/TCP                                             │
-│         │    - Protocol: HTTPS                                           │
-│         │    - Encryption: TLS 1.2+                                      │
-│         │    - Auth: AWS IAM credentials                                 │
-│         │    - Purpose: Model weight loading from object storage         │
+│         ├──► [S3-Compatible Storage]                                     │
+│         │    Port: 443/TCP                                               │
+│         │    Protocol: HTTPS                                             │
+│         │    Encryption: TLS 1.2+                                        │
+│         │    Auth: AWS IAM credentials                                   │
+│         │    Purpose: Optional model weight loading from object storage  │
 │         │                                                                │
-│         └──► [Gloo Distributed Backend] (Optional)                       │
-│              - Port: Configurable                                        │
-│              - Protocol: TCP                                             │
-│              - Encryption: None                                          │
-│              - Auth: None                                                │
-│              - Purpose: Tensor/data parallelism communication            │
+│         └──► [Gloo Distributed Backend]                                  │
+│              Port: Configurable                                          │
+│              Protocol: TCP                                               │
+│              Encryption: None                                            │
+│              Auth: None                                                   │
+│              Purpose: Tensor/data parallelism (multi-node)               │
 │                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  BUILD-TIME ONLY                                                         │
+│  OPTIONAL INTEGRATIONS                                                   │
 │                                                                          │
-│  [IBM DevPI - wheels.developerfirst.ibm.com]                             │
-│  - Port: 443/TCP                                                         │
-│  - Protocol: HTTPS                                                       │
-│  - Encryption: TLS 1.2+                                                  │
-│  - Auth: None                                                            │
-│  - Purpose: ppc64le Python wheel downloads                               │
+│  ┌──► [Ray Cluster]                                                      │
+│  │    Port: 6379/TCP (head node)                                         │
+│  │    Protocol: Ray protocol                                             │
+│  │    Encryption: None                                                   │
+│  │    Auth: None                                                         │
+│  │    Purpose: Distributed execution orchestration                       │
+│  │                                                                       │
+│  └──► [MCP Server (Model Context Protocol)]                             │
+│       Port: Configurable                                                 │
+│       Protocol: HTTP                                                     │
+│       Encryption: Configurable                                           │
+│       Auth: Configurable                                                 │
+│       Purpose: Tool/context protocol for agentic interactions            │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- No RBAC — vLLM CPU is a containerized service, not a Kubernetes operator.
-- RBAC is managed by KServe, which deploys vLLM as an InferenceService runtime.
+  No Kubernetes RBAC — this is a containerized service, not an operator.
+  RBAC is managed by KServe which deploys vLLM as an InferenceService runtime.
 
 Secrets:
-- SSL certificate/key (kubernetes.io/tls) - TLS termination, cert-manager or manual, auto-rotate via --enable-ssl-refresh
-- API key (Opaque) - Bearer token auth for /v1/* paths (VLLM_API_KEY env or --api-key), no auto-rotation
-- HuggingFace token (Opaque) - Model repo access (HF_TOKEN env), no auto-rotation
+  - SSL certificate/key (kubernetes.io/tls) - TLS termination, cert-manager or manual, auto-rotate via --enable-ssl-refresh
+  - API key (Opaque) - Bearer token auth, manual/platform config, no auto-rotate
+  - HuggingFace token (Opaque) - HF_TOKEN env var for model repo access, manual, no auto-rotate
 
-Authentication & Authorization:
-- /v1/* endpoints: Bearer Token (SHA256-hashed, constant-time comparison)
-- Health/operational endpoints: Unauthenticated (open access)
-- CORS: Defaults to allow all origins/methods/headers (should be restricted in production)
-- OPTIONS preflight: Exempted from auth
+Crypto / FIPS Notes:
+  - Base image: UBI 9 (system OpenSSL for FIPS-validated crypto)
+  - Python ssl module delegates to system OpenSSL
+  - hashlib.md5 used for config hashing (SHA256 fallback in FIPS mode via safe_hash())
+  - blake3 default multimodal hasher (set VLLM_MM_HASHER_ALGORITHM=sha256 for FIPS)
+  - OTLP gRPC exporter defaults to insecure channel (configure TLS for FIPS)
 
-FIPS Crypto Considerations:
-- Base image: UBI 9 (system OpenSSL for FIPS)
-- TLS: Python ssl module delegates to system OpenSSL
-- Config hashing: MD5 default with SHA256 FIPS fallback (safe_hash())
-- Multimodal hashing: blake3 default, set VLLM_MM_HASHER_ALGORITHM=sha256 for FIPS
-- OTLP exporter: Insecure gRPC channel by default (configure TLS for FIPS)
-
-Build Hermeticity:
-- hermetic: false (explicitly disabled in Tekton pipeline)
-- No lock files (requirements/*.txt specify version ranges)
-- Dependencies resolved at build time from PyPI, IBM DevPI, RPM repos
+Security Recommendations:
+  1. Restrict CORS (default allows all origins/methods/headers)
+  2. Network policy to restrict access to unauthenticated operational endpoints
+  3. Enable TLS (--ssl-certfile/--ssl-keyfile) in production
+  4. Set VLLM_MM_HASHER_ALGORITHM=sha256 for FIPS compliance
+  5. Configure OTLP exporter with TLS for FIPS compliance
+  6. Protect /update_weights and /collective_rpc via service mesh AuthorizationPolicy

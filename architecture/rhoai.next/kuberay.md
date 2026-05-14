@@ -242,6 +242,27 @@ The operator also supports pluggable batch schedulers (Volcano, Yunikorn, schedu
 
 _This is the `main` branch. Downstream release branches (e.g., `rhoai-3.x`) likely add `rpms.lock.yaml` and Hermeto prefetch integration during release hardening._
 
+## Admission Webhooks
+
+This component defines 3 webhook(s) (2 mutating, 1 validating).
+
+| Name | Type | Target Resources | Purpose |
+|------|------|-----------------|---------|
+| mraycluster.kb.io | mutating | rayclusters | Mutates RayCluster resources on create/update to enforce platform-specific network security defaults. On OpenShift clusters (detected via Route API availability), it sets the secure trusted network annotation to true and forcibly disables Ingress/Route creation (overriding user settings) to enforce Gateway API-only access with centralized authentication; on non-OpenShift clusters, it sets the annotation to false. |
+| mraycluster.kb.io | mutating |  | Mutates RayCluster resources on create/update to enforce platform-specific network security defaults. On OpenShift clusters (detected via Route API availability), it sets the secure trusted network annotation to true and forcibly disables Ingress/Route creation (overriding user settings) to enforce Gateway API-only access with centralized authentication; on non-OpenShift clusters, it sets the annotation to false. |
+| vraycluster.kb.io | validating |  | Validates RayCluster resources on create and update, ensuring the cluster name matches a strict DNS-compatible regex pattern (lowercase alphanumeric, starting with a letter) and that all worker group names within the spec are unique. |
+
+### External Webhooks
+
+The following webhooks from peer components intercept this component's resource types:
+
+| Webhook | Defined By |
+|---------|-----------|
+| mraycluster.ray.openshift.ai | codeflare-operator |
+| vraycluster.ray.openshift.ai | codeflare-operator |
+| mraycluster.kb.io | kueue |
+| vraycluster.kb.io | kueue |
+
 ## Data Flows
 
 ### Flow 1: RayCluster Creation and Dashboard Access (OpenShift/RHOAI)

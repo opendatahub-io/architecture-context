@@ -3,108 +3,91 @@ graph TB
         User["User / Client"]
     end
 
-    subgraph LlamaStackRuntime["LLAMA STACK RUNTIME (In-Cluster)"]
+    subgraph LlamaStackZone["LLAMA STACK SERVER (In-Cluster)"]
         direction TB
+        LSD["Llama Stack Distribution<br/>8321/TCP HTTP<br/>SA: {lsd-name}-sa"]
 
-        subgraph NS_LSD["Namespace: {user-namespace}"]
-            LSD["Llama Stack Server<br/>8321/TCP HTTP<br/>SA: {lsd-name}-sa"]
-            InlineProvider["GarakInlineEvalAdapter<br/>subprocess spawn (os.setsid)<br/>Semaphore concurrency"]
-            RemoteProvider["GarakRemoteEvalAdapter<br/>KFP pipeline submission"]
+        subgraph Providers["Garak Providers (plugins)"]
+            InlineProvider["inline::trustyai_garak<br/>subprocess execution"]
+            RemoteProvider["remote::trustyai_garak<br/>KFP pipeline submission"]
         end
+
+        LSD --> InlineProvider
+        LSD --> RemoteProvider
     end
 
-    subgraph EvalHubRuntime["EVAL-HUB RUNTIME (In-Cluster)"]
+    subgraph KFPZone["KUBEFLOW PIPELINES (In-Cluster)"]
         direction TB
-
-        subgraph NS_EvalHub["Namespace: {eval-namespace}"]
-            EvalHubSvc["Eval-Hub Service"]
-            EvalPod["Eval-Hub Job Pod<br/>ConfigMap: /meta/job.json<br/>Mode: simple | kfp"]
-            Sidecar["Eval-Hub Sidecar<br/>(localhost, HTTP, no auth)"]
-        end
+        DSPA["DSPA API Server<br/>443/TCP HTTPS<br/>Auth: Bearer Token (SA)"]
+        KFPPod["KFP Pipeline Step Pods<br/>Image: odh-trustyai-garak-<br/>lls-provider-dsp-rhel9<br/>Secrets: /mnt/model-auth"]
+        DSPA --> KFPPod
     end
 
-    subgraph KFPRuntime["KFP RUNTIME (In-Cluster)"]
+    subgraph EvalHubZone["EVAL-HUB (In-Cluster)"]
         direction TB
-
-        subgraph NS_KFP["Namespace: {namespace}"]
-            KFPAPI["KFP API (DSPA)<br/>443/TCP HTTPS<br/>RBAC: lsd-garak-dspa-api-access"]
-            KFPPod["KFP Pipeline Pods<br/>Image: quay.io/rhoai/<br/>odh-trustyai-garak-lls-provider-dsp-rhel9<br/>Mount: /mnt/model-auth"]
-        end
+        EvalHubSvc["Eval-Hub Service<br/>K8s Job orchestration"]
+        GarakPod["GarakAdapter K8s Job Pod<br/>ConfigMap: /meta/job.json<br/>Modes: simple | kfp"]
+        Sidecar["Eval-Hub Sidecar<br/>localhost HTTP<br/>No auth (pod-local)"]
+        EvalHubSvc -->|K8s Job| GarakPod
+        GarakPod -->|status events| Sidecar
     end
 
     subgraph ModelEndpoints["MODEL ENDPOINTS"]
-        TargetLLM["Target LLM (vLLM)<br/>443/8080 TCP<br/>HTTPS/HTTP<br/>TLS: Configurable<br/>Auth: Bearer Token"]
-        SDGModel["SDG Model<br/>443/8080 TCP<br/>HTTPS/HTTP<br/>Auth: SDG_API_KEY"]
-        JudgeModel["Judge/Attacker/Evaluator<br/>443/8080 TCP<br/>HTTPS/HTTP<br/>Auth: Per-role API keys"]
-        ShieldModels["Shield Models<br/>(Llama Guard, Prompt Guard)<br/>8321/TCP HTTP<br/>via Llama Stack Safety API"]
+        TargetLLM["Target LLM (vLLM)<br/>443/8080 TCP HTTPS/HTTP<br/>TLS configurable<br/>Auth: Bearer Token"]
+        SDGModel["SDG Model<br/>443/8080 TCP HTTPS/HTTP<br/>Auth: SDG_API_KEY"]
+        JudgeModels["Judge/Attacker/Evaluator<br/>443/8080 TCP HTTPS/HTTP<br/>Auth: per-role API keys"]
+        ShieldModels["Shield Models<br/>(via LSD Safety API)<br/>8321/TCP HTTP<br/>No auth (in-cluster)"]
     end
 
-    subgraph StorageServices["STORAGE & TRACKING SERVICES"]
-        S3["S3 Object Storage<br/>443/TCP HTTPS<br/>TLS<br/>Auth: AWS IAM"]
-        OCI["OCI Registry<br/>443/TCP HTTPS<br/>TLS<br/>Auth: Registry creds"]
-        MLflow["MLflow Tracking<br/>443/5000 TCP<br/>HTTPS/HTTP<br/>Auth: Configurable"]
-        PostgreSQL["PostgreSQL (via LSD)<br/>5432/TCP<br/>No encryption (in-cluster)<br/>Auth: DB credentials"]
+    subgraph StorageServices["STORAGE & INFRASTRUCTURE"]
+        S3["S3 Object Storage<br/>443/TCP HTTPS TLS<br/>Auth: AWS IAM"]
+        OCI["OCI Registry<br/>443/TCP HTTPS TLS<br/>Auth: Registry creds"]
+        MLflow["MLflow Tracking<br/>443/5000 TCP HTTPS/HTTP<br/>Auth: Configurable"]
+        PostgreSQL["PostgreSQL (via LSD)<br/>5432/TCP<br/>No encryption (in-cluster)"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>mTLS ServiceAccount"]
     end
 
-    subgraph K8sControl["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>mTLS (ServiceAccount)<br/>Auth: SA Token"]
-    end
+    %% External flows
+    User -->|"HTTP/8321<br/>No TLS<br/>No auth"| LSD
 
-    %% External to Llama Stack
-    User -->|"HTTP/8321<br/>No encryption<br/>No auth"| LSD
+    %% Provider to KFP
+    RemoteProvider -->|"HTTPS/443<br/>TLS<br/>Bearer Token (SA)"| DSPA
+    GarakPod -->|"HTTPS/443<br/>TLS<br/>Bearer Token (SA)"| DSPA
 
-    %% Llama Stack internal
-    LSD --> InlineProvider
-    LSD --> RemoteProvider
-
-    %% Inline mode egress
-    InlineProvider -->|"HTTPS/443<br/>TLS (configurable)<br/>Bearer Token"| TargetLLM
-
-    %% Remote mode to KFP
-    RemoteProvider -->|"HTTPS/443<br/>TLS<br/>Bearer Token (SA)"| KFPAPI
-    KFPAPI --> KFPPod
-
-    %% KFP Pod egress
+    %% To model endpoints
+    InlineProvider -->|"subprocess → garak"| TargetLLM
     KFPPod -->|"HTTPS/443<br/>TLS (configurable)<br/>Bearer Token"| TargetLLM
+    GarakPod -->|"subprocess → garak"| TargetLLM
+    KFPPod -->|"HTTPS/443<br/>Bearer: SDG_API_KEY"| SDGModel
+    KFPPod -->|"HTTPS/443<br/>per-role API keys"| JudgeModels
+    InlineProvider -->|"HTTP/8321<br/>in-cluster"| ShieldModels
+
+    %% To storage
     KFPPod -->|"HTTPS/443<br/>TLS<br/>AWS IAM"| S3
-    KFPPod -->|"HTTP/8321<br/>No encryption"| LSD
-
-    %% Eval-Hub flows
-    EvalHubSvc -->|"K8s Job creation"| EvalPod
-    EvalPod -->|"HTTP localhost<br/>No auth"| Sidecar
-    EvalPod -->|"HTTPS/443<br/>TLS (configurable)<br/>Bearer Token"| TargetLLM
-    EvalPod -->|"HTTPS/443<br/>TLS<br/>Bearer Token (SA)"| KFPAPI
-    EvalPod -->|"HTTPS/443<br/>TLS<br/>AWS IAM"| S3
-    EvalPod -->|"HTTPS/443<br/>TLS<br/>Registry creds"| OCI
-    EvalPod -->|"HTTPS/443<br/>Configurable"| MLflow
-
-    %% Intents benchmark model endpoints
-    KFPPod -->|"HTTPS/443<br/>Bearer Token"| SDGModel
-    KFPPod -->|"HTTPS/443<br/>Per-role API keys"| JudgeModel
-
-    %% Shield scan
-    InlineProvider -->|"HTTP/8321<br/>No encryption<br/>In-cluster"| ShieldModels
+    GarakPod -->|"HTTPS/443<br/>TLS<br/>AWS IAM"| S3
+    GarakPod -->|"HTTPS/443<br/>TLS<br/>Registry creds"| OCI
+    GarakPod -->|"HTTPS/443<br/>TLS"| MLflow
+    LSD -->|"PostgreSQL/5432"| PostgreSQL
 
     %% K8s API access
     LSD -->|"HTTPS/443<br/>mTLS<br/>SA Token"| K8sAPI
-    EvalPod -->|"HTTPS/443<br/>mTLS<br/>SA Token"| K8sAPI
+    GarakPod -->|"HTTPS/443<br/>mTLS<br/>SA Token"| K8sAPI
+    KFPPod -->|"HTTPS/443<br/>mTLS<br/>SA Token"| K8sAPI
 
-    %% PostgreSQL
-    LSD -->|"PostgreSQL/5432<br/>No encryption<br/>DB creds"| PostgreSQL
+    %% KFP Pod back to LSD
+    KFPPod -->|"HTTP/8321<br/>No TLS"| LSD
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef llamastack fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef evalhub fill:#fce4ec,stroke:#e91e63,stroke-width:2px
-    classDef kfp fill:#e8f4fd,stroke:#4a90e2,stroke-width:2px
-    classDef models fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef storage fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef k8s fill:#e0e0e0,stroke:#616161,stroke-width:2px
+    classDef llamastack fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef kfp fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef evalhub fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef model fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef storage fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class User external
     class LSD,InlineProvider,RemoteProvider llamastack
-    class EvalHubSvc,EvalPod,Sidecar evalhub
-    class KFPAPI,KFPPod kfp
-    class TargetLLM,SDGModel,JudgeModel,ShieldModels models
-    class S3,OCI,MLflow,PostgreSQL storage
-    class K8sAPI k8s
+    class DSPA,KFPPod kfp
+    class EvalHubSvc,GarakPod,Sidecar evalhub
+    class TargetLLM,SDGModel,JudgeModels,ShieldModels model
+    class S3,OCI,MLflow,PostgreSQL,K8sAPI storage

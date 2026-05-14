@@ -1,68 +1,65 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist / ML Engineer" "Deploys and queries LLM models for inference"
-        platformEngineer = person "Platform Engineer" "Deploys and operates the llm-d inference stack"
+        datascientist = person "Data Scientist / ML Engineer" "Deploys and queries LLM models for inference"
+        platformeng = person "Platform Engineer" "Configures and operates the inference platform"
 
-        llmd = softwareSystem "llm-d" "Kubernetes-native distributed inference serving stack — container images, deployment recipes, and orchestration patterns for production-scale LLM serving" {
-            cudaImage = container "llm-d-cuda" "Multi-stage CUDA image with vLLM, NIXL, UCX, NVSHMEM, DeepEP, DeepGEMM, FlashInfer, LMCache, OTEL" "Container Image (Dockerfile)"
+        llmd = softwareSystem "llm-d" "Kubernetes-native distributed inference serving stack with optimized container images, deployment recipes, and orchestration patterns for production-scale LLM serving" {
+            cudaImage = container "llm-d-cuda" "Multi-stage CUDA-based vLLM image with NIXL, UCX, NVSHMEM, DeepEP, DeepGEMM, FlashInfer, LMCache, OTEL" "Container Image (Dockerfile)"
             cpuImage = container "llm-d-cpu" "CPU-only vLLM image with NIXL/UCX" "Container Image (Dockerfile)"
             hpuImage = container "llm-d-hpu" "vLLM-Gaudi image for Intel Habana accelerators" "Container Image (Dockerfile)"
-            rocmImage = container "llm-d-rocm" "vLLM image for AMD ROCm GPUs with RIXL/UCX" "Container Image (Dockerfile)"
-            rdmaTools = container "llm-d-rdma-tools" "Diagnostic image for RDMA network validation" "Container Image (Dockerfile)"
-            deploymentRecipes = container "Deployment Recipes" "Kustomize bases/overlays for model server topologies (single-host, P/D, wide-EP)" "Kustomize"
-            gatewayRecipes = container "Gateway Recipes" "Gateway API configs for Istio, agentgateway, GKE" "Kustomize/YAML"
-            schedulerValues = container "Scheduler Configuration" "Helm values for EPP plugin chains, scoring profiles" "Helm Values"
+            rocmImage = container "llm-d-rocm" "vLLM image for AMD ROCm GPUs with RIXL and UCX" "Container Image (Dockerfile)"
+            deploymentRecipes = container "Deployment Recipes" "Kustomize bases and overlays for single-host, P/D disaggregation, wide-EP topologies" "Kustomize Manifests"
+            gatewayRecipes = container "Gateway Recipes" "Gateway API configurations for Istio, agentgateway, GKE" "Kustomize/YAML"
+            schedulerConfig = container "Scheduler Configuration" "Helm values for EPP plugin chains and scoring profiles" "Helm Values"
+            wellLitPaths = container "Well-Lit Path Guides" "End-to-end deployment guides with manifests" "Documentation + YAML"
         }
 
-        vllm = softwareSystem "vLLM" "High-performance LLM serving engine with OpenAI-compatible API" "External Upstream"
-        nixl = softwareSystem "NIXL" "High-performance data transfer library for KV cache disaggregation" "External Upstream"
-        epp = softwareSystem "llm-d-inference-scheduler (EPP)" "Endpoint Picker extension for intelligent inference load balancing" "Internal Platform"
-        routingSidecar = softwareSystem "llm-d-routing-sidecar" "Routing proxy sidecar for P/D decode coordination" "Internal Platform"
-        wva = softwareSystem "Workload Variant Autoscaler (WVA)" "SLO-aware autoscaling for model server instances" "Internal Platform"
+        vllm = softwareSystem "vLLM" "Model serving engine - core inference runtime (OpenAI-compatible API)" "External"
+        epp = softwareSystem "llm-d-inference-scheduler (EPP)" "Endpoint Picker extension - intelligent load balancing via ext_proc" "Internal Platform"
+        routingSidecar = softwareSystem "llm-d-routing-sidecar" "Routing proxy sidecar for P/D disaggregation coordination" "Internal Platform"
+        wva = softwareSystem "Workload Variant Autoscaler (WVA)" "SLO-aware autoscaling of model server instances" "Internal Platform"
+        nixl = softwareSystem "NIXL" "High-performance KV cache transfer library for disaggregated serving" "External"
+        nvshmem = softwareSystem "NVSHMEM" "NVIDIA symmetric memory for GPU-to-GPU expert parallelism" "External"
 
-        gatewayAPI = softwareSystem "Kubernetes Gateway API" "Ingress and routing control plane (Gateway, HTTPRoute CRDs)" "External"
+        gatewayAPI = softwareSystem "Kubernetes Gateway API" "Gateway, HTTPRoute CRDs for ingress and routing" "External"
         inferenceGW = softwareSystem "Kubernetes Inference Gateway Extension" "InferencePool, InferenceObjective, EndpointPickerConfig CRDs" "External"
         istio = softwareSystem "Istio" "Service mesh and Gateway API provider" "External"
-        agentgateway = softwareSystem "agentgateway (kgateway)" "Alternative Gateway API implementation" "External"
+        agentgateway = softwareSystem "agentgateway (kgateway)" "Alternative Gateway API provider" "External"
         gkeGateway = softwareSystem "GKE Gateway" "Google Cloud Gateway API implementation" "External"
         lws = softwareSystem "LeaderWorkerSet Controller" "Multi-node workload management for expert parallelism" "External"
 
+        huggingface = softwareSystem "HuggingFace Hub" "Model weight storage and download" "External"
         prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
         grafana = softwareSystem "Grafana" "Metrics visualization dashboards" "External"
         otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed trace collection" "External"
         jaeger = softwareSystem "Jaeger" "Distributed trace visualization" "External"
 
-        hfHub = softwareSystem "HuggingFace Hub" "Model weight repository" "External"
-        rdmaFabric = softwareSystem "RDMA/InfiniBand Fabric" "GPU-to-GPU high-speed interconnect" "External"
+        datascientist -> llmd "Deploys models using deployment recipes"
+        datascientist -> vllm "Sends inference requests via OpenAI API" "HTTP/8000"
+        platformeng -> llmd "Configures deployment topologies and gateway routing"
 
-        # User interactions
-        dataScientist -> llmd "Sends inference requests via HTTP/80"
-        platformEngineer -> llmd "Deploys and configures via Kustomize/Helm"
+        llmd -> vllm "Provides optimized container images for" "Container Runtime"
+        llmd -> epp "Configures via Helm values" "Helm"
+        llmd -> routingSidecar "Deploys as init container on decode pods" "Kustomize"
+        llmd -> gatewayAPI "Consumes Gateway and HTTPRoute CRDs" "Kubernetes API"
+        llmd -> inferenceGW "Consumes InferencePool and InferenceObjective CRDs" "Kubernetes API"
+        llmd -> lws "Consumes LeaderWorkerSet CRD for wide-EP" "Kubernetes API"
 
-        # Core runtime dependencies
-        llmd -> vllm "Embeds as model serving engine" "Container runtime"
-        llmd -> nixl "Embeds for KV cache transfer" "Library / 5600/TCP"
-        llmd -> epp "Routes requests through" "gRPC/9002 ext_proc"
-        llmd -> routingSidecar "Coordinates P/D decode via" "HTTP/8000 init container"
-        llmd -> wva "Autoscales with" "Kubernetes API"
+        epp -> vllm "Routes requests to selected backend" "gRPC ext_proc/9002 → HTTP/8000"
+        vllm -> nixl "Transfers KV cache between instances" "RDMA/TCP/5600"
+        vllm -> nvshmem "GPU-to-GPU collective communication" "IB/RoCE RDMA"
+        vllm -> huggingface "Downloads model weights" "HTTPS/443"
+        vllm -> otelCollector "Exports traces" "OTLP gRPC/4317"
+        prometheus -> vllm "Scrapes /metrics endpoint" "HTTP/8000"
+        prometheus -> epp "Scrapes metrics" "HTTP/9002"
+        grafana -> prometheus "Queries metrics" "HTTP/9090"
+        otelCollector -> jaeger "Forwards traces" "HTTP/16686"
 
-        # Infrastructure dependencies
-        llmd -> gatewayAPI "Uses for ingress" "Kubernetes API (Gateway, HTTPRoute)"
-        llmd -> inferenceGW "Uses for pool management" "Kubernetes API (InferencePool, InferenceObjective)"
-        llmd -> istio "Uses as gateway provider" "Kubernetes API"
-        llmd -> agentgateway "Uses as gateway provider" "Kubernetes API"
-        llmd -> gkeGateway "Uses as gateway provider" "Kubernetes API"
-        llmd -> lws "Uses for multi-node groups" "Kubernetes API (LeaderWorkerSet)"
+        istio -> gatewayAPI "Implements Gateway API"
+        agentgateway -> gatewayAPI "Implements Gateway API"
+        gkeGateway -> gatewayAPI "Implements Gateway API"
 
-        # Observability
-        llmd -> prometheus "Exposes metrics" "HTTP/8000 + 9002 scrape"
-        llmd -> otelCollector "Exports traces" "gRPC/4317 OTLP"
-        otelCollector -> jaeger "Forwards traces" "HTTP"
-        prometheus -> grafana "Feeds dashboards" "HTTP"
-
-        # External services
-        llmd -> hfHub "Downloads model weights" "HTTPS/443 + HF_TOKEN"
-        llmd -> rdmaFabric "Transfers KV cache via GPU-Direct" "RDMA/IB (L2)"
+        wva -> vllm "Autoscales model server instances" "Kubernetes API"
     }
 
     views {
@@ -81,29 +78,22 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "External Upstream" {
+            element "Internal Platform" {
+                background #7ed321
+                color #ffffff
+            }
+            element "Person" {
+                shape Person
                 background #4a90e2
                 color #ffffff
             }
-            element "Internal Platform" {
-                background #7ed321
-                color #000000
+            element "Software System" {
+                background #4a90e2
+                color #ffffff
             }
-            element "Container Image (Dockerfile)" {
-                background #76b900
-                color #000000
-            }
-            element "Kustomize" {
-                background #d5e8d4
-                color #000000
-            }
-            element "Kustomize/YAML" {
-                background #d5e8d4
-                color #000000
-            }
-            element "Helm Values" {
-                background #fff2cc
-                color #000000
+            element "Container" {
+                background #438dd5
+                color #ffffff
             }
         }
     }

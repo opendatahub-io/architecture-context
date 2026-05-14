@@ -1,52 +1,48 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Deploys and queries ML models for text generation inference"
-        sre = person "SRE / Platform Engineer" "Monitors TGIS health, metrics, and GPU utilization"
+        dataScientist = person "Data Scientist" "Deploys and queries LLM models for text generation"
+        mlEngineer = person "ML Engineer" "Configures model serving and optimizes inference performance"
 
-        tgis = softwareSystem "Text Generation Inference Server (TGIS)" "High-performance text generation inference server with dynamic batching, tensor parallelism, and multiple inference engine backends" {
-            launcher = container "text-generation-launcher" "Process supervisor that spawns Python shards and the Rust router, handles signal propagation and health polling" "Rust 1.77.2 CLI"
-            router = container "text-generation-router" "High-performance gRPC/HTTP server implementing continuous batching, request validation, tokenization, TLS termination" "Rust 1.77.2 Service" {
-                grpcServer = component "gRPC Server" "fmaas.GenerationService - Generate, GenerateStream, Tokenize, ModelInfo RPCs" "Tonic gRPC, 8033/TCP"
-                httpServer = component "HTTP Server" "Health probes and Prometheus metrics exposition" "Actix-web, 3000/TCP"
-                batcher = component "Continuous Batcher" "Weight-aware dynamic batch formation with queue jumping and mid-inference concatenation" "Rust async"
-                validator = component "Request Validator" "Validates input parameters, tokenizes text, enforces limits" "Rust"
+        tgis = softwareSystem "Text Generation Inference Server (TGIS)" "High-performance text generation inference server with gRPC/HTTP APIs, continuous batching, and multi-GPU tensor parallelism" {
+            launcher = container "Launcher" "Process supervisor that spawns shards and router, handles signals and health polling" "Rust 1.77.2 CLI"
+            router = container "Router" "gRPC/HTTP server with continuous batching, request validation, tokenization, and TLS termination" "Rust 1.77.2 Service" {
+                grpcServer = component "gRPC Server" "fmaas.GenerationService: Generate, GenerateStream, Tokenize, ModelInfo" "Tonic gRPC"
+                httpServer = component "HTTP Server" "Health probes (/health) and Prometheus metrics (/metrics)" "Actix-Web"
+                batcher = component "Continuous Batcher" "Dynamic batch formation with queue jumping and prefill weight limits" "Rust"
+                tokenizer = component "Tokenizer" "HuggingFace tokenizer for input processing" "Rust/Python binding"
             }
-            client = container "text-generation-client" "gRPC client library for router-to-shard communication over Unix domain sockets" "Rust Library"
-            server = container "text-generation-server" "Model inference backend that loads weights, manages KV cache, executes forward passes. One shard per GPU." "Python 3.11 gRPC Service" {
-                inferenceEngine = component "Inference Engine" "Pluggable backend: hf_transformers, tgis_native, ibm_fms, hf_optimum_ort, ds_inference" "Python"
-                kvCache = component "KV Cache Manager" "Paged attention memory management for efficient GPU utilization" "Python/CUDA"
-                modelLoader = component "Model Loader" "Loads model weights from HuggingFace Hub or PVC, supports GPTQ/bitsandbytes quantization" "Python"
+            server = container "Python Shard" "Model inference backend: loads weights, manages KV cache, executes forward passes" "Python 3.11 gRPC Service" {
+                inferenceEngine = component "Inference Engine" "Pluggable backends: hf_transformers, tgis_native, ibm_fms, onnx_rt, deepspeed" "Python"
+                kvCache = component "KV Cache Manager" "Paged attention cache with dynamic memory allocation" "Python/CUDA"
+                modelLoader = component "Model Loader" "Loads and shards model weights across GPUs" "Python"
             }
         }
 
-        kserve = softwareSystem "KServe" "Manages InferenceService lifecycle and routing" "Internal RHOAI"
-        hfHub = softwareSystem "HuggingFace Hub" "Model weight and tokenizer repository" "External"
-        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and alerting" "Internal"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing aggregation" "External"
-        pvc = softwareSystem "PVC (Persistent Volume)" "Persistent model weight storage at /shared_model_storage" "Kubernetes"
-        nvidiaGpu = softwareSystem "NVIDIA GPU (CUDA 12.1)" "GPU compute for model inference via CUDA and NCCL" "Hardware"
+        kserve = softwareSystem "KServe" "Serverless ML inference platform that manages TGIS as a serving runtime" "Internal RHOAI"
+        hfHub = softwareSystem "HuggingFace Hub" "Model repository for downloading weights and tokenizers" "External"
+        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and alerting" "Internal Platform"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing aggregation" "Internal Platform"
+        k8sAPI = softwareSystem "Kubernetes API" "Container orchestration and pod management" "Internal Platform"
+        nvidiaGPU = softwareSystem "NVIDIA GPU (CUDA 12.1)" "GPU compute for model inference" "Hardware"
+        pvc = softwareSystem "PVC (models-pvc)" "Persistent model weight storage" "Internal Platform"
 
-        # Relationships - External
-        dataScientist -> tgis "Sends text generation requests via gRPC" "gRPC/8033, TLS/mTLS"
-        sre -> tgis "Monitors health and metrics" "HTTP/3000"
-        kserve -> tgis "Deploys and manages as InferenceService serving runtime"
-        tgis -> hfHub "Downloads model weights and tokenizers at startup" "HTTPS/443, HF Token"
-        tgis -> pvc "Reads model weights from persistent storage" "Volume mount"
-        tgis -> nvidiaGpu "Executes model forward passes on GPU" "CUDA 12.1"
-        tgis -> otelCollector "Exports distributed tracing spans" "gRPC, configurable"
-        prometheus -> tgis "Scrapes metrics at /metrics" "HTTP/3000"
+        # Relationships
+        dataScientist -> tgis "Sends text generation requests via gRPC" "gRPC/8033 TLS"
+        mlEngineer -> kserve "Configures InferenceService" "kubectl"
 
-        # Relationships - Internal
+        kserve -> tgis "Manages as serving runtime container" "Container lifecycle"
+        tgis -> hfHub "Downloads model weights" "HTTPS/443 TLS 1.2+"
+        tgis -> nvidiaGPU "Executes model inference" "CUDA 12.1"
+        tgis -> pvc "Reads model weights" "Volume mount"
+        tgis -> otelCollector "Exports tracing spans" "gRPC"
+
+        prometheus -> tgis "Scrapes /metrics endpoint" "HTTP/3000"
+        k8sAPI -> tgis "Health probes" "HTTP/3000"
+
+        # Internal relationships
         launcher -> router "Spawns and monitors"
-        launcher -> server "Spawns one per GPU"
-        router -> client "Uses for shard communication"
-        client -> server "gRPC over Unix domain sockets" "UDS, plaintext"
-        grpcServer -> validator "Validates requests"
-        validator -> batcher "Enqueues validated requests"
-        batcher -> client "Dispatches batched inference"
-        server -> nvidiaGpu "Forward passes" "CUDA"
-        modelLoader -> hfHub "Downloads weights" "HTTPS/443"
-        modelLoader -> pvc "Loads weights" "Volume mount"
+        launcher -> server "Spawns per GPU"
+        router -> server "Inference RPCs (Prefill, NextToken)" "gRPC/UDS plaintext"
     }
 
     views {
@@ -79,8 +75,8 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Kubernetes" {
-                background #326ce5
+            element "Internal Platform" {
+                background #4a90e2
                 color #ffffff
             }
             element "Hardware" {
@@ -88,21 +84,9 @@ workspace {
                 color #ffffff
             }
             element "Person" {
-                shape Person
+                shape person
                 background #08427b
                 color #ffffff
-            }
-            element "Software System" {
-                background #1168bd
-                color #ffffff
-            }
-            element "Container" {
-                background #438dd5
-                color #ffffff
-            }
-            element "Component" {
-                background #85bbf0
-                color #000000
             }
         }
     }

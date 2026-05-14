@@ -1,99 +1,82 @@
 graph TB
-    subgraph EvalHub["Eval Hub Platform"]
+    subgraph EvalHub["Eval Hub Service"]
         direction TB
 
-        subgraph CoreService["eval-hub (Go REST API)"]
-            Server["HTTP Server<br/>8080/TCP"]
-            AuthN["AuthN Middleware<br/>K8s TokenReview"]
-            AuthZ["AuthZ Middleware<br/>K8s SAR"]
-            Handlers["API Handlers<br/>/api/v1/evaluations/*"]
-            StorageLayer["Storage Layer<br/>SQLite / PostgreSQL"]
-            RuntimeLayer["Runtime Layer<br/>K8s / Local"]
-            ConfigWatcher["Config Watcher<br/>fsnotify + debounce"]
-            Metrics["Prometheus Metrics<br/>/metrics"]
-            OTEL["OTEL Exporter<br/>Traces + Metrics"]
-
-            Server --> AuthN
-            AuthN --> AuthZ
-            AuthZ --> Handlers
-            Handlers --> StorageLayer
-            Handlers --> RuntimeLayer
-            ConfigWatcher -->|hot-reload| Handlers
-            Server --> Metrics
-            Server --> OTEL
+        subgraph APILayer["HTTP Handler Layer"]
+            Server["eval-hub API Server<br/>Go REST API<br/>8080/TCP"]
+            AuthN["AuthN Middleware<br/>K8s TokenReview<br/>2-min cache"]
+            AuthZ["AuthZ Middleware<br/>K8s SubjectAccessReview<br/>5-min allow / 30s deny cache"]
+            Server --> AuthN --> AuthZ
         end
 
-        subgraph JobPod["Evaluation Job Pod (per benchmark)"]
-            direction LR
-            InitContainer["eval-runtime-init<br/>S3 Data Downloader"]
-            Sidecar["eval-runtime-sidecar<br/>HTTP Reverse Proxy<br/>8080/TCP localhost"]
-            Adapter["Evaluation Adapter<br/>Lighteval / lm-eval / Garak / etc."]
-
-            InitContainer -->|downloads data| Adapter
-            Adapter -->|localhost:8080| Sidecar
+        subgraph StorageLayer["Storage Abstraction"]
+            StorageIF["Storage Interface<br/>WithTenant / WithOwner"]
+            PostgreSQL["PostgreSQL Driver<br/>pgx"]
+            SQLite["SQLite Driver<br/>modernc.org/sqlite"]
+            StorageIF --> PostgreSQL
+            StorageIF --> SQLite
         end
 
-        subgraph MCPServer["evalhub-mcp (Optional)"]
-            MCP["MCP Server<br/>stdio / HTTP 3001/TCP"]
-            MCPClient["EvalHub REST Client<br/>pkg/evalhubclient"]
-            MCP --> MCPClient
+        subgraph RuntimeLayer["Runtime Abstraction"]
+            RuntimeIF["Runtime Interface"]
+            K8sRuntime["Kubernetes Runtime<br/>Batch Jobs + ConfigMaps"]
+            LocalRuntime["Local Runtime<br/>Shell Subprocess"]
+            RuntimeIF --> K8sRuntime
+            RuntimeIF --> LocalRuntime
         end
+
+        subgraph Observability["Observability"]
+            Prometheus["Prometheus Metrics<br/>/metrics endpoint"]
+            OTEL["OpenTelemetry<br/>OTLP gRPC/HTTP"]
+        end
+
+        AuthZ --> StorageIF
+        AuthZ --> RuntimeIF
     end
 
-    %% External actors
-    Client["Client<br/>(Dashboard / API / CLI)"]
-    AIAgent["AI Agent<br/>(MCP Consumer)"]
+    subgraph JobPod["Evaluation Job Pod (KEP-753)"]
+        direction LR
+        InitContainer["eval-runtime-init<br/>S3 Data Downloader"]
+        Sidecar["eval-runtime-sidecar<br/>HTTP Reverse Proxy<br/>8080/TCP localhost"]
+        Adapter["Evaluation Adapter<br/>(Lighteval / lm-eval / Garak / etc.)"]
+        InitContainer -.->|"completes before"| Adapter
+        Adapter -->|"localhost:8080"| Sidecar
+    end
 
-    %% External dependencies
-    K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS"]
-    MLflow["MLflow Tracking Server<br/>HTTPS"]
-    PostgreSQL["PostgreSQL<br/>5432/TCP"]
-    S3["S3 Object Storage<br/>443/TCP HTTPS"]
-    OCIRegistry["OCI Registry<br/>443/TCP HTTPS"]
-    OTELCollector["OTEL Collector<br/>4317/TCP gRPC"]
+    subgraph MCPServer["evalhub-mcp"]
+        MCP["MCP Server<br/>stdio / HTTP:3001"]
+    end
 
-    %% Client flows
-    Client -->|"HTTPS 8080<br/>Bearer Token"| Server
-    AIAgent -->|"stdio / HTTP 3001"| MCP
-    MCPClient -->|"HTTPS 8080<br/>Bearer Token"| Server
+    Client["Client<br/>(Dashboard / API / CLI)"] -->|"HTTPS 8080<br/>Bearer Token"| Server
+    K8sRuntime -->|"creates"| JobPod
+    Sidecar -->|"HTTPS 8080<br/>SA Token"| Server
+    MCP -->|"REST API<br/>Bearer Token"| Server
 
-    %% Core service egress
-    AuthN -->|TokenReview| K8sAPI
-    AuthZ -->|SubjectAccessReview| K8sAPI
-    RuntimeLayer -->|"Create Job/ConfigMap"| K8sAPI
-    StorageLayer -->|"5432/TCP"| PostgreSQL
-    Handlers -->|"Experiment tracking"| MLflow
-    OTEL -->|"OTLP gRPC"| OTELCollector
+    Sidecar -->|"HTTPS<br/>Projected SA Token"| MLflow["MLflow Tracking Server"]
+    Sidecar -->|"HTTPS 443<br/>Bearer Token"| OCIRegistry["OCI Registry"]
+    InitContainer -->|"HTTPS 443<br/>AWS IAM"| S3["S3 Object Storage"]
 
-    %% Job pod egress
-    InitContainer -->|"Download test data"| S3
-    Sidecar -->|"Status updates"| Server
-    Sidecar -->|"Run tracking"| MLflow
-    Sidecar -->|"Artifact push"| OCIRegistry
+    K8sRuntime -->|"HTTPS 443<br/>SA Token"| K8sAPI["Kubernetes API Server"]
+    AuthN -->|"TokenReview<br/>HTTPS 443"| K8sAPI
+    AuthZ -->|"SAR<br/>HTTPS 443"| K8sAPI
 
-    %% Styling
-    style CoreService fill:#4a90e2,stroke:#2a6cb5,color:#fff
-    style JobPod fill:#f5a623,stroke:#d4891a,color:#fff
-    style MCPServer fill:#9b59b6,stroke:#7d3c98,color:#fff
-    style Server fill:#3478c6,stroke:#2a6cb5,color:#fff
-    style AuthN fill:#3478c6,stroke:#2a6cb5,color:#fff
-    style AuthZ fill:#3478c6,stroke:#2a6cb5,color:#fff
-    style Handlers fill:#3478c6,stroke:#2a6cb5,color:#fff
-    style StorageLayer fill:#3478c6,stroke:#2a6cb5,color:#fff
-    style RuntimeLayer fill:#3478c6,stroke:#2a6cb5,color:#fff
-    style ConfigWatcher fill:#3478c6,stroke:#2a6cb5,color:#fff
-    style Metrics fill:#3478c6,stroke:#2a6cb5,color:#fff
-    style OTEL fill:#3478c6,stroke:#2a6cb5,color:#fff
-    style InitContainer fill:#e8a317,stroke:#d4891a,color:#fff
-    style Sidecar fill:#e8a317,stroke:#d4891a,color:#fff
-    style Adapter fill:#e8a317,stroke:#d4891a,color:#fff
-    style MCP fill:#8e44ad,stroke:#7d3c98,color:#fff
-    style MCPClient fill:#8e44ad,stroke:#7d3c98,color:#fff
-    style Client fill:#2ecc71,stroke:#27ae60,color:#fff
-    style AIAgent fill:#2ecc71,stroke:#27ae60,color:#fff
-    style K8sAPI fill:#95a5a6,stroke:#7f8c8d,color:#fff
-    style MLflow fill:#95a5a6,stroke:#7f8c8d,color:#fff
-    style PostgreSQL fill:#95a5a6,stroke:#7f8c8d,color:#fff
-    style S3 fill:#95a5a6,stroke:#7f8c8d,color:#fff
-    style OCIRegistry fill:#95a5a6,stroke:#7f8c8d,color:#fff
-    style OTELCollector fill:#95a5a6,stroke:#7f8c8d,color:#fff
+    style Server fill:#4a90e2,color:#fff
+    style AuthN fill:#4a90e2,color:#fff
+    style AuthZ fill:#4a90e2,color:#fff
+    style StorageIF fill:#4a90e2,color:#fff
+    style RuntimeIF fill:#4a90e2,color:#fff
+    style Sidecar fill:#4a90e2,color:#fff
+    style InitContainer fill:#4a90e2,color:#fff
+    style MCP fill:#4a90e2,color:#fff
+    style Prometheus fill:#50c878,color:#fff
+    style OTEL fill:#50c878,color:#fff
+    style PostgreSQL fill:#336791,color:#fff
+    style SQLite fill:#003b57,color:#fff
+    style K8sRuntime fill:#326ce5,color:#fff
+    style LocalRuntime fill:#326ce5,color:#fff
+    style Client fill:#f5a623,color:#fff
+    style MLflow fill:#0194e2,color:#fff
+    style OCIRegistry fill:#999,color:#fff
+    style S3 fill:#e47911,color:#fff
+    style K8sAPI fill:#326ce5,color:#fff
+    style Adapter fill:#7ed321,color:#fff

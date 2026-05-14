@@ -1,41 +1,46 @@
 sequenceDiagram
     participant User as User / DSP Operator
     participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant WFC as workflow-controller<br/>:9090 metrics, :6060 healthz
+    participant WFC as Workflow Controller<br/>9090/TCP metrics<br/>6060/TCP healthz
     participant CronCtrl as Cron Controller<br/>(in workflow-controller)
-    participant Pod as Workflow Pod<br/>(created by controller)
-    participant ArgoExec as argoexec (sidecar)<br/>Emissary pattern
+    participant Pod as Workflow Pod<br/>(main container)
+    participant InitExec as argoexec (init)<br/>Artifact Download
+    participant WaitExec as argoexec (wait)<br/>Artifact Upload
     participant S3 as S3 / Minio<br/>443/TCP HTTPS
     participant DB as PostgreSQL<br/>5432/TCP TLS
 
-    Note over User,DB: Flow 1: Workflow Execution
+    Note over User, DB: Flow 1: Workflow Execution
 
     User->>K8sAPI: Create Workflow CR<br/>Auth: ServiceAccount Bearer
-    K8sAPI-->>WFC: Informer notification<br/>HTTPS/443 TLS 1.2+
-    WFC->>K8sAPI: Create Pod (workflow step)<br/>Auth: ServiceAccount Bearer
-    K8sAPI-->>Pod: Pod scheduled
+    K8sAPI-->>WFC: Informer notification<br/>Auth: ServiceAccount Bearer
+    WFC->>K8sAPI: Create Workflow Pod<br/>(main + argoexec sidecar)<br/>Auth: ServiceAccount Bearer
+    K8sAPI-->>InitExec: Pod scheduled
 
-    Note over ArgoExec,S3: Init Container Phase
-    ArgoExec->>S3: Download input artifacts<br/>Auth: AccessKey/SecretKey<br/>HTTPS/443 TLS 1.2+
-    S3-->>ArgoExec: Artifact data
+    InitExec->>S3: Download input artifacts<br/>Auth: AccessKey/SecretKey
+    S3-->>InitExec: Artifact data
 
-    Note over Pod: Main container executes
+    Note over Pod: Main container executes<br/>pipeline step logic
 
-    Note over ArgoExec,S3: Wait Container Phase
-    ArgoExec->>S3: Upload output artifacts<br/>Auth: AccessKey/SecretKey<br/>HTTPS/443 TLS 1.2+
-    ArgoExec->>K8sAPI: Patch WorkflowTaskResult<br/>Auth: ServiceAccount Bearer
+    Pod->>WaitExec: Container completes<br/>(emissary /var/run/argo/)
 
-    WFC->>DB: Archive workflow (optional)<br/>Auth: Secret credentials<br/>PostgreSQL/TLS
+    WaitExec->>S3: Upload output artifacts<br/>Auth: AccessKey/SecretKey
+    S3-->>WaitExec: Upload confirmed
 
-    Note over User,DB: Flow 2: CronWorkflow Scheduling
+    WaitExec->>K8sAPI: Patch WorkflowTaskResult<br/>Auth: ServiceAccount Bearer
+
+    K8sAPI-->>WFC: Result notification
+    WFC->>K8sAPI: Update Workflow status<br/>Schedule next DAG node
+    WFC->>DB: Archive workflow (optional)<br/>Auth: Secret credentials
+
+    Note over User, DB: Flow 2: CronWorkflow Scheduling
 
     CronCtrl->>K8sAPI: List CronWorkflows<br/>Auth: ServiceAccount Bearer
     K8sAPI-->>CronCtrl: CronWorkflow list
-    CronCtrl->>K8sAPI: Create Workflow from schedule<br/>Auth: ServiceAccount Bearer
+    CronCtrl->>CronCtrl: Check cron schedule
+    CronCtrl->>K8sAPI: Create Workflow from template<br/>Auth: ServiceAccount Bearer
 
-    Note over User,DB: Flow 3: Artifact Garbage Collection
+    Note over User, DB: Flow 3: Artifact Garbage Collection
 
     WFC->>K8sAPI: Create WorkflowArtifactGCTask<br/>Auth: ServiceAccount Bearer
     WFC->>K8sAPI: Create GC Pod<br/>Auth: ServiceAccount Bearer
-    Note over ArgoExec,S3: GC Pod executes
-    ArgoExec->>S3: Delete expired artifacts<br/>Auth: AccessKey/SecretKey
+    Note over S3: GC Pod (argoexec)<br/>deletes expired artifacts

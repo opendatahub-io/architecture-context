@@ -1,83 +1,91 @@
 workspace {
     model {
-        datascientist = person "Data Scientist / ML Engineer" "Deploys and queries LLM inference models"
-        platformengineer = person "Platform Engineer" "Configures inference platform and scheduling"
+        datascientist = person "Data Scientist / ML Engineer" "Deploys and operates LLM inference workloads"
+        sre = person "SRE / Platform Operator" "Manages inference platform and observability"
 
-        llmdkvcache = softwareSystem "llm-d-kv-cache" "Pluggable KV-Cache indexing library and tooling for cache-aware routing in LLM inference platforms" {
-            indexer = container "KV-Cache Indexer" "Core indexer library: block-key computation, index lookup, pod scoring for cache-aware routing" "Go Library (embedded in EPP)"
-            eventsPool = container "KV-Events Pool" "Sharded worker pool consuming ZMQ messages from inference engines, maintaining index state" "Go Library"
-            tokenPool = container "Tokenization Pool" "Client library providing gRPC-based tokenization via UDS socket" "Go Library"
-            udsTokenizer = container "UDS Tokenizer Service" "Async gRPC sidecar for tokenization and chat template rendering using vLLM CPU-mode" "Python gRPC Sidecar" "Sidecar"
-            fsBackend = container "llmd_fs_backend" "vLLM OffloadingConnector storage backend for GPU-to-storage KV-cache block transfers" "Python/C++/CUDA Plugin"
-            pvcEvictor = container "PVC Evictor" "Multi-process disk space manager for KV-cache PVC storage with threshold-based eviction" "Python Sidecar Utility"
-            indexBackend = container "Block Index Backend" "Pluggable storage: InMemory LRU, Ristretto, Redis, or Valkey" "Go"
+        llmdKVCache = softwareSystem "llm-d-kv-cache" "Pluggable KV-Cache indexing library and tooling for cache-aware routing and cross-node cache coordination in LLM inference platforms" {
+            indexer = container "KV-Cache Indexer" "Core indexer orchestrating block-key computation, index lookup, and pod scoring for KV-cache-aware routing" "Go Library (pkg/kvcache)"
+            eventPool = container "KV-Events Pool" "Sharded worker pool consuming ZMQ messages from inference engines and maintaining index state" "Go Library (pkg/kvevents)"
+            tokenPool = container "Tokenization Pool" "Client library providing gRPC-based tokenization via UDS socket connection to sidecar service" "Go Library (pkg/tokenization)"
+            udsTokenizer = container "UDS Tokenizer Service" "Async gRPC service for tokenization and chat template rendering using vLLM CPU-mode renderer" "Python gRPC Sidecar"
+            fsBackend = container "llmd_fs_backend" "vLLM OffloadingConnector storage backend moving KV-cache blocks between GPU and shared storage" "Python/C++/CUDA Connector"
+            pvcEvictor = container "PVC Evictor" "Multi-process disk space manager for KV-cache PVC storage with threshold-based eviction" "Python Utility"
         }
 
-        epp = softwareSystem "llm-d Inference Scheduler (EPP)" "Envoy Processing Plugin that embeds the Indexer library for cache-aware request routing" "Internal llm-d"
-        vllm = softwareSystem "vLLM / SGLang" "LLM inference engine pods publishing KV-Events and serving model predictions" "Internal Platform"
-        k8sapi = softwareSystem "Kubernetes API" "Pod discovery and RBAC management" "Infrastructure"
-        redis = softwareSystem "Redis / Valkey" "Optional external block index storage backend" "Infrastructure"
-        hfhub = softwareSystem "HuggingFace Hub" "Model tokenizer file downloads" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection for block index operations" "Infrastructure"
-        otel = softwareSystem "OpenTelemetry Collector" "OTLP trace export for distributed tracing" "Infrastructure"
-        sharedstorage = softwareSystem "Shared Storage (NFS/PVC)" "Persistent storage for offloaded KV-cache blocks" "Infrastructure"
+        eppScheduler = softwareSystem "llm-d Inference Scheduler (EPP)" "Envoy Processing Plugin that embeds the KV-Cache Indexer for cache-aware request routing" "Internal"
+        vllmPods = softwareSystem "vLLM Inference Pods" "Model serving pods running vLLM with ZMQ event publishing and optional KV-cache offloading" "Internal"
+        sglangPods = softwareSystem "SGLang Inference Pods" "Model serving pods running SGLang with ZMQ event publishing" "Internal"
+        kubeAPI = softwareSystem "Kubernetes API" "Kubernetes control plane API server for pod discovery" "External"
+        redis = softwareSystem "Redis / Valkey" "External key-value store for block index storage backend (optional)" "External"
+        hfHub = softwareSystem "HuggingFace Hub" "Model and tokenizer file hosting service" "External"
+        sharedStorage = softwareSystem "Shared Storage (NFS/PVC)" "Network-attached storage for KV-cache block offloading" "External"
+        otlpCollector = softwareSystem "OTLP Collector" "OpenTelemetry trace collection service" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring system" "External"
 
-        # Relationships
-        epp -> indexer "Embeds library, calls ScoreTokens() for cache-aware routing" "Go API (in-process)"
-        vllm -> eventsPool "Publishes KV-Events (BlockStored, BlockRemoved, AllBlocksCleared)" "ZMQ PUB/SUB 5557/TCP msgpack"
-        eventsPool -> indexer "Updates block index with ingested events" "Go API (in-process)"
-        indexer -> tokenPool "Tokenizes prompts for block key computation" "Go API (in-process)"
-        tokenPool -> udsTokenizer "gRPC tokenization requests" "gRPC over UDS socket"
-        indexer -> indexBackend "Lookup, Add, Evict block entries" "Go interface (in-process)"
-        indexBackend -> redis "Optional external storage" "Redis protocol 6379/TCP, optional TLS"
-        udsTokenizer -> hfhub "Downloads tokenizer model files" "HTTPS 443/TCP, HF Token"
-        indexer -> k8sapi "Pod discovery for ZMQ subscriber management" "HTTPS 443/TCP, Bearer token"
-        indexer -> prometheus "Exposes kvcache metrics" "HTTP metrics scrape"
-        indexer -> otel "Exports distributed traces" "gRPC OTLP 4317/TCP"
-        vllm -> fsBackend "OffloadingConnector API for KV-cache transfers" "Python API (in-process)"
-        fsBackend -> sharedstorage "Reads/writes KV-cache block files" "POSIX I/O or NIXL"
-        pvcEvictor -> sharedstorage "Manages disk space via threshold-based eviction" "POSIX I/O"
+        # Relationships - System Context
+        eppScheduler -> llmdKVCache "Embeds indexer library for cache-aware pod scoring" "Go API (in-process)"
+        vllmPods -> llmdKVCache "Publishes KV-Events (BlockStored, BlockRemoved, AllBlocksCleared)" "ZMQ msgpack/5557"
+        sglangPods -> llmdKVCache "Publishes KV-Events" "ZMQ msgpack/5557"
+        llmdKVCache -> redis "Stores/retrieves block index entries (optional)" "Redis/6379"
+        llmdKVCache -> hfHub "Downloads tokenizer model files" "HTTPS/443"
+        llmdKVCache -> kubeAPI "Pod discovery for subscriber management (optional)" "HTTPS/443"
+        llmdKVCache -> sharedStorage "Reads/writes KV-cache blocks (fs_backend)" "POSIX I/O"
+        llmdKVCache -> otlpCollector "Exports distributed traces (optional)" "gRPC/4317"
+        llmdKVCache -> prometheus "Exposes metrics (admissions, evictions, latency)" "HTTP scrape"
 
-        platformengineer -> epp "Configures inference scheduling and cache-aware routing"
-        datascientist -> vllm "Sends inference requests to deployed models"
+        datascientist -> eppScheduler "Submits inference requests"
+        sre -> prometheus "Monitors KV-cache performance"
+
+        # Relationships - Container
+        indexer -> eventPool "Receives indexed block state"
+        indexer -> tokenPool "Requests tokenization"
+        tokenPool -> udsTokenizer "gRPC over Unix Domain Socket"
+        eventPool -> vllmPods "Subscribes to ZMQ events" "ZMQ SUB/5557"
+        eventPool -> sglangPods "Subscribes to ZMQ events" "ZMQ SUB/5557"
+        indexer -> redis "Block index CRUD (optional)" "Redis/6379"
+        udsTokenizer -> hfHub "Downloads tokenizer files" "HTTPS/443"
+        fsBackend -> sharedStorage "Offloads KV-cache blocks" "POSIX I/O"
+        pvcEvictor -> sharedStorage "Evicts old cache blocks" "POSIX I/O"
+        eventPool -> kubeAPI "Pod watch (optional)" "HTTPS/443"
+        indexer -> otlpCollector "Trace export (optional)" "gRPC/4317"
     }
 
     views {
-        systemContext llmdkvcache "SystemContext" {
+        systemContext llmdKVCache "SystemContext" {
             include *
             autoLayout
         }
 
-        container llmdkvcache "Containers" {
+        container llmdKVCache "Containers" {
             include *
             autoLayout
         }
 
         styles {
+            element "Software System" {
+                background #4a90e2
+                color #ffffff
+                shape RoundedBox
+            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal llm-d" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Internal Platform" {
+            element "Internal" {
                 background #7ed321
-                color #ffffff
-            }
-            element "Infrastructure" {
-                background #f5a623
-                color #ffffff
-            }
-            element "Sidecar" {
-                background #9b59b6
                 color #ffffff
             }
             element "Person" {
                 background #08427b
                 color #ffffff
-                shape person
+                shape Person
+            }
+            element "Container" {
+                background #4a90e2
+                color #ffffff
+            }
+            relationship "Relationship" {
+                dashed false
             }
         }
     }

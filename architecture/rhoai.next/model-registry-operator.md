@@ -244,6 +244,16 @@ The operator supports API version migration from v1alpha1 (deprecated, with Isti
 
 _This is the `main` branch of a downstream (red-hat-data-services) fork. RPM lock files and Hermeto prefetch integration are typically added on versioned release branches (e.g., `rhoai-3.x`)._
 
+## Admission Webhooks
+
+This component defines 3 webhook(s) (1 mutating, 1 validating, 1 conversion).
+
+| Name | Type | Target Resources | Purpose |
+|------|------|-----------------|---------|
+| mmodelregistry.opendatahub.io | mutating | modelregistries | Mutating and validating admission webhook for ModelRegistry custom resources. The mutating handler applies default values to the CR spec on create/update, while the validating handler enforces cluster-wide name uniqueness on creation (by listing all existing ModelRegistry resources) and validates the registry spec fields on both create and update. |
+| vmodelregistry.opendatahub.io | validating | modelregistries | Mutating and validating admission webhook for ModelRegistry custom resources. The mutating handler applies default values to the CR spec on create/update, while the validating handler enforces cluster-wide name uniqueness on creation (by listing all existing ModelRegistry resources) and validates the registry spec fields on both create and update. |
+| conversion.modelregistries.modelregistry.opendatahub.io | conversion | modelregistries |  |
+
 ## Data Flows
 
 ### Flow 1: Model Registry Instance Deployment

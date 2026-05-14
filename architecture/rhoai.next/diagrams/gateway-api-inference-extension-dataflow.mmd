@@ -1,42 +1,47 @@
 sequenceDiagram
     participant Client as External Client
-    participant Gateway as Envoy Gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant BBR as Body-Based Router<br/>9004/TCP gRPC TLS
-    participant EPP as Endpoint Picker<br/>9002/TCP gRPC TLS
+    participant Gateway as Envoy-Compatible Gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant BBR as Body-Based Router (BBR)<br/>9004/TCP gRPC TLS
+    participant EPP as Endpoint Picker (EPP)<br/>9002/TCP gRPC TLS
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
     participant ModelServer as Model Server Pod<br/>(vLLM/SGLang/Triton)
+    participant MetricsEP as Model Server /metrics<br/>HTTP
 
-    Note over Client,ModelServer: Flow 1: Inference Request Processing (with BBR)
+    Note over EPP,K8sAPI: Startup: Watch CRDs & Pods
+    EPP->>K8sAPI: Watch InferencePool, InferenceObjective,<br/>InferenceModelRewrite, Pods
+    K8sAPI-->>EPP: CRD & Pod events (streaming)
+    BBR->>K8sAPI: Watch ConfigMaps (bbr-managed=true)
+    K8sAPI-->>BBR: ConfigMap events (streaming)
 
-    Client->>Gateway: POST /v1/chat/completions<br/>Auth: Bearer Token / API Key
-    Gateway->>BBR: ext-proc: RequestHeaders + RequestBody<br/>gRPC/HTTP2 TLS (self-signed)
-    BBR->>BBR: Parse JSON body<br/>Extract model name
-    BBR->>BBR: Lookup adapter→base model<br/>(from ConfigMap cache)
-    BBR-->>Gateway: ext-proc response:<br/>Inject X-Gateway-Model-Name header
-    Gateway->>EPP: ext-proc: RequestHeaders + RequestBody<br/>gRPC/HTTP2 TLS (self-signed)
-
-    Note over EPP: Scheduling Pipeline
-    EPP->>EPP: 1. Filter endpoints<br/>(prefix cache affinity, SLO headroom)
-    EPP->>EPP: 2. Score endpoints<br/>(KV cache util, queue depth,<br/>LoRA affinity, predicted latency)
-    EPP->>EPP: 3. Pick best endpoint<br/>(max score / weighted random)
-
-    EPP-->>Gateway: ext-proc response:<br/>Set target endpoint address<br/>+ port in headers
-    Gateway->>ModelServer: Forward request to<br/>selected endpoint<br/>HTTP/gRPC
-    ModelServer-->>Gateway: Inference response<br/>(streaming or unary)
-    Gateway-->>Client: Response<br/>(SSE stream or JSON)
-
-    Note over EPP,ModelServer: Flow 2: Continuous Metrics Scraping
-
-    loop Every 50ms (configurable)
-        EPP->>ModelServer: GET /metrics<br/>HTTP (InsecureSkipVerify)
-        ModelServer-->>EPP: Prometheus metrics:<br/>KV cache util, queue depth,<br/>running requests, LoRA info
-        EPP->>EPP: Update in-memory datastore<br/>with endpoint metrics
+    Note over EPP,MetricsEP: Continuous: Metrics Scraping (every 50ms default)
+    loop Every refresh-metrics-interval
+        EPP->>MetricsEP: GET /metrics<br/>HTTP (InsecureSkipVerify)
+        MetricsEP-->>EPP: KV cache util, queue depth,<br/>running requests, LoRA info
     end
 
-    Note over BBR,K8sAPI: Flow 3: CRD & ConfigMap Watches
+    Note over Client,ModelServer: Flow 1: Inference Request with Body-Based Routing
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTPS TLS 1.2+, Bearer Token
+    Gateway->>BBR: ext-proc ProcessingRequest<br/>gRPC/HTTP2 TLS (self-signed)
+    Note right of BBR: Parse JSON body,<br/>extract model name,<br/>resolve LoRA→base model
+    BBR-->>Gateway: ProcessingResponse<br/>(inject model-name header)
 
-    K8sAPI-->>EPP: Watch notifications:<br/>InferencePool, InferenceObjective,<br/>InferenceModelRewrite, Pods
-    EPP->>EPP: Reconcile datastore:<br/>update endpoints, models,<br/>priorities, SLOs
+    Gateway->>EPP: ext-proc ProcessingRequest<br/>gRPC/HTTP2 TLS (self-signed)
+    Note right of EPP: Flow control admission<br/>→ Filter endpoints<br/>→ Score endpoints<br/>→ Pick best endpoint
+    EPP-->>Gateway: ProcessingResponse<br/>(set target-endpoint header)
 
-    K8sAPI-->>BBR: Watch notifications:<br/>ConfigMaps (bbr-managed=true)
-    BBR->>BBR: Update adapter→base model<br/>mapping cache
+    Gateway->>ModelServer: Forward inference request<br/>to selected endpoint
+    ModelServer-->>Gateway: Inference response<br/>(streaming or unary)
+    Gateway-->>Client: Response<br/>HTTPS TLS 1.2+
+
+    Note over Client,ModelServer: Flow 2: Direct Routing (no BBR)
+    Client->>Gateway: POST /v1/completions<br/>HTTPS, model in header
+    Gateway->>EPP: ext-proc ProcessingRequest<br/>gRPC/HTTP2 TLS
+    EPP-->>Gateway: ProcessingResponse<br/>(target-endpoint header)
+    Gateway->>ModelServer: Forward to selected endpoint
+    ModelServer-->>Gateway: Inference response
+    Gateway-->>Client: Response
+
+    Note over EPP,MetricsEP: Flow 3: Metrics Collection
+    EPP->>MetricsEP: GET /metrics<br/>HTTP/HTTPS (configurable)
+    MetricsEP-->>EPP: Prometheus metrics
+    Note right of EPP: Update datastore:<br/>KV cache utilization,<br/>queue depth,<br/>running requests,<br/>LoRA adapter status

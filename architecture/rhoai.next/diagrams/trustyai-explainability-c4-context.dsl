@@ -1,49 +1,53 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Creates ML models, monitors fairness and drift metrics"
-        mlops = person "MLOps Engineer" "Manages model serving infrastructure and monitoring"
+        dataScientist = person "Data Scientist" "Creates ML models, monitors fairness/drift, requests explanations"
+        mlEngineer = person "ML Engineer" "Deploys models, configures monitoring, reviews metrics"
 
-        trustyai = softwareSystem "TrustyAI Explainability" "AI model explainability, fairness metrics, and data drift detection service" {
-            coreLib = container "explainability-core" "LIME, SHAP, Counterfactual, PDP explainability algorithms" "Java 17 Library"
-            connectorsLib = container "explainability-connectors" "KServe v1/v2 HTTP and gRPC connectors for model inference" "Java 17 Library"
-            arrowLib = container "explainability-arrow" "Apache Arrow columnar data format support" "Java 17 Library"
-            service = container "explainability-service" "REST API for fairness metrics, drift detection, data management" "Quarkus 3.8.5" {
-                fairnessEndpoints = component "Fairness Endpoints" "SPD, DIR metric computation" "RESTEasy Reactive"
-                driftEndpoints = component "Drift Endpoints" "KS Test, FourierMMD, Meanshift detection" "RESTEasy Reactive"
-                consumerEndpoint = component "Consumer Endpoint" "/consumer/kserve/v2 payload ingestion" "RESTEasy Reactive"
-                cloudEventConsumer = component "CloudEvent Consumer" "Knative CloudEvents ingestion" "Quarkus Funqy"
-                payloadReconciler = component "Payload Reconciler" "Matches request/response payloads" "CDI Bean"
-                prometheusScheduler = component "Prometheus Scheduler" "Periodic metric computation (5s)" "Quarkus Scheduler"
-                storageLayer = component "Storage Layer" "Pluggable: PVC, Hibernate, MinIO, Memory" "CDI @LookupIfProperty"
+        trustyai = softwareSystem "TrustyAI Explainability" "AI model explainability, fairness metrics, and data drift detection service for OpenShift AI" {
+            core = container "explainability-core" "Core AI explainability algorithms: LIME, SHAP, Counterfactual (OptaPlanner), PDP, Aggregated LIME" "Java 17 Library"
+            connectors = container "explainability-connectors" "KServe v1/v2 HTTP and gRPC connectors for model inference with protobuf definitions" "Java 17 Library"
+            arrow = container "explainability-arrow" "Apache Arrow columnar data format support for efficient data interchange" "Java 17 Library"
+            service = container "explainability-service" "Quarkus REST API service: fairness metrics, drift detection, data management, and explainability (ODH only)" "Quarkus 3.8.5 / Java 17" {
+                consumerEndpoint = component "Consumer Endpoint" "Receives KServe v2 inference payloads from ModelMesh" "JAX-RS REST"
+                cloudEventConsumer = component "CloudEvent Consumer" "Receives Knative CloudEvents from KServe InferenceServices" "Quarkus Funqy"
+                fairnessEndpoints = component "Fairness Metric Endpoints" "SPD, DIR fairness metric computation and scheduling" "JAX-RS REST"
+                driftEndpoints = component "Drift Metric Endpoints" "KSTest, FourierMMD, Meanshift drift detection" "JAX-RS REST"
+                explainerEndpoints = component "Explainer Endpoints" "LIME, SHAP, Counterfactual, TSSaliency, PDP (ODH only)" "JAX-RS REST"
+                reconciler = component "Payload Reconciler" "Matches inference request/response pairs before persistence" "CDI Bean"
+                storageLayer = component "Storage Layer" "Pluggable storage: PVC, Hibernate (MariaDB), MinIO, Memory" "CDI + LookupIfProperty"
+                prometheusScheduler = component "Prometheus Scheduler" "Periodically computes registered metrics, publishes to Micrometer" "Quarkus Scheduler"
             }
         }
 
-        kserveModelMesh = softwareSystem "KServe / ModelMesh" "Model serving infrastructure for ML models" "External"
-        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and alerting" "External"
-        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Deploys and manages TrustyAI instances per namespace" "Internal RHOAI"
+        kserveModelMesh = softwareSystem "KServe / ModelMesh" "Model serving infrastructure providing inference endpoints" "External"
+        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and alerting platform" "External"
+        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Deploys and manages TrustyAI service instances per namespace" "Internal RHOAI"
         mariadb = softwareSystem "MariaDB / MySQL" "Relational database for observation data persistence" "External"
         minio = softwareSystem "MinIO" "S3-compatible object storage for observation data" "External"
-        pvc = softwareSystem "PersistentVolumeClaim" "Filesystem storage for observation data (default)" "External"
-        openshiftRoute = softwareSystem "OpenShift Route" "Ingress for external access to service endpoints" "External"
+        pvc = softwareSystem "PersistentVolumeClaim" "Kubernetes volume for file-based observation storage" "External"
+        certManager = softwareSystem "cert-manager" "Certificate lifecycle management for TLS" "External"
+        dashboard = softwareSystem "ODH Dashboard" "OpenShift AI web console for model management" "Internal RHOAI"
 
         # User interactions
-        datascientist -> trustyai "Requests fairness/drift metrics, uploads data" "HTTP/8080"
-        mlops -> trustyai "Monitors metrics, configures service" "HTTP/8080"
+        dataScientist -> trustyai "Requests fairness metrics, drift analysis, explanations" "REST/HTTP"
+        mlEngineer -> trustyai "Configures monitoring, uploads data, reviews metrics" "REST/HTTP"
 
         # System interactions
-        kserveModelMesh -> trustyai "Sends inference payloads for observation tracking" "HTTP/8080, gRPC"
-        trustyai -> kserveModelMesh "Invokes models for explainability (ODH only)" "HTTP/8080, gRPC/plaintext"
-        prometheus -> trustyai "Scrapes /q/metrics for trustyai_spd, trustyai_dir" "HTTP/8080"
-        trustyaiOperator -> trustyai "Deploys and manages lifecycle" "Kubernetes API"
+        kserveModelMesh -> trustyai "Sends inference payloads (HTTP POST, CloudEvents)" "HTTP/8080"
+        trustyai -> kserveModelMesh "Invokes model inference for explainability" "HTTP/8080, gRPC"
+        prometheus -> trustyai "Scrapes /q/metrics for trustyai_* gauges" "HTTP/8080 Bearer Token"
+        trustyaiOperator -> trustyai "Manages lifecycle, deploys per namespace" "Kubernetes API"
         trustyai -> mariadb "Persists observation data (DATABASE mode)" "JDBC/3306"
-        trustyai -> minio "Persists observation data (MINIO mode)" "S3 HTTP API"
-        trustyai -> pvc "Persists observation data (PVC mode, default)" "Filesystem"
-        openshiftRoute -> trustyai "Routes external traffic" "HTTP/80 -> 8080"
+        trustyai -> minio "Persists observation data (MINIO mode)" "HTTP S3 API"
+        trustyai -> pvc "Persists observation data (PVC mode)" "Filesystem"
+        certManager -> trustyai "Provisions TLS certificates for HTTPS/4443" "Kubernetes Secret"
+        dashboard -> trustyai "Displays fairness/drift metrics via API" "REST/HTTP"
 
-        # Internal container relationships
-        service -> coreLib "Uses explainability algorithms"
-        service -> connectorsLib "Uses KServe connectors for model inference"
-        service -> arrowLib "Uses Arrow format for data interchange"
+        # Internal container interactions
+        service -> core "Uses explainability algorithms"
+        service -> connectors "Uses KServe prediction providers"
+        service -> arrow "Uses Arrow data format"
+        connectors -> core "Implements PredictionProvider interface"
     }
 
     views {
@@ -64,7 +68,7 @@ workspace {
 
         styles {
             element "Person" {
-                shape person
+                shape Person
                 background #08427b
                 color #ffffff
             }
@@ -77,7 +81,7 @@ workspace {
                 color #ffffff
             }
             element "Internal RHOAI" {
-                background #7ed321
+                background #438dd5
                 color #ffffff
             }
             element "Container" {

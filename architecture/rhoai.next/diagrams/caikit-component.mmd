@@ -2,43 +2,26 @@ graph TB
     subgraph CaikitFramework["Caikit Framework (Python SDK/Runtime)"]
         direction TB
 
-        subgraph Core["caikit.core - Module/Task/DataModel Framework"]
-            Task["Task Definitions<br/>(@task decorator)"]
-            Module["Module Base<br/>(@module decorator)"]
-            DataModel["DataModel / DataObject<br/>(@dataobject decorator)"]
-            Registry["Module & Task Registry"]
-            ModelManager_Core["Core Model Manager"]
-            Loader["Model Loader / Saver"]
+        subgraph Core["caikit.core"]
+            TaskDef["Task Definitions<br/>(TextGeneration, Embedding,<br/>Classification, etc.)"]
+            ModuleBase["Module Base<br/>(@module decorator)"]
+            DataModel["DataModel / @dataobject<br/>(auto-generates protobuf)"]
+            Registries["Module & Task Registries"]
+            ModuleLoader["Module Loader / Saver"]
             Factory["Backend Factory"]
-
-            Task --> Registry
-            Module --> Registry
-            DataModel --> Registry
-            Registry --> ModelManager_Core
-            ModelManager_Core --> Loader
         end
 
-        subgraph Interfaces["caikit.interfaces - Domain Task Definitions"]
-            NLP["NLP Tasks<br/>(TextGeneration, Embedding,<br/>Classification, Reranking,<br/>SentenceSimilarity)"]
-            Vision["Vision Tasks<br/>(ObjectDetection,<br/>ImageClassification)"]
-            TimeSeries["Time Series Tasks<br/>(Forecasting,<br/>AnomalyDetection)"]
-            CommonDM["Common Data Models<br/>(Vectors, StreamSources,<br/>Remote Config)"]
-        end
-
-        subgraph Runtime["caikit.runtime - Dual-Protocol Serving"]
+        subgraph Runtime["caikit.runtime"]
             direction TB
-            ServiceFactory["ServicePackageFactory<br/>(Dynamic Service Generation)"]
 
-            subgraph gRPCLayer["gRPC Server (Port 8085)"]
-                gRPCServer["gRPC Server<br/>(grpcio)"]
-                ServerWrapper["CaikitRuntimeServerWrapper<br/>(Dynamic RPC routing)"]
-                gRPCInterceptors["Metrics Interceptors<br/>(py-grpc-prometheus)"]
+            subgraph Servers["Dual-Protocol Servers"]
+                GRPCServer["gRPC Server<br/>Port 8085/TCP<br/>Optional TLS/mTLS"]
+                HTTPServer["HTTP Server (FastAPI)<br/>Port 8080/TCP<br/>Optional TLS/mTLS"]
             end
 
-            subgraph HTTPLayer["HTTP Server (Port 8080)"]
-                HTTPServer["FastAPI Server<br/>(uvicorn)"]
-                PydanticWrapper["Pydantic Wrapper<br/>(Request validation)"]
-                SSE["SSE Streaming<br/>(sse-starlette)"]
+            subgraph ServiceGen["Dynamic Service Generation"]
+                ServiceFactory["ServicePackageFactory<br/>(scans modules at startup)"]
+                RPCGen["RPC Generator<br/>(py-to-proto)"]
             end
 
             subgraph Servicers["Shared Servicers"]
@@ -51,65 +34,77 @@ graph TB
             end
 
             subgraph ModelMgmt["Model Management"]
-                RuntimeModelManager["Runtime ModelManager"]
+                ModelManager["ModelManager"]
                 LoadedModel["LoadedModel"]
                 CoreModelLoader["CoreModelLoader"]
             end
 
-            ServiceFactory --> gRPCServer
-            ServiceFactory --> HTTPServer
-            gRPCServer --> ServerWrapper
-            ServerWrapper --> PredictServicer
-            ServerWrapper --> TrainServicer
-            HTTPServer --> PredictServicer
-            HTTPServer --> TrainServicer
-            PredictServicer --> RuntimeModelManager
-            TrainServicer --> RuntimeModelManager
-            RuntimeModelManager --> LoadedModel
-            RuntimeModelManager --> CoreModelLoader
+            MetricsPort["Prometheus Metrics<br/>Port 8086/TCP"]
         end
 
-        subgraph HealthProbe["caikit_health_probe (CLI)"]
-            Probe["Health Probe Binary<br/>(liveness + readiness)"]
+        subgraph Interfaces["caikit.interfaces"]
+            NLP["NLP Tasks<br/>(TextGeneration, Embedding,<br/>Classification, Reranking,<br/>Summarization)"]
+            Vision["Vision Tasks<br/>(Image data models)"]
+            TimeSeries["Time Series Tasks<br/>(Forecasting)"]
         end
 
-        subgraph Config["caikit.config"]
-            ConfigSystem["Hierarchical YAML Config<br/>(alchemy-config)"]
+        subgraph HealthProbe["caikit_health_probe"]
+            Probe["Health Probe Binary<br/>(external process)"]
         end
     end
 
+    %% Internal flows
+    TaskDef -->|defines contracts| ModuleBase
+    ModuleBase -->|registers in| Registries
+    DataModel -->|generates proto via| RPCGen
+    Registries -->|scanned by| ServiceFactory
+    ServiceFactory -->|generates RPCs for| GRPCServer
+    ServiceFactory -->|generates routes for| HTTPServer
+
+    GRPCServer -->|delegates to| PredictServicer
+    GRPCServer -->|delegates to| TrainServicer
+    HTTPServer -->|delegates to| PredictServicer
+    HTTPServer -->|delegates to| TrainServicer
+    PredictServicer -->|looks up model| ModelManager
+    ModelManager -->|retrieves| LoadedModel
+    LoadedModel -->|calls Module.run| ModuleBase
+
+    NLP -->|registers tasks| Registries
+    Vision -->|registers tasks| Registries
+    TimeSeries -->|registers tasks| Registries
+
     %% External interactions
-    Client[Client / Application] -->|"POST /api/v1/{task}/..."| HTTPServer
-    Client -->|"gRPC {TaskName}Service"| gRPCServer
+    Client["Client<br/>(Data Scientist / Application)"]
+    Client -->|"POST inference<br/>8080/TCP HTTP"| HTTPServer
+    Client -->|"RPC inference<br/>8085/TCP gRPC"| GRPCServer
 
-    ModelMesh["Model Mesh Sidecar"] -->|"gRPC mmesh.ModelRuntime<br/>Unix socket / 8085"| ModelRuntimeServicer
-    ModelRuntimeServicer --> RuntimeModelManager
+    ModelMeshCtrl["Model Mesh Controller<br/>(sidecar)"]
+    ModelMeshCtrl -->|"loadModel/unloadModel<br/>Unix socket or 8085/TCP"| ModelRuntimeServicer
+    ModelRuntimeServicer -->|manages| ModelManager
+    CoreModelLoader -->|"loads from"| Storage["Filesystem / S3 Storage"]
 
-    Probe -->|"gRPC Health Check<br/>8085/TCP"| gRPCServer
-    Probe -->|"HTTP GET /health<br/>8080/TCP"| HTTPServer
+    Probe -->|"health check<br/>8080/TCP + 8085/TCP"| GRPCServer
+    Probe -->|"health check<br/>8080/TCP + 8085/TCP"| HTTPServer
 
-    K8s["Kubernetes<br/>(liveness/readiness)"] -->|"exec probe"| Probe
+    KServe["KServe<br/>InferenceService Pod"]
+    KServe -.->|"hosts caikit as<br/>model server"| Runtime
 
-    Prometheus["Prometheus"] -->|"scrape :8086"| gRPCInterceptors
-
-    %% Core to Interfaces relationship
-    NLP --> Task
-    Vision --> Task
-    TimeSeries --> Task
-    CommonDM --> DataModel
+    %% Downstream consumers
+    Downstream["Downstream Libraries<br/>(caikit-nlp, caikit-tgis-serving)"]
+    Downstream -->|"Python import<br/>registers modules"| Core
 
     %% Styling
-    style CaikitFramework fill:#e8f4fd,stroke:#4a90e2,stroke-width:2px
-    style Core fill:#dbeafe,stroke:#3b82f6,stroke-width:2px
-    style Interfaces fill:#fef3c7,stroke:#d97706,stroke-width:2px
-    style Runtime fill:#d1fae5,stroke:#059669,stroke-width:2px
-    style gRPCLayer fill:#c7d2fe,stroke:#6366f1,stroke-width:1px
-    style HTTPLayer fill:#fce7f3,stroke:#db2777,stroke-width:1px
-    style Servicers fill:#e0e7ff,stroke:#4338ca,stroke-width:1px
-    style ModelMgmt fill:#ccfbf1,stroke:#0d9488,stroke-width:1px
-    style HealthProbe fill:#fef9c3,stroke:#ca8a04,stroke-width:1px
-    style Config fill:#f3e8ff,stroke:#7c3aed,stroke-width:1px
-    style Client fill:#f9fafb,stroke:#6b7280,stroke-width:2px
-    style ModelMesh fill:#e5e7eb,stroke:#374151,stroke-width:2px
-    style K8s fill:#e5e7eb,stroke:#374151,stroke-width:2px
-    style Prometheus fill:#e5e7eb,stroke:#374151,stroke-width:2px
+    style CaikitFramework fill:#e8f0fe,stroke:#4a90e2,stroke-width:2px
+    style Core fill:#dcedc8,stroke:#689f38,stroke-width:2px
+    style Runtime fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    style Interfaces fill:#f3e5f5,stroke:#8e24aa,stroke-width:2px
+    style HealthProbe fill:#e0f7fa,stroke:#00838f,stroke-width:2px
+    style Servers fill:#fff8e1,stroke:#f9a825
+    style ServiceGen fill:#fff8e1,stroke:#f9a825
+    style Servicers fill:#fff8e1,stroke:#f9a825
+    style ModelMgmt fill:#fff8e1,stroke:#f9a825
+    style Client fill:#f9f9f9,stroke:#999,stroke-width:2px
+    style ModelMeshCtrl fill:#e8e8e8,stroke:#666
+    style KServe fill:#e8e8e8,stroke:#666
+    style Storage fill:#f5a623,stroke:#333
+    style Downstream fill:#e8e8e8,stroke:#666

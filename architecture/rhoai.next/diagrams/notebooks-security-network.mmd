@@ -4,93 +4,74 @@ graph TB
     end
 
     subgraph Ingress["INGRESS (Platform-Managed)"]
-        Gateway["Platform Gateway (Envoy)<br/>443/TCP HTTPS<br/>TLS 1.2+ SIMPLE<br/>HTTPRoute (Gateway API)"]
+        Gateway["Platform Gateway (Envoy)<br/>HTTPRoute<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ SIMPLE<br/>OAuth/OIDC cookie"]
     end
 
-    subgraph NotebookPod["NOTEBOOK POD (StatefulSet)"]
+    subgraph AuthSidecar["AUTH SIDECAR (Injected by Notebook Controller)"]
+        KRBAC["kube-rbac-proxy<br/>8443/TCP → 8888/TCP<br/>Validates Bearer token<br/>Enforces namespace RBAC"]
+    end
+
+    subgraph WorkbenchPod["WORKBENCH POD (Application)"]
         direction TB
-        KubeRBAC["kube-rbac-proxy Sidecar<br/>8443/TCP HTTPS<br/>OAuth/OIDC validation<br/>Injected by Notebook Controller"]
-
-        subgraph WorkbenchVariants["Workbench Container (one of)"]
-            JupyterLab["JupyterLab<br/>8888/TCP HTTP<br/>Jupyter / PyTorch / TF / TrustyAI"]
-            CodeServerStack["code-server Stack<br/>nginx (8888) → code-server (8080)<br/>httpd CGI (8080)"]
-            RStudioStack["RStudio Stack<br/>nginx (8888) → RStudio (8787)"]
-        end
+        Jupyter["JupyterLab<br/>8888/TCP HTTP"]
+        CS["code-server<br/>nginx:8888 → code-server:8080<br/>HTTP"]
+        RS["RStudio<br/>nginx:8888 → rstudio:8787<br/>HTTP"]
     end
 
-    subgraph ClusterInternal["CLUSTER INTERNAL"]
+    subgraph ControlPlane["PLATFORM CONTROL PLANE"]
         direction TB
-        APIServer["OpenShift API Server<br/>6443/TCP HTTPS TLS 1.2+<br/>ServiceAccount token auth"]
-
-        subgraph PlatformComponents["Platform Components"]
-            NbController["ODH Notebook Controller<br/>Creates StatefulSets +<br/>kube-rbac-proxy sidecars"]
-            DashboardUI["ODH Dashboard<br/>Reads ImageStream annotations"]
-            PlatformOp["rhods-operator<br/>Applies kustomize manifests"]
-            Elyra["Elyra Pipeline Engine<br/>Selects runtime images"]
-        end
-
-        ImageStreams["OpenShift ImageStreams<br/>Image reference tracking<br/>3 version tags (N, N-1, N-2)"]
+        Konflux["Konflux Build System<br/>102 Tekton PipelineRuns"]
+        Operator["rhods-operator"]
+        Dashboard["ODH Dashboard"]
+        NotebookCtrl["ODH Notebook Controller"]
+        K8sAPI["OpenShift API<br/>6443/TCP HTTPS"]
     end
 
-    subgraph EgressTargets["EGRESS (User-Initiated)"]
-        PyPI["PyPI / Package Registries<br/>443/TCP HTTPS TLS 1.2+"]
-        GitRepos["Git Repositories<br/>443/TCP HTTPS TLS 1.2+<br/>User-configured auth"]
-        S3["S3-Compatible Storage<br/>443/TCP HTTPS TLS 1.2+<br/>AWS IAM / S3 credentials"]
-        MongoDB["MongoDB<br/>27017/TCP<br/>TLS optional<br/>Credentials"]
-        ODBC["ODBC Data Sources<br/>varies/TCP<br/>Credentials"]
+    subgraph ImageRegistry["CONTAINER REGISTRIES"]
+        RHIO["registry.redhat.io<br/>443/TCP HTTPS TLS 1.2+"]
     end
 
-    subgraph BuildPipeline["BUILD PIPELINE"]
-        Konflux["Konflux Build System<br/>102 Tekton PipelineRuns<br/>Hermetic (zero network)"]
-        ContainerReg["Container Registry<br/>registry.redhat.io / quay.io<br/>443/TCP HTTPS TLS 1.2+"]
+    subgraph ExternalServices["EXTERNAL SERVICES (User-Initiated Egress)"]
+        PyPI["PyPI / Package Registries<br/>443/TCP HTTPS<br/>Auth: None"]
+        Git["Git Repositories<br/>443/TCP HTTPS<br/>Auth: User credentials"]
+        S3["S3-Compatible Storage<br/>443/TCP HTTPS<br/>Auth: AWS IAM / S3 creds"]
+        MongoDB["MongoDB<br/>27017/TCP<br/>Auth: Credentials"]
+        ODBC["ODBC Data Sources<br/>Varies/TCP<br/>Auth: Credentials"]
     end
 
-    %% External → Ingress
+    %% User access flow
     User -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth/OIDC cookie"| Gateway
+    Gateway -->|"HTTPS/8443<br/>TLS (in-cluster)<br/>Bearer token"| KRBAC
+    KRBAC -->|"HTTP/8888<br/>No encryption (pod-local)<br/>Pre-authenticated"| Jupyter
+    KRBAC -->|"HTTP/8888<br/>No encryption (pod-local)<br/>Pre-authenticated"| CS
+    KRBAC -->|"HTTP/8888<br/>No encryption (pod-local)<br/>Pre-authenticated"| RS
 
-    %% Ingress → Pod
-    Gateway -->|"HTTPS/8443<br/>TLS (in-cluster)<br/>Bearer token"| KubeRBAC
+    %% Control plane flows
+    Konflux -->|"HTTPS/443<br/>TLS 1.2+<br/>SA auth"| RHIO
+    Operator -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    Dashboard -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    NotebookCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
 
-    %% kube-rbac-proxy → Workbench
-    KubeRBAC -->|"HTTP/8888<br/>localhost (no TLS)<br/>Pre-authenticated"| JupyterLab
-    KubeRBAC -->|"HTTP/8888<br/>localhost (no TLS)<br/>Pre-authenticated"| CodeServerStack
-    KubeRBAC -->|"HTTP/8888<br/>localhost (no TLS)<br/>Pre-authenticated"| RStudioStack
-
-    %% Platform components → API Server
-    NbController -->|"HTTPS/6443<br/>SA token"| APIServer
-    DashboardUI -->|"HTTPS/6443<br/>SA token"| APIServer
-    PlatformOp -->|"HTTPS/6443<br/>SA token"| APIServer
-    Elyra -->|"HTTPS/6443<br/>SA token"| APIServer
-
-    %% API Server ↔ ImageStreams
-    PlatformOp -->|creates| ImageStreams
-    DashboardUI -->|reads| ImageStreams
-    NbController -->|reads| ImageStreams
-
-    %% Egress from notebook
-    JupyterLab -->|"HTTPS/443<br/>pip install"| PyPI
-    JupyterLab -->|"HTTPS/443<br/>git clone"| GitRepos
-    JupyterLab -->|"HTTPS/443<br/>AWS IAM"| S3
-    JupyterLab -->|"TCP/27017<br/>mongocli"| MongoDB
-    JupyterLab -->|"TCP/varies<br/>unixODBC"| ODBC
-
-    %% Build pipeline
-    Konflux -->|"HTTPS/443<br/>SA auth<br/>Push images"| ContainerReg
-    ContainerReg -.->|"HTTPS/443<br/>Pull secret<br/>Image pull"| NotebookPod
+    %% Egress flows
+    WorkbenchPod -->|"HTTPS/443<br/>TLS 1.2+"| PyPI
+    WorkbenchPod -->|"HTTPS/443<br/>TLS 1.2+"| Git
+    WorkbenchPod -->|"HTTPS/443<br/>TLS 1.2+"| S3
+    WorkbenchPod -->|"TCP/27017<br/>TLS optional"| MongoDB
+    WorkbenchPod -->|"TCP/varies"| ODBC
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef pod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef build fill:#f5f5f5,stroke:#666,stroke-width:2px
-    classDef security fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef auth fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef workbench fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef controlplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef registry fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class User external
     class Gateway ingress
-    class KubeRBAC security
-    class JupyterLab,CodeServerStack,RStudioStack pod
-    class APIServer,NbController,DashboardUI,PlatformOp,Elyra,ImageStreams cluster
-    class PyPI,GitRepos,S3,MongoDB,ODBC egress
-    class Konflux,ContainerReg build
+    class KRBAC auth
+    class Jupyter,CS,RS workbench
+    class Konflux,Operator,Dashboard,NotebookCtrl,K8sAPI controlplane
+    class RHIO registry
+    class PyPI,Git,S3,MongoDB,ODBC externalservice

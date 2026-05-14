@@ -1,57 +1,55 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Deploys ML models for inference via ModelMesh"
-        admin = person "Platform Admin" "Configures storage credentials and model serving infrastructure"
+        datascientist = person "Data Scientist" "Creates and deploys ML models via ModelMesh"
 
-        modelmeshRuntimeAdapter = softwareSystem "ModelMesh Runtime Adapter" "Sidecar service that retrieves model artifacts from cloud storage and adapts ModelMesh protocol to runtime-specific APIs" {
-            puller = container "model-serving-puller" "Downloads model artifacts from cloud storage backends (S3, GCS, Azure, HTTP, PVC) and proxies load/unload requests to runtime adapters" "Go Service, gRPC :8084"
-            pullmanLib = container "pullman" "Pluggable storage provider framework with provider registration, client caching (1h TTL), and secure path joining" "Go Library"
-            tritonAdapter = container "model-mesh-triton-adapter" "Adapts mmesh.ModelRuntime to Triton gRPC API with model layout transformation, config.pbtxt generation, and Keras-to-TF conversion" "Go Service, gRPC :8085"
-            ovmsAdapter = container "model-mesh-ovms-adapter" "Adapts mmesh.ModelRuntime to OVMS REST API with actor-pattern batched config reload (100ms-3s window)" "Go Service, gRPC :8085"
-            mlserverAdapter = container "model-mesh-mlserver-adapter" "Adapts mmesh.ModelRuntime to MLServer gRPC API with model-settings.json generation and implementation class mapping" "Go Service, gRPC :8085"
-            torchserveAdapter = container "model-mesh-torchserve-adapter" "Adapts mmesh.ModelRuntime to TorchServe gRPC management/inference APIs with mmconfig.properties generation" "Go Service, gRPC :8085"
-            tfConverter = container "tf_pb.py" "Converts Keras .h5 models to TensorFlow SavedModel format at model-load time" "Python 3.11, TensorFlow 2.19"
-
-            puller -> pullmanLib "Uses for storage operations"
-            puller -> tritonAdapter "Forward LoadModel/UnloadModel" "gRPC :8085 plaintext"
-            puller -> ovmsAdapter "Forward LoadModel/UnloadModel" "gRPC :8085 plaintext"
-            puller -> mlserverAdapter "Forward LoadModel/UnloadModel" "gRPC :8085 plaintext"
-            puller -> torchserveAdapter "Forward LoadModel/UnloadModel" "gRPC :8085 plaintext"
-            tritonAdapter -> tfConverter "Invokes for .h5 model conversion"
+        modelmeshRuntimeAdapter = softwareSystem "ModelMesh Runtime Adapter" "Sidecar container that bridges ModelMesh protocol to runtime-specific APIs and handles model artifact retrieval from cloud storage" {
+            puller = container "model-serving-puller" "Downloads model artifacts from cloud storage and proxies load/unload gRPC calls to the runtime adapter" "Go gRPC Service :8084"
+            tritonAdapter = container "triton-adapter" "Adapts ModelMesh gRPC protocol to NVIDIA Triton model repository management API with Keras-to-TF conversion" "Go gRPC Service :8085"
+            ovmsAdapter = container "ovms-adapter" "Adapts ModelMesh gRPC protocol to OpenVINO Model Server REST API with batched config reload" "Go gRPC Service :8085"
+            mlserverAdapter = container "mlserver-adapter" "Adapts ModelMesh gRPC protocol to Seldon MLServer gRPC API with model-settings.json generation" "Go gRPC Service :8085"
+            torchserveAdapter = container "torchserve-adapter" "Adapts ModelMesh gRPC protocol to TorchServe management and inference gRPC APIs" "Go gRPC Service :8085"
+            pullmanLib = component "pullman" "Pluggable storage provider framework with S3, GCS, Azure, HTTP, and PVC backends" "Go Library"
+            tfConvert = component "tf_pb.py" "Converts Keras .h5 models to TensorFlow SavedModel format" "Python Script"
         }
 
-        modelmesh = softwareSystem "ModelMesh" "Intelligent model routing and caching layer that manages model lifecycle across pods" "Internal RHOAI"
-        modelmeshController = softwareSystem "ModelMesh Controller" "Kubernetes operator managing ModelMesh Serving deployments and ServingRuntime resources" "Internal RHOAI"
+        modelmeshServing = softwareSystem "ModelMesh Serving" "Multi-model serving platform that manages model lifecycle across heterogeneous runtimes" "Internal Platform"
+        modelmeshController = softwareSystem "ModelMesh Controller" "Kubernetes operator managing ModelMesh deployments and runtime configurations" "Internal Platform"
 
-        triton = softwareSystem "NVIDIA Triton Inference Server" "High-performance ML inference server supporting multiple frameworks" "Co-located Runtime"
-        ovms = softwareSystem "OpenVINO Model Server" "Intel's ML inference server optimized for OpenVINO IR models" "Co-located Runtime"
-        mlserver = softwareSystem "Seldon MLServer" "ML inference server supporting scikit-learn, XGBoost, LightGBM, MLlib" "Co-located Runtime"
-        torchserve = softwareSystem "PyTorch TorchServe" "PyTorch's production model serving framework" "Co-located Runtime"
+        triton = softwareSystem "NVIDIA Triton Inference Server" "High-performance inference server supporting multiple ML frameworks" "Runtime"
+        ovms = softwareSystem "OpenVINO Model Server" "Intel-optimized model server for OpenVINO IR and ONNX models" "Runtime"
+        mlserver = softwareSystem "Seldon MLServer" "Python-based inference server supporting sklearn, xgboost, lightgbm, mllib" "Runtime"
+        torchserve = softwareSystem "PyTorch TorchServe" "PyTorch model serving framework with management and inference APIs" "Runtime"
 
-        s3 = softwareSystem "S3 / IBM COS" "S3-compatible object storage for model artifacts" "External Cloud"
-        gcs = softwareSystem "Google Cloud Storage" "Google's object storage for model artifacts" "External Cloud"
-        azure = softwareSystem "Azure Blob Storage" "Microsoft's object storage for model artifacts" "External Cloud"
-        httpServer = softwareSystem "HTTP/HTTPS Server" "Generic HTTP endpoint serving model artifacts" "External"
+        s3 = softwareSystem "S3 / IBM COS" "S3-compatible object storage for model artifacts" "External"
+        gcs = softwareSystem "Google Cloud Storage" "GCS object storage for model artifacts" "External"
+        azureBlob = softwareSystem "Azure Blob Storage" "Azure object storage for model artifacts" "External"
+        httpServer = softwareSystem "HTTP/HTTPS Server" "HTTP-accessible model artifact server" "External"
 
-        k8sSecrets = softwareSystem "Kubernetes Secrets" "Stores cloud storage credentials mounted into pods" "Kubernetes"
+        # Relationships
+        modelmeshServing -> modelmeshRuntimeAdapter "Sends LoadModel/UnloadModel/RuntimeStatus gRPC calls" "gRPC/8084,8085"
+        modelmeshController -> modelmeshRuntimeAdapter "References via model-serving-config ConfigMap storageHelperImage field" "ConfigMap"
 
-        datascientist -> modelmesh "Deploys InferenceService" "kubectl / API"
-        admin -> k8sSecrets "Provisions storage-config Secret" "kubectl"
+        puller -> pullmanLib "Uses for model artifact download"
+        tritonAdapter -> pullmanLib "Uses when embedded puller enabled"
+        ovmsAdapter -> pullmanLib "Uses when embedded puller enabled"
+        mlserverAdapter -> pullmanLib "Uses when embedded puller enabled"
+        torchserveAdapter -> pullmanLib "Uses when embedded puller enabled"
+        tritonAdapter -> tfConvert "Invokes for Keras model conversion"
 
-        modelmesh -> modelmeshRuntimeAdapter "Calls mmesh.ModelRuntime (loadModel, unloadModel, runtimeStatus)" "gRPC :8084/:8085 plaintext"
-        modelmeshController -> modelmeshRuntimeAdapter "References via storageHelperImage in model-serving-config ConfigMap" "ConfigMap"
+        puller -> tritonAdapter "Forwards load/unload after pulling" "gRPC/8085"
+        puller -> ovmsAdapter "Forwards load/unload after pulling" "gRPC/8085"
+        puller -> mlserverAdapter "Forwards load/unload after pulling" "gRPC/8085"
+        puller -> torchserveAdapter "Forwards load/unload after pulling" "gRPC/8085"
 
-        modelmeshRuntimeAdapter -> triton "Model repository management" "gRPC :8001 plaintext"
-        modelmeshRuntimeAdapter -> ovms "Model config management" "HTTP :8001 plaintext"
-        modelmeshRuntimeAdapter -> mlserver "Model repository management" "gRPC :8001 plaintext"
-        modelmeshRuntimeAdapter -> torchserve "Model registration/management" "gRPC :7071/:7070 plaintext"
+        tritonAdapter -> triton "Model repository management" "gRPC/8001"
+        ovmsAdapter -> ovms "Model config management" "HTTP/8001"
+        mlserverAdapter -> mlserver "Model repository management" "gRPC/8001"
+        torchserveAdapter -> torchserve "Model registration and health check" "gRPC/7071,7070"
 
-        modelmeshRuntimeAdapter -> s3 "Downloads model artifacts" "HTTPS :443 TLS 1.2+"
-        modelmeshRuntimeAdapter -> gcs "Downloads model artifacts" "HTTPS :443 TLS 1.2+"
-        modelmeshRuntimeAdapter -> azure "Downloads model artifacts" "HTTPS :443 TLS 1.2+"
-        modelmeshRuntimeAdapter -> httpServer "Downloads model artifacts" "HTTP/HTTPS :80/:443"
-
-        k8sSecrets -> modelmeshRuntimeAdapter "Mounted at /storage-config" "Volume mount"
+        modelmeshRuntimeAdapter -> s3 "Downloads model artifacts" "HTTPS/443"
+        modelmeshRuntimeAdapter -> gcs "Downloads model artifacts" "HTTPS/443"
+        modelmeshRuntimeAdapter -> azureBlob "Downloads model artifacts" "HTTPS/443"
+        modelmeshRuntimeAdapter -> httpServer "Downloads model artifacts" "HTTPS/443"
     }
 
     views {
@@ -66,38 +64,34 @@ workspace {
         }
 
         styles {
-            element "External Cloud" {
-                background #f5a623
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal Platform" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Runtime" {
                 background #7ed321
                 color #ffffff
             }
-            element "Co-located Runtime" {
-                background #e8e8e8
-                color #333333
-            }
-            element "Kubernetes" {
-                background #326ce5
+            element "Person" {
+                shape Person
+                background #08427b
                 color #ffffff
             }
             element "Software System" {
-                background #4a90e2
+                background #1168bd
                 color #ffffff
-            }
-            element "Person" {
-                background #08427b
-                color #ffffff
-                shape person
             }
             element "Container" {
-                background #4a90e2
+                background #438dd5
                 color #ffffff
+            }
+            element "Component" {
+                background #85bbf0
+                color #000000
             }
         }
     }

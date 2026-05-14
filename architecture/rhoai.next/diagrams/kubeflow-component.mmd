@@ -1,75 +1,79 @@
 graph TB
-    subgraph KubeflowControllers["Kubeflow Notebook Controllers"]
+    subgraph KubeflowNotebook["Kubeflow Notebook Controllers"]
         direction TB
 
-        subgraph NotebookCtrl["notebook-controller (upstream)"]
-            NC_Main[Notebook Controller<br/>Reconciler]
-            NC_Culler[Culling Controller<br/>Reconciler]
-            NC_Metrics[Metrics Server<br/>:8080]
-            NC_Health[Health Probes<br/>:8081]
+        subgraph UpstreamCtrl["notebook-controller (upstream Kubeflow)"]
+            NotebookCtrl["Notebook Controller<br/>Go Operator<br/>8080/TCP metrics, 8081/TCP health"]
+            CullingCtrl["Culling Controller<br/>Polls Jupyter API for idle detection"]
+            NotebookCtrl -->|"reconciles"| CullingCtrl
         end
 
-        subgraph ODHCtrl["odh-notebook-controller (RHOAI)"]
-            ODH_Main[ODH Notebook Controller<br/>Reconciler]
-            ODH_MutWebhook[Mutating Webhook<br/>:8443/mutate-notebook-v1]
-            ODH_ValWebhook[Validating Webhook<br/>:8443/validate-notebook-v1]
-            ODH_Metrics[Metrics Server<br/>:8080]
-            ODH_Health[Health Probes<br/>:8081]
+        subgraph ODHCtrl["odh-notebook-controller (RHOAI extensions)"]
+            ODHReconciler["ODH Notebook Reconciler<br/>Go Operator<br/>8080/TCP metrics, 8081/TCP health"]
+            MutatingWH["Mutating Webhook<br/>8443/TCP HTTPS"]
+            ValidatingWH["Validating Webhook<br/>8443/TCP HTTPS"]
+            ODHReconciler -->|"serves"| MutatingWH
+            ODHReconciler -->|"serves"| ValidatingWH
         end
 
-        subgraph CommonLib["common library"]
-            Common[Reconcile Helpers<br/>Deployment, Service,<br/>StatefulSet, VirtualService]
+        subgraph CommonLib["common (shared library)"]
+            ReconcileHelpers["Reconciliation Helpers<br/>Deployment, Service,<br/>StatefulSet, VirtualService"]
         end
 
-        NC_Main -.->|uses| Common
-        ODH_Main -.->|uses| Common
+        NotebookCtrl -->|"uses"| ReconcileHelpers
+        ODHReconciler -->|"uses"| ReconcileHelpers
     end
 
     %% CRD
-    User[User / Dashboard] -->|creates/updates| NotebookCR["Notebook CR<br/>kubeflow.org/v1"]
+    User["User / Data Scientist"] -->|"creates/updates"| NotebookCR["Notebook CR<br/>kubeflow.org/v1<br/>Namespaced"]
 
     %% Webhook flow
-    NotebookCR -->|admission| ODH_MutWebhook
-    NotebookCR -->|admission| ODH_ValWebhook
+    NotebookCR -->|"admission"| MutatingWH
+    NotebookCR -->|"admission"| ValidatingWH
 
-    %% Controller watches
-    NotebookCR -->|watched by| NC_Main
-    NotebookCR -->|watched by| ODH_Main
-    NotebookCR -->|watched by| NC_Culler
+    %% Core controller creates
+    NotebookCR -->|"watched by"| NotebookCtrl
+    NotebookCtrl -->|"creates"| StatefulSet["StatefulSet<br/>(notebook pod)"]
+    NotebookCtrl -->|"creates"| NotebookSvc["ClusterIP Service<br/>80/TCP → 8888"]
+    NotebookCtrl -->|"creates (optional)"| VirtualSvc["Istio VirtualService"]
 
-    %% notebook-controller creates
-    NC_Main -->|creates| StatefulSet[StatefulSet]
-    NC_Main -->|creates| SVC_NB["Service<br/>{notebook-name}"]
-    NC_Main -->|creates optional| VS["VirtualService<br/>(Istio mode)"]
-
-    %% odh-notebook-controller creates
-    ODH_Main -->|creates| HTTPRoute["HTTPRoute<br/>nb-{ns}-{name}"]
-    ODH_Main -->|creates| RefGrant["ReferenceGrant<br/>(cross-namespace)"]
-    ODH_Main -->|creates| NetPol["NetworkPolicy<br/>(per notebook)"]
-    ODH_Main -->|injects| KRBP["kube-rbac-proxy<br/>sidecar (8443)"]
-    ODH_Main -->|creates| DSPASecret["ds-pipeline-config<br/>Secret"]
+    %% ODH controller creates
+    NotebookCR -->|"watched by"| ODHReconciler
+    ODHReconciler -->|"creates"| HTTPRoute["HTTPRoute<br/>/notebook/{ns}/{name}"]
+    ODHReconciler -->|"creates"| RefGrant["ReferenceGrant<br/>(cross-namespace)"]
+    ODHReconciler -->|"creates"| NetPol["NetworkPolicy<br/>(per notebook)"]
+    ODHReconciler -->|"injects"| KubeRBACProxy["kube-rbac-proxy<br/>Sidecar (8443/TCP)"]
+    ODHReconciler -->|"creates"| DSPASecret["ds-pipeline-config<br/>Secret"]
 
     %% Culling flow
-    NC_Culler -->|polls /api/kernels<br/>/api/terminals| SVC_NB
+    CullingCtrl -->|"polls /api/kernels,<br/>/api/terminals"| StatefulSet
 
-    %% External access
-    Gateway["Gateway<br/>data-science-gateway<br/>443/TCP"] -->|routes via| HTTPRoute
-    HTTPRoute -->|backend ref| KRBP
-    KRBP -->|authenticated| SVC_NB
+    %% External dependencies
+    HTTPRoute -->|"parentRef"| Gateway["Gateway<br/>data-science-gateway<br/>443/TCP"]
+    KubeRBACProxy -->|"TokenReview +<br/>SubjectAccessReview"| K8sAPI["Kubernetes API<br/>6443/TCP"]
+
+    %% Platform webhooks
+    PlatformWH1["connection-notebook<br/>(rhods-operator)"] -.->|"also mutates"| NotebookCR
+    PlatformWH2["hardwareprofile-injector<br/>(rhods-operator)"] -.->|"also mutates"| NotebookCR
 
     %% Styling
-    style NC_Main fill:#4a90e2,color:#fff
-    style NC_Culler fill:#4a90e2,color:#fff
-    style ODH_Main fill:#e86826,color:#fff
-    style ODH_MutWebhook fill:#e86826,color:#fff
-    style ODH_ValWebhook fill:#e86826,color:#fff
-    style Common fill:#7ed321,color:#fff
+    style NotebookCtrl fill:#4a90e2,color:#fff
+    style CullingCtrl fill:#4a90e2,color:#fff
+    style ODHReconciler fill:#4a90e2,color:#fff
+    style MutatingWH fill:#4a90e2,color:#fff
+    style ValidatingWH fill:#4a90e2,color:#fff
+    style ReconcileHelpers fill:#4a90e2,color:#fff
     style NotebookCR fill:#f5a623,color:#fff
-    style StatefulSet fill:#b8d4e3
-    style SVC_NB fill:#b8d4e3
-    style HTTPRoute fill:#f0c8a8
-    style RefGrant fill:#f0c8a8
-    style NetPol fill:#f0c8a8
-    style KRBP fill:#d35400,color:#fff
-    style Gateway fill:#8e44ad,color:#fff
-    style User fill:#ecf0f1,stroke:#333
+    style StatefulSet fill:#7ed321,color:#fff
+    style NotebookSvc fill:#7ed321,color:#fff
+    style HTTPRoute fill:#7ed321,color:#fff
+    style RefGrant fill:#7ed321,color:#fff
+    style NetPol fill:#7ed321,color:#fff
+    style KubeRBACProxy fill:#7ed321,color:#fff
+    style DSPASecret fill:#7ed321,color:#fff
+    style VirtualSvc fill:#7ed321,color:#fff
+    style Gateway fill:#e8e8e8,stroke:#333
+    style K8sAPI fill:#e8e8e8,stroke:#333
+    style PlatformWH1 fill:#e8e8e8,stroke:#333
+    style PlatformWH2 fill:#e8e8e8,stroke:#333
+    style User fill:#f9f9f9,stroke:#333

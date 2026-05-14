@@ -1,34 +1,40 @@
 workspace {
     model {
-        pipelineOrchestrator = person "Pipeline Orchestrator" "Data Science Pipelines (DSP) — records pipeline run metadata, artifact provenance, and lineage"
-        dataScientist = person "Data Scientist" "Runs ML pipelines and views lineage in the UI"
+        datascientist = person "Data Scientist" "Creates and runs ML pipelines that generate metadata"
+        mlEngineer = person "ML Engineer" "Queries lineage and artifact provenance"
 
         mlmd = softwareSystem "ML Metadata (MLMD)" "gRPC server that records and retrieves metadata (artifacts, executions, contexts, lineage) for ML workflows" {
-            grpcServer = container "metadata_store_server" "Stateless gRPC server exposing MetadataStoreService (46 RPCs) for metadata CRUD and lineage queries" "C++ gRPC Service"
-            protoDefs = container "Protocol Buffer Definitions" "Proto files defining metadata data model (Artifact, Execution, Context, Event) and gRPC service interface" "Protobuf Schema"
+            grpcServer = container "metadata_store_server" "C++ gRPC service exposing MetadataStoreService API (46 RPCs) for metadata CRUD and lineage queries" "C++ / gRPC / HTTP2"
+            protoAPI = container "Protocol Buffer Definitions" "Defines data model (Artifact, Execution, Context, Event) and gRPC service interface" "Protocol Buffers"
+            pythonClient = container "ml-metadata Python Library" "Python client for interacting with the gRPC server or in-process metadata store" "Python / PyPI"
         }
 
-        dsp = softwareSystem "Data Science Pipelines (DSP)" "Pipeline orchestrator that manages ML workflow execution" "Internal RHOAI"
-        kfUI = softwareSystem "Kubeflow Pipelines UI" "Web UI for viewing pipeline runs, artifacts, and lineage graphs" "Internal RHOAI"
-        pythonClient = softwareSystem "ml-metadata Python Library" "Python client for interacting with MLMD gRPC server" "Client Library"
+        dsp = softwareSystem "Data Science Pipelines (DSP)" "Pipeline orchestrator that records pipeline run metadata, artifact provenance, and lineage" "Internal RHOAI"
+        pipelinesUI = softwareSystem "Kubeflow Pipelines UI" "Web UI that reads artifact and lineage data for visualization" "Internal RHOAI"
+        platformOperator = softwareSystem "Platform Operator" "rhods-operator / opendatahub-operator — deploys and configures MLMD server" "Internal RHOAI"
 
-        mysql = softwareSystem "MySQL / MariaDB" "Relational database for persistent metadata storage (production)" "External Database"
-        postgresql = softwareSystem "PostgreSQL" "Alternative relational database for persistent metadata storage" "External Database"
-
-        platformOperator = softwareSystem "Platform Operator" "rhods-operator / opendatahub-operator — deploys and manages MLMD server" "Internal RHOAI"
+        mysql = softwareSystem "MySQL / MariaDB" "Relational database for persistent metadata storage (production)" "External"
+        postgresql = softwareSystem "PostgreSQL" "Alternative relational database for persistent metadata storage" "External"
+        certManager = softwareSystem "cert-manager" "Provisions TLS certificates for optional gRPC TLS/mTLS" "External"
 
         # Relationships
-        pipelineOrchestrator -> dsp "Triggers pipeline runs"
-        dataScientist -> kfUI "Views pipeline lineage and artifacts"
+        datascientist -> dsp "Submits ML pipelines"
+        mlEngineer -> pipelinesUI "Queries lineage and artifacts"
 
-        dsp -> mlmd "Records metadata via gRPC" "gRPC/HTTP2 on 8080/TCP, Optional TLS/mTLS"
-        kfUI -> mlmd "Queries artifacts and lineage via gRPC" "gRPC/HTTP2 on 8080/TCP, Optional TLS"
-        pythonClient -> mlmd "Interacts with metadata store" "gRPC/HTTP2 on 8080/TCP"
+        dsp -> mlmd "Records pipeline metadata, artifacts, executions, events, lineage" "gRPC/8080"
+        pipelinesUI -> mlmd "Reads artifact and lineage data" "gRPC/8080"
 
-        mlmd -> mysql "Stores/retrieves metadata" "MySQL protocol on 3306/TCP, Optional SSL, Username/Password"
-        mlmd -> postgresql "Stores/retrieves metadata" "PostgreSQL protocol on 5432/TCP, Optional SSL, Username/Password"
+        mlmd -> mysql "Persists metadata" "MySQL/3306"
+        mlmd -> postgresql "Persists metadata (alternative)" "PostgreSQL/5432"
+        platformOperator -> mlmd "Deploys and configures"
+        certManager -> mlmd "Provisions TLS certificates" "kubernetes.io/tls"
 
-        platformOperator -> mlmd "Deploys and configures" "Kubernetes API"
+        # Container-level relationships
+        dsp -> grpcServer "PutArtifacts, PutExecutions, PutEvents, PutContexts, PutExecution" "gRPC/8080"
+        pipelinesUI -> grpcServer "GetLineageSubgraph, GetArtifactsByContext" "gRPC/8080"
+        pythonClient -> grpcServer "MetadataStoreService RPCs" "gRPC/8080"
+        grpcServer -> mysql "SQL queries (metadata CRUD)" "MySQL/3306"
+        grpcServer -> postgresql "SQL queries (metadata CRUD)" "PostgreSQL/5432"
     }
 
     views {
@@ -43,26 +49,22 @@ workspace {
         }
 
         styles {
-            element "External Database" {
-                background #f5a623
+            element "External" {
+                background #999999
                 color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Client Library" {
-                background #50e3c2
-                color #333333
+            element "Person" {
+                shape Person
+                background #4a90e2
+                color #ffffff
             }
             element "Software System" {
                 background #4a90e2
                 color #ffffff
-            }
-            element "Person" {
-                background #08427b
-                color #ffffff
-                shape person
             }
             element "Container" {
                 background #438dd5

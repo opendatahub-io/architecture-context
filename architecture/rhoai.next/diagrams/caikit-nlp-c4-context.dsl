@@ -1,53 +1,50 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates, trains, and deploys NLP models for inference"
-        mlApp = person "ML Application" "Sends inference requests to deployed models"
+        dataScientist = person "Data Scientist" "Creates inference requests and trains prompt-tuned models"
+        mlEngineer = person "ML Engineer" "Deploys and manages serving runtimes"
 
-        caikitNlp = softwareSystem "caikit-nlp" "Python library providing NLP capabilities (text generation, embeddings, reranking, classification) via the caikit framework" {
-            textGenModules = container "Text Generation Modules" "TextGeneration, TextGenerationTGIS, PeftPromptTuning, PeftPromptTuningTGIS" "Python / caikit Module"
-            embeddingModules = container "Embedding & Reranking Modules" "EmbeddingModule, CrossEncoderModule with thread-safe tokenization" "Python / sentence-transformers"
-            classificationModules = container "Classification Modules" "SequenceClassification, FilteredSpanClassification" "Python / HuggingFace transformers"
-            tokenizationModules = container "Tokenization Modules" "RegexSentenceSplitter" "Python / caikit Module"
-            tgisAutoFinder = container "TGISAutoFinder" "Automatic discovery of models on remote TGIS servers" "Python / Model Finder"
+        caikitNlp = softwareSystem "caikit-nlp" "Python library providing NLP modules (text generation, embeddings, reranking, classification) for the caikit runtime" {
+            textGenLocal = container "TextGeneration" "Local text generation and fine-tuning using HuggingFace transformers" "Python Module"
+            textGenTGIS = container "TextGenerationTGIS" "Remote text generation via TGIS with streaming support" "Python Module"
+            peftPromptTuning = container "PeftPromptTuning" "Prompt tuning and multi-task prompt tuning via PEFT on frozen base models" "Python Module"
+            peftPromptTuningTGIS = container "PeftPromptTuningTGIS" "Remote inference of PEFT-tuned prompt vectors via TGIS" "Python Module"
+            embeddingModule = container "EmbeddingModule" "Text embeddings, sentence similarity, bi-encoder reranking via sentence-transformers" "Python Module"
+            crossEncoderModule = container "CrossEncoderModule" "Cross-encoder reranking via sentence-transformers CrossEncoder" "Python Module"
+            sequenceClassification = container "SequenceClassification" "Text sequence classification via HuggingFace transformers" "Python Module"
+            filteredSpanClassification = container "FilteredSpanClassification" "Span-level token classification with score filtering" "Python Module"
+            regexSentenceSplitter = container "RegexSentenceSplitter" "Regex-based sentence tokenization" "Python Module"
+            tgisAutoFinder = container "TGISAutoFinder" "Automatic discovery of models on remote TGIS servers" "Python Module"
         }
 
-        caikitRuntime = softwareSystem "caikit Runtime" "Hosts caikit-nlp modules and exposes them as HTTP/gRPC services" {
-            httpServer = container "HTTP Server" "Auto-generated REST endpoints from task methods" "Python / 8080/TCP"
-            grpcServer = container "gRPC Server" "Auto-generated gRPC services from task methods" "Python / 8085/TCP"
-            moduleLoader = container "Module Loader" "Discovers and loads caikit-nlp modules via RUNTIME_LIBRARY env" "Python"
-        }
+        caikitRuntime = softwareSystem "Caikit Runtime" "Hosts caikit-nlp modules, exposes HTTP (8080) and gRPC (8085) APIs" "Internal Platform"
+        tgis = softwareSystem "TGIS" "Text Generation Inference Server for remote model inference" "Internal Platform"
+        kserve = softwareSystem "KServe" "Serverless inference platform managing InferenceService CRs" "Internal Platform"
+        rhodsOperator = softwareSystem "RHODS Operator" "Platform operator creating ServingRuntime CRs" "Internal Platform"
 
-        tgis = softwareSystem "TGIS" "Text Generation Inference Server for remote model serving" "External"
-        huggingfaceHub = softwareSystem "HuggingFace Hub" "Model and tokenizer repository" "External"
-        platformOperator = softwareSystem "RHOAI Operator" "Manages ServingRuntime CRs and deploys caikit runtime pods" "Internal RHOAI"
-        kserve = softwareSystem "KServe" "Manages InferenceService lifecycle and routing" "Internal RHOAI"
-        pytorchDistributed = softwareSystem "PyTorch Distributed" "Multi-GPU coordination for fine-tuning via torchrun" "External"
+        huggingfaceHub = softwareSystem "HuggingFace Hub" "Model and tokenizer download repository" "External"
+        pytorch = softwareSystem "PyTorch" "Deep learning framework for inference and training" "External"
+        sentenceTransformers = softwareSystem "sentence-transformers" "Sentence embedding and semantic search library" "External"
 
-        # Relationships - Users
-        dataScientist -> caikitRuntime "Sends training requests (prompt tuning)" "HTTP/gRPC"
-        mlApp -> caikitRuntime "Sends inference requests (generation, embedding, rerank)" "HTTP/gRPC"
+        # Relationships
+        dataScientist -> caikitRuntime "Sends inference/training requests via" "HTTP/gRPC"
+        mlEngineer -> rhodsOperator "Configures ServingRuntime CRs"
 
-        # Relationships - Runtime to Library
-        caikitRuntime -> caikitNlp "Loads and executes NLP modules" "Python in-process"
+        caikitRuntime -> caikitNlp "Loads NLP modules via RUNTIME_LIBRARY=caikit_nlp" "Python import"
+        caikitNlp -> tgis "Delegates remote inference to" "gRPC (configurable port, TLS/mTLS optional)"
+        caikitNlp -> huggingfaceHub "Downloads models and tokenizers" "HTTPS/443"
+        caikitNlp -> pytorch "Uses for inference and training" "Python import"
+        caikitNlp -> sentenceTransformers "Uses for embeddings and reranking" "Python import"
 
-        # Relationships - Internal containers
-        moduleLoader -> textGenModules "Discovers and loads"
-        moduleLoader -> embeddingModules "Discovers and loads"
-        moduleLoader -> classificationModules "Discovers and loads"
-        moduleLoader -> tokenizationModules "Discovers and loads"
-        httpServer -> moduleLoader "Routes requests to modules"
-        grpcServer -> moduleLoader "Routes requests to modules"
+        kserve -> caikitRuntime "Routes inference traffic to"
+        rhodsOperator -> caikitRuntime "Creates and manages runtime containers"
 
-        # Relationships - External
-        textGenModules -> tgis "Remote inference via gRPC" "gRPC / TLS+mTLS (optional)"
-        textGenModules -> huggingfaceHub "Downloads models (when allowed)" "HTTPS/443"
-        embeddingModules -> huggingfaceHub "Downloads sentence-transformer models" "HTTPS/443"
-        textGenModules -> pytorchDistributed "Multi-GPU training coordination" "TCP/29550"
+        textGenTGIS -> tgis "gRPC inference" "gRPC"
+        peftPromptTuningTGIS -> tgis "gRPC inference with prompt vectors" "gRPC"
         tgisAutoFinder -> tgis "Discovers available models" "gRPC"
-
-        # Relationships - Platform
-        platformOperator -> caikitRuntime "Deploys via ServingRuntime CR"
-        kserve -> caikitRuntime "Routes traffic via InferenceService"
+        textGenLocal -> pytorch "Local inference" "Python"
+        peftPromptTuning -> pytorch "Training with Accelerate" "Python"
+        embeddingModule -> sentenceTransformers "Embeddings" "Python"
+        crossEncoderModule -> sentenceTransformers "Cross-encoder scoring" "Python"
     }
 
     views {
@@ -56,33 +53,28 @@ workspace {
             autoLayout
         }
 
-        container caikitNlp "CaikitNlpContainers" {
-            include *
-            autoLayout
-        }
-
-        container caikitRuntime "CaikitRuntimeContainers" {
+        container caikitNlp "Containers" {
             include *
             autoLayout
         }
 
         styles {
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
             element "Person" {
-                background #08427b
-                color #ffffff
                 shape Person
+                background #4a90e2
+                color #ffffff
+            }
+            element "Software System" {
+                background #4a90e2
+                color #ffffff
             }
             element "Container" {
                 background #438dd5

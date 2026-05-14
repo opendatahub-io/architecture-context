@@ -315,6 +315,29 @@ _Note: The EPP Konflux Dockerfile uses CGO_ENABLED=1 but does not include -tags 
 
 _Note: The artifacts.lock.yaml and generic_lockfile.yaml are present but empty (tokenizer Rust dependency is built from a git submodule). No rpms.lock.yaml found on the main branch - likely added on downstream release branches (e.g., rhoai-3.4). The Konflux Dockerfiles do not source cachi2.env or reference Hermeto prefetch._
 
+## Admission Webhooks
+
+This component defines 5 webhook(s) (4 mutating, 1 validating).
+
+| Name | Type | Target Resources | Purpose |
+|------|------|-----------------|---------|
+| namespace.sidecar-injector.istio.io | mutating | pods |  |
+| object.sidecar-injector.istio.io | mutating | pods |  |
+| rev.namespace.sidecar-injector.istio.io | mutating | pods |  |
+| rev.object.sidecar-injector.istio.io | mutating | pods |  |
+| rev.validation.istio.io | validating | * |  |
+
+### External Webhooks
+
+The following webhooks from peer components intercept this component's resource types:
+
+| Webhook | Defined By |
+|---------|-----------|
+| inferenceservice.kserve-webhook-server.pod-mutator | kserve-autogluon-server |
+| inferenceservice.kserve-webhook-server.pod-mutator | kserve |
+| mutating.pod.odh-model-controller.opendatahub.io | odh-model-controller |
+| mutate-pod.sparkoperator.k8s.io | spark-operator |
+
 ## Data Flows
 
 ### Flow 1: Inference Request Routing (EPP)

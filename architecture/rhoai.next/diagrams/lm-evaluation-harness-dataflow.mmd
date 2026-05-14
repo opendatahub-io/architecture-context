@@ -1,68 +1,72 @@
 sequenceDiagram
     participant Operator as trustyai-service-operator
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant JobPod as lmes-job Pod<br/>(main.py)
-    participant ConfigMap as ConfigMap<br/>/meta/job.json
+    participant JobPod as lmes-job Pod<br/>(Batch Job)
     participant EvalHub as EvalHub Service<br/>443/TCP HTTPS
     participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
-    participant Model as Model Inference Endpoint<br/>Configurable Port HTTPS
+    participant Model as Model Inference Endpoint<br/>HTTPS TLS 1.2+
     participant OCI as OCI Registry<br/>443/TCP HTTPS
-    participant MLflow as MLflow Server<br/>Configurable HTTPS
+    participant MLflow as MLflow Server<br/>HTTPS TLS 1.2+
 
-    rect rgb(240, 248, 255)
-        Note over Operator,K8sAPI: Flow 1: EvalHub Job Execution
-        Operator->>K8sAPI: Create Job from LMEvalJob CR<br/>Auth: ServiceAccount Token<br/>TLS 1.3
-        K8sAPI-->>JobPod: Pod scheduled & started
+    Note over Operator,K8sAPI: Flow 1: EvalHub Job Execution
 
-        JobPod->>ConfigMap: Read job spec<br/>(filesystem mount)
-        Note over JobPod: Parse JobSpec JSON:<br/>model, benchmark_id, params
+    Operator->>K8sAPI: Create Job + ConfigMap<br/>from LMEvalJob CR<br/>Auth: ServiceAccount Token
+    K8sAPI-->>JobPod: Schedule Pod<br/>Mount ConfigMap at /meta/job.json
 
-        JobPod->>EvalHub: POST status: INITIALIZING<br/>Auth: Bearer Token<br/>TLS 1.2+
-        EvalHub-->>JobPod: 200 OK
+    rect rgb(220, 240, 220)
+        Note over JobPod: Phase: INITIALIZING
+        JobPod->>JobPod: Load JobSpec from /meta/job.json<br/>(model, benchmark_id, params)
+        JobPod->>EvalHub: POST status: INITIALIZING<br/>Auth: Bearer Token
+    end
 
+    rect rgb(220, 230, 250)
+        Note over JobPod: Phase: LOADING_DATA
         JobPod->>EvalHub: POST status: LOADING_DATA<br/>Auth: Bearer Token
-        JobPod->>HFHub: GET benchmark datasets<br/>Auth: HF_TOKEN (optional)<br/>TLS 1.2+
+        JobPod->>HFHub: GET datasets, tokenizers<br/>Auth: HF_TOKEN (optional)
         HFHub-->>JobPod: Dataset artifacts
+    end
 
+    rect rgb(255, 240, 220)
+        Note over JobPod: Phase: RUNNING_EVALUATION
         JobPod->>EvalHub: POST status: RUNNING_EVALUATION<br/>Auth: Bearer Token
-
-        loop For each evaluation prompt (up to 128 concurrent)
+        loop For each evaluation batch (num_concurrent: 1-128)
             JobPod->>Model: POST /v1/completions<br/>Auth: Bearer Token (OPENAI_API_KEY)<br/>TLS 1.2+ (custom CA supported)
             Model-->>JobPod: Completion response
         end
-
-        Note over JobPod: Compute metrics<br/>(117 metric types)
-
-        JobPod->>EvalHub: POST status: POST_PROCESSING<br/>Auth: Bearer Token
-
-        JobPod->>EvalHub: POST status: PERSISTING_ARTIFACTS<br/>Auth: Bearer Token
-
-        JobPod->>OCI: Push result artifacts<br/>Auth: Registry Auth<br/>TLS 1.2+
-        OCI-->>JobPod: Push confirmed
-
-        JobPod->>MLflow: Log metrics & run metadata<br/>Auth: Configurable<br/>TLS 1.2+
-        MLflow-->>JobPod: run_id
-
-        JobPod->>EvalHub: POST status: COMPLETED<br/>+ evaluation results<br/>Auth: Bearer Token
-        EvalHub-->>JobPod: 200 OK
+        Note over JobPod: Compute metrics<br/>(117 metric functions)
     end
 
-    rect rgb(255, 248, 240)
-        Note over JobPod,Model: Flow 2: Offline/Disconnected Evaluation
+    rect rgb(240, 220, 240)
+        Note over JobPod: Phase: POST_PROCESSING
+        JobPod->>EvalHub: POST status: POST_PROCESSING<br/>Auth: Bearer Token
+    end
+
+    rect rgb(220, 240, 235)
+        Note over JobPod: Phase: PERSISTING_ARTIFACTS
+        JobPod->>EvalHub: POST status: PERSISTING_ARTIFACTS<br/>Auth: Bearer Token
+        JobPod->>OCI: Push result artifacts<br/>Auth: Registry Auth
+        JobPod->>MLflow: Log metrics + run metadata<br/>Auth: Configurable
+        MLflow-->>JobPod: run_id
+    end
+
+    rect rgb(220, 250, 220)
+        Note over JobPod: Phase: COMPLETED
+        JobPod->>EvalHub: POST results + status: COMPLETED<br/>Auth: Bearer Token
+    end
+
+    Note over JobPod,Model: Flow 2: Offline/Disconnected Mode
+
+    rect rgb(245, 245, 220)
+        Note over JobPod: Offline Mode (HF_HUB_OFFLINE=1)
         participant S3 as S3/COS Storage<br/>443/TCP HTTPS
         participant InitC as Init Container
-        participant Volume as /test_data Volume
 
-        InitC->>S3: Download cached datasets<br/>Auth: AWS IAM / IBM COS<br/>TLS 1.2+
-        S3-->>InitC: Dataset archives
-        InitC->>Volume: Write to /test_data
+        InitC->>S3: Download cached datasets<br/>Auth: AWS IAM / IBM COS
+        S3-->>InitC: Dataset artifacts
+        InitC->>InitC: Populate /test_data volume
 
-        Note over JobPod: HF_HUB_OFFLINE=1<br/>HF_DATASETS_OFFLINE=1<br/>HF_EVALUATE_OFFLINE=1<br/>TRANSFORMERS_OFFLINE=1
-
-        JobPod->>Volume: Read cached datasets<br/>(HF_HOME=/test_data)
-
-        loop Evaluation prompts
-            JobPod->>Model: POST /v1/completions<br/>Auth: Bearer Token<br/>TLS 1.2+
-            Model-->>JobPod: Completion response
-        end
+        Note over JobPod: HF_HOME=/test_data<br/>HF_DATASETS_OFFLINE=1<br/>TRANSFORMERS_OFFLINE=1
+        JobPod->>JobPod: Load data from /test_data (local)
+        JobPod->>Model: POST /v1/completions<br/>Auth: Bearer Token
+        Model-->>JobPod: Completion response
     end

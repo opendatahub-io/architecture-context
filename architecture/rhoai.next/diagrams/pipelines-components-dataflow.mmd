@@ -1,81 +1,56 @@
 sequenceDiagram
-    autonumber
-
-    participant User as Data Scientist
+    participant Init as Init Container<br/>(odh-pipelines-components)
+    participant Vol as Shared Volume<br/>/config/managed-pipelines
     participant KFP as KFP API Server
-    participant InitC as Init Container<br/>(odh-pipelines-components)
-    participant SharedVol as Shared Volume<br/>(/config/managed-pipelines)
-    participant ArgoWF as Argo Workflow<br/>(Pipeline Runner)
-    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant User as Data Scientist
     participant S3 as AWS S3<br/>443/TCP HTTPS
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant Trainer as Training Workers<br/>(GPU Pods)
-    participant PVC as PVC Workspace<br/>(ReadWriteMany)
-    participant ModelReg as Model Registry<br/>8080/TCP HTTP
-    participant LlamaStack as Llama Stack API<br/>HTTP/HTTPS
-    participant vLLM as vLLM<br/>(Local GPU)
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant PVC as PVC Workspace<br/>Filesystem
+    participant K8s as Kubernetes API<br/>443/TCP HTTPS
+    participant Trainer as Kubeflow Trainer<br/>Worker Pods
+    participant vLLM as vLLM Engine<br/>Local
+    participant MR as Model Registry<br/>8080/TCP HTTP
+    participant LS as Llama Stack API<br/>HTTPS
 
-    rect rgb(240, 248, 255)
-        Note over InitC,SharedVol: Flow 1: Managed Pipeline Staging (Platform Startup)
-        InitC->>InitC: generate_managed_pipelines.py<br/>Compile pipeline.py → YAML
-        InitC->>SharedVol: Copy compiled YAMLs<br/>+ managed-pipelines.json manifest
-        KFP->>SharedVol: Read managed pipeline YAMLs<br/>Serve to users
+    rect rgb(230, 245, 255)
+        Note over Init,KFP: Flow 1: Managed Pipeline Staging (Platform Startup)
+        Init->>Init: generate_managed_pipelines.py<br/>Compiles pipeline.py → YAML
+        Init->>Vol: Copy compiled YAMLs<br/>Filesystem
+        KFP->>Vol: Read managed pipelines<br/>Filesystem
     end
 
-    rect rgb(255, 248, 240)
-        Note over User,ModelReg: Flow 2: Fine-Tuning Pipeline (LoRA/OSFT/SFT)
+    rect rgb(255, 245, 230)
+        Note over User,MR: Flow 2: Fine-Tuning Pipeline (LoRA/OSFT/SFT)
         User->>KFP: Submit fine-tuning pipeline
-        KFP->>ArgoWF: Create Argo Workflow
-
-        ArgoWF->>HF: GET dataset (HF_TOKEN)<br/>HTTPS TLS 1.2+
-        HF-->>ArgoWF: Dataset files
-        ArgoWF->>S3: GET dataset (AWS IAM)<br/>HTTPS TLS 1.2+
-        S3-->>ArgoWF: Dataset files
-        ArgoWF->>PVC: Write preprocessed data
-
-        ArgoWF->>K8sAPI: POST TrainingJob CR<br/>ServiceAccount token
-        K8sAPI->>Trainer: Schedule GPU worker pods
-        Trainer->>PVC: Read training data
-        Trainer->>Trainer: Train model (LoRA/OSFT/SFT)
-        Trainer->>PVC: Write model checkpoints
-        Trainer-->>ArgoWF: Training complete
-
-        ArgoWF->>vLLM: Load model for evaluation
-        vLLM-->>ArgoWF: Evaluation metrics (MMLU, GSM8K, etc.)
-
-        ArgoWF->>ModelReg: POST model metadata<br/>HTTP/8080 (plaintext, no auth)
-        ModelReg-->>ArgoWF: Model version registered
+        KFP->>S3: dataset_download<br/>HTTPS/443 | AWS IAM
+        KFP->>HF: dataset_download<br/>HTTPS/443 | HF_TOKEN
+        KFP->>PVC: Store dataset<br/>Filesystem
+        KFP->>K8s: train_model: Create TrainingJob CR<br/>HTTPS/443 | SA Token
+        K8s->>Trainer: Schedule worker pods
+        Trainer->>PVC: Write model checkpoints<br/>Filesystem
+        Trainer-->>KFP: Stream training logs
+        KFP->>vLLM: universal_llm_evaluator<br/>Load model, run benchmarks
+        vLLM-->>KFP: Evaluation metrics
+        KFP->>MR: Register model + metadata<br/>HTTP/8080 | No auth (insecure)
     end
 
-    rect rgb(240, 255, 240)
-        Note over User,LlamaStack: Flow 3: AutoRAG Optimization Pipeline
+    rect rgb(230, 255, 230)
+        Note over User,LS: Flow 3: AutoRAG Optimization Pipeline
         User->>KFP: Submit AutoRAG pipeline
-        KFP->>ArgoWF: Create Argo Workflow
-
-        ArgoWF->>S3: LIST + GET documents<br/>AWS IAM, HTTPS TLS 1.2+
-        S3-->>ArgoWF: Documents (PDF, DOCX, etc.)
-        ArgoWF->>ArgoWF: Docling text extraction<br/>(local processing)
-
-        ArgoWF->>LlamaStack: POST search space models<br/>API key auth, TLS
-        LlamaStack-->>ArgoWF: Available models list
-
-        ArgoWF->>LlamaStack: POST vector store indexing<br/>+ RAG inference calls
-        LlamaStack-->>ArgoWF: Optimization results
-
-        ArgoWF->>ArgoWF: Leaderboard evaluation<br/>(local pattern.json scoring)
+        KFP->>S3: test_data_loader: Load test JSON<br/>HTTPS/443 | AWS IAM
+        KFP->>S3: documents_discovery: List objects<br/>HTTPS/443 | AWS IAM
+        KFP->>S3: text_extraction: Download docs<br/>HTTPS/443 | AWS IAM
+        KFP->>KFP: text_extraction: Docling extraction<br/>Local
+        KFP->>LS: search_space_preparation<br/>HTTPS | Bearer token
+        KFP->>LS: rag_templates_optimization<br/>Indexing + inference | API key
+        KFP->>KFP: leaderboard_evaluation<br/>Local (pattern.json)
     end
 
-    rect rgb(255, 255, 240)
+    rect rgb(255, 240, 245)
         Note over User,PVC: Flow 4: AutoML Tabular Training Pipeline
         User->>KFP: Submit AutoML pipeline
-        KFP->>ArgoWF: Create Argo Workflow
-
-        ArgoWF->>S3: GET CSV data (streaming)<br/>AWS IAM, HTTPS TLS 1.2+
-        S3-->>ArgoWF: CSV data stream
-        ArgoWF->>PVC: Write train/test splits
-
-        ArgoWF->>ArgoWF: AutoGluon model training<br/>(local CPU processing)
-        ArgoWF->>PVC: Write trained models + metrics
-
-        ArgoWF->>ArgoWF: Leaderboard evaluation<br/>(model comparison)
+        KFP->>S3: automl_data_loader: Stream CSV<br/>HTTPS/443 | AWS IAM
+        KFP->>PVC: Store train/test splits<br/>Filesystem
+        KFP->>PVC: autogluon_models_training<br/>Local AutoGluon training
+        KFP->>PVC: leaderboard_evaluation<br/>Local model metrics
     end

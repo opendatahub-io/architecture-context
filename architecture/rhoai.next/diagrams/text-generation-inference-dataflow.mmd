@@ -2,53 +2,49 @@ sequenceDiagram
     participant Client as External Client
     participant KServe as KServe Route<br/>443/TCP HTTPS TLS 1.2+
     participant Router as TGIS Router (Rust)<br/>8033/TCP gRPC TLS/mTLS
-    participant HTTP as TGIS HTTP Server<br/>3000/TCP
-    participant Batcher as Continuous Batcher<br/>(in-process)
+    participant HTTP as TGIS Router (Rust)<br/>3000/TCP HTTP
     participant Shard0 as Python Shard 0<br/>UDS plaintext
     participant ShardN as Python Shard N<br/>UDS plaintext
     participant GPU as NVIDIA GPU<br/>CUDA 12.1
-    participant NCCL as NCCL<br/>29500/TCP plaintext
 
-    Note over Client,GPU: Flow 1: Unary Text Generation (GenerationService.Generate)
-
-    Client->>KServe: POST /v1/models/model:predict<br/>HTTPS/443, TLS 1.2+
-    KServe->>Router: Forward gRPC<br/>8033/TCP, TLS/mTLS
-    Router->>Router: Validate request params<br/>(max tokens, sequence length)
-    Router->>Router: Tokenize input text
-    Router->>Batcher: Enqueue in batch queue<br/>(weight-aware scheduling)
-    Batcher->>Shard0: Prefill RPC<br/>UDS gRPC, plaintext
-    Shard0->>GPU: Forward pass (prefill)
-    Shard0->>NCCL: allreduce (multi-GPU)<br/>29500/TCP, plaintext
-    NCCL->>ShardN: Tensor sync
-    Shard0-->>Batcher: Prefill result + KV cache
-    loop NextToken decode loop
-        Batcher->>Shard0: NextToken RPC<br/>UDS gRPC, plaintext
-        Shard0->>GPU: Forward pass (decode)
-        Shard0-->>Batcher: Next token + stop signal
+    Note over Client,GPU: Flow 1: Unary Text Generation (gRPC)
+    Client->>KServe: gRPC request<br/>HTTPS/443, TLS 1.2+
+    KServe->>Router: Forward<br/>gRPC/8033, TLS/mTLS
+    Router->>Router: Validate request<br/>(max tokens, seq length)
+    Router->>Router: Tokenize input<br/>(HuggingFace tokenizer)
+    Router->>Router: Batch queue<br/>(continuous batching,<br/>queue jumping)
+    Router->>Shard0: Prefill RPC<br/>gRPC/UDS, plaintext
+    Shard0->>GPU: CUDA forward pass
+    Shard0->>ShardN: NCCL allreduce<br/>29500/TCP, plaintext
+    ShardN->>GPU: CUDA forward pass
+    Shard0-->>Router: Prefill result
+    loop NextToken loop (until EOS or max_new_tokens)
+        Router->>Shard0: NextToken RPC<br/>gRPC/UDS, plaintext
+        Shard0->>GPU: CUDA forward pass
+        Shard0->>ShardN: NCCL allreduce
+        Shard0-->>Router: Next token
     end
-    Batcher-->>Router: Complete response
-    Router-->>KServe: gRPC response<br/>TLS/mTLS
-    KServe-->>Client: JSON/gRPC response<br/>HTTPS
+    Router-->>KServe: gRPC response
+    KServe-->>Client: HTTPS response
 
-    Note over Client,GPU: Flow 2: Streaming Text Generation (GenerationService.GenerateStream)
-
-    Client->>Router: GenerateStream RPC<br/>8033/TCP gRPC, TLS/mTLS
+    Note over Client,GPU: Flow 2: Streaming Text Generation (gRPC)
+    Client->>Router: GenerateStream RPC<br/>gRPC/8033, TLS/mTLS
     Router->>Router: Validate + Tokenize
-    Router->>Shard0: Prefill RPC<br/>UDS gRPC, plaintext
-    Shard0->>GPU: Forward pass (prefill)
-    Router-->>Client: Stream first token<br/>gRPC server-stream
-    loop Token-by-token streaming
-        Router->>Shard0: NextToken RPC<br/>UDS gRPC, plaintext
-        Shard0->>GPU: Forward pass (decode)
-        Router-->>Client: Stream token<br/>gRPC server-stream
+    Router->>Shard0: Prefill RPC<br/>gRPC/UDS
+    Shard0->>GPU: CUDA forward pass
+    Shard0-->>Router: First token
+    Router-->>Client: Stream first token
+    loop Each subsequent token
+        Router->>Shard0: NextToken RPC<br/>gRPC/UDS
+        Shard0->>GPU: CUDA forward pass
+        Shard0-->>Router: Token
+        Router-->>Client: Stream token
     end
 
-    Note over Client,GPU: Flow 3: Health Check
-
-    participant Kubelet as Kubernetes Kubelet
-    Kubelet->>HTTP: GET /health<br/>3000/TCP HTTP, no TLS
-    HTTP->>Shard0: Health RPC<br/>UDS gRPC, plaintext
+    Note over Client,GPU: Flow 3: Health Check (HTTP)
+    Client->>HTTP: GET /health<br/>HTTP/3000
+    HTTP->>Shard0: Health RPC<br/>gRPC/UDS
     Shard0->>GPU: CUDA alloc test
     GPU-->>Shard0: OK
     Shard0-->>HTTP: Healthy
-    HTTP-->>Kubelet: 200 OK
+    HTTP-->>Client: 200 OK

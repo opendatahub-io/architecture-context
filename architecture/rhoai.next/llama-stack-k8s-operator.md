@@ -188,6 +188,14 @@ For RHOAI, the operator is deployed into the `redhat-ods-applications` namespace
 
 _This analysis is on the `main` branch. The downstream release branches (e.g., `rhoai-3.4`) likely add `rpms.lock.yaml` and Hermeto prefetch integration for full build hermeticity._
 
+## Admission Webhooks
+
+This component defines 1 webhook(s) (0 mutating, 1 validating).
+
+| Name | Type | Target Resources | Purpose |
+|------|------|-----------------|---------|
+| vogxserver.kb.io | validating | ogxservers | Validating webhook for OGXServer custom resources on create and update. It enforces that the distribution name is known, provider IDs are unique, model-to-provider references resolve to declared providers, and adoption annotations do not equal the CR name (which would cause Deployment name conflicts). |
+
 ## Data Flows
 
 ### Flow 1: LlamaStackDistribution Reconciliation

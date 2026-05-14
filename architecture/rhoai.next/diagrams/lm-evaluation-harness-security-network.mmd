@@ -1,64 +1,59 @@
 graph TB
     subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
-        Operator["trustyai-service-operator<br/>Watches LMEvalJob CRDs"]
+        Operator["trustyai-service-operator<br/>Creates Jobs from LMEvalJob CRDs"]
         K8sAPI["Kubernetes API Server"]
     end
 
-    subgraph JobPod["JOB POD (Batch - No Inbound Traffic)"]
+    subgraph BatchJob["BATCH JOB POD (Egress Only — No Ingress)"]
         direction TB
 
-        subgraph InitContainer["Init Container (offline mode)"]
-            Init["Init Container<br/>Pre-populate /test_data"]
+        subgraph Container["lmes-job Container"]
+            JobRunner["lm-evaluation-harness<br/>Image: odh-ta-lmes-job<br/>Base: UBI 9 / Python 3.11<br/>No exposed ports"]
         end
 
-        subgraph MainContainer["lmes-job Container"]
-            LMESJob["lmes-job<br/>Image: odh-ta-lmes-job<br/>Base: UBI 9 python-311<br/>Runtime: Python 3.11<br/>SA: operator-configured<br/>No inbound ports"]
-            ConfigMount["ConfigMap Mount<br/>/meta/job.json"]
-        end
+        ConfigMap["ConfigMap<br/>/meta/job.json"]
+        TestData["Volume: /test_data<br/>(offline mode)"]
+    end
+
+    subgraph InternalServices["INTERNAL PLATFORM SERVICES"]
+        EvalHub["EvalHub Service<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token"]
+        OCI["OCI Registry<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Docker Config Auth"]
+        MLflow["MLflow Tracking Server<br/>Configurable port<br/>HTTPS TLS 1.2+"]
+        ModelEndpoint["Model Inference Endpoint<br/>(vLLM / TGI / OpenAI-compat)<br/>443 or 8080/TCP<br/>HTTPS TLS 1.2+<br/>Bearer Token (OPENAI_API_KEY)"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        ModelEndpoint["Model Inference Endpoint<br/>(vLLM / TGI / OpenAI-compatible)<br/>POST /v1/completions<br/>Bearer Token"]
-        EvalHub["EvalHub Service<br/>REST Callbacks<br/>Bearer Token"]
-        OCIRegistry["OCI Registry<br/>Docker Auth"]
-        MLflow["MLflow Tracking Server<br/>Configurable Auth"]
-        HFHub["HuggingFace Hub<br/>HF_TOKEN (optional)"]
-        S3["S3 / COS Storage<br/>AWS IAM / IBM COS"]
-        WandB["W&B (optional)<br/>API Key"]
+        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>HF_TOKEN (optional)"]
+        S3["S3/COS Object Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM / IBM COS"]
+        WandB["W&B (optional)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>wandb API key"]
     end
 
-    %% Control plane flows
+    %% Control Plane flows
     Operator -->|"HTTPS/443<br/>TLS 1.3<br/>ServiceAccount Token"| K8sAPI
-    K8sAPI -->|"Creates Job +<br/>ConfigMap"| MainContainer
+    K8sAPI -->|"Creates Job + ConfigMap"| BatchJob
 
-    %% Init container flow (offline)
-    Init -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM / IBM COS"| S3
+    %% Egress flows from batch job
+    JobRunner -->|"POST /v1/completions<br/>HTTPS TLS 1.2+<br/>Bearer Token<br/>Custom CA supported<br/>Concurrent: 1-128"| ModelEndpoint
+    JobRunner -->|"POST status/results<br/>HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| EvalHub
+    JobRunner -->|"OCI Push<br/>HTTPS/443<br/>TLS 1.2+<br/>Registry Auth"| OCI
+    JobRunner -->|"Log metrics<br/>HTTPS TLS 1.2+<br/>Configurable auth"| MLflow
+    JobRunner -->|"GET datasets<br/>HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HFHub
+    JobRunner -.->|"S3 API (via init container)<br/>HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    JobRunner -.->|"Optional<br/>HTTPS/443<br/>TLS 1.2+"| WandB
 
-    %% Main container egress flows
-    LMESJob -->|"HTTPS/443 or 8080<br/>TLS 1.2+ (custom CA)<br/>Bearer Token (OPENAI_API_KEY)<br/>Up to 128 concurrent"| ModelEndpoint
-
-    LMESJob -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| EvalHub
-
-    LMESJob -->|"HTTPS/443<br/>TLS 1.2+<br/>Registry Auth"| OCIRegistry
-
-    LMESJob -->|"HTTPS/configurable<br/>TLS 1.2+<br/>Configurable Auth"| MLflow
-
-    LMESJob -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN (optional)"| HFHub
-
-    LMESJob -.->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-
-    LMESJob -.->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| WandB
-
-    ConfigMount -->|"Filesystem"| LMESJob
+    %% Local mounts
+    ConfigMap -.->|"Filesystem<br/>Mounted volume"| JobRunner
+    TestData -.->|"Filesystem<br/>Offline mode"| JobRunner
 
     %% Styling
-    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef jobpod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef container fill:#e1f5e1,stroke:#82b366,stroke-width:1px
+    classDef controlplane fill:#e8e8e8,stroke:#666,stroke-width:2px
+    classDef batchjob fill:#d5e8d4,stroke:#82b366,stroke-width:3px
+    classDef internal fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef external fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef optional fill:#f8f8f8,stroke:#ccc,stroke-width:1px,stroke-dasharray: 5 5
+    classDef config fill:#f5a623,stroke:#333,stroke-width:1px
 
     class Operator,K8sAPI controlplane
-    class LMESJob,Init,ConfigMount jobpod
-    class ModelEndpoint,EvalHub,OCIRegistry,MLflow,HFHub,S3 external
-    class WandB optional
+    class JobRunner batchjob
+    class EvalHub,OCI,MLflow,ModelEndpoint internal
+    class HFHub,S3,WandB external
+    class ConfigMap,TestData config

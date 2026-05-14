@@ -1,87 +1,68 @@
 sequenceDiagram
-    participant Client as External Client<br/>(via KServe Ingress)
-    participant KServeAgent as KServe Model Agent
-    participant REST as REST Server<br/>8080/TCP HTTP
-    participant gRPC as gRPC Server<br/>8081/TCP gRPC
+    participant Client as External Client
+    participant KServe as KServe Ingress<br/>(Istio/Gateway API)<br/>TLS Termination
+    participant REST as MLServer REST<br/>FastAPI/Uvicorn<br/>8080/TCP HTTP
+    participant GRPC as MLServer gRPC<br/>grpcio<br/>8081/TCP
     participant DP as DataPlane Handler
-    participant Batcher as Adaptive Batcher
-    participant Cache as Response Cache
-    participant Registry as Model Registry
-    participant Model as MLModel Runtime<br/>(sklearn/xgboost/lgbm/onnx)
-    participant Dispatcher as Dispatcher
-    participant Worker as Worker Process<br/>(multiprocessing)
-    participant Storage as /mnt/models<br/>(PVC/S3 Volume)
+    participant Batcher as Adaptive Batcher<br/>(optional)
+    participant Cache as Response Cache<br/>(optional)
+    participant Model as MLModel.predict()<br/>(sklearn/xgboost/lgbm/onnx)
+    participant Worker as Parallel Worker<br/>(multiprocessing)
+    participant Metrics as Metrics Server<br/>8082/TCP HTTP
+    participant Prom as Prometheus
+    participant OTel as OpenTelemetry<br/>Collector
     participant Kafka as Kafka Brokers<br/>9092/TCP
-    participant Prom as Prometheus<br/>8082/TCP
-    participant OTEL as OTel Collector<br/>gRPC
+    participant Storage as Model Storage<br/>/mnt/models
 
-    Note over Client, OTEL: Flow 1: REST Inference Request (Single Worker)
-
-    Client->>REST: POST /v2/models/{name}/infer<br/>HTTP 8080/TCP (plaintext)
-    REST->>DP: Route to DataPlane handler
-    DP->>Cache: Check response cache (optional)
+    Note over Client,KServe: Flow 1: REST Inference Request
+    Client->>KServe: POST /v2/models/{name}/infer<br/>HTTPS/443 TLS 1.3<br/>Bearer Token (optional)
+    KServe->>REST: POST /v2/models/{name}/infer<br/>HTTP/8080 (plaintext, pod-internal)
+    REST->>DP: Route request via FastAPI
+    DP->>Cache: Check response cache (if enabled)
     alt Cache Hit
         Cache-->>DP: Cached response
     else Cache Miss
-        DP->>Model: model.predict(request)
-        Model-->>DP: InferenceResponse
-        DP->>Cache: Store in cache (optional)
+        DP->>Batcher: Queue request (if adaptive batching enabled)
+        Batcher->>Model: Batched predict() call
+        Model-->>Batcher: Prediction result
+        Batcher-->>DP: Individual response
     end
     DP-->>REST: InferenceResponse
-    REST-->>Client: JSON Response<br/>HTTP 200
+    REST-->>KServe: HTTP 200 JSON response
+    KServe-->>Client: HTTPS response
 
-    REST->>Prom: Update metrics counters<br/>(model_infer_request_success/failure/duration)
-    REST->>OTEL: Export trace span<br/>OTLP gRPC (insecure)
-
-    Note over Client, OTEL: Flow 2: gRPC Streaming Inference
-
-    Client->>gRPC: ModelStreamInfer (bidirectional)<br/>gRPC 8081/TCP (plaintext)
-    gRPC->>DP: Stream to DataPlane handler
-    DP->>Model: model.predict_stream(request)
-    loop Streaming Response
-        Model-->>DP: Partial InferenceResponse
-        DP-->>gRPC: Stream chunk
-        gRPC-->>Client: gRPC stream response
+    Note over Client,GRPC: Flow 2: gRPC Streaming Inference
+    Client->>KServe: gRPC ModelStreamInfer<br/>HTTPS/443
+    KServe->>GRPC: gRPC stream<br/>8081/TCP (plaintext)
+    GRPC->>DP: Streaming inference request
+    DP->>Model: predict_stream() async iterator
+    loop Streaming responses
+        Model-->>DP: Partial result
+        DP-->>GRPC: Stream chunk
+        GRPC-->>KServe: gRPC stream response
+        KServe-->>Client: Stream chunk
     end
 
-    Note over Client, OTEL: Flow 3: Parallel Worker Inference
+    Note over DP,Worker: Flow 3: Parallel Worker Inference
+    DP->>Worker: Dispatch via multiprocessing.Queue<br/>(Pickle/IPC)
+    Worker->>Model: predict() in worker process<br/>(separate GIL)
+    Model-->>Worker: Prediction result
+    Worker-->>DP: Response via Queue<br/>(Pickle/IPC)
 
-    Client->>REST: POST /v2/models/{name}/infer<br/>HTTP 8080/TCP
-    REST->>DP: Route to DataPlane handler
-    DP->>Dispatcher: Dispatch to worker pool
-    Dispatcher->>Worker: multiprocessing.Queue<br/>(Pickle serialization, IPC)
-    Worker->>Model: model.predict() in worker process
-    Model-->>Worker: InferenceResponse
-    Worker-->>Dispatcher: Response via Queue (IPC)
-    Dispatcher-->>DP: Aggregated response
-    DP-->>REST: InferenceResponse
-    REST-->>Client: JSON Response
+    Note over Kafka,DP: Flow 4: Kafka Async Inference
+    Kafka->>DP: Consume from input topic<br/>TCP/9092
+    DP->>Model: infer()
+    Model-->>DP: Prediction result
+    DP->>Kafka: Produce to output topic<br/>TCP/9092
 
-    Note over Client, OTEL: Flow 4: Kafka Async Inference
+    Note over Prom,Metrics: Flow 5: Metrics & Tracing
+    Prom->>Metrics: GET /metrics<br/>HTTP/8082
+    Metrics-->>Prom: Prometheus metrics<br/>(request counts, latencies, batch queue)
+    REST->>OTel: OTLP traces<br/>gRPC (insecure)
+    GRPC->>OTel: OTLP traces<br/>gRPC (insecure)
 
-    Kafka->>Kafka: Input topic message
-    Note right of Kafka: KafkaServer consumes<br/>from input topic
-    Kafka->>DP: Inference request (deserialized)
-    DP->>Model: model.predict(request)
-    Model-->>DP: InferenceResponse
-    DP->>Kafka: Produce to output topic<br/>9092/TCP
-
-    Note over Client, OTEL: Flow 5: Model Lifecycle (Load/Unload)
-
-    KServeAgent->>REST: POST /v2/repository/models/{name}/load<br/>HTTP 8080/TCP
-    REST->>DP: Load model request
-    DP->>Registry: Register model
-    Registry->>Registry: Validate against trusted-runtimes.json
-    Registry->>Storage: Read model artifacts from /mnt/models
-    Storage-->>Registry: Model files
-    Registry->>Model: Instantiate MLModel runtime
-    Model->>Model: model.load()
-    Model-->>Registry: Model ready
-    Registry-->>DP: Model loaded
-    DP-->>REST: Load success
-    REST-->>KServeAgent: HTTP 200
-
-    Note over Client, OTEL: Prometheus Metrics Scraping
-
-    Prom->>REST: GET /metrics<br/>HTTP 8082/TCP
-    REST-->>Prom: Prometheus metrics<br/>(request counts, latencies, batch queue)
+    Note over Storage,Model: Flow 6: Model Loading
+    REST->>DP: POST /v2/repository/models/{name}/load<br/>(from KServe Agent)
+    DP->>Storage: Read model artifacts<br/>from /mnt/models (filesystem)
+    Storage-->>DP: Model files
+    DP->>Model: Initialize runtime & load model

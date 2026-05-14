@@ -1,58 +1,56 @@
 workspace {
     model {
-        admin = person "Platform Admin" "Creates and manages LlamaStackDistribution custom resources"
-        client = person "External Client" "Consumes Llama Stack API endpoints for AI inference"
+        admin = person "Platform Admin" "Deploys and manages Llama Stack instances via LlamaStackDistribution CRs"
+        datascientist = person "Data Scientist" "Consumes Llama Stack inference APIs for AI application development"
 
-        llamaOperator = softwareSystem "llama-stack-k8s-operator" "Kubernetes operator managing Llama Stack distribution server deployments on OpenShift/Kubernetes" {
-            controller = container "Reconciler" "Reconciles LlamaStackDistribution CRs, manages lifecycle of per-instance resources" "Go (controller-runtime)"
-            kustomizePipeline = container "Kustomize Pipeline" "Renders base YAML manifests with plugin transformations (NamePrefix, Namespace, FieldMutator, NetworkPolicy)" "Go (kustomize/api)"
-            caBundleManager = container "CA Bundle Manager" "Aggregates and validates PEM/X.509 CA certificates from user and platform sources" "Go (crypto/x509)"
-            directClient = container "DirectClient" "Non-cached Kubernetes client for reading ConfigMaps without operator labels" "Go (controller-runtime)"
+        llamaStackOperator = softwareSystem "llama-stack-k8s-operator" "Kubernetes operator managing lifecycle of Llama Stack distribution server deployments on OpenShift/Kubernetes" {
+            controller = container "Reconciler" "controller-runtime based reconcile loop; watches LlamaStackDistribution CRs and manages per-instance resources" "Go"
+            kustomizer = container "Kustomize Pipeline" "Renders base manifests into instance-specific K8s resources via plugin pipeline (name prefix, namespace, field mutation, NetworkPolicy transform)" "Go / kustomize API"
+            caManager = container "CA Bundle Manager" "Aggregates CA certificates from user bundles and ODH trusted CA bundle; validates PEM/X.509 with security limits" "Go / crypto/x509"
+            webhook = container "Validating Webhook" "Validates OGXServer CRs on create/update: distribution name, unique providers, model-provider references" "Go / controller-runtime"
         }
 
-        llamaServer = softwareSystem "Llama Stack Server" "Meta's AI application framework server (managed pods)" "Managed"
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for resource management" "Infrastructure"
-        ingressController = softwareSystem "OpenShift Ingress Controller" "Routes external HTTP traffic to cluster services" "Infrastructure"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Infrastructure"
-        odhTrustedCA = softwareSystem "ODH Trusted CA Bundle" "Platform-managed trusted CA certificates ConfigMap" "Internal RHOAI"
-        openshiftSCC = softwareSystem "OpenShift SCC System" "Security Context Constraints for pod permissions" "Infrastructure"
+        llamaStackServer = softwareSystem "Llama Stack Server" "Meta's AI application framework server; managed by the operator as Deployments" "Managed"
 
-        admin -> llamaOperator "Creates LlamaStackDistribution CR via kubectl/API"
-        llamaOperator -> k8sAPI "CRUD resources, leader election, status updates" "HTTPS/443 TLS 1.2+ Bearer Token"
-        llamaOperator -> llamaServer "Probes /v1/health, /v1/providers, /v1/version" "HTTP/8321 plaintext"
-        llamaOperator -> odhTrustedCA "Reads platform CA certificates" "Kubernetes API"
-        llamaOperator -> openshiftSCC "Binds anyuid SCC to instance ServiceAccounts" "RBAC"
-        client -> ingressController "AI inference requests (when exposeRoute=true)" "HTTP/80"
-        ingressController -> llamaServer "Forwards to instance service" "HTTP/8321"
-        prometheus -> llamaOperator "Scrapes operator metrics" "HTTPS/8443 TLS Bearer Token"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for resource management, RBAC, leader election" "External"
+        openshiftIngress = softwareSystem "OpenShift Ingress Controller" "Routes external HTTP traffic to cluster services via Ingress resources" "External"
+        openshiftSCC = softwareSystem "OpenShift SCC System" "Security Context Constraints for pod security; provides anyuid SCC" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring via ServiceMonitor scraping" "External"
 
-        controller -> kustomizePipeline "Renders per-instance manifests"
-        controller -> caBundleManager "Aggregates CA certificates"
-        controller -> directClient "Reads user and operator ConfigMaps"
+        odhTrustedCA = softwareSystem "ODH Trusted CA Bundle" "Platform-level trusted CA certificate ConfigMap (odh-trusted-ca-bundle)" "Internal RHOAI"
+        operatorConfig = softwareSystem "Operator Config" "Feature flags and image overrides ConfigMap (llama-stack-operator-config)" "Internal RHOAI"
+
+        # Relationships
+        admin -> llamaStackOperator "Creates LlamaStackDistribution CRs" "kubectl / YAML"
+        datascientist -> llamaStackServer "Sends inference requests" "HTTP/8321"
+
+        llamaStackOperator -> k8sAPI "CRUD resources, leader election, status updates" "HTTPS/443 TLS 1.2+"
+        llamaStackOperator -> llamaStackServer "Probes health, providers, version" "HTTP/8321"
+        llamaStackOperator -> odhTrustedCA "Reads platform CA certificates" "Kubernetes API"
+        llamaStackOperator -> operatorConfig "Reads feature flags and image overrides" "Kubernetes API"
+        llamaStackOperator -> openshiftSCC "Binds anyuid SCC to instance ServiceAccounts" "RoleBinding"
+
+        openshiftIngress -> llamaStackServer "Routes external traffic when exposeRoute=true" "HTTP/8321"
+        prometheus -> llamaStackOperator "Scrapes operator metrics" "HTTPS/8443 Bearer Token"
+
+        # Internal container relationships
+        controller -> kustomizer "Renders manifests for each CR instance"
+        controller -> caManager "Validates and aggregates CA certificates"
     }
 
     views {
-        systemContext llamaOperator "SystemContext" {
+        systemContext llamaStackOperator "SystemContext" {
             include *
             autoLayout
         }
 
-        container llamaOperator "Containers" {
+        container llamaStackOperator "Containers" {
             include *
             autoLayout
         }
 
         styles {
-            element "Person" {
-                shape Person
-                background #08427b
-                color #ffffff
-            }
-            element "Software System" {
-                background #1168bd
-                color #ffffff
-            }
-            element "Infrastructure" {
+            element "External" {
                 background #999999
                 color #ffffff
             }
@@ -61,8 +59,16 @@ workspace {
                 color #ffffff
             }
             element "Managed" {
-                background #50c878
+                background #4a90e2
                 color #ffffff
+            }
+            element "Person" {
+                shape Person
+                background #08427b
+                color #ffffff
+            }
+            element "Software System" {
+                shape RoundedBox
             }
             element "Container" {
                 background #438dd5

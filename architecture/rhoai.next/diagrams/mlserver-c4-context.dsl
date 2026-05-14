@@ -1,64 +1,69 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and deploys ML models for inference"
-        mlEngineer = person "ML Engineer" "Manages model serving infrastructure and pipelines"
+        datascientist = person "Data Scientist" "Creates, deploys, and queries ML models for inference"
 
-        mlserver = softwareSystem "MLServer" "Python-based ML inference server implementing V2/Open Inference Protocol over REST and gRPC, used as the default multi-model serving runtime in RHOAI" {
-            restServer = container "REST Server" "Serves V2 Inference Protocol over HTTP, handles model inference, health checks, repository management, and Swagger docs" "FastAPI/Uvicorn, Port 8080"
-            grpcServer = container "gRPC Server" "Serves V2 Inference Protocol over gRPC, supports unary and bidirectional streaming inference" "grpcio, Port 8081"
-            metricsServer = container "Metrics Server" "Exposes Prometheus metrics for inference request counts, latencies, and batch queue metrics" "prometheus-client, Port 8082"
-            kafkaServer = container "Kafka Server" "Optional async inference via Kafka topic consumption and production" "aiokafka"
-            dataPlane = container "DataPlane Handler" "Central orchestration for all inference protocols, applies consistent metrics, caching, and batching" "Python"
-            adaptiveBatcher = container "Adaptive Batcher" "Groups multiple inference requests into batched predictions for throughput optimization" "Python"
-            responseCache = container "Response Cache" "Local in-memory cache for repeated inference responses" "Python"
-            modelRegistry = container "Model Registry" "Manages model lifecycle (load, unload, version), validates against trusted runtimes allowlist" "Python"
-            sklearnRuntime = container "sklearn Runtime" "Scikit-learn model serving" "mlserver-sklearn"
-            xgboostRuntime = container "XGBoost Runtime" "XGBoost model serving" "mlserver-xgboost"
-            lightgbmRuntime = container "LightGBM Runtime" "LightGBM model serving" "mlserver-lightgbm"
-            onnxRuntime = container "ONNX Runtime" "ONNX model serving via onnxruntime" "mlserver-onnx"
-            inferencePool = container "Inference Pool" "Parallel worker processes to bypass Python GIL, with self-healing and model replay" "multiprocessing"
+        mlserver = softwareSystem "MLServer" "Python-based ML inference server implementing V2 Inference Protocol (REST + gRPC) for traditional ML frameworks" {
+            restServer = container "REST Server" "FastAPI/Uvicorn HTTP server implementing V2 Inference Protocol endpoints" "Python / FastAPI" "Server"
+            grpcServer = container "gRPC Server" "gRPC server implementing V2 Inference Protocol services" "Python / grpcio" "Server"
+            metricsServer = container "Metrics Server" "Dedicated Prometheus metrics endpoint" "Python / prometheus-client" "Server"
+            kafkaServer = container "Kafka Server" "Optional async inference via Kafka topics" "Python / aiokafka" "Server"
+            dataPlane = container "DataPlane Handler" "Central orchestration for inference requests across all protocols" "Python" "Component"
+            modelRegistry = container "Model Registry" "Manages model loading, versioning, and runtime selection" "Python" "Component"
+            adaptiveBatcher = container "Adaptive Batcher" "Groups multiple inference requests into batched predictions" "Python" "Component"
+            parallelPool = container "Parallel Worker Pool" "Multiprocessing workers to bypass Python GIL" "Python / multiprocessing" "Component"
+            trustedRuntimes = container "Trusted Runtimes Security" "Allowlist-based validation of permitted ML implementations" "Python / Pydantic" "Security"
+            sklearnRuntime = container "SKLearn Runtime" "Scikit-learn model serving plugin" "Python / scikit-learn" "Runtime"
+            xgboostRuntime = container "XGBoost Runtime" "XGBoost model serving plugin" "Python / xgboost" "Runtime"
+            lightgbmRuntime = container "LightGBM Runtime" "LightGBM model serving plugin" "Python / lightgbm" "Runtime"
+            onnxRuntime = container "ONNX Runtime" "ONNX model serving plugin" "Python / onnxruntime" "Runtime"
         }
 
-        kserve = softwareSystem "KServe" "Manages InferenceService lifecycle, ingress routing, autoscaling, and model storage initialization" "Internal RHOAI"
-        istio = softwareSystem "Istio / Gateway API" "Service mesh providing TLS termination, traffic routing, and mTLS between services" "External"
-        prometheus = softwareSystem "Prometheus" "Platform monitoring system, scrapes MLServer metrics" "Internal RHOAI"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Collects and exports distributed traces via OTLP" "Internal RHOAI"
-        kafka = softwareSystem "Apache Kafka" "Message broker for asynchronous inference workloads" "External"
-        modelStorage = softwareSystem "Model Storage" "PVC or S3-backed storage for ML model artifacts, mounted at /mnt/models" "External"
+        kserve = softwareSystem "KServe" "Manages InferenceService lifecycle, ingress routing, scaling, and auth" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus" "Platform monitoring and metrics collection" "Internal RHOAI"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing infrastructure" "Internal RHOAI"
+        istio = softwareSystem "Istio / Gateway API" "Service mesh providing TLS termination and traffic management" "Internal RHOAI"
+        kafkaBrokers = softwareSystem "Kafka Brokers" "Message broker for async inference workloads" "External"
+        modelStorage = softwareSystem "Model Storage" "PVC or S3-backed storage for ML model artifacts" "External"
 
         # External relationships
-        dataScientist -> kserve "Creates InferenceService CR via kubectl/dashboard"
-        mlEngineer -> kserve "Manages serving runtimes and model deployment"
-        kserve -> mlserver "Deploys MLServer as serving container, manages model load/unload via agent"
-        mlserver -> istio "Ingress traffic routed through Istio/Gateway API (TLS termination)"
-        mlserver -> modelStorage "Reads model artifacts from /mnt/models volume" "Filesystem"
-        mlserver -> prometheus "Exposes /metrics endpoint for scraping" "HTTP/8082"
-        mlserver -> otelCollector "Exports OTLP traces" "gRPC (insecure)"
-        mlserver -> kafka "Consumes/produces async inference messages" "TCP/9092"
+        datascientist -> mlserver "Sends inference requests via REST/gRPC" "HTTPS/443 (via KServe)"
+        datascientist -> kserve "Deploys InferenceService resources" "kubectl / API"
 
-        # Internal relationships
-        restServer -> dataPlane "Routes inference requests"
-        grpcServer -> dataPlane "Routes inference requests"
-        kafkaServer -> dataPlane "Routes async inference requests"
+        # KServe manages MLServer
+        kserve -> mlserver "Manages pod lifecycle, routes traffic, handles auth" "Kubernetes / Istio"
+        istio -> mlserver "Terminates TLS, provides ingress" "HTTPS → HTTP"
+
+        # MLServer → external
+        mlserver -> modelStorage "Loads model artifacts" "Filesystem /mnt/models"
+        mlserver -> kafkaBrokers "Async inference (optional)" "TCP/9092"
+        mlserver -> otelCollector "Exports OTLP traces" "gRPC (insecure)"
+        prometheus -> mlserver "Scrapes /metrics" "HTTP/8082"
+
+        # Internal container relationships
+        restServer -> dataPlane "Routes REST requests"
+        grpcServer -> dataPlane "Routes gRPC requests"
+        kafkaServer -> dataPlane "Routes Kafka messages"
+        dataPlane -> modelRegistry "Resolves model + version"
         dataPlane -> adaptiveBatcher "Batches requests (optional)"
-        dataPlane -> responseCache "Checks/stores cached responses"
-        dataPlane -> modelRegistry "Resolves model and runtime"
-        dataPlane -> inferencePool "Dispatches to parallel workers (optional)"
-        modelRegistry -> sklearnRuntime "Loads sklearn models"
+        dataPlane -> parallelPool "Dispatches to workers (optional)"
+        modelRegistry -> sklearnRuntime "Loads scikit-learn models"
         modelRegistry -> xgboostRuntime "Loads XGBoost models"
         modelRegistry -> lightgbmRuntime "Loads LightGBM models"
         modelRegistry -> onnxRuntime "Loads ONNX models"
+        modelRegistry -> trustedRuntimes "Validates allowed implementations"
     }
 
     views {
         systemContext mlserver "SystemContext" {
             include *
             autoLayout
+            description "MLServer in the context of the RHOAI platform ecosystem"
         }
 
         container mlserver "Containers" {
             include *
             autoLayout
+            description "Internal architecture of the MLServer inference server"
         }
 
         styles {
@@ -71,16 +76,35 @@ workspace {
                 background #1168bd
                 color #ffffff
             }
-            element "External" {
-                background #999999
-                color #ffffff
-            }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
+            element "External" {
+                background #999999
+                color #ffffff
+            }
             element "Container" {
                 background #438dd5
+                color #ffffff
+            }
+            element "Server" {
+                shape Hexagon
+                background #438dd5
+                color #ffffff
+            }
+            element "Component" {
+                background #85bbf0
+                color #000000
+            }
+            element "Runtime" {
+                shape RoundedBox
+                background #7ed321
+                color #ffffff
+            }
+            element "Security" {
+                shape Diamond
+                background #d0021b
                 color #ffffff
             }
         }

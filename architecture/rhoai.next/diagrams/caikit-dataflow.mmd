@@ -1,74 +1,59 @@
 sequenceDiagram
     participant Client as External Client
-    participant HTTPServer as HTTP Server (FastAPI)<br/>8080/TCP HTTP/HTTPS
-    participant gRPCServer as gRPC Server<br/>8085/TCP gRPC
+    participant HTTPServer as HTTP Server (FastAPI)<br/>8080/TCP<br/>Optional TLS/mTLS
+    participant GRPCServer as gRPC Server<br/>8085/TCP<br/>Optional TLS/mTLS
     participant PredictSvc as GlobalPredictServicer
     participant TrainSvc as GlobalTrainServicer
     participant ModelMgr as ModelManager
     participant LoadedModel as LoadedModel<br/>(Module.run)
-    participant ModelMesh as Model Mesh Sidecar<br/>Unix socket / 8085/TCP
-    participant ModelLoader as CoreModelLoader
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant FS as Local Filesystem
-    participant Prometheus as Prometheus<br/>8086/TCP HTTP
-    participant OTEL as OTEL Collector<br/>4317/TCP gRPC
+    participant ModelMesh as Model Mesh Controller<br/>Unix Socket / 8085/TCP
+    participant MRSvc as ModelRuntimeServicer
+    participant Loader as CoreModelLoader
+    participant S3 as S3 / Filesystem
+    participant OTEL as OpenTelemetry Collector<br/>4317/TCP gRPC
+    participant Prom as Prometheus<br/>8086/TCP HTTP
 
-    Note over Client, OTEL: Flow 1: HTTP Inference (Unary or SSE Streaming)
+    Note over Client, S3: Flow 1: HTTP Model Inference
+    Client->>HTTPServer: POST /api/v1/{task}/...<br/>HTTP/HTTPS, Optional TLS
+    HTTPServer->>PredictSvc: Route to servicer<br/>(Python in-process)
+    PredictSvc->>ModelMgr: Retrieve loaded model
+    ModelMgr->>LoadedModel: Module.run(request)
+    LoadedModel-->>ModelMgr: Prediction result
+    ModelMgr-->>PredictSvc: Result
+    PredictSvc-->>HTTPServer: Response
+    HTTPServer-->>Client: JSON response<br/>(or SSE stream)
 
-    Client->>HTTPServer: POST /api/v1/{task}/{model_id}<br/>Optional TLS/mTLS
-    HTTPServer->>PredictSvc: route request (in-process)
-    PredictSvc->>ModelMgr: retrieve_model(model_id)
-    ModelMgr->>LoadedModel: Module.run(input)
-    LoadedModel-->>ModelMgr: prediction result
-    ModelMgr-->>PredictSvc: result
-    PredictSvc-->>HTTPServer: response
-    HTTPServer-->>Client: JSON response or SSE stream<br/>Optional TLS
+    Note over Client, S3: Flow 2: gRPC Model Inference
+    Client->>GRPCServer: {TaskName}Service RPC<br/>gRPC, Optional TLS/mTLS
+    GRPCServer->>PredictSvc: CaikitRuntimeServerWrapper<br/>routes dynamic RPC
+    PredictSvc->>ModelMgr: Retrieve loaded model
+    ModelMgr->>LoadedModel: Module.run(request)
+    LoadedModel-->>ModelMgr: Prediction result
+    ModelMgr-->>PredictSvc: Result
+    PredictSvc-->>GRPCServer: Response
+    GRPCServer-->>Client: gRPC Response<br/>(unary or server-stream)
 
-    Note over Client, OTEL: Flow 2: gRPC Inference
+    Note over ModelMesh, S3: Flow 3: Model Loading via Model Mesh
+    ModelMesh->>MRSvc: loadModel(modelId, modelPath)<br/>gRPC via Unix socket
+    MRSvc->>ModelMgr: load_model(model_id, path)
+    ModelMgr->>Loader: CoreModelLoader.load()
+    Loader->>S3: Download model artifacts<br/>HTTPS/443, TLS, IAM Auth
+    S3-->>Loader: Model files
+    Loader-->>ModelMgr: Loaded module instance
+    ModelMgr-->>MRSvc: Load complete
+    MRSvc-->>ModelMesh: LoadModelResponse(sizeInBytes)
 
-    Client->>gRPCServer: {TaskName}Service.{TaskName}Predict<br/>Optional TLS/mTLS
-    gRPCServer->>PredictSvc: CaikitRuntimeServerWrapper<br/>dynamic RPC routing
-    PredictSvc->>ModelMgr: retrieve_model(model_id)
-    ModelMgr->>LoadedModel: Module.run(input)
-    LoadedModel-->>ModelMgr: prediction result
-    ModelMgr-->>PredictSvc: result
-    PredictSvc-->>gRPCServer: response proto
-    gRPCServer-->>Client: gRPC response<br/>Optional TLS/mTLS
-
-    Note over Client, OTEL: Flow 3: Model Loading via Model Mesh
-
-    ModelMesh->>gRPCServer: loadModel(model_id, model_path)<br/>gRPC (Unix socket or 8085/TCP)
-    gRPCServer->>ModelMgr: ModelRuntimeServicer.loadModel
-    ModelMgr->>ModelLoader: load_model(model_path)
-    alt Local model path
-        ModelLoader->>FS: Read model artifacts<br/>Local I/O
-        FS-->>ModelLoader: model files
-    else S3 model path
-        ModelLoader->>S3: GET model artifacts<br/>HTTPS/443, TLS, IAM auth
-        S3-->>ModelLoader: model files
-    end
-    ModelLoader-->>ModelMgr: loaded Module instance
-    ModelMgr-->>gRPCServer: LoadModelResponse(size)
-    gRPCServer-->>ModelMesh: success + model size
-
-    Note over Client, OTEL: Flow 4: Training Job
-
-    Client->>HTTPServer: POST /api/v1/{module}/train<br/>Optional TLS/mTLS (multipart form)
-    HTTPServer->>TrainSvc: route training request
+    Note over Client, S3: Flow 4: Training Job
+    Client->>HTTPServer: POST /api/v1/{module}/train<br/>HTTP/HTTPS, multipart form
+    HTTPServer->>TrainSvc: Route to train servicer
     TrainSvc->>LoadedModel: Module.train(data) [async]
-    LoadedModel->>FS: Save training output<br/>Local filesystem
-    FS-->>LoadedModel: saved
-    LoadedModel-->>TrainSvc: training_id
-    TrainSvc-->>HTTPServer: training_id
-    HTTPServer-->>Client: {training_id: "..."}
+    LoadedModel->>S3: Read training data<br/>HTTPS/443 (S3Files plugin)
+    S3-->>LoadedModel: Training data
+    LoadedModel->>S3: Save trained model<br/>Local filesystem / S3
+    Client->>HTTPServer: GET /api/v1/training/status<br/>Poll for completion
+    HTTPServer-->>Client: TrainingStatus response
 
-    Client->>HTTPServer: GET /api/v1/training/status<br/>Optional TLS/mTLS
-    HTTPServer-->>Client: {status: "COMPLETED"}
-
-    Note over Client, OTEL: Observability (continuous)
-
-    Prometheus->>gRPCServer: GET /metrics<br/>8086/TCP HTTP (plaintext)
-    gRPCServer-->>Prometheus: Prometheus metrics
-
-    gRPCServer->>OTEL: Push traces<br/>4317/TCP gRPC, Optional TLS/mTLS
-    HTTPServer->>OTEL: Push traces<br/>4317/TCP gRPC, Optional TLS/mTLS
+    Note over HTTPServer, Prom: Observability
+    HTTPServer->>OTEL: Push traces<br/>gRPC/4317 or HTTP/4318<br/>Optional TLS/mTLS
+    GRPCServer->>OTEL: Push traces<br/>gRPC/4317 or HTTP/4318
+    Prom->>HTTPServer: Scrape /metrics<br/>HTTP/8086 plaintext

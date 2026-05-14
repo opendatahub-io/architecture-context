@@ -1,165 +1,185 @@
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  INIT CONTAINER (Platform Startup - No Network)                             │
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
 │                                                                              │
-│  [odh-pipelines-components]                                                  │
-│  - Image: registry.redhat.io/ubi9/python-311                                │
-│  - SA: (KFP API Server pod SA)                                              │
-│  - Port: N/A (filesystem only)                                              │
+│  [Data Scientist]                                                            │
 │         │                                                                    │
-│         │ Writes compiled pipeline YAMLs                                     │
-│         │ Protocol: Filesystem                                               │
-│         │ Encryption: N/A                                                    │
-│         │ Auth: N/A                                                          │
+│         │ Submits pipeline via KFP UI/SDK                                    │
 │         ▼                                                                    │
-│  [Shared Volume: /config/managed-pipelines]                                 │
-│  - Type: emptyDir / shared volume                                            │
-│  - Read by: KFP API Server                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM (Trusted - Internal Cluster)                                      │
 │                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  PIPELINE RUNTIME (Argo Workflow Pods - Ephemeral)                          │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  INIT CONTAINER (Platform Startup)                                   │    │
+│  │                                                                       │    │
+│  │  [odh-pipelines-components]                                           │    │
+│  │  - Image: registry.redhat.io/ubi9/python-311                         │    │
+│  │  - Purpose: Compile managed pipeline.py → YAML                       │    │
+│  │  - Port: N/A (init container, no network)                            │    │
+│  │         │                                                             │    │
+│  │         │ Filesystem                                                  │    │
+│  │         │ Protocol: N/A (volume mount)                                │    │
+│  │         ▼                                                             │    │
+│  │  [Shared Volume: /config/managed-pipelines]                           │    │
+│  │         │                                                             │    │
+│  │         │ Filesystem                                                  │    │
+│  │         ▼                                                             │    │
+│  │  [KFP API Server]                                                     │    │
+│  │  - Reads managed pipeline YAMLs from shared volume                   │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
 │                                                                              │
-│  [KFP Pipeline Step Pods]                                                    │
-│  - Namespace: {user-namespace}                                               │
-│  - SA: pipeline-runner (KFP-managed)                                         │
-│  - Images:                                                                   │
-│    - odh-automl (AutoGluon components)                                       │
-│    - odh-autorag (RAG components)                                            │
-│    - python:3.11 (general components)                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  PIPELINE STEPS (Ephemeral Argo Workflow Pods)                       │    │
+│  │  - ServiceAccount: pipeline-runner (pre-configured RBAC)             │    │
+│  │  - Pods terminate after completion                                    │    │
+│  │                                                                       │    │
+│  │  [Data Processing Steps]                                              │    │
+│  │  - dataset_download, sdg, yoda_data_processor                        │    │
+│  │  - AutoRAG: documents_discovery, text_extraction, documents_indexing  │    │
+│  │  - AutoML: tabular_data_loader, timeseries_data_loader               │    │
+│  │         │                                                             │    │
+│  │  [Training Steps]                                                     │    │
+│  │  - Fine-tuning: LoRA (Unsloth), OSFT (mini-trainer), SFT (ILab)     │    │
+│  │  - AutoML: autogluon_models_training                                  │    │
+│  │  - AutoRAG: rag_templates_optimization, search_space_preparation      │    │
+│  │  - Runtime Images: odh-automl, odh-autorag                           │    │
+│  │         │                                                             │    │
+│  │  [Evaluation Steps]                                                   │    │
+│  │  - lm_eval (EleutherAI benchmarks)                                    │    │
+│  │  - leaderboard_evaluation                                             │    │
+│  │  - Uses vLLM for GPU inference (local)                                │    │
+│  │         │                                                             │    │
+│  │  [Deployment Steps]                                                   │    │
+│  │  - kubeflow_model_registry, build_responses_request_bodies            │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
 │                                                                              │
-│  EGRESS CONNECTIONS:                                                         │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  INTERNAL PLATFORM SERVICES                                           │    │
+│  │                                                                       │    │
+│  │  [Kubernetes API Server]                                              │    │
+│  │  - Port: 443/TCP                                                      │    │
+│  │  - Protocol: HTTPS                                                    │    │
+│  │  - Encryption: TLS 1.2+                                               │    │
+│  │  - Auth: ServiceAccount bearer token                                  │    │
+│  │  - Purpose: TrainingJob CR submission, pod monitoring                 │    │
+│  │                                                                       │    │
+│  │  [Kubeflow Model Registry]                                            │    │
+│  │  - Port: 8080/TCP                                                     │    │
+│  │  - Protocol: HTTP                                                     │    │
+│  │  - Encryption: ⚠️  PLAINTEXT (no TLS)                                │    │
+│  │  - Auth: ⚠️  NONE (insecure)                                         │    │
+│  │  - Purpose: Model versioning, metadata, provenance                   │    │
+│  │                                                                       │    │
+│  │  [Kubeflow Trainer (ClusterTrainingRuntime)]                          │    │
+│  │  - Interaction: Kubernetes API (TrainingJob CR)                       │    │
+│  │  - Purpose: Distributed LoRA/OSFT/SFT training jobs                  │    │
+│  │                                                                       │    │
+│  │  [PVC Workspace]                                                      │    │
+│  │  - Fine-tuning: 50Gi ReadWriteMany (nfs-csi)                        │    │
+│  │  - AutoML: 12Gi ReadWriteOnce                                         │    │
+│  │  - Purpose: Shared datasets, checkpoints, model artifacts            │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
 │                                                                              │
-│  ┌─── To: AWS S3 ───────────────────────────────────────────────────────┐   │
-│  │  Port: 443/TCP                                                        │   │
-│  │  Protocol: HTTPS                                                      │   │
-│  │  Encryption: TLS 1.2+                                                 │   │
-│  │  Auth: AWS IAM credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY) │   │
-│  │  Purpose: Dataset upload/download, document storage                   │   │
-│  │  ⚠ WARNING: SSL verify=False fallback on self-signed cert errors     │   │
-│  └───────────────────────────────────────────────────────────────────────┘   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS TO EXTERNAL SERVICES                                                │
 │                                                                              │
-│  ┌─── To: HuggingFace Hub (huggingface.co) ─────────────────────────────┐   │
-│  │  Port: 443/TCP                                                        │   │
-│  │  Protocol: HTTPS                                                      │   │
-│  │  Encryption: TLS 1.2+                                                 │   │
-│  │  Auth: Bearer Token (HF_TOKEN, optional for gated repos)             │   │
-│  │  Purpose: Dataset and model downloads                                 │   │
-│  └───────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-│  ┌─── To: Llama Stack API ──────────────────────────────────────────────┐   │
-│  │  Port: configurable/TCP                                               │   │
-│  │  Protocol: HTTP/HTTPS                                                 │   │
-│  │  Encryption: TLS (with SSL fallback to verify=False)                  │   │
-│  │  Auth: API key header (LLAMA_STACK_CLIENT_API_KEY)                   │   │
-│  │  Purpose: Vector store CRUD, embeddings, RAG inference                │   │
-│  │  ⚠ WARNING: SSL verify=False fallback on self-signed cert errors     │   │
-│  └───────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-│  ┌─── To: LLM API Endpoint ────────────────────────────────────────────┐   │
-│  │  Port: configurable/TCP                                               │   │
-│  │  Protocol: HTTPS                                                      │   │
-│  │  Encryption: TLS 1.2+                                                 │   │
-│  │  Auth: API key (LLM_API_KEY)                                         │   │
-│  │  Purpose: LLM inference for synthetic data generation (SDG)           │   │
-│  └───────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-│  ┌─── To: OpenAI-compatible Inference Endpoints ────────────────────────┐   │
-│  │  Port: configurable/TCP                                               │   │
-│  │  Protocol: HTTPS                                                      │   │
-│  │  Encryption: TLS (with SSL fallback)                                  │   │
-│  │  Auth: Bearer token (chat_model_token, embedding_model_token)        │   │
-│  │  Purpose: Chat completions and embeddings for RAG optimization        │   │
-│  │  ⚠ WARNING: SSL verify=False fallback on self-signed cert errors     │   │
-│  └───────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-│  ┌─── To: Kubeflow Model Registry ─────────────────────────────────────┐   │
-│  │  Port: 8080/TCP                                                       │   │
-│  │  Protocol: HTTP                                                       │   │
-│  │  Encryption: plaintext (NO TLS)                                       │   │
-│  │  Auth: None (insecure)                                                │   │
-│  │  Purpose: Model registration and metadata storage                     │   │
-│  │  ⚠ SECURITY: No encryption, no authentication                       │   │
-│  └───────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-│  ┌─── To: Kubernetes API ───────────────────────────────────────────────┐   │
-│  │  Port: 443/TCP                                                        │   │
-│  │  Protocol: HTTPS                                                      │   │
-│  │  Encryption: TLS 1.2+                                                 │   │
-│  │  Auth: ServiceAccount bearer token                                    │   │
-│  │  Purpose: TrainingJob submission, pod monitoring, namespace resolution │   │
-│  └───────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-│  LOCAL PROCESSING (No Network):                                             │
-│                                                                              │
-│  ┌─── Local Services ──────────────────────────────────────────────────┐   │
-│  │  vLLM: GPU inference for evaluation (in-pod, no network)             │   │
-│  │  lm-eval: Benchmark evaluation framework (in-pod library)            │   │
-│  │  Docling: Document text extraction (in-pod library)                  │   │
-│  │  ChromaDB: Ephemeral vector store (in-memory, no network)            │   │
-│  │  AutoGluon: Tabular/time-series training (in-pod library)            │   │
-│  └───────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-│  STORAGE:                                                                    │
-│                                                                              │
-│  ┌─── PVC Workspace ───────────────────────────────────────────────────┐   │
-│  │  Fine-tuning: ReadWriteMany, 50Gi, nfs-csi                          │   │
-│  │  AutoML: ReadWriteOnce, 12Gi                                         │   │
-│  │  Purpose: Shared workspace for datasets, checkpoints, artifacts      │   │
-│  └───────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES                                                           │
-│                                                                              │
-│  [AWS S3 - s3.amazonaws.com / custom endpoint]                              │
-│  - Purpose: Data lake for datasets and model artifacts                       │
-│  - Auth: AWS IAM credentials                                                │
+│  [AWS S3 Endpoint]                                                           │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
 │  - Encryption: TLS 1.2+                                                      │
+│  - Auth: AWS IAM credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)      │
+│  - Purpose: Dataset upload/download, document storage (AutoML, AutoRAG)      │
+│  - ⚠️  SSL verify=False fallback on self-signed cert errors                 │
 │                                                                              │
-│  [HuggingFace Hub - huggingface.co]                                         │
-│  - Purpose: Public/gated dataset and model downloads                        │
-│  - Auth: Bearer Token (optional)                                             │
+│  [HuggingFace Hub - huggingface.co]                                          │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
 │  - Encryption: TLS 1.2+                                                      │
+│  - Auth: Bearer Token (HF_TOKEN, optional for gated repos)                  │
+│  - Purpose: Dataset and model downloads                                      │
 │                                                                              │
-│  [Llama Stack API - configurable]                                           │
-│  - Purpose: Vector store, embeddings, RAG inference                         │
-│  - Auth: API key                                                             │
-│  - Encryption: TLS (optional)                                                │
+│  [Llama Stack API]                                                           │
+│  - Port: configurable/TCP                                                    │
+│  - Protocol: HTTP/HTTPS                                                      │
+│  - Encryption: TLS (with SSL fallback)                                       │
+│  - Auth: API key header (LLAMA_STACK_CLIENT_API_KEY)                        │
+│  - Purpose: Vector store CRUD, embeddings, RAG inference                     │
+│  - ⚠️  SSL verify=False fallback on self-signed cert errors                 │
 │                                                                              │
-│  [LLM API - configurable]                                                   │
-│  - Purpose: Synthetic data generation, chat completions                     │
-│  - Auth: API key / Bearer token                                              │
+│  [LLM API Endpoint]                                                          │
+│  - Port: configurable/TCP                                                    │
+│  - Protocol: HTTPS                                                           │
 │  - Encryption: TLS 1.2+                                                      │
+│  - Auth: API key (LLM_API_KEY)                                               │
+│  - Purpose: LLM inference for synthetic data generation (SDG)                │
 │                                                                              │
-│  [Kubeflow Model Registry - cluster-internal]                               │
-│  - Purpose: Model versioning and metadata                                    │
-│  - Auth: None (insecure)                                                     │
-│  - Encryption: plaintext                                                     │
+│  [OpenAI-compatible Inference Endpoints]                                     │
+│  - Port: configurable/TCP                                                    │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS (with SSL fallback)                                       │
+│  - Auth: Bearer token (chat_model_token, embedding_model_token)              │
+│  - Purpose: RAG optimization chat generation and embeddings                  │
+│  - ⚠️  SSL verify=False fallback on self-signed cert errors                 │
 │                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+│  [Kubernetes API Server]                                                     │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: ServiceAccount bearer token                                         │
+│  - Purpose: Training job submission, pod monitoring, namespace resolution    │
+└─────────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- No ClusterRoles or Roles defined directly by this component
+- No ClusterRoles or Roles directly defined by this component
 - Components run under the KFP pipeline-runner ServiceAccount
-- pipeline-runner SA has pre-configured RBAC from platform operator (rhods-operator)
-- Fine-tuning components require SA with create/watch permissions for TrainingJobs
+- pipeline-runner SA has pre-configured RBAC from the platform operator (rhods-operator)
+- Kubeflow Trainer components require SA permissions to create/watch TrainingJobs
+- Fine-tuning steps use KUBERNETES_AUTH_TOKEN from user-provided secrets for K8s API auth
 
-Secrets (User-Provisioned via RHOAI Connections):
-- train_data_secret_name (Opaque) - AWS S3 creds (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_ENDPOINT, AWS_DEFAULT_REGION)
-- llama_stack_secret_name (Opaque) - Llama Stack creds (LLAMA_STACK_CLIENT_BASE_URL, LLAMA_STACK_CLIENT_API_KEY)
-- hf-token (Opaque) - HuggingFace Hub token (HF_TOKEN)
-- s3-secret (Opaque) - S3 credentials for fine-tuning
-- kubernetes-credentials (Opaque) - KUBERNETES_SERVER_URL, KUBERNETES_AUTH_TOKEN
-- oci-pull-secret-model-download (Opaque) - OCI registry credentials
-- llm-credentials (Opaque) - LLM_API_KEY for SDG
-- sdg-llm-test-flow (ConfigMap) - SDG flow YAML at /etc/sdg
-- sdg-llm-test-prompt (ConfigMap) - SDG prompt templates at /etc/sdg/prompts
+Secrets Summary:
+- train_data_secret_name / input_data_secret_name / test_data_secret_name (Opaque)
+  → AWS S3 credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_ENDPOINT)
+  → Provisioned by: User (RHOAI Connections) | Auto-Rotate: No
+- llama_stack_secret_name (Opaque)
+  → Llama Stack API credentials (LLAMA_STACK_CLIENT_BASE_URL, LLAMA_STACK_CLIENT_API_KEY)
+  → Provisioned by: User (RHOAI Connections) | Auto-Rotate: No
+- hf-token (Opaque)
+  → HuggingFace Hub token (HF_TOKEN) for gated model/dataset access
+  → Provisioned by: User | Auto-Rotate: No
+- s3-secret (Opaque)
+  → AWS S3 credentials for fine-tuning pipeline dataset downloads
+  → Provisioned by: User (RHOAI Connections) | Auto-Rotate: No
+- kubernetes-credentials (Opaque)
+  → KUBERNETES_SERVER_URL and KUBERNETES_AUTH_TOKEN for training job submission
+  → Provisioned by: User | Auto-Rotate: No
+- oci-pull-secret-model-download (Opaque)
+  → OCI registry credentials for pulling model artifacts
+  → Provisioned by: User | Auto-Rotate: No
+- llm-credentials (Opaque)
+  → LLM API key (LLM_API_KEY) for synthetic data generation
+  → Provisioned by: User | Auto-Rotate: No
+- sdg-llm-test-flow (ConfigMap)
+  → SDG flow YAML definition mounted at /etc/sdg
+  → Provisioned by: User | Auto-Rotate: No
+- sdg-llm-test-prompt (ConfigMap)
+  → SDG prompt templates mounted at /etc/sdg/prompts
+  → Provisioned by: User | Auto-Rotate: No
 
 Security Concerns:
-⚠ SSL verification disabled as fallback in multiple components (boto3 verify=False, httpx verify=False, ssl.CERT_NONE)
-⚠ Kubeflow Model Registry uses plaintext HTTP/8080 with no authentication
-⚠ Secrets are user-provisioned with no auto-rotation
-⚠ Custom CA bundles supported via REQUESTS_CA_BUNDLE/SSL_CERT_FILE but not proactively configured
+⚠️  SSL verification disabled as fallback in multiple components:
+  - boto3 verify=False on self-signed cert errors (S3 connections)
+  - httpx verify=False on self-signed cert errors (Llama Stack, OpenAI endpoints)
+  - ssl.CERT_NONE fallback in text extraction components
+  - This is a development convenience that weakens TLS in non-production deployments
+⚠️  Kubeflow Model Registry uses plaintext HTTP (8080/TCP) with no authentication
+⚠️  All secrets are user-provisioned with no auto-rotation
+
+Certificate Handling:
+- Honors REQUESTS_CA_BUNDLE and SSL_CERT_FILE env vars for custom CA bundles
+- Falls back to system trust store (UBI9 OpenSSL)
+- SSL fallback pattern: try TLS → catch SSLError → retry with verify=False
 
 FIPS Compliance:
-- Build-time: Python-only (no Go binaries), UBI9 base images with system OpenSSL
-- Application-level: Python ssl module uses system default context (FIPS via system OpenSSL on UBI9)
-- Risk: SSL verify=False fallback bypasses FIPS-compliant TLS validation
+- Python-only (no Go binaries, no CGO)
+- UBI9 base images provide FIPS-validated OpenSSL
+- Python ssl module delegates to system OpenSSL on UBI9
+- ⚠️  SSL verify=False fallback bypasses FIPS TLS validation

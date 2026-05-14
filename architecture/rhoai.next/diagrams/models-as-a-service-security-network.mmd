@@ -1,70 +1,87 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client / AI Engineer"]
+        Client["External Client<br/>Auth: API key (sk-oai-*)<br/>OR OpenShift token<br/>OR OIDC JWT"]
     end
 
-    subgraph Ingress["INGRESS - Gateway API (openshift-ingress)"]
-        direction TB
-        Gateway["maas-default-gateway<br/>80/TCP HTTP → 443/TCP HTTPS<br/>TLS Terminate (TLS 1.2+)<br/>Host: maas.CLUSTER_DOMAIN"]
-        BBR["payload-processing (BBR)<br/>SA: payload-processing<br/>9004/TCP gRPC ext-proc<br/>9005/TCP metrics"]
-        Authorino["Authorino<br/>(AuthPolicy enforcement)<br/>AuthN: API key | K8s token | OIDC"]
-        Limitador["Limitador<br/>(TokenRateLimitPolicy)<br/>Per-user token rate limiting"]
-        HTTPRoutes["HTTPRoutes<br/>Per-model: /{ns}/{model}/v1/*<br/>API: /v1/models, /v1/api-keys/*"]
+    subgraph Ingress["INGRESS (Gateway API)"]
+        Gateway["maas-default-gateway<br/>Host: maas.${CLUSTER_DOMAIN}<br/>80/TCP, 443/TCP<br/>TLS Terminate<br/>Default: deny unconfigured (fail-closed)"]
 
-        Gateway -->|"gRPC/9004<br/>TLS SIMPLE<br/>No auth"| BBR
-        Gateway --> Authorino
-        Authorino --> Limitador
-        Gateway --> HTTPRoutes
+        subgraph GatewayFilters["Gateway Processing Pipeline"]
+            direction LR
+            BBR["payload-processing (BBR)<br/>9004/TCP gRPC<br/>TLS SIMPLE<br/>Plugins: model-to-header,<br/>provider-resolver, api-translation,<br/>apikey-injection"]
+            AuthorinoGW["Authorino<br/>(Kuadrant AuthPolicy)<br/>API key + K8s token + OIDC"]
+            LimitadorGW["Limitador<br/>(TokenRateLimitPolicy)<br/>Per-user token rate limits"]
+        end
     end
 
-    subgraph Internal["INTERNAL SERVICES (opendatahub namespace)"]
+    subgraph PlatformServices["PLATFORM SERVICES (opendatahub namespace)"]
         direction TB
 
-        Controller["maas-controller<br/>SA: maas-controller-manager<br/>8080/TCP metrics (HTTP)<br/>8081/TCP health (HTTP)"]
+        subgraph MaaSAPI["maas-api"]
+            APIExternal["User-Facing Endpoints<br/>8443/TCP HTTPS TLS 1.2+<br/>/v1/models, /v1/api-keys/*<br/>/v1/subscriptions<br/>Auth: Authorino (Bearer token)"]
+            APIInternal["Internal Endpoints<br/>8443/TCP HTTPS TLS 1.2+<br/>/internal/v1/api-keys/validate<br/>/internal/v1/subscriptions/select<br/>Auth: None (NetworkPolicy)"]
+        end
 
-        MaaSAPI["maas-api<br/>SA: maas-api<br/>8080/TCP HTTP | 8443/TCP HTTPS<br/>TLS 1.2+ (service-ca cert)<br/>Auth: Authorino (ext) | NetworkPolicy (int)"]
+        Controller["maas-controller<br/>SA: maas-controller-manager<br/>8080/TCP metrics, 8081/TCP health<br/>No external exposure"]
 
-        CronJob["API Key Cleanup CronJob<br/>POST /internal/v1/api-keys/cleanup"]
-    end
-
-    subgraph DataStorage["DATA STORAGE"]
         PostgreSQL["PostgreSQL<br/>5432/TCP<br/>Auth: DB credentials<br/>(maas-db-config Secret)"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        ExtLLM["External LLM Providers<br/>(api.openai.com, etc.)<br/>443/TCP HTTPS<br/>TLS SIMPLE (DestinationRule)<br/>Auth: Provider API key (BBR-injected)"]
-        KServe["KServe InferenceServices<br/>HTTPS (varies)<br/>Auth: Bearer token"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS<br/>Auth: ServiceAccount token"]
+    subgraph ModelBackends["MODEL BACKENDS"]
+        direction LR
+        KServe["KServe InferenceService<br/>HTTPS<br/>TLS<br/>Internal models"]
+        ExternalLLM["External LLM Providers<br/>(api.openai.com, etc.)<br/>443/TCP HTTPS<br/>TLS SIMPLE (DestinationRule)<br/>Auth: Provider API key<br/>(injected by BBR)"]
     end
 
-    %% External flows
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>API key (sk-oai-*) OR<br/>OpenShift token OR OIDC JWT"| Gateway
+    subgraph InfraServices["INFRASTRUCTURE SERVICES"]
+        direction LR
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS TLS<br/>Auth: ServiceAccount token"]
+        OpenShiftAuth["OpenShift Authentication<br/>443/TCP HTTPS TLS<br/>Issuer URL discovery"]
+        Prometheus["Prometheus<br/>Scrapes: 8080, 9005, 15090/TCP<br/>HTTP, No encryption"]
+    end
 
-    %% Auth callbacks
-    Authorino -->|"HTTPS/8443<br/>TLS 1.2+<br/>NetworkPolicy"| MaaSAPI
+    %% External → Gateway
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>API key OR token"| Gateway
 
-    %% Internal flows
-    HTTPRoutes -->|"HTTPS/8443<br/>TLS 1.2+"| MaaSAPI
-    HTTPRoutes -->|"HTTPS<br/>TLS"| KServe
-    HTTPRoutes -->|"HTTPS/443<br/>TLS SIMPLE<br/>via ServiceEntry"| ExtLLM
+    %% Gateway processing
+    Gateway -->|"gRPC/9004<br/>TLS SIMPLE<br/>ext-proc filter"| BBR
+    Gateway -->|"Auth evaluation<br/>per-model AuthPolicy"| AuthorinoGW
+    Gateway -->|"Rate check<br/>per-model TokenRateLimitPolicy"| LimitadorGW
 
-    Controller -->|"HTTPS/443<br/>TLS<br/>SA token"| K8sAPI
-    MaaSAPI -->|"HTTPS/443<br/>TLS<br/>SA token"| K8sAPI
-    BBR -->|"HTTPS/443<br/>TLS<br/>SA token"| K8sAPI
+    %% Authorino → maas-api callbacks
+    AuthorinoGW -->|"HTTPS/8443<br/>TLS 1.2+<br/>NetworkPolicy restricted"| APIInternal
 
-    MaaSAPI -->|"PostgreSQL/5432<br/>DB credentials"| PostgreSQL
+    %% Gateway → model backends
+    Gateway -->|"HTTPS<br/>TLS<br/>Internal routing"| KServe
+    Gateway -->|"HTTPS/443<br/>TLS SIMPLE<br/>Istio ServiceEntry<br/>Provider API key (BBR injected)"| ExternalLLM
 
-    CronJob -->|"HTTP/8080<br/>NetworkPolicy"| MaaSAPI
+    %% maas-api → dependencies
+    APIExternal -->|"PostgreSQL/5432<br/>DB credentials"| PostgreSQL
+    APIInternal -->|"PostgreSQL/5432<br/>DB credentials"| PostgreSQL
+    APIExternal -->|"HTTPS/443<br/>TLS<br/>SubjectAccessReview"| K8sAPI
+    APIExternal -->|"HTTPS<br/>TLS<br/>Probes /v1/models"| KServe
+
+    %% Controller → dependencies
+    Controller -->|"HTTPS/443<br/>TLS<br/>CRD CRUD, SSA apply<br/>leader election"| K8sAPI
+    Controller -->|"HTTPS/443<br/>TLS<br/>Issuer URL"| OpenShiftAuth
+
+    %% BBR → K8s API
+    BBR -->|"HTTPS/443<br/>TLS<br/>Read ExternalModel,<br/>Secrets, ConfigMaps"| K8sAPI
+
+    %% Monitoring
+    Prometheus -.->|"HTTP/8080<br/>PodMonitor"| Controller
+    Prometheus -.->|"HTTP/9005<br/>ServiceMonitor"| BBR
 
     %% Styling
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px,color:#333
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px,color:#333
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px,color:#333
-    classDef storage fill:#e1d5e7,stroke:#9673a6,stroke-width:2px,color:#333
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px,color:#333
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef backends fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef infra fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef security fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
-    class Gateway,BBR,Authorino,Limitador,HTTPRoutes ingress
-    class Controller,MaaSAPI,CronJob internal
-    class PostgreSQL storage
-    class ExtLLM,KServe,K8sAPI externalservice
+    class Gateway,BBR,AuthorinoGW,LimitadorGW ingress
+    class APIExternal,APIInternal,Controller,PostgreSQL platform
+    class KServe,ExternalLLM backends
+    class K8sAPI,OpenShiftAuth,Prometheus infra

@@ -1,88 +1,79 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client"]
+        Client["External Client<br/>Inference Consumer"]
     end
 
-    subgraph ProxyLayer["PLATFORM PROXY LAYER (Auth Boundary)"]
-        KubeRBAC["kube-rbac-proxy Sidecar<br/>8443/TCP<br/>TLS 1.2+ termination<br/>TokenReview + SubjectAccessReview"]
+    subgraph PlatformSecurity["PLATFORM SECURITY LAYER (RHOAI)"]
+        direction TB
+        KubeRBACProxy["kube-rbac-proxy Sidecar<br/>8443/TCP<br/>TLS 1.2+<br/>K8s TokenReview + SubjectAccessReview"]
+        IstioSidecar["Istio Envoy Sidecar<br/>(optional)<br/>mTLS STRICT<br/>SPIFFE Identity"]
     end
 
-    subgraph OVMSPod["OVMS POD (No Internal TLS)"]
+    subgraph OVMSPod["OVMS POD (KServe InferenceService)<br/>UID: 5000 / GID: 5000 (non-root)<br/>No K8s API access"]
         direction TB
 
-        subgraph RESTServer["REST Server (Drogon)"]
-            REST["HTTP/1.1 Plaintext<br/>configurable/TCP<br/>Auth: API key (v3 only, optional)"]
-            TFSv1Route["/v1/models/* — No auth"]
-            KServev2Route["/v2/* — No auth"]
-            OpenAIv3Route["/v3/* — API key optional"]
-            MetricsRoute["/metrics — No auth"]
+        subgraph RESTEndpoint["REST Endpoint (Drogon)"]
+            REST["HTTP/1.1 Plaintext<br/>configurable/TCP<br/>Workers: 10"]
+            V1API["/v1/* TFS v1<br/>No auth"]
+            V2API["/v2/* KServe v2<br/>No auth"]
+            V3API["/v3/* OpenAI/Cohere<br/>API key (optional)"]
+            MetricsAPI["/metrics Prometheus<br/>No auth"]
         end
 
-        subgraph GRPCServer["gRPC Server"]
-            GRPC["gRPC HTTP/2 Plaintext<br/>configurable/TCP<br/>InsecureServerCredentials<br/>Auth: None"]
+        subgraph GRPCEndpoint["gRPC Endpoint"]
+            GRPC["gRPC HTTP/2 Plaintext<br/>InsecureServerCredentials<br/>configurable/TCP<br/>Memory Quota: 2GB"]
         end
 
-        subgraph InferenceEngine["Inference Engine"]
-            OVRuntime["OpenVINO Runtime<br/>CPU / GPU / NPU"]
-        end
-
-        NginxMTLS["nginx-mtls-auth (Optional)<br/>443/TCP mTLS<br/>Client cert required"]
-    end
-
-    subgraph IstioMesh["ISTIO SERVICE MESH (Optional)"]
-        Envoy["Envoy Sidecar<br/>mTLS pod-to-pod"]
+        InferenceCore["Inference Core<br/>OpenVINO Runtime 2026.0"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES (Model Storage)"]
-        S3["Amazon S3<br/>s3.amazonaws.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS IAM"]
-        GCS["Google Cloud Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: GCP Service Account"]
-        Azure["Azure Blob Storage<br/>*.blob.core.windows.net<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Connection String"]
-        HuggingFace["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: HF_TOKEN Bearer"]
+        S3["Amazon S3<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
+        GCS["Google Cloud Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>GCP Service Account"]
+        Azure["Azure Blob Storage<br/>*.blob.core.windows.net<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Connection String"]
+        HuggingFace["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>HF_TOKEN Bearer"]
     end
 
     subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>Scrapes /metrics<br/>HTTP plaintext"]
+        Prometheus["Prometheus<br/>Scrapes /metrics<br/>HTTP configurable/TCP"]
     end
 
-    %% Flows
-    Client -->|"HTTPS/8443<br/>TLS 1.2+<br/>K8s Bearer Token"| KubeRBAC
-    KubeRBAC -->|"HTTP (localhost)<br/>Plaintext<br/>No auth (trusted)"| REST
-    Client -.->|"gRPC HTTP/2<br/>Plaintext<br/>No auth"| GRPC
+    %% Ingress flows
+    Client -->|"HTTPS/8443<br/>TLS 1.2+<br/>K8s Bearer Token"| KubeRBACProxy
+    KubeRBACProxy -->|"HTTP/configurable<br/>Plaintext (localhost)<br/>No auth"| REST
+    Client -.->|"HTTP or gRPC<br/>(direct, non-RHOAI)"| REST
+    Client -.->|"gRPC/configurable<br/>Plaintext<br/>No auth"| GRPC
+    IstioSidecar -.->|"mTLS envelope<br/>SPIFFE identity"| OVMSPod
 
-    REST --> TFSv1Route
-    REST --> KServev2Route
-    REST --> OpenAIv3Route
-    REST --> MetricsRoute
+    %% Internal routing
+    REST --- V1API
+    REST --- V2API
+    REST --- V3API
+    REST --- MetricsAPI
+    V1API --> InferenceCore
+    V2API --> InferenceCore
+    V3API --> InferenceCore
+    GRPC --> InferenceCore
 
-    TFSv1Route --> OVRuntime
-    KServev2Route --> OVRuntime
-    OpenAIv3Route --> OVRuntime
-    GRPC --> OVRuntime
+    %% Egress flows
+    InferenceCore -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM credentials"| S3
+    InferenceCore -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP SA JSON"| GCS
+    InferenceCore -->|"HTTPS/443<br/>TLS 1.2+<br/>Azure conn string"| Azure
+    InferenceCore -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN Bearer"| HuggingFace
 
-    OVRuntime -->|"HTTPS/443<br/>TLS 1.2+<br/>IAM credentials"| S3
-    OVRuntime -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP SA JSON"| GCS
-    OVRuntime -->|"HTTPS/443<br/>TLS 1.2+<br/>Connection string"| Azure
-    OVRuntime -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN Bearer"| HuggingFace
-
-    Prometheus -->|"HTTP<br/>Plaintext<br/>Scrape /metrics"| MetricsRoute
+    %% Monitoring
+    Prometheus -->|"HTTP/configurable<br/>No auth"| MetricsAPI
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef proxy fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef ovmspod fill:#dbeafe,stroke:#3b82f6,stroke-width:2px
-    classDef restsvr fill:#e0f2fe,stroke:#0284c7
-    classDef grpcsvr fill:#e0f2fe,stroke:#0284c7
-    classDef engine fill:#d1fae5,stroke:#10b981
+    classDef platform fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef app fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef monitoring fill:#f3e8ff,stroke:#9333ea
-    classDef istio fill:#fecaca,stroke:#dc2626,stroke-dasharray:5 5
+    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef noauth fill:#f8cecc,stroke:#b85450,stroke-width:1px
 
     class Client external
-    class KubeRBAC proxy
-    class REST,TFSv1Route,KServev2Route,OpenAIv3Route,MetricsRoute restsvr
-    class GRPC grpcsvr
-    class OVRuntime engine
+    class KubeRBACProxy,IstioSidecar platform
+    class REST,GRPC,InferenceCore,V1API,V2API,V3API,MetricsAPI app
     class S3,GCS,Azure,HuggingFace externalservice
     class Prometheus monitoring
-    class Envoy istio
-    class NginxMTLS proxy

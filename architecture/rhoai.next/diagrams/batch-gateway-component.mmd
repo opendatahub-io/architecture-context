@@ -1,70 +1,72 @@
 graph TB
-    subgraph BatchGateway["Batch Gateway System"]
+    subgraph BatchGateway["Batch Gateway"]
         direction TB
 
-        subgraph Apiserver["batch-gateway-apiserver"]
-            direction LR
+        subgraph Apiserver["batch-gateway-apiserver<br/>(Go HTTP Service)"]
             BatchAPI["Batch Handler<br/>/v1/batches/*"]
             FileAPI["File Handler<br/>/v1/files/*"]
-            Middleware["Request Middleware<br/>(Tenant extraction)"]
-            SecurityHeaders["Security Headers<br/>Middleware"]
+            Middleware["Request Middleware<br/>(Tenant Extraction)"]
+            SecurityMW["Security Headers<br/>Middleware"]
             HealthAPI["Health/Ready/Metrics<br/>:8081/TCP"]
         end
 
-        subgraph Processor["batch-gateway-processor"]
-            direction LR
-            Poller["Queue Poller<br/>(semaphore-driven)"]
-            Workers["Worker Pool<br/>(configurable count)"]
-            Executor["Inference Executor<br/>(global + per-model<br/>concurrency)"]
-            Recovery["Crash Recovery<br/>(startup scan)"]
-            StatusUpdater["Status Updater"]
-            CancelHandler["Cancel Handler<br/>(Redis event listener)"]
+        subgraph Processor["batch-gateway-processor<br/>(Go Worker Service)"]
+            Poller["Queue Poller<br/>(Semaphore-driven)"]
+            Workers["Worker Pool<br/>(num_workers goroutines)"]
+            JobRunner["Job Runner<br/>(Preprocessor + Executor + Finalizer)"]
+            Recovery["Crash Recovery<br/>(Startup scan)"]
+            CancelListener["Cancel Listener<br/>(Redis event channel)"]
+            StatusUpdater["Status Updater<br/>(Redis progress)"]
+            ProcessorHealth["Health/Ready/Metrics"]
         end
 
-        subgraph GC["batch-gateway-gc"]
-            Collector["GC Collector<br/>(periodic scan)"]
+        subgraph GC["batch-gateway-gc<br/>(Go Background Service)"]
+            Collector["GC Collector<br/>(Periodic scan)"]
         end
     end
 
-    %% External Client
-    Client[External Client] -->|"HTTP/HTTPS<br/>Tenant Header"| Middleware
-    Middleware --> BatchAPI
-    Middleware --> FileAPI
+    %% Client interactions
+    Client[External Client] -->|"POST /v1/files<br/>Tenant Header"| Middleware
+    Client -->|"POST /v1/batches<br/>Tenant Header"| Middleware
+    Client -->|"GET /v1/batches/{id}<br/>Tenant Header"| Middleware
+    Middleware --> SecurityMW
+    SecurityMW --> BatchAPI
+    SecurityMW --> FileAPI
 
-    %% Apiserver to Storage
-    BatchAPI -->|"enqueue job"| RedisQueue["Redis/Valkey<br/>Priority Queue<br/>:6379/TCP"]
-    BatchAPI -->|"metadata CRUD"| PostgreSQL["PostgreSQL<br/>:5432/TCP"]
-    FileAPI -->|"file upload/download"| FileStore["File Store<br/>(S3 :443 / FS)"]
-    FileAPI -->|"file metadata"| PostgreSQL
+    %% Apiserver to storage
+    BatchAPI -->|"enqueue job"| RedisQueue["Redis/Valkey<br/>Priority Queue"]
+    BatchAPI -->|"CRUD metadata"| PostgreSQL["PostgreSQL<br/>:5432/TCP"]
+    FileAPI -->|"upload/download"| FileStore["File Store<br/>(S3 / Filesystem)"]
+    FileAPI -->|"CRUD metadata"| PostgreSQL
 
-    %% Processor flows
+    %% Processor flow
     Poller -->|"dequeue"| RedisQueue
-    Poller -->|"dispatch"| Workers
-    Workers -->|"execute"| Executor
-    Executor -->|"inference request<br/>Bearer token"| InferenceGW["LLM Inference Gateway<br/>(llm-d / vLLM)"]
-    Executor -->|"read input"| FileStore
-    Executor -->|"write output"| FileStore
-    StatusUpdater -->|"progress updates"| RedisQueue
-    StatusUpdater -->|"status updates"| PostgreSQL
-    CancelHandler -->|"cancel events"| RedisQueue
+    Poller --> Workers
+    Workers --> JobRunner
+    JobRunner -->|"download input"| FileStore
+    JobRunner -->|"inference requests"| InferenceGW["LLM Inference Gateway<br/>(llm-d / vLLM)"]
+    JobRunner -->|"upload output"| FileStore
+    JobRunner -->|"status update"| PostgreSQL
+    CancelListener -->|"subscribe"| RedisEvents["Redis/Valkey<br/>Event Channel"]
+    StatusUpdater -->|"progress"| RedisStatus["Redis/Valkey<br/>Status Store"]
+    Recovery -->|"scan workdir"| LocalFS["Local Workdir<br/>/var/lib/batch-gateway"]
 
-    %% GC flows
+    %% GC flow
     Collector -->|"query expired"| PostgreSQL
-    Collector -->|"delete expired files"| FileStore
+    Collector -->|"delete files"| FileStore
 
-    %% Observability
-    Prometheus["Prometheus"] -.->|"scrape :8081"| HealthAPI
-    Prometheus -.->|"scrape processor addr"| Processor
-    OTel["OpenTelemetry Collector<br/>:4317/TCP"] -.->|"OTLP/gRPC"| BatchGateway
+    %% Cancel flow from apiserver
+    BatchAPI -->|"publish cancel"| RedisEvents
 
     %% Styling
-    style Apiserver fill:#4a90e2,stroke:#2c5f9e,color:#fff
-    style Processor fill:#7ed321,stroke:#5ca318,color:#fff
-    style GC fill:#f5a623,stroke:#c78519,color:#fff
+    style Apiserver fill:#4a90e2,stroke:#333,color:#fff
+    style Processor fill:#7ed321,stroke:#333,color:#fff
+    style GC fill:#f5a623,stroke:#333,color:#fff
     style Client fill:#f9f9f9,stroke:#999
-    style PostgreSQL fill:#336791,stroke:#234d6e,color:#fff
-    style RedisQueue fill:#dc382d,stroke:#a12b22,color:#fff
-    style FileStore fill:#ff9900,stroke:#cc7a00,color:#fff
-    style InferenceGW fill:#9b59b6,stroke:#7d3f98,color:#fff
-    style Prometheus fill:#e6522c,stroke:#b84123,color:#fff
-    style OTel fill:#425cc7,stroke:#344a9f,color:#fff
+    style PostgreSQL fill:#336791,stroke:#333,color:#fff
+    style RedisQueue fill:#dc382d,stroke:#333,color:#fff
+    style RedisEvents fill:#dc382d,stroke:#333,color:#fff
+    style RedisStatus fill:#dc382d,stroke:#333,color:#fff
+    style FileStore fill:#ff9900,stroke:#333,color:#fff
+    style InferenceGW fill:#9b59b6,stroke:#333,color:#fff
+    style LocalFS fill:#e8e8e8,stroke:#333

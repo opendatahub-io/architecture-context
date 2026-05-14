@@ -275,6 +275,16 @@ The TrainJob controller creates resources dynamically during reconciliation:
 
 _Analyzing the `main` branch. Downstream release branches (e.g., `rhoai-3.5`) likely add `rpms.lock.yaml` and Hermeto prefetch integration for full build hermeticity._
 
+## Admission Webhooks
+
+This component defines 3 webhook(s) (0 mutating, 3 validating).
+
+| Name | Type | Target Resources | Purpose |
+|------|------|-----------------|---------|
+| validator.clustertrainingruntime.trainer.kubeflow.org | validating | clustertrainingruntimes | Validates ClusterTrainingRuntime resources on create and update by checking that replicated jobs in the runtime spec are valid, and warns if the runtime is marked as deprecated via labels. |
+| validator.trainjob.trainer.kubeflow.org | validating | trainjobs | Validates TrainJob resources on create and update by resolving the runtime referenced in the TrainJob spec and delegating validation to that runtime's ValidateObjects method, rejecting requests that reference unsupported runtimes. |
+| validator.trainingruntime.trainer.kubeflow.org | validating | trainingruntimes | Validates TrainingRuntime resources on creation, ensuring that replicated jobs marked as ancestors (trainer, model-initializer, dataset-initializer) have exactly 1 replica and contain the required container name for their ancestor type (e.g., 'node' for trainer, 'model-initializer' for model-initializer). |
+
 ## Data Flows
 
 ### Flow 1: TrainJob Reconciliation

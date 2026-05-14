@@ -3,8 +3,7 @@
 │                                                                          │
 │  [trustyai-service-operator]                                             │
 │  - Namespace: {operator-namespace}                                       │
-│  - Watches: LMEvalJob CRDs                                              │
-│  - Creates: Kubernetes Jobs                                              │
+│  - Creates Kubernetes Jobs from LMEvalJob CRDs                          │
 │         │                                                                │
 │         │ Port: 443/TCP                                                  │
 │         │ Protocol: HTTPS                                                │
@@ -12,57 +11,53 @@
 │         │ Auth: ServiceAccount Token                                     │
 │         ▼                                                                │
 │  [Kubernetes API Server]                                                 │
+│  - Creates Job + ConfigMap                                               │
+│  - Mounts ConfigMap at /meta/job.json                                   │
 │         │                                                                │
-│         │ Creates Job + ConfigMap mount                                   │
+│         │ Pod scheduling                                                 │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  JOB POD (Batch Execution - No Inbound Traffic)                         │
-│                                                                          │
-│  [Init Container] (offline mode only)                                    │
-│  - Purpose: Pre-populate /test_data from S3/COS                         │
-│         │                                                                │
-│         │ Port: 443/TCP                                                  │
-│         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS 1.2+                                           │
-│         │ Auth: AWS IAM / IBM COS credentials                            │
-│         ▼                                                                │
-│  [S3/COS Object Storage] ──── (see EXTERNAL SERVICES below)             │
+│  BATCH JOB POD (No ingress — egress only)                               │
 │                                                                          │
 │  [lmes-job Container]                                                    │
-│  - Image: odh-ta-lmes-job                                               │
-│  - Base: UBI 9 (registry.access.redhat.com/ubi9/python-311:latest)      │
+│  - Namespace: {user-namespace}                                           │
+│  - Image: odh-ta-lmes-job:{tag}                                         │
+│  - Base: registry.access.redhat.com/ubi9/python-311:latest              │
 │  - Runtime: Python 3.11                                                  │
-│  - ServiceAccount: Configured by operator                                │
+│  - No exposed ports (batch consumer only)                                │
 │  - ConfigMap mount: /meta/job.json (JobSpec)                             │
-│  - Env: OPENAI_API_KEY, HF_TOKEN (from model auth secret)              │
-│  - No inbound ports exposed                                             │
-│  - No Kubernetes Services                                                │
+│  - Volume mount: /test_data (offline mode, optional)                    │
 │         │                                                                │
 │         ├─── Egress 1 ──────────────────────────────────────────────    │
-│         │    Destination: Model Inference Endpoint                        │
+│         │    Destination: Model Inference Endpoint                       │
 │         │    Port: Configurable (typically 443/TCP or 8080/TCP)          │
-│         │    Protocol: HTTPS (or HTTP)                                    │
-│         │    Encryption: TLS 1.2+ (configurable via verify_certificate)  │
-│         │    Custom CA: Supported (ca_cert path, symlinks rejected)       │
-│         │    Auth: Bearer Token (OPENAI_API_KEY)                         │
-│         │    Concurrency: Up to 128 concurrent requests (num_concurrent) │
-│         │    Transport: aiohttp (async) or requests (sync)               │
+│         │    Protocol: HTTPS or HTTP                                     │
+│         │    Encryption: TLS 1.2+ (custom CA bundle supported)          │
+│         │    Auth: Bearer Token (OPENAI_API_KEY env var)                 │
+│         │    Path: POST /v1/completions                                  │
+│         │    Concurrency: 1-128 concurrent requests (num_concurrent)     │
+│         │    TLS Notes: ssl.create_default_context(); symlink paths      │
+│         │               rejected; verify_certificate configurable        │
 │         │                                                                │
 │         ├─── Egress 2 ──────────────────────────────────────────────    │
-│         │    Destination: EvalHub Service                                 │
+│         │    Destination: EvalHub Service                                │
 │         │    Port: 443/TCP                                               │
 │         │    Protocol: HTTPS                                             │
-│         │    Encryption: TLS 1.2+ (configurable via evalhub_insecure)    │
-│         │    Auth: Bearer Token                                          │
-│         │    Purpose: Status callbacks, result submission                │
+│         │    Encryption: TLS 1.2+ (evalhub_insecure flag available)     │
+│         │    Auth: Bearer Token (eval-hub-sdk DefaultCallbacks)          │
+│         │    Purpose: Status updates (INITIALIZING → LOADING_DATA →     │
+│         │             RUNNING_EVALUATION → POST_PROCESSING →            │
+│         │             PERSISTING_ARTIFACTS → COMPLETED)                  │
+│         │    Purpose: Final result submission                            │
 │         │                                                                │
 │         ├─── Egress 3 ──────────────────────────────────────────────    │
-│         │    Destination: OCI Registry                                    │
+│         │    Destination: OCI Registry                                   │
 │         │    Port: 443/TCP                                               │
 │         │    Protocol: HTTPS                                             │
 │         │    Encryption: TLS 1.2+                                        │
-│         │    Auth: Docker registry auth (configurable path)              │
-│         │    Purpose: Push evaluation result artifacts                   │
+│         │    Auth: Docker registry auth (configurable auth config path)  │
+│         │    Purpose: Push evaluation result artifacts as OCI images     │
+│         │    Annotations: benchmark, model, job_id, timestamp            │
 │         │                                                                │
 │         ├─── Egress 4 ──────────────────────────────────────────────    │
 │         │    Destination: MLflow Tracking Server                         │
@@ -70,109 +65,97 @@
 │         │    Protocol: HTTPS                                             │
 │         │    Encryption: TLS 1.2+                                        │
 │         │    Auth: Configurable                                          │
-│         │    Purpose: Log evaluation metrics and run metadata            │
+│         │    Purpose: Log evaluation metrics, run metadata, scores       │
+│         │    Returns: run_id for traceability                            │
 │         │                                                                │
 │         ├─── Egress 5 ──────────────────────────────────────────────    │
-│         │    Destination: HuggingFace Hub                                │
+│         │    Destination: HuggingFace Hub (huggingface.co)              │
 │         │    Port: 443/TCP                                               │
-│         │    Protocol: HTTPS                                             │
+│         │    Protocol: HTTPS + Git LFS                                   │
 │         │    Encryption: TLS 1.2+                                        │
-│         │    Auth: HF_TOKEN (optional, required for gated datasets)      │
-│         │    Purpose: Download benchmark datasets and tokenizers         │
+│         │    Auth: HF_TOKEN (optional; required for gated datasets)      │
+│         │    Purpose: Download benchmark datasets, tokenizers            │
 │         │    Note: Disabled in offline mode (HF_HUB_OFFLINE=1)          │
 │         │                                                                │
 │         └─── Egress 6 ──────────────────────────────────────────────    │
-│              Destination: S3/COS Object Storage                          │
+│              Destination: S3/COS Object Storage                         │
 │              Port: 443/TCP                                               │
-│              Protocol: HTTPS                                             │
+│              Protocol: HTTPS (S3 API via boto3)                          │
 │              Encryption: TLS 1.2+                                        │
-│              Auth: AWS IAM / IBM COS credentials (via boto3)             │
-│              Purpose: Offline test data caches                           │
+│              Auth: AWS IAM credentials / IBM COS credentials             │
+│              Purpose: Offline test data caches (via init container)      │
 │                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  EXTERNAL SERVICES                                                       │
 │                                                                          │
 │  [Model Inference Endpoint]                                              │
-│  - Purpose: Serves model completions (vLLM, TGI, OpenAI-compatible)    │
-│  - API: POST /v1/completions (OpenAI-compatible)                        │
-│  - Auth: Bearer Token (OPENAI_API_KEY)                                  │
-│  - Encryption: TLS 1.2+ (custom CA bundle supported)                   │
+│  - Type: OpenAI-compatible API (vLLM, TGI, etc.)                       │
+│  - Port: Configurable (443/TCP or 8080/TCP typical)                     │
+│  - Auth: API key validated by inference server                           │
 │                                                                          │
 │  [EvalHub Service]                                                       │
-│  - Purpose: Job lifecycle management, result aggregation                │
-│  - API: REST callbacks (report_status, report_results)                  │
-│  - Auth: Bearer Token                                                   │
-│  - Encryption: TLS 1.2+ (configurable insecure flag)                   │
+│  - Type: Internal RHOAI platform service                                │
+│  - Port: 443/TCP                                                         │
+│  - Auth: Token provided by eval-hub-sdk                                  │
 │                                                                          │
 │  [OCI Registry]                                                          │
-│  - Purpose: Evaluation result artifact storage                          │
-│  - Auth: Docker registry credentials                                    │
-│  - Encryption: TLS 1.2+                                                 │
+│  - Port: 443/TCP                                                         │
+│  - Auth: Docker config auth                                              │
 │                                                                          │
 │  [MLflow Tracking Server]                                                │
-│  - Purpose: Evaluation metrics and run tracking                         │
-│  - Auth: Configurable                                                   │
-│  - Encryption: TLS 1.2+                                                 │
+│  - Port: Configurable                                                    │
+│  - Auth: Configurable                                                    │
 │                                                                          │
 │  [HuggingFace Hub - huggingface.co]                                     │
-│  - Purpose: Benchmark datasets, tokenizers, gated model artifacts       │
-│  - Auth: HF_TOKEN (optional)                                            │
-│  - Encryption: TLS 1.2+                                                 │
+│  - Port: 443/TCP                                                         │
+│  - Auth: HF_TOKEN (Bearer)                                              │
 │                                                                          │
-│  [S3/COS Object Storage]                                                 │
-│  - Purpose: Offline test data caches                                    │
+│  [S3/COS Object Storage - s3.amazonaws.com / IBM COS]                  │
+│  - Port: 443/TCP                                                         │
 │  - Auth: AWS IAM / IBM COS credentials                                  │
-│  - Encryption: TLS 1.2+                                                 │
 │                                                                          │
-│  [W&B - Weights & Biases] (optional)                                    │
-│  - Purpose: Experiment tracking                                         │
-│  - Auth: API key                                                        │
-│  - Encryption: TLS 1.2+                                                 │
+│  [W&B (Weights & Biases) - optional]                                    │
+│  - Port: 443/TCP                                                         │
+│  - Auth: wandb API key                                                   │
+│                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
 - Not directly applicable — lm-evaluation-harness is a batch job container
 - RBAC for the Job pod is configured by the trustyai-service-operator
-- The operator creates the Job with appropriate ServiceAccount and RBAC bindings
-- No ClusterRoles or ClusterRoleBindings defined in this component
+- The operator's ServiceAccount creates Jobs and ConfigMaps in user namespaces
 
 Secrets:
-- Model auth secret (model.auth.secret_ref) (Opaque)
-  - Contains: API key, HF token (hf-token key), optional CA cert
+- Model auth secret (model.auth.secret_ref) (Opaque) — API key, HF token, optional CA cert
   - Provisioned by: User / trustyai-service-operator
   - Auto-rotate: No
-
-- OCI registry auth (Docker config)
-  - Contains: Registry authentication credentials
+- OCI registry auth (Docker config) — Registry authentication for artifact push
   - Provisioned by: User / platform config
   - Auto-rotate: No
-
-- OPENAI_API_KEY (Env var)
-  - Contains: Bearer token for model inference API
-  - Derived from: Model auth secret
+- OPENAI_API_KEY (env var) — Bearer token for model inference API
+  - Derived from: model auth secret
   - Auto-rotate: No
-
-- HF_TOKEN (Env var)
-  - Contains: HuggingFace Hub access token
-  - Derived from: Model auth secret (hf-token key) or user env
+- HF_TOKEN (env var) — HuggingFace Hub token for gated resources
+  - Derived from: model auth secret (hf-token key) or user env
   - Auto-rotate: No
 
 TLS Configuration:
 - Python ssl.create_default_context() for custom CA bundles
-- Respects system-level FIPS configuration (UBI 9 OpenSSL)
-- aiohttp TCPConnector with configurable ssl context for async requests
+- System trust store via UBI 9 base image
+- aiohttp TCPConnector with configurable ssl context
 - requests.post(verify=...) for sync requests
 - Symlink paths for CA certificates explicitly rejected (security hardening)
-- verify_certificate parameter: True (system trust store), False (skip), or path (custom CA)
+- verify_certificate: True (system trust), False (skip), or path to CA bundle
 
 FIPS Compliance:
-- Python application on UBI 9 base image — FIPS via system OpenSSL
-- No non-FIPS crypto detected (no MD5, RC4, DES, custom RNG)
-- hashlib.sha256 used for cache keys (FIPS-approved)
-- ssl.create_default_context() respects system FIPS mode
+- Python application — no Go binary (check-payload N/A for Go checks)
+- OpenSSL present via UBI 9 base image
+- Uses hashlib.sha256 (FIPS-approved) for cache keys
+- No non-FIPS crypto (MD5, RC4, DES) detected
+- ssl module delegates to system OpenSSL (FIPS via UBI 9)
 
-Network Summary:
-- INGRESS: None (batch job — no inbound traffic)
-- EGRESS: 6 destinations (all outbound HTTPS)
-- No Kubernetes Services exposed
-- No Istio/ServiceMesh sidecar requirements documented
+Network Policy Notes:
+- No ingress required (batch job — egress only)
+- All egress uses HTTPS/TLS 1.2+ minimum
+- Offline mode eliminates egress 5 (HuggingFace Hub) — data pre-fetched via init container
+- Custom CA bundles supported for all TLS connections

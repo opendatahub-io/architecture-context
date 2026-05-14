@@ -232,6 +232,40 @@ The operator supports both cluster-scoped and namespace-scoped modes, scale-to-z
 
 _This is the `main` branch (upstream-tracking). Downstream release branches (e.g., `rhoai-X.Y`) likely add rpms.lock.yaml and Hermeto prefetch integration for hermetic Konflux builds._
 
+## Admission Webhooks
+
+This component defines 2 webhook(s) (0 mutating, 1 validating, 1 conversion).
+
+| Name | Type | Target Resources | Purpose |
+|------|------|-----------------|---------|
+| servingruntime.modelmesh-webhook-server.default | validating | clusterservingruntimes, servingruntimes | Validating webhook for ServingRuntime and ClusterServingRuntime resources that enforces autoscaler configuration rules on multi-model (ModelMesh-compatible) runtimes. It validates that the autoscaler class is a supported type (e.g. HPA), HPA metrics are from the allowed list, target utilization percentage is an integer between 1-100, and that explicit replicas are not set simultaneously with an enabled autoscaler, along with min/max replica consistency. |
+| conversion.predictors.serving.kserve.io | conversion | predictors |  |
+
+### Platform Webhooks
+
+The following webhooks are defined by the platform operator and apply to this component's resource types:
+
+| Webhook | Defined By |
+|---------|-----------|
+| connection-isvc.opendatahub.io | rhods-operator |
+
+### External Webhooks
+
+The following webhooks from peer components intercept this component's resource types:
+
+| Webhook | Defined By |
+|---------|-----------|
+| clusterservingruntime.kserve-webhook-server.validator | kserve-autogluon-server |
+| inferenceservice.kserve-webhook-server.defaulter | kserve-autogluon-server |
+| inferenceservice.kserve-webhook-server.validator | kserve-autogluon-server |
+| servingruntime.kserve-webhook-server.validator | kserve-autogluon-server |
+| clusterservingruntime.kserve-webhook-server.validator | kserve |
+| inferenceservice.kserve-webhook-server.defaulter | kserve |
+| inferenceservice.kserve-webhook-server.validator | kserve |
+| servingruntime.kserve-webhook-server.validator | kserve |
+| minferenceservice-v1beta1.odh-model-controller.opendatahub.io | odh-model-controller |
+| validating.isvc.odh-model-controller.opendatahub.io | odh-model-controller |
+
 ## Data Flows
 
 ### Flow 1: Model Inference Request (gRPC)

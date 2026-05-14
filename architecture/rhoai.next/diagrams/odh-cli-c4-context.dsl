@@ -1,139 +1,148 @@
 workspace {
     model {
-        admin = person "Platform Admin" "RHOAI cluster administrator performing upgrade readiness, diagnostics, and migrations"
-        cicd = person "CI/CD Pipeline" "Automated pipeline runner executing lint checks and backup operations"
+        admin = person "Platform Admin / SRE" "Manages RHOAI deployments, performs upgrades and diagnostics"
+        cicd = person "CI/CD Pipeline" "Automated upgrade readiness checks"
 
-        odhCli = softwareSystem "odh-cli" "CLI tool for validating, diagnosing, backing up, and migrating RHOAI deployments (kubectl plugin)" {
-            cobraRoot = container "Cobra CLI Framework" "Root command with AddFlags/Complete/Validate/Run lifecycle" "Go (cobra)"
-            lintEngine = container "Lint Engine" "37 diagnostic checks across 5 groups (dependency, service, platform, component, workload)" "Go"
-            backupPipeline = container "Backup Pipeline" "Three-stage concurrent pipeline: Discovery → Resolver → Writer" "Go (errgroup)"
-            migrateFramework = container "Migration Framework" "Two-phase Action/Task pattern with progress tracking" "Go"
-            depsChecker = container "Dependency Checker" "Validates required operator dependencies against manifest" "Go"
-            componentsMgr = container "Components Manager" "Component health enrichment and state management" "Go"
-            getMgr = container "Resource Lister" "Lists workload resources across namespaces" "Go"
-            clientWrapper = container "Kubernetes Client" "client-go wrapper with QPS=50/Burst=100, Reader/Writer split" "Go (client-go)"
-            resourceTypes = container "Resource Type Registry" "40+ GVK/GVR definitions — single source of truth" "Go"
-            printerPkg = container "Output Printer" "Table, JSON, YAML renderers with envelope wrapper (cli.opendatahub.io/v1)" "Go"
+        odhCli = softwareSystem "odh-cli (kubectl-odh)" "CLI tool for validating, diagnosing, backing up, and migrating RHOAI deployments" {
+            lintEngine = container "Lint Engine" "37 diagnostic checks across 5 groups for upgrade readiness assessment" "Go (cobra + client-go)"
+            backupPipeline = container "Backup Pipeline" "Concurrent 3-stage pipeline: Discovery → Resolver → Writer" "Go (errgroup + channels)"
+            migrateFramework = container "Migration Framework" "Two-phase Action/Task pattern: Prepare + Run with progress tracking" "Go"
+            getCmd = container "Get Command" "Resource listing with output format support" "Go"
+            depsCmd = container "Deps Command" "Dependency checking against odh-gitops manifests" "Go"
+            componentsCmd = container "Components Command" "Component management with health enrichment" "Go"
+            clientWrapper = container "K8s Client Wrapper" "client-go wrapper with QPS=50, Burst=100, Reader/Writer split" "Go (client-go)"
+            resourceRegistry = container "Resource Type Registry" "Single source of truth for 40+ GVK/GVR definitions" "Go"
+            outputEnvelope = container "Output Envelope" "Self-describing cli.opendatahub.io/v1 format" "Go"
         }
 
-        containerImage = softwareSystem "Container Image" "quay.io/rhoai/rhoai-upgrade-helpers-rhel9 — bundles CLI + kubectl + oc + yq + Python helpers" "Distribution"
+        k8sApi = softwareSystem "Kubernetes API Server" "Cluster API for all resource operations" "External" {
+            tags "External"
+        }
 
-        k8sApi = softwareSystem "Kubernetes API Server" "Cluster control plane (v1.29+)" "External"
-        openshiftApi = softwareSystem "OpenShift API" "OpenShift extensions — ClusterVersion, Routes (v4.14+)" "External"
-        olm = softwareSystem "Operator Lifecycle Manager" "Manages operator subscriptions, CSVs, catalogs (v0.39+)" "External"
-        certManager = softwareSystem "cert-manager Operator" "Certificate management — required RHOAI dependency" "External"
-        serviceMeshV3 = softwareSystem "Service Mesh v3 Operator" "Service mesh — required for 2.x→3.x upgrade" "External"
+        openshiftApi = softwareSystem "OpenShift API" "ClusterVersion detection, Route/ImageStream access" "External" {
+            tags "External"
+        }
 
-        dsc = softwareSystem "DataScienceCluster" "Singleton CR managing RHOAI component lifecycle" "Internal ODH"
-        dsci = softwareSystem "DSCInitialization" "Singleton CR for platform initialization and namespace config" "Internal ODH"
-        notebooks = softwareSystem "Notebooks (kubeflow.org)" "Jupyter notebook workloads" "Internal ODH"
-        inferenceServices = softwareSystem "InferenceServices (kserve.io)" "ML model serving workloads" "Internal ODH"
-        dspa = softwareSystem "DataSciencePipelinesApplication" "ML pipeline definitions" "Internal ODH"
-        kueue = softwareSystem "Kueue (kueue.x-k8s.io)" "Job queuing system — ClusterQueues and LocalQueues" "Internal ODH"
-        otherWorkloads = softwareSystem "Other Workloads" "RayClusters, PyTorchJobs, GuardrailsOrchestrators, LlamaStack, LLMInferenceServices" "Internal ODH"
+        olm = softwareSystem "OLM (Operator Lifecycle Manager)" "Operator installation and lifecycle management" "External" {
+            tags "External"
+        }
 
-        github = softwareSystem "GitHub (raw.githubusercontent.com)" "Public repo for odh-gitops dependency manifests" "External"
-        filesystem = softwareSystem "Local Filesystem" "Backup YAML output and migration backup files" "External"
+        dsc = softwareSystem "DataScienceCluster" "Singleton CR managing ODH/RHOAI platform state" "Internal ODH" {
+            tags "Internal"
+        }
 
-        konflux = softwareSystem "Konflux Build System" "Hermetic multi-arch container builds with FIPS compliance" "Build"
+        dsci = softwareSystem "DSCInitialization" "Singleton CR for platform initialization and namespace config" "Internal ODH" {
+            tags "Internal"
+        }
 
-        # User interactions
-        admin -> odhCli "Runs kubectl odh lint|backup|migrate|deps|components|get" "CLI"
-        cicd -> odhCli "Executes lint checks in CI pipeline" "CLI (--json output)"
+        certManager = softwareSystem "cert-manager" "Certificate management operator" "External" {
+            tags "External"
+        }
 
-        # CLI to infrastructure
-        odhCli -> k8sApi "Queries and mutates cluster resources" "HTTPS/6443, TLS 1.2+, Bearer Token"
-        odhCli -> openshiftApi "Reads ClusterVersion, Routes" "HTTPS/6443, TLS 1.2+, Bearer Token"
-        odhCli -> olm "Reads Subscriptions/CSVs, creates Subscriptions (migrate)" "HTTPS/6443, TLS 1.2+, Bearer Token"
-        odhCli -> github "Fetches dependency manifests (optional --refresh)" "HTTPS/443, No Auth"
-        odhCli -> filesystem "Writes backup YAML files" "Local I/O"
+        serviceMesh = softwareSystem "Service Mesh v3" "Istio-based service mesh operator" "External" {
+            tags "External"
+        }
 
-        # CLI reads ODH resources
-        odhCli -> dsc "Reads version, component state; patches managementState (migrate)" "HTTPS/6443"
-        odhCli -> dsci "Reads version, namespace config, ServiceMesh state" "HTTPS/6443"
-        odhCli -> notebooks "Lists and backs up notebook workloads with dependencies" "HTTPS/6443"
-        odhCli -> inferenceServices "Lists ISVCs, checks serverless/modelmesh/accelerator conditions" "HTTPS/6443"
-        odhCli -> dspa "Lists and backs up DSPA with 9-field dependency resolution" "HTTPS/6443"
-        odhCli -> kueue "Validates data integrity (3 invariants), migration backup/verify" "HTTPS/6443"
-        odhCli -> otherWorkloads "Reads for lint checks and workload listing" "HTTPS/6443"
+        notebooks = softwareSystem "Notebooks (kubeflow.org)" "Jupyter notebook workloads" "Internal ODH" {
+            tags "Internal"
+        }
 
-        # Lint checks dependencies
-        odhCli -> certManager "Validates installation (lint dependency check)" "HTTPS/6443"
-        odhCli -> serviceMeshV3 "Validates catalog availability for upgrade (lint check)" "HTTPS/6443"
+        kserve = softwareSystem "KServe" "ML model serving (InferenceServices, ServingRuntimes)" "Internal ODH" {
+            tags "Internal"
+        }
+
+        dspa = softwareSystem "Data Science Pipelines" "Pipeline orchestration (DataSciencePipelinesApplication)" "Internal ODH" {
+            tags "Internal"
+        }
+
+        kueue = softwareSystem "Kueue" "Job queueing (ClusterQueues, LocalQueues)" "Internal ODH" {
+            tags "Internal"
+        }
+
+        ray = softwareSystem "Ray (ray.io)" "Distributed computing (RayClusters, RayJobs)" "Internal ODH" {
+            tags "Internal"
+        }
+
+        guardrails = softwareSystem "TrustyAI Guardrails" "AI safety orchestration" "Internal ODH" {
+            tags "Internal"
+        }
+
+        github = softwareSystem "GitHub (odh-gitops)" "Dependency manifest source repository" "External" {
+            tags "External"
+        }
+
+        localFs = softwareSystem "Local Filesystem" "Backup YAML output and migration backups" "External" {
+            tags "External"
+        }
+
+        # User relationships
+        admin -> odhCli "Runs CLI commands (lint, backup, migrate, get, deps, components)" "kubectl plugin"
+        cicd -> odhCli "Automated upgrade readiness checks" "CLI invocation"
 
         # Internal container relationships
-        cobraRoot -> lintEngine "Dispatches lint command"
-        cobraRoot -> backupPipeline "Dispatches backup command"
-        cobraRoot -> migrateFramework "Dispatches migrate command"
-        cobraRoot -> depsChecker "Dispatches deps command"
-        cobraRoot -> componentsMgr "Dispatches components command"
-        cobraRoot -> getMgr "Dispatches get command"
+        lintEngine -> clientWrapper "Reads cluster state" "client.Reader"
+        backupPipeline -> clientWrapper "Reads workloads and dependencies" "client.Reader"
+        migrateFramework -> clientWrapper "Reads and writes resources" "client.Reader + client.Writer"
+        getCmd -> clientWrapper "Lists resources" "client.Reader"
+        depsCmd -> clientWrapper "Checks installed operators" "client.Reader"
+        componentsCmd -> clientWrapper "Queries component health" "client.Reader + client.Writer"
 
-        lintEngine -> clientWrapper "Uses Reader interface (read-only)"
-        backupPipeline -> clientWrapper "Uses Reader interface"
-        migrateFramework -> clientWrapper "Uses full Client (read + write)"
-        depsChecker -> clientWrapper "Uses Reader interface"
-        componentsMgr -> clientWrapper "Uses full Client"
-        getMgr -> clientWrapper "Uses Reader interface"
+        lintEngine -> resourceRegistry "Resolves GVK/GVR" "Go import"
+        backupPipeline -> resourceRegistry "Resolves GVK/GVR" "Go import"
 
-        clientWrapper -> resourceTypes "Resolves GVK/GVR for API calls"
+        lintEngine -> outputEnvelope "Formats results" "Go import"
+        getCmd -> outputEnvelope "Formats output" "Go import"
 
-        lintEngine -> printerPkg "Renders diagnostic results"
-        backupPipeline -> printerPkg "Renders backup summaries"
-        depsChecker -> printerPkg "Renders dependency status"
-        componentsMgr -> printerPkg "Renders component health"
-        getMgr -> printerPkg "Renders resource listings"
+        # External system relationships
+        clientWrapper -> k8sApi "All cluster queries" "HTTPS/6443, TLS 1.2+, Bearer Token"
+        clientWrapper -> openshiftApi "ClusterVersion, Routes" "HTTPS/6443, TLS 1.2+, Bearer Token"
+        clientWrapper -> olm "Subscriptions, CSVs, PackageManifests" "HTTPS/6443, TLS 1.2+, Bearer Token"
 
-        # Build
-        konflux -> containerImage "Builds hermetic multi-arch image" "Tekton, FIPS"
+        odhCli -> dsc "Read spec/status, Patch managementState" "HTTPS/6443"
+        odhCli -> dsci "Read spec/status" "HTTPS/6443"
+        odhCli -> notebooks "List, backup with dependency resolution" "HTTPS/6443"
+        odhCli -> kserve "List InferenceServices, ServingRuntimes, lint checks" "HTTPS/6443"
+        odhCli -> dspa "List, backup with 9-field resolution" "HTTPS/6443"
+        odhCli -> kueue "List ClusterQueues/LocalQueues, migration backup/verify" "HTTPS/6443"
+        odhCli -> ray "List RayClusters/RayJobs, lint checks" "HTTPS/6443"
+        odhCli -> guardrails "List GuardrailsOrchestrators, lint checks" "HTTPS/6443"
+
+        depsCmd -> github "Fetch dependency manifests (optional --refresh)" "HTTPS/443"
+        backupPipeline -> localFs "Write backup YAML files" "Local I/O"
+        migrateFramework -> localFs "Write migration backup files" "Local I/O"
     }
 
     views {
         systemContext odhCli "SystemContext" {
             include *
-            exclude containerImage konflux
             autoLayout
         }
 
         container odhCli "Containers" {
             include *
-            exclude containerImage konflux
-            autoLayout
-        }
-
-        systemContext odhCli "BuildContext" {
-            include odhCli containerImage konflux admin cicd
             autoLayout
         }
 
         styles {
+            element "Person" {
+                shape Person
+                background #08427B
+                color #ffffff
+            }
+            element "Software System" {
+                background #1168BD
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal ODH" {
+            element "Internal" {
                 background #7ed321
                 color #ffffff
             }
-            element "Distribution" {
-                background #f5a623
-                color #ffffff
-            }
-            element "Build" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Person" {
-                shape Person
-                background #4a90e2
-                color #ffffff
-            }
-            element "Software System" {
-                background #1168bd
-                color #ffffff
-            }
             element "Container" {
-                background #438dd5
+                background #438DD5
                 color #ffffff
             }
         }

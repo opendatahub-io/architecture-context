@@ -1,55 +1,58 @@
 sequenceDiagram
+    autonumber
+
     participant User as User / kubectl
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant Webhook as odh-model-controller<br/>Webhook 9443/TCP TLS
-    participant Controller as odh-model-controller<br/>Controllers
+    participant Webhook as odh-model-controller<br/>Webhook 9443/TCP HTTPS
+    participant Controller as odh-model-controller<br/>Reconciler
     participant Route as OpenShift Route<br/>443/TCP HTTPS
-    participant NGC as NVIDIA NGC API<br/>443/TCP HTTPS
-    participant NVCR as nvcr.io Registry<br/>443/TCP HTTPS
     participant Dashboard as RHOAI Dashboard
-    participant ServingAPI as model-serving-api<br/>8443/TCP HTTPS FIPS
+    participant MSA as model-serving-api<br/>8443/TCP HTTPS (FIPS)
+    participant NGC as NVIDIA NGC API<br/>api.ngc.nvidia.com
+    participant NVCR as nvcr.io Registry<br/>443/TCP HTTPS
     participant ModelReg as Model Registry<br/>HTTP/HTTPS
 
-    Note over User, ModelReg: Flow 1: InferenceService Deployment
+    rect rgb(230, 245, 255)
+        Note over User,Route: Flow 1: InferenceService Deployment
+        User->>K8sAPI: POST InferenceService CR<br/>Auth: Bearer Token
+        K8sAPI->>Webhook: Admission (mutating + validating)<br/>TLS, API server cert
+        Webhook-->>K8sAPI: Allowed (name ≤53 chars, namespace OK)
+        K8sAPI-->>User: InferenceService created
+        Controller->>K8sAPI: Watch event received
+        Controller->>K8sAPI: Create Route, Service,<br/>ServiceMonitor, KEDA TriggerAuth,<br/>ClusterRoleBinding<br/>Auth: ServiceAccount token
+        K8sAPI-->>Controller: Resources created
+        Note over Route: Per-ISVC Route exposed<br/>{isvc}.{ns}.{cluster-domain}
+    end
 
-    User->>K8sAPI: POST InferenceService CR<br/>Auth: Bearer Token
-    K8sAPI->>Webhook: Admission Webhook (mutate/validate)<br/>TLS, API server cert
-    Webhook-->>K8sAPI: Allowed (name ≤53 chars)
-    K8sAPI-->>User: ISVC Created
-    K8sAPI->>Controller: Watch event: ISVC created
-    Controller->>K8sAPI: Create Route, Service,<br/>ServiceMonitor, KEDA TriggerAuth<br/>Auth: ServiceAccount token
-    Controller->>K8sAPI: Create ClusterRoleBinding<br/>(auth-delegator for ISVC SA)
-    Note right of Controller: DeltaProcessor: compute desired → diff → create/update/delete
+    rect rgb(255, 243, 224)
+        Note over User,NVCR: Flow 2: NIM Account Provisioning
+        User->>K8sAPI: POST Account CR (nim.opendatahub.io/v1)<br/>Auth: Bearer Token
+        K8sAPI->>Webhook: Validating admission<br/>(singleton per namespace)
+        Webhook-->>K8sAPI: Allowed
+        K8sAPI-->>User: Account created
+        Controller->>K8sAPI: Watch event received
+        Controller->>NGC: Validate API key<br/>HTTPS/443, NGC API Key (Bearer)
+        NGC-->>Controller: Key valid + model data
+        Controller->>NVCR: Get pull token<br/>HTTPS/443, NGC API Key (Basic)
+        NVCR-->>Controller: Docker auth token
+        Controller->>K8sAPI: Create Secret (ngc-secret),<br/>ConfigMap, OpenShift Template<br/>Auth: ServiceAccount token
+        K8sAPI-->>Controller: Resources created
+    end
 
-    Note over User, ModelReg: Flow 2: NIM Account Provisioning
+    rect rgb(232, 245, 233)
+        Note over Dashboard,MSA: Flow 3: Gateway Discovery (Dashboard)
+        Dashboard->>MSA: GET /api/v1/gateways<br/>HTTPS/443, Bearer Token (user)
+        MSA->>K8sAPI: SelfSubjectAccessReview<br/>(user can create llminferenceservices?)<br/>Auth: User Bearer Token
+        K8sAPI-->>MSA: Access review result
+        MSA->>K8sAPI: List Gateways<br/>Auth: ServiceAccount token
+        K8sAPI-->>MSA: Filtered gateway list
+        MSA-->>Dashboard: JSON response<br/>(RBAC-filtered gateways)
+    end
 
-    User->>K8sAPI: POST Account CR (nim.opendatahub.io)<br/>Auth: Bearer Token
-    K8sAPI->>Webhook: Validate: singleton per namespace
-    Webhook-->>K8sAPI: Allowed
-    K8sAPI->>Controller: Watch event: Account created
-    Controller->>NGC: Validate API Key<br/>Auth: NGC API Key (Bearer)
-    NGC-->>Controller: Validation result + model data
-    Controller->>NVCR: Get pull token<br/>Auth: NGC API Key (Basic)
-    NVCR-->>Controller: Docker auth token
-    Controller->>K8sAPI: Create pull Secret, ConfigMap,<br/>ServingRuntime Template<br/>Auth: ServiceAccount token
-
-    Note over User, ModelReg: Flow 3: Gateway Discovery (Dashboard)
-
-    Dashboard->>ServingAPI: GET /api/v1/gateways<br/>Auth: User Bearer Token<br/>HTTPS TLS 1.2+ (FIPS ciphers)
-    ServingAPI->>K8sAPI: SelfSubjectAccessReview<br/>(check user can create llminferenceservices)<br/>Auth: User Bearer Token
-    K8sAPI-->>ServingAPI: Allowed/Denied per namespace
-    ServingAPI->>K8sAPI: List Gateways<br/>(filtered by label + RBAC)<br/>Auth: ServiceAccount token
-    K8sAPI-->>ServingAPI: Gateway list
-    ServingAPI-->>Dashboard: JSON: filtered gateways
-
-    Note over User, ModelReg: Flow 4: LLM Auth Policy Management
-
-    K8sAPI->>Controller: Watch event: LLMInferenceService created
-    Controller->>K8sAPI: Create AuthPolicy for HTTPRoute<br/>Auth: ServiceAccount token
-    Controller->>K8sAPI: Create EnvoyFilter for Gateway<br/>(Authorino TLS bootstrap)
-    Note right of Controller: Gateway-level + per-route auth<br/>managed by separate controllers
-
-    Note over User, ModelReg: Flow 5: Model Registry Sync (Optional)
-
-    Controller->>ModelReg: Sync ISVC metadata<br/>(labels, model IDs)<br/>Auth: Bearer Token
-    ModelReg-->>Controller: Sync result
+    rect rgb(243, 229, 245)
+        Note over Controller,K8sAPI: Flow 4: LLM Auth Policy Management
+        Note over Controller: LLMInferenceService created by KServe
+        Controller->>K8sAPI: Create AuthPolicy for HTTPRoute<br/>Auth: ServiceAccount token
+        Controller->>K8sAPI: Create EnvoyFilter for Gateway<br/>(Authorino TLS bootstrap)<br/>Auth: ServiceAccount token
+        Note over Controller: Kuadrant/Authorino enforce<br/>auth on traffic via mTLS
+    end

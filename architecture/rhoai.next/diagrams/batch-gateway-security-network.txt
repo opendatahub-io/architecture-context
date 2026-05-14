@@ -1,183 +1,166 @@
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                        │
-│                                                                              │
-│  [External Client]                                                           │
-│         │                                                                    │
-│         │ Port: Configurable (service.port)                                  │
-│         │ Protocol: HTTP or HTTPS                                            │
-│         │ Encryption: TLS 1.2+ (optional, cert/key from secret or           │
-│         │             cert-manager)                                           │
-│         │ Auth: Tenant header (X-MaaS-Username, configurable)               │
-│         │       No authn — relies on upstream auth proxy                     │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (Optional - Gateway API)                                            │
-│                                                                              │
-│  [HTTPRoute - Gateway API]                                                   │
-│  - Type: HTTPRoute CRD                                                       │
-│  - Paths: /v1/batches, /v1/files (exact path prefix match)                  │
-│  - Parent: Gateway reference (parentRefs)                                    │
-│  - TLS: Depends on Gateway configuration                                     │
-│  - Enabled: Optional (apiserver.httpRoute.enabled)                          │
-│         │                                                                    │
-│         │ Port: service.port                                                 │
-│         │ Protocol: HTTP/HTTPS                                               │
-│         │ Encryption: Depends on Gateway                                     │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  CLUSTER NETWORK (Internal)                                                  │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │  batch-gateway-apiserver                                            │     │
-│  │  - Service: {release}-batch-gateway-apiserver (ClusterIP)           │     │
-│  │  - Port: Configurable (service.port) → container "http"            │     │
-│  │  - Observability Port: 8081/TCP → container "observability"        │     │
-│  │  - ServiceAccount: {release}-batch-gateway-apiserver               │     │
-│  │  - Image: batch-gateway-apiserver                                   │     │
-│  │  - TLS: Optional (ssl_cert_file / ssl_key_file)                    │     │
-│  │  - TLS Min Version: TLS 1.2                                        │     │
-│  │  - Slowloris Protection: read_header_timeout_seconds=10            │     │
-│  │  - Max Upload: 200MB / 50K lines                                   │     │
-│  │  - Security Headers: X-Content-Type-Options, X-Frame-Options,      │     │
-│  │    Content-Security-Policy, Strict-Transport-Security,              │     │
-│  │    X-XSS-Protection, Referrer-Policy                               │     │
-│  └─────────────────────────────────────────────────────────────────────┘     │
-│         │                                                                    │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │  batch-gateway-processor                                            │     │
-│  │  - No ClusterIP Service (worker, no inbound traffic)               │     │
-│  │  - Observability: configurable addr (metrics, health, ready)       │     │
-│  │  - ServiceAccount: {release}-batch-gateway-processor               │     │
-│  │  - Image: batch-gateway-processor                                   │     │
-│  │  - Global Concurrency: 100 (default)                               │     │
-│  │  - Per-Model Concurrency: 10 (default)                             │     │
-│  │  - Graceful Shutdown: 30s timeout                                   │     │
-│  │  - Crash Recovery: scans workdir at startup                        │     │
-│  └─────────────────────────────────────────────────────────────────────┘     │
-│         │                                                                    │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │  batch-gateway-gc                                                   │     │
-│  │  - No network listener (background job only)                       │     │
-│  │  - ServiceAccount: {release}-batch-gateway-gc                      │     │
-│  │  - Image: batch-gateway-gc                                          │     │
-│  │  - Max Concurrency: 10 deletions                                   │     │
-│  └─────────────────────────────────────────────────────────────────────┘     │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  EGRESS (Backend Services)                                                   │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │  [PostgreSQL]                                                       │     │
-│  │  - Port: 5432/TCP                                                   │     │
-│  │  - Protocol: TCP (pgx v5 connection pool)                          │     │
-│  │  - Encryption: TLS (configurable)                                   │     │
-│  │  - Auth: Connection URL (username/password from secret)            │     │
-│  │  - Purpose: Primary metadata store (batch_items, file_items)       │     │
-│  │  - Used by: apiserver, processor, gc                               │     │
-│  └─────────────────────────────────────────────────────────────────────┘     │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │  [Redis / Valkey]                                                   │     │
-│  │  - Port: 6379/TCP                                                   │     │
-│  │  - Protocol: TCP (go-redis v9)                                     │     │
-│  │  - Encryption: TLS / mTLS (configurable, client certs supported)   │     │
-│  │  - Auth: Connection URL from secret                                │     │
-│  │  - Purpose: Priority queue (sorted sets), event channels           │     │
-│  │    (lists with BLMPop), status store; optional metadata backend    │     │
-│  │  - Atomic ops: Lua scripts for complex queries                     │     │
-│  │  - Used by: apiserver, processor, gc (when Redis backend)          │     │
-│  └─────────────────────────────────────────────────────────────────────┘     │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │  [S3-Compatible Storage (MinIO, AWS S3)]                            │     │
-│  │  - Port: 443/TCP                                                    │     │
-│  │  - Protocol: HTTPS (AWS SDK v2)                                    │     │
-│  │  - Encryption: TLS                                                  │     │
-│  │  - Auth: AWS credentials (access key / secret key from secret)     │     │
-│  │  - Purpose: File content storage (input/output/error JSONL)        │     │
-│  │  - Used by: apiserver, processor, gc                               │     │
-│  │  - Alternative: Filesystem via PVC (no network egress)             │     │
-│  └─────────────────────────────────────────────────────────────────────┘     │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │  [LLM Inference Gateway (llm-d / vLLM)]                            │     │
-│  │  - Port: Configurable                                               │     │
-│  │  - Protocol: HTTP/HTTPS                                             │     │
-│  │  - Encryption: TLS 1.2+ (configurable, CA cert, client certs,     │     │
-│  │    InsecureSkipVerify option for testing only, default false)       │     │
-│  │  - Auth: Bearer token (API key from secret or file)                │     │
-│  │  - Purpose: Forward inference requests for batch processing        │     │
-│  │  - Routing: Global gateway OR per-model gateways                   │     │
-│  │  - Retry: Exponential backoff with jitter                          │     │
-│  │  - Used by: processor only                                         │     │
-│  └─────────────────────────────────────────────────────────────────────┘     │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  OBSERVABILITY (Optional)                                                    │
-│                                                                              │
-│  [OpenTelemetry Collector]                                                   │
-│  - Port: 4317/TCP                                                            │
-│  - Protocol: OTLP/gRPC                                                       │
-│  - Encryption: Plaintext or TLS (configurable)                              │
-│  - Purpose: Distributed tracing from all three components                   │
-│                                                                              │
-│  [Prometheus]                                                                │
-│  - Scrape: 8081/TCP (apiserver via ServiceMonitor)                          │
-│  - Scrape: processor addr (via PodMonitor)                                  │
-│  - Protocol: HTTP                                                            │
-│  - Encryption: None                                                          │
-│  - PrometheusRule alerts: queue wait, failure rate, expiry, saturation       │
-│                                                                              │
-│  [Grafana]                                                                   │
-│  - Pre-built dashboards via ConfigMap                                        │
-│  - apiserver.json + processor.json                                           │
-│                                                                              │
-│  [cert-manager]                                                              │
-│  - Certificate CRD for apiserver TLS (optional)                             │
-│  - Auto-rotation supported                                                   │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: Configurable (service.port)                              │
+│         │ Protocol: HTTP or HTTPS                                        │
+│         │ Encryption: TLS 1.2+ (optional, cert/key file-based)           │
+│         │ Auth: Tenant header (X-MaaS-Username) — no authn,              │
+│         │       relies on upstream auth proxy                            │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Optional Gateway API)                                         │
+│                                                                          │
+│  [Gateway API HTTPRoute]                                                 │
+│  - Type: HTTPRoute (Gateway API)                                         │
+│  - Matches: /v1/batches, /v1/files                                       │
+│  - TLS: Depends on parent Gateway configuration                         │
+│  - Enabled: Optional (apiserver.httpRoute.enabled)                       │
+│         │                                                                │
+│         │ Port: service.port                                             │
+│         │ Protocol: HTTP/HTTPS                                           │
+│         │ Encryption: Depends on Gateway                                 │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION LAYER (Cluster Internal)                                   │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  batch-gateway-apiserver                                         │    │
+│  │  - Service: ClusterIP                                             │    │
+│  │  - Port: Configurable (API) + 8081/TCP (observability)           │    │
+│  │  - ServiceAccount: {release}-batch-gateway-apiserver             │    │
+│  │  - TLS: Optional (ssl_cert_file / ssl_key_file)                  │    │
+│  │  - cert-manager: Optional Certificate CRD                        │    │
+│  │  - Security Headers: X-Content-Type-Options, X-Frame-Options     │    │
+│  │  - Timeouts: read_header=10s, read=900s, write=120s, idle=90s    │    │
+│  │  - Slowloris protection: read_header_timeout_seconds=10          │    │
+│  └─────────────────────────┬───────────────────────────────────────┘    │
+│                             │                                            │
+│  ┌─────────────────────────┼───────────────────────────────────────┐    │
+│  │  batch-gateway-processor │                                       │    │
+│  │  - No inbound Service (worker, no ingress)                       │    │
+│  │  - Observability: configurable addr (health/ready/metrics)       │    │
+│  │  - ServiceAccount: {release}-batch-gateway-processor             │    │
+│  │  - Concurrency: global=100, per-model=10 (configurable)          │    │
+│  │  - Graceful shutdown: 30s timeout for in-flight jobs             │    │
+│  │  - Crash recovery: workdir scan at startup                       │    │
+│  └─────────────────────────┬───────────────────────────────────────┘    │
+│                             │                                            │
+│  ┌─────────────────────────┼───────────────────────────────────────┐    │
+│  │  batch-gateway-gc        │                                       │    │
+│  │  - No network listener (background service)                      │    │
+│  │  - ServiceAccount: {release}-batch-gateway-gc                    │    │
+│  │  - Periodic scan interval (configurable)                         │    │
+│  │  - Max concurrency: 10 deletion tasks                            │    │
+│  └─────────────────────────┼───────────────────────────────────────┘    │
+│                             │                                            │
+├─────────────────────────────┼───────────────────────────────────────────┤
+│  EGRESS — DATA STORES       │                                            │
+│                             │                                            │
+│  [PostgreSQL]  ◄────────────┤                                            │
+│  - Port: 5432/TCP           │                                            │
+│  - Protocol: TCP            │                                            │
+│  - Encryption: TLS (configurable via connection URL)                    │
+│  - Auth: Connection URL from batch-gateway-secrets                      │
+│  - Purpose: Batch and file metadata (batch_items, file_items tables)    │
+│  - Client: pgx v5 with connection pooling                               │
+│                             │                                            │
+│  [Redis / Valkey]  ◄────────┤                                            │
+│  - Port: 6379/TCP           │                                            │
+│  - Protocol: TCP            │                                            │
+│  - Encryption: TLS / mTLS (configurable)                                │
+│  - Auth: Connection URL from batch-gateway-secrets                      │
+│  - Purpose: Priority queue (sorted sets), event channels (BLMPop),      │
+│             status store, optional metadata backend                      │
+│  - Client: go-redis v9                                                   │
+│                             │                                            │
+├─────────────────────────────┼───────────────────────────────────────────┤
+│  EGRESS — FILE STORAGE      │                                            │
+│                             │                                            │
+│  [S3-Compatible Storage]  ◄─┤  (when fileClient.type=s3)                │
+│  - Port: 443/TCP            │                                            │
+│  - Protocol: HTTPS          │                                            │
+│  - Encryption: TLS          │                                            │
+│  - Auth: Access key + secret key from batch-gateway-secrets             │
+│  - Client: AWS SDK v2                                                    │
+│  - Purpose: Input/output/error JSONL file storage                       │
+│                             │                                            │
+│  [Filesystem PVC]  ◄────────┘  (when fileClient.type=fs)                │
+│  - Protocol: Local I/O                                                   │
+│  - Auth: Filesystem permissions                                          │
+│  - Purpose: Alternative file storage via PersistentVolumeClaim          │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS — INFERENCE                                                      │
+│                                                                          │
+│  [LLM Inference Gateway (global)]  ◄── processor                        │
+│  - Port: Configurable                                                    │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Encryption: TLS 1.2+ (configurable, CA cert, client certs supported) │
+│  - Auth: Bearer token (API key from secret or file)                     │
+│  - Purpose: Forward batch inference requests                             │
+│  - Client: HTTP client with exponential backoff retries                  │
+│  - Risk: InsecureSkipVerify option available (default false)             │
+│                                                                          │
+│  [LLM Inference Gateway (per-model)]  ◄── processor                     │
+│  - Port: Configurable                                                    │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Encryption: TLS 1.2+ (configurable)                                   │
+│  - Auth: Bearer token (API key)                                          │
+│  - Purpose: Model-specific inference routing                             │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS — OBSERVABILITY                                                  │
+│                                                                          │
+│  [OpenTelemetry Collector]  ◄── all three components                     │
+│  - Port: 4317/TCP                                                        │
+│  - Protocol: OTLP/gRPC                                                   │
+│  - Encryption: Plaintext or TLS (configurable)                           │
+│  - Auth: None                                                            │
+│  - Purpose: Distributed trace export                                     │
+│                                                                          │
+│  [Prometheus]  ──► scrapes apiserver (:8081) and processor               │
+│  - Port: 8081/TCP (apiserver), processor addr                            │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: None                                                      │
+│  - Auth: None                                                            │
+│  - Collection: ServiceMonitor (apiserver), PodMonitor (processor)        │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- No RBAC resources defined (no ClusterRoles, no RoleBindings)
+- No ClusterRoles or RoleBindings defined
 - ServiceAccounts used for pod identity only:
   - {release}-batch-gateway-apiserver
   - {release}-batch-gateway-processor
   - {release}-batch-gateway-gc
-
-Authentication & Authorization:
-- Endpoint /v1/batches/*: Tenant header (X-MaaS-Username, configurable)
-  - Enforcement: apiserver middleware (request_middleware.go)
-  - Policy: Tenant-scoped data isolation; no authn — relies on upstream auth proxy
-- Endpoint /v1/files/*: Tenant header (X-MaaS-Username, configurable)
-  - Enforcement: apiserver middleware (request_middleware.go)
-  - Policy: Tenant-scoped data isolation; no authn — relies on upstream auth proxy
-- Endpoint /health, /ready, /metrics: Unauthenticated
-- Inference gateway: Bearer token (API key from file/secret)
+- No Kubernetes API server access required (no CRDs, no watches)
+- Authorization is application-level only (tenant header isolation)
 
 Secrets:
-- batch-gateway-secrets (Opaque)
-  - redis-url: Redis/Valkey connection URL
-  - postgresql-url: PostgreSQL connection URL
-  - inference-api-key: Bearer token for inference gateway
-  - s3-secret-access-key: AWS secret access key for S3
-  - Provisioned by: Manual (kubectl create secret)
-  - Auto-Rotate: No
+- batch-gateway-secrets (Opaque) — redis-url, postgresql-url, inference-api-key,
+  s3-secret-access-key. Provisioned manually. No auto-rotation.
+- {release}-batch-gateway-apiserver-tls (kubernetes.io/tls) — TLS cert/key for apiserver.
+  Provisioned by cert-manager (when enabled) or manually. Auto-rotates with cert-manager.
 
-- {release}-batch-gateway-apiserver-tls (kubernetes.io/tls)
-  - TLS certificate and key for apiserver HTTPS
-  - Provisioned by: cert-manager (when enabled) or manual
-  - Auto-Rotate: Yes (cert-manager) / No (manual)
+Authentication Model:
+- batch-gateway does NOT perform authentication
+- Tenant identity extracted from configurable HTTP header (default: X-MaaS-Username)
+- Relies on upstream auth proxy (kube-rbac-proxy, external auth service) to validate
+  identity and inject tenant header
+- All data queries scoped by tenant ID
+- File storage paths include SHA256-derived tenant-scoped folder names
 
-FIPS Compliance:
-- Build: CGO_ENABLED=0 (static linking — will FAIL check-payload FIPS validation)
-- Dockerfiles expose CGO_ENABLED as build ARG for downstream override
-- Runtime: stdlib crypto/tls only, MinVersion TLS 1.2
-- Risk: InsecureSkipVerify option available for inference TLS (testing only, default false)
-- No MD5/RC4/DES usage detected
+TLS Configuration:
+- Apiserver: Optional TLS with tls.Config{MinVersion: tls.VersionTLS12}
+- Inference client: Configurable TLS with custom CA bundle, client certs, InsecureSkipVerify
+- Redis: Configurable TLS/mTLS support
+- PostgreSQL: TLS configurable via connection URL parameters
+- All crypto: stdlib crypto/tls only (no third-party crypto libraries)
 
-Multi-Tenancy:
-- Tenant isolation via HTTP header extraction (default: X-MaaS-Username)
-- All DB queries scoped by tenant ID
-- File storage paths use SHA256-derived folders incorporating tenant ID
-- No authentication performed — upstream auth proxy expected
+FIPS Status:
+- Currently builds with CGO_ENABLED=0 (static linking — would fail check-payload)
+- Dockerfiles expose CGO_ENABLED as build ARG for downstream override to CGO_ENABLED=1
+- No non-FIPS crypto dependencies detected
+- Planned migration from ubi-micro to distroless base images

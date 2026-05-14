@@ -1,40 +1,48 @@
 workspace {
     model {
-        dataScienceAdmin = person "Data Science Admin" "Manages AI model catalog and platform configuration"
+        platformEngineer = person "Platform Engineer" "Maintains RHOAI platform, runs CI/CD pipelines"
+        dataScientist = person "Data Scientist" "Browses model catalog via RHOAI Dashboard"
 
-        modelMetadataCollection = softwareSystem "Model Metadata Collection" "Aggregates, enriches, and catalogs AI model and MCP server metadata from registries and HuggingFace" {
-            modelExtractor = container "model-extractor" "Go CLI that processes model indexes, fetches registry/HuggingFace metadata, enriches model cards, and generates catalog YAML files" "Go CLI (build-time only)"
+        modelMetadata = softwareSystem "Model Metadata Collection" "Aggregates, enriches, and catalogs AI model and MCP server metadata from container registries and HuggingFace APIs" {
+            modelExtractor = container "model-extractor" "Go CLI pipeline that processes model indexes, fetches metadata from registries/HuggingFace, and generates catalog YAML files" "Go CLI (build-time only)"
             metadataReport = container "metadata-report" "Generates metadata completeness reports from catalog output" "Go CLI (build-time only)"
-            dataContainer = container "odh-model-metadata-collection" "Minimal data-only container (UBI9-minimal) that bundles pre-generated catalog YAML files for consumption by platform components" "Data Container"
+            dataContainer = container "odh-model-metadata-collection" "Minimal data-only container (UBI9-minimal) that bundles pre-generated catalog YAML files; runs sleep infinity" "Data Container"
         }
 
-        huggingface = softwareSystem "HuggingFace API" "Model metadata, README content, collection discovery, validated model lists" "External"
-        registryRedHat = softwareSystem "registry.redhat.io" "OCI container registry for Red Hat model images" "External"
-        registryAccess = softwareSystem "registry.access.redhat.com" "OCI container registry for MCP server images" "External"
-        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "Web UI that renders model catalog for users" "Internal RHOAI"
-        rhodsOperator = softwareSystem "rhods-operator" "Platform operator that orchestrates component deployment" "Internal RHOAI"
-        konflux = softwareSystem "Konflux" "RHOAI CI/CD pipeline with hermetic builds" "Internal Build"
-        githubActions = softwareSystem "GitHub Actions" "ODH upstream CI/CD pipeline" "Internal Build"
-        quay = softwareSystem "Quay.io" "Container image registry for built images" "External"
+        huggingFace = softwareSystem "HuggingFace API" "AI model hosting and metadata API" "External"
+        rhRegistry = softwareSystem "registry.redhat.io" "Red Hat OCI container registry for model images" "External"
+        accessRegistry = softwareSystem "registry.access.redhat.com" "Red Hat OCI container registry for MCP server images" "External"
+        quayRegistry = softwareSystem "quay.io" "Container image registry for built images" "External"
+        konflux = softwareSystem "Konflux" "RHOAI CI/CD pipeline with hermetic builds" "External"
+        githubActions = softwareSystem "GitHub Actions" "ODH upstream CI/CD pipeline" "External"
 
-        modelExtractor -> huggingface "Fetches model details, README, collections" "HTTPS/443, Bearer Token (optional)"
-        modelExtractor -> registryRedHat "Fetches OCI image manifests, architectures, timestamps" "HTTPS/443, Registry API v2"
-        modelExtractor -> registryAccess "Fetches MCP server container image metadata" "HTTPS/443, Registry API v2"
-        modelExtractor -> dataContainer "Generates catalog YAML files" "File I/O (build-time)"
-        metadataReport -> dataContainer "Analyzes catalog completeness" "File I/O"
-        rhoaiDashboard -> dataContainer "Reads catalog YAML files" "Volume mount (/app/data)"
-        rhodsOperator -> dataContainer "Deploys and manages lifecycle" "Kubernetes API"
-        konflux -> quay "Pushes container image (RHOAI)" "HTTPS/443, Quay credentials"
-        githubActions -> quay "Pushes container image (ODH)" "HTTPS/443, Quay credentials"
+        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "Web UI for Red Hat OpenShift AI platform" "Internal RHOAI"
+        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator that manages component lifecycle" "Internal RHOAI"
+
+        # Build-time relationships
+        platformEngineer -> konflux "Triggers builds"
+        konflux -> modelExtractor "Executes during build pipeline"
+        modelExtractor -> huggingFace "Fetches model details, README, collections" "HTTPS/443, Bearer Token (optional)"
+        modelExtractor -> rhRegistry "Fetches OCI image manifests, architectures" "HTTPS/443, No Auth"
+        modelExtractor -> accessRegistry "Fetches MCP server container metadata" "HTTPS/443, No Auth"
+        modelExtractor -> dataContainer "Generates catalog YAML files bundled into" "File I/O"
+        metadataReport -> dataContainer "Analyzes catalog YAML for completeness" "File I/O"
+        konflux -> quayRegistry "Pushes built container image" "HTTPS/443"
+        githubActions -> quayRegistry "Pushes upstream container image" "HTTPS/443"
+
+        # Runtime relationships
+        rhodsOperator -> dataContainer "Deploys alongside consumers"
+        dataContainer -> rhoaiDashboard "Provides catalog YAML files via volume mount" "Shared filesystem"
+        dataScientist -> rhoaiDashboard "Browses model catalog"
     }
 
     views {
-        systemContext modelMetadataCollection "SystemContext" {
+        systemContext modelMetadata "SystemContext" {
             include *
             autoLayout
         }
 
-        container modelMetadataCollection "Containers" {
+        container modelMetadata "Containers" {
             include *
             autoLayout
         }
@@ -48,22 +56,18 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal Build" {
-                background #f5a623
+            element "Person" {
+                shape Person
+                background #4a90e2
                 color #ffffff
             }
             element "Software System" {
-                background #4a90e2
+                background #1168bd
                 color #ffffff
             }
             element "Container" {
-                background #4a90e2
+                background #438dd5
                 color #ffffff
-            }
-            element "Person" {
-                background #08427b
-                color #ffffff
-                shape Person
             }
         }
     }

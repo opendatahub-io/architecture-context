@@ -1,66 +1,62 @@
 sequenceDiagram
-    autonumber
-
-    participant User as User / Dashboard
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant ODHWebhook as ODH Webhook<br/>8443/TCP HTTPS
+    participant User as User / Data Scientist
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant ODHWebhook as ODH Webhook<br/>8443/TCP HTTPS (service CA)
     participant ODHCtrl as ODH Notebook Controller
-    participant NBCtrl as Notebook Controller
-    participant Gateway as Gateway<br/>443/TCP HTTPS
-    participant KRBP as kube-rbac-proxy<br/>8443/TCP HTTPS
-    participant Notebook as Notebook Pod<br/>8888/TCP HTTP
+    participant NotebookCtrl as Notebook Controller
+    participant Gateway as Gateway (data-science-gateway)<br/>443/TCP HTTPS TLS 1.2+
+    participant KRBP as kube-rbac-proxy Sidecar<br/>8443/TCP HTTPS TLS
+    participant Notebook as Notebook Container<br/>8888/TCP HTTP
+    participant DSPA as DSPA CR / S3 Secrets
 
-    rect rgb(230, 245, 255)
-        Note over User,Notebook: Flow 1: Notebook Creation (Auth-Enabled)
-        User->>K8sAPI: POST Notebook CR<br/>Auth: Bearer Token
-        K8sAPI->>ODHWebhook: Mutating admission<br/>TLS (service CA)
-        Note right of ODHWebhook: Injects kube-rbac-proxy sidecar,<br/>resolves ImageStream images,<br/>mounts CA bundles, proxy env,<br/>syncs DSPA/Feast config
-        ODHWebhook-->>K8sAPI: Mutated Notebook
-        K8sAPI->>ODHWebhook: Validating admission<br/>TLS (service CA)
-        ODHWebhook-->>K8sAPI: Validated
-        K8sAPI-->>User: Notebook created
+    Note over User, Notebook: Flow 1: Notebook Creation and Access (Auth-Enabled)
 
-        NBCtrl->>K8sAPI: Watch: Notebook CR changed
-        NBCtrl->>K8sAPI: Create StatefulSet<br/>SA Token auth
-        NBCtrl->>K8sAPI: Create Service ({name}:80→8888)<br/>SA Token auth
+    User->>K8sAPI: POST Notebook CR<br/>Auth: Bearer Token
+    K8sAPI->>ODHWebhook: /mutate-notebook-v1<br/>TLS client cert
+    Note right of ODHWebhook: Injects kube-rbac-proxy sidecar,<br/>resolves ImageStream images,<br/>mounts CA bundles & pipeline config,<br/>injects proxy/MLflow env vars
 
-        ODHCtrl->>K8sAPI: Watch: Notebook CR changed
-        ODHCtrl->>K8sAPI: Create HTTPRoute (nb-{ns}-{name})<br/>SA Token auth
-        ODHCtrl->>K8sAPI: Create ReferenceGrant<br/>SA Token auth
-        ODHCtrl->>K8sAPI: Create NetworkPolicy<br/>SA Token auth
-        ODHCtrl->>K8sAPI: Create kube-rbac-proxy Service,<br/>ConfigMap, TLS Secret, CRB
+    ODHWebhook-->>K8sAPI: Mutated Notebook CR
+
+    par ODH Controller Reconciliation
+        ODHCtrl->>K8sAPI: Create HTTPRoute<br/>(path: /notebook/{ns}/{name})
+        ODHCtrl->>K8sAPI: Create ReferenceGrant<br/>(cross-namespace backend ref)
+        ODHCtrl->>K8sAPI: Create NetworkPolicy<br/>(allow 8888 + 8443)
+        ODHCtrl->>K8sAPI: Create kube-rbac-proxy<br/>Service, ConfigMap, TLS Secret,<br/>ClusterRoleBinding
+    and Notebook Controller Reconciliation
+        NotebookCtrl->>K8sAPI: Create StatefulSet<br/>(notebook pod)
+        NotebookCtrl->>K8sAPI: Create ClusterIP Service<br/>(80 → 8888)
     end
 
-    rect rgb(255, 245, 230)
-        Note over User,Notebook: Flow 1 (cont): User Accesses Notebook
-        User->>Gateway: GET /notebook/{ns}/{name}<br/>HTTPS TLS 1.2+
-        Gateway->>KRBP: Forward via HTTPRoute<br/>HTTPS TLS
-        KRBP->>K8sAPI: TokenReview<br/>HTTPS TLS 1.2+
-        K8sAPI-->>KRBP: Token valid
-        KRBP->>K8sAPI: SubjectAccessReview<br/>(get notebooks in {ns})
-        K8sAPI-->>KRBP: Access granted
-        KRBP->>Notebook: Proxy to 8888<br/>HTTP (localhost)
-        Notebook-->>KRBP: Response
-        KRBP-->>Gateway: Response
-        Gateway-->>User: Response
+    Note over User, Notebook: User Accesses Notebook
+
+    User->>Gateway: GET /notebook/{ns}/{name}<br/>HTTPS/443, TLS 1.2+
+    Gateway->>KRBP: Forward request<br/>HTTPS/8443, TLS
+    KRBP->>K8sAPI: TokenReview<br/>(validate user token)
+    K8sAPI-->>KRBP: Token valid
+    KRBP->>K8sAPI: SubjectAccessReview<br/>(check 'get' on 'notebooks')
+    K8sAPI-->>KRBP: Access granted
+    KRBP->>Notebook: Forward to notebook<br/>HTTP/8888 (localhost)
+    Notebook-->>KRBP: Response
+    KRBP-->>Gateway: Response
+    Gateway-->>User: Notebook UI
+
+    Note over User, Notebook: Flow 2: Notebook Idle Culling
+
+    loop Every IDLENESS_CHECK_PERIOD (default: 1 min)
+        NotebookCtrl->>Notebook: GET /api/kernels<br/>HTTP/8888 (in-cluster)
+        Notebook-->>NotebookCtrl: Kernel list
+        NotebookCtrl->>Notebook: GET /api/terminals<br/>HTTP/8888 (in-cluster)
+        Notebook-->>NotebookCtrl: Terminal list
     end
 
-    rect rgb(230, 255, 230)
-        Note over User,Notebook: Flow 2: Idle Notebook Culling
-        loop Every IDLENESS_CHECK_PERIOD (default: 1 min)
-            NBCtrl->>Notebook: GET /api/kernels<br/>HTTP 8888/TCP
-            Notebook-->>NBCtrl: Kernel list (activity timestamps)
-            NBCtrl->>Notebook: GET /api/terminals<br/>HTTP 8888/TCP
-            Notebook-->>NBCtrl: Terminal list
-        end
-        Note right of NBCtrl: If idle > CULL_IDLE_TIME (default: 1440 min)
-        NBCtrl->>K8sAPI: Patch Notebook annotation:<br/>kubeflow-resource-stopped
-        NBCtrl->>K8sAPI: Scale StatefulSet replicas=0
-    end
+    Note right of NotebookCtrl: If idle > CULL_IDLE_TIME (default: 1440 min)
+    NotebookCtrl->>K8sAPI: Patch Notebook annotation<br/>kubeflow-resource-stopped
+    NotebookCtrl->>K8sAPI: Scale StatefulSet to 0
 
-    rect rgb(255, 230, 255)
-        Note over User,Notebook: Flow 3: DSPA Pipeline Secret Injection
-        ODHCtrl->>K8sAPI: Read DSPA CR (named "dspa")<br/>in notebook namespace
-        ODHCtrl->>K8sAPI: Read S3 credential Secret<br/>(from DSPA spec)
-        ODHCtrl->>K8sAPI: Create/Update ds-pipeline-config Secret<br/>(Elyra pipeline runtime config)
-    end
+    Note over User, Notebook: Flow 3: DSPA Pipeline Secret Injection
+
+    ODHCtrl->>K8sAPI: Read DSPA CR<br/>(named 'dspa' in notebook ns)
+    K8sAPI-->>ODHCtrl: DSPA spec (S3 config)
+    ODHCtrl->>K8sAPI: Read S3 credential Secret<br/>(from DSPA spec)
+    K8sAPI-->>ODHCtrl: S3 credentials
+    ODHCtrl->>K8sAPI: Create/Update ds-pipeline-config Secret<br/>(Elyra pipeline runtime config)

@@ -2,93 +2,94 @@ graph TB
     subgraph MaaS["Models as a Service Platform"]
         direction TB
 
-        subgraph ControlPlane["Control Plane (opendatahub namespace)"]
-            Controller["maas-controller<br/>Go Operator<br/>8080/TCP metrics<br/>8081/TCP health"]
-            API["maas-api<br/>Go HTTP Service (Gin)<br/>8080/TCP HTTP | 8443/TCP HTTPS"]
-            CronJob["API Key Cleanup<br/>CronJob"]
+        subgraph Controller["maas-controller (Go Operator)"]
+            TenantReconciler["Tenant Reconciler<br/>Platform lifecycle via kustomize"]
+            ModelRefCtrl["MaaSModelRef Controller<br/>Model endpoint references"]
+            AuthPolicyCtrl["MaaSAuthPolicy Controller<br/>Aggregates auth → Kuadrant AuthPolicy"]
+            SubscriptionCtrl["MaaSSubscription Controller<br/>Aggregates limits → TokenRateLimitPolicy"]
+            ExternalModelCtrl["ExternalModel Controller<br/>Istio ServiceEntry + DestinationRule"]
         end
 
-        subgraph DataPlane["Data Plane (openshift-ingress namespace)"]
-            BBR["payload-processing (BBR)<br/>Go gRPC ext-proc<br/>9004/TCP gRPC | 9005/TCP metrics"]
+        subgraph API["maas-api (Go HTTP Service / Gin)"]
+            KeyMgmt["API Key Management<br/>POST/GET/DELETE /v1/api-keys"]
+            ModelDiscovery["Model Discovery<br/>GET /v1/models"]
+            SubscriptionAPI["Subscription API<br/>GET /v1/subscriptions"]
+            InternalValidate["Internal: Key Validation<br/>POST /internal/v1/api-keys/validate"]
+            InternalSelect["Internal: Subscription Selection<br/>POST /internal/v1/subscriptions/select"]
+        end
+
+        subgraph BBR["payload-processing (BBR ext-proc)"]
+            ModelExtract["model-to-header Plugin<br/>Extract model from body"]
+            ProviderResolve["model-provider-resolver Plugin<br/>Resolve ExternalModel provider"]
+            APITranslate["api-translation Plugin<br/>Translate API formats"]
+            CredInject["apikey-injection Plugin<br/>Inject provider credentials"]
         end
     end
 
-    subgraph CRDs["MaaS Custom Resources (maas.opendatahub.io/v1alpha1)"]
-        TenantCR["Tenant CR<br/>(singleton: default-tenant)"]
-        ModelRefCR["MaaSModelRef CR"]
-        AuthPolicyCR["MaaSAuthPolicy CR"]
-        SubscriptionCR["MaaSSubscription CR"]
-        ExternalModelCR["ExternalModel CR"]
-    end
+    %% CRDs
+    TenantCR["Tenant CR<br/>(singleton: default-tenant)"]
+    ModelRefCR["MaaSModelRef CR"]
+    AuthPolicyCR["MaaSAuthPolicy CR"]
+    SubscriptionCR["MaaSSubscription CR"]
+    ExternalModelCR["ExternalModel CR"]
 
-    subgraph GatewayStack["Gateway Stack"]
-        Gateway["maas-default-gateway<br/>Gateway API<br/>443/TCP HTTPS"]
-        HTTPRoutes["HTTPRoutes<br/>(per-model routing)"]
-    end
+    %% CR → Controller watches
+    TenantCR -->|watched by| TenantReconciler
+    ModelRefCR -->|watched by| ModelRefCtrl
+    AuthPolicyCR -->|watched by| AuthPolicyCtrl
+    SubscriptionCR -->|watched by| SubscriptionCtrl
+    ExternalModelCR -->|watched by| ExternalModelCtrl
 
-    subgraph AuthStack["Auth & Rate Limiting"]
-        Authorino["Authorino<br/>(AuthPolicy enforcement)"]
-        Limitador["Limitador<br/>(Token rate limiting)"]
-    end
+    %% Controller creates downstream resources
+    TenantReconciler -->|deploys via kustomize| API
+    TenantReconciler -->|deploys via kustomize| BBR
+    AuthPolicyCtrl -->|creates aggregated| KuadrantAuthPolicy["Kuadrant AuthPolicy<br/>(per-model HTTPRoute)"]
+    SubscriptionCtrl -->|creates aggregated| KuadrantTRLP["Kuadrant TokenRateLimitPolicy<br/>(per-model HTTPRoute)"]
+    ExternalModelCtrl -->|creates| IstioSE["Istio ServiceEntry"]
+    ExternalModelCtrl -->|creates| IstioDR["Istio DestinationRule"]
+    ExternalModelCtrl -->|creates| HTTPRoute["Gateway API HTTPRoute"]
+    ModelRefCtrl -->|creates| HTTPRouteModel["Model HTTPRoute"]
 
-    subgraph Storage["Data Storage"]
-        PostgreSQL["PostgreSQL<br/>5432/TCP"]
-    end
+    %% External dependencies
+    Gateway["Gateway API Gateway<br/>maas-default-gateway"]
+    Authorino["Authorino<br/>(API key + OIDC + K8s token)"]
+    Limitador["Limitador<br/>(Token rate limiting)"]
+    PostgreSQL["PostgreSQL<br/>5432/TCP"]
+    KServe["KServe<br/>LLMInferenceService"]
 
-    %% Controller relationships
-    Controller -->|"reconciles"| TenantCR
-    Controller -->|"reconciles"| ModelRefCR
-    Controller -->|"reconciles"| AuthPolicyCR
-    Controller -->|"reconciles"| SubscriptionCR
-    Controller -->|"reconciles"| ExternalModelCR
+    %% Integration flows
+    Authorino -->|HTTP callback| InternalValidate
+    Authorino -->|HTTP callback| InternalSelect
+    API -->|SQL| PostgreSQL
+    ModelDiscovery -->|probes /v1/models| KServe
+    KuadrantAuthPolicy -->|enforced by| Authorino
+    KuadrantTRLP -->|enforced by| Limitador
 
-    Controller -->|"deploys via kustomize"| API
-    Controller -->|"deploys via kustomize"| BBR
-    Controller -->|"deploys via kustomize"| CronJob
-
-    Controller -->|"creates aggregated"| KuadrantAuthPolicy["Kuadrant AuthPolicy"]
-    Controller -->|"creates aggregated"| KuadrantTRLP["Kuadrant TokenRateLimitPolicy"]
-    Controller -->|"creates"| HTTPRoutes
-    Controller -->|"creates Istio resources"| IstioResources["ServiceEntry<br/>DestinationRule<br/>EnvoyFilter"]
-
-    %% API relationships
-    API -->|"stores/queries keys"| PostgreSQL
-    API -->|"validates access via SAR"| K8sAPI["Kubernetes API"]
-    API -->|"probes model access"| KServeModels["KServe Models"]
-    CronJob -->|"cleanup expired keys"| API
-
-    %% Auth flow
-    Authorino -->|"callback: validate key"| API
-    Authorino -->|"callback: select subscription"| API
-    KuadrantAuthPolicy -->|"enforced by"| Authorino
-    KuadrantTRLP -->|"enforced by"| Limitador
-
-    %% Gateway flow
-    Gateway -->|"routes via"| HTTPRoutes
-    Gateway -->|"ext-proc filter"| BBR
-    BBR -->|"reads ExternalModels, Secrets"| K8sAPI
-
-    %% User interaction
-    User["User / Client"] -->|"HTTPS/443"| Gateway
+    %% User flow
+    User["User / Client"] -->|HTTPS 443| Gateway
+    Gateway -->|gRPC ext-proc| BBR
+    Gateway -->|auth check| Authorino
+    Gateway -->|rate check| Limitador
+    Gateway -->|routes to| KServe
+    Gateway -->|routes to| ExternalProvider["External LLM Provider<br/>(OpenAI, Anthropic, etc.)"]
 
     %% Styling
     style Controller fill:#4a90e2,color:#fff
-    style API fill:#4a90e2,color:#fff
-    style BBR fill:#4a90e2,color:#fff
-    style CronJob fill:#4a90e2,color:#fff
-    style TenantCR fill:#f5a623,color:#fff
-    style ModelRefCR fill:#f5a623,color:#fff
-    style AuthPolicyCR fill:#f5a623,color:#fff
-    style SubscriptionCR fill:#f5a623,color:#fff
-    style ExternalModelCR fill:#f5a623,color:#fff
-    style Gateway fill:#7ed321,color:#fff
-    style HTTPRoutes fill:#7ed321,color:#fff
-    style Authorino fill:#bd10e0,color:#fff
-    style Limitador fill:#bd10e0,color:#fff
-    style PostgreSQL fill:#e8e8e8,color:#333
-    style K8sAPI fill:#e8e8e8,color:#333
-    style KServeModels fill:#e8e8e8,color:#333
-    style User fill:#50e3c2,color:#333
-    style KuadrantAuthPolicy fill:#bd10e0,color:#fff
-    style KuadrantTRLP fill:#bd10e0,color:#fff
-    style IstioResources fill:#7ed321,color:#fff
+    style API fill:#50c878,color:#fff
+    style BBR fill:#9b59b6,color:#fff
+    style TenantCR fill:#f5a623,color:#000
+    style ModelRefCR fill:#f5a623,color:#000
+    style AuthPolicyCR fill:#f5a623,color:#000
+    style SubscriptionCR fill:#f5a623,color:#000
+    style ExternalModelCR fill:#f5a623,color:#000
+    style KuadrantAuthPolicy fill:#e74c3c,color:#fff
+    style KuadrantTRLP fill:#e74c3c,color:#fff
+    style IstioSE fill:#e8e8e8,color:#000
+    style IstioDR fill:#e8e8e8,color:#000
+    style Gateway fill:#3498db,color:#fff
+    style Authorino fill:#999,color:#fff
+    style Limitador fill:#999,color:#fff
+    style PostgreSQL fill:#336791,color:#fff
+    style KServe fill:#7ed321,color:#000
+    style ExternalProvider fill:#f39c12,color:#000
+    style User fill:#ecf0f1,color:#000

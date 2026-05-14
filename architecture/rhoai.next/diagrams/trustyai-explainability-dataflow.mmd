@@ -1,63 +1,59 @@
 sequenceDiagram
-    participant Client as Client / Dashboard
+    participant Client as External Client
     participant Route as OpenShift Route<br/>80/TCP HTTP
-    participant TrustyAI as TrustyAI Service<br/>8080/TCP HTTP
-    participant Reconciler as KServeInferencePayload<br/>Reconciler
+    participant Service as TrustyAI Service<br/>8080/TCP HTTP
+    participant Reconciler as KServe Inference<br/>Payload Reconciler
     participant Storage as Storage Backend<br/>(PVC/DB/MinIO)
-    participant ModelMesh as ModelMesh<br/>Serving Runtime
-    participant KServeIS as KServe<br/>InferenceService
-    participant ModelServer as KServe/ModelMesh<br/>Model Server
+    participant ModelMesh as KServe / ModelMesh<br/>Model Server
+    participant KServeIS as KServe InferenceService<br/>(CloudEvents)
     participant Prometheus as Prometheus<br/>OpenShift Monitoring
     participant MariaDB as MariaDB/MySQL<br/>3306/TCP JDBC
 
-    Note over Client,Prometheus: Flow 1: Inference Payload Ingestion (ModelMesh -> TrustyAI)
-    ModelMesh->>TrustyAI: POST /consumer/kserve/v2<br/>8080/TCP HTTP, No Auth
-    TrustyAI->>Reconciler: InferencePartialPayload<br/>(request + response matching)
+    Note over Client,Prometheus: Flow 1: Inference Payload Ingestion (ModelMesh → TrustyAI)
+    ModelMesh->>Service: POST /consumer/kserve/v2<br/>HTTP/8080 InferencePartialPayload
+    Service->>Reconciler: Match request ↔ response
     Reconciler->>Storage: Persist complete observation
-    Note right of Storage: PVC: filesystem /inputs<br/>DB: JDBC 3306/TCP<br/>MinIO: S3 HTTP API
+    Note right of Storage: PVC: filesystem /inputs<br/>DB: JDBC/3306<br/>MinIO: S3 API
 
-    Note over Client,Prometheus: Flow 2: CloudEvents Payload Ingestion (KServe -> TrustyAI)
-    KServeIS->>TrustyAI: CloudEvent (Knative Funqy)<br/>org.kubeflow.serving.inference.*<br/>8080/TCP HTTP
-    TrustyAI->>Reconciler: CloudEvent payload
-    Reconciler->>Storage: Persist observation
+    Note over Client,Prometheus: Flow 2: CloudEvents Payload Ingestion (KServe → TrustyAI)
+    KServeIS->>Service: CloudEvent POST<br/>org.kubeflow.serving.inference.request<br/>HTTP/8080
+    KServeIS->>Service: CloudEvent POST<br/>org.kubeflow.serving.inference.response<br/>HTTP/8080
+    Service->>Reconciler: Match request ↔ response
+    Reconciler->>Storage: Persist complete observation
 
     Note over Client,Prometheus: Flow 3: Fairness/Drift Metric Computation
-    Client->>Route: POST /metrics/group/fairness/spd<br/>80/TCP HTTP
-    Route->>TrustyAI: Forward request<br/>8080/TCP HTTP
-    TrustyAI->>Storage: Read observation data
-    Storage-->>TrustyAI: DataFrame
-    TrustyAI-->>Route: Metric result (JSON)
-    Route-->>Client: HTTP 200 Response
+    Client->>Route: POST /metrics/group/fairness/spd<br/>HTTP/80
+    Route->>Service: Forward HTTP/8080
+    Service->>Storage: Read observation data
+    Storage-->>Service: DataFrame
+    Service->>Service: Compute metric (SPD/DIR/KSTest/etc.)
+    Service->>Service: Register with PrometheusScheduler
+    Service-->>Route: Metric result JSON
+    Route-->>Client: Response
 
-    Note over TrustyAI,Prometheus: Scheduled Metric Publishing (every 5s)
-    loop PrometheusScheduler @Scheduled(5s)
-        TrustyAI->>Storage: Read observation data
-        Storage-->>TrustyAI: DataFrame
-        TrustyAI->>TrustyAI: Compute SPD, DIR, drift metrics
-        TrustyAI->>TrustyAI: Publish to Micrometer gauges<br/>(trustyai_spd, trustyai_dir)
+    loop Every 5s (configurable)
+        Service->>Service: PrometheusScheduler computes<br/>all registered metrics
+        Service->>Service: Publish to Micrometer gauges<br/>(trustyai_spd, trustyai_dir)
     end
-    Prometheus->>TrustyAI: GET /q/metrics<br/>8080/TCP HTTP<br/>Auth: Bearer Token (SA)
-    TrustyAI-->>Prometheus: Prometheus metrics
 
-    Note over Client,Prometheus: Flow 4: Explainability Request (ODH only - disabled in RHOAI)
-    Client->>Route: POST /explainers/local/lime<br/>80/TCP HTTP
-    Route->>TrustyAI: Forward request
-    TrustyAI->>Storage: Read observation data
-    Storage-->>TrustyAI: DataFrame
-    TrustyAI->>ModelServer: HTTP inference request<br/>8080/TCP HTTP, No TLS
-    ModelServer-->>TrustyAI: Prediction response
-    alt gRPC path
-        TrustyAI->>ModelServer: gRPC v2 inference<br/>plaintext, No Auth
-        ModelServer-->>TrustyAI: gRPC response
-    end
-    TrustyAI->>TrustyAI: Compute LIME explanation
-    TrustyAI-->>Route: Explanation result (JSON)
-    Route-->>Client: HTTP 200 Response
+    Prometheus->>Service: GET /q/metrics<br/>HTTP/8080<br/>Auth: Bearer Token (SA)
+    Service-->>Prometheus: Prometheus exposition format<br/>(trustyai_* gauges)
+
+    Note over Client,Prometheus: Flow 4: Explainability Request (ODH only, disabled in RHOAI)
+    Client->>Route: POST /explainers/local/lime<br/>HTTP/80
+    Route->>Service: Forward HTTP/8080
+    Service->>Storage: Load observation data
+    Storage-->>Service: DataFrame
+    Service->>ModelMesh: KServe v2 HTTP inference<br/>POST /v2/models/{model}/infer<br/>HTTP/8080
+    ModelMesh-->>Service: Inference result
+    Note right of Service: Alternative: gRPC v2<br/>plaintext (no TLS)
+    Service->>Service: Run LIME/SHAP/CF algorithm<br/>(explainability-core)
+    Service-->>Route: Explanation result JSON
+    Route-->>Client: Response
 
     Note over Client,Prometheus: Flow 5: Data Upload
-    Client->>Route: POST /data/upload<br/>80/TCP HTTP
-    Route->>TrustyAI: Batch model data / ground truths
-    TrustyAI->>Storage: Persist uploaded data
-    Storage-->>TrustyAI: Confirmation
-    TrustyAI-->>Route: HTTP 200
-    Route-->>Client: Upload confirmed
+    Client->>Route: POST /data/upload<br/>HTTP/80
+    Route->>Service: Forward HTTP/8080
+    Service->>Storage: Persist batch data / ground truths
+    Service-->>Route: Upload confirmation
+    Route-->>Client: Response

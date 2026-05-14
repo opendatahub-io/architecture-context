@@ -3,72 +3,96 @@ graph TB
         direction TB
 
         subgraph Controllers["Controllers"]
-            VAReconciler["VA Reconciler<br/>Reconciles VariantAutoscaling CRs"]
-            CMReconciler["ConfigMap Reconciler<br/>Watches config overrides"]
-            IPReconciler["InferencePool Reconciler<br/>Watches InferencePool CRs"]
+            VAReconciler["VA Reconciler<br/>(VariantAutoscaling CR)"]
+            IPReconciler["InferencePool Reconciler<br/>(v1 + v1alpha2)"]
+            CMReconciler["ConfigMap Reconciler<br/>(global + namespace-local)"]
         end
 
         subgraph Engines["Optimization Engines"]
-            SatEngine["Saturation Engine<br/>30s polling interval<br/>V1/V2/Queueing analyzers"]
-            SFZEngine["Scale-From-Zero Engine<br/>100ms polling interval<br/>EPP pod scraping"]
-            QMEngine["Queueing Model Engine<br/>M/M/1 theory analyzer"]
+            SatEngine["Saturation Engine<br/>(30s polling)"]
+            SFZEngine["Scale-From-Zero Engine<br/>(100ms polling)"]
+            QueueEngine["Queueing Model Engine<br/>(M/M/1 theory)"]
+        end
+
+        subgraph Analyzers["Analyzers"]
+            V1Analyzer["V1 Analyzer<br/>(% KV cache/queue)"]
+            V2Analyzer["V2 Analyzer<br/>(token-based capacity)"]
+            MM1Analyzer["M/M/1 Analyzer<br/>(queueing theory)"]
+        end
+
+        subgraph Optimizers["Optimizers"]
+            CostOpt["CostAware Optimizer<br/>(prefer cheapest variant)"]
+            GreedyOpt["GreedyByScore Optimizer<br/>(GPU-limited mode)"]
         end
 
         subgraph Core["Core Components"]
-            Collector["Collector<br/>vLLM metrics from Prometheus"]
-            Actuator["Actuator<br/>Emits wva_desired_replicas<br/>wva_desired_ratio metrics"]
-            Datastore["Datastore<br/>In-memory cache<br/>InferencePool data + EPP sources"]
-            DecisionCache["Decision Cache<br/>In-memory scaling decisions"]
+            DecisionCache["Decision Cache<br/>(in-memory)"]
+            Datastore["Datastore<br/>(InferencePool data, EPP sources)"]
+            Actuator["Actuator<br/>(Prometheus metric emitter)"]
+            Collector["Collector<br/>(vLLM metrics)"]
         end
-
-        SatEngine -->|"writes decisions"| DecisionCache
-        SFZEngine -->|"writes decisions"| DecisionCache
-        QMEngine -->|"writes decisions"| DecisionCache
-        DecisionCache -->|"triggers via Go channel"| VAReconciler
-        SatEngine -->|"reads metrics"| Collector
-        CMReconciler -->|"config updates"| SatEngine
-        CMReconciler -->|"config updates"| SFZEngine
-        IPReconciler -->|"pool metadata"| Datastore
-        SFZEngine -->|"reads EPP sources"| Datastore
-        VAReconciler -->|"emits scaling metrics"| Actuator
     end
 
-    %% External CRDs
-    User["Data Scientist / Platform Admin"] -->|"creates"| VACR["VariantAutoscaling CR<br/>llmd.ai/v1alpha1"]
-    VACR -->|"watched by"| VAReconciler
+    %% CRDs
+    VACR["VariantAutoscaling CR<br/>(llmd.ai/v1alpha1)"]
+    IPCR["InferencePool CR<br/>(Gateway API)"]
+    ConfigMaps["ConfigMaps<br/>(saturation, scale-to-zero,<br/>queueing model)"]
 
-    %% External Dependencies
-    Collector -->|"PromQL queries<br/>9091/TCP HTTPS"| Prometheus["Prometheus / Thanos Querier"]
-    Prometheus -->|"scrapes"| vLLM["vLLM Inference Servers"]
-    SFZEngine -->|"scrapes metrics<br/>HTTPS"| EPP["EPP Pods<br/>Endpoint Picker"]
-    IPReconciler -->|"watches"| InferencePoolCR["InferencePool CR<br/>Gateway API"]
+    %% External
+    Prometheus["Prometheus / Thanos Querier<br/>(9091/TCP HTTPS)"]
+    EPPPods["EPP Pods<br/>(Endpoint Picker)"]
+    K8sAPI["Kubernetes API<br/>(443/TCP HTTPS)"]
+    HPAKEDA["HPA / KEDA<br/>(external autoscalers)"]
+    vLLM["vLLM Inference Servers<br/>(metrics source)"]
 
-    %% Outputs
-    Actuator -->|"exposes /metrics<br/>8443/TCP HTTPS"| PrometheusOut["Prometheus Scraper"]
-    PrometheusOut -->|"wva_desired_ratio"| HPA["HPA / KEDA"]
-    HPA -->|"scales"| Deployments["Deployments / LWS"]
-    SFZEngine -->|"direct scale 0→1<br/>443/TCP HTTPS"| Deployments
+    %% CR Flows
+    VACR -->|watched by| VAReconciler
+    IPCR -->|watched by| IPReconciler
+    ConfigMaps -->|watched by| CMReconciler
 
-    %% K8s API
-    VAReconciler -->|"status patch<br/>443/TCP HTTPS"| K8sAPI["Kubernetes API"]
-    CMReconciler -->|"watches ConfigMaps"| K8sAPI
+    %% Engine connections
+    SatEngine -->|queries PromQL| Prometheus
+    Collector -->|reads vLLM metrics from| Prometheus
+    SFZEngine -->|scrapes queue metrics| EPPPods
 
-    %% Styling
-    style VAReconciler fill:#4a90e2,color:#fff
-    style CMReconciler fill:#4a90e2,color:#fff
-    style IPReconciler fill:#4a90e2,color:#fff
-    style SatEngine fill:#e67e22,color:#fff
-    style SFZEngine fill:#e67e22,color:#fff
-    style QMEngine fill:#e67e22,color:#fff
-    style Collector fill:#27ae60,color:#fff
-    style Actuator fill:#27ae60,color:#fff
-    style Datastore fill:#27ae60,color:#fff
-    style DecisionCache fill:#27ae60,color:#fff
-    style VACR fill:#f5a623,color:#000
-    style InferencePoolCR fill:#f5a623,color:#000
-    style Prometheus fill:#999,color:#fff
-    style vLLM fill:#999,color:#fff
-    style EPP fill:#999,color:#fff
-    style HPA fill:#999,color:#fff
-    style K8sAPI fill:#999,color:#fff
-    style Deployments fill:#8e44ad,color:#fff
+    %% Analyzer selection
+    SatEngine -->|selects| V1Analyzer
+    SatEngine -->|selects| V2Analyzer
+    QueueEngine -->|uses| MM1Analyzer
+
+    %% Decision flow
+    V2Analyzer -->|ModelScalingRequest| CostOpt
+    V2Analyzer -->|ModelScalingRequest| GreedyOpt
+    SatEngine -->|writes decisions| DecisionCache
+    QueueEngine -->|writes decisions| DecisionCache
+    SFZEngine -->|writes decisions| DecisionCache
+    DecisionCache -->|triggers via Go channel| VAReconciler
+
+    %% Actuator
+    VAReconciler -->|emits metrics via| Actuator
+    Actuator -->|wva_desired_replicas<br/>wva_desired_ratio| Prometheus
+
+    %% External interactions
+    IPReconciler -->|syncs pool metadata| Datastore
+    SFZEngine -->|reads EPP sources| Datastore
+    SFZEngine -->|scales 0→1 via /scale| K8sAPI
+    VAReconciler -->|patches VA status| K8sAPI
+    HPAKEDA -->|reads wva metrics from| Prometheus
+    HPAKEDA -->|scales pods via| K8sAPI
+    vLLM -.->|scraped by| Prometheus
+
+    %% Styles
+    style WVA fill:#e8f4f8,stroke:#2196F3,stroke-width:2px
+    style Controllers fill:#bbdefb,stroke:#1976D2
+    style Engines fill:#c8e6c9,stroke:#388E3C
+    style Analyzers fill:#fff9c4,stroke:#F9A825
+    style Optimizers fill:#f3e5f5,stroke:#7B1FA2
+    style Core fill:#ffe0b2,stroke:#E65100
+    style VACR fill:#f5a623,stroke:#333
+    style IPCR fill:#f5a623,stroke:#333
+    style ConfigMaps fill:#f5a623,stroke:#333
+    style Prometheus fill:#e8e8e8,stroke:#333
+    style EPPPods fill:#e8e8e8,stroke:#333
+    style K8sAPI fill:#e8e8e8,stroke:#333
+    style HPAKEDA fill:#e8e8e8,stroke:#333
+    style vLLM fill:#e8e8e8,stroke:#333

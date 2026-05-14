@@ -1,37 +1,48 @@
 workspace {
     model {
         dataScientist = person "Data Scientist" "Deploys and queries ML models for inference"
-        applicationDev = person "Application Developer" "Integrates inference APIs into applications"
+        application = person "Application / Service" "Sends inference requests to deployed models"
 
-        vllm = softwareSystem "vLLM CUDA Runtime" "GPU-accelerated LLM inference runtime with dual-protocol support (OpenAI HTTP + TGIS gRPC), packaged as RHOAI container image" {
-            vllmEngine = container "vLLM HTTP Server" "OpenAI-compatible inference engine with GPU acceleration" "Python / CUDA" "Port 8000/TCP"
-            tgisAdapter = container "vllm_tgis_adapter" "gRPC-to-HTTP bridge implementing TGIS GenerationService protocol" "Python" "Port 8033/TCP"
+        vllm = softwareSystem "vLLM CUDA Runtime" "GPU-accelerated LLM inference runtime with TGIS gRPC adapter, built on RHAIIS base image" {
+            vllmEngine = container "vLLM HTTP Server" "OpenAI-compatible inference API serving LLM predictions" "Python / CUDA" "Port 8000/TCP"
+            tgisAdapter = container "vllm_tgis_adapter" "gRPC-to-HTTP bridge exposing TGIS-compatible GenerationService" "Python" "Port 8033/TCP"
+            cudaRuntime = container "CUDA Runtime" "GPU compute runtime for model inference" "NVIDIA CUDA"
         }
 
-        kserve = softwareSystem "KServe" "Model serving platform that manages ServingRuntime and InferenceService lifecycle" "Internal RHOAI"
-        istio = softwareSystem "Istio Service Mesh" "Provides mTLS, traffic management, and ingress gateway" "Internal Platform"
-        gpuPlugin = softwareSystem "NVIDIA GPU Device Plugin" "Allocates GPU resources to pods via nvidia.com/gpu resource requests" "External"
-        rhaiis = softwareSystem "RHAIIS Base Image" "Pre-built vLLM CUDA base image (registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.2.2) providing runtime, CUDA libs, and TGIS adapter" "External"
-        s3 = softwareSystem "S3 Storage" "Object storage for LLM model weights" "External"
-        pvc = softwareSystem "PVC Storage" "Persistent volume for local model weights" "External"
-        huggingFace = softwareSystem "Hugging Face Hub" "Model registry for downloading weights and tokenizer configs" "External"
-        konflux = softwareSystem "Konflux Build System" "Multi-arch container image build and vulnerability scanning pipeline" "External"
+        kserve = softwareSystem "KServe" "Kubernetes-native model serving platform managing InferenceService lifecycle" "Internal ODH"
+        istio = softwareSystem "Istio Service Mesh" "Service mesh providing mTLS, traffic management, and auth enforcement" "Internal ODH"
+        gpuPlugin = softwareSystem "NVIDIA GPU Device Plugin" "Kubernetes device plugin for GPU resource allocation" "External"
+        modelRegistry = softwareSystem "Model Registry" "Stores model metadata and version information" "Internal ODH"
+        dashboard = softwareSystem "ODH Dashboard" "Web UI for managing data science workloads" "Internal ODH"
 
-        dataScientist -> kserve "Creates InferenceService CR via kubectl/dashboard"
-        applicationDev -> vllm "Sends inference requests" "HTTPS/443"
+        s3 = softwareSystem "S3 / Object Storage" "Cloud object storage for LLM model weights" "External"
+        huggingFace = softwareSystem "Hugging Face Hub" "Public model repository for downloading model weights and tokenizers" "External"
+        pvc = softwareSystem "PVC / Persistent Volume" "Kubernetes persistent storage for pre-staged model weights" "External"
 
-        kserve -> vllm "Deploys and manages as ServingRuntime container"
+        rhaiisBase = softwareSystem "RHAIIS Base Image" "Red Hat AI Infrastructure & Services vLLM CUDA base image (registry.redhat.io/rhaiis/vllm-cuda-rhel9)" "External"
+        konflux = softwareSystem "Konflux Build System" "CI/CD build system for multi-arch container image builds" "External"
+
+        # Relationships - User interactions
+        dataScientist -> kserve "Creates InferenceService / ServingRuntime via kubectl"
+        application -> kserve "Sends inference requests via HTTPS/443"
+
+        # Relationships - Platform integration
+        kserve -> vllm "Deploys as inference container in ServingRuntime pods"
         istio -> vllm "Injects sidecar for mTLS and traffic management"
-        gpuPlugin -> vllm "Allocates NVIDIA GPU resources"
-        rhaiis -> vllm "Provides base container image with vLLM + CUDA + TGIS adapter"
+        gpuPlugin -> vllm "Allocates nvidia.com/gpu resources to inference pod"
 
-        vllm -> s3 "Downloads model weights at startup" "HTTPS/443 TLS 1.2+ IAM"
-        vllm -> pvc "Reads model weights from volume mount" "Filesystem"
-        vllm -> huggingFace "Downloads model weights and tokenizer configs" "HTTPS/443 TLS 1.2+"
+        # Relationships - Internal container
+        tgisAdapter -> vllmEngine "Translates TGIS gRPC to HTTP" "HTTP/8000 localhost"
+        vllmEngine -> cudaRuntime "Runs model inference on GPU" "CUDA"
 
-        konflux -> vllm "Builds multi-arch container image (amd64/arm64)"
+        # Relationships - Model loading (egress)
+        vllm -> s3 "Downloads model weights at startup" "HTTPS/443 TLS 1.2+"
+        vllm -> huggingFace "Downloads model weights and tokenizers" "HTTPS/443 TLS 1.2+"
+        vllm -> pvc "Reads pre-staged model weights" "Filesystem"
 
-        tgisAdapter -> vllmEngine "Bridges gRPC to HTTP" "HTTP/8000 localhost"
+        # Relationships - Build
+        rhaiisBase -> vllm "Provides base image with vLLM, CUDA, TGIS adapter" "FROM registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.2.2"
+        konflux -> vllm "Builds multi-arch container images (amd64/arm64)" "Tekton Pipeline"
     }
 
     views {
@@ -50,16 +61,12 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal ODH" {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal Platform" {
-                background #4a90e2
-                color #ffffff
-            }
             element "Person" {
-                shape person
+                shape Person
                 background #08427b
                 color #ffffff
             }

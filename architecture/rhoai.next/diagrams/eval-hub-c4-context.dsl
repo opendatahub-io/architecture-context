@@ -1,83 +1,90 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and manages LLM evaluation jobs via Dashboard or API"
-        aiAgent = person "AI Agent" "Interacts with eval-hub via MCP protocol for automated evaluation workflows"
+        datascientist = person "Data Scientist" "Creates and manages LLM evaluation jobs via Dashboard or API"
+        platformadmin = person "Platform Admin" "Manages RBAC, providers, and collections"
 
-        evalHub = softwareSystem "Eval Hub" "REST API service for orchestrating LLM evaluation jobs, managing providers, benchmarks, and tracking results" {
-            evalHubAPI = container "eval-hub API" "Primary REST API server for evaluation job orchestration, provider/collection management, authentication/authorization" "Go REST API, 8080/TCP"
-            runtimeSidecar = container "eval-runtime-sidecar" "Native sidecar container (KEP-753) proxying API calls from evaluation adapters to eval-hub, MLflow, and OCI registries with token injection" "Go HTTP Reverse Proxy"
-            runtimeInit = container "eval-runtime-init" "Init container downloading test data from S3-compatible storage before evaluation adapter starts" "Go Init Container"
-            mcpServer = container "evalhub-mcp" "Model Context Protocol server exposing eval-hub resources (providers, benchmarks, collections, jobs) to AI agents" "Go MCP Server, stdio/HTTP 3001/TCP"
-            storageLayer = container "Storage Layer" "Evaluation data persistence via SQLite (dev) or PostgreSQL (production)" "SQLite / PostgreSQL"
+        evalhub = softwareSystem "Eval Hub" "REST API service for orchestrating LLM evaluation jobs, managing evaluation providers, benchmark collections, and tracking results" {
+            apiserver = container "eval-hub API Server" "Primary REST API server for evaluation job orchestration, provider/collection management. OpenAPI 3.1." "Go REST API, 8080/TCP"
+            sidecar = container "eval-runtime-sidecar" "Native sidecar container proxying eval-hub API, MLflow, and OCI registry calls from evaluation job pods with token injection" "Go HTTP Reverse Proxy"
+            initcontainer = container "eval-runtime-init" "S3 test data downloader init container for evaluation jobs" "Go Init Container"
+            mcpserver = container "evalhub-mcp" "Model Context Protocol server exposing eval-hub resources (providers, benchmarks, collections, jobs) to AI agents" "Go MCP Server, stdio/HTTP:3001"
+            pythonwheel = container "eval-hub-server (Python wheel)" "pip-installable wrapper distributing the Go eval-hub binary for local development" "Python Package"
         }
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API for authentication (TokenReview), authorization (SubjectAccessReview), and workload management (Jobs, ConfigMaps)" "Kubernetes"
-        mlflow = softwareSystem "MLflow Tracking Server" "Experiment tracking, run logging, and artifact management for evaluation results" "External"
-        postgresql = softwareSystem "PostgreSQL" "Persistent relational storage for evaluation jobs, providers, and collections" "External"
-        s3 = softwareSystem "S3-compatible Object Storage" "Test data distribution to evaluation jobs" "External"
-        ociRegistry = softwareSystem "OCI Registry" "Evaluation artifact export (results, model cards) via Distribution v2 API" "External"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing, metrics, and log collection via OTLP" "External"
-        kueue = softwareSystem "Kueue" "Job queue management and scheduling for evaluation workloads" "Kubernetes"
-        serviceCA = softwareSystem "OpenShift Service CA" "Service-serving CA certificate for internal TLS verification" "Internal Platform"
-        rhoaiOperator = softwareSystem "RHOAI Platform Operator" "Manages eval-hub Deployment, RBAC, config, and service exposure" "Internal Platform"
-        evalProviders = softwareSystem "Evaluation Providers" "Lighteval, lm-evaluation-harness, Garak, GuideLLM, IBM CLEAR — adapter container images" "External"
+        k8sapi = softwareSystem "Kubernetes API Server" "Cluster API for authentication (TokenReview), authorization (SAR), and resource management (Jobs, ConfigMaps)" "External"
+        mlflow = softwareSystem "MLflow Tracking Server" "Experiment tracking, run logging, artifact management for evaluation results" "External"
+        postgresql = softwareSystem "PostgreSQL" "Persistent storage for evaluation jobs, providers, and collections" "External"
+        s3 = softwareSystem "S3-compatible Object Storage" "Test data distribution to evaluation job pods" "External"
+        ociregistry = softwareSystem "OCI Registry" "Evaluation artifact export (results, model cards) via Distribution v2 API" "External"
+        otel = softwareSystem "OpenTelemetry Collector" "Distributed tracing, metrics, and logs collection via OTLP" "External"
+        kueue = softwareSystem "Kueue" "Job queue management for evaluation workloads" "External"
+        serviceca = softwareSystem "OpenShift Service CA" "Service-serving CA certificate for internal TLS verification" "Internal RHOAI"
+        platformoperator = softwareSystem "RHOAI Platform Operator" "Manages eval-hub deployment, service accounts, and configuration" "Internal RHOAI"
+        evalproviders = softwareSystem "Evaluation Providers" "Lighteval, lm-evaluation-harness, Garak, GuideLLM, IBM CLEAR adapter containers" "External"
 
         # User interactions
-        dataScientist -> evalHub "Creates evaluation jobs, manages providers/collections via REST API" "HTTPS/8080, Bearer Token"
-        aiAgent -> mcpServer "Queries providers, benchmarks, collections, jobs via MCP protocol" "stdio / HTTP/3001"
+        datascientist -> evalhub "Creates evaluation jobs, views results" "HTTPS/8080, Bearer Token"
+        platformadmin -> evalhub "Manages providers, collections, RBAC" "HTTPS/8080, Bearer Token"
 
-        # Internal container relationships
-        mcpServer -> evalHubAPI "Fetches resources via REST client (pkg/evalhubclient)" "HTTPS/8080, Bearer Token"
-        evalHubAPI -> storageLayer "Reads/writes evaluation data" "SQL"
-        evalHubAPI -> k8sAPI "TokenReview, SubjectAccessReview, Job/ConfigMap CRUD" "HTTPS/443, SA Token"
-        evalHubAPI -> mlflow "Creates experiments, tracks runs" "HTTPS, Bearer Token"
-        runtimeSidecar -> evalHubAPI "Status updates, job metadata" "HTTPS/8080, SA Token"
-        runtimeSidecar -> mlflow "Run tracking, experiment management" "HTTPS, Projected SA Token"
-        runtimeSidecar -> ociRegistry "Push evaluation artifacts" "HTTPS/443, Bearer Token"
-        runtimeInit -> s3 "Downloads test data files" "HTTPS/443, AWS IAM"
+        # Eval Hub → External dependencies
+        evalhub -> k8sapi "TokenReview, SAR, Job/ConfigMap CRUD" "HTTPS/443, SA Token"
+        evalhub -> mlflow "Create experiments, track runs, manage artifacts" "HTTPS, Projected SA Token"
+        evalhub -> postgresql "Persistent storage for jobs, providers, collections" "TCP/5432, Connection string"
+        evalhub -> s3 "Download test data for evaluation jobs" "HTTPS/443, AWS IAM"
+        evalhub -> ociregistry "Push evaluation artifacts" "HTTPS/443, Bearer Token"
+        evalhub -> otel "Export traces, metrics, logs" "gRPC/4317 or HTTP/4318"
+        evalhub -> kueue "Queue management for eval jobs" "Job labels"
+        evalhub -> serviceca "TLS CA certificates" "ConfigMap"
+        evalhub -> evalproviders "Pull and execute adapter container images" "Container Image"
 
-        # External integrations
-        evalHubAPI -> postgresql "Persistent evaluation data storage" "TCP/5432"
-        evalHubAPI -> otelCollector "Distributed tracing, metrics export" "gRPC/4317 OTLP"
-        evalHubAPI -> kueue "Job queue scheduling via labels" "Kubernetes API"
-        rhoaiOperator -> evalHub "Deploys and configures eval-hub instance" "Kubernetes API"
-        serviceCA -> evalHub "Provides CA certificate for internal TLS" "ConfigMap"
-        evalProviders -> runtimeSidecar "Adapter containers communicate through sidecar proxy" "HTTP/8080 localhost"
+        # Internal interactions
+        platformoperator -> evalhub "Deploy, configure, manage lifecycle" "Operator CR"
+
+        # Container-level interactions
+        datascientist -> apiserver "REST API calls" "HTTPS/8080, Bearer Token"
+        apiserver -> k8sapi "Auth + resource management" "HTTPS/443"
+        apiserver -> postgresql "Query/store data" "TCP/5432"
+        apiserver -> mlflow "Experiment tracking" "HTTPS"
+        apiserver -> otel "Telemetry export" "OTLP"
+        sidecar -> apiserver "Forward status events" "HTTPS/8080"
+        sidecar -> mlflow "Forward MLflow API calls" "HTTPS"
+        sidecar -> ociregistry "Forward artifact pushes" "HTTPS/443"
+        initcontainer -> s3 "Download test data" "HTTPS/443"
+        mcpserver -> apiserver "REST API client" "HTTPS/8080"
     }
 
     views {
-        systemContext evalHub "SystemContext" {
+        systemContext evalhub "SystemContext" {
             include *
             autoLayout
         }
 
-        container evalHub "Containers" {
+        container evalhub "Containers" {
             include *
             autoLayout
         }
 
         styles {
             element "Person" {
-                shape Person
-                background #4a90e2
+                shape person
+                background #08427b
                 color #ffffff
             }
             element "Software System" {
-                background #999999
+                background #1168bd
                 color #ffffff
             }
             element "Container" {
-                background #4a90e2
+                background #438dd5
                 color #ffffff
             }
             element "External" {
                 background #999999
+                color #ffffff
             }
-            element "Internal Platform" {
+            element "Internal RHOAI" {
                 background #7ed321
-            }
-            element "Kubernetes" {
-                background #326ce5
+                color #ffffff
             }
         }
     }

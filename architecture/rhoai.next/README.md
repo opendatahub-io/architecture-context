@@ -1,7 +1,7 @@
 # RHOAI.NEXT unknown - Component Architectures
 
 Source: architecture/rhoai.next/component-map.json
-Date: 2026-05-06
+Date: 2026-05-13
 
 ## Components
 
@@ -26,6 +26,7 @@ Date: 2026-05-06
 | fms-hf-tuning | [fms-hf-tuning.md](./fms-hf-tuning.md) |
 | gateway-api-inference-extension | [gateway-api-inference-extension.md](./gateway-api-inference-extension.md) |
 | guardrails-detectors | [guardrails-detectors.md](./guardrails-detectors.md) |
+| guardrails-regex-detector | [guardrails-regex-detector.md](./guardrails-regex-detector.md) |
 | kserve | [kserve.md](./kserve.md) |
 | kserve-autogluon-server | [kserve-autogluon-server.md](./kserve-autogluon-server.md) |
 | kube-auth-proxy | [kube-auth-proxy.md](./kube-auth-proxy.md) |
@@ -59,6 +60,7 @@ Date: 2026-05-06
 | odh-deployer | [odh-deployer.md](./odh-deployer.md) |
 | odh-model-controller | [odh-model-controller.md](./odh-model-controller.md) |
 | openvino | [openvino.md](./openvino.md) |
+| openvino_model_server | [openvino_model_server.md](./openvino_model_server.md) |
 | pipelines-components | [pipelines-components.md](./pipelines-components.md) |
 | rest-proxy | [rest-proxy.md](./rest-proxy.md) |
 | rhds-llama-stack-distribution | [rhds-llama-stack-distribution.md](./rhds-llama-stack-distribution.md) |
@@ -81,4 +83,4 @@ Date: 2026-05-06
 
 - **Platform**: RHOAI.NEXT
 - **Version**: unknown
-- **Components**: 69
+- **Components**: 71

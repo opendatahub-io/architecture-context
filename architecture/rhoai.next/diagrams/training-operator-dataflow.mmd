@@ -1,55 +1,46 @@
 sequenceDiagram
     participant User as Data Scientist
-    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
     participant Webhook as Training Operator Webhook<br/>9443/TCP HTTPS TLS (self-signed)
-    participant Controller as Training Operator Controller<br/>opendatahub namespace
+    participant Controller as Training Operator Controller<br/>controller-runtime
     participant DNS as Kubernetes DNS<br/>53/UDP
-    participant Master as Master/Launcher Pod
-    participant Workers as Worker Pods
-    participant Volcano as Volcano (optional)<br/>PodGroup CRD
+    participant Master as Master Pod<br/>(via headless service)
+    participant Workers as Worker Pods<br/>(via headless service)
 
     Note over User,Workers: Flow 1: Distributed PyTorch Training Job Lifecycle
 
     User->>K8sAPI: 1. kubectl create PyTorchJob<br/>HTTPS/443, Bearer Token
-    K8sAPI->>Webhook: 2. Validate PyTorchJob<br/>HTTPS/9443, TLS (self-signed)<br/>API server client cert
-    Webhook-->>K8sAPI: Admission response (allow/deny)
+    K8sAPI->>Webhook: 2. Admission review<br/>HTTPS/9443, API server client cert
+    Webhook-->>K8sAPI: Validated (or rejected)
     K8sAPI-->>User: PyTorchJob created
 
-    Note over Controller,K8sAPI: Controller reconciliation loop
+    K8sAPI->>Controller: 3. Watch event (PyTorchJob)<br/>HTTPS/443, ServiceAccount Token
+    Controller->>K8sAPI: 4. Create headless Service<br/>HTTPS/443, ServiceAccount Token
+    Controller->>K8sAPI: 4. Create Master Pod<br/>HTTPS/443, ServiceAccount Token
+    Controller->>K8sAPI: 4. Create Worker Pods<br/>HTTPS/443, ServiceAccount Token
 
-    Controller->>K8sAPI: 3. Watch PyTorchJob CR<br/>HTTPS/443, SA Token
-    K8sAPI-->>Controller: PyTorchJob event
+    Workers->>DNS: 5. Resolve master hostname<br/>DNS/53 UDP
+    DNS-->>Workers: Master Pod IP
 
-    opt Gang Scheduling Enabled
-        Controller->>K8sAPI: Create PodGroup CR<br/>HTTPS/443, SA Token
-        K8sAPI->>Volcano: PodGroup scheduling
-        Volcano-->>K8sAPI: PodGroup scheduled
-    end
+    Workers->>Master: 6. Connect for distributed training<br/>TCP (per job config, no encryption)
+    Master-->>Workers: Training coordination (gradients, parameters)
 
-    Controller->>K8sAPI: 4a. Create headless Service<br/>HTTPS/443, SA Token
-    Controller->>K8sAPI: 4b. Create Master Pod<br/>(MASTER_ADDR, WORLD_SIZE env vars)<br/>HTTPS/443, SA Token
-    Controller->>K8sAPI: 4c. Create Worker Pods<br/>(MASTER_ADDR, RANK, WORLD_SIZE env vars)<br/>HTTPS/443, SA Token
+    Note over Controller,Workers: Controller monitors pod status, handles restarts, updates job status
 
-    Workers->>DNS: 5. Resolve master pod DNS<br/>via headless service<br/>UDP/53
-    DNS-->>Workers: Master pod IP
-
-    Workers->>Master: 6. Distributed training communication<br/>TCP (per job config)<br/>No encryption (cluster-internal)
-    Master-->>Workers: Gradient synchronization
+    Controller->>K8sAPI: Update PyTorchJob status<br/>HTTPS/443, ServiceAccount Token
 
     Note over User,Workers: Flow 2: MPI Job Communication Pattern
 
-    Controller->>K8sAPI: 1. Create ConfigMap (hostfile + scripts)<br/>Create ServiceAccount, Role, RoleBinding<br/>HTTPS/443, SA Token
+    participant Launcher as MPI Launcher Pod<br/>(with kubectl-delivery init)
+    participant MPIWorkers as MPI Worker Pods
 
-    K8sAPI-->>Controller: Resources created
+    Controller->>K8sAPI: 1. Create ConfigMap (hostfile, scripts)<br/>HTTPS/443, ServiceAccount Token
+    Controller->>K8sAPI: 1. Create ServiceAccount, Role, RoleBinding<br/>HTTPS/443, ServiceAccount Token
+    Controller->>K8sAPI: 1. Create Launcher + Worker Pods<br/>HTTPS/443, ServiceAccount Token
 
-    Controller->>K8sAPI: Create Launcher + Worker Pods<br/>HTTPS/443, SA Token
+    Note over Launcher: 2. Init container copies kubectl<br/>binary from kubectl-delivery image
 
-    Note over Master: Launcher Pod init container<br/>copies kubectl binary from<br/>kubectl-delivery image
+    Launcher->>K8sAPI: 3. kubectl exec into workers<br/>HTTPS/443, per-job SA Token
+    K8sAPI->>MPIWorkers: 4. Execute MPI commands<br/>Kubernetes exec, TLS 1.2+<br/>RBAC: pods/exec on specific pod names
 
-    Master->>K8sAPI: 3. kubectl exec into workers<br/>HTTPS/443, Per-job SA Token<br/>RBAC: pods/exec on specific pod names
-    K8sAPI->>Workers: 4. Execute MPI commands<br/>Kubernetes exec (TLS 1.2+)
-    Workers-->>K8sAPI: Command output
-    K8sAPI-->>Master: Exec result
-
-    Note over Controller: Job completion/failure detection<br/>Status update, cleanup
-    Controller->>K8sAPI: Update job status<br/>HTTPS/443, SA Token
+    MPIWorkers-->>Launcher: MPI results

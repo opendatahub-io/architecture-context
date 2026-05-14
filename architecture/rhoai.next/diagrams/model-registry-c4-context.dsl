@@ -1,60 +1,61 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates, registers, and deploys ML models via the dashboard or CLI"
-        mlEngineer = person "ML Engineer" "Manages model serving environments and deployments"
+        dataScientist = person "Data Scientist" "Creates and deploys ML models, browses model catalog"
+        mlEngineer = person "ML Engineer" "Manages model serving and deployment pipelines"
 
         modelRegistry = softwareSystem "Model Registry" "Central repository for ML model metadata, versions, artifacts, and serving metadata" {
-            proxy = container "model-registry (proxy)" "Core REST API server for ML metadata CRUD operations" "Go REST API, Port 8080" "Service"
-            controller = container "model-registry-controller" "Reconciles KServe InferenceService CRs with registry metadata" "Go Controller (controller-runtime), Port 8081/8443" "Controller"
-            bff = container "model-registry-ui (BFF)" "Backend-For-Frontend proxying UI requests to registry and catalog APIs" "Go BFF Server, Port 8080" "Service"
-            frontend = container "model-registry-ui (frontend)" "User interface for browsing and managing models" "React/TypeScript SPA" "WebApp"
-            catalogServer = container "model-catalog-server" "Aggregates model catalog data from multiple sources" "Go REST API, Port 8080" "Service"
-            csi = container "storage-initializer (CSI)" "Resolves model-registry:// URIs for KServe model downloads" "Go CLI, KServe Plugin" "Plugin"
-            asyncUpload = container "async-upload-job" "Orchestrates model file transfers between storage backends" "Python K8s Job" "Job"
+            proxy = container "model-registry (proxy)" "Core REST API server for ML metadata CRUD operations" "Go REST API" "Primary"
+            controller = container "model-registry-controller" "Reconciles KServe InferenceService CRs with registry metadata" "Go Controller (controller-runtime)" "Optional"
+            bff = container "model-registry-ui (BFF)" "Proxies UI requests to registry and catalog APIs, handles auth" "Go BFF Server"
+            catalogServer = container "model-catalog-server" "Aggregates model metadata from Hugging Face, YAML, DB sources" "Go REST API" "Optional"
+            csi = container "storage-initializer (CSI)" "Resolves model-registry:// URIs for KServe model download" "Go CLI (KServe Plugin)" "Utility"
+            asyncUpload = container "async-upload-job" "Copies models between storage backends with signing support" "Python K8s Job" "Utility"
+            frontend = container "model-registry-ui (frontend)" "User interface for browsing and managing models" "React/TypeScript SPA"
         }
 
-        mysql = softwareSystem "MySQL 8.3+" "Primary metadata storage for model registry" "Database"
-        postgresql = softwareSystem "PostgreSQL 16+" "Metadata storage (alternative) and catalog database" "Database"
-        kserve = softwareSystem "KServe" "Kubernetes-native serverless ML inference platform" "Internal ODH"
-        istio = softwareSystem "Istio Service Mesh" "Traffic routing, mTLS enforcement, and authorization" "Internal Platform"
-        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "Web UI for RHOAI platform management" "Internal ODH"
-        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator that deploys managed components" "Internal Platform"
-        huggingFace = softwareSystem "Hugging Face API" "External ML model metadata and artifacts source" "External"
-        s3Storage = softwareSystem "S3-compatible Storage" "Cloud object storage for model artifacts" "External"
-        ociRegistry = softwareSystem "OCI Registry" "Container/artifact registry for model images" "External"
-        k8sAPI = softwareSystem "Kubernetes API" "Cluster control plane API server" "Internal Platform"
-        prometheus = softwareSystem "Prometheus" "Monitoring and metrics collection" "Internal Platform"
+        mysqlDB = softwareSystem "MySQL Database" "Primary metadata storage (8.3+)" "Database"
+        postgresDB = softwareSystem "PostgreSQL Database" "Alternative metadata / catalog storage (16+)" "Database"
 
-        # External interactions
-        dataScientist -> modelRegistry "Registers models, browses catalog via Dashboard" "HTTPS/443"
-        mlEngineer -> modelRegistry "Manages serving environments and deployments" "HTTPS/443"
+        istio = softwareSystem "Istio Service Mesh" "Traffic routing, mTLS, authorization policies" "External Infrastructure"
+        kserve = softwareSystem "KServe" "Serverless ML inference platform, InferenceService CRD" "Internal ODH"
+        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "Platform UI for data science workflows" "Internal ODH"
+        rhodsOperator = softwareSystem "rhods-operator" "Platform operator deploying model registry via kustomize" "Internal ODH"
+
+        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management and RBAC" "External Infrastructure"
+        huggingFace = softwareSystem "Hugging Face API" "External model metadata source" "External"
+        s3Storage = softwareSystem "S3-Compatible Storage" "Model artifact storage (AWS S3, MinIO, etc.)" "External"
+        ociRegistry = softwareSystem "OCI Registry" "Container/artifact registry for model images" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External Infrastructure"
+
+        # User relationships
+        dataScientist -> modelRegistry "Registers models, browses catalog via UI"
+        mlEngineer -> modelRegistry "Manages model versions and deployments via API"
 
         # Internal container relationships
-        frontend -> bff "API requests" "HTTP/8080"
-        bff -> proxy "Proxy model registry CRUD" "HTTP/8080, Forwarded token"
-        bff -> catalogServer "Proxy catalog browsing" "HTTP/8080, Forwarded token"
-        bff -> k8sAPI "Namespace listing, RBAC checks, service discovery" "HTTPS/443, User/SA token"
-        controller -> proxy "Sync InferenceService metadata" "HTTP/8080, Bearer Token"
-        controller -> k8sAPI "Watch InferenceService CRs, update labels" "HTTPS/443, ServiceAccount"
-        csi -> proxy "Resolve model-registry:// URIs" "HTTP/8080"
-        asyncUpload -> proxy "Register/update model artifacts" "HTTP/8080, Bearer Token"
+        frontend -> bff "HTTP requests" "HTTPS/HTTP"
+        bff -> proxy "Proxies model registry API calls" "HTTP/8080"
+        bff -> catalogServer "Proxies catalog API calls" "HTTP/8080"
+        bff -> k8sAPI "Namespace listing, RBAC checks" "HTTPS/443"
+        controller -> proxy "Creates/updates InferenceService metadata" "HTTP/8080 Bearer Token"
+        controller -> k8sAPI "Watches InferenceService CRs, updates labels" "HTTPS/443 ServiceAccount"
+        csi -> proxy "Resolves model-registry:// URIs" "HTTP/8080"
+        asyncUpload -> proxy "Registers model artifacts" "HTTP/8080 Bearer Token"
 
         # External dependencies
-        proxy -> mysql "Store/retrieve model metadata" "MySQL/3306, user/pass"
-        proxy -> postgresql "Store/retrieve model metadata (alt)" "PostgreSQL/5432, user/pass"
-        catalogServer -> postgresql "Catalog metadata storage" "PostgreSQL/5432, user/pass"
-        catalogServer -> huggingFace "Import model metadata" "HTTPS/443, API key"
-        csi -> s3Storage "Download model artifacts" "HTTPS/443, Storage credentials"
-        asyncUpload -> s3Storage "Download model files" "HTTPS/443, AWS credentials"
-        asyncUpload -> ociRegistry "Push/pull model images" "HTTPS/443, Registry credentials"
+        proxy -> mysqlDB "Stores/retrieves model metadata" "MySQL/3306"
+        proxy -> postgresDB "Stores/retrieves model metadata" "PostgreSQL/5432"
+        catalogServer -> postgresDB "Stores catalog metadata" "PostgreSQL/5432"
+        catalogServer -> huggingFace "Imports external model metadata" "HTTPS/443"
+        asyncUpload -> s3Storage "Downloads model files" "HTTPS/443"
+        asyncUpload -> ociRegistry "Pushes model OCI artifacts" "HTTPS/443"
+        csi -> s3Storage "Delegates model download" "HTTPS/443"
 
-        # Platform integrations
-        istio -> modelRegistry "mTLS enforcement, traffic routing, AuthorizationPolicy" "mTLS ISTIO_MUTUAL"
-        rhoaiDashboard -> bff "Browse and manage models via BFF API" "HTTP/8080, Istio mTLS"
+        # Platform integration
+        istio -> modelRegistry "mTLS traffic routing via VirtualService" "HTTP/8080 mTLS"
+        rhoaiDashboard -> bff "Browses models, manages registries" "HTTP/8080"
         rhodsOperator -> modelRegistry "Deploys via kustomize manifests" "Kustomize"
-        kserve -> controller "InferenceService CR lifecycle events" "K8s API watch"
-        csi -> kserve "Delegates model download to KServe storage providers" "ClusterStorageContainer"
-        prometheus -> controller "Scrape controller metrics" "HTTPS/8443, TokenReview+SAR"
+        kserve -> controller "InferenceService CR events trigger reconciliation" "HTTPS/443 K8s API"
+        prometheus -> controller "Scrapes /metrics endpoint" "HTTPS/8443 TokenReview"
     }
 
     views {
@@ -73,39 +74,35 @@ workspace {
                 background #999999
                 color #ffffff
             }
+            element "External Infrastructure" {
+                background #888888
+                color #ffffff
+            }
             element "Internal ODH" {
                 background #7ed321
-                color #ffffff
-            }
-            element "Internal Platform" {
-                background #4a90e2
-                color #ffffff
+                color #333333
             }
             element "Database" {
-                background #f5a623
+                background #4a90e2
                 color #ffffff
                 shape Cylinder
             }
-            element "Service" {
+            element "Primary" {
                 background #4a90e2
                 color #ffffff
             }
-            element "Controller" {
-                background #9b59b6
+            element "Optional" {
+                background #6ab0de
                 color #ffffff
             }
-            element "WebApp" {
-                background #50c878
-                color #ffffff
-                shape WebBrowser
+            element "Utility" {
+                background #95c8e8
+                color #333333
             }
-            element "Plugin" {
-                background #9b59b6
-                color #ffffff
-            }
-            element "Job" {
-                background #e67e22
-                color #ffffff
+            element "Person" {
+                background #f5a623
+                color #333333
+                shape Person
             }
         }
     }
