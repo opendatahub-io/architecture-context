@@ -10,9 +10,8 @@ affects:
   - fms-hf-tuning
   - platform
 release:
-  - "rhoai-3.4-ea.2"
-  - "rhoai-3.4"
-  - "rhoai-3.5-ea.1"
+  - "3.4"
+  - "3.5"
   - "next"
 provenance:
   - https://redhat.atlassian.net/browse/RHOAIENG-62210
