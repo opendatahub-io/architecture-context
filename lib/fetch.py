@@ -4,9 +4,19 @@ import asyncio
 import fnmatch
 import os
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
+
+_log_file = None
+
+
+def _log(msg: str) -> None:
+    _log(msg)
+    if _log_file is not None:
+        _log_file.write(msg + "\n")
+        _log_file.flush()
 
 
 def _prepare_env() -> dict:
@@ -23,7 +33,7 @@ def _prepare_env() -> dict:
     # GITHUB_TOKEN is already in env if loaded from .env file
     # Just ensure it's present for subprocess calls
     if "GITHUB_TOKEN" in env:
-        print("Using GITHUB_TOKEN from environment")
+        _log("Using GITHUB_TOKEN from environment")
 
     return env
 
@@ -70,21 +80,21 @@ async def _ensure_gh_org_clone() -> str:
     # First check if it's already in PATH
     gh_org_clone_path = shutil.which("gh-org-clone")
     if gh_org_clone_path:
-        print(f"Found gh-org-clone in PATH: {gh_org_clone_path}")
+        _log(f"Found gh-org-clone in PATH: {gh_org_clone_path}")
         return "gh-org-clone"
 
     # Check if it's already installed in ./bin
     local_bin = Path("bin").absolute()
     local_gh_org_clone = local_bin / "gh-org-clone"
     if local_gh_org_clone.exists():
-        print(f"Found gh-org-clone in ./bin: {local_gh_org_clone}")
+        _log(f"Found gh-org-clone in ./bin: {local_gh_org_clone}")
         # Add to PATH for this session
         os.environ["PATH"] = f"{local_bin}:{os.environ.get('PATH', '')}"
         return str(local_gh_org_clone)
 
     # Not found - need to clone and build
-    print("gh-org-clone not found in PATH or ./bin")
-    print("Installing gh-org-clone from https://github.com/jctanner/gh-org-clone")
+    _log("gh-org-clone not found in PATH or ./bin")
+    _log("Installing gh-org-clone from https://github.com/jctanner/gh-org-clone")
 
     tmp_dir = Path("tmp").absolute()
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -96,7 +106,7 @@ async def _ensure_gh_org_clone() -> str:
 
     # Clone the repository if not already present
     if not clone_dir.exists():
-        print(f"Cloning to {clone_dir}...")
+        _log(f"Cloning to {clone_dir}...")
         proc = await asyncio.create_subprocess_exec(
             "git", "clone",
             "https://github.com/jctanner/gh-org-clone",
@@ -108,12 +118,12 @@ async def _ensure_gh_org_clone() -> str:
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
             raise RuntimeError(f"Failed to clone gh-org-clone: {stderr.decode()}")
-        print("Clone successful")
+        _log("Clone successful")
     else:
-        print(f"Using existing clone at {clone_dir}")
+        _log(f"Using existing clone at {clone_dir}")
 
     # Build the project (assuming it's a Go project)
-    print("Building gh-org-clone...")
+    _log("Building gh-org-clone...")
     local_bin.mkdir(parents=True, exist_ok=True)
     proc = await asyncio.create_subprocess_exec(
         "go", "build", "-o", str(local_gh_org_clone),
@@ -132,7 +142,7 @@ async def _ensure_gh_org_clone() -> str:
             f" at {local_gh_org_clone}"
         )
 
-    print(f"Successfully built and installed gh-org-clone to {local_gh_org_clone}")
+    _log(f"Successfully built and installed gh-org-clone to {local_gh_org_clone}")
 
     # Add to PATH for this session
     os.environ["PATH"] = f"{local_bin}:{os.environ.get('PATH', '')}"
@@ -152,20 +162,20 @@ async def _ensure_arch_analyzer() -> str:
     # First check if it's already in PATH
     arch_analyzer_path = shutil.which(arch_analyzer_name)
     if arch_analyzer_path:
-        print(f"Found {arch_analyzer_name} in PATH: {arch_analyzer_path}")
+        _log(f"Found {arch_analyzer_name} in PATH: {arch_analyzer_path}")
         return arch_analyzer_name
 
     # Check if it's already installed in ./bin
     local_bin = Path("bin").absolute()
     local_arch_analyzer = local_bin / arch_analyzer_name
     if local_arch_analyzer.exists():
-        print(f"Found {arch_analyzer_name} in ./bin: {local_arch_analyzer}")
+        _log(f"Found {arch_analyzer_name} in ./bin: {local_arch_analyzer}")
         os.environ["PATH"] = f"{local_bin}:{os.environ.get('PATH', '')}"
         return str(local_arch_analyzer)
 
     # Not found - need to clone and build
-    print(f"{arch_analyzer_name} not found in PATH or ./bin")
-    print("Installing arch-analyzer from https://github.com/ugiordan/architecture-analyzer")
+    _log(f"{arch_analyzer_name} not found in PATH or ./bin")
+    _log("Installing arch-analyzer from https://github.com/ugiordan/architecture-analyzer")
 
     tmp_dir = Path("tmp").absolute()
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -176,7 +186,7 @@ async def _ensure_arch_analyzer() -> str:
 
     # Clone the repository if not already present
     if not clone_dir.exists():
-        print(f"Cloning to {clone_dir}...")
+        _log(f"Cloning to {clone_dir}...")
         proc = await asyncio.create_subprocess_exec(
             "git", "clone",
             "https://github.com/ugiordan/architecture-analyzer",
@@ -191,12 +201,12 @@ async def _ensure_arch_analyzer() -> str:
                 "Failed to clone architecture-analyzer:"
                 f" {stderr.decode()}"
             )
-        print("Clone successful")
+        _log("Clone successful")
     else:
-        print(f"Using existing clone at {clone_dir}")
+        _log(f"Using existing clone at {clone_dir}")
 
     # Build the project
-    print("Building arch-analyzer...")
+    _log("Building arch-analyzer...")
     local_bin.mkdir(parents=True, exist_ok=True)
     proc = await asyncio.create_subprocess_exec(
         "go", "build", "-o", str(local_arch_analyzer), "./cmd/arch-analyzer",
@@ -215,7 +225,7 @@ async def _ensure_arch_analyzer() -> str:
             f" at {local_arch_analyzer}"
         )
 
-    print(f"Successfully built and installed arch-analyzer to {local_arch_analyzer}")
+    _log(f"Successfully built and installed arch-analyzer to {local_arch_analyzer}")
 
     os.environ["PATH"] = f"{local_bin}:{os.environ.get('PATH', '')}"
 
@@ -233,17 +243,17 @@ async def _ensure_arch_query() -> str:
 
     path = shutil.which(name)
     if path:
-        print(f"Found {name} in PATH: {path}")
+        _log(f"Found {name} in PATH: {path}")
         return name
 
     local_bin = Path("bin").absolute()
     local_binary = local_bin / name
     if local_binary.exists():
-        print(f"Found {name} in ./bin: {local_binary}")
+        _log(f"Found {name} in ./bin: {local_binary}")
         os.environ["PATH"] = f"{local_bin}:{os.environ.get('PATH', '')}"
         return str(local_binary)
 
-    print(f"{name} not found in PATH or ./bin — building from src/arch-query")
+    _log(f"{name} not found in PATH or ./bin — building from src/arch-query")
     src_dir = Path("src/arch-query").absolute()
     if not src_dir.exists():
         raise RuntimeError(f"Source directory not found: {src_dir}")
@@ -266,7 +276,7 @@ async def _ensure_arch_query() -> str:
             f"Build succeeded but binary not found at {local_binary}"
         )
 
-    print(f"Successfully built {name} to {local_binary}")
+    _log(f"Successfully built {name} to {local_binary}")
     os.environ["PATH"] = f"{local_bin}:{os.environ.get('PATH', '')}"
     return str(local_binary)
 
@@ -309,7 +319,7 @@ async def _pull_existing_repos(checkouts_dir: Path, org: str, suffix: str = None
         return
 
     total = len(repos)
-    print(
+    _log(
         f"\nPulling {total} existing repos in"
         f" {org_dir} ({max_concurrent} concurrent)..."
     )
@@ -322,7 +332,7 @@ async def _pull_existing_repos(checkouts_dir: Path, org: str, suffix: str = None
         async with sem:
             result = await _pull_one_repo(repo_path, env)
         done += 1
-        print(f"  [{done}/{total}] {result.strip()}")
+        _log(f"  [{done}/{total}] {result.strip()}")
         return result
 
     await asyncio.gather(*[_limited_pull(r) for r in repos])
@@ -347,15 +357,15 @@ async def _clone_org(
         exclude: Comma-separated glob patterns to exclude
     """
     if suffix:
-        print(f"\nFetching repositories from organization: {org}")
-        print(f"Target directory: {checkouts_dir}/{org}.{suffix}")
+        _log(f"\nFetching repositories from organization: {org}")
+        _log(f"Target directory: {checkouts_dir}/{org}.{suffix}")
     else:
-        print(f"\nFetching repositories from organization: {org}")
-        print(f"Target directory: {checkouts_dir}/{org}")
+        _log(f"\nFetching repositories from organization: {org}")
+        _log(f"Target directory: {checkouts_dir}/{org}")
     if branch:
-        print(f"Branch filter: {branch}")
+        _log(f"Branch filter: {branch}")
     if exclude:
-        print(f"Exclude patterns: {exclude}")
+        _log(f"Exclude patterns: {exclude}")
 
     cmd = [gh_org_clone_cmd, "-path", str(checkouts_dir)]
 
@@ -368,7 +378,7 @@ async def _clone_org(
 
     cmd.append(org)
 
-    print(f"Running: {' '.join(cmd)}")
+    _log(f"Running: {' '.join(cmd)}")
 
     env = _prepare_env()
 
@@ -387,7 +397,7 @@ async def _clone_org(
             f" {returncode} for org {org}"
         )
 
-    print(f"Successfully cloned repositories from {org}")
+    _log(f"Successfully cloned repositories from {org}")
 
 
 def _apply_exclude_files(repo_path: Path, patterns: list, repo_name: str) -> None:
@@ -408,7 +418,7 @@ def _apply_exclude_files(repo_path: Path, patterns: list, repo_name: str) -> Non
     resolved_root = repo_path.resolve()
     for pattern in patterns:
         if ".." in pattern or pattern.startswith("/"):
-            print(f"  exclude_files [{repo_name}]: REJECTED unsafe pattern: {pattern}")
+            _log(f"  exclude_files [{repo_name}]: REJECTED unsafe pattern: {pattern}")
             continue
         matches = sorted(repo_path.glob(pattern))
         if not matches:
@@ -418,7 +428,7 @@ def _apply_exclude_files(repo_path: Path, patterns: list, repo_name: str) -> Non
             if resolved != resolved_root and not str(resolved).startswith(
                 str(resolved_root) + os.sep
             ):
-                print(
+                _log(
                     f"  exclude_files [{repo_name}]:"
                     f" SKIPPED {match} (escapes repo root)"
                 )
@@ -426,10 +436,10 @@ def _apply_exclude_files(repo_path: Path, patterns: list, repo_name: str) -> Non
             rel = match.relative_to(repo_path)
             if match.is_dir():
                 shutil.rmtree(match)
-                print(f"  exclude_files [{repo_name}]: removed directory {rel}/")
+                _log(f"  exclude_files [{repo_name}]: removed directory {rel}/")
             elif match.exists():
                 match.unlink()
-                print(f"  exclude_files [{repo_name}]: removed {rel}")
+                _log(f"  exclude_files [{repo_name}]: removed {rel}")
 
 
 async def _clone_repo(
@@ -459,19 +469,19 @@ async def _clone_repo(
             if proc.returncode == 0:
                 out = stdout.decode().strip()
                 if "Already up to date" in out:
-                    print(f"  {org}/{repo}: up to date")
+                    _log(f"  {org}/{repo}: up to date")
                 else:
-                    print(f"  {org}/{repo}: updated")
+                    _log(f"  {org}/{repo}: updated")
             else:
-                print(f"  {org}/{repo}: pull failed ({stderr.decode().strip()})")
+                _log(f"  {org}/{repo}: pull failed ({stderr.decode().strip()})")
         else:
-            print(f"  Skipped {org}/{repo} (already exists)")
+            _log(f"  Skipped {org}/{repo} (already exists)")
         if exclude_files:
             _apply_exclude_files(repo_path, exclude_files, repo)
         return
 
     clone_url = f"https://github.com/{org}/{repo}.git"
-    print(f"  Cloning {org}/{repo}...")
+    _log(f"  Cloning {org}/{repo}...")
 
     repo_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -493,9 +503,9 @@ async def _clone_repo(
 
     if returncode != 0:
         if branch:
-            print(f"  Skipped {org}/{repo} (branch '{branch}' not found)")
+            _log(f"  Skipped {org}/{repo} (branch '{branch}' not found)")
         else:
-            print(f"  Failed to clone {org}/{repo}")
+            _log(f"  Failed to clone {org}/{repo}")
     elif exclude_files:
         _apply_exclude_files(repo_path, exclude_files, repo)
 
@@ -525,6 +535,13 @@ async def fetch_repositories(
         platform: Platform name to load config from platforms.yaml
         pull: If True, pull latest changes in existing repos
     """
+    global _log_file
+    checkouts_path = Path(checkouts_dir).absolute()
+    checkouts_path.mkdir(parents=True, exist_ok=True)
+    log_path = checkouts_path / "fetch.log"
+    _log_file = open(log_path, "w")  # noqa: SIM115
+    _log(f"fetch started at {datetime.now(timezone.utc).isoformat()}")
+
     if platform and "GITHUB_TOKEN" not in os.environ:
         raise RuntimeError(
             "GITHUB_TOKEN is not set. The fetch phase requires a"
@@ -533,16 +550,13 @@ async def fetch_repositories(
             "  export GITHUB_TOKEN=ghp_..."
         )
     if not platform and "GITHUB_TOKEN" not in os.environ:
-        print(
+        _log(
             "WARNING: GITHUB_TOKEN is not set. Private repos"
             " will not be visible and API rate limits will"
             " be restricted to 60 requests/hour."
         )
 
     gh_org_clone_cmd = await _ensure_gh_org_clone()
-
-    checkouts_path = Path(checkouts_dir).absolute()
-    checkouts_path.mkdir(parents=True, exist_ok=True)
 
     if platform:
         config = load_platform_config(platform)
@@ -597,7 +611,7 @@ async def fetch_repositories(
         # falling back to platform suffix
         extra_repos = config.get("extra_repos", [])
         if extra_repos:
-            print(f"\nCloning {len(extra_repos)} extra repo(s)...")
+            _log(f"\nCloning {len(extra_repos)} extra repo(s)...")
             for entry in extra_repos:
                 repo_branch = entry.get("branch")
                 repo_suffix = entry.get("suffix") or suffix
@@ -643,3 +657,8 @@ async def fetch_repositories(
 
     else:
         raise ValueError("Either 'org' or '--platform' must be specified")
+
+    _log(f"fetch finished at {datetime.now(timezone.utc).isoformat()}")
+    _log(f"log written to {log_path}")
+    _log_file.close()
+    _log_file = None
