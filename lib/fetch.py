@@ -392,11 +392,24 @@ async def _clone_org(
 
 def _apply_exclude_files(repo_path: Path, patterns: list, repo_name: str) -> None:
     """Remove files/directories matching glob patterns from a cloned repo."""
+    resolved_root = repo_path.resolve()
     for pattern in patterns:
+        if ".." in pattern or pattern.startswith("/"):
+            print(f"  exclude_files [{repo_name}]: REJECTED unsafe pattern: {pattern}")
+            continue
         matches = sorted(repo_path.glob(pattern))
         if not matches:
             continue
         for match in matches:
+            resolved = match.resolve()
+            if resolved != resolved_root and not str(resolved).startswith(
+                str(resolved_root) + os.sep
+            ):
+                print(
+                    f"  exclude_files [{repo_name}]:"
+                    f" SKIPPED {match} (escapes repo root)"
+                )
+                continue
             rel = match.relative_to(repo_path)
             if match.is_dir():
                 shutil.rmtree(match)
@@ -436,12 +449,12 @@ async def _clone_repo(
                     print(f"  {org}/{repo}: up to date")
                 else:
                     print(f"  {org}/{repo}: updated")
-                if exclude_files:
-                    _apply_exclude_files(repo_path, exclude_files, repo)
             else:
                 print(f"  {org}/{repo}: pull failed ({stderr.decode().strip()})")
         else:
             print(f"  Skipped {org}/{repo} (already exists)")
+        if exclude_files:
+            _apply_exclude_files(repo_path, exclude_files, repo)
         return
 
     clone_url = f"https://github.com/{org}/{repo}.git"
@@ -524,9 +537,13 @@ async def fetch_repositories(
             all_excludes.extend(exclude.split(","))
         exclude_str = ",".join(all_excludes) if all_excludes else None
 
+        platform_org_dirs = set()
+
         # Clone primary orgs (with branch + suffix)
         orgs = config.get("orgs", [])
         for cfg_org in orgs:
+            org_dir_name = f"{cfg_org}.{suffix}" if suffix else cfg_org
+            platform_org_dirs.add(org_dir_name)
             await _clone_org(gh_org_clone_cmd, cfg_org, checkouts_path,
                              branch=branch, suffix=suffix, exclude=exclude_str)
             if pull:
@@ -542,6 +559,8 @@ async def fetch_repositories(
                 if isinstance(entry, dict)
                 else None
             ) or suffix
+            org_dir_name = f"{org_name}.{org_suffix}" if org_suffix else org_name
+            platform_org_dirs.add(org_dir_name)
             await _clone_org(gh_org_clone_cmd, org_name, checkouts_path,
                              branch=org_branch, suffix=org_suffix, exclude=exclude_str)
             if pull:
@@ -555,6 +574,10 @@ async def fetch_repositories(
             for entry in extra_repos:
                 repo_branch = entry.get("branch")
                 repo_suffix = entry.get("suffix") or suffix
+                org_dir_name = (
+                    f"{entry['org']}.{repo_suffix}" if repo_suffix else entry["org"]
+                )
+                platform_org_dirs.add(org_dir_name)
                 await _clone_repo(checkouts_path, entry["org"], entry["repo"],
                                   branch=repo_branch, suffix=repo_suffix, pull=pull,
                                   exclude_files=entry.get("exclude_files"))
@@ -562,7 +585,14 @@ async def fetch_repositories(
         # Apply platform-wide post_checkout exclude_files rules
         post_checkout = config.get("post_checkout", [])
         if post_checkout:
-            for org_dir in sorted(checkouts_path.iterdir()):
+            for i, rule in enumerate(post_checkout):
+                if "repo" not in rule or "exclude_files" not in rule:
+                    raise ValueError(
+                        f"post_checkout[{i}]: each entry must have"
+                        " 'repo' and 'exclude_files' keys"
+                    )
+            for org_dir_name in sorted(platform_org_dirs):
+                org_dir = checkouts_path / org_dir_name
                 if not org_dir.is_dir():
                     continue
                 for repo_dir in sorted(org_dir.iterdir()):
