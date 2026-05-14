@@ -13,7 +13,7 @@ _log_file = None
 
 
 def _log(msg: str) -> None:
-    _log(msg)
+    print(msg)
     if _log_file is not None:
         _log_file.write(msg + "\n")
         _log_file.flush()
@@ -538,7 +538,9 @@ async def fetch_repositories(
     global _log_file
     checkouts_path = Path(checkouts_dir).absolute()
     checkouts_path.mkdir(parents=True, exist_ok=True)
-    log_path = checkouts_path / "fetch.log"
+    log_dir = Path("logs").absolute()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "fetch.log"
     _log_file = open(log_path, "w")  # noqa: SIM115
     _log(f"fetch started at {datetime.now(timezone.utc).isoformat()}")
 
