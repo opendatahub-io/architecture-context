@@ -525,6 +525,20 @@ async def fetch_repositories(
         platform: Platform name to load config from platforms.yaml
         pull: If True, pull latest changes in existing repos
     """
+    if platform and "GITHUB_TOKEN" not in os.environ:
+        raise RuntimeError(
+            "GITHUB_TOKEN is not set. The fetch phase requires a"
+            " GitHub token to list org repositories (including"
+            " private ones) and avoid API rate limits.\n\n"
+            "  export GITHUB_TOKEN=ghp_..."
+        )
+    if not platform and "GITHUB_TOKEN" not in os.environ:
+        print(
+            "WARNING: GITHUB_TOKEN is not set. Private repos"
+            " will not be visible and API rate limits will"
+            " be restricted to 60 requests/hour."
+        )
+
     gh_org_clone_cmd = await _ensure_gh_org_clone()
 
     checkouts_path = Path(checkouts_dir).absolute()
