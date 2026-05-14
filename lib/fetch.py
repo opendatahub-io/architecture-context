@@ -392,6 +392,19 @@ async def _clone_org(
 
 def _apply_exclude_files(repo_path: Path, patterns: list, repo_name: str) -> None:
     """Remove files/directories matching glob patterns from a cloned repo."""
+    if repo_path.is_symlink():
+        raise ValueError(
+            f"exclude_files for {repo_name}: repo path is a symlink"
+        )
+    if not (repo_path / ".git").is_dir():
+        raise ValueError(
+            f"exclude_files for {repo_name}: not a git checkout"
+        )
+    if isinstance(patterns, str) or not isinstance(patterns, list):
+        raise ValueError(
+            f"exclude_files for {repo_name} must be a list of"
+            " glob patterns, not a bare string"
+        )
     resolved_root = repo_path.resolve()
     for pattern in patterns:
         if ".." in pattern or pattern.startswith("/"):
