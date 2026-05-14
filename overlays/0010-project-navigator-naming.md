@@ -33,7 +33,7 @@ The feature consists of two repositories:
 | rhoai-mcp | opendatahub-io | Frontend — MCP (Model Context Protocol) server for RHOAI |
 | llm-d-planner | llm-d-incubation | Backend — planning and orchestration engine |
 
-Neither repository has RHOAI release branches; both are cloned from `main` via `extra_repos`. The feature entered Developer Preview in RHOAI 3.4 and is planned for Tech Preview in 3.5.
+Neither repository has RHOAI release branches; both are cloned from `main` via `extra_repos`. The feature entered Developer Preview in RHOAI 3.4, is planned for Tech Preview in 3.5, and should be treated as Tech Preview for `next` unless superseded by a later overlay.
 
 ## Impact on Strategies
 
