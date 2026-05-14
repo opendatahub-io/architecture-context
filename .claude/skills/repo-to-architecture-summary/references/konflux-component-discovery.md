@@ -53,7 +53,7 @@ Produce a table mapping each Dockerfile to a component:
 - **Primary service**: The main binary/server the repo exists to produce
 - **Sidecar module**: Runs alongside primary in the same pod (BFF modules, kube-rbac-proxy)
 - **Build variant**: Same component with instrumentation or different config (e.g., sealights)
-- **Utility image**: CLI tool, migration runner, init container
+- **Utility image**: CLI tool, migration runner, init container — note that for init containers, the Dockerfile `CMD` is a default often overridden by the consuming deployment's `command:` field; describe the actual deployed behavior, not just the image default
 - **Optional module**: Only deployed when a feature is enabled in platform config
 
 Intent drives the Sub-Component Details section. For multi-component repos, every component except build variants gets a dedicated subsection.

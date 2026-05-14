@@ -6,7 +6,12 @@ import subprocess
 from pathlib import Path
 
 from lib.build_info import get_full_build_info
-from lib.component_discovery import get_component_map_metadata, read_component_map
+from lib.component_discovery import (
+    apply_platform_overrides,
+    get_component_map_metadata,
+    read_component_map,
+)
+from lib.fetch import load_platform_config
 
 
 def _discover_platform_maps(architecture_dir: Path) -> list[tuple[str, Path]]:
@@ -105,6 +110,12 @@ async def run_collect_architectures_phase(args) -> None:
         if not components:
             print(f"  No components in {map_file}")
             continue
+
+        platform_config = load_platform_config(platform_key)
+        if platform_config:
+            components = apply_platform_overrides(
+                components, platform_config, checkouts_base="checkouts",
+            )
 
         # Find components with architecture files
         # Check both canonical and legacy filenames
