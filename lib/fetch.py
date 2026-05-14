@@ -546,6 +546,9 @@ async def fetch_repositories(
     try:
         _log(f"fetch started at {datetime.now(timezone.utc).isoformat()}")
 
+        # Warn-only, not a hard gate: GITHUB_TOKEN improves API rate
+        # limits but does not grant visibility to private repos —
+        # SSH keys handle that (see extra_repos protocol: ssh).
         if "GITHUB_TOKEN" not in os.environ:
             _log(
                 "WARNING: GITHUB_TOKEN is not set. API rate limits"
