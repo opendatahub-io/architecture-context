@@ -476,8 +476,12 @@ async def _clone_repo(
 
     if protocol == "ssh":
         clone_url = f"git@github.com:{org}/{repo}.git"
-    else:
+    elif protocol == "https":
         clone_url = f"https://github.com/{org}/{repo}.git"
+    else:
+        raise ValueError(
+            f"Unknown protocol '{protocol}' for {org}/{repo}"
+        )
     _log(f"  Cloning {org}/{repo}...")
 
     repo_path.parent.mkdir(parents=True, exist_ok=True)
@@ -539,118 +543,130 @@ async def fetch_repositories(
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "fetch.log"
     _log_file = open(log_path, "w")  # noqa: SIM115
-    _log(f"fetch started at {datetime.now(timezone.utc).isoformat()}")
+    try:
+        _log(f"fetch started at {datetime.now(timezone.utc).isoformat()}")
 
-    if "GITHUB_TOKEN" not in os.environ:
-        _log(
-            "WARNING: GITHUB_TOKEN is not set. API rate limits"
-            " will be restricted to 60 requests/hour."
-        )
+        if "GITHUB_TOKEN" not in os.environ:
+            _log(
+                "WARNING: GITHUB_TOKEN is not set. API rate limits"
+                " will be restricted to 60 requests/hour."
+            )
 
-    gh_org_clone_cmd = await _ensure_gh_org_clone()
+        gh_org_clone_cmd = await _ensure_gh_org_clone()
 
-    if platform:
-        config = load_platform_config(platform)
+        if platform:
+            config = load_platform_config(platform)
 
-        # Branch precedence: CLI --branch > config branch
-        if not branch:
-            branch = config.get("branch")
+            # Branch precedence: CLI --branch > config branch
+            if not branch:
+                branch = config.get("branch")
 
-        # Suffix precedence: CLI --suffix > config suffix > branch fallback
-        if not suffix:
-            suffix = config.get("suffix")
-            if not suffix and branch:
+            # Suffix precedence: CLI --suffix > config suffix > branch fallback
+            if not suffix:
+                suffix = config.get("suffix")
+                if not suffix and branch:
+                    suffix = branch
+
+            # Merge exclude patterns from config and CLI
+            config_excludes = config.get("exclude_repos", [])
+            all_excludes = list(config_excludes)
+            if exclude:
+                all_excludes.extend(exclude.split(","))
+            exclude_str = ",".join(all_excludes) if all_excludes else None
+
+            platform_org_dirs = set()
+
+            # Clone primary orgs (with branch + suffix)
+            orgs = config.get("orgs", [])
+            for cfg_org in orgs:
+                org_dir_name = f"{cfg_org}.{suffix}" if suffix else cfg_org
+                platform_org_dirs.add(org_dir_name)
+                await _clone_org(gh_org_clone_cmd, cfg_org, checkouts_path,
+                                 branch=branch, suffix=suffix, exclude=exclude_str)
+                if pull:
+                    await _pull_existing_repos(checkouts_path, cfg_org, suffix=suffix)
+
+            # Clone extra orgs — per-entry overrides, falling back to platform suffix
+            extra_orgs = config.get("extra_orgs", [])
+            for entry in extra_orgs:
+                org_name = entry.get("org") if isinstance(entry, dict) else entry
+                org_branch = entry.get("branch") if isinstance(entry, dict) else None
+                org_suffix = (
+                    entry.get("suffix")
+                    if isinstance(entry, dict)
+                    else None
+                ) or suffix
+                org_dir_name = f"{org_name}.{org_suffix}" if org_suffix else org_name
+                platform_org_dirs.add(org_dir_name)
+                await _clone_org(gh_org_clone_cmd, org_name, checkouts_path,
+                                 branch=org_branch, suffix=org_suffix,
+                                 exclude=exclude_str)
+                if pull:
+                    await _pull_existing_repos(
+                        checkouts_path, org_name, suffix=org_suffix,
+                    )
+
+            # Clone individual extra repos -- per-entry overrides,
+            # falling back to platform suffix
+            extra_repos = config.get("extra_repos", [])
+            if extra_repos:
+                _log(f"\nCloning {len(extra_repos)} extra repo(s)...")
+                for entry in extra_repos:
+                    repo_branch = entry.get("branch")
+                    repo_suffix = entry.get("suffix") or suffix
+                    org_dir_name = (
+                        f"{entry['org']}.{repo_suffix}"
+                        if repo_suffix
+                        else entry["org"]
+                    )
+                    platform_org_dirs.add(org_dir_name)
+                    await _clone_repo(
+                        checkouts_path, entry["org"], entry["repo"],
+                        branch=repo_branch, suffix=repo_suffix, pull=pull,
+                        exclude_files=entry.get("exclude_files"),
+                        protocol=entry.get("protocol", "https"),
+                    )
+
+            # Apply platform-wide post_checkout exclude_files rules
+            post_checkout = config.get("post_checkout", [])
+            if post_checkout:
+                for i, rule in enumerate(post_checkout):
+                    if "repo" not in rule or "exclude_files" not in rule:
+                        raise ValueError(
+                            f"post_checkout[{i}]: each entry must have"
+                            " 'repo' and 'exclude_files' keys"
+                        )
+                for org_dir_name in sorted(platform_org_dirs):
+                    org_dir = checkouts_path / org_dir_name
+                    if not org_dir.is_dir():
+                        continue
+                    for repo_dir in sorted(org_dir.iterdir()):
+                        if not repo_dir.is_dir():
+                            continue
+                        for rule in post_checkout:
+                            if fnmatch.fnmatch(repo_dir.name, rule["repo"]):
+                                _apply_exclude_files(
+                                    repo_dir, rule["exclude_files"],
+                                    repo_dir.name,
+                                )
+
+        elif org:
+            # Direct org mode (original behavior)
+            if branch and not suffix:
                 suffix = branch
 
-        # Merge exclude patterns from config and CLI
-        config_excludes = config.get("exclude_repos", [])
-        all_excludes = list(config_excludes)
-        if exclude:
-            all_excludes.extend(exclude.split(","))
-        exclude_str = ",".join(all_excludes) if all_excludes else None
-
-        platform_org_dirs = set()
-
-        # Clone primary orgs (with branch + suffix)
-        orgs = config.get("orgs", [])
-        for cfg_org in orgs:
-            org_dir_name = f"{cfg_org}.{suffix}" if suffix else cfg_org
-            platform_org_dirs.add(org_dir_name)
-            await _clone_org(gh_org_clone_cmd, cfg_org, checkouts_path,
-                             branch=branch, suffix=suffix, exclude=exclude_str)
+            await _clone_org(gh_org_clone_cmd, org, checkouts_path,
+                             branch=branch, suffix=suffix, exclude=exclude)
             if pull:
-                await _pull_existing_repos(checkouts_path, cfg_org, suffix=suffix)
+                await _pull_existing_repos(checkouts_path, org, suffix=suffix)
 
-        # Clone extra orgs — per-entry overrides, falling back to platform suffix
-        extra_orgs = config.get("extra_orgs", [])
-        for entry in extra_orgs:
-            org_name = entry.get("org") if isinstance(entry, dict) else entry
-            org_branch = entry.get("branch") if isinstance(entry, dict) else None
-            org_suffix = (
-                entry.get("suffix")
-                if isinstance(entry, dict)
-                else None
-            ) or suffix
-            org_dir_name = f"{org_name}.{org_suffix}" if org_suffix else org_name
-            platform_org_dirs.add(org_dir_name)
-            await _clone_org(gh_org_clone_cmd, org_name, checkouts_path,
-                             branch=org_branch, suffix=org_suffix, exclude=exclude_str)
-            if pull:
-                await _pull_existing_repos(checkouts_path, org_name, suffix=org_suffix)
+        else:
+            raise ValueError(
+                "Either 'org' or '--platform' must be specified"
+            )
 
-        # Clone individual extra repos -- per-entry overrides,
-        # falling back to platform suffix
-        extra_repos = config.get("extra_repos", [])
-        if extra_repos:
-            _log(f"\nCloning {len(extra_repos)} extra repo(s)...")
-            for entry in extra_repos:
-                repo_branch = entry.get("branch")
-                repo_suffix = entry.get("suffix") or suffix
-                org_dir_name = (
-                    f"{entry['org']}.{repo_suffix}" if repo_suffix else entry["org"]
-                )
-                platform_org_dirs.add(org_dir_name)
-                await _clone_repo(checkouts_path, entry["org"], entry["repo"],
-                                  branch=repo_branch, suffix=repo_suffix, pull=pull,
-                                  exclude_files=entry.get("exclude_files"),
-                                  protocol=entry.get("protocol", "https"))
-
-        # Apply platform-wide post_checkout exclude_files rules
-        post_checkout = config.get("post_checkout", [])
-        if post_checkout:
-            for i, rule in enumerate(post_checkout):
-                if "repo" not in rule or "exclude_files" not in rule:
-                    raise ValueError(
-                        f"post_checkout[{i}]: each entry must have"
-                        " 'repo' and 'exclude_files' keys"
-                    )
-            for org_dir_name in sorted(platform_org_dirs):
-                org_dir = checkouts_path / org_dir_name
-                if not org_dir.is_dir():
-                    continue
-                for repo_dir in sorted(org_dir.iterdir()):
-                    if not repo_dir.is_dir():
-                        continue
-                    for rule in post_checkout:
-                        if fnmatch.fnmatch(repo_dir.name, rule["repo"]):
-                            _apply_exclude_files(
-                                repo_dir, rule["exclude_files"], repo_dir.name,
-                            )
-
-    elif org:
-        # Direct org mode (original behavior)
-        if branch and not suffix:
-            suffix = branch
-
-        await _clone_org(gh_org_clone_cmd, org, checkouts_path,
-                         branch=branch, suffix=suffix, exclude=exclude)
-        if pull:
-            await _pull_existing_repos(checkouts_path, org, suffix=suffix)
-
-    else:
-        raise ValueError("Either 'org' or '--platform' must be specified")
-
-    _log(f"fetch finished at {datetime.now(timezone.utc).isoformat()}")
-    _log(f"log written to {log_path}")
-    _log_file.close()
-    _log_file = None
+        _log(f"fetch finished at {datetime.now(timezone.utc).isoformat()}")
+        _log(f"log written to {log_path}")
+    finally:
+        _log_file.close()
+        _log_file = None
