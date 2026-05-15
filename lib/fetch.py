@@ -24,11 +24,15 @@ def _prepare_env() -> dict:
     Prepare environment variables for subprocess calls.
 
     Includes GITHUB_TOKEN if set in environment (e.g., from .env file).
+    Sets GIT_TERMINAL_PROMPT=0 so git never blocks waiting for
+    credentials — failed auth surfaces as a clone error instead.
 
     Returns:
         Dictionary of environment variables to pass to subprocess
     """
-    return os.environ.copy()
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
 
 
 def load_platform_config(platform: str, config_path: str = "platforms.yaml") -> dict:
@@ -338,6 +342,7 @@ async def _clone_org(
     branch: str = None,
     suffix: str = None,
     exclude: str = None,
+    ssh: bool = False,
 ) -> None:
     """Clone all repositories from a single GitHub org.
 
@@ -348,6 +353,7 @@ async def _clone_org(
         branch: Optional branch to clone
         suffix: Optional directory suffix (e.g., org.suffix/)
         exclude: Comma-separated glob patterns to exclude
+        ssh: If True, pass -ssh to gh-org-clone
     """
     if suffix:
         _log(f"\nFetching repositories from organization: {org}")
@@ -368,6 +374,8 @@ async def _clone_org(
         cmd.extend(["-suffix", suffix])
     if exclude:
         cmd.extend(["-exclude", exclude])
+    if ssh:
+        cmd.append("-ssh")
 
     cmd.append(org)
 
@@ -581,11 +589,14 @@ async def fetch_repositories(
 
             # Clone primary orgs (with branch + suffix)
             orgs = config.get("orgs", [])
+            platform_protocol = config.get("protocol", "https")
+            use_ssh = platform_protocol == "ssh"
             for cfg_org in orgs:
                 org_dir_name = f"{cfg_org}.{suffix}" if suffix else cfg_org
                 platform_org_dirs.add(org_dir_name)
                 await _clone_org(gh_org_clone_cmd, cfg_org, checkouts_path,
-                                 branch=branch, suffix=suffix, exclude=exclude_str)
+                                 branch=branch, suffix=suffix,
+                                 exclude=exclude_str, ssh=use_ssh)
                 if pull:
                     await _pull_existing_repos(checkouts_path, cfg_org, suffix=suffix)
 
@@ -599,11 +610,17 @@ async def fetch_repositories(
                     if isinstance(entry, dict)
                     else None
                 ) or suffix
+                org_protocol = (
+                    entry.get("protocol")
+                    if isinstance(entry, dict)
+                    else None
+                ) or platform_protocol
                 org_dir_name = f"{org_name}.{org_suffix}" if org_suffix else org_name
                 platform_org_dirs.add(org_dir_name)
                 await _clone_org(gh_org_clone_cmd, org_name, checkouts_path,
                                  branch=org_branch, suffix=org_suffix,
-                                 exclude=exclude_str)
+                                 exclude=exclude_str,
+                                 ssh=org_protocol == "ssh")
                 if pull:
                     await _pull_existing_repos(
                         checkouts_path, org_name, suffix=org_suffix,
