@@ -1,81 +1,62 @@
 sequenceDiagram
     autonumber
 
-    rect rgb(240, 248, 255)
-        Note over Client,ModelStorage: Flow 1: InferenceService Model Serving Request
-        participant Client as External Client
-        participant Gateway as Istio Gateway /<br/>OpenShift Router<br/>443/TCP HTTPS TLS 1.2+
-        participant VS as VirtualService /<br/>HTTPRoute<br/>80/TCP HTTP mTLS
-        participant AuthProxy as oauth-proxy /<br/>kube-rbac-proxy<br/>8443/TCP
-        participant Predictor as Predictor Pod<br/>8080/TCP HTTP
-        participant ModelStorage as Model Storage<br/>443/TCP HTTPS
+    %% Flow 1: InferenceService Model Serving (Raw Deployment Mode)
+    rect rgb(230, 245, 255)
+    Note over Client,CloudStorage: Flow 1: InferenceService — Raw Deployment Mode
+    participant Client as External Client
+    participant Gateway as Gateway / Ingress<br/>443/TCP HTTPS TLS 1.2+
+    participant PredSvc as {isvc}-predictor Service<br/>8080/TCP HTTP or 8443/TCP HTTPS
+    participant Predictor as Predictor Pod<br/>8080/TCP HTTP
+    participant CloudStorage as Cloud Storage<br/>(S3 / GCS / Azure / HF / OCI)<br/>443/TCP HTTPS TLS 1.2+
 
-        Client->>Gateway: POST /v1/models/{model}:predict<br/>HTTPS/443, TLS 1.2+<br/>Auth: Bearer Token (optional)
-        Gateway->>VS: Route via VirtualService/HTTPRoute<br/>HTTP/80, mTLS (Istio mesh)
-        VS->>AuthProxy: Forward to predictor service<br/>HTTP/80, mTLS
-        AuthProxy->>Predictor: Authenticated request<br/>HTTP/8080, localhost
-        Note over Predictor,ModelStorage: Init: storage-initializer downloads model
-        Predictor->>ModelStorage: Load model artifacts (init)<br/>HTTPS/443, TLS 1.2+<br/>Auth: AWS IAM / Access Key / GCP / Azure
-        ModelStorage-->>Predictor: Model artifacts
-        Predictor-->>AuthProxy: Prediction response
-        AuthProxy-->>VS: Response
-        VS-->>Gateway: Response
-        Gateway-->>Client: JSON prediction result<br/>HTTPS/443
+    Client->>Gateway: HTTPS/443<br/>Auth: None or OAuth
+    Gateway->>PredSvc: HTTPRoute → Service<br/>8080/TCP HTTP or 8443/TCP HTTPS<br/>Auth: None or kube-rbac-proxy
+    PredSvc->>Predictor: HTTP/8080<br/>No encryption
+    Note over Predictor,CloudStorage: Init container (storage-initializer) runs first
+    Predictor->>CloudStorage: HTTPS/443<br/>TLS 1.2+<br/>Auth: Cloud credentials (IAM/JSON/Token)
+    CloudStorage-->>Predictor: Model artifacts
+    Predictor-->>PredSvc: Inference result
+    PredSvc-->>Gateway: Response
+    Gateway-->>Client: JSON Response
     end
 
-    rect rgb(255, 248, 240)
-        Note over Client2,DecodePod: Flow 2: LLMInferenceService Request (Disaggregated P/D)
-        participant Client2 as External Client
-        participant GW2 as Gateway<br/>443/TCP HTTPS TLS 1.2+
-        participant Scheduler as InferencePool<br/>Scheduler<br/>gRPC TLS
-        participant PrefillPod as Prefill Workload Pod<br/>8000/TCP HTTPS
-        participant DecodePod as Decode Workload Pod<br/>8000/TCP HTTPS
+    %% Flow 2: LLMInferenceService with Scheduler (Gateway API)
+    rect rgb(255, 245, 230)
+    Note over Client,Prometheus: Flow 2: LLMInferenceService — Gateway API + Scheduler
+    participant PlatformGW as Platform Gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant InfPool as InferencePool<br/>(scheduler routing)
+    participant EPP as Scheduler EPP<br/>9002/TCP gRPC TLS
+    participant WorkloadPod as Workload Pod<br/>8000/TCP HTTPS TLS
+    participant Prometheus as Prometheus<br/>HTTPS TLS
+    participant WVA as WVA Autoscaler
 
-        Client2->>GW2: POST inference request<br/>HTTPS/443, TLS 1.2+<br/>Auth: Bearer Token
-        GW2->>Scheduler: Route via HTTPRoute<br/>gRPC, TLS
-        Scheduler->>PrefillPod: Schedule prefill<br/>HTTPS/8000, TLS (self-signed)
-        PrefillPod->>DecodePod: Route via routing sidecar<br/>HTTPS/8000, TLS (self-signed)
-        DecodePod-->>GW2: Inference response<br/>HTTPS, TLS
-        GW2-->>Client2: Response<br/>HTTPS/443
+    Client->>PlatformGW: HTTPS/443<br/>Auth: Kuadrant AuthPolicy
+    PlatformGW->>InfPool: HTTPRoute → InferencePool
+    InfPool->>EPP: gRPC/9002<br/>TLS (self-signed)<br/>Auth: None
+    EPP->>WorkloadPod: HTTPS/8000<br/>TLS (self-signed or service-ca)<br/>Auth: None
+    WorkloadPod-->>EPP: Inference result
+    EPP-->>InfPool: Response
+    InfPool-->>PlatformGW: Response
+    PlatformGW-->>Client: JSON Response
+
+    Note over WVA,Prometheus: Autoscaling feedback loop
+    WVA->>Prometheus: Query wva_desired_replicas<br/>HTTPS / Bearer Token
+    Prometheus-->>WVA: Metric values
+    WVA->>WorkloadPod: Scale via HPA/KEDA
     end
 
-    rect rgb(240, 255, 240)
-        Note over LMCacheCR,NodePV: Flow 3: LocalModel Cache Download
-        participant LMCacheCR as LocalModelCache CR
-        participant LMCtrl as localmodel-controller
-        participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-        participant LMAgent as localmodelnode-agent
-        participant DownloadJob as Download Job<br/>(storage-initializer)
-        participant CloudStorage as Cloud Storage<br/>443/TCP HTTPS
-        participant NodePV as Node Local PV
+    %% Flow 3: InferenceGraph Routing
+    rect rgb(230, 255, 230)
+    Note over Client,ISvcB: Flow 3: InferenceGraph — Multi-model Routing
+    participant RouterSvc as Router Service<br/>8080/TCP HTTP
+    participant ISvcA as InferenceService A<br/>(predictor)<br/>8080/TCP HTTP
+    participant ISvcB as InferenceService B<br/>(transformer)<br/>8080/TCP HTTP
 
-        LMCacheCR->>LMCtrl: CRD Watch event
-        LMCtrl->>K8sAPI: Create PV/PVC<br/>HTTPS/6443, ServiceAccount Token
-        LMCtrl->>K8sAPI: Update LocalModelNode spec<br/>HTTPS/6443, ServiceAccount Token
-        LMAgent->>K8sAPI: Watch LocalModelNode<br/>HTTPS/6443, ServiceAccount Token
-        LMAgent->>K8sAPI: Create download Job<br/>HTTPS/6443, ServiceAccount Token
-        DownloadJob->>CloudStorage: Download model artifacts<br/>HTTPS/443, TLS 1.2+<br/>Auth: Storage credentials
-        CloudStorage-->>DownloadJob: Model artifacts
-        DownloadJob->>NodePV: Write to local filesystem
-        LMAgent->>K8sAPI: Update LocalModelNode status
-    end
-
-    rect rgb(255, 240, 255)
-        Note over IGClient,ISvcB: Flow 4: InferenceGraph DAG Routing
-        participant IGClient as External Client
-        participant IGRouter as kserve-router<br/>8080/TCP HTTP/HTTPS
-        participant TokenReview as K8s TokenReview API<br/>6443/TCP HTTPS
-        participant ISvcA as InferenceService A<br/>80/TCP HTTP mTLS
-        participant ISvcB as InferenceService B<br/>80/TCP HTTP mTLS
-
-        IGClient->>IGRouter: POST inference request<br/>HTTP(S)/8080, TLS (optional)<br/>Auth: Bearer Token (optional)
-        IGRouter->>TokenReview: Validate bearer token<br/>HTTPS/6443, ServiceAccount Token
-        TokenReview-->>IGRouter: SubjectAccessReview result
-        par DAG fan-out (splitter/ensemble/sequence)
-            IGRouter->>ISvcA: Inference request<br/>HTTP/80, mTLS (mesh)
-            ISvcA-->>IGRouter: Partial result
-            IGRouter->>ISvcB: Inference request<br/>HTTP/80, mTLS (mesh)
-            ISvcB-->>IGRouter: Partial result
-        end
-        IGRouter-->>IGClient: Combined response<br/>HTTP(S)/8080
+    Client->>RouterSvc: HTTP/8080<br/>Auth: None
+    RouterSvc->>ISvcA: HTTP/8080 — Step node
+    ISvcA-->>RouterSvc: Partial result
+    RouterSvc->>ISvcB: HTTP/8080 — Step node
+    ISvcB-->>RouterSvc: Partial result
+    RouterSvc-->>Client: Combined response
     end

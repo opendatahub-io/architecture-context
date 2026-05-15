@@ -1,38 +1,55 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and manages distributed ML training jobs via TrainJob CRs"
+        user = person "Data Scientist" "Creates and manages distributed ML training jobs via TrainJob CRs or Python SDK"
 
-        trainer = softwareSystem "Kubeflow Trainer" "Kubernetes-native operator for orchestrating distributed ML training jobs across PyTorch, JAX, TensorFlow, and MPI" {
-            controller = container "trainer-controller-manager" "Manages TrainJob, TrainingRuntime, and ClusterTrainingRuntime CRDs; creates JobSet, NetworkPolicy, and PodGroup resources" "Go Operator (controller-runtime)"
-            webhook = container "Webhook Server" "Validates TrainJob, TrainingRuntime, and ClusterTrainingRuntime resources on create/update" "Go Service, 9443/TCP HTTPS"
-            progressionTracker = container "RHAI Progression Tracker" "Polls training pod HTTP metrics for real-time training progress; updates TrainJob annotations" "Controller Extension (RHOAI)"
-            runtimes = container "ClusterTrainingRuntimes" "Pre-configured training templates for PyTorch CUDA/ROCm/CPU with curated container images" "Cluster-scoped CRs (RHOAI)"
+        trainer = softwareSystem "Kubeflow Trainer" "Kubernetes operator that manages distributed ML training jobs by translating TrainJob specifications into JobSets with framework-specific configuration" {
+            controller = container "trainer-controller-manager" "Reconciles TrainJob, TrainingRuntime, and ClusterTrainingRuntime CRDs; creates JobSets and supporting resources via plugin framework" "Go Operator (controller-runtime)"
+            webhookServer = container "Webhook Server" "Validates TrainJob, TrainingRuntime, and ClusterTrainingRuntime resources on create/update" "Go (9443/TCP HTTPS)"
+            pluginFramework = container "Plugin Framework" "Extensible plugin system with JobSet, Torch, MPI, PlainML, CoScheduling, and Volcano plugins" "Go"
+            rhaiFeatures = container "RHOAI Features" "Progression tracking (polls training pod metrics) and NetworkPolicy creation for pod isolation" "Go"
+            dataCacheHead = container "Data Cache Head" "Coordinates distributed data caching; reads Iceberg metadata, partitions data across workers via Arrow Flight gRPC" "Rust"
+            dataCacheWorker = container "Data Cache Worker" "Loads and serves data partitions via Arrow Flight gRPC; maintains in-memory Arrow tables" "Rust"
+            pythonSDK = container "Python SDK" "Client library for creating and managing TrainJobs programmatically" "Python"
         }
 
-        jobset = softwareSystem "JobSet" "Manages replicated batch Jobs for distributed training workloads (sigs.k8s.io/jobset v0.10.1)" "External"
-        schedulerPlugins = softwareSystem "Kubernetes Scheduler Plugins" "PodGroup-based gang-scheduling via coscheduling plugin (v0.34.1)" "External Optional"
-        volcano = softwareSystem "Volcano" "Alternative PodGroup-based gang-scheduling (v1.13.1)" "External Optional"
-        kueue = softwareSystem "Kueue" "Multi-cluster job scheduling via managedBy field" "External Optional"
         k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for resource management" "External"
-        certController = softwareSystem "cert-controller" "Generates and rotates TLS certificates for webhook server (open-policy-agent/cert-controller)" "External"
+        jobset = softwareSystem "JobSet Controller" "Reconciles JobSet resources into Jobs and Pods" "External (kubernetes-sigs/jobset v0.10.1)"
+        knativeSchedulerPlugins = softwareSystem "Kubernetes Scheduler Plugins" "Gang scheduling via PodGroup (CoScheduling)" "External (Optional)"
+        volcano = softwareSystem "Volcano Scheduler" "Gang scheduling via PodGroup (Volcano)" "External (Optional)"
+        leaderWorkerSet = softwareSystem "LeaderWorkerSet Controller" "Head/worker topology for data-cache runtimes" "External (Optional)"
+        certController = softwareSystem "cert-controller (OPA)" "Webhook certificate rotation" "External"
+        kueue = softwareSystem "Kueue (MultiKueue)" "Job queueing and multi-cluster dispatch" "External (Optional)"
+        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and alerting" "Internal RHOAI"
+        rhodsOperator = softwareSystem "rhods-operator" "Platform operator that deploys Trainer via kustomize manifests" "Internal RHOAI"
+        imageStreams = softwareSystem "OpenShift ImageStreams" "Pre-built training images for ClusterTrainingRuntimes" "Internal RHOAI"
+        containerRegistries = softwareSystem "Container Registries" "quay.io, ghcr.io for training and operator images" "External"
+        icebergStorage = softwareSystem "Iceberg Storage" "Iceberg table metadata and data files (S3/GCS/HDFS)" "External (Optional)"
 
-        rhodsOperator = softwareSystem "rhods-operator" "Deploys Kubeflow Trainer via kustomize manifests; manages namespace and image references" "Internal RHOAI"
-        monitoring = softwareSystem "OpenShift Monitoring" "Prometheus-based monitoring; scrapes controller metrics via PodMonitor" "Internal RHOAI"
+        # User interactions
+        user -> trainer "Creates TrainJob CR via kubectl or Python SDK"
+        user -> pythonSDK "Uses Python SDK to create/manage TrainJobs"
 
-        trainingPods = softwareSystem "Training Pods" "Distributed ML training workloads (master + workers) running PyTorch/JAX/TF/MPI" "Runtime Workload"
+        # Internal interactions
+        controller -> webhookServer "Validates resources"
+        controller -> pluginFramework "Delegates object creation to plugins"
+        controller -> rhaiFeatures "Progression tracking + NetworkPolicy (RHOAI)"
+        dataCacheHead -> dataCacheWorker "Distributes data partitions via Arrow Flight gRPC"
 
-        user -> trainer "Creates TrainJob CRs via kubectl/API" "HTTPS/443"
-        trainer -> k8sAPI "CRD CRUD, JobSet management, Pod listing, NetworkPolicy management" "HTTPS/443, SA Token"
-        trainer -> jobset "Creates and monitors JobSet CRs for each TrainJob" "HTTPS/443"
-        trainer -> schedulerPlugins "Creates PodGroup resources for gang-scheduling" "HTTPS/443"
-        trainer -> volcano "Creates Volcano PodGroup resources for gang-scheduling" "HTTPS/443"
-        trainer -> kueue "Delegates reconciliation via managedBy field" "N/A"
-        trainer -> trainingPods "Polls /metrics endpoint for RHAI progression tracking" "HTTP/28080, plaintext"
-        certController -> trainer "Generates and rotates webhook TLS certificates" "Secret mount"
-        rhodsOperator -> trainer "Deploys via kustomize manifests" "Kustomize"
-        monitoring -> trainer "Scrapes controller metrics via PodMonitor" "HTTPS/8443"
-        jobset -> trainingPods "Creates batch Jobs and Pods for training workloads" "K8s API"
-        k8sAPI -> trainer "Sends webhook validation requests" "HTTPS/9443, client cert"
+        # External interactions
+        controller -> k8sAPI "CRD reconciliation, resource creation (HTTPS/443, SA token)" "HTTPS/443"
+        k8sAPI -> webhookServer "Admission review requests (HTTPS/9443, client cert)" "HTTPS/9443"
+        controller -> jobset "Creates JobSet CRs that JobSet controller reconciles" "K8s API"
+        controller -> knativeSchedulerPlugins "Creates PodGroup for CoScheduling gang scheduling" "K8s API"
+        controller -> volcano "Creates PodGroup for Volcano gang scheduling" "K8s API"
+        controller -> leaderWorkerSet "Creates LeaderWorkerSet for data-cache topology" "K8s API"
+        certController -> controller "Rotates webhook TLS certificates"
+        kueue -> trainer "Manages TrainJob via managedBy field" "K8s API"
+        prometheus -> controller "Scrapes metrics (HTTPS/8443, self-signed TLS)" "HTTPS/8443"
+        rhodsOperator -> trainer "Deploys Trainer manifests via kustomize" "Kustomize"
+        imageStreams -> trainer "Provides pre-built training images for runtimes"
+        rhaiFeatures -> k8sAPI "Polls training pod metrics (HTTP/28080)" "HTTP/28080"
+        dataCacheHead -> icebergStorage "Reads Iceberg table metadata"
+        containerRegistries -> k8sAPI "Kubelet pulls training images (HTTPS/443)" "HTTPS/443"
     }
 
     views {
@@ -51,17 +68,12 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "External Optional" {
+            element "External (Optional)" {
                 background #bbbbbb
                 color #ffffff
-                shape RoundedBox
             }
             element "Internal RHOAI" {
                 background #7ed321
-                color #ffffff
-            }
-            element "Runtime Workload" {
-                background #f5a623
                 color #ffffff
             }
             element "Person" {

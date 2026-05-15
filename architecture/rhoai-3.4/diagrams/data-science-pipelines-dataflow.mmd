@@ -1,61 +1,53 @@
 sequenceDiagram
-    participant User as User / KFP SDK
-    participant API as API Server<br/>8888/TCP REST<br/>8887/TCP gRPC
-    participant DB as MySQL/MariaDB<br/>3306/TCP
-    participant ObjStore as MinIO/S3<br/>9000/TCP
-    participant K8s as Kubernetes API<br/>6443/TCP
-    participant Argo as Argo Workflows<br/>Controller
+    participant User as User / SDK
+    participant GW as Platform Gateway<br/>443/TCP HTTPS
+    participant API as API Server<br/>8888/TCP HTTP<br/>8887/TCP gRPC
+    participant DB as MySQL/PostgreSQL<br/>3306/5432 TCP
+    participant ObjStore as S3 / MinIO<br/>9000/443 TCP
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant ArgoWF as Argo Workflow
     participant Driver as Driver<br/>(init container)
     participant MLMD as ML Metadata<br/>8080/TCP gRPC
-    participant Launcher as Launcher<br/>(sidecar)
+    participant CacheSvr as Cache Server<br/>8443/TCP HTTPS
+    participant Launcher as Launcher<br/>(user container wrapper)
     participant PA as Persistence Agent
     participant SWC as Scheduled Workflow<br/>Controller
 
-    Note over User,SWC: Flow 1: Pipeline Submission and Execution
+    Note over User,Launcher: Flow 1: Pipeline Execution
 
-    User->>API: POST /apis/v2beta1/pipelines/upload<br/>Auth: Bearer Token
-    API->>DB: Store pipeline metadata<br/>MySQL 3306/TCP
-    API->>ObjStore: Store pipeline spec YAML<br/>HTTP/S 9000/TCP
-    API-->>User: Pipeline ID
+    User->>GW: POST /apis/v2beta1/runs<br/>Bearer Token
+    GW->>API: Forward (TLS terminated)
+    API->>DB: Store run metadata<br/>Username/Password
+    API->>ObjStore: Store pipeline spec<br/>Access Key / IAM
+    API->>K8sAPI: Create Argo Workflow CR<br/>ServiceAccount Token
 
-    User->>API: POST /apis/v2beta1/runs<br/>Auth: Bearer Token
-    API->>DB: Create run record<br/>MySQL 3306/TCP
-    API->>K8s: Create Workflow CR<br/>HTTPS 6443/TCP, SA Token
-    K8s->>Argo: Workflow event
-    Argo->>K8s: Create Driver pod<br/>(init container)
+    K8sAPI->>ArgoWF: Schedule Workflow
+    ArgoWF->>Driver: Run init container
+    Driver->>MLMD: Create execution context<br/>gRPC (Optional TLS)
+    Driver->>API: Cache check (TaskService)<br/>gRPC/8887 Bearer Token
+    API-->>Driver: Cache hit/miss
+    Driver->>K8sAPI: Read ConfigMaps, manage PVCs<br/>ServiceAccount
 
-    activate Driver
-    Driver->>MLMD: Create execution context<br/>gRPC 8080/TCP
-    Driver->>API: Cache lookup<br/>gRPC 8887/TCP
-    alt Cache Hit
-        Driver-->>Argo: Return cached outputs<br/>Skip Launcher
-    else Cache Miss
-        Driver->>K8s: Generate pod spec patch<br/>PVC create if needed
-        deactivate Driver
+    Note over K8sAPI,CacheSvr: Flow 4: Cache Mutation (parallel)
+    K8sAPI->>CacheSvr: AdmissionReview (pod create)<br/>HTTPS/443→8443
+    CacheSvr->>DB: Cache lookup<br/>Username/Password
+    CacheSvr-->>K8sAPI: Mutated pod spec (cached results)
 
-        activate Launcher
-        Launcher->>ObjStore: Download input artifacts<br/>HTTP/S 9000/TCP
-        Note over Launcher: Execute user container
-        Launcher->>ObjStore: Upload output artifacts<br/>HTTP/S 9000/TCP
-        Launcher->>MLMD: Publish execution metadata<br/>gRPC 8080/TCP
-        deactivate Launcher
-    end
+    Note over Driver,Launcher: Pipeline Step Execution
+    Driver-->>Launcher: Pod spec patched with inputs
+    Launcher->>ObjStore: Download input artifacts<br/>Access Key / IAM
+    Launcher->>Launcher: Execute user code
+    Launcher->>ObjStore: Upload output artifacts<br/>Access Key / IAM
+    Launcher->>MLMD: Publish execution results<br/>gRPC (Optional TLS)
 
-    Note over User,SWC: Flow 2: Workflow State Persistence
+    Note over PA,API: Flow 3: State Persistence (continuous)
+    PA->>K8sAPI: Watch Argo Workflows<br/>ServiceAccount Token
+    K8sAPI-->>PA: Workflow state changes
+    PA->>API: ReportWorkflow<br/>gRPC/8887 Bearer Token (SA)
+    API->>DB: Persist execution state<br/>Username/Password
 
-    K8s-->>PA: Workflow status change<br/>(Informer watch)
-    activate PA
-    PA->>API: ReportWorkflow<br/>gRPC 8887/TCP<br/>Bearer Token (projected SA)
-    API->>DB: Update run status<br/>MySQL 3306/TCP
-    deactivate PA
-
-    Note over User,SWC: Flow 3: Recurring Run Scheduling
-
-    User->>API: POST /apis/v2beta1/recurringRuns<br/>Auth: Bearer Token
-    API->>K8s: Create ScheduledWorkflow CR<br/>HTTPS 6443/TCP
-    K8s-->>SWC: ScheduledWorkflow event<br/>(Informer watch)
-    activate SWC
-    SWC->>SWC: Evaluate cron/periodic schedule
-    SWC->>API: CreateRun<br/>gRPC 8887/TCP<br/>Bearer Token (projected SA)
-    API->>K8s: Create Workflow CR<br/>HTTPS 6443/TCP
-    deactivate SWC
+    Note over SWC,API: Flow 2: Scheduled Execution (periodic)
+    SWC->>K8sAPI: Watch ScheduledWorkflows<br/>ServiceAccount Token
+    K8sAPI-->>SWC: Schedule trigger
+    SWC->>API: CreateRun<br/>gRPC/8887 Bearer Token (SA)
+    API->>K8sAPI: Create Argo Workflow CR

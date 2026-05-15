@@ -1,35 +1,64 @@
 sequenceDiagram
-    participant Konflux as Konflux Build System<br/>Tekton PipelineRuns
-    participant Registry as Container Registry<br/>registry.redhat.io<br/>443/TCP HTTPS
-    participant Operator as rhods-operator<br/>Platform Operator
-    participant K8sAPI as OpenShift API<br/>6443/TCP HTTPS
-    participant Dashboard as ODH Dashboard<br/>443/TCP HTTPS
-    participant User as User Browser
-    participant Gateway as Platform Gateway<br/>(Envoy)<br/>443/TCP HTTPS TLS 1.2+
-    participant KRBAC as kube-rbac-proxy<br/>sidecar<br/>8443/TCP HTTPS
-    participant Notebook as Notebook Container<br/>(JupyterLab/code-server/RStudio)<br/>8888/TCP HTTP
-    participant NotebookCtrl as ODH Notebook Controller
+    participant Dev as Developer
+    participant Konflux as Konflux Build System
+    participant Cachi2 as cachi2 Prefetch
+    participant Registry as Container Registry<br/>(registry.redhat.io / quay.io)
+    participant Operator as rhods-operator
+    participant Dashboard as ODH Dashboard
+    participant User as Data Scientist
+    participant Gateway as Platform Gateway<br/>(Envoy) 443/TCP
+    participant KRBP as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant Jupyter as JupyterLab<br/>8888/TCP HTTP
+    participant Nginx as nginx (Code-Server)<br/>80/TCP HTTP
+    participant CS as code-server<br/>8787/TCP HTTP
+    participant Httpd as httpd CGI<br/>8080/TCP HTTP
+    participant DSPA as Data Science Pipelines<br/>443/TCP HTTPS
+    participant Runtime as Runtime Image<br/>(Pipeline Pod)
+    participant Culler as Notebook Controller<br/>Culler
 
-    Note over Konflux,Registry: Flow 1: Workbench Image Deployment
+    Note over Dev,Registry: Flow 1: Workbench Image Build (Konflux)
+    Dev->>Konflux: Push code changes
+    Konflux->>Cachi2: Prefetch dependencies<br/>(RPMs, pip, npm, generic)<br/>HTTPS/443
+    Cachi2-->>Konflux: Cached artifacts<br/>(file mount)
+    Konflux->>Konflux: Build Dockerfile.konflux.*<br/>(hermetic, network-isolated)
+    Konflux->>Registry: Push container images<br/>HTTPS/443 TLS 1.2+
 
-    Konflux->>Registry: Push built container images<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Service Account
-    Operator->>K8sAPI: Apply kustomize manifests<br/>(create ImageStreams)<br/>6443/TCP HTTPS TLS 1.2+<br/>Auth: ServiceAccount token
-    Dashboard->>K8sAPI: Read ImageStream annotations<br/>6443/TCP HTTPS TLS 1.2+<br/>Auth: ServiceAccount token
-    User->>Dashboard: Select workbench image<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: OAuth/OIDC SSO
-    Dashboard->>NotebookCtrl: Create Notebook CR
-    NotebookCtrl->>K8sAPI: Create StatefulSet + Service<br/>+ kube-rbac-proxy sidecar<br/>6443/TCP HTTPS TLS 1.2+<br/>Auth: ServiceAccount token
-    K8sAPI->>Registry: kubelet pulls image<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Pull secret
+    Note over Operator,Dashboard: ImageStream Deployment
+    Operator->>Operator: Deploy ImageStream manifests<br/>from manifests/rhoai/base/
+    Dashboard->>Operator: Read ImageStream annotations<br/>(via Kubernetes API)
 
-    Note over User,Notebook: Flow 2: User Notebook Session
+    Note over User,CS: Flow 2: Workbench Launch (Jupyter)
+    User->>Dashboard: Select workbench flavor
+    Dashboard->>Operator: Create Notebook CR
+    User->>Gateway: Access workbench<br/>HTTPS/443 TLS 1.2+<br/>OAuth/OIDC
+    Gateway->>KRBP: Forward request<br/>HTTPS/8443 TLS 1.2+<br/>OAuth Token
+    KRBP->>Jupyter: Proxy to JupyterLab<br/>HTTP/8888 (localhost)<br/>No auth (trusted sidecar)
+    Jupyter-->>KRBP: JupyterLab response
+    KRBP-->>Gateway: HTTPS response
+    Gateway-->>User: Workbench UI
 
-    User->>Gateway: Access notebook UI<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: OAuth/OIDC cookie
-    Gateway->>KRBAC: Forward request<br/>8443/TCP HTTPS<br/>Auth: Bearer token
-    KRBAC->>Notebook: Proxy to workbench<br/>8888/TCP HTTP (pod network)<br/>Auth: None (pre-authenticated)
-    Notebook-->>KRBAC: Response (HTML/JSON/WebSocket)
-    KRBAC-->>Gateway: Response
-    Gateway-->>User: Notebook UI
+    Note over User,CS: Flow 2b: Workbench Launch (Code-Server)
+    User->>Gateway: Access Code-Server workbench<br/>HTTPS/443 TLS 1.2+
+    Gateway->>KRBP: Forward request<br/>HTTPS/8443 TLS 1.2+
+    KRBP->>Nginx: Proxy to nginx<br/>HTTP/80 (localhost)
+    Nginx->>CS: Forward to code-server<br/>HTTP/8787 (localhost)
+    CS-->>Nginx: VS Code response
+    Nginx-->>KRBP: Response
+    KRBP-->>Gateway: HTTPS response
+    Gateway-->>User: Code-Server UI
 
-    Note over Notebook,Registry: Flow 3: Runtime Egress (User-Initiated)
+    Note over Jupyter,Runtime: Flow 3: Elyra Pipeline Submission
+    User->>Jupyter: Design pipeline in Elyra
+    Jupyter->>DSPA: Submit pipeline run<br/>HTTPS/443 TLS 1.2+<br/>ServiceAccount Token
+    DSPA->>Runtime: Launch pipeline pod<br/>with runtime image
+    Runtime->>Runtime: Execute pipeline step
+    Runtime-->>DSPA: Step result
 
-    Notebook->>Registry: pip install (user packages)<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: None
-    Note right of Notebook: Also: Git repos (443/TCP),<br/>S3 storage (443/TCP),<br/>MongoDB (27017/TCP),<br/>ODBC sources (varies)
+    Note over Culler,Httpd: Flow 4: Idle Culling (Code-Server)
+    Culler->>KRBP: Poll /api/kernels/<br/>HTTPS/8443 TLS 1.2+<br/>ServiceAccount Token
+    KRBP->>Nginx: Forward to nginx<br/>HTTP/80
+    Nginx->>Nginx: Check access log<br/>(JSON format)
+    Culler->>Httpd: Poll CGI endpoint<br/>HTTP/8080
+    Httpd->>CS: access.cgi checks<br/>/codeserver/healthz<br/>HTTP/8888
+    CS-->>Httpd: Heartbeat response
+    Httpd-->>Culler: Jupyter-compatible<br/>kernel format response

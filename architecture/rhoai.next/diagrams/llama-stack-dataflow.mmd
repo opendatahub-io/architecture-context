@@ -1,60 +1,64 @@
 sequenceDiagram
     participant Client as External Client
-    participant Server as Llama Stack Server<br/>8321/TCP HTTP/HTTPS
-    participant Auth as AuthenticationMiddleware
-    participant OIDC as OIDC Provider<br/>443/TCP HTTPS
-    participant Quota as QuotaMiddleware
-    participant ABAC as AccessControlMiddleware<br/>Cedar Policies
-    participant Router as InferenceRouter
-    participant AgentProv as Agent Provider
-    participant RAGTool as RAG Tool Runtime
-    participant SafetyRouter as SafetyRouter
-    participant vLLM as vLLM Provider<br/>8000/TCP HTTP/HTTPS
-    participant pgvector as pgvector<br/>5432/TCP PostgreSQL
-    participant LlamaGuard as Llama Guard Model<br/>(via Inference Provider)
+    participant MW as Llama Stack<br/>Middleware Chain<br/>8321/TCP
+    participant Auth as OAuth2/JWKS<br/>Endpoint<br/>443/TCP HTTPS
+    participant Quota as QuotaMiddleware<br/>(SQLite KV)
+    participant Router as API Router<br/>(Dynamic Routes)
+    participant ABAC as ABAC Engine<br/>(Cedar-like)
+    participant Inference as Inference Provider<br/>(Router)
+    participant VLLM as vLLM Server<br/>8000/TCP
+    participant RAG as RAG Tool Runtime
+    participant VectorDB as Vector DB<br/>(pgvector :5432)
+    participant Safety as Safety Shield<br/>(Inline)
+    participant Tool as Tool Runtime<br/>(Web Search/MCP)
 
-    Note over Client,LlamaGuard: Flow 1: Chat Completion Request
+    Note over Client, VLLM: Flow 1: Chat Completion Request
+    Client->>MW: POST /v1/inference/chat-completion<br/>HTTP/HTTPS :8321<br/>Bearer Token (JWT)
+    MW->>Auth: Validate JWT (JWKS fetch)<br/>HTTPS :443 TLS 1.2+
+    Auth-->>MW: Token Valid + Claims
+    MW->>Quota: Check rate limit<br/>100/day anon, 1000/day auth
+    Quota-->>MW: Allowed
+    MW->>Router: Route to inference handler
+    Router->>ABAC: Evaluate access rules
+    ABAC-->>Router: Permitted
+    Router->>Inference: chat_completion(request)
+    Inference->>VLLM: POST /v1/chat/completions<br/>HTTP/HTTPS :8000<br/>Bearer Token (optional)
+    VLLM-->>Inference: SSE stream chunks
+    Inference-->>MW: SSE stream
+    MW-->>Client: text/event-stream<br/>x-trace-id header
 
-    Client->>Server: POST /v1/inference/chat-completion<br/>Bearer Token (JWT)
-    Server->>Auth: Validate token
-    Auth->>OIDC: Fetch JWKS / Introspect token<br/>HTTPS/443 TLS 1.2+
-    OIDC-->>Auth: Token claims (sub, groups, roles)
-    Auth->>Quota: Check rate limit
-    Quota->>ABAC: Evaluate Cedar policy<br/>(principal, action, resource)
-    ABAC->>Router: Route to provider
-    Router->>vLLM: POST /v1/chat/completions<br/>HTTP/HTTPS, Bearer Token
-    vLLM-->>Router: Completion response (streaming SSE)
-    Router-->>Server: Forward response
-    Server-->>Client: SSE stream<br/>HTTP/HTTPS 8321/TCP
+    Note over Client, VectorDB: Flow 2: RAG Query (Vector IO + Inference)
+    Client->>MW: POST /v1/tool-runtime/rag-tool/query<br/>HTTP/HTTPS :8321<br/>Bearer Token
+    MW->>Auth: Validate JWT
+    Auth-->>MW: Valid
+    MW->>Router: Route to RAG handler
+    Router->>RAG: rag_query(request)
+    RAG->>Inference: Generate embeddings<br/>(inline or remote)
+    Inference-->>RAG: Embedding vectors
+    RAG->>VectorDB: Query similar chunks<br/>PostgreSQL :5432<br/>Optional TLS, Password auth
+    VectorDB-->>RAG: Relevant chunks
+    RAG->>Inference: Generate response with context<br/>HTTP :8000 → vLLM
+    Inference->>VLLM: POST /v1/chat/completions<br/>(with RAG context)
+    VLLM-->>Inference: Response
+    Inference-->>RAG: LLM response
+    RAG-->>MW: Final response
+    MW-->>Client: JSON response
 
-    Note over Client,LlamaGuard: Flow 2: Agent Turn with Tool Use (RAG)
-
-    Client->>Server: POST /v1/agents/{id}/turn<br/>Bearer Token
-    Server->>Auth: Validate token
-    Auth-->>Server: Authenticated
-    Server->>AgentProv: Process agent turn
-    AgentProv->>Router: Chat completion (initial)
-    Router->>vLLM: POST /v1/chat/completions<br/>8000/TCP
-    vLLM-->>Router: Response with tool_call (RAG query)
-    Router-->>AgentProv: Tool call detected
-    AgentProv->>RAGTool: Execute vector query
-    RAGTool->>pgvector: SELECT with vector similarity<br/>5432/TCP, Username/Password
-    pgvector-->>RAGTool: Relevant documents
-    RAGTool-->>AgentProv: RAG context
-    AgentProv->>Router: Chat completion (with RAG context)
-    Router->>vLLM: POST /v1/chat/completions<br/>8000/TCP (augmented prompt)
-    vLLM-->>Router: Final response
-    Router-->>AgentProv: Completion
-    AgentProv-->>Server: Agent turn result
-    Server-->>Client: SSE stream response<br/>8321/TCP
-
-    Note over Client,LlamaGuard: Flow 3: Safety Shield Execution
-
-    Client->>Server: POST /v1/safety/run-shield<br/>Bearer Token
-    Server->>Auth: Validate token
-    Auth-->>Server: Authenticated
-    Server->>SafetyRouter: Run shield
-    SafetyRouter->>LlamaGuard: Inference request<br/>(Llama Guard model via provider)
-    LlamaGuard-->>SafetyRouter: Safety classification<br/>(safe/unsafe + category)
-    SafetyRouter-->>Server: Shield result
-    Server-->>Client: JSON response<br/>8321/TCP
+    Note over Client, Tool: Flow 3: Agent Turn with Tool Execution
+    Client->>MW: POST /v1/agents/{id}/session/{sid}/turn<br/>HTTP/HTTPS :8321 (SSE)<br/>Bearer Token
+    MW->>Auth: Validate JWT
+    Auth-->>MW: Valid
+    MW->>Router: Route to agent handler
+    Router->>Inference: Initial LLM call<br/>HTTP :8000 → vLLM
+    Inference->>VLLM: Chat completion
+    VLLM-->>Inference: Tool call response
+    Router->>Safety: Run safety shield<br/>(in-process)
+    Safety-->>Router: Safe
+    Router->>Tool: Execute tool<br/>HTTPS :443 (Tavily/Brave)<br/>API key auth
+    Tool-->>Router: Tool results
+    Router->>Inference: Final LLM call with tool results
+    Inference->>VLLM: POST /v1/chat/completions
+    VLLM-->>Inference: Final response (SSE)
+    Inference-->>Router: Stream chunks
+    Router-->>MW: SSE stream
+    MW-->>Client: text/event-stream<br/>x-trace-id header

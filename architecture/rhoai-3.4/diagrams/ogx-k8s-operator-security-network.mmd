@@ -3,62 +3,77 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (DMZ)"]
-        IngressCtrl["OpenShift Ingress Controller<br/>80/443/TCP<br/>TLS termination (configurable)<br/>No auth at Ingress level"]
+    subgraph Ingress["INGRESS (Platform-managed)"]
+        IngressCtrl["Kubernetes Ingress Controller<br/>{instance}-ingress<br/>80/TCP → 8321/TCP<br/>TLS: platform-dependent"]
     end
 
-    subgraph ClusterInternal["CLUSTER INTERNAL (NetworkPolicy Protected)"]
+    subgraph WorkloadNS["WORKLOAD NAMESPACE ({user-namespace})<br/>NetworkPolicy: {instance}-netpol"]
         direction TB
 
-        subgraph NS_Operator["Namespace: redhat-ods-applications"]
-            OperatorPod["llama-stack-k8s-operator<br/>SA: controller-manager<br/>Metrics: 8080/TCP<br/>Health: 8081/TCP"]
+        subgraph PodBox["LlamaStack Server Pod"]
+            LLPod["LlamaStack Server<br/>SA: {instance}-sa<br/>SCC: anyuid (fsGroup=1001)<br/>SSL_CERT_FILE: /certs/ca-bundle.crt<br/>Port: 8321/TCP HTTP"]
         end
 
-        subgraph NS_User["Namespace: {user-namespace}"]
-            LLSDService["{instance}-service<br/>ClusterIP 8321/TCP"]
-            LLSDPod["LlamaStack Server Pod<br/>SA: {instance}-sa<br/>SCC: anyuid (fsGroup 1001)<br/>Port: 8321/TCP<br/>SSL_CERT_FILE: managed CA"]
-            NetPol["NetworkPolicy<br/>Allow: same-ns, operator-ns,<br/>explicit ns, label selectors,<br/>router ns"]
-        end
+        InstanceSvc["{instance}-service<br/>ClusterIP 8321/TCP<br/>HTTP, plaintext"]
+        ManagedCA["Managed CA ConfigMap<br/>(aggregated certs)"]
     end
 
-    subgraph PlatformServices["PLATFORM SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Token"]
-        Prometheus["Prometheus<br/>Scrapes /metrics"]
+    subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-applications)"]
+        direction TB
+
+        Operator["LlamaStack K8s Operator<br/>SA: controller-manager<br/>ClusterRole: manager-role<br/>Probes: 8081/TCP"]
+        MetricsSvc["Metrics Service<br/>8443/TCP HTTPS<br/>kube-rbac-proxy<br/>Auth: Bearer Token"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        Registry["Container Registry<br/>quay.io<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Registry credentials"]
+    subgraph ClusterSvcs["CLUSTER SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+        Prometheus["Prometheus<br/>(ServiceMonitor)"]
+        SCC["OpenShift SCC: anyuid"]
+    end
+
+    subgraph ConfigSources["CONFIGURATION SOURCES"]
+        UserCACM["User CA ConfigMap"]
+        ODHTrustCM["odh-trusted-ca-bundle<br/>ConfigMap"]
+        OperatorConfig["llama-stack-operator-config<br/>ConfigMap<br/>(feature flags, image overrides)"]
     end
 
     %% External access flow
-    Client -->|"HTTP/HTTPS 80/443<br/>No auth (Ingress level)"| IngressCtrl
-    IngressCtrl -->|"HTTP/8321<br/>No encryption<br/>No auth"| LLSDService
-    LLSDService --> LLSDPod
+    Client -->|"HTTP/80<br/>No Auth<br/>NetworkPolicy enforced"| IngressCtrl
+    IngressCtrl -->|"HTTP/8321<br/>plaintext"| InstanceSvc
+    InstanceSvc --> LLPod
 
-    %% Operator flows
-    OperatorPod -->|"HTTP/8321<br/>No encryption<br/>Status: /v1/providers, /v1/version"| LLSDPod
-    OperatorPod -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token (bearer)<br/>Reconciliation, CRUD, leader election"| K8sAPI
+    %% Operator → K8s API
+    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Bearer Token<br/>CR watch + resource CRUD"| K8sAPI
+
+    %% Operator → Managed pods (health checks)
+    Operator -->|"HTTP/8321<br/>plaintext<br/>No Auth<br/>health/providers/version"| InstanceSvc
+
+    %% Operator → ConfigMap reads
+    Operator -->|"HTTPS/443<br/>direct client read"| UserCACM
+    Operator -->|"HTTPS/443<br/>direct client read"| ODHTrustCM
+    Operator -->|"HTTPS/443<br/>direct client read"| OperatorConfig
+
+    %% CA bundle flow
+    Operator -->|"creates/updates"| ManagedCA
+    ManagedCA -->|"mounted as<br/>SSL_CERT_FILE"| LLPod
 
     %% Monitoring
-    Prometheus -->|"HTTP/8080<br/>No auth<br/>Scrape /metrics"| OperatorPod
+    Prometheus -->|"HTTPS/8443<br/>TLS<br/>Bearer Token"| MetricsSvc
 
-    %% Image pull (by Kubelet)
-    LLSDPod -.->|"HTTPS/443<br/>TLS 1.2+<br/>Registry creds<br/>(pulled by Kubelet)"| Registry
-
-    %% NetworkPolicy enforcement
-    NetPol -.->|protects| LLSDPod
+    %% SCC reference
+    LLPod -.->|"RoleBinding →<br/>system:openshift:scc:anyuid"| SCC
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef clusterinternal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef netpol fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef workload fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef cluster fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef config fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
     class Client external
     class IngressCtrl ingress
-    class OperatorPod,LLSDPod,LLSDService clusterinternal
-    class K8sAPI,Prometheus platform
-    class Registry externalservice
-    class NetPol netpol
+    class LLPod,InstanceSvc,ManagedCA workload
+    class Operator,MetricsSvc operator
+    class K8sAPI,Prometheus,SCC cluster
+    class UserCACM,ODHTrustCM,OperatorConfig config

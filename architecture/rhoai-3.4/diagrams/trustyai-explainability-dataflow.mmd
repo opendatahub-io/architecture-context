@@ -1,38 +1,55 @@
 sequenceDiagram
-    participant MM as ModelMesh Serving
-    participant KS as KServe<br/>(Knative Eventing)
-    participant TrustyAI as TrustyAI Service<br/>8080/TCP HTTP
-    participant Storage as Storage Backend<br/>(PVC / DB / MinIO)
-    participant Inference as KServe/ModelMesh<br/>Inference Service
-    participant Prom as Prometheus<br/>(ServiceMonitor)
-    participant Client as API Client
+    participant Client as External Client
+    participant Route as OpenShift Route<br/>80/TCP HTTP
+    participant Service as TrustyAI Service<br/>8080/TCP HTTP<br/>4443/TCP HTTPS
+    participant Storage as Storage Backend<br/>(PVC / DB / Memory)
+    participant Scheduler as Prometheus Scheduler<br/>(every 5s)
+    participant Prometheus as Prometheus<br/>Scraper
+    participant ModelMesh as ModelMesh<br/>Payload Processor
+    participant KnativeBroker as Knative Broker
+    participant KServe as KServe/ModelMesh<br/>Model Server
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant InitContainer as Init Container<br/>(ose-cli)
 
-    Note over MM, Storage: Flow 1: ModelMesh Inference Payload Ingestion
-    MM->>TrustyAI: POST /consumer/kserve/v2<br/>8080/TCP HTTP (cluster-internal)
-    TrustyAI->>TrustyAI: ModelMeshInferencePayloadReconciler<br/>match request/response by inference ID
-    TrustyAI->>Storage: Persist dataframe<br/>File I/O (PVC) / JDBC 3306 (DB) / HTTPS (MinIO)
+    Note over InitContainer,K8sAPI: Flow 4: Init Container Setup
+    InitContainer->>K8sAPI: oc apply ConfigMap<br/>model-serving-config<br/>443/TCP HTTPS, TLS<br/>Auth: SA Token
+    K8sAPI-->>InitContainer: ConfigMap created
+    Note right of InitContainer: Registers TrustyAI as<br/>ModelMesh payload processor
 
-    Note over KS, Storage: Flow 2: KServe CloudEvent Inference Ingestion
-    KS->>TrustyAI: CloudEvent trigger<br/>org.kubeflow.serving.inference.request/response<br/>8080/TCP HTTP
-    TrustyAI->>TrustyAI: KServeInferencePayloadReconciler<br/>match request/response by inference ID
-    TrustyAI->>Storage: Persist dataframe<br/>File I/O / JDBC / HTTPS
+    Note over ModelMesh,Storage: Flow 1: Inference Data Ingestion (REST)
+    ModelMesh->>Service: POST /consumer/kserve/v2<br/>8080/TCP HTTP<br/>No Auth
+    Service->>Storage: Store inference data<br/>(CSV to PVC or JDBC to DB)
+    Note right of Storage: /inputs/data.csv (PVC)<br/>or MariaDB/MySQL 3306/TCP
 
-    Note over TrustyAI, Prom: Flow 3: Scheduled Metric Computation & Prometheus Publication
-    TrustyAI->>TrustyAI: PrometheusScheduler<br/>(cron: service.metrics-schedule, default 5s)
-    TrustyAI->>Storage: Read inference data
-    Storage-->>TrustyAI: Dataframes
-    TrustyAI->>TrustyAI: Compute fairness/drift metrics<br/>→ PrometheusPublisher (Micrometer gauges)
-    Prom->>TrustyAI: GET /q/metrics<br/>8080/TCP HTTP<br/>Auth: Bearer Token (SA)
-    TrustyAI-->>Prom: trustyai_* Prometheus gauges
+    Note over KnativeBroker,Storage: Flow 2: Inference Data Ingestion (Knative)
+    KServe->>KnativeBroker: Emit CloudEvent<br/>org.kubeflow.serving.inference.request
+    KnativeBroker->>Service: Forward CloudEvent<br/>8080/TCP HTTP
+    Service->>Storage: Store inference data
 
-    Note over Client, Inference: Flow 4: Explainability Request (disabled in RHOAI profile)
-    Client->>TrustyAI: POST /explainers/local/lime<br/>8080/TCP HTTP (TLS optional on 4443)
-    TrustyAI->>Inference: gRPC KServe v2 inference call<br/>cluster-internal, plaintext
-    Inference-->>TrustyAI: Model prediction result
-    TrustyAI-->>Client: Explanation response (JSON)
+    Note over Scheduler,Prometheus: Metrics Computation & Scraping
+    loop Every 5 seconds
+        Scheduler->>Storage: Read stored inference data
+        Storage-->>Scheduler: Inference records
+        Scheduler->>Scheduler: Compute SPD, DIR,<br/>drift metrics
+        Scheduler->>Service: Update /q/metrics values
+    end
+    Prometheus->>Service: GET /q/metrics<br/>8080/TCP HTTP<br/>Auth: Bearer Token (SA)
+    Service-->>Prometheus: trustyai_spd, trustyai_dir,<br/>trustyai_* metrics
 
-    Note over TrustyAI, Storage: Flow 5: PVC-to-Database Migration
-    TrustyAI->>TrustyAI: HibernateDataSource @PostConstruct<br/>detect legacy PVC files at /inputs
-    TrustyAI->>Storage: Read legacy CSV files (PVCStorage)
-    Storage-->>TrustyAI: Legacy dataframes
-    TrustyAI->>Storage: HibernateMigrator → MariaDB/MySQL<br/>JDBC 3306/TCP, username/password
+    Note over Client,KServe: Flow 3: On-Demand Explainability (disabled in RHOAI)
+    Client->>Route: POST /explainers/local/lime<br/>80/TCP HTTP
+    Route->>Service: Forward request<br/>8080/TCP
+    Service->>KServe: Inference calls for perturbation<br/>8033/TCP gRPC or 80/TCP HTTP<br/>Plaintext, No Auth
+    KServe-->>Service: Prediction results
+    Service->>Service: Compute LIME explanation
+    Service-->>Route: Explanation response (JSON)
+    Route-->>Client: LIME explanation
+
+    Note over Client,Service: On-Demand Fairness/Drift Metrics
+    Client->>Route: POST /metrics/group/fairness/spd<br/>80/TCP HTTP
+    Route->>Service: Forward request
+    Service->>Storage: Read inference data
+    Storage-->>Service: Filtered records
+    Service->>Service: Compute SPD metric
+    Service-->>Route: SPD result (JSON)
+    Route-->>Client: Fairness metric response

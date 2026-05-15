@@ -1,55 +1,76 @@
 sequenceDiagram
     autonumber
 
-    participant Client as External Client
-    participant GW as Istio Gateway /<br/>Gateway API<br/>443/TCP HTTPS
-    participant VS as VirtualService /<br/>HTTPRoute
-    participant PredSvc as Predictor Service<br/>80/TCP HTTP
-    participant Pod as Model Server Pod<br/>8080/TCP HTTP
-    participant OAuth as OAuth/kube-rbac-proxy<br/>8443/TCP HTTPS
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant Storage as Cloud Storage<br/>(S3/GCS/Azure/HF)<br/>443/TCP HTTPS
-    participant StorageInit as storage-initializer<br/>(Init Container)
-    participant RouterPod as inference-router<br/>8080/TCP
-    participant ISVC_N as InferenceService N<br/>(Graph Step)
+    %% ============================================================
+    %% Flow 1: InferenceService Model Serving (Standard Mode)
+    %% ============================================================
 
-    rect rgb(240, 248, 255)
-        Note over Client,Pod: Flow 1: Standard InferenceService Request
-        Client->>GW: POST /v1/models/{model}:predict<br/>HTTPS TLS 1.2+, Bearer token (optional)
-        GW->>VS: Route via VirtualService/HTTPRoute<br/>HTTP (mesh internal)
-        VS->>PredSvc: Forward to Predictor Service<br/>80/TCP HTTP
-        PredSvc->>Pod: Proxy to Model Server<br/>8080/TCP HTTP
-        Pod-->>PredSvc: Prediction Response
-        PredSvc-->>GW: Response
-        GW-->>Client: JSON Response (HTTPS)
+    rect rgb(230, 245, 255)
+        Note over Client,ObjStorage: Flow 1 - InferenceService Model Serving (Standard Mode)
+
+        participant Client as External Client
+        participant Gateway as Gateway / Ingress<br/>443/TCP HTTPS<br/>TLS 1.2+
+        participant AuthProxy as kube-rbac-proxy<br/>Sidecar<br/>8443/TCP HTTPS
+        participant ModelServer as Model Server<br/>Container<br/>8080/TCP HTTP
+        participant ObjStorage as Object Storage<br/>(S3/GCS/Azure/HF/OCI)<br/>443/TCP HTTPS
+
+        Note over ModelServer,ObjStorage: Init Phase (before serving)
+        ModelServer-->>ObjStorage: storage-initializer downloads model<br/>HTTPS/443 | TLS 1.2+ | Provider credentials
+
+        Note over Client,ModelServer: Inference Phase
+        Client->>Gateway: POST /v1/models/{model}:predict<br/>HTTPS/443 | TLS 1.2+ | Bearer token (optional)
+        Gateway->>AuthProxy: Forward request<br/>HTTPS/8443 | TLS
+        AuthProxy->>AuthProxy: SubjectAccessReview<br/>(validates Bearer token)
+        AuthProxy->>ModelServer: Forward to model server<br/>HTTP/8080 | None (localhost)
+        ModelServer-->>AuthProxy: Prediction response
+        AuthProxy-->>Gateway: Response
+        Gateway-->>Client: JSON prediction result
     end
 
-    rect rgb(255, 245, 238)
-        Note over Client,K8sAPI: Flow 2: InferenceService with OAuth Proxy (ODH)
-        Client->>OAuth: POST /v1/models/{model}:predict<br/>HTTPS TLS, Bearer token
-        OAuth->>K8sAPI: SubjectAccessReview<br/>6443/TCP HTTPS, SA token
-        K8sAPI-->>OAuth: Authorized
-        OAuth->>Pod: Forward to Model Server (localhost)<br/>8080/TCP HTTP (loopback)
-        Pod-->>OAuth: Prediction Response
-        OAuth-->>Client: JSON Response (HTTPS)
+    %% ============================================================
+    %% Flow 2: LLMInferenceService Model Serving
+    %% ============================================================
+
+    rect rgb(255, 245, 230)
+        Note over Client2,Prometheus: Flow 2 - LLMInferenceService Model Serving
+
+        participant Client2 as External Client
+        participant GW as data-science-gateway<br/>443/TCP HTTPS<br/>TLS 1.2+
+        participant EPP as Scheduler (EPP)<br/>9002/TCP gRPC<br/>TLS (self-signed)
+        participant Workload as Workload Pod<br/>(vLLM)<br/>8000/TCP HTTPS
+        participant Prometheus as Prometheus<br/>Monitoring
+
+        Client2->>GW: POST /v1/completions<br/>HTTPS/443 | TLS 1.2+ | Kuadrant AuthPolicy (OCP)
+        GW->>GW: HTTPRoute matches<br/>InferencePool backend
+        GW->>EPP: Route via InferencePool<br/>gRPC/9002 | TLS (self-signed)
+        EPP->>EPP: Schedule request<br/>(select optimal pod)
+        EPP->>Workload: Forward to workload pod<br/>HTTPS/8000 | TLS (self-signed or service-ca)
+        Workload-->>EPP: LLM completion response
+        EPP-->>GW: Response
+        GW-->>Client2: JSON completion result
+
+        Note over Prometheus,Workload: Monitoring
+        Prometheus->>Workload: Scrape vLLM metrics (PodMonitor)<br/>HTTPS/8000 | TLS (InsecureSkipVerify)
+        Prometheus->>EPP: Scrape scheduler metrics (ServiceMonitor)<br/>HTTPS/metrics | TLS | Bearer token (SA secret)
     end
 
-    rect rgb(245, 255, 245)
-        Note over StorageInit,Storage: Flow 4: Storage Initialization
-        Note right of StorageInit: Injected as init container<br/>by pod mutating webhook
-        StorageInit->>Storage: Download model artifacts<br/>443/TCP HTTPS TLS 1.2+<br/>Cloud credentials (IAM/token)
-        Storage-->>StorageInit: Model artifacts
-        Note right of StorageInit: Write to local filesystem<br/>(emptyDir/PVC)
-    end
+    %% ============================================================
+    %% Flow 3: InferenceGraph Routing
+    %% ============================================================
 
-    rect rgb(255, 248, 240)
-        Note over Client,ISVC_N: Flow 5: InferenceGraph Multi-Step Pipeline
-        Client->>RouterPod: POST inference request<br/>8080/TCP HTTP/HTTPS<br/>Optional Bearer token
-        RouterPod->>K8sAPI: TokenReview + SubjectAccessReview<br/>(if auth enabled)
-        K8sAPI-->>RouterPod: Authorized
-        RouterPod->>PredSvc: Step 1: InferenceService<br/>HTTP/HTTPS, Istio mTLS
-        PredSvc-->>RouterPod: Step 1 Result
-        RouterPod->>ISVC_N: Step N: InferenceService<br/>HTTP/HTTPS, Istio mTLS
-        ISVC_N-->>RouterPod: Step N Result
-        RouterPod-->>Client: Combined Response
+    rect rgb(230, 255, 230)
+        Note over Client3,TargetISVC: Flow 3 - InferenceGraph DAG Routing
+
+        participant Client3 as External Client
+        participant RouterPod as kserve-router<br/>8080/TCP HTTP<br/>Optional TLS
+        participant TargetISVC as Target InferenceService(s)<br/>Various ports<br/>HTTP/HTTPS
+
+        Client3->>RouterPod: POST / (inference request)<br/>HTTP/8080 | Optional TLS | Optional Bearer token
+        RouterPod->>RouterPod: TokenReview + SAR<br/>(if auth enabled)
+        RouterPod->>TargetISVC: Step 1: Call model A<br/>HTTP/HTTPS | Istio mTLS (if in mesh)
+        TargetISVC-->>RouterPod: Step 1 result
+        RouterPod->>TargetISVC: Step 2: Call model B<br/>(Sequence/Splitter/Ensemble/Switch)
+        TargetISVC-->>RouterPod: Step 2 result
+        RouterPod->>RouterPod: Merge/route results<br/>(DAG logic)
+        RouterPod-->>Client3: Combined inference result
     end

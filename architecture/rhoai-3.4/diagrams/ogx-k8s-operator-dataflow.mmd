@@ -1,41 +1,61 @@
 sequenceDiagram
-    participant User as User / kubectl
+    participant Admin as Admin / Data Scientist
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
-    participant Operator as llama-stack-k8s-operator<br/>controller-runtime
-    participant KustomizePipeline as Kustomize Pipeline<br/>(in-process)
-    participant LLSDPod as LlamaStack Server Pod<br/>8321/TCP HTTP
-    participant IngressCtrl as Ingress Controller<br/>80/443/TCP
+    participant Operator as LlamaStack Operator<br/>(redhat-ods-applications)
+    participant Pod as LlamaStack Server Pod<br/>8321/TCP HTTP
+    participant Ingress as Ingress Controller<br/>80/TCP HTTP
     participant Client as External Client
 
-    Note over User,LLSDPod: Flow 1: LlamaStackDistribution Reconciliation
+    rect rgb(230, 245, 255)
+        Note over Admin,Pod: Flow 1: LlamaStackDistribution Reconciliation
+        Admin->>K8sAPI: kubectl apply LlamaStackDistribution CR
+        K8sAPI-->>Operator: Watch event (HTTPS/443, SA Bearer Token)
+        Operator->>K8sAPI: Read CR spec (HTTPS/443, SA Bearer Token)
+        Operator->>Operator: Render manifests via Kustomize<br/>Apply transformer plugins
 
-    User->>K8sAPI: kubectl apply LlamaStackDistribution CR<br/>Auth: User credentials
-    K8sAPI-->>Operator: Watch event (LLSD CR changed)<br/>Auth: ServiceAccount token
-    Operator->>Operator: Read operator-config ConfigMap<br/>(feature flags, image overrides)
-    Operator->>KustomizePipeline: Render manifests from base + plugins<br/>(NamePrefix, Namespace, FieldMutator, NetworkPolicyTransformer)
-    KustomizePipeline-->>Operator: Generated Kubernetes resources
-    Operator->>K8sAPI: Server-side apply: Deployment, Service,<br/>PVC, SA, RoleBinding, NetworkPolicy, HPA, PDB<br/>Auth: ServiceAccount token
-    K8sAPI-->>Operator: Resources created/updated
-    Operator->>LLSDPod: GET /v1/providers<br/>HTTP 8321/TCP (no auth)
-    LLSDPod-->>Operator: Provider info JSON
-    Operator->>LLSDPod: GET /v1/version<br/>HTTP 8321/TCP (no auth)
-    LLSDPod-->>Operator: Server version
-    Operator->>K8sAPI: Update LLSD CR status<br/>(providers, version, conditions)
+        Operator->>K8sAPI: Create/Update Deployment (HTTPS/443)
+        Operator->>K8sAPI: Create/Update Service (HTTPS/443)
+        Operator->>K8sAPI: Create/Update ServiceAccount (HTTPS/443)
+        Operator->>K8sAPI: Create/Update RoleBinding → anyuid SCC (HTTPS/443)
+        Operator->>K8sAPI: Create/Update NetworkPolicy (HTTPS/443)
 
-    Note over User,LLSDPod: Flow 2: CA Bundle Management
+        alt spec.network.exposeRoute=true
+            Operator->>K8sAPI: Create/Update Ingress (HTTPS/443)
+        end
+        alt spec.storage configured
+            Operator->>K8sAPI: Create PVC (HTTPS/443)
+        end
+        alt spec.autoscaling configured
+            Operator->>K8sAPI: Create/Update HPA (HTTPS/443)
+            Operator->>K8sAPI: Remove spec.replicas from Deployment
+        end
+        Operator->>K8sAPI: Create/Update PDB (HTTPS/443)
 
-    Operator->>K8sAPI: Read user CA ConfigMap<br/>(spec.server.tlsConfig.caBundle)
-    K8sAPI-->>Operator: User CA PEM data
-    Operator->>K8sAPI: Read odh-trusted-ca-bundle ConfigMap
-    K8sAPI-->>Operator: Platform CA PEM data
-    Operator->>Operator: Validate PEM/X.509 certs<br/>(crypto/x509, size limits: 10MB, 1000 certs)
-    Operator->>K8sAPI: Create/Update managed CA ConfigMap<br/>(concatenated, validated bundle)
-    Note over LLSDPod: Kubelet mounts CA ConfigMap<br/>as SSL_CERT_FILE volume
+        Note over Operator,Pod: Wait for Deployment ready
+        Operator->>Pod: GET /v1/health (HTTP/8321, plaintext)
+        Pod-->>Operator: 200 OK
+        Operator->>Pod: GET /v1/providers (HTTP/8321, plaintext)
+        Pod-->>Operator: Provider info JSON
+        Operator->>Pod: GET /v1/version (HTTP/8321, plaintext)
+        Pod-->>Operator: Version info JSON
+        Operator->>K8sAPI: Update CR status (HTTPS/443, SA Bearer Token)
+    end
 
-    Note over Client,LLSDPod: Flow 3: External Access via Ingress
+    rect rgb(255, 245, 230)
+        Note over Operator,K8sAPI: Flow 2: CA Bundle Aggregation
+        Operator->>K8sAPI: Read user CA ConfigMap<br/>(direct client, HTTPS/443)
+        K8sAPI-->>Operator: ConfigMap data
+        Operator->>K8sAPI: Read odh-trusted-ca-bundle<br/>(direct client, HTTPS/443)
+        K8sAPI-->>Operator: ConfigMap data (may not exist)
+        Operator->>Operator: Parse PEM blocks<br/>Validate X.509 certs<br/>Reject non-CERTIFICATE types<br/>Enforce size limits (10MB, 1000 certs)
+        Operator->>K8sAPI: Create/Update managed CA ConfigMap<br/>(HTTPS/443)
+        Note over Pod: Pod mounts managed CA ConfigMap<br/>via SSL_CERT_FILE env var
+    end
 
-    Operator->>K8sAPI: Create Ingress resource<br/>(when spec.network.exposeRoute: true)
-    Client->>IngressCtrl: HTTP/HTTPS request<br/>80/443/TCP
-    IngressCtrl->>LLSDPod: Forward to Service<br/>8321/TCP HTTP (no encryption)
-    LLSDPod-->>IngressCtrl: Response
-    IngressCtrl-->>Client: Response
+    rect rgb(230, 255, 230)
+        Note over Client,Pod: Flow 3: External Access (when exposeRoute=true)
+        Client->>Ingress: HTTP request (80/TCP)
+        Ingress->>Pod: Forward to {instance}-service<br/>(8321/TCP, HTTP, plaintext)
+        Pod-->>Ingress: Response
+        Ingress-->>Client: Response
+    end

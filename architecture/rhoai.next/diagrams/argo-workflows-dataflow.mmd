@@ -1,46 +1,62 @@
 sequenceDiagram
-    participant User as User / DSP Operator
-    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant WFC as Workflow Controller<br/>9090/TCP metrics<br/>6060/TCP healthz
-    participant CronCtrl as Cron Controller<br/>(in workflow-controller)
-    participant Pod as Workflow Pod<br/>(main container)
-    participant InitExec as argoexec (init)<br/>Artifact Download
-    participant WaitExec as argoexec (wait)<br/>Artifact Upload
-    participant S3 as S3 / Minio<br/>443/TCP HTTPS
-    participant DB as PostgreSQL<br/>5432/TCP TLS
+    participant DSP as DSP API Server
+    participant K8s as Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+
+    participant WC as workflow-controller<br/>9090/TCP metrics<br/>6060/TCP health
+    participant Pod as Workflow Step Pod
+    participant Init as argoexec (init)<br/>Init Container
+    participant Wait as argoexec (wait)<br/>Emissary Sidecar
+    participant S3 as S3/MinIO Storage<br/>443/TCP HTTPS
+    participant DB as PostgreSQL/MariaDB<br/>5432/3306 TCP
 
-    Note over User, DB: Flow 1: Workflow Execution
+    Note over DSP,DB: Flow 1: Workflow Execution (Pipeline Run)
 
-    User->>K8sAPI: Create Workflow CR<br/>Auth: ServiceAccount Bearer
-    K8sAPI-->>WFC: Informer notification<br/>Auth: ServiceAccount Bearer
-    WFC->>K8sAPI: Create Workflow Pod<br/>(main + argoexec sidecar)<br/>Auth: ServiceAccount Bearer
-    K8sAPI-->>InitExec: Pod scheduled
+    DSP->>K8s: POST Workflow CR<br/>Auth: ServiceAccount token
+    activate K8s
+    K8s-->>DSP: Workflow created
+    deactivate K8s
 
-    InitExec->>S3: Download input artifacts<br/>Auth: AccessKey/SecretKey
-    S3-->>InitExec: Artifact data
+    WC->>K8s: Watch Workflow CRs<br/>Auth: ServiceAccount token
+    K8s-->>WC: New Workflow event
 
-    Note over Pod: Main container executes<br/>pipeline step logic
+    loop For each workflow step
+        WC->>K8s: Create Pod (with argoexec sidecar)<br/>Auth: ServiceAccount token
+        K8s-->>WC: Pod created
 
-    Pod->>WaitExec: Container completes<br/>(emissary /var/run/argo/)
+        activate Pod
+        Note over Pod,Init: Pod starts - init container runs first
 
-    WaitExec->>S3: Upload output artifacts<br/>Auth: AccessKey/SecretKey
-    S3-->>WaitExec: Upload confirmed
+        Init->>S3: Download input artifacts<br/>Auth: Secret-based credentials
+        S3-->>Init: Artifact data
+        Note over Init: Stage scripts to<br/>/var/run/argo/
 
-    WaitExec->>K8sAPI: Patch WorkflowTaskResult<br/>Auth: ServiceAccount Bearer
+        Note over Pod,Wait: Main container executes step
 
-    K8sAPI-->>WFC: Result notification
-    WFC->>K8sAPI: Update Workflow status<br/>Schedule next DAG node
-    WFC->>DB: Archive workflow (optional)<br/>Auth: Secret credentials
+        Wait->>K8s: Patch pod annotations (progress)<br/>Auth: ServiceAccount token
+        K8s-->>Wait: Updated
 
-    Note over User, DB: Flow 2: CronWorkflow Scheduling
+        Wait->>S3: Upload output artifacts<br/>Auth: Secret-based credentials
+        S3-->>Wait: Upload confirmed
 
-    CronCtrl->>K8sAPI: List CronWorkflows<br/>Auth: ServiceAccount Bearer
-    K8sAPI-->>CronCtrl: CronWorkflow list
-    CronCtrl->>CronCtrl: Check cron schedule
-    CronCtrl->>K8sAPI: Create Workflow from template<br/>Auth: ServiceAccount Bearer
+        Wait->>K8s: Create/Patch WorkflowTaskResult CR<br/>Auth: ServiceAccount token
+        K8s-->>Wait: Result recorded
+        deactivate Pod
+    end
 
-    Note over User, DB: Flow 3: Artifact Garbage Collection
+    WC->>K8s: Update Workflow status (completed)<br/>Auth: ServiceAccount token
+    K8s-->>WC: Status updated
 
-    WFC->>K8sAPI: Create WorkflowArtifactGCTask<br/>Auth: ServiceAccount Bearer
-    WFC->>K8sAPI: Create GC Pod<br/>Auth: ServiceAccount Bearer
-    Note over S3: GC Pod (argoexec)<br/>deletes expired artifacts
+    Note over DSP,DB: Flow 2: Workflow Archiving (Optional)
+
+    WC->>K8s: Watch completed Workflows<br/>Auth: ServiceAccount token
+    K8s-->>WC: Completed Workflow event
+
+    WC->>DB: Archive workflow data<br/>Auth: Secret-based username/password<br/>Encryption: Optional SSL/TLS
+    DB-->>WC: Archived
+
+    Note over DSP,DB: Flow 3: CronWorkflow Scheduling
+
+    WC->>K8s: Watch CronWorkflow CRs<br/>Auth: ServiceAccount token
+    K8s-->>WC: CronWorkflow schedule triggered
+
+    WC->>K8s: Create Workflow CR from template<br/>Auth: ServiceAccount token
+    K8s-->>WC: Workflow created

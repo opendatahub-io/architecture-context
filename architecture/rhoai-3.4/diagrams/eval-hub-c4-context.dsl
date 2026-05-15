@@ -1,63 +1,56 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Creates and manages LLM evaluation jobs"
-        admin = person "Platform Admin" "Configures providers, collections, and RBAC"
+        dataScientist = person "Data Scientist" "Creates and manages LLM evaluation jobs via dashboard or SDK"
+        platformAdmin = person "Platform Admin" "Manages RHOAI platform and evaluation infrastructure"
 
-        evalHub = softwareSystem "EvalHub" "Lightweight REST API service for orchestrating LLM evaluations across multiple backends" {
-            apiServer = container "eval-hub API Server" "Main REST API for evaluation orchestration, job management, provider/collection CRUD" "Go Service"
-            authMiddleware = container "Auth Middleware" "TokenReview + SubjectAccessReview enforcement with X-Tenant namespace mapping" "Go Middleware"
-            storageLayer = container "Storage Layer" "Abstracted persistence (PostgreSQL for production, SQLite for dev)" "Go Interface"
-            mlflowClient = container "MLflow Client" "Experiment creation, run tagging, result aggregation" "Go HTTP Client"
-            k8sRuntime = container "Kubernetes Runtime" "Creates evaluation Job pods with 3-container pattern" "Go K8s Client"
+        evalHub = softwareSystem "Eval-Hub" "REST API service for orchestrating LLM evaluations across multiple framework backends" {
+            apiServer = container "eval-hub API Server" "Central REST API for evaluation job orchestration, provider/collection management, experiment tracking" "Go HTTP Service"
+            authMiddleware = container "Auth Middleware" "Authenticates via K8s TokenReview, authorizes via SubjectAccessReview with custom API groups" "Go Middleware"
+            storageLayer = container "Storage Layer" "SQL-based persistence with JSON documents, supports SQLite and PostgreSQL" "Go SQL Interface"
+            runtimeAbstraction = container "Runtime Abstraction" "Pluggable job execution — Kubernetes batch/v1 Jobs (production) or local processes (development)" "Go Interface"
+            sidecar = container "eval-runtime-sidecar" "KEP-753 native sidecar in job pods — reverse proxy with auth token injection for eval-hub, MLflow, OCI" "Go HTTP Sidecar"
+            initContainer = container "eval-runtime-init" "Init container that downloads S3 test data to shared volume before adapter starts" "Go CLI"
         }
 
-        evalJobPod = softwareSystem "Evaluation Job Pod" "Batch v1 Job with init + adapter + sidecar containers" {
-            initContainer = container "eval-runtime-init" "Downloads test data from S3 before evaluation starts" "Go Init Container"
-            adapter = container "Evaluation Adapter" "Runs evaluation framework (lm-eval, LightEval, Garak, GuideLLM, IBM CLEAR)" "Provider-defined Container"
-            sidecar = container "eval-runtime-sidecar" "Reverse proxy for auth injection and upstream routing" "Go Native Sidecar (KEP-753)"
-        }
-
-        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Deploys and manages EvalHub instances via EvalHub CR" "Internal RHOAI"
-        k8sAPI = softwareSystem "Kubernetes API Server" "Authentication (TokenReview), authorization (SAR), workload management" "External"
-        mlflow = softwareSystem "MLflow Tracking Server" "Experiment tracking and evaluation result storage" "Internal RHOAI"
-        postgresql = softwareSystem "PostgreSQL" "Production persistent storage for jobs, collections, providers" "External"
-        s3 = softwareSystem "S3-compatible Storage" "Test data storage for evaluation jobs" "External"
-        ociRegistry = softwareSystem "OCI Registry" "Model artifact storage and retrieval" "External"
-        kubeRBACProxy = softwareSystem "kube-rbac-proxy" "Authentication proxy fronting eval-hub service" "External"
-        kueue = softwareSystem "Kueue" "Optional queue scheduling for GPU-bound evaluation workloads" "External"
+        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Deploys and manages eval-hub instances via EvalHub custom resource" "Internal RHOAI"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API for authentication, authorization, and workload management" "Platform"
+        postgresql = softwareSystem "PostgreSQL" "Relational database for production persistent storage" "Infrastructure"
+        mlflow = softwareSystem "MLflow Tracking Server" "Experiment tracking and metric logging for evaluation runs" "Internal RHOAI"
+        s3 = softwareSystem "AWS S3" "Object storage for test data artifacts" "External"
+        ociRegistry = softwareSystem "OCI Registry" "Container/artifact registry for evaluation result export" "External"
+        otelCollector = softwareSystem "OTEL Collector" "Distributed tracing collection (optional)" "Infrastructure"
+        prometheus = softwareSystem "Prometheus" "Metrics collection via /metrics scrape endpoint" "Infrastructure"
+        kueue = softwareSystem "Kueue" "Job queue management for evaluation workloads (optional)" "Platform"
+        serviceCA = softwareSystem "OpenShift Service CA" "Provides CA certificates for internal service TLS" "Platform"
 
         # User interactions
-        user -> evalHub "Creates evaluation jobs, views results" "REST API / Bearer Token"
-        admin -> evalHub "Manages providers and benchmark collections" "REST API / Bearer Token"
+        dataScientist -> evalHub "Creates evaluation jobs, manages providers and collections" "HTTPS/8080, Bearer Token"
+        platformAdmin -> trustyaiOperator "Creates EvalHub CR to deploy instances" "kubectl"
 
-        # Operator management
-        trustyaiOperator -> evalHub "Deploys via EvalHub CR" "CRD Watch"
+        # Operator manages eval-hub
+        trustyaiOperator -> evalHub "Deploys Deployment, Service, ConfigMap via EvalHub CR" "K8s API"
 
-        # EvalHub internal flows
+        # eval-hub dependencies
+        evalHub -> k8sAPI "TokenReview, SAR, Job/ConfigMap CRUD" "HTTPS/443, SA Token"
+        evalHub -> postgresql "Persistent storage for evaluations, providers, collections" "TCP/5432, Password"
+        evalHub -> mlflow "Create/get experiments, log metrics" "HTTPS/5000, Bearer Token"
+        evalHub -> s3 "Download test data (via init container)" "HTTPS/443, AWS IAM"
+        evalHub -> ociRegistry "Export evaluation result artifacts (via sidecar)" "HTTPS/443, Bearer Token"
+        evalHub -> otelCollector "Export distributed traces" "gRPC/4317, OTLP"
+        prometheus -> evalHub "Scrape metrics" "HTTP(S)/8080"
+        evalHub -> kueue "Job queue scheduling labels" "Label injection"
+        evalHub -> serviceCA "CA certificates for internal TLS" "ConfigMap mount"
+
+        # Internal container interactions
         apiServer -> authMiddleware "Validates requests"
-        authMiddleware -> k8sAPI "TokenReview + SubjectAccessReview" "HTTPS/443"
-        apiServer -> storageLayer "Persists jobs, collections, providers"
-        apiServer -> mlflowClient "Creates experiments, tags runs"
-        apiServer -> k8sRuntime "Creates evaluation Job pods"
-
-        storageLayer -> postgresql "Production queries" "TCP/5432"
-        mlflowClient -> mlflow "Experiment tracking" "HTTP(S)/5000"
-        k8sRuntime -> k8sAPI "Job/ConfigMap CRUD" "HTTPS/443"
-
-        # External access
-        user -> kubeRBACProxy "HTTPS with Bearer Token" "HTTPS/8443"
-        kubeRBACProxy -> evalHub "Pre-authenticated requests" "HTTP/8080"
-
-        # Job pod flows
-        evalHub -> evalJobPod "Creates 3-container Job pod"
-        initContainer -> s3 "Downloads test data" "HTTPS/443 AWS IAM"
-        adapter -> sidecar "All outbound HTTP via localhost" "HTTP/8080"
-        sidecar -> evalHub "Status event callbacks" "HTTPS/Bearer SA token"
-        sidecar -> mlflow "Experiment tracking calls" "HTTPS/Bearer token"
-        sidecar -> ociRegistry "Model artifact push/pull" "HTTPS/Bearer challenge"
-
-        # Optional integration
-        evalHub -> kueue "Queue scheduling via Job labels" "Label-based"
+        authMiddleware -> k8sAPI "TokenReview + SAR"
+        apiServer -> storageLayer "CRUD operations"
+        apiServer -> runtimeAbstraction "Job lifecycle"
+        runtimeAbstraction -> k8sAPI "Create/delete batch/v1 Jobs"
+        sidecar -> apiServer "Forward status events" "HTTPS/8443, SA Token"
+        sidecar -> mlflow "Forward experiment tracking" "HTTPS/5000, Projected SA Token"
+        sidecar -> ociRegistry "Forward artifact push/pull" "HTTPS/443, Bearer Token"
+        initContainer -> s3 "Download test data" "HTTPS/443, AWS IAM"
     }
 
     views {
@@ -66,17 +59,21 @@ workspace {
             autoLayout
         }
 
-        container evalHub "EvalHubContainers" {
-            include *
-            autoLayout
-        }
-
-        container evalJobPod "EvalJobPodContainers" {
+        container evalHub "Containers" {
             include *
             autoLayout
         }
 
         styles {
+            element "Person" {
+                shape Person
+                background #08427b
+                color #ffffff
+            }
+            element "Software System" {
+                background #1168bd
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -85,14 +82,13 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Person" {
-                shape Person
-                background #4a90e2
+            element "Platform" {
+                background #438dd5
                 color #ffffff
             }
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
+            element "Infrastructure" {
+                background #85bbf0
+                color #000000
             }
             element "Container" {
                 background #438dd5

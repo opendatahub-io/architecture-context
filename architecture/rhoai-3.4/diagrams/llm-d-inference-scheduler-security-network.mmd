@@ -3,84 +3,92 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (Gateway API)"]
-        Envoy["Envoy Gateway<br/>80/TCP HTTP<br/>ext-proc filter"]
+    subgraph Ingress["INGRESS (Gateway API Layer)"]
+        Gateway["Envoy Gateway<br/>inference-gateway<br/>80/TCP HTTP<br/>No encryption (configurable)"]
     end
 
-    subgraph ControlPlane["SCHEDULING CONTROL PLANE (Cluster Internal)"]
+    subgraph ClusterInternal["CLUSTER SERVICES (Internal)"]
         direction TB
 
-        subgraph NS_EPP["Namespace: ${NAMESPACE}"]
-            EPP["EPP (Endpoint Picker)<br/>SA: ${EPP_NAME}<br/>Image: odh-llm-d-inference-scheduler<br/>FIPS: strictfipsruntime"]
-            EPP_Ports["Ports:<br/>9002/TCP gRPC ext-proc<br/>9003/TCP gRPC health<br/>9090/TCP HTTP metrics<br/>5557/TCP ZMQ events"]
-            Tokenizer["UDS Tokenizer<br/>Unix Socket<br/>8082/TCP health"]
+        subgraph NS_EPP["EPP Deployment"]
+            EPP["Endpoint Picker Processor<br/>SA: $EPP_NAME<br/>Image: odh-llm-d-inference-scheduler<br/>FIPS: strictfipsruntime"]
+            EPP_extproc["9002/TCP gRPC ext-proc<br/>No encryption, No auth"]
+            EPP_health["9003/TCP gRPC health<br/>No encryption, No auth"]
+            EPP_metrics["9090/TCP HTTP metrics<br/>No encryption, No auth"]
+            EPP_zmq["5557/TCP ZMQ subscriber<br/>No encryption, No auth"]
+        end
+
+        subgraph NS_vLLM["vLLM Pod (with Sidecar)"]
+            Sidecar["P/D Routing Sidecar<br/>Image: odh-llm-d-routing-sidecar<br/>FIPS: strictfipsruntime"]
+            Sidecar_proxy["8000/TCP HTTPS proxy<br/>TLS 1.2+ FIPS ciphers<br/>No auth (SSRF opt-in)"]
+            Decoder["vLLM Decoder<br/>8001/TCP<br/>Encryption: configurable"]
+            Tokenizer["UDS Tokenizer<br/>gRPC over UDS<br/>No encryption"]
+        end
+
+        subgraph NS_Remote["Remote vLLM Workers"]
+            Prefiller["vLLM Prefiller<br/>(configurable port)<br/>Encryption: configurable"]
+            Encoder["vLLM Encoder<br/>(configurable port, EPD)<br/>Encryption: configurable"]
         end
     end
 
-    subgraph DataPlane["RUNTIME DATA PLANE (Per Pod)"]
-        direction TB
-
-        subgraph NS_Model["Namespace: ${NAMESPACE}"]
-            Sidecar["Routing Sidecar<br/>8000/TCP HTTP/HTTPS<br/>TLS 1.2+ configurable<br/>SSRF: Pod IP allowlist<br/>FIPS: strictfipsruntime"]
-            LocalDecoder["vLLM Decoder (local)<br/>8001/TCP HTTP"]
-        end
+    subgraph Platform["PLATFORM SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
+        Prometheus["Prometheus<br/>Scrapes 9090/TCP<br/>HTTP, No auth"]
+        OTel["OpenTelemetry Collector<br/>4317/TCP gRPC<br/>No encryption (insecure)"]
     end
 
-    subgraph RemoteWorkers["REMOTE MODEL WORKERS"]
-        Prefiller["vLLM Prefiller<br/>varies HTTP/HTTPS<br/>TLS 1.2+ configurable"]
-        Encoder["vLLM Encoder<br/>varies HTTP/HTTPS<br/>TLS 1.2+ configurable"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        HuggingFace["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer HF_TOKEN"]
     end
 
-    subgraph K8sServices["KUBERNETES SERVICES"]
-        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
-        vLLMEngines["vLLM Engines<br/>5556/TCP ZMQ<br/>No Encryption"]
-        vLLMModels["vLLM /v1/models<br/>varies HTTP<br/>No Encryption"]
+    subgraph ZMQEvents["vLLM KV-Events"]
+        vLLMZMQ["ZMQ PUB<br/>5556/TCP<br/>No encryption, No auth"]
     end
 
-    subgraph Observability["OBSERVABILITY (Optional)"]
-        Prometheus["Prometheus<br/>Scrapes 9090/TCP<br/>HTTP, No TLS"]
-        OTLP["OTLP Collector<br/>4317/TCP gRPC<br/>⚠ Insecure credentials"]
-    end
+    %% External → Ingress
+    Client -->|"HTTP/80<br/>No encryption<br/>No auth"| Gateway
 
-    %% External to Ingress
-    Client -->|"HTTP/80<br/>No TLS<br/>No Auth"| Envoy
+    %% Ingress → EPP (ext-proc)
+    Gateway -->|"gRPC/9002<br/>No encryption<br/>No auth"| EPP_extproc
 
-    %% Envoy to components
-    Envoy -->|"gRPC/9002<br/>No TLS (cluster-internal)<br/>No Auth"| EPP
-    Envoy -->|"HTTP(S)/8000<br/>TLS 1.2+ configurable<br/>No Auth"| Sidecar
+    %% Ingress → Sidecar (routed request)
+    Gateway -->|"HTTPS/8000<br/>TLS 1.2+<br/>No auth"| Sidecar_proxy
 
-    %% EPP internal
-    EPP -->|"Unix Socket<br/>N/A"| Tokenizer
+    %% Sidecar → vLLM
+    Sidecar_proxy -->|"HTTP(S)/8001<br/>Configurable TLS<br/>No auth"| Decoder
+    Sidecar_proxy -->|"HTTP(S)/configurable<br/>Configurable TLS<br/>No auth"| Prefiller
+    Sidecar_proxy -->|"HTTP(S)/configurable<br/>Configurable TLS<br/>No auth"| Encoder
 
-    %% EPP to K8s
+    %% EPP → Platform
     EPP -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    EPP -->|"ZMQ SUB/5556<br/>No TLS<br/>No Auth"| vLLMEngines
-    EPP -->|"HTTP/varies<br/>No TLS<br/>⚠ insecureSkipVerify=true"| vLLMModels
+    EPP_metrics -.->|"HTTP/9090<br/>Scraped by"| Prometheus
+    EPP -->|"gRPC/4317<br/>Insecure<br/>No auth"| OTel
+    Sidecar -->|"gRPC/4317<br/>Insecure<br/>No auth"| OTel
 
-    %% Sidecar flows
-    Sidecar -->|"HTTP/8001<br/>No TLS (localhost)<br/>No Auth"| LocalDecoder
-    Sidecar -->|"HTTP(S)/varies<br/>TLS 1.2+ configurable<br/>No Auth"| Prefiller
-    Sidecar -->|"HTTP(S)/varies<br/>TLS 1.2+ configurable<br/>No Auth"| Encoder
+    %% ZMQ Events
+    vLLMZMQ -->|"ZMQ SUB/5556<br/>No encryption<br/>No auth"| EPP_zmq
+
+    %% EPP → Tokenizer
+    Tokenizer -->|"gRPC/UDS<br/>No encryption"| EPP
+
+    %% Sidecar → K8s (SSRF allowlist)
     Sidecar -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
 
-    %% Observability
-    Prometheus -->|"HTTP/9090<br/>No TLS"| EPP
-    EPP -->|"gRPC/4317<br/>⚠ Insecure"| OTLP
-    Sidecar -->|"gRPC/4317<br/>⚠ Insecure"| OTLP
+    %% External services
+    EPP -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer HF_TOKEN"| HuggingFace
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef controlplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef dataplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef remote fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef k8s fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef observability fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef zmq fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:3px,stroke-dasharray: 5
 
     class Client external
-    class Envoy ingress
-    class EPP,EPP_Ports,Tokenizer controlplane
-    class Sidecar,LocalDecoder dataplane
-    class Prefiller,Encoder remote
-    class K8sAPI,vLLMEngines,vLLMModels k8s
-    class Prometheus,OTLP observability
+    class Gateway ingress
+    class EPP,EPP_extproc,EPP_health,EPP_metrics,EPP_zmq,Sidecar,Sidecar_proxy,Decoder,Tokenizer,Prefiller,Encoder internal
+    class K8sAPI,Prometheus,OTel platform
+    class HuggingFace externalservice
+    class vLLMZMQ zmq

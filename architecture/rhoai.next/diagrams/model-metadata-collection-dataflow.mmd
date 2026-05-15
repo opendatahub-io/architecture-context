@@ -1,48 +1,52 @@
 sequenceDiagram
-    participant CI as CI/CD Runner
+    participant Index as models-index.yaml<br/>(Local File)
     participant Extractor as model-extractor<br/>(Go CLI)
-    participant FS as Local Filesystem
-    participant RHReg as registry.redhat.io<br/>443/TCP HTTPS
-    participant AReg as registry.access.redhat.com<br/>443/TCP HTTPS
-    participant HF as huggingface.co<br/>443/TCP HTTPS
-    participant Docker as Konflux Pipeline<br/>(Docker Build)
-    participant Quay as quay.io/rhoai<br/>443/TCP HTTPS
-    participant Container as Data Container<br/>(sleep infinity)
-    participant Dashboard as RHOAI Dashboard
+    participant HF as HuggingFace API<br/>443/TCP HTTPS
+    participant OCI as OCI Registry<br/>registry.redhat.io<br/>443/TCP HTTPS
+    participant Output as output/ directory<br/>(Local Filesystem)
+    participant Catalog as data/models-catalog.yaml<br/>(Local File)
+    participant MCPIdx as mcp-servers-index.yaml<br/>(Local File)
+    participant MCPFiles as input/mcp_servers/<br/>(Local Files)
+    participant MCPCat as mcp-servers-catalog.yaml<br/>(Local File)
+    participant Konflux as Konflux Pipeline<br/>(CI/CD)
+    participant Quay as quay.io<br/>443/TCP HTTPS
+    participant Dashboard as RHOAI Dashboard<br/>(Volume Mount)
 
-    Note over CI,HF: Flow 1: Model Catalog Generation (CI/CD Build Time)
+    rect rgb(230, 240, 255)
+        Note over Index,Catalog: Flow 1: Model Metadata Extraction & Catalog Generation
+        Index->>Extractor: Read models-index.yaml
+        Extractor->>HF: GET /api/collections/{id}<br/>Bearer Token (optional)<br/>TLS 1.2+
+        HF-->>Extractor: Collection models list
+        Extractor->>HF: GET /api/models/{name}<br/>TLS 1.2+
+        HF-->>Extractor: Model details (downloads, likes, tags)
+        Extractor->>HF: GET /{repo}/raw/main/README.md<br/>TLS 1.2+
+        HF-->>Extractor: README content (YAML frontmatter)
 
-    CI->>FS: Read models-index.yaml,<br/>validated-models-index.yaml,<br/>other-models-index.yaml
-    FS-->>Extractor: Model definitions
+        Extractor->>OCI: GET /v2/{repo}/manifests/{tag}<br/>TLS 1.2+, Registry Auth
+        OCI-->>Extractor: OCI Manifest (model card layer ref)
+        Extractor->>OCI: GET /v2/{repo}/blobs/{digest}<br/>TLS 1.2+
+        OCI-->>Extractor: Model card content (YAML/markdown)
 
-    par Fetch OCI Metadata
-        Extractor->>RHReg: GET /v2/{image}/manifests/{tag}<br/>TLS 1.2+, No Auth (public)
-        RHReg-->>Extractor: OCI manifests<br/>(architectures, timestamps, layers)
-    and Fetch HuggingFace Metadata
-        Extractor->>HF: GET /api/models/{model_id}<br/>TLS 1.2+, Bearer Token (optional)
-        HF-->>Extractor: Model details, README,<br/>collections, validated lists
+        Note over Extractor: Enrichment Engine:<br/>Priority: HF YAML > HF API > HF README ><br/>HF Tags > OCI YAML > OCI Regex
+        Extractor->>Output: Write metadata.yaml per model
+        Extractor->>Output: Write enrichment.yaml (provenance)
+        Extractor->>Catalog: Write aggregated models-catalog.yaml
     end
 
-    Extractor->>Extractor: Merge metadata<br/>(7 priority levels,<br/>confidence-based override)
-    Extractor->>FS: Write models-catalog.yaml,<br/>validated-models-catalog.yaml,<br/>other-models-catalog.yaml
+    rect rgb(255, 243, 224)
+        Note over MCPIdx,MCPCat: Flow 2: MCP Server Catalog Generation
+        MCPIdx->>Extractor: Read mcp-servers-index.yaml
+        MCPFiles->>Extractor: Read individual server YAML files
+        Extractor->>OCI: GET /v2/{mcp-image}/manifests/{tag}<br/>TLS 1.2+
+        OCI-->>Extractor: Image manifest (architectures, timestamps)
+        Extractor->>MCPFiles: Write enriched server YAML (idempotent)
+        Extractor->>MCPCat: Write mcp-servers-catalog.yaml
+    end
 
-    Note over CI,AReg: Flow 2: MCP Server Catalog Generation (CI/CD Build Time)
-
-    CI->>FS: Read *-mcp-servers-index.yaml
-    FS-->>Extractor: MCP server definitions
-    Extractor->>FS: Read input/mcp_servers/*.yaml
-    Extractor->>AReg: GET /v2/{image}/manifests/{tag}<br/>TLS 1.2+, No Auth (public)
-    AReg-->>Extractor: MCP container metadata<br/>(architectures, timestamps)
-    Extractor->>FS: Write redhat-mcp-servers-catalog.yaml,<br/>partner-mcp-servers-catalog.yaml,<br/>community-mcp-servers-catalog.yaml
-
-    Note over Docker,Quay: Container Image Build & Push
-
-    Docker->>FS: COPY data/*.yaml
-    Docker->>Quay: Push image<br/>TLS 1.2+, Quay credentials
-    Quay-->>Docker: Image pushed
-
-    Note over Container,Dashboard: Flow 3: Runtime Data Consumption (On-Cluster)
-
-    Container->>Container: sleep infinity<br/>(data-only, no binary)
-    Dashboard->>Container: Volume mount /app/data
-    Container-->>Dashboard: Catalog YAML files<br/>(shared filesystem)
+    rect rgb(224, 255, 224)
+        Note over Konflux,Dashboard: Flow 3: Container Image Build & Consumption
+        Note over Konflux: Dockerfile.konflux:<br/>COPY data/*.yaml /app/data/
+        Konflux->>Quay: Push odh-model-metadata-collection<br/>HTTPS/443, Registry Push Auth
+        Note over Dashboard: Pod mounts container volume
+        Dashboard->>Dashboard: Read /app/data/*.yaml<br/>Local filesystem (no network)
+    end

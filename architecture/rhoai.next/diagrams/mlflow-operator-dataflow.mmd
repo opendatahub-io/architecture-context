@@ -1,41 +1,35 @@
 sequenceDiagram
-    participant Client as External Client
-    participant Gateway as data-science-gateway<br/>443/TCP HTTPS<br/>TLS 1.2+
-    participant MLflow as MLflow Server<br/>8443/TCP HTTPS<br/>TLS (service-ca)
     participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant PG as PostgreSQL<br/>5432/TCP<br/>TLS (optional)
+    participant Operator as mlflow-operator<br/>controller-runtime
+    participant Helm as Helm Renderer<br/>(in-process)
+    participant Client as External Client
+    participant Gateway as data-science-gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant MLflow as MLflow Pod<br/>8443/TCP HTTPS TLS (service-ca)
+    participant DB as PostgreSQL/MySQL<br/>5432/3306 TCP
     participant S3 as S3-compatible Storage<br/>443/TCP HTTPS
+    participant Prom as Prometheus
 
-    Note over Client,S3: Flow 1: External User Access via Gateway
+    Note over K8sAPI,Operator: Flow 1: MLflow CR Reconciliation
+    K8sAPI->>Operator: Watch event: MLflow CR created/updated<br/>HTTPS/6443 | TLS 1.2+ | SA Token
+    Operator->>Helm: Render chart with CR spec as values<br/>(in-process, no network)
+    Helm-->>Operator: Rendered K8s manifests
+    Operator->>K8sAPI: Server-side apply: Deployment, Service,<br/>HTTPRoute, ConsoleLink, NetworkPolicy, RBAC<br/>HTTPS/6443 | TLS 1.2+ | SA Token
+    Operator->>K8sAPI: Update MLflow CR status<br/>HTTPS/6443 | TLS 1.2+ | SA Token
+    K8sAPI-->>Operator: Status updated
 
-    Client->>Gateway: POST /mlflow/api/2.0/mlflow/runs/create<br/>Auth: OIDC/OAuth (platform auth)
-    Gateway->>MLflow: Forward to /api/2.0/mlflow/runs/create<br/>URL rewrite strips /mlflow prefix<br/>Re-encrypted TLS (service-ca cert)
-    MLflow->>K8sAPI: SelfSubjectAccessReview<br/>Check user permissions on<br/>mlflow.kubeflow.org/experiments
-    K8sAPI-->>MLflow: Allowed/Denied
-    alt Authorized
-        MLflow-->>Gateway: 200 OK + JSON Response
-    else Unauthorized
-        MLflow-->>Gateway: 403 Forbidden
-    end
-    Gateway-->>Client: Response
-
-    Note over MLflow,PG: Flow 2: Backend Store Access
-
-    MLflow->>PG: SQL queries (experiments, runs, models)<br/>Auth: Connection string credentials<br/>TLS: PGSSLMODE=verify-full (when CA present)
-    PG-->>MLflow: Query results
-
-    Note over MLflow,S3: Flow 3: Artifact Storage Access
-
-    MLflow->>S3: PUT/GET model artifacts<br/>Auth: AWS IAM credentials<br/>(envFrom secret or per-namespace<br/>mlflow-artifact-connection)
+    Note over Client,S3: Flow 2: MLflow Client Request via Gateway API
+    Client->>Gateway: POST /mlflow/api/2.0/...<br/>HTTPS/443 | TLS 1.2+ | Bearer Token (K8s)
+    Gateway->>MLflow: Forward (path rewrite: /mlflow/api → /api)<br/>HTTPS/8443 | TLS (service-ca) | Passthrough
+    MLflow->>K8sAPI: SelfSubjectAccessReview<br/>HTTPS/6443 | TLS 1.2+ | Bearer Token
+    K8sAPI-->>MLflow: Access decision (allow/deny)
+    MLflow->>DB: Query/store metadata<br/>5432 or 3306/TCP | DB wire protocol<br/>TLS verify-full (when CA configured)<br/>Connection string credentials
+    DB-->>MLflow: Query results
+    MLflow->>S3: Store/retrieve artifacts<br/>HTTPS/443 or HTTP/9000<br/>TLS 1.2+ | S3 credentials from secret
     S3-->>MLflow: Artifact data
+    MLflow-->>Gateway: JSON Response
+    Gateway-->>Client: JSON Response
 
-    Note over MLflow,K8sAPI: Flow 4: Operator Reconciliation
-
-    participant Operator as MLflow Operator<br/>8081/TCP (health)<br/>8443/TCP (metrics)
-
-    Operator->>K8sAPI: Watch MLflow CRs<br/>Auth: Bearer Token (SA)
-    K8sAPI-->>Operator: MLflow CR event (create/update/delete)
-    Operator->>Operator: Render Helm chart<br/>(embedded, in-process)
-    Operator->>K8sAPI: Server-Side Apply<br/>Deployment, Service, PVC,<br/>NetworkPolicy, RBAC, HTTPRoute,<br/>ConsoleLink, ServiceMonitor
-    K8sAPI-->>Operator: Applied successfully
-    Operator->>K8sAPI: Update MLflow CR status<br/>(conditions, URL)
+    Note over Prom,MLflow: Flow 3: Prometheus Metrics Scraping
+    Prom->>Prom: ServiceMonitor discovery
+    Prom->>MLflow: GET /metrics<br/>HTTPS/8443 | TLS (service-ca verified<br/>via openshift-service-ca.crt)<br/>Bearer Token
+    MLflow-->>Prom: Prometheus metrics

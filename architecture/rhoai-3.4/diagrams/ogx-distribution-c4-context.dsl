@@ -1,103 +1,80 @@
 workspace {
     model {
-        # People
-        dataScientist = person "Data Scientist" "Creates and deploys ML models, runs inference and evaluation"
-        mlEngineer = person "ML Engineer" "Configures and manages AI service deployments"
-        securityEngineer = person "Security Engineer" "Reviews and monitors AI safety guardrails"
+        datascientist = person "Data Scientist" "Creates AI applications using Llama Stack APIs for inference, RAG, safety, and evaluation"
+        platformadmin = person "Platform Admin" "Deploys and configures Llama Stack via RHOAI operator"
 
-        # Main System
-        llamaStack = softwareSystem "ogx-distribution (Llama Stack)" "Llama Stack AI inference server providing OpenAI-compatible APIs, RAG, safety, evaluation, and multi-provider inference" {
-            apiLayer = container "API Layer" "HTTP REST endpoints: /v1/inference, /v1/safety, /v1/vector_io, /v1/eval, /v1/files, /v1/responses, /v1/batches, /v1/scoring, /v1/tool_runtime, /v1/datasetio" "FastAPI/Uvicorn on UBI 9 Python 3.12" "WebApp"
-            authMiddleware = container "OAuth2 Auth Middleware" "Validates JWT tokens against OIDC JWKS endpoint, enforces owner-based access control" "Built-in Llama Stack auth" "Component"
-            providerFramework = container "Provider Framework" "Conditional provider activation via env vars; routes requests to appropriate backends" "Llama Stack Providers" "Component"
-            kvStore = container "KV Store Client" "Key-value storage for metadata registry and provider state" "kv_postgres" "Component"
-            sqlStore = container "SQL Store Client" "Structured storage for inference logs, agent responses, conversations, file metadata" "sql_postgres" "Component"
-            embeddedModels = container "Embedded Models" "Pre-cached granite-embedding-125m-english and tiktoken cl100k_base" "HuggingFace/tiktoken" "Component"
-            configYaml = container "Configuration" "distribution/config.yaml defining APIs, providers, storage, auth, telemetry" "YAML" "Component"
+        ogxDistribution = softwareSystem "ogx-distribution (Llama Stack)" "Containerized Llama Stack server providing standardized APIs for inference, safety, evaluation, vector I/O, tool runtime, and more" {
+            llamaStackServer = container "Llama Stack Server" "Serves Llama Stack APIs as an HTTP service with conditional provider activation" "Python 3.12 (FastAPI/Uvicorn)" "WebApp"
+            distroConfig = container "Distribution Config" "Defines active providers, storage backends, auth policy, and registered resources" "YAML (config.yaml)" "Config"
+            oauth2Middleware = container "OAuth2 Auth Middleware" "Validates JWT tokens against JWKS endpoint when AUTH_ISSUER is configured" "Python" "Component"
+            kvPostgres = container "kv_postgres Store" "Key-value storage for metadata, vector IO state, batches" "PostgreSQL client" "Database"
+            sqlPostgres = container "sql_postgres Store" "Relational storage for inference records, files metadata, agent responses" "PostgreSQL client" "Database"
         }
 
-        # Internal Platform Dependencies
-        vllm = softwareSystem "vLLM Serving Runtime" "LLM and embedding model serving via OpenAI-compatible API" "Internal RHOAI"
-        postgresql = softwareSystem "PostgreSQL" "Persistent storage backend for KV store and SQL store" "Internal RHOAI"
-        trustyaiFMS = softwareSystem "TrustyAI FMS Orchestrator" "AI safety guardrails and content filtering" "Internal RHOAI"
-        trustyaiLMEval = softwareSystem "TrustyAI LMEval" "LLM evaluation via lm-evaluation-harness" "Internal RHOAI"
-        kubeflow = softwareSystem "Kubeflow Pipelines" "Remote RAGAS and Garak evaluation pipeline execution" "Internal RHOAI"
-        platformIngress = softwareSystem "Platform Ingress" "Gateway API / HTTPRoute for TLS termination and external access" "Internal RHOAI"
+        # Internal RHOAI Platform Dependencies
+        vllm = softwareSystem "vLLM Serving Runtime" "LLM and embedding model inference serving" "Internal RHOAI"
+        trustyai = softwareSystem "TrustyAI" "AI safety guardrails (FMS) and model evaluation (LM-Eval, RAGAS, Garak)" "Internal RHOAI"
+        kubeflow = softwareSystem "Kubeflow Pipelines" "Pipeline orchestration for remote evaluation jobs" "Internal RHOAI"
+        postgresql = softwareSystem "PostgreSQL" "Persistent relational database for KV store, SQL store, inference store" "Internal RHOAI"
+        s3Storage = softwareSystem "S3-compatible Storage" "Object storage for files (MinIO/ODF)" "Internal RHOAI"
+        otelCollector = softwareSystem "OTEL Collector" "OpenTelemetry traces and metrics aggregation" "Internal RHOAI"
+        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator that deploys and manages Llama Stack" "Internal RHOAI"
+
+        # External Cloud Inference Providers
+        awsBedrock = softwareSystem "AWS Bedrock" "Cloud LLM inference via Amazon Bedrock" "External Cloud"
+        googleVertexAI = softwareSystem "Google Vertex AI" "Cloud LLM inference via Google AI Platform" "External Cloud"
+        openaiAPI = softwareSystem "OpenAI API" "Cloud LLM inference via OpenAI" "External Cloud"
+        ibmWatsonX = softwareSystem "IBM WatsonX" "Cloud LLM inference via IBM AI Platform" "External Cloud"
+        azureOpenAI = softwareSystem "Azure OpenAI" "Cloud LLM inference via Microsoft Azure" "External Cloud"
 
         # External Vector Databases
-        milvus = softwareSystem "Milvus" "Remote vector database for RAG operations" "External"
-        qdrant = softwareSystem "Qdrant" "Remote vector database for RAG operations" "External"
-        pgvector = softwareSystem "pgvector" "Vector database via PostgreSQL extension" "External"
+        milvus = softwareSystem "Milvus" "Distributed vector database for similarity search" "External"
+        qdrant = softwareSystem "Qdrant" "Vector database with REST and gRPC APIs" "External"
 
-        # External Cloud LLM Providers
-        awsBedrock = softwareSystem "AWS Bedrock" "Remote LLM inference via AWS" "External Cloud"
-        azureOpenAI = softwareSystem "Azure OpenAI" "Remote LLM inference via Azure" "External Cloud"
-        vertexAI = softwareSystem "Google Vertex AI" "Remote LLM inference via Google Cloud" "External Cloud"
-        openai = softwareSystem "OpenAI API" "Remote LLM inference via OpenAI" "External Cloud"
-        watsonx = softwareSystem "IBM WatsonX" "Remote LLM inference via IBM" "External Cloud"
-
-        # External Services
-        s3 = softwareSystem "S3-compatible Storage" "Model artifacts and file storage" "External"
-        huggingface = softwareSystem "HuggingFace Hub" "Dataset loading and model downloads" "External"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Traces and metrics export" "External"
-        oidcProvider = softwareSystem "OAuth2/OIDC Provider" "JWT validation via JWKS endpoint" "External"
-
-        # Tool Services
-        braveSearch = softwareSystem "Brave Search API" "Web search tool runtime" "External"
-        tavilySearch = softwareSystem "Tavily Search API" "Web search tool runtime" "External"
-        mcpServers = softwareSystem "MCP Servers" "External tool integration via Model Context Protocol" "External"
+        # External Tools & Services
+        braveSearch = softwareSystem "Brave Search" "Web search API for tool runtime" "External"
+        tavilySearch = softwareSystem "Tavily Search" "Web search API for tool runtime" "External"
+        huggingface = softwareSystem "HuggingFace Hub" "Model and dataset repository" "External"
+        oauth2Provider = softwareSystem "OAuth2 Identity Provider" "JWT token issuer and JWKS endpoint" "External"
 
         # Relationships - Users
-        dataScientist -> llamaStack "Submits inference requests, runs evaluations" "HTTPS/443 (via ingress)"
-        mlEngineer -> llamaStack "Configures providers, manages models" "HTTPS/443 (via ingress)"
-        securityEngineer -> llamaStack "Reviews safety guardrail results" "HTTPS/443 (via ingress)"
+        datascientist -> ogxDistribution "Creates AI applications via REST APIs" "HTTP/8321"
+        platformadmin -> rhodsOperator "Configures and deploys Llama Stack" "kubectl/oc"
 
-        # Relationships - Ingress
-        platformIngress -> llamaStack "Routes requests, terminates TLS" "HTTP/8321"
+        # Relationships - Platform operator
+        rhodsOperator -> ogxDistribution "Deploys and manages container lifecycle" "Kubernetes API"
 
-        # Relationships - Internal Components
-        apiLayer -> authMiddleware "Validates requests"
-        authMiddleware -> providerFramework "Routes authenticated requests"
-        providerFramework -> kvStore "Stores/retrieves metadata"
-        providerFramework -> sqlStore "Stores/retrieves structured data"
-        providerFramework -> embeddedModels "Uses cached embedding model"
+        # Relationships - Internal platform
+        ogxDistribution -> vllm "Sends inference and embedding requests" "HTTP/HTTPS, Bearer Token"
+        ogxDistribution -> trustyai "Sends safety checks and evaluation jobs" "HTTP/HTTPS, Certificate/Token"
+        ogxDistribution -> kubeflow "Submits evaluation pipelines (RAGAS, Garak)" "HTTP, Bearer Token"
+        ogxDistribution -> postgresql "Stores state (KV + SQL)" "TCP/5432, Password"
+        ogxDistribution -> s3Storage "Stores and retrieves files" "HTTPS/443, AWS IAM"
+        ogxDistribution -> otelCollector "Exports traces and metrics" "HTTP OTLP"
 
-        # Relationships - Internal Platform
-        llamaStack -> vllm "LLM inference and embedding requests" "HTTP/HTTPS, API Token"
-        llamaStack -> postgresql "KV store and SQL store operations" "PostgreSQL/5432, Username/Password"
-        llamaStack -> trustyaiFMS "Safety guardrails and content filtering" "HTTP/HTTPS, in-cluster"
-        llamaStack -> trustyaiLMEval "LLM evaluation" "HTTP/HTTPS, in-cluster"
-        llamaStack -> kubeflow "Remote evaluation pipelines" "HTTP/HTTPS, API Token"
+        # Relationships - External cloud
+        ogxDistribution -> awsBedrock "Cloud LLM inference" "HTTPS/443, Bearer Token"
+        ogxDistribution -> googleVertexAI "Cloud LLM inference" "HTTPS/443, Google ADC"
+        ogxDistribution -> openaiAPI "Cloud LLM inference" "HTTPS/443, API Key"
+        ogxDistribution -> ibmWatsonX "Cloud LLM inference" "HTTPS/443, API Key"
+        ogxDistribution -> azureOpenAI "Cloud LLM inference" "HTTPS/443, API Key"
 
-        # Relationships - Vector Databases
-        llamaStack -> milvus "Vector similarity search (RAG)" "HTTP/HTTPS, mTLS + Token"
-        llamaStack -> qdrant "Vector similarity search (RAG)" "HTTP/6333, gRPC/6334, API Key"
-        llamaStack -> pgvector "Vector similarity search (RAG)" "PostgreSQL/5432, Username/Password"
-
-        # Relationships - Cloud Providers
-        llamaStack -> awsBedrock "Remote LLM inference" "HTTPS/443, Bearer Token"
-        llamaStack -> azureOpenAI "Remote LLM inference" "HTTPS/443, API Key"
-        llamaStack -> vertexAI "Remote LLM inference" "HTTPS/443, ADC"
-        llamaStack -> openai "Remote LLM inference" "HTTPS/443, API Key"
-        llamaStack -> watsonx "Remote LLM inference" "HTTPS/443, API Key"
-
-        # Relationships - External Services
-        llamaStack -> s3 "File and model artifact storage" "HTTPS/443, AWS IAM"
-        llamaStack -> huggingface "Dataset loading" "HTTPS/443"
-        llamaStack -> otelCollector "Traces and metrics" "HTTP OTLP"
-        llamaStack -> oidcProvider "JWKS key retrieval for auth" "HTTPS/443"
-        llamaStack -> braveSearch "Web search queries" "HTTPS/443, API Key"
-        llamaStack -> tavilySearch "Web search queries" "HTTPS/443, API Key"
-        llamaStack -> mcpServers "External tool calls" "HTTP/HTTPS"
+        # Relationships - External services
+        ogxDistribution -> milvus "Vector similarity search" "TCP, TLS/mTLS optional"
+        ogxDistribution -> qdrant "Vector similarity search" "HTTP-gRPC/6333-6334, API Key"
+        ogxDistribution -> braveSearch "Web search tool" "HTTPS/443, API Key"
+        ogxDistribution -> tavilySearch "Web search tool" "HTTPS/443, API Key"
+        ogxDistribution -> huggingface "Downloads datasets" "HTTPS/443, Token"
+        ogxDistribution -> oauth2Provider "Validates JWT tokens via JWKS" "HTTPS/443"
     }
 
     views {
-        systemContext llamaStack "SystemContext" {
+        systemContext ogxDistribution "SystemContext" {
             include *
             autoLayout
         }
 
-        container llamaStack "Containers" {
+        container ogxDistribution "Containers" {
             include *
             autoLayout
         }
@@ -107,21 +84,22 @@ workspace {
                 background #438dd5
                 color #ffffff
             }
-            element "External" {
-                background #999999
-            }
-            element "External Cloud" {
-                background #ff8c00
-                color #ffffff
-            }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
+            element "External Cloud" {
+                background #f5a623
+                color #ffffff
+            }
+            element "External" {
+                background #999999
+                color #ffffff
+            }
             element "Person" {
-                shape person
                 background #08427b
                 color #ffffff
+                shape person
             }
             element "Container" {
                 background #438dd5
@@ -130,9 +108,14 @@ workspace {
             element "WebApp" {
                 shape WebBrowser
             }
+            element "Database" {
+                shape Cylinder
+            }
+            element "Config" {
+                shape Folder
+            }
             element "Component" {
-                background #85bbf0
-                color #000000
+                shape Hexagon
             }
         }
     }

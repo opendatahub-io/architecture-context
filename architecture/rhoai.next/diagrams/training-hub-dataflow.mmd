@@ -1,0 +1,65 @@
+sequenceDiagram
+    participant User as User Script / Notebook
+    participant API as training_hub API<br/>sft() / lora_grpo() / grpo()
+    participant Registry as AlgorithmRegistry<br/>create_algorithm()
+    participant Algo as Algorithm Instance<br/>train()
+    participant Backend as Backend Instance<br/>execute_training()
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant GPU as GPU Cluster<br/>TCP NCCL
+    participant FS as Filesystem<br/>Checkpoints
+    participant Tracker as WandB / MLflow<br/>443/TCP HTTPS
+
+    Note over User, Tracker: Flow 1: Supervised Fine-Tuning (SFT)
+    User->>API: sft(model_path, data_path, ...)
+    API->>Registry: create_algorithm('sft')
+    Registry-->>API: SFTAlgorithm + InstructLabTrainingSFTBackend
+    API->>Algo: train()
+    Algo->>Backend: execute_training(algorithm_params)
+    Backend->>HF: Download model weights & tokenizer<br/>HTTPS / Token auth (optional)
+    HF-->>Backend: Model artifacts
+    Backend->>GPU: torchrun distributed training<br/>DDP/FSDP via NCCL
+    loop Training Loop
+        GPU->>GPU: Forward/backward pass<br/>Gradient sync
+    end
+    Backend->>FS: Write checkpoints, metrics JSONL
+    opt Experiment Tracking Enabled
+        Backend->>Tracker: Upload metrics<br/>HTTPS / API Key
+    end
+    Backend-->>Algo: Training complete
+    Algo-->>User: Checkpoint path
+
+    Note over User, Tracker: Flow 2: LoRA+GRPO (ART Backend - Single GPU)
+    User->>API: lora_grpo(model_path, data_path,<br/>reward_funcs, backend='art')
+    API->>Registry: create_algorithm('lora_grpo', backend='art')
+    Registry-->>API: LoRAGRPOAlgorithm + ARTLoRAGRPOBackend
+    API->>Algo: train()
+    Algo->>Algo: _decompose_multiturn_traces()<br/>N-turn → N per-turn samples
+    Algo->>Backend: execute_training(algorithm_params)
+    Backend->>Backend: _create_seed_lora_checkpoint()<br/>vLLM V1 compatibility
+    Backend->>GPU: Launch ART subprocess<br/>Co-located vLLM + LoRA training
+
+    loop GRPO Training Loop
+        GPU->>GPU: vLLM rollout generation<br/>HTTP localhost
+        GPU->>GPU: Compute rewards<br/>tool_call_reward / binary_reward
+        GPU->>GPU: LoRA adapter update<br/>GRPO loss
+    end
+    Backend->>FS: Write LoRA adapter checkpoints
+    Backend-->>User: Adapter checkpoint path
+
+    Note over User, Tracker: Flow 3: LoRA+GRPO (verl Backend - Multi GPU)
+    User->>API: lora_grpo(model_path, data_path,<br/>reward_funcs, backend='verl')
+    API->>Registry: create_algorithm('lora_grpo', backend='verl')
+    Registry-->>API: LoRAGRPOAlgorithm + VeRLLoRAGRPOBackend
+    API->>Algo: train()
+    Algo->>Backend: execute_training(algorithm_params)
+    Backend->>Backend: Convert data to Parquet<br/>prompt/reward columns
+    Backend->>GPU: Launch verl subprocess<br/>verl.trainer.main_ppo with FSDP config
+
+    loop Dr. GRPO Training Loop
+        GPU->>GPU: Distributed vLLM rollout workers<br/>TCP
+        GPU->>GPU: FSDP gradient sync<br/>NCCL
+        GPU->>GPU: Dr. GRPO with token-level<br/>loss normalization
+    end
+    Backend->>Backend: Parse live metrics<br/>from verl stdout
+    Backend->>FS: Normalize checkpoints<br/>Merge tokenizer into adapter dirs
+    Backend-->>User: Normalized checkpoint path

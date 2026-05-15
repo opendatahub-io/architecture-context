@@ -3,75 +3,114 @@ graph TB
         direction TB
 
         subgraph InitContainer["odh-pipelines-components (Init Container)"]
-            GenScript["generate_managed_pipelines.py<br/>Compiles pipeline.py → YAML"]
-            InitScript["init_managed_pipelines.py<br/>Copies YAMLs to shared volume"]
-            GenScript --> InitScript
+            GenManaged["generate_managed_pipelines.py<br/>Build-time pipeline compiler"]
+            InitManaged["init_managed_pipelines.py<br/>Runtime artifact copier"]
+            GenManaged -->|"produces"| CompiledYAML["Compiled Pipeline YAMLs<br/>+ managed-pipelines.json"]
+            CompiledYAML -->|"copied by"| InitManaged
         end
 
         subgraph KFPLibrary["kfp-components (Python Library)"]
             direction TB
-            subgraph DataProc["Data Processing"]
-                DatasetDownload["dataset_download"]
-                SDG["sdg (Synthetic Data Gen)"]
-                YodaProcessor["yoda_data_processor"]
+
+            subgraph DataProc["Data Processing Components"]
+                DatasetDownload["dataset_download<br/>HF/S3 data fetcher"]
+                TabularLoader["tabular_data_loader<br/>AutoML CSV loader"]
+                TimeseriesLoader["timeseries_data_loader<br/>AutoML TS loader"]
+                DocsDiscovery["documents_discovery<br/>S3 document scanner"]
+                TextExtract["text_extraction<br/>docling PDF/DOCX parser"]
+                DocsIndexing["documents_indexing<br/>OGX vector indexer"]
+                SDGComponent["sdg<br/>Synthetic data generator"]
             end
 
-            subgraph Training["Training"]
-                LoRA["LoRA Fine-Tuning<br/>(Unsloth)"]
-                OSFT["OSFT Fine-Tuning<br/>(mini-trainer)"]
-                SFT["SFT Fine-Tuning<br/>(InstructLab)"]
-                AutoMLTrain["AutoGluon Training<br/>(Tabular/TimeSeries)"]
-                AutoRAGOpt["RAG Optimization<br/>(ai4rag)"]
+            subgraph Training["Training Components"]
+                LoRA["lora_training<br/>Unsloth LoRA"]
+                SFT["sft_training<br/>InstructLab SFT"]
+                OSFT["osft_training<br/>mini-trainer OSFT"]
+                AutoGluonTrain["autogluon_models_training<br/>Tabular AutoML"]
+                AutoGluonTS["autogluon_timeseries<br/>Timeseries AutoML"]
+                RAGOptim["rag_templates_optimization<br/>ai4rag optimizer"]
             end
 
-            subgraph Evaluation["Evaluation"]
-                LMEval["lm_eval<br/>(EleutherAI benchmarks)"]
-                Leaderboard["Leaderboard Evaluation"]
+            subgraph Evaluation["Evaluation Components"]
+                LMEval["universal_llm_evaluator<br/>lm-eval + vLLM"]
+                Leaderboard["autogluon_leaderboard<br/>Model comparison"]
+                RAGLeaderboard["rag_leaderboard<br/>RAG pattern evaluation"]
             end
 
-            subgraph Deploy["Deployment"]
-                ModelReg["kubeflow_model_registry<br/>registration"]
-                BuildResponses["build_responses<br/>request_bodies"]
+            subgraph Deployment["Deployment Components"]
+                ModelReg["kubeflow_model_registry<br/>Model registration"]
+                ResponsesAPI["build_responses_request_bodies<br/>OGX /v1/responses builder"]
             end
         end
 
-        subgraph RuntimeImages["Runtime Images"]
-            AutoMLImage["odh-automl<br/>AutoGluon + pandas + sklearn<br/>base-image-cpu-rhel9"]
-            AutoRAGImage["odh-autorag<br/>ai4rag + Docling + Llama Stack<br/>base-image-cpu-rhel9"]
+        subgraph TaskImages["Task Container Images"]
+            AutoMLImage["odh-automl<br/>AutoGluon + scikit-learn<br/>Python 3.11"]
+            AutoRAGImage["odh-autorag<br/>ai4rag + docling + OGX<br/>Python 3.11"]
         end
     end
 
-    %% Init Container Flow
-    InitScript -->|"stages YAMLs to<br/>/config/managed-pipelines"| SharedVolume["Shared Volume<br/>/config/managed-pipelines"]
-    SharedVolume -->|"reads managed pipelines"| KFPServer["KFP API Server"]
+    %% Init container delivers to KFP API Server
+    InitManaged -->|"/config/managed-pipelines/<br/>shared volume"| KFPAPI["KFP API Server"]
 
-    %% Runtime image usage
-    AutoMLTrain -.->|"runs on"| AutoMLImage
-    AutoRAGOpt -.->|"runs on"| AutoRAGImage
+    %% Task images used by components
+    AutoMLImage -.->|"base image"| TabularLoader
+    AutoMLImage -.->|"base image"| AutoGluonTrain
+    AutoMLImage -.->|"base image"| Leaderboard
+    AutoRAGImage -.->|"base image"| DocsDiscovery
+    AutoRAGImage -.->|"base image"| TextExtract
+    AutoRAGImage -.->|"base image"| DocsIndexing
+    AutoRAGImage -.->|"base image"| RAGOptim
 
-    %% Fine-tuning → Trainer API
-    LoRA -->|"submits TrainingJob CR"| TrainerAPI["Kubeflow Trainer<br/>ClusterTrainingRuntime"]
-    OSFT -->|"submits TrainingJob CR"| TrainerAPI
-    SFT -->|"submits TrainingJob CR"| TrainerAPI
+    %% Pipeline composition flows
+    DatasetDownload -->|"PVC"| LoRA
+    DatasetDownload -->|"PVC"| SFT
+    DatasetDownload -->|"PVC"| OSFT
+    LoRA -->|"PVC"| LMEval
+    SFT -->|"PVC"| LMEval
+    OSFT -->|"PVC"| LMEval
+    LMEval -->|"metrics"| ModelReg
 
-    %% External Dependencies
-    DatasetDownload -->|"downloads"| HFHub["HuggingFace Hub"]
-    DatasetDownload -->|"downloads"| S3["AWS S3"]
-    AutoRAGOpt -->|"vector store + inference"| LlamaStack["Llama Stack API"]
-    ModelReg -->|"registers model"| ModelRegistry["Kubeflow Model Registry"]
-    LMEval -->|"inference"| vLLM["vLLM Engine"]
-    SDG -->|"LLM calls"| LLMAPI["LLM API Endpoint"]
+    TabularLoader -->|"PVC"| AutoGluonTrain
+    AutoGluonTrain -->|"PVC"| Leaderboard
+
+    DocsDiscovery -->|"artifact"| TextExtract
+    TextExtract -->|"artifact"| DocsIndexing
+    DocsIndexing -->|"indexed"| RAGOptim
+    RAGOptim -->|"patterns"| ResponsesAPI
+
+    SDGComponent -->|"JSONL"| DatasetDownload
+
+    %% External services
+    S3["S3-compatible Storage<br/>443/TCP HTTPS"]
+    HFHub["HuggingFace Hub<br/>443/TCP HTTPS"]
+    OGXAPI["OGX API<br/>443/TCP HTTPS"]
+    Milvus["Milvus Vector DB<br/>19530/TCP gRPC"]
+    LLMAPI["LLM API (LiteLLM)<br/>443/TCP HTTPS"]
+    KFTrainer["Kubeflow Trainer<br/>TrainJob CRD"]
+
+    DatasetDownload -->|"HTTPS"| S3
+    DatasetDownload -->|"HTTPS"| HFHub
+    TabularLoader -->|"HTTPS"| S3
+    DocsDiscovery -->|"HTTPS"| S3
+    TextExtract -->|"HTTPS"| S3
+    DocsIndexing -->|"HTTPS"| OGXAPI
+    OGXAPI -->|"gRPC"| Milvus
+    RAGOptim -->|"HTTPS"| OGXAPI
+    SDGComponent -->|"HTTPS"| LLMAPI
+    LoRA -->|"CRD"| KFTrainer
+    SFT -->|"CRD"| KFTrainer
+    OSFT -->|"CRD"| KFTrainer
+    ModelReg -->|"HTTP/8080"| ModelRegistry["Kubeflow Model Registry"]
 
     %% Styling
-    style InitContainer fill:#4a90e2,stroke:#333,color:#fff
-    style KFPLibrary fill:#e8f4fd,stroke:#4a90e2
-    style RuntimeImages fill:#fff3e0,stroke:#f5a623
-    style KFPServer fill:#7ed321,stroke:#333
-    style TrainerAPI fill:#7ed321,stroke:#333
+    style InitContainer fill:#e6f3ff,stroke:#4a90e2,stroke-width:2px
+    style KFPLibrary fill:#f0f9f0,stroke:#82b366,stroke-width:2px
+    style TaskImages fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    style KFPAPI fill:#e8e8e8,stroke:#666
+    style S3 fill:#f5a623,stroke:#333
+    style HFHub fill:#f5a623,stroke:#333
+    style OGXAPI fill:#f5a623,stroke:#333
+    style Milvus fill:#f5a623,stroke:#333
+    style LLMAPI fill:#f5a623,stroke:#333
+    style KFTrainer fill:#7ed321,stroke:#333
     style ModelRegistry fill:#7ed321,stroke:#333
-    style HFHub fill:#e8e8e8,stroke:#999
-    style S3 fill:#e8e8e8,stroke:#999
-    style LlamaStack fill:#e8e8e8,stroke:#999
-    style vLLM fill:#e8e8e8,stroke:#999
-    style LLMAPI fill:#e8e8e8,stroke:#999
-    style SharedVolume fill:#f5a623,stroke:#333,color:#fff

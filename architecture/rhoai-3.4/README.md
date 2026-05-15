@@ -1,7 +1,7 @@
 # RHOAI-3.4 unknown - Component Architectures
 
 Source: architecture/rhoai-3.4/component-map.json
-Date: 2026-05-06
+Date: 2026-05-15
 
 ## Components
 
@@ -33,6 +33,7 @@ Date: 2026-05-06
 | llm-d | [llm-d.md](./llm-d.md) |
 | llm-d-inference-scheduler | [llm-d-inference-scheduler.md](./llm-d-inference-scheduler.md) |
 | llm-d-kv-cache | [llm-d-kv-cache.md](./llm-d-kv-cache.md) |
+| llm-d-planner | [llm-d-planner.md](./llm-d-planner.md) |
 | llm-d-routing-sidecar | [llm-d-routing-sidecar.md](./llm-d-routing-sidecar.md) |
 | lm-evaluation-harness | [lm-evaluation-harness.md](./lm-evaluation-harness.md) |
 | ml-metadata | [ml-metadata.md](./ml-metadata.md) |
@@ -42,6 +43,7 @@ Date: 2026-05-06
 | model-registry | [model-registry.md](./model-registry.md) |
 | model-registry-operator | [model-registry-operator.md](./model-registry-operator.md) |
 | models-as-a-service | [models-as-a-service.md](./models-as-a-service.md) |
+| models-perf-benchmark-data | [models-perf-benchmark-data.md](./models-perf-benchmark-data.md) |
 | notebooks | [notebooks.md](./notebooks.md) |
 | odh-cli | [odh-cli.md](./odh-cli.md) |
 | odh-dashboard | [odh-dashboard.md](./odh-dashboard.md) |
@@ -50,9 +52,11 @@ Date: 2026-05-06
 | ogx-k8s-operator | [ogx-k8s-operator.md](./ogx-k8s-operator.md) |
 | openvino_model_server | [openvino_model_server.md](./openvino_model_server.md) |
 | pipelines-components | [pipelines-components.md](./pipelines-components.md) |
+| rhoai-mcp | [rhoai-mcp.md](./rhoai-mcp.md) |
 | rhods-operator | [rhods-operator.md](./rhods-operator.md) |
 | spark-operator | [spark-operator.md](./spark-operator.md) |
 | trainer | [trainer.md](./trainer.md) |
+| training-hub | [training-hub.md](./training-hub.md) |
 | training-operator | [training-operator.md](./training-operator.md) |
 | trustyai-explainability | [trustyai-explainability.md](./trustyai-explainability.md) |
 | trustyai-service-operator | [trustyai-service-operator.md](./trustyai-service-operator.md) |
@@ -65,4 +69,4 @@ Date: 2026-05-06
 
 - **Platform**: RHOAI-3.4
 - **Version**: unknown
-- **Components**: 53
+- **Components**: 57

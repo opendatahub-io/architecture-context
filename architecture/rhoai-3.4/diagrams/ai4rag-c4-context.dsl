@@ -1,54 +1,50 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Defines RAG benchmark data and search space, runs optimization experiments"
-        mlEngineer = person "ML Engineer" "Integrates ai4rag into Kubeflow Pipelines for automated RAG tuning"
+        dataScientist = person "Data Scientist" "Defines RAG templates, search spaces, and benchmark data for optimization"
+        mlEngineer = person "ML Engineer" "Integrates ai4rag into KFP pipelines for automated RAG optimization"
 
-        ai4rag = softwareSystem "ai4rag" "RAG hyperparameter optimization engine using GAM-based surrogate model and Bayesian optimization" {
-            experiment = container "AI4RAGExperiment" "Orchestrates full RAG optimization lifecycle: model pre-selection, HPO, evaluation" "Python Module"
-            preselector = container "ModelsPreSelector" "Filters foundation and embedding models by evaluating on a data sample before full HPO" "Python Module"
-            gamOptimizer = container "GAMOptimizer" "Generalized Additive Model-based surrogate optimizer using pygam and scikit-learn" "Python Module"
-            randomOptimizer = container "RandomOptimizer" "Baseline random search optimizer for comparison" "Python Module"
-            simpleRAG = container "SimpleRAG" "RAG pipeline: chunking, retrieval, context assembly, generation" "Python Module"
-            searchSpace = container "AI4RAGSearchSpace" "Manages parameter combinations with constraint rules for valid RAG configurations" "Python Module"
-            unitxtEvaluator = container "UnitxtEvaluator" "Computes RAG quality metrics via IBM Unitxt framework" "Python Module"
-            eventHandlers = container "Event Handlers" "LocalEventHandler (JSON files) and KFPEventHandler (Kubeflow Pipelines)" "Python Module"
+        ai4rag = softwareSystem "ai4rag" "Automated hyperparameter optimization engine for RAG pipelines" {
+            experiment = container "AI4RAGExperiment" "Orchestrates full HPO lifecycle: MPS, optimization iterations, evaluation" "Python Module"
+            mps = container "ModelsPreSelector" "Fast screening of foundation model x embedding model pairs" "Python Module"
+            gamOptimizer = container "GAMOptimizer" "GAM-based Bayesian optimization for search space exploration" "Python Module (pygam)"
+            randomOptimizer = container "RandomOptimizer" "Random search baseline optimizer" "Python Module"
+            simpleRAG = container "SimpleRAG" "RAG template: chunk -> embed -> retrieve -> generate" "Python Module"
+            ogxModels = container "OGX Model Clients" "Foundation model + embedding model integration via ogx-client" "Python Module (ogx-client)"
+            ogxVectorStore = container "OGX Vector Store" "Vector store management and similarity search via OGX" "Python Module (ogx-client)"
+            chromaVectorStore = container "ChromaVectorStore" "In-memory ChromaDB for MPS fast screening" "Python Module (langchain_chroma)"
+            evaluator = container "UnitxtEvaluator" "RAG evaluation metrics with confidence intervals" "Python Module (unitxt)"
+            searchSpace = container "AI4RAGSearchSpace" "Search space definition with constraint rules" "Python Module"
+            eventHandler = container "EventHandler" "Pluggable event streaming (Local JSON / KFP)" "Python Module"
         }
 
-        llamaStack = softwareSystem "Llama Stack Server" "LLM inference, embedding, and vector store operations server" "External"
-        openaiEndpoint = softwareSystem "OpenAI-compatible Endpoint" "Alternative LLM and embedding provider" "External"
-        milvus = softwareSystem "Milvus" "Vector database for similarity search (proxied via Llama Stack)" "External"
-        qdrant = softwareSystem "Qdrant" "Alternative vector database (proxied via Llama Stack)" "External"
-        kfp = softwareSystem "Kubeflow Pipelines" "ML workflow orchestration platform" "Internal RHOAI"
+        ogxServer = softwareSystem "OGX Server" "Foundation model inference, embeddings, and vector store operations (REST API)" "External"
+        kubeflowPipelines = softwareSystem "Kubeflow Pipelines" "ML pipeline orchestration platform" "Internal RHOAI"
 
-        # Person relationships
-        dataScientist -> ai4rag "Runs RAG optimization experiments via Python API"
-        mlEngineer -> kfp "Creates KFP pipeline components that use ai4rag"
+        # User relationships
+        dataScientist -> ai4rag "Defines experiments and runs optimization" "Python API"
+        mlEngineer -> kubeflowPipelines "Creates KFP pipelines that use ai4rag"
 
         # System-level relationships
-        ai4rag -> llamaStack "Foundation model inference, embeddings, vector store ops" "HTTPS, API Key (Bearer)"
-        ai4rag -> openaiEndpoint "Alternative foundation model and embedding calls" "HTTPS, API Key (Bearer)"
-        llamaStack -> milvus "Proxies vector storage operations"
-        llamaStack -> qdrant "Proxies vector storage operations"
-        ai4rag -> kfp "Reports experiment results via KFPEventHandler" "In-process"
+        ai4rag -> ogxServer "Chat completions, embeddings, vector store CRUD" "HTTPS/TLS, API Key Bearer"
+        kubeflowPipelines -> ai4rag "Consumes as library in pipeline components" "In-process (KFPEventHandler)"
 
         # Container-level relationships
-        experiment -> preselector "Runs model pre-selection phase"
-        experiment -> gamOptimizer "Gets next parameter suggestion"
-        experiment -> randomOptimizer "Gets random parameter suggestion"
-        experiment -> simpleRAG "Executes RAG pattern evaluation"
+        experiment -> mps "Pre-selects optimal model pairs"
+        experiment -> gamOptimizer "Runs GAM-based optimization"
+        experiment -> randomOptimizer "Runs random search (fallback / initial)"
+        experiment -> simpleRAG "Executes RAG pipeline per parameter combo"
+        experiment -> evaluator "Evaluates predictions vs references"
+        experiment -> eventHandler "Emits experiment status and results"
         experiment -> searchSpace "Gets valid parameter combinations"
-        experiment -> unitxtEvaluator "Evaluates RAG quality metrics"
-        experiment -> eventHandlers "Reports pattern and experiment results"
 
-        preselector -> simpleRAG "Evaluates models on data sample"
-        preselector -> searchSpace "Filters search space by model performance"
+        mps -> chromaVectorStore "Stores embeddings for fast screening"
+        mps -> ogxModels "Tests model candidates"
 
-        simpleRAG -> llamaStack "Chat completions, embeddings, vector I/O" "HTTPS, API Key"
-        simpleRAG -> openaiEndpoint "Chat completions, embeddings" "HTTPS, API Key"
+        simpleRAG -> ogxModels "Text generation and embedding"
+        simpleRAG -> ogxVectorStore "Document indexing and retrieval"
 
-        searchSpace -> llamaStack "Discovers available models" "HTTPS, API Key"
-
-        eventHandlers -> kfp "KFPEventHandler integration" "In-process"
+        ogxModels -> ogxServer "REST API calls" "HTTPS/TLS, API Key"
+        ogxVectorStore -> ogxServer "REST API calls" "HTTPS/TLS, API Key"
     }
 
     views {
@@ -72,7 +68,7 @@ workspace {
                 color #ffffff
             }
             element "Person" {
-                shape Person
+                shape person
                 background #4a90e2
                 color #ffffff
             }

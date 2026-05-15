@@ -1,98 +1,74 @@
 graph TB
     subgraph WVA["Workload Variant Autoscaler"]
         direction TB
+        Controller["controller-manager<br/>(Go Operator / controller-runtime)"]
+        SatEngine["Saturation Engine<br/>(30s polling loop)"]
+        SFZEngine["Scale-From-Zero Engine<br/>(100ms polling loop)"]
+        DecisionCache["Decision Cache<br/>(in-memory)"]
+        Datastore["Datastore<br/>(in-memory)"]
 
-        subgraph Controllers["Controllers"]
-            VAReconciler["VA Reconciler<br/>(VariantAutoscaling CR)"]
-            IPReconciler["InferencePool Reconciler<br/>(v1 + v1alpha2)"]
-            CMReconciler["ConfigMap Reconciler<br/>(global + namespace-local)"]
-        end
+        SatEngine -->|"writes decisions"| DecisionCache
+        SFZEngine -->|"writes decisions"| DecisionCache
+        DecisionCache -->|"DecisionTrigger channel"| Controller
+        Controller -->|"tracks namespaces"| Datastore
+        SFZEngine -->|"reads InferencePool state"| Datastore
 
-        subgraph Engines["Optimization Engines"]
-            SatEngine["Saturation Engine<br/>(30s polling)"]
-            SFZEngine["Scale-From-Zero Engine<br/>(100ms polling)"]
-            QueueEngine["Queueing Model Engine<br/>(M/M/1 theory)"]
+        subgraph Analyzers["Analyzer Pipeline"]
+            V1["V1 Analyzer<br/>(percentage-based saturation)"]
+            V2["V2 Analyzer<br/>(token-based capacity)"]
+            QM["Queueing Model Analyzer<br/>(Kalman filter / M/M/c)"]
         end
+        SatEngine --> V1
+        SatEngine --> V2
+        SatEngine --> QM
 
-        subgraph Analyzers["Analyzers"]
-            V1Analyzer["V1 Analyzer<br/>(% KV cache/queue)"]
-            V2Analyzer["V2 Analyzer<br/>(token-based capacity)"]
-            MM1Analyzer["M/M/1 Analyzer<br/>(queueing theory)"]
+        subgraph Pipeline["Optimization Pipeline"]
+            Limiter["DefaultLimiter<br/>(GPU-aware)"]
+            Greedy["GreedyBySaturation<br/>Algorithm"]
+            Limiter --> Greedy
         end
-
-        subgraph Optimizers["Optimizers"]
-            CostOpt["CostAware Optimizer<br/>(prefer cheapest variant)"]
-            GreedyOpt["GreedyByScore Optimizer<br/>(GPU-limited mode)"]
-        end
-
-        subgraph Core["Core Components"]
-            DecisionCache["Decision Cache<br/>(in-memory)"]
-            Datastore["Datastore<br/>(InferencePool data, EPP sources)"]
-            Actuator["Actuator<br/>(Prometheus metric emitter)"]
-            Collector["Collector<br/>(vLLM metrics)"]
-        end
+        V1 --> Limiter
+        V2 --> Limiter
+        QM --> Limiter
     end
 
-    %% CRDs
-    VACR["VariantAutoscaling CR<br/>(llmd.ai/v1alpha1)"]
-    IPCR["InferencePool CR<br/>(Gateway API)"]
-    ConfigMaps["ConfigMaps<br/>(saturation, scale-to-zero,<br/>queueing model)"]
+    %% External Resources
+    User["Platform Admin"] -->|"creates"| VACR["VariantAutoscaling CR<br/>(llmd.ai/v1alpha1)"]
+    VACR -->|"watched by"| Controller
+    Controller -->|"patches status"| VACR
 
-    %% External
-    Prometheus["Prometheus / Thanos Querier<br/>(9091/TCP HTTPS)"]
-    EPPPods["EPP Pods<br/>(Endpoint Picker)"]
-    K8sAPI["Kubernetes API<br/>(443/TCP HTTPS)"]
-    HPAKEDA["HPA / KEDA<br/>(external autoscalers)"]
-    vLLM["vLLM Inference Servers<br/>(metrics source)"]
+    %% Scale Targets
+    Controller -->|"emits metrics"| MetricsEndpoint["/metrics<br/>8443/TCP HTTPS"]
+    MetricsEndpoint -->|"scraped by"| Prometheus["Prometheus"]
+    MetricsEndpoint -->|"consumed by"| HPA["HPA"]
+    MetricsEndpoint -->|"consumed by"| KEDA["KEDA"]
+    HPA -->|"scales"| Deployment["Deployment"]
+    KEDA -->|"scales"| Deployment
+    SFZEngine -->|"direct /scale"| Deployment
 
-    %% CR Flows
-    VACR -->|watched by| VAReconciler
-    IPCR -->|watched by| IPReconciler
-    ConfigMaps -->|watched by| CMReconciler
+    %% Data Sources
+    Prometheus -->|"PromQL queries<br/>9091/TCP HTTPS"| SatEngine
+    InferencePool["InferencePool CR"] -->|"watched by"| Controller
+    EPP["EPP Pods"] -->|"HTTP metrics scraping"| SFZEngine
+    ConfigMaps["ConfigMaps<br/>(saturation, scale-to-zero,<br/>queueing model)"] -->|"watched by"| Controller
 
-    %% Engine connections
-    SatEngine -->|queries PromQL| Prometheus
-    Collector -->|reads vLLM metrics from| Prometheus
-    SFZEngine -->|scrapes queue metrics| EPPPods
-
-    %% Analyzer selection
-    SatEngine -->|selects| V1Analyzer
-    SatEngine -->|selects| V2Analyzer
-    QueueEngine -->|uses| MM1Analyzer
-
-    %% Decision flow
-    V2Analyzer -->|ModelScalingRequest| CostOpt
-    V2Analyzer -->|ModelScalingRequest| GreedyOpt
-    SatEngine -->|writes decisions| DecisionCache
-    QueueEngine -->|writes decisions| DecisionCache
-    SFZEngine -->|writes decisions| DecisionCache
-    DecisionCache -->|triggers via Go channel| VAReconciler
-
-    %% Actuator
-    VAReconciler -->|emits metrics via| Actuator
-    Actuator -->|wva_desired_replicas<br/>wva_desired_ratio| Prometheus
-
-    %% External interactions
-    IPReconciler -->|syncs pool metadata| Datastore
-    SFZEngine -->|reads EPP sources| Datastore
-    SFZEngine -->|scales 0→1 via /scale| K8sAPI
-    VAReconciler -->|patches VA status| K8sAPI
-    HPAKEDA -->|reads wva metrics from| Prometheus
-    HPAKEDA -->|scales pods via| K8sAPI
-    vLLM -.->|scraped by| Prometheus
-
-    %% Styles
-    style WVA fill:#e8f4f8,stroke:#2196F3,stroke-width:2px
-    style Controllers fill:#bbdefb,stroke:#1976D2
-    style Engines fill:#c8e6c9,stroke:#388E3C
-    style Analyzers fill:#fff9c4,stroke:#F9A825
-    style Optimizers fill:#f3e5f5,stroke:#7B1FA2
-    style Core fill:#ffe0b2,stroke:#E65100
+    %% Styling
+    style Controller fill:#4a90e2,stroke:#333,color:#fff
+    style SatEngine fill:#4a90e2,stroke:#333,color:#fff
+    style SFZEngine fill:#4a90e2,stroke:#333,color:#fff
+    style DecisionCache fill:#4a90e2,stroke:#333,color:#fff
+    style Datastore fill:#4a90e2,stroke:#333,color:#fff
+    style V1 fill:#6ba5e7,stroke:#333,color:#fff
+    style V2 fill:#6ba5e7,stroke:#333,color:#fff
+    style QM fill:#6ba5e7,stroke:#333,color:#fff
+    style Limiter fill:#6ba5e7,stroke:#333,color:#fff
+    style Greedy fill:#6ba5e7,stroke:#333,color:#fff
     style VACR fill:#f5a623,stroke:#333
-    style IPCR fill:#f5a623,stroke:#333
+    style InferencePool fill:#f5a623,stroke:#333
     style ConfigMaps fill:#f5a623,stroke:#333
     style Prometheus fill:#e8e8e8,stroke:#333
-    style EPPPods fill:#e8e8e8,stroke:#333
-    style K8sAPI fill:#e8e8e8,stroke:#333
-    style HPAKEDA fill:#e8e8e8,stroke:#333
-    style vLLM fill:#e8e8e8,stroke:#333
+    style HPA fill:#e8e8e8,stroke:#333
+    style KEDA fill:#e8e8e8,stroke:#333
+    style EPP fill:#7ed321,stroke:#333
+    style Deployment fill:#e8e8e8,stroke:#333
+    style MetricsEndpoint fill:#d4edda,stroke:#333

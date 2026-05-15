@@ -1,73 +1,76 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client"]
+        Client["Client / Data Scientist"]
     end
 
-    subgraph ClusterInternal["CLUSTER INTERNAL (OpenShift SDN/OVN)"]
+    subgraph DistBoundary["LLAMA STACK DISTRIBUTION (Component Boundary)"]
         direction TB
+        LLSServer["Llama Stack Distribution Server<br/>ClusterIP 8321/TCP HTTP<br/>Auth: None (delegated to ingress)<br/>Managed by: Llama Stack Operator"]
 
-        subgraph NS_User["Namespace: {user-namespace}"]
-            LLS["Llama Stack Server<br/>ClusterIP 8321/TCP<br/>HTTP (plaintext)<br/>Llama Stack auth"]
-
-            subgraph Provider["llama-stack-provider-ragas"]
-                InlineEval["RagasEvaluatorInline<br/>(in-process, no network)"]
-                RemoteEval["RagasEvaluatorRemote<br/>(network egress)"]
-            end
+        subgraph Provider["llama-stack-provider-ragas<br/>Image: rhoai/odh-trustyai-ragas-lls-provider-dsp-rhel9<br/>Python 3.12 / UBI9"]
+            InlineEval["Inline Evaluator<br/>In-process LLM + Embeddings<br/>max_workers=1"]
+            RemoteEval["Remote Evaluator<br/>KFP pipeline submission<br/>Async job tracking"]
         end
 
-        subgraph NS_KFP["Namespace: {kubeflow-namespace}"]
-            KFPPods["KFP Pipeline Pods<br/>Image: odh-trustyai-ragas-<br/>lls-provider-dsp-rhel9<br/>Step 1: retrieve_data<br/>Step 2: run_ragas"]
-        end
+        LLSServer -->|in-process<br/>delegation| InlineEval
+        LLSServer -->|in-process<br/>delegation| RemoteEval
+    end
 
-        subgraph NS_RHOAI["Namespace: redhat-ods-applications"]
-            TrustyAICM["ConfigMap:<br/>trustyai-service-operator-config<br/>(base image resolution)"]
-        end
-
-        subgraph ClusterServices["Cluster Services"]
-            K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount token"]
-            KFPAPI["Kubeflow Pipelines API<br/>HTTPS TLS 1.2+<br/>Bearer Token"]
-            InferenceBackend["Ollama / vLLM<br/>11434/TCP HTTP (Ollama)<br/>8443/TCP HTTPS (vLLM)"]
-        end
+    subgraph KFPZone["KUBEFLOW PIPELINES ZONE"]
+        direction TB
+        KFPAPI["Kubeflow Pipelines API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token"]
+        KFPPod["KFP Pipeline Pod<br/>retrieve_data + run_ragas<br/>Image: ragas-provider"]
+        KFPAPI -->|creates| KFPPod
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
+        direction TB
         S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM credentials"]
+        vLLM["Ollama / vLLM<br/>8443/TCP or 11434/TCP<br/>HTTP/HTTPS configurable<br/>Bearer Token (optional)"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount token"]
     end
 
-    %% Client to LLS
-    Client -->|"HTTP/8321<br/>Llama Stack auth<br/>⚠️ No TLS (relies on ingress)"| LLS
+    subgraph Secrets["SECRETS (User-Provisioned, No Auto-Rotation)"]
+        direction LR
+        KFPToken["kubeflow-pipelines-token<br/>⚠️ OpenShift user token<br/>(limited TTL)"]
+        AWSCreds["aws-credentials<br/>AccessKeyId / SecretAccessKey"]
+        ModelSecret["llama-stack-inference-model-secret<br/>Model name, vLLM URL, API token"]
+    end
 
-    %% LLS internal
-    LLS --- InlineEval
-    LLS --- RemoteEval
+    %% External to Distribution
+    Client -->|"HTTP/8321<br/>No encryption<br/>Auth: None"| LLSServer
 
-    %% Remote provider egress
-    RemoteEval -->|"HTTPS<br/>TLS 1.2+<br/>Bearer Token"| KFPAPI
+    %% Remote evaluator egress
+    RemoteEval -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| KFPAPI
     RemoteEval -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    RemoteEval -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
 
-    %% KFP pods
-    KFPAPI -->|"launches"| KFPPods
-    KFPPods -->|"HTTP/8321<br/>⚠️ No TLS, No auth"| LLS
-    KFPPods -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    %% KFP Pod connections
+    KFPPod -->|"HTTP/8321<br/>No auth"| LLSServer
+    KFPPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
 
     %% Inference backend
-    LLS -->|"HTTP/11434 or HTTPS/8443<br/>⚠️ Demo: TLS_VERIFY=false"| InferenceBackend
+    LLSServer -->|"HTTP(S)/8443 or 11434<br/>Configurable TLS<br/>⚠️ VLLM_TLS_VERIFY flag"| vLLM
 
-    %% ConfigMap read
-    K8sAPI -.->|"reads"| TrustyAICM
+    %% Kubernetes API
+    RemoteEval -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token / kubeconfig"| K8sAPI
+
+    %% Secret usage (dotted)
+    KFPToken -.->|used by| RemoteEval
+    AWSCreds -.->|used by| RemoteEval
+    AWSCreds -.->|mounted in| KFPPod
+    ModelSecret -.->|used by| LLSServer
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef kfp fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef distribution fill:#dbeafe,stroke:#3b82f6,stroke-width:2px
+    classDef provider fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    classDef kfp fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef clusterservice fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef secret fill:#fde8e8,stroke:#e53e3e,stroke-width:1px,stroke-dasharray: 5 5
 
     class Client external
-    class LLS,InlineEval,RemoteEval cluster
-    class KFPPods kfp
-    class S3 externalservice
-    class K8sAPI,KFPAPI,InferenceBackend clusterservice
-    class TrustyAICM cluster
+    class LLSServer distribution
+    class InlineEval,RemoteEval provider
+    class KFPAPI,KFPPod kfp
+    class S3,vLLM,K8sAPI externalservice
+    class KFPToken,AWSCreds,ModelSecret secret

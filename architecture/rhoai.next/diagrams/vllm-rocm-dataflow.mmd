@@ -1,27 +1,33 @@
 sequenceDiagram
-    participant Client as Client / KServe Router
-    participant KServe as KServe Controller
-    participant Pod as vllm-rocm Pod
-    participant GPU as AMD ROCm GPU
-    participant S3 as Model Storage<br/>(PVC / S3)
-    participant HF as Hugging Face Hub<br/>(optional)
+    participant Client as External Client
+    participant Gateway as KServe Gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant AuthProxy as Auth Proxy<br/>(kube-rbac-proxy / oauth-proxy)
+    participant VLLM_HTTP as vllm-rocm Container<br/>8000/TCP HTTP
+    participant VLLM_GRPC as vllm-rocm Container<br/>8033/TCP gRPC
+    participant GPU as AMD ROCm GPU<br/>PCIe/HIP
+    participant S3 as Model Storage<br/>(S3/PVC) 443/TCP
 
-    Note over Pod,S3: Flow 3: Model Loading at Startup
-    Pod->>S3: Load model weights<br/>Filesystem (PVC) or HTTPS/443<br/>TLS 1.2+ / IAM credentials
-    S3-->>Pod: Model artifacts
-    Pod->>HF: Download tokenizer (optional)<br/>HTTPS/443, TLS 1.2+<br/>Bearer Token (optional)
-    HF-->>Pod: Tokenizer files
-    Pod->>GPU: Load model into GPU memory<br/>PCIe/ROCm
-    GPU-->>Pod: Model ready
+    Note over VLLM_HTTP,S3: Flow 3: Model Loading (Startup)
+    VLLM_HTTP->>S3: Load model weights<br/>HTTPS/443 or filesystem<br/>Auth: IAM/SA credentials
+    S3-->>VLLM_HTTP: Model artifacts & tokenizer
+    VLLM_HTTP->>GPU: Transfer weights to VRAM<br/>PCIe/Device API
 
-    Note over Client,Pod: Flow 1: OpenAI-compatible HTTP Inference
-    Client->>Pod: POST /v1/completions<br/>HTTP/8000 TCP<br/>No encryption (pod-level)
-    Pod->>GPU: Inference computation<br/>PCIe/ROCm
-    GPU-->>Pod: Generated tokens
-    Pod-->>Client: JSON response<br/>HTTP/8000 TCP
+    Note over Client,GPU: Flow 1: HTTP Inference Request
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTPS/443, TLS 1.2+
+    Gateway->>AuthProxy: Forward request<br/>TLS terminated at gateway
+    AuthProxy->>VLLM_HTTP: HTTP/8000<br/>Auth enforced at proxy
+    VLLM_HTTP->>GPU: Tensor operations<br/>PCIe/HIP Runtime
+    GPU-->>VLLM_HTTP: Inference result
+    VLLM_HTTP-->>AuthProxy: JSON response
+    AuthProxy-->>Gateway: Forward response
+    Gateway-->>Client: JSON response
 
-    Note over Client,Pod: Flow 2: TGIS gRPC Inference
-    Client->>Pod: gRPC GenerationService<br/>gRPC/8033 TCP<br/>No encryption (pod-level)
-    Pod->>GPU: Inference computation<br/>PCIe/ROCm
-    GPU-->>Pod: Generated tokens
-    Pod-->>Client: gRPC response<br/>gRPC/8033 TCP
+    Note over Client,GPU: Flow 2: gRPC/TGIS Inference Request
+    Client->>Gateway: gRPC GenerateStream<br/>HTTPS/443, TLS 1.2+
+    Gateway->>AuthProxy: Forward request<br/>TLS terminated at gateway
+    AuthProxy->>VLLM_GRPC: gRPC/8033<br/>Auth enforced at proxy
+    VLLM_GRPC->>GPU: Tensor operations<br/>PCIe/HIP Runtime
+    GPU-->>VLLM_GRPC: Inference result
+    VLLM_GRPC-->>AuthProxy: gRPC response stream
+    AuthProxy-->>Gateway: Forward response
+    Gateway-->>Client: gRPC response stream

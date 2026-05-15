@@ -1,57 +1,41 @@
 sequenceDiagram
     participant vLLM as vLLM Inference Servers
-    participant Prom as Prometheus / Thanos Querier<br/>9091/TCP HTTPS TLS 1.2+
-    participant Collector as Metrics Collector
-    participant SatEngine as Saturation Engine<br/>(60s interval)
+    participant Prom as Prometheus / Thanos Querier<br/>9091/TCP HTTPS
+    participant Collector as WVA Collector
+    participant SatEngine as WVA Saturation Engine<br/>(30s loop)
     participant Cache as Decision Cache<br/>(in-memory)
-    participant VAReconciler as VA Reconciler
-    participant Actuator as Actuator
+    participant Controller as WVA Controller<br/>Reconciler
+    participant Actuator as WVA Actuator
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
     participant HPA as HPA / KEDA
 
-    Note over SatEngine: Flow 1: Saturation-Based Autoscaling Loop
+    Note over vLLM,HPA: Flow 1: Saturation-Based Autoscaling Decision
 
-    rect rgb(240, 248, 255)
-        Prom->>vLLM: Scrape vLLM metrics<br/>(KV cache, queue depth, tokens)
-        SatEngine->>Prom: PromQL query (batch all VAs)<br/>Auth: Bearer Token (SA token)
-        Prom-->>SatEngine: Metric results<br/>(kv_cache_usage_perc, num_requests_waiting, etc.)
-        SatEngine->>SatEngine: Run saturation analysis<br/>(V1 threshold / V2 token-level)
-        SatEngine->>Cache: Publish scaling decisions
-        Cache->>VAReconciler: Trigger via DecisionTrigger Channel
-        VAReconciler->>K8sAPI: GET scale target replicas<br/>Auth: Bearer Token
-        K8sAPI-->>VAReconciler: Current replicas
-        VAReconciler->>K8sAPI: PATCH VA status (desired replicas)<br/>Auth: Bearer Token
-        VAReconciler->>Actuator: Emit scaling metrics
-        Actuator->>Actuator: Publish to local Prometheus registry<br/>(wva_desired_replicas, wva_desired_ratio)
-    end
+    vLLM->>Prom: Expose KV cache utilization,<br/>queue depth, request counts
+    SatEngine->>Collector: Trigger metric collection
+    Collector->>Prom: PromQL queries<br/>HTTPS/9091, Bearer Token (SA token)
+    Prom-->>Collector: vLLM saturation metrics<br/>TLS 1.2+
+    Collector-->>SatEngine: Parsed replica-level metrics
+    SatEngine->>SatEngine: Run analyzer<br/>(V1/V2/Queueing Model)
+    SatEngine->>Cache: Write scaling decision<br/>(desiredOptimizedAlloc)
+    SatEngine->>Actuator: Emit Prometheus gauges
+    Note right of Actuator: wva_desired_replicas<br/>wva_current_replicas<br/>wva_desired_ratio
+    Controller->>Cache: Read scaling decision
+    Controller->>K8sAPI: Update VariantAutoscaling status<br/>HTTPS/443, SA token
+    Prom->>Actuator: Scrape /metrics<br/>HTTPS/8443, Bearer Token
+    HPA->>Prom: Query WVA metrics<br/>HTTPS/9091, Bearer Token
+    HPA->>K8sAPI: Scale Deployment/LWS<br/>via scale subresource<br/>HTTPS/443, SA token
 
-    Note over Prom,HPA: HPA/KEDA Scaling Execution
+    Note over vLLM,HPA: Flow 2: Scale-from-Zero
 
-    rect rgb(255, 248, 240)
-        Prom->>Actuator: Scrape /metrics<br/>8443/TCP HTTPS<br/>Auth: Bearer Token
-        Actuator-->>Prom: WVA custom metrics
-        HPA->>Prom: Query wva_desired_replicas<br/>Auth: Bearer Token
-        Prom-->>HPA: Desired replica count
-        HPA->>K8sAPI: Scale Deployment/StatefulSet/LWS<br/>Auth: Bearer Token
-    end
+    participant EPP as EPP Pods<br/>(Gateway API Inference Extension)
+    participant SFZ as WVA Scale-from-Zero Engine<br/>(100ms poll)
+    participant DActuator as WVA Direct Actuator
 
-    Note over Collector: Flow 2: EPP Metrics Scraping
-
-    participant EPP as EPP Pods<br/>(Endpoint Picker)
-
-    rect rgb(240, 255, 240)
-        VAReconciler->>K8sAPI: Watch InferencePool CRs<br/>Auth: Bearer Token
-        K8sAPI-->>VAReconciler: InferencePool events
-        Collector->>EPP: Scrape flow control metrics<br/>HTTPS, Auth: Bearer Token (epp-metrics-token)
-        EPP-->>Collector: queue_size, queue_bytes
-        Collector->>SatEngine: Provide via source registry
-    end
-
-    Note over VAReconciler: Flow 3: ConfigMap Configuration Updates
-
-    rect rgb(255, 240, 255)
-        VAReconciler->>K8sAPI: Watch ConfigMaps<br/>(saturation, scale-to-zero, queueing)
-        K8sAPI-->>VAReconciler: ConfigMap change event
-        VAReconciler->>VAReconciler: Update Unified Config
-        VAReconciler->>SatEngine: Config refresh
-    end
+    EPP->>EPP: Queue pending requests<br/>in flow control queue
+    SFZ->>EPP: Scrape queue metrics<br/>HTTPS, Bearer Token (epp-metrics-token)
+    EPP-->>SFZ: Flow control queue size > 0
+    SFZ->>SFZ: Detect scale-from-zero needed<br/>(zero replicas + pending requests)
+    SFZ->>DActuator: Trigger direct scale
+    DActuator->>K8sAPI: Patch scale subresource<br/>(replicas: 0 → minReplicas)<br/>HTTPS/443, SA token
+    SFZ->>Cache: Write decision to cache

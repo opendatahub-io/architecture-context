@@ -1,138 +1,145 @@
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                        │
 │                                                                              │
-│  [External Client / API Consumer]                                            │
+│  [External Client]                                                           │
 │         │                                                                    │
 │         │ Port: 8033/TCP                                                     │
-│         │ Protocol: HTTP or HTTPS                                            │
-│         │ Encryption: Optional TLS (rustls, ring backend, TLS 1.2+)          │
+│         │ Protocol: HTTP/HTTPS                                               │
+│         │ Encryption: TLS 1.2+ (optional, rustls + ring)                     │
 │         │ Auth: Header passthrough (X-Forwarded-Access-Token → Bearer)       │
-│         │ mTLS: Optional (WebPkiClientVerifier when tls_client_ca_cert       │
-│         │        is configured)                                              │
+│         │                                                                    │
+│         │ Port: 8034/TCP (health only)                                       │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (plaintext)                                       │
+│         │ Auth: None                                                         │
 │         ▼                                                                    │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│  GUARDRAILS SERVICE (Internal / ClusterIP)                                   │
+│  ORCHESTRATOR SERVICE (Dual-Server)                                          │
 │                                                                              │
-│  [Guardrails Server — fms-guardrails-orchestr8]                              │
-│  - Listen Port: 8033/TCP (API endpoints)                                     │
-│  - TLS: Optional (rustls ServerConfig, ring crypto backend)                  │
-│  - mTLS: Optional (WebPkiClientVerifier for client cert validation)          │
-│  - Auth: None enforced; headers passed through to upstreams                  │
-│  - Runtime: Rust (axum + tokio async)                                        │
+│  [Guardrails API Server]                                                     │
+│  - Port: 8033/TCP (main API)                                                 │
+│  - Protocol: HTTP/HTTPS                                                      │
+│  - TLS: Optional (rustls with ring crypto backend)                           │
+│  - mTLS: Optional (WebPkiClientVerifier)                                     │
+│  - Endpoints:                                                                │
+│    - /api/v1/task/classification-with-text-generation (POST)                 │
+│    - /api/v1/task/server-streaming-classification-with-text-generation (POST)│
+│    - /api/v2/text/detection/* (POST)                                         │
+│    - /api/v2/text/generation-detection (POST)                                │
+│    - /api/v2/chat/completions-detection (POST, conditional)                  │
+│    - /api/v2/text/completions-detection (POST, conditional)                  │
 │                                                                              │
 │  [Health Server]                                                             │
-│  - Listen Port: 8034/TCP (health/readiness)                                  │
-│  - TLS: None (no independent TLS)                                            │
-│  - Auth: None (open for Kubernetes probes)                                   │
+│  - Port: 8034/TCP (health only)                                              │
+│  - Protocol: HTTP (plaintext always)                                         │
+│  - Endpoints: /health (GET), /info (GET)                                     │
 │         │                                                                    │
-│         ├───────────────────────────────────────────────────────────┐         │
-│         │                                                           │         │
-│         │ EGRESS TO UPSTREAM SERVICES                               │         │
-│         │                                                           │         │
-│         ▼                                                           ▼         │
+│         │ OUTBOUND CONNECTIONS                                               │
+│         ▼                                                                    │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│  UPSTREAM GENERATION SERVICES (Internal / ClusterIP)                         │
+│  BACKEND SERVICES - gRPC (Generation & Chunking)                             │
 │                                                                              │
-│  [TGIS — Text Generation Inference Server]                                   │
-│  - Port: 8033/TCP                                                            │
-│  - Protocol: gRPC (tonic client)                                             │
-│  - Encryption: Optional TLS (configurable per service)                       │
+│  [TGIS - Text Generation Inference Server]                                   │
+│  - Port: 8033/TCP (default)                                                  │
+│  - Protocol: gRPC/HTTP2                                                      │
+│  - Encryption: TLS (optional, per tls config profile)                        │
 │  - Auth: None                                                                │
 │  - RPCs: Generate, GenerateStream, Tokenize, ModelInfo                       │
-│  - Load Balancing: ginepro (DNS-based endpoint discovery)                    │
+│  - Retry: Exponential backoff on 502/503/504                                 │
 │                                                                              │
-│  [Caikit NLP]                                                                │
-│  - Port: 8085/TCP                                                            │
-│  - Protocol: gRPC (tonic client)                                             │
-│  - Encryption: Optional TLS (configurable per service)                       │
+│  [Caikit NLP Service]                                                        │
+│  - Port: 8085/TCP (default)                                                  │
+│  - Protocol: gRPC/HTTP2                                                      │
+│  - Encryption: TLS (optional, per tls config profile)                        │
 │  - Auth: None                                                                │
 │  - RPCs: TextGenerationTaskPredict, ServerStreamingTextGenerationTaskPredict, │
 │          TokenizationTaskPredict, TokenClassificationTaskPredict             │
-│  - Retry: Exponential backoff on 502-506 errors                             │
-│  - Load Balancing: ginepro (DNS-based)                                       │
 │                                                                              │
-│  [OpenAI-compatible / vLLM Server]                                           │
-│  - Port: 8080/TCP                                                            │
-│  - Protocol: HTTP/HTTPS (reqwest client)                                     │
-│  - Encryption: Optional TLS (configurable per service)                       │
-│  - Auth: Optional Bearer token (api_token config)                            │
-│  - Endpoints: POST /v1/chat/completions, /v1/completions, /tokenize         │
-│  - Health: Separate endpoint (configurable port)                             │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  UPSTREAM CHUNKER SERVICES (Internal / ClusterIP)                            │
-│                                                                              │
-│  [Caikit Chunker Services]                                                   │
-│  - Port: 8085/TCP                                                            │
-│  - Protocol: gRPC (tonic client)                                             │
-│  - Encryption: Optional TLS (configurable per service)                       │
+│  [Caikit Chunkers Service]                                                   │
+│  - Port: 8085/TCP (default)                                                  │
+│  - Protocol: gRPC/HTTP2                                                      │
+│  - Encryption: TLS (optional, per tls config profile)                        │
 │  - Auth: None                                                                │
-│  - RPCs: ChunkerTokenizationTaskPredict (unary),                             │
-│          BidiStreamingChunkerTokenizationTaskPredict (bidirectional)          │
-│  - Load Balancing: ginepro (DNS-based)                                       │
+│  - RPCs: ChunkerTokenizationTaskPredict,                                     │
+│          BidiStreamingChunkerTokenizationTaskPredict                          │
 │                                                                              │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│  UPSTREAM DETECTOR SERVICES (Internal / ClusterIP)                           │
+│  BACKEND SERVICES - HTTP (Detection & OpenAI)                                │
 │                                                                              │
-│  [Detector Services — HAP, PII, etc.]                                        │
-│  - Port: 8080/TCP (API)                                                      │
-│  - Protocol: HTTP/HTTPS (reqwest client)                                     │
-│  - Encryption: Optional TLS (configurable per service)                       │
-│  - Auth: Optional Bearer token (api_token config)                            │
-│  - Endpoints: POST /api/v1/text/contents, /api/v1/text/chat,                │
-│               /api/v1/text/context/doc, /api/v1/text/generation             │
-│  - Health Port: 8081/TCP (configurable, separate health endpoint)            │
-│  - Health: GET /health                                                       │
+│  [Detector Services]                                                         │
+│  - Port: 8080/TCP (default, API)                                             │
+│  - Port: 8081/TCP (configurable, health)                                     │
+│  - Protocol: HTTP/HTTPS                                                      │
+│  - Encryption: TLS (optional, per tls config profile)                        │
+│  - Auth: Bearer token (optional, via api_token env var)                      │
+│  - Endpoints:                                                                │
+│    - /api/v1/text/contents (POST) - text_contents detection                  │
+│    - /api/v1/text/chat (POST) - text_chat detection                          │
+│    - /api/v1/text/context/doc (POST) - text_context_doc detection            │
+│    - /api/v1/text/generation (POST) - text_generation detection              │
+│    - /health (GET) - health check (8081/TCP)                                 │
+│                                                                              │
+│  [OpenAI-compatible Server (e.g., vLLM)]                                     │
+│  - Port: 8080/TCP (default)                                                  │
+│  - Protocol: HTTP/HTTPS                                                      │
+│  - Encryption: TLS (optional, per tls config profile)                        │
+│  - Auth: Bearer token (optional, via api_token env var)                      │
+│  - Endpoints:                                                                │
+│    - /v1/chat/completions (POST)                                             │
+│    - /v1/completions (POST)                                                  │
+│    - /tokenize (POST)                                                        │
 │                                                                              │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│  OBSERVABILITY (Internal)                                                    │
+│  OBSERVABILITY                                                               │
 │                                                                              │
 │  [OTLP Collector]                                                            │
 │  - Port: 4317/TCP (gRPC) or 4318/TCP (HTTP)                                 │
 │  - Protocol: gRPC or HTTP                                                    │
-│  - Encryption: Plaintext (default endpoints)                                 │
+│  - Encryption: None (configurable)                                           │
 │  - Auth: None                                                                │
-│  - Purpose: Distributed tracing and metrics export                           │
-│  - Library: opentelemetry-otlp 0.31.0                                        │
+│  - Purpose: Distributed tracing (traces) and metrics export                  │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 
+TLS Configuration:
+- Server TLS: rustls with ring crypto backend
+  - Certificate: PEM file via --tls-cert-path CLI arg
+  - Key: PEM file via --tls-key-path CLI arg
+  - mTLS: WebPkiClientVerifier via --tls-client-ca-cert-path CLI arg
+  - Supports TLS 1.2+
+- Client TLS: Named profiles in YAML config
+  - Per-service TLS configuration (cert_path, key_path, ca_cert_path)
+  - Insecure mode: NoVerifier disables all cert verification (dev only)
+  - Supports legacy signature schemes (RSA_PKCS1_SHA1, ECDSA_SHA1_Legacy)
+  - System trust store (native-roots) or webpki-roots
+
 RBAC Summary:
-- No RBAC manifests in this repository
-- RBAC is managed externally by the deploying operator (rhods-operator)
-- Service runs as a stateless container; no Kubernetes API access required
+- No RBAC manifests. This service does not interact with the Kubernetes API.
+- No ClusterRoles, Roles, or RoleBindings defined.
 
 Secrets:
-- TLS server cert (kubernetes.io/tls) — Server TLS certificate for guardrails API
-  Provisioned by: Manual / cert-manager (external), No auto-rotation (file-based)
-- TLS server key (kubernetes.io/tls) — Server TLS private key
-  Provisioned by: Manual / cert-manager (external), No auto-rotation (file-based)
-- TLS client CA cert (Opaque) — Client CA certificate for mTLS verification
-  Provisioned by: Manual / cert-manager (external), No auto-rotation (file-based)
-- Per-service TLS certs (Opaque) — Client TLS certificates for upstream connections
-  Provisioned by: Manual / cert-manager (external), configured via YAML
-- API tokens (Opaque) — Bearer tokens for upstream HTTP services
-  Provisioned by: Manual, via environment variable references
+- TLS server cert/key (kubernetes.io/tls) - Server-side TLS for guardrails API
+  - Provisioned manually via CLI args (--tls-cert-path/--tls-key-path)
+  - No auto-rotation
+- TLS client CA cert (Opaque) - mTLS client verification
+  - Provisioned manually via CLI arg (--tls-client-ca-cert-path)
+  - No auto-rotation
+- Per-service TLS certs (Opaque) - Client TLS for downstream gRPC/HTTP services
+  - Provisioned manually via YAML config tls section
+  - No auto-rotation
+- API tokens (Opaque) - Bearer auth for downstream HTTP services
+  - Read from environment variables (api_token config field names env var)
+  - No auto-rotation
 
 Authentication & Authorization:
-- All /api/* endpoints: Header passthrough (X-Forwarded-Access-Token rewritable
-  to Bearer); orchestrator does NOT enforce auth itself
-- Optional mTLS: When tls_client_ca_cert_path is configured, clients must present
-  valid certificates signed by the specified CA
-- Health endpoints (/health, /info): Open access, no authentication
+- Orchestrator itself performs NO authentication/authorization
+- Header passthrough: X-Forwarded-Access-Token rewritten to Bearer header
+- Headers matching passthrough_headers config forwarded to downstream services
+- Detector/OpenAI endpoints use optional Bearer tokens from env vars
+- All auth enforcement is delegated to downstream services
 
-TLS Configuration:
-- Library: rustls 0.23.36 with ring crypto backend
-- Protocols: TLS 1.2+ (hyper-rustls tls12 feature enabled)
-- Certificate Formats: PEM (PKCS#1, PKCS#8, SEC1 key formats)
-- Named TLS configs shareable across upstream services via YAML
-- INSECURE MODE: NoVerifier bypasses ALL certificate verification when
-  "insecure: true" is configured — SECURITY RISK in production
-
-FIPS Compliance:
-- ⚠️  SIGNIFICANT GAP: Application uses rustls/ring for all TLS operations
-- ring is NOT FIPS 140-2/3 validated
-- OpenSSL is installed in container image (satisfies check-payload)
-- Runtime TLS does NOT use OpenSSL — uses ring instead
-- DISA STIG remediation script sets system FIPS policy but this only affects
-  OpenSSL-based applications, not the rustls-based orchestrator binary
+FIPS Compliance Notes:
+- Uses ring crypto library (NOT OpenSSL FIPS module) for all TLS operations
+- OpenSSL is installed in container image (satisfies check-payload for base image)
+- Rust binary uses ring via rustls - potential FIPS compliance gap
+- NoVerifier struct supports legacy SHA1 signature schemes (non-FIPS)

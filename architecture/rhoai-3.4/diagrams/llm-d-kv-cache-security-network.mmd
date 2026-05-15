@@ -1,81 +1,76 @@
 graph TB
-    subgraph External["EXTERNAL (Untrusted)"]
-        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+"]
-    end
-
-    subgraph Ingress["INGRESS (OpenShift Route)"]
-        Route["OpenShift Route<br/>Edge TLS Termination<br/>→ 8080/TCP backend"]
-    end
-
-    subgraph ClusterInternal["CLUSTER INTERNAL (Kubernetes Network)"]
+    subgraph PodBoundary["POD BOUNDARY (Inference Scheduler Pod)"]
         direction TB
 
-        subgraph KVCachePod["Pod: llm-d-kv-cache (StatefulSet)<br/>Namespace: ${NAMESPACE}"]
-            direction TB
+        Scheduler["llm-d-inference-scheduler<br/>Embeds kvcache.Indexer + kvevents.Pool<br/>SA: (consuming deployment)"]
+        UDSTokenizer["UDS Tokenizer Sidecar<br/>Image: odh-llm-d-kv-cache-rhel9<br/>Python 3.12 / vLLM CPU<br/>Health: 8082/TCP HTTP"]
+    end
 
-            subgraph GoContainer["Container: KV-Cache Manager (Go)"]
-                Indexer["KV-Cache Indexer<br/>8080/TCP HTTP<br/>No encryption, No auth"]
-                EventPool["KV Events Pool<br/>5557/TCP ZMQ SUB<br/>No encryption, No auth"]
-                IndexerGRPC["Indexer gRPC<br/>50051/TCP gRPC<br/>grpc.WithInsecure()"]
-            end
+    subgraph ClusterInternal["CLUSTER-INTERNAL (Trusted)"]
+        direction TB
 
-            subgraph PythonContainer["Container: UDS Tokenizer (Python)<br/>Image: quay.io/rhoai/odh-llm-d-kv-cache-rhel9"]
-                TokenizerGRPC["gRPC Server<br/>UDS: /tmp/tokenizer/*.socket<br/>No encryption (UDS)<br/>File perms UID 65532"]
-                HealthEndpoint["Health Check<br/>8082/TCP HTTP<br/>No auth"]
-            end
-
-            SharedVol["Shared Volume: emptyDir<br/>/tmp/tokenizer/"]
+        subgraph vLLMFleet["vLLM Pod Fleet"]
+            vLLM1["vLLM Pod 1<br/>ZMQ PUB 5557/TCP"]
+            vLLM2["vLLM Pod 2<br/>ZMQ PUB 5557/TCP"]
+            vLLMN["vLLM Pod N<br/>ZMQ PUB 5557/TCP"]
         end
 
-        subgraph InferencePods["vLLM/SGLang Inference Pods"]
-            VLLMPod["vLLM Pod<br/>ZMQ PUB 5557/TCP"]
-            SGLangPod["SGLang Pod<br/>ZMQ PUB 5557/TCP"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS"]
+
+        subgraph OptionalBackends["Optional Backends"]
+            Redis["Redis / Valkey<br/>6379/TCP<br/>Optional TLS (rediss://)"]
         end
 
-        subgraph PlatformServices["Platform Services"]
-            Scheduler["llm-d-inference-scheduler<br/>Go API (in-process)<br/>Indexer.GetPodScores()"]
-            K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>mTLS (ServiceAccount)"]
-            Prometheus["Prometheus<br/>HTTP scrape 8080/TCP"]
+        subgraph PVCComponents["Optional: PVC-backed KV-Cache Pod"]
+            PVCEvictor["PVC Evictor<br/>N+2 processes<br/>No network ports"]
+            FSBackend["llmd_fs_backend<br/>CUDA tensor I/O<br/>Shared PVC/NFS"]
         end
     end
 
-    subgraph OptionalExternal["OPTIONAL EXTERNAL SERVICES"]
-        Redis["Redis/Valkey<br/>6379/TCP RESP<br/>No encryption default<br/>TLS via rediss://<br/>Redis ACL optional"]
-        OTEL["OpenTelemetry Collector<br/>4317/TCP gRPC OTLP<br/>Insecure default"]
+    subgraph Observability["OBSERVABILITY (Optional)"]
+        OTLP["OTLP Collector<br/>4317/TCP gRPC"]
+        Prometheus["Prometheus<br/>HTTP metrics scrape"]
     end
 
-    %% External flows
-    PythonContainer -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer HF_TOKEN"| HFHub
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        HFHub["Hugging Face Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS 1.2+"]
+    end
 
-    %% Ingress
-    Route -->|"HTTP/8080<br/>No encryption<br/>No auth"| Indexer
+    %% Pod-internal flow
+    Scheduler -->|"gRPC over UDS<br/>/tmp/tokenizer/tokenizer-uds.socket<br/>No encryption, No auth<br/>(filesystem permissions)"| UDSTokenizer
 
-    %% Pod-internal UDS
-    GoContainer -->|"gRPC over UDS<br/>No encryption<br/>File permissions"| TokenizerGRPC
+    %% ZMQ event ingestion
+    vLLM1 -->|"ZMQ PUB/SUB<br/>5557/TCP<br/>msgpack<br/>No encryption, No auth"| Scheduler
+    vLLM2 -->|"ZMQ PUB/SUB<br/>5557/TCP<br/>No encryption"| Scheduler
+    vLLMN -->|"ZMQ PUB/SUB<br/>5557/TCP<br/>No encryption"| Scheduler
 
-    %% Cluster-internal flows
-    VLLMPod -->|"ZMQ PUB/SUB 5557/TCP<br/>MessagePack<br/>Plaintext, No auth"| EventPool
-    SGLangPod -->|"ZMQ PUB/SUB 5557/TCP<br/>MessagePack<br/>Plaintext, No auth"| EventPool
-    Scheduler -->|"Go library API<br/>In-process call"| Indexer
-    K8sAPI -->|"HTTPS/6443<br/>mTLS<br/>ServiceAccount token"| EventPool
-    Prometheus -->|"HTTP/8080<br/>No encryption<br/>GET /metrics"| Indexer
+    %% Kubernetes API
+    Scheduler -->|"HTTPS/443<br/>TLS<br/>SA Token<br/>pods: get,list,watch"| K8sAPI
 
-    %% Optional external
-    GoContainer -->|"RESP/6379<br/>No encryption default<br/>TLS optional (rediss://)"| Redis
-    GoContainer -->|"gRPC OTLP/4317<br/>Insecure default"| OTEL
+    %% Optional Redis
+    Scheduler -.->|"Redis/6379<br/>Optional TLS (rediss://)<br/>No auth (URL creds)"| Redis
 
-    %% Styling - Trust zones
-    classDef external fill:#ffcccc,stroke:#cc0000,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef pod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef optional fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef gocomp fill:#4a90e2,stroke:#333,color:#fff
-    classDef pycomp fill:#f5a623,stroke:#333
+    %% Observability
+    Scheduler -.->|"gRPC/4317<br/>Insecure (default)<br/>No auth"| OTLP
+    Scheduler -.->|"HTTP metrics<br/>No encryption"| Prometheus
 
+    %% External egress
+    UDSTokenizer -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (optional)"| HFHub
+
+    %% PVC Evictor
+    PVCEvictor -.->|"local disk I/O<br/>/mnt/pvc"| FSBackend
+
+    %% Styling
+    classDef podInternal fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef clusterService fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef optional fill:#fff2cc,stroke:#d6b656,stroke-width:1px,stroke-dasharray: 5 5
+    classDef external fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef observability fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
+    classDef platform fill:#f5f5f5,stroke:#666,stroke-width:2px
+
+    class Scheduler,UDSTokenizer podInternal
+    class vLLM1,vLLM2,vLLMN clusterService
+    class K8sAPI platform
+    class Redis,PVCEvictor,FSBackend optional
+    class OTLP,Prometheus observability
     class HFHub external
-    class Route ingress
-    class VLLMPod,SGLangPod,Scheduler,K8sAPI,Prometheus internal
-    class Indexer,EventPool,IndexerGRPC gocomp
-    class TokenizerGRPC,HealthEndpoint pycomp
-    class Redis,OTEL optional

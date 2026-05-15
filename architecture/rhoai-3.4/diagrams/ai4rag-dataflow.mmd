@@ -1,89 +1,76 @@
 sequenceDiagram
-    participant User as User Code
+    participant User as User Code / KFP
     participant Exp as AI4RAGExperiment
     participant MPS as ModelsPreSelector
-    participant SS as AI4RAGSearchSpace
     participant GAM as GAMOptimizer
+    participant RAG as SimpleRAG
     participant Chunker as LangChainChunker
-    participant Embed as Embedding Model<br/>(LS / OpenAI)
-    participant VS as Vector Store<br/>(LS / Chroma)
-    participant Retriever as Retriever
-    participant FM as Foundation Model<br/>(LS / OpenAI)
+    participant Chroma as ChromaVectorStore<br/>(in-memory)
+    participant OGX as OGX Server<br/>HTTPS / TLS<br/>API Key Auth
     participant Eval as UnitxtEvaluator
-    participant LS as Llama Stack Server<br/>HTTPS / API Key
-    participant Handler as EventHandler<br/>(Local / KFP)
+    participant EH as EventHandler
 
-    Note over User,Handler: Flow 1: RAG Optimization Experiment
+    Note over User,EH: Phase 1: Models Pre-Selection (MPS)
 
     User->>Exp: search(benchmark_data, search_space)
-    activate Exp
+    Exp->>MPS: pre_select(models, sample_data)
+    MPS->>Chunker: chunk documents
+    Chunker-->>MPS: chunked documents
 
-    Note over Exp,MPS: Phase 1: Model Pre-Selection
-    Exp->>MPS: select_models(data_sample)
-    activate MPS
-    MPS->>Chunker: chunk(documents)
-    Chunker-->>MPS: chunks[]
-    MPS->>Embed: embed(chunks)
-    Embed->>LS: POST /embeddings<br/>HTTPS, API Key
-    LS-->>Embed: vectors[]
-    Embed-->>MPS: embeddings
-    MPS->>VS: insert(embeddings)
-    Note over VS: ChromaDB in-memory<br/>(for pre-selection)
-    MPS->>Retriever: query(questions)
-    Retriever->>VS: similarity_search()
-    VS-->>Retriever: contexts[]
-    MPS->>FM: generate(context + question)
-    FM->>LS: POST /chat/completions<br/>HTTPS, API Key
-    LS-->>FM: answer
-    FM-->>MPS: response
-    MPS->>Eval: evaluate(predictions, ground_truth)
-    Eval-->>MPS: scores{faithfulness, correctness}
-    MPS-->>Exp: filtered_models[]
-    deactivate MPS
-
-    Note over Exp,GAM: Phase 2: HPO Iterations
-    Exp->>SS: prepare_search_space(filtered_models)
-    SS->>LS: GET /models/list<br/>HTTPS, API Key
-    LS-->>SS: available_models[]
-    SS-->>Exp: valid_combinations[]
-
-    loop For each HPO iteration
-        Exp->>GAM: suggest_next(observations)
-        GAM-->>Exp: next_params
-
-        Note over Exp,FM: Phase 3: RAG Pattern Evaluation
-        Exp->>Chunker: chunk(documents, params)
-        Chunker-->>Exp: chunks[]
-        Exp->>Embed: embed(chunks)
-        Embed->>LS: POST /embeddings<br/>HTTPS, API Key
-        LS-->>Embed: vectors[]
-        Embed-->>Exp: embeddings
-        Exp->>VS: create_store + insert
-        VS->>LS: POST /vector_stores/create<br/>HTTPS, API Key
-        LS-->>VS: store_id
-        VS->>LS: POST /vector_io/insert<br/>HTTPS, API Key
-        LS-->>VS: ok
-
-        par Parallel query execution (ThreadPool, max=10)
-            Exp->>Retriever: query(question)
-            Retriever->>VS: similarity_search()
-            VS->>LS: POST /vector_io/query<br/>HTTPS, API Key
-            LS-->>VS: results[]
-            VS-->>Retriever: contexts[]
-            Retriever-->>Exp: context
-            Exp->>FM: generate(context + question)
-            FM->>LS: POST /chat/completions<br/>HTTPS, API Key
-            LS-->>FM: answer
-            FM-->>Exp: response
-        end
-
-        Exp->>Eval: evaluate(all_predictions, ground_truth)
-        Eval-->>Exp: scores + confidence_intervals
-
-        Exp->>GAM: update(params, score)
-        Exp->>Handler: on_pattern_evaluated(payload)
+    loop For each embedding model candidate
+        MPS->>OGX: POST embeddings.create<br/>HTTPS / TLS / API Key
+        OGX-->>MPS: embedding vectors
+        MPS->>Chroma: store embeddings (in-memory)
     end
 
-    Exp->>Handler: on_experiment_completed(results)
-    Handler-->>User: results (JSON files / KFP outputs)
-    deactivate Exp
+    loop For each foundation model candidate
+        MPS->>Chroma: retrieve relevant chunks
+        Chroma-->>MPS: retrieved documents
+        MPS->>OGX: POST chat.completions.create<br/>HTTPS / TLS / API Key
+        OGX-->>MPS: generated answers
+        MPS->>Eval: evaluate(predictions, references)
+        Eval-->>MPS: scores (correctness, faithfulness)
+    end
+
+    MPS-->>Exp: top model pairs ranked by score
+
+    Note over User,EH: Phase 2: Full HPO with GAM Optimizer
+
+    Exp->>OGX: POST vector_stores.create<br/>HTTPS / TLS / API Key
+    OGX-->>Exp: vector_store_id
+
+    Exp->>GAM: initialize(search_space, n_random_nodes)
+
+    loop For each optimization iteration
+        GAM->>Exp: next parameter combination (RAG Pattern)
+        Exp->>EH: emit(pattern_started)
+
+        Exp->>RAG: execute(pattern, benchmark_data)
+
+        RAG->>Chunker: chunk documents
+        Chunker-->>RAG: chunked documents
+
+        RAG->>OGX: POST embeddings.create<br/>HTTPS / TLS / API Key
+        OGX-->>RAG: embedding vectors
+
+        RAG->>OGX: POST vector_io.insert<br/>HTTPS / TLS / API Key
+        OGX-->>RAG: indexed
+
+        par For each query (ThreadPoolExecutor, 10 threads)
+            RAG->>OGX: POST vector_io.query<br/>HTTPS / TLS / API Key
+            OGX-->>RAG: retrieved documents
+            RAG->>OGX: POST chat.completions.create<br/>HTTPS / TLS / API Key
+            OGX-->>RAG: generated answer
+        end
+
+        RAG-->>Exp: predictions + contexts
+
+        Exp->>Eval: evaluate(predictions, references)
+        Eval-->>Exp: scores with confidence intervals
+
+        Exp->>GAM: update(pattern, scores)
+        Exp->>EH: emit(pattern_completed, results)
+    end
+
+    Exp->>EH: emit(experiment_completed, all_results)
+    EH-->>User: aggregated results (best RAG Pattern)

@@ -1,59 +1,58 @@
 sequenceDiagram
-    participant User as Data Scientist<br/>(Jupyter Notebook)
-    participant SDK as CodeFlare SDK<br/>(Python Client)
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant User as Data Scientist<br/>(Python / Notebook)
+    participant SDK as CodeFlare SDK<br/>(Client Library)
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
     participant KubeRay as KubeRay Operator
-    participant Kueue as Kueue Controller
-    participant RayHead as Ray Head Node<br/>8265/TCP
-    participant FS as Local Filesystem<br/>~/.local/share/codeflare/tls/
+    participant AppWCtrl as AppWrapper Controller
+    participant RayHead as Ray Head Pod<br/>8265/TCP
+    participant Dashboard as Ray Dashboard<br/>443/TCP (Route)
 
-    Note over User,FS: Flow 1: RayCluster Creation
+    Note over User,Dashboard: Flow 1: Cluster Creation
 
-    User->>SDK: Cluster(ClusterConfiguration(...))
-    SDK->>K8sAPI: Auth: Bearer Token / OIDC<br/>Verify connectivity
-    SDK->>K8sAPI: POST ray.io/v1 RayCluster CR<br/>Auth: Bearer Token / OIDC
-    K8sAPI-->>SDK: RayCluster created
-    KubeRay->>K8sAPI: Watch RayCluster<br/>Auth: Service Account
-    KubeRay->>K8sAPI: Create head-svc, pods<br/>Create CA Secret
-
-    loop Poll for CA certificate
-        SDK->>K8sAPI: GET Secret (label: ray.openshift.ai/cluster-name)<br/>Auth: Bearer Token / OIDC
+    User->>SDK: ClusterConfiguration(name, num_workers,<br/>cpu, memory, gpu, local_queue)
+    SDK->>SDK: generate_yaml()<br/>Render base-template.yaml<br/>with resource config
+    alt AppWrapper enabled
+        SDK->>K8s: POST AppWrapper CR<br/>Auth: Bearer Token
+        K8s->>AppWCtrl: Reconcile AppWrapper
+        AppWCtrl->>K8s: Create RayCluster CR
+    else Bare RayCluster
+        SDK->>K8s: POST RayCluster CR<br/>Auth: Bearer Token
     end
-    K8sAPI-->>SDK: CA Secret data
-    SDK->>FS: Write client cert + key<br/>Permissions: 0600<br/>RSA 3072-bit, SHA-256
-    SDK->>SDK: Set RAY_USE_TLS=1<br/>Configure mTLS env vars
-    SDK-->>User: Cluster ready
+    K8s->>KubeRay: Reconcile RayCluster
+    KubeRay->>K8s: Create Head Pod, Worker Pods,<br/>head-svc (6379, 8265, 10001)
 
-    Note over User,FS: Flow 2: RayJob Submission
+    Note over User,Dashboard: Flow 2: Cluster Status Check
 
-    User->>SDK: RayJob(ManagedClusterConfig(...))
-    SDK->>K8sAPI: POST v1 Secret (local files, base64)<br/>Auth: Bearer Token / OIDC
-    SDK->>K8sAPI: POST ray.io/v1 RayJob CR<br/>(with kueue.x-k8s.io/queue-name label)<br/>Auth: Bearer Token / OIDC
-    Kueue->>K8sAPI: Create Workload<br/>Manage admission<br/>Auth: Service Account
-    Kueue->>K8sAPI: Set suspend: false<br/>(when quota available)
-    KubeRay->>K8sAPI: Watch RayJob<br/>Create pods<br/>Auth: Service Account
-
-    loop Poll job status
-        SDK->>K8sAPI: GET ray.io/v1 RayJob status<br/>Auth: Bearer Token / OIDC
+    User->>SDK: cluster.status() / cluster.details()
+    SDK->>K8s: GET RayCluster CR status<br/>Auth: Bearer Token
+    K8s-->>SDK: RayCluster status (Ready/Pending/Failed)
+    opt AppWrapper mode
+        SDK->>K8s: GET AppWrapper CR status<br/>Auth: Bearer Token
+        K8s-->>SDK: AppWrapper status (Suspended/Resuming/Running)
     end
-    K8sAPI-->>SDK: RayJob status (SUCCEEDED/FAILED)
-    SDK-->>User: Job result
+    SDK->>Dashboard: GET /api/version (readiness check)<br/>HTTPS via Route, Auth: Bearer Token
+    Dashboard-->>SDK: 200 OK / connection error
+    SDK-->>User: ClusterStatus + dashboard URL
 
-    Note over User,FS: Flow 3: Dashboard URL Resolution
+    Note over User,Dashboard: Flow 3: Ray Job Submission
 
-    SDK->>K8sAPI: LIST HTTPRoutes (5 namespaces)<br/>Labels: ray.io/cluster-name<br/>Auth: Bearer Token / OIDC
-    alt HTTPRoute found (RHOAI 3.x)
-        K8sAPI-->>SDK: HTTPRoute with parentRef
-        SDK->>K8sAPI: GET Gateway (resolve hostname)<br/>Auth: Bearer Token / OIDC
-        K8sAPI-->>SDK: Gateway hostname
-        SDK->>SDK: Construct URL: https://{hostname}
-    else Fallback: OpenShift Route
-        SDK->>K8sAPI: LIST Routes<br/>Label: ray.io/cluster-name
-        K8sAPI-->>SDK: Route with host
-    else Fallback: Kubernetes Ingress
-        SDK->>K8sAPI: LIST Ingresses
-        K8sAPI-->>SDK: Ingress with host
+    User->>SDK: RayJobClient.submit_job(entrypoint)
+    SDK->>Dashboard: POST /api/jobs/<br/>8265/TCP or 443/TCP (Route)<br/>Auth: Bearer Token (OpenShift)
+    Dashboard->>RayHead: Schedule job on Ray cluster
+    RayHead-->>Dashboard: Job status updates
+    Dashboard-->>SDK: Job ID + status
+    SDK-->>User: Job submission result
+
+    Note over User,Dashboard: Flow 4: TLS Certificate Generation
+
+    User->>SDK: generate_tls_cert(cluster_name, namespace)
+    SDK->>K8s: GET Secret {cluster}-ca-secret-cert<br/>Auth: Bearer Token
+    K8s-->>SDK: CA cert + key (or 404)
+    alt CA secret not found
+        SDK->>SDK: Generate RSA-2048 CA key<br/>+ self-signed X.509 cert (SHA256)
+        SDK->>K8s: CREATE Secret {cluster}-ca-secret-cert<br/>Auth: Bearer Token
     end
-    SDK->>RayHead: GET /api/version (health check)<br/>8265/TCP HTTP/HTTPS<br/>Auth: Client certificate (if mTLS)
-    RayHead-->>SDK: Dashboard available
-    SDK-->>User: Dashboard URL
+    SDK->>SDK: Generate worker cert signed by CA
+    SDK->>SDK: Write cert/key to local filesystem
+    SDK->>SDK: Set RAY_USE_TLS=1, RAY_TLS_*<br/>environment variables
+    SDK-->>User: TLS cert paths + env vars configured

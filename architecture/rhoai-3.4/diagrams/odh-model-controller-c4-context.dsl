@@ -1,66 +1,107 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Creates and deploys ML models via InferenceService, LLMInferenceService, and NIM Account CRDs"
-        dashboard = person "RHOAI Dashboard" "Web UI for managing model serving resources"
+        user = person "Data Scientist / ML Engineer" "Creates and deploys ML models via InferenceService and LLMInferenceService resources"
+        admin = person "Platform Admin" "Configures NIM Accounts and manages model serving infrastructure"
+        dashboard_user = person "Dashboard User" "Uses RHOAI Dashboard to deploy models via Gateway API"
 
-        odmcSystem = softwareSystem "odh-model-controller" "Manages model serving infrastructure lifecycle for KServe on RHOAI" {
-            controller = container "odh-model-controller" "Kubernetes controller managing 8 controllers and 4 webhooks for InferenceService, LLMInferenceService, NIM, Gateway lifecycle" "Go Operator (controller-runtime)"
-            servingAPI = container "model-serving-api" "REST API server for Gateway discovery with RBAC-filtered namespace access" "Go REST Server (HTTPS, FIPS TLS)"
+        odhModelController = softwareSystem "odh-model-controller" "Kubernetes operator managing model serving infrastructure lifecycle for KServe InferenceServices and LLMInferenceServices" {
+            controller = container "odh-model-controller" "Reconciles InferenceService, LLMInferenceService, ServingRuntime, NIM Account CRDs" "Go Operator (controller-runtime)" {
+                isvcReconciler = component "InferenceService Reconciler" "Orchestrates sub-reconcilers for route, metrics, monitoring, KEDA, RBAC" "Go"
+                llmReconciler = component "LLMInferenceService Reconciler" "Manages AuthPolicy for Gateway API authentication" "Go"
+                gatewayReconciler = component "Gateway Reconciler" "Bootstraps EnvoyFilter and AuthPolicy per Gateway" "Go"
+                nimController = component "NIM Account Controller" "Manages NVIDIA NIM lifecycle: API keys, pull secrets, templates" "Go"
+                secretController = component "Secret Controller" "Aggregates data connection secrets with CA certs into storage-config" "Go"
+                podWebhook = component "Pod Webhook" "Injects Ray TLS volumes and init containers" "Go"
+            }
+            apiServer = container "model-serving-api" "HTTPS API for gateway discovery with bearer token passthrough RBAC" "Go HTTPS Server" {
+                gatewayHandler = component "Gateway Discovery Handler" "Lists and filters Gateway API gateways by user RBAC" "Go"
+                authMiddleware = component "Auth Middleware" "Passes bearer tokens through to K8s API for SAR" "Go"
+            }
         }
 
-        kserve = softwareSystem "KServe" "Provides InferenceService, ServingRuntime, InferenceGraph, LLMInferenceService CRDs" "External - Required"
-        kuadrant = softwareSystem "Kuadrant Operator" "Provides AuthPolicy CRD for gateway-level authentication" "External - Optional"
-        authorino = softwareSystem "Authorino Operator" "Authentication provider used by Kuadrant AuthPolicy" "External - Optional"
-        istio = softwareSystem "Istio / Service Mesh" "Provides EnvoyFilter CRD for TLS bootstrap on gateways" "External - Optional"
-        keda = softwareSystem "KEDA" "Provides TriggerAuthentication CRD for Prometheus-based autoscaling" "External - Optional"
-        prometheusOp = softwareSystem "Prometheus Operator" "Provides ServiceMonitor and PodMonitor CRDs for metrics collection" "External - Optional"
-        gatewayAPI = softwareSystem "Gateway API" "Provides Gateway and HTTPRoute CRDs for LLMInferenceService ingress" "External - Optional"
-        knative = softwareSystem "Knative Serving" "Serverless InferenceService mode" "External - Optional"
+        # External Dependencies
+        kserve = softwareSystem "KServe" "Provides InferenceService, ServingRuntime, LLMInferenceService CRDs and model serving runtime" "External"
+        kuadrant = softwareSystem "Kuadrant" "Provides AuthPolicy CRD for Gateway API authentication" "External"
+        authorino = softwareSystem "Authorino" "Authorization service performing TokenReview and SubjectAccessReview" "External"
+        istio = softwareSystem "Istio" "Service mesh providing EnvoyFilter CRD for TLS configuration" "External"
+        keda = softwareSystem "KEDA" "Provides TriggerAuthentication CRD for Prometheus-based autoscaling" "External"
+        prometheusOp = softwareSystem "Prometheus Operator" "Provides ServiceMonitor and PodMonitor CRDs for metrics collection" "External"
+        gatewayAPI = softwareSystem "Gateway API" "Provides Gateway and HTTPRoute CRDs for LLMInferenceService routing" "External"
+        certManager = softwareSystem "cert-manager" "Optional TLS certificate management" "External"
 
-        ngcAPI = softwareSystem "NVIDIA NGC API" "NIM API key validation, model catalog, runtime token exchange" "External Service"
-        modelRegistry = softwareSystem "Kubeflow Model Registry" "Bidirectional InferenceService sync with model registry" "Internal ODH - Optional"
+        # Internal Platform
+        rhodsOperator = softwareSystem "rhods-operator" "Platform operator providing DataScienceCluster and DSCInitialization CRDs" "Internal RHOAI"
+        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "Web UI for model deployment and gateway selection" "Internal RHOAI"
+        modelRegistry = softwareSystem "Model Registry" "Stores model metadata and version tracking" "Internal RHOAI"
+        openshiftRouter = softwareSystem "OpenShift Router" "Exposes services via Route resources" "OpenShift"
 
-        openshiftRouting = softwareSystem "OpenShift Routes" "Traffic exposure for InferenceServices" "Platform"
-        openshiftMonitoring = softwareSystem "OpenShift Monitoring" "Prometheus metrics federation" "Platform"
-        dsc = softwareSystem "DataScienceCluster / DSCInitialization" "Platform configuration CRDs for namespace discovery" "Internal ODH"
+        # External Services
+        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for all resource operations" "Infrastructure"
+        ngcAPI = softwareSystem "NVIDIA NGC API" "NIM API key validation, runtime catalog, model metadata" "External Service"
+        nvcrRegistry = softwareSystem "nvcr.io" "NVIDIA container registry for NIM inference runtime images" "External Service"
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Central API for all cluster operations" "Platform"
+        # Relationships - User interactions
+        user -> odhModelController "Creates InferenceService / LLMInferenceService via kubectl"
+        admin -> odhModelController "Creates NIM Account resources"
+        dashboard_user -> rhoaiDashboard "Selects gateway for model deployment"
 
-        user -> odmcSystem "Creates InferenceService, LLMInferenceService, NIM Account via kubectl" "HTTPS/443"
-        dashboard -> servingAPI "Queries gateway discovery API" "HTTPS/443, Bearer Token"
-
-        controller -> k8sAPI "Watches CRDs, creates Routes/ServiceMonitors/NetworkPolicies/AuthPolicies/EnvoyFilters" "HTTPS/443, SA Token"
-        servingAPI -> k8sAPI "SelfSubjectAccessReview + List Gateways" "HTTPS/443, User Token + SA Token"
-
-        odmcSystem -> kserve "Watches InferenceService, ServingRuntime, InferenceGraph, LLMInferenceService CRDs" "K8s API"
-        odmcSystem -> kuadrant "Creates AuthPolicy for LLMInferenceService auth" "K8s API"
-        odmcSystem -> authorino "Watches Authorino for TLS config" "K8s API"
-        odmcSystem -> istio "Creates EnvoyFilters on Gateways" "K8s API"
-        odmcSystem -> keda "Creates TriggerAuthentication for autoscaling" "K8s API"
-        odmcSystem -> prometheusOp "Creates ServiceMonitor/PodMonitor for metrics" "K8s API"
-        odmcSystem -> gatewayAPI "Watches Gateways, manages HTTPRoutes" "K8s API"
-        odmcSystem -> openshiftRouting "Creates Routes for InferenceService traffic" "K8s API"
-        odmcSystem -> openshiftMonitoring "Creates RoleBindings for metrics access" "RBAC"
-        odmcSystem -> dsc "Reads DataScienceCluster/DSCInitialization for namespace config" "K8s API"
-        odmcSystem -> ngcAPI "NIM API key validation, model catalog queries" "HTTPS/443, API Key"
-        odmcSystem -> modelRegistry "Bidirectional InferenceService sync" "HTTPS/443, Bearer Token"
+        # Relationships - System interactions
+        rhoaiDashboard -> odhModelController "GET /api/v1/gateways" "HTTPS/443"
+        odhModelController -> k8sAPI "CRD reconciliation, resource CRUD, RBAC checks" "HTTPS/443"
+        odhModelController -> kserve "Watches InferenceService, ServingRuntime, LLMInferenceService CRDs" "K8s API"
+        odhModelController -> kuadrant "Creates AuthPolicy resources for Gateway API auth" "K8s API"
+        odhModelController -> istio "Creates EnvoyFilter for Gateway-to-Authorino TLS" "K8s API"
+        odhModelController -> keda "Creates TriggerAuthentication for autoscaling" "K8s API"
+        odhModelController -> prometheusOp "Creates ServiceMonitor per InferenceService" "K8s API"
+        odhModelController -> gatewayAPI "Watches/updates Gateway, HTTPRoute resources" "K8s API"
+        odhModelController -> openshiftRouter "Creates Routes for traditional InferenceServices" "K8s API"
+        odhModelController -> rhodsOperator "Reads DataScienceCluster, DSCInitialization config" "K8s API"
+        odhModelController -> ngcAPI "Validates NIM API keys, fetches runtime catalog" "HTTPS/443"
+        odhModelController -> nvcrRegistry "Verifies NIM image pull authentication" "HTTPS/443"
+        odhModelController -> modelRegistry "Optional: registers InferenceServices with model metadata" "HTTPS/443"
+        odhModelController -> authorino "EnvoyFilter configures TLS to Authorino gRPC" "gRPC/50051"
     }
 
     views {
-        systemContext odmcSystem "SystemContext" {
+        systemContext odhModelController "SystemContext" {
             include *
             autoLayout
         }
 
-        container odmcSystem "Containers" {
+        container odhModelController "Containers" {
+            include *
+            autoLayout
+        }
+
+        component controller "ControllerComponents" {
+            include *
+            autoLayout
+        }
+
+        component apiServer "APIServerComponents" {
             include *
             autoLayout
         }
 
         styles {
-            element "Person" {
-                shape person
-                background #08427b
+            element "External" {
+                background #999999
+                color #ffffff
+            }
+            element "Internal RHOAI" {
+                background #7ed321
+                color #ffffff
+            }
+            element "OpenShift" {
+                background #ee0000
+                color #ffffff
+            }
+            element "Infrastructure" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "External Service" {
+                background #f5a623
                 color #ffffff
             }
             element "Software System" {
@@ -71,29 +112,14 @@ workspace {
                 background #438dd5
                 color #ffffff
             }
-            element "External - Required" {
-                background #999999
+            element "Component" {
+                background #85bbf0
+                color #000000
+            }
+            element "Person" {
+                background #08427b
                 color #ffffff
-            }
-            element "External - Optional" {
-                background #bbbbbb
-                color #ffffff
-            }
-            element "External Service" {
-                background #f5a623
-                color #000000
-            }
-            element "Internal ODH" {
-                background #7ed321
-                color #000000
-            }
-            element "Internal ODH - Optional" {
-                background #7ed321
-                color #000000
-            }
-            element "Platform" {
-                background #d5e8d4
-                color #000000
+                shape person
             }
         }
     }

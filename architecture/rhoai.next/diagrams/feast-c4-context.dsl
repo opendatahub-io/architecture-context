@@ -1,68 +1,103 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates FeatureStore CRs, explores features via UI, uses features in Jupyter notebooks"
-        mlEngineer = person "ML Engineer / Pipeline" "Pushes features, triggers materialization, retrieves online features for inference"
+        dataScientist = person "Data Scientist" "Creates FeatureStore CRs, defines features, queries feature data from notebooks"
+        mlEngineer = person "ML Engineer" "Deploys and manages Feast feature stores, configures backends and auth"
+        inferenceClient = person "ML Inference Client" "Applications that retrieve online features for real-time predictions"
 
-        feast = softwareSystem "Feast" "Open-source feature store that manages, stores, and serves ML features for training and online inference" {
-            operator = container "Feast Operator" "Manages FeatureStore CRD lifecycle, creates Deployments, Services, RBAC, CronJobs, and Routes" "Go / controller-runtime"
-            featureServer = container "Feature Server" "Serves online features via REST and gRPC, handles materialization, push operations, and metrics" "Python / FastAPI / Uvicorn / Gunicorn"
-            goFeatureServer = container "Go Feature Server" "High-performance online feature serving via gRPC" "Go / gRPC"
-            registry = container "Registry Service" "Feature metadata store, permission policies, gRPC and REST APIs" "Python / FastAPI"
-            ui = container "Feast UI" "Web-based feature store exploration and visualization" "React / TypeScript / Elastic UI"
-            cronJob = container "Materialization CronJob" "Scheduled batch materialization from offline to online store" "Kubernetes CronJob / ose-cli"
+        feast = softwareSystem "Feast" "Feature store platform for ML feature lifecycle management: registration, storage, serving, and materialization" {
+            feastOperator = container "feast-operator" "Manages FeatureStore CRDs, deploys and configures all Feast services on Kubernetes" "Go Operator (controller-runtime)" {
+                featureStoreCtrl = component "FeatureStore Controller" "Watches FeatureStore CRDs, reconciles Deployments, Services, RBAC, HPAs, PDBs, CronJobs" "Go"
+                notebookCtrl = component "Notebook ConfigMap Controller" "Watches Kubeflow Notebooks, provides feast config via ConfigMap" "Go"
+                accessManager = component "Access Manager" "Queries registry permissions, creates K8s RBAC for auto-access" "Go"
+                tlsManager = component "TLS Manager" "Handles OpenShift service-serving certs and manual TLS" "Go"
+            }
+            onlineServer = container "Online Feature Server" "Serves online features via REST/gRPC with embedded Go server for high throughput" "Python (FastAPI) + Go" {
+                tags "FeatureServer"
+            }
+            offlineServer = container "Offline Feature Server" "Serves batch features via Apache Arrow Flight protocol" "Python" {
+                tags "FeatureServer"
+            }
+            registryServer = container "Registry Server" "Feature metadata CRUD via gRPC (40+ RPCs) and REST API" "Python (gRPC + FastAPI)" {
+                tags "FeatureServer"
+            }
+            feastUI = container "Feast UI" "Web interface for browsing feature store metadata" "Python" {
+                tags "FeatureServer"
+            }
+            materializationCronJob = container "Materialization CronJob" "Scheduled jobs to materialize features from offline to online store" "ose-cli container"
         }
 
-        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management, RBAC, and token review" "Platform"
-        openshiftAPI = softwareSystem "OpenShift API" "Route creation, service-serving certificate injection, CA bundle management" "Platform"
-        oidcProvider = softwareSystem "Platform OIDC Provider" "JWT token validation via JWKS discovery for feature server authorization" "Platform"
-        kubeflowNotebooks = softwareSystem "Kubeflow Notebook Controller" "Manages Jupyter notebooks; Feast injects client ConfigMaps into labeled notebooks" "Internal ODH"
-        odhOperator = softwareSystem "ODH / RHODS Operator" "Deploys feast-operator via kustomize overlays" "Internal ODH"
-        prometheusOperator = softwareSystem "Prometheus Operator" "Scrapes metrics via ServiceMonitor CRD" "Platform"
+        rhoaiOperator = softwareSystem "RHOAI Operator" "Platform operator (rhods-operator) that deploys Feast via kustomize overlays" "Internal Platform" {
+            tags "Internal"
+        }
+        odhDashboard = softwareSystem "ODH Dashboard / Notebooks" "Kubeflow notebooks with Feast integration label" "Internal Platform" {
+            tags "Internal"
+        }
 
-        redis = softwareSystem "Redis" "Online feature store backend for real-time feature read/write" "External Data Store"
-        postgresql = softwareSystem "PostgreSQL" "Online/offline store and SQL registry backend" "External Data Store"
-        dynamodb = softwareSystem "DynamoDB" "AWS-managed online feature store backend" "External Data Store"
-        bigquery = softwareSystem "BigQuery" "GCP-managed offline feature store backend" "External Data Store"
-        snowflake = softwareSystem "Snowflake" "Online/offline store and registry backend" "External Data Store"
-        s3 = softwareSystem "S3 Storage" "Registry file storage for feature definitions" "External Data Store"
-        gcs = softwareSystem "GCS Storage" "Registry file storage for feature definitions" "External Data Store"
-        elasticsearch = softwareSystem "Elasticsearch" "Online store for vector search features" "External Data Store"
-        milvus = softwareSystem "Milvus" "Online store for vector search features" "External Data Store"
-        openlineage = softwareSystem "OpenLineage / Marquez" "Data lineage tracking and event collection" "External"
+        kubernetes = softwareSystem "Kubernetes API" "Cluster control plane for resource management" "External" {
+            tags "Infrastructure"
+        }
+        openshift = softwareSystem "OpenShift Platform" "Service-serving certificates, Routes, cluster detection" "External" {
+            tags "Infrastructure"
+        }
 
-        # User interactions
-        dataScientist -> feast "Creates FeatureStore CR, explores features via UI"
-        mlEngineer -> feast "Retrieves features, pushes features, triggers materialization"
+        redis = softwareSystem "Redis" "In-memory data store for online feature storage (single/cluster)" "External" {
+            tags "DataStore"
+        }
+        postgresql = softwareSystem "PostgreSQL" "Relational database for online/offline store and SQL registry" "External" {
+            tags "DataStore"
+        }
+        dynamodb = softwareSystem "AWS DynamoDB" "Managed NoSQL for online feature storage" "External" {
+            tags "CloudService"
+        }
+        bigquery = softwareSystem "Google BigQuery" "Serverless data warehouse for offline feature retrieval" "External" {
+            tags "CloudService"
+        }
+        s3 = softwareSystem "AWS S3" "Object storage for registry metadata" "External" {
+            tags "CloudService"
+        }
+        gcs = softwareSystem "Google Cloud Storage" "Object storage for registry metadata" "External" {
+            tags "CloudService"
+        }
+        snowflake = softwareSystem "Snowflake" "Cloud data platform for online/offline store and registry" "External" {
+            tags "CloudService"
+        }
+        oidcProvider = softwareSystem "OIDC Provider" "Identity provider for token validation via JWKS endpoint" "External" {
+            tags "Security"
+        }
 
-        # Internal container relationships
-        operator -> featureServer "Creates and manages Deployment" "Kubernetes API"
-        operator -> goFeatureServer "Creates and manages Deployment" "Kubernetes API"
-        operator -> registry "Fetches permission policies" "HTTP/8001, Intra-communication JWT"
-        operator -> ui "Creates and manages Deployment" "Kubernetes API"
-        operator -> cronJob "Creates and manages CronJob" "Kubernetes API"
-        featureServer -> registry "Syncs feature metadata" "gRPC/6001"
-        cronJob -> featureServer "Triggers materialization" "kubectl exec"
+        # Relationships - Users
+        dataScientist -> feast "Creates FeatureStore CRs, queries features via SDK" "kubectl, Python SDK"
+        mlEngineer -> feast "Manages feature store infrastructure" "kubectl, CLI"
+        inferenceClient -> onlineServer "Retrieves online features" "HTTP/gRPC, 6566/TCP"
 
-        # Platform dependencies
-        operator -> kubernetesAPI "CRD watches, resource CRUD, RBAC, token review" "HTTPS/6443"
-        operator -> openshiftAPI "Route creation, cert injection" "HTTPS/6443"
-        featureServer -> oidcProvider "JWT token validation via JWKS" "HTTPS/443"
-        featureServer -> kubernetesAPI "Token review for K8s SA auth" "HTTPS/6443"
-        operator -> kubeflowNotebooks "Watches Notebook CRDs, injects ConfigMaps" "Kubernetes API"
-        odhOperator -> feast "Deploys via kustomize overlays" "Kustomize"
-        prometheusOperator -> feast "Scrapes metrics via ServiceMonitor" "HTTPS/8443"
+        # Relationships - Internal Platform
+        rhoaiOperator -> feastOperator "Deploys via kustomize overlays" "Kustomize"
+        odhDashboard -> feast "Notebooks query features" "Python SDK"
 
-        # External data store connections
-        featureServer -> redis "Online feature read/write" "TCP/6379"
-        featureServer -> postgresql "Online/offline store, SQL registry" "TCP/5432"
-        featureServer -> dynamodb "Online feature store" "HTTPS/443"
-        featureServer -> bigquery "Offline feature store" "HTTPS/443"
-        featureServer -> snowflake "Online/offline store, registry" "HTTPS/443"
-        featureServer -> s3 "Registry file storage" "HTTPS/443"
-        featureServer -> gcs "Registry file storage" "HTTPS/443"
-        featureServer -> elasticsearch "Online store (vector search)" "HTTPS/9200"
-        featureServer -> milvus "Online store (vector search)" "gRPC/19530"
-        featureServer -> openlineage "Data lineage events" "HTTP/HTTPS"
+        # Relationships - Operator
+        feastOperator -> kubernetes "Watches CRDs, manages resources" "HTTPS/6443, SA token"
+        feastOperator -> openshift "Creates Routes, detects cluster type" "HTTPS/6443, SA token"
+        feastOperator -> registryServer "Fetches permission policies" "HTTP/6572, JWT"
+
+        # Relationships - Feature Servers → Stores
+        onlineServer -> redis "Read/write online features" "TCP/6379, Password"
+        onlineServer -> postgresql "Read/write features" "TCP/5432, User/Pass"
+        onlineServer -> dynamodb "Read/write online features" "HTTPS/443, AWS IAM"
+        offlineServer -> bigquery "Query historical features" "HTTPS/443, GCP SA"
+        offlineServer -> snowflake "Query features" "HTTPS/443, Snowflake creds"
+        registryServer -> s3 "Store/retrieve registry metadata" "HTTPS/443, AWS IAM"
+        registryServer -> gcs "Store/retrieve registry metadata" "HTTPS/443, GCP SA"
+        registryServer -> postgresql "SQL registry backend" "TCP/5432, User/Pass"
+
+        # Relationships - Auth
+        onlineServer -> oidcProvider "Validates OIDC tokens" "HTTPS/443, JWKS"
+        offlineServer -> oidcProvider "Validates OIDC tokens" "HTTPS/443, JWKS"
+        registryServer -> oidcProvider "Validates OIDC tokens" "HTTPS/443, JWKS"
+
+        # Relationships - Materialization
+        materializationCronJob -> registryServer "Fetch feature definitions" "gRPC/6570, SA token"
+        materializationCronJob -> bigquery "Read historical features" "HTTPS/443"
+        materializationCronJob -> redis "Write materialized features" "TCP/6379"
     }
 
     views {
@@ -76,34 +111,52 @@ workspace {
             autoLayout
         }
 
+        component feastOperator "OperatorComponents" {
+            include *
+            autoLayout
+        }
+
         styles {
-            element "Platform" {
-                background #e1d5e7
-                color #333333
-            }
-            element "Internal ODH" {
-                background #7ed321
-                color #ffffff
-            }
-            element "External Data Store" {
-                background #fff2cc
-                color #333333
-            }
-            element "External" {
-                background #999999
+            element "Software System" {
+                background #438dd5
                 color #ffffff
             }
             element "Person" {
-                shape Person
-                background #4a90e2
+                background #08427b
                 color #ffffff
-            }
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
+                shape person
             }
             element "Container" {
                 background #438dd5
+                color #ffffff
+            }
+            element "Component" {
+                background #85bbf0
+                color #000000
+            }
+            element "Internal" {
+                background #7ed321
+                color #ffffff
+            }
+            element "Infrastructure" {
+                background #999999
+                color #ffffff
+            }
+            element "DataStore" {
+                background #f5a623
+                color #ffffff
+                shape cylinder
+            }
+            element "CloudService" {
+                background #ff6b6b
+                color #ffffff
+            }
+            element "Security" {
+                background #9b59b6
+                color #ffffff
+            }
+            element "FeatureServer" {
+                background #50c878
                 color #ffffff
             }
         }

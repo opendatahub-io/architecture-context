@@ -1,69 +1,79 @@
 sequenceDiagram
     autonumber
 
-    participant User as User / Data Scientist
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant Operator as KubeRay Operator<br/>(controller-runtime)
-    participant Dashboard as Ray Dashboard<br/>8265/TCP HTTP
-    participant Head as Head Pod<br/>6379, 10001, 8265
-    participant Workers as Worker Pods
-    participant Gateway as RHOAI Gateway<br/>443/TCP HTTPS
-    participant KRBP as kube-rbac-proxy<br/>8443/TCP HTTPS
-    participant Submitter as Submitter Job Pod
-    participant Redis as Redis<br/>6379/TCP
-
-    rect rgb(230, 245, 255)
-        Note over User,Workers: Flow 1: RayCluster Pod Lifecycle
-        User->>K8sAPI: kubectl apply RayCluster<br/>HTTPS/443, Bearer Token
-        K8sAPI->>Operator: Watch event (informer)<br/>HTTP/2, TLS 1.2+, SA Token
-        Operator->>K8sAPI: Create head pod, services, RBAC<br/>HTTPS/443, SA Token
-        K8sAPI-->>Head: Head pod scheduled & started
-        Operator->>K8sAPI: Create worker pods<br/>HTTPS/443, SA Token
-        K8sAPI-->>Workers: Worker pods scheduled
-        Workers->>Head: GCS health check (init container)<br/>6379/TCP, None or mTLS
-        Workers->>Head: Ray runtime connect<br/>6379, 10001/TCP, None or mTLS
+    box rgb(240,240,240) External
+        participant User as User / Platform Operator
     end
 
-    rect rgb(255, 243, 224)
-        Note over User,Submitter: Flow 2: RayJob Submission (K8sJobMode)
-        User->>K8sAPI: kubectl apply RayJob<br/>HTTPS/443, Bearer Token
-        K8sAPI->>Operator: Watch event (informer)
-        Operator->>K8sAPI: Create RayCluster CR<br/>HTTPS/443, SA Token
-        Note over Head,Workers: Cluster provisions (Flow 1)
-        Operator->>Dashboard: Check cluster ready<br/>HTTP/8265, None
-        Dashboard-->>Operator: Cluster status
-        Operator->>K8sAPI: Create K8s Job (submitter)<br/>HTTPS/443, SA Token
-        K8sAPI-->>Submitter: Submitter pod started
-        Submitter->>Dashboard: ray job submit<br/>HTTP/8265, None
-        Dashboard-->>Submitter: Job ID
-        Submitter->>Dashboard: ray job logs (poll)<br/>HTTP/8265, None
-        Dashboard-->>Submitter: Job output & status
+    box rgb(255,243,224) Kubernetes Control Plane
+        participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
+        participant Webhook as KubeRay Webhook<br/>9443/TCP HTTPS
     end
 
-    rect rgb(232, 245, 233)
-        Note over User,KRBP: Flow 3: Gateway API Authentication (RHOAI)
-        User->>Gateway: Access Ray Dashboard<br/>HTTPS/443, TLS 1.2+
-        Gateway->>KRBP: Forward via HTTPRoute<br/>HTTPS/8443, TLS (cert-manager)
-        KRBP->>K8sAPI: TokenReview (validate Bearer)<br/>HTTPS/443, SA Token
-        K8sAPI-->>KRBP: Token valid + identity
-        KRBP->>K8sAPI: SubjectAccessReview<br/>HTTPS/443, SA Token
-        K8sAPI-->>KRBP: Authorized
-        KRBP->>Dashboard: Proxy to dashboard<br/>HTTP/8265, localhost, None
-        Dashboard-->>KRBP: Dashboard response
-        KRBP-->>Gateway: Response (HTTPS)
-        Gateway-->>User: Dashboard UI
+    box rgb(224,242,241) KubeRay Operator
+        participant RCC as RayCluster Controller
+        participant AuthC as Authentication Controller
+        participant NPC as NetworkPolicy Controller
+        participant MTLSC as mTLS Controller
+        participant RJC as RayJob Controller
+        participant RSC as RayService Controller
     end
 
-    rect rgb(252, 228, 236)
-        Note over Operator,Redis: Flow 4: GCS Fault Tolerance (optional)
-        Head->>Redis: GCS data persistence<br/>6379/TCP, Redis protocol, Optional TLS
-        Note over Head: Head pod restarts
-        Head->>Redis: GCS data recovery<br/>6379/TCP
-        Workers--xHead: Connection lost (600s timeout)
-        Head-->>Workers: Reconnect after recovery
-        Note over Operator,Redis: On cluster deletion:
-        Operator->>K8sAPI: Create Redis cleanup Job
-        K8sAPI-->>Submitter: Cleanup job runs
-        Submitter->>Redis: DEL ray namespace data<br/>6379/TCP
-        Operator->>K8sAPI: Remove finalizer
+    box rgb(232,245,233) Ray Cluster
+        participant KRBP as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
+        participant Dashboard as Ray Dashboard<br/>8265/TCP HTTP
+        participant Serve as Ray HTTP Proxy<br/>8000/TCP HTTP
     end
+
+    box rgb(243,229,245) External Services
+        participant CertMgr as cert-manager
+        participant Gateway as Platform Gateway<br/>443/TCP HTTPS TLS 1.3
+    end
+
+    Note over User, Gateway: Flow 1: RayCluster Lifecycle (RHOAI/OpenShift)
+
+    User->>K8sAPI: Create RayCluster CR
+    K8sAPI->>Webhook: Mutating admission (9443/TCP HTTPS)
+    Webhook-->>K8sAPI: Enforces odh.ray.io/secure-trusted-network=true,<br/>disables enableIngress
+    K8sAPI->>Webhook: Validating admission (9443/TCP HTTPS)
+    Webhook-->>K8sAPI: Validates name format + worker group uniqueness
+
+    K8sAPI->>RCC: RayCluster event (watch)
+    RCC->>K8sAPI: Create head Pod, Services (443/TCP HTTPS)
+    K8sAPI->>AuthC: RayCluster event (watch)
+    AuthC->>K8sAPI: Create HTTPRoute (platform ns),<br/>ReferenceGrant, ConfigMap, SA (443/TCP HTTPS)
+    K8sAPI->>NPC: RayCluster event (watch)
+    NPC->>K8sAPI: Create head + worker NetworkPolicies (443/TCP HTTPS)
+    K8sAPI->>MTLSC: RayCluster event (watch)
+    MTLSC->>CertMgr: Create Issuers + Certificates (443/TCP HTTPS)
+    CertMgr-->>MTLSC: TLS secrets provisioned
+
+    RCC->>K8sAPI: Create worker Pods (443/TCP HTTPS)
+
+    User->>Gateway: Access Ray Dashboard<br/>HTTPS/443, TLS 1.3, OIDC/OAuth
+    Gateway->>KRBP: HTTPRoute → kube-rbac-proxy<br/>8443/TCP HTTPS
+    KRBP->>K8sAPI: SubjectAccessReview (services/get)
+    K8sAPI-->>KRBP: Authorized
+    KRBP->>Dashboard: Proxy to localhost:8265<br/>HTTP plaintext
+
+    Note over User, Gateway: Flow 2: RayJob Submission (K8sJobMode)
+
+    User->>K8sAPI: Create RayJob CR
+    K8sAPI->>RJC: RayJob event (watch)
+    RJC->>K8sAPI: Create transient RayCluster (443/TCP HTTPS)
+    RJC->>K8sAPI: Create K8s Job submitter pod (443/TCP HTTPS)
+    Note over RJC, Dashboard: K8s Job submitter Pod
+    RJC->>Dashboard: SubmitJob (8265/TCP HTTP, no auth)
+    RJC->>Dashboard: GetJobInfo / StopJob (8265/TCP HTTP)
+    Dashboard-->>RJC: Job status response
+
+    Note over User, Gateway: Flow 3: RayService Zero-Downtime Upgrade
+
+    User->>K8sAPI: Update RayService CR
+    K8sAPI->>RSC: RayService event (watch)
+    RSC->>K8sAPI: Create pending RayCluster (443/TCP HTTPS)
+    RSC->>Dashboard: UpdateDeployments (8265/TCP HTTP)
+    RSC->>Dashboard: GetMultiApplicationStatus (8265/TCP HTTP)
+    RSC->>Serve: CheckProxyActorHealth (8000/TCP HTTP)
+    Serve-->>RSC: Health OK
+    RSC->>K8sAPI: Switch Services to pending cluster,<br/>promote pending → active (443/TCP HTTPS)

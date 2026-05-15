@@ -1,58 +1,60 @@
 workspace {
     model {
-        user = person "Platform Engineer / Data Scientist" "Manages RHOAI installations, validates upgrade readiness, backs up workloads"
-        ciPipeline = person "CI/CD Pipeline" "Automated upgrade validation and workload backup"
+        user = person "Platform Engineer / SRE" "Runs upgrade readiness checks, backups, and migrations for RHOAI clusters"
+        ciPipeline = person "CI Pipeline" "Automated execution of lint checks in CI/CD workflows"
 
-        odhCli = softwareSystem "odh-cli (kubectl-odh)" "CLI tool for validating, diagnosing, and managing RHOAI installations and upgrades" {
-            lintSubsystem = container "Lint Subsystem" "37 checks: platform, component, dependency, workload. Version-gated applicability, glob-based selector." "Go"
-            backupSubsystem = container "Backup Subsystem" "Three-stage pipeline: Discovery → Resolution → Writing. Parallel workers, dependency chasing." "Go"
-            migrateSubsystem = container "Migrate Subsystem" "Action registry with lifecycle: CanApply → Prepare → Run. Interactive confirmations." "Go"
-            k8sClient = container "Kubernetes Client Layer" "Wraps controller-runtime and client-go. Dynamic + metadata access, OLM discovery. QPS=50, Burst=100." "Go"
-            outputFormatter = container "Output Formatter" "Renders results as table, JSON, or YAML" "Go"
-
-            lintSubsystem -> k8sClient "Reads cluster resources"
-            backupSubsystem -> k8sClient "Lists and resolves workloads"
-            migrateSubsystem -> k8sClient "Reads and writes cluster resources"
-            lintSubsystem -> outputFormatter "Formats diagnostic results"
-            backupSubsystem -> outputFormatter "Formats backup output"
+        odhCli = softwareSystem "odh-cli (kubectl-odh)" "CLI tool for validating, backing up, and migrating RHOAI deployments" {
+            lintFramework = container "Lint Framework" "38 upgrade readiness checks organized in 5 groups: platform, components, dependencies, workloads, services" "Go (cobra)"
+            backupPipeline = container "Backup Pipeline" "Discovery → Dependency Resolution → Writer pipeline for exporting workloads to portable YAML" "Go"
+            migrateFramework = container "Migration Framework" "Two-phase Action pattern (Prepare/Run) for version-aware cluster migrations" "Go"
+            k8sClient = container "Unified K8s Client" "Aggregated dynamic, discovery, OLM, and metadata clients with Reader/Writer interfaces" "Go (client-go)"
+            containerImage = container "Container Image" "All-in-one upgrade toolkit: CLI + oc + kubectl + jq + yq + Python scripts" "OCI (ose-cli-rhel9)"
         }
 
-        k8sApiServer = softwareSystem "Kubernetes API Server" "OpenShift cluster control plane" "External"
-        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator (DataScienceCluster, DSCInitialization)" "Internal RHOAI"
-        notebookController = softwareSystem "odh-notebook-controller" "Manages Notebook workloads" "Internal RHOAI"
-        kserve = softwareSystem "KServe" "ML model serving (InferenceService, ServingRuntime)" "Internal RHOAI"
-        kueue = softwareSystem "Kueue" "Job queueing (ClusterQueue, LocalQueue)" "Internal RHOAI"
-        olm = softwareSystem "Operator Lifecycle Manager" "Operator management (Subscriptions, CSVs, PackageManifests)" "External"
-        openshift = softwareSystem "OpenShift Platform" "Cluster infrastructure (ClusterVersion, ImageStreams)" "External"
-        certManager = softwareSystem "cert-manager" "TLS certificate management" "External"
-        serviceMesh = softwareSystem "Service Mesh Operator" "Service mesh management (Istio/OSSM)" "External"
-        dspOperator = softwareSystem "Data Science Pipelines Operator" "Pipeline management (DSPA)" "Internal RHOAI"
-        trustyai = softwareSystem "TrustyAI" "AI trustworthiness (GuardrailsOrchestrator)" "Internal RHOAI"
-        ray = softwareSystem "Ray / CodeFlare" "Distributed computing (RayCluster, RayJob, AppWrapper)" "Internal RHOAI"
-        trainingOperator = softwareSystem "Training Operator" "Distributed training (PyTorchJob)" "Internal RHOAI"
-        dashboard = softwareSystem "ODH Dashboard" "UI management (AcceleratorProfile, HardwareProfile)" "Internal RHOAI"
-        localFS = softwareSystem "Local Filesystem" "Backup YAML output destination" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane providing access to all resources" "External"
+        openshift = softwareSystem "OpenShift Platform" "Container platform with ClusterVersion, ImageStreams, Ingress Operator" "External"
+        olm = softwareSystem "Operator Lifecycle Manager" "Manages operator subscriptions, CSVs, and package manifests" "External"
 
-        user -> odhCli "Runs lint, backup, migrate commands via kubectl plugin"
-        ciPipeline -> odhCli "Automated upgrade validation (JSON output)"
+        dsc = softwareSystem "DataScienceCluster" "RHOAI platform CRD - component management states" "Internal RHOAI"
+        dsci = softwareSystem "DSCInitialization" "RHOAI platform CRD - initialization state, service mesh config" "Internal RHOAI"
+        rhodsOperator = softwareSystem "rhods-operator" "RHOAI operator providing platform version via CSV" "Internal RHOAI"
 
-        odhCli -> k8sApiServer "All cluster queries and mutations" "HTTPS/6443, TLS 1.2+, Bearer Token"
+        certManager = softwareSystem "cert-manager Operator" "Certificate management operator" "External Dependency"
+        serviceMeshV3 = softwareSystem "Service Mesh v3 Operator" "Istio-based service mesh for RHOAI 3.x" "External Dependency"
+        kueueOperator = softwareSystem "Red Hat Build of Kueue" "Standalone Kueue operator installed during migration" "External Dependency"
 
-        k8sClient -> rhodsOperator "Reads DSC, DSCI for version detection and upgrade readiness" "HTTPS/6443"
-        k8sClient -> notebookController "Reads Notebooks for backup and compatibility checks" "HTTPS/6443"
-        k8sClient -> kserve "Reads ISVCs, ServingRuntimes for deployment mode validation" "HTTPS/6443"
-        k8sClient -> kueue "Reads ClusterQueues, LocalQueues for migration verification" "HTTPS/6443"
-        k8sClient -> olm "Reads/creates Subscriptions, reads CSVs for operator management" "HTTPS/6443"
-        k8sClient -> openshift "Reads ClusterVersion, ImageStreams for platform checks" "HTTPS/6443"
-        k8sClient -> certManager "Reads OLM Subscriptions for dependency validation" "HTTPS/6443"
-        k8sClient -> serviceMesh "Reads Subscriptions, PackageManifests for mesh checks" "HTTPS/6443"
-        k8sClient -> dspOperator "Reads DSPA for pipeline renaming and config checks" "HTTPS/6443"
-        k8sClient -> trustyai "Reads GuardrailsOrchestrator for config validation" "HTTPS/6443"
-        k8sClient -> ray "Reads RayClusters, RayJobs, AppWrappers for CodeFlare checks" "HTTPS/6443"
-        k8sClient -> trainingOperator "Reads PyTorchJobs for deprecation assessment" "HTTPS/6443"
-        k8sClient -> dashboard "Reads AcceleratorProfiles, HardwareProfiles for migration" "HTTPS/6443"
+        notebooks = softwareSystem "Notebook Controller" "Manages Jupyter notebook workloads" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "ML model serving platform" "Internal RHOAI"
+        pipelines = softwareSystem "Data Science Pipelines" "ML pipeline orchestration" "Internal RHOAI"
+        kueue = softwareSystem "Kueue" "Job queueing system" "Internal RHOAI"
 
-        backupSubsystem -> localFS "Writes sanitized YAML backup files"
+        localFS = softwareSystem "Local Filesystem" "Backup output destination for portable YAML files" "External"
+
+        # Relationships
+        user -> odhCli "Runs lint, backup, migrate commands"
+        ciPipeline -> odhCli "Executes lint checks in CI"
+
+        lintFramework -> k8sClient "Uses for API queries"
+        backupPipeline -> k8sClient "Uses for resource discovery"
+        migrateFramework -> k8sClient "Uses for read/write operations"
+
+        k8sClient -> k8sAPI "HTTPS/6443 - Bearer Token / Client Cert" "TLS 1.2+"
+
+        odhCli -> dsc "Reads component management states" "HTTPS/6443"
+        odhCli -> dsci "Reads platform initialization state" "HTTPS/6443"
+        odhCli -> rhodsOperator "Detects installed RHOAI version" "HTTPS/6443"
+        odhCli -> openshift "Validates OpenShift version >= 4.19.9" "HTTPS/6443"
+        odhCli -> olm "Queries operator installations" "HTTPS/6443"
+        odhCli -> certManager "Validates installation status" "HTTPS/6443"
+        odhCli -> serviceMeshV3 "Validates availability in catalog" "HTTPS/6443"
+        odhCli -> kueueOperator "Installs during RHBOK migration" "HTTPS/6443"
+
+        odhCli -> notebooks "Inspects notebook workloads" "HTTPS/6443"
+        odhCli -> kserve "Inspects InferenceServices" "HTTPS/6443"
+        odhCli -> pipelines "Inspects DSPA resources" "HTTPS/6443"
+        odhCli -> kueue "Validates queue integrity" "HTTPS/6443"
+
+        backupPipeline -> localFS "Writes portable YAML files"
     }
 
     views {
@@ -71,12 +73,16 @@ workspace {
                 background #999999
                 color #ffffff
             }
+            element "External Dependency" {
+                background #b0bec5
+                color #ffffff
+            }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
             element "Person" {
-                shape person
+                shape Person
                 background #4a90e2
                 color #ffffff
             }

@@ -1,53 +1,59 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates ML models, monitors fairness/drift, requests explanations"
-        mlEngineer = person "ML Engineer" "Deploys models, configures monitoring, reviews metrics"
+        dataScientist = person "Data Scientist" "Creates and deploys ML models, monitors fairness and drift"
+        platformAdmin = person "Platform Admin" "Manages OpenShift AI platform and monitoring infrastructure"
 
-        trustyai = softwareSystem "TrustyAI Explainability" "AI model explainability, fairness metrics, and data drift detection service for OpenShift AI" {
-            core = container "explainability-core" "Core AI explainability algorithms: LIME, SHAP, Counterfactual (OptaPlanner), PDP, Aggregated LIME" "Java 17 Library"
-            connectors = container "explainability-connectors" "KServe v1/v2 HTTP and gRPC connectors for model inference with protobuf definitions" "Java 17 Library"
-            arrow = container "explainability-arrow" "Apache Arrow columnar data format support for efficient data interchange" "Java 17 Library"
-            service = container "explainability-service" "Quarkus REST API service: fairness metrics, drift detection, data management, and explainability (ODH only)" "Quarkus 3.8.5 / Java 17" {
-                consumerEndpoint = component "Consumer Endpoint" "Receives KServe v2 inference payloads from ModelMesh" "JAX-RS REST"
-                cloudEventConsumer = component "CloudEvent Consumer" "Receives Knative CloudEvents from KServe InferenceServices" "Quarkus Funqy"
-                fairnessEndpoints = component "Fairness Metric Endpoints" "SPD, DIR fairness metric computation and scheduling" "JAX-RS REST"
-                driftEndpoints = component "Drift Metric Endpoints" "KSTest, FourierMMD, Meanshift drift detection" "JAX-RS REST"
-                explainerEndpoints = component "Explainer Endpoints" "LIME, SHAP, Counterfactual, TSSaliency, PDP (ODH only)" "JAX-RS REST"
-                reconciler = component "Payload Reconciler" "Matches inference request/response pairs before persistence" "CDI Bean"
-                storageLayer = component "Storage Layer" "Pluggable storage: PVC, Hibernate (MariaDB), MinIO, Memory" "CDI + LookupIfProperty"
-                prometheusScheduler = component "Prometheus Scheduler" "Periodically computes registered metrics, publishes to Micrometer" "Quarkus Scheduler"
-            }
+        trustyai = softwareSystem "TrustyAI Explainability" "AI fairness metrics, model explainability, and data drift detection service" {
+            service = container "explainability-service" "Quarkus REST service providing fairness, drift, and explainability endpoints" "Java 17 / Quarkus 3.8.5"
+            core = container "explainability-core" "Core XAI algorithms: SPD, DIR, LIME, SHAP, CF, KS, MMD, Meanshift" "Java Library"
+            connectors = container "explainability-connectors" "KServe v1/v2 HTTP and gRPC inference protocol connectors" "Java Library"
+            arrow = container "explainability-arrow" "Apache Arrow bridge for Python interoperability" "Java Library"
+            reconciler = container "PayloadReconciler" "Matches partial inference payloads (input+output) by ID" "Internal Component"
+            scheduler = container "PrometheusScheduler" "Cron-triggered metric computation and gauge updates" "Internal Component"
         }
 
-        kserveModelMesh = softwareSystem "KServe / ModelMesh" "Model serving infrastructure providing inference endpoints" "External"
-        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and alerting platform" "External"
-        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Deploys and manages TrustyAI service instances per namespace" "Internal RHOAI"
-        mariadb = softwareSystem "MariaDB / MySQL" "Relational database for observation data persistence" "External"
-        minio = softwareSystem "MinIO" "S3-compatible object storage for observation data" "External"
-        pvc = softwareSystem "PersistentVolumeClaim" "Kubernetes volume for file-based observation storage" "External"
-        certManager = softwareSystem "cert-manager" "Certificate lifecycle management for TLS" "External"
-        dashboard = softwareSystem "ODH Dashboard" "OpenShift AI web console for model management" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Model serving platform with InferenceService lifecycle management" "Internal RHOAI"
+        modelmesh = softwareSystem "ModelMesh Serving" "Multi-model serving with shared inference infrastructure" "Internal RHOAI"
+        trustyaiOperator = softwareSystem "TrustyAI Operator" "Manages per-namespace TrustyAI service instances" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and alerting platform" "Internal Platform"
+        dashboard = softwareSystem "OpenShift AI Dashboard" "Web UI for model management and monitoring" "Internal RHOAI"
+        kubeflow = softwareSystem "Kubeflow Event Broker" "CloudEvent distribution for serverless inference logging" "Internal Platform"
+
+        pvc = softwareSystem "PVC Storage" "Kubernetes PersistentVolumeClaim for CSV data storage" "Infrastructure"
+        minio = softwareSystem "MinIO / S3" "S3-compatible object storage (optional backend)" "External"
+        database = softwareSystem "MariaDB / MySQL" "Relational database (optional backend)" "External"
 
         # User interactions
-        dataScientist -> trustyai "Requests fairness metrics, drift analysis, explanations" "REST/HTTP"
-        mlEngineer -> trustyai "Configures monitoring, uploads data, reviews metrics" "REST/HTTP"
+        dataScientist -> trustyai "Queries fairness metrics, requests explanations" "REST HTTP/8080"
+        dataScientist -> dashboard "Views model monitoring dashboards"
+        platformAdmin -> prometheus "Configures alerts on trustyai_* metrics"
 
-        # System interactions
-        kserveModelMesh -> trustyai "Sends inference payloads (HTTP POST, CloudEvents)" "HTTP/8080"
-        trustyai -> kserveModelMesh "Invokes model inference for explainability" "HTTP/8080, gRPC"
-        prometheus -> trustyai "Scrapes /q/metrics for trustyai_* gauges" "HTTP/8080 Bearer Token"
-        trustyaiOperator -> trustyai "Manages lifecycle, deploys per namespace" "Kubernetes API"
-        trustyai -> mariadb "Persists observation data (DATABASE mode)" "JDBC/3306"
-        trustyai -> minio "Persists observation data (MINIO mode)" "HTTP S3 API"
-        trustyai -> pvc "Persists observation data (PVC mode)" "Filesystem"
-        certManager -> trustyai "Provisions TLS certificates for HTTPS/4443" "Kubernetes Secret"
-        dashboard -> trustyai "Displays fairness/drift metrics via API" "REST/HTTP"
+        # Inbound data flows
+        kserve -> trustyai "Sends inference payloads via payload processor webhook" "HTTP/8080"
+        modelmesh -> trustyai "Sends partial inference payloads (Protobuf)" "HTTP/8080"
+        kubeflow -> trustyai "Sends inference CloudEvents" "HTTP/8080"
 
-        # Internal container interactions
-        service -> core "Uses explainability algorithms"
-        service -> connectors "Uses KServe prediction providers"
-        service -> arrow "Uses Arrow data format"
-        connectors -> core "Implements PredictionProvider interface"
+        # Outbound inference
+        trustyai -> kserve "Makes inference calls for explanation generation" "gRPC/8033 or HTTP"
+
+        # Monitoring
+        prometheus -> trustyai "Scrapes trustyai_* Prometheus gauges" "HTTP/8080 Bearer Token"
+        dashboard -> trustyai "Queries fairness/drift status" "HTTP/8080"
+
+        # Operator management
+        trustyaiOperator -> trustyai "Deploys and manages service instances" "CRD reconciliation"
+
+        # Storage
+        trustyai -> pvc "Reads/writes inference data (CSV)" "Filesystem I/O"
+        trustyai -> minio "Reads/writes inference data (optional)" "HTTP/9000 or HTTPS/443"
+        trustyai -> database "Reads/writes inference data (optional)" "JDBC/3306"
+
+        # Internal container relationships
+        service -> core "Uses for metric computation and explanations"
+        service -> connectors "Uses for KServe inference protocol"
+        service -> reconciler "Delegates payload matching"
+        service -> scheduler "Delegates scheduled metric computation"
+        core -> connectors "Uses for model inference during explanations"
     }
 
     views {
@@ -57,11 +63,6 @@ workspace {
         }
 
         container trustyai "Containers" {
-            include *
-            autoLayout
-        }
-
-        component service "Components" {
             include *
             autoLayout
         }
@@ -76,21 +77,25 @@ workspace {
                 background #1168bd
                 color #ffffff
             }
+            element "Internal RHOAI" {
+                background #7ed321
+                color #ffffff
+            }
+            element "Internal Platform" {
+                background #438dd5
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
-                background #438dd5
-                color #ffffff
+            element "Infrastructure" {
+                background #d6b656
+                color #333333
             }
             element "Container" {
                 background #438dd5
                 color #ffffff
-            }
-            element "Component" {
-                background #85bbf0
-                color #000000
             }
         }
     }

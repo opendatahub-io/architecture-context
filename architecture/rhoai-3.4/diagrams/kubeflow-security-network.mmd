@@ -1,84 +1,95 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User Browser / kubectl<br/>Dashboard"]
+        User["User / Dashboard"]
     end
 
-    subgraph Ingress["INGRESS (Gateway API - TLS Termination)"]
-        Gateway["data-science-gateway<br/>Namespace: openshift-ingress<br/>443/TCP → HTTPRoute backend<br/>TLS 1.2+ (SIMPLE)"]
+    subgraph Ingress["INGRESS (Gateway / Router)"]
+        Gateway["data-science-gateway<br/>Namespace: openshift-ingress<br/>443/TCP<br/>TLS 1.2+ (SIMPLE)<br/>Gateway API"]
     end
 
-    subgraph AuthProxy["AUTH PROXY LAYER (per notebook pod)"]
-        KRBP["kube-rbac-proxy sidecar<br/>Port: 8443/TCP HTTPS<br/>TLS: serving-cert (auto-rotated)<br/>Auth: TokenReview + SubjectAccessReview<br/>Policy: GET kubeflow.org/v1.notebooks"]
+    subgraph AuthLayer["AUTHENTICATION LAYER"]
+        RBACProxy["kube-rbac-proxy sidecar<br/>8443/TCP HTTPS<br/>TLS: serving cert<br/>SubjectAccessReview"]
     end
 
-    subgraph Workload["WORKLOAD LAYER (user namespaces)"]
-        Jupyter["Jupyter Server<br/>Port: 8888/TCP HTTP<br/>No encryption (pod-internal)<br/>NetworkPolicy: ctrl-np (8888)<br/>NetworkPolicy: krbp-np (8443)"]
-    end
-
-    subgraph Controllers["CONTROLLER LAYER (opendatahub namespace)"]
+    subgraph Controllers["CONTROLLERS (Namespace: opendatahub)"]
         direction TB
 
-        NBCtrl["notebook-controller<br/>SA: notebook-controller-service-account<br/>Metrics: 8080/TCP HTTP<br/>Health: 8081/TCP HTTP"]
+        NC["notebook-controller<br/>SA: notebook-controller-service-account<br/>8080/TCP metrics, 8081/TCP health"]
 
-        ODHCtrl["odh-notebook-controller<br/>SA: odh-notebook-controller-manager<br/>Metrics: 8080/TCP HTTP<br/>Health: 8081/TCP HTTP<br/>Webhook: 8443/TCP HTTPS"]
+        ODHCtrl["odh-notebook-controller<br/>SA: odh-notebook-controller-manager<br/>8080/TCP metrics, 8081/TCP health<br/>8443/TCP webhook HTTPS"]
+
+        subgraph Webhooks["Webhook Services"]
+            MutWH["Mutating Webhook<br/>/mutate-notebook-v1<br/>443→8443/TCP HTTPS<br/>fail-closed"]
+            ValWH["Validating Webhook<br/>/validate-notebook-v1<br/>443→8443/TCP HTTPS<br/>fail-closed"]
+        end
     end
 
-    subgraph PlatformSvcs["PLATFORM SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: ServiceAccount tokens"]
+    subgraph Workload["WORKLOAD (Notebook Pod - StatefulSet)"]
+        Jupyter["Jupyter Server<br/>Namespace: {user-namespace}<br/>SA: {notebook-name}<br/>8888/TCP HTTP<br/>Image: from ImageStream"]
+    end
 
-        ImageReg["OpenShift Image Registry<br/>5000/TCP HTTPS<br/>TLS<br/>Auth: ServiceAccount token"]
+    subgraph PlatformServices["PLATFORM SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+        ServiceCA["OpenShift service-ca-operator<br/>Auto-generates TLS certs"]
+        ImageStreams["OpenShift ImageStreams<br/>443/TCP HTTPS"]
+        DSPA["DSPA API<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+    end
 
-        ServingCert["serving-cert-controller<br/>Annotation-triggered<br/>Auto-generates & rotates TLS certs"]
-
-        DSPA["DSPA API Server<br/>HTTPS, TLS<br/>Auth: ServiceAccount token<br/>(optional)"]
-
-        Prometheus["Prometheus<br/>Scrapes 8080/TCP HTTP"]
+    subgraph IntegrationServices["INTEGRATION SERVICES"]
+        MLflow["MLflow Operator<br/>ClusterRole reference"]
+        Feast["Feast Feature Store<br/>ConfigMap mount"]
     end
 
     %% External → Ingress
     User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Gateway
 
-    %% Ingress → Auth Proxy
-    Gateway -->|"HTTPS/8443<br/>TLS (serving cert)<br/>Bearer token forwarded"| KRBP
+    %% Ingress → Auth (with auth)
+    Gateway -->|"HTTPS/8443<br/>TLS serving cert<br/>Bearer Token fwd"| RBACProxy
 
-    %% Auth Proxy → K8s API (auth check)
-    KRBP -->|"HTTPS/6443<br/>TLS 1.2+<br/>TokenReview + SAR"| K8sAPI
+    %% Auth → K8s API (SubjectAccessReview)
+    RBACProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>SubjectAccessReview"| K8sAPI
 
-    %% Auth Proxy → Jupyter (proxied request)
-    KRBP -->|"HTTP/8888<br/>No encryption (localhost)<br/>X-Auth-Request-User header"| Jupyter
+    %% Auth → Jupyter (after auth passes)
+    RBACProxy -->|"HTTP/8888<br/>None (localhost)<br/>X-Auth-Request-User"| Jupyter
 
     %% Controllers → K8s API
-    NBCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token<br/>StatefulSet/Service CRUD"| K8sAPI
-    ODHCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token<br/>HTTPRoute/NetworkPolicy/RBAC CRUD"| K8sAPI
+    NC -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>CRUD: StatefulSets, Services"| K8sAPI
+    ODHCtrl -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>CRUD: HTTPRoutes, RBAC, Secrets"| K8sAPI
 
-    %% Culling → Jupyter
-    NBCtrl -->|"HTTP/8888<br/>No encryption<br/>No auth<br/>/api/kernels, /api/terminals"| Jupyter
+    %% Idle culling
+    NC -->|"HTTP/8888<br/>No encryption<br/>No auth<br/>/api/kernels, /api/terminals"| Jupyter
 
-    %% ODH → Image Registry
-    ODHCtrl -->|"HTTPS/5000<br/>TLS<br/>SA token<br/>ImageStream resolution"| ImageReg
+    %% ODH → Platform
+    ODHCtrl -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| DSPA
+    ODHCtrl -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| ImageStreams
 
-    %% ODH → DSPA
-    ODHCtrl -.->|"HTTPS<br/>TLS<br/>SA token<br/>Elyra config"| DSPA
+    %% K8s API → Webhooks
+    K8sAPI -->|"HTTPS/443→8443<br/>TLS serving cert<br/>API server auth"| MutWH
+    K8sAPI -->|"HTTPS/443→8443<br/>TLS serving cert<br/>API server auth"| ValWH
 
-    %% serving-cert → secrets
-    ServingCert -.->|"auto-generates<br/>kube-rbac-proxy-tls<br/>webhook-cert"| KRBP
-    ServingCert -.->|"auto-generates<br/>webhook-cert"| ODHCtrl
+    %% Cert provisioning
+    ServiceCA -.->|"auto-generates"| RBACProxy
+    ServiceCA -.->|"auto-generates"| ODHCtrl
 
-    %% Prometheus scraping
-    Prometheus -.->|"HTTP/8080<br/>No auth"| NBCtrl
-    Prometheus -.->|"HTTP/8080<br/>No auth"| ODHCtrl
+    %% Integration references
+    ODHCtrl -.->|"ClusterRole ref"| MLflow
+    ODHCtrl -.->|"ConfigMap mount"| Feast
 
     %% Styling
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px,color:#333
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px,color:#333
-    classDef authproxy fill:#f8cecc,stroke:#b85450,stroke-width:2px,color:#333
-    classDef workload fill:#e1d5e7,stroke:#9673a6,stroke-width:2px,color:#333
-    classDef controller fill:#d5e8d4,stroke:#82b366,stroke-width:2px,color:#333
-    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px,color:#333
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef auth fill:#ffcccc,stroke:#cc0000,stroke-width:2px
+    classDef controller fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef workload fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef integration fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef webhook fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class User external
     class Gateway ingress
-    class KRBP authproxy
+    class RBACProxy auth
+    class NC,ODHCtrl controller
+    class MutWH,ValWH webhook
     class Jupyter workload
-    class NBCtrl,ODHCtrl controller
-    class K8sAPI,ImageReg,ServingCert,DSPA,Prometheus platform
+    class K8sAPI,ServiceCA,ImageStreams,DSPA platform
+    class MLflow,Feast integration

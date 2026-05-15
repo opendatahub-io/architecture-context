@@ -1,240 +1,245 @@
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                        │
-│                                                                              │
-│  [External Client / User]                                                    │
-│         │                                                                    │
-│         │ Port: 443/TCP                                                      │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS 1.2+ (Terminate at Gateway)                        │
-│         │ Auth: Bearer sk-oai-* (API key) OR OpenShift token OR OIDC JWT     │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (Gateway API - DMZ)                                                 │
-│                                                                              │
-│  [maas-default-gateway]                                                      │
-│  - Type: Gateway (GatewayClass: openshift-default)                           │
-│  - Host: maas.${CLUSTER_DOMAIN}                                              │
-│  - Port: 80/TCP (HTTP), 443/TCP (HTTPS)                                      │
-│  - TLS Termination: TLS 1.2+ (Terminate mode)                               │
-│  - Default Auth: gateway-default-auth (deny unconfigured paths → 401/403)    │
-│  - Default Rate: gateway-default-deny (0 tokens/min for unconfigured paths)  │
-│         │                                                                    │
-│         ├────── Port: 9004/TCP ──────────────────────────────────────┐        │
-│         │       Protocol: gRPC/HTTP2                                 │        │
-│         │       Encryption: TLS (SIMPLE, insecureSkipVerify)         │        │
-│         │       Auth: None (mesh-internal)                           │        │
-│         │       Purpose: Envoy ext-proc filter                       │        │
-│         │                                                            ▼        │
-│         │       [payload-processing (BBR ext-proc)]                          │
-│         │       - Namespace: openshift-ingress                               │
-│         │       - ServiceAccount: payload-processing                         │
-│         │       - Port: 9004/TCP (gRPC), 9005/TCP (metrics)                  │
-│         │       - Plugins: model-to-header, provider-resolver,               │
-│         │         api-translation, apikey-injection                           │
-│         │       - Reads: ConfigMaps, Secrets, ExternalModel CRs              │
-│         │                                                                    │
-│         ├────── Authorino Auth Check ────────────────────────────────┐        │
-│         │       Auth mechanisms (per AuthPolicy):                    │        │
-│         │       1. API key: callback to maas-api                    │        │
-│         │       2. kubernetesTokenReview: K8s API 443/TCP            │        │
-│         │       3. OIDC JWT: issuer validation                       │        │
-│         │       Authorization: OPA (group + subscription check)      │        │
-│         │                                                            ▼        │
-│         │       [Authorino (via Kuadrant)]                                   │
-│         │       - Caches: metadata=${METADATA_CACHE_TTL}s,                   │
-│         │         authz=${AUTHZ_CACHE_TTL}s                                  │
-│         │              │                                                     │
-│         │              │ Port: 8443/TCP                                       │
-│         │              │ Protocol: HTTPS                                      │
-│         │              │ Encryption: TLS 1.2+                                 │
-│         │              │ Auth: None (NetworkPolicy restricted)                │
-│         │              ▼                                                     │
-│         │       [maas-api /internal/v1/*]                                    │
-│         │       - /internal/v1/api-keys/validate (API key validation)        │
-│         │       - /internal/v1/subscriptions/select (subscription resolve)   │
-│         │                                                                    │
-│         ├────── Limitador Rate Check ────────────────────────────────┐        │
-│         │       Per-model token rate limits                          │        │
-│         │       Counter key: auth.identity.userid                    │        │
-│         │                                                            ▼        │
-│         │       [Limitador (via Kuadrant)]                                   │
-│         │       - TokenRateLimitPolicy per model per subscription            │
-│         │                                                                    │
-│         ├────── Model Routing ───────────────────────────────────────┐        │
-│         │       HTTPRoute per model (path + header match)            │        │
-│         │       Path: /{namespace}/{model}/v1/*                      │        │
-│         │       Header: X-Gateway-Model-Name                         │        │
-│         │                                                            │        │
-│         │       ┌─ Internal Model ──────────────────────┐            │        │
-│         │       │  Port: varies                          │            │        │
-│         │       │  Protocol: HTTPS                       │            │        │
-│         │       │  Encryption: TLS                       │            │        │
-│         │       │  Auth: Bearer token (stripped by BBR)   │            │        │
-│         │       │  ▼                                     │            │        │
-│         │       │  [KServe InferenceService]              │            │        │
-│         │       └────────────────────────────────────────┘            │        │
-│         │                                                            │        │
-│         │       ┌─ External Model ──────────────────────┐            │        │
-│         │       │  Port: 443/TCP                         │            │        │
-│         │       │  Protocol: HTTPS                       │            │        │
-│         │       │  Encryption: TLS SIMPLE (DestinationRule)│           │        │
-│         │       │  Auth: Provider API key (injected by BBR)│           │        │
-│         │       │  Routing: Istio ServiceEntry + ExternalName│         │        │
-│         │       │  ▼                                     │            │        │
-│         │       │  [External LLM Provider]               │            │        │
-│         │       │  (api.openai.com, etc.)                 │            │        │
-│         │       └────────────────────────────────────────┘            │        │
-│         │                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  PLATFORM SERVICES (opendatahub namespace)                                   │
-│                                                                              │
-│  [maas-api]                                                                  │
-│  - Namespace: opendatahub                                                    │
-│  - ServiceAccount: maas-api                                                  │
-│  - Port: 8080/TCP (HTTP) or 8443/TCP (HTTPS with TLS overlay)                │
-│  - TLS: OpenShift service-ca provisioned cert (maas-api-serving-cert)        │
-│  - External endpoints: /v1/models, /v1/api-keys/*, /v1/subscriptions         │
-│  - Internal endpoints: /internal/v1/* (NetworkPolicy restricted)             │
-│         │                                                                    │
-│         │ Port: 5432/TCP                                                     │
-│         │ Protocol: PostgreSQL                                               │
-│         │ Encryption: Depends on deployment                                  │
-│         │ Auth: DB credentials (maas-db-config Secret)                       │
-│         ▼                                                                    │
-│  [PostgreSQL]                                                                │
-│  - Purpose: API key storage and management                                   │
-│  - Secret: maas-db-config (DB_CONNECTION_URL)                                │
-│                                                                              │
-│  [maas-controller]                                                           │
-│  - Namespace: opendatahub                                                    │
-│  - ServiceAccount: maas-controller-manager                                   │
-│  - Port: 8080/TCP (metrics), 8081/TCP (health probes)                        │
-│  - No external exposure                                                      │
-│         │                                                                    │
-│         │ Port: 443/TCP                                                      │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS                                                    │
-│         │ Auth: ServiceAccount token                                         │
-│         ▼                                                                    │
-│  [Kubernetes API Server]                                                     │
-│  - CRD CRUD (5 MaaS CRDs + Kuadrant + Istio + Gateway API)                  │
-│  - RBAC, leader election, informers                                          │
-│  - TokenReview, SubjectAccessReview                                          │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  MONITORING (Internal)                                                       │
-│                                                                              │
-│  [Prometheus]                                                                │
-│  - Scrapes maas-controller: 8080/TCP (PodMonitor)                            │
-│  - Scrapes payload-processing: 9005/TCP (ServiceMonitor)                     │
-│  - Scrapes istio-gateway: 15090/TCP (ServiceMonitor)                         │
-│  - Scrapes Authorino: ServiceMonitor                                         │
-│  - Scrapes Limitador: ServiceMonitor                                         │
-│  - Protocol: HTTP                                                            │
-│  - Encryption: None                                                          │
-│  - Auth: None                                                                │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES                                                           │
-│                                                                              │
-│  [External LLM Providers - e.g., api.openai.com]                             │
-│  - Purpose: Third-party model inference                                      │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS (SIMPLE via Istio DestinationRule)                        │
-│  - Auth: Provider API key (from ExternalModel credentialRef Secret)           │
-│  - Routing: Istio ServiceEntry → ExternalName Service                        │
-│                                                                              │
-│  [OpenShift Authentication]                                                  │
-│  - Purpose: Cluster service account issuer URL discovery                     │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Auth: ServiceAccount token                                                │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                            │
+│                                                                                  │
+│  [External Client]                                                               │
+│         │                                                                        │
+│         │ Port: 443/TCP                                                          │
+│         │ Protocol: HTTPS                                                        │
+│         │ Encryption: TLS 1.3 (Gateway terminates)                               │
+│         │ Auth: Bearer sk-oai-* (API key) OR K8s Token OR OIDC JWT               │
+│         ▼                                                                        │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway API - DMZ)                                                     │
+│                                                                                  │
+│  [MaaS Default Gateway - maas.${CLUSTER_DOMAIN}]                                 │
+│  - Ports: 80/TCP (HTTP → redirect), 443/TCP (HTTPS)                             │
+│  - TLS Mode: Terminate                                                           │
+│  - GatewayClass: openshift-default                                               │
+│  - Namespace: openshift-ingress                                                  │
+│  - Default Deny: AuthPolicy (401) + TokenRateLimitPolicy (0 tokens/1m)          │
+│         │                                                                        │
+│         ├─── Kuadrant Wasm Plugin (in-process)                                   │
+│         │    - Auth evaluation → Authorino gRPC                                  │
+│         │    - Rate limit evaluation → Limitador gRPC                            │
+│         │                                                                        │
+│         ├─── EnvoyFilter: ext_proc → payload-processing                          │
+│         │    Port: 9004/TCP                                                      │
+│         │    Protocol: gRPC (HTTP/2)                                             │
+│         │    Encryption: TLS SIMPLE (DestinationRule)                             │
+│         │    failure_mode_allow: false (fail-closed)                              │
+│         │                                                                        │
+│         │ Per-model HTTPRoutes (dynamically created by controllers)               │
+│         │ Per-model AuthPolicy (aggregated from MaaSAuthPolicy CRs)              │
+│         │ Per-model TokenRateLimitPolicy (aggregated from MaaSSubscription CRs)  │
+│         ▼                                                                        │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│  KUADRANT AUTH PLANE                                                             │
+│                                                                                  │
+│  [Authorino]                                                                     │
+│  - Port: 50051/TCP (gRPC)                                                       │
+│  - Encryption: mTLS                                                              │
+│  - Auth mechanisms:                                                               │
+│    1. API key validation via HTTP callback → maas-api                            │
+│    2. K8s TokenReview (native)                                                   │
+│    3. External OIDC JWT validation (configurable issuer)                         │
+│         │                                                                        │
+│         │ Port: 8080/TCP or 8443/TCP                                             │
+│         │ Protocol: HTTP or HTTPS                                                │
+│         │ Encryption: Optional TLS 1.2+ (via TLS overlay DestinationRule)        │
+│         │ Auth: NetworkPolicy (pod-to-pod only)                                  │
+│         ▼                                                                        │
+│  [Limitador]                                                                     │
+│  - Token-level rate limiting per model per subscription                          │
+│  - Configured via Kuadrant TokenRateLimitPolicy CRDs                            │
+│                                                                                  │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION PLANE (Cluster-Internal)                                            │
+│                                                                                  │
+│  Namespace: opendatahub (or configured app-namespace)                            │
+│                                                                                  │
+│  [maas-api]                                                                      │
+│  - ServiceAccount: maas-api                                                      │
+│  - Service: ClusterIP                                                            │
+│  - Ports:                                                                        │
+│    - 8080/TCP (HTTP API, cluster-internal)                                       │
+│    - 9090/TCP (Prometheus metrics, cluster-internal)                             │
+│  - Encryption: None (or TLS 1.2+ with TLS overlay)                              │
+│  - Auth: Bearer (via Authorino enforcement) for external routes                  │
+│  - Auth: NetworkPolicy for /internal/v1/* endpoints                              │
+│  - NetworkPolicies:                                                               │
+│    - maas-authorino-allow: Authorino → maas-api /internal/v1/api-keys/validate   │
+│    - maas-api-cleanup-restrict: CronJob → /internal/v1/api-keys/cleanup          │
+│    - monitoring: openshift-monitoring → :9090                                    │
+│         │                                                                        │
+│         │ Port: 5432/TCP                                                         │
+│         │ Protocol: PostgreSQL wire                                              │
+│         │ Encryption: TLS (configurable via connection URL)                       │
+│         │ Auth: Connection URL from Secret (maas-db-config)                       │
+│         ▼                                                                        │
+│  [maas-controller]                                                               │
+│  - Namespace: opendatahub                                                        │
+│  - ServiceAccount: maas-controller                                               │
+│  - Port: 8080/TCP (metrics only)                                                │
+│  - Encryption: None (cluster-internal metrics)                                   │
+│         │                                                                        │
+│         │ Port: 443/TCP                                                          │
+│         │ Protocol: HTTPS                                                        │
+│         │ Encryption: TLS 1.2+                                                   │
+│         │ Auth: ServiceAccount token                                              │
+│         ▼                                                                        │
+│                                                                                  │
+│  Namespace: openshift-ingress                                                    │
+│                                                                                  │
+│  [payload-processing (BBR ext_proc)]                                             │
+│  - ServiceAccount: payload-processing                                            │
+│  - Service: ClusterIP                                                            │
+│  - Port: 9004/TCP (gRPC), 9005/TCP (metrics)                                    │
+│  - Encryption: TLS SIMPLE (DestinationRule)                                      │
+│  - Auth: None (cluster-internal, Envoy-initiated only)                           │
+│  - Plugin pipeline:                                                               │
+│    1. body-field-to-header (extract model name)                                  │
+│    2. model-provider-resolver (resolve external endpoints)                       │
+│    3. api-translation (format conversion)                                        │
+│    4. apikey-injection (credential injection from Secrets)                        │
+│         │                                                                        │
+│         │ Port: 443/TCP                                                          │
+│         │ Protocol: HTTPS                                                        │
+│         │ Encryption: TLS 1.2+                                                   │
+│         │ Auth: ServiceAccount token (read Secrets, ConfigMaps, ExternalModels)   │
+│         ▼                                                                        │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                        │
+│                                                                                  │
+│  [Kubernetes API Server]                                                         │
+│  - Port: 443/TCP                                                                │
+│  - Protocol: HTTPS                                                               │
+│  - Encryption: TLS 1.2+                                                          │
+│  - Auth: ServiceAccount tokens (automounted)                                     │
+│  - Used by:                                                                       │
+│    - maas-controller: CR reconciliation, SSA, policy creation                    │
+│    - maas-api: Informer cache (MaaSModelRef, MaaSSubscription),                  │
+│      TokenReview, SubjectAccessReview                                            │
+│    - payload-processing: Secret/ConfigMap reads                                  │
+│                                                                                  │
+│  [OpenShift Authentication API]                                                  │
+│  - Port: 443/TCP                                                                │
+│  - Protocol: HTTPS                                                               │
+│  - Encryption: TLS 1.2+                                                          │
+│  - Auth: None (public OIDC discovery)                                            │
+│  - Purpose: OIDC issuer URL discovery for external auth config                   │
+│                                                                                  │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                               │
+│                                                                                  │
+│  [PostgreSQL]                                                                    │
+│  - Port: 5432/TCP                                                               │
+│  - Protocol: PostgreSQL wire                                                     │
+│  - Encryption: TLS (configurable)                                                │
+│  - Auth: Connection URL (DB_CONNECTION_URL from Secret maas-db-config)           │
+│  - Purpose: API key storage (SHA-256 hashed), migration management               │
+│                                                                                  │
+│  [KServe InferenceServices]                                                      │
+│  - Port: 443/TCP                                                                │
+│  - Protocol: HTTPS                                                               │
+│  - Encryption: TLS 1.2+                                                          │
+│  - Auth: ServiceAccount token                                                    │
+│  - Purpose: Model readiness probes (/v1/models), inference backends              │
+│                                                                                  │
+│  [External Model Providers (OpenAI, Anthropic, etc.)]                            │
+│  - Port: 443/TCP                                                                │
+│  - Protocol: HTTPS                                                               │
+│  - Encryption: TLS 1.2+                                                          │
+│  - Auth: API key (from ExternalModel credentialRef Secret,                       │
+│          injected by payload-processing apikey-injection plugin)                  │
+│  - Purpose: Inference requests for ExternalModel backends                        │
+│  - Routing: Via Istio ServiceEntry + ExternalName Service                        │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
 
-  ClusterRole: maas-controller-manager
-  - maas.opendatahub.io: tenants, maasmodelrefs, maasauthpolicies, maassubscriptions, externalmodels
-    → get, list, watch, create, update, patch, delete (+ status + finalizers)
-  - gateway.networking.k8s.io: gateways → get, list, watch
-  - gateway.networking.k8s.io: httproutes → create, delete, get, list, patch, update, watch
-  - kuadrant.io: authpolicies, tokenratelimitpolicies, ratelimitpolicies → CRUD
-  - extensions.kuadrant.io: telemetrypolicies → get, list, watch, create, patch, delete
-  - networking.istio.io: serviceentries, destinationrules, envoyfilters → CRUD
-  - telemetry.istio.io: telemetries → get, list, watch, create, patch, delete
-  - config.openshift.io: authentications → get, list, watch
-  - core: secrets (maas-db-config) → get
-  - core: namespaces, serviceaccounts, services, configmaps → CRUD
-  - apps: deployments → CRUD
-  - batch: cronjobs → CRUD
-  - rbac: clusterroles, clusterrolebindings → CRUD
-  - authentication.k8s.io: tokenreviews → create
-  - authorization.k8s.io: subjectaccessreviews → create
-  - perses.dev: persesdashboards, persesdatasources → CRUD
-
+Service Account: maas-api (namespace: opendatahub)
   ClusterRole: maas-api
-  - core: secrets (maas-db-config) → get
-  - core: namespaces → get, list, watch, create
-  - core: serviceaccounts → get, list, watch, create, delete
-  - core: pods, services, endpoints → get, list, watch
-  - authentication.k8s.io: tokenreviews → create
-  - authorization.k8s.io: subjectaccessreviews → create
-  - maas.opendatahub.io: maasmodelrefs, maassubscriptions → get, list, watch
-  - gateway.networking.k8s.io: httproutes → get, list, watch
+    - core: secrets (maas-db-config) → get
+    - core: namespaces → get, list, watch, create
+    - core: serviceaccounts → get, list, watch, create, delete
+    - core: serviceaccounts/token → create
+    - authentication.k8s.io: tokenreviews → create
+    - authorization.k8s.io: subjectaccessreviews → create
+    - maas.opendatahub.io: maasmodelrefs, maassubscriptions → get, list, watch
+    - gateway.networking.k8s.io: httproutes → get, list, watch
+    - core: pods, services, endpoints → get, list, watch
 
+Service Account: maas-controller (namespace: opendatahub)
+  ClusterRole: maas-controller-role
+    - core: configmaps, serviceaccounts → create, delete, get, list, patch, watch
+    - core: endpoints, pods, secrets → get, list, watch
+    - core: events → create, patch
+    - core: namespaces → create, get, list, watch
+    - core: services → full CRUD + watch
+    - apiextensions.k8s.io: customresourcedefinitions → get, list, watch
+    - apps: deployments → full CRUD + watch
+    - batch: cronjobs → create, delete, get, list, patch, watch
+    - config.openshift.io: authentications → get, list, watch
+    - extensions.kuadrant.io: telemetrypolicies → create, delete, get, list, patch, watch
+    - gateway.networking.k8s.io: gateways → get, list, watch
+    - gateway.networking.k8s.io: httproutes → full CRUD + watch
+    - kuadrant.io: authpolicies, tokenratelimitpolicies → full CRUD + watch
+    - kuadrant.io: ratelimitpolicies → full CRUD + watch
+    - maas.opendatahub.io: all MaaS CRDs → full CRUD + watch
+    - monitoring.coreos.com: podmonitors → create, delete, get, list, patch, watch
+    - networking.istio.io: destinationrules, envoyfilters, serviceentries → full CRUD + watch
+    - networking.k8s.io: networkpolicies → create, delete, get, list, patch, watch
+    - operator.authorino.kuadrant.io: authorinos → get, list, watch
+    - perses.dev: persesdashboards, persesdatasources → create, delete, get, list, patch, watch
+    - rbac.authorization.k8s.io: clusterroles, clusterrolebindings → full CRUD + watch
+    - serving.kserve.io: llminferenceservices → get, list, watch
+    - telemetry.istio.io: telemetries → create, delete, get, list, patch, watch
+
+Service Account: payload-processing (namespace: openshift-ingress)
   ClusterRole: payload-processing-reader
-  - core: configmaps, secrets → get, list, watch
-  - maas.opendatahub.io: externalmodels → get, list, watch
+    - core: configmaps → get, list, watch
+    - core: secrets → get, list, watch
+    - maas.opendatahub.io: externalmodels → get, list, watch
 
-  ClusterRole: maas-controller-owner (aggregate)
-  - maas.opendatahub.io: maasmodelrefs, externalmodels → CRUD
+Security Policies:
 
-  ClusterRole: maas-controller-viewer (aggregate)
-  - maas.opendatahub.io: maasmodelrefs, externalmodels → get, list, watch
+  Gateway Default Deny:
+    - AuthPolicy: gateway-default-auth → rejects all requests to ungoverned model paths (401)
+    - TokenRateLimitPolicy: gateway-default-deny → 0 tokens/1m for model paths (defense-in-depth)
 
-Authentication & Authorization:
+  Per-Model Policies (dynamically created):
+    - AuthPolicy: CEL expressions extract identity from 3 auth sources
+      (API key, K8s token, OIDC JWT) into unified user/group/subscription tuple
+    - TokenRateLimitPolicy: per-subscription token rate limits
+    - Authorization header stripped after auth (prevents credential exfiltration)
 
-  Layer 1 - Authorino (AuthPolicy per model HTTPRoute):
-  - API key: sk-oai-{key_id}_{secret} → HTTP callback to maas-api /internal/v1/api-keys/validate
-  - Kubernetes token: kubernetesTokenReview → K8s API TokenReview
-  - OIDC JWT: issuer validation with cluster-audience
-  - Authorization: OPA policy checking group membership + subscription validity
+  NetworkPolicies:
+    - maas-authorino-allow: Authorino pods → maas-api /internal/v1/*
+    - maas-api-cleanup-restrict: CronJob pods → maas-api /internal/v1/api-keys/cleanup
+    - monitoring: openshift-monitoring namespace → maas-api :9090
 
-  Layer 2 - Limitador (TokenRateLimitPolicy per model):
-  - Token-based rate limits per user (auth.identity.userid)
-  - Rates aggregated from MaaSSubscription CRs
-  - Priority-based subscription selection
-
-  Layer 3 - BBR ext-proc (Security controls):
-  - Strips original Authorization header before model backends
-  - Injects model-specific credentials from Kubernetes Secrets
-  - Prevents credential exfiltration to untrusted models
-
-  Default Gateway Policies (fail-closed):
-  - gateway-default-auth: 401/403 for unconfigured paths
-  - gateway-default-deny: 0 tokens/min rate limit for unconfigured paths
+  Conflict Detection:
+    - Monitors for non-MaaS AuthPolicies targeting MaaS-managed HTTPRoutes
+    - Emits events and degrades MaaSAuthPolicy status on conflicts
 
 Secrets:
 
-  | Secret Name                     | Type             | Purpose                                     | Provisioned By           | Auto-Rotate |
-  |--------------------------------|------------------|---------------------------------------------|--------------------------|-------------|
-  | maas-db-config                  | Opaque           | PostgreSQL connection URL (DB_CONNECTION_URL)| Manual (admin)           | No          |
-  | maas-api-serving-cert           | kubernetes.io/tls| TLS cert for maas-api HTTPS                 | OpenShift service-ca     | Yes         |
-  | ExternalModel credentialRef     | Opaque           | Provider API key (key: api-key)             | Manual (per-model)       | No          |
-  | Gateway TLS cert (${CERT_NAME})| kubernetes.io/tls | TLS cert for Gateway listener               | Manual or cert-manager   | Depends     |
-
-Network Policies:
-
-  - maas-api internal endpoints (/internal/v1/*): NetworkPolicy restricts access to Authorino namespace only
-  - CronJob cleanup endpoint: NetworkPolicy restricts to same namespace
-  - Monitoring: NetworkPolicy allows Prometheus scrape on metrics ports
+  | Secret Name              | Type             | Purpose                              | Rotation   |
+  |--------------------------|------------------|--------------------------------------|------------|
+  | maas-db-config           | Opaque           | PostgreSQL connection URL             | Manual     |
+  | Gateway TLS cert         | kubernetes.io/tls| Gateway HTTPS termination             | Depends    |
+  | Authorino TLS            | kubernetes.io/tls| mTLS between Authorino ↔ maas-api     | Auto       |
+  | ExternalModel credential | Opaque           | Backend API keys (per provider)       | Manual     |
 
 FIPS Compliance:
 
-  - Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, dynamic linking
-  - Runtime: UBI9 base with OpenSSL, stdlib crypto/tls + crypto/sha256 via OpenSSL
-  - TLS: Configurable MinVersion (default TLS 1.2), supports TLS 1.2 and 1.3
-  - Risk: InsecureSkipVerify=true for cluster-internal model probing (acceptable for internal traffic)
-  - No MD5/RC4/DES usage detected
+  Build-time:
+    - GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1 (dynamic linking)
+    - UBI9 base images (OpenSSL included)
+
+  Application-level:
+    - TLS: configurable MinVersion (1.2 or 1.3)
+    - Crypto: stdlib crypto/tls (FIPS via OpenSSL with strictfipsruntime)
+    - API keys: SHA-256 hashing (FIPS-approved)
+    - Known risk: InsecureSkipVerify: true on cluster-internal model discovery HTTP client

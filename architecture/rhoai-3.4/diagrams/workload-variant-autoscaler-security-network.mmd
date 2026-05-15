@@ -1,72 +1,73 @@
 graph TB
-    subgraph Cluster["CLUSTER INTERNAL (Kubernetes Network)"]
+    subgraph External["EXTERNAL SERVICES"]
+        direction TB
+        Prometheus["Prometheus / Thanos Querier<br/>thanos-querier.openshift-monitoring.svc<br/>9091/TCP HTTPS<br/>TLS 1.2+"]
+        EPP["EPP Pods<br/>(Gateway API Inference Extension)<br/>configurable/TCP HTTPS<br/>TLS"]
+    end
+
+    subgraph Cluster["CLUSTER INTERNAL"]
         direction TB
 
-        subgraph WVA_NS["Namespace: workload-variant-autoscaler-system"]
-            WVA["WVA Controller Manager<br/>SA: controller-manager<br/>Image: llm-d-workload-variant-autoscaler:v0.6.0<br/>FIPS: strictfipsruntime + OpenSSL"]
+        subgraph WVANamespace["Namespace: workload-variant-autoscaler-system"]
+            direction TB
+            WVA["WVA Controller Manager<br/>SA: controller-manager<br/>Image: llm-d-workload-variant-autoscaler:v0.6.0<br/>FIPS: strictfipsruntime + UBI9"]
 
             subgraph Ports["Exposed Ports"]
-                MetricsPort["8443/TCP HTTPS<br/>Prometheus Metrics<br/>TLS (cert-managed)<br/>Auth: Bearer Token<br/>(TokenReview + SAR)"]
-                HealthPort["8081/TCP HTTP<br/>Health Probes<br/>No Encryption<br/>No Auth"]
+                Metrics["8443/TCP HTTPS<br/>/metrics<br/>TLS (self-signed/cert-manager)<br/>Auth: Bearer Token<br/>(TokenReview + SubjectAccessReview)"]
+                Health["8081/TCP HTTP<br/>/healthz, /readyz<br/>No encryption<br/>No auth"]
             end
 
-            MetricsService["Service: controller-manager-metrics-service<br/>ClusterIP 8443/TCP → 8443/TCP<br/>HTTPS + Bearer Token"]
+            MetricsSvc["controller-manager-metrics-service<br/>ClusterIP"]
+            NetPol["NetworkPolicy:<br/>allow-metrics-traffic<br/>(restricts to Prometheus)"]
         end
 
-        subgraph Monitoring["Namespace: openshift-monitoring"]
-            Prometheus["Prometheus / Thanos Querier<br/>9091/TCP HTTPS<br/>TLS 1.2+"]
+        subgraph MonitoringNS["Namespace: openshift-monitoring"]
+            PromScraper["Prometheus Scraper<br/>(cluster-monitoring)"]
         end
 
         subgraph UserNS["Namespace: {user-namespaces}"]
-            vLLM["vLLM Inference Servers<br/>(metrics source via Prometheus)"]
-            EPP["EPP Pods (Endpoint Picker)<br/>varies/TCP HTTPS<br/>TLS"]
-            ScaleTargets["Scale Targets<br/>Deployments / StatefulSets / LWS"]
+            Deployments["Deployments / StatefulSets<br/>(vLLM model servers)"]
+            LWSNS["LeaderWorkerSets"]
         end
 
-        subgraph ControlPlane["Control Plane"]
-            K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+"]
-        end
-
-        subgraph Consumers["Metrics Consumers"]
-            HPA["HPA / KEDA<br/>(reads wva_desired_replicas)"]
-            PromAdapter["Prometheus Adapter<br/>(custom metrics API bridge)"]
-        end
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS<br/>SA token"]
     end
 
-    %% WVA Egress flows
-    WVA -->|"PromQL Queries<br/>9091/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Bearer Token (SA) +<br/>optional mTLS (client cert)"| Prometheus
-    WVA -->|"Watch/Update CRs<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Bearer Token (SA)"| K8sAPI
-    WVA -->|"Scrape Flow Metrics<br/>HTTPS<br/>TLS<br/>Auth: Bearer Token<br/>(epp-metrics-token)"| EPP
+    %% Ingress flows
+    PromScraper -->|"HTTPS/8443<br/>TLS<br/>Bearer Token<br/>(TokenReview + SAR)"| MetricsSvc
+    MetricsSvc --> Metrics
 
-    %% Prometheus scrapes vLLM
-    Prometheus -->|"Scrape vLLM metrics"| vLLM
+    %% Egress flows
+    WVA -->|"HTTPS/9091<br/>TLS 1.2+<br/>Bearer Token (SA token)<br/>PromQL queries"| Prometheus
+    WVA -->|"HTTPS/configurable<br/>TLS<br/>Bearer Token (epp-metrics-token)<br/>Queue metrics scraping"| EPP
+    WVA -->|"HTTPS/443<br/>TLS<br/>SA token<br/>CRUD: VA, Deployments,<br/>ConfigMaps, LWS, Nodes"| K8sAPI
 
-    %% Prometheus scrapes WVA
-    Prometheus -->|"Scrape /metrics<br/>8443/TCP HTTPS<br/>TLS<br/>Auth: Bearer Token<br/>via ServiceMonitor"| MetricsService
+    %% Scale targets
+    K8sAPI -.->|"scale subresource"| Deployments
+    K8sAPI -.->|"scale subresource"| LWSNS
 
-    %% HPA/KEDA reads from Prometheus
-    HPA -->|"Query wva_desired_replicas<br/>via Prometheus"| Prometheus
-    PromAdapter -->|"Bridge metrics<br/>to custom metrics API"| Prometheus
+    %% Secrets
+    subgraph Secrets["Secrets (mounted volumes)"]
+        SAToken["SA token<br/>/var/run/secrets/kubernetes.io/<br/>serviceaccount/token"]
+        EPPToken["epp-metrics-token<br/>/var/run/secrets/epp-metrics/token"]
+        PromCert["prometheus-client-cert<br/>(optional mTLS)"]
+    end
 
-    %% HPA scales targets
-    HPA -->|"Scale subresource<br/>443/TCP HTTPS"| ScaleTargets
+    Secrets -.->|"mounted in"| WVA
 
     %% Styling
-    classDef wvaNode fill:#4a90e2,stroke:#2c5f8a,color:#fff,stroke-width:2px
-    classDef serviceNode fill:#5dade2,stroke:#2e86c1,color:#fff
-    classDef portNode fill:#85c1e9,stroke:#2e86c1,color:#000
-    classDef external fill:#e8e8e8,stroke:#999,stroke-width:2px
-    classDef monitoring fill:#f39c12,stroke:#d68910,color:#fff
-    classDef consumer fill:#7ed321,stroke:#5ba318,color:#fff
-    classDef target fill:#e1d5e7,stroke:#9673a6,color:#000
-    classDef epp fill:#e74c3c,stroke:#c0392b,color:#fff
+    classDef wva fill:#4a90e2,stroke:#333,stroke-width:3px,color:#fff
+    classDef service fill:#6baed6,stroke:#333,color:#fff
+    classDef external fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef k8s fill:#e8e8e8,stroke:#333
+    classDef netpol fill:#ffcccc,stroke:#cc0000
+    classDef secret fill:#f0e6ff,stroke:#9966cc
+    classDef workload fill:#d5e8d4,stroke:#82b366
 
-    class WVA wvaNode
-    class MetricsService serviceNode
-    class MetricsPort,HealthPort portNode
-    class K8sAPI external
-    class Prometheus monitoring
-    class vLLM monitoring
-    class HPA,PromAdapter consumer
-    class ScaleTargets target
-    class EPP epp
+    class WVA wva
+    class MetricsSvc,Metrics,Health service
+    class Prometheus,EPP external
+    class K8sAPI,PromScraper k8s
+    class NetPol netpol
+    class SAToken,EPPToken,PromCert secret
+    class Deployments,LWSNS workload

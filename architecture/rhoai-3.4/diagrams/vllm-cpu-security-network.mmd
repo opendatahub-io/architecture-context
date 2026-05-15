@@ -1,80 +1,72 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client<br/>Data Scientist"]
+        Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (Platform-Managed)"]
-        KServeGW["KServe Gateway / HTTPRoute<br/>443/TCP → 8000/TCP<br/>TLS 1.2+ termination<br/>Platform RBAC (kube-rbac-proxy / OAuth)"]
+    subgraph Ingress["INGRESS (DMZ)"]
+        Gateway["RHOAI Gateway (Envoy)<br/>HTTPRoute (Gateway API)<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ SIMPLE"]
     end
 
-    subgraph Application["APPLICATION (vLLM CPU Pod)"]
+    subgraph AuthProxy["AUTH PROXY LAYER"]
+        KubeRBAC["kube-rbac-proxy (Sidecar)<br/>8443/TCP → 8000/TCP<br/>OAuth/OIDC validation<br/>RBAC enforcement"]
+    end
+
+    subgraph Application["APPLICATION LAYER (vLLM CPU Pod)<br/>UID: 2000 / GID: 0 (non-root)<br/>Image: rhoai/odh-vllm-cpu-rhel9"]
         direction TB
 
-        subgraph AuthEndpoints["Authenticated Endpoints (API Key optional)"]
-            ChatAPI["POST /v1/chat/completions"]
-            CompletionsAPI["POST /v1/completions"]
-            EmbeddingsAPI["POST /v1/embeddings"]
-            ModelsAPI["GET /v1/models"]
-            ResponsesAPI["POST /v1/responses"]
-            MessagesAPI["POST /v1/messages"]
-            LoRAAPI["POST /v1/load_lora_adapter<br/>POST /v1/unload_lora_adapter"]
-        end
+        APIServer["vLLM OpenAI API Server<br/>(FastAPI + Uvicorn)<br/>Port: 8000/TCP<br/>Auth: SHA-256 Bearer Token<br/>SSL hot-reload capable"]
 
-        subgraph UnauthEndpoints["Unauthenticated Endpoints"]
-            HealthAPI["GET /health"]
-            MetricsAPI["GET /metrics"]
-            VersionAPI["GET /version"]
-            PingAPI["GET /ping"]
-        end
+        GRPCServer["vLLM gRPC Server<br/>(Optional)<br/>Port: 50051/TCP<br/>⚠️ INSECURE (plaintext, no auth)"]
 
-        Engine["AsyncLLM Engine<br/>CPU Memory (PagedAttention)<br/>C/C++ Kernels"]
+        Engine["AsyncLLM Engine (v1)<br/>PagedAttention + Continuous Batching<br/>ZeroMQ IPC (multiprocess)"]
 
-        GrpcServer["gRPC Server<br/>50051/TCP<br/>plaintext (optional)"]
+        APIServer --> Engine
+        GRPCServer --> Engine
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        HFHub["Hugging Face Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Bearer HF_TOKEN"]
-        S3["S3-Compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: AWS IAM"]
-        OTLP["OTLP Collector<br/>4317/TCP gRPC<br/>TLS (configurable)"]
+        HFHub["Hugging Face Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (HF_TOKEN)"]
+
+        S3["S3-Compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM Credentials"]
+
+        OTel["OpenTelemetry Collector<br/>4317/TCP gRPC or 4318/TCP HTTP<br/>TLS 1.2+<br/>OTLP (optional)"]
     end
 
-    subgraph Monitoring["MONITORING (Inbound)"]
-        Prometheus["Prometheus<br/>Scrapes /metrics"]
+    subgraph Observability["OBSERVABILITY"]
+        Prometheus["Prometheus<br/>Scrapes /metrics<br/>HTTP/8000"]
     end
 
-    %% External → Ingress
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Platform Auth"| KServeGW
+    subgraph Platform["PLATFORM"]
+        KServe["KServe<br/>ServingRuntime<br/>Manages lifecycle"]
+    end
 
-    %% Ingress → Application
-    KServeGW -->|"HTTP/8000<br/>plaintext (internal)<br/>API Key (optional)"| AuthEndpoints
-    KServeGW -->|"HTTP/8000<br/>plaintext (internal)<br/>No auth"| UnauthEndpoints
+    %% Flows
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (OAuth/OIDC)"| Gateway
+    Gateway -->|"HTTPS/8443<br/>TLS 1.2+<br/>Service Account Token"| KubeRBAC
+    KubeRBAC -->|"HTTP/8000<br/>plaintext (localhost)<br/>Bearer Token (optional)"| APIServer
 
-    %% Internal flows
-    AuthEndpoints --> Engine
-    GrpcServer --> Engine
-
-    %% Egress
     Engine -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer HF_TOKEN"| HFHub
     Engine -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    Engine -->|"gRPC/4317<br/>TLS (configurable)"| OTLP
+    Engine -->|"gRPC/4317 or HTTP/4318<br/>TLS 1.2+<br/>OTLP traces"| OTel
 
-    %% Monitoring
-    Prometheus -->|"HTTP/8000<br/>No auth"| MetricsAPI
+    Prometheus -.->|"HTTP/8000<br/>GET /metrics<br/>No auth"| APIServer
+    KServe -.->|"manages"| Application
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef authproxy fill:#fff2cc,stroke:#d6b656,stroke-width:2px
     classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef authEndpoint fill:#dae8fc,stroke:#6c8ebf,stroke-width:1px
-    classDef unauthEndpoint fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
-    classDef engine fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef monitoring fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef externalservice fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef observability fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef platform fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef warning fill:#ff6666,stroke:#cc0000,stroke-width:2px,color:#fff
 
     class Client external
-    class KServeGW ingress
-    class ChatAPI,CompletionsAPI,EmbeddingsAPI,ModelsAPI,ResponsesAPI,MessagesAPI,LoRAAPI authEndpoint
-    class HealthAPI,MetricsAPI,VersionAPI,PingAPI unauthEndpoint
-    class Engine,GrpcServer engine
-    class HFHub,S3,OTLP externalservice
-    class Prometheus monitoring
+    class Gateway ingress
+    class KubeRBAC authproxy
+    class APIServer,Engine application
+    class GRPCServer warning
+    class HFHub,S3,OTel externalservice
+    class Prometheus observability
+    class KServe platform

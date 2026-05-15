@@ -1,52 +1,49 @@
 sequenceDiagram
-    participant vLLM as vLLM Servers
-    participant Prom as Prometheus/Thanos<br/>9091/TCP HTTPS
-    participant SatEng as Saturation Engine<br/>(30s polling)
+    participant Admin as Platform Admin
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant Controller as Controller Reconciler
+    participant SatEngine as Saturation Engine<br/>(30s loop)
     participant Cache as Decision Cache<br/>(in-memory)
-    participant Reconciler as VA Reconciler
-    participant Actuator as Actuator<br/>8443/TCP HTTPS
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant HPAKEDA as HPA / KEDA
-    participant EPP as EPP Pods<br/>HTTPS
-    participant SFZEng as Scale-From-Zero Engine<br/>(100ms polling)
+    participant Prom as Prometheus (Thanos Querier)<br/>9091/TCP HTTPS TLS 1.2+
+    participant Metrics as /metrics Endpoint<br/>8443/TCP HTTPS TLS
+    participant HPA as HPA / KEDA
+    participant Deploy as Deployment / LWS
 
-    Note over vLLM, Prom: vLLM metrics scraped by Prometheus
+    Note over Admin,Deploy: Flow 1: Saturation-Based Autoscaling Loop
 
-    rect rgb(230, 245, 255)
-        Note over SatEng, HPAKEDA: Flow 1: Saturation-Based Autoscaling Loop
-        SatEng->>Prom: PromQL query (KV cache, queue depth,<br/>tokens, TTFT, ITL)<br/>HTTPS + Bearer Token (SA)
-        Prom-->>SatEng: vLLM metrics response<br/>HTTPS TLS 1.2+
+    Admin->>K8sAPI: Create VariantAutoscaling CR
+    K8sAPI-->>Controller: Watch event (VA created)
+    Controller->>K8sAPI: Read ConfigMaps<br/>(saturation, queueing model)
 
-        alt V2 Token-Based Analyzer
-            SatEng->>SatEng: Analyze token capacity<br/>(cache_config_info)
-        else V1 Percentage Analyzer
-            SatEng->>SatEng: Check KV cache % +<br/>queue thresholds
-        else Queueing Model
-            SatEng->>SatEng: M/M/1 latency/throughput<br/>prediction
-        end
+    loop Every 30 seconds
+        SatEngine->>K8sAPI: List VariantAutoscaling CRs<br/>Auth: SA Token
+        K8sAPI-->>SatEngine: Active VA list
+        SatEngine->>Prom: PromQL: vllm:kv_cache_usage_perc,<br/>num_requests_waiting, token rates<br/>Auth: Bearer Token
+        Prom-->>SatEngine: Metrics response
 
-        SatEng->>SatEng: Run Optimizer<br/>(CostAware or GreedyByScore)
-        SatEng->>Cache: Write VariantDecision<br/>(Go channel)
-        Cache->>Reconciler: Trigger via DecisionTrigger<br/>(GenericEvent channel)
+        Note over SatEngine: Run V1/V2/QM analyzers<br/>Apply GPU limiter if enabled
 
-        Reconciler->>K8sAPI: Patch VA status<br/>(desiredReplicas)<br/>HTTPS + SA token
-        Reconciler->>Actuator: Emit metrics
-
-        Prom->>Actuator: Scrape /metrics<br/>HTTPS 8443/TCP + Bearer Token
-        Actuator-->>Prom: wva_desired_replicas,<br/>wva_desired_ratio,<br/>wva_current_replicas
-
-        HPAKEDA->>Prom: Read wva_desired_ratio<br/>HTTPS + SA token
-        HPAKEDA->>K8sAPI: Scale Deployment/LWS<br/>HTTPS + SA token
+        SatEngine->>Cache: Store scaling decision<br/>(desired replicas per VA)
+        Cache-->>Controller: DecisionTrigger channel
+        Controller->>K8sAPI: Patch VA status<br/>(desired replicas, conditions)<br/>Auth: SA Token
     end
 
-    rect rgb(255, 245, 230)
-        Note over EPP, SFZEng: Flow 2: Scale-From-Zero Detection
-        SFZEng->>EPP: Scrape queue metrics<br/>(inference_extension_flow_control_queue_size)<br/>HTTPS + Bearer Token (EPP token)
-        EPP-->>SFZEng: Queue size per model<br/>HTTPS response
+    Prom->>Metrics: Scrape wva_desired_replicas,<br/>wva_current_replicas,<br/>wva_desired_ratio<br/>Auth: Bearer Token
+    HPA->>Metrics: Read custom metrics<br/>Auth: Bearer Token
+    HPA->>K8sAPI: Scale Deployment<br/>Auth: SA Token
+    K8sAPI-->>Deploy: Update replicas
 
-        alt Queue size > 0 AND replicas == 0
-            SFZEng->>K8sAPI: Scale 0→1 via /scale subresource<br/>HTTPS + SA token
-            SFZEng->>Cache: Write scale-from-zero decision<br/>(Go channel)
-            Cache->>Reconciler: Trigger reconciliation
-        end
+    Note over Admin,Deploy: Flow 2: Scale-From-Zero Cold Start
+
+    participant SFZEngine as Scale-From-Zero Engine<br/>(100ms loop)
+    participant EPP as EPP Pods<br/>HTTP
+
+    loop Every 100ms
+        SFZEngine->>K8sAPI: List inactive VAs (replicas=0)<br/>Auth: SA Token
+        K8sAPI-->>SFZEngine: Inactive VA list
+        SFZEngine->>EPP: GET flow_control_queue_size<br/>Auth: Bearer Token (EPP token)
+        EPP-->>SFZEngine: Queue size > 0
+        SFZEngine->>K8sAPI: PATCH /scale subresource<br/>(set replicas=1)<br/>Auth: SA Token
+        K8sAPI-->>Deploy: Scale to 1 replica
+        SFZEngine->>Cache: Store decision (replicas=1)
     end

@@ -1,55 +1,48 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["API Client<br/>Authorization header (passthrough)<br/>x-forwarded-* headers"]
+        Client["Client<br/>(OpenAI-compatible)"]
     end
 
-    subgraph GatewayZone["GATEWAY SERVICE"]
+    subgraph ApplicationLayer["APPLICATION LAYER"]
+        Gateway["vLLM Orchestrator Gateway<br/>Container Port: 8090/TCP<br/>Rust / axum 0.7.9<br/>No local auth enforcement"]
+
+        subgraph ConfigMounts["Configuration & Secrets"]
+            Config["config.yaml<br/>(GATEWAY_CONFIG env var)"]
+            TLSCert["/etc/tls/private/tls.crt<br/>X.509 PEM Client Cert"]
+            TLSKey["/etc/tls/private/tls.key<br/>PEM Private Key"]
+            CACert["/etc/tls/ca/service-ca.crt<br/>X.509 PEM CA Cert"]
+        end
+
+        Config -->|"read at startup"| Gateway
+        TLSCert -->|"mTLS identity"| Gateway
+        TLSKey -->|"mTLS identity"| Gateway
+        CACert -->|"custom CA trust"| Gateway
+    end
+
+    subgraph BackendServices["BACKEND SERVICES (Internal)"]
         direction TB
-        Gateway["vllm-orchestrator-gateway<br/>Rust/axum<br/>Listen: 0.0.0.0:8090/TCP<br/>Protocol: HTTP (plaintext)<br/>No local auth enforcement"]
 
-        subgraph ConfigMount["Configuration"]
-            Config["YAML Config File<br/>/app/config/config.yaml<br/>Routes, Detectors, Orchestrator"]
-        end
+        Orchestrator["FMS Guardrails Orchestrator<br/>Port: 8085/TCP (configurable)<br/>Endpoint: /api/v2/chat/completions-detection"]
 
-        subgraph TLSMount["TLS Secrets (Volume Mounts)"]
-            ClientCert["tls.crt + tls.key<br/>/etc/tls/private/<br/>kubernetes.io/tls<br/>cert-manager"]
-            CACert["service-ca.crt<br/>/etc/tls/ca/<br/>service-ca-operator"]
-        end
+        Detectors["Guardrails Detectors<br/>(e.g., regex-detector, PII)<br/>Invoked by Orchestrator only"]
+
+        LLM["vLLM / LLM Inference Server<br/>Invoked by Orchestrator only"]
+
+        Orchestrator -->|"content analysis"| Detectors
+        Orchestrator -->|"text generation"| LLM
     end
 
-    subgraph InternalPlatform["INTERNAL PLATFORM (TrustyAI Stack)"]
-        direction TB
-        Orchestrator["FMS Guardrails Orchestrator<br/>8085/TCP (configurable)<br/>HTTP or HTTPS<br/>Validates Authorization"]
-
-        subgraph OrchestratorBackends["Orchestrator Backends (Indirect)"]
-            Detectors["Content Detectors<br/>(e.g., regex-detector)<br/>Input/Output detection"]
-            ModelServer["vLLM Model Server<br/>LLM inference backend"]
-        end
-    end
-
-    %% Flows
-    Client -->|"HTTP/8090<br/>Plaintext<br/>Authorization passthrough<br/>POST /{route}/v1/chat/completions"| Gateway
-
-    Config -.->|"file mount"| Gateway
-    ClientCert -.->|"PKCS#12 identity<br/>(PEM → PKCS#12 via openssl)"| Gateway
-    CACert -.->|"CA trust bundle"| Gateway
-
-    Gateway -->|"HTTP(S)/8085<br/>Optional mTLS<br/>Authorization forwarded<br/>POST /api/v2/chat/completions-detection"| Orchestrator
-
-    Orchestrator -->|"internal"| Detectors
-    Orchestrator -->|"internal"| ModelServer
+    %% Network Flows
+    Client -->|"HTTP/8090<br/>Plaintext<br/>Auth: pass-through<br/>POST /{route}/v1/chat/completions"| Gateway
+    Gateway -->|"HTTP or HTTPS/8085<br/>Optional mTLS<br/>Auth: forwarded header + client cert<br/>POST /api/v2/chat/completions-detection"| Orchestrator
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef gateway fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef config fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef tls fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef backend fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef application fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef backend fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef secrets fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class Client external
-    class Gateway gateway
-    class Config config
-    class ClientCert,CACert tls
-    class Orchestrator internal
-    class Detectors,ModelServer backend
+    class Gateway application
+    class Orchestrator,Detectors,LLM backend
+    class Config,TLSCert,TLSKey,CACert secrets

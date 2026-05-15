@@ -1,77 +1,56 @@
 sequenceDiagram
     participant Client as External Client
-    participant APIServer as API Server<br/>8000/TCP
+    participant APIServer as API Server<br/>8000/TCP HTTP/HTTPS
     participant PG as PostgreSQL<br/>5432/TCP
     participant Redis as Redis<br/>6379/TCP
-    participant S3 as S3 Storage<br/>443/TCP
-    participant Processor as Batch Processor<br/>9090/TCP
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant Processor as Batch Processor
     participant InfGW as Inference Gateway<br/>HTTP/HTTPS
     participant GC as Garbage Collector
 
-    Note over Client,InfGW: Flow 1: File Upload
-    Client->>APIServer: POST /v1/files (multipart/form-data)<br/>Auth: X-MaaS-Username header<br/>TLS 1.2+ (optional)
-    APIServer->>APIServer: Validate file (max 200MB, max 50K lines)
-    APIServer->>S3: Upload file content<br/>HTTPS/443, TLS 1.2+<br/>Auth: IAM/Static credentials
-    S3-->>APIServer: Upload confirmed
-    APIServer->>PG: Store file metadata<br/>TCP/5432, TLS (configurable)<br/>Auth: Connection string
-    PG-->>APIServer: File record created
-    APIServer-->>Client: 200 OK (file object JSON)
+    rect rgb(230, 240, 255)
+        Note over Client,S3: Flow 1: Batch Job Submission
+        Client->>APIServer: POST /v1/files (multipart/form-data)<br/>Auth: X-MaaS-Username header
+        APIServer->>S3: Upload input file<br/>TLS 1.2+ / AWS credentials
+        APIServer->>PG: Store file metadata<br/>TLS (optional) / conn string
+        APIServer-->>Client: File ID
 
-    Note over Client,InfGW: Flow 2: Batch Job Submission
-    Client->>APIServer: POST /v1/batches<br/>Auth: X-MaaS-Username header<br/>TLS 1.2+ (optional)
-    APIServer->>PG: Create batch record<br/>TCP/5432, TLS (configurable)
-    PG-->>APIServer: Batch record stored
-    APIServer->>Redis: ZADD to priority queue<br/>TCP/6379, TLS (configurable)
-    Redis-->>APIServer: Enqueued
-    APIServer-->>Client: 200 OK (batch object JSON)
-
-    Note over Processor,InfGW: Flow 3: Batch Job Processing
-    loop Poll interval (5s)
-        Processor->>Redis: ZMPOP from priority queue<br/>TCP/6379
-    end
-    Redis-->>Processor: Job dequeued
-    Processor->>PG: Fetch batch metadata<br/>TCP/5432
-    PG-->>Processor: Batch details
-    Processor->>S3: Download input file<br/>HTTPS/443, TLS 1.2+
-    S3-->>Processor: JSONL input data
-    Processor->>Processor: Preprocess: FNV-32a hash sort<br/>for prefix cache optimization
-    Processor->>Processor: Plan: SLO scoring & ordering
-
-    loop Per inference request (up to 50K)
-        Processor->>InfGW: POST /v1/chat/completions<br/>HTTP/HTTPS, TLS 1.2+<br/>Auth: Bearer token / API key<br/>Headers: x-slo-ttft-ms, x-gateway-inference-objective
-        InfGW-->>Processor: Inference response
-        Processor->>Redis: SET progress update<br/>TCP/6379
+        Client->>APIServer: POST /v1/batches<br/>Auth: X-MaaS-Username header
+        APIServer->>PG: Store batch metadata<br/>TLS (optional) / conn string
+        APIServer->>Redis: Enqueue to priority queue (sorted set)<br/>SLO-based score
+        APIServer-->>Client: Batch ID + status: validating
     end
 
-    Processor->>S3: Upload output file<br/>HTTPS/443, TLS 1.2+
-    S3-->>Processor: Output stored
-    Processor->>PG: Update batch status → completed<br/>TCP/5432
-    PG-->>Processor: Status updated
+    rect rgb(230, 255, 230)
+        Note over Processor,S3: Flow 2: Batch Job Processing
+        Processor->>Redis: Dequeue job (ZPOPMIN)<br/>poll_interval: 5s
+        Processor->>PG: Read batch metadata
+        Processor->>S3: Download input file<br/>TLS 1.2+ / AWS credentials
+        Note over Processor: Parse JSONL, group by model,<br/>sort by FNV-32a hash,<br/>create binary plan (16-byte entries)
+        loop For each request in plan (concurrency: 100 global, 10 per-model)
+            Processor->>InfGW: POST /v1/chat/completions<br/>Auth: Bearer token<br/>Headers: x-slo-ttft-ms, x-gateway-inference-objective
+            InfGW-->>Processor: Inference response
+        end
+        Processor->>S3: Upload output file<br/>TLS 1.2+ / AWS credentials
+        Processor->>S3: Upload error file (if any)
+        Processor->>PG: Update batch status: completed
+        Processor->>Redis: Update progress cache (TTL: 24h)
+    end
 
-    Note over Client,APIServer: Flow 4: Status Check & Result Retrieval
-    Client->>APIServer: GET /v1/batches/{batch_id}<br/>Auth: X-MaaS-Username
-    APIServer->>PG: Query batch record
-    APIServer->>Redis: GET progress counters
-    APIServer-->>Client: Batch status with progress
+    rect rgb(255, 240, 230)
+        Note over Client,Redis: Flow 3: Batch Job Cancellation
+        Client->>APIServer: POST /v1/batches/{id}/cancel<br/>Auth: X-MaaS-Username header
+        APIServer->>PG: Update status: cancelling
+        APIServer->>Redis: Publish cancel event (LPUSH)
+        APIServer-->>Client: status: cancelling
+        Redis-->>Processor: Cancel event received (BRPOP)
+        Processor->>S3: Upload partial results
+        Processor->>PG: Update status: cancelled
+    end
 
-    Client->>APIServer: GET /v1/files/{output_file_id}/content<br/>Auth: X-MaaS-Username
-    APIServer->>S3: Download output file
-    S3-->>APIServer: File content
-    APIServer-->>Client: JSONL output data
-
-    Note over Client,APIServer: Flow 5: Batch Cancellation
-    Client->>APIServer: POST /v1/batches/{batch_id}/cancel<br/>Auth: X-MaaS-Username
-    APIServer->>Redis: ZREM from priority queue
-    APIServer->>Redis: RPUSH cancel event
-    APIServer->>PG: Update status → cancelling
-    APIServer-->>Client: 200 OK (batch status: cancelling)
-
-    Note over GC,S3: Flow 6: Garbage Collection (periodic, interval: 1h)
-    loop Every 1 hour
-        GC->>PG: Query expired batches/files<br/>TCP/5432
-        PG-->>GC: Expired records
-        GC->>S3: Delete expired files<br/>HTTPS/443
-        S3-->>GC: Files deleted
-        GC->>PG: Delete expired metadata<br/>TCP/5432
-        GC->>Redis: Delete expired keys<br/>TCP/6379
+    rect rgb(255, 245, 230)
+        Note over GC,S3: Flow 4: Garbage Collection (every 30m)
+        GC->>PG: Query expired batches/files
+        GC->>S3: Delete expired file content
+        GC->>PG: Delete expired metadata
     end

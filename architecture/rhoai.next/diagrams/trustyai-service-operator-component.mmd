@@ -1,88 +1,104 @@
 graph TB
-    subgraph Operator["TrustyAI Service Operator (controller-manager)"]
+    subgraph Operator["TrustyAI Service Operator (manager)"]
         direction TB
-        Main["cmd/main.go<br/>--enable-services flag"]
+        Manager["Manager Binary<br/>Go 1.24 / controller-runtime<br/>8080/TCP metrics, 8081/TCP health"]
 
-        subgraph Controllers["Controllers (independently selectable)"]
-            direction LR
-            TAS["TAS Controller<br/>TrustyAIService"]
-            LMES["LMES Controller<br/>LMEvalJob"]
-            GORCH["GORCH Controller<br/>GuardrailsOrchestrator"]
-            NEMO["NemoGuardrails Controller<br/>NemoGuardrails"]
-            EVALHUB["EvalHub Controller<br/>EvalHub"]
-            JOBMGR["JOB_MGR Controller<br/>Kueue Integration"]
+        subgraph Controllers["Controller Registry (--enable-services)"]
+            TAS["TAS Controller<br/>TrustyAI Explainability"]
+            LMES["LMES Controller<br/>LMEval Jobs"]
+            JOB_MGR["Job Manager Controller<br/>Kueue Adapter"]
+            GORCH["GORCH Controller<br/>Guardrails Orchestrator"]
+            NEMO["NemoGuardrails Controller<br/>NVIDIA NeMo"]
+            EVALHUB["EvalHub Controller<br/>Centralized Evaluation"]
         end
 
-        Main -->|enables| Controllers
-        Metrics["Metrics :8080/TCP"]
-        Health["Health Probes :8081/TCP"]
+        Manager --> TAS
+        Manager --> LMES
+        Manager --> JOB_MGR
+        Manager --> GORCH
+        Manager --> NEMO
+        Manager --> EVALHUB
     end
 
-    subgraph Driver["ta-lmes-driver (sidecar)"]
-        DriverBin["Driver Binary<br/>:18080/TCP localhost"]
-        DriverBin -->|executes| LMHarness["lm-evaluation-harness"]
+    subgraph CRDs["Custom Resource Definitions"]
+        TrustyAIServiceCR["TrustyAIService CR<br/>v1 / v1alpha1"]
+        LMEvalJobCR["LMEvalJob CR<br/>v1alpha1"]
+        GuardrailsOrchestratorCR["GuardrailsOrchestrator CR<br/>v1alpha1"]
+        NemoGuardrailsCR["NemoGuardrails CR<br/>v1alpha1"]
+        EvalHubCR["EvalHub CR<br/>v1alpha1"]
     end
 
-    %% CRDs
-    TASCR["TrustyAIService CR<br/>trustyai.opendatahub.io/v1"]
-    LMESCR["LMEvalJob CR<br/>trustyai.opendatahub.io/v1alpha1"]
-    GORCHCR["GuardrailsOrchestrator CR<br/>trustyai.opendatahub.io/v1alpha1"]
-    NEMOCR["NemoGuardrails CR<br/>trustyai.opendatahub.io/v1alpha1"]
-    EVALHUBCR["EvalHub CR<br/>trustyai.opendatahub.io/v1alpha1"]
+    subgraph ManagedResources["Managed Kubernetes Resources"]
+        Deployments["Deployments"]
+        Services["Services<br/>(ClusterIP)"]
+        Routes["OpenShift Routes<br/>(HTTPS)"]
+        ConfigMaps["ConfigMaps"]
+        ServiceMonitors["ServiceMonitors<br/>(Prometheus)"]
+        RBAC["RBAC Resources<br/>(SA, CR, CRB)"]
+    end
 
-    %% CRD watches
-    TASCR -->|watched by| TAS
-    LMESCR -->|watched by| LMES
-    GORCHCR -->|watched by| GORCH
-    NEMOCR -->|watched by| NEMO
-    EVALHUBCR -->|watched by| EVALHUB
+    subgraph Sidecars["Security Sidecars"]
+        KRBP["kube-rbac-proxy<br/>Bearer Token Auth<br/>FIPS 140-2 TLS"]
+    end
 
-    %% What each controller creates
-    TAS -->|creates| TASDeployment["TrustyAI Service<br/>Deployment + Route"]
-    TAS -->|patches| InferenceService["KServe InferenceService<br/>(payload processors)"]
-    TAS -->|creates| IstioResources["DestinationRule /<br/>VirtualService<br/>(conditional)"]
+    subgraph Driver["ta-lmes-driver"]
+        DriverBin["Driver Binary<br/>Init + Sidecar<br/>18080/TCP status"]
+    end
 
-    LMES -->|creates| EvalPod["Evaluation Pod<br/>(with ta-lmes-driver)"]
-    LMES -->|monitors| DriverBin
+    %% CRD to Controller mappings
+    TrustyAIServiceCR -->|watched by| TAS
+    LMEvalJobCR -->|watched by| LMES
+    LMEvalJobCR -->|scheduled by| JOB_MGR
+    GuardrailsOrchestratorCR -->|watched by| GORCH
+    NemoGuardrailsCR -->|watched by| NEMO
+    EvalHubCR -->|watched by| EVALHUB
 
-    GORCH -->|creates| OrchestratorDeploy["Orchestrator Deployment<br/>+ Gateway Routes"]
-    GORCH -->|auto-discovers| InferenceService
-    GORCH -->|discovers| DetectorSvc["Detector Services"]
+    %% Controllers create resources
+    TAS -->|creates| Deployments
+    TAS -->|creates| Services
+    TAS -->|creates| Routes
+    TAS -->|creates| ServiceMonitors
+    GORCH -->|creates| Deployments
+    GORCH -->|creates| Services
+    GORCH -->|creates| Routes
+    GORCH -->|creates| ConfigMaps
+    NEMO -->|creates| Deployments
+    NEMO -->|creates| Services
+    NEMO -->|creates| Routes
+    EVALHUB -->|creates| Deployments
+    EVALHUB -->|creates| Services
+    EVALHUB -->|creates| Routes
+    EVALHUB -->|creates| RBAC
+    LMES -->|creates pods with| DriverBin
 
-    NEMO -->|creates| NemoDeployment["NeMo Guardrails<br/>Deployment + Route"]
+    %% Security sidecar
+    Deployments -->|includes| KRBP
 
-    EVALHUB -->|creates| EvalHubDeploy["EvalHub Deployment<br/>+ Route + RBAC"]
-    EVALHUB -->|provisions| TenantRBAC["Per-Tenant<br/>ServiceAccounts & Roles"]
-    EVALHUB -->|integrates| MLFlow["MLFlow Tracking"]
-
-    JOBMGR -->|creates| KueueWorkload["Kueue Workload CR"]
-    JOBMGR -->|schedules| EvalPod
-
-    %% Auth sidecars
-    TASDeployment -.-|kube-rbac-proxy| RBACPROXY["kube-rbac-proxy<br/>SAR enforcement"]
-    OrchestratorDeploy -.-|kube-rbac-proxy| RBACPROXY
-    NemoDeployment -.-|kube-rbac-proxy| RBACPROXY
-    EvalHubDeploy -.-|kube-rbac-proxy| RBACPROXY
+    %% External integrations
+    TAS -->|patches| KServeISVC["KServe InferenceService"]
+    GORCH -->|auto-discovers| KServeISVC
+    TAS -.->|conditional| Istio["Istio DestinationRule<br/>VirtualService"]
+    EVALHUB -->|watches| TenantNS["Tenant Namespaces"]
+    EVALHUB -->|integrates| MLflow["MLflow Tracking"]
+    JOB_MGR -->|creates| KueueWL["Kueue Workloads"]
 
     %% Styling
-    style Operator fill:#e8f4fd,stroke:#4a90e2,stroke-width:2px
-    style Driver fill:#fef3e2,stroke:#f5a623,stroke-width:2px
-    style Controllers fill:#f0f8e8,stroke:#82b366,stroke-width:1px
-
-    style TAS fill:#4a90e2,color:#fff
-    style LMES fill:#4a90e2,color:#fff
-    style GORCH fill:#4a90e2,color:#fff
-    style NEMO fill:#4a90e2,color:#fff
-    style EVALHUB fill:#4a90e2,color:#fff
-    style JOBMGR fill:#4a90e2,color:#fff
-
-    style TASCR fill:#f5a623,color:#fff
-    style LMESCR fill:#f5a623,color:#fff
-    style GORCHCR fill:#f5a623,color:#fff
-    style NEMOCR fill:#f5a623,color:#fff
-    style EVALHUBCR fill:#f5a623,color:#fff
-
-    style RBACPROXY fill:#e74c3c,color:#fff
-    style InferenceService fill:#7ed321,color:#fff
-    style KueueWorkload fill:#7ed321,color:#fff
-    style MLFlow fill:#7ed321,color:#fff
+    style Manager fill:#4a90e2,stroke:#333,color:#fff
+    style TAS fill:#5ba0d2,stroke:#333,color:#fff
+    style LMES fill:#5ba0d2,stroke:#333,color:#fff
+    style JOB_MGR fill:#5ba0d2,stroke:#333,color:#fff
+    style GORCH fill:#5ba0d2,stroke:#333,color:#fff
+    style NEMO fill:#5ba0d2,stroke:#333,color:#fff
+    style EVALHUB fill:#5ba0d2,stroke:#333,color:#fff
+    style TrustyAIServiceCR fill:#f5a623,stroke:#333,color:#333
+    style LMEvalJobCR fill:#f5a623,stroke:#333,color:#333
+    style GuardrailsOrchestratorCR fill:#f5a623,stroke:#333,color:#333
+    style NemoGuardrailsCR fill:#f5a623,stroke:#333,color:#333
+    style EvalHubCR fill:#f5a623,stroke:#333,color:#333
+    style KRBP fill:#e74c3c,stroke:#333,color:#fff
+    style DriverBin fill:#9b59b6,stroke:#333,color:#fff
+    style KServeISVC fill:#7ed321,stroke:#333
+    style Istio fill:#999,stroke:#333
+    style MLflow fill:#7ed321,stroke:#333
+    style KueueWL fill:#7ed321,stroke:#333
+    style TenantNS fill:#7ed321,stroke:#333

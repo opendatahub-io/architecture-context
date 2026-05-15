@@ -1,56 +1,58 @@
 graph TB
-    subgraph External["EXTERNAL / PLATFORM (Orchestrated)"]
-        Orchestrator["FMS Guardrails Orchestrator<br/>Content analysis orchestration"]
+    subgraph External["EXTERNAL (Untrusted)"]
+        Orchestrator["FMS Guardrails Orchestrator<br/>(caller)"]
     end
 
-    subgraph ServiceMesh["SERVICE MESH (mTLS via Istio Sidecar Injection)"]
+    subgraph Ingress["INGRESS (Istio - mTLS PASSTHROUGH)"]
+        direction TB
+        KServeHF["KServe InferenceService<br/>HuggingFace Detector<br/>8000/TCP<br/>Auth: security.opendatahub.io/enable-auth"]
+        KServeJudge["KServe InferenceService<br/>LLM Judge Detector<br/>8000/TCP<br/>Auth: security.opendatahub.io/enable-auth"]
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (Internal)"]
         direction TB
 
-        subgraph NS_BuiltIn["Built-in Detector"]
-            BuiltIn["Built-in Detector<br/>Image: odh-built-in-detector-rhel9<br/>Port: 8080/TCP<br/>Endpoints: /api/v1/text/contents,<br/>/health, /metrics, /registry"]
-        end
-
-        subgraph NS_HF["HuggingFace Detector (KServe ISVC)"]
-            HF["HuggingFace Detector<br/>Image: odh-guardrails-detector-hf-runtime-rhel9<br/>Port: 8000/TCP<br/>Endpoints: /api/v1/text/contents,<br/>/health, /metrics<br/>Auth: security.opendatahub.io/enable-auth"]
-        end
-
-        subgraph NS_Judge["LLM Judge Detector (KServe ISVC)"]
-            Judge["LLM Judge Detector<br/>Image: guardrails-detector-llm-judge<br/>Port: 8000/TCP<br/>Endpoints: /api/v1/text/contents,<br/>/api/v1/text/generation,<br/>/health, /metrics<br/>Auth: security.opendatahub.io/enable-auth"]
+        subgraph NS_Detectors["Namespace: (deployment ns)"]
+            BuiltIn["Built-in Detector<br/>ClusterIP 8080/TCP<br/>HTTP / No TLS (configurable)<br/>Image: rhoai/odh-built-in-detector-rhel9<br/>No auth"]
+            HFDetector["HuggingFace Detector<br/>ClusterIP 8000/TCP<br/>HTTP / Istio mTLS<br/>Image: rhoai/odh-guardrails-detector-hf-runtime-rhel9<br/>KServe auth"]
+            JudgeDetector["LLM Judge Detector<br/>ClusterIP 8000/TCP<br/>HTTP / Istio mTLS<br/>Image: quay.io/trustyai/guardrails-detector-llm-judge<br/>KServe auth (upstream only)"]
         end
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        S3["S3/MinIO Storage<br/>9000/TCP HTTP<br/>Auth: AWS IAM credentials<br/>Purpose: Model file storage"]
-        VLLM["vLLM Server<br/>8080/TCP HTTP<br/>Auth: None<br/>Purpose: LLM inference backend"]
-        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Purpose: Model download (init only)"]
+        vLLM["vLLM Server<br/>configurable port<br/>HTTP / No TLS<br/>No auth"]
+        S3["S3/Minio Storage<br/>9000/TCP<br/>HTTP / No TLS<br/>AWS credentials"]
+        HFHub["HuggingFace Hub<br/>443/TCP<br/>HTTPS / TLS<br/>Optional token"]
+        Prometheus["Prometheus<br/>Scrape: 8080, 8000/TCP<br/>HTTP / No auth"]
     end
 
-    subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>Scrapes /metrics<br/>trustyai_guardrails_*"]
-    end
+    %% Inbound flows
+    Orchestrator -->|"HTTP/8080<br/>No TLS (Istio mTLS in mesh)<br/>No app auth"| BuiltIn
+    Orchestrator -->|"HTTP/8000<br/>Istio mTLS<br/>KServe auth"| KServeHF
+    Orchestrator -->|"HTTP/8000<br/>Istio mTLS<br/>KServe auth"| KServeJudge
 
-    %% Flows from Orchestrator
-    Orchestrator -->|"HTTP/8080<br/>mTLS (Istio)<br/>Platform auth"| BuiltIn
-    Orchestrator -->|"HTTP/8000<br/>mTLS (Istio)<br/>Platform auth"| HF
-    Orchestrator -->|"HTTP/8000<br/>mTLS (Istio)<br/>Platform auth"| Judge
+    KServeHF --> HFDetector
+    KServeJudge --> JudgeDetector
 
-    %% Egress flows
-    HF -->|"HTTP/9000<br/>No encryption<br/>AWS credentials"| S3
-    Judge -->|"HTTP/8080<br/>No encryption<br/>No auth"| VLLM
-    HF -.->|"HTTPS/443<br/>TLS 1.2+<br/>(init container only)"| HFHub
+    %% Outbound flows
+    JudgeDetector -->|"HTTP/configurable<br/>No TLS<br/>No auth"| vLLM
+    HFDetector -.->|"HTTP/9000<br/>No TLS<br/>AWS credentials<br/>(KServe storage init)"| S3
+    HFDetector -.->|"HTTPS/443<br/>TLS<br/>HF token (init)"| HFHub
 
-    %% Monitoring
-    Prometheus -.->|"HTTP/8080, 8000<br/>scrape"| BuiltIn
-    Prometheus -.->|"HTTP/8000<br/>scrape"| HF
-    Prometheus -.->|"HTTP/8000<br/>scrape"| Judge
+    %% Metrics
+    Prometheus -.->|"HTTP scrape<br/>/metrics"| BuiltIn
+    Prometheus -.->|"HTTP scrape<br/>/metrics"| HFDetector
+    Prometheus -.->|"HTTP scrape<br/>/metrics"| JudgeDetector
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef upstream fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Orchestrator external
-    class BuiltIn,HF,Judge servicemesh
-    class S3,VLLM,HFHub externalservice
-    class Prometheus monitoring
+    class KServeHF,KServeJudge ingress
+    class BuiltIn,HFDetector servicemesh
+    class JudgeDetector upstream
+    class vLLM,S3,HFHub,Prometheus externalservice

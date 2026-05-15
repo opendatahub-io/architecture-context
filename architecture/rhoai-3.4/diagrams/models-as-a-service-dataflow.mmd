@@ -1,70 +1,63 @@
 sequenceDiagram
     participant Client as External Client
-    participant Gateway as maas-default-gateway<br/>443/TCP HTTPS TLS
-    participant Authorino as Authorino<br/>(Kuadrant)
+    participant Gateway as Gateway (Envoy)<br/>443/TCP HTTPS TLS
+    participant Authorino as Kuadrant Authorino
     participant MaaSAPI as maas-api<br/>8443/TCP HTTPS TLS 1.2+
-    participant Limitador as Limitador<br/>(Kuadrant)
     participant PayloadProc as payload-processing<br/>9004/TCP gRPC TLS
-    participant KServe as KServe Model Endpoint<br/>443/TCP HTTPS
-    participant ExtLLM as External LLM Provider<br/>443/TCP HTTPS
-    participant PostgreSQL as PostgreSQL<br/>5432/TCP TLS
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant PostgreSQL as PostgreSQL<br/>5432/TCP
+    participant KServe as KServe Model Server<br/>HTTPS
+    participant ExtProvider as External LLM Provider<br/>443/TCP HTTPS
 
-    rect rgb(240, 248, 255)
-        Note over Client,ExtLLM: Flow 1: Model Inference (API Key Authentication)
-        Client->>Gateway: POST /{namespace}/{model}:predict<br/>Auth: Bearer sk-oai-* API key
-        Gateway->>Authorino: Auth evaluation<br/>(API key credential)
-        Authorino->>MaaSAPI: POST /internal/v1/api-keys/validate<br/>NetworkPolicy-restricted
-        MaaSAPI->>PostgreSQL: Lookup key hash<br/>(SHA-256 with per-key salt)
-        PostgreSQL-->>MaaSAPI: Key record + subscription binding
-        MaaSAPI-->>Authorino: Validation result + identity
-        Authorino->>MaaSAPI: POST /internal/v1/subscriptions/select<br/>NetworkPolicy-restricted
-        MaaSAPI-->>Authorino: Selected subscription + limits
-        Authorino->>Limitador: Token rate limit check<br/>(gRPC, mTLS)
-        Limitador-->>Authorino: Allow/Deny
-        Authorino-->>Gateway: Auth result<br/>(strip Authorization header)
-        Gateway->>PayloadProc: ext_proc request<br/>gRPC/9004, TLS SIMPLE
-        PayloadProc-->>Gateway: Model name extraction<br/>API translation<br/>Credential injection
-        alt KServe Model
-            Gateway->>KServe: Forward inference<br/>HTTPS/443, injected credential
-            KServe-->>Gateway: Prediction response
-        else External Model
-            Gateway->>ExtLLM: Forward inference<br/>HTTPS/443, TLS SIMPLE<br/>Injected backend API key
-            ExtLLM-->>Gateway: Prediction response
-        end
-        Gateway-->>Client: JSON Response
+    Note over Client,ExtProvider: Flow 1: User Inference Request (API Key)
+
+    Client->>Gateway: POST /v1/chat/completions<br/>Auth: Bearer sk-oai-{key_id}_{secret}
+    Gateway->>Authorino: AuthPolicy evaluation
+    Authorino->>MaaSAPI: POST /internal/v1/api-keys/validate<br/>(NetworkPolicy-protected, no auth)
+    MaaSAPI->>PostgreSQL: Query key hash (SHA-256)<br/>constant-time comparison
+    PostgreSQL-->>MaaSAPI: Key metadata + subscription
+    MaaSAPI-->>Authorino: Validation result
+    Authorino->>MaaSAPI: POST /internal/v1/subscriptions/select<br/>(resolve subscription tier)
+    MaaSAPI-->>Authorino: Subscription + rate limit info
+    Note over Authorino: Inject X-MaaS-Username,<br/>X-MaaS-Group, X-MaaS-Subscription headers
+    Note over Authorino: OPA: check group membership
+    Authorino-->>Gateway: Auth OK + identity headers
+    Note over Gateway: Limitador enforces<br/>TokenRateLimitPolicy
+    Gateway->>PayloadProc: ext_proc: request body
+    Note over PayloadProc: Extract model name from body<br/>Set X-Gateway-Model-Name header
+    PayloadProc->>K8sAPI: Read ExternalModel CR + Secret
+    K8sAPI-->>PayloadProc: Provider config + API key
+    Note over PayloadProc: Resolve provider, translate API format,<br/>inject provider API key
+    PayloadProc-->>Gateway: Transformed request
+    Note over Gateway: Strip Authorization header<br/>(prevent credential exfiltration)
+
+    alt Internal Model (KServe)
+        Gateway->>KServe: Forward inference request<br/>(no auth header)
+        KServe-->>Gateway: Prediction response
+    else External Model (via ServiceEntry)
+        Gateway->>ExtProvider: Forward to external provider<br/>(provider API key injected)
+        ExtProvider-->>Gateway: Provider response
     end
 
-    rect rgb(255, 248, 240)
-        Note over Client,PostgreSQL: Flow 2: API Key Creation (User Token Auth)
-        Client->>Gateway: POST /v1/api-keys<br/>Auth: Bearer OpenShift token
-        Gateway->>Authorino: Auth evaluation<br/>(OpenShift token)
-        Authorino->>Gateway: KubernetesTokenReview<br/>HTTPS/443
-        Note right of Authorino: Validates token via<br/>K8s TokenReview API
-        Authorino-->>Gateway: Identity (X-MaaS-Username,<br/>X-MaaS-Group headers)
-        Gateway->>MaaSAPI: POST /v1/api-keys<br/>HTTPS/8443, TLS 1.2+
-        MaaSAPI->>PostgreSQL: Store key hash<br/>(SHA-256, per-key salt,<br/>show-once pattern)
-        PostgreSQL-->>MaaSAPI: Key stored
-        MaaSAPI-->>Gateway: API key (plaintext, shown once)
-        Gateway-->>Client: API key response
-    end
+    Gateway-->>Client: JSON Response (OpenAI-compatible)
 
-    rect rgb(240, 255, 240)
-        Note over Client,KServe: Flow 3: Model Listing with Access Probing
-        Client->>Gateway: GET /v1/models<br/>Auth: Bearer token / API key
-        Gateway->>Authorino: Auth evaluation
-        Authorino-->>Gateway: Identity headers
-        Gateway->>MaaSAPI: GET /v1/models<br/>HTTPS/8443
-        loop Per model (concurrent, max 10)
-            MaaSAPI->>KServe: GET /v1/models<br/>HTTPS/443, Bearer passthrough<br/>(InsecureSkipVerify for cluster-internal)
-            KServe-->>MaaSAPI: Model info or 403
-        end
-        MaaSAPI-->>Gateway: Accessible models list
-        Gateway-->>Client: JSON model list
-    end
+    Note over Client,ExtProvider: Flow 2: API Key Creation
 
-    rect rgb(255, 240, 255)
-        Note over Gateway,ExtLLM: Flow 4: ExternalModel Reconciliation (Controller)
-        Note over Gateway: maas-controller watches<br/>ExternalModel CRs
-        Gateway->>Gateway: Create ExternalName Service<br/>+ ServiceEntry (MESH_EXTERNAL)<br/>+ DestinationRule (TLS SIMPLE)<br/>+ HTTPRoute (path + header match)
-        Note over Gateway,ExtLLM: At inference time, Gateway routes<br/>to external provider via Istio networking
-    end
+    Client->>Gateway: POST /v1/api-keys<br/>Auth: Bearer K8s token
+    Gateway->>Authorino: AuthPolicy evaluation<br/>(K8s TokenReview, no API keys allowed)
+    Authorino-->>Gateway: Auth OK + X-MaaS-* headers
+    Gateway->>MaaSAPI: POST /v1/api-keys<br/>X-MaaS-Username, X-MaaS-Group headers
+    MaaSAPI->>K8sAPI: SubjectAccessReview (verify permissions)
+    K8sAPI-->>MaaSAPI: SAR result
+    MaaSAPI->>PostgreSQL: Store key hash + metadata<br/>(per-key salt via key_id)
+    PostgreSQL-->>MaaSAPI: Stored
+    MaaSAPI-->>Gateway: API key (sk-oai-{key_id}_{secret})<br/>shown once only
+    Gateway-->>Client: JSON: { api_key: "sk-oai-..." }
+
+    Note over Client,ExtProvider: Flow 3: Tenant Reconciliation (Platform Deploy)
+
+    Note over K8sAPI: Tenant CR created/updated
+    K8sAPI->>K8sAPI: maas-controller watches Tenant CR
+    Note over K8sAPI: Kustomize render from embedded overlays
+    Note over K8sAPI: Post-render: inject AuthPolicies,<br/>TelemetryPolicies, DestinationRules
+    K8sAPI->>K8sAPI: Server-Side Apply: Deployment, Service,<br/>ServiceAccount, NetworkPolicy, HTTPRoute,<br/>ClusterRole, CronJob, AuthPolicy, TRLP

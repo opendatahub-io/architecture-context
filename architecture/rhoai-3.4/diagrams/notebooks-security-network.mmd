@@ -1,83 +1,109 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User Browser"]
+        User["Data Scientist<br/>User Browser"]
     end
 
-    subgraph Ingress["INGRESS (Gateway)"]
-        Gateway["RHOAI Gateway (Envoy)<br/>443/TCP → 8443/TCP<br/>TLS 1.2+<br/>HTTPRoute per-notebook"]
+    subgraph Ingress["INGRESS (Platform Gateway)"]
+        Gateway["OpenShift Gateway/Route<br/>443/TCP<br/>TLS 1.2+ (SIMPLE)<br/>Managed by odh-notebook-controller"]
     end
 
-    subgraph AuthProxy["AUTH PROXY (Trust Boundary)"]
-        KRBAC["kube-rbac-proxy sidecar<br/>8443/TCP → 8888 or 8787/TCP<br/>Bearer token (OAuth/OIDC)<br/>TLS termination"]
-    end
-
-    subgraph WorkbenchPod["WORKBENCH POD (Application)"]
+    subgraph WorkbenchPod["WORKBENCH POD"]
         direction TB
 
-        subgraph JupyterOption["Option A: JupyterLab"]
-            Jupyter["JupyterLab<br/>8888/TCP HTTP<br/>Auth: None (proxy)"]
+        subgraph AuthSidecar["Auth Sidecar (injected)"]
+            KubeRBAC["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>OAuth/OIDC validation<br/>Namespace access check"]
         end
 
-        subgraph CodeServerOption["Option B: Code Server"]
-            CSApp["code-server 4.106.3<br/>8787/TCP HTTP<br/>--auth none"]
-            CSNginx["nginx proxy<br/>8080/TCP HTTP"]
-            CSHttpd["httpd CGI<br/>/api/kernels"]
-            CSApp --> CSNginx
-            CSHttpd --> CSNginx
+        subgraph JupyterStack["Jupyter Workbench"]
+            Jupyter["JupyterLab 4.5<br/>8888/TCP HTTP<br/>ServerApp.token=''<br/>Endpoints: /notebook/{ns}/{user}/"]
         end
 
-        subgraph RStudioOption["Option C: RStudio"]
-            RSApp["RStudio Server<br/>8787/TCP HTTP"]
-            RSNginx["nginx proxy<br/>8080/TCP HTTP"]
-            RSHttpd["httpd CGI<br/>/api/kernels"]
-            RSApp --> RSNginx
-            RSHttpd --> RSNginx
+        subgraph CodeServerStack["Code-Server Workbench"]
+            CS_CodeServer["code-server v4.106.3<br/>8888/TCP HTTP"]
+            CS_Nginx["nginx 1.24<br/>80/TCP HTTP<br/>/api/kernels/ (idle cull)"]
+            CS_HTTPD["httpd CGI<br/>8080/TCP HTTP<br/>Activity tracking"]
         end
+
+        subgraph RStudioStack["RStudio Workbench"]
+            RS_RStudio["RStudio Server 2025.09.0<br/>8787/TCP HTTP"]
+            RS_Nginx["nginx 1.24<br/>80/TCP HTTP<br/>/api/kernels/ (idle cull)"]
+            RS_HTTPD["httpd CGI<br/>8080/TCP HTTP<br/>Access log parsing"]
+        end
+
+        Secrets["Mounted Secrets:<br/>CA bundle (custom certs)<br/>DSPA connection (pipeline creds)"]
     end
 
-    subgraph EgressTargets["EGRESS (Outbound)"]
-        PyPI["PyPI / RH Python Index<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>No auth"]
-        CRAN["CRAN<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>No auth"]
-        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount token"]
-        S3["S3 Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM / HMAC"]
-        Git["Git Repos<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SSH key / PAT"]
-        MLflow["MLflow Server<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+    subgraph ControlPlane["CONTROL PLANE (Cluster-internal)"]
+        Controller["odh-notebook-controller<br/>Mutating webhook<br/>Injects sidecar + secrets"]
+        Operator["rhods-operator<br/>Deploys ImageStreams"]
+        Dashboard["ODH Dashboard<br/>Reads ImageStream annotations"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS mTLS"]
+        Culler["Notebook Controller Culler<br/>Polls /api/kernels/"]
     end
 
-    subgraph BuildPipeline["BUILD PIPELINE (Hermetic)"]
-        Konflux["Konflux CI"]
-        Cachi2["Cachi2 Prefetch<br/>443/TCP HTTPS"]
-        Registry["registry.redhat.io<br/>443/TCP HTTPS<br/>Registry credentials"]
-        Konflux -->|prefetch deps| Cachi2
-        Konflux -->|push images| Registry
+    subgraph EgressTargets["EGRESS (User-initiated)"]
+        PyPI["PyPI / Package Registries<br/>443/TCP HTTPS TLS 1.2+<br/>No auth"]
+        Git["Git Repositories<br/>443/TCP HTTPS TLS 1.2+<br/>User credentials"]
+        S3["S3 Object Storage<br/>443/TCP HTTPS TLS 1.2+<br/>AWS creds / user-provided"]
+        DSPA["Data Science Pipelines API<br/>443/TCP HTTPS TLS 1.2+<br/>Bearer Token (mounted)"]
+        CRAN["CRAN (R packages)<br/>443/TCP HTTPS TLS 1.2+<br/>No auth"]
     end
 
-    %% Access flow
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth/OIDC"| Gateway
-    Gateway -->|"HTTPS/8443<br/>mTLS<br/>Bearer token"| KRBAC
-    KRBAC -->|"HTTP/8888<br/>plaintext (pod-internal)<br/>pre-authorized"| Jupyter
-    KRBAC -->|"HTTP/8080<br/>plaintext (pod-internal)<br/>pre-authorized"| CSNginx
-    KRBAC -->|"HTTP/8080<br/>plaintext (pod-internal)<br/>pre-authorized"| RSNginx
+    subgraph BuildPipeline["BUILD PIPELINE (Konflux)"]
+        Konflux["Konflux Pipeline<br/>Hermetic builds"]
+        Cachi2["cachi2/Hermeto<br/>Dependency prefetch"]
+        RegistryRH["registry.redhat.io<br/>443/TCP HTTPS TLS 1.2+"]
+    end
 
-    %% Egress flows
-    Jupyter -->|pip install| PyPI
-    Jupyter -->|oc CLI| K8sAPI
-    Jupyter -->|boto3| S3
-    Jupyter -->|git-lfs| Git
-    Jupyter -->|mlflow SDK| MLflow
-    RSApp -->|R packages| CRAN
+    %% External → Ingress
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>OIDC/OAuth"| Gateway
+
+    %% Ingress → Auth
+    Gateway -->|"HTTPS/8443<br/>TLS<br/>OAuth token"| KubeRBAC
+
+    %% Auth → Workbench
+    KubeRBAC -->|"HTTP/8888<br/>No encryption (localhost)<br/>No auth (token='')"| Jupyter
+
+    %% Idle culling (Code-Server)
+    CS_Nginx -->|"HTTP/8080<br/>localhost"| CS_HTTPD
+    CS_HTTPD -->|"HTTP/8888<br/>localhost"| CS_CodeServer
+
+    %% Idle culling (RStudio)
+    RS_Nginx -->|"HTTP/8080<br/>localhost"| RS_HTTPD
+
+    %% Culler → workbenches
+    Culler -->|"HTTP/8888 or 80<br/>Pod-internal"| Jupyter
+    Culler -->|"HTTP/80<br/>Pod-internal"| CS_Nginx
+    Culler -->|"HTTP/80<br/>Pod-internal"| RS_Nginx
+
+    %% Control plane
+    Controller -->|"HTTPS/6443<br/>mTLS<br/>Service account"| K8sAPI
+    Operator -->|"HTTPS/6443<br/>mTLS<br/>Service account"| K8sAPI
+    Dashboard -->|"HTTPS/6443<br/>mTLS<br/>Service account"| K8sAPI
+
+    %% Egress
+    Jupyter -->|"HTTPS/443<br/>TLS 1.2+"| PyPI
+    Jupyter -->|"HTTPS/443<br/>TLS 1.2+<br/>User creds"| Git
+    Jupyter -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS creds"| S3
+    Jupyter -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| DSPA
+
+    %% Build pipeline
+    Konflux -->|"HTTPS/443<br/>TLS 1.2+<br/>Service account"| Cachi2
+    Konflux -->|"HTTPS/443<br/>TLS 1.2+<br/>Release creds"| RegistryRH
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef authproxy fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef auth fill:#f8cecc,stroke:#b85450,stroke-width:2px
     classDef workbench fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef control fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef build fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef build fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
     class User external
     class Gateway ingress
-    class KRBAC authproxy
-    class Jupyter,CSApp,CSNginx,CSHttpd,RSApp,RSNginx,RSHttpd workbench
-    class PyPI,CRAN,K8sAPI,S3,Git,MLflow egress
-    class Konflux,Cachi2,Registry build
+    class KubeRBAC auth
+    class Jupyter,CS_CodeServer,CS_Nginx,CS_HTTPD,RS_RStudio,RS_Nginx,RS_HTTPD workbench
+    class Controller,Operator,Dashboard,K8sAPI,Culler control
+    class PyPI,Git,S3,DSPA,CRAN egress
+    class Konflux,Cachi2,RegistryRH build

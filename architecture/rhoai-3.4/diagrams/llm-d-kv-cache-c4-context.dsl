@@ -1,86 +1,83 @@
 workspace {
     model {
-        scheduler = person "llm-d-inference-scheduler" "Distributes inference requests across vLLM pods using cache-aware routing"
+        scheduler = person "Inference Scheduler" "llm-d-inference-scheduler or Envoy Gateway EPP that embeds the KV-cache indexer library"
 
-        llmdKVCache = softwareSystem "llm-d-kv-cache" "Pluggable KV-cache indexing and management service enabling cache-aware routing for distributed LLM inference" {
-            indexer = container "KV-Cache Indexer" "Tokenizes prompts, computes KV-block keys, queries block index, and scores pods based on cache hit rates" "Go Library"
-            eventPool = container "KV Events Pool" "Sharded worker pool that ingests ZMQ event streams from inference pods and updates block index in near-real-time" "Go Library"
-            tokenProcessor = container "Token Processor" "FNV-64a hashing for block key computation from tokenized prompts" "Go Library"
-            kvBlockScorer = container "KV Block Scorer" "Computes pod scores based on cache hit rates for routing decisions" "Go Library"
-            inMemoryIndex = container "In-Memory LRU Index" "hashicorp/golang-lru based block index for single-node deployments" "Go Library"
-            costAwareIndex = container "Cost-Aware Memory Index" "dgraph-io/ristretto based index with byte-level cost tracking" "Go Library"
-            redisIndex = container "Redis/Valkey Index" "Distributed block index using HSET/HKEYS with Lua script atomic operations" "Go Library + Redis Client"
-            udsTokenizer = container "UDS Tokenizer Service" "gRPC tokenization and chat template rendering service via Unix Domain Socket" "Python 3.12 gRPC Service"
-            healthCheck = container "Health Check" "HTTP health probe endpoint for Kubernetes liveness/readiness" "HTTP 8082/TCP"
+        kvCache = softwareSystem "llm-d-kv-cache" "KV-Cache indexing library and tokenization sidecar for KV-cache-aware routing in distributed LLM inference" {
+            indexer = container "kvcache.Indexer" "Maintains global KV-cache block index, scores pods for cache-aware routing" "Go Library"
+            eventPool = container "kvevents.Pool" "Sharded worker pool ingesting KVEvents from ZMQ subscribers, updates block index" "Go Library"
+            blockIndex = container "kvblock.Index" "Pluggable KV-block storage backend (InMemory, Redis, Valkey, CostAwareMemory)" "Go Library"
+            tokenPool = container "tokenization.Pool" "Worker pool for tokenization tasks, supporting UDS and embedded backends" "Go Library"
+            tokenProcessor = container "TokenProcessor" "CBOR canonical encoding + FNV-64a hashing for token-to-block-key conversion" "Go Library"
+            udsTokenizer = container "UDS Tokenizer" "Python gRPC sidecar providing tokenization and chat template rendering via Unix Domain Socket" "Python 3.12 / vLLM CPU"
+            pvcEvictor = container "PVC Evictor" "Multi-process service managing disk usage for filesystem-based KV-cache storage" "Python 3.12"
+            fsBackend = container "llmd_fs_backend" "CUDA-accelerated filesystem storage connector for vLLM KV-cache offloading" "Python/C++/CUDA"
         }
 
-        vllmPods = softwareSystem "vLLM/SGLang Inference Pods" "LLM serving framework pods that generate and stream KV-cache events" "External"
-        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster API for pod auto-discovery via controller-runtime watches" "External"
-        redis = softwareSystem "Redis/Valkey" "Optional distributed KV-block index backend with RDMA support" "External"
-        huggingfaceHub = softwareSystem "HuggingFace Hub" "Tokenizer model file repository" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed trace collection via OTLP" "External"
+        vllm = softwareSystem "vLLM Pods" "Large Language Model inference engines publishing KV-cache events" "External"
+        redis = softwareSystem "Redis / Valkey" "Optional external KV-block index backend" "External"
+        k8sApi = softwareSystem "Kubernetes API" "Pod discovery and watch for dynamic subscriber management" "External"
+        hfHub = softwareSystem "Hugging Face Hub" "Tokenizer model file downloads" "External"
+        otlpCollector = softwareSystem "OTLP Collector" "Distributed tracing export" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection for index operations" "External"
+        envoyGateway = softwareSystem "Envoy Gateway EPP" "Inference routing using KV-cache scoring" "Internal llm-d"
+        inferenceScheduler = softwareSystem "llm-d-inference-scheduler" "Scheduling service embedding indexer for pod scoring" "Internal llm-d"
 
-        fsBackend = softwareSystem "llmd_fs_backend" "vLLM plugin for KV-cache offloading to shared filesystem with optional GPU Direct Storage" "Upstream Only"
-        pvcEvictor = softwareSystem "PVC Evictor" "Automated disk space management for KV-cache PVCs" "Upstream Only"
+        # External relationships
+        scheduler -> kvCache "Embeds as Go library for KV-cache-aware pod scoring"
+        kvCache -> vllm "Subscribes to KVEvents" "ZMQ PUB/SUB 5557/TCP, msgpack, plaintext"
+        kvCache -> redis "Optional external block index" "Redis 6379/TCP, optional TLS"
+        kvCache -> k8sApi "Watches pods for ZMQ subscriber management" "HTTPS 443/TCP, TLS, SA Token"
+        kvCache -> hfHub "Downloads tokenizer files" "HTTPS 443/TCP, TLS 1.2+"
+        kvCache -> otlpCollector "Exports distributed traces" "gRPC 4317/TCP, insecure"
+        kvCache -> prometheus "Exposes metrics" "HTTP"
 
-        # Relationships
-        scheduler -> llmdKVCache "Calls GetPodScores() for cache-aware routing" "Go Library API"
-        vllmPods -> llmdKVCache "Streams KV-cache events (BlockStored, BlockRemoved, AllBlocksCleared)" "ZMQ PUB/SUB 5557/TCP, MessagePack"
-        llmdKVCache -> kubernetesAPI "Auto-discovers vLLM pods for ZMQ subscriber management" "HTTPS 6443/TCP, mTLS"
-        llmdKVCache -> redis "Stores/queries distributed block index" "RESP 6379/TCP, optional TLS"
-        llmdKVCache -> huggingfaceHub "Downloads tokenizer model files" "HTTPS 443/TCP, Bearer Token"
-        prometheus -> llmdKVCache "Scrapes metrics (admissions, evictions, latency)" "HTTP 8080/TCP"
-        llmdKVCache -> otelCollector "Exports distributed traces" "gRPC OTLP 4317/TCP"
+        # Internal relationships
+        inferenceScheduler -> kvCache "Imports indexer + event pool as Go library"
+        envoyGateway -> kvCache "Uses ComputeBlockKeys + ScoreTokens for routing"
 
-        # Internal container relationships
-        scheduler -> indexer "GetPodScores(prompt, model)" "Go API"
-        indexer -> tokenProcessor "Compute block keys" "In-process"
-        indexer -> kvBlockScorer "Score pods" "In-process"
-        indexer -> udsTokenizer "Tokenize prompts" "gRPC over UDS"
-        indexer -> inMemoryIndex "Lookup/Add blocks" "In-process"
-        indexer -> costAwareIndex "Lookup/Add blocks" "In-process"
-        indexer -> redisIndex "Lookup/Add blocks" "In-process"
-        eventPool -> inMemoryIndex "Update index on events" "In-process"
-        eventPool -> costAwareIndex "Update index on events" "In-process"
-        eventPool -> redisIndex "Update index on events" "In-process"
-        udsTokenizer -> huggingfaceHub "Download tokenizer (first call)" "HTTPS 443/TCP"
-        vllmPods -> eventPool "KV-cache events" "ZMQ SUB 5557/TCP"
-        redisIndex -> redis "HSET, HKEYS, Lua scripts" "RESP 6379/TCP"
+        # Container relationships
+        indexer -> eventPool "Receives parsed KVEvents"
+        indexer -> blockIndex "Queries and updates block data"
+        indexer -> tokenPool "Requests tokenization"
+        indexer -> tokenProcessor "Converts tokens to block keys"
+        tokenPool -> udsTokenizer "gRPC over UDS" "Unix Domain Socket, plaintext"
+        eventPool -> vllm "ZMQ SUB" "5557/TCP, msgpack"
+        blockIndex -> redis "Optional backend" "6379/TCP, Redis protocol"
+        pvcEvictor -> fsBackend "Manages disk eviction"
     }
 
     views {
-        systemContext llmdKVCache "SystemContext" {
+        systemContext kvCache "SystemContext" {
             include *
             autoLayout
         }
 
-        container llmdKVCache "Containers" {
+        container kvCache "Containers" {
             include *
             autoLayout
         }
 
         styles {
-            element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Upstream Only" {
-                background #cccccc
-                color #333333
+            element "Internal llm-d" {
+                background #7ed321
+                color #ffffff
+            }
+            element "Software System" {
+                background #4a90e2
+                color #ffffff
             }
             element "Container" {
                 background #438dd5
                 color #ffffff
             }
             element "Person" {
-                shape person
                 background #08427b
                 color #ffffff
+                shape Person
             }
         }
     }

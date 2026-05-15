@@ -1,62 +1,57 @@
 sequenceDiagram
-    participant Client as MLflow Client<br/>(Python SDK)
-    participant KRP as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
+    autonumber
+
+    participant SDK as ML SDK Client<br/>(Notebook / Pipeline)
+    participant Browser as Browser<br/>(RHOAI Dashboard)
+    participant Gateway as RHOAI Gateway<br/>443/TCP HTTPS<br/>TLS 1.2+
     participant MLflow as MLflow Server<br/>5000/TCP HTTP
-    participant AuthMW as Auth Middleware<br/>(K8s Auth Provider)
+    participant KubeAuth as kubernetes-auth<br/>Plugin
     participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant PG as PostgreSQL<br/>5432/TCP TLS
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant PostgreSQL as PostgreSQL<br/>5432/TCP TLS
+    participant S3 as S3 / GCS / Azure<br/>443/TCP HTTPS
 
-    Note over Client,S3: Flow 1: Experiment Tracking (Create Run, Log Metrics)
+    rect rgb(230, 245, 255)
+        Note over SDK,S3: Flow 1: SDK Client → Experiment Tracking
+        SDK->>Gateway: POST /mlflow/api/2.0/mlflow/runs/create<br/>Auth: Bearer Token (K8s SA)<br/>Header: X-MLFLOW-WORKSPACE={namespace}
+        Gateway->>MLflow: HTTP/5000 Forward<br/>TLS terminated at gateway
+        MLflow->>KubeAuth: Authenticate & authorize request
+        KubeAuth->>K8sAPI: POST SelfSubjectAccessReview<br/>Auth: SA Token<br/>Resource: mlflow.kubeflow.org
+        K8sAPI-->>KubeAuth: allowed: true/false
+        KubeAuth-->>MLflow: Authorized (workspace resolved)
+        MLflow->>PostgreSQL: INSERT run record<br/>Auth: DB credentials
+        PostgreSQL-->>MLflow: Run created
+        MLflow->>S3: PUT artifact (if --serve-artifacts)<br/>Auth: AWS IAM / GCS SA
+        S3-->>MLflow: Upload complete
+        MLflow-->>Gateway: 200 OK (JSON response)
+        Gateway-->>SDK: HTTPS response
+    end
 
-    Client->>KRP: POST /api/3.0/mlflow/runs/create<br/>Auth: Bearer Token (K8s SA)
-    KRP->>MLflow: Forward (HTTP/localhost)<br/>Proxied Bearer Token
-    MLflow->>AuthMW: Authenticate request
-    AuthMW->>K8sAPI: TokenReview (validate SA token)<br/>HTTPS/6443, TLS 1.2+
-    K8sAPI-->>AuthMW: Token valid + user info
-    AuthMW-->>MLflow: Authenticated (workspace resolved)
-    MLflow->>PG: INSERT run record<br/>Workspace-filtered query
-    PG-->>MLflow: Run ID
-    MLflow-->>KRP: 200 OK (run_id)
-    KRP-->>Client: Response (TLS)
+    rect rgb(255, 243, 224)
+        Note over Browser,PostgreSQL: Flow 2: UI User → Dashboard Embedding
+        Browser->>Gateway: GET /mlflow/<br/>Auth: OAuth session
+        Gateway->>MLflow: HTTP/5000 Forward
+        MLflow-->>Gateway: React SPA index.html
+        Gateway-->>Browser: HTTPS response
+        Browser->>Gateway: GET /mlflow/api/2.0/mlflow/experiments/search<br/>Auth: Bearer Token + Workspace
+        Gateway->>MLflow: HTTP/5000 Forward
+        MLflow->>KubeAuth: Authenticate & authorize
+        KubeAuth->>K8sAPI: SelfSubjectAccessReview
+        K8sAPI-->>KubeAuth: allowed: true
+        MLflow->>PostgreSQL: SELECT experiments
+        PostgreSQL-->>MLflow: Experiment data
+        MLflow-->>Gateway: JSON response
+        Gateway-->>Browser: Experiment list
+    end
 
-    Note over Client,S3: Flow 2: Artifact Upload
-
-    Client->>KRP: POST /api/3.0/mlflow/runs/log-artifact<br/>Auth: Bearer Token (K8s SA)
-    KRP->>MLflow: Forward (HTTP/localhost)
-    MLflow->>AuthMW: Authenticate + authorize (EDIT permission)
-    AuthMW-->>MLflow: Authorized
-    MLflow->>S3: PUT object<br/>AWS IAM credentials, TLS 1.2+
-    S3-->>MLflow: 200 OK
-    MLflow->>PG: UPDATE artifact metadata
-    PG-->>MLflow: OK
-    MLflow-->>KRP: 200 OK
-    KRP-->>Client: Response (TLS)
-
-    Note over Client,S3: Flow 3: Workspace Resolution (kubernetes-namespaced)
-
-    Client->>Client: Read /var/run/secrets/.../namespace
-    Client->>KRP: GET /api/3.0/mlflow/experiments/search<br/>Auth: Bearer Token<br/>X-MLFLOW-WORKSPACE: {namespace}
-    KRP->>MLflow: Forward with workspace header
-    MLflow->>AuthMW: Authenticate + resolve workspace
-    AuthMW->>K8sAPI: Validate token + namespace access
-    K8sAPI-->>AuthMW: Authorized
-    MLflow->>PG: SELECT experiments<br/>WHERE workspace = {namespace}
-    PG-->>MLflow: Filtered results
-    MLflow-->>KRP: 200 OK (experiments)
-    KRP-->>Client: Response (TLS)
-
-    Note over Client,S3: Flow 4: Web UI Access
-
-    participant Browser as Browser
-
-    Browser->>KRP: GET / (React SPA)<br/>via Platform Gateway HTTPS/443
-    KRP->>MLflow: Forward (HTTP/localhost)
-    MLflow-->>KRP: index.html + static assets
-    KRP-->>Browser: Response (TLS)
-    Browser->>KRP: AJAX /ajax-api/3.0/mlflow/experiments/search<br/>Auth: Bearer Token
-    KRP->>MLflow: Forward
-    MLflow->>PG: Query experiments
-    PG-->>MLflow: Results
-    MLflow-->>KRP: JSON response
-    KRP-->>Browser: Response (TLS)
+    rect rgb(232, 245, 233)
+        Note over SDK,PostgreSQL: Flow 3: OTLP Trace Ingestion
+        SDK->>Gateway: POST /mlflow/v1/traces<br/>Content-Type: application/x-protobuf<br/>Auth: Bearer Token (K8s SA)<br/>Header: x-mlflow-experiment-id
+        Gateway->>MLflow: HTTP/5000 Forward
+        MLflow->>KubeAuth: Authenticate (experiment-scoped)
+        KubeAuth->>K8sAPI: SelfSubjectAccessReview
+        K8sAPI-->>KubeAuth: allowed: true
+        MLflow->>PostgreSQL: INSERT trace spans
+        PostgreSQL-->>MLflow: Stored
+        MLflow-->>Gateway: 200 OK
+        Gateway-->>SDK: Trace accepted
+    end

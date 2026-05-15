@@ -1,47 +1,60 @@
 sequenceDiagram
     participant Client as External Client
-    participant GW as Gateway<br/>(Istio/agentgateway/GKE)<br/>80/TCP HTTP
-    participant EPP as llm-d-inference-scheduler<br/>(EPP)<br/>9002/TCP gRPC
-    participant Prefill as Prefill vLLM<br/>8000/TCP HTTP
-    participant Sidecar as routing-sidecar<br/>(decode pod)<br/>8000/TCP HTTP
-    participant Decode as Decode vLLM<br/>8200/TCP HTTP
-    participant NIXL as NIXL KV Transfer<br/>5600/TCP RDMA/TCP
-    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant OTEL as OTEL Collector<br/>4317/TCP gRPC
+    participant GW as Gateway<br/>(Envoy/AgentGW/Istio)<br/>80/TCP HTTP
+    participant EPP as EPP<br/>(Inference Scheduler)<br/>9002/TCP gRPC
+    participant Prefill as Prefill Server<br/>8000/TCP HTTP
+    participant Decode as Decode Server<br/>8000/TCP HTTP
+    participant DecodeBackend as Decode Backend<br/>8200/TCP HTTP
+    participant Sidecar as Routing Sidecar<br/>8000/TCP HTTP
+    participant S3 as HuggingFace Hub<br/>443/TCP HTTPS
     participant Prom as Prometheus<br/>9090/TCP HTTP
+    participant OTEL as OTEL Collector<br/>4317/TCP gRPC
 
-    Note over Client,Decode: Flow 1: Standard Inference (Optimized Baseline)
-    Client->>GW: POST /v1/chat/completions<br/>HTTP/80 (no auth)
-    GW->>EPP: ext_proc gRPC/9002<br/>(scoring, filtering)
-    EPP-->>GW: Selected backend
-    GW->>Decode: HTTP/8000<br/>(direct to model server)
-    Decode-->>Client: Streamed response<br/>HTTP/80
+    rect rgb(230, 245, 255)
+        Note over Client,Decode: Flow 1: Standard Inference (Optimized Baseline)
+        Client->>GW: POST /v1/chat/completions<br/>HTTP/80
+        GW->>EPP: gRPC ext-proc request<br/>9002/TCP
+        Note over EPP: Evaluate pod metrics:<br/>- prefix cache affinity<br/>- load-aware balancing<br/>- queue depth signals
+        EPP->>GW: ext-proc response<br/>(selected endpoint)
+        GW->>Decode: Forward request<br/>HTTP/8000
+        Decode-->>GW: Streaming response<br/>HTTP/8000
+        GW-->>Client: Streaming response<br/>HTTP/80
+    end
 
-    Note over Client,NIXL: Flow 2: Prefill/Decode Disaggregation
-    Client->>GW: POST /v1/chat/completions<br/>HTTP/80
-    GW->>EPP: ext_proc gRPC/9002<br/>(prefill profile)
-    EPP-->>GW: Selected prefill instance
-    GW->>Prefill: HTTP/8000<br/>(prefill request)
-    Prefill->>NIXL: KV cache transfer<br/>5600/TCP RDMA/TCP (L2, no encryption)
-    NIXL->>Decode: KV cache data<br/>5600/TCP
-    Sidecar->>Decode: Forward request<br/>HTTP/8200 (internal)
-    Decode-->>Client: Streamed response<br/>HTTP/80 via Gateway
+    rect rgb(255, 240, 230)
+        Note over Client,DecodeBackend: Flow 2: Prefill/Decode Disaggregation
+        Client->>GW: POST /v1/chat/completions<br/>HTTP/80
+        GW->>EPP: gRPC ext-proc request<br/>9002/TCP
+        Note over EPP: Select prefill pod<br/>(cache-aware)
+        EPP->>GW: ext-proc response<br/>(prefill endpoint)
+        GW->>Prefill: Forward to prefill<br/>HTTP/8000
+        Note over Prefill: Execute prefill phase<br/>(compute KV cache)
+        Prefill->>DecodeBackend: NIXL KV Transfer<br/>5600/TCP (RDMA/TCP)
+        Note over DecodeBackend: Receive KV cache<br/>(zero-copy if RDMA)
+        Sidecar->>EPP: Decode notification<br/>HTTP/8000
+        DecodeBackend-->>Sidecar: Streaming tokens
+        Sidecar-->>GW: Streaming response
+        GW-->>Client: Streaming response<br/>HTTP/80
+    end
 
-    Note over Client,NIXL: Flow 3: Wide Expert-Parallelism (Multi-Node)
-    Client->>GW: POST /v1/chat/completions<br/>HTTP/80
-    GW->>EPP: ext_proc gRPC/9002
-    EPP-->>GW: Selected leader pod
-    GW->>Sidecar: HTTP/8000<br/>(to leader pod)
-    Sidecar->>Decode: Forward to leader vLLM
-    Decode->>Decode: Worker RPC 5555/TCP<br/>(data parallel)
-    Decode->>NIXL: NVSHMEM/NCCL collective<br/>IB/RoCE RDMA (L2)
-    Decode-->>Client: Streamed response
+    rect rgb(240, 255, 240)
+        Note over Decode,S3: Flow 3: Model Loading (Startup)
+        Decode->>S3: Download model weights<br/>HTTPS/443 (HF_TOKEN Bearer)
+        S3-->>Decode: Model artifacts
+        Note over Decode: Load model into<br/>GPU/accelerator memory
+        Decode->>Prom: Expose /metrics<br/>HTTP/8000
+    end
 
-    Note over Prefill,OTEL: Observability & Model Loading
-    Prefill->>HF: Download model weights<br/>HTTPS/443 (HF_TOKEN)
-    Decode->>HF: Download model weights<br/>HTTPS/443 (HF_TOKEN)
-    Prefill->>OTEL: Traces<br/>OTLP gRPC/4317
-    Decode->>OTEL: Traces<br/>OTLP gRPC/4317
-    Prom->>Prefill: Scrape /metrics<br/>HTTP/8000
-    Prom->>Decode: Scrape /metrics<br/>HTTP/8000
-    Prom->>EPP: Scrape metrics<br/>HTTP/9002
+    rect rgb(255, 245, 230)
+        Note over Prefill,DecodeBackend: Flow 4: Wide Expert-Parallelism (Multi-Node)
+        Note over Prefill,DecodeBackend: Worker 0 (Leader) coordinates Workers 1..N
+        Prefill->>DecodeBackend: data-parallel RPC<br/>5555/TCP gRPC
+        Note over Prefill,DecodeBackend: NVSHMEM/RDMA all-to-all<br/>GPU Direct (ibgda transport)<br/>Requires IPC_LOCK capability
+    end
+
+    rect rgb(245, 240, 255)
+        Note over Decode,OTEL: Observability (Optional)
+        Decode->>OTEL: Export traces<br/>gRPC/4317
+        Decode->>Prom: Scrape metrics<br/>HTTP/8000 /metrics
+        EPP->>Prom: Scrape EPP metrics<br/>HTTP/9090 /metrics
+    end

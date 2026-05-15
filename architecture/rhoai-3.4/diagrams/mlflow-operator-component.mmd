@@ -1,62 +1,81 @@
 graph TB
-    subgraph Operator["MLflow Operator (controller-runtime)"]
-        direction TB
-        Controller["mlflow-operator<br/>Go Controller<br/>8081/TCP health, 8443/TCP metrics"]
-        HelmRenderer["HelmRenderer<br/>Embedded Helm Chart Engine"]
-        Controller -->|renders via| HelmRenderer
+    subgraph Operator["MLflow Operator (Go, controller-runtime)"]
+        Controller["MLflow Controller<br/>Watches MLflow CRs<br/>Server-Side Apply"]
+        HelmRenderer["Helm Chart Renderer<br/>(embedded charts/mlflow)"]
+        MigrationInjector["Migration Injector<br/>Post-render mutation"]
+        Controller -->|renders| HelmRenderer
+        HelmRenderer -->|post-render| MigrationInjector
     end
 
-    subgraph MLflowPod["MLflow Server Pod"]
+    subgraph ManagedResources["Managed Resources (per reconciliation)"]
         direction TB
-        InitCombineCA["Init: combine-ca-bundles<br/>Concatenates system + platform + custom CAs"]
-        InitDBMigration["Init: db-migration<br/>mlflow db fix-migration-gap<br/>(Alembic schema migration)"]
-        MLflowServer["MLflow Tracking Server<br/>8443/TCP HTTPS<br/>uvicorn + kubernetes-auth"]
-        CAWatcher["Sidecar: ca-bundle-watcher<br/>Polls CA ConfigMap changes<br/>every 30s"]
-        InitCombineCA -->|"creates initial bundle"| MLflowServer
-        InitDBMigration -->|"schema ready"| MLflowServer
-        CAWatcher -->|"updates combined-ca-bundle<br/>(emptyDir volume)"| MLflowServer
+        MLflowDeploy["MLflow Deployment<br/>(tracking server + sidecars)"]
+        MLflowSvc["MLflow Service<br/>8443/TCP HTTPS"]
+        NetworkPolicy["NetworkPolicy<br/>(restrictive ingress/egress)"]
+        PVC["PersistentVolumeClaim"]
+        RBAC["ServiceAccount + RBAC"]
+        ServiceMon["ServiceMonitor"]
+        HTTPRoute["HTTPRoute<br/>(Gateway API)"]
+        ConsoleLink["ConsoleLink<br/>(OpenShift menu)"]
+    end
+
+    subgraph MLflowPod["MLflow Pod (Deployed)"]
+        direction TB
+        InitCA["Init: combine-ca-bundles<br/>Aggregates CA certificates"]
+        InitMigration["Init: db-migration<br/>mlflow db fix-migration-gap"]
+        MLflowServer["MLflow Tracking Server<br/>Python, uvicorn<br/>8443/TCP HTTPS"]
+        CAWatcher["Sidecar: ca-bundle-watcher<br/>Polls CA changes (30s)"]
+        InitCA -.->|startup order| InitMigration
+        InitMigration -.->|startup order| MLflowServer
+        MLflowServer --- CAWatcher
     end
 
     %% CRDs
-    User[Platform Admin] -->|creates| MLflowCR["MLflow CR<br/>(mlflow.opendatahub.io/v1)<br/>Cluster-scoped"]
-    NSOwner[Namespace Owner] -->|creates| MLflowConfigCR["MLflowConfig CR<br/>(mlflow.kubeflow.org/v1)<br/>Namespaced"]
+    User["Platform Operator<br/>(rhods-operator)"] -->|creates| MLflowCR["MLflow CR<br/>(Cluster-scoped, singleton)"]
+    WorkspaceOwner["Workspace Owner"] -->|creates| MLflowConfigCR["MLflowConfig CR<br/>(Namespace-scoped)"]
 
-    %% Operator watches and reconciles
     MLflowCR -->|watched by| Controller
-    Controller -->|"SSA apply<br/>(Deployment, Service,<br/>SA, NetworkPolicy,<br/>PVC, ServiceMonitor)"| MLflowPod
-    Controller -->|creates| HTTPRoute["HTTPRoute<br/>(Gateway API)"]
-    Controller -->|creates| ConsoleLink["ConsoleLink<br/>(OpenShift Console)"]
+    MLflowConfigCR -->|watched by| Controller
 
-    %% MLflow server reads config
-    MLflowConfigCR -->|"read at runtime<br/>(artifact storage override)"| MLflowServer
+    %% Reconciliation output
+    MigrationInjector -->|creates/updates| MLflowDeploy
+    MigrationInjector -->|creates/updates| MLflowSvc
+    MigrationInjector -->|creates/updates| NetworkPolicy
+    MigrationInjector -->|creates/updates| PVC
+    MigrationInjector -->|creates/updates| RBAC
+    MigrationInjector -->|creates/updates| ServiceMon
+    Controller -->|creates/updates| HTTPRoute
+    Controller -->|creates/updates| ConsoleLink
+
+    MLflowDeploy -.->|runs| MLflowPod
 
     %% External dependencies
-    Controller -->|"watches/applies via"| K8sAPI["Kubernetes API<br/>6443/TCP"]
-    HTTPRoute -->|"parent ref"| Gateway["data-science-gateway<br/>(Gateway API)"]
-    MLflowServer -->|"SelfSubjectAccessReview"| K8sAPI
-    MLflowServer -->|"backend store"| PostgreSQL["PostgreSQL<br/>5432/TCP"]
-    MLflowServer -->|"artifact storage"| S3["S3-compatible Storage<br/>(MinIO/SeaweedFS/AWS S3)"]
+    Controller -->|API calls<br/>6443/TCP| K8sAPI["Kubernetes API Server"]
+    MLflowServer -->|SelfSubjectAccessReview<br/>6443/TCP| K8sAPI
+    MLflowServer -->|metadata store<br/>5432/TCP| PostgreSQL["PostgreSQL"]
+    MLflowServer -->|artifact storage<br/>9000/TCP| S3["S3-compatible Storage<br/>(MinIO / SeaweedFS)"]
 
-    %% Platform integrations
-    ServiceCA["OpenShift service-CA"] -->|"provisions TLS cert"| MLflowPod
-    CABundle["odh-trusted-ca-bundle<br/>ConfigMap"] -->|"mounted"| MLflowPod
-    Prometheus["Prometheus"] -->|"scrapes /metrics via<br/>ServiceMonitor"| MLflowServer
+    HTTPRoute -->|parentRef| Gateway["data-science-gateway<br/>(Envoy)"]
+
+    %% CA bundle sources
+    SystemCA["System CA<br/>(/etc/pki/tls)"] -->|mounted| InitCA
+    PlatformCA["odh-trusted-ca-bundle<br/>ConfigMap"] -->|mounted| InitCA
+    CustomCA["Custom CA<br/>ConfigMap (optional)"] -->|mounted| InitCA
 
     %% Styling
-    style Controller fill:#4a90e2,stroke:#333,color:#fff
-    style HelmRenderer fill:#4a90e2,stroke:#333,color:#fff
-    style MLflowServer fill:#50c878,stroke:#333,color:#fff
-    style CAWatcher fill:#50c878,stroke:#333,color:#fff
-    style InitCombineCA fill:#87ceeb,stroke:#333
-    style InitDBMigration fill:#87ceeb,stroke:#333
-    style MLflowCR fill:#f5a623,stroke:#333
-    style MLflowConfigCR fill:#f5a623,stroke:#333
-    style HTTPRoute fill:#f5a623,stroke:#333
-    style ConsoleLink fill:#f5a623,stroke:#333
+    style Controller fill:#4a90e2,color:#fff
+    style HelmRenderer fill:#4a90e2,color:#fff
+    style MigrationInjector fill:#4a90e2,color:#fff
+    style MLflowServer fill:#7ed321,color:#fff
+    style CAWatcher fill:#7ed321,color:#fff
+    style InitCA fill:#7ed321,color:#fff
+    style InitMigration fill:#7ed321,color:#fff
+    style MLflowCR fill:#f5a623,color:#fff
+    style MLflowConfigCR fill:#f5a623,color:#fff
     style K8sAPI fill:#e8e8e8,stroke:#333
-    style Gateway fill:#e8e8e8,stroke:#333
     style PostgreSQL fill:#e8e8e8,stroke:#333
     style S3 fill:#e8e8e8,stroke:#333
-    style ServiceCA fill:#dda0dd,stroke:#333
-    style CABundle fill:#dda0dd,stroke:#333
-    style Prometheus fill:#dda0dd,stroke:#333
+    style Gateway fill:#e8e8e8,stroke:#333
+    style SystemCA fill:#fff2cc,stroke:#d6b656
+    style PlatformCA fill:#fff2cc,stroke:#d6b656
+    style CustomCA fill:#fff2cc,stroke:#d6b656

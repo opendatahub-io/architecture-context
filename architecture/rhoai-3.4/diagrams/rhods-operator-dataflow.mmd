@@ -1,55 +1,47 @@
 sequenceDiagram
-    autonumber
-
     participant Client as External Client
-    participant Route as OpenShift Route<br/>443/TCP HTTPS
-    participant Gateway as Gateway (Envoy)<br/>443/TCP TLS Terminate
-    participant EnvoyFilter as EnvoyFilter<br/>ext_authz + Lua
+    participant LB as LoadBalancer /<br/>OpenShift Route<br/>443/TCP HTTPS
+    participant Gateway as Gateway (Envoy)<br/>443/TCP HTTPS
+    participant EnvoyFilter as EnvoyFilter<br/>ext_authz
     participant AuthProxy as kube-auth-proxy<br/>8443/TCP HTTPS
-    participant Backend as Backend Service<br/>(via HTTPRoute)
-    participant User as Platform Admin
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant DSCWebhook as DSC Webhook<br/>8443/TCP HTTPS
+    participant OAuth as OpenShift OAuth /<br/>OIDC Provider<br/>443/TCP HTTPS
+    participant Backend as Backend App<br/>(via HTTPRoute)
+
+    Note over Client,Backend: Flow 1: External User → Gateway → Application
+
+    Client->>LB: HTTPS/443<br/>TLS 1.2+
+    LB->>Gateway: HTTPS/443<br/>TLS terminate/reencrypt
+    Gateway->>EnvoyFilter: Route matching
+    EnvoyFilter->>AuthProxy: ext_authz check<br/>HTTPS/8443 (service-ca TLS)<br/>Cookie or Bearer token
+    AuthProxy->>OAuth: Validate credentials<br/>HTTPS/443 TLS 1.2+<br/>OAuth2/OIDC
+    OAuth-->>AuthProxy: Auth response
+    AuthProxy-->>EnvoyFilter: Auth decision
+    EnvoyFilter->>Backend: Lua filter injects<br/>Authorization header<br/>strips cookies
+    Backend-->>Gateway: Response
+    Gateway-->>Client: JSON/HTML Response
+
+    Note over Client,Backend: Flow 2: Component Lifecycle Management
+
+    participant Admin as Admin
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
     participant DSCCtrl as DSC Controller
-    participant CompRegistry as Component Registry
-    participant CompReconciler as Component Reconciler
-    participant OTEL as OpenTelemetry<br/>Collector
-    participant Prometheus as Prometheus<br/>8889/TCP HTTPS
+    participant CompCtrl as Component Controller
+
+    Admin->>K8sAPI: Create/Update DSC CR<br/>HTTPS/443 TLS 1.2+<br/>kubeconfig auth
+    K8sAPI->>DSCCtrl: Watch notification<br/>ServiceAccount token
+    DSCCtrl->>K8sAPI: Create component CRs<br/>Server-Side Apply (SSA)
+    K8sAPI->>CompCtrl: Watch notification
+    CompCtrl->>K8sAPI: Apply kustomize manifests<br/>SSA with field ownership
+
+    Note over Client,Backend: Flow 3: Monitoring Telemetry Collection
+
+    participant AppPod as Application Pod
+    participant OTelCol as OpenTelemetry<br/>Collector<br/>4317/TCP gRPC
     participant Tempo as Tempo<br/>4317/TCP gRPC
+    participant MonStack as MonitoringStack<br/>(Prometheus)
+    participant Thanos as ThanosQuerier<br/>9090/TCP
 
-    rect rgb(230, 245, 255)
-        Note over Client,Backend: Flow 1: Platform Ingress (LoadBalancer Mode)
-        Client->>Gateway: HTTPS/443<br/>TLS Terminate (GatewayConfig cert)
-        Gateway->>EnvoyFilter: ext_authz check<br/>8443/TCP HTTPS
-        EnvoyFilter->>AuthProxy: OAuth2/OIDC credentials<br/>8443/TCP HTTPS (insecureSkipVerify)
-        AuthProxy-->>EnvoyFilter: x-auth-request-access-token<br/>x-auth-request-user headers
-        EnvoyFilter->>Backend: Lua forwards Bearer token<br/>via HTTPRoute matching
-        Backend-->>Client: Response (via Gateway)
-    end
-
-    rect rgb(255, 243, 224)
-        Note over Client,Route: Flow 2: Legacy Dashboard Redirect
-        Client->>Route: HTTPS/443<br/>edge TLS (legacy hostname)
-        Route->>Route: nginx 301 redirect<br/>8080/TCP HTTP
-        Route-->>Client: 301 Redirect to<br/>rh-ai.{cluster-domain}
-        Client->>Gateway: HTTPS/443<br/>(follows redirect, Flow 1)
-    end
-
-    rect rgb(224, 242, 224)
-        Note over User,CompReconciler: Flow 3: Component Provisioning
-        User->>K8sAPI: Create/Update DSC CR<br/>6443/TCP HTTPS, Bearer token
-        K8sAPI->>DSCWebhook: Validation + Defaulting<br/>8443/TCP HTTPS, cert-manager TLS
-        DSCWebhook-->>K8sAPI: Admitted
-        K8sAPI-->>DSCCtrl: Watch event
-        DSCCtrl->>CompRegistry: Iterate component handlers
-        CompRegistry->>K8sAPI: Create component CR<br/>6443/TCP HTTPS, SA token
-        K8sAPI-->>CompReconciler: Watch event (component CR)
-        CompReconciler->>K8sAPI: Apply kustomize manifests<br/>6443/TCP HTTPS, SA token
-    end
-
-    rect rgb(242, 224, 242)
-        Note over Backend,Tempo: Flow 4: Observability Pipeline
-        Backend->>OTEL: Metrics + Traces<br/>4317/TCP gRPC, 4318/TCP HTTP
-        OTEL->>Prometheus: Export metrics<br/>8889/TCP HTTPS (serving-cert)
-        OTEL->>Tempo: Export traces<br/>4317/TCP gRPC TLS
-    end
+    AppPod->>OTelCol: OTLP traces<br/>gRPC/4317<br/>Optional TLS
+    OTelCol->>Tempo: Forward traces<br/>gRPC/4317<br/>Optional TLS
+    MonStack->>AppPod: Scrape metrics<br/>HTTP (ServiceMonitor)
+    MonStack->>Thanos: Query federation<br/>HTTP/9090<br/>TLS (service-ca)

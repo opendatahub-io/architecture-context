@@ -1,64 +1,85 @@
 graph TB
-    subgraph "llm-d Stack"
+    subgraph External["External Clients"]
+        Client[Client Application]
+    end
+
+    subgraph GatewayLayer["Gateway Layer"]
+        Gateway["llm-d-inference-gateway<br/>Gateway API (port 80/TCP)"]
+        HTTPRoute["HTTPRoute<br/>(per InferencePool)"]
+        Gateway --> HTTPRoute
+    end
+
+    subgraph RouterLayer["Router / Intelligent Routing"]
+        Envoy["Envoy Proxy<br/>(GAIE sidecar)<br/>80/TCP"]
+        EPP["llm-d-inference-scheduler<br/>(EPP / Endpoint Picker)<br/>ext-proc 6789/TCP gRPC"]
+        Envoy -->|ext-proc gRPC<br/>6789/TCP| EPP
+        EPP -->|routing decision| Envoy
+    end
+
+    subgraph ModelServers["Model Server Pods"]
         direction TB
 
-        subgraph Images["Container Images"]
-            CUDA["llm-d-cuda<br/>NVIDIA CUDA GPU<br/>vLLM + NIXL + UCX + NVSHMEM<br/>DeepEP, DeepGEMM, FlashInfer"]
-            CPU["llm-d-cpu<br/>CPU-only inference<br/>vLLM + NIXL + UCX"]
-            HPU["llm-d-hpu<br/>Intel Gaudi HPU<br/>vLLM + vllm-gaudi"]
-            ROCm["llm-d-rocm<br/>AMD ROCm GPU<br/>vLLM + RIXL + UCX"]
-            RDMATools["llm-d-rdma-tools<br/>Diagnostics Only<br/>iperf3, perftest, NCCL"]
+        subgraph CUDAServer["llm-d-cuda (NVIDIA GPU)"]
+            vLLM_CUDA["vLLM Engine<br/>8000/TCP HTTP"]
+            NIXL_CUDA["NIXL Agent<br/>5600/TCP"]
         end
 
-        subgraph Recipes["Deployment Recipes (Kustomize/Helm)"]
-            OptBaseline["Optimized Baseline<br/>Qwen3-32B, 8 replicas"]
-            PDDisagg["P/D Disaggregation<br/>Prefill + Decode split"]
-            WideEP["Wide Expert-Parallelism<br/>DeepSeek-R1, LWS"]
-            PrefixCache["Prefix Cache-Aware<br/>Tiered KV offload"]
-            FlowCtrl["Flow Control<br/>Multi-tenant fairness"]
+        subgraph CPUServer["llm-d-cpu (CPU)"]
+            vLLM_CPU["vLLM Engine<br/>8000/TCP HTTP"]
+        end
+
+        subgraph HPUServer["llm-d-hpu (Intel Gaudi)"]
+            vLLM_HPU["vLLM-Gaudi Engine<br/>8000/TCP HTTP"]
+        end
+
+        subgraph ROCmServer["llm-d-rocm (AMD GPU)"]
+            vLLM_ROCm["vLLM Engine<br/>8000/TCP HTTP"]
+            RIXL_ROCm["RIXL Agent<br/>5600/TCP"]
         end
     end
 
-    subgraph "Runtime Components (External)"
-        EPP["llm-d Inference Scheduler<br/>(EPP v0.8.0)<br/>Port 8081/TCP"]
-        Sidecar["llm-d Routing Sidecar<br/>(v0.7.1)<br/>Port 8000/TCP"]
-        WVA["Workload Variant<br/>Autoscaler (WVA)<br/>Port 8443/TCP"]
+    subgraph PDDisaggregation["Prefill/Decode Disaggregation"]
+        PrefillPod["Prefill Pod<br/>vLLM + NIXL<br/>8000/TCP + 5600/TCP"]
+        DecodePod["Decode Pod<br/>vLLM + Routing Sidecar<br/>8000/TCP (ext) + 8200/TCP (int)"]
+        RoutingSidecar["llm-d-routing-sidecar<br/>8000 → 8200"]
+        PrefillPod <-->|NIXL KV Transfer<br/>5600/TCP| DecodePod
+        RoutingSidecar -->|routes to| DecodePod
     end
 
-    Client[Client] -->|HTTP 80/TCP| Gateway["Gateway API<br/>(Istio / AgentGateway)<br/>Port 80/TCP"]
-    Gateway -->|ExtProc| EPP
-    EPP -->|HTTP 8000/TCP| Sidecar
-    Sidecar -->|HTTP 8200/TCP| CUDA
-    CUDA -->|RDMA/TCP 5600| CUDA
+    subgraph CRDs["Kubernetes CRDs (GAIE)"]
+        InferencePool["InferencePool<br/>inference.networking.k8s.io/v1"]
+        InferenceModelRewrite["InferenceModelRewrite<br/>v1alpha2"]
+        EPPConfig["EndpointPickerConfig<br/>(ConfigMap)"]
+    end
 
-    OptBaseline -.->|deploys| CUDA
-    PDDisagg -.->|deploys| CUDA
-    PDDisagg -.->|configures| Sidecar
-    WideEP -.->|deploys| CUDA
-    PrefixCache -.->|deploys| CUDA
+    %% Flows
+    Client -->|HTTP/80| Gateway
+    HTTPRoute -->|routes to| Envoy
+    Envoy -->|HTTP/8000| vLLM_CUDA
+    Envoy -->|HTTP/8000| vLLM_CPU
+    Envoy -->|HTTP/8000| vLLM_HPU
+    Envoy -->|HTTP/8000| vLLM_ROCm
+    Envoy -->|HTTP/8000| RoutingSidecar
 
-    CUDA -->|metrics 8000/TCP| Prometheus["Prometheus<br/>PodMonitor"]
-    EPP -->|metrics 9090/TCP| Prometheus
-    WVA -->|scales| CUDA
+    EPP -->|watches| InferencePool
+    EPP -->|reads| EPPConfig
+    EPP -->|polls /metrics<br/>8000/TCP| vLLM_CUDA
 
-    CUDA -->|HTTPS 443/TCP| HFHub["HuggingFace Hub<br/>Model Downloads"]
-    CUDA -->|gRPC 4317/TCP| OTel["OpenTelemetry<br/>Collector"]
-
-    style CUDA fill:#4a90e2,stroke:#333,stroke-width:3px,color:#fff
-    style CPU fill:#4a90e2,stroke:#333,color:#fff
-    style HPU fill:#4a90e2,stroke:#333,color:#fff
-    style ROCm fill:#4a90e2,stroke:#333,color:#fff
-    style RDMATools fill:#999,stroke:#333,color:#fff
-    style EPP fill:#7ed321,stroke:#333,color:#fff
-    style Sidecar fill:#7ed321,stroke:#333,color:#fff
-    style WVA fill:#7ed321,stroke:#333,color:#fff
-    style Gateway fill:#f5a623,stroke:#333,color:#fff
-    style OptBaseline fill:#e8d4f0,stroke:#333
-    style PDDisagg fill:#e8d4f0,stroke:#333
-    style WideEP fill:#e8d4f0,stroke:#333
-    style PrefixCache fill:#e8d4f0,stroke:#333
-    style FlowCtrl fill:#e8d4f0,stroke:#333
-    style HFHub fill:#f9f9f9,stroke:#999
-    style Prometheus fill:#f9f9f9,stroke:#999
-    style OTel fill:#f9f9f9,stroke:#999
-    style Client fill:#fff,stroke:#333
+    %% Styling
+    style Client fill:#f9f9f9,stroke:#999,stroke-width:2px
+    style Gateway fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    style HTTPRoute fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    style Envoy fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    style EPP fill:#dae8fc,stroke:#6c8ebf,stroke-width:3px
+    style vLLM_CUDA fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    style vLLM_CPU fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    style vLLM_HPU fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    style vLLM_ROCm fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    style NIXL_CUDA fill:#b8d4e3,stroke:#333
+    style RIXL_ROCm fill:#b8d4e3,stroke:#333
+    style PrefillPod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    style DecodePod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    style RoutingSidecar fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    style InferencePool fill:#f5a623,stroke:#333,stroke-width:2px
+    style InferenceModelRewrite fill:#f5a623,stroke:#333
+    style EPPConfig fill:#f5a623,stroke:#333

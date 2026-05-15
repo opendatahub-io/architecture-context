@@ -1,68 +1,70 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client<br/>User Application"]
-    end
-
-    subgraph Ingress["INGRESS (KServe Gateway)"]
-        KServeGW["KServe InferenceService<br/>HTTPRoute<br/>443/TCP → internal<br/>TLS SIMPLE"]
+        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+"]
     end
 
     subgraph ServiceMesh["SERVICE MESH (Istio mTLS STRICT)"]
         direction TB
 
-        Orchestrator["FMS Guardrails Orchestrator<br/>Invokes detectors on<br/>LLM input/output"]
-
-        subgraph NS_Deploy["Namespace: (deploy namespace)"]
-            direction TB
-
-            BuiltIn["Built-in Detector<br/>ClusterIP 8080/TCP<br/>Image: odh-built-in-detector-rhel9<br/>4 uvicorn workers<br/>No external deps"]
-
-            HFDetector["HuggingFace Detector<br/>ClusterIP 8000/TCP (KServe ISVC)<br/>Image: odh-guardrails-detector-hf-rhel9<br/>1 uvicorn worker (GPU-bound)<br/>Istio sidecar + auth annotation"]
-
-            JudgeDetector["LLM Judge Detector<br/>ClusterIP 8000/TCP (KServe ISVC)<br/>Image: guardrails-detector-llm-judge<br/>Istio sidecar + auth annotation<br/>No Konflux build (pre-GA)"]
-
-            MinIO["S3/MinIO<br/>minio-guardrails-guardian<br/>ClusterIP 9000/TCP"]
+        subgraph Caller["Caller"]
+            Orch["FMS Guardrails Orchestrator<br/>IBM Detector API caller"]
         end
 
-        VLLMServer["vLLM Inference Server<br/>8080/TCP HTTP<br/>OpenAI-compatible"]
+        subgraph NS_Detectors["Namespace: detector deployment namespace"]
+            direction TB
+
+            BuiltIn["Built-in Detector<br/>rhoai/odh-built-in-detector-rhel9<br/>8080/TCP ClusterIP<br/>Istio sidecar: true<br/>Endpoints: /api/v1/text/contents,<br/>/health, /metrics, /registry"]
+
+            HFDet["HuggingFace Detector<br/>rhoai/odh-guardrails-detector-<br/>huggingface-runtime-rhel9<br/>8000/TCP ClusterIP<br/>Istio sidecar: true<br/>KServe ISVC (RawDeployment)<br/>Endpoints: /api/v1/text/contents,<br/>/health, /metrics"]
+
+            JudgeDet["LLM Judge Detector<br/>quay.io/trustyai/guardrails-<br/>detector-llm-judge:latest<br/>8000/TCP ClusterIP<br/>Istio sidecar: true<br/>KServe ISVC (RawDeployment)<br/>Endpoints: /api/v1/text/contents,<br/>/api/v1/text/generation,<br/>/api/v1/metrics, /health, /metrics"]
+        end
+
+        subgraph InCluster["In-Cluster Services"]
+            S3["S3/MinIO Model Storage<br/>9000/TCP ClusterIP<br/>HTTP (plaintext)<br/>AWS IAM credentials"]
+
+            vLLM["vLLM Inference Server<br/>8080/TCP<br/>HTTP (plaintext)<br/>OpenAI-compatible API"]
+        end
+
+        Prometheus["Prometheus<br/>Metrics Scraper"]
     end
 
-    subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>Scrapes /metrics"]
+    subgraph Platform["PLATFORM INFRASTRUCTURE"]
+        KServe["KServe<br/>InferenceService host<br/>RawDeployment mode<br/>Auth: security.opendatahub.io/<br/>enable-auth: true"]
+        Istio["Istio Service Mesh<br/>PeerAuth: STRICT<br/>TLS: ISTIO_MUTUAL"]
     end
 
-    %% External flows
-    Client -->|"HTTPS/443<br/>TLS (KServe-managed)<br/>kube-rbac-proxy / OAuth"| KServeGW
+    %% Flows with security details
+    Orch -->|"HTTP/8080<br/>mTLS STRICT<br/>KServe platform auth"| BuiltIn
+    Orch -->|"HTTP/8000<br/>mTLS STRICT<br/>KServe platform auth"| HFDet
+    Orch -->|"HTTP/8000<br/>mTLS STRICT<br/>KServe platform auth"| JudgeDet
 
-    %% Ingress to service mesh
-    KServeGW -->|"HTTP/8080,8000<br/>mTLS STRICT<br/>Istio service identity"| Orchestrator
+    HFDet -->|"HTTP/9000<br/>No encryption<br/>AWS credentials (Secret)"| S3
+    HFDet -.->|"HTTPS/443<br/>TLS 1.2+<br/>HF token (optional)"| HFHub
 
-    %% Orchestrator to detectors
-    Orchestrator -->|"HTTP/8080<br/>mTLS (Istio)<br/>POST /api/v1/text/contents"| BuiltIn
-    Orchestrator -->|"HTTP/8000<br/>mTLS (Istio)<br/>POST /api/v1/text/contents"| HFDetector
-    Orchestrator -->|"HTTP/8000<br/>mTLS (Istio)<br/>POST /api/v1/text/contents"| JudgeDetector
+    JudgeDet -->|"HTTP/8080<br/>No encryption<br/>No auth (in-cluster)"| vLLM
 
-    %% HF to MinIO
-    HFDetector -->|"HTTP/9000<br/>S3 API<br/>No TLS (cluster-internal)<br/>AWS access key/secret"| MinIO
+    Prometheus -->|"HTTP/8080,8000<br/>No auth<br/>scrape /metrics"| BuiltIn
+    Prometheus -->|"HTTP/8080,8000<br/>No auth<br/>scrape /metrics"| HFDet
+    Prometheus -->|"HTTP/8080,8000<br/>No auth<br/>scrape /metrics"| JudgeDet
 
-    %% Judge to vLLM
-    JudgeDetector -->|"HTTP/8080<br/>OpenAI-compatible<br/>No TLS (cluster-internal)<br/>No Auth"| VLLMServer
-
-    %% Monitoring
-    Prometheus -->|"HTTP/8080,8000<br/>GET /metrics<br/>No Auth"| BuiltIn
-    Prometheus -->|"HTTP/8000<br/>GET /metrics<br/>No Auth"| HFDetector
+    KServe -.->|manages| BuiltIn
+    KServe -.->|manages| HFDet
+    KServe -.->|manages| JudgeDet
+    Istio -.->|sidecar injection| BuiltIn
+    Istio -.->|sidecar injection| HFDet
+    Istio -.->|sidecar injection| JudgeDet
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef detector fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef incluster fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef caller fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
-    class Client external
-    class KServeGW ingress
-    class Orchestrator servicemesh
-    class BuiltIn,HFDetector,JudgeDetector detector
-    class MinIO,VLLMServer storage
-    class Prometheus monitoring
+    class HFHub external
+    class BuiltIn,HFDet,JudgeDet servicemesh
+    class S3,vLLM incluster
+    class KServe,Istio platform
+    class Orch caller
+    class Prometheus servicemesh

@@ -3,86 +3,92 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (Gateway API)"]
-        Gateway["Gateway API<br/>(Istio / AgentGateway)<br/>80/TCP HTTP<br/>Auth: Provider-specific"]
+    subgraph Ingress["INGRESS (Gateway Layer)"]
+        Gateway["llm-d-inference-gateway<br/>80/TCP → 80/TCP<br/>HTTP (TLS configurable per provider)<br/>Providers: AgentGateway / Istio / GKE"]
+        HTTPRoute["HTTPRoute<br/>(per InferencePool)"]
+        Gateway --> HTTPRoute
     end
 
-    subgraph Routing["ROUTING LAYER (Plaintext)"]
+    subgraph Routing["ROUTING LAYER (In-Cluster, Plaintext)"]
+        Envoy["Envoy Proxy (GAIE)<br/>80/TCP ingress → 8000/TCP upstream<br/>HTTP, No encryption, No auth"]
+        EPP["EPP / Inference Scheduler<br/>6789/TCP gRPC (ext-proc)<br/>9090/TCP metrics<br/>No encryption, No auth"]
+    end
+
+    subgraph ModelServerNetwork["MODEL SERVER NETWORK (In-Cluster, Plaintext)"]
         direction TB
-        EPP["llm-d Inference Scheduler<br/>(EPP v0.8.0)<br/>8081/TCP HTTP ExtProc<br/>9090/TCP Metrics"]
-        Sidecar["Routing Sidecar v0.7.1<br/>8000/TCP → 8200/TCP<br/>P/D coordination"]
-    end
 
-    subgraph ModelServers["MODEL SERVER LAYER (Plaintext)"]
-        direction TB
-
-        subgraph PrefillPods["Prefill Pods"]
-            PrefillVLLM["vLLM Prefill<br/>8000/TCP HTTP API<br/>5600/TCP NIXL RDMA<br/>SA: sa (no token mount)"]
+        subgraph DecodePod["Decode Pod"]
+            RoutingSidecar["Routing Sidecar<br/>8000/TCP (external)<br/>HTTP, No auth"]
+            DecodeVLLM["vLLM Decode<br/>8200/TCP (internal, PD mode)<br/>or 8000/TCP (baseline)<br/>HTTP, No auth"]
+            NIXLDecode["NIXL Agent<br/>5600/TCP<br/>Custom protocol, No encryption"]
         end
 
-        subgraph DecodePods["Decode Pods"]
-            DecodeVLLM["vLLM Decode<br/>8000/8200 TCP HTTP API<br/>5600/TCP NIXL RDMA<br/>5556/TCP ZMQ Events<br/>SA: sa (no token mount)"]
+        subgraph PrefillPod["Prefill Pod"]
+            PrefillVLLM["vLLM Prefill<br/>8000/TCP HTTP<br/>No auth"]
+            NIXLPrefill["NIXL Agent<br/>5600/TCP<br/>Custom protocol, No encryption"]
         end
 
-        subgraph WideEP["Wide-EP Pods (LWS)"]
-            Leader["LWS Leader<br/>5555/TCP gRPC DP-RPC"]
-            Workers["LWS Workers<br/>InfiniBand RDMA<br/>NVSHMEM/NCCL"]
-        end
+        NVSHMEM["NVSHMEM / UCX<br/>Dynamic ports (RDMA/TCP)<br/>No encryption<br/>Fabric-level isolation only"]
     end
 
-    subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>PodMonitor scrape"]
-        OTel["OpenTelemetry Collector<br/>4317/TCP gRPC OTLP"]
-        WVA["WVA<br/>8443/TCP HTTPS TLS<br/>Autoscaling"]
+    subgraph Observability["OBSERVABILITY (In-Cluster)"]
+        Prometheus["Prometheus<br/>Scrapes 8000/TCP + 9090/TCP<br/>HTTP, No auth<br/>30s interval (PodMonitor)"]
+        OTELCollector["OTEL Collector<br/>4317/TCP gRPC (OTLP)<br/>No encryption, No auth"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer HF_TOKEN"]
+    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
+        HFHub["Hugging Face Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Bearer Token (HF_TOKEN)"]
     end
 
-    %% Client → Gateway
-    Client -->|"HTTP/80<br/>No encryption<br/>Provider auth"| Gateway
+    %% External → Ingress
+    Client -->|"HTTP/80<br/>No TLS (configurable)"| Gateway
 
-    %% Gateway → EPP
-    Gateway -->|"HTTP/8081<br/>ExtProc<br/>No encryption"| EPP
+    %% Ingress → Routing
+    HTTPRoute -->|"HTTP/80"| Envoy
 
-    %% EPP → Sidecar/Model Server
-    EPP -->|"HTTP/8000<br/>No encryption<br/>No auth"| Sidecar
-    EPP -->|"HTTP/8000<br/>No encryption<br/>No auth"| DecodeVLLM
+    %% Routing internals
+    Envoy <-->|"gRPC/6789<br/>ext-proc<br/>No encryption"| EPP
 
-    %% Sidecar → vLLM
-    Sidecar -->|"HTTP/8200<br/>No encryption"| DecodeVLLM
-    Sidecar -->|"HTTP/8000<br/>No encryption"| PrefillVLLM
+    %% Routing → Model Servers
+    Envoy -->|"HTTP/8000<br/>No TLS, No auth"| RoutingSidecar
+    Envoy -->|"HTTP/8000<br/>No TLS, No auth"| DecodeVLLM
 
-    %% KV-cache transfers
-    PrefillVLLM <-->|"RDMA/TCP 5600<br/>NIXL<br/>No encryption"| DecodeVLLM
+    %% PD internals
+    RoutingSidecar -->|"HTTP/8200<br/>No TLS"| DecodeVLLM
+    NIXLDecode <-->|"NIXL/5600<br/>No encryption<br/>No auth"| NIXLPrefill
 
-    %% Wide-EP coordination
-    Leader <-->|"gRPC/5555<br/>DP-RPC<br/>No encryption"| Workers
-    Workers <-->|"InfiniBand RDMA<br/>NVSHMEM<br/>No encryption"| Workers
+    %% Multi-node GPU
+    DecodePod <-->|"RDMA/TCP<br/>Dynamic ports<br/>No encryption"| NVSHMEM
+    PrefillPod <-->|"RDMA/TCP<br/>Dynamic ports<br/>No encryption"| NVSHMEM
 
-    %% Monitoring
-    DecodeVLLM -.->|"HTTP/8000<br/>/metrics"| Prometheus
-    PrefillVLLM -.->|"HTTP/8000<br/>/metrics"| Prometheus
-    EPP -.->|"HTTP/9090<br/>/metrics"| Prometheus
-    WVA -.->|"HTTPS/8443<br/>TLS"| Prometheus
-    DecodeVLLM -.->|"gRPC/4317<br/>OTLP traces"| OTel
+    %% EPP monitoring
+    EPP -->|"HTTP/8000<br/>polls /metrics"| DecodeVLLM
+    EPP -->|"HTTP/8000<br/>polls /metrics"| PrefillVLLM
 
-    %% External
-    DecodeVLLM -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer HF_TOKEN"| HFHub
-    PrefillVLLM -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer HF_TOKEN"| HFHub
+    %% Observability
+    Prometheus -->|"HTTP/8000<br/>/metrics"| DecodeVLLM
+    Prometheus -->|"HTTP/8000<br/>/metrics"| PrefillVLLM
+    Prometheus -->|"HTTP/9090<br/>/metrics"| EPP
+    DecodeVLLM -->|"gRPC OTLP/4317<br/>No TLS"| OTELCollector
+    EPP -->|"gRPC OTLP/4317<br/>No TLS"| OTELCollector
+
+    %% Egress
+    DecodeVLLM -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
+    PrefillVLLM -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef routing fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef modelserver fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef observability fill:#e8eaf6,stroke:#5c6bc0,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef warning fill:#ffcdd2,stroke:#e53935,stroke-width:2px
 
     class Client external
-    class Gateway ingress
-    class EPP,Sidecar routing
-    class PrefillVLLM,DecodeVLLM,Leader,Workers modelserver
-    class Prometheus,OTel,WVA monitoring
+    class Gateway,HTTPRoute ingress
+    class Envoy,EPP routing
+    class RoutingSidecar,DecodeVLLM,NIXLDecode,PrefillVLLM,NIXLPrefill modelserver
+    class NVSHMEM warning
+    class Prometheus,OTELCollector observability
     class HFHub externalservice

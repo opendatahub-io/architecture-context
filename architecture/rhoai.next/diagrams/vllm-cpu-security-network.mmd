@@ -1,74 +1,67 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["Client / KServe Gateway"]
+        Client["External Client"]
+        GRPCClient["gRPC Client"]
     end
 
-    subgraph ServiceBoundary["SERVICE BOUNDARY (vLLM Pod)"]
+    subgraph Ingress["INGRESS (Platform-Managed by KServe)"]
+        KServeRoute["KServe Route/HTTPRoute<br/>TLS termination at platform level"]
+    end
+
+    subgraph Service["SERVICE (ClusterIP - Internal)"]
         direction TB
 
-        subgraph APILayer["API Layer"]
-            APIServer["vLLM OpenAI API Server<br/>FastAPI + uvicorn<br/>8000/TCP HTTP(S)<br/>Configurable TLS<br/>Bearer Token on /v1/* only"]
-            GRPCServer["gRPC Server<br/>smg-grpc-servicer<br/>50051/TCP gRPC<br/>No encryption<br/>No auth"]
-            MetricsEndpoint["Prometheus Metrics<br/>8000/TCP (shared)<br/>HTTP<br/>No auth"]
-        end
+        subgraph Pod["vllm-cpu Pod<br/>User: 2000 (non-root) | Group: 0<br/>Base: UBI9 ubi-minimal"]
+            direction TB
 
-        subgraph UnauthEndpoints["UNAUTHENTICATED ENDPOINTS (Risk)"]
-            HealthEndpoints["/health, /version, /load<br/>Read-only (Low Risk)"]
-            OpEndpoints["/pause, /resume, /sleep,<br/>/wake_up, /update_weights,<br/>/collective_rpc<br/>(CRITICAL Risk)"]
-            CacheEndpoints["/reset_prefix_cache,<br/>/reset_mm_cache<br/>(Medium Risk)"]
+            OpenAIAPI["OpenAI API Server (FastAPI)<br/>Service: vllm-openai<br/>8000/TCP HTTP<br/>Optional TLS (ssl module)<br/>Auth: API Key (optional)<br/>Cert reload: SSLCertRefresher"]
+
+            GRPCServer["gRPC Server<br/>Service: vllm-grpc<br/>50051/TCP gRPC (HTTP/2)<br/>⚠️ No TLS (add_insecure_port)<br/>⚠️ No Auth"]
+
+            Engine["V1 AsyncLLM Engine<br/>VLLM_USE_V1=1<br/>PyTorch CPU Backend<br/>x86_64 / ppc64le / s390x"]
         end
     end
 
-    subgraph EgressServices["EGRESS (Outbound)"]
-        direction TB
-        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer HF_TOKEN"]
-        OTLPCollector["OTLP Collector<br/>Configurable port<br/>gRPC/HTTP<br/>Default: INSECURE"]
-        RHStats["Red Hat Stats<br/>console.redhat.com<br/>443/TCP HTTPS<br/>TLS 1.2+"]
-        S3Storage["S3-Compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
+    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
+        HFHub["Hugging Face Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer HF_TOKEN"]
+        S3["S3-compatible Storage<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS IAM<br/>(S3_ACCESS_KEY_ID)"]
+        OTel["OpenTelemetry Collector<br/>configurable port<br/>HTTPS/gRPC TLS 1.2+"]
+        MCP["MCP Tool Servers<br/>configurable port<br/>HTTP/HTTPS"]
     end
 
-    subgraph DistributedOpt["OPTIONAL DISTRIBUTED"]
-        Gloo["Gloo Backend<br/>TCP (no encryption)<br/>Tensor parallelism"]
-        RayCluster["Ray Cluster<br/>6379/TCP<br/>No encryption"]
+    subgraph Monitoring["MONITORING (Internal)"]
+        Prometheus["Prometheus<br/>Scrapes /metrics<br/>8000/TCP HTTP"]
     end
 
-    %% Inbound flows
-    Client -->|"HTTP(S)/8000<br/>Configurable TLS<br/>Bearer API Key"| APIServer
-    Client -->|"gRPC/50051<br/>No encryption"| GRPCServer
+    %% Ingress Flows
+    Client -->|"HTTP 8000/TCP<br/>Optional TLS<br/>API Key (Bearer)"| KServeRoute
+    KServeRoute -->|"HTTP 8000/TCP<br/>Optional TLS<br/>API Key forwarded"| OpenAIAPI
+    GRPCClient -->|"gRPC 50051/TCP<br/>⚠️ No TLS<br/>⚠️ No Auth"| GRPCServer
 
-    %% Internal
-    APIServer -.-> HealthEndpoints
-    APIServer -.-> OpEndpoints
-    APIServer -.-> CacheEndpoints
+    %% Internal Flows
+    OpenAIAPI -->|"in-process<br/>Python call"| Engine
+    GRPCServer -->|"in-process<br/>Python call"| Engine
 
-    %% Egress flows
-    APIServer -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer HF_TOKEN"| HFHub
-    APIServer -->|"gRPC (insecure default)<br/>OpenTelemetry traces"| OTLPCollector
-    APIServer -->|"HTTPS/443<br/>TLS 1.2+<br/>No auth"| RHStats
-    APIServer -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3Storage
+    %% Egress Flows
+    Engine -->|"HTTPS 443/TCP<br/>TLS 1.2+<br/>Bearer HF_TOKEN"| HFHub
+    Engine -->|"HTTPS 443/TCP<br/>TLS 1.2+<br/>AWS IAM"| S3
+    Engine -->|"HTTPS/gRPC<br/>TLS 1.2+"| OTel
+    Engine -->|"HTTP/HTTPS<br/>Configurable"| MCP
 
-    %% Observability
-    Prometheus["Prometheus Scraper"] -->|"HTTP/8000<br/>Configurable TLS<br/>No auth"| MetricsEndpoint
-
-    %% Distributed
-    APIServer -.->|"TCP<br/>No encryption"| Gloo
-    APIServer -.->|"Ray protocol/6379<br/>No encryption"| RayCluster
+    %% Monitoring
+    Prometheus -->|"HTTP 8000/TCP<br/>/metrics<br/>No Auth"| OpenAIAPI
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef service fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
-    classDef grpc fill:#3498db,stroke:#333,stroke-width:2px,color:#fff
-    classDef metrics fill:#2ecc71,stroke:#333,stroke-width:2px
-    classDef risk fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff
-    classDef lowrisk fill:#f39c12,stroke:#e67e22,stroke-width:2px
-    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef distributed fill:#ddd,stroke:#999,stroke-width:1px,stroke-dasharray: 5 5
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef service fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef monitoring fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
 
-    class Client,Prometheus external
-    class APIServer service
-    class GRPCServer grpc
-    class MetricsEndpoint metrics
-    class OpEndpoints risk
-    class HealthEndpoints,CacheEndpoints lowrisk
-    class HFHub,OTLPCollector,RHStats,S3Storage egress
-    class Gloo,RayCluster distributed
+    class Client,GRPCClient external
+    class KServeRoute ingress
+    class OpenAIAPI,Engine service
+    class GRPCServer warning
+    class HFHub,S3,OTel,MCP externalservice
+    class Prometheus monitoring

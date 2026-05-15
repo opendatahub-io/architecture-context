@@ -1,147 +1,120 @@
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  KUBERNETES CLUSTER                                                         │
-│                                                                             │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  OPERATOR (Control Plane)                                           │    │
-│  │                                                                     │    │
-│  │  [TrustyAI LMEval Operator]                                         │    │
-│  │  - Creates Kubernetes Jobs based on LMEvalJob CRDs                  │    │
-│  │  - Manages Job lifecycle                                            │    │
-│  │         │                                                           │    │
-│  │         │ Kubernetes Job API                                        │    │
-│  │         │ Auth: ServiceAccount                                      │    │
-│  │         ▼                                                           │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                             │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  JOB EXECUTION (Batch Workload)                                     │    │
-│  │                                                                     │    │
-│  │  [Init Container] (offline mode only)                               │    │
-│  │  - Image: init-container-image                                      │    │
-│  │  - Purpose: Pre-download datasets for offline evaluation            │    │
-│  │         │                                                           │    │
-│  │         │ Port: 443/TCP                                             │    │
-│  │         │ Protocol: HTTPS                                           │    │
-│  │         │ Encryption: TLS 1.2+                                      │    │
-│  │         │ Auth: AWS IAM / IBM COS credentials                       │    │
-│  │         │ Destination: S3 / IBM COS                                 │    │
-│  │         ▼                                                           │    │
-│  │  [/test_data shared volume]                                         │    │
-│  │         │                                                           │    │
-│  │         │ Filesystem (no network)                                   │    │
-│  │         ▼                                                           │    │
-│  │  [lm-evaluation-harness Job Container]                              │    │
-│  │  - Image: odh-ta-lmes-job-rhel9 (UBI9/Python 3.11)                │    │
-│  │  - Namespace: {user-namespace}                                      │    │
-│  │  - ServiceAccount: managed by LMEval Operator                       │    │
-│  │  - Architectures: x86_64, s390x, ppc64le                          │    │
-│  │  - Input: /meta/job.json (ConfigMap mount)                         │    │
-│  │  - No inbound ports (batch job, no Services)                       │    │
-│  │                                                                     │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                             │
-│  EGRESS (All outbound connections from Job container)                       │
-│  ═══════════════════════════════════════════════════                        │
-│                                                                             │
-│  [Job Container] ──────────────────────────────────────────────────────     │
-│         │                                                                   │
-│         ├── Port: 443/TCP ──► [EvalHub Service]                            │
-│         │   Protocol: HTTPS                                                 │
-│         │   Encryption: TLS 1.2+                                           │
-│         │   Auth: Bearer Token (from job spec)                             │
-│         │   Purpose: Status callbacks (INITIALIZING → LOADING_DATA →       │
-│         │            RUNNING → POST_PROCESSING → PERSISTING_ARTIFACTS →    │
-│         │            COMPLETED) and final evaluation results               │
-│         │                                                                   │
-│         ├── Port: 443/TCP or 8080/TCP ──► [Model Serving Endpoint]         │
-│         │   Protocol: HTTPS or HTTP                                         │
-│         │   Encryption: TLS 1.2+ (configurable, supports custom CA)        │
-│         │   Auth: Bearer Token (OPENAI_API_KEY env var)                    │
-│         │   Purpose: OpenAI-compatible /v1/completions inference requests  │
-│         │   Concurrency: Up to 128 concurrent async requests (aiohttp)     │
-│         │                                                                   │
-│         ├── Port: 443/TCP ──► [OCI Registry]                               │
-│         │   Protocol: HTTPS                                                 │
-│         │   Encryption: TLS 1.2+                                           │
-│         │   Auth: Registry credentials (username/password or token)        │
-│         │   Purpose: Push evaluation result OCI artifacts                  │
-│         │                                                                   │
-│         ├── Port: 443/TCP or 5000/TCP ──► [MLflow Tracking Server]         │
-│         │   Protocol: HTTPS or HTTP                                         │
-│         │   Encryption: TLS 1.2+                                           │
-│         │   Auth: Bearer Token                                             │
-│         │   Purpose: Log evaluation metrics and run metadata               │
-│         │                                                                   │
-│         ├── Port: 443/TCP ──► [HuggingFace Hub - huggingface.co]          │
-│         │   Protocol: HTTPS                                                 │
-│         │   Encryption: TLS 1.2+                                           │
-│         │   Auth: HF_TOKEN (Bearer)                                        │
-│         │   Purpose: Download tokenizers, datasets, and model configs      │
-│         │   Note: Disabled in offline mode (HF_*_OFFLINE=1)               │
-│         │                                                                   │
-│         └── Port: 443/TCP ──► [S3 / IBM COS]                              │
-│             Protocol: HTTPS                                                 │
-│             Encryption: TLS 1.2+                                           │
-│             Auth: AWS IAM credentials / IBM COS credentials                │
-│             Purpose: Download test data for offline evaluations            │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  KUBERNETES CLUSTER (Internal)                                               │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │  JOB CONTAINER (Ephemeral - Batch Job)                                │  │
+│  │                                                                        │  │
+│  │  [LMES Job Container]                                                  │  │
+│  │  - Image: lmes-job (UBI9/Python 3.11)                                  │  │
+│  │  - Runs as: Kubernetes Job (not long-running)                          │  │
+│  │  - ServiceAccount: managed by EvalHub Operator                         │  │
+│  │  - device=cpu (no GPU required)                                        │  │
+│  │                                                                        │  │
+│  │  Internal Components:                                                  │  │
+│  │  ┌─────────────────────┐  ┌──────────────────────┐                    │  │
+│  │  │ LMEval Adapter      │  │ lm-evaluation-harness│                    │  │
+│  │  │ (main.py)           │──│ (lm_eval/)           │                    │  │
+│  │  │ FrameworkAdapter    │  │ v0.4.8 fork          │                    │  │
+│  │  └─────────┬───────────┘  └──────────┬───────────┘                    │  │
+│  │            │                          │                                │  │
+│  │  ┌─────────────────────┐  ┌──────────────────────┐                    │  │
+│  │  │ OCI Publisher       │  │ Offline Metrics       │                    │  │
+│  │  │ (scripts/oci.py)    │  │ (metrics/)            │                    │  │
+│  │  │ skopeo + olot       │  │ 55+ pre-packaged      │                    │  │
+│  │  └─────────────────────┘  └──────────────────────┘                    │  │
+│  │                                                                        │  │
+│  │  Mounted Resources:                                                    │  │
+│  │  - /meta/job.json (ConfigMap) - Job specification                      │  │
+│  │  - Secrets: API keys, HF tokens, CA certs                              │  │
+│  │  - /test_data (volume, offline mode only)                              │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│         │              │              │             │            │            │
+│         │              │              │             │            │            │
+├─────────┼──────────────┼──────────────┼─────────────┼────────────┼────────────┤
+│  EGRESS │              │              │             │            │            │
+│         │              │              │             │            │            │
+│         │ Port: 443    │ Port: config │ Port: 443   │ Port: 443  │ Port: cfg  │
+│         │ Proto: HTTPS │ Proto: HTTP/ │ Proto: HTTPS│ Proto: HTTPS│ Proto: HTTPS│
+│         │ Enc: TLS 1.2+│ HTTPS       │ Enc: TLS 1.2+│Enc: TLS 1.2+│Enc: TLS 1.2+│
+│         │ Auth: Bearer │ Enc: TLS    │ Auth: Docker │ Auth:      │ Auth:      │
+│         │ Token        │ (configurable│ config /    │ HF_TOKEN   │ Bearer     │
+│         │              │ via verify_  │ username+pw │ (optional) │ Token      │
+│         │              │ certificate) │             │            │            │
+│         │              │ Auth: Bearer │             │            │            │
+│         │              │ (OPENAI_API_ │             │            │            │
+│         │              │ KEY)         │             │            │            │
+│         ▼              ▼              ▼             ▼            ▼            │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                           │
+│                                                                              │
+│  [EvalHub Service]          [Model Inference Endpoint]                       │
+│  - Purpose: Job lifecycle   - Purpose: LLM completions & logprobs            │
+│    callbacks (status,       - Backends: vLLM, TGI, or other                  │
+│    progress, results)         OpenAI-compatible serving runtime               │
+│  - Auth: Bearer Token       - Auth: Bearer Token (OPENAI_API_KEY)            │
+│  - Encryption: TLS 1.2+    - Encryption: TLS configurable                   │
+│                               (verify_certificate param)                      │
+│                             - Concurrency: up to 128 parallel requests        │
+│                                                                              │
+│  [OCI Registry (Quay)]      [HuggingFace Hub]                                │
+│  - Purpose: Persist eval    - Purpose: Benchmark datasets,                   │
+│    results as OCI artifacts   tokenizers, gated resources                     │
+│  - Auth: Docker config      - Auth: HF_TOKEN (optional,                      │
+│    (/tmp/.docker/config.json) required for gated datasets)                   │
+│    or OCI_USERNAME/PASSWORD  - Encryption: TLS 1.2+                          │
+│  - Encryption: TLS 1.2+    - Disabled in offline mode                        │
+│                               (HF_HUB_OFFLINE=1)                             │
+│                                                                              │
+│  [MLflow Tracking Server]   [S3-compatible Storage]                          │
+│  - Purpose: Log eval        - Purpose: Pre-staged test data                  │
+│    metrics, parameters,       for offline/disconnected evals                  │
+│    run metadata             - Auth: AWS IAM / IBM COS creds                  │
+│  - Auth: Bearer Token       - Encryption: TLS 1.2+                           │
+│  - Encryption: TLS 1.2+    - Used by init container only                     │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL SERVICES                                                          │
-│                                                                             │
-│  [EvalHub Service]                                                          │
-│  - Purpose: Evaluation orchestration, receives status and results          │
-│  - Auth: Bearer Token                                                      │
-│  - Encryption: TLS 1.2+                                                    │
-│                                                                             │
-│  [Model Serving Endpoint (vLLM / KServe / etc.)]                           │
-│  - Purpose: LLM inference via OpenAI-compatible API                        │
-│  - Auth: OPENAI_API_KEY Bearer Token                                       │
-│  - Encryption: TLS 1.2+ (supports custom CA certificates)                 │
-│                                                                             │
-│  [OCI Registry]                                                             │
-│  - Purpose: Evaluation result artifact persistence                         │
-│  - Auth: Username/Password or Token                                        │
-│  - Encryption: TLS 1.2+                                                    │
-│                                                                             │
-│  [MLflow Tracking Server]                                                   │
-│  - Purpose: Experiment tracking, metric logging                            │
-│  - Auth: Bearer Token                                                      │
-│  - Encryption: TLS 1.2+                                                    │
-│                                                                             │
-│  [HuggingFace Hub - huggingface.co]                                        │
-│  - Purpose: Tokenizer, dataset, and model config downloads                 │
-│  - Auth: HF_TOKEN Bearer                                                   │
-│  - Encryption: TLS 1.2+                                                    │
-│                                                                             │
-│  [S3 / IBM COS]                                                            │
-│  - Purpose: Object storage for offline test data and model artifacts       │
-│  - Auth: AWS IAM / IBM COS credentials                                    │
-│  - Encryption: TLS 1.2+                                                    │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+INGRESS: None
+  This component is a batch job. It does not accept inbound connections.
+  No Kubernetes Services, Ingress, or Routes are created.
 
 RBAC Summary:
-- No RBAC resources defined by this component
-- Job RBAC is managed by the TrustyAI / LMEval operator that creates the Job
-- Job runs under a ServiceAccount provisioned by the operator
+  No RBAC resources defined in this repository.
+  RBAC is managed by the parent operator (TrustyAI/EvalHub Operator)
+  that creates and manages the Kubernetes Job.
 
 Secrets:
-- model-auth-secret (Opaque) - API key for model endpoint (OPENAI_API_KEY),
-  optional HF_TOKEN, custom CA cert - Provisioned by User/Operator, no auto-rotate
-- OCI registry credentials (Opaque) - Username/password for OCI artifact push -
-  Provisioned by User/Operator, no auto-rotate
+  - Model auth secret (model.auth.secret_ref)
+    Type: Opaque
+    Contents: OPENAI_API_KEY, optional hf-token key
+    Provisioned by: User/Operator
+    Auto-Rotate: No
 
-TLS Configuration:
-- Uses Python stdlib `ssl` module backed by system OpenSSL on UBI9
-- Supports custom CA certificates via `verify_certificate` parameter
-- Creates ssl.SSLContext with ssl.create_default_context() (inherits system crypto policy)
-- Resolves symlinks for K8s secret volume mounts
-- No non-FIPS crypto risks detected (no MD5, RC4, DES, or custom crypto)
+  - OCI registry auth (/tmp/.docker/config.json)
+    Type: Docker config
+    Contents: Registry authentication credentials
+    Provisioned by: EvalHub/Operator
+    Auto-Rotate: No
 
-Network Posture:
-- INGRESS: None (batch job, no exposed Services or ports)
-- EGRESS: All connections are outbound HTTPS (TLS 1.2+)
-- No service mesh sidecar requirements documented
-- No NetworkPolicy defined by this component
+  - CA certificate bundle (verify_certificate)
+    Type: Opaque
+    Contents: Custom CA certificate for model endpoint TLS
+    Provisioned by: User/Operator
+    Auto-Rotate: No
+    Note: Validated to not be symlink (defense against K8s
+          secret volume mount symlink attacks)
+
+TLS/Certificate Handling:
+  - Uses ssl.create_default_context() with system trust store
+  - Supports custom CA bundle via verify_certificate parameter
+  - Custom CA paths validated: not symlink, absolute path, regular file
+  - FIPS-compliant via UBI9 system OpenSSL when FIPS mode enabled
+  - No non-FIPS crypto: hashlib.sha256 used only for cache keys (non-security)
+
+Authentication Mechanisms:
+  - Model Endpoint: Bearer Token via OPENAI_API_KEY env var
+  - EvalHub Callbacks: Bearer Token from job spec
+  - HuggingFace Hub: HF_TOKEN env var (optional)
+  - OCI Registry: Docker config or OCI_USERNAME/OCI_PASSWORD
+  - S3 Storage: AWS IAM / IBM COS credentials
+  - MLflow: Bearer Token

@@ -1,71 +1,82 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User / Platform UI"]
+        User["User / Data Scientist"]
     end
 
-    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP<br/>TLS 1.2+<br/>RBAC AuthZ"]
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE (Trusted)"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token / OIDC / SA Token"]
     end
 
     subgraph OperatorNS["OPERATOR NAMESPACE (opendatahub)"]
         direction TB
-        Controller["trainer-controller-manager<br/>SA: kubeflow-trainer-controller-manager<br/>FIPS: strictfipsruntime + CGO_ENABLED=1"]
 
-        subgraph ControllerPorts["Controller Ports"]
-            WebhookPort["9443/TCP Webhook<br/>HTTPS TLS<br/>API server client cert"]
-            MetricsPort["8443/TCP Metrics<br/>HTTPS TLS<br/>No auth"]
-            HealthPort["8081/TCP Health<br/>HTTP plaintext<br/>No auth"]
+        subgraph ControllerPod["trainer-controller-manager<br/>SA: kubeflow-trainer-controller-manager<br/>Image: quay.io/opendatahub/trainer:odh-3.4.0<br/>FIPS: strictfipsruntime + UBI9"]
+            WebhookSvc["Webhook Server<br/>ClusterIP 443→9443/TCP<br/>TLS (auto-rotated, cert-controller)<br/>Auth: API Server client cert"]
+            MetricsSvc["Metrics Server<br/>ClusterIP 8443/TCP<br/>TLS (self-signed)<br/>Auth: None (insecureSkipVerify)"]
+            HealthSvc["Health Probes<br/>8081/TCP HTTP<br/>No encryption<br/>/healthz, /readyz"]
         end
 
-        Controller --- ControllerPorts
+        PodMonitor["Prometheus / PodMonitor<br/>Scrapes 8443/TCP HTTPS"]
     end
 
-    subgraph UserNS["USER NAMESPACE (per-TrainJob NetworkPolicy isolation)"]
+    subgraph UserNS["USER NAMESPACE ({user-namespace})"]
         direction TB
 
-        subgraph TrainingWorkload["Training Workload (JobSet)"]
-            Master["Training Pod 0 (Master/Rank-0)<br/>29500/TCP NCCL + 28080/TCP Metrics"]
-            Worker1["Training Pod 1 (Worker)<br/>29500/TCP NCCL"]
-            WorkerN["Training Pod N (Worker)<br/>29500/TCP NCCL"]
+        subgraph TrainingPods["Training Pods (JobSet managed)<br/>NetworkPolicy: per-TrainJob"]
+            MasterPod["Training Pod (node-0)<br/>29500/TCP rendezvous<br/>28080/TCP metrics (HTTP)"]
+            WorkerPod["Training Worker Pods<br/>Dynamic/TCP NCCL"]
         end
 
-        NetPol["NetworkPolicy<br/>Ingress: same JobSet + controller only"]
+        subgraph DataCacheOpt["Data Cache (Optional)"]
+            DCHead["data-cache (head)<br/>8080/TCP health<br/>Dynamic gRPC Arrow Flight<br/>Image: ghcr.io/.../data-cache:v2.1.0"]
+            DCWorker["data-cache (worker)<br/>8080/TCP health<br/>Dynamic gRPC Arrow Flight"]
+        end
     end
 
-    subgraph Monitoring["MONITORING"]
-        Prometheus["OpenShift Monitoring<br/>Prometheus<br/>PodMonitor scrape"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        Registry["Container Registries<br/>quay.io, ghcr.io<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Pull secret"]
+        IcebergStore["Iceberg Storage (Optional)<br/>S3/GCS/HDFS<br/>Auth: Varies"]
     end
 
-    %% External → Control Plane
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (RBAC)"| K8sAPI
+    %% Flows - External to Control Plane
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token / OIDC"| K8sAPI
 
-    %% Control Plane → Operator
-    K8sAPI -->|"HTTPS/9443<br/>TLS<br/>API server client cert"| WebhookPort
+    %% Flows - Control Plane to Operator
+    K8sAPI -->|"HTTPS/9443<br/>TLS auto-rotated<br/>API Server client cert<br/>FailurePolicy: Fail"| WebhookSvc
 
-    %% Operator → Control Plane
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token (Bearer)<br/>CRD CRUD, JobSet mgmt,<br/>Pod listing, NetworkPolicy mgmt"| K8sAPI
+    %% Flows - Operator to Control Plane
+    ControllerPod -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>CRD reconciliation + resource mgmt"| K8sAPI
 
-    %% Operator → Training Pods (RHAI)
-    Controller -->|"HTTP/28080<br/>plaintext<br/>No auth (NetworkPolicy)<br/>RHAI progression polling"| Master
+    %% Flows - Operator to User Namespace
+    ControllerPod -->|"HTTP/28080<br/>No encryption<br/>NetworkPolicy restricted<br/>Progression tracking"| MasterPod
 
-    %% Inter-pod training communication
-    Master -->|"TCP/29500<br/>plaintext<br/>NCCL/gRPC<br/>NetworkPolicy restricted"| Worker1
-    Master -->|"TCP/29500<br/>plaintext<br/>NCCL/gRPC<br/>NetworkPolicy restricted"| WorkerN
+    %% Flows - Monitoring
+    PodMonitor -->|"HTTPS/8443<br/>TLS self-signed<br/>insecureSkipVerify"| MetricsSvc
 
-    %% Monitoring
-    Prometheus -->|"HTTPS/8443<br/>TLS<br/>PodMonitor scrape"| MetricsPort
+    %% Flows - Training Inter-Pod
+    WorkerPod -->|"TCP/29500<br/>No encryption<br/>torchrun rendezvous"| MasterPod
+    MasterPod <-->|"TCP/Dynamic<br/>NCCL all-reduce<br/>No encryption"| WorkerPod
+
+    %% Flows - Data Cache
+    DCHead -->|"gRPC/Dynamic<br/>Arrow Flight<br/>No encryption"| DCWorker
+    MasterPod -->|"gRPC/Dynamic<br/>Arrow Flight"| DCHead
+    MasterPod -->|"gRPC/Dynamic<br/>Arrow Flight"| DCWorker
+    DCHead -->|"Varies<br/>Iceberg metadata"| IcebergStore
+
+    %% Flows - External Services
+    UserNS -.->|"HTTPS/443<br/>TLS 1.2+<br/>Pull secret<br/>(kubelet pulls)"| Registry
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef controlplane fill:#dce6f5,stroke:#4a6fa5,stroke-width:2px
-    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef userns fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef netpol fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef operatorns fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef userns fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef monitoring fill:#f8cecc,stroke:#b85450,stroke-width:1px
 
     class User external
     class K8sAPI controlplane
-    class Controller,WebhookPort,MetricsPort,HealthPort operator
-    class Master,Worker1,WorkerN userns
-    class Prometheus monitoring
-    class NetPol netpol
+    class WebhookSvc,MetricsSvc,HealthSvc operatorns
+    class MasterPod,WorkerPod,DCHead,DCWorker userns
+    class Registry,IcebergStore externalservice
+    class PodMonitor monitoring

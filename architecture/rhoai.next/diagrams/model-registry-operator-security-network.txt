@@ -1,205 +1,260 @@
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                        │
 │                                                                              │
-│  [API Client]                                                                │
+│  [External Client]                                                           │
 │         │                                                                    │
-│         │ Port: 443/TCP                                                      │
+│         ├─── Port: 443/TCP ────────────────────────────────────┐             │
+│         │    Protocol: HTTPS                                    │             │
+│         │    Encryption: TLS (edge termination)                 │             │
+│         │    Auth: None (passthrough to kube-rbac-proxy)        │             │
+│         │                                                       │             │
+│         └─── Port: 80/TCP ──────────────────┐                   │             │
+│              Protocol: HTTP                  │                   │             │
+│              Encryption: None                │                   │             │
+│              Auth: None                      │                   │             │
+│              (direct REST access)            │                   │             │
+│                                              │                   │             │
+├──────────────────────────────────────────────┼───────────────────┼────────────┤
+│  INGRESS (OpenShift Router / DMZ)            │                   │            │
+│                                              │                   │            │
+│  [OpenShift Route - HTTPS (reencrypt)]       │                   │            │
+│  - Name: {name}-https                        │                   │            │
+│  - Host: {name}-rest.{domain}                │                   │            │
+│  - Port: 443/TCP (external) → 8443/TCP      │                   │            │
+│  - TLS Mode: Reencrypt                       │                   │            │
+│         │                                    │                   │            │
+│  [OpenShift Route - HTTP]  ◄─────────────────┘                   │            │
+│  - Name: {name}-http                                             │            │
+│  - Port: 80/TCP (external) → 8080/TCP                           │            │
+│  - Encryption: None                                              │            │
+│                                                                  │            │
+│  [Catalog Route - HTTPS (reencrypt)]  ◄──────────────────────────┘            │
+│  - Name: model-catalog-https                                                 │
+│  - Host: model-catalog-rest.{domain}                                         │
+│  - Port: 443/TCP (external) → 8443/TCP                                       │
+│  - TLS Mode: Reencrypt                                                       │
+│         │                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE (Trusted - cluster-scoped operator)                      │
+│                                                                              │
+│  [model-registry-operator Pod]                                               │
+│  - ServiceAccount: controller-manager                                        │
+│  - Image: quay.io/opendatahub/model-registry-operator:latest                │
+│  │                                                                           │
+│  ├── Metrics Endpoint                                                        │
+│  │   - Port: 8443/TCP                                                        │
+│  │   - Protocol: HTTPS                                                       │
+│  │   - Encryption: TLS (OpenShift serving cert)                              │
+│  │   - Auth: Bearer Token (FilterProvider → TokenReview + SAR)               │
+│  │   - Service: controller-manager-metrics-service (ClusterIP)               │
+│  │                                                                           │
+│  ├── Webhook Endpoint                                                        │
+│  │   - Port: 9443/TCP                                                        │
+│  │   - Protocol: HTTPS                                                       │
+│  │   - Encryption: TLS (OpenShift serving cert)                              │
+│  │   - Auth: Kubernetes API server client cert                               │
+│  │   - Service: webhook-service (ClusterIP 443 → 9443)                       │
+│  │   - Paths: /mutate-modelregistry-..., /validate-modelregistry-...         │
+│  │                                                                           │
+│  └── Health Probes                                                           │
+│      - Port: 8081/TCP                                                        │
+│      - Protocol: HTTP                                                        │
+│      - Auth: None                                                            │
+│      - Paths: /healthz, /readyz                                              │
+│         │                                                                    │
+│         │ Port: 6443/TCP                                                     │
 │         │ Protocol: HTTPS                                                    │
 │         │ Encryption: TLS                                                    │
-│         │ Auth: Bearer Token (OpenShift OAuth)                               │
+│         │ Auth: ServiceAccount token                                         │
+│         │ Purpose: CRUD on Deployments, Services, Routes, RBAC, etc.         │
 │         ▼                                                                    │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (OpenShift Router)                                                  │
+│  REGISTRY NAMESPACE (per ModelRegistry instance)                             │
 │                                                                              │
-│  [OpenShift Route: {registry-name}-https]                                    │
-│  - Port: 443/TCP (external) → 8443/TCP (internal)                          │
-│  - TLS Mode: reencrypt                                                       │
-│  - Hostname: {registry-name}-rest.{domain}                                  │
+│  [Registry Pod]                                                              │
+│  - ServiceAccount: {name}                                                    │
+│  │                                                                           │
+│  ├── kube-rbac-proxy sidecar                                                 │
+│  │   - Port: 8443/TCP (https-api)                                            │
+│  │   - Protocol: HTTPS                                                       │
+│  │   - Encryption: TLS (OpenShift serving cert or user-provided)             │
+│  │   - Auth: SubjectAccessReview (services/get on registry Service)          │
+│  │   │                                                                       │
+│  │   │  Port: 6443/TCP                                                       │
+│  │   │  Protocol: HTTPS, TLS                                                 │
+│  │   │  Auth: SA token                                                       │
+│  │   ├──► [Kubernetes API - TokenReview]                                     │
+│  │   ├──► [Kubernetes API - SubjectAccessReview]                             │
+│  │   │                                                                       │
+│  │   │  Port: 8080/TCP                                                       │
+│  │   │  Protocol: HTTP                                                       │
+│  │   │  Encryption: None (localhost)                                         │
+│  │   │  Auth: None (pre-authorized)                                          │
+│  │   ▼                                                                       │
+│  └── model-registry REST container                                           │
+│      - Port: 8080/TCP (http-api)                                             │
+│      - Protocol: HTTP                                                        │
+│      - Image: quay.io/opendatahub/model-registry:latest                     │
 │         │                                                                    │
-│  [OpenShift Route: model-catalog-https]                                      │
-│  - Port: 443/TCP (external) → 8443/TCP (internal)                          │
-│  - TLS Mode: reencrypt                                                       │
-│  - Hostname: model-catalog.{domain}                                         │
-│         │                                                                    │
-│         │ Port: 8443/TCP                                                     │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS (OpenShift serving cert)                           │
-│         │ Auth: Bearer Token forwarded                                       │
+│         │ Port: 5432/TCP (PostgreSQL) or 3306/TCP (MySQL)                    │
+│         │ Protocol: DB wire protocol                                         │
+│         │ Encryption: Configurable SSL                                       │
+│         │   (disable/allow/prefer/require/verify-ca/verify-full)             │
+│         │ Auth: Username/password + optional SSL client certs                │
 │         ▼                                                                    │
+│  [PostgreSQL Pod - auto-provisioned (optional)]                              │
+│  - Port: 5432/TCP                                                            │
+│  - Protocol: PostgreSQL                                                      │
+│  - Image: quay.io/sclorg/postgresql-16-c10s:latest                          │
+│  - Credentials: Secret {name}-postgres (crypto/rand password)               │
+│  - Service: {name}-postgres (ClusterIP)                                      │
+│                                                                              │
+│  NetworkPolicy (kube-rbac-proxy port):                                       │
+│  - Allow from: openshift-ingress (network.openshift.io/policy-group)         │
+│  - Allow from: odh-generated namespaces (opendatahub.io/generated-namespace) │
+│  - Deny: all other ingress to 8443/TCP                                       │
+│                                                                              │
+│  NetworkPolicy (PostgreSQL port):                                            │
+│  - Allow from: registry pod only (podSelector match)                         │
+│  - Deny: all other ingress to 5432/TCP                                       │
+│                                                                              │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│  AUTH ENFORCEMENT LAYER                                                      │
+│  CATALOG NAMESPACE (singleton)                                               │
 │                                                                              │
-│  [kube-rbac-proxy sidecar]                                                   │
-│  - Port: 8443/TCP (listen)                                                   │
-│  - TLS: OpenShift serving cert (auto-rotated)                               │
-│  - Auth: SubjectAccessReview against K8s API                                │
-│  - Policy: User must have "get" verb on Service/{name} resource             │
-│         │                                                                    │
-│         │ Port: 443/TCP                                                      │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS 1.2+                                               │
-│         │ Auth: ServiceAccount Token                                         │
-│         │ Purpose: SubjectAccessReview check                                 │
-│         ▼                                                                    │
-│  [Kubernetes API Server]                                                     │
-│         │                                                                    │
-│         │ SubjectAccessReview Response                                       │
-│         ▼                                                                    │
-│  [kube-rbac-proxy] ──────────────────────────────────────────────────────    │
-│         │                                                                    │
-│         │ Port: 8080/TCP                                                     │
-│         │ Protocol: HTTP                                                     │
-│         │ Encryption: None (localhost loopback)                              │
-│         │ Auth: None (trusted after SAR)                                     │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  APPLICATION LAYER                                                           │
-│                                                                              │
-│  [Model Registry REST Container]                                             │
-│  - Namespace: {registries-namespace}                                         │
-│  - ServiceAccount: {registry-name}                                          │
-│  - Port: 8080/TCP (HTTP, localhost only)                                    │
-│  - Health: /readyz/isDirty (liveness), /readyz/health (readiness)           │
-│         │                                                                    │
-│  [Model Catalog Container]                                                   │
-│  - Namespace: {registries-namespace}                                         │
-│  - ServiceAccount: model-catalog                                            │
-│  - Port: 8080/TCP (HTTP, localhost only)                                    │
-│  - Init Containers: catalog-data, benchmark-data                            │
+│  [Catalog Pod]                                                               │
+│  │                                                                           │
+│  ├── kube-rbac-proxy sidecar                                                 │
+│  │   - Port: 8443/TCP (https-proxy)                                          │
+│  │   - Protocol: HTTPS                                                       │
+│  │   - Encryption: TLS (OpenShift serving cert)                              │
+│  │   - Auth: SubjectAccessReview (services/get on catalog Service)           │
+│  │   ▼                                                                       │
+│  └── model-catalog REST container                                            │
+│      - Port: 8080/TCP                                                        │
+│      - Protocol: HTTP                                                        │
+│      - Init containers: catalog-data-init, benchmark-data-init               │
 │         │                                                                    │
 │         │ Port: 5432/TCP                                                     │
-│         │ Protocol: TCP (PostgreSQL wire protocol)                           │
-│         │ Encryption: Optional (sslMode: disable/allow/prefer/require/      │
-│         │             verify-ca/verify-full)                                 │
-│         │ Auth: Username/Password (from Secret)                              │
+│         │ Protocol: PostgreSQL                                               │
+│         │ Encryption: plaintext                                              │
+│         │ Auth: Username/password (Secret model-catalog-postgres)            │
 │         ▼                                                                    │
+│  [Catalog PostgreSQL Pod]                                                    │
+│  - Service: model-catalog-postgres (ClusterIP 5432)                          │
+│                                                                              │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│  DATA LAYER                                                                  │
+│  KUBERNETES CONTROL PLANE                                                    │
 │                                                                              │
-│  [{registry-name}-postgres]                                                  │
-│  - Port: 5432/TCP                                                            │
-│  - Image: sclorg/postgresql-16-c10s                                         │
-│  - NetworkPolicy: Ingress only from owning registry pod (label selector)    │
-│  - Credentials: {registry-name}-postgres-credentials Secret                 │
-│                                                                              │
-│  [model-catalog-postgres]                                                    │
-│  - Port: 5432/TCP                                                            │
-│  - NetworkPolicy: Ingress only from catalog pod (label selector)            │
-│  - Credentials: model-catalog-postgres Secret                               │
-│                                                                              │
-│  [External PostgreSQL] (optional)                                            │
-│  - Port: 5432/TCP                                                            │
-│  - Encryption: Configurable SSL (sslMode parameter)                         │
-│  - Auth: Username/Password via user-provided Secret                         │
-│                                                                              │
-│  [External MySQL] (optional)                                                 │
-│  - Port: 3306/TCP                                                            │
-│  - Encryption: Configurable SSL (cert/key/CA)                               │
-│  - Auth: Username/Password via user-provided Secret                         │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
-
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  OPERATOR CONTROL PLANE                                                      │
-│                                                                              │
-│  [Model Registry Operator]                                                   │
-│  - Namespace: model-registry-operator-system (or opendatahub)               │
-│  - ServiceAccount: controller-manager                                       │
-│  - Image: quay.io/opendatahub/model-registry-operator                       │
-│         │                                                                    │
-│         │ Port: 443/TCP                                                      │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS 1.2+                                               │
-│         │ Auth: ServiceAccount Token                                         │
-│         │ Purpose: Reconciliation (CRUD on Deployments, Services, Routes,   │
-│         │          RBAC, NetworkPolicies, Secrets, ConfigMaps, PVCs)         │
-│         ▼                                                                    │
 │  [Kubernetes API Server]                                                     │
-│                                                                              │
-│  Endpoints:                                                                  │
-│  - /healthz: 8081/TCP HTTP (liveness probe, no auth)                        │
-│  - /readyz: 8081/TCP HTTP (readiness probe, no auth)                        │
-│  - /metrics: 8443/TCP HTTPS TLS (self-signed), Bearer Token (SA)            │
-│                                                                              │
-│  [Webhook Service]                                                           │
-│  - Port: 443/TCP → 9443/TCP                                                │
+│  - Port: 6443/TCP                                                            │
 │  - Protocol: HTTPS                                                           │
-│  - TLS: cert-manager (self-signed issuer)                                   │
-│  - Called by: K8s API server (admission control)                            │
+│  - Encryption: TLS                                                           │
+│  - Auth: ServiceAccount tokens, client certificates                          │
+│  - Used by: Operator (CRUD), kube-rbac-proxy (TokenReview, SAR),            │
+│             Webhooks (called by API server)                                   │
 │                                                                              │
-│  [Prometheus / ServiceMonitor]                                               │
-│  - Scrapes: controller-manager-metrics-service                              │
-│  - Port: 8443/TCP HTTPS                                                      │
-│  - Auth: Bearer Token (metrics-reader ClusterRole)                          │
+│  [OpenShift Config API]                                                      │
+│  - config.openshift.io/ingresses                                             │
+│  - Purpose: Cluster ingress domain for Route hostname generation             │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (optional - user-provided databases)                      │
+│                                                                              │
+│  [External PostgreSQL]                                                       │
+│  - Port: 5432/TCP                                                            │
+│  - Protocol: PostgreSQL                                                      │
+│  - Encryption: Configurable                                                  │
+│    (disable/allow/prefer/require/verify-ca/verify-full)                      │
+│  - Auth: Username/password + optional SSL client certs                       │
+│  - Purpose: Model registry metadata storage                                 │
+│                                                                              │
+│  [External MySQL]                                                            │
+│  - Port: 3306/TCP                                                            │
+│  - Protocol: MySQL                                                           │
+│  - Encryption: Configurable (SSL client certs, CA, cipher)                   │
+│  - Auth: Username/password + optional SSL                                    │
+│  - Purpose: Alternative model registry metadata storage                      │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- ClusterRole: manager-role
-  - modelregistry.opendatahub.io: modelregistries (get, list, watch, create, update, patch, delete)
-  - modelregistry.opendatahub.io: modelregistries/status (get, update, patch)
-  - modelregistry.opendatahub.io: modelregistries/finalizers (update)
-  - apps: deployments (get, list, watch, create, update, patch, delete)
-  - core: services, serviceaccounts (get, list, watch, create, update, patch, delete)
-  - core: configmaps, secrets, persistentvolumeclaims (create, get, list, watch, patch, update, delete)
-  - core: pods, pods/log, endpoints (get, list, watch)
-  - core, events.k8s.io: events (create, patch)
-  - route.openshift.io: routes, routes/custom-host (get, list, watch, create, update, patch, delete)
-  - user.openshift.io: groups (get, list, watch, create, update, patch, delete)
-  - rbac.authorization.k8s.io: roles, rolebindings, clusterrolebindings (get, list, watch, create, update, patch, delete)
-  - networking.k8s.io: networkpolicies (get, list, watch, create, update, patch, delete)
-  - authentication.k8s.io: tokenreviews (create)
-  - authorization.k8s.io: subjectaccessreviews (create)
-  - config.openshift.io: ingresses (get, list, watch)
-  - migration.k8s.io: storageversionmigrations (get, list, watch, create, update, patch, delete)
-  - apiextensions.k8s.io: customresourcedefinitions (get, list, watch)
-  - components.platform.opendatahub.io: modelregistries (get, list, watch)
-  - services.platform.opendatahub.io: auths (get, list, watch)
+  ClusterRole: manager-role
+    ServiceAccount: controller-manager
+    Binding: manager-rolebinding (ClusterRoleBinding)
+    Key Permissions:
+    - core: configmaps, pvcs, secrets, serviceaccounts, services (full CRUD)
+    - core: endpoints, pods, pods/log (read-only)
+    - apps: deployments (full CRUD)
+    - authentication.k8s.io: tokenreviews (create)
+    - authorization.k8s.io: subjectaccessreviews (create)
+    - modelregistry.opendatahub.io: modelregistries (full CRUD + finalizers + status)
+    - networking.k8s.io: networkpolicies (full CRUD)
+    - rbac.authorization.k8s.io: clusterrolebindings, rolebindings, roles (full CRUD)
+    - route.openshift.io: routes, routes/custom-host (full CRUD)
+    - user.openshift.io: groups (full CRUD)
+    - components.platform.opendatahub.io: modelregistries (read-only)
+    - services.platform.opendatahub.io: auths (read-only)
+    - config.openshift.io: ingresses (read-only)
+    - migration.k8s.io: storageversionmigrations (full CRUD)
 
-- ClusterRole: proxy-role
-  - authentication.k8s.io: tokenreviews (create)
-  - authorization.k8s.io: subjectaccessreviews (create)
+  ClusterRole: system:auth-delegator
+    ServiceAccount: {name} (per-registry SA)
+    Binding: {name}-auth-delegator (ClusterRoleBinding)
+    Purpose: Allows kube-rbac-proxy sidecar to perform TokenReview + SAR
 
-- ClusterRole: metrics-reader
-  - /metrics (get)
+  Role: leader-election-role (namespace-scoped)
+    ServiceAccount: controller-manager
+    Binding: leader-election-rolebinding
+    Purpose: Leader election via configmaps/leases
 
-- Role (namespace-scoped): leader-election-role
-  - core: configmaps (get, list, watch, create, update, patch, delete)
-  - coordination.k8s.io: leases (get, list, watch, create, update, patch, delete)
+Authentication & Authorization:
+  Model Registry REST API:
+    - Enforcement: kube-rbac-proxy sidecar (port 8443)
+    - Mechanism: SubjectAccessReview (services/get on registry Service)
+    - User must have "get" permission on the Service resource in registry namespace
 
-- ClusterRole: modelregistry-admin-role (modelregistries: *)
-- ClusterRole: modelregistry-editor-role (modelregistries: create, delete, get, list, watch, patch, update)
-- ClusterRole: modelregistry-viewer-role (modelregistries: get, list, watch)
+  Model Catalog REST API:
+    - Enforcement: kube-rbac-proxy sidecar (port 8443)
+    - Mechanism: SubjectAccessReview (services/get on catalog Service)
+    - User must have "get" permission on the model-catalog Service
 
-- Role (per-registry): registry-user-{name}
-  - core: services (get) - resourceName: {name}
-  - core: endpoints (get) - resourceName: {name}
+  Operator Metrics:
+    - Enforcement: controller-runtime metrics server (port 8443)
+    - Mechanism: Bearer Token → TokenReview + SubjectAccessReview
 
-Key Bindings:
-- manager-rolebinding: controller-manager → manager-role (Cluster)
-- proxy-rolebinding: controller-manager → proxy-role (Cluster)
-- leader-election-rolebinding: controller-manager → leader-election-role (Namespace)
-- {registry-name}-auth-delegator: {registry-name} SA → system:auth-delegator (Cluster)
-- {registry-name}-users: Group:{registry-name}-users → registry-user-{name} (Namespace)
-- model-catalog-admin: admin groups (from Auth CR) → model-catalog-admin Role (Namespace)
-- model-catalog-kube-rbac-proxy: model-catalog SA → system:auth-delegator (Cluster)
-
-NetworkPolicy Summary:
-- PostgreSQL pods: Ingress only from owning registry/catalog pod (label selector match)
-- kube-rbac-proxy pods: Ingress only from OpenShift ingress controller namespace
-  (network.openshift.io/policy-group: ingress)
+  Webhooks:
+    - Enforcement: Kubernetes API server
+    - Mechanism: API server client cert (only API server can call)
 
 Secrets:
-- webhook-server-cert (kubernetes.io/tls) - Webhook TLS, cert-manager, auto-rotate: Yes
-- {registry-name}-postgres-credentials (Opaque) - PostgreSQL user/pass, operator-generated, auto-rotate: No
-- {registry-name}-kube-rbac-proxy (kubernetes.io/tls) - Proxy TLS, OpenShift serving cert, auto-rotate: Yes
-- model-catalog-postgres (Opaque) - Catalog PostgreSQL creds, operator-generated, auto-rotate: No
-- model-catalog-kube-rbac-proxy (kubernetes.io/tls) - Catalog proxy TLS, OpenShift serving cert, auto-rotate: Yes
-- (user-provided DB secrets) (Opaque) - External DB credentials, manual, auto-rotate: N/A
+  {name}-kube-rbac-proxy (kubernetes.io/tls)
+    - Purpose: TLS cert/key for kube-rbac-proxy sidecar
+    - Provisioned by: OpenShift serving cert annotation or user-provided
+    - Rotation: Yes (OpenShift) / No (user-provided)
+
+  {name}-postgres (Opaque) [auto-provisioned only]
+    - Purpose: PostgreSQL credentials (database-user, database-password, database-name)
+    - Provisioned by: Operator (random password via crypto/rand)
+    - Rotation: No
+
+  model-catalog-postgres (Opaque)
+    - Purpose: Catalog PostgreSQL credentials
+    - Provisioned by: Operator (random password)
+    - Rotation: No
+
+  controller-manager-metrics-service (kubernetes.io/tls)
+    - Purpose: TLS cert for operator metrics endpoint
+    - Provisioned by: OpenShift serving cert annotation
+    - Rotation: Yes (OpenShift)
+
+  webhook-service (kubernetes.io/tls)
+    - Purpose: TLS cert for webhook endpoint
+    - Provisioned by: OpenShift serving cert annotation
+    - Rotation: Yes (OpenShift)
 
 FIPS Compliance:
-- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, dynamic linking
-- Base image: UBI9 minimal (OpenSSL included)
-- TLS: Delegated to kube-rbac-proxy and OpenShift serving certs (no direct TLS in operator)
-- Crypto: stdlib only (no third-party), FIPS enforced via Go strictfipsruntime
-- Non-FIPS risks: None detected (InsecureSkipVerify in test code only)
+  - Build: CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime -tags strictfipsruntime
+  - Linking: Dynamic (CGO_ENABLED=1) with OpenSSL via UBI9 base
+  - TLS: controller-runtime defaults + OpenShift serving certs
+  - Crypto: stdlib crypto/rand (FIPS via OpenSSL at runtime)
+  - No non-FIPS crypto detected (no MD5, RC4, DES, InsecureSkipVerify)

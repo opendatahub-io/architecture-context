@@ -1,76 +1,89 @@
 graph TB
-    subgraph "AI Gateway Payload Processing Service"
+    subgraph PayloadProcessing["AI Gateway Payload Processing (BBR ext_proc)"]
         direction TB
-        BBR["BBR Runtime<br/>(ext_proc gRPC Server)<br/>Port 9004/TCP"]
-        Health["Health Check<br/>Port 9005/TCP"]
-
-        subgraph "Plugin Chain (ordered)"
-            direction TB
-            P1["body-field-to-header<br/>(upstream built-in)<br/>Extracts model field → X-Gateway-Model-Name header"]
-            P2["model-provider-resolver<br/>(RequestProcessor)<br/>Resolves model → provider, targetModel, credentialRef"]
-            P3["api-translation<br/>(Request + ResponseProcessor)<br/>Translates OpenAI ↔ provider-native formats"]
-            P4["apikey-injection<br/>(RequestProcessor)<br/>Injects provider-specific auth headers"]
-            P5["nemo-request-guard<br/>(RequestProcessor, optional)<br/>Enforces NeMo content safety rails"]
-            P1 --> P2 --> P3 --> P4 --> P5
+        subgraph PluginChain["Plugin Chain (ordered)"]
+            direction LR
+            ModelExtractor["body-field-to-header<br/>(upstream BBR plugin)<br/>Extracts model name"]
+            ModelResolver["model-provider-resolver<br/>Resolves model → provider<br/>+ credential ref"]
+            APITranslation["api-translation<br/>OpenAI ↔ provider format<br/>Request + Response"]
+            APIKeyInjection["apikey-injection<br/>Injects provider auth<br/>headers"]
+            ModelExtractor --> ModelResolver
+            ModelResolver --> APITranslation
+            APITranslation --> APIKeyInjection
         end
 
-        BBR -->|executes| P1
+        subgraph OptionalPlugins["Optional Plugins"]
+            NemoGuard["nemo-request-guard<br/>Content safety rails"]
+        end
+
+        subgraph Reconcilers["Background Reconcilers"]
+            EMReconciler["ExternalModel<br/>Reconciler"]
+            SecretReconciler["Secret<br/>Reconciler"]
+        end
+
+        subgraph InMemoryStores["In-Memory Stores"]
+            ModelInfoStore["modelInfoStore<br/>(model → provider info)"]
+            SecretStore["secretStore<br/>(secret → API key)"]
+        end
+
+        EMReconciler -->|populates| ModelInfoStore
+        SecretReconciler -->|populates| SecretStore
+        ModelResolver -->|reads| ModelInfoStore
+        APIKeyInjection -->|reads| SecretStore
+
+        subgraph CycleState["CycleState (per-request)"]
+            ProviderKey["ProviderName"]
+            TargetModel["TargetModelName"]
+            CredRef["CredentialRef"]
+        end
+
+        ModelResolver -->|writes| CycleState
+        APITranslation -->|reads| CycleState
+        APIKeyInjection -->|reads| CycleState
+
+        HealthEndpoint["/healthz, /readyz<br/>9005/TCP HTTP"]
+        ExtProcEndpoint["ext_proc gRPC<br/>9004/TCP"]
     end
 
-    subgraph "CycleState (inter-plugin data)"
-        CS["provider | model | credential-ref-name | credential-ref-namespace"]
-    end
+    Client[External Client] -->|HTTPS/443| IstioGW["Istio Gateway<br/>(Envoy)"]
+    IstioGW -->|gRPC ext_proc<br/>9004/TCP plaintext| ExtProcEndpoint
 
-    P2 -->|writes| CS
-    P3 -->|reads| CS
-    P4 -->|reads| CS
+    EMReconciler -->|watches| ExternalModelCR["ExternalModel CRDs<br/>(maas.opendatahub.io)"]
+    SecretReconciler -->|watches| Secrets["Labeled Secrets<br/>(bbr-managed=true)"]
+    ExternalModelCR -.->|created by| MaaSController["MaaS Controller"]
 
-    Client["Client<br/>(OpenAI Chat Completions API)"] -->|POST /v1/chat/completions| Envoy
-    Envoy["Envoy Gateway<br/>(Istio)"] -->|ext_proc gRPC<br/>9004/TCP| BBR
-    BBR -->|mutated request/response| Envoy
+    NemoGuard -->|HTTP POST| NemoService["NeMo Guardrails<br/>Service"]
 
-    ExternalModelCR["ExternalModel CR<br/>(maas.opendatahub.io/v1alpha1)"]
-    ExternalModelCR -->|watched by<br/>controller-runtime| P2
+    IstioGW -->|forwards mutated<br/>request| Providers["External AI Providers<br/>(OpenAI, Anthropic,<br/>Azure, Vertex, Bedrock)"]
 
-    SecretsCR["Kubernetes Secrets<br/>(labeled bbr-managed=true)"]
-    SecretsCR -->|watched by<br/>controller-runtime| P4
-
-    NeMo["NeMo Guardrails Service"]
-    P5 -->|POST /v1/guardrail/checks<br/>HTTP| NeMo
-
-    subgraph "Provider Translators"
+    subgraph TranslationFormats["Supported Provider Formats"]
         direction LR
-        T1["OpenAI<br/>(pass-through)"]
-        T2["Anthropic<br/>(full body translation)"]
-        T3["Azure OpenAI<br/>(path rewrite + field strip)"]
-        T4["Vertex AI OpenAI<br/>(path rewrite)"]
-        T5["AWS Bedrock<br/>(path rewrite)"]
+        OpenAI["OpenAI<br/>(passthrough)"]
+        Anthropic["Anthropic<br/>(full translation)"]
+        Azure["Azure OpenAI<br/>(path rewrite)"]
+        Vertex["Vertex AI<br/>(GenerateContent)"]
+        VertexOAI["Vertex OpenAI<br/>(path rewrite)"]
+        Bedrock["Bedrock OpenAI<br/>(path rewrite)"]
     end
 
-    P3 -->|delegates to| T1
-    P3 -->|delegates to| T2
-    P3 -->|delegates to| T3
-    P3 -->|delegates to| T4
-    P3 -->|delegates to| T5
+    APITranslation -.->|translates to/from| TranslationFormats
 
-    Envoy -->|HTTPS/443| Providers["External AI Providers<br/>(OpenAI, Anthropic, Azure, Vertex, Bedrock)"]
-
-    style BBR fill:#4a90e2,stroke:#333,color:#fff
-    style Health fill:#4a90e2,stroke:#333,color:#fff
-    style P1 fill:#6baed6,stroke:#333
-    style P2 fill:#6baed6,stroke:#333
-    style P3 fill:#6baed6,stroke:#333
-    style P4 fill:#6baed6,stroke:#333
-    style P5 fill:#6baed6,stroke:#333
-    style CS fill:#fff3cd,stroke:#d6b656
+    style PayloadProcessing fill:#e8f4fd,stroke:#4a90e2,stroke-width:2px
+    style PluginChain fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    style ModelExtractor fill:#7ed321,stroke:#333
+    style ModelResolver fill:#7ed321,stroke:#333
+    style APITranslation fill:#7ed321,stroke:#333
+    style APIKeyInjection fill:#7ed321,stroke:#333
+    style NemoGuard fill:#f5a623,stroke:#333
+    style CycleState fill:#fff2cc,stroke:#d6b656,stroke-width:1px
+    style EMReconciler fill:#4a90e2,stroke:#333,color:#fff
+    style SecretReconciler fill:#4a90e2,stroke:#333,color:#fff
+    style ModelInfoStore fill:#dae8fc,stroke:#6c8ebf
+    style SecretStore fill:#dae8fc,stroke:#6c8ebf
+    style IstioGW fill:#e8e8e8,stroke:#333
     style ExternalModelCR fill:#f5a623,stroke:#333
-    style SecretsCR fill:#f5a623,stroke:#333
-    style Envoy fill:#e8e8e8,stroke:#333
-    style NeMo fill:#7ed321,stroke:#333
+    style Secrets fill:#f5a623,stroke:#333
+    style MaaSController fill:#7ed321,stroke:#333
+    style NemoService fill:#e8e8e8,stroke:#333
+    style Providers fill:#e8e8e8,stroke:#333
     style Client fill:#f9f9f9,stroke:#999
-    style Providers fill:#f9f9f9,stroke:#999
-    style T1 fill:#d5e8d4,stroke:#82b366
-    style T2 fill:#d5e8d4,stroke:#82b366
-    style T3 fill:#d5e8d4,stroke:#82b366
-    style T4 fill:#d5e8d4,stroke:#82b366
-    style T5 fill:#d5e8d4,stroke:#82b366

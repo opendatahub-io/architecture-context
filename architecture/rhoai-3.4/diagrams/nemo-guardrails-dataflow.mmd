@@ -1,51 +1,79 @@
 sequenceDiagram
-    participant Client as External Client
-    participant Gateway as RHOAI Gateway<br/>Platform TLS / kube-rbac-proxy
+    participant Client as Client / Platform Ingress
     participant Server as NeMo Guardrails Server<br/>8000/TCP HTTP
-    participant InputRails as Input Rails<br/>(in-process)
-    participant LLM as Upstream LLM Server<br/>443/TCP HTTPS TLS 1.2+
-    participant OutputRails as Output Rails<br/>(in-process)
-    participant OTel as OpenTelemetry Collector<br/>4317/TCP gRPC
-    participant Redis as Redis (optional)<br/>6379/TCP
+    participant InputRails as Input Rails<br/>(Content Safety, Jailbreak, SDD)
+    participant ContentSafety as Content Safety Model<br/>HTTP(S)
+    participant Jailbreak as Jailbreak Detection<br/>HTTP(S)
+    participant LLM as LLM Provider<br/>443/TCP HTTPS TLS 1.2+
+    participant OutputRails as Output Rails<br/>(Content Safety, Hallucination, Self-Check)
+    participant Redis as Redis (Optional)<br/>6379/TCP
 
     Note over Client,Redis: Flow 1: Chat Completion with Guardrails
 
-    Client->>Gateway: POST /v1/chat/completions<br/>Platform Auth
-    Gateway->>Server: HTTP/8000<br/>Platform TLS terminated
-    Server->>Redis: Load thread context (optional)
-    Redis-->>Server: Thread history
-    Server->>InputRails: Evaluate input guardrails<br/>(self-check, injection, PII, topic)
-    InputRails-->>Server: Pass / Block
+    Client->>Server: POST /v1/chat/completions<br/>HTTP (Platform TLS)<br/>Authorization header forwarded
+    Server->>Server: Select engine<br/>(IORails or LLMRails)
 
-    alt Input Blocked
-        Server-->>Gateway: 200 OK (blocked response)
-        Gateway-->>Client: Guardrail rejection message
-    else Input Passed
-        Server->>LLM: POST /v1/chat/completions<br/>HTTPS/443<br/>Bearer Token (API key)
-        LLM-->>Server: LLM Response
-        Server->>OutputRails: Evaluate output guardrails<br/>(hallucination, fact-check, content safety)
-        OutputRails-->>Server: Pass / Block / Modify
-        Server->>Redis: Persist thread (optional)
-        Server-->>Gateway: 200 OK (response)
-        Gateway-->>Client: JSON Response
+    opt Thread persistence enabled
+        Server->>Redis: Load conversation state<br/>TCP/6379 (Optional TLS)
+        Redis-->>Server: Thread history
     end
 
-    Server->>OTel: Export traces (OTLP)<br/>gRPC/4317 TLS
+    rect rgb(255, 243, 224)
+        Note over Server,Jailbreak: Input Rails Phase
+        Server->>InputRails: Execute input rails
+        InputRails->>ContentSafety: Content safety check<br/>HTTP(S), API key
+        ContentSafety-->>InputRails: Classification result (cached)
+        InputRails->>Jailbreak: Jailbreak detection<br/>HTTP(S), API key
+        Jailbreak-->>InputRails: Detection result (cached)
+        InputRails->>InputRails: Sensitive data detection<br/>(Presidio/spacy, in-process)
+        InputRails-->>Server: Rails result (pass/block)
+    end
 
-    Note over Client,Redis: Flow 2: Guardrail Check (No LLM Generation - IORails fast path)
+    alt Input blocked
+        Server-->>Client: Blocked response<br/>(policy violation message)
+    else Input passed
+        rect rgb(224, 247, 224)
+            Note over Server,LLM: Generation Phase
+            Server->>Server: Check LFU cache
+            alt Cache hit
+                Server->>Server: Return cached response
+            else Cache miss
+                Server->>LLM: Chat completion request<br/>HTTPS/443, Bearer Token/API key<br/>Authorization header forwarded
+                LLM-->>Server: LLM response
+                Server->>Server: Cache response (LFU)
+            end
+        end
 
-    Client->>Gateway: POST /v1/guardrail/checks<br/>Platform Auth
-    Gateway->>Server: HTTP/8000
-    Server->>InputRails: Evaluate rails only<br/>(no LLM call)
-    InputRails-->>Server: Check results
-    Server-->>Gateway: 200 OK (check results)
-    Gateway-->>Client: JSON Response
+        rect rgb(224, 232, 255)
+            Note over Server,ContentSafety: Output Rails Phase
+            Server->>OutputRails: Execute output rails
+            OutputRails->>ContentSafety: Content safety check<br/>HTTP(S), API key
+            ContentSafety-->>OutputRails: Classification result
+            OutputRails->>OutputRails: Hallucination self-check<br/>(via LLM)
+            OutputRails->>OutputRails: Output self-check<br/>(via LLM)
+            OutputRails-->>Server: Rails result (pass/block)
+        end
 
-    Note over Client,Redis: Flow 3: Model Listing (Passthrough)
+        opt Thread persistence enabled
+            Server->>Redis: Save conversation state<br/>TCP/6379
+        end
 
-    Client->>Gateway: GET /v1/models<br/>Authorization header
-    Gateway->>Server: HTTP/8000
-    Server->>LLM: GET /v1/models<br/>Forwarded Authorization header
-    LLM-->>Server: Model list
-    Server-->>Gateway: 200 OK
-    Gateway-->>Client: Model list JSON
+        Server-->>Client: JSON response<br/>(OpenAI-compatible format)
+    end
+
+    Note over Client,Redis: Flow 2: Guardrail Checks (RHOAI-Specific)
+
+    Client->>Server: POST /v1/guardrail/checks<br/>HTTP (Platform TLS)
+    Server->>Server: Evaluate rails per-message<br/>(no LLM generation)
+    Server->>ContentSafety: Rail evaluation<br/>HTTP(S)
+    ContentSafety-->>Server: Rail results
+    Server-->>Client: Per-message rail results<br/>(pass/fail per rail)
+
+    Note over Client,Redis: Flow 3: Knowledge Base Embedding Search
+
+    Client->>Server: Query with KB-enabled config
+    Server->>Server: Generate embedding<br/>(FastEmbed, in-process)
+    Server->>Server: Vector similarity search<br/>(Annoy index, in-process)
+    Server->>LLM: RAG query with retrieved chunks<br/>HTTPS/443, Bearer Token
+    LLM-->>Server: Grounded response
+    Server-->>Client: Response with KB context

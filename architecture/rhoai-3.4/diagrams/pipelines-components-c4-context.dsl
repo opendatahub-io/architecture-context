@@ -1,62 +1,65 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and runs ML pipelines via RHOAI Dashboard"
-        mlEngineer = person "ML Engineer" "Develops custom pipeline components and pipelines"
+        dataScientist = person "Data Scientist" "Creates and runs ML training, AutoML, AutoRAG, and fine-tuning pipelines"
+        mlEngineer = person "ML Engineer" "Configures pipeline parameters, manages model lifecycle"
 
-        pipelinesComponents = softwareSystem "Pipelines Components" "Reusable KFP pipeline components and managed pipelines for AI/ML workflows" {
-            kfpComponentsLib = container "kfp-components Library" "Python package with @dsl.component and @dsl.pipeline definitions" "Python / KFP SDK"
-            initContainer = container "odh-pipelines-components" "Init container that copies compiled managed pipeline YAMLs to shared volume" "Python / UBI9"
-            automlRuntime = container "odh-automl Runtime" "Pre-built AutoGluon environment for AutoML pipeline steps" "Python / UBI9"
-            autoragRuntime = container "odh-autorag Runtime" "Pre-built docling + ai4rag environment for RAG pipeline steps" "Python / UBI9"
-            generateScript = container "generate_managed_pipelines" "Build-time script: discovers, validates, compiles managed pipelines to YAML" "Python Script"
-            initScript = container "init_managed_pipelines" "Runtime entry point: copies pipeline YAMLs to /config/managed-pipelines/" "Python Script"
+        pipelinesComponents = softwareSystem "Pipelines Components" "Centralized library of reusable KFP components and pre-built pipelines for AI/ML workflows on RHOAI" {
+            initContainer = container "Init Container" "Stages pre-compiled KFP pipeline YAMLs to shared volume for API server registration" "Python 3.11 / UBI9"
+            componentLibrary = container "KFP Component Library" "25+ reusable KFP v2 components across AutoML, AutoRAG, finetuning, and utilities" "Python / kfp 2.16.0"
+            automlImage = container "odh-automl Runtime" "Container image with AutoGluon and ML dependencies for AutoML pipeline steps" "Python / rhai/base-image-cpu-rhel9"
+            autoragImage = container "odh-autorag Runtime" "Container image with ai4rag, docling, and LlamaStack client for RAG pipeline steps" "Python / rhai/base-image-cpu-rhel9"
+            managedPipelines = container "Managed Pipelines" "Pre-compiled pipeline definitions (AutoML, AutoRAG, finetuning) as KFP IR YAML" "KFP IR YAML"
+            buildSystem = container "Pipeline Compiler" "Discovers metadata.yaml, compiles pipelines using KFP Compiler" "Python / generate_managed_pipelines.py"
         }
 
-        kfpServer = softwareSystem "KFP API Server" "Kubeflow Pipelines API server, discovers and exposes managed pipelines" "Internal RHOAI"
-        dspo = softwareSystem "Data Science Pipelines Operator" "Deploys KFP API server and init container, manages pipeline infrastructure" "Internal RHOAI"
-        argoWorkflows = softwareSystem "Argo Workflows" "Executes compiled KFP pipelines as Argo workflow pods" "Internal RHOAI"
-        modelRegistry = softwareSystem "Kubeflow Model Registry" "Stores model metadata and provenance" "Internal RHOAI"
-        kubeflowTrainer = softwareSystem "Kubeflow Trainer" "Orchestrates distributed training via TrainJob CRs" "Internal RHOAI"
-        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "Web UI for submitting and monitoring pipeline runs" "Internal RHOAI"
+        kfpApiServer = softwareSystem "KFP API Server" "Kubeflow Pipelines API server - manages pipeline definitions and runs" "Internal RHOAI"
+        argoWorkflow = softwareSystem "Argo Workflow Engine" "Orchestrates pipeline step execution as Kubernetes pods" "Internal RHOAI"
+        s3Storage = softwareSystem "S3-compatible Storage" "Dataset and artifact storage (AWS S3 or MinIO)" "External"
+        llamaStack = softwareSystem "LlamaStack Server" "Vector store operations, embedding models, and generation for RAG" "External"
+        huggingFace = softwareSystem "HuggingFace Hub" "Dataset and pre-trained model downloads" "External"
+        modelRegistry = softwareSystem "Kubeflow Model Registry" "Model metadata registration with provenance tracking" "Internal RHOAI"
+        kubeflowTrainer = softwareSystem "Kubeflow Trainer" "Distributed training job orchestration (ClusterTrainingRuntime)" "Internal RHOAI"
+        k8sApi = softwareSystem "Kubernetes API Server" "Cluster API for resource management" "Infrastructure"
+        liteLLM = softwareSystem "LiteLLM Endpoint" "Model inference for synthetic data generation" "External"
+        ociRegistry = softwareSystem "OCI Registry" "Container and model artifact registry" "External"
 
-        s3Storage = softwareSystem "S3/MinIO Object Storage" "Stores training datasets, documents, and model artifacts" "External"
-        huggingFaceHub = softwareSystem "HuggingFace Hub" "Hosts pre-trained models and ML datasets" "External"
-        llamaStack = softwareSystem "Llama Stack API" "Provides embeddings, vector I/O, and RAG responses" "External"
-        liteLLM = softwareSystem "LiteLLM API" "Unified LLM gateway for synthetic data generation" "External"
-        vllm = softwareSystem "vLLM" "LLM inference backend for model evaluation" "External"
-        milvus = softwareSystem "Milvus" "Vector database for document indexing and similarity search" "External"
-        k8sAPI = softwareSystem "Kubernetes API" "Cluster API for TrainJob CR management" "Platform"
+        # User interactions
+        dataScientist -> kfpApiServer "Creates and monitors pipeline runs via KFP UI/SDK"
+        mlEngineer -> kfpApiServer "Configures managed pipelines and runtime parameters"
 
-        # Relationships
-        dataScientist -> rhoaiDashboard "Submits pipeline runs via"
-        mlEngineer -> kfpComponentsLib "Develops components using"
-        rhoaiDashboard -> kfpServer "Triggers pipeline execution"
+        # Init container flow
+        initContainer -> kfpApiServer "Stages pipeline YAMLs via shared volume mount"
+        buildSystem -> managedPipelines "Compiles pipeline.py to KFP IR YAML"
+        managedPipelines -> initContainer "Bundled into init container image"
 
-        dspo -> initContainer "Deploys as init container alongside KFP API server"
-        initContainer -> kfpServer "Provides managed pipeline YAMLs via shared volume" "Filesystem"
-        kfpServer -> argoWorkflows "Compiles pipelines to Argo Workflow specs"
+        # Component execution flows
+        kfpApiServer -> argoWorkflow "Schedules pipeline runs"
+        argoWorkflow -> componentLibrary "Executes pipeline steps as pods"
+        componentLibrary -> automlImage "AutoML steps use as base_image"
+        componentLibrary -> autoragImage "AutoRAG steps use as base_image"
 
-        # Pipeline step egress
-        pipelinesComponents -> s3Storage "Downloads datasets, documents; uploads artifacts" "HTTPS/443, AWS Sig V4"
-        pipelinesComponents -> huggingFaceHub "Downloads pre-trained models and datasets" "HTTPS/443, Bearer Token"
-        pipelinesComponents -> llamaStack "Generates embeddings, vector I/O, RAG responses" "HTTPS/443, API Key"
-        pipelinesComponents -> liteLLM "Generates synthetic training data" "HTTPS/443, API Key"
-        pipelinesComponents -> vllm "Runs LLM evaluation inference" "HTTP/8000"
-        pipelinesComponents -> milvus "Indexes documents for similarity search" "gRPC/19530"
-        pipelinesComponents -> modelRegistry "Registers trained models with provenance" "HTTP/8080"
-        pipelinesComponents -> kubeflowTrainer "Creates TrainJob CRs for distributed training" "HTTPS/443"
-        pipelinesComponents -> k8sAPI "Manages TrainJob CRs" "HTTPS/443, SA Token"
+        # External integrations
+        componentLibrary -> s3Storage "Read/write datasets and artifacts" "HTTPS/443 - AWS IAM"
+        componentLibrary -> llamaStack "Vector store, embedding, generation" "HTTP(S)/8321 - API key"
+        componentLibrary -> huggingFace "Download datasets and models" "HTTPS/443 - Bearer token"
+        componentLibrary -> modelRegistry "Register trained models" "HTTP/8080 - No auth"
+        componentLibrary -> kubeflowTrainer "Submit distributed training jobs" "HTTPS/443 - SA token"
+        componentLibrary -> k8sApi "Create TrainJobs, stream logs" "HTTPS/443 - SA token"
+        componentLibrary -> liteLLM "Model inference for SDG" "HTTPS - API key"
+        componentLibrary -> ociRegistry "Download models via skopeo" "HTTPS/443 - Docker auth"
     }
 
     views {
         systemContext pipelinesComponents "SystemContext" {
             include *
             autoLayout
+            description "System context for pipelines-components showing external integrations"
         }
 
         container pipelinesComponents "Containers" {
             include *
             autoLayout
+            description "Internal structure of pipelines-components"
         }
 
         styles {
@@ -68,12 +71,12 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Platform" {
+            element "Infrastructure" {
                 background #4a90e2
                 color #ffffff
             }
             element "Person" {
-                shape person
+                shape Person
                 background #08427b
                 color #ffffff
             }

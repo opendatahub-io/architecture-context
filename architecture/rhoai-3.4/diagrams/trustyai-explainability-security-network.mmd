@@ -1,58 +1,93 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["API Client / Dashboard"]
+        Client["Client / Dashboard"]
     end
 
-    subgraph Ingress["INGRESS"]
-        Route["OpenShift Route: trustyai<br/>80/TCP → 8080/TCP<br/>TLS: null (⚠️ no encryption in base)<br/>Production: kube-rbac-proxy sidecar"]
+    subgraph Ingress["INGRESS (OpenShift Route)"]
+        Route["OpenShift Route<br/>trustyai-&lt;ns&gt;.&lt;domain&gt;<br/>80/TCP HTTP<br/>TLS: None (tls: null)<br/>Auth: None"]
     end
 
     subgraph ClusterInternal["CLUSTER INTERNAL (Namespace-scoped)"]
         direction TB
 
-        subgraph TrustyAIPod["TrustyAI Pod<br/>SA: trustyai-serviceaccount"]
-            Service["trustyai-service (ClusterIP)<br/>80/TCP → 8080/TCP<br/>Optional TLS: 4443/TCP"]
-            KubeRBACProxy["kube-rbac-proxy sidecar<br/>(injected by Operator in prod)"]
+        subgraph TrustyAIPod["TrustyAI Service Pod"]
+            direction LR
+            ServiceHTTP["REST API<br/>8080/TCP HTTP<br/>No Auth"]
+            ServiceHTTPS["TLS Endpoint<br/>4443/TCP HTTPS<br/>Cert: /etc/tls/internal/"]
+            RBACProxy["kube-rbac-proxy<br/>(sidecar)"]
         end
 
-        subgraph InboundSources["Inbound Sources"]
-            ModelMesh["ModelMesh Serving<br/>POST /consumer/kserve/v2"]
-            KServe["KServe (Knative Eventing)<br/>CloudEvent triggers"]
-            Prometheus["Prometheus<br/>GET /q/metrics<br/>Bearer Token (SA)"]
+        subgraph InitPod["Init Container"]
+            InitContainer["ose-cli<br/>creates ConfigMap"]
         end
+
+        subgraph DataSources["Data Sources"]
+            ModelMesh["ModelMesh<br/>Payload Processor"]
+            KnativeBroker["Knative Broker<br/>CloudEvents"]
+        end
+
+        subgraph Monitoring["Monitoring"]
+            Prometheus["Prometheus<br/>ServiceMonitor<br/>Scrape interval: 4s"]
+        end
+
+        subgraph ModelServing["Model Serving"]
+            KServeHTTP["KServe/ModelMesh<br/>v1/v2 HTTP<br/>80/TCP"]
+            KServegRPC["KServe/ModelMesh<br/>v2 gRPC<br/>8033/TCP"]
+        end
+
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS"]
     end
 
-    subgraph EgressTargets["EGRESS DESTINATIONS"]
-        direction TB
-        InferenceService["KServe/ModelMesh<br/>Inference Service<br/>gRPC KServe v2<br/>plaintext"]
-        Database["MariaDB / MySQL<br/>3306/TCP<br/>JDBC plaintext<br/>Username/password"]
-        MinIO["MinIO / S3<br/>443/TCP or custom<br/>HTTPS (TLS configurable)<br/>Access key/secret key"]
-        PVC["PVC: /inputs<br/>1Gi RWO<br/>Filesystem I/O"]
+    subgraph Storage["STORAGE"]
+        PVC["PVC Volume<br/>/inputs/data.csv<br/>1Gi"]
     end
 
-    %% External flows
-    Client -->|"HTTP 80/TCP<br/>No TLS (base manifests)<br/>No Auth"| Route
-    Route -->|"HTTP 8080/TCP"| Service
+    subgraph ExternalServices["EXTERNAL SERVICES (Optional)"]
+        MariaDB["MariaDB/MySQL<br/>3306/TCP JDBC<br/>Plaintext<br/>Auth: Username/Password"]
+        MinIO["MinIO Storage<br/>HTTP/HTTPS<br/>Auth: Access Key"]
+    end
 
-    %% Inbound cluster flows
-    ModelMesh -->|"HTTP 8080/TCP<br/>No encryption<br/>No auth"| Service
-    KServe -->|"HTTP 8080/TCP<br/>CloudEvent<br/>No encryption<br/>No auth"| Service
-    Prometheus -->|"HTTP 8080/TCP<br/>Bearer Token (SA)<br/>4s interval"| Service
+    %% External → Ingress
+    Client -->|"HTTP/80<br/>No TLS<br/>No Auth"| Route
 
-    %% Egress flows
-    Service -->|"gRPC<br/>plaintext<br/>No auth"| InferenceService
-    Service -->|"JDBC<br/>3306/TCP<br/>plaintext<br/>User/pass"| Database
-    Service -->|"HTTPS<br/>443/TCP<br/>TLS configurable<br/>Access key"| MinIO
-    Service -->|"File I/O<br/>local mount"| PVC
+    %% Ingress → Service
+    Route -->|"HTTP/8080<br/>No Encryption<br/>No Auth"| ServiceHTTP
+
+    %% Data ingestion
+    ModelMesh -->|"POST /consumer/kserve/v2<br/>HTTP/8080<br/>Plaintext, No Auth"| ServiceHTTP
+    KnativeBroker -->|"CloudEvent<br/>HTTP/8080<br/>Plaintext, No Auth"| ServiceHTTP
+
+    %% Monitoring
+    Prometheus -->|"GET /q/metrics<br/>HTTP/8080<br/>Auth: Bearer Token (SA)"| ServiceHTTP
+
+    %% Egress - Model serving
+    ServiceHTTP -->|"Inference requests<br/>HTTP/80<br/>Plaintext, No Auth"| KServeHTTP
+    ServiceHTTP -->|"Inference requests<br/>gRPC/8033<br/>Plaintext, No Auth"| KServegRPC
+
+    %% Init container → K8s API
+    InitContainer -->|"oc apply ConfigMap<br/>HTTPS/443<br/>TLS<br/>Auth: SA Token"| K8sAPI
+
+    %% Storage
+    ServiceHTTP -->|"Filesystem I/O"| PVC
+    ServiceHTTP -.-|"JDBC/3306<br/>Plaintext<br/>Auth: User/Pass"| MariaDB
+    ServiceHTTP -.-|"HTTP(S)<br/>Auth: AccessKey"| MinIO
 
     %% Styling
-    classDef external fill:#ffcdd2,stroke:#c62828,stroke-width:2px
-    classDef ingress fill:#ffe0b2,stroke:#e65100,stroke-width:2px
-    classDef internal fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
-    classDef egress fill:#fff9c4,stroke:#f9a825,stroke-width:2px
-    classDef warning fill:#ffab91,stroke:#bf360c,stroke-width:2px
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef clusterinternal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef service fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef warning fill:#ff6666,color:#fff,stroke:#cc0000,stroke-width:2px
 
     class Client external
     class Route ingress
-    class Service,KubeRBACProxy,ModelMesh,KServe,Prometheus internal
-    class InferenceService,Database,MinIO,PVC egress
+    class ServiceHTTP,ServiceHTTPS,RBACProxy service
+    class InitContainer service
+    class ModelMesh,KnativeBroker,KServeHTTP,KServegRPC clusterinternal
+    class Prometheus monitoring
+    class PVC storage
+    class MariaDB,MinIO externalservice
+    class K8sAPI clusterinternal

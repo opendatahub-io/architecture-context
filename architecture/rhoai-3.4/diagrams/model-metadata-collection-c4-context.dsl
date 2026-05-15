@@ -1,49 +1,56 @@
 workspace {
     model {
-        dataEngineer = person "Data Engineer / CI Operator" "Triggers CI/CD pipeline to rebuild model catalogs"
-        dataScientist = person "Data Scientist" "Browses model catalog in RHOAI Dashboard"
+        platformEngineer = person "Platform Engineer" "Maintains RHOAI platform and CI/CD pipelines"
+        dataScientist = person "Data Scientist" "Browses AI model catalog via RHOAI Dashboard"
 
-        modelMetadataCollection = softwareSystem "Model Metadata Collection" "Build-time pipeline that collects, enriches, and packages AI model metadata and MCP server catalogs into a static data container image" {
-            modelExtractor = container "model-extractor" "CLI tool that discovers models, extracts metadata from OCI registries, enriches with HuggingFace data, generates catalog YAML" "Go 1.24 CLI"
-            metadataReport = container "metadata-report" "CLI tool that audits metadata quality and generates completeness reports" "Go 1.24 CLI"
-            dataContainer = container "Data Container" "Minimal container (ubi9-minimal) serving pre-generated YAML catalog files via volume mount. Runs sleep infinity." "Container Image"
+        modelMetadataCollection = softwareSystem "Model Metadata Collection" "Build-time pipeline that generates YAML catalogs of AI model and MCP server metadata, packaged into a data-only container image" {
+            modelExtractor = container "model-extractor" "Primary CLI pipeline: discovers HuggingFace collections, extracts OCI modelcards, enriches metadata, generates YAML catalogs for models and MCP servers" "Go CLI"
+            metadataReport = container "metadata-report" "Reporting utility: analyzes metadata completeness and data source provenance" "Go CLI"
+            dataContainer = container "odh-model-metadata-collection" "Minimal ubi9-micro image containing pre-generated YAML catalog files; runs sleep infinity as a data volume source" "Data Container (ubi9-micro)"
         }
 
-        huggingFace = softwareSystem "HuggingFace" "AI model hosting platform with collections, model details, and metadata APIs" "External"
-        ociRegistry = softwareSystem "OCI Container Registry" "registry.redhat.io - hosts modelcar container images with embedded model metadata" "External"
-        dashboard = softwareSystem "RHOAI Dashboard" "Web UI for Red Hat OpenShift AI platform, displays model and MCP server catalogs" "Internal RHOAI"
-        konflux = softwareSystem "Konflux CI/CD" "Tekton-based build pipeline for multi-arch container images" "Internal Platform"
-        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server for pod lifecycle management" "Infrastructure"
+        huggingface = softwareSystem "HuggingFace" "AI model hub for discovering model collections, fetching metadata and README files" "External"
+        redhatRegistry = softwareSystem "Red Hat Container Registry" "OCI container registry (registry.redhat.io) for fetching model container images and extracting modelcards" "External"
+        konflux = softwareSystem "Konflux CI/CD" "Build pipeline that compiles and packages the data container image" "External"
 
-        # Build-time relationships
-        dataEngineer -> konflux "Triggers pipeline rebuild"
-        konflux -> modelMetadataCollection "Builds multi-arch container image"
-        modelExtractor -> huggingFace "Discovers model collections, fetches details and READMEs" "HTTPS/443, Bearer Token (optional)"
-        modelExtractor -> ociRegistry "Pulls modelcar manifests, extracts modelcard layers" "HTTPS/443, OCI Distribution v2"
-        modelExtractor -> metadataReport "Catalog output feeds report generation"
+        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "Web UI that displays model and MCP server information to data scientists" "Internal RHOAI"
 
-        # Runtime relationships
-        dataScientist -> dashboard "Browses model catalog"
-        dashboard -> dataContainer "Mounts /app/data/ volume to read catalog YAML" "Filesystem (volume mount)"
-        kubernetesAPI -> dataContainer "Schedules and manages pod lifecycle" "HTTPS/443"
+        # Relationships - system level
+        platformEngineer -> modelMetadataCollection "Triggers catalog generation pipeline"
+        dataScientist -> rhoaiDashboard "Browses model catalog"
+        modelMetadataCollection -> huggingface "Fetches model collections, metadata, README files" "HTTPS/443"
+        modelMetadataCollection -> redhatRegistry "Fetches OCI manifests, container layers for modelcard extraction" "HTTPS/443"
+        konflux -> modelMetadataCollection "Builds data container image from catalog files"
+        rhoaiDashboard -> modelMetadataCollection "Reads YAML catalog files via volume mount" "File I/O"
+
+        # Relationships - container level
+        platformEngineer -> modelExtractor "Runs in CI pipeline or locally"
+        modelExtractor -> huggingface "Fetches model collections, metadata, README files" "HTTPS/443, Bearer Token (optional)"
+        modelExtractor -> redhatRegistry "Fetches OCI manifests, container layers" "HTTPS/443, No auth"
+        modelExtractor -> dataContainer "Generated YAML files packaged into image" "Konflux Dockerfile"
+        metadataReport -> modelExtractor "Analyzes output from extractor" "File I/O"
+        rhoaiDashboard -> dataContainer "Reads catalog YAML files" "Volume mount / File I/O"
     }
 
     views {
         systemContext modelMetadataCollection "SystemContext" {
             include *
             autoLayout
-            description "System context for Model Metadata Collection showing build-time and runtime interactions"
         }
 
         container modelMetadataCollection "Containers" {
             include *
             autoLayout
-            description "Container view showing build-time CLI tools and the shipped data container"
         }
 
         styles {
+            element "Person" {
+                shape Person
+                background #08427b
+                color #ffffff
+            }
             element "Software System" {
-                background #438dd5
+                background #1168bd
                 color #ffffff
             }
             element "External" {
@@ -54,21 +61,12 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal Platform" {
-                background #f5a623
-                color #ffffff
-            }
-            element "Infrastructure" {
-                background #e8e8e8
-                color #333333
-            }
             element "Container" {
                 background #438dd5
                 color #ffffff
             }
-            element "Person" {
-                shape person
-                background #08427b
+            element "Data Container (ubi9-micro)" {
+                background #85bb65
                 color #ffffff
             }
         }

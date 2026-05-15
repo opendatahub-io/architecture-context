@@ -1,95 +1,85 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and deploys ML models for inference"
-        mlEngineer = person "ML Engineer" "Manages model serving infrastructure and runtimes"
+        dataScientist = person "Data Scientist" "Deploys and queries ML models via KServe InferenceService"
+        sre = person "SRE / Platform Admin" "Monitors inference server health and performance"
 
-        mlserver = softwareSystem "MLServer" "Python-based inference server implementing V2 Inference Protocol (Open Inference Protocol) for serving ML models over REST and gRPC" {
-            restServer = container "REST Server" "FastAPI/Uvicorn HTTP server implementing V2 Inference Protocol endpoints" "Python (FastAPI)" "WebBrowser"
-            grpcServer = container "gRPC Server" "gRPC server implementing V2 Inference Protocol RPCs" "Python (grpc.aio)"
-            metricsServer = container "Metrics Server" "Dedicated Prometheus metrics HTTP server" "Python (Uvicorn)"
-            dataPlane = container "DataPlane" "Central handler implementing all inference and metadata operations independent of transport" "Python"
-            modelRegistry = container "Model Registry" "Model lifecycle management - load, unload, readiness tracking" "Python"
-            inferencePool = container "Inference Pool" "Parallel inference via multiprocessing workers to bypass Python GIL" "Python (multiprocessing)"
-            sklearnRuntime = container "sklearn Runtime" "Scikit-learn model serving (scikit-learn 1.8.0)" "Python Plugin"
-            xgboostRuntime = container "XGBoost Runtime" "XGBoost model serving (XGBoost 3.2.0)" "Python Plugin"
-            lightgbmRuntime = container "LightGBM Runtime" "LightGBM model serving (LightGBM 4.6.0)" "Python Plugin"
-            onnxRuntime = container "ONNX Runtime" "ONNX model serving (onnxruntime 1.24.4)" "Python Plugin"
-            trustedRuntimes = container "Trusted Runtimes Allowlist" "Security mechanism restricting loadable model implementations in production" "JSON Config"
-            kafkaServer = container "Kafka Server" "Optional async Kafka consumer/producer for event-driven inference" "Python (aiokafka)"
+        mlserver = softwareSystem "MLServer" "Python-based inference server implementing KServe V2 Open Inference Protocol with pluggable ML framework runtimes" {
+            restServer = container "REST Server" "HTTP/REST interface for inference, health, metadata, and model repository APIs" "FastAPI/uvicorn, 8080/TCP"
+            grpcServer = container "gRPC Server" "gRPC interface for inference, health, metadata, and model repository APIs" "grpc.aio, 8081/TCP"
+            kafkaServer = container "Kafka Server" "Async message-based inference via Kafka topics" "aiokafka, 9092/TCP"
+            metricsServer = container "Metrics Server" "Prometheus metrics endpoint" "starlette-exporter, 8082/TCP"
+            dataPlane = container "DataPlane Handler" "Core inference routing, CloudEvents injection, response caching, adaptive batching" "Python"
+            runtimePlugins = container "Runtime Plugin System" "Pluggable model runtimes: scikit-learn, XGBoost, LightGBM, ONNX (RHOAI curated set)" "Python MLModel base class"
+            parallelPool = container "Parallel Inference Pool" "Multiprocessing worker pool for CPU-parallel model inference" "Python multiprocessing"
+            modelRepository = container "Model Repository" "File-based model discovery via model-settings.json" "Python"
+            codecSystem = container "Codec System" "Content-type negotiation for numpy, pandas, string, base64, datetime, JSON" "Python"
+            trustedRuntimes = container "Trusted Runtimes Guard" "Production mode allowlist restricting which model implementations can be loaded" "JSON config at /etc/mlserver/trusted-runtimes.json"
         }
 
-        kserve = softwareSystem "KServe" "Kubernetes-native model serving platform that manages InferenceService lifecycle" "External"
-        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Authentication/authorization sidecar enforcing Kubernetes RBAC" "External"
-        prometheus = softwareSystem "Prometheus" "Monitoring system that scrapes metrics" "External"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing data collection and export" "External"
-        kafkaBroker = softwareSystem "Kafka" "Message broker for event-driven inference" "External"
-        modelStorage = softwareSystem "Model Storage" "PVC, S3, or ModelCar providing model artifacts at /mnt/models" "External"
+        kserve = softwareSystem "KServe" "Manages InferenceService lifecycle, creates pods with MLServer container" "Internal RHOAI"
+        rhoaiGateway = softwareSystem "RHOAI Gateway" "Platform ingress with TLS termination and kube-rbac-proxy authentication" "Internal RHOAI"
+        modelStorage = softwareSystem "Model Storage" "PVC or S3-backed storage for model artifacts, mounted at /mnt/models" "External"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Receives distributed tracing data via OTLP gRPC" "External"
+        kafkaBroker = softwareSystem "Kafka Broker" "Message broker for async inference requests" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal RHOAI"
 
-        # User interactions
-        dataScientist -> kserve "Creates InferenceService CR via kubectl/dashboard"
-        mlEngineer -> kserve "Configures ServingRuntime CR referencing MLServer image"
+        # External relationships
+        dataScientist -> rhoaiGateway "Sends inference requests" "HTTPS/443, Bearer Token"
+        rhoaiGateway -> mlserver "Forwards requests (TLS terminated)" "HTTP/8080, gRPC/8081"
+        sre -> prometheus "Monitors metrics" "HTTPS"
 
-        # KServe deploys MLServer
-        kserve -> mlserver "Deploys as inference container within InferenceService pod"
-
-        # External client flow
-        dataScientist -> kubeRbacProxy "Sends inference requests" "HTTPS/443, Bearer Token"
-        kubeRbacProxy -> restServer "Proxies authenticated requests" "HTTP/8080"
-        kubeRbacProxy -> grpcServer "Proxies authenticated requests" "gRPC/8081"
-
-        # Internal flows
-        restServer -> dataPlane "Delegates inference/metadata calls"
-        grpcServer -> dataPlane "Delegates inference/metadata calls"
-        kafkaServer -> dataPlane "Delegates event-driven inference"
-        dataPlane -> modelRegistry "Loads/invokes models"
-        modelRegistry -> trustedRuntimes "Validates implementation against allowlist"
-        dataPlane -> inferencePool "Dispatches parallel inference requests"
-        modelRegistry -> sklearnRuntime "Manages sklearn models"
-        modelRegistry -> xgboostRuntime "Manages XGBoost models"
-        modelRegistry -> lightgbmRuntime "Manages LightGBM models"
-        modelRegistry -> onnxRuntime "Manages ONNX models"
+        # Container relationships
+        rhoaiGateway -> restServer "Forwards REST requests" "HTTP/8080, plaintext"
+        rhoaiGateway -> grpcServer "Forwards gRPC requests" "gRPC/8081, insecure"
+        restServer -> dataPlane "Routes inference" "In-process"
+        grpcServer -> dataPlane "Routes inference" "In-process"
+        kafkaServer -> dataPlane "Routes async inference" "In-process"
+        dataPlane -> codecSystem "Encodes/decodes data" "In-process"
+        dataPlane -> runtimePlugins "Invokes MLModel.predict()" "In-process"
+        dataPlane -> parallelPool "Dispatches to workers" "multiprocessing.Queue IPC"
+        modelRepository -> runtimePlugins "Discovers and loads models" "In-process"
+        trustedRuntimes -> modelRepository "Restricts allowed runtimes" "In-process"
 
         # External integrations
-        modelStorage -> modelRegistry "Provides model artifacts" "Filesystem (/mnt/models)"
+        kserve -> mlserver "Deploys as container image in InferenceService pods" "Container Image"
+        modelStorage -> modelRepository "Provides model artifacts" "Filesystem mount at /mnt/models"
+        mlserver -> otelCollector "Exports traces" "gRPC/4317, insecure"
+        kafkaBroker -> kafkaServer "Delivers/receives messages" "TCP/9092"
         prometheus -> metricsServer "Scrapes metrics" "HTTP/8082"
-        restServer -> otelCollector "Exports traces" "gRPC (OTLP, insecure)"
-        grpcServer -> otelCollector "Exports traces" "gRPC (OTLP, insecure)"
-        kafkaServer -> kafkaBroker "Consumes/produces messages" "TCP/9092"
     }
 
     views {
         systemContext mlserver "SystemContext" {
             include *
             autoLayout
-            description "MLServer in the context of RHOAI platform"
         }
 
         container mlserver "Containers" {
             include *
             autoLayout
-            description "Internal structure of MLServer inference server"
         }
 
         styles {
+            element "Person" {
+                shape Person
+                background #08427b
+                color #ffffff
+            }
             element "Software System" {
                 background #1168bd
-                color #ffffff
-            }
-            element "External" {
-                background #999999
-                color #ffffff
-            }
-            element "Person" {
-                shape person
-                background #08427b
                 color #ffffff
             }
             element "Container" {
                 background #438dd5
                 color #ffffff
             }
-            element "WebBrowser" {
-                shape WebBrowser
+            element "External" {
+                background #999999
+                color #ffffff
+            }
+            element "Internal RHOAI" {
+                background #7ed321
+                color #ffffff
             }
         }
     }

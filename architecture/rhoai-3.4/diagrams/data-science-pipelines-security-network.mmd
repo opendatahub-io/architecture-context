@@ -1,93 +1,96 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User / KFP SDK"]
-        Dashboard["OpenShift Dashboard"]
-        Workbench["Workbench / Jupyter"]
+        User["User / SDK / Dashboard"]
     end
 
     subgraph Ingress["INGRESS (Platform Gateway)"]
-        Gateway["HTTPRoute + kube-rbac-proxy<br/>TLS SIMPLE<br/>TokenReview validation"]
+        Gateway["Platform Gateway (HTTPRoute)<br/>443/TCP → 8888/TCP<br/>TLS 1.2+ (SIMPLE)<br/>kube-rbac-proxy (TokenReview)"]
     end
 
-    subgraph DSPServices["DSP SERVICES (User Namespace)"]
+    subgraph AppLayer["APPLICATION LAYER (DSP Namespace)"]
         direction TB
 
-        subgraph APIGroup["API Layer"]
-            APIServer["API Server<br/>SA: ml-pipeline<br/>8888/TCP REST, 8887/TCP gRPC<br/>8443/TCP Webhook (TLS required)<br/>FIPS: strictfipsruntime"]
+        subgraph APIGroup["API Server"]
+            APIServer["API Server<br/>SA: ml-pipeline<br/>8888/TCP HTTP | 8887/TCP gRPC | 8443/TCP webhook<br/>AuthN: TokenReview (pipelines.kubeflow.org)<br/>AuthZ: SubjectAccessReview<br/>FIPS: strictfipsruntime"]
         end
 
-        subgraph AgentGroup["Agents & Controllers"]
-            PA["Persistence Agent<br/>SA: ml-pipeline-persistenceagent<br/>No external port<br/>FIPS: strictfipsruntime"]
+        subgraph ArgoGroup["Argo Workflow Pods"]
+            direction LR
+            DriverPod["Driver (init container)<br/>SA: pipeline-runner<br/>FIPS: strictfipsruntime"]
+            LauncherPod["Launcher (sidecar)<br/>SA: pipeline-runner<br/>FIPS: dual binary"]
+        end
+
+        subgraph Controllers["Controllers"]
+            direction LR
+            PA["Persistence Agent<br/>SA: ml-pipeline-persistenceagent<br/>FIPS: strictfipsruntime"]
             SWC["Scheduled Workflow Controller<br/>SA: ml-pipeline-scheduledworkflow<br/>9090/TCP metrics<br/>FIPS: strictfipsruntime"]
         end
-    end
 
-    subgraph Execution["PIPELINE EXECUTION (Argo Pods)"]
-        Driver["Driver (init container)<br/>FIPS: strictfipsruntime"]
-        Launcher["Launcher (sidecar)<br/>FIPS: dual binary<br/>(launcher-v2-fips selected by DSPA)"]
-    end
-
-    subgraph K8sControl["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS TLS<br/>SA Token auth"]
-        ArgoCtrl["Argo Workflows Controller<br/>Watches Workflow CRDs"]
+        subgraph WebhookGroup["Webhooks"]
+            CacheSvr["Cache Server<br/>SA: kubeflow-pipelines-cache<br/>443→8443/TCP HTTPS<br/>Auth: AdmissionReview"]
+        end
     end
 
     subgraph DataStores["DATA STORES"]
-        MySQL["MySQL/MariaDB<br/>3306/TCP<br/>Optional TLS<br/>Username/Password"]
-        ObjStore["MinIO/S3 Object Store<br/>9000/TCP HTTP/HTTPS<br/>Optional TLS<br/>Access Key/Secret Key"]
-        MLMD["ML Metadata (MLMD)<br/>8080/TCP gRPC<br/>Optional TLS<br/>No auth"]
+        direction LR
+        DB["MySQL / PostgreSQL<br/>3306/5432 TCP<br/>Optional TLS<br/>Username/Password"]
+        ObjStore["S3 / MinIO / GCS<br/>9000/443 TCP<br/>HTTP/HTTPS<br/>Access Key / IAM"]
+        MLMD["ML Metadata<br/>8080/TCP gRPC<br/>Optional TLS"]
     end
 
-    subgraph CloudServices["EXTERNAL CLOUD SERVICES (optional)"]
-        AWSS3["AWS S3<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>IAM / Access Key"]
-        GCS["GCS<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA JSON"]
+    subgraph Platform["PLATFORM SERVICES"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Token"]
     end
 
-    %% External to Ingress
-    User -->|"HTTP/S 8888<br/>Bearer Token"| Gateway
-    Dashboard -->|"HTTP/S 8888<br/>Bearer Token"| Gateway
-    Workbench -->|"HTTP/S 8888<br/>Bearer Token"| Gateway
+    subgraph Monitoring["MONITORING"]
+        Prometheus["Prometheus<br/>HTTP scrape<br/>No auth"]
+    end
 
-    %% Ingress to API
-    Gateway -->|"HTTP/S 8888<br/>Optional TLS<br/>HTTP Header / Bearer"| APIServer
+    %% External → Ingress
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Gateway
 
-    %% Internal service auth
-    PA -->|"gRPC 8887<br/>Optional TLS<br/>Projected SA Token<br/>(1h expiry, pipelines.kubeflow.org)"| APIServer
-    SWC -->|"gRPC 8887<br/>Optional TLS<br/>Projected SA Token<br/>(1h expiry)"| APIServer
+    %% Ingress → API
+    Gateway -->|"HTTP/8888 or gRPC/8887<br/>Optional TLS<br/>Bearer Token / HTTP Header"| APIServer
 
-    %% API to data stores
-    APIServer -->|"MySQL 3306<br/>Optional TLS<br/>User/Pass"| MySQL
-    APIServer -->|"HTTP/S 9000<br/>Optional TLS<br/>Access Key"| ObjStore
-    APIServer -->|"HTTPS 6443<br/>TLS<br/>SA Token"| K8sAPI
+    %% API Server → Data Stores
+    APIServer -->|"TCP/3306<br/>Optional TLS<br/>Username/Password"| DB
+    APIServer -->|"HTTP(S)/9000 or 443<br/>Optional TLS<br/>Access Key"| ObjStore
+    APIServer -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
 
-    %% K8s to Argo
-    K8sAPI --- ArgoCtrl
-    ArgoCtrl -->|"Creates pods"| Driver
+    %% Argo Workflow Pods
+    K8sAPI -->|"Creates Argo Workflows"| DriverPod
+    DriverPod -->|"gRPC/8080<br/>Optional TLS<br/>None"| MLMD
+    DriverPod -->|"gRPC/8887<br/>Optional TLS<br/>Bearer Token"| APIServer
+    DriverPod -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
+    LauncherPod -->|"gRPC/8080<br/>Optional TLS<br/>None"| MLMD
+    LauncherPod -->|"HTTP(S)/9000 or 443<br/>Optional TLS<br/>Access Key / IAM"| ObjStore
+    LauncherPod -->|"HTTPS/443<br/>TLS<br/>SA Token (Secret reads)"| K8sAPI
 
-    %% Execution flows
-    Driver -->|"gRPC 8080<br/>Optional TLS<br/>No auth"| MLMD
-    Driver -->|"gRPC 8887<br/>Optional TLS<br/>Cache lookup"| APIServer
-    Driver -->|"HTTPS 6443<br/>TLS<br/>SA Token"| K8sAPI
-    Launcher -->|"gRPC 8080<br/>Optional TLS<br/>No auth"| MLMD
-    Launcher -->|"HTTP/S 9000<br/>Optional TLS<br/>Secret-based"| ObjStore
+    %% Controllers
+    PA -->|"HTTPS/443 Watch<br/>TLS<br/>SA Token"| K8sAPI
+    PA -->|"gRPC/8887<br/>Optional TLS<br/>Bearer Token (SA)"| APIServer
+    SWC -->|"HTTPS/443 Watch<br/>TLS<br/>SA Token"| K8sAPI
+    SWC -->|"gRPC/8887<br/>Optional TLS<br/>Bearer Token (SA)"| APIServer
 
-    %% Optional cloud
-    ObjStore -.->|"alternative"| AWSS3
-    ObjStore -.->|"alternative"| GCS
+    %% Cache Server
+    K8sAPI -->|"HTTPS/443→8443<br/>TLS<br/>AdmissionReview"| CacheSvr
+    CacheSvr -->|"TCP/3306<br/>Optional TLS<br/>Username/Password"| DB
+
+    %% Monitoring
+    Prometheus -.->|"HTTP/8888<br/>No encryption<br/>No auth"| APIServer
+    Prometheus -.->|"HTTP/9090<br/>No encryption<br/>No auth"| SWC
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef dspservice fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef execution fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef k8s fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef app fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef datastore fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef cloud fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
-    class User,Dashboard,Workbench external
+    class User external
     class Gateway ingress
-    class APIServer,PA,SWC dspservice
-    class Driver,Launcher execution
-    class K8sAPI,ArgoCtrl k8s
-    class MySQL,ObjStore,MLMD datastore
-    class AWSS3,GCS cloud
+    class APIServer,DriverPod,LauncherPod,PA,SWC,CacheSvr app
+    class DB,ObjStore,MLMD datastore
+    class K8sAPI platform
+    class Prometheus monitoring

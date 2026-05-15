@@ -1,60 +1,77 @@
 sequenceDiagram
     participant Client as External Client
-    participant API as Apiserver<br/>HTTP/HTTPS
+    participant GW as Gateway Layer<br/>(Kuadrant/Authorino)<br/>Envoy ext_authz
+    participant API as API Server<br/>8000/TCP HTTP/HTTPS
     participant PG as PostgreSQL<br/>5432/TCP
-    participant Redis as Redis/Valkey<br/>6379/TCP
-    participant FS as File Store<br/>(S3/Filesystem)
-    participant Proc as Processor<br/>(Worker Pool)
-    participant LLM as Inference Gateway<br/>(llm-d / vLLM)
-    participant GC as Batch GC
+    participant Redis as Redis/Valkey<br/>6379/TCP RESP
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant Proc as Processor<br/>9090/TCP
+    participant Infer as Inference Gateway<br/>(llm-d / vLLM)
+    participant GCsvc as Garbage Collector
 
-    rect rgb(230, 245, 255)
-        Note over Client,FS: Flow 1: Batch Job Submission & Execution
-        Client->>API: POST /v1/files (multipart JSONL)<br/>Header: X-MaaS-Username
-        API->>API: Validate (max 200MB, 50K lines)<br/>LimitedCountingReader
-        API->>FS: Upload file content<br/>HTTPS/443 (S3) or local
-        API->>PG: Store file metadata<br/>TCP/5432 TLS
-        API-->>Client: 200 File object (file_id)
+    Note over Client,Infer: Flow 1: Batch Job Submission
 
-        Client->>API: POST /v1/batches<br/>Header: X-MaaS-Username
-        API->>PG: Create batch record<br/>TCP/5432 TLS
-        API->>Redis: Enqueue to priority queue<br/>(sorted set, SLO priority)<br/>TCP/6379 TLS
-        API-->>Client: 200 Batch object (batch_id, status=validating)
+    Client->>GW: POST /v1/files<br/>Upload JSONL input file
+    GW->>GW: ext_authz: authenticate<br/>Append X-MaaS-Username
+    GW->>API: Forward with tenant header
+    API->>S3: Store input file content<br/>HTTPS/443, TLS 1.2+, AWS IAM
+    API->>PG: Create file metadata record<br/>TCP/5432, connection URL creds
+    API-->>Client: 200 OK (file_id)
 
-        Proc->>Redis: BLMPop dequeue job<br/>(semaphore-driven polling)
-        Redis-->>Proc: Job payload
-        Proc->>FS: Download input JSONL<br/>HTTPS/443
-        Proc->>Redis: Update status: in_progress
+    Client->>GW: POST /v1/batches<br/>input_file_id, model, endpoint
+    GW->>GW: ext_authz: authenticate
+    GW->>API: Forward with tenant header
+    API->>PG: Create batch record (validating)<br/>TCP/5432
+    API->>Redis: Enqueue job to priority queue<br/>TCP/6379, sorted set by SLO
+    API-->>Client: 200 OK (batch_id, status: validating)
 
-        loop For each line in JSONL (concurrency-controlled)
-            Proc->>LLM: POST inference request<br/>Bearer token auth<br/>HTTP/HTTPS TLS 1.2+
-            LLM-->>Proc: Inference response
-            Proc->>Redis: Update progress counter
-        end
+    Note over Client,Infer: Flow 2: Batch Job Processing
 
-        Proc->>FS: Upload output JSONL<br/>HTTPS/443
-        Proc->>FS: Upload error JSONL (if errors)<br/>HTTPS/443
-        Proc->>PG: Update batch: completed<br/>TCP/5432
-        Proc->>Redis: Final status update
+    loop Poll interval (5s)
+        Proc->>Redis: BZPOPMIN from priority queue<br/>TCP/6379
+    end
+    Redis-->>Proc: Job payload (batch_id, priority)
+
+    Proc->>PG: Read batch + file metadata<br/>TCP/5432
+    Proc->>S3: Download input JSONL file<br/>HTTPS/443, TLS 1.2+, AWS IAM
+    S3-->>Proc: Input file content
+
+    Proc->>Proc: Pre-process: parse JSONL,<br/>build per-model execution plans
+
+    Proc->>PG: Update status: in_progress<br/>TCP/5432
+
+    loop For each inference request (up to 50,000)
+        Proc->>Proc: Acquire semaphores:<br/>per-model -> global
+        Proc->>Infer: POST /v1/chat/completions<br/>HTTP(S), Bearer token or mTLS<br/>x-slo-ttft-ms, x-gateway-inference-objective
+        Infer-->>Proc: Inference response
+        Proc->>Proc: Release semaphores
+        Proc->>Redis: Update progress counter<br/>TCP/6379
     end
 
-    rect rgb(255, 245, 230)
-        Note over Client,Redis: Flow 2: Batch Cancellation
-        Client->>API: POST /v1/batches/{id}/cancel<br/>Header: X-MaaS-Username
-        API->>Redis: Publish cancel event<br/>(list-based event channel)
-        API-->>Client: 200 Batch (status=cancelling)
-        Redis-->>Proc: Cancel event received<br/>(BLMPop listener)
-        Proc->>Proc: Cancel in-flight requests<br/>(context cancellation)
-        Proc->>FS: Upload partial output
-        Proc->>PG: Update batch: cancelled
+    Proc->>S3: Upload output JSONL file<br/>HTTPS/443, TLS 1.2+, AWS IAM
+    opt Errors occurred
+        Proc->>S3: Upload error JSONL file<br/>HTTPS/443
     end
+    Proc->>PG: Update status: completed<br/>Set output_file_id, error_file_id<br/>TCP/5432
 
-    rect rgb(245, 255, 230)
-        Note over GC,FS: Flow 3: Garbage Collection
-        loop Periodic (configurable interval)
-            GC->>PG: Query expired batches/files<br/>TCP/5432
-            PG-->>GC: Expired records
-            GC->>FS: Delete expired file content<br/>HTTPS/443
-            GC->>PG: Delete expired metadata
-        end
+    Note over Client,Infer: Flow 3: Status Check & Result Retrieval
+
+    Client->>GW: GET /v1/batches/{batch_id}
+    GW->>API: Forward with tenant header
+    API->>PG: Read batch metadata<br/>TCP/5432
+    API->>Redis: Read progress status<br/>TCP/6379
+    API-->>Client: Batch status with progress counts
+
+    Client->>GW: GET /v1/files/{output_file_id}/content
+    GW->>API: Forward with tenant header
+    API->>S3: Download output file<br/>HTTPS/443
+    API-->>Client: Stream output JSONL
+
+    Note over GCsvc,S3: Flow 4: Garbage Collection (every 30m)
+
+    loop GC interval (30m)
+        GCsvc->>PG: Query expired batches and files<br/>TCP/5432
+        PG-->>GCsvc: Expired items list
+        GCsvc->>S3: Delete expired file content<br/>HTTPS/443
+        GCsvc->>PG: Delete expired metadata records<br/>TCP/5432
     end

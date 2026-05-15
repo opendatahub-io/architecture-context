@@ -1,65 +1,38 @@
 sequenceDiagram
-    autonumber
-
     participant Client as External Client
-    participant GW as Gateway (Envoy)<br/>80/TCP HTTP
-    participant EPP as EPP (Endpoint Picker)<br/>9002/TCP gRPC
-    participant K8s as Kubernetes API<br/>443/TCP HTTPS
-    participant vLLM_M as vLLM Model Server<br/>(Metrics)
-    participant vLLM_KV as vLLM Model Server<br/>(KV Events 5556/TCP ZMQ)
-    participant Sidecar as P/D Sidecar<br/>8000/TCP HTTP/HTTPS
-    participant Prefiller as Prefiller Pod
-    participant Decoder as Decoder (vLLM)<br/>8001/TCP
-    participant UDS as UDS Tokenizer<br/>Unix Domain Socket
+    participant Envoy as Envoy Gateway<br/>80/TCP HTTP
+    participant EPP as EPP ext-proc<br/>9002/TCP gRPC TLS
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant ModelMetrics as Model Server /metrics<br/>HTTP/HTTPS
+    participant KVCache as llm-d-kv-cache<br/>5557/TCP ZMQ
+    participant PDSidecar as PD Sidecar<br/>8000/TCP HTTP/HTTPS
+    participant Prefiller as Remote Prefiller<br/>HTTP/HTTPS TLS
+    participant Decoder as Local vLLM Decoder<br/>8001/TCP HTTP
 
-    rect rgb(230, 240, 255)
-        Note over EPP,K8s: Startup: Controller Watches
-        EPP->>K8s: Watch InferencePool CRs<br/>SA token auth
-        EPP->>K8s: Watch Pod resources<br/>(matching pool selector)
-        EPP->>K8s: Watch InferenceObjective CRs
-        EPP->>K8s: Watch InferenceModelRewrite CRs
-        K8s-->>EPP: Resource events (add/update/delete)
-    end
+    Note over EPP,KVCache: Flow 1: Inference Request Routing (EPP)
+    Client->>Envoy: POST /v1/chat/completions<br/>HTTP/80
+    Envoy->>EPP: ext-proc ProcessingRequest<br/>gRPC/9002 TLS (self-signed)
+    EPP->>K8sAPI: Watch InferencePool, Pods<br/>HTTPS/443 ServiceAccount token
+    EPP->>ModelMetrics: Scrape metrics<br/>(queue depth, KV-cache, LoRA)
+    EPP->>KVCache: ZMQ SUB<br/>KV-cache block index updates
+    Note over EPP: Filter → Score → Pick<br/>Evaluate endpoints:<br/>KV-cache util, queue depth,<br/>prefix affinity, LoRA locality
+    EPP-->>Envoy: ProcessingResponse<br/>Set target-pod header
+    Envoy->>Decoder: Routed inference request<br/>HTTP/8000
 
-    rect rgb(255, 245, 230)
-        Note over EPP,vLLM_KV: Background: Metrics & KV Cache Collection
-        loop Every refresh-metrics-interval
-            EPP->>vLLM_M: GET /metrics (HTTP/HTTPS)<br/>Queue depth, KV cache %, LoRA info
-            vLLM_M-->>EPP: Prometheus metrics
-        end
-        vLLM_KV-)EPP: ZMQ PUB/SUB KV cache events<br/>5556/TCP (continuous)
-        EPP->>EPP: Update KV cache index<br/>(llm-d-kv-cache library)
-    end
+    Note over PDSidecar,Decoder: Flow 2: P/D Disaggregated Inference (NIXL v2)
+    Envoy->>PDSidecar: POST /v1/chat/completions<br/>HTTP(S)/8000 TLS 1.2+
+    PDSidecar->>Prefiller: Prefill request<br/>+ kv_transfer_params<br/>HTTP(S) TLS (configurable)<br/>SSRF allowlist validated
+    Note over Prefiller: KV-cache generation
+    Prefiller-->>PDSidecar: Prefill complete<br/>(KV-cache transferred via NIXL/RDMA)
+    PDSidecar->>Decoder: Decode request<br/>HTTP/8001 (localhost)
+    Decoder-->>PDSidecar: Streaming tokens
+    PDSidecar-->>Envoy: SSE streaming response<br/>HTTP(S)/8000
 
-    rect rgb(230, 255, 230)
-        Note over Client,Decoder: Flow 1: Inference Request Routing (EPP)
-        Client->>GW: POST /v1/chat/completions<br/>HTTP/80
-        GW->>EPP: ext_proc ProcessingRequest<br/>gRPC streaming 9002/TCP
-        EPP->>UDS: Tokenize prompt<br/>gRPC over UDS
-        UDS-->>EPP: Token IDs
-        EPP->>EPP: Run scheduling pipeline<br/>Filters → Scorers → Pickers
-        Note over EPP: Select optimal endpoint based on:<br/>- KV cache prefix match<br/>- Queue depth<br/>- Load balancing<br/>- Priority/admission
-        EPP-->>GW: ProcessingResponse<br/>(target endpoint in headers)
-        GW->>Decoder: Forward to selected pod<br/>HTTP/8000
-        Decoder-->>GW: Inference response
-        GW-->>Client: JSON response
-    end
-
-    rect rgb(255, 230, 255)
-        Note over GW,Decoder: Flow 2: Disaggregated P/D Inference (Sidecar)
-        GW->>Sidecar: POST /v1/chat/completions<br/>HTTP/HTTPS 8000/TCP<br/>(EPP set x-prefill-host header)
-        Sidecar->>Sidecar: Validate prefill target<br/>(SSRF allowlist check)
-        Sidecar->>Prefiller: Forward prefill request<br/>HTTP/HTTPS (Optional TLS)
-        Prefiller-->>Sidecar: Prefill response<br/>(KV cache transfer params)
-        Note over Sidecar: KV cache transfer via connector:<br/>NIXL V2 / Shared Storage / SGLang
-        Sidecar->>Decoder: Forward decode request<br/>HTTP/HTTPS 8001/TCP
-        Decoder-->>Sidecar: Streamed inference response
-        Sidecar-->>GW: Streamed response
-        GW-->>Client: Streamed response
-    end
-
-    rect rgb(255, 255, 230)
-        Note over vLLM_KV,EPP: Flow 3: KV Cache Event Subscription
-        vLLM_KV-)EPP: KV cache block events<br/>ZMQ PUB/SUB 5556/TCP
-        EPP->>EPP: Update prefix cache index<br/>for precise scoring
-    end
+    Note over PDSidecar,Decoder: Flow 3: E/P/D Multimodal Pipeline
+    Envoy->>PDSidecar: POST /v1/responses<br/>(multimodal content)
+    PDSidecar->>Prefiller: Fan-out to encoder cluster<br/>HTTP(S) TLS SSRF validated
+    Note over Prefiller: Encode multimodal content
+    PDSidecar->>Prefiller: Prefill with encoded content<br/>HTTP(S) TLS SSRF validated
+    PDSidecar->>Decoder: Decode with KV-cache<br/>HTTP/8001
+    Decoder-->>PDSidecar: Streaming tokens
+    PDSidecar-->>Envoy: SSE streaming response

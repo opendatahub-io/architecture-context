@@ -3,80 +3,70 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (Gateway API)"]
-        HTTPRoute["HTTPRoute<br/>/v1/batches, /v1/files<br/>→ Parent Gateway<br/>TLS depends on Gateway config"]
+    subgraph Ingress["INGRESS (Optional - Gateway API)"]
+        HTTPRoute["HTTPRoute<br/>/v1/batches, /v1/files<br/>TLS: SIMPLE (parent Gateway)"]
     end
 
-    subgraph Internal["INTERNAL SERVICES (Cluster Network)"]
+    subgraph Cluster["CLUSTER INTERNAL (Kubernetes)"]
         direction TB
 
-        subgraph NS_BGW["Namespace: batch-gateway"]
-            APIServer["batch-gateway-apiserver<br/>ClusterIP Service<br/>8000/TCP (API) | 8081/TCP (obs)<br/>TLS 1.2+ (optional, cert-manager)<br/>Auth: X-MaaS-Username tenant header<br/>Security: X-Content-Type-Options,<br/>X-Frame-Options, CSP headers"]
-
-            Processor["batch-gateway-processor<br/>No Service (outbound only)<br/>9090/TCP (observability PodMonitor)<br/>Concurrency: global=100, per_model=10<br/>Crash recovery on startup"]
-
-            GColl["batch-gateway-gc<br/>No Service, no inbound ports<br/>Single replica<br/>Dry-run mode available"]
+        subgraph NS_BG["Batch Gateway Namespace"]
+            direction TB
+            APIServer["API Server<br/>8000/TCP (API) + 8081/TCP (obs)<br/>SA: {release}-apiserver<br/>TLS 1.2+ optional (cert-manager)<br/>Auth: Tenant header (X-MaaS-Username)"]
+            Processor["Batch Processor<br/>9090/TCP (obs only)<br/>SA: {release}-processor<br/>emptyDir: 10Gi workdir<br/>Auth: Bearer token + mTLS (optional)"]
+            GarbageCollector["Garbage Collector<br/>No network listeners<br/>SA: {release}-gc<br/>Single replica"]
         end
     end
 
-    subgraph DataLayer["DATA LAYER (Egress)"]
-        PG["PostgreSQL<br/>5432/TCP<br/>TLS (sslmode configurable)<br/>Auth: Connection string<br/>Secret: batch-gateway-secrets"]
-
-        RedisDB["Redis<br/>6379/TCP<br/>TLS (configurable)<br/>Auth: Connection string<br/>Secret: batch-gateway-secrets"]
-
-        S3["S3-compatible Storage<br/>(AWS S3 / MinIO / Ceph RGW)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: IAM / Static access keys<br/>Secret: batch-gateway-secrets"]
+    subgraph DataLayer["DATA LAYER"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS optional (sslmode)<br/>Conn string credentials"]
+        Redis["Redis<br/>6379/TCP<br/>TLS optional (enableTLS)<br/>Conn string credentials"]
+        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM credentials"]
     end
 
-    subgraph InferenceLayer["INFERENCE (Egress)"]
-        InfGW["Inference Gateway<br/>(global or per-model)<br/>Configurable port<br/>HTTP/HTTPS, TLS 1.2+<br/>Supports custom CA + mTLS<br/>Auth: Bearer token / API key<br/>Secret: batch-gateway-secrets"]
+    subgraph InferenceLayer["INFERENCE LAYER"]
+        InfGW["Inference Gateway<br/>(llm-d / vLLM)<br/>Configurable port<br/>TLS 1.2+ optional + custom CA + mTLS<br/>Bearer token (API key)"]
     end
 
-    subgraph Observability["OBSERVABILITY (Egress)"]
-        OTLP["OTLP Collector<br/>Configurable port<br/>gRPC<br/>Plaintext (default)<br/>Auth: None"]
-
-        Prom["Prometheus<br/>Scrapes :8081 (ServiceMonitor)<br/>Scrapes :9090 (PodMonitor)<br/>HTTP, No encryption"]
+    subgraph Observability["OBSERVABILITY"]
+        OTel["OpenTelemetry Collector<br/>4317/TCP gRPC OTLP<br/>plaintext"]
+        Prometheus["Prometheus<br/>Scrapes 8081/TCP + 9090/TCP<br/>HTTP / No auth"]
     end
 
-    %% External → Ingress
-    Client -->|"HTTP/HTTPS<br/>TLS 1.2+ (optional)<br/>Auth: X-MaaS-Username<br/>+ pass-through headers"| HTTPRoute
+    %% External flows
+    Client -->|"HTTP/HTTPS 8000/TCP<br/>TLS 1.2+ (optional)<br/>Tenant header + ext_authz"| HTTPRoute
+    HTTPRoute -->|"8000/TCP<br/>Path-based routing"| APIServer
 
-    %% Ingress → API Server
-    HTTPRoute -->|"8000/TCP<br/>HTTP/HTTPS<br/>TLS 1.2+ (configurable)"| APIServer
+    %% Internal flows
+    APIServer -->|"PostgreSQL/5432<br/>TLS optional<br/>Conn string"| PostgreSQL
+    APIServer -->|"Redis/6379<br/>TLS optional<br/>Conn string"| Redis
+    APIServer -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
 
-    %% API Server → Data Layer
-    APIServer -->|"5432/TCP<br/>PostgreSQL protocol<br/>TLS (sslmode)"| PG
-    APIServer -->|"6379/TCP<br/>Redis protocol<br/>TLS (configurable)"| RedisDB
-    APIServer -->|"443/TCP HTTPS<br/>TLS 1.2+<br/>IAM/Static creds"| S3
+    Processor -->|"PostgreSQL/5432<br/>TLS optional<br/>Conn string"| PostgreSQL
+    Processor -->|"Redis/6379<br/>TLS optional<br/>Conn string"| Redis
+    Processor -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    Processor -->|"HTTP/HTTPS<br/>TLS 1.2+ optional + mTLS<br/>Bearer token"| InfGW
 
-    %% Processor → Data Layer
-    Processor -->|"5432/TCP<br/>TLS (sslmode)"| PG
-    Processor -->|"6379/TCP<br/>TLS (configurable)"| RedisDB
-    Processor -->|"443/TCP HTTPS<br/>TLS 1.2+"| S3
-
-    %% Processor → Inference
-    Processor -->|"HTTP/HTTPS<br/>TLS 1.2+ (mTLS supported)<br/>Bearer token / API key<br/>x-slo-ttft-ms header"| InfGW
-
-    %% GC → Data Layer
-    GColl -->|"5432/TCP<br/>TLS (sslmode)"| PG
-    GColl -->|"6379/TCP<br/>TLS (configurable)"| RedisDB
-    GColl -->|"443/TCP HTTPS<br/>TLS 1.2+"| S3
+    GarbageCollector -->|"PostgreSQL/5432<br/>TLS optional"| PostgreSQL
+    GarbageCollector -->|"HTTPS/443<br/>TLS 1.2+"| S3
 
     %% Observability
-    Processor -->|"gRPC<br/>OTLP traces<br/>W3C Trace Context"| OTLP
-    Prom -.->|"HTTP scrape :8081"| APIServer
-    Prom -.->|"HTTP scrape :9090"| Processor
+    APIServer -.->|"gRPC/4317<br/>OTLP traces"| OTel
+    Processor -.->|"gRPC/4317<br/>OTLP traces"| OTel
+    Prometheus -.->|"HTTP scrape<br/>8081/TCP"| APIServer
+    Prometheus -.->|"HTTP scrape<br/>9090/TCP"| Processor
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef datalayer fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef inference fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
     classDef observability fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class Client external
     class HTTPRoute ingress
-    class APIServer,Processor,GColl internal
-    class PG,RedisDB,S3 datalayer
+    class APIServer,Processor,GarbageCollector cluster
+    class PostgreSQL,Redis,S3 datalayer
     class InfGW inference
-    class OTLP,Prom observability
+    class OTel,Prometheus observability

@@ -1,75 +1,106 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["ML Model / Application"]
+        Client["ML Application / Client"]
     end
 
-    subgraph Ingress["INGRESS (OpenShift Route)"]
-        Route["OpenShift Route<br/>feast-{name}-ui<br/>443/TCP → 8443/TCP<br/>TLS Reencrypt"]
+    subgraph Ingress["INGRESS (OpenShift Routes - Edge TLS)"]
+        UIRoute["{name}-ui Route<br/>443/TCP -> 8080/TCP<br/>Edge TLS (service serving cert)<br/>Auth: None"]
+        RegistryRoute["{name}-registry-rest Route<br/>443/TCP -> 8080/TCP<br/>Edge TLS (service serving cert)<br/>Auth: Bearer JWT"]
     end
 
-    subgraph ClusterNetwork["CLUSTER NETWORK (Internal)"]
+    subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-applications)"]
+        direction TB
+        Operator["feast-operator-controller-manager<br/>SA: feast-operator-controller-manager<br/>Image: odh-feast-operator-rhel9<br/>FIPS: strictfipsruntime, CGO_ENABLED=1"]
+        OpHealth["Health Probes :8081/TCP<br/>HTTP, No TLS, No Auth"]
+        OpMetrics["Metrics :8443/TCP<br/>HTTPS, TLS, Bearer Token RBAC"]
+    end
+
+    subgraph UserNS["USER NAMESPACE ({user-namespace})"]
         direction TB
 
-        subgraph NS_Operator["Namespace: redhat-ods-applications"]
-            Operator["Feast Operator<br/>SA: feast-operator-controller-manager<br/>Image: odh-feast-operator-rhel9<br/>Health: 8081/TCP (plaintext)"]
+        subgraph PyServer["Python Feature Server"]
+            PyAPI["REST API :6566/TCP<br/>HTTP/HTTPS (TLS configurable)<br/>Auth: OIDC JWT / K8s SA / None<br/>RBAC: Permission-based"]
+            PyMetrics["Metrics :8000/TCP<br/>HTTP, No Auth"]
         end
 
-        subgraph NS_User["Namespace: {user-namespace}"]
-            direction TB
+        subgraph GoServer["Go Feature Server"]
+            GoAPI["HTTP+gRPC :8080/TCP<br/>TLS configurable<br/>Auth: None"]
+            GoMetrics["Metrics :9090/TCP<br/>HTTP, No Auth"]
+        end
 
-            OnlineSvc["feast-{name}-online<br/>80→6566 HTTP | 443→6567 HTTPS<br/>Auth: OIDC/K8s RBAC"]
-            OfflineSvc["feast-{name}-offline<br/>80→8815 HTTP | 443→8816 HTTPS<br/>Auth: OIDC/K8s RBAC"]
-            RegistryGRPC["feast-{name}-registry<br/>80→6570 gRPC | 443→6571 gRPC+TLS<br/>Auth: OIDC/K8s RBAC"]
-            RegistryREST["feast-{name}-registry-rest<br/>80→6572 HTTP | 443→6573 HTTPS<br/>Auth: Bearer (intra-comm JWT)"]
-            UISvc["feast-{name}-ui<br/>80→8888 HTTP | 443→8443 HTTPS<br/>Auth: None"]
-            MetricsSvc["Metrics: 8000/TCP<br/>HTTP, No Auth<br/>Prometheus scrape"]
-            CronJob["CronJob Pod<br/>Image: ose-cli<br/>kubectl exec → feast apply"]
+        RegistrySvc["Feature Registry<br/>gRPC :6570/TCP + REST :8080/TCP<br/>TLS configurable<br/>Auth: Bearer JWT (intra-comm HMAC-SHA256)<br/>NOTE: InsecureSkipVerify=true"]
+
+        UISvc["Feast UI :8080/TCP<br/>HTTP/HTTPS, TLS configurable<br/>Auth: None"]
+
+        subgraph Services["ClusterIP Services"]
+            OnlineSvc["{name}-online<br/>80/443 -> 8080"]
+            OfflineSvc["{name}-offline<br/>80/443 -> 8815"]
+            RegSvc["{name}-registry<br/>80/443 -> 6570"]
+            RegRestSvc["{name}-registry-rest<br/>80/443 -> 8080"]
+            UISvcK8s["{name}-ui<br/>80/443 -> 8080"]
         end
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        Redis["Redis<br/>6379/TCP<br/>Optional TLS<br/>Password from Secret"]
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>Optional TLS<br/>Credentials from Secret"]
-        S3["S3 Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM / access key"]
-        GCS["GCS<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>GCP SA"]
-        Snowflake["Snowflake<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Credentials from Secret"]
-        OIDC["OIDC Provider<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Client credentials"]
+    subgraph ExternalSvc["EXTERNAL SERVICES (Egress)"]
+        Redis["Redis<br/>6379/TCP<br/>TLS optional<br/>Auth: Password"]
+        Postgres["PostgreSQL<br/>5432/TCP<br/>TLS (sslmode configurable)<br/>Auth: User/Pass"]
+        DynamoDB["DynamoDB<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: AWS IAM"]
+        BigQuery["BigQuery<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: GCP SA"]
+        Snowflake["Snowflake<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: User/Pass"]
+        S3["S3 Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: AWS IAM"]
+        GCS["GCS<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: GCP SA"]
+        OIDC["OIDC Provider<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>CA: odh-trusted-ca-bundle"]
+        GitRepo["Git Repository<br/>443/TCP HTTPS or 22/TCP SSH<br/>Auth: Token / SSH key"]
     end
 
-    K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS<br/>SA Token"]
+    subgraph Platform["PLATFORM"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: SA Token"]
+        PlatformOp["rhods-operator<br/>Deploys via Kustomize"]
+    end
 
-    %% External flows
-    Client -->|"HTTPS/443<br/>TLS Reencrypt<br/>UI access"| Route
-    Route -->|"HTTPS/8443<br/>TLS service cert"| UISvc
-
-    Client -->|"HTTP(S)/80,443<br/>Plaintext or TLS<br/>OIDC/K8s RBAC"| OnlineSvc
+    %% External to Ingress
+    Client -->|"HTTP/gRPC<br/>:6566 or :8080<br/>TLS configurable<br/>OIDC JWT / K8s SA"| PyAPI
+    Client -->|"HTTP/gRPC<br/>:8080<br/>TLS configurable"| GoAPI
+    Client -->|"HTTPS :443<br/>Edge TLS"| UIRoute
+    UIRoute -->|":8080"| UISvc
 
     %% Operator flows
-    Operator -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
-    Operator -->|"HTTP(S)/6572-6573<br/>InsecureSkipVerify<br/>Intra-comm JWT HS256"| RegistryREST
+    PlatformOp -->|"Kustomize deploy"| Operator
+    Operator -->|"HTTPS :6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    Operator -->|"HTTP/HTTPS :8080<br/>Bearer JWT<br/>InsecureSkipVerify"| RegistrySvc
 
-    %% CronJob flows
-    CronJob -->|"K8s exec API<br/>HTTPS/443<br/>SA Token"| K8sAPI
+    %% Inter-service
+    PyAPI -->|"gRPC :6570 / HTTP :8080<br/>TLS configurable<br/>Bearer JWT (intra-comm)"| RegistrySvc
+    GoAPI -->|"gRPC :6570<br/>TLS configurable"| RegistrySvc
 
-    %% Feature server egress
-    OnlineSvc -->|"6379/TCP<br/>Redis protocol<br/>Optional TLS"| Redis
-    OnlineSvc -->|"5432/TCP<br/>PG wire<br/>Optional TLS"| PostgreSQL
-    OfflineSvc -->|"5432/TCP<br/>PG wire<br/>Optional TLS"| PostgreSQL
-    OfflineSvc -->|"443/TCP HTTPS<br/>TLS 1.2+"| Snowflake
-    RegistryGRPC -->|"5432/TCP<br/>PG wire"| PostgreSQL
-    RegistryGRPC -->|"443/TCP HTTPS<br/>TLS 1.2+"| S3
-    RegistryGRPC -->|"443/TCP HTTPS<br/>TLS 1.2+"| GCS
-    OnlineSvc -->|"443/TCP HTTPS<br/>TLS 1.2+<br/>OIDC validation"| OIDC
+    %% Egress to stores
+    PyAPI -->|"TCP :6379<br/>TLS optional<br/>Password"| Redis
+    PyAPI -->|"TCP :5432<br/>SSL configurable<br/>User/Pass"| Postgres
+    PyAPI -->|"HTTPS :443<br/>TLS 1.2+<br/>AWS IAM"| DynamoDB
+    PyAPI -->|"HTTPS :443<br/>TLS 1.2+<br/>GCP SA"| BigQuery
+    PyAPI -->|"HTTPS :443<br/>TLS 1.2+<br/>User/Pass"| Snowflake
+    GoAPI -->|"TCP :6379<br/>TLS optional"| Redis
+    GoAPI -->|"TCP :5432<br/>SSL configurable"| Postgres
+    GoAPI -->|"HTTPS :443<br/>AWS IAM"| DynamoDB
+
+    %% Registry storage egress
+    RegistrySvc -->|"HTTPS :443<br/>AWS IAM"| S3
+    RegistrySvc -->|"HTTPS :443<br/>GCP SA"| GCS
+
+    %% Auth egress
+    PyAPI -->|"HTTPS :443<br/>TLS 1.2+<br/>OIDC Discovery + JWKS"| OIDC
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef userworkload fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef k8s fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef platform fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
     class Client external
-    class Route ingress
-    class Operator,OnlineSvc,OfflineSvc,RegistryGRPC,RegistryREST,UISvc,MetricsSvc,CronJob cluster
-    class Redis,PostgreSQL,S3,GCS,Snowflake,OIDC externalservice
-    class K8sAPI k8s
+    class UIRoute,RegistryRoute ingress
+    class Operator,OpHealth,OpMetrics operator
+    class PyAPI,PyMetrics,GoAPI,GoMetrics,RegistrySvc,UISvc,OnlineSvc,OfflineSvc,RegSvc,RegRestSvc,UISvcK8s userworkload
+    class Redis,Postgres,DynamoDB,BigQuery,Snowflake,S3,GCS,OIDC,GitRepo externalservice
+    class K8sAPI,PlatformOp platform

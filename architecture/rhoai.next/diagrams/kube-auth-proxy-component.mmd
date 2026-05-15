@@ -1,73 +1,76 @@
 graph TB
-    subgraph Container["kube-auth-proxy Container Image"]
-        direction TB
-        Entrypoint["entrypoint<br/>(multiplexer)<br/>Selects binary via PROXY_MODE"]
+    subgraph Image["kube-auth-proxy Container Image"]
+        Entrypoint["entrypoint<br/>(Go binary dispatcher)<br/>Selects mode via PROXY_MODE env"]
 
         subgraph AuthMode["Auth Mode (PROXY_MODE=auth)"]
-            direction TB
-            AuthProxy["kube-auth-proxy<br/>4180/TCP HTTP | 443/TCP HTTPS"]
-            MiddlewareChain["Middleware Chain<br/>(alice)"]
-            ScopeInject["Scope Injection<br/>Request ID, Reverse Proxy"]
-            HealthReady["Health/Readiness<br/>/ping, /ready"]
-            Metrics["Metrics Middleware<br/>oauth2_proxy_requests_total"]
-            SessionLoader["Session Loader<br/>K8s Token → OAuth → JWT → Basic → Stored"]
-            HeaderInjector["Header Injection<br/>X-Forwarded-User/Email/Groups"]
-            UpstreamProxy["Upstream Proxy<br/>Reverse proxy to application"]
+            AuthProxy["kube-auth-proxy<br/>(OAuth2/OIDC Proxy)<br/>Port: 4180/HTTP, 4443/HTTPS"]
+            MiddlewareChain["Authentication Chain<br/>(alice middleware)"]
+            K8sTokenValidator["K8s Token Validator"]
+            OAuthBearer["OAuth Bearer Validator"]
+            JWTBearer["JWT Bearer Validator"]
+            BasicAuth["Basic Auth (htpasswd)"]
+            StoredSession["Stored Session (Cookie/Redis)"]
+            CSRFProtection["CSRF Protection<br/>(PKCE + Nonce + Signed Cookie)"]
 
             AuthProxy --> MiddlewareChain
-            MiddlewareChain --> ScopeInject
-            ScopeInject --> HealthReady
-            HealthReady --> Metrics
-            Metrics --> SessionLoader
-            SessionLoader --> HeaderInjector
-            HeaderInjector --> UpstreamProxy
+            MiddlewareChain --> K8sTokenValidator
+            K8sTokenValidator -->|pass| OAuthBearer
+            OAuthBearer -->|pass| JWTBearer
+            JWTBearer -->|pass| BasicAuth
+            BasicAuth -->|pass| StoredSession
+            AuthProxy --> CSRFProtection
         end
 
         subgraph RBACMode["RBAC Mode (PROXY_MODE=rbac, default)"]
-            direction TB
-            RBACProxy["kube-rbac-proxy<br/>8443/TCP HTTPS"]
-            DelegatingAuth["Delegating Authenticator<br/>TokenReview / OIDC JWT / X509"]
-            UnionAuthz["Union Authorizer"]
-            HardcodedAuthz["Hardcoded Authorizer<br/>Prometheus metrics access"]
-            StaticAuthz["Static Authorizer<br/>YAML pattern rules"]
-            SARAuthz["SAR Authorizer<br/>SubjectAccessReview"]
-            AuthzCache["Authorization Cache<br/>5m positive / 30s negative"]
+            RBACProxy["kube-rbac-proxy<br/>(K8s RBAC Proxy)<br/>Port: 8443/HTTPS"]
+            DelegatingAuthn["Delegating Authenticator<br/>(TokenReview / OIDC / x509)"]
+            AuthzChain["Authorization Chain"]
+            HardcodedAuthz["Hardcoded Metrics Authorizer<br/>(auto-allow Prometheus SA)"]
+            StaticAuthz["Static YAML Authorizer"]
+            SARAuthz["SubjectAccessReview Authorizer<br/>(5min allow / 30s deny cache)"]
 
-            RBACProxy --> DelegatingAuth
-            DelegatingAuth --> UnionAuthz
-            UnionAuthz --> HardcodedAuthz
-            UnionAuthz --> StaticAuthz
-            UnionAuthz --> SARAuthz
-            SARAuthz --> AuthzCache
+            RBACProxy --> DelegatingAuthn
+            DelegatingAuthn --> AuthzChain
+            AuthzChain --> HardcodedAuthz
+            HardcodedAuthz -->|not metrics| StaticAuthz
+            StaticAuthz -->|no match| SARAuthz
         end
 
         Entrypoint -->|"PROXY_MODE=auth"| AuthProxy
-        Entrypoint -->|"PROXY_MODE=rbac (default)"| RBACProxy
+        Entrypoint -->|"PROXY_MODE=rbac"| RBACProxy
     end
 
-    subgraph SessionStore["Session Storage"]
-        CookieStore["Cookie Store<br/>AES-CFB + HMAC-SHA256<br/>Auto-splitting >4KB"]
-        RedisStore["Redis Store<br/>AES-GCM per-session<br/>Ticket-based lookup<br/>Distributed locking"]
-    end
+    %% External actors
+    Browser["Browser User"] -->|"HTTPS/4443<br/>OAuth2 session"| AuthProxy
+    APIClient["API Client"] -->|"HTTPS/8443<br/>Bearer token"| RBACProxy
 
-    SessionLoader -->|"cookie mode (default)"| CookieStore
-    SessionLoader -->|"redis mode"| RedisStore
+    %% External dependencies
+    AuthProxy -->|"HTTPS/443<br/>OIDC discovery + tokens"| OIDCProvider["OIDC / OpenShift<br/>OAuth Server"]
+    AuthProxy -->|"TCP/6379<br/>Session storage"| Redis["Redis<br/>(optional)"]
+    AuthProxy -->|"HTTPS/443<br/>TokenReview"| K8sAPI["Kubernetes<br/>API Server"]
+    RBACProxy -->|"HTTPS/443<br/>TokenReview + SAR"| K8sAPI
 
-    %% External interactions
-    User["User Browser"] -->|"HTTPS/HTTP"| Entrypoint
-    EnvoyGW["Envoy Gateway<br/>(ext_authz)"] -->|"HTTP /oauth2/auth"| AuthProxy
-    UpstreamProxy -->|"HTTP/HTTPS/h2c"| UpstreamApp["Upstream Application"]
+    %% Upstream
+    AuthProxy -->|"HTTP/HTTPS<br/>Proxied request"| Upstream["Upstream<br/>Application"]
+    RBACProxy -->|"HTTP/HTTPS/h2c<br/>Proxied request"| Upstream
+
+    %% Operator
+    Operator["rhods-operator"] -.->|"Injects sidecar<br/>Sets PROXY_MODE + flags"| Image
+
+    %% Prometheus
+    Prometheus["OpenShift Prometheus"] -->|"HTTPS/8443<br/>/metrics scrape"| RBACProxy
 
     %% Styling
-    style Container fill:#e8f4fd,stroke:#2196F3,stroke-width:2px
-    style AuthMode fill:#e3f2fd,stroke:#1976D2,stroke-width:2px
-    style RBACMode fill:#e8eaf6,stroke:#3F51B5,stroke-width:2px
-    style SessionStore fill:#fff3e0,stroke:#FF9800,stroke-width:2px
-    style Entrypoint fill:#4a90e2,stroke:#333,color:#fff
+    style Entrypoint fill:#9b59b6,stroke:#333,color:#fff
     style AuthProxy fill:#4a90e2,stroke:#333,color:#fff
     style RBACProxy fill:#4a90e2,stroke:#333,color:#fff
-    style User fill:#f5f5f5,stroke:#999
-    style EnvoyGW fill:#f5f5f5,stroke:#999
-    style UpstreamApp fill:#f5f5f5,stroke:#999
-    style CookieStore fill:#fff8e1,stroke:#FFC107
-    style RedisStore fill:#fff8e1,stroke:#FFC107
+    style MiddlewareChain fill:#5dade2,stroke:#333,color:#fff
+    style AuthzChain fill:#5dade2,stroke:#333,color:#fff
+    style OIDCProvider fill:#e8e8e8,stroke:#333
+    style K8sAPI fill:#e8e8e8,stroke:#333
+    style Redis fill:#e8e8e8,stroke:#333
+    style Upstream fill:#7ed321,stroke:#333
+    style Operator fill:#f5a623,stroke:#333
+    style Browser fill:#f9f9f9,stroke:#333
+    style APIClient fill:#f9f9f9,stroke:#333
+    style Prometheus fill:#e8e8e8,stroke:#333

@@ -1,159 +1,138 @@
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                       │
-│                                                                             │
-│  [External Client]                                                          │
-│         │                                                                   │
-│         │ Port: 443/TCP                                                     │
-│         │ Protocol: HTTPS                                                   │
-│         │ Encryption: TLS 1.2+                                              │
-│         │ Auth: Bearer Token (optional)                                     │
-│         │ Body: OpenAI Chat Completions format                              │
-│         ▼                                                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (Gateway - Envoy Proxy)                                            │
-│                                                                             │
-│  [Envoy Gateway (Istio)]                                                    │
-│  - Port: 443/TCP (external) → internal routing                             │
-│  - TLS Termination: TLS 1.2+                                               │
-│  - EnvoyFilter: ext_proc filter attached (INSERT_AFTER)                    │
-│  - Gateway: maas-default-gateway                                           │
-│         │                                                                   │
-│         │ Port: 9004/TCP                                                    │
-│         │ Protocol: gRPC (ext_proc)                                         │
-│         │ Encryption: mTLS (Istio mesh)                                     │
-│         │ Auth: None (mesh-internal, Istio service identity)                │
-│         ▼                                                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  SERVICE MESH (Trusted - Istio mTLS)                                        │
-│                                                                             │
-│  [AI Gateway Payload Processing BBR Service]                                │
-│  - Namespace: {release-namespace}                                           │
-│  - ServiceAccount: payload-processing-{release}                            │
-│  - Image: quay.io/opendatahub/odh-ai-gateway-payload-processing:odh-stable │
-│  - Service: payload-processing (ClusterIP)                                  │
-│  - ext_proc Port: 9004/TCP (gRPC)                                          │
-│  - Health Port: 9005/TCP (HTTP /healthz)                                    │
-│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, UBI9 base          │
-│                                                                             │
-│    Plugin Chain (executed in order):                                         │
-│    ┌──────────────────────────────────────────────────────────────┐         │
-│    │ 1. body-field-to-header (upstream)                           │         │
-│    │    - Extracts "model" → X-Gateway-Model-Name header         │         │
-│    ├──────────────────────────────────────────────────────────────┤         │
-│    │ 2. model-provider-resolver                                   │         │
-│    │    - Reads ExternalModel CRD cache (in-memory)              │         │
-│    │    - Writes: provider, model, credential-ref to CycleState  │         │
-│    ├──────────────────────────────────────────────────────────────┤         │
-│    │ 3. api-translation                                           │         │
-│    │    - Reads provider from CycleState                         │         │
-│    │    - Request: translates OpenAI → provider-native format    │         │
-│    │    - Response: translates provider-native → OpenAI format   │         │
-│    ├──────────────────────────────────────────────────────────────┤         │
-│    │ 4. apikey-injection                                          │         │
-│    │    - Reads credential-ref from CycleState                   │         │
-│    │    - Looks up Secret in in-memory store                     │         │
-│    │    - Injects provider-specific auth header                  │         │
-│    ├──────────────────────────────────────────────────────────────┤         │
-│    │ 5. nemo-request-guard (optional)                             │         │
-│    │    - Calls NeMo Guardrails for content safety               │         │
-│    │    - Returns 403 if blocked                                 │         │
-│    └──────────────────────────────────────────────────────────────┘         │
-│         │                              │                                    │
-│         │ Port: 443/TCP                │ Port: configurable/TCP             │
-│         │ Protocol: HTTPS              │ Protocol: HTTP                     │
-│         │ Encryption: TLS 1.2+         │ Encryption: Configurable           │
-│         │ Auth: ServiceAccount token   │ Auth: None                         │
-│         ▼                              ▼                                    │
-│  [Kubernetes API Server]         [NeMo Guardrails Service]                  │
-│  - Watch: ExternalModel CRDs      - Endpoint: /v1/guardrail/checks         │
-│    (maas.opendatahub.io/v1alpha1)  - Method: POST                          │
-│  - Watch: Secrets (labeled           - Timeout: 360s (configurable)         │
-│    inference.networking.k8s.io/      - Response limit: 1 MiB               │
-│    bbr-managed=true)                 - Status: success | blocked           │
-│                                                                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  EGRESS (via Envoy Gateway - after ext_proc processing)                     │
-│                                                                             │
-│  [Envoy forwards to external providers after payload mutation]              │
-│         │                                                                   │
-│         │ Port: 443/TCP                                                     │
-│         │ Protocol: HTTPS                                                   │
-│         │ Encryption: TLS 1.2+                                              │
-│         │ Auth: Provider-specific API key (injected by apikey-injection)     │
-│         ▼                                                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES (AI Providers)                                           │
-│                                                                             │
-│  [OpenAI API - api.openai.com]                                              │
-│  - Path: /v1/chat/completions                                               │
-│  - Auth: Authorization: Bearer <key>                                        │
-│  - Encryption: TLS 1.2+                                                     │
-│                                                                             │
-│  [Anthropic API - api.anthropic.com]                                        │
-│  - Path: /v1/messages                                                       │
-│  - Auth: x-api-key: <key>, anthropic-version header                        │
-│  - Encryption: TLS 1.2+                                                     │
-│  - Body: Full translation (OpenAI → Anthropic Messages API)                │
-│                                                                             │
-│  [Azure OpenAI API - {resource}.openai.azure.com]                          │
-│  - Path: /openai/v1/chat/completions                                        │
-│  - Auth: api-key: <key>                                                     │
-│  - Encryption: TLS 1.2+                                                     │
-│  - Response: Field stripping (content_filter_results)                       │
-│                                                                             │
-│  [Google Vertex AI - {region}-aiplatform.googleapis.com]                    │
-│  - Path: /v1/projects/{p}/locations/{l}/endpoints/{e}/chat/completions     │
-│  - Auth: Authorization: Bearer <key>                                        │
-│  - Encryption: TLS 1.2+                                                     │
-│                                                                             │
-│  [AWS Bedrock - bedrock-runtime.{region}.amazonaws.com]                     │
-│  - Path: /v1/chat/completions                                               │
-│  - Auth: Authorization: Bearer <key>                                        │
-│  - Encryption: TLS 1.2+                                                     │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]                                                           │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: Bearer Token (user credential)                               │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway / DMZ)                                                     │
+│                                                                              │
+│  [Istio Gateway (Envoy)]                                                     │
+│  - Port: 443/TCP (external) → internal routing                              │
+│  - TLS Termination: TLS 1.2+                                                │
+│  - EnvoyFilter: INSERT_AFTER (Kuadrant WASM filter)                         │
+│  - Gateway CR: maas-default-gateway                                          │
+│         │                                                                    │
+│         │ Port: 9004/TCP                                                     │
+│         │ Protocol: gRPC (ext_proc)                                          │
+│         │ Encryption: plaintext (pod-local / sidecar)                        │
+│         │ Auth: None (Envoy-internal)                                        │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  PAYLOAD PROCESSING SERVICE (Internal)                                       │
+│                                                                              │
+│  [ai-gateway-payload-processing]                                             │
+│  - Namespace: {release-namespace}                                            │
+│  - ServiceAccount: payload-processing-{release}                              │
+│  - Image: quay.io/opendatahub/odh-ai-gateway-payload-processing:odh-stable  │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1                       │
+│  - Base: registry.access.redhat.com/ubi9/ubi-minimal                         │
+│                                                                              │
+│  Services:                                                                   │
+│  ┌──────────────────────────────────────────────┐                            │
+│  │ ext_proc gRPC    │ 9004/TCP │ gRPC      │ ClusterIP │ plaintext │        │
+│  │ Health/Readiness │ 9005/TCP │ HTTP      │ ClusterIP │ plaintext │        │
+│  │   /healthz       │          │           │           │           │        │
+│  │   /readyz        │          │           │           │           │        │
+│  └──────────────────────────────────────────────┘                            │
+│                                                                              │
+│  Plugin Chain (in-process):                                                  │
+│  ┌────────────────────────────────────────────────────────────────┐          │
+│  │ 1. body-field-to-header (upstream) → extracts model name      │          │
+│  │ 2. model-provider-resolver → resolves provider + cred ref     │          │
+│  │ 3. api-translation → OpenAI ↔ provider format translation     │          │
+│  │ 4. apikey-injection → injects provider auth header            │          │
+│  │ [optional] nemo-request-guard → content safety check          │          │
+│  └────────────────────────────────────────────────────────────────┘          │
+│         │                           │                                        │
+│         │ (Egress 1)                │ (Egress 2)                             │
+│         │ Port: 443/TCP             │ Port: configurable                     │
+│         │ Protocol: HTTPS           │ Protocol: HTTP/HTTPS                   │
+│         │ Encryption: TLS 1.2+      │ Encryption: configurable               │
+│         │ Auth: ServiceAccount      │ Auth: None (sidecar-level)             │
+│         │       token               │                                        │
+│         ▼                           ▼                                        │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE SERVICES                                                      │
+│                                                                              │
+│  [Kubernetes API Server]                                                     │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: ServiceAccount token                                                │
+│  - Purpose: Watch ExternalModel CRDs and labeled Secrets                     │
+│  - Watched resources:                                                        │
+│    - maas.opendatahub.io/v1alpha1 ExternalModel (all namespaces)             │
+│    - core/v1 Secret (label: inference.networking.k8s.io/bbr-managed=true)    │
+│                                                                              │
+│  [NeMo Guardrails Service] (optional)                                        │
+│  - Port: configurable                                                        │
+│  - Protocol: HTTP/HTTPS                                                      │
+│  - Encryption: configurable (relies on cluster network / Istio mTLS)         │
+│  - Auth: None (sidecar-level security)                                       │
+│  - Timeout: 360s default                                                     │
+│  - Purpose: Input content safety rail evaluation                             │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (via Envoy upstream, after payload processing)            │
+│                                                                              │
+│  [External AI Providers]                                                     │
+│  - OpenAI API (api.openai.com)                                               │
+│    - Auth: Bearer token (Authorization header)                               │
+│  - Anthropic API (api.anthropic.com)                                         │
+│    - Auth: x-api-key header                                                  │
+│  - Azure OpenAI (*.openai.azure.com)                                         │
+│    - Auth: api-key header                                                    │
+│  - Vertex AI (*.googleapis.com)                                              │
+│    - Auth: Bearer token (Authorization header)                               │
+│  - Amazon Bedrock (*.amazonaws.com)                                          │
+│    - Auth: Bearer token (Authorization header)                               │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Note: Requests forwarded by Envoy AFTER payload processing mutates        │
+│    headers/body. The payload-processing service itself does NOT connect       │
+│    to providers directly.                                                     │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
 - ClusterRole: {release}-externalmodels-reader
-  - API Groups: "" (core)
-  - Resources: secrets
-  - Verbs: get, list, watch
-  - API Groups: maas.opendatahub.io
-  - Resources: externalmodels
-  - Verbs: get, list, watch
-
-- ClusterRoleBinding: {release}-externalmodels-reader (when multiNamespace=true)
+  - API Group: "" (core)
+    - Resources: secrets
+    - Verbs: get, list, watch
+  - API Group: maas.opendatahub.io
+    - Resources: externalmodels
+    - Verbs: get, list, watch
+- ClusterRoleBinding: {release}-externalmodels-reader
   - ServiceAccount: payload-processing-{release}
-  - Scope: cluster-wide
-
-- RoleBinding: {release}-externalmodels-reader (when multiNamespace=false)
-  - ServiceAccount: payload-processing-{release}
-  - Scope: {release-namespace}
-
-Authentication per Provider:
-- OpenAI:     Authorization: Bearer <api-key>
-- Anthropic:  x-api-key: <api-key>
-- Azure:      api-key: <api-key>
-- Vertex AI:  Authorization: Bearer <api-key>
-- Bedrock:    Authorization: Bearer <api-key>
+  - Scope: cluster-wide (when multiNamespace=true)
+  - Scope: {release-namespace} (when multiNamespace=false, uses Role/RoleBinding)
 
 Secrets:
 - Provider API key Secrets (Opaque)
   - Label: inference.networking.k8s.io/bbr-managed=true
-  - Field: api-key
-  - Provisioned By: User / MaaS controller
+  - Purpose: API keys for external AI providers
+  - Provisioned by: MaaS controller / user
   - Auto-Rotate: No
-  - Scope: Cluster-wide (when multiNamespace=true)
-  - In-memory cache: sync.RWMutex protected, namespace/name keyed
+  - Contains: Provider-specific API keys (OpenAI, Anthropic, Azure, Vertex, Bedrock)
+
+Authentication Flow:
+- External Client → Istio Gateway: User Bearer token (TLS 1.2+)
+- Istio Gateway → Payload Processing: None (pod-local gRPC, plaintext)
+- Payload Processing → K8s API: ServiceAccount token (TLS 1.2+)
+- Payload Processing → NeMo: None (relies on network/mTLS)
+- Envoy → External Providers: Injected API key per provider format
+  - Original user Authorization header STRIPPED before forwarding
 
 FIPS Compliance:
 - Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
-- Base Image: registry.access.redhat.com/ubi9/ubi-minimal:latest (OpenSSL)
-- TLS: No direct TLS; relies on Istio mesh mTLS and Envoy proxy
-- Crypto: stdlib only (FIPS via OpenSSL/strictfipsruntime)
+- Base image: UBI9 (OpenSSL included)
+- TLS: Relies on BBR framework defaults and Envoy for TLS termination
+- Crypto: stdlib only (FIPS-compliant Go runtime)
+- No custom TLS configuration in application code
 - No non-FIPS crypto risks detected
-
-Service Mesh:
-- Provider: Istio
-- EnvoyFilter: Attaches ext_proc to maas-default-gateway
-- Operation: INSERT_AFTER
-- Internal communication: mTLS (Istio mesh)

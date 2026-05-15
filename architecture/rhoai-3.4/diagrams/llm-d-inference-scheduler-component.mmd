@@ -1,72 +1,110 @@
 graph TB
-    subgraph LLMDScheduler["llm-d Inference Scheduler"]
-        subgraph EPPComponent["EPP (Endpoint Picker)"]
-            EPP["EPP Service<br/>9002/TCP gRPC ext-proc"]
-            EPPHealth["Health Probe<br/>9003/TCP gRPC"]
-            EPPMetrics["Metrics Endpoint<br/>9090/TCP HTTP"]
-            EPPZmq["KV Event Receiver<br/>5557/TCP ZMQ"]
-        end
-
-        subgraph SidecarComponent["Routing Sidecar (pd-sidecar)"]
-            Sidecar["Inference Proxy<br/>8000/TCP HTTP/HTTPS"]
-            SidecarNIXL["NIXL v2 Connector"]
-            SidecarSS["Shared Storage Connector"]
-            SidecarSGL["SGLang Connector"]
-            SidecarSSRF["SSRF Allowlist<br/>InferencePool Watch"]
-            Sidecar --> SidecarNIXL
-            Sidecar --> SidecarSS
-            Sidecar --> SidecarSGL
-            Sidecar --> SidecarSSRF
-        end
-
-        subgraph TokenizerComponent["UDS Tokenizer"]
-            Tokenizer["Tokenizer Sidecar<br/>Unix Domain Socket<br/>8082/TCP health"]
-        end
+    subgraph Client["External Client"]
+        User[Client Application]
     end
 
-    %% External Inputs
-    Client["External Client"] -->|"HTTP/80"| EnvoyGW["Envoy Gateway<br/>(Gateway API)"]
-    EnvoyGW -->|"gRPC ext-proc<br/>9002/TCP"| EPP
-    EnvoyGW -->|"HTTP/HTTPS<br/>8000/TCP"| Sidecar
+    subgraph GatewayLayer["Kubernetes Gateway Layer"]
+        GW["inference-gateway<br/>Gateway API<br/>80/TCP HTTP"]
+        HTTPRoute["HTTPRoute<br/>→ InferencePool backends"]
+        GW --> HTTPRoute
+    end
 
-    %% EPP Internal Flows
-    EPP -->|"Unix Socket"| Tokenizer
-    EPP -->|"watches"| InferencePoolCR["InferencePool CR"]
-    EPP -->|"watches"| K8sPods["Kubernetes Pods"]
+    subgraph EPPComponent["Endpoint Picker Processor (EPP)"]
+        direction TB
+        ExtProc["ext-proc gRPC Server<br/>9002/TCP"]
+        HealthGRPC["gRPC Health Check<br/>9003/TCP"]
+        Metrics["Prometheus Metrics<br/>9090/TCP"]
+        ZMQSub["ZMQ Subscriber<br/>5557/TCP"]
 
-    %% EPP to vLLM
-    EPP -->|"ZMQ SUB<br/>5556/TCP"| vLLMEngines["vLLM Engines<br/>(KV-cache events)"]
-    EPP -->|"HTTP GET<br/>/v1/models"| vLLMModels["vLLM Model Servers"]
+        subgraph PluginSystem["Plugin System"]
+            direction LR
+            Filters["Filters<br/>by-label, by-label-selector,<br/>roles"]
+            Scorers["Scorers<br/>active-request, load-aware,<br/>session-affinity, no-hit-lru,<br/>precise-prefix-cache"]
+            Profiles["Profile Handlers<br/>disagg, pd, dp"]
+            Deciders["Deciders<br/>always-disagg-pd,<br/>always-disagg-mm,<br/>prefix-based-pd"]
+        end
+
+        subgraph CacheEngine["KV Cache Engine"]
+            KVIndexer["KV-Block Indexer"]
+            PrefixStore["Prefix Store"]
+            KVIndexer --> PrefixStore
+        end
+
+        ExtProc --> PluginSystem
+        ZMQSub --> CacheEngine
+        PluginSystem --> CacheEngine
+    end
+
+    subgraph SidecarComponent["P/D Routing Sidecar"]
+        direction TB
+        Proxy["HTTP Reverse Proxy<br/>8000/TCP HTTPS"]
+        ProxyHealth["/health endpoint"]
+
+        subgraph Connectors["KV Transfer Connectors"]
+            NIXLv2["NIXL v2<br/>(sequential)"]
+            SharedStorage["Shared Storage<br/>(decode-first)"]
+            SGLang["SGLang<br/>(concurrent)"]
+            EPD["EPD<br/>(multimodal)"]
+        end
+
+        subgraph SSRFProtection["SSRF Protection"]
+            Allowlist["InferencePool<br/>Pod Allowlist"]
+        end
+
+        Proxy --> Connectors
+        Proxy --> SSRFProtection
+    end
+
+    subgraph ModelServing["vLLM Model Serving Pods"]
+        Decoder["vLLM Decoder<br/>8001/TCP"]
+        Prefiller["vLLM Prefiller<br/>(remote)"]
+        Encoder["vLLM Encoder<br/>(remote, EPD)"]
+    end
+
+    subgraph Sidecars["Sidecar Services"]
+        Tokenizer["UDS Tokenizer<br/>gRPC over UDS"]
+    end
+
+    subgraph ExternalDeps["External Dependencies"]
+        Envoy["Envoy Gateway<br/>(ext-proc callbacks)"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS"]
+    end
+
+    %% Request Flow
+    User -->|"HTTP inference request"| GW
+    GW -->|"ext-proc callback"| ExtProc
+    ExtProc -->|"routing decision"| Envoy
+    Envoy -->|"routed request"| Proxy
+
+    %% EPP integrations
+    ExtProc -->|"watch resources"| K8sAPI
+    Tokenizer -->|"tokenize prompts"| ExtProc
 
     %% Sidecar flows
-    Sidecar -->|"HTTP<br/>8001/TCP"| LocalDecoder["vLLM Decoder<br/>(local)"]
-    Sidecar -->|"HTTP/HTTPS<br/>varies"| RemotePrefiller["vLLM Prefiller<br/>(remote)"]
-    Sidecar -->|"HTTP/HTTPS<br/>varies"| RemoteEncoder["vLLM Encoder<br/>(remote)"]
+    Proxy -->|"prefill request"| Prefiller
+    Proxy -->|"decode request"| Decoder
+    Proxy -->|"encode request<br/>(EPD mode)"| Encoder
 
-    %% Observability
-    Prometheus["Prometheus"] -->|"scrape<br/>9090/TCP"| EPPMetrics
-    EPP -->|"gRPC<br/>4317/TCP"| OTLP["OTLP Collector"]
-    Sidecar -->|"gRPC<br/>4317/TCP"| OTLP
+    %% KV cache events
+    Decoder -.->|"ZMQ KV events<br/>5556/TCP"| ZMQSub
+    Prefiller -.->|"ZMQ KV events<br/>5556/TCP"| ZMQSub
+
+    %% CRDs
+    InferencePoolCR["InferencePool CR"]:::crd
+    InferenceModelCR["InferenceModel CR"]:::crd
+    InferencePoolCR -->|"watched by"| ExtProc
+    InferenceModelCR -->|"watched by"| ExtProc
+    InferencePoolCR -->|"SSRF allowlist"| Allowlist
 
     %% Styling
-    style EPP fill:#4a90e2,stroke:#333,color:#fff
-    style EPPHealth fill:#4a90e2,stroke:#333,color:#fff
-    style EPPMetrics fill:#4a90e2,stroke:#333,color:#fff
-    style EPPZmq fill:#4a90e2,stroke:#333,color:#fff
-    style Sidecar fill:#50c878,stroke:#333,color:#fff
-    style SidecarNIXL fill:#50c878,stroke:#333,color:#fff
-    style SidecarSS fill:#50c878,stroke:#333,color:#fff
-    style SidecarSGL fill:#50c878,stroke:#333,color:#fff
-    style SidecarSSRF fill:#50c878,stroke:#333,color:#fff
-    style Tokenizer fill:#9b59b6,stroke:#333,color:#fff
-    style InferencePoolCR fill:#f5a623,stroke:#333
-    style K8sPods fill:#f5a623,stroke:#333
-    style EnvoyGW fill:#e74c3c,stroke:#333,color:#fff
-    style Client fill:#f9f9f9,stroke:#999
-    style vLLMEngines fill:#999,stroke:#333,color:#fff
-    style vLLMModels fill:#999,stroke:#333,color:#fff
-    style LocalDecoder fill:#999,stroke:#333,color:#fff
-    style RemotePrefiller fill:#999,stroke:#333,color:#fff
-    style RemoteEncoder fill:#999,stroke:#333,color:#fff
-    style Prometheus fill:#e8e8e8,stroke:#333
-    style OTLP fill:#e8e8e8,stroke:#333
+    style EPPComponent fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style SidecarComponent fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style PluginSystem fill:#e1f5fe,stroke:#0288d1
+    style CacheEngine fill:#e1f5fe,stroke:#0288d1
+    style Connectors fill:#c8e6c9,stroke:#388e3c
+    style SSRFProtection fill:#fff3e0,stroke:#ef6c00
+    style GatewayLayer fill:#f3e5f5,stroke:#7b1fa2
+    style ModelServing fill:#fff9c4,stroke:#f9a825
+    style ExternalDeps fill:#f5f5f5,stroke:#757575
+
+    classDef crd fill:#f5a623,stroke:#333,stroke-width:2px

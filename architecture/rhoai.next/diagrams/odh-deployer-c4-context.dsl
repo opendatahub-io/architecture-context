@@ -1,54 +1,65 @@
 workspace {
     model {
-        sre = person "SRE / Platform Admin" "Deploys and manages the RHODS/RHOAI platform on OpenShift"
-        dataScientist = person "Data Scientist" "Consumes RHODS Dashboard, notebooks, and model serving"
+        platformAdmin = person "Platform Administrator" "Installs and manages the RHODS platform on OpenShift"
+        dataScientist = person "Data Scientist" "Uses RHODS dashboard, notebooks, and model serving"
+        sreEngineer = person "SRE Engineer" "Monitors platform health and responds to alerts (managed service)"
 
-        odhDeployer = softwareSystem "odh-deployer" "Containerized Bash deployer that bootstraps RHODS platform components via KfDef CRs, monitoring, network policies, and dashboard configuration" {
-            deployScript = container "deploy.sh" "Main orchestration script that creates namespaces, applies KfDef CRs, configures monitoring, network policies, and dashboard resources" "Bash Script"
-            kfdefManifests = container "KfDef Manifests" "Kubernetes custom resources that trigger the ODH operator to install platform components" "YAML"
-            monitoringConfigs = container "Monitoring Configs" "Prometheus, Alertmanager, and Blackbox Exporter deployment manifests with SLO burn rate alerting" "YAML"
-            dashboardISVs = container "Dashboard ISVs" "Kustomize-based ISV application tiles, CRDs, and OdhDashboardConfig for the RHODS Dashboard" "Kustomize Overlays"
-            networkPolicies = container "Network Policies" "Namespace-scoped network policies restricting ingress across applications, monitoring, and operator namespaces" "YAML"
+        odhDeployer = softwareSystem "odh-deployer" "Bootstraps RHODS platform components by creating KfDef CRs, configuring monitoring, networking, dashboard ISVs, and partner integrations" {
+            deployScript = container "deploy.sh" "Main deployment script — orchestrates namespace creation, CRD application, KfDef creation, monitoring config, ISV deployment, network policies" "Bash Script (Init Container)"
+            kfdefManifests = container "KfDef Manifests" "KfDef YAML resources that trigger operator to deploy dashboard, notebooks, model-mesh, DSPO, monitoring, anaconda" "Kubernetes CRs"
+            dashboardCRDs = container "Dashboard CRDs" "OdhApplication, OdhDocument, OdhQuickStart, OdhDashboardConfig custom resources for ISV tiles and dashboard config" "Kustomize Overlays"
+            monitoringManifests = container "Monitoring Stack" "Prometheus, Alertmanager, Blackbox Exporter deployments with SLO-based alerting, PagerDuty/SMTP/DMS integrations" "Kubernetes Manifests"
+            networkPolicies = container "Network Policies" "NetworkPolicy resources controlling ingress to applications, monitoring, and operator namespaces" "Kubernetes Manifests"
         }
 
-        odhOperator = softwareSystem "ODH Operator (KfDef Controller)" "Watches KfDef CRs and installs platform components from odh-manifests tarball" "Internal ODH"
-        rhodsDashboard = softwareSystem "RHODS Dashboard" "Web UI for data scientists to manage notebooks, model serving, and ISV integrations" "Internal ODH"
-        notebookController = softwareSystem "ODH Notebook Controller" "Manages Jupyter notebook lifecycle and spawning" "Internal ODH"
-        modelMesh = softwareSystem "ModelMesh Serving" "Multi-model serving platform for ML inference" "Internal ODH"
-        dspo = softwareSystem "Data Science Pipelines Operator" "Manages ML pipeline deployments" "Internal ODH"
+        rhodsOperator = softwareSystem "rhods-operator (opendatahub operator)" "Reconciles KfDef CRs to deploy and manage RHODS platform components" "Internal RHOAI"
+        odhDashboard = softwareSystem "ODH Dashboard" "Web UI for managing data science projects, notebooks, model serving, and ISV integrations" "Internal RHOAI"
+        notebookController = softwareSystem "ODH Notebook Controller" "Manages Jupyter notebook server lifecycle on OpenShift" "Internal RHOAI"
+        modelMesh = softwareSystem "ModelMesh" "Multi-model serving platform for deploying and managing ML models at scale" "Internal RHOAI"
+        dspo = softwareSystem "Data Science Pipelines Operator" "Manages Data Science Pipelines (based on Kubeflow Pipelines)" "Internal RHOAI"
 
-        prometheus = softwareSystem "Prometheus" "Metrics collection, SLO burn rate alerting, federation from cluster Prometheus" "External"
-        alertmanager = softwareSystem "Alertmanager" "Alert routing to PagerDuty, SMTP, and Dead Man's Snitch" "External"
-        openshiftAPI = softwareSystem "OpenShift API Server" "Kubernetes API for all resource management" "External"
-        clusterPrometheus = softwareSystem "OpenShift Cluster Prometheus" "Platform-level metrics provider in openshift-monitoring namespace" "External"
-        pagerDuty = softwareSystem "PagerDuty" "Incident alerting for critical SLO violations (managed service only)" "External"
-        deadMansSnitch = softwareSystem "Dead Man's Snitch" "Monitoring pipeline liveness verification (managed service only)" "External"
-        smtpServer = softwareSystem "SMTP Server" "Email notifications for user-facing alerts (managed service only)" "External"
-        osdAddonFramework = softwareSystem "OSD Addon Framework" "Provides addon parameters and manages addon lifecycle on OSD" "External"
+        ocpPrometheus = softwareSystem "OpenShift Prometheus" "Platform monitoring stack in openshift-monitoring namespace" "External (OpenShift)"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API for managing all Kubernetes resources" "External (OpenShift)"
+        ocpConsole = softwareSystem "OpenShift Console" "Web console for managing OpenShift clusters" "External (OpenShift)"
+
+        pagerduty = softwareSystem "PagerDuty" "Incident management and alerting platform" "External SaaS"
+        smtpServer = softwareSystem "SMTP Server" "Email delivery service for user notifications" "External"
+        deadMansSnitch = softwareSystem "Dead Man's Snitch" "Heartbeat monitoring service" "External SaaS"
+        segmentIO = softwareSystem "Segment.io" "Analytics and telemetry tracking" "External SaaS"
+        anaconda = softwareSystem "Anaconda CE" "Anaconda Community Edition for data science packages" "External Partner"
 
         # Relationships
-        sre -> odhDeployer "Triggers deployment job"
-        odhDeployer -> openshiftAPI "Creates namespaces, applies CRs, RBAC, network policies" "HTTPS/443 TLS 1.2+ ServiceAccount Token"
-        odhDeployer -> odhOperator "Creates KfDef CRs to trigger component installation" "Kubernetes API"
-        odhOperator -> rhodsDashboard "Installs via KfDef" "Kubernetes API"
-        odhOperator -> notebookController "Installs via KfDef" "Kubernetes API"
-        odhOperator -> modelMesh "Installs via KfDef" "Kubernetes API"
-        odhOperator -> dspo "Installs via KfDef" "Kubernetes API"
+        platformAdmin -> odhDeployer "Triggers platform bootstrap by installing RHODS operator"
+        dataScientist -> odhDashboard "Uses dashboard for notebooks, model serving, ISV tools"
+        sreEngineer -> ocpPrometheus "Monitors platform health via federated metrics and alerts"
 
-        odhDeployer -> prometheus "Deploys monitoring stack" "oc apply YAML"
-        odhDeployer -> alertmanager "Deploys alerting stack" "oc apply YAML"
-        prometheus -> clusterPrometheus "Federates HAProxy, pod, cluster metrics" "HTTPS/9091 TLS Bearer Token"
-        prometheus -> rhodsDashboard "Scrapes metrics + blackbox probe" "HTTP/8080, HTTPS/8443"
-        prometheus -> notebookController "Scrapes controller metrics" "HTTP/8080"
-        prometheus -> modelMesh "Scrapes controller metrics" "HTTP/8080"
-        prometheus -> dspo "Scrapes operator metrics" "HTTP/8080"
-        prometheus -> alertmanager "Sends alerts" "HTTP/9093"
-        alertmanager -> pagerDuty "Critical SLO alerts" "HTTPS/443 TLS 1.2+"
-        alertmanager -> deadMansSnitch "Watchdog heartbeat" "HTTPS/443 TLS 1.2+"
-        alertmanager -> smtpServer "User notification emails" "SMTP STARTTLS"
+        deployScript -> k8sAPI "Creates namespaces, applies CRDs, creates KfDef CRs, deploys monitoring, applies network policies" "HTTPS/443 TLS 1.2+ SA Token"
+        deployScript -> kfdefManifests "Reads and applies KfDef manifests"
+        deployScript -> dashboardCRDs "Reads and applies dashboard CRDs and ISV tiles"
+        deployScript -> monitoringManifests "Deploys Prometheus, Alertmanager, Blackbox Exporter"
+        deployScript -> networkPolicies "Applies NetworkPolicies across namespaces"
 
-        odhDeployer -> osdAddonFramework "Reads addon parameters" "Kubernetes API Secret"
-        dataScientist -> rhodsDashboard "Accesses RHODS Dashboard" "HTTPS/443"
+        kfdefManifests -> rhodsOperator "KfDef CRs trigger operator reconciliation"
+        rhodsOperator -> odhDashboard "Deploys dashboard components"
+        rhodsOperator -> notebookController "Deploys notebook controller"
+        rhodsOperator -> modelMesh "Deploys ModelMesh serving"
+        rhodsOperator -> dspo "Deploys Data Science Pipelines Operator"
+
+        monitoringManifests -> ocpPrometheus "Federates haproxy, controller_runtime, resource metrics" "HTTPS/9091 TLS Bearer Token"
+        monitoringManifests -> notebookController "Scrapes metrics" "HTTP/8080 plaintext"
+        monitoringManifests -> modelMesh "Scrapes metrics" "HTTP/8080 plaintext"
+        monitoringManifests -> dspo "Scrapes metrics" "HTTP/8080 plaintext"
+        monitoringManifests -> rhodsOperator "Scrapes metrics" "HTTP/8383 plaintext"
+        monitoringManifests -> odhDashboard "Blackbox probes dashboard availability" "HTTPS/8443 TLS"
+
+        monitoringManifests -> pagerduty "Routes critical alerts" "HTTPS/443 TLS 1.2+ Service Key"
+        monitoringManifests -> smtpServer "Sends user notifications" "SMTP TLS STARTTLS"
+        monitoringManifests -> deadMansSnitch "Heartbeat every 5 min" "HTTPS/443 TLS 1.2+ URL secret"
+
+        dashboardCRDs -> odhDashboard "Configures ISV tiles, quickstarts, documentation, feature flags"
+        deployScript -> ocpConsole "Creates ConsoleLink for Application Launcher"
+        deployScript -> anaconda "Creates anaconda-ce-access secret placeholder"
+        odhDashboard -> segmentIO "Sends analytics telemetry via segment key"
     }
 
     views {
@@ -63,20 +74,28 @@ workspace {
         }
 
         styles {
-            element "External" {
+            element "External (OpenShift)" {
                 background #999999
                 color #ffffff
             }
-            element "Internal ODH" {
-                background #7ed321
+            element "External SaaS" {
+                background #f5a623
+                color #333333
+            }
+            element "External" {
+                background #cccccc
+                color #333333
+            }
+            element "External Partner" {
+                background #e6522c
                 color #ffffff
+            }
+            element "Internal RHOAI" {
+                background #7ed321
+                color #333333
             }
             element "Person" {
                 shape person
-                background #4a90e2
-                color #ffffff
-            }
-            element "Software System" {
                 background #4a90e2
                 color #ffffff
             }

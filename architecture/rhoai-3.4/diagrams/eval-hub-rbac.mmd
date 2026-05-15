@@ -1,82 +1,97 @@
 graph TD
     subgraph ServiceAccounts["Service Accounts"]
-        EvalHubSA["eval-hub<br/>(operator-created)"]
-        TestSA["test-sa<br/>(example tenant SA)"]
-        JobSA["per-job SA<br/>(evaluation workload)"]
-    end
-
-    subgraph ClusterRoleBindings["Role Bindings"]
-        CRB_FullAccess["eval-hub-service-full-access<br/>(RoleBinding - per namespace)"]
-    end
-
-    subgraph ClusterRoles["Cluster Roles"]
-        CR_FullAccess["eval-hub-service-full-access<br/>(example ClusterRole)"]
-    end
-
-    subgraph APIResources_TrustyAI["API Group: trustyai.opendatahub.io"]
-        Evaluations["evaluations<br/>get, list, create, update,<br/>patch, delete"]
-        Collections["collections<br/>get, list, create, update,<br/>patch, delete"]
-        Providers["providers<br/>get, list, create, update,<br/>patch, delete"]
-        StatusEvents["status-events<br/>create"]
-    end
-
-    subgraph APIResources_MLflow["API Group: mlflow.kubeflow.org"]
-        Experiments["experiments<br/>create, get"]
+        SA_EvalHub["eval-hub SA<br/>(platform namespace)"]
+        SA_Job["evaluation job SA<br/>(tenant namespace)"]
     end
 
     subgraph AuthFlow["Authentication & Authorization Flow"]
-        direction LR
-        BearerToken["Bearer Token<br/>(K8s SA Token)"]
-        TokenReview["TokenReview<br/>(K8s API)"]
-        SAR["SubjectAccessReview<br/>(K8s API)"]
-        XTenant["X-Tenant Header<br/>→ Namespace"]
+        direction TB
+        TokenReview["K8s TokenReview API<br/>Validates Bearer Token<br/>→ User Identity"]
+        SAR["K8s SubjectAccessReview<br/>Checks RBAC permissions<br/>Namespace from X-Tenant header"]
     end
 
-    subgraph K8sResources["Kubernetes Resources (eval-hub SA permissions)"]
-        Jobs["batch/v1 Jobs<br/>create, delete, list, watch"]
-        ConfigMaps["core/v1 ConfigMaps<br/>create, delete"]
-        Secrets["core/v1 Secrets<br/>get"]
+    subgraph RequiredPermissions["Required Permissions (provisioned by TrustyAI Operator)"]
+        direction TB
+
+        subgraph BatchPerms["batch API Group"]
+            Jobs["batch/v1 Jobs<br/>create, delete, list, watch"]
+        end
+
+        subgraph CorePerms["core API Group"]
+            ConfigMaps["v1 ConfigMaps<br/>create, delete, get"]
+        end
+
+        subgraph AuthPerms["Auth API Groups"]
+            TokenReviews["authentication.k8s.io<br/>tokenreviews<br/>create"]
+            SARs["authorization.k8s.io<br/>subjectaccessreviews<br/>create"]
+        end
     end
 
-    %% Tenant SA → RBAC flow
-    TestSA -->|"bound via"| CRB_FullAccess
-    CRB_FullAccess -->|"grants"| CR_FullAccess
-    CR_FullAccess -->|"get, list, create,<br/>update, patch, delete"| Evaluations
-    CR_FullAccess -->|"get, list, create,<br/>update, patch, delete"| Collections
-    CR_FullAccess -->|"get, list, create,<br/>update, patch, delete"| Providers
-    CR_FullAccess -->|"create"| StatusEvents
+    subgraph CustomAPIGroups["Custom API Groups (for SAR checks)"]
+        direction TB
 
-    %% Job creation requires MLflow permissions
-    CR_FullAccess -->|"create, get<br/>(for job creation)"| Experiments
+        subgraph TrustyAIGroup["trustyai.opendatahub.io"]
+            Evaluations["evaluations<br/>create, get, delete"]
+            StatusEvents["status-events<br/>create"]
+            Providers["providers<br/>create, get, update, patch, delete"]
+            Collections["collections<br/>create, get, update, patch, delete"]
+        end
 
-    %% EvalHub SA → K8s resources
-    EvalHubSA -->|"in-cluster token"| Jobs
-    EvalHubSA -->|"in-cluster token"| ConfigMaps
-    EvalHubSA -->|"in-cluster token"| Secrets
+        subgraph MLflowGroup["mlflow.kubeflow.org"]
+            Experiments["experiments<br/>create, get"]
+        end
+    end
 
-    %% Auth flow
-    BearerToken -->|"validates identity"| TokenReview
-    TokenReview -->|"checks permissions"| SAR
-    SAR -->|"namespace from"| XTenant
+    subgraph AuthConfig["Auth Config (config/auth.yaml)"]
+        direction TB
+        EndpointMapping["HTTP Endpoint → K8s Resource Mapping<br/>POST /api/v1/evaluations/jobs → evaluations:create<br/>GET /api/v1/evaluations/jobs → evaluations:get<br/>POST /api/v1/evaluations/jobs/{id}/events → status-events:create<br/>* /api/v1/evaluations/providers → providers:{verb}<br/>* /api/v1/evaluations/collections → collections:{verb}"]
+    end
 
-    %% Job SA
-    JobSA -->|"projected token<br/>(1h expiry)"| StatusEvents
+    subgraph Secrets["Secrets & Credentials"]
+        direction TB
+        ServiceCACert["evalhub-service-ca<br/>ConfigMap (service-ca.crt)<br/>OpenShift Service CA<br/>Auto-rotate: Yes"]
+        MLflowToken["MLflow Projected SA Token<br/>ProjectedServiceAccountToken<br/>Expiry: 3600s<br/>Auto-rotate: Yes"]
+        S3Creds["S3 Credentials<br/>Opaque Secret<br/>AWS_ACCESS_KEY_ID<br/>AWS_SECRET_ACCESS_KEY<br/>Auto-rotate: No"]
+        OCICreds["OCI Registry Credentials<br/>kubernetes.io/dockerconfigjson<br/>Auto-rotate: No"]
+        DBPassword["Database Password<br/>Secret file mapping<br/>PostgreSQL connection<br/>Auto-rotate: No"]
+        ModelAuth["Model Auth Credentials<br/>Opaque Secret<br/>Model endpoint auth<br/>Auto-rotate: No"]
+    end
+
+    %% Flows
+    SA_EvalHub -->|"uses"| TokenReview
+    TokenReview -->|"identity verified"| SAR
+    SAR -->|"checks against"| CustomAPIGroups
+    SAR -->|"namespace from"| EndpointMapping
+
+    SA_EvalHub -->|"needs"| BatchPerms
+    SA_EvalHub -->|"needs"| CorePerms
+    SA_EvalHub -->|"needs"| AuthPerms
+
+    SA_EvalHub -->|"mounts"| ServiceCACert
+    SA_EvalHub -->|"mounts"| DBPassword
+    SA_Job -->|"mounts"| MLflowToken
+    SA_Job -->|"mounts"| S3Creds
+    SA_Job -->|"mounts"| OCICreds
+    SA_Job -->|"mounts"| ModelAuth
 
     %% Styling
-    style EvalHubSA fill:#4a90e2,stroke:#333,color:#fff
-    style TestSA fill:#4a90e2,stroke:#333,color:#fff
-    style JobSA fill:#4a90e2,stroke:#333,color:#fff
-    style CR_FullAccess fill:#f5a623,stroke:#333,color:#fff
-    style CRB_FullAccess fill:#f5a623,stroke:#333,color:#fff
-    style Evaluations fill:#7ed321,stroke:#333,color:#fff
-    style Collections fill:#7ed321,stroke:#333,color:#fff
-    style Providers fill:#7ed321,stroke:#333,color:#fff
-    style StatusEvents fill:#7ed321,stroke:#333,color:#fff
-    style Experiments fill:#50c878,stroke:#333,color:#fff
-    style Jobs fill:#dae8fc,stroke:#6c8ebf
-    style ConfigMaps fill:#dae8fc,stroke:#6c8ebf
-    style Secrets fill:#dae8fc,stroke:#6c8ebf
-    style BearerToken fill:#e8e8e8,stroke:#333
-    style TokenReview fill:#e8e8e8,stroke:#333
-    style SAR fill:#e8e8e8,stroke:#333
-    style XTenant fill:#e8e8e8,stroke:#333
+    style SA_EvalHub fill:#4a90e2,stroke:#333,color:#fff
+    style SA_Job fill:#4a90e2,stroke:#333,color:#fff
+    style TokenReview fill:#f5a623,stroke:#333
+    style SAR fill:#f5a623,stroke:#333
+    style Jobs fill:#7ed321,stroke:#333
+    style ConfigMaps fill:#7ed321,stroke:#333
+    style TokenReviews fill:#7ed321,stroke:#333
+    style SARs fill:#7ed321,stroke:#333
+    style Evaluations fill:#9dc3e6,stroke:#333
+    style StatusEvents fill:#9dc3e6,stroke:#333
+    style Providers fill:#9dc3e6,stroke:#333
+    style Collections fill:#9dc3e6,stroke:#333
+    style Experiments fill:#9dc3e6,stroke:#333
+    style EndpointMapping fill:#e8e8e8,stroke:#333
+    style ServiceCACert fill:#fff2cc,stroke:#d6b656
+    style MLflowToken fill:#fff2cc,stroke:#d6b656
+    style S3Creds fill:#f8cecc,stroke:#b85450
+    style OCICreds fill:#f8cecc,stroke:#b85450
+    style DBPassword fill:#f8cecc,stroke:#b85450
+    style ModelAuth fill:#f8cecc,stroke:#b85450

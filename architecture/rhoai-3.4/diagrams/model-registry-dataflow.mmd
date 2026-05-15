@@ -1,60 +1,61 @@
 sequenceDiagram
-    autonumber
-
-    participant Client as Client<br/>(UI / Python SDK / curl)
-    participant Gateway as Kubeflow Gateway<br/>443/TCP HTTPS TLS
-    participant Proxy as model-registry (proxy)<br/>8080/TCP HTTP<br/>Istio mTLS
-    participant DB as MySQL/PostgreSQL<br/>3306/5432/TCP
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant Controller as controller-manager<br/>8081/TCP (health)
-    participant KServePod as KServe Pod<br/>(init container)
-    participant CSI as mr-storage-initializer
-    participant AsyncJob as async-upload job<br/>(Python)
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant OCI as OCI Registry<br/>443/TCP HTTPS
-    participant Sigstore as Sigstore/Rekor<br/>443/TCP HTTPS
-
-    rect rgb(230, 240, 255)
+    %% Flow 1: Model Registration via REST API
+    rect rgb(230, 245, 255)
         Note over Client,DB: Flow 1: Model Registration via REST API
-        Client->>Gateway: POST /api/model_registry/v1alpha3/registered_models<br/>HTTPS/443, TLS 1.2+
-        Gateway->>Proxy: Forward request<br/>HTTP/8080, Istio mTLS (ISTIO_MUTUAL)
-        Proxy->>DB: INSERT model metadata<br/>TCP 3306/5432, Optional TLS<br/>Auth: username/password
-        DB-->>Proxy: Query result
-        Proxy-->>Gateway: 201 Created (JSON)
-        Gateway-->>Client: Response
+        participant Client as Client<br/>(UI / CLI / SDK)
+        participant AuthProxy as Platform Auth Proxy<br/>(Istio / kube-rbac-proxy)
+        participant MR as Model Registry<br/>REST API Server<br/>8080/TCP HTTP
+        participant DB as MySQL 3306/TCP<br/>or PostgreSQL 5432/TCP
+
+        Client->>AuthProxy: POST /api/model_registry/v1alpha3/registered_models<br/>Platform Auth
+        AuthProxy->>MR: Forward (authenticated)<br/>HTTP/8080
+        MR->>DB: INSERT model metadata<br/>MySQL/PostgreSQL protocol<br/>Optional TLS 1.2+<br/>username/password
+        DB-->>MR: Result
+        MR-->>AuthProxy: 201 Created (JSON)
+        AuthProxy-->>Client: Response
     end
 
+    %% Flow 2: InferenceService Reconciliation
+    rect rgb(255, 245, 230)
+        Note over K8sAPI,MR: Flow 2: InferenceService Reconciliation (Controller)
+        participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+        participant Controller as MR Controller<br/>(controller-runtime)
+
+        K8sAPI->>Controller: Watch Event: InferenceService CR<br/>TLS / ServiceAccount token
+        Controller->>MR: GET/POST /api/.../inference_services<br/>HTTP/8080 (InsecureSkipVerify)
+        MR-->>Controller: Model metadata
+        Controller->>K8sAPI: Update InferenceService finalizers<br/>TLS / ServiceAccount token
+    end
+
+    %% Flow 3: CSI Model Download
     rect rgb(230, 255, 230)
-        Note over K8sAPI,Controller: Flow 2: InferenceService Sync (Controller)
-        K8sAPI->>Controller: Watch event: InferenceService created/updated<br/>HTTPS/6443, TLS 1.2+<br/>Auth: ServiceAccount token
-        Controller->>Proxy: POST/PATCH serving_environments, inference_services<br/>HTTP/8080, InsecureSkipVerify=true<br/>Auth: Bearer Token
-        Proxy->>DB: Upsert metadata<br/>TCP 3306/5432
-        DB-->>Proxy: Result
-        Proxy-->>Controller: 200 OK
+        Note over KServe,Storage: Flow 3: CSI Model Download
+        participant KServe as KServe Runtime
+        participant CSI as mr-storage-initializer<br/>(init container)
+        participant Storage as S3 / GCS Storage<br/>443/TCP HTTPS
+
+        KServe->>CSI: Invoke init container<br/>model-registry:// URI
+        CSI->>MR: GET /api/.../model_artifacts<br/>HTTP/8080
+        MR-->>CSI: Artifact with storage URI
+        CSI->>Storage: Download model artifacts<br/>HTTPS/443 TLS 1.2+<br/>Storage credentials
+        Storage-->>CSI: Model files
+        CSI-->>KServe: Model ready at local path
     end
 
-    rect rgb(255, 240, 230)
-        Note over KServePod,S3: Flow 3: KServe Model Download (CSI Initializer)
-        KServePod->>CSI: Init container starts<br/>model-registry://model/version URI
-        CSI->>Proxy: GET /api/model_registry/v1alpha3/model_artifacts/{id}<br/>HTTP/8080, No Auth
-        Proxy->>DB: Query artifact<br/>TCP 3306/5432
-        DB-->>Proxy: Artifact with storage URI
-        Proxy-->>CSI: Artifact response (s3://bucket/path)
-        CSI->>S3: Download model artifacts<br/>HTTPS/443, TLS 1.2+<br/>Auth: Provider-specific (AWS IAM)
-        S3-->>CSI: Model files
-        CSI-->>KServePod: Model ready at /mnt/models/
-    end
-
+    %% Flow 4: Async Model Upload
     rect rgb(255, 230, 255)
-        Note over AsyncJob,Sigstore: Flow 4: Async Model Upload Job
-        AsyncJob->>S3: Download model from source<br/>HTTPS/443, TLS 1.2+<br/>Auth: AWS IAM credentials
-        S3-->>AsyncJob: Model files
-        AsyncJob->>OCI: Push model image (skopeo/olot)<br/>HTTPS/443, TLS 1.2+<br/>Auth: username/password
-        OCI-->>AsyncJob: Push complete
-        AsyncJob->>Sigstore: Sign model/image (optional)<br/>HTTPS/443, TLS 1.2+<br/>Auth: OIDC identity token
-        Sigstore-->>AsyncJob: Signature recorded
-        AsyncJob->>Proxy: Register/update metadata<br/>HTTP/8080<br/>Auth: Bearer Token (optional)
-        Proxy->>DB: Upsert artifact URI<br/>TCP 3306/5432
-        DB-->>Proxy: Result
-        Proxy-->>AsyncJob: 200 OK
+        Note over Job,Sigstore: Flow 4: Async Model Upload Job
+        participant Job as async-upload Job<br/>(Python)
+        participant SrcStorage as Source Storage<br/>(S3/OCI/HuggingFace)<br/>443/TCP HTTPS
+        participant DstStorage as Destination Storage<br/>(OCI Registry)<br/>443/TCP HTTPS
+        participant Sigstore as Sigstore<br/>(Fulcio/Rekor/TUF)<br/>443/TCP HTTPS
+
+        Job->>SrcStorage: Download model<br/>HTTPS/443 TLS 1.2+<br/>AWS IAM / Docker auth / HF token
+        SrcStorage-->>Job: Model artifacts
+        Job->>Sigstore: Sign model/image<br/>HTTPS/443 TLS 1.2+<br/>OIDC identity token
+        Sigstore-->>Job: Signature
+        Job->>DstStorage: Upload to OCI registry<br/>HTTPS/443 TLS 1.2+<br/>Docker auth
+        DstStorage-->>Job: Push complete
+        Job->>MR: Register/update artifact<br/>HTTPS/443 TLS 1.2+<br/>Bearer token
+        MR-->>Job: Confirmation
     end

@@ -1,55 +1,61 @@
 sequenceDiagram
-    participant User as User / Dashboard
-    participant KRBAC as kube-rbac-proxy<br/>(platform sidecar)
-    participant EvalHub as eval-hub API<br/>8080/TCP HTTP/HTTPS
-    participant K8sAuth as Kubernetes API<br/>443/TCP HTTPS<br/>(Auth)
-    participant K8sJobs as Kubernetes API<br/>443/TCP HTTPS<br/>(Batch v1)
-    participant MLflow as MLflow Tracking<br/>5000/TCP HTTP/HTTPS
-    participant PostgreSQL as PostgreSQL<br/>5432/TCP
-
-    Note over User,PostgreSQL: Flow 1: Evaluation Job Creation
-
-    User->>KRBAC: POST /api/v1/evaluations/jobs<br/>Bearer Token (K8s SA)
-    KRBAC->>EvalHub: Forward (authenticated)
-    EvalHub->>K8sAuth: TokenReview<br/>TLS 1.2+ / In-cluster SA token
-    K8sAuth-->>EvalHub: Identity (user, groups)
-    EvalHub->>K8sAuth: SubjectAccessReview<br/>trustyai.opendatahub.io/evaluations:create<br/>Namespace: X-Tenant header
-    K8sAuth-->>EvalHub: Allowed
-    EvalHub->>MLflow: Create Experiment<br/>Bearer Token
-    MLflow-->>EvalHub: Experiment ID
-    EvalHub->>PostgreSQL: Persist Job Record
-    PostgreSQL-->>EvalHub: OK
-    EvalHub->>K8sJobs: Create ConfigMap (job spec + sidecar config)<br/>TLS 1.2+ / SA token
-    K8sJobs-->>EvalHub: ConfigMap created
-    EvalHub->>K8sJobs: Create Job (3-container pod)<br/>TLS 1.2+ / SA token
-    K8sJobs-->>EvalHub: Job created
-    EvalHub-->>User: 201 Created (Job ID)
-
-    Note over User,PostgreSQL: Flow 2: Evaluation Job Execution (in-pod)
-
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant Init as eval-runtime-init
-    participant Adapter as Eval Adapter<br/>(lm-eval / LightEval / etc.)
+    participant Client as Client<br/>(Dashboard / SDK)
+    participant API as eval-hub API<br/>8080/TCP HTTPS
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant PG as PostgreSQL<br/>5432/TCP
+    participant MLflow as MLflow Tracking<br/>5000/TCP HTTPS
+    participant S3 as AWS S3<br/>443/TCP HTTPS
+    participant Adapter as Framework Adapter<br/>(eval job pod)
     participant Sidecar as eval-runtime-sidecar<br/>8080/TCP HTTP (localhost)
     participant OCI as OCI Registry<br/>443/TCP HTTPS
 
-    Init->>S3: Download test data<br/>TLS 1.2+ / AWS IAM credentials
-    S3-->>Init: Test data objects
-    Note over Init: Init container completes
+    Note over Client,OCI: Flow 1: Create and Run Evaluation Job
 
-    Adapter->>Sidecar: POST /api/v1/evaluations/jobs/{id}/events<br/>localhost:8080 (no auth)
-    Sidecar->>EvalHub: Forward status event<br/>HTTPS / Bearer SA token
-    EvalHub-->>Sidecar: ACK
+    Client->>API: POST /api/v1/evaluations/jobs<br/>Auth: Bearer Token (K8s SA)<br/>TLS 1.2+
+    API->>K8sAPI: TokenReview + SubjectAccessReview<br/>Auth: SA Token, TLS 1.2+
+    K8sAPI-->>API: Authenticated & Authorized
 
-    Adapter->>Sidecar: POST /api/2.0/mlflow/runs/log-metric<br/>localhost:8080 (no auth)
-    Sidecar->>MLflow: Forward to MLflow<br/>HTTPS / Bearer token
-    MLflow-->>Sidecar: OK
+    API->>PG: INSERT evaluation record<br/>SQL, Password auth
+    PG-->>API: Stored
 
-    Adapter->>Sidecar: PUT /{oci-repo}/blobs<br/>localhost:8080 (no auth)
-    Sidecar->>OCI: Push artifacts<br/>TLS 1.2+ / Bearer (challenge/response)
-    OCI-->>Sidecar: OK
+    API->>MLflow: Create experiment<br/>Auth: Bearer Token, TLS 1.2+
+    MLflow-->>API: Experiment ID
 
-    Adapter->>Sidecar: Final status: completed
-    Sidecar->>EvalHub: POST /events (completed)<br/>HTTPS / Bearer SA token
-    EvalHub->>MLflow: Tag run with results
-    EvalHub->>PostgreSQL: Update job status
+    API->>K8sAPI: Create ConfigMap (job spec + sidecar config)<br/>Auth: SA Token, TLS 1.2+
+    API->>K8sAPI: Create batch/v1 Job<br/>(init + sidecar + adapter containers)<br/>Auth: SA Token, TLS 1.2+
+    K8sAPI-->>API: Job created
+
+    API-->>Client: 201 Created (job ID)
+
+    Note over S3,Adapter: Init Container Phase (if test data configured)
+
+    S3->>Adapter: eval-runtime-init downloads test data<br/>Auth: AWS IAM, TLS 1.2+
+
+    Note over Adapter,OCI: Evaluation Execution Phase
+
+    Adapter->>Sidecar: POST /api/v1/evaluations/jobs/{id}/events<br/>HTTP plaintext (pod-local), No auth
+
+    Note over Sidecar,API: Flow 2: Sidecar Auth Token Resolution
+    Sidecar->>Sidecar: Read SA token from<br/>/var/run/secrets/.../token
+    Sidecar->>API: Forward request<br/>Auth: Bearer Token (from SA token file)<br/>HTTPS 8443/TCP, TLS 1.2+
+    API->>PG: Update job status
+    API-->>Sidecar: 200 OK
+    Sidecar-->>Adapter: 200 OK
+
+    Adapter->>Sidecar: POST /api/2.0/mlflow/runs/log-metric<br/>HTTP plaintext (pod-local)
+    Sidecar->>Sidecar: Read projected SA token from<br/>/var/run/secrets/mlflow/token
+    Sidecar->>MLflow: Forward to MLflow Tracking<br/>Auth: Projected SA Token<br/>HTTPS, TLS 1.2+
+    MLflow-->>Sidecar: 200 OK
+    Sidecar-->>Adapter: 200 OK
+
+    Adapter->>Sidecar: PUT /v2/{repo}/blobs/uploads<br/>HTTP plaintext (pod-local)
+    Sidecar->>OCI: OCI auth challenge flow<br/>Auth: Bearer Token (Docker config.json)<br/>HTTPS 443/TCP, TLS 1.2+
+    OCI-->>Sidecar: 201 Created
+    Sidecar-->>Adapter: 201 Created
+
+    Note over Client,API: Job Completion
+
+    Client->>API: GET /api/v1/evaluations/jobs/{id}<br/>Auth: Bearer Token
+    API->>PG: SELECT evaluation record
+    PG-->>API: Job status + results
+    API-->>Client: 200 OK (job details)

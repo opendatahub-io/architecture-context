@@ -1,64 +1,77 @@
 graph TB
-    subgraph External["External Traffic"]
-        Client["Client / Gateway<br/>(Inference Request)"]
-    end
+    subgraph Sidecar["llm-d-routing-sidecar (Go HTTP Reverse Proxy)"]
+        direction TB
+        Proxy["Reverse Proxy Server<br/>Port: 8000/TCP<br/>TLS 1.2+"]
+        ChatHandler["/v1/chat/completions Handler"]
+        CompHandler["/v1/completions Handler"]
+        HealthHandler["/health Handler"]
+        CatchAll["/* Catch-All Handler"]
 
-    subgraph Ingress["OpenShift Ingress"]
-        Route["OpenShift Route<br/>443/TCP HTTPS<br/>TLS Edge Termination"]
-    end
-
-    subgraph Pod["Kubernetes Pod"]
-        subgraph Sidecar["llm-d-routing-sidecar"]
-            Proxy["HTTP Reverse Proxy<br/>8000/TCP HTTPS<br/>TLS 1.2+"]
-            Router{"Route Decision<br/>x-prefiller-host-port<br/>header present?"}
-            Allowlist["AllowlistValidator<br/>(SSRF Protection)"]
-            LRU["LRU Cache<br/>(Prefiller Proxies<br/>capacity: 16)"]
-            ConnNIXL["NIXL v2 Connector<br/>(Protocol Handler)"]
+        subgraph Connectors["P/D Protocol Connectors"]
+            NIXLv2["NIXL v2 Connector<br/>(current)"]
+            NIXLv1["NIXL v1 Connector<br/>(deprecated)"]
+            LMCache["LMCache Connector<br/>(deprecated)"]
         end
 
-        Decoder["vLLM Decoder<br/>8001/TCP<br/>HTTP/HTTPS"]
+        subgraph Security["Security"]
+            AllowlistValidator["AllowlistValidator<br/>SSRF Protection"]
+            TLSConfig["TLS Config<br/>ECDHE + AES-GCM/ChaCha20"]
+        end
+
+        LRUCache["LRU Cache<br/>Prefiller Proxy Handlers<br/>(capacity: 16)"]
+
+        Proxy --> ChatHandler
+        Proxy --> CompHandler
+        Proxy --> HealthHandler
+        Proxy --> CatchAll
+
+        ChatHandler -->|SSRF check| AllowlistValidator
+        CompHandler -->|SSRF check| AllowlistValidator
+        ChatHandler -->|protocol dispatch| NIXLv2
+        ChatHandler -->|protocol dispatch| NIXLv1
+        ChatHandler -->|protocol dispatch| LMCache
+        CompHandler -->|protocol dispatch| NIXLv2
+
+        NIXLv2 -->|cache handler| LRUCache
+        NIXLv1 -->|cache handler| LRUCache
+        LMCache -->|cache handler| LRUCache
     end
 
-    subgraph RemoteWorkers["Remote Prefill Workers"]
-        Prefiller1["vLLM Prefiller Pod 1"]
-        Prefiller2["vLLM Prefiller Pod 2"]
-        PrefillerN["vLLM Prefiller Pod N"]
+    Client[External Client] -->|"HTTPS/8000<br/>TLS 1.2+"| Proxy
+
+    subgraph K8sResources["Kubernetes Resources (Watched)"]
+        InferencePoolCR["InferencePool CR<br/>inference.networking.x-k8s.io/v1alpha2"]
+        Pods["Pods<br/>matching InferencePool selector"]
     end
 
-    subgraph K8sControl["Kubernetes Control Plane"]
-        APIServer["Kubernetes API Server<br/>443/TCP HTTPS"]
-        InferencePool["InferencePool CR<br/>inference.networking.x-k8s.io/v1alpha2"]
+    AllowlistValidator -->|"watch via K8s API<br/>HTTPS/443"| InferencePoolCR
+    AllowlistValidator -->|"watch via K8s API<br/>HTTPS/443"| Pods
+
+    subgraph LocalDecoder["Co-located vLLM Instance"]
+        Decoder["vLLM Decoder<br/>Port: 8001/TCP"]
     end
 
-    %% External flow
-    Client -->|"POST /v1/chat/completions<br/>HTTPS"| Route
-    Route -->|"8080/TCP"| Proxy
+    RemotePrefiller["Remote vLLM Prefiller(s)<br/>Dynamic port from header"]
 
-    %% Internal routing
-    Proxy --> Router
-    Router -->|"Header present"| Allowlist
-    Router -->|"No header<br/>(passthrough)"| Decoder
+    NIXLv2 -->|"Step 1: prefill request<br/>HTTP(S)"| RemotePrefiller
+    RemotePrefiller -->|"KV cache transfer params"| NIXLv2
+    NIXLv2 -->|"Step 2: enriched decode<br/>HTTP(S)/8001"| Decoder
 
-    Allowlist -->|"Validated"| LRU
-    LRU --> ConnNIXL
-    ConnNIXL -->|"Prefill request<br/>(max_tokens=1)"| Prefiller1
-    ConnNIXL -->|"Decode request<br/>(with kv_transfer_params)"| Decoder
+    CatchAll -->|"passthrough<br/>HTTP(S)/8001"| Decoder
 
-    %% SSRF allowlist watches
-    Allowlist -.->|"Watch pods &<br/>InferencePool"| APIServer
-    APIServer -.->|"Pod IPs"| InferencePool
-
-    %% Styling
     style Proxy fill:#4a90e2,stroke:#333,color:#fff
-    style Router fill:#f5a623,stroke:#333,color:#fff
-    style Allowlist fill:#e74c3c,stroke:#333,color:#fff
-    style ConnNIXL fill:#4a90e2,stroke:#333,color:#fff
-    style LRU fill:#4a90e2,stroke:#333,color:#fff
-    style Decoder fill:#7ed321,stroke:#333,color:#fff
-    style Prefiller1 fill:#9b59b6,stroke:#333,color:#fff
-    style Prefiller2 fill:#9b59b6,stroke:#333,color:#fff
-    style PrefillerN fill:#9b59b6,stroke:#333,color:#fff
-    style InferencePool fill:#f5a623,stroke:#333,color:#fff
-    style APIServer fill:#999,stroke:#333,color:#fff
-    style Route fill:#e67e22,stroke:#333,color:#fff
+    style ChatHandler fill:#4a90e2,stroke:#333,color:#fff
+    style CompHandler fill:#4a90e2,stroke:#333,color:#fff
+    style HealthHandler fill:#4a90e2,stroke:#333,color:#fff
+    style CatchAll fill:#4a90e2,stroke:#333,color:#fff
+    style NIXLv2 fill:#50c878,stroke:#333,color:#fff
+    style NIXLv1 fill:#999,stroke:#333,color:#fff
+    style LMCache fill:#999,stroke:#333,color:#fff
+    style AllowlistValidator fill:#e8594f,stroke:#333,color:#fff
+    style TLSConfig fill:#e8594f,stroke:#333,color:#fff
+    style LRUCache fill:#f5a623,stroke:#333
+    style InferencePoolCR fill:#f5a623,stroke:#333
+    style Pods fill:#f5a623,stroke:#333
+    style Decoder fill:#7ed321,stroke:#333
+    style RemotePrefiller fill:#7ed321,stroke:#333
     style Client fill:#f9f9f9,stroke:#999,stroke-width:2px

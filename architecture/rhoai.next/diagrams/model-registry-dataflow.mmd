@@ -1,87 +1,56 @@
 sequenceDiagram
-    autonumber
+    participant Client as Client<br/>(Dashboard/CLI/SDK)
+    participant IstioGW as Istio Gateway<br/>443/TCP HTTPS
+    participant Proxy as model-registry proxy<br/>8080/TCP HTTP
+    participant DB as MySQL/PostgreSQL<br/>3306/5432 TCP
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Controller as model-registry controller<br/>8081/TCP (health)
+    participant KServePod as KServe Inference Pod
+    participant CSI as CSI Storage Initializer
+    participant AsyncJob as async-upload Job<br/>(Python)
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant OCI as OCI Registry<br/>443/TCP HTTPS
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant Sigstore as Sigstore<br/>443/TCP HTTPS
 
-    %% Flow 1: Model Registration via REST API
-    rect rgb(230, 245, 255)
-    Note over Client,DB: Flow 1 - Model Registration via REST API
-    participant Client as Client<br/>(Dashboard/CLI)
-    participant IstioGW as Istio Gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant MRProxy as model-registry (proxy)<br/>8080/TCP HTTP
-    participant DB as MySQL 3306/TCP<br/>or PostgreSQL 5432/TCP
+    Note over Client,DB: Flow 1: Model Registration via REST API
 
-    Client->>IstioGW: POST /api/model_registry/v1alpha3/registered_models<br/>HTTPS, Platform auth
-    IstioGW->>MRProxy: Forward (Istio mTLS)<br/>VirtualService routing
-    MRProxy->>DB: INSERT registered_model<br/>DB protocol, Username/password
-    DB-->>MRProxy: Result
-    MRProxy-->>IstioGW: 201 Created (JSON)
+    Client->>IstioGW: POST /api/model_registry/v1alpha3/registered_models<br/>HTTPS TLS 1.3
+    IstioGW->>Proxy: Forward request<br/>HTTP (Istio mTLS in-mesh)<br/>AuthorizationPolicy enforced
+    Proxy->>DB: INSERT registered model<br/>MySQL/PostgreSQL protocol<br/>TLS 1.2+ (optional)<br/>Auth: Username/Password
+    DB-->>Proxy: Success
+    Proxy-->>IstioGW: 201 Created (JSON)
     IstioGW-->>Client: Response
-    end
 
-    %% Flow 2: InferenceService Reconciliation
-    rect rgb(255, 245, 230)
-    Note over KServe,MRProxy: Flow 2 - InferenceService Reconciliation
-    participant KServe as KServe
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS
-    participant CtrlMgr as controller-manager<br/>8081/TCP health
+    Note over K8sAPI,Controller: Flow 2: InferenceService Synchronization
 
-    KServe->>K8sAPI: Create InferenceService CR<br/>HTTPS, ServiceAccount
-    K8sAPI-->>CtrlMgr: Watch event (ISVC created)<br/>HTTPS, ServiceAccount token
-    CtrlMgr->>MRProxy: POST /api/.../inference_services<br/>HTTP :8080, Bearer Token
-    MRProxy->>DB: INSERT inference_service
-    DB-->>MRProxy: Result
-    MRProxy-->>CtrlMgr: 201 Created
-    CtrlMgr->>K8sAPI: PATCH ISVC (add labels/finalizer)<br/>HTTPS, ServiceAccount
-    end
+    K8sAPI->>Controller: Watch InferenceService CRDs<br/>HTTPS TLS 1.2+<br/>Auth: ServiceAccount Token
+    Controller->>Proxy: POST /api/model_registry/v1alpha3/inference_services<br/>HTTP 8080/TCP<br/>Auth: Bearer Token (SA)
+    Proxy->>DB: INSERT inference_service metadata
+    DB-->>Proxy: Success
+    Proxy-->>Controller: 201 Created
+    Controller->>K8sAPI: Update labels/finalizers<br/>HTTPS TLS 1.2+<br/>Auth: ServiceAccount Token
 
-    %% Flow 3: Model Download via CSI Storage Initializer
-    rect rgb(230, 255, 230)
-    Note over CSIInit,ModelStorage: Flow 3 - Model Download via CSI Storage Initializer
-    participant CSIInit as CSI Storage Initializer<br/>(KServe init container)
-    participant ModelStorage as Model Storage<br/>(S3/GCS/OCI)<br/>443/TCP HTTPS
+    Note over KServePod,Proxy: Flow 3: Model Download via CSI
 
-    CSIInit->>MRProxy: GET model artifact URI<br/>HTTP :8080
-    MRProxy->>DB: SELECT model_artifact<br/>DB protocol
-    DB-->>MRProxy: Artifact metadata (storage URI)
-    MRProxy-->>CSIInit: model-registry:// → s3://bucket/model
-    CSIInit->>ModelStorage: Download model files<br/>HTTPS :443, TLS 1.2+, Storage credentials
-    ModelStorage-->>CSIInit: Model artifacts
-    end
+    KServePod->>CSI: Init container starts<br/>storageUri: model-registry://model/v1
+    CSI->>Proxy: GET /api/model_registry/v1alpha3/model_artifacts<br/>HTTP 8080/TCP<br/>Auth: None
+    Proxy->>DB: SELECT artifact metadata
+    DB-->>Proxy: Artifact location (S3 URI)
+    Proxy-->>CSI: Artifact metadata (JSON)
+    CSI->>S3: Download model artifact<br/>HTTPS 443/TCP TLS 1.2+<br/>Auth: Storage credentials
+    S3-->>CSI: Model files
+    CSI-->>KServePod: Model ready at /mnt/models
 
-    %% Flow 4: Async Model Upload Job
-    rect rgb(255, 230, 255)
-    Note over AsyncJob,OCIReg: Flow 4 - Async Model Upload Job
-    participant AsyncJob as async-upload-job<br/>(Python K8s Job)
-    participant SrcStorage as Source Storage<br/>(S3/OCI) 443/TCP
-    participant OCIReg as Destination<br/>OCI Registry 443/TCP
+    Note over AsyncJob,Sigstore: Flow 4: Async Model Upload
 
-    AsyncJob->>SrcStorage: Download model<br/>HTTPS :443, TLS 1.2+, Storage creds
-    SrcStorage-->>AsyncJob: Model files
-    Note over AsyncJob: Sign model + OCI image
-    AsyncJob->>OCIReg: Push OCI artifact<br/>HTTPS :443, TLS 1.2+, Registry creds
-    OCIReg-->>AsyncJob: Push success
-    AsyncJob->>MRProxy: Register artifact<br/>HTTP :8080, Bearer Token (optional)
-    MRProxy-->>AsyncJob: 201 Created
-    end
-
-    %% Flow 5: UI Model Browsing
-    rect rgb(255, 255, 230)
-    Note over Browser,CatalogSrv: Flow 5 - UI Model Browsing
-    participant Browser as Browser
-    participant BFF as UI BFF<br/>8080/TCP HTTP
-    participant CatalogSrv as model-catalog-server<br/>8080/TCP HTTP
-
-    Browser->>BFF: GET /api/v1/model_registry/{name}/registered_models<br/>User token
-    BFF->>MRProxy: GET /api/model_registry/v1alpha3/registered_models<br/>Forwarded token
-    MRProxy-->>BFF: Models list (JSON)
-    BFF-->>Browser: Proxied response
-
-    Browser->>BFF: GET /api/v1/catalog/models<br/>User token
-    BFF->>CatalogSrv: GET /api/model_catalog/v1alpha1/catalog_models<br/>Forwarded token
-    CatalogSrv-->>BFF: Catalog models (JSON)
-    BFF-->>Browser: Proxied response
-
-    Browser->>BFF: GET /api/v1/namespaces<br/>User token
-    BFF->>K8sAPI: GET namespaces<br/>HTTPS :443, User token
-    K8sAPI-->>BFF: Namespace list
-    BFF-->>Browser: Accessible namespaces
-    end
+    AsyncJob->>S3: Download source model<br/>HTTPS 443/TCP TLS 1.2+<br/>Auth: AWS IAM credentials
+    S3-->>AsyncJob: Model artifacts
+    AsyncJob->>OCI: Upload as OCI image (skopeo)<br/>HTTPS 443/TCP TLS 1.2+<br/>Auth: Docker credentials
+    OCI-->>AsyncJob: Push success
+    AsyncJob->>Sigstore: Sign artifact (cosign)<br/>HTTPS 443/TCP TLS 1.2+<br/>Auth: OIDC Token
+    Sigstore-->>AsyncJob: Signature
+    AsyncJob->>Proxy: Register model/version/artifact<br/>HTTP/HTTPS 8080/TCP<br/>Auth: Bearer Token (optional)
+    Proxy->>DB: INSERT model metadata
+    DB-->>Proxy: Success
+    Proxy-->>AsyncJob: 201 Created

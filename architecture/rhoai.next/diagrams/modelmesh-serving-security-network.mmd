@@ -1,74 +1,83 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client"]
+        Client[External Client]
     end
 
-    subgraph Cluster["KUBERNETES CLUSTER"]
+    subgraph InferenceDataPlane["INFERENCE DATA PLANE (Runtime Pods)"]
         direction TB
 
-        subgraph ControllerNS["Controller Namespace (opendatahub)"]
-            Controller["modelmesh-controller<br/>SA: modelmesh-controller<br/>Ports: 8080 metrics, 8081 health"]
-            WebhookSvc["Webhook Service<br/>9443/TCP HTTPS<br/>TLS (cert-manager)<br/>K8s API CA bundle"]
+        subgraph RuntimePod["Runtime Pod"]
+            OAuthProxy["oauth-proxy<br/>8443/TCP HTTPS<br/>TLS<br/>OpenShift OAuth (SAR)"]
+            RESTProxy["REST Proxy<br/>8008/TCP HTTP<br/>No encryption<br/>KServe v2 API"]
+            ModelMesh["ModelMesh<br/>8033/TCP gRPC<br/>TLS (optional)<br/>mTLS (configurable)"]
+            RuntimeContainer["Model Runtime<br/>Triton/MLServer/OVMS/TorchServe<br/>UDS or TCP<br/>No encryption"]
+            Puller["Storage Puller<br/>8086/TCP gRPC<br/>No encryption<br/>pod-internal"]
         end
+    end
 
-        subgraph UserNS["User Namespace"]
-            subgraph Pod["modelmesh-serving Pod<br/>SA: modelmesh-serving-sa | SCC: restricted"]
-                OAuthProxy["oauth-proxy<br/>8443/TCP HTTPS<br/>TLS (serving-cert-signer)<br/>Auth: OpenShift OAuth<br/>SAR: get services"]
-                RESTProxy["rest-proxy<br/>8008/TCP HTTP<br/>No encryption (localhost)"]
-                ModelMesh["modelmesh (mm)<br/>8033/TCP gRPC<br/>Optional TLS/mTLS<br/>MM_TLS_CLIENT_AUTH"]
-                RuntimeC["Runtime Container<br/>(Triton/OVMS/MLServer/TorchServe)<br/>gRPC localhost/UDS"]
-                PullerC["Puller Sidecar<br/>8086/TCP gRPC<br/>8085/TCP → Runtime"]
-            end
+    subgraph ControlPlane["CONTROL PLANE"]
+        direction TB
 
-            HeadlessSvc["modelmesh-serving Service<br/>(headless ClusterIP)<br/>8033, 8008, 8443, 2112"]
-        end
+        Controller["modelmesh-controller<br/>SA: modelmesh-controller<br/>Metrics: 8080/TCP HTTP<br/>Health: 8081/TCP HTTP"]
+        WebhookServer["Webhook Server<br/>9443/TCP HTTPS<br/>TLS (cert-manager)<br/>K8s API server mTLS"]
+    end
 
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS<br/>SA Token Auth"]
+    subgraph CoordinationLayer["COORDINATION LAYER"]
+        etcd["etcd Cluster<br/>2379/TCP gRPC<br/>TLS (mTLS supported)<br/>Username/password + client certs"]
+    end
+
+    subgraph K8sControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS<br/>ServiceAccount token"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        etcd["etcd Cluster<br/>2379/TCP gRPC<br/>Optional TLS/mTLS<br/>User/pass or client certs"]
-        S3["S3 Storage<br/>443/TCP HTTPS<br/>TLS | AWS IAM"]
-        GCS["GCS Storage<br/>443/TCP HTTPS<br/>TLS | GCP creds"]
-        Azure["Azure Blob<br/>443/TCP HTTPS<br/>TLS | Azure creds"]
+        S3["S3 Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
+        GCS["GCS<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA key"]
+        Azure["Azure Blob<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Account key"]
+        Prometheus["Prometheus<br/>2112/TCP HTTPS<br/>TLS<br/>InsecureSkipVerify"]
     end
 
     %% External flows
-    Client -->|"gRPC/8033<br/>Optional TLS/mTLS<br/>Optional client cert"| HeadlessSvc
-    Client -->|"HTTPS/8443<br/>TLS<br/>OAuth Token"| HeadlessSvc
+    Client -->|"HTTPS/8443<br/>TLS<br/>OAuth Bearer + SAR"| OAuthProxy
 
-    HeadlessSvc -.->|8443| OAuthProxy
-    HeadlessSvc -.->|8033| ModelMesh
+    %% Pod-internal flows
+    OAuthProxy -->|"HTTP/8008<br/>No encryption<br/>pod-internal"| RESTProxy
+    RESTProxy -->|"gRPC/8033<br/>TLS (optional)<br/>pod-internal"| ModelMesh
+    ModelMesh -->|"gRPC (UDS/TCP)<br/>No encryption<br/>pod-internal"| RuntimeContainer
+    ModelMesh -->|"gRPC/8086<br/>No encryption<br/>pod-internal"| Puller
 
-    %% Internal pod flows
-    OAuthProxy -->|"HTTP/8008<br/>localhost<br/>pre-authenticated"| RESTProxy
-    RESTProxy -->|"gRPC/8033<br/>Optional TLS<br/>localhost"| ModelMesh
-    ModelMesh -->|"gRPC<br/>localhost/UDS<br/>no encryption"| RuntimeC
-    PullerC -->|"gRPC/8085<br/>localhost"| RuntimeC
+    %% Direct gRPC inference (non-REST path)
+    Client -.->|"gRPC/8033<br/>TLS (optional)<br/>mTLS (optional)"| ModelMesh
 
-    %% Controller flows
-    Controller -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
-    Controller -->|"gRPC/8033<br/>Optional TLS/mTLS"| ModelMesh
-    WebhookSvc -.->|"called by"| K8sAPI
+    %% Control plane flows
+    Controller -->|"gRPC/8033<br/>TLS (optional)<br/>kube:// resolver"| ModelMesh
+    Controller -->|"HTTPS/443<br/>TLS<br/>SA token"| K8sAPI
+    K8sAPI -->|"HTTPS/9443<br/>TLS<br/>mTLS"| WebhookServer
+
+    %% Coordination flows
+    ModelMesh -->|"gRPC/2379<br/>TLS mTLS<br/>user/pass + certs"| etcd
+    Controller -->|"gRPC/2379<br/>TLS mTLS<br/>EtcdRangeWatcher"| etcd
 
     %% External service flows
-    ModelMesh -->|"gRPC/2379<br/>Optional TLS/mTLS<br/>Credentials"| etcd
-    Controller -->|"reads etcd secret<br/>copies to user NS"| etcd
-    PullerC -->|"HTTPS/443<br/>TLS<br/>IAM/access keys"| S3
-    PullerC -->|"HTTPS/443<br/>TLS<br/>GCP creds"| GCS
-    PullerC -->|"HTTPS/443<br/>TLS<br/>Azure creds"| Azure
+    Puller -->|"HTTPS/443<br/>TLS 1.2+<br/>IAM creds"| S3
+    Puller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA key"| GCS
+    Puller -->|"HTTPS/443<br/>TLS 1.2+<br/>Account key"| Azure
+
+    %% Prometheus scraping
+    Prometheus -.->|"HTTPS/2112<br/>TLS<br/>InsecureSkipVerify"| ModelMesh
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef controller fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef dataplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef coordination fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef k8s fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef k8s fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
-    class OAuthProxy ingress
-    class RESTProxy,ModelMesh,RuntimeC,PullerC servicemesh
-    class Controller,WebhookSvc controller
-    class etcd,S3,GCS,Azure externalservice
-    class K8sAPI,HeadlessSvc k8s
+    class OAuthProxy,RESTProxy,ModelMesh,RuntimeContainer,Puller dataplane
+    class Controller,WebhookServer controlplane
+    class etcd coordination
+    class K8sAPI k8s
+    class S3,GCS,Azure,Prometheus externalservice

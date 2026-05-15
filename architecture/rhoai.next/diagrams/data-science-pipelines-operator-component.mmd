@@ -1,95 +1,84 @@
 graph TB
     subgraph DSPO["Data Science Pipelines Operator"]
-        Controller["DSPO Controller<br/>(DSPAReconciler)<br/>Go / controller-runtime"]
+        Controller["DSPO Controller Manager<br/>Go Operator<br/>Reconciles DSPA CRs"]
+        Webhook["PipelineVersion Webhook<br/>443/TCP HTTPS<br/>Validates/Mutates PipelineVersions"]
+        Controller -->|deploys| Webhook
     end
 
-    subgraph DSPAStack["DSPA Stack (per namespace)"]
+    subgraph DSPAComponents["DSPA Child Resources (per namespace)"]
         direction TB
 
-        subgraph APILayer["API Layer"]
-            APIServer["ds-pipeline-api-server<br/>KFP v2 REST/gRPC<br/>8888/TCP, 8887/TCP"]
-            KRBPApi["kube-rbac-proxy<br/>(API sidecar)<br/>8443/TCP"]
-            KRBPApi -->|SAR auth + proxy| APIServer
+        subgraph APIServerGroup["API Server Stack"]
+            KubeRBACProxy["kube-rbac-proxy<br/>Sidecar 8443/TCP<br/>RBAC Auth"]
+            APIServer["DS Pipeline API Server<br/>8888/TCP HTTP, 8887/TCP gRPC<br/>Pipeline CRUD & Execution"]
+            ManagedPipelinesInit["Managed Pipelines<br/>Init Container<br/>OCI Pipeline Import"]
+            KubeRBACProxy -->|proxy to| APIServer
+            ManagedPipelinesInit -.->|pre-loads pipelines| APIServer
         end
 
-        subgraph Orchestration["Workflow Orchestration"]
-            WorkflowCtrl["ds-pipeline-workflow-controller<br/>Argo Workflow Controller"]
-            PersistenceAgent["ds-pipeline-persistenceagent<br/>Syncs Workflow → KFP DB"]
-            ScheduledWF["ds-pipeline-scheduledworkflow<br/>Cron-triggered runs"]
+        subgraph WorkflowGroup["Workflow & Agents"]
+            WorkflowController["Workflow Controller<br/>Argo Workflows<br/>Pipeline Orchestration"]
+            PersistenceAgent["Persistence Agent<br/>Artifact & Metadata Sync"]
+            ScheduledWorkflow["Scheduled Workflow<br/>Cron-based Execution"]
         end
 
-        subgraph MLMetadata["ML Metadata"]
-            MLMDGrpc["ds-pipeline-metadata-grpc<br/>MLMD gRPC Server<br/>8080/TCP"]
-            Envoy["ds-pipeline-metadata-envoy<br/>Envoy Proxy<br/>9090/TCP"]
-            KRBPEnvoy["kube-rbac-proxy<br/>(Envoy sidecar)<br/>8443/TCP"]
-            KRBPEnvoy -->|SAR auth + proxy| Envoy
-            Envoy -->|gRPC| MLMDGrpc
+        subgraph MLMDGroup["ML Metadata Stack"]
+            MLMDEnvoy["MLMD Envoy Proxy<br/>9090/TCP gRPC, 8443/TCP HTTPS<br/>TLS Termination"]
+            MLMDgRPC["MLMD gRPC Server<br/>8080/TCP gRPC<br/>Metadata Storage"]
+            MLMDEnvoy -->|proxy to| MLMDgRPC
         end
 
-        subgraph Storage["Storage (optional managed)"]
-            MariaDB["mariadb<br/>Pipeline & MLMD DB<br/>3306/TCP"]
-            MinIO["minio<br/>Artifact Storage<br/>9000/TCP"]
-        end
-
-        subgraph Webhook["Admission Webhook (conditional)"]
-            WebhookServer["ds-pipelines-webhook<br/>PipelineVersion validation<br/>8443/TCP"]
-        end
-
-        subgraph InitContainers["Init Containers"]
-            InitMP["init-managed-pipelines<br/>OCI pipeline extraction"]
+        subgraph DataBackends["Data Backends"]
+            MariaDB["MariaDB<br/>3306/TCP MySQL<br/>Pipeline Metadata"]
+            MinIO["MinIO<br/>9000/TCP S3<br/>Artifact Storage"]
         end
     end
 
+    %% Operator deploys all components
+    Controller -->|"deploys & manages"| APIServerGroup
+    Controller -->|"deploys & manages"| WorkflowGroup
+    Controller -->|"deploys & manages"| MLMDGroup
+    Controller -->|"deploys & manages"| DataBackends
+
+    %% User interaction
+    User[User / Dashboard] -->|"HTTPS 8443"| KubeRBACProxy
+
     %% DSPA CR
-    User["User / Platform Admin"] -->|creates| DSPACR["DataSciencePipelinesApplication CR"]
+    DSPACR["DataSciencePipelinesApplication CR"]
+    User -.->|creates| DSPACR
     DSPACR -->|watched by| Controller
 
-    %% Controller deploys everything
-    Controller -->|deploys & manages| APIServer
-    Controller -->|deploys| WorkflowCtrl
-    Controller -->|deploys| PersistenceAgent
-    Controller -->|deploys| ScheduledWF
-    Controller -->|deploys| MLMDGrpc
-    Controller -->|deploys| Envoy
-    Controller -->|deploys| MariaDB
-    Controller -->|deploys| MinIO
-    Controller -->|deploys| WebhookServer
-    Controller -->|injects| InitMP
-
     %% Internal data flows
-    APIServer -->|stores metadata| MariaDB
-    APIServer -->|stores artifacts| MinIO
-    MLMDGrpc -->|stores lineage| MariaDB
-    PersistenceAgent -->|reads workflow status| WorkflowCtrl
-    PersistenceAgent -->|updates run status| APIServer
-    ScheduledWF -->|creates Workflows| WorkflowCtrl
-    InitMP -.->|shared volume| APIServer
+    APIServer -->|"MySQL 3306"| MariaDB
+    APIServer -->|"S3 9000"| MinIO
+    PersistenceAgent -->|"HTTP 8888"| APIServer
+    PersistenceAgent -->|"gRPC 8080"| MLMDgRPC
+    WorkflowController -->|"creates Workflow CRs"| K8sAPI[Kubernetes API]
+    ScheduledWorkflow -->|"creates Workflow CRs"| K8sAPI
 
     %% External dependencies
-    Controller -->|CRUD| K8sAPI["Kubernetes API"]
-    WorkflowCtrl -->|manages Workflows| K8sAPI
-    APIServer -->|CRUD resources| K8sAPI
+    Controller -->|"HTTPS 443"| K8sAPI
+    Controller -->|"HTTPS 443"| OCIRegistry[OCI Registry]
 
-    %% Routes
-    Route1["OpenShift Route<br/>ds-pipeline-{name}<br/>443/TCP TLS Reencrypt"] -->|proxies to| KRBPApi
-    Route2["OpenShift Route<br/>ds-pipeline-md-{name}<br/>443/TCP TLS Reencrypt"] -->|proxies to| KRBPEnvoy
+    %% Platform integrations
+    Route["OpenShift Route<br/>TLS Reencrypt"] -->|"8443"| KubeRBACProxy
+    Prometheus["Prometheus<br/>User Workload Monitoring"] -->|"scrapes 8888"| APIServer
 
     %% Styling
-    style Controller fill:#4a90e2,stroke:#333,stroke-width:3px,color:#fff
-    style APIServer fill:#5ba0d0,stroke:#333,color:#fff
-    style KRBPApi fill:#e8935a,stroke:#333,color:#fff
-    style KRBPEnvoy fill:#e8935a,stroke:#333,color:#fff
-    style WorkflowCtrl fill:#5ba0d0,stroke:#333,color:#fff
-    style PersistenceAgent fill:#5ba0d0,stroke:#333,color:#fff
-    style ScheduledWF fill:#5ba0d0,stroke:#333,color:#fff
-    style MLMDGrpc fill:#5ba0d0,stroke:#333,color:#fff
-    style Envoy fill:#5ba0d0,stroke:#333,color:#fff
-    style MariaDB fill:#9b59b6,stroke:#333,color:#fff
-    style MinIO fill:#9b59b6,stroke:#333,color:#fff
-    style WebhookServer fill:#5ba0d0,stroke:#333,color:#fff
-    style InitMP fill:#95a5a6,stroke:#333,color:#fff
-    style DSPACR fill:#f5a623,stroke:#333,color:#fff
-    style Route1 fill:#27ae60,stroke:#333,color:#fff
-    style Route2 fill:#27ae60,stroke:#333,color:#fff
+    style Controller fill:#4a90e2,stroke:#333,color:#fff
+    style Webhook fill:#4a90e2,stroke:#333,color:#fff
+    style APIServer fill:#50c878,stroke:#333,color:#fff
+    style KubeRBACProxy fill:#f5a623,stroke:#333,color:#fff
+    style ManagedPipelinesInit fill:#87ceeb,stroke:#333
+    style WorkflowController fill:#50c878,stroke:#333,color:#fff
+    style PersistenceAgent fill:#50c878,stroke:#333,color:#fff
+    style ScheduledWorkflow fill:#50c878,stroke:#333,color:#fff
+    style MLMDEnvoy fill:#dda0dd,stroke:#333
+    style MLMDgRPC fill:#50c878,stroke:#333,color:#fff
+    style MariaDB fill:#ff6b6b,stroke:#333,color:#fff
+    style MinIO fill:#ff6b6b,stroke:#333,color:#fff
+    style DSPACR fill:#f5a623,stroke:#333
     style K8sAPI fill:#e8e8e8,stroke:#333
-    style User fill:#f9f9f9,stroke:#333
+    style OCIRegistry fill:#e8e8e8,stroke:#333
+    style Route fill:#e8e8e8,stroke:#333
+    style Prometheus fill:#e8e8e8,stroke:#333

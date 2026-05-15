@@ -1,66 +1,79 @@
 workspace {
     model {
-        admin = person "Platform Admin" "Deploys and configures MLflow tracking server instances via MLflow CR"
-        datascientist = person "Data Scientist" "Tracks experiments, logs models, and queries artifacts via MLflow API"
-        nsowner = person "Namespace Owner" "Configures per-namespace artifact storage via MLflowConfig CR"
+        dataScientist = person "Data Scientist" "Creates and manages ML experiments, models, and artifacts via MLflow"
+        platformAdmin = person "Platform Admin" "Deploys and configures the MLflow operator via RHOAI platform operator"
+        workspaceOwner = person "Workspace Owner" "Configures per-namespace artifact storage credentials via MLflowConfig"
 
-        mlflowOperator = softwareSystem "MLflow Operator" "Deploys and manages MLflow tracking server instances on OpenShift via cluster-scoped MLflow CRD" {
-            controller = container "MLflow Operator Controller" "Watches MLflow CRD, renders embedded Helm chart, applies manifests via Server-Side Apply, manages HTTPRoute and ConsoleLink" "Go (controller-runtime)"
-            helmRenderer = container "HelmRenderer" "Loads embedded Helm chart from charts/mlflow/, translates CR spec to Helm values, renders templates" "helm.sh/helm/v3"
-            mlflowServer = container "MLflow Tracking Server" "Serves MLflow REST API with Kubernetes-native auth, experiment tracking, model registry, artifact management" "Python (uvicorn)"
-            caBundleWatcher = container "CA Bundle Watcher" "Sidecar that polls for CA ConfigMap changes every 30s and regenerates combined CA bundle" "Shell script"
-            dbMigration = container "DB Migration Init" "Runs mlflow db fix-migration-gap for Alembic schema migration between RHOAI versions" "Python (mlflow CLI)"
-            combineCaBundles = container "Combine CA Bundles Init" "Creates initial combined CA bundle from system, platform, and custom certificates" "Shell script"
+        mlflowOperator = softwareSystem "MLflow Operator" "Kubernetes operator managing MLflow tracking server deployments via Helm chart reconciliation" {
+            controller = container "MLflow Controller" "Watches MLflow CRs and reconciles deployments using embedded Helm chart rendering and Server-Side Apply" "Go (controller-runtime)"
+            helmRenderer = container "Helm Chart Renderer" "Renders charts/mlflow templates into unstructured Kubernetes resources" "helm.sh/helm/v3"
+            migrationInjector = container "Migration Injector" "Post-render mutation to inject db-migration init container for RHOAI upgrades" "Go"
         }
 
-        k8sApi = softwareSystem "Kubernetes API Server" "Cluster API for resource management, RBAC, and SelfSubjectAccessReview" "External"
-        dataScienceGateway = softwareSystem "Data Science Gateway" "Gateway API ingress for RHOAI services, provides external HTTPS access" "Internal RHOAI"
-        openshiftServiceCA = softwareSystem "OpenShift Service-CA" "Auto-generates and rotates TLS certificates for Services via annotation" "Internal OpenShift"
-        openshiftConsole = softwareSystem "OpenShift Console" "Web console with application menu, extended via ConsoleLink CRD" "Internal OpenShift"
-        prometheus = softwareSystem "Prometheus" "Metrics collection via ServiceMonitor CRD scraping" "Internal OpenShift"
-        odhTrustedCABundle = softwareSystem "odh-trusted-ca-bundle" "Platform ConfigMap containing custom CA certificates for TLS verification" "Internal RHOAI"
-        postgresql = softwareSystem "PostgreSQL" "Relational database for MLflow backend and registry metadata store" "External"
-        mysql = softwareSystem "MySQL" "Alternative relational database for MLflow backend store" "External"
-        s3Storage = softwareSystem "S3-compatible Storage" "Object storage for MLflow artifacts (MinIO, SeaweedFS, AWS S3)" "External"
+        mlflowServer = softwareSystem "MLflow Tracking Server" "Deployed MLflow server providing experiment tracking, model registry, and artifact management" {
+            server = container "MLflow Server" "Python application serving REST API over HTTPS with Kubernetes-native RBAC authorization" "Python (uvicorn), 8443/TCP HTTPS"
+            caBundleWatcher = container "CA Bundle Watcher" "Sidecar that polls CA certificate sources every 30s and regenerates combined bundle" "Shell script sidecar"
+            dbMigration = container "DB Migration" "Init container running mlflow db fix-migration-gap for Alembic schema migration" "Python init container"
+            combineCaBundles = container "CA Bundle Aggregator" "Init container combining system, platform, and custom CA certificates" "Shell script init container"
+        }
 
-        # Admin interactions
-        admin -> mlflowOperator "Creates/updates MLflow CR (mlflow.opendatahub.io/v1)" "kubectl/API"
-        nsowner -> mlflowOperator "Creates MLflowConfig CR (mlflow.kubeflow.org/v1)" "kubectl/API"
+        # External dependencies
+        k8sApi = softwareSystem "Kubernetes API Server" "Cluster API server for resource management and RBAC authorization" "External"
+        rhoaiOperator = softwareSystem "RHOAI Platform Operator" "rhods-operator that deploys MLflow operator and creates MLflow CRs" "Internal RHOAI"
+        dataScienceGateway = softwareSystem "Data Science Gateway" "Envoy-based Gateway API gateway providing external HTTPS ingress" "Internal RHOAI"
+        openshiftConsole = softwareSystem "OpenShift Console" "Web console with application menu integration via ConsoleLink" "External"
+        serviceCa = softwareSystem "OpenShift service-ca" "Auto-provisions TLS certificates for annotated Services" "External"
+        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics scraping and monitoring via ServiceMonitor" "External"
 
-        # Client interactions
-        datascientist -> dataScienceGateway "MLflow REST API calls" "HTTPS/443, Bearer Token"
-        dataScienceGateway -> mlflowOperator "Forwards to MLflow via HTTPRoute" "HTTPS/8443, TLS (service-CA)"
+        # Data stores
+        postgresql = softwareSystem "PostgreSQL" "Backend metadata store for MLflow experiments and model registry" "External"
+        s3Storage = softwareSystem "S3-compatible Storage" "MinIO or SeaweedFS providing artifact storage for ML experiments" "External"
 
-        # Internal component flows
-        controller -> helmRenderer "Renders Helm chart templates" "In-process"
-        controller -> k8sApi "Watches CRDs, SSA apply, manages HTTPRoute/ConsoleLink" "HTTPS/6443, SA token"
-        combineCaBundles -> mlflowServer "Provides initial combined CA bundle" "Filesystem (emptyDir)"
-        dbMigration -> postgresql "Runs schema migration" "PostgreSQL/5432, TLS"
-        caBundleWatcher -> mlflowServer "Updates combined CA bundle" "Filesystem (emptyDir, polling 30s)"
+        # Platform CA
+        platformCa = softwareSystem "Platform CA Bundle" "odh-trusted-ca-bundle ConfigMap managed by RHOAI platform operator" "Internal RHOAI"
 
-        # MLflow server dependencies
-        mlflowServer -> k8sApi "SelfSubjectAccessReview for auth" "HTTPS/6443, Delegated Bearer Token"
+        # Relationships - Users
+        dataScientist -> mlflowServer "Creates experiments, logs metrics, registers models" "HTTPS/8443, Bearer Token"
+        platformAdmin -> rhoaiOperator "Configures RHOAI platform" "kubectl/API"
+        workspaceOwner -> k8sApi "Creates MLflowConfig CR and mlflow-artifact-connection Secret" "kubectl/API"
+
+        # Relationships - Platform lifecycle
+        rhoaiOperator -> mlflowOperator "Deploys operator, creates singleton MLflow CR" "Kubernetes API"
+        mlflowOperator -> k8sApi "Watches CRs, applies resources via Server-Side Apply" "HTTPS/6443"
+        mlflowOperator -> mlflowServer "Creates and manages Deployment, Service, NetworkPolicy" "Kubernetes API"
+
+        # Relationships - Runtime
+        dataScienceGateway -> mlflowServer "Routes external traffic to MLflow" "HTTPS/8443, TLS (service-ca)"
+        mlflowServer -> k8sApi "SelfSubjectAccessReview for authorization" "HTTPS/6443"
         mlflowServer -> postgresql "Stores experiment/model metadata" "PostgreSQL/5432, TLS verify-full"
-        mlflowServer -> mysql "Alternative metadata store" "MySQL/3306, TLS"
-        mlflowServer -> s3Storage "Stores/retrieves model artifacts" "HTTPS/443 or 9000, AWS credentials"
+        mlflowServer -> s3Storage "Stores/retrieves ML artifacts" "HTTPS/9000, AWS IAM"
+        serviceCa -> mlflowServer "Provisions TLS certificate (mlflow-tls secret)" "Annotation-triggered"
+        platformCa -> mlflowServer "Provides trusted CA certificates" "ConfigMap volume mount"
+        prometheus -> mlflowOperator "Scrapes operator metrics" "HTTPS/8443, TokenReview+SAR"
+        mlflowOperator -> dataScienceGateway "Creates HTTPRoute for external ingress" "Gateway API"
+        mlflowOperator -> openshiftConsole "Creates ConsoleLink for menu integration" "ConsoleLink CR"
 
-        # Platform integrations
-        mlflowOperator -> dataScienceGateway "Creates HTTPRoute (parent ref)" "Gateway API"
-        mlflowOperator -> openshiftConsole "Creates ConsoleLink" "ConsoleLink CRD"
-        openshiftServiceCA -> mlflowOperator "Provisions TLS certificate (mlflow-tls secret)" "Annotation-based"
-        prometheus -> mlflowOperator "Scrapes /metrics endpoint" "HTTPS/8443, ServiceMonitor"
-        odhTrustedCABundle -> mlflowOperator "Provides platform CA certificates" "ConfigMap volume mount"
+        controller -> helmRenderer "Passes CR spec values for chart rendering"
+        helmRenderer -> migrationInjector "Rendered unstructured objects for post-processing"
     }
 
     views {
         systemContext mlflowOperator "SystemContext" {
             include *
             autoLayout
+            description "MLflow Operator system context showing all external interactions"
         }
 
-        container mlflowOperator "Containers" {
+        container mlflowOperator "OperatorContainers" {
             include *
             autoLayout
+            description "Internal structure of the MLflow Operator"
+        }
+
+        container mlflowServer "ServerContainers" {
+            include *
+            autoLayout
+            description "Internal structure of the deployed MLflow Tracking Server"
         }
 
         styles {
@@ -72,12 +85,8 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal OpenShift" {
-                background #9b59b6
-                color #ffffff
-            }
             element "Person" {
-                shape Person
+                shape person
                 background #4a90e2
                 color #ffffff
             }

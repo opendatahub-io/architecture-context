@@ -1,81 +1,94 @@
 graph TB
-    subgraph External["USER (External to Cluster)"]
-        User["Data Scientist / kubectl"]
+    subgraph External["EXTERNAL (Untrusted)"]
+        User["User / Data Scientist"]
     end
 
-    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>Bearer Token / Client Certs"]
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE (Trusted)"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP<br/>TLS 1.2+<br/>Bearer Token / Client Cert"]
     end
 
-    subgraph OperatorNS["OPERATOR NAMESPACE (opendatahub)"]
+    subgraph OperatorNS["OPERATOR NAMESPACE: opendatahub"]
         direction TB
-        Operator["Training Operator Controller<br/>SA: training-operator<br/>Image: training-operator:v1.9.0-odh-3<br/>FIPS: strictfipsruntime"]
-
-        subgraph OperatorPorts["Exposed Ports"]
-            Webhook["Webhook Server<br/>9443/TCP HTTPS<br/>TLS (self-signed)<br/>API server client cert auth"]
-            Metrics["Metrics<br/>8080/TCP HTTP<br/>No auth"]
-            Health["Health Probes<br/>8081/TCP HTTP<br/>/healthz /readyz"]
+        subgraph OperatorPod["Training Operator Pod<br/>SA: training-operator<br/>Image: quay.io/opendatahub/training-operator:v1.9.0-odh-3"]
+            WebhookSvr["Webhook Server<br/>9443/TCP HTTPS<br/>TLS (auto-managed)<br/>Auth: K8s API server cert"]
+            MetricsEP["Metrics Endpoint<br/>8080/TCP HTTP<br/>No encryption<br/>No auth"]
+            HealthEP["Health Probes<br/>8081/TCP HTTP<br/>/healthz /readyz"]
         end
-
-        Service["Service: kubeflow-training-operator<br/>ClusterIP<br/>443→9443 (webhook)"]
+        WebhookSecret["Secret: kubeflow-training-operator-webhook-cert<br/>Type: Opaque (TLS cert/key)<br/>Provisioned: cert-controller<br/>Auto-Rotate: Yes"]
     end
 
-    subgraph JobNS["JOB NAMESPACE ({user-namespace})"]
+    subgraph JobNS["JOB NAMESPACES (user namespaces)"]
         direction TB
-
-        subgraph StandardJobs["Standard Jobs (PyTorch/TF/JAX/XGBoost/Paddle)"]
-            MasterPod["Master Pod"]
-            WorkerPods["Worker Pods"]
-            HeadlessSvc["Headless Service<br/>{job}-{type}-{idx}<br/>ClusterIP: None<br/>No encryption"]
+        subgraph PyTorchJob["PyTorch Training Job"]
+            MasterPod["Master Pod<br/>framework-port/TCP"]
+            WorkerPods["Worker Pod(s)<br/>framework-port/TCP"]
+            NP["NetworkPolicy<br/>Ingress: same-job pods<br/>+ openshift-monitoring:8080"]
         end
 
-        subgraph MPIJobs["MPI Jobs (Additional Resources)"]
-            Launcher["MPI Launcher Pod<br/>SA: {job}-launcher<br/>Init: kubectl-delivery"]
-            MPIWorkers["MPI Worker Pods"]
-            MPIRole["Role: {job}-launcher<br/>(pods/exec on specific pods)"]
-            MPIConfig["ConfigMap: {job}-config<br/>(hostfile, scripts)"]
+        subgraph MPIJob["MPI Training Job"]
+            Launcher["Launcher Pod<br/>kubectl exec via K8s API<br/>Per-job SA token"]
+            MPIWorkers["Worker Pod(s)<br/>MPI ports/TCP"]
         end
+
+        HeadlessSvc["Headless Services<br/>ClusterIP: None<br/>Pod-to-pod DNS discovery"]
     end
 
-    subgraph OptionalIntegrations["OPTIONAL INTEGRATIONS (Cluster-Internal)"]
-        Volcano["Volcano Scheduler<br/>PodGroup CRD<br/>scheduling.volcano.sh"]
-        SchedulerPlugins["scheduler-plugins<br/>PodGroup CRD<br/>scheduling.x-k8s.io"]
+    subgraph Monitoring["MONITORING: openshift-monitoring"]
         Prometheus["Prometheus<br/>PodMonitor scrape"]
-        Kueue["Kueue<br/>CRD labels + webhooks"]
     end
 
-    %% Flows
+    subgraph OptionalScheduling["OPTIONAL: Gang Scheduling"]
+        Volcano["Volcano Scheduler<br/>PodGroup CRs<br/>scheduling.volcano.sh"]
+        SchedPlugins["Scheduler-Plugins<br/>PodGroup CRs<br/>scheduling.x-k8s.io"]
+    end
+
+    %% External flows
     User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| K8sAPI
-    K8sAPI -->|"HTTPS/9443<br/>TLS (self-signed)<br/>API server client cert"| Webhook
-    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>ServiceAccount Token<br/>CRD reconciliation, Pod/Svc CRUD"| K8sAPI
 
-    Operator -->|"Creates"| MasterPod
-    Operator -->|"Creates"| WorkerPods
-    Operator -->|"Creates"| HeadlessSvc
-    Operator -->|"Creates"| Launcher
-    Operator -->|"Creates"| MPIWorkers
-    Operator -->|"Creates"| MPIRole
-    Operator -->|"Creates"| MPIConfig
+    %% Control plane to operator
+    K8sAPI -->|"HTTPS/9443<br/>TLS (auto-managed)<br/>API server client cert"| WebhookSvr
 
-    WorkerPods <-->|"TCP (per job config)<br/>No encryption<br/>via headless DNS"| MasterPod
-    Launcher -->|"HTTPS/443<br/>kubectl exec<br/>TLS 1.2+<br/>Per-job SA Token"| K8sAPI
-    K8sAPI -->|"Kubernetes exec<br/>RBAC: pods/exec"| MPIWorkers
+    %% Operator to control plane
+    OperatorPod -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>CRUD: Pods, Services,<br/>ConfigMaps, RBAC, NetworkPolicies"| K8sAPI
 
-    Operator -.->|"HTTPS/443<br/>PodGroup CRUD"| Volcano
-    Operator -.->|"HTTPS/443<br/>PodGroup CRUD"| SchedulerPlugins
-    Prometheus -.->|"HTTP/8080<br/>No auth"| Metrics
-    Kueue -.->|"Webhooks intercept<br/>training CRDs"| K8sAPI
+    %% Operator creates job resources
+    OperatorPod -.->|creates| MasterPod
+    OperatorPod -.->|creates| WorkerPods
+    OperatorPod -.->|creates| HeadlessSvc
+    OperatorPod -.->|creates| NP
+    OperatorPod -.->|creates| Launcher
+    OperatorPod -.->|creates| MPIWorkers
+
+    %% Inter-pod communication
+    MasterPod <-->|"HTTP/framework-port<br/>No encryption<br/>No auth<br/>via headless DNS"| WorkerPods
+
+    %% MPI specific
+    Launcher -->|"HTTPS/443 via K8s API<br/>kubectl exec<br/>Per-job SA token"| K8sAPI
+    MPIWorkers <-->|"MPI ports/TCP<br/>No encryption"| MPIWorkers
+
+    %% Monitoring
+    Prometheus -->|"HTTP/8080<br/>No encryption<br/>No auth<br/>PodMonitor"| MetricsEP
+
+    %% Secret
+    WebhookSecret -.->|mounted at<br/>/tmp/k8s-webhook-server/serving-certs| WebhookSvr
+
+    %% Optional gang scheduling
+    OperatorPod -.->|"HTTPS/443<br/>Creates PodGroups"| Volcano
+    OperatorPod -.->|"HTTPS/443<br/>Creates PodGroups"| SchedPlugins
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef controlplane fill:#dce6f5,stroke:#4a78b0,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef jobns fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef optional fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef port fill:#d5e8d4,stroke:#82b366,stroke-width:1px
+    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef optional fill:#f8cecc,stroke:#b85450,stroke-width:1px,stroke-dasharray: 5 5
+    classDef secret fill:#ffe6cc,stroke:#d79b00,stroke-width:1px
 
     class User external
     class K8sAPI controlplane
-    class Operator,Service,Webhook,Metrics,Health operator
-    class MasterPod,WorkerPods,HeadlessSvc,Launcher,MPIWorkers,MPIRole,MPIConfig jobns
-    class Volcano,SchedulerPlugins,Prometheus,Kueue optional
+    class WebhookSvr,MetricsEP,HealthEP operator
+    class MasterPod,WorkerPods,Launcher,MPIWorkers,HeadlessSvc,NP jobns
+    class Prometheus monitoring
+    class Volcano,SchedPlugins optional
+    class WebhookSecret secret

@@ -1,97 +1,91 @@
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                       │
-│                                                                             │
-│  [API Client]                                                               │
-│         │                                                                   │
-│         │ Port: 8090/TCP                                                    │
-│         │ Protocol: HTTP                                                    │
-│         │ Encryption: None (plaintext)                                      │
-│         │ Auth: Authorization header (passthrough, not validated locally)    │
-│         │ Headers: x-forwarded-* (forwarded to orchestrator)                │
-│         ▼                                                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  GATEWAY SERVICE (vllm-orchestrator-gateway)                                │
-│                                                                             │
-│  [vllm-orchestrator-gateway]                                                │
-│  - Binary: Rust (axum framework)                                            │
-│  - Listen: 0.0.0.0:8090 (configurable via HTTP_PORT, HOST env vars)        │
-│  - Endpoints: /{route_name}/v1/chat/completions (POST)                     │
-│  - Routes: Dynamically configured from YAML config                          │
-│  - Streaming: SSE (Server-Sent Events) supported                           │
-│  - Config: /app/config/config.yaml (GATEWAY_CONFIG env var)                │
-│  - Image: UBI9-minimal base                                                │
-│                                                                             │
-│  Processing:                                                                │
-│  1. Match request to configured route                                       │
-│  2. Inject detector config (detectors, params, input/output type)          │
-│  3. Forward augmented request to orchestrator                               │
-│  4. If detections found + fallback configured → replace response           │
-│         │                                                                   │
-│         │ Port: 8085/TCP (configurable)                                     │
-│         │ Protocol: HTTP or HTTPS                                           │
-│         │ Encryption: Optional mTLS                                         │
-│         │   - Client cert: /etc/tls/private/tls.crt                        │
-│         │   - Client key: /etc/tls/private/tls.key                         │
-│         │   - CA cert: /etc/tls/ca/service-ca.crt                          │
-│         │   - Identity: PKCS#12 (converted from PEM via openssl crate)     │
-│         │ Auth: Authorization header forwarded from client                  │
-│         │       + mTLS client certificate (when TLS configured)            │
-│         │ Path: /api/v2/chat/completions-detection                         │
-│         ▼                                                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  INTERNAL PLATFORM SERVICES (TrustyAI Stack)                                │
-│                                                                             │
-│  [FMS Guardrails Orchestrator]                                              │
-│  - Port: 8085/TCP (configurable)                                           │
-│  - Protocol: HTTP or HTTPS                                                  │
-│  - Purpose: Content detection on chat completions                           │
-│  - Endpoint: /api/v2/chat/completions-detection                            │
-│  - Auth: Validates forwarded Authorization header                           │
-│         │                                                                   │
-│         ├──── [Content Detectors (e.g., regex-detector)]                   │
-│         │     - Interaction: Indirect (via orchestrator)                    │
-│         │     - Purpose: Input/output content detection                     │
-│         │                                                                   │
-│         └──── [vLLM Model Server]                                          │
-│               - Interaction: Indirect (via orchestrator)                    │
-│               - Purpose: LLM inference backend                             │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-TLS Configuration:
-- Library: openssl 0.10.73 (FFI to system libssl) + native-tls 0.2.12
-- Client Identity: PEM cert/key → PKCS#12 conversion → reqwest native-tls
-- CA Trust: Custom CA from /etc/tls/ca/service-ca.crt
-- Cipher Suites: System OpenSSL defaults (FIPS-compliant on FIPS-enabled nodes)
-- Special: danger_accept_invalid_hostnames(true) ONLY for localhost connections
-- FIPS: Inherits system OpenSSL FIPS mode on FIPS-enabled RHEL/OpenShift nodes
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Client (OpenAI-compatible)]                                            │
+│         │                                                                │
+│         │ Port: 8090/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (plaintext)                                   │
+│         │ Auth: Authorization header (pass-through, not enforced)        │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION LAYER                                                       │
+│                                                                          │
+│  [vLLM Orchestrator Gateway]                                             │
+│  - Language: Rust (axum 0.7.9 framework)                                │
+│  - Container Port: 8090/TCP                                              │
+│  - No Kubernetes Service manifest (deployed by external operator)        │
+│  - No local authentication enforcement                                   │
+│  - Routes: /{route_name}/v1/chat/completions (POST)                     │
+│  - Config: YAML from GATEWAY_CONFIG env var (default: config/config.yaml)│
+│         │                                                                │
+│         │ Port: Configurable (default 8085/TCP)                          │
+│         │ Protocol: HTTP or HTTPS                                        │
+│         │ Encryption: Optional mTLS                                      │
+│         │   - When TLS certs present at /etc/tls/private/:               │
+│         │     HTTPS with mTLS (client cert + custom CA)                  │
+│         │   - When TLS certs absent:                                     │
+│         │     HTTP plaintext                                             │
+│         │ Auth: Authorization header forwarded + mTLS client certificate │
+│         │ Note: danger_accept_invalid_hostnames(true) for localhost only  │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  BACKEND SERVICES (Internal)                                             │
+│                                                                          │
+│  [FMS Guardrails Orchestrator]                                           │
+│  - Endpoint: /api/v2/chat/completions-detection                         │
+│  - Port: Configurable (default 8085/TCP)                                │
+│  - Purpose: Chat completions with detector-based content analysis        │
+│  - Auth: Receives forwarded Authorization header + validates mTLS cert   │
+│         │                                                                │
+│         │ (Internal orchestrator communication)                          │
+│         ▼                                                                │
+│  [Guardrails Detectors]                                                  │
+│  - e.g., regex-detector, PII detectors                                  │
+│  - Invoked by orchestrator, NOT by gateway directly                     │
+│  - Purpose: Content safety analysis (input/output)                       │
+│                                                                          │
+│  [vLLM / LLM Inference Server]                                          │
+│  - Invoked by orchestrator, NOT by gateway directly                     │
+│  - Purpose: Text generation (model inference)                            │
+└─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- No RBAC resources — standalone service, not a Kubernetes operator
-- No ClusterRoles, ClusterRoleBindings, Roles, or RoleBindings defined
-
-Secrets:
-- TLS cert (/etc/tls/private/tls.crt) - kubernetes.io/tls - mTLS client cert
-  Provisioned by: Platform/cert-manager (external)
-  Auto-Rotate: Unknown
-- TLS key (/etc/tls/private/tls.key) - kubernetes.io/tls - mTLS private key
-  Provisioned by: Platform/cert-manager (external)
-  Auto-Rotate: Unknown
-- CA cert (/etc/tls/ca/service-ca.crt) - Opaque - Custom CA for orchestrator trust
-  Provisioned by: Platform/service-ca-operator (external)
-  Auto-Rotate: Unknown
+- No Kubernetes RBAC definitions exist for this component
+- No ClusterRoles, Roles, ClusterRoleBindings, or RoleBindings
+- Component is a stateless HTTP service, not a Kubernetes operator
 
 Authentication & Authorization:
-- Endpoint: /{route_name}/v1/chat/completions
-- Method: POST
-- Auth: Passthrough — forwards Authorization header to orchestrator
-- Enforcement: No local auth enforcement; gateway is transparent proxy
-- x-forwarded-* headers: Forwarded to orchestrator
+- Gateway Level: No authentication enforcement
+  - Authorization header passed through transparently to orchestrator
+  - x-forwarded-* headers forwarded to orchestrator
+- Orchestrator Level: Auth enforcement delegated to orchestrator or upstream proxy
+- mTLS: Client certificate-based mutual authentication (when TLS certs present)
 
-Build & Supply Chain:
-- Base Image: UBI9-minimal
-- OpenSSL: compat-openssl11 in runtime, openssl-devel in build
-- Linking: Dynamic (Rust links against system OpenSSL)
-- Cargo.lock: Present (deterministic dependency resolution)
-- Hermetic Build: Not enabled on main (hermetic: false in Tekton PipelineRun)
-- check-payload: N/A (Rust binary, check-payload targets Go)
+Secrets:
+- /etc/tls/private/tls.crt (X.509 PEM)
+  - Purpose: Client certificate for mTLS to orchestrator
+  - Provisioned by: Platform (cert-manager or manual volume mount)
+  - Auto-Rotate: Unknown
+- /etc/tls/private/tls.key (PEM private key)
+  - Purpose: Private key for mTLS client identity
+  - Provisioned by: Platform (cert-manager or manual volume mount)
+  - Auto-Rotate: Unknown
+- /etc/tls/ca/service-ca.crt (X.509 PEM CA)
+  - Purpose: Custom CA for validating orchestrator server certificate
+  - Provisioned by: Platform (service-ca-operator or manual mount)
+  - Auto-Rotate: Unknown
+
+TLS Implementation Details:
+- Library: openssl 0.10.73 (Rust bindings to system OpenSSL) + native-tls 0.2.12
+- Certificate path: PEM → X509/PKey → PKCS#12 → native-tls Identity
+  (workaround: reqwest's native-tls backend requires PKCS#12 format)
+- Scheme selection: Automatic based on cert file presence at /etc/tls/private/
+- Dev convenience: danger_accept_invalid_hostnames(true) when host=localhost
+- Base image: UBI 9 minimal with compat-openssl11
+
+FIPS Compliance:
+- Build: Dynamic linking against system OpenSSL (openssl-devel at build, compat-openssl11 at runtime)
+- Crypto: Uses system OpenSSL via openssl + native-tls crates (FIPS when system OpenSSL is FIPS-validated)
+- Risk: No explicit cipher suite restrictions; relies on OpenSSL defaults
+- Note: Not a Go binary — GOEXPERIMENT/strictfipsruntime not applicable

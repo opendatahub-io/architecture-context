@@ -1,58 +1,58 @@
 sequenceDiagram
-    autonumber
-
-    participant User as User<br/>(kubectl/Dashboard)
-    participant APIServer as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
-    participant ODHWebhook as odh-notebook-controller<br/>Webhook 8443/TCP HTTPS
-    participant ODHCtrl as odh-notebook-controller<br/>Reconciler
-    participant NBCtrl as notebook-controller<br/>Reconciler
-    participant Gateway as data-science-gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant KRBP as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant User as User / Dashboard
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
+    participant MutWH as ODH Mutating Webhook<br/>8443/TCP HTTPS TLS
+    participant ValWH as ODH Validating Webhook<br/>8443/TCP HTTPS TLS
+    participant NC as notebook-controller
+    participant ODH as odh-notebook-controller
+    participant GW as data-science-gateway<br/>443/TCP HTTPS
+    participant RBAC as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
     participant Jupyter as Jupyter Server<br/>8888/TCP HTTP
-    participant CullCtrl as Culling Controller
+    participant DSPA as DSPA<br/>443/TCP HTTPS
 
-    rect rgb(230, 245, 255)
-        Note over User,Jupyter: Flow 1: Notebook Creation (Auth Mode)
-        User->>APIServer: POST Notebook CR<br/>Auth: User credentials
-        APIServer->>ODHWebhook: Mutating Webhook<br/>HTTPS/8443, TLS (serving cert)
-        Note over ODHWebhook: Injects kube-rbac-proxy sidecar,<br/>resolves ImageStream tags,<br/>mounts CA bundles,<br/>sets Elyra/MLflow/Feast config
-        ODHWebhook-->>APIServer: Mutated Notebook CR
-        APIServer->>ODHCtrl: Watch event (Notebook created)
-        ODHCtrl->>APIServer: Create HTTPRoute<br/>(nb-{ns}-{name})
-        ODHCtrl->>APIServer: Create ReferenceGrant<br/>(cross-namespace)
-        ODHCtrl->>APIServer: Create NetworkPolicy<br/>(controller-access + krbp-access)
-        ODHCtrl->>APIServer: Create Service, SA,<br/>ClusterRoleBinding for kube-rbac-proxy
-        APIServer->>NBCtrl: Watch event (Notebook created)
-        NBCtrl->>APIServer: Create StatefulSet<br/>(replicas=1)
-        NBCtrl->>APIServer: Create Service<br/>({notebook-name} 80→8888)
-        Note over NBCtrl: Pod starts with Jupyter +<br/>kube-rbac-proxy containers
+    Note over User,DSPA: Flow 1: Notebook Creation and Network Exposure
+
+    User->>K8sAPI: POST Notebook CR<br/>Auth: Bearer Token
+    K8sAPI->>MutWH: Admission Review (CREATE)<br/>HTTPS/8443, TLS serving cert
+    Note right of MutWH: Injects: kube-rbac-proxy sidecar,<br/>CA bundles, pipeline secrets,<br/>MLflow env, proxy env,<br/>reconciliation lock annotation
+    MutWH-->>K8sAPI: Mutated Notebook
+
+    K8sAPI-->>User: Notebook created
+
+    par notebook-controller reconcile
+        NC->>K8sAPI: Create StatefulSet<br/>HTTPS/443, SA token
+        NC->>K8sAPI: Create Service (port 80→8888)<br/>HTTPS/443, SA token
+    and odh-notebook-controller reconcile
+        ODH->>K8sAPI: Create HTTPRoute in central namespace<br/>HTTPS/443, SA token
+        ODH->>K8sAPI: Create ReferenceGrant<br/>HTTPS/443, SA token
+        ODH->>K8sAPI: Create kube-rbac-proxy Service (8443)<br/>HTTPS/443, SA token
+        ODH->>K8sAPI: Create NetworkPolicy<br/>HTTPS/443, SA token
+        ODH->>DSPA: Read DSPA CR status<br/>HTTPS/443, SA token
+        ODH->>K8sAPI: Create ds-pipeline-config Secret<br/>HTTPS/443, SA token
+        ODH->>K8sAPI: Create DSPA/MLflow RoleBindings<br/>HTTPS/443, SA token
+        Note right of ODH: Removes reconciliation lock<br/>annotation → pod starts
     end
 
-    rect rgb(255, 245, 230)
-        Note over User,Jupyter: Flow 2: Notebook Access via Gateway (Auth Mode)
-        User->>Gateway: GET /notebook/{ns}/{name}<br/>HTTPS/443, TLS 1.2+
-        Gateway->>KRBP: Forward request<br/>HTTPS/8443, TLS (serving cert)<br/>Bearer token forwarded
-        KRBP->>APIServer: TokenReview<br/>HTTPS/6443
-        APIServer-->>KRBP: Token valid, user identity
-        KRBP->>APIServer: SubjectAccessReview<br/>(GET kubeflow.org/v1.notebooks)
-        APIServer-->>KRBP: Access granted
-        KRBP->>Jupyter: Proxy request<br/>HTTP/8888 (localhost)<br/>Headers: X-Auth-Request-User,<br/>X-Auth-Request-Groups
-        Jupyter-->>KRBP: Response
-        KRBP-->>Gateway: Response
-        Gateway-->>User: HTTPS Response
-    end
+    Note over User,DSPA: Flow 2: User Accesses Notebook (with auth)
 
-    rect rgb(255, 230, 230)
-        Note over CullCtrl,Jupyter: Flow 3: Idle Notebook Culling
-        loop Every IDLENESS_CHECK_PERIOD minutes
-            CullCtrl->>Jupyter: GET /api/kernels<br/>HTTP/8888, No Auth
-            Jupyter-->>CullCtrl: Kernel list (last_activity)
-            CullCtrl->>Jupyter: GET /api/terminals<br/>HTTP/8888, No Auth
-            Jupyter-->>CullCtrl: Terminal list (last_activity)
-            alt Idle > CULL_IDLE_TIME (default 24h)
-                CullCtrl->>APIServer: Patch Notebook:<br/>kubeflow-resource-stopped annotation
-                APIServer->>NBCtrl: Watch event (annotation changed)
-                NBCtrl->>APIServer: Scale StatefulSet replicas=0
-            end
+    User->>GW: GET /notebook/{ns}/{name}/*<br/>HTTPS/443, TLS 1.2+
+    GW->>RBAC: Forward via HTTPRoute<br/>HTTPS/8443, TLS serving cert,<br/>Bearer Token forwarded
+    RBAC->>K8sAPI: SubjectAccessReview<br/>(can user GET notebooks?)<br/>HTTPS/443, SA token
+    K8sAPI-->>RBAC: Allowed
+    RBAC->>Jupyter: Proxy to notebook<br/>HTTP/8888, localhost<br/>X-Auth-Request-User header
+    Jupyter-->>RBAC: Response
+    RBAC-->>GW: Response
+    GW-->>User: Notebook UI
+
+    Note over User,DSPA: Flow 3: Idle Notebook Culling
+
+    loop Every IDLENESS_CHECK_PERIOD (default 1 min)
+        NC->>Jupyter: GET /api/kernels<br/>HTTP/8888, no auth
+        Jupyter-->>NC: Kernel states
+        NC->>Jupyter: GET /api/terminals<br/>HTTP/8888, no auth
+        Jupyter-->>NC: Terminal activity
+        alt All kernels idle > CULL_IDLE_TIME
+            NC->>K8sAPI: Patch Notebook annotation<br/>kubeflow-resource-stopped<br/>HTTPS/443, SA token
+            Note right of NC: StatefulSet scaled to 0
         end
     end

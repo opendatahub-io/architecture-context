@@ -1,89 +1,80 @@
 workspace {
     model {
-        aiAppDev = person "AI Application Developer" "Builds AI applications that require content safety guardrails"
-        platformAdmin = person "Platform Administrator" "Configures guardrail policies, detectors, and backend connections"
+        client = person "Client Application" "Sends text generation requests with guardrails requirements"
+        operator = person "Platform Operator" "Deploys and configures the orchestrator via TrustyAI stack"
 
-        guardrailsOrchestrator = softwareSystem "FMS Guardrails Orchestrator" "REST API middleware that coordinates AI text generation with content safety guardrails, managing detectors, chunkers, and LLM backends" {
-            apiServer = container "Guardrails API Server" "REST API server with v1 (classification) and v2 (detection) endpoints, optional TLS/mTLS" "Rust (axum + hyper), port 8033" "Service"
-            healthServer = container "Health Server" "Health and info endpoints with aggregated backend status" "Rust (axum), port 8034" "Service"
-            orchestratorCore = container "Orchestrator Core" "Request handlers, task pipeline with concurrent processing (buffer_unordered, broadcast channels)" "Rust (tokio)" "Component"
-            tlsLayer = container "TLS Layer" "Server and client TLS/mTLS using rustls with ring crypto backend" "rustls 0.23.36" "Component"
-            headerFilter = container "Header Filter" "X-Forwarded-Access-Token to Bearer token rewrite, header passthrough" "Rust" "Component"
-            grpcClients = container "gRPC Clients" "TGIS, NLP, and Chunker clients with load-balanced channels (ginepro)" "tonic 0.14.2" "Component"
-            httpClients = container "HTTP Clients" "Detector and OpenAI clients with retry logic and TLS support" "reqwest 0.12.28" "Component"
-            otelIntegration = container "OpenTelemetry Integration" "Distributed tracing (W3C Trace Context) and metrics export" "opentelemetry 0.31.0" "Component"
+        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "REST API orchestrator coordinating AI text generation with content safety guardrails (Rust/axum+tonic)" {
+            apiServer = container "Guardrails API Server" "Handles REST API requests, routes to orchestration handlers" "Rust (axum)" "8033/TCP"
+            orchestrationEngine = container "Orchestration Engine" "Implements Handle<Task> trait for each workflow type (unary, streaming, detection-only)" "Rust (tokio)"
+            streamingPipeline = container "Streaming Pipeline" "Broadcast channels, concurrent detection streams, DetectionBatcher, CompletionState" "Rust (tokio::sync)"
+            clientLayer = container "Client Layer" "gRPC clients (tonic) for generation/chunker, HTTP clients (reqwest) for detectors/OpenAI" "Rust (tonic, reqwest)"
+            healthServer = container "Health Server" "Health check and backend status endpoints" "Rust (axum)" "8034/TCP"
+            tlsLayer = container "TLS Layer" "Server TLS/mTLS (rustls/ring), per-service client TLS" "Rust (rustls)"
         }
 
-        tgis = softwareSystem "TGIS" "Text Generation Inference Server - gRPC text generation backend" "Internal RHOAI"
-        caikitNLP = softwareSystem "Caikit NLP Runtime" "gRPC text generation and tokenization backend" "Internal RHOAI"
-        caikitChunker = softwareSystem "Caikit Chunker Service" "gRPC text chunking and tokenization service" "Internal RHOAI"
-        detectorServices = softwareSystem "Detector Services" "Content safety detection services (HAP, PII, groundedness, etc.)" "Internal RHOAI"
-        openaiServer = softwareSystem "OpenAI-compatible Server" "vLLM or similar server providing OpenAI-compatible chat/completions API" "Internal RHOAI"
-        otlpCollector = softwareSystem "OTLP Collector" "OpenTelemetry trace and metric collection" "Infrastructure"
-        certManager = softwareSystem "cert-manager" "TLS certificate provisioning and rotation" "Infrastructure"
-        rhodsOperator = softwareSystem "RHODS Operator" "Platform operator managing deployment, routes, and ingress" "Internal RHOAI"
+        tgis = softwareSystem "TGIS Generation Server" "Text Generation Inference Server — gRPC text generation" "External Backend"
+        caikitNlp = softwareSystem "Caikit NLP Server" "gRPC NLP service for generation, tokenization, classification" "External Backend"
+        chunker = softwareSystem "Caikit Chunker Service" "gRPC text segmentation service for detection pipeline" "External Backend"
+        detectors = softwareSystem "Detector Services" "HTTP REST content safety detectors (HAP, PII, etc.)" "External Backend"
+        vllm = softwareSystem "OpenAI-compatible Service (vLLM)" "HTTP REST chat/text completions with streaming" "External Backend"
+        otlpCollector = softwareSystem "OTLP Collector" "Receives OpenTelemetry traces and metrics" "Observability"
+        kubernetes = softwareSystem "Kubernetes" "Container orchestration, health probes" "Platform"
 
-        # Person relationships
-        aiAppDev -> guardrailsOrchestrator "Sends prompts with guardrail configs via REST API" "HTTP/HTTPS 8033/TCP"
-        platformAdmin -> guardrailsOrchestrator "Configures detectors, backends, and TLS via config.yaml"
+        client -> orchestrator "Sends guardrailed generation/detection requests" "HTTPS/8033, TLS 1.2+"
+        operator -> orchestrator "Configures via config.yaml and environment variables"
 
-        # Internal container relationships
-        apiServer -> orchestratorCore "Routes requests to handlers"
-        apiServer -> tlsLayer "TLS termination and mTLS verification"
-        apiServer -> headerFilter "Filters and rewrites auth headers"
-        orchestratorCore -> grpcClients "Generation and chunking requests"
-        orchestratorCore -> httpClients "Detection and OpenAI requests"
-        orchestratorCore -> otelIntegration "Trace spans and metrics"
-        healthServer -> grpcClients "Backend health checks (gRPC Health.check)"
-        healthServer -> httpClients "Backend health checks (HTTP GET /health)"
+        orchestrator -> tgis "Text generation (Generate, GenerateStream, Tokenize)" "gRPC/8033, mTLS"
+        orchestrator -> caikitNlp "Text generation, tokenization, classification" "gRPC/8085, mTLS"
+        orchestrator -> chunker "Text chunking (unary and bidi-streaming)" "gRPC/8085, mTLS"
+        orchestrator -> detectors "Content detection (contents, chat, context, generation)" "HTTP/8080, TLS + Bearer"
+        orchestrator -> vllm "Chat/text completions, tokenization" "HTTP/8080, TLS + Bearer"
+        orchestrator -> otlpCollector "Exports traces and metrics" "gRPC/4317 or HTTP/4318"
+        kubernetes -> orchestrator "Liveness/readiness probes" "HTTP/8034"
 
-        # External system relationships
-        guardrailsOrchestrator -> tgis "Text generation (generate, generate_stream, tokenize)" "gRPC/8033 Optional TLS/mTLS"
-        guardrailsOrchestrator -> caikitNLP "Text generation and tokenization" "gRPC/8085 Optional TLS/mTLS"
-        guardrailsOrchestrator -> caikitChunker "Text chunking/tokenization" "gRPC/8085 Optional TLS/mTLS"
-        guardrailsOrchestrator -> detectorServices "Content safety detection" "HTTP/8080 Optional TLS/mTLS"
-        guardrailsOrchestrator -> openaiServer "Chat/text completions" "HTTP/8080 Optional TLS"
-        guardrailsOrchestrator -> otlpCollector "Trace and metric export" "gRPC/4317 or HTTP/4318"
-        certManager -> guardrailsOrchestrator "Provisions TLS certificates"
-        rhodsOperator -> guardrailsOrchestrator "Deploys and manages service, creates Routes/HTTPRoutes"
+        apiServer -> orchestrationEngine "Dispatches tasks via Handle<Task>"
+        orchestrationEngine -> streamingPipeline "Creates streaming pipelines for SSE endpoints"
+        orchestrationEngine -> clientLayer "Calls backend services"
+        streamingPipeline -> clientLayer "Concurrent backend calls with ordering"
+        apiServer -> tlsLayer "TLS termination and client verification"
+        clientLayer -> tlsLayer "Per-service TLS configuration"
     }
 
     views {
-        systemContext guardrailsOrchestrator "SystemContext" {
+        systemContext orchestrator "SystemContext" {
             include *
             autoLayout
         }
 
-        container guardrailsOrchestrator "Containers" {
+        container orchestrator "Containers" {
             include *
             autoLayout
         }
 
         styles {
             element "Software System" {
-                background #438DD5
+                background #4a90e2
                 color #ffffff
             }
-            element "Internal RHOAI" {
-                background #7ed321
-                color #ffffff
-            }
-            element "Infrastructure" {
+            element "External Backend" {
                 background #999999
+                color #ffffff
+            }
+            element "Observability" {
+                background #9673a6
+                color #ffffff
+            }
+            element "Platform" {
+                background #d6b656
                 color #ffffff
             }
             element "Person" {
                 shape person
-                background #08427B
+                background #08427b
                 color #ffffff
             }
-            element "Service" {
-                shape RoundedBox
-            }
-            element "Component" {
-                shape Component
-                background #85BBF0
-                color #000000
+            element "Container" {
+                background #438dd5
+                color #ffffff
             }
         }
     }

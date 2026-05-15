@@ -1,49 +1,48 @@
 sequenceDiagram
-    participant VLLMPod as vLLM/SGLang Pod
-    participant ZMQ as ZMQ Publisher<br/>5557/TCP
-    participant EventPool as KV Events Pool<br/>(Sharded Workers)
-    participant Adapter as Engine Adapter<br/>(vLLM/SGLang)
-    participant Index as KV Block Index<br/>(LRU/Ristretto/Redis)
-    participant Redis as Redis/Valkey<br/>6379/TCP RESP
-    participant Scheduler as llm-d-inference-scheduler<br/>(Go API)
-    participant Indexer as KV-Cache Indexer<br/>8080/TCP HTTP
-    participant TokenPool as Tokenization Pool
-    participant UDSTokenizer as UDS Tokenizer<br/>gRPC over UDS
-    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
-    participant Prometheus as Prometheus<br/>8080/TCP HTTP
+    participant vLLM as vLLM Pod<br/>ZMQ PUB 5557/TCP
+    participant ZMQ as ZMQ Subscriber<br/>zmqSubscriber
+    participant Pool as kvevents.Pool<br/>Sharded Workers
+    participant Adapter as EngineAdapter<br/>(vLLM/SGLang)
+    participant Index as kvblock.Index<br/>(InMemory/Redis)
+    participant K8s as Kubernetes API<br/>443/TCP HTTPS
+    participant PodRecon as Pod Reconciler<br/>controller-runtime
+    participant SubMgr as SubscriberManager
+    participant Scheduler as Inference Scheduler<br/>/ EPP
+    participant Indexer as kvcache.Indexer
+    participant TokPool as tokenization.Pool
+    participant UDS as UDS Tokenizer<br/>gRPC over UDS
+    participant TokProc as TokenProcessor<br/>CBOR+FNV-64a
+    participant Scorer as KVBlockScorer
 
-    Note over VLLMPod,Redis: Flow 1: KV-Cache Event Ingestion (Write Path)
-    VLLMPod->>ZMQ: KV-cache event<br/>(BlockStored/BlockRemoved/AllBlocksCleared)
-    ZMQ->>EventPool: ZMQ SUB 5557/TCP<br/>MessagePack serialized
-    EventPool->>EventPool: FNV-1a shard routing<br/>(per-pod ordering)
-    EventPool->>Adapter: Raw event bytes
-    Adapter->>Adapter: Domain event conversion<br/>(vLLM/SGLang field mapping)
-    Adapter->>Index: Add/Evict block
-    Index-->>Redis: HSET/HKEYS (if Redis backend)<br/>Lua atomic operations
+    Note over K8s,SubMgr: Flow 3: Pod Discovery (ZMQ Subscriber Management)
+    K8s->>PodRecon: Watch pods (label: llm-d.ai/inferenceServing=true)<br/>443/TCP HTTPS, TLS, SA Token
+    PodRecon->>SubMgr: EnsureSubscriber(podIP)
+    SubMgr->>ZMQ: Start ZMQ SUB<br/>tcp://<PodIP>:5557
 
-    Note over Scheduler,HFHub: Flow 2: Pod Scoring (Read Path)
-    Scheduler->>Indexer: GetPodScores(prompt, model)<br/>Go API or HTTP 8080/TCP
-    Indexer->>TokenPool: Tokenize request
-    TokenPool->>UDSTokenizer: gRPC Tokenize<br/>/tmp/tokenizer/tokenizer-uds.socket
-    UDSTokenizer->>HFHub: Download tokenizer (first call)<br/>HTTPS 443/TCP, Bearer HF_TOKEN
-    HFHub-->>UDSTokenizer: Tokenizer model files
-    UDSTokenizer-->>TokenPool: Token IDs
-    TokenPool-->>Indexer: Tokenized prompt
-    Indexer->>Indexer: Compute block keys<br/>(FNV-64a hashing)
-    Indexer->>Index: Lookup matching blocks
-    Index-->>Redis: HKEYS lookup (if Redis)
-    Redis-->>Index: Pod set for blocks
-    Index-->>Indexer: Block → Pod mappings
-    Indexer->>Indexer: Score pods by cache hit rate
-    Indexer-->>Scheduler: map[pod]score
+    Note over vLLM,Index: Flow 1: KV-Cache Event Ingestion (Write Path)
+    vLLM->>ZMQ: KVEvents (BlockStored, BlockRemoved, AllBlocksCleared)<br/>ZMQ PUB/SUB 5557/TCP, msgpack
+    ZMQ->>Pool: AddTask (FNV-1a hash routes to worker)
+    Pool->>Adapter: ParseMessage (msgpack decode)
+    Adapter-->>Pool: Parsed KVEvent
+    alt InMemory Backend
+        Pool->>Index: Add/Evict blocks (in-process)
+    else Redis/Valkey Backend
+        Pool->>Index: Add/Evict blocks<br/>6379/TCP, Redis protocol, optional TLS
+    end
 
-    Note over UDSTokenizer,HFHub: Flow 3: Tokenization Detail (UDS gRPC)
-    Note right of UDSTokenizer: Runs as sidecar container<br/>Shared emptyDir volume
-    Scheduler->>UDSTokenizer: RenderChatCompletion<br/>gRPC over UDS
-    UDSTokenizer->>UDSTokenizer: vLLM OpenAIServingRender<br/>Chat template rendering
-    UDSTokenizer->>UDSTokenizer: HuggingFace AutoTokenizer<br/>Token encoding
-    UDSTokenizer-->>Scheduler: Rendered + tokenized response
-
-    Note over Indexer,Prometheus: Metrics Export
-    Prometheus->>Indexer: GET /metrics<br/>HTTP 8080/TCP
-    Indexer-->>Prometheus: OpenMetrics format<br/>(admissions, evictions, latency)
+    Note over Scheduler,Scorer: Flow 2: KV-Cache Scoring (Read Path)
+    Scheduler->>Indexer: GetPodScores(prompt) [in-process library call]
+    Indexer->>TokPool: Tokenize(prompt)
+    TokPool->>UDS: gRPC Tokenize RPC<br/>UDS socket /tmp/tokenizer/tokenizer-uds.socket<br/>No encryption, No auth
+    UDS-->>TokPool: Token IDs
+    Indexer->>TokProc: TokensToKVBlockKeys<br/>CBOR canonical encoding + FNV-64a hash
+    TokProc-->>Indexer: Block Keys (hash chain)
+    alt InMemory Backend
+        Indexer->>Index: Lookup block keys (in-process)
+    else Redis/Valkey Backend
+        Indexer->>Index: Lookup block keys<br/>6379/TCP pipelined
+    end
+    Index-->>Indexer: Pod → block matches
+    Indexer->>Scorer: Score(pod matches, block positions)
+    Scorer-->>Indexer: Pod scores (cache hit ratio)
+    Indexer-->>Scheduler: Scored pod list (sorted by KV-cache reuse)

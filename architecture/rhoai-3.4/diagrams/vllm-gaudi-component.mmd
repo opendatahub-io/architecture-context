@@ -1,107 +1,97 @@
 graph TB
     subgraph External["External Clients"]
-        Client[Client via KServe Route]
+        Client[Client Application]
     end
 
-    subgraph Sidecar["kube-rbac-proxy Sidecar"]
-        KRBP["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS 1.2+ / Bearer Token"]
+    subgraph Platform["RHOAI Platform Layer"]
+        Ingress["Platform Ingress<br/>(Gateway/Route)<br/>443/TCP HTTPS"]
+        KServe["KServe<br/>InferenceService"]
     end
 
-    subgraph VllmGaudi["vllm-gaudi Container Image"]
+    subgraph VllmGaudi["vllm-gaudi Container (odh-vllm-gaudi-rhel9)"]
         direction TB
 
-        subgraph APIServer["vLLM OpenAI-Compatible API Server (port 8000)"]
-            Completions["/v1/completions"]
-            Chat["/v1/chat/completions"]
-            Models["/v1/models"]
-            Embeddings["/v1/embeddings"]
-            Health["/health"]
-            Metrics["/metrics"]
+        subgraph APILayer["API Layer"]
+            APIServer["vLLM OpenAI API Server<br/>Port 8000/TCP HTTP"]
         end
 
-        subgraph Platform["Platform Registration"]
-            HpuPlatform["HpuPlatform<br/>(vllm.platform_plugins)"]
+        subgraph PluginLayer["vllm-gaudi Plugin"]
+            Plugin["Plugin Registration<br/>(entry_points)"]
+            Platform_["HpuPlatform<br/>(platform detection)"]
+            CustomOps["Custom Ops Registry<br/>(01. load order)"]
+            CustomModels["Custom Models Registry<br/>(02. load order)"]
+            Plugin --> Platform_
+            Plugin --> CustomOps
+            Plugin --> CustomModels
         end
 
-        subgraph Extension["Extension Framework"]
-            Config["Config Engine<br/>(Lazy-evaluated)"]
-            Features["Feature Flags<br/>(Bucketing, Compilation,<br/>Attention, Quantization)"]
-            Bucketing["Bucketing Manager<br/>(Exponential/Linear)"]
-            Config --> Features
-            Features --> Bucketing
+        subgraph ExecutionLayer["Execution Layer"]
+            ModelRunner["HPU Model Runner<br/>(forward pass, bucketing,<br/>graph compilation)"]
+            Worker["HPU Worker<br/>(device lifecycle,<br/>memory profiling)"]
+            InputBatch["Input Batch Manager<br/>(sampling metadata)"]
+            Worker --> ModelRunner
+            ModelRunner --> InputBatch
         end
 
-        subgraph Ops["Custom Operator Library"]
-            RotaryEmb["Rotary Embeddings"]
+        subgraph AttentionLayer["Attention Backends"]
+            StdAttn["HPUAttentionV1<br/>(Standard Paged)"]
+            MLAAttn["HPUAttentionMLA<br/>(Multi-head Latent)"]
+            UnifiedAttn["HPUUnifiedAttention<br/>(Batched Causal+Cached)"]
+            UnifiedMLA["HPUUnifiedMLA<br/>(Unified + MLA)"]
+        end
+
+        subgraph OpsLayer["HPU Custom Ops"]
+            FP8Ops["FP8 Quantization"]
+            FusedMoE["Fused MoE"]
+            RotaryEmb["Rotary Embedding"]
             LayerNorm["Layer Normalization"]
-            FP8Quant["FP8/AWQ/GPTQ<br/>Quantization"]
-            MoE["MoE Kernels"]
-            MambaSSM["Mamba SSM"]
         end
 
-        subgraph Attention["Attention Backends"]
-            PagedAttn["Paged Attention"]
-            UnifiedAttn["Unified Attention"]
-            MLA["MLA (Multi-head<br/>Latent Attention)"]
-            UnifiedMLA["Unified MLA"]
-        end
-
-        subgraph Worker["HPU Worker (v1)"]
-            ModelRunner["Model Runner"]
-            KVCache["KV Cache Manager"]
-            HPUGraph["HPU Graph Compiler"]
-            Profiler["Model Profiler"]
-        end
-
-        subgraph Distributed["Distributed Communication"]
+        subgraph DistLayer["Distributed Communication"]
             HCCL["HCCL Communicator<br/>(all-reduce, all-gather)"]
-            NIXL["NIXL KV Connector<br/>(RDMA/TCP)"]
-            ExpertParallel["Expert Parallelism<br/>(dispatch/combine)"]
+            NIXL["NIXL Connector<br/>(KV cache transfer)"]
         end
 
-        subgraph ModelOverrides["Model Overrides"]
-            Gemma3["Gemma3 VL"]
-            Qwen25VL["Qwen2.5-VL"]
-            Qwen3VL["Qwen3-VL"]
-            Qwen3MoE["Qwen3-MoE"]
-        end
-
-        HpuPlatform --> Extension
-        HpuPlatform --> Worker
-        Extension --> Ops
-        Extension --> Attention
-        Worker --> Ops
-        Worker --> Attention
-        Worker --> Distributed
-        Worker --> ModelOverrides
-        APIServer --> Worker
+        APIServer --> ModelRunner
+        ModelRunner --> AttentionLayer
+        ModelRunner --> OpsLayer
+        Worker --> DistLayer
     end
 
     subgraph HardwareLayer["Intel Gaudi Hardware"]
-        HPU["Gaudi 2 / Gaudi 3<br/>HPU Accelerators"]
+        HPU["Gaudi 2/3 HPU<br/>(Synapse AI 1.23.0)"]
+        PyTorch["PyTorch HPU<br/>(v2.9.0)"]
     end
 
-    Client -->|"HTTPS/8443<br/>Bearer Token"| KRBP
-    KRBP -->|"HTTP/8000<br/>localhost"| APIServer
-    Worker -->|"PCIe/RDMA"| HPU
-    HCCL -->|"HCCL/TCP<br/>Dynamic ports"| HPU
-    Prometheus["Prometheus"] -.->|"scrape /metrics<br/>HTTP/8000"| Metrics
+    subgraph ExternalDeps["External Services"]
+        ModelStorage["Model Storage<br/>(PVC / S3)"]
+        HFHub["HuggingFace Hub<br/>(model weights)"]
+    end
+
+    %% Flows
+    Client -->|HTTPS/443| Ingress
+    Ingress -->|HTTP/8000| APIServer
+    KServe -->|deploys| VllmGaudi
+    Worker -->|HPU DMA| HPU
+    ModelRunner -->|torch.compile| PyTorch
+    PyTorch -->|habana_frameworks| HPU
+    HCCL -->|RDMA/TCP| HPU
+    VllmGaudi -->|model loading| ModelStorage
+    VllmGaudi -->|tokenizer/config| HFHub
 
     %% Styling
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef sidecar fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef api fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef core fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef hardware fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef distributed fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef platform fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef container fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef hardware fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef external fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef client fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef attention fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
+    classDef ops fill:#f8cecc,stroke:#b85450,stroke-width:1px
 
-    class Client external
-    class KRBP sidecar
-    class Completions,Chat,Models,Embeddings,Health,Metrics api
-    class HpuPlatform,Config,Features,Bucketing,RotaryEmb,LayerNorm,FP8Quant,MoE,MambaSSM core
-    class PagedAttn,UnifiedAttn,MLA,UnifiedMLA core
-    class ModelRunner,KVCache,HPUGraph,Profiler core
-    class Gemma3,Qwen25VL,Qwen3VL,Qwen3MoE core
-    class HCCL,NIXL,ExpertParallel distributed
-    class HPU hardware
-    class Prometheus external
+    class Client client
+    class Ingress,KServe platform
+    class APIServer,Plugin,Platform_,CustomOps,CustomModels,ModelRunner,Worker,InputBatch,HCCL,NIXL container
+    class StdAttn,MLAAttn,UnifiedAttn,UnifiedMLA attention
+    class FP8Ops,FusedMoE,RotaryEmb,LayerNorm ops
+    class HPU,PyTorch hardware
+    class ModelStorage,HFHub external

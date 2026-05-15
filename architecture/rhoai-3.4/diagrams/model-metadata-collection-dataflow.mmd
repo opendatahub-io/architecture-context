@@ -1,47 +1,63 @@
 sequenceDiagram
-    participant CI as CI/CD Pipeline<br/>(Konflux/Tekton)
-    participant Extractor as model-extractor<br/>Go CLI
-    participant HF as HuggingFace API<br/>443/TCP HTTPS
-    participant OCI as OCI Registry<br/>registry.redhat.io<br/>443/TCP HTTPS
+    participant CI as CI Pipeline<br/>(Konflux/Developer)
+    participant Extractor as model-extractor<br/>(Go CLI)
+    participant HF_API as HuggingFace API<br/>443/TCP HTTPS
+    participant HF_Raw as HuggingFace Raw<br/>443/TCP HTTPS
+    participant Registry as registry.redhat.io<br/>443/TCP HTTPS
     participant FS as Local Filesystem
-    participant Container as Data Container<br/>odh-model-metadata-collection
+    participant Docker as Konflux Build<br/>(Dockerfile.konflux)
+    participant Container as Data Container<br/>(ubi9-micro)
     participant Dashboard as RHOAI Dashboard
 
-    Note over CI,FS: Flow 1: Model Catalog Generation (Build Time)
-    CI->>Extractor: Execute model-extractor CLI
-    Extractor->>FS: Read data/models-index.yaml
-    FS-->>Extractor: Model index entries
+    rect rgb(230, 245, 255)
+        Note over CI,FS: Flow 1: Model Catalog Generation (Build-Time)
+        CI->>Extractor: Execute with --input models-index.yaml
+        Extractor->>FS: Read models-index.yaml,<br/>supplemental-catalog.yaml,<br/>vLLM configs, SVG assets
+        FS-->>Extractor: Input data
 
-    Extractor->>HF: GET /api/users/RedHatAI/collections<br/>Auth: Bearer HF_TOKEN (optional)<br/>TLS 1.2+
-    HF-->>Extractor: Collection list with model IDs
+        loop For each model collection
+            Extractor->>HF_API: GET /api/collections/{id}<br/>Auth: Bearer HF_TOKEN (optional)
+            HF_API-->>Extractor: Collection metadata (models list)
+        end
 
-    loop For each model (max 5 concurrent)
-        Extractor->>OCI: GET manifest + layers<br/>TLS 1.2+, public pull
-        OCI-->>Extractor: Modelcar image layers + config blobs
-        Extractor->>Extractor: Parse modelcard YAML frontmatter
-        Extractor->>HF: GET /api/models/{model_id}<br/>Auth: Bearer HF_TOKEN (optional)
-        HF-->>Extractor: Model details, README, tags
-        Extractor->>Extractor: Multi-source metadata fusion<br/>(HF YAML > HF API > HF tags > modelcard)
-        Extractor->>FS: Write output/{model}/metadata.yaml<br/>+ enrichment.yaml
+        loop For each model in collection
+            Extractor->>HF_API: GET /api/models/{id}<br/>Auth: Bearer HF_TOKEN (optional)
+            HF_API-->>Extractor: Model details (tags, config)
+
+            Extractor->>HF_Raw: GET /{org}/{model}/raw/main/README.md<br/>Auth: Bearer HF_TOKEN (optional)
+            HF_Raw-->>Extractor: README with YAML frontmatter
+
+            Extractor->>Registry: GET /v2/{repo}/manifests/{tag}
+            Registry-->>Extractor: OCI manifest (layers, annotations)
+
+            Extractor->>Registry: GET /v2/{repo}/blobs/{digest}
+            Registry-->>Extractor: Container layer (modelcard.md)
+        end
+
+        Extractor->>Extractor: Enrich metadata<br/>(priority: HF YAML > modelcard > HF API > tags > defaults)
+        Extractor->>FS: Write output/*.yaml (per-model metadata)
+        Extractor->>FS: Write data/models-catalog.yaml<br/>data/validated-models-catalog.yaml<br/>data/other-models-catalog.yaml
     end
 
-    Extractor->>FS: Write data/models-catalog.yaml
-    Extractor->>FS: Read input/mcp_servers/*.yaml
+    rect rgb(255, 245, 230)
+        Note over CI,FS: Flow 3: MCP Server Catalog Generation (Build-Time)
+        CI->>Extractor: Execute with --mcp-index mcp-servers-index.yaml
+        Extractor->>FS: Read input/mcp_servers/*.yaml
+        FS-->>Extractor: MCP server definitions
 
-    Note over Extractor,OCI: Flow 2: MCP Server Catalog Generation (Build Time)
-    loop For each MCP server
-        Extractor->>OCI: GET manifest for MCP image<br/>TLS 1.2+, public pull
-        OCI-->>Extractor: Architecture list + timestamps
-        Extractor->>Extractor: Enrich MCP server metadata
+        loop For each MCP server with OCI image
+            Extractor->>Registry: GET /v2/{repo}/manifests/{tag}
+            Registry-->>Extractor: Architecture + timestamp metadata
+        end
+
+        Extractor->>FS: Write data/redhat-mcp-servers-catalog.yaml<br/>data/partner-mcp-servers-catalog.yaml<br/>data/community-mcp-servers-catalog.yaml
     end
 
-    Extractor->>FS: Write data/redhat-mcp-servers-catalog.yaml
-
-    Note over CI,Container: Flow 3: Container Image Build
-    CI->>CI: Dockerfile.konflux: COPY data/*.yaml /app/data/
-    CI->>Container: Build + publish multi-arch image<br/>(x86_64, ppc64le, s390x, arm64)
-
-    Note over Container,Dashboard: Flow 4: Runtime Catalog Consumption
-    Container->>Container: Entrypoint: sleep infinity
-    Dashboard->>Container: Mount /app/data/ volume
-    Dashboard->>Dashboard: Read models-catalog.yaml<br/>+ mcp-servers-catalog.yaml<br/>Display in UI
+    rect rgb(230, 255, 230)
+        Note over Docker,Dashboard: Flow 2: Data Container Consumption (Runtime)
+        Docker->>FS: COPY data/*.yaml /app/data/
+        Docker->>Container: Build ubi9-micro image<br/>CMD ["sleep", "infinity"]
+        Note over Container: Container runs with<br/>no network, no egress,<br/>UID 1001 (non-root)
+        Dashboard->>Container: Volume mount /app/data/
+        Container-->>Dashboard: models-catalog.yaml,<br/>MCP server catalogs
+    end

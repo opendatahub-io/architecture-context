@@ -3,83 +3,74 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph AuthBoundary["INGRESS (Auth Boundary)"]
-        Gateway["KServe Gateway /<br/>kube-rbac-proxy<br/>443/TCP<br/>TLS 1.2+ Termination<br/>Bearer Token AuthN<br/>Kubernetes RBAC AuthZ"]
+    subgraph PlatformIngress["PLATFORM INGRESS (TLS Termination + AuthN/AuthZ)"]
+        Gateway["RHOAI Gateway<br/>+ kube-rbac-proxy<br/>443/TCP<br/>TLS 1.2+<br/>Bearer Token + K8s RBAC"]
     end
 
-    subgraph Pod["POD INTERNAL (Trusted - same network namespace)"]
+    subgraph PodNetwork["POD NETWORK (No TLS, No Auth - Cluster Internal)"]
         direction TB
 
-        RESTServer["MLServer REST Server<br/>(FastAPI/Uvicorn)<br/>8080/TCP HTTP<br/>No encryption<br/>CORS: wildcards blocked in prod"]
-
-        GRPCServer["MLServer gRPC Server<br/>8081/TCP gRPC (HTTP/2)<br/>No encryption<br/>add_insecure_port()"]
-
-        MetricsServer["MLServer Metrics Server<br/>(Uvicorn)<br/>8082/TCP HTTP<br/>No encryption<br/>Endpoint: /metrics"]
-
-        DataPlane["DataPlane<br/>V2 Protocol Handler<br/>Runtime security validation"]
-
-        TrustedRuntimes["Trusted Runtimes Allowlist<br/>/etc/mlserver/trusted-runtimes.json<br/>(read-only, baked at build)<br/>Blocks: custom envs, untrusted impls"]
-
-        subgraph RuntimePlugins["ML Runtime Plugins (allowlisted only)"]
-            SKLearn["mlserver-sklearn<br/>scikit-learn 1.8.0"]
-            XGBoost["mlserver-xgboost<br/>XGBoost 3.2.0"]
-            LightGBM["mlserver-lightgbm<br/>LightGBM 4.6.0"]
-            ONNXRuntime["mlserver-onnx<br/>onnxruntime 1.24.4"]
+        subgraph ServerPorts["MLServer Listening Ports"]
+            RESTServer["REST Server<br/>(FastAPI/uvicorn)<br/>8080/TCP HTTP<br/>Plaintext<br/>No Auth"]
+            GRPCServer["gRPC Server<br/>(add_insecure_port)<br/>8081/TCP gRPC<br/>No Encryption<br/>No Auth"]
+            MetricsServer["Metrics Server<br/>(Prometheus)<br/>8082/TCP HTTP<br/>Plaintext<br/>No Auth"]
         end
 
-        RESTServer --> DataPlane
-        GRPCServer --> DataPlane
-        DataPlane -->|validates| TrustedRuntimes
-        DataPlane --> SKLearn
-        DataPlane --> XGBoost
-        DataPlane --> LightGBM
-        DataPlane --> ONNXRuntime
+        subgraph Security["Runtime Security Enforcement"]
+            TrustedRuntimes["Trusted Runtimes<br/>/etc/mlserver/trusted-runtimes.json<br/>Production mode allowlist<br/>Rejects: custom envs, wildcard CORS"]
+        end
+
+        subgraph LocalFS["Filesystem Access"]
+            ModelMount["/mnt/models<br/>(PVC/S3 mount)<br/>Read-only<br/>Model artifacts"]
+            SAToken["/var/run/secrets/.../namespace<br/>Read-only<br/>CloudEvents headers"]
+        end
     end
 
-    subgraph Storage["MODEL STORAGE"]
-        ModelStorage["PVC / S3 / ModelCar<br/>Volume mount: /mnt/models<br/>Credentials: managed by KServe"]
+    subgraph EgressTargets["EGRESS DESTINATIONS"]
+        OTel["OpenTelemetry Collector<br/>4317/TCP gRPC<br/>No Encryption (insecure=True)<br/>No Auth"]
+        Kafka["Kafka Broker<br/>9092/TCP<br/>No Encryption<br/>No Auth<br/>(optional)"]
+        RemoteInfer["Remote Inference Server<br/>Variable port<br/>HTTP/HTTPS<br/>Configurable SSL<br/>(Alibi-Explain only)"]
     end
 
-    subgraph OptionalEgress["OPTIONAL EGRESS"]
-        OTelCollector["OpenTelemetry Collector<br/>gRPC (insecure=True)<br/>No encryption, No auth<br/>OTLP trace export"]
-        KafkaBroker["Kafka Brokers<br/>9092/TCP<br/>No encryption (default)<br/>No auth"]
+    subgraph Monitoring["MONITORING (Inbound Scrape)"]
+        Prometheus["Prometheus<br/>Scrapes /metrics"]
     end
 
-    subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>Scrapes /metrics<br/>HTTP/8082<br/>No auth (NetworkPolicy)"]
-    end
-
-    %% External flows
+    %% External → Ingress
     Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Gateway
-    Gateway -->|"HTTP/8080<br/>No encryption<br/>pod-internal"| RESTServer
-    Gateway -->|"gRPC/8081<br/>No encryption<br/>pod-internal"| GRPCServer
 
-    %% Storage
-    ModelStorage -->|"Filesystem<br/>/mnt/models<br/>read-only"| DataPlane
-
-    %% Optional egress
-    RESTServer -.->|"gRPC<br/>insecure"| OTelCollector
-    GRPCServer -.->|"gRPC<br/>insecure"| OTelCollector
-    DataPlane -.->|"TCP/9092<br/>No encryption"| KafkaBroker
+    %% Ingress → Pod (no encryption)
+    Gateway -->|"HTTP/8080<br/>Plaintext<br/>No Auth"| RESTServer
+    Gateway -->|"gRPC/8081<br/>Insecure<br/>No Auth"| GRPCServer
 
     %% Monitoring
-    Prometheus -->|"HTTP/8082<br/>GET /metrics"| MetricsServer
+    Prometheus -->|"HTTP/8082<br/>Plaintext<br/>Scrape"| MetricsServer
+
+    %% Egress
+    RESTServer -.->|"gRPC/4317<br/>insecure=True<br/>Traces"| OTel
+    RESTServer -.->|"TCP/9092<br/>No Encryption<br/>Async Inference"| Kafka
+    RESTServer -.->|"HTTP(S)/Variable<br/>Configurable SSL<br/>Black-box explain"| RemoteInfer
+
+    %% Local filesystem
+    ModelMount -.->|"Filesystem<br/>Read-only"| RESTServer
+    SAToken -.->|"Filesystem<br/>Read-only"| RESTServer
+
+    %% Security enforcement
+    TrustedRuntimes -.->|"Restricts<br/>model loading"| RESTServer
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef podinternal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef podnetwork fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
     classDef security fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef optional fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef monitoring fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef runtime fill:#d5e8d4,stroke:#82b366
+    classDef monitoring fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef filesystem fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
     class Client external
     class Gateway ingress
-    class RESTServer,GRPCServer,MetricsServer,DataPlane podinternal
+    class RESTServer,GRPCServer,MetricsServer podnetwork
+    class OTel,Kafka,RemoteInfer egress
     class TrustedRuntimes security
-    class SKLearn,XGBoost,LightGBM,ONNXRuntime runtime
-    class ModelStorage storage
-    class OTelCollector,KafkaBroker optional
     class Prometheus monitoring
+    class ModelMount,SAToken filesystem

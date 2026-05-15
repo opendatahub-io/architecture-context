@@ -1,44 +1,53 @@
 sequenceDiagram
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant DSPO as DSPO Controller<br/>ServiceAccount token
-    participant MariaDB as MariaDB<br/>3306/TCP MySQL
-    participant S3 as S3 Object Store<br/>9000/TCP HTTP
+    participant User as User / Dashboard
+    participant Route as OpenShift Route<br/>443/TCP HTTPS
+    participant RBAC as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
+    participant API as DS Pipeline API Server<br/>8888/TCP HTTP(S)
+    participant DB as MariaDB<br/>3306/TCP MySQL TLS
+    participant S3 as S3 Storage<br/>HTTPS/HTTP
+    participant Argo as Argo Workflow Controller
+    participant Launcher as KFP Launcher/Driver Pod
+    participant MLMD as MLMD gRPC Server<br/>8080/TCP gRPC mTLS
+    participant Envoy as MLMD Envoy Proxy<br/>9090/TCP gRPC-Web
+
+    Note over User,S3: Flow 1: Pipeline Submission & Execution
+
+    User->>Route: POST /apis/v2beta1/pipelines<br/>Bearer Token
+    Route->>RBAC: Reencrypt TLS
+    RBAC->>RBAC: SubjectAccessReview<br/>(datasciencepipelinesapplications/api)
+    RBAC->>API: Forward (HTTP or HTTPS<br/>if PodToPodTLS)
+    API->>DB: Store pipeline metadata<br/>MySQL TLS (if PodToPodTLS)<br/>Username/Password
+    API->>S3: Store pipeline artifact<br/>TLS 1.2+<br/>Access Key / Secret Key
+    API->>Argo: Create Workflow CR<br/>via K8s API (RBAC)
+    Argo->>Launcher: Create Launcher/Driver pods<br/>via K8s API
+
+    Note over Launcher,MLMD: Flow 2: ML Metadata Access (during pipeline execution)
+
+    Launcher->>MLMD: Record artifacts/lineage<br/>gRPC 8080/TCP<br/>mTLS (if PodToPodTLS)<br/>NetworkPolicy enforced
+    MLMD->>DB: Store metadata<br/>MySQL TLS<br/>Username/Password
+
+    Note over User,Envoy: Flow 3: Dashboard MLMD Access
+
+    User->>Route: GET metadata<br/>443/TCP HTTPS
+    Route->>RBAC: Reencrypt TLS
+    RBAC->>Envoy: gRPC-Web 9090/TCP<br/>localhost (no auth)
+    Envoy->>MLMD: gRPC 8080/TCP<br/>TLS (if PodToPodTLS)
+    MLMD-->>Envoy: Metadata response
+    Envoy-->>RBAC: gRPC-Web response
+    RBAC-->>Route: Response
+    Route-->>User: JSON/Protobuf
+
+    Note over User,S3: Flow 4: DSPA Reconciliation (Operator)
+
+    participant K8sAPI as K8s API Server<br/>443/TCP HTTPS TLS
+    participant DSPO as DSPO Controller
     participant OCI as OCI Registry<br/>443/TCP HTTPS
 
-    Note over K8sAPI,S3: Flow 1: DSPA Reconciliation
-    K8sAPI->>DSPO: Watch DSPA CR change<br/>HTTPS/6443 TLS 1.2+<br/>ServiceAccount token
-    DSPO->>MariaDB: Health check (SQL query)<br/>MySQL/3306 TLS configurable<br/>Password auth
-    MariaDB-->>DSPO: Connection OK
-    DSPO->>S3: Health check (StatObject)<br/>HTTP/9000 TLS configurable<br/>S3 access key
-    S3-->>DSPO: Object OK
-    DSPO->>K8sAPI: Apply rendered manifests<br/>HTTPS/6443 TLS 1.2+<br/>ServiceAccount token
-    K8sAPI-->>DSPO: Resources created/updated
-
-    Note over K8sAPI,S3: Flow 2: Pipeline API Server Request
-    participant Client as Client<br/>(User/Dashboard)
-    participant Route as OpenShift Route<br/>443/TCP HTTPS
-    participant RBAC as kube-rbac-proxy<br/>8443/TCP HTTPS
-    participant API as ds-pipeline API Server<br/>8888/TCP HTTPS
-    participant MLMD as MLMD gRPC<br/>8080/TCP gRPC
-
-    Client->>Route: REST API call<br/>HTTPS/443 TLS<br/>Bearer token
-    Route->>RBAC: Reencrypt TLS<br/>HTTPS/8443<br/>service-ca cert
-    RBAC->>K8sAPI: SubjectAccessReview<br/>HTTPS/6443 TLS 1.2+<br/>Check DSPA/api permission
-    K8sAPI-->>RBAC: Allowed/Denied
-    RBAC->>API: Forward request<br/>HTTPS/8888 TLS (service-ca)<br/>PodToPodTLS
-    API->>MariaDB: Query pipeline metadata<br/>MySQL/3306 TLS configurable<br/>Password
-    MariaDB-->>API: Results
-    API->>S3: Read/write artifacts<br/>HTTP/9000 TLS configurable<br/>S3 access key
-    S3-->>API: Artifact data
-    API->>MLMD: Store/retrieve metadata<br/>gRPC/8080 TLS (service-ca)<br/>PodToPodTLS
-    MLMD-->>API: Metadata response
-    API-->>RBAC: JSON response
-    RBAC-->>Route: Response
-    Route-->>Client: JSON response
-
-    Note over DSPO,OCI: Flow 3: Managed Pipelines Init
-    DSPO->>OCI: Pull managed-pipelines.json<br/>HTTPS/443 TLS 1.2+<br/>Pull secret keychain
-    OCI-->>DSPO: Container image manifest
-    Note over DSPO: Validate pipeline names<br/>against allowlist
-    DSPO->>K8sAPI: Deploy init container<br/>with emptyDir mount
-    Note over API: Init container writes<br/>pipelines to emptyDir<br/>API server reads at startup
+    K8sAPI->>DSPO: Watch DSPA CR change<br/>ServiceAccount token
+    DSPO->>DB: Health check<br/>MySQL TLS (configurable)
+    DB-->>DSPO: Connection OK
+    DSPO->>S3: Health check<br/>TLS 1.2+ (configurable)
+    S3-->>DSPO: Connection OK
+    DSPO->>OCI: Fetch managed pipelines<br/>HTTPS TLS
+    OCI-->>DSPO: Pipeline manifests (OCI layers)
+    DSPO->>K8sAPI: Apply manifests (Manifestival)<br/>ServiceAccount token

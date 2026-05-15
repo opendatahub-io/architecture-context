@@ -1,63 +1,62 @@
 sequenceDiagram
-    participant Controller as KServe Controller
-    participant Storage as Model Storage<br/>(S3/GCS/Azure/PVC)<br/>443/TCP HTTPS
-    participant Server as autogluon-server<br/>8080/TCP HTTP<br/>8081/TCP gRPC
-    participant AutoGluon as AutoGluon Predictor<br/>(in-process)
-    participant Client as Client / KServe Router
-    participant Prom as Prometheus
+    participant Client as External Client
+    participant Ingress as Platform Ingress<br/>443/TCP HTTPS TLS 1.2+
+    participant RBAC as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
+    participant AG as autogluonserver<br/>8080/TCP HTTP
+    participant Storage as kserve-storage<br/>(in-process)
+    participant Cloud as Cloud Storage<br/>443/TCP HTTPS TLS 1.2+
+    participant FS as Local Filesystem<br/>/mnt/models
 
-    Note over Controller,Server: Flow 1: Pod Creation & Model Loading
-    Controller->>Server: Create pod with autogluon-server image<br/>(InferenceService CR reconciliation)
-    activate Server
-    Server->>Server: runtime_paths.py: set writable CWD<br/>(/tmp, $HOME, or /home/kserve)
-    Server->>Storage: kserve_storage.Storage.download()<br/>HTTPS/443, TLS 1.2+<br/>Auth: AWS IAM / storage-config secret
-    Storage-->>Server: Model artifacts (saved model directory)
-    Server->>AutoGluon: predictor_detect.py: try TimeSeriesPredictor.load()
-    alt Time Series Model
-        AutoGluon-->>Server: TimeSeriesPredictor loaded
-    else Tabular Model (fallback)
-        Server->>AutoGluon: TabularPredictor.load()
-        AutoGluon-->>Server: TabularPredictor loaded
+    Note over AG,Cloud: Flow 2: Model Loading at Startup
+
+    AG->>AG: ensure_autogluon_runtime_paths()<br/>Set writable CWD for OpenShift
+    AG->>Storage: Storage.download(storageUri)
+    Storage->>Cloud: GET model artifacts<br/>Auth: Cloud credentials (IAM/SA/Token)
+    Cloud-->>Storage: Model files
+    Storage->>FS: Write to /mnt/models
+    AG->>AG: PredictorFactory.detect()<br/>Try TimeSeriesPredictor first
+    alt TimeSeriesPredictor detected
+        AG->>AG: TimeSeriesPredictor.load(/mnt/models)
+    else TabularPredictor fallback
+        AG->>AG: TabularPredictor.load(/mnt/models)
     end
-    Server->>Server: Register model in ModelRepository<br/>Start FastAPI (8080) + gRPC (8081)
-    deactivate Server
+    AG->>AG: ModelServer.start()<br/>Listen 8080/TCP HTTP + 8081/TCP gRPC
 
-    Note over Client,Server: Flow 2: v1 REST Inference (Tabular)
-    Client->>Server: POST /v1/models/{name}:predict<br/>HTTP 8080/TCP, JSON payload<br/>{"instances": [[val1, val2, ...]]}
-    activate Server
-    Server->>Server: v1 protocol handler: parse JSON
-    Server->>AutoGluon: TabularPredictor.predict(DataFrame)<br/>or predict_proba (if PREDICT_PROBA=true)
-    AutoGluon-->>Server: Predictions array
-    Server-->>Client: JSON response<br/>{"predictions": [...]}
-    deactivate Server
+    Note over Client,AG: Flow 1: Tabular Inference (v1)
 
-    Note over Client,Server: Flow 3: v2 REST Inference (Tabular)
-    Client->>Server: POST /v2/models/{name}/infer<br/>HTTP 8080/TCP, tensor payload<br/>{inputs: [{name, shape, datatype, data}]}
-    activate Server
-    Server->>Server: v2 protocol handler: map tensors to DataFrame<br/>(feature name resolution, dtype mapping)
-    Server->>AutoGluon: TabularPredictor.predict(DataFrame)
-    AutoGluon-->>Server: Predictions
-    Server->>Server: Map predictions to v2 tensor format<br/>(INT64, FP64, BYTES)
-    Server-->>Client: InferResponse<br/>{outputs: [{name, shape, datatype, data}]}
-    deactivate Server
+    Client->>Ingress: POST /v1/models/{name}:predict<br/>Auth: Bearer Token
+    Ingress->>RBAC: Forward request<br/>8443/TCP HTTPS
+    RBAC->>RBAC: Validate token
+    RBAC->>AG: Forward 8080/TCP HTTP<br/>(localhost, no auth)
+    AG->>AG: Parse JSON → pandas DataFrame
+    AG->>AG: TabularPredictor.predict(df)
+    AG-->>RBAC: JSON prediction result
+    RBAC-->>Ingress: Response
+    Ingress-->>Client: HTTPS Response
 
-    Note over Client,Server: Flow 4: v1 REST Inference (Time Series)
-    Client->>Server: POST /v1/models/{name}:predict<br/>HTTP 8080/TCP, JSON payload<br/>{"instances": [...], "parameters": {"known_covariates": [...]}}
-    activate Server
-    Server->>Server: v1 protocol handler: parse history + covariates
-    Server->>AutoGluon: TimeSeriesPredictor.predict(TimeSeriesDataFrame)
-    AutoGluon-->>Server: Forecast results
-    Server-->>Client: JSON response<br/>{"predictions": [...]}
-    deactivate Server
+    Note over Client,AG: Flow 1b: Tabular Inference (v2)
 
-    Note over Client,Server: Flow 5: gRPC Inference
-    Client->>Server: ModelInferRequest<br/>gRPC/HTTP2 8081/TCP
-    activate Server
-    Server->>AutoGluon: Predict via appropriate predictor
-    AutoGluon-->>Server: Predictions
-    Server-->>Client: ModelInferResponse
-    deactivate Server
+    Client->>Ingress: POST /v2/models/{name}/infer<br/>Auth: Bearer Token
+    Ingress->>RBAC: Forward request
+    RBAC->>AG: Forward 8080/TCP HTTP
+    AG->>AG: InferRequest tensors → DataFrame<br/>Map tensor names to columns
+    AG->>AG: TabularPredictor.predict(df)
+    AG-->>RBAC: InferResponse tensors
+    RBAC-->>Ingress: Response
+    Ingress-->>Client: HTTPS Response
 
-    Note over Prom,Server: Flow 6: Metrics Scrape
-    Prom->>Server: GET /metrics<br/>HTTP 8080/TCP
-    Server-->>Prom: Prometheus metrics<br/>(request_preprocess_seconds,<br/>request_predict_seconds,<br/>request_postprocess_seconds,<br/>request_explain_seconds)
+    Note over Client,AG: Flow 3: Time Series Inference (v1 only)
+
+    Client->>Ingress: POST /v1/models/{name}:predict<br/>Auth: Bearer Token
+    Ingress->>RBAC: Forward request
+    RBAC->>AG: Forward 8080/TCP HTTP
+    AG->>AG: Parse JSON → TimeSeriesDataFrame
+    AG->>AG: TimeSeriesPredictor.predict(tsdf)
+    AG-->>RBAC: JSON prediction result
+    RBAC-->>Ingress: Response
+    Ingress-->>Client: HTTPS Response
+
+    Note over Client,AG: Metrics Scraping
+
+    Ingress->>AG: GET /metrics (8080/TCP)
+    AG-->>Ingress: Prometheus metrics

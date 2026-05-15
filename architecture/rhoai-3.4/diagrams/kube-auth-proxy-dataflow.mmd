@@ -1,61 +1,64 @@
 sequenceDiagram
-    participant Browser as Browser / Client
-    participant Envoy as Envoy Proxy<br/>(RHOAI Gateway)<br/>443/TCP HTTPS
-    participant AuthProxy as kube-auth-proxy<br/>(auth mode)<br/>8443/TCP HTTPS
-    participant RBACProxy as kube-rbac-proxy<br/>(rbac mode)<br/>8443/TCP HTTPS
-    participant OIDC as OIDC Provider<br/>(Keycloak)<br/>443/TCP HTTPS
-    participant OSAuth as OpenShift OAuth<br/>443/TCP HTTPS
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant Upstream as Upstream App<br/>(RHOAI Component)
-    participant Redis as Redis<br/>6379/TCP
+    participant Browser as User Browser
+    participant Gateway as RHOAI Gateway<br/>(Envoy)
+    participant AuthProxy as kube-auth-proxy<br/>4180/TCP HTTP
+    participant RBACProxy as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS
+    participant OIDC as OIDC Provider /<br/>OpenShift OAuth<br/>443/TCP HTTPS
+    participant Upstream as Upstream Application
+    participant Redis as Redis (optional)<br/>6379/TCP
 
-    rect rgb(230, 240, 255)
-        Note over Browser,Upstream: Flow 1: OIDC Authentication (auth mode)
-        Browser->>AuthProxy: GET /resource<br/>HTTPS/8443, TLS 1.2+
-        AuthProxy-->>Browser: 302 Redirect to /oauth2/start
-        Browser->>AuthProxy: GET /oauth2/start<br/>No auth
-        AuthProxy->>OIDC: Redirect to authorize endpoint<br/>HTTPS/443, Client credentials, PKCE
-        Browser->>OIDC: User authenticates<br/>HTTPS/443, User credentials
-        OIDC->>Browser: 302 Redirect with auth code
-        Browser->>AuthProxy: GET /oauth2/callback?code=...<br/>HTTPS/8443, CSRF cookie
-        AuthProxy->>OIDC: POST /token (code + PKCE)<br/>HTTPS/443, Client credentials
-        OIDC-->>AuthProxy: Access token + ID token
-        AuthProxy->>Redis: Store session (optional)<br/>TCP/6379, Password/TLS
+    Note over AuthProxy,RBACProxy: PROXY_MODE selects which binary runs
+
+    rect rgb(230, 245, 255)
+        Note over Browser,Upstream: Flow 1: Browser-Based OIDC Authentication (auth mode)
+        Browser->>AuthProxy: GET /oauth2/start<br/>HTTP/HTTPS
+        AuthProxy->>OIDC: Redirect to authorization endpoint<br/>HTTPS/443, OAuth2 client ID + PKCE
+        Browser->>OIDC: Login with credentials<br/>HTTPS/443
+        OIDC->>AuthProxy: Redirect to /oauth2/callback<br/>Authorization code + state
+        AuthProxy->>OIDC: POST token endpoint<br/>HTTPS/443, Client credentials + code + PKCE verifier
+        OIDC-->>AuthProxy: Access token + ID token + refresh token
+        AuthProxy->>Redis: Store session (if Redis backend)<br/>TCP/6379
+        Redis-->>AuthProxy: OK
         AuthProxy-->>Browser: Set session cookie + redirect
-        Browser->>AuthProxy: GET /resource<br/>HTTPS/8443, Session cookie
-        AuthProxy->>Upstream: Forward request<br/>HTTP/HTTPS, Identity headers injected<br/>(X-Forwarded-User, X-Forwarded-Email, X-Forwarded-Groups)
+        Browser->>AuthProxy: Request with session cookie
+        AuthProxy->>Upstream: Proxied request<br/>X-Forwarded-User, X-Forwarded-Email headers
         Upstream-->>AuthProxy: Response
-        AuthProxy-->>Browser: Response
-    end
-
-    rect rgb(255, 245, 230)
-        Note over Browser,Upstream: Flow 2: Envoy ext_authz Integration (auth mode)
-        Browser->>Envoy: GET /resource<br/>HTTPS/443, TLS 1.3, Bearer token or cookie
-        Envoy->>AuthProxy: GET /oauth2/auth<br/>HTTP/8080 (in-pod), Bearer forwarded
-        alt Valid session
-            AuthProxy-->>Envoy: 202 Accepted<br/>X-Auth-Request-User, X-Auth-Request-Groups headers
-            Envoy->>Upstream: Forward request<br/>HTTP/HTTPS, Auth headers from 202
-            Upstream-->>Envoy: Response
-            Envoy-->>Browser: Response
-        else Invalid / no session
-            AuthProxy-->>Envoy: 401 Unauthorized
-            Envoy-->>Browser: 401 Unauthorized
-        end
+        AuthProxy-->>Browser: Proxied response
     end
 
     rect rgb(230, 255, 230)
-        Note over Browser,Upstream: Flow 3: RBAC Authorization (rbac mode)
-        Browser->>RBACProxy: GET /resource<br/>HTTPS/8443, TLS 1.2+, Bearer token
-        RBACProxy->>K8sAPI: TokenReview<br/>HTTPS/443, SA token
-        K8sAPI-->>RBACProxy: User identity
-        RBACProxy->>K8sAPI: SubjectAccessReview<br/>HTTPS/443, SA token<br/>(resource, verb, namespace)
+        Note over Gateway,Upstream: Flow 2: K8s SA Token Validation (rbac mode)
+        Gateway->>RBACProxy: Request with Bearer SA token<br/>HTTPS/8443, TLS 1.2+
+        RBACProxy->>K8sAPI: TokenReview (authn)<br/>HTTPS/443, In-cluster SA token
+        K8sAPI-->>RBACProxy: TokenReview response<br/>(user info, audiences)
+        RBACProxy->>K8sAPI: SubjectAccessReview (authz)<br/>HTTPS/443, In-cluster SA token
+        K8sAPI-->>RBACProxy: SubjectAccessReview response<br/>(allowed: true/false)
         alt Authorized
-            K8sAPI-->>RBACProxy: Allowed
-            RBACProxy->>Upstream: Forward request<br/>HTTP/HTTPS/H2C<br/>x-remote-user, x-remote-groups headers
+            RBACProxy->>Upstream: Proxied request<br/>x-remote-user, x-remote-groups headers
             Upstream-->>RBACProxy: Response
-            RBACProxy-->>Browser: Response
+            RBACProxy-->>Gateway: Proxied response
         else Denied
-            K8sAPI-->>RBACProxy: Denied
-            RBACProxy-->>Browser: 403 Forbidden
+            RBACProxy-->>Gateway: 403 Forbidden
+        end
+    end
+
+    rect rgb(255, 245, 230)
+        Note over Browser,OIDC: Flow 3: OpenShift OAuth Logout (auth mode)
+        Browser->>AuthProxy: GET /oauth2/sign_out<br/>Session cookie
+        AuthProxy->>K8sAPI: DELETE OAuthAccessToken<br/>HTTPS/443, In-cluster SA token
+        K8sAPI-->>AuthProxy: Token deleted
+        AuthProxy->>OIDC: RP-initiated logout (optional)<br/>HTTPS/443, ID token hint
+        OIDC-->>AuthProxy: Logout confirmed
+        AuthProxy-->>Browser: Clear session cookie + redirect
+    end
+
+    rect rgb(245, 245, 255)
+        Note over Gateway,AuthProxy: Flow 4: Envoy ext_authz Check (auth mode)
+        Gateway->>AuthProxy: GET /oauth2/auth<br/>HTTP/4180 (pod-local)
+        alt Authenticated
+            AuthProxy-->>Gateway: 202 Accepted<br/>X-Auth-Request-User headers
+        else Not Authenticated
+            AuthProxy-->>Gateway: 401 Unauthorized
         end
     end

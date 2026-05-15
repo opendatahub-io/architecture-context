@@ -1,50 +1,71 @@
 workspace {
     model {
-        admin = person "Platform Admin" "Deploys and manages Llama Stack instances via LlamaStackDistribution CRs"
-        datascientist = person "Data Scientist" "Consumes Llama Stack inference APIs for AI application development"
+        user = person "Data Scientist / Platform User" "Creates and manages OGXServer instances for AI inference"
+        admin = person "Platform Admin" "Manages RHOAI platform and operator deployment"
 
-        llamaStackOperator = softwareSystem "llama-stack-k8s-operator" "Kubernetes operator managing lifecycle of Llama Stack distribution server deployments on OpenShift/Kubernetes" {
-            controller = container "Reconciler" "controller-runtime based reconcile loop; watches LlamaStackDistribution CRs and manages per-instance resources" "Go"
-            kustomizer = container "Kustomize Pipeline" "Renders base manifests into instance-specific K8s resources via plugin pipeline (name prefix, namespace, field mutation, NetworkPolicy transform)" "Go / kustomize API"
-            caManager = container "CA Bundle Manager" "Aggregates CA certificates from user bundles and ODH trusted CA bundle; validates PEM/X.509 with security limits" "Go / crypto/x509"
-            webhook = container "Validating Webhook" "Validates OGXServer CRs on create/update: distribution name, unique providers, model-provider references" "Go / controller-runtime"
+        ogxOperator = softwareSystem "OGX K8s Operator" "Manages lifecycle of OGX AI inference servers on Kubernetes" {
+            controller = container "OGXServer Reconciler" "Watches OGXServer CRs and reconciles desired state by managing Deployments, Services, NetworkPolicies, PVCs, HPAs, PDBs, Ingresses, ConfigMaps" "Go (controller-runtime)"
+            webhook = container "Validating Webhook" "Validates OGXServer CRs on create/update: distribution name, provider ID uniqueness, provider references, adoption annotations" "HTTPS/9443"
+            kustomizeEngine = container "Kustomize Engine" "Renders deployment manifests from base templates using embedded kustomize with Go plugin pipeline (namespace, name prefix, field mutation, network policy transformation)" "Internal Library"
+            legacyAdoption = container "Legacy Adoption System" "Migrates v1alpha1 LlamaStackDistribution resources to v1beta1 OGXServer with zero-downtime PVC, Service, and Ingress transfer" "Go"
         }
 
-        llamaStackServer = softwareSystem "Llama Stack Server" "Meta's AI application framework server; managed by the operator as Deployments" "Managed"
+        ogxServer = softwareSystem "OGX Server Instance" "AI inference server deployed and managed by the operator" {
+            serverPod = container "OGX Server Pod" "Serves AI inference requests, routes to configured providers" "Container (OGX distribution image)"
+            serverService = container "Instance Service" "ClusterIP service for internal access" "Kubernetes Service"
+            serverIngress = container "Instance Ingress" "Optional external access via Kubernetes Ingress" "Kubernetes Ingress"
+        }
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for resource management, RBAC, leader election" "External"
-        openshiftIngress = softwareSystem "OpenShift Ingress Controller" "Routes external HTTP traffic to cluster services via Ingress resources" "External"
-        openshiftSCC = softwareSystem "OpenShift SCC System" "Security Context Constraints for pod security; provides anyuid SCC" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring via ServiceMonitor scraping" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for resource management" "External"
+        certManager = softwareSystem "cert-manager / OpenShift service-ca" "TLS certificate provisioning for webhook server" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
+        openShiftSCC = softwareSystem "OpenShift SCC" "Security Context Constraints for pod security" "External"
+        odhCABundle = softwareSystem "ODH Trusted CA Bundle" "Platform-managed CA certificates for outbound TLS trust" "Internal RHOAI"
 
-        odhTrustedCA = softwareSystem "ODH Trusted CA Bundle" "Platform-level trusted CA certificate ConfigMap (odh-trusted-ca-bundle)" "Internal RHOAI"
-        operatorConfig = softwareSystem "Operator Config" "Feature flags and image overrides ConfigMap (llama-stack-operator-config)" "Internal RHOAI"
+        vllm = softwareSystem "vLLM" "Remote inference endpoint" "External Provider"
+        openAI = softwareSystem "OpenAI API" "Cloud AI inference service" "External Provider"
+        azureOpenAI = softwareSystem "Azure OpenAI" "Microsoft cloud AI inference service" "External Provider"
+        awsBedrock = softwareSystem "AWS Bedrock" "Amazon cloud AI inference service" "External Provider"
+        vertexAI = softwareSystem "Google VertexAI" "Google cloud AI inference service" "External Provider"
+        watsonx = softwareSystem "IBM Watsonx" "IBM cloud AI inference service" "External Provider"
+        vectorDB = softwareSystem "Vector Databases" "PGVector, Milvus, Qdrant for vector I/O" "External Provider"
+        s3Storage = softwareSystem "S3 Storage" "S3-compatible object storage for files" "External Provider"
+        containerRegistry = softwareSystem "Container Registries" "docker.io, quay.io for OGX distribution images" "External"
 
         # Relationships
-        admin -> llamaStackOperator "Creates LlamaStackDistribution CRs" "kubectl / YAML"
-        datascientist -> llamaStackServer "Sends inference requests" "HTTP/8321"
+        user -> ogxOperator "Creates OGXServer CRs via kubectl" "HTTPS/443"
+        admin -> ogxOperator "Deploys and configures operator" "kubectl/OLM"
+        user -> ogxServer "Sends inference requests" "HTTP or HTTPS/{port}"
 
-        llamaStackOperator -> k8sAPI "CRUD resources, leader election, status updates" "HTTPS/443 TLS 1.2+"
-        llamaStackOperator -> llamaStackServer "Probes health, providers, version" "HTTP/8321"
-        llamaStackOperator -> odhTrustedCA "Reads platform CA certificates" "Kubernetes API"
-        llamaStackOperator -> operatorConfig "Reads feature flags and image overrides" "Kubernetes API"
-        llamaStackOperator -> openshiftSCC "Binds anyuid SCC to instance ServiceAccounts" "RoleBinding"
+        controller -> kustomizeEngine "Renders manifests" "Internal"
+        controller -> legacyAdoption "Triggers migration" "Internal"
+        controller -> webhook "Validated by" "Internal"
 
-        openshiftIngress -> llamaStackServer "Routes external traffic when exposeRoute=true" "HTTP/8321"
-        prometheus -> llamaStackOperator "Scrapes operator metrics" "HTTPS/8443 Bearer Token"
+        ogxOperator -> k8sAPI "CRUD for managed resources" "HTTPS/443"
+        ogxOperator -> ogxServer "Health checks, config injection" "HTTP/8321"
+        certManager -> ogxOperator "Provisions webhook TLS cert" "Certificate CR"
+        prometheus -> ogxOperator "Scrapes /metrics" "HTTPS/8443"
+        ogxOperator -> openShiftSCC "Uses anyuid SCC for init containers" "RBAC"
+        ogxOperator -> odhCABundle "Reads CA bundle ConfigMap" "K8s API"
 
-        # Internal container relationships
-        controller -> kustomizer "Renders manifests for each CR instance"
-        controller -> caManager "Validates and aggregates CA certificates"
+        ogxServer -> vllm "Remote inference" "HTTP/HTTPS"
+        ogxServer -> openAI "Remote inference" "HTTPS/443, API key"
+        ogxServer -> azureOpenAI "Remote inference" "HTTPS/443, API key"
+        ogxServer -> awsBedrock "Remote inference" "HTTPS/443, AWS IAM"
+        ogxServer -> vertexAI "Remote inference" "HTTPS/443, SA JSON"
+        ogxServer -> watsonx "Remote inference" "HTTPS/443, API key"
+        ogxServer -> vectorDB "Vector I/O" "TCP, configurable"
+        ogxServer -> s3Storage "File storage" "HTTPS/443, AWS creds"
+        ogxServer -> containerRegistry "Pulls distribution images" "HTTPS/443"
     }
 
     views {
-        systemContext llamaStackOperator "SystemContext" {
+        systemContext ogxOperator "SystemContext" {
             include *
             autoLayout
         }
 
-        container llamaStackOperator "Containers" {
+        container ogxOperator "Containers" {
             include *
             autoLayout
         }
@@ -54,25 +75,26 @@ workspace {
                 background #999999
                 color #ffffff
             }
+            element "External Provider" {
+                background #d6b656
+                color #333333
+            }
             element "Internal RHOAI" {
                 background #7ed321
-                color #ffffff
-            }
-            element "Managed" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Person" {
-                shape Person
-                background #08427b
-                color #ffffff
+                color #333333
             }
             element "Software System" {
-                shape RoundedBox
+                background #4a90e2
+                color #ffffff
             }
             element "Container" {
                 background #438dd5
                 color #ffffff
+            }
+            element "Person" {
+                background #08427b
+                color #ffffff
+                shape person
             }
         }
     }

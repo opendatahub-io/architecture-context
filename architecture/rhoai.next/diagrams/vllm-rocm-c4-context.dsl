@@ -1,33 +1,30 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Deploys and queries LLM models for inference"
-        application = person "Application Client" "Sends inference requests to deployed models"
+        user = person "Data Scientist / ML Engineer" "Deploys and queries LLM inference endpoints on OpenShift AI"
 
-        vllmRocm = softwareSystem "vllm-rocm" "GPU-accelerated LLM inference runtime for AMD ROCm, exposing OpenAI-compatible HTTP and TGIS gRPC APIs" {
-            tgisAdapter = container "vllm_tgis_adapter" "Python entrypoint wrapping vLLM with TGIS gRPC protocol support" "Python"
-            vllmEngine = container "vLLM Engine" "High-throughput LLM inference engine with PagedAttention" "Python/C++"
-            rocmRuntime = container "ROCm Runtime" "AMD GPU compute libraries for inference acceleration" "ROCm/HIP"
-
-            tgisAdapter -> vllmEngine "Wraps and delegates inference requests"
-            vllmEngine -> rocmRuntime "Uses for GPU computation"
+        vllmRocm = softwareSystem "vllm-rocm" "GPU-accelerated LLM inference serving runtime using AMD ROCm with TGIS adapter for dual-protocol serving (HTTP + gRPC)" {
+            container_image = container "odh-vllm-rocm-rhel9" "Container image wrapping RHAIIS vllm-rocm base with TGIS adapter entrypoint" "Python / vllm_tgis_adapter" {
+                httpApi = component "OpenAI-Compatible HTTP API" "Serves /v1/completions, /v1/chat/completions, /v1/models, /health" "HTTP/8000"
+                grpcApi = component "TGIS gRPC Service" "TGIS-compatible text generation interface" "gRPC/8033"
+                vllmEngine = component "vLLM Engine" "Core inference engine for LLM serving" "Python"
+                rocmRuntime = component "ROCm Runtime" "AMD GPU compute libraries (HIP)" "C++/ROCm"
+            }
         }
 
-        kserve = softwareSystem "KServe" "Deploys and manages ServingRuntime containers for ML inference" "Internal RHOAI"
-        modelStorageS3 = softwareSystem "S3-compatible Storage" "Object storage for model weights" "External"
-        modelStoragePVC = softwareSystem "PVC Storage" "Persistent volume for model weights" "Internal"
-        huggingFaceHub = softwareSystem "Hugging Face Hub" "Model and tokenizer download hub" "External"
-        amdGPU = softwareSystem "AMD ROCm GPU" "Hardware GPU accelerator for inference computation" "Infrastructure"
-        rhaiisBaseImage = softwareSystem "RHAIIS Base Image" "Red Hat AI Infrastructure Services vLLM ROCm image (registry.redhat.io/rhaiis/vllm-rocm-rhel9)" "External"
+        kserve = softwareSystem "KServe" "Manages InferenceService lifecycle, autoscaling, and traffic routing" "Internal RHOAI"
+        rhodsOperator = softwareSystem "rhods-operator / opendatahub-operator" "Platform operator that references this image in ServingRuntime CR templates" "Internal RHOAI"
+        rhaiisBase = softwareSystem "RHAIIS Base Image" "registry.redhat.io/rhaiis/vllm-rocm-rhel9 — provides vLLM, ROCm, Python, vllm-tgis-adapter" "External Red Hat"
+        modelStorage = softwareSystem "Model Storage" "S3-compatible object storage or PersistentVolumeClaim for model weights" "External"
+        huggingFace = softwareSystem "Hugging Face Hub" "Public model and tokenizer repository" "External"
+        rocmGPU = softwareSystem "AMD ROCm GPU" "Hardware GPU with ROCm driver on host node" "Infrastructure"
 
-        # Relationships
-        datascientist -> kserve "Creates InferenceService via kubectl/Dashboard"
-        application -> vllmRocm "Sends inference requests" "HTTP/8000, gRPC/8033"
-        kserve -> vllmRocm "Deploys as ServingRuntime, manages lifecycle"
-        vllmRocm -> modelStorageS3 "Downloads model weights at startup" "HTTPS/443"
-        vllmRocm -> modelStoragePVC "Reads model weights via volume mount" "Filesystem"
-        vllmRocm -> huggingFaceHub "Downloads model/tokenizer (optional)" "HTTPS/443"
-        vllmRocm -> amdGPU "Performs inference computation" "PCIe/ROCm"
-        rhaiisBaseImage -> vllmRocm "Provides base container layer" "Build-time"
+        user -> vllmRocm "Sends inference requests via KServe gateway" "HTTPS/443"
+        kserve -> vllmRocm "Deploys as InferenceService serving runtime, manages pod lifecycle" "Kubernetes API"
+        rhodsOperator -> vllmRocm "References image in ServingRuntime CR templates" "Image reference"
+        vllmRocm -> rhaiisBase "Built FROM base image (all runtime dependencies)" "Container build"
+        vllmRocm -> modelStorage "Downloads model weights at startup" "HTTPS/443 or filesystem"
+        vllmRocm -> huggingFace "Downloads models/tokenizers (optional)" "HTTPS/443"
+        vllmRocm -> rocmGPU "Executes tensor operations for inference" "PCIe/HIP Device API"
     }
 
     views {
@@ -41,26 +38,31 @@ workspace {
             autoLayout
         }
 
+        component container_image "Components" {
+            include *
+            autoLayout
+        }
+
         styles {
             element "External" {
                 background #999999
+                color #ffffff
+            }
+            element "External Red Hat" {
+                background #cc0000
                 color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal" {
-                background #4a90e2
-                color #ffffff
-            }
             element "Infrastructure" {
-                background #e74c3c
+                background #f5a623
                 color #ffffff
             }
             element "Person" {
                 shape Person
-                background #08427b
+                background #4a90e2
                 color #ffffff
             }
         }

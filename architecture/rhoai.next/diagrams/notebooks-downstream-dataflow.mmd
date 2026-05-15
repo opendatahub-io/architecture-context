@@ -1,51 +1,56 @@
 sequenceDiagram
-    participant User as User (Browser)
+    participant User as Data Scientist
     participant Dashboard as RHOAI Dashboard<br/>443/TCP HTTPS
+    participant Controller as odh-notebook-controller
     participant K8sAPI as OpenShift API<br/>6443/TCP HTTPS
-    participant Controller as ODH Notebook Controller
-    participant Kubelet as OpenShift Kubelet
-    participant Quay as quay.io/modh<br/>443/TCP HTTPS
-    participant Ingress as HTTPRoute / Route<br/>443/TCP HTTPS
-    participant RBACProxy as kube-rbac-proxy<br/>Sidecar
+    participant Registry as Container Registry<br/>443/TCP HTTPS
+    participant Gateway as Platform Gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant KRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS
     participant Workbench as Workbench Pod<br/>8888/TCP HTTP
+    participant KFP as Kubeflow Pipelines<br/>443/TCP HTTPS
+    participant Runtime as Runtime Image
 
-    Note over User,Workbench: Flow 1: Workbench Image Selection and Launch
+    rect rgb(230, 240, 255)
+        Note over User,Workbench: Flow 1: User Creates Workbench
+        User->>Dashboard: Select workbench type<br/>HTTPS/443, OAuth
+        Dashboard->>Controller: Create Notebook CR<br/>Kubernetes API
+        Controller->>K8sAPI: Create StatefulSet + HTTPRoute<br/>HTTPS/6443, ServiceAccount
+        K8sAPI->>Registry: Pull workbench image<br/>HTTPS/443, Pull Secret
+        Registry-->>K8sAPI: Container image (digest-pinned)
+        Note over K8sAPI: StatefulSet creates Pod<br/>with kube-rbac-proxy sidecar
+        User->>Gateway: Access workbench<br/>HTTPS/443, TLS 1.2+
+        Gateway->>KRBAC: Forward request<br/>mTLS
+        KRBAC->>KRBAC: SubjectAccessReview<br/>OAuth token validation
+        KRBAC->>Workbench: Proxy to JupyterLab<br/>HTTP/8888
+        Workbench-->>KRBAC: Notebook UI
+        KRBAC-->>Gateway: Response
+        Gateway-->>User: JupyterLab UI
+    end
 
-    User->>Dashboard: Select workbench type<br/>HTTPS/443, OAuth2/OIDC
-    Dashboard->>K8sAPI: List ImageStreams<br/>HTTPS/6443, SA Token
-    K8sAPI-->>Dashboard: Available images<br/>(annotations: image-name, software, python-deps)
-    Dashboard-->>User: Display workbench options<br/>(N through N-5 versions)
+    rect rgb(255, 240, 230)
+        Note over User,Runtime: Flow 2: Elyra Pipeline Submission
+        User->>Workbench: Submit pipeline via Elyra<br/>HTTP/8888, Token
+        Workbench->>KFP: Submit pipeline run<br/>HTTPS/443, ServiceAccount token
+        KFP->>Registry: Pull runtime image<br/>HTTPS/443, Pull Secret
+        Registry-->>KFP: Runtime container image
+        KFP->>Runtime: Execute pipeline step<br/>Container exec, ServiceAccount
+        Runtime-->>KFP: Step output
+        KFP-->>Workbench: Pipeline status
+    end
 
-    User->>Dashboard: Create workbench<br/>HTTPS/443, OAuth2/OIDC
-    Dashboard->>K8sAPI: Create Notebook CR<br/>HTTPS/6443, SA Token
-    K8sAPI->>Controller: Notebook CR event
-    Controller->>K8sAPI: Create StatefulSet + Service<br/>HTTPS/6443, SA Token
-    Note over Controller: Injects kube-rbac-proxy sidecar<br/>(RHOAI 3.x) or oauth-proxy (2.x)
-    Controller->>K8sAPI: Create HTTPRoute/Route<br/>HTTPS/6443, SA Token
-    K8sAPI->>Kubelet: Schedule pod
-    Kubelet->>Quay: Pull image<br/>HTTPS/443, Pull Secret
-    Quay-->>Kubelet: Container image<br/>(SHA256 digest)
-    Kubelet-->>K8sAPI: Pod Running
+    rect rgb(240, 255, 240)
+        Note over User,Registry: Flow 3: Konflux Image Build
+        participant GitHub as GitHub PR
+        participant PaC as PipelinesAsCode
+        participant Tekton as Tekton PipelineRun
+        participant Quay as quay.io/opendatahub<br/>443/TCP HTTPS
 
-    User->>Ingress: Access workbench<br/>HTTPS/443, TLS 1.2+
-    Ingress->>RBACProxy: Forward request<br/>TLS terminated
-    RBACProxy->>RBACProxy: Authenticate user<br/>(OpenShift OAuth)
-    RBACProxy->>Workbench: Forward to JupyterLab<br/>HTTP/8888, plaintext
-    Workbench-->>RBACProxy: Response
-    RBACProxy-->>Ingress: Authenticated response
-    Ingress-->>User: Workbench UI
-
-    Note over User,Workbench: Flow 2: Konflux Image Build (PR)
-
-    participant Dev as Developer
-    participant GitHub as GitHub
-    participant PaC as Pipelines-as-Code
-    participant Tekton as Tekton PipelineRun
-
-    Dev->>GitHub: Open Pull Request<br/>HTTPS/443, GitHub Token
-    GitHub->>PaC: Webhook event
-    PaC->>Tekton: Trigger PipelineRun<br/>(CEL: pathChanged filter)
-    Note over Tekton: git-clone → buildah → SBOM → image-index
-    Tekton->>Quay: Push multi-arch image<br/>HTTPS/443, Push Secret
-    Tekton->>Tekton: Generate SBOM<br/>& attach attestation
-    Tekton-->>GitHub: Report status
+        GitHub->>PaC: Push/PR event<br/>HTTPS/443, Webhook
+        PaC->>Tekton: Trigger PipelineRun<br/>CEL path filter
+        Tekton->>GitHub: Clone repo<br/>HTTPS/443, git_auth_secret
+        Tekton->>Registry: Pull base images<br/>HTTPS/443, Pull Secret
+        Registry-->>Tekton: Base images (UBI9, CUDA, etc.)
+        Tekton->>Tekton: buildah build<br/>(sandbox.py context)
+        Tekton->>Quay: Push built image<br/>HTTPS/443, Push Secret
+        Quay-->>Tekton: Image digest
+    end
