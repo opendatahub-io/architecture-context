@@ -1,34 +1,51 @@
 sequenceDiagram
+    autonumber
+
     participant User as User Browser
-    participant Router as OpenShift Router<br/>443/TCP HTTPS TLS 1.2+
-    participant OAuth as OAuth Proxy Sidecar<br/>8443/TCP HTTPS TLS
-    participant Dashboard as Ray Head Dashboard<br/>8265/TCP HTTP
-    participant Operator as CodeFlare Operator<br/>controller-runtime
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
-    participant CASecret as CA Secret<br/>(per-cluster)
-    participant InitC as Init Container<br/>(head/worker pod)
+    participant Router as OpenShift Router<br/>443/TCP HTTPS
+    participant OAuth as OAuth Proxy Sidecar<br/>8443/TCP HTTPS
+    participant OSOAuth as OpenShift OAuth Server<br/>443/TCP HTTPS
+    participant Dashboard as Ray Dashboard<br/>8265/TCP HTTP
     participant RayHead as Ray Head Node<br/>10001/TCP gRPC
     participant RayWorker as Ray Worker Node<br/>10001/TCP gRPC
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant CASecret as CA Secret<br/>(K8s Secret)
 
     Note over User, Dashboard: Flow 1: RayCluster OAuth Dashboard Access (OpenShift)
-    User->>Router: GET /dashboard<br/>HTTPS/443
-    Router->>OAuth: Forward (reencrypt)<br/>HTTPS/8443
-    Note right of OAuth: Validates OpenShift<br/>OAuth token
-    OAuth->>Dashboard: Proxy request<br/>HTTP/8265 (localhost)
+
+    User->>Router: GET /dashboard<br/>HTTPS/443, TLS 1.2+
+    Router->>OAuth: Reencrypt TLS<br/>HTTPS/8443
+    OAuth->>OSOAuth: OAuth delegation<br/>HTTPS/443, TLS 1.2+
+    OSOAuth-->>OAuth: Auth token validated
+    OAuth->>Dashboard: Proxied request<br/>HTTP/8265 (loopback)
     Dashboard-->>OAuth: Dashboard response
     OAuth-->>Router: HTTPS response
-    Router-->>User: Dashboard HTML
+    Router-->>User: HTTPS response
 
-    Note over Operator, RayWorker: Flow 2: RayCluster mTLS Certificate Bootstrap
-    Operator->>K8sAPI: Generate RSA 2048-bit CA cert<br/>ServiceAccount token auth
-    K8sAPI-->>Operator: Confirmed
-    Operator->>CASecret: Create ca-secret-{cluster}<br/>CA key + certificate
-    Note over InitC: Pod starts with<br/>CA cert volume mount
-    InitC->>InitC: OpenSSL genrsa + req<br/>Generate per-pod server cert
-    InitC->>InitC: OpenSSL x509 -CA<br/>Sign with cluster CA
-    Note over RayHead, RayWorker: mTLS established between nodes
-    RayHead->>RayWorker: gRPC/10001<br/>mTLS (per-pod certs)
-    RayWorker-->>RayHead: Response<br/>mTLS (client cert)
+    Note over RayHead, CASecret: Flow 2: Ray mTLS Inter-Node Communication
 
-    Note over User, RayWorker: Flow 3: Network Policy Enforcement
-    Note right of RayHead: NetworkPolicy rules:<br/>1. Same ray.io/cluster pods: full access<br/>2. Same namespace: 10001, 8265<br/>3. KubeRay operator ns: 8265, 10001<br/>4. openshift-monitoring: 8080<br/>5. All sources: 8443 (OAuth), 10001 (mTLS)
+    rect rgb(240, 248, 255)
+        Note right of RayHead: Init Container (create-cert)
+        RayHead->>K8sAPI: Get CA Secret<br/>HTTPS/443, SA Token
+        K8sAPI-->>RayHead: CA key + cert
+        RayHead->>RayHead: Generate node cert<br/>openssl (RSA 2048)
+        RayWorker->>K8sAPI: Get CA Secret<br/>HTTPS/443, SA Token
+        K8sAPI-->>RayWorker: CA key + cert
+        RayWorker->>RayWorker: Generate node cert<br/>openssl (RSA 2048)
+    end
+
+    rect rgb(245, 255, 245)
+        Note right of RayHead: Runtime Communication
+        RayHead->>RayWorker: Ray task/object<br/>gRPC/10001, mTLS
+        RayWorker-->>RayHead: Result<br/>gRPC/10001, mTLS
+        RayWorker->>RayHead: Heartbeat<br/>gRPC/10001, mTLS
+    end
+
+    Note over User, RayHead: Flow 3: Ray Client Access (OpenShift)
+
+    participant Client as Ray Client SDK
+
+    Client->>Router: Ray client connect<br/>HTTPS/443, TLS passthrough
+    Router->>RayHead: Passthrough<br/>gRPC/10001, mTLS
+    RayHead-->>Router: Response<br/>gRPC/10001, mTLS
+    Router-->>Client: Response<br/>HTTPS/443

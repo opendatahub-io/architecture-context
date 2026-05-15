@@ -1,44 +1,63 @@
 sequenceDiagram
     participant Client as External Client
-    participant Platform as Platform Ingress<br/>(KServe / Gateway API /<br/>kube-rbac-proxy)
-    participant Runtime as Caikit Runtime<br/>8080/TCP HTTP<br/>8085/TCP gRPC
-    participant LocalMod as Local Module<br/>(TextGeneration /<br/>EmbeddingModule)
-    participant HFModel as HuggingFace Model<br/>(in-memory GPU/CPU)
-    participant TGISMod as TGIS Module<br/>(TextGenerationTGIS /<br/>PeftPromptTuningTGIS)
-    participant TGIS as TGIS Server<br/>gRPC (configurable port)
-    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
+    participant KServe as KServe Gateway
+    participant HTTP as caikit Runtime<br/>HTTP 8080/TCP
+    participant gRPC as caikit Runtime<br/>gRPC 8085/TCP
+    participant Registry as Module Registry
+    participant TextGen as TextGeneration<br/>(Local)
+    participant TextGenTGIS as TextGenerationTGIS<br/>(Remote)
+    participant Embed as EmbeddingModule
+    participant Peft as PeftPromptTuning
+    participant TGIS as TGIS Server<br/>(Remote)
+    participant HFModel as HuggingFace Model<br/>(In-Memory)
+    participant STModel as SentenceTransformer<br/>(In-Memory)
+    participant FS as Filesystem<br/>/caikit/ mount
 
-    Note over Client,TGIS: Flow 1: Local Text Generation / Embedding Inference
-    Client->>Platform: POST /api/v1/task/text-generation<br/>Auth: Platform-managed
-    Platform->>Runtime: Forward request<br/>HTTP :8080 or gRPC :8085
-    Runtime->>LocalMod: Python in-process call
-    LocalMod->>HFModel: PyTorch inference
-    HFModel-->>LocalMod: Generated text / embeddings
-    LocalMod-->>Runtime: Response
-    Runtime-->>Platform: Response
-    Platform-->>Client: JSON / gRPC Response
+    Note over Client,FS: Flow 1: Local Text Generation Inference
 
-    Note over Client,TGIS: Flow 2: TGIS Remote Text Generation
-    Client->>Platform: POST /api/v1/task/text-generation<br/>Auth: Platform-managed
-    Platform->>Runtime: Forward request
-    Runtime->>TGISMod: Python in-process call
-    TGISMod->>TGIS: gRPC generation request<br/>TLS (optional) / mTLS (optional)
-    TGIS-->>TGISMod: Generated text (streaming supported)
-    TGISMod-->>Runtime: Response
-    Runtime-->>Platform: Response
-    Platform-->>Client: JSON / gRPC Response
+    Client->>KServe: POST /v1/models/model:predict
+    KServe->>HTTP: POST /api/v1/task/text-generation<br/>8080/TCP HTTP
+    HTTP->>Registry: Dispatch to module
+    Registry->>TextGen: Python in-process call
+    TextGen->>HFModel: PyTorch inference<br/>(CausalLM / Seq2SeqLM)
+    HFModel-->>TextGen: Generated text
+    TextGen-->>HTTP: GeneratedTextResult
+    HTTP-->>KServe: JSON response
+    KServe-->>Client: Prediction response
 
-    Note over Client,HFHub: Flow 3: Prompt Tuning Training
-    Client->>Platform: POST train API<br/>Auth: Platform-managed
-    Platform->>Runtime: Forward request
-    Runtime->>LocalMod: PeftPromptTuning.train()
-    LocalMod->>HFModel: PyTorch training<br/>(gradient accumulation,<br/>mixed precision via Accelerate)
-    HFModel-->>LocalMod: Training complete
-    LocalMod-->>LocalMod: Save prompt vectors<br/>(encoder.pt / decoder.pt)
-    LocalMod-->>Runtime: Trained model reference
-    Runtime-->>Platform: Response
-    Platform-->>Client: Training complete
+    Note over Client,FS: Flow 2: Remote TGIS Text Generation Inference
 
-    Note over Client,HFHub: Flow 4: Model Download (optional)
-    Runtime->>HFHub: HTTPS GET model artifacts<br/>TLS 1.2+ / Token auth (optional)
-    HFHub-->>Runtime: Model weights & tokenizer
+    Client->>KServe: POST /v1/models/model:predict
+    KServe->>HTTP: POST /api/v1/task/text-generation<br/>8080/TCP HTTP
+    HTTP->>Registry: Dispatch to module
+    Registry->>TextGenTGIS: Python in-process call
+    TextGenTGIS->>TGIS: gRPC GenerationRequest<br/>TLS (optional) / mTLS (optional)
+    TGIS-->>TextGenTGIS: GenerationResponse
+    TextGenTGIS-->>HTTP: GeneratedTextResult
+    HTTP-->>KServe: JSON response
+    KServe-->>Client: Prediction response
+
+    Note over Client,FS: Flow 3: Embedding Inference
+
+    Client->>KServe: Embedding request
+    KServe->>HTTP: POST /api/v1/task/embedding<br/>8080/TCP HTTP
+    HTTP->>Registry: Dispatch to module
+    Registry->>Embed: Python in-process call
+    Embed->>STModel: SentenceTransformer.encode()<br/>Thread-safe tokenization
+    STModel-->>Embed: Embedding vectors
+    Embed-->>HTTP: EmbeddingResult
+    HTTP-->>KServe: JSON response
+    KServe-->>Client: Embedding response
+
+    Note over Client,FS: Flow 4: PEFT Prompt Tuning Training
+
+    Client->>gRPC: Training request<br/>8085/TCP gRPC
+    gRPC->>Registry: Dispatch to training method
+    Registry->>Peft: PeftPromptTuning.train()
+    Peft->>HFModel: Load base model<br/>(CausalLM / Seq2SeqLM)
+    HFModel-->>Peft: Model loaded
+    Peft->>Peft: PEFT prompt tuning<br/>GPU/CPU via Accelerate
+    Peft->>FS: Save prompt vectors<br/>(encoder.pt, decoder.pt)
+    FS-->>Peft: Vectors saved
+    Peft-->>gRPC: Training complete
+    gRPC-->>Client: Training response

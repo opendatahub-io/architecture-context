@@ -1,51 +1,56 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Submits batch inference jobs via OpenAI-compatible API"
-        platformAdmin = person "Platform Admin" "Deploys and configures batch-gateway via Helm"
+        # Actors
+        dataScientist = person "Data Scientist / ML Engineer" "Submits batch inference jobs with up to 50,000 requests per batch"
+        sre = person "SRE / Platform Admin" "Monitors batch processing health and performance"
 
-        batchGateway = softwareSystem "Batch Gateway" "OpenAI-compatible batch inference API gateway for llm-d" {
-            apiserver = container "batch-gateway-apiserver" "OpenAI-compatible REST API for batch and file CRUD operations. Validates input, stores metadata, enqueues jobs to priority queue." "Go HTTP Service"
-            processor = container "batch-gateway-processor" "Dequeues batch jobs from priority queue, orchestrates concurrent inference execution against LLM backends, manages job lifecycle with crash recovery." "Go Worker Service"
-            gc = container "batch-gateway-gc" "Periodically scans for and removes expired batch/file records and their associated file content." "Go Background Service"
+        # Primary System
+        batchGateway = softwareSystem "Batch Gateway" "OpenAI-compatible batch inference gateway for processing large-scale batch jobs in Kubernetes" {
+            apiserver = container "API Server" "Handles REST requests for /v1/batches and /v1/files endpoints. Enforces tenant isolation via X-MaaS-Username header. Serves health, readiness, and metrics on observability port." "Go HTTP Service" "Port 8000 (API), 8081 (obs)"
+            processor = container "Batch Processor" "Queue-driven worker that dequeues batch jobs, pre-processes input files into per-model execution plans, dispatches inference requests with concurrency control, and uploads results. Supports crash recovery." "Go Worker Service" "Port 9090 (metrics)"
+            gc = container "Garbage Collector" "Periodic background service that scans for expired batch jobs and files, removes them from database and file storage. Single replica to avoid delete races." "Go Background Service" "No ports"
         }
 
-        postgresql = softwareSystem "PostgreSQL" "Primary metadata storage for batch and file records (batch_items, file_items tables)" "External"
-        redis = softwareSystem "Redis / Valkey" "Priority queue (sorted sets), event channels (cancel via BLMPop), status store, optional metadata backend" "External"
-        s3 = softwareSystem "S3-Compatible Storage" "File content storage for input/output/error JSONL files (MinIO, AWS S3)" "External"
-        inferenceGateway = softwareSystem "LLM Inference Gateway" "llm-d or vLLM inference backend for model completions" "Internal Platform"
-        certManager = softwareSystem "cert-manager" "Automated TLS certificate provisioning for apiserver HTTPS" "External"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing collection via OTLP/gRPC" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics scraping via ServiceMonitor and PodMonitor" "External"
-        grafana = softwareSystem "Grafana" "Pre-built dashboards for apiserver and processor metrics" "External"
-        gatewayAPI = softwareSystem "Gateway API" "Optional external ingress routing via HTTPRoute" "External"
+        # External Dependencies
+        postgresql = softwareSystem "PostgreSQL" "Batch job and file metadata storage with tenant-scoped queries" "External"
+        redis = softwareSystem "Redis / Valkey" "Priority queue (sorted set by SLO), event channels, progress status, optional metadata storage" "External"
+        s3 = softwareSystem "S3-compatible Storage" "Batch input/output file content storage (JSONL files up to 200 MB)" "External"
+        inferenceGW = softwareSystem "Inference Gateway (llm-d / vLLM)" "Downstream inference endpoint for individual request dispatch from batch jobs" "Internal Platform"
+        kuadrant = softwareSystem "Kuadrant / Authorino" "Authentication and authorization enforcement at gateway layer via Envoy ext_authz" "Internal Platform"
+        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for external ingress routing via HTTPRoute" "Internal Platform"
+        certManager = softwareSystem "cert-manager" "Optional TLS certificate provisioning for API server" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics scraping via ServiceMonitor (apiserver) and PodMonitor (processor)" "Internal Platform"
+        grafana = softwareSystem "Grafana" "Dashboard visualization via labeled ConfigMap sidecar loading" "Internal Platform"
+        otlpCollector = softwareSystem "OTLP Collector" "OpenTelemetry distributed tracing collection" "Internal Platform"
 
-        # User interactions
-        user -> batchGateway "Submits batch jobs, uploads files, checks status" "HTTP/HTTPS REST API"
-        platformAdmin -> batchGateway "Deploys and configures" "Helm chart"
+        # Relationships - Actors to System
+        dataScientist -> batchGateway "Submits batch jobs, uploads input files, retrieves results" "HTTPS/443 via Gateway"
+        sre -> prometheus "Monitors batch processing metrics and alerts" "HTTPS"
+        sre -> grafana "Views batch gateway dashboards" "HTTPS"
 
-        # Container-level interactions
-        user -> apiserver "POST /v1/files, POST /v1/batches, GET /v1/batches/{id}" "HTTP/HTTPS with Tenant Header"
-        apiserver -> postgresql "CRUD batch and file metadata" "TCP/5432 TLS"
-        apiserver -> redis "Enqueue jobs, publish cancel events" "TCP/6379 TLS/mTLS"
-        apiserver -> s3 "Upload/download file content" "HTTPS/443"
+        # Relationships - Internal containers
+        apiserver -> postgresql "CRUD batch/file metadata" "TCP/5432 PostgreSQL"
+        apiserver -> redis "Enqueue jobs, publish events" "TCP/6379 RESP"
+        apiserver -> s3 "Store/retrieve file content" "HTTPS/443 AWS IAM"
 
-        processor -> redis "Dequeue jobs, receive cancel events, update progress" "TCP/6379 TLS/mTLS"
-        processor -> postgresql "Read metadata, update batch status" "TCP/5432 TLS"
-        processor -> s3 "Download input, upload output/error files" "HTTPS/443"
-        processor -> inferenceGateway "Forward inference requests with concurrency control" "HTTP/HTTPS Bearer Token"
+        processor -> redis "Dequeue jobs, subscribe events, update progress" "TCP/6379 RESP"
+        processor -> postgresql "Read/update batch metadata" "TCP/5432 PostgreSQL"
+        processor -> s3 "Download input, upload output/error files" "HTTPS/443 AWS IAM"
+        processor -> inferenceGW "Dispatch individual inference requests" "HTTP(S) Bearer/mTLS"
 
-        gc -> postgresql "Query and delete expired records" "TCP/5432 TLS"
-        gc -> redis "Query and delete expired records" "TCP/6379 TLS"
-        gc -> s3 "Delete expired file content" "HTTPS/443"
+        gc -> postgresql "Query and delete expired records" "TCP/5432 PostgreSQL"
+        gc -> redis "Query and delete expired records" "TCP/6379 RESP"
+        gc -> s3 "Delete expired file content" "HTTPS/443 AWS IAM"
 
-        # Observability
-        batchGateway -> otelCollector "Export distributed traces" "OTLP/gRPC 4317"
-        prometheus -> batchGateway "Scrape metrics" "HTTP/8081"
-        grafana -> prometheus "Query metrics for dashboards"
-
-        # Infrastructure
-        certManager -> batchGateway "Provision TLS certificates" "Certificate CRD"
-        gatewayAPI -> apiserver "Route external traffic" "HTTPRoute CRD"
+        # Relationships - External integrations
+        kuadrant -> apiserver "Forwards authenticated requests with tenant header" "HTTP(S)/8000"
+        dataScientist -> kuadrant "Authenticates via ext_authz" "HTTPS/443"
+        gatewayAPI -> apiserver "Routes /v1/batches, /v1/files via HTTPRoute" "HTTP(S)/8000"
+        certManager -> apiserver "Provisions TLS certificates" "Certificate CRD"
+        prometheus -> apiserver "Scrapes metrics" "HTTP/8081 ServiceMonitor"
+        prometheus -> processor "Scrapes metrics" "HTTP/9090 PodMonitor"
+        apiserver -> otlpCollector "Exports traces" "gRPC/4317"
+        processor -> otlpCollector "Exports traces" "gRPC/4317"
     }
 
     views {
@@ -69,16 +74,16 @@ workspace {
                 color #ffffff
             }
             element "Person" {
-                shape Person
+                shape person
                 background #4a90e2
                 color #ffffff
             }
             element "Software System" {
-                background #4a90e2
+                background #438dd5
                 color #ffffff
             }
             element "Container" {
-                background #438dd5
+                background #4a90e2
                 color #ffffff
             }
         }

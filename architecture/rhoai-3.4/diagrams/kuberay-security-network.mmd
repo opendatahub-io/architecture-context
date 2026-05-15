@@ -1,93 +1,102 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["External User<br/>Data Scientist"]
+        User["User / Platform Operator"]
     end
 
-    subgraph Ingress["INGRESS - Gateway API (DMZ)"]
-        Gateway["RHOAI Gateway<br/>(data-science-gateway)<br/>443/TCP → HTTPRoute<br/>TLS 1.2+ terminated"]
+    subgraph Ingress["INGRESS (Platform Gateway)<br/>Namespace: openshift-ingress"]
+        Gateway["data-science-gateway<br/>443/TCP → HTTPRoute<br/>TLS 1.3<br/>OIDC / OAuth"]
     end
 
-    subgraph AuthProxy["AUTH PROXY (Trust Boundary)"]
-        KRBP["kube-rbac-proxy sidecar<br/>8443/TCP HTTPS<br/>TLS (cert-manager)<br/>TokenReview + SubjectAccessReview"]
-        OAuthProxy["oauth-proxy sidecar<br/>(IntegratedOAuth mode)<br/>Cookie-based session"]
+    subgraph AuthProxy["AUTH PROXY (Head Pod Sidecar)<br/>Namespace: {user-namespace}"]
+        direction LR
+        KRBP["kube-rbac-proxy<br/>8443/TCP HTTPS TLS<br/>SubjectAccessReview<br/>(services/get)"]
+        OAuthProxy["oauth-proxy<br/>8443/TCP HTTPS TLS (self-signed)<br/>OpenShift OAuth<br/>(pods/get)"]
     end
 
-    subgraph OperatorNS["OPERATOR NAMESPACE (opendatahub)"]
-        direction TB
-        Operator["KubeRay Operator<br/>SA: kuberay-operator<br/>Image: kuberay-operator:v1.4.4"]
-        Metrics["Metrics: 8080/TCP HTTP"]
-        Probes["Probes: 8081/TCP HTTP"]
-        WebhookSvc["Webhook Service<br/>443/TCP → 9443/TCP<br/>HTTPS (OpenShift serving certs)<br/>Mutual TLS with API server"]
-    end
-
-    subgraph UserNS["USER NAMESPACE (Ray Workloads)"]
+    subgraph RayCluster["RAY CLUSTER<br/>Namespace: {user-namespace}"]
         direction TB
 
-        subgraph HeadPodGroup["Head Pod"]
-            HeadContainer["ray-head container<br/>8265, 10001, 6379, 8080"]
-            AuthSidecar["Auth sidecar<br/>8443/TCP HTTPS"]
+        subgraph HeadPodGroup["Head Pod (UID 1000, run-as-ray-user SCC)"]
+            Dashboard["Ray Dashboard<br/>8265/TCP HTTP<br/>No encryption"]
+            GCS["GCS Server<br/>6379/TCP<br/>None or mTLS"]
+            ClientPort["Client Port<br/>10001/TCP<br/>None or mTLS"]
+            ServeProxy["Serve Proxy<br/>8000/TCP HTTP<br/>No encryption"]
+            Metrics_Head["Metrics<br/>8080/TCP HTTP"]
         end
 
-        HeadSvc["head-svc ClusterIP<br/>8265, 10001, 6379, 8080"]
-        ServeSvc["serve-svc ClusterIP<br/>8000/TCP HTTP"]
-        HeadlessSvc["headless-svc<br/>Worker peer discovery"]
-
-        subgraph WorkerPodGroup["Worker Pods"]
-            WorkerInit["Init: GCS health check<br/>polls 6379 until ready"]
-            WorkerContainer["ray-worker container"]
+        subgraph WorkerPods["Worker Pods (UID 1000, run-as-ray-user SCC)"]
+            WorkerClient["Client Port<br/>10001/TCP<br/>None or mTLS"]
+            WorkerMetrics["Metrics<br/>8080/TCP HTTP"]
         end
 
-        NetPol["NetworkPolicies<br/>annotation-gated"]
-        MTLSCerts["mTLS Certificates<br/>cert-manager managed<br/>90d duration / 15d renewal"]
+        HeadSvc["{cluster}-head-svc<br/>Headless ClusterIP:None<br/>6379, 8265, 10001, 8080, 8000"]
+        ServeSvc["{cluster}-serve-svc<br/>ClusterIP<br/>8000/TCP HTTP"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+"]
-        CertManager["cert-manager<br/>Certificate + Issuer CRs"]
-        RedisStore["Redis (optional)<br/>6379/TCP<br/>Optional TLS<br/>Optional password"]
-        Prometheus["Prometheus<br/>8080/TCP HTTP<br/>Metrics scraping"]
-        OSHOAuth["OpenShift OAuth Server<br/>(IntegratedOAuth mode)"]
-        OSHConfig["OpenShift API<br/>config.openshift.io<br/>443/TCP HTTPS read-only"]
+    subgraph OperatorNS["OPERATOR NAMESPACE<br/>(redhat-ods-applications)"]
+        Operator["KubeRay Operator<br/>SA: kuberay-operator<br/>Metrics: 8080/TCP<br/>Health: 8081/TCP<br/>Webhooks: 9443/TCP HTTPS"]
+    end
+
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+<br/>ServiceAccount token auth"]
+    end
+
+    subgraph PlatformServices["PLATFORM SERVICES"]
+        CertMgr["cert-manager<br/>CRD API<br/>mTLS PKI:<br/>SelfSigned → CA (10yr) → Certs (90d)"]
+        Prometheus["Prometheus<br/>8080/TCP HTTP<br/>Metrics scrape"]
+        OAuthConfig["OpenShift Auth Config<br/>443/TCP HTTPS TLS 1.2+<br/>config.openshift.io"]
     end
 
     %% External → Ingress
-    User -->|"HTTPS/443<br/>TLS 1.2+"| Gateway
+    User -->|"HTTPS/443<br/>TLS 1.3<br/>OIDC / OAuth"| Gateway
 
-    %% Ingress → Auth
-    Gateway -->|"HTTPS/8443<br/>TLS (cert-manager)<br/>Bearer Token forwarded"| KRBP
-    KRBP -->|"HTTP/8265<br/>localhost<br/>pre-authorized"| HeadContainer
-    KRBP -->|"HTTPS/443<br/>TokenReview<br/>SubjectAccessReview"| K8sAPI
-    OAuthProxy -.->|"delegates auth"| OSHOAuth
+    %% Ingress → Auth Proxy
+    Gateway -->|"HTTPS/8443<br/>TLS<br/>Token forwarded"| KRBP
+    Gateway -.->|"HTTPS/8443<br/>TLS (self-signed)<br/>OAuth"| OAuthProxy
 
-    %% Operator flows
-    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    Operator -->|"HTTP/8265<br/>Job status polling"| HeadContainer
-    Operator -->|"HTTPS/443<br/>Certificate CRs"| CertManager
-    Operator -->|"HTTPS/443<br/>read-only"| OSHConfig
-    WebhookSvc -->|"HTTPS/9443<br/>Mutual TLS"| K8sAPI
+    %% Auth Proxy → Dashboard
+    KRBP -->|"HTTP/8265<br/>plaintext (localhost)<br/>SubjectAccessReview verified"| Dashboard
+    OAuthProxy -.->|"HTTP/8265<br/>plaintext (localhost)<br/>OAuth verified"| Dashboard
 
-    %% Head ↔ Worker
-    WorkerInit -->|"6379/TCP<br/>GCS health check<br/>None or mTLS"| HeadContainer
-    WorkerContainer -->|"6379, 10001/TCP<br/>Ray runtime<br/>None or mTLS"| HeadContainer
+    %% KRBP → K8s for SAR
+    KRBP -->|"HTTPS/443<br/>SubjectAccessReview"| K8sAPI
 
-    %% Head → External
-    HeadContainer -->|"6379/TCP<br/>Redis protocol<br/>Optional TLS"| RedisStore
+    %% Intra-cluster communication
+    GCS <-->|"TCP/6379<br/>None or mTLS<br/>(cert-manager)"| WorkerClient
+    ClientPort <-->|"TCP/10001<br/>None or mTLS"| WorkerClient
 
-    %% Monitoring
-    Prometheus -->|"HTTP/8080<br/>scrape metrics"| Metrics
-    Prometheus -->|"HTTP/8080<br/>scrape metrics"| HeadContainer
+    %% Operator → K8s API
+    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+
+    %% Operator → Ray Dashboard
+    Operator -->|"HTTP/8265<br/>No encryption<br/>No auth"| Dashboard
+
+    %% Operator → Serve proxy
+    Operator -->|"HTTP/8000<br/>No encryption"| ServeProxy
+
+    %% K8s API → Webhook
+    K8sAPI -->|"HTTPS/9443<br/>TLS (serving cert)<br/>API server cert"| Operator
+
+    %% Platform services
+    Operator -->|"CRD API<br/>Issuer, Certificate"| CertMgr
+    Prometheus -->|"HTTP/8080<br/>scrape"| Metrics_Head
+    Prometheus -->|"HTTP/8080<br/>scrape"| WorkerMetrics
+    Prometheus -->|"HTTP/8080<br/>scrape"| Operator
+    Operator -->|"HTTPS/443<br/>read auth config"| OAuthConfig
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef authproxy fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef operatorns fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef userns fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef authproxy fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef raycluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef controlplane fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef platform fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class User external
     class Gateway ingress
     class KRBP,OAuthProxy authproxy
-    class Operator,Metrics,Probes,WebhookSvc operatorns
-    class HeadContainer,AuthSidecar,HeadSvc,ServeSvc,HeadlessSvc,WorkerInit,WorkerContainer,NetPol,MTLSCerts userns
-    class K8sAPI,CertManager,RedisStore,Prometheus,OSHOAuth,OSHConfig externalservice
+    class Dashboard,GCS,ClientPort,ServeProxy,Metrics_Head,WorkerClient,WorkerMetrics,HeadSvc,ServeSvc raycluster
+    class Operator operator
+    class K8sAPI controlplane
+    class CertMgr,Prometheus,OAuthConfig platform

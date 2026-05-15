@@ -1,75 +1,92 @@
 graph TD
-    subgraph ServiceAccounts["Service Accounts"]
-        SA["mlflow-server<br/>(operator namespace)"]
+    subgraph Callers["Request Callers"]
+        SDKClient["MLflow SDK Client<br/>(Bearer Token: K8s SA or User)"]
+        BrowserUser["Browser User<br/>(Bearer Token: Session)"]
+        OTelClient["OTel Collector<br/>(Bearer Token + Experiment ID)"]
     end
 
-    subgraph ClusterRoleBindings["ClusterRole Bindings (Managed by MLflow Operator)"]
-        CRB["mlflow-server-binding<br/>(ClusterRoleBinding)"]
+    subgraph AuthPlugin["kubernetes-auth Plugin (Per-Request Enforcement)"]
+        TokenExtract["Extract Bearer Token<br/>from Authorization header"]
+        WorkspaceResolve["Resolve Workspace<br/>from X-MLFLOW-WORKSPACE header"]
+        SAR["SelfSubjectAccessReview<br/>against mlflow.kubeflow.org"]
     end
 
-    subgraph ClusterRoles["ClusterRole Permissions (Managed by MLflow Operator)"]
-        CR["mlflow-server-role<br/>(ClusterRole)"]
-    end
+    subgraph K8sRBAC["Kubernetes RBAC (Managed by MLflow Operator)"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS"]
 
-    subgraph APIResources["API Resources"]
-        direction TB
-
-        subgraph MLflowGroup["mlflow.kubeflow.org"]
-            MLflowConfigs["mlflowconfigs"]
+        subgraph PseudoResources["mlflow.kubeflow.org Pseudo-Resources"]
+            Experiments["experiments"]
+            Runs["runs"]
+            RegisteredModels["registered-models"]
+            ModelVersions["model-versions"]
+            Artifacts["artifacts"]
+            Traces["traces"]
+            GatewaySecrets["gateway-secrets"]
+            Workspaces["workspaces"]
         end
-
-        subgraph CoreGroup["core ('')"]
-            Namespaces["namespaces"]
-        end
-
-        subgraph AuthGroup["authorization.k8s.io"]
-            SSAR["selfsubjectaccessreviews"]
-        end
-    end
-
-    subgraph RuntimeAuth["Runtime Authorization (Per-Request)"]
-        direction TB
-        AuthFlow["kubernetes-auth Plugin<br/>Per-request RBAC enforcement"]
-        PseudoResources["Pseudo-Resources<br/>(mlflow.kubeflow.org group)<br/>experiments, runs, models,<br/>model-versions, workspaces"]
     end
 
     subgraph Endpoints["Protected Endpoints"]
-        direction TB
-        TrackingEndpoints["/api/2.0/mlflow/*<br/>Experiment & Run CRUD"]
-        RegistryEndpoints["/api/2.0/mlflow/registered-models/*<br/>Model Registry"]
-        GatewayEndpoints["/gateway/*<br/>AI Gateway Invocation"]
-        TracesEndpoints["/v1/traces<br/>OTLP Trace Ingestion<br/>(+ x-mlflow-experiment-id)"]
-        PublicEndpoints["/health, /version, /static-files/*<br/>(No auth required)"]
+        TrackingAPI["/api/2.0/mlflow/*<br/>Tracking API"]
+        ModelRegAPI["/api/2.0/mlflow/registered-models/*<br/>Model Registry"]
+        TraceAPI["/api/3.0/mlflow/traces/*<br/>Trace Management"]
+        GatewayAPI["/gateway/*<br/>AI Gateway"]
+        AjaxAPI["/ajax-api/*<br/>UI Backend"]
+        WorkspaceEndpoint["/api/3.0/mlflow/workspaces/*<br/>Workspace Mgmt"]
     end
 
-    %% Bindings
-    SA -->|"bound via"| CRB
-    CRB -->|"grants"| CR
+    subgraph ExemptEndpoints["Exempt Endpoints (No Auth)"]
+        Health["/health"]
+        Version["/version"]
+        StaticFiles["/static-files/*"]
+        IndexHTML["/ (index.html)"]
+    end
 
-    %% Permissions
-    CR -->|"get, list, watch"| MLflowConfigs
-    CR -->|"get, list, watch"| Namespaces
-    CR -->|"create"| SSAR
+    subgraph ServerSA["MLflow Server ServiceAccount"]
+        MLflowSA["mlflow-server SA<br/>(used for SAR submissions)"]
+    end
 
-    %% Runtime auth flow
-    TrackingEndpoints -->|"Bearer Token"| AuthFlow
-    RegistryEndpoints -->|"Bearer Token"| AuthFlow
-    GatewayEndpoints -->|"Bearer Token"| AuthFlow
-    TracesEndpoints -->|"Bearer Token +<br/>x-mlflow-experiment-id"| AuthFlow
-    AuthFlow -->|"SelfSubjectAccessReview<br/>against pseudo-resources"| SSAR
-    AuthFlow -->|"checks permissions on"| PseudoResources
+    subgraph Secrets["Secrets"]
+        KEK["MLFLOW_CRYPTO_KEK_PASSPHRASE<br/>Opaque env var<br/>KEK for AES-256-GCM"]
+        GWSecrets["Gateway Endpoint Secrets<br/>Encrypted in DB<br/>AES-256-GCM + DEK"]
+        TLSCerts["TLS Certificates<br/>kubernetes.io/tls<br/>cert-manager / Operator"]
+    end
+
+    %% Auth flow
+    SDKClient -->|"Bearer Token"| TokenExtract
+    BrowserUser -->|"Bearer Token"| TokenExtract
+    OTelClient -->|"Bearer Token"| TokenExtract
+    TokenExtract --> WorkspaceResolve
+    WorkspaceResolve --> SAR
+    SAR -->|"Submit caller's token<br/>as SAR"| K8sAPI
+    K8sAPI -->|"Check against"| PseudoResources
+
+    %% Endpoint protection
+    SAR -->|"grants access"| TrackingAPI
+    SAR -->|"grants access"| ModelRegAPI
+    SAR -->|"grants access"| TraceAPI
+    SAR -->|"grants access"| GatewayAPI
+    SAR -->|"grants access"| AjaxAPI
+    SAR -->|"grants access"| WorkspaceEndpoint
+
+    %% Server SA
+    MLflowSA -->|"submits SARs<br/>lists namespaces<br/>gets MLflowConfig"| K8sAPI
+
+    %% Secrets
+    MLflowSA -.->|"mounts"| KEK
+    MLflowSA -.->|"mounts"| TLSCerts
 
     %% Styling
-    style SA fill:#4a90e2,stroke:#333,color:#fff
-    style CRB fill:#6c8ebf,stroke:#333,color:#fff
-    style CR fill:#f5a623,stroke:#333
-    style MLflowConfigs fill:#7ed321,stroke:#333
-    style Namespaces fill:#7ed321,stroke:#333
-    style SSAR fill:#7ed321,stroke:#333
-    style AuthFlow fill:#f8cecc,stroke:#b85450
-    style PseudoResources fill:#f8cecc,stroke:#b85450
-    style PublicEndpoints fill:#d5e8d4,stroke:#82b366
-    style TrackingEndpoints fill:#dae8fc,stroke:#6c8ebf
-    style RegistryEndpoints fill:#dae8fc,stroke:#6c8ebf
-    style GatewayEndpoints fill:#dae8fc,stroke:#6c8ebf
-    style TracesEndpoints fill:#dae8fc,stroke:#6c8ebf
+    style AuthPlugin fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    style K8sRBAC fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    style Endpoints fill:#d5e8d4,stroke:#82b366
+    style ExemptEndpoints fill:#f0f0f0,stroke:#999
+    style Secrets fill:#fff2cc,stroke:#d6b656
+    style Callers fill:#f9f9f9,stroke:#999
+
+    style SAR fill:#e6b8af,stroke:#b85450
+    style K8sAPI fill:#4a90e2,stroke:#333,color:#fff
+    style MLflowSA fill:#4a90e2,stroke:#333,color:#fff
+    style KEK fill:#f5a623,stroke:#333,color:#fff
+    style GWSecrets fill:#f5a623,stroke:#333,color:#fff
+    style TLSCerts fill:#f5a623,stroke:#333,color:#fff

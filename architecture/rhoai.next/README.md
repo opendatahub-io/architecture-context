@@ -1,7 +1,7 @@
 # RHOAI.NEXT unknown - Component Architectures
 
 Source: architecture/rhoai.next/component-map.json
-Date: 2026-05-13
+Date: 2026-05-15
 
 ## Components
 
@@ -23,10 +23,8 @@ Date: 2026-05-13
 | eval-hub | [eval-hub.md](./eval-hub.md) |
 | feast | [feast.md](./feast.md) |
 | fms-guardrails-orchestrator | [fms-guardrails-orchestrator.md](./fms-guardrails-orchestrator.md) |
-| fms-hf-tuning | [fms-hf-tuning.md](./fms-hf-tuning.md) |
 | gateway-api-inference-extension | [gateway-api-inference-extension.md](./gateway-api-inference-extension.md) |
 | guardrails-detectors | [guardrails-detectors.md](./guardrails-detectors.md) |
-| guardrails-regex-detector | [guardrails-regex-detector.md](./guardrails-regex-detector.md) |
 | kserve | [kserve.md](./kserve.md) |
 | kserve-autogluon-server | [kserve-autogluon-server.md](./kserve-autogluon-server.md) |
 | kube-auth-proxy | [kube-auth-proxy.md](./kube-auth-proxy.md) |
@@ -41,8 +39,8 @@ Date: 2026-05-13
 | llm-d | [llm-d.md](./llm-d.md) |
 | llm-d-inference-scheduler | [llm-d-inference-scheduler.md](./llm-d-inference-scheduler.md) |
 | llm-d-kv-cache | [llm-d-kv-cache.md](./llm-d-kv-cache.md) |
+| llm-d-planner | [llm-d-planner.md](./llm-d-planner.md) |
 | llm-d-routing-sidecar | [llm-d-routing-sidecar.md](./llm-d-routing-sidecar.md) |
-| lm-evaluation-harness | [lm-evaluation-harness.md](./lm-evaluation-harness.md) |
 | ml-metadata | [ml-metadata.md](./ml-metadata.md) |
 | mlflow | [mlflow.md](./mlflow.md) |
 | mlflow-operator | [mlflow-operator.md](./mlflow-operator.md) |
@@ -53,21 +51,24 @@ Date: 2026-05-13
 | modelmesh-runtime-adapter | [modelmesh-runtime-adapter.md](./modelmesh-runtime-adapter.md) |
 | modelmesh-serving | [modelmesh-serving.md](./modelmesh-serving.md) |
 | models-as-a-service | [models-as-a-service.md](./models-as-a-service.md) |
+| models-perf-benchmark-data | [models-perf-benchmark-data.md](./models-perf-benchmark-data.md) |
+| must-gather | [must-gather.md](./must-gather.md) |
 | notebooks | [notebooks.md](./notebooks.md) |
 | notebooks-downstream | [notebooks-downstream.md](./notebooks-downstream.md) |
 | odh-cli | [odh-cli.md](./odh-cli.md) |
 | odh-dashboard | [odh-dashboard.md](./odh-dashboard.md) |
 | odh-deployer | [odh-deployer.md](./odh-deployer.md) |
 | odh-model-controller | [odh-model-controller.md](./odh-model-controller.md) |
-| openvino | [openvino.md](./openvino.md) |
+| ogx-k8s-operator | [ogx-k8s-operator.md](./ogx-k8s-operator.md) |
 | openvino_model_server | [openvino_model_server.md](./openvino_model_server.md) |
 | pipelines-components | [pipelines-components.md](./pipelines-components.md) |
 | rest-proxy | [rest-proxy.md](./rest-proxy.md) |
 | rhds-llama-stack-distribution | [rhds-llama-stack-distribution.md](./rhds-llama-stack-distribution.md) |
+| rhoai-mcp | [rhoai-mcp.md](./rhoai-mcp.md) |
 | rhods-operator | [rhods-operator.md](./rhods-operator.md) |
 | spark-operator | [spark-operator.md](./spark-operator.md) |
-| text-generation-inference | [text-generation-inference.md](./text-generation-inference.md) |
 | trainer | [trainer.md](./trainer.md) |
+| training-hub | [training-hub.md](./training-hub.md) |
 | training-operator | [training-operator.md](./training-operator.md) |
 | trustyai-explainability | [trustyai-explainability.md](./trustyai-explainability.md) |
 | trustyai-service-operator | [trustyai-service-operator.md](./trustyai-service-operator.md) |
@@ -83,4 +84,4 @@ Date: 2026-05-13
 
 - **Platform**: RHOAI.NEXT
 - **Version**: unknown
-- **Components**: 71
+- **Components**: 72

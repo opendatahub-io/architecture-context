@@ -1,99 +1,108 @@
 graph TB
     subgraph KueueSystem["Kueue Controller Manager"]
         direction TB
-        subgraph CoreControllers["Core Controllers"]
-            CQCtrl["ClusterQueue<br/>Controller"]
-            LQCtrl["LocalQueue<br/>Controller"]
-            WLCtrl["Workload<br/>Controller"]
-            RFCtrl["ResourceFlavor<br/>Controller"]
-            ACCtrl["AdmissionCheck<br/>Controller"]
-            CohortCtrl["Cohort<br/>Controller"]
-        end
+        Controller["Kueue Controller<br/>(controller-runtime)"]
+        Scheduler["Scheduler<br/>(admission decisions)"]
+        Cache["In-Memory Cache<br/>(queue state)"]
+        QueueMgr["Queue Manager<br/>(queue ordering)"]
+        Webhook["Webhook Server<br/>9443/TCP TLS<br/>(36 webhooks)"]
 
-        subgraph SchedulerEngine["Scheduler"]
-            Scheduler["Scheduler Loop<br/>(manager.Runnable)"]
-            FlavorAssigner["Flavor Assigner"]
-            Preemptor["Preemption Engine"]
-            Scheduler --> FlavorAssigner
-            Scheduler --> Preemptor
-        end
-
-        subgraph TAS["Topology-Aware Scheduling"]
-            TopoCtrl["Topology Controller"]
-            TopoUngater["Topology Ungater"]
-            TASFlavorCtrl["TAS ResourceFlavor<br/>Controller"]
-        end
-
-        subgraph MultiKueueSub["MultiKueue (disabled in RHOAI)"]
-            MKClusterCtrl["Clusters Reconciler"]
-            MKWlCtrl["Workload Reconciler"]
-            MKACCtrl["AdmissionCheck<br/>Reconciler"]
-        end
-
-        subgraph Provisioning["Provisioning Integration"]
-            ProvCtrl["Provisioning<br/>Controller"]
-        end
-
-        subgraph Webhooks["Admission Webhooks (9443/TCP)"]
-            MutatingWH["17 Mutating<br/>Webhooks"]
-            ValidatingWH["18 Validating<br/>Webhooks"]
-            ConversionWH["1 Conversion<br/>Webhook"]
-        end
-
-        subgraph Cache["In-Memory Cache"]
-            QueueCache["Queue Snapshot"]
-            ClusterQueueCache["ClusterQueue Cache"]
-        end
-
-        CQCtrl --> ClusterQueueCache
-        LQCtrl --> QueueCache
-        WLCtrl --> QueueCache
-        RFCtrl -->|notifies| CQCtrl
-        Scheduler -->|reads| QueueCache
-        Scheduler -->|reads| ClusterQueueCache
+        Controller -->|state sync| Cache
+        Scheduler -->|reads state| Cache
+        Scheduler -->|reads order| QueueMgr
+        Controller -->|notifies| QueueMgr
     end
 
-    %% CRDs
-    User[User / Data Scientist] -->|creates| JobCR["batch/v1 Job<br/>PyTorchJob, RayJob,<br/>JobSet, AppWrapper, etc."]
-    JobCR -->|intercepted by| Webhooks
-    Webhooks -->|creates| WorkloadCR["Workload CR"]
+    subgraph CRDs["Kueue CRDs (kueue.x-k8s.io)"]
+        CQ["ClusterQueue<br/>(cluster-scoped)<br/>quotas, flavors, preemption"]
+        LQ["LocalQueue<br/>(namespace-scoped)<br/>user-facing queue"]
+        WL["Workload<br/>(namespace-scoped)<br/>job resource request"]
+        RF["ResourceFlavor<br/>(cluster-scoped)<br/>hardware types"]
+        AC["AdmissionCheck<br/>(cluster-scoped)<br/>external gates"]
+        WPC["WorkloadPriorityClass<br/>(cluster-scoped)"]
+        MKC["MultiKueueCluster<br/>(cluster-scoped)"]
+        Cohort["Cohort<br/>(cluster-scoped, v1alpha1)"]
+        Topology["Topology<br/>(cluster-scoped, v1alpha1)"]
+    end
 
-    %% Core CRDs managed
-    ClusterQueueCR["ClusterQueue CR"] -->|watched by| CQCtrl
-    LocalQueueCR["LocalQueue CR"] -->|watched by| LQCtrl
-    WorkloadCR -->|watched by| WLCtrl
-    ResourceFlavorCR["ResourceFlavor CR"] -->|watched by| RFCtrl
-    AdmissionCheckCR["AdmissionCheck CR"] -->|watched by| ACCtrl
+    subgraph JobFrameworks["Job Framework Integrations"]
+        Job["batch/v1 Job"]
+        JobSet["JobSet"]
+        PyTorch["PyTorchJob"]
+        TFJob["TFJob"]
+        MPIJob["MPIJob"]
+        XGBoost["XGBoostJob"]
+        Paddle["PaddleJob"]
+        RayJob["RayJob"]
+        RayCluster["RayCluster"]
+        AppWrapper["AppWrapper"]
+    end
 
-    %% Scheduler output
-    Scheduler -->|admits workload<br/>unsuspends job| K8sAPI["Kubernetes API<br/>6443/TCP"]
+    subgraph AdmissionChecks["Admission Check Controllers"]
+        ProvCtrl["Provisioning Controller<br/>(ProvisioningRequest)"]
+        MKCtrl["MultiKueue Controller<br/>(multi-cluster)"]
+    end
 
-    %% Provisioning
-    ProvCtrl -->|creates| ProvReqCR["ProvisioningRequest CR"]
-    ProvReqCR -->|read by| ClusterAutoscaler["Cluster Autoscaler"]
+    %% User interaction
+    User["Data Scientist / User"] -->|submits job with<br/>queue-name label| JobFrameworks
+    Admin["Platform Admin"] -->|creates| CQ
+    Admin -->|creates| RF
+    Admin -->|creates| LQ
 
-    %% Metrics & Health
-    Prometheus["Prometheus"] -->|scrapes 8443/TCP<br/>Bearer Token + TLS| KueueSystem
+    %% Queue hierarchy
+    LQ -->|references| CQ
+    CQ -->|member of| Cohort
+    CQ -->|uses| RF
+    CQ -->|requires| AC
+
+    %% Job → Workload flow
+    JobFrameworks -->|webhook intercept| Webhook
+    Controller -->|creates Workload from| JobFrameworks
+    Controller -->|watches| CRDs
+
+    %% Scheduler admission
+    Scheduler -->|admits| WL
+    WL -->|submitted to| LQ
+    Controller -->|suspends/resumes| JobFrameworks
+
+    %% Admission checks
+    AC -->|delegates to| AdmissionChecks
+    ProvCtrl -->|creates ProvisioningRequest| K8sAPI["Kubernetes API Server"]
+    MKCtrl -->|distributes to| RemoteCluster["Remote Kueue Cluster"]
+
+    %% External
+    Controller -->|all operations via| K8sAPI
+    Prometheus["Prometheus"] -->|scrapes :8443| Controller
 
     %% Styling
-    style KueueSystem fill:#e8f0fe,stroke:#4a90e2,stroke-width:2px
-    style CoreControllers fill:#d5e8d4,stroke:#82b366
-    style SchedulerEngine fill:#fff2cc,stroke:#d6b656
-    style TAS fill:#f8cecc,stroke:#b85450
-    style MultiKueueSub fill:#e1d5e7,stroke:#9673a6,stroke-dasharray: 5 5
-    style Provisioning fill:#dae8fc,stroke:#6c8ebf
-    style Webhooks fill:#ffe6cc,stroke:#d79b00
-    style Cache fill:#f5f5f5,stroke:#666
-
-    style User fill:#4a90e2,color:#fff
+    style Controller fill:#4a90e2,stroke:#333,color:#fff
+    style Scheduler fill:#4a90e2,stroke:#333,color:#fff
+    style Cache fill:#4a90e2,stroke:#333,color:#fff
+    style QueueMgr fill:#4a90e2,stroke:#333,color:#fff
+    style Webhook fill:#4a90e2,stroke:#333,color:#fff
+    style CQ fill:#f5a623,stroke:#333
+    style LQ fill:#f5a623,stroke:#333
+    style WL fill:#f5a623,stroke:#333
+    style RF fill:#f5a623,stroke:#333
+    style AC fill:#f5a623,stroke:#333
+    style WPC fill:#f5a623,stroke:#333
+    style MKC fill:#f5a623,stroke:#333
+    style Cohort fill:#f5a623,stroke:#333
+    style Topology fill:#f5a623,stroke:#333
+    style Job fill:#7ed321,stroke:#333
+    style JobSet fill:#7ed321,stroke:#333
+    style PyTorch fill:#7ed321,stroke:#333
+    style TFJob fill:#7ed321,stroke:#333
+    style MPIJob fill:#7ed321,stroke:#333
+    style XGBoost fill:#7ed321,stroke:#333
+    style Paddle fill:#7ed321,stroke:#333
+    style RayJob fill:#7ed321,stroke:#333
+    style RayCluster fill:#7ed321,stroke:#333
+    style AppWrapper fill:#7ed321,stroke:#333
+    style ProvCtrl fill:#9b59b6,stroke:#333,color:#fff
+    style MKCtrl fill:#9b59b6,stroke:#333,color:#fff
     style K8sAPI fill:#e8e8e8,stroke:#333
+    style RemoteCluster fill:#e8e8e8,stroke:#333
     style Prometheus fill:#e8e8e8,stroke:#333
-    style ClusterAutoscaler fill:#e8e8e8,stroke:#333,stroke-dasharray: 5 5
-
-    style ClusterQueueCR fill:#f5a623,color:#fff
-    style LocalQueueCR fill:#f5a623,color:#fff
-    style WorkloadCR fill:#f5a623,color:#fff
-    style ResourceFlavorCR fill:#f5a623,color:#fff
-    style AdmissionCheckCR fill:#f5a623,color:#fff
-    style JobCR fill:#f5a623,color:#fff
-    style ProvReqCR fill:#f5a623,color:#fff
+    style User fill:#ddd,stroke:#333
+    style Admin fill:#ddd,stroke:#333

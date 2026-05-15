@@ -1,67 +1,82 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User / Data Scientist<br/>kubectl / kueuectl"]
+        User["Data Scientist / User"]
     end
 
-    subgraph K8sControlPlane["KUBERNETES CONTROL PLANE"]
-        APIServer["Kubernetes API Server<br/>6443/TCP<br/>TLS 1.2+<br/>User credentials / SA tokens"]
+    subgraph K8sControl["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP<br/>TLS 1.2+<br/>Bearer Token / Client Cert / OIDC"]
     end
 
-    subgraph KueueNamespace["NAMESPACE: opendatahub (RHOAI)"]
+    subgraph KueueNS["KUEUE NAMESPACE: opendatahub"]
         direction TB
 
-        subgraph ControllerPod["Kueue Controller Manager Pod"]
-            direction TB
-            WebhookServer["Webhook Server<br/>9443/TCP HTTPS<br/>TLS (internal cert mgmt)<br/>Auth: API server webhook auth"]
-            MetricsServer["Metrics Server<br/>8443/TCP HTTPS<br/>TLS (cert-watcher)<br/>Auth: Bearer Token + TokenReview"]
-            HealthProbe["Health Probes<br/>8081/TCP HTTP<br/>No TLS / No Auth"]
-            SchedulerLoop["Scheduler Loop<br/>(in-process)"]
-            Controllers["Core Controllers<br/>(in-process)"]
+        subgraph Controller["kueue-controller-manager"]
+            direction LR
+            WebhookPort["Webhook<br/>9443/TCP HTTPS<br/>TLS (cert-mgmt)<br/>mTLS (API server)"]
+            MetricsPort["Metrics<br/>8443/TCP HTTPS<br/>TLS<br/>Bearer Token"]
+            HealthPort["Health<br/>8081/TCP HTTP<br/>No Auth"]
         end
 
-        WebhookSvc["kueue-webhook-service<br/>ClusterIP 443→9443/TCP"]
-        MetricsSvc["kueue-metrics-service<br/>ClusterIP 8443/TCP"]
-        NetPolicy["NetworkPolicy<br/>Allows ingress to 9443/TCP"]
+        subgraph Services["ClusterIP Services"]
+            WebhookSvc["kueue-webhook-service<br/>443 → 9443/TCP<br/>HTTPS/TLS"]
+            MetricsSvc["kueue-metrics-service<br/>8443/TCP<br/>HTTPS/TLS<br/>Bearer Token"]
+        end
 
-        WebhookSvc --> WebhookServer
-        MetricsSvc --> MetricsServer
+        NetPol["NetworkPolicy<br/>Ingress: port 9443 only"]
     end
 
     subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>ServiceMonitor + PrometheusRule"]
+        Prometheus["Prometheus<br/>Scrapes metrics"]
     end
 
-    subgraph OptionalExternal["OPTIONAL EXTERNAL SERVICES"]
-        RemoteCluster["Remote Cluster API<br/>(MultiKueue - disabled)<br/>6443/TCP HTTPS TLS 1.2+<br/>Auth: Kubeconfig"]
-        CertManager["cert-manager<br/>(optional)<br/>Certificate management"]
+    subgraph ExternalServices["EXTERNAL SERVICES (optional)"]
+        RemoteKueue["Remote Kueue Clusters<br/>(MultiKueue - disabled in RHOAI)<br/>443/TCP HTTPS TLS 1.2+<br/>kubeconfig from Secret"]
+        ClusterAS["Cluster Autoscaler<br/>(ProvisioningRequest)<br/>Indirect via K8s API"]
     end
 
-    %% Flows
-    User -->|"HTTPS/6443<br/>TLS 1.2+<br/>User creds (OIDC/certs)"| APIServer
+    subgraph SecurityContext["CONTAINER SECURITY"]
+        SecCtx["UID: 65532 (non-root)<br/>runAsNonRoot: true<br/>Seccomp: RuntimeDefault<br/>Capabilities: ALL dropped<br/>FIPS: strictfipsruntime"]
+    end
 
-    APIServer -->|"HTTPS/443→9443<br/>TLS (internal certs)<br/>API server webhook auth"| WebhookSvc
+    %% External → API Server
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token / Client Cert"| K8sAPI
 
-    Controllers -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount token"| APIServer
+    %% API Server → Webhook (admission reviews)
+    K8sAPI -->|"HTTPS/9443<br/>TLS<br/>mTLS (API server cert)<br/>36 webhooks"| WebhookSvc
+    WebhookSvc --> WebhookPort
+    NetPol -.->|restricts| WebhookPort
 
-    SchedulerLoop -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount token"| APIServer
+    %% Controller → API Server (egress)
+    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Bearer Token<br/>CRD watches, status updates"| K8sAPI
 
-    Prometheus -->|"HTTPS/8443<br/>TLS (cert-watcher)<br/>Bearer Token (SA token)<br/>TokenReview + SubjectAccessReview"| MetricsSvc
+    %% Prometheus → Metrics
+    Prometheus -->|"HTTPS/8443<br/>TLS<br/>Bearer Token<br/>metrics-reader ClusterRole"| MetricsSvc
+    MetricsSvc --> MetricsPort
 
-    Controllers -.->|"HTTPS/6443<br/>TLS 1.2+<br/>Kubeconfig auth<br/>(disabled in RHOAI)"| RemoteCluster
+    %% MultiKueue (optional)
+    Controller -.->|"HTTPS/443<br/>TLS 1.2+<br/>kubeconfig Secret<br/>(disabled: MultiKueue=false)"| RemoteKueue
+
+    %% ProvisioningRequest (indirect)
+    Controller -.->|"Creates ProvisioningRequest CR<br/>via K8s API"| ClusterAS
+
+    %% Security context association
+    SecCtx -.->|applied to| Controller
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef kueuens fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef monitoring fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef optional fill:#e1d5e7,stroke:#9673a6,stroke-width:2px,stroke-dasharray: 5 5
-    classDef service fill:#ffe6cc,stroke:#d79b00
-    classDef netpol fill:#f8cecc,stroke:#b85450
+    classDef k8s fill:#326ce5,stroke:#333,stroke-width:2px,color:#fff
+    classDef kueue fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef service fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef extsvc fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef security fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef netpol fill:#ffe6cc,stroke:#d79b00,stroke-width:1px,stroke-dasharray: 5 5
 
     class User external
-    class APIServer controlplane
-    class WebhookServer,MetricsServer,HealthProbe,SchedulerLoop,Controllers kueuens
-    class Prometheus monitoring
-    class RemoteCluster,CertManager optional
+    class K8sAPI k8s
+    class Controller,WebhookPort,MetricsPort,HealthPort kueue
     class WebhookSvc,MetricsSvc service
-    class NetPolicy netpol
+    class Prometheus monitoring
+    class RemoteKueue,ClusterAS extsvc
+    class SecCtx security
+    class NetPol netpol

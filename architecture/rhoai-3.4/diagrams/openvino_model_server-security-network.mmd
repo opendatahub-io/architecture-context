@@ -1,93 +1,72 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        RESTClient["REST Client"]
-        GRPCClient["gRPC Client"]
+        Client["External Client"]
     end
 
-    subgraph MeshLayer["SERVICE MESH (Istio mTLS)"]
-        IstioSidecar["Istio Envoy Sidecar<br/>TLS Termination<br/>mTLS between services<br/>SPIFFE Identity"]
-    end
-
-    subgraph OVMSContainer["OVMS CONTAINER (UID 5000, UBI 9 Minimal)"]
+    subgraph Pod["POD BOUNDARY (KServe InferenceService Pod)"]
         direction TB
 
-        subgraph Servers["Server Layer (No TLS)"]
-            DrogonHTTP["Drogon HTTP Server<br/>0.0.0.0:REST_PORT<br/>HTTP plaintext<br/>API Key (optional)"]
-            GRPCServer["gRPC Server<br/>0.0.0.0:GRPC_PORT<br/>InsecureServerCredentials<br/>No auth"]
-            Metrics["Prometheus Metrics<br/>/metrics<br/>No auth"]
+        KubeRBAC["kube-rbac-proxy Sidecar<br/>8443/TCP<br/>TLS 1.2+ Termination<br/>Platform Bearer Token Auth"]
+
+        subgraph OVMSContainer["OVMS Container"]
+            direction TB
+            RESTServer["REST Server (Drogon)<br/>REST port/TCP<br/>HTTP Plaintext<br/>No built-in TLS"]
+            GRPCServer["gRPC Server<br/>gRPC port/TCP<br/>InsecureServerCredentials<br/>No built-in TLS"]
+
+            subgraph V3Auth["V3 Endpoints (Optional Auth)"]
+                V3["OpenAI-Compatible API<br/>/v3/chat/completions<br/>/v3/embeddings<br/>/v3/rerank<br/>Bearer API key (--api_key_file)"]
+            end
+
+            subgraph NoAuth["V1/V2 Endpoints (No App Auth)"]
+                V1V2["/v1/* TFS v1<br/>/v2/* KServe v2<br/>/metrics Prometheus<br/>Relies on platform auth"]
+            end
+
+            RESTServer --- V3Auth
+            RESTServer --- NoAuth
         end
 
-        subgraph APIs["API Endpoints"]
-            TFSv1["/v1 TFS<br/>predict, classify, regress"]
-            KServev2["/v2 KServe<br/>infer, ready, health"]
-            OpenAIv1["/v1 OpenAI<br/>chat/completions<br/>embeddings, tokenize"]
-            Cohere["/v1 Cohere<br/>rerankings"]
-            ImageGen["/v3 ImageGen<br/>generations, edits"]
-        end
-
-        subgraph Engine["Inference Engine (In-Process)"]
-            Runtime["OpenVINO Runtime 2026.0<br/>CPU / GPU / NPU"]
-        end
+        KubeRBAC -->|"HTTP (localhost)<br/>No encryption<br/>No auth"| RESTServer
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        S3["AWS S3<br/>s3.amazonaws.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS IAM"]
-        Azure["Azure Blob Storage<br/>*.blob.core.windows.net<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Azure SDK"]
-        GCS["Google Cloud Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: GCS SA"]
-        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: HF Token (optional)"]
+    subgraph Platform["PLATFORM SERVICES (Internal)"]
+        KServe["KServe Controller<br/>Pod lifecycle & scaling"]
+        Operator["RHOAI Operator<br/>ServingRuntime CR"]
+        Prometheus["Prometheus<br/>Metrics scraping"]
     end
 
-    subgraph PlatformServices["PLATFORM SERVICES"]
-        KServe["KServe<br/>InferenceService<br/>KServe v2 Protocol"]
-        Prometheus["Prometheus<br/>Metrics Scraping"]
+    subgraph EgressServices["EGRESS - EXTERNAL SERVICES"]
+        S3["Amazon S3<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
+        GCS["Google Cloud Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>OAuth2/SA"]
+        Azure["Azure Blob Storage<br/>*.blob.core.windows.net<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Managed Identity"]
+        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>HF_TOKEN Bearer"]
     end
 
-    %% External to Mesh
-    RESTClient -->|"HTTPS/443<br/>TLS (Istio-terminated)"| IstioSidecar
-    GRPCClient -->|"gRPC over TLS/443<br/>TLS (Istio-terminated)"| IstioSidecar
+    %% Flows
+    Client -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer Token"| KubeRBAC
 
-    %% Mesh to OVMS (plaintext - localhost)
-    IstioSidecar -->|"HTTP plaintext<br/>REST_PORT<br/>localhost loopback"| DrogonHTTP
-    IstioSidecar -->|"gRPC/HTTP2 plaintext<br/>GRPC_PORT<br/>InsecureCredentials"| GRPCServer
+    KServe -.->|"manages pod"| Pod
+    Operator -.->|"configures"| Pod
+    Prometheus -->|"HTTP scrape<br/>/metrics"| RESTServer
 
-    %% Server to APIs
-    DrogonHTTP --> TFSv1
-    DrogonHTTP --> KServev2
-    DrogonHTTP --> OpenAIv1
-    DrogonHTTP --> Cohere
-    DrogonHTTP --> ImageGen
-    GRPCServer --> TFSv1
-    GRPCServer --> KServev2
-
-    %% APIs to Engine
-    TFSv1 --> Runtime
-    KServev2 --> Runtime
-    OpenAIv1 --> Runtime
-    Cohere --> Runtime
-    ImageGen --> Runtime
-
-    %% Egress
-    Runtime -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM creds"| S3
-    Runtime -->|"HTTPS/443<br/>TLS 1.2+<br/>Azure SDK creds"| Azure
-    Runtime -->|"HTTPS/443<br/>TLS 1.2+<br/>GCS SA creds"| GCS
-    Runtime -->|"HTTPS/443<br/>TLS 1.2+<br/>HF Token"| HFHub
-
-    %% Platform integration
-    KServe -->|"KServe v2<br/>gRPC + REST"| IstioSidecar
-    Prometheus -->|"HTTP scrape<br/>/metrics<br/>No auth"| Metrics
+    RESTServer -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    RESTServer -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth2"| GCS
+    RESTServer -->|"HTTPS/443<br/>TLS 1.2+<br/>Azure MI"| Azure
+    RESTServer -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HFHub
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef mesh fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef container fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef server fill:#4a90e2,stroke:#333,color:#fff
-    classDef noauth fill:#ff6b6b,stroke:#c92a2a,color:#fff
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef pod fill:#e3f2fd,stroke:#1565c0,stroke-width:3px
+    classDef proxy fill:#ffe0b2,stroke:#e65100,stroke-width:2px
+    classDef ovms fill:#bbdefb,stroke:#1565c0,stroke-width:2px
+    classDef authzone fill:#c8e6c9,stroke:#2e7d32,stroke-width:1px
+    classDef noauthzone fill:#ffcdd2,stroke:#c62828,stroke-width:1px
+    classDef platform fill:#e8eaf6,stroke:#283593,stroke-width:2px
+    classDef egress fill:#fff9c4,stroke:#f57f17,stroke-width:2px
 
-    class RESTClient,GRPCClient external
-    class IstioSidecar mesh
-    class DrogonHTTP,Metrics server
-    class GRPCServer noauth
-    class S3,Azure,GCS,HFHub externalservice
-    class KServe,Prometheus platform
+    class Client external
+    class KubeRBAC proxy
+    class RESTServer,GRPCServer ovms
+    class V3 authzone
+    class V1V2 noauthzone
+    class KServe,Operator,Prometheus platform
+    class S3,GCS,Azure,HFHub egress

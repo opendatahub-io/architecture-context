@@ -1,79 +1,79 @@
 graph TB
-    subgraph External["External Clients"]
-        Client[Client / Upstream Gateway]
+    subgraph External["External Callers"]
+        EPP["llm-d-inference-scheduler<br/>(EPP)"]
+        Client["Direct Client"]
     end
 
-    subgraph Sidecar["llm-d-routing-sidecar (Go HTTP Reverse Proxy)"]
-        direction TB
-        ProxyListener["Proxy Listener<br/>8000/TCP HTTPS<br/>TLS 1.2+ (AEAD ciphers)"]
+    subgraph SidecarPod["Decoder Pod"]
+        subgraph Sidecar["llm-d-routing-sidecar<br/>(Port 8000/TCP · HTTPS)"]
+            direction TB
+            Proxy["HTTP Reverse Proxy<br/>(Go net/http)"]
+            ChatHandler["/v1/chat/completions<br/>Handler"]
+            CompHandler["/v1/completions<br/>Handler"]
+            HealthHandler["/health<br/>Handler"]
+            CatchAll["/* Catch-All<br/>Passthrough"]
 
-        subgraph Routing["Request Routing"]
-            ChatHandler["/v1/chat/completions<br/>POST"]
-            CompHandler["/v1/completions<br/>POST"]
-            HealthHandler["/health<br/>GET"]
-            CatchAll["/* catch-all<br/>ANY"]
+            subgraph Connectors["Protocol Connectors"]
+                NIXLV2["NIXL V2 Connector<br/>(default)"]
+                NIXLV1["NIXL V1 Connector<br/>(deprecated)"]
+                LMCache["LMCache Connector<br/>(deprecated)"]
+            end
+
+            subgraph Security["Security Layer"]
+                AllowlistValidator["AllowlistValidator<br/>(SSRF Protection)"]
+                TLSConfig["TLS Configuration<br/>TLS 1.2+ · Curated Ciphers"]
+            end
+
+            LRUCache["LRU Cache<br/>(Prefiller Proxy Handlers)"]
+
+            Proxy --> ChatHandler
+            Proxy --> CompHandler
+            Proxy --> HealthHandler
+            Proxy --> CatchAll
+            ChatHandler --> AllowlistValidator
+            CompHandler --> AllowlistValidator
+            AllowlistValidator --> NIXLV2
+            AllowlistValidator --> NIXLV1
+            AllowlistValidator --> LMCache
+            NIXLV2 --> LRUCache
+            NIXLV1 --> LRUCache
         end
 
-        subgraph Connectors["P/D Connectors"]
-            NIXLv2["NIXL v2 Connector<br/>(default, active)"]
-            NIXLv1["NIXL v1 Connector<br/>(deprecated)"]
-            LMCache["LMCache Connector<br/>(deprecated)"]
-        end
-
-        subgraph Security["Security"]
-            AllowlistValidator["AllowlistValidator<br/>K8s Informer"]
-            LRUCache["LRU Cache<br/>(capacity: 16)<br/>Prefiller proxy handlers"]
-        end
-
-        ProxyListener --> ChatHandler
-        ProxyListener --> CompHandler
-        ProxyListener --> HealthHandler
-        ProxyListener --> CatchAll
-
-        ChatHandler -->|"x-prefiller-host-port<br/>header present"| NIXLv2
-        CompHandler -->|"x-prefiller-host-port<br/>header present"| NIXLv2
-        ChatHandler -->|"no prefill header"| CatchAll
-        CompHandler -->|"no prefill header"| CatchAll
-
-        NIXLv2 -->|"validate prefiller IP"| AllowlistValidator
-        NIXLv2 -->|"cache proxy handler"| LRUCache
+        Decoder["vLLM Decoder<br/>(Port 8001/TCP · localhost)"]
     end
 
-    subgraph K8sAPI["Kubernetes API"]
-        InferencePool["InferencePool CR<br/>inference.networking.x-k8s.io/v1alpha2"]
-        PodAPI["Pod API<br/>core/v1"]
+    subgraph RemoteWorkers["Remote Prefill Workers"]
+        Prefiller["vLLM Prefiller Pod(s)<br/>(Configurable Port)"]
     end
 
-    subgraph LocalPod["Local Pod"]
-        vLLMDecoder["vLLM Decoder<br/>8001/TCP"]
+    subgraph K8sAPI["Kubernetes API Server"]
+        InferencePoolCR["InferencePool CR<br/>(inference.networking.x-k8s.io/v1alpha2)"]
+        PodAPI["Pod API<br/>(Watch · Allowlist)"]
     end
 
-    subgraph RemotePods["Remote Pods"]
-        vLLMPrefiller["vLLM Prefiller<br/>Variable Port"]
-    end
+    %% External flows
+    EPP -->|"POST · HTTPS/8000<br/>x-prefiller-host-port header"| Proxy
+    Client -->|"POST · HTTPS/8000"| Proxy
 
-    Client -->|"HTTPS/8000<br/>TLS 1.2+"| ProxyListener
-    NIXLv2 -->|"Phase 1: Prefill request<br/>HTTP(S)"| vLLMPrefiller
-    NIXLv2 -->|"Phase 2: Decode request<br/>with kv_transfer_params"| vLLMDecoder
-    CatchAll -->|"Passthrough<br/>HTTP(S)/8001"| vLLMDecoder
+    %% Internal flows
+    NIXLV2 -->|"Prefill Request<br/>HTTP(S)"| Prefiller
+    Prefiller -->|"kv_transfer_params<br/>Response"| NIXLV2
+    NIXLV2 -->|"Decode Request + KV params<br/>HTTP(S)/8001"| Decoder
+    CatchAll -->|"Passthrough<br/>HTTP(S)/8001"| Decoder
 
-    AllowlistValidator -->|"Watch<br/>HTTPS/443"| InferencePool
-    AllowlistValidator -->|"Watch pods<br/>HTTPS/443"| PodAPI
+    %% K8s watches
+    AllowlistValidator -->|"Watch<br/>HTTPS/443"| InferencePoolCR
+    AllowlistValidator -->|"Watch<br/>HTTPS/443"| PodAPI
 
-    vLLMDecoder -->|"Response"| Client
-
-    style ProxyListener fill:#4a90e2,stroke:#333,color:#fff
-    style ChatHandler fill:#5ba8f7,stroke:#333,color:#fff
-    style CompHandler fill:#5ba8f7,stroke:#333,color:#fff
-    style HealthHandler fill:#5ba8f7,stroke:#333,color:#fff
-    style CatchAll fill:#5ba8f7,stroke:#333,color:#fff
-    style NIXLv2 fill:#7ed321,stroke:#333,color:#fff
-    style NIXLv1 fill:#999,stroke:#333,color:#fff
-    style LMCache fill:#999,stroke:#333,color:#fff
-    style AllowlistValidator fill:#f5a623,stroke:#333,color:#fff
-    style LRUCache fill:#f5a623,stroke:#333,color:#fff
-    style vLLMDecoder fill:#9b59b6,stroke:#333,color:#fff
-    style vLLMPrefiller fill:#9b59b6,stroke:#333,color:#fff
-    style InferencePool fill:#e8e8e8,stroke:#333
-    style PodAPI fill:#e8e8e8,stroke:#333
-    style Client fill:#f9f9f9,stroke:#333
+    %% Styling
+    style Sidecar fill:#4a90e2,stroke:#2c5f8a,stroke-width:2px,color:#fff
+    style Decoder fill:#7ed321,stroke:#5a9e18,stroke-width:2px,color:#fff
+    style Prefiller fill:#f5a623,stroke:#c48419,stroke-width:2px,color:#fff
+    style NIXLV2 fill:#6c5ce7,stroke:#4b3dbd,stroke-width:1px,color:#fff
+    style NIXLV1 fill:#999,stroke:#666,stroke-width:1px,color:#fff
+    style LMCache fill:#999,stroke:#666,stroke-width:1px,color:#fff
+    style AllowlistValidator fill:#e74c3c,stroke:#c0392b,stroke-width:1px,color:#fff
+    style TLSConfig fill:#e74c3c,stroke:#c0392b,stroke-width:1px,color:#fff
+    style EPP fill:#3498db,stroke:#2980b9,stroke-width:2px,color:#fff
+    style InferencePoolCR fill:#f39c12,stroke:#d68910,stroke-width:1px,color:#fff
+    style PodAPI fill:#f39c12,stroke:#d68910,stroke-width:1px,color:#fff

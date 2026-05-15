@@ -1,62 +1,54 @@
 workspace {
     model {
-        llmUser = person "LLM User" "Sends prompts to LLM via guardrails-protected endpoint"
+        orchestrator = person "FMS Guardrails Orchestrator" "Sends text content for regex-based PII and pattern detection; aggregates results from multiple detectors"
 
-        guardrailsOrchestrator = softwareSystem "FMS Guardrails Orchestrator" "Routes LLM I/O through multiple detector services to enforce guardrail policies" "Internal RHOAI"
-
-        regexDetector = softwareSystem "Guardrails Regex Detector" "Lightweight Rust HTTP service that detects PII and custom patterns in text using regex matching" {
-            httpServer = container "Axum HTTP Server" "Serves POST /api/v1/text/contents and GET /health" "Rust / Axum 0.7.9" "Service"
-            detectionEngine = container "Detection Engine" "Dispatches built-in (email, SSN, credit card) and custom regex patterns against input text" "Rust / regex 1.11.1" "Engine"
+        regexDetector = softwareSystem "Guardrails Regex Detector" "Lightweight Rust HTTP service that detects PII and custom patterns in text using regular expressions" {
+            server = container "axum HTTP Server" "Handles HTTP routing and request/response lifecycle" "Rust / axum 0.7.9"
+            detectionEngine = container "Detection Engine" "Pattern registry with built-in PII detectors (email, SSN, credit card) and custom regex compilation" "Rust / regex 1.11.1"
         }
 
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform" "External"
+        platformSecurity = softwareSystem "Platform Security Infrastructure" "Provides network isolation, mTLS, and auth proxy for cluster-internal services" "External" {
+            networkPolicies = container "Kubernetes Network Policies" "Restricts pod-to-pod communication" "Kubernetes"
+            serviceMesh = container "Service Mesh" "Provides mTLS encryption between services" "Istio / OSSM"
+            kubeRBACProxy = container "kube-rbac-proxy" "Sidecar providing authentication and authorization" "kube-rbac-proxy"
+        }
 
-        llmUser -> guardrailsOrchestrator "Sends prompts for LLM inference"
-        guardrailsOrchestrator -> regexDetector "POST /api/v1/text/contents" "HTTP/8080 plaintext"
-        kubernetes -> regexDetector "GET /health (liveness/readiness probes)" "HTTP/8080"
+        kubernetes = softwareSystem "Kubernetes API Server" "Cluster orchestration (not accessed by this component)" "External"
 
-        httpServer -> detectionEngine "Dispatches regex patterns for matching"
+        orchestrator -> regexDetector "POST /api/v1/text/contents" "HTTP/8080 (plaintext)"
+        orchestrator -> regexDetector "GET /health" "HTTP/8080 (plaintext)"
+        platformSecurity -> regexDetector "Enforces mTLS, network isolation, auth proxy" "Platform-level"
     }
 
     views {
         systemContext regexDetector "SystemContext" {
             include *
             autoLayout
-            description "System context for Guardrails Regex Detector within the RHOAI Guardrails subsystem"
+            description "System context for the Guardrails Regex Detector showing its role as an internal detection backend"
         }
 
         container regexDetector "Containers" {
             include *
             autoLayout
-            description "Internal container architecture of the Guardrails Regex Detector"
+            description "Internal structure of the Guardrails Regex Detector"
         }
 
         styles {
             element "Software System" {
-                background #438dd5
+                background #4a90e2
                 color #ffffff
             }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
-                background #e17055
-                color #ffffff
-            }
             element "Person" {
+                background #9013fe
+                color #ffffff
                 shape Person
-                background #08427b
-                color #ffffff
             }
-            element "Service" {
-                shape RoundedBox
-                background #4a90e2
-                color #ffffff
-            }
-            element "Engine" {
-                shape Hexagon
-                background #00b894
+            element "Container" {
+                background #5ba5e6
                 color #ffffff
             }
         }

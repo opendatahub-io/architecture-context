@@ -1,103 +1,106 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Browser["Browser / Client"]
+        Browser["Browser / External Client"]
     end
 
     subgraph Ingress["INGRESS (Gateway API)"]
-        Gateway["data-science-gateway<br/>HTTPRoute<br/>443/TCP → 8443/TCP<br/>TLS SIMPLE"]
-        LegacyRoute["OpenShift Route (legacy)<br/>443/TCP → 8443/TCP<br/>TLS reencrypt + HSTS"]
+        Gateway["data-science-gateway (Envoy)<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ termination<br/>HTTPRoute: PathPrefix /"]
     end
 
     subgraph AuthLayer["AUTHENTICATION (kube-rbac-proxy)"]
-        KRBP["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>service-serving-cert TLS<br/>AuthZ: list project.openshift.io/projects<br/>Outputs: x-forwarded-access-token"]
+        KRBAC["kube-rbac-proxy<br/>8443/TCP HTTPS (serving cert)<br/>8444/TCP metrics<br/>AuthZ: SubjectAccessReview<br/>projects.list permission"]
     end
 
-    subgraph AppLayer["APPLICATION LAYER (odh-dashboard Pod)"]
+    subgraph PodInternal["POD INTERNAL (9 containers, shared network namespace)"]
         direction TB
 
-        subgraph CoreApp["Core Dashboard"]
-            Backend["odh-dashboard Backend<br/>Node.js/Fastify<br/>8080/TCP HTTP (localhost)<br/>SA: odh-dashboard<br/>AuthZ: secureRoute() + secureAdminRoute()"]
+        subgraph Core["Core Dashboard"]
+            DashboardBackend["Dashboard Backend<br/>Node.js/Fastify<br/>8080/TCP HTTP<br/>SA: dashboard"]
         end
 
-        subgraph BFF["Module Federation BFF Sidecars (shared proxy-tls cert)"]
-            GenAI["gen-ai BFF<br/>Go 1.24 FIPS<br/>8143/TCP HTTPS"]
-            ModelRegBFF["model-registry BFF<br/>Go 1.25 FIPS<br/>8043/TCP HTTPS"]
-            MaaSBFF["maas BFF<br/>Go 1.24 FIPS<br/>8243/TCP HTTPS"]
-            MLflowBFF["mlflow BFF<br/>Go 1.24 FIPS<br/>8343/TCP HTTPS"]
-            EvalHubBFF["eval-hub BFF<br/>Go 1.24 FIPS<br/>8543/TCP HTTPS"]
-            AutoMLBFF["automl BFF<br/>Go 1.24 FIPS<br/>8643/TCP HTTPS"]
-            AutoRAGBFF["autorag BFF<br/>Go 1.24 FIPS<br/>8743/TCP HTTPS"]
+        subgraph BFFs["BFF Sidecars (Go, TLS 1.3, FIPS strictfipsruntime)"]
+            direction LR
+            MR["Model Registry BFF<br/>8043/TCP HTTPS"]
+            GAI["Gen AI BFF<br/>8143/TCP HTTPS"]
+            MAAS["MaaS BFF<br/>8243/TCP HTTPS"]
+            MLF["MLflow BFF<br/>8343/TCP HTTPS"]
+            EH["Eval Hub BFF<br/>8543/TCP HTTPS"]
+            AML["AutoML BFF<br/>8643/TCP HTTPS"]
+            ARG["AutoRAG BFF<br/>8743/TCP HTTPS"]
         end
-
-        Backend -->|HTTPS proxy<br/>shared proxy-tls| GenAI
-        Backend -->|HTTPS proxy| ModelRegBFF
-        Backend -->|HTTPS proxy| MaaSBFF
-        Backend -->|HTTPS proxy| MLflowBFF
-        Backend -->|HTTPS proxy| EvalHubBFF
-        Backend -->|HTTPS proxy| AutoMLBFF
-        Backend -->|HTTPS proxy| AutoRAGBFF
     end
 
-    subgraph InternalServices["INTERNAL PLATFORM SERVICES"]
-        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>SA Bearer Token"]
-        Thanos["thanos-querier<br/>openshift-monitoring<br/>9092/TCP HTTPS<br/>SA Bearer Token"]
-        DSP["ds-pipeline-dspa<br/>8443/TCP HTTPS<br/>SA Bearer Token"]
-        MLMD["ds-pipeline-md-dspa<br/>8443/TCP HTTPS<br/>SA Bearer Token"]
-        ModelRegSvc["Model Registry<br/>443/TCP HTTPS<br/>SA Bearer Token"]
-        TrustyAI["TrustyAI<br/>443/TCP HTTPS<br/>SA Bearer Token"]
-        ModelServing["model-serving-api<br/>443/TCP HTTPS<br/>SA Bearer Token"]
-        LlamaStack["Llama Stack<br/>443/TCP HTTPS<br/>Bearer Token"]
-        Feast["Feast Registry<br/>8080/TCP HTTP<br/>SA Bearer Token"]
-        Perses["Perses<br/>8080/TCP HTTP<br/>user_token"]
+    subgraph PlatformServices["PLATFORM SERVICES (Internal)"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token / User Token"]
+        DSPipelines["Data Science Pipelines<br/>8443/TCP HTTPS<br/>Bearer Token"]
+        TrustyAI["TrustyAI Service<br/>443/TCP HTTPS<br/>Bearer Token"]
+        ModelReg["Model Registry API<br/>443/TCP HTTPS<br/>Bearer Token"]
+        ModelCat["Model Catalog API<br/>443/TCP HTTPS<br/>Bearer Token"]
+        Perses["Perses Dashboards<br/>8080/TCP HTTP<br/>No Auth"]
     end
 
-    subgraph ExternalSvc["EXTERNAL SERVICES"]
-        MaaSSvc["MaaS Backend<br/>HTTPS<br/>Bearer Token"]
-        MLflowSvc["MLflow Tracking<br/>HTTPS<br/>Bearer Token"]
-        MCPSvc["MCP Servers<br/>HTTPS<br/>Bearer Token"]
-        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>AWS IAM"]
-        Segment["Segment Analytics<br/>443/TCP HTTPS<br/>Segment Key"]
+    subgraph AIServices["AI / ML SERVICES"]
+        LlamaStack["LlamaStack<br/>HTTP/gRPC<br/>TLS optional<br/>Per-request Token"]
+        MaaSAPI["MaaS API<br/>HTTPS<br/>Token-based"]
+        MLflowSvc["MLflow Tracking<br/>HTTP<br/>TLS optional<br/>Token-based"]
     end
 
-    %% External flows
-    Browser -->|"HTTPS/443<br/>OAuth Token"| Gateway
-    Browser -->|"HTTPS/443<br/>OAuth Token"| LegacyRoute
-    Gateway -->|"HTTPS/8443<br/>TLS service-serving-cert<br/>Bearer Token"| KRBP
-    LegacyRoute -->|"HTTPS/8443<br/>TLS reencrypt"| KRBP
-    KRBP -->|"HTTP/8080<br/>localhost (no TLS)<br/>x-forwarded-access-token"| Backend
+    subgraph ExternalStorage["EXTERNAL SERVICES"]
+        S3["S3 Storage<br/>443/TCP HTTPS<br/>TLS<br/>AWS Credentials"]
+    end
 
-    %% Backend egress
-    Backend -->|"HTTPS/443<br/>SA Token / User Token"| K8sAPI
-    Backend -->|"HTTPS/9092<br/>SA Bearer Token"| Thanos
-    Backend -->|"HTTPS/8443<br/>SA Bearer Token"| DSP
-    Backend -->|"HTTPS/8443<br/>SA Bearer Token"| MLMD
-    Backend -->|"HTTPS/443<br/>SA Bearer Token"| ModelRegSvc
-    Backend -->|"HTTPS/443<br/>SA Bearer Token"| TrustyAI
-    Backend -->|"HTTPS/443<br/>SA Bearer Token"| ModelServing
-    Backend -->|"HTTP/8080<br/>SA Bearer Token"| Feast
-    Backend -->|"HTTP/8080<br/>user_token"| Perses
+    %% External → Ingress
+    Browser -->|"HTTPS/443<br/>TLS 1.2+"| Gateway
 
-    %% BFF egress
-    GenAI -->|"HTTPS/443<br/>Bearer Token"| LlamaStack
-    GenAI -->|"HTTPS<br/>Bearer Token"| MCPSvc
-    MaaSBFF -->|"HTTPS<br/>Bearer Token"| MaaSSvc
-    MLflowBFF -->|"HTTPS<br/>Bearer Token"| MLflowSvc
-    AutoMLBFF -->|"HTTPS/443<br/>AWS IAM"| S3
-    AutoRAGBFF -->|"HTTPS/443<br/>AWS IAM"| S3
+    %% Ingress → Auth
+    Gateway -->|"HTTPS/8443<br/>TLS reencrypt<br/>serving cert"| KRBAC
+
+    %% Auth → Core
+    KRBAC -->|"HTTP/8080<br/>localhost (no TLS)<br/>x-forwarded-access-token<br/>x-forwarded-user"| DashboardBackend
+
+    %% Core → BFFs (all TLS 1.3, x-forwarded-access-token)
+    DashboardBackend -->|"HTTPS/8043<br/>TLS 1.3"| MR
+    DashboardBackend -->|"HTTPS/8143<br/>TLS 1.3"| GAI
+    DashboardBackend -->|"HTTPS/8243<br/>TLS 1.3"| MAAS
+    DashboardBackend -->|"HTTPS/8343<br/>TLS 1.3"| MLF
+    DashboardBackend -->|"HTTPS/8543<br/>TLS 1.3"| EH
+    DashboardBackend -->|"HTTPS/8643<br/>TLS 1.3"| AML
+    DashboardBackend -->|"HTTPS/8743<br/>TLS 1.3"| ARG
+
+    %% Egress from Core
+    DashboardBackend -->|"HTTPS/6443<br/>User Token"| K8sAPI
+    DashboardBackend -->|"HTTPS/8443<br/>User Token"| DSPipelines
+    DashboardBackend -->|"HTTPS/443<br/>User Token"| TrustyAI
+    DashboardBackend -->|"HTTP/8080<br/>No Auth"| Perses
+
+    %% Egress from BFFs
+    MR -->|"HTTPS/443<br/>Bearer Token"| ModelReg
+    MR -->|"HTTPS/443<br/>Bearer Token"| ModelCat
+    GAI -->|"HTTP/gRPC<br/>Per-request Token"| LlamaStack
+    GAI -->|"HTTPS<br/>Token"| MaaSAPI
+    GAI -->|"HTTP<br/>Token"| MLflowSvc
+    MAAS -->|"HTTPS<br/>Token"| MaaSAPI
+    MLF -->|"HTTP<br/>Token"| MLflowSvc
+    AML -->|"HTTPS/443<br/>AWS Creds"| S3
+    AML -->|"HTTPS<br/>Bearer Token"| DSPipelines
+    ARG -->|"HTTP/gRPC<br/>Token"| LlamaStack
+    ARG -->|"HTTPS/443<br/>AWS Creds"| S3
 
     %% Styling
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef auth fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef app fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef bff fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef externalsvc fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px,color:#333
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px,color:#333
+    classDef auth fill:#f8cecc,stroke:#b85450,stroke-width:2px,color:#333
+    classDef core fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px,color:#333
+    classDef bff fill:#e1d5e7,stroke:#9673a6,stroke-width:2px,color:#333
+    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:2px,color:#333
+    classDef aiservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px,color:#333
+    classDef externalsvc fill:#f5f5f5,stroke:#666,stroke-width:2px,color:#333
 
     class Browser external
-    class Gateway,LegacyRoute ingress
-    class KRBP auth
-    class Backend app
-    class GenAI,ModelRegBFF,MaaSBFF,MLflowBFF,EvalHubBFF,AutoMLBFF,AutoRAGBFF bff
-    class K8sAPI,Thanos,DSP,MLMD,ModelRegSvc,TrustyAI,ModelServing,LlamaStack,Feast,Perses internal
-    class MaaSSvc,MLflowSvc,MCPSvc,S3,Segment externalsvc
+    class Gateway ingress
+    class KRBAC auth
+    class DashboardBackend core
+    class MR,GAI,MAAS,MLF,EH,AML,ARG bff
+    class K8sAPI,DSPipelines,TrustyAI,ModelReg,ModelCat,Perses platform
+    class LlamaStack,MaaSAPI,MLflowSvc aiservice
+    class S3 externalsvc

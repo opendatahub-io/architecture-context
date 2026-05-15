@@ -1,110 +1,121 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  ai4rag - Security Network Architecture                                 │
-│  Type: Python Library (client-side, no exposed services)                │
+│  IN-PROCESS (Library Boundary)                                          │
 │                                                                          │
-│  NOTE: ai4rag is a pip-installable Python library. It does NOT expose   │
-│  any network services, Kubernetes resources, or ingress endpoints.      │
-│  All network activity is OUTBOUND (egress) to external services.        │
-├─────────────────────────────────────────────────────────────────────────┤
+│  ai4rag is a Python library, not a deployed service.                     │
+│  All internal communication is in-process (function calls).              │
 │                                                                          │
-│  APPLICATION PROCESS (Python Runtime)                                    │
-│                                                                          │
-│  ┌───────────────────────────────────────────────────────┐              │
-│  │  ai4rag Library                                       │              │
-│  │                                                       │              │
-│  │  ┌─────────────────┐  ┌──────────────────┐           │              │
-│  │  │ AI4RAGExperiment│  │ ModelsPreSelector │           │              │
-│  │  │ (Orchestrator)  │  │ (Model Filtering) │           │              │
-│  │  └────────┬────────┘  └────────┬─────────┘           │              │
-│  │           │                    │                      │              │
-│  │  ┌────────▼────────────────────▼─────────┐           │              │
-│  │  │        Provider Adapters               │           │              │
-│  │  │  ┌──────────┐  ┌──────────────┐       │           │              │
-│  │  │  │ Llama    │  │ OpenAI       │       │           │              │
-│  │  │  │ Stack    │  │ Compatible   │       │           │              │
-│  │  │  │ Adapters │  │ Adapters     │       │           │              │
-│  │  │  └─────┬────┘  └──────┬───────┘       │           │              │
-│  │  └────────┼───────────────┼───────────────┘           │              │
-│  │           │               │                           │              │
-│  │  ┌────────▼───────┐  ┌───▼──────────┐                │              │
-│  │  │ ChromaDB       │  │ Unitxt       │                │              │
-│  │  │ (In-Memory)    │  │ (In-Process) │                │              │
-│  │  │ No network I/O │  │ No network   │                │              │
-│  │  └────────────────┘  └──────────────┘                │              │
-│  └───────────────────────────────────────────────────────┘              │
-│           │                       │                                      │
-│           │ EGRESS                │ EGRESS                               │
-│           ▼                       ▼                                      │
-├─────────────────────────────────────────────────────────────────────────┤
-│  EGRESS - Llama Stack Server                                            │
-│                                                                          │
-│  [Llama Stack Server]                                                    │
-│  - Destination: User-configured (BASE_URL env var)                      │
-│  - Port: Configurable (typically 443/TCP or 8321/TCP)                   │
-│  - Protocol: HTTP/HTTPS                                                  │
-│  - Encryption: TLS (configurable, depends on server setup)              │
-│  - Auth: API Key (Bearer token via API_KEY env var)                     │
-│  - Client: llama-stack-client SDK (httpx-based)                         │
-│                                                                          │
-│  Endpoints called:                                                       │
-│  - POST /chat/completions     (Foundation model inference)              │
-│  - POST /embeddings           (Text → vector embedding)                 │
-│  - POST /vector_stores/create (Create vector store)                     │
-│  - POST /vector_stores/{id}   (Retrieve/delete vector store)           │
-│  - POST /vector_io/insert     (Insert document embeddings)              │
-│  - POST /vector_io/query      (Similarity search)                       │
-│  - GET  /models/list          (Discover available models)               │
-│                                                                          │
-│  Proxied backends (via Llama Stack):                                    │
-│  - Milvus (vector storage and similarity search)                        │
-│  - Qdrant (alternative vector storage backend)                          │
+│  [User Code / KFP Pipeline Component]                                    │
+│         │                                                                │
+│         │ Method: AI4RAGExperiment.search()                              │
+│         │ Transport: In-process (Python function call)                   │
+│         │ Encryption: N/A                                                │
+│         │ Auth: N/A                                                      │
+│         ▼                                                                │
+│  [AI4RAGExperiment]                                                      │
+│  - Orchestrates full HPO lifecycle                                       │
+│  - Manages ThreadPoolExecutor (10 threads, concurrent I/O)              │
+│         │                                                                │
+│         ├── [ModelsPreSelector] ─── In-process ──► [ChromaVectorStore]   │
+│         │       Uses in-memory ChromaDB for fast model screening         │
+│         │       No network calls for Chroma (embedded DB)                │
+│         │                                                                │
+│         ├── [GAMOptimizer / RandomOptimizer] ─── In-process              │
+│         │       Pure computation (pygam, scikit-learn)                    │
+│         │       No network calls                                         │
+│         │                                                                │
+│         ├── [SimpleRAG Pipeline] ─── In-process                          │
+│         │       │                                                        │
+│         │       ├── [LangChainChunker] ─── In-process                   │
+│         │       │       Pure computation (text splitting)                │
+│         │       │                                                        │
+│         │       ├── [OGXEmbeddingModel] ─── See EGRESS below            │
+│         │       ├── [OGXVectorStore] ─── See EGRESS below               │
+│         │       ├── [Retriever] ─── See EGRESS below                    │
+│         │       └── [OGXFoundationModel] ─── See EGRESS below           │
+│         │                                                                │
+│         └── [UnitxtEvaluator] ─── In-process                            │
+│                 Pure computation (metrics calculation)                    │
+│                 No network calls                                         │
 │                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  EGRESS - OpenAI-compatible Endpoint                                    │
+│  EGRESS (Outbound Connections)                                           │
 │                                                                          │
-│  [OpenAI-compatible API Server]                                          │
-│  - Destination: User-configured                                          │
-│  - Port: Configurable (typically 443/TCP)                                │
-│  - Protocol: HTTP/HTTPS                                                  │
-│  - Encryption: TLS (configurable)                                        │
-│  - Auth: API Key (Bearer token)                                          │
-│  - Client: openai Python SDK (httpx-based)                              │
+│  All external communication goes to a single destination:                │
+│  the OGX Server, via the ogx-client library.                             │
 │                                                                          │
-│  Endpoints called:                                                       │
-│  - POST /chat/completions     (Foundation model inference)              │
-│  - POST /embeddings           (Text → vector embedding)                 │
+│  [OGXFoundationModel]                                                    │
+│         │                                                                │
+│         │ Endpoint: {BASE_URL}/chat/completions                          │
+│         │ Port: Configurable (BASE_URL)                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (via ogx-client / httpx)                       │
+│         │ Auth: API Key (Bearer Token)                                   │
+│         │ Purpose: Foundation model text generation                      │
+│         ▼                                                                │
+│  [OGXEmbeddingModel]                                                     │
+│         │                                                                │
+│         │ Endpoint: {BASE_URL}/embeddings                                │
+│         │ Port: Configurable (BASE_URL)                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (via ogx-client / httpx)                       │
+│         │ Auth: API Key (Bearer Token)                                   │
+│         │ Purpose: Text embedding generation                             │
+│         ▼                                                                │
+│  [OGXVectorStore]                                                        │
+│         │                                                                │
+│         │ Endpoint: {BASE_URL}/vector_stores/*                           │
+│         │           {BASE_URL}/vector_io/*                               │
+│         │ Port: Configurable (BASE_URL)                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (via ogx-client / httpx)                       │
+│         │ Auth: API Key (Bearer Token)                                   │
+│         │ Purpose: Vector store CRUD, document insert, similarity query  │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [OGX Server]                                                            │
+│  - Host: Configurable via BASE_URL environment variable                  │
+│  - Port: Configurable (typically 443 for HTTPS)                          │
+│  - Protocol: HTTPS (REST API)                                            │
+│  - Encryption: TLS (handled by ogx-client / httpx / Python SSL)         │
+│  - Auth: API Key (Bearer Token via API_KEY env var)                      │
+│  - APIs consumed:                                                        │
+│    • chat.completions.create — Foundation model inference                │
+│    • embeddings.create — Text embedding generation                      │
+│    • vector_stores.create/search/delete — Vector store management       │
+│    • vector_io.insert/query — Document indexing and retrieval            │
+│  - Concurrency: Up to 10 concurrent requests (ThreadPoolExecutor)       │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 
-Secrets / Credentials:
-- API_KEY (Environment variable) — Llama Stack server authentication
-  - Provisioned by: User (.env file)
-  - Auto-Rotate: No
-  - Used by: LlamaStackClient (Bearer token in HTTP Authorization header)
-- BASE_URL (Environment variable) — Llama Stack server endpoint
-  - Provisioned by: User (.env file)
-  - Auto-Rotate: No
-
 RBAC Summary:
-- None — ai4rag is a Python library with no Kubernetes RBAC requirements.
+- No Kubernetes RBAC resources — ai4rag is a Python library, not a K8s operator.
 - No ClusterRoles, Roles, or RoleBindings.
-- No ServiceAccounts.
+- When consumed by a KFP pipeline component, RBAC is managed by the
+  consuming component's ServiceAccount and Kubeflow Pipelines RBAC.
 
-Service Mesh / Network Policies:
+Secrets / Credentials:
+- API_KEY (environment variable / .env file)
+  - Type: API Key (Bearer Token)
+  - Purpose: Authentication to OGX Server
+  - Provisioned by: User (manual configuration)
+  - Auto-Rotate: No
+  - Risk: If leaked, grants access to OGX Server resources
+
+- BASE_URL (environment variable / .env file)
+  - Type: URL
+  - Purpose: OGX Server endpoint
+  - Provisioned by: User (manual configuration)
+  - Auto-Rotate: No
+
+Service Mesh Configuration:
 - N/A — ai4rag is a library, not a deployed service.
-- No PeerAuthentication, AuthorizationPolicy, or NetworkPolicy resources.
-- When deployed within a pod (e.g., as part of a KFP pipeline step),
-  it inherits the pod's network policy and service mesh configuration.
+- When running inside a KFP pod with service mesh sidecar,
+  outbound HTTPS to OGX Server would traverse the mesh egress.
 
-TLS / Crypto Notes:
-- No custom TLS configuration — relies on httpx/urllib3 defaults.
-- TLS version determined by Python runtime's OpenSSL configuration.
-- Certificate verification uses system trust store (default httpx behavior).
-- hashlib.sha256 used for document deduplication (not security-critical).
-- No MD5, RC4, DES, or other non-FIPS crypto detected.
-- FIPS compliance inherited from host Python/OpenSSL runtime.
-
-Threading:
-- ThreadPoolExecutor used for parallel RAG queries (max_threads=10).
-- No explicit rate limiting or backoff for external API calls.
-- Failed iterations return None score without retry.
+FIPS Compliance:
+- Pure Python library — no direct cryptographic operations.
+- TLS delegated to ogx-client (httpx internally).
+- hashlib.sha256 used for document deduplication (FIPS-approved).
+- No non-FIPS crypto risks detected.

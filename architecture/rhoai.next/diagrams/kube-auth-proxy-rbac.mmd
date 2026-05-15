@@ -1,74 +1,88 @@
 graph TD
-    subgraph SidecarSA["Service Account (per-component)"]
-        SA["ServiceAccount<br/>(created by rhods-operator<br/>per component pod)"]
+    subgraph DeploymentModel["Deployment Model (RBAC configured by rhods-operator)"]
+        Operator["rhods-operator<br/>(deploys sidecar, configures RBAC)"]
     end
 
-    subgraph RBACBindings["Role Bindings (created by rhods-operator)"]
-        CRB_TokenReview["ClusterRoleBinding<br/>(TokenReview access)"]
-        CRB_SAR["ClusterRoleBinding<br/>(SubjectAccessReview access)"]
+    subgraph AuthModeRBAC["Auth Mode - Authentication Chain"]
+        direction TB
+
+        AuthSA["ServiceAccount<br/>(mounted in pod by operator)"]
+
+        subgraph AuthChain["Multi-Layer Auth Chain (strict order)"]
+            direction TB
+            Layer1["1. K8s TokenReview<br/>(if --enable-k8s-token-validation)<br/>Validates K8s SA tokens<br/>via API server"]
+            Layer2["2. OAuth Bearer<br/>Validates OAuth2 access tokens<br/>against OIDC provider"]
+            Layer3["3. JWT Bearer<br/>(if --skip-jwt-bearer-tokens)<br/>Validates JWT tokens locally<br/>using OIDC JWKS"]
+            Layer4["4. Basic Auth<br/>(if --htpasswd-file)<br/>Validates against htpasswd file"]
+            Layer5["5. Stored Session<br/>Validates encrypted cookie<br/>or Redis session ticket"]
+
+            Layer1 -->|"pass"| Layer2
+            Layer2 -->|"pass"| Layer3
+            Layer3 -->|"pass"| Layer4
+            Layer4 -->|"pass"| Layer5
+        end
+
+        AuthSA -->|"used for<br/>TokenReview API calls"| Layer1
     end
 
-    subgraph ClusterRoles["ClusterRole Permissions"]
-        CR_AuthN["ClusterRole<br/>(Authentication)"]
-        CR_AuthZ["ClusterRole<br/>(Authorization)"]
+    subgraph RBACModeAuthz["RBAC Mode - Authorization Chain"]
+        direction TB
+
+        RBACSA["ServiceAccount<br/>(mounted in pod by operator)"]
+
+        subgraph AuthnLayer["Authentication (Delegating Authenticator)"]
+            TokenReview["TokenReview<br/>(Bearer token → user identity)"]
+            OIDCAuth["OIDC JWT Verification<br/>(if --oidc-issuer configured)"]
+            X509Auth["x509 Client Certificate<br/>(if --client-ca-file configured)"]
+        end
+
+        subgraph AuthzLayer["Authorization (3-tier chain)"]
+            direction TB
+            Tier1["Tier 1: Hardcoded Metrics Authorizer<br/>Auto-allows:<br/>system:serviceaccount:<br/>openshift-monitoring:prometheus-k8s<br/>Path: /metrics"]
+            Tier2["Tier 2: Static Authorizer<br/>Pre-configured rules from<br/>--config-file YAML"]
+            Tier3["Tier 3: SubjectAccessReview<br/>Delegates to K8s API server<br/>Cache: 5min allow / 30s deny"]
+
+            Tier1 -->|"not /metrics"| Tier2
+            Tier2 -->|"no match"| Tier3
+        end
+
+        RBACSA -->|"used for<br/>TokenReview +<br/>SAR API calls"| AuthnLayer
+        AuthnLayer --> AuthzLayer
     end
 
-    subgraph APIResources["Kubernetes API Resources"]
-        TokenReview["authentication.k8s.io<br/>TokenReview"]
-        SAR["authorization.k8s.io<br/>SubjectAccessReview"]
+    subgraph K8sResources["Kubernetes API Resources Consumed"]
+        TokenReviewAPI["authentication.k8s.io/v1<br/>TokenReview<br/>Verbs: create"]
+        SARAPI["authorization.k8s.io/v1<br/>SubjectAccessReview<br/>Verbs: create"]
+        OAuthTokenAPI["oauth.openshift.io/v1<br/>OAuthAccessToken<br/>Verbs: delete"]
     end
 
-    %% Bindings
-    SA -->|"bound via"| CRB_TokenReview
-    SA -->|"bound via"| CRB_SAR
-    CRB_TokenReview -->|"grants"| CR_AuthN
-    CRB_SAR -->|"grants"| CR_AuthZ
+    %% Connections
+    Operator -->|"creates SA +<br/>RoleBindings<br/>per component"| AuthSA
+    Operator -->|"creates SA +<br/>RoleBindings<br/>per component"| RBACSA
+    Layer1 -->|"HTTPS/443"| TokenReviewAPI
+    Tier3 -->|"HTTPS/443"| SARAPI
+    TokenReview -->|"HTTPS/443"| TokenReviewAPI
 
-    %% Permissions
-    CR_AuthN -->|"create"| TokenReview
-    CR_AuthZ -->|"create"| SAR
-
-    subgraph HardcodedAuth["Hardcoded Authorization (kube-rbac-proxy)"]
-        HardcodedRule["Hardcoded Authorizer"]
+    subgraph PrometheusAccess["Auto-Allowed Metrics Access"]
         PromSA["system:serviceaccount:<br/>openshift-monitoring:<br/>prometheus-k8s"]
-        MetricsEndpoint["/metrics (GET)"]
-
-        PromSA -->|"always allowed"| HardcodedRule
-        HardcodedRule -->|"grants access to"| MetricsEndpoint
+        MetricsEndpoint["/metrics endpoint<br/>8443/TCP HTTPS"]
+        PromSA -->|"auto-allowed<br/>(hardcoded)"| MetricsEndpoint
     end
-
-    subgraph AuthMethods["Authentication Methods (auth mode)"]
-        direction LR
-        K8sToken["K8s ServiceAccount Token<br/>(via TokenReview API)"]
-        OAuthToken["OAuth Bearer Token<br/>(via provider validation)"]
-        JWTToken["JWT Bearer Token<br/>(via JWKS verification)"]
-        BasicAuth["Basic Auth<br/>(htpasswd file)"]
-        SessionCookie["Session Cookie<br/>(AES-CFB encrypted)"]
-    end
-
-    subgraph AuthzMethods["Authorization Methods (rbac mode)"]
-        direction LR
-        Hardcoded["Hardcoded<br/>(Prometheus SA)"]
-        Static["Static Rules<br/>(YAML config)"]
-        SARCheck["SubjectAccessReview<br/>(K8s API delegation)"]
-    end
-
-    subgraph OpenShiftAPIs["OpenShift-Specific API Access (auth mode)"]
-        UserAPI["user.openshift.io/v1<br/>users/~<br/>Verbs: get"]
-        OAuthTokenAPI["oauth.openshift.io/v1<br/>oauthaccesstokens<br/>Verbs: delete"]
-    end
-
-    SA -->|"auth mode uses"| AuthMethods
-    SA -->|"rbac mode uses"| AuthzMethods
 
     %% Styling
-    style SA fill:#4a90e2,stroke:#333,color:#fff
-    style CR_AuthN fill:#f5a623,stroke:#333,color:#fff
-    style CR_AuthZ fill:#f5a623,stroke:#333,color:#fff
-    style TokenReview fill:#7ed321,stroke:#333,color:#fff
-    style SAR fill:#7ed321,stroke:#333,color:#fff
-    style HardcodedRule fill:#ff6b6b,stroke:#333,color:#fff
-    style PromSA fill:#4a90e2,stroke:#333,color:#fff
-    style MetricsEndpoint fill:#7ed321,stroke:#333,color:#fff
-    style UserAPI fill:#7ed321,stroke:#333,color:#fff
-    style OAuthTokenAPI fill:#7ed321,stroke:#333,color:#fff
+    style Operator fill:#f5a623,stroke:#333,color:#fff
+    style AuthSA fill:#4a90e2,stroke:#333,color:#fff
+    style RBACSA fill:#4a90e2,stroke:#333,color:#fff
+    style Layer1 fill:#85bbf0,stroke:#333
+    style Layer2 fill:#85bbf0,stroke:#333
+    style Layer3 fill:#85bbf0,stroke:#333
+    style Layer4 fill:#85bbf0,stroke:#333
+    style Layer5 fill:#85bbf0,stroke:#333
+    style Tier1 fill:#7ed321,stroke:#333
+    style Tier2 fill:#f5a623,stroke:#333
+    style Tier3 fill:#e74c3c,stroke:#333,color:#fff
+    style TokenReviewAPI fill:#dae8fc,stroke:#6c8ebf
+    style SARAPI fill:#dae8fc,stroke:#6c8ebf
+    style OAuthTokenAPI fill:#dae8fc,stroke:#6c8ebf
+    style PromSA fill:#999,stroke:#333,color:#fff
+    style MetricsEndpoint fill:#999,stroke:#333,color:#fff

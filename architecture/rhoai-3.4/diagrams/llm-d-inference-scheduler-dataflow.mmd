@@ -1,49 +1,62 @@
 sequenceDiagram
     participant Client as External Client
-    participant Envoy as Envoy Gateway<br/>80/TCP HTTP
-    participant EPP as EPP (Endpoint Picker)<br/>9002/TCP gRPC
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant ZMQ as vLLM KV Events<br/>5556/TCP ZMQ
-    participant Tokenizer as UDS Tokenizer<br/>Unix Socket
-    participant Sidecar as Routing Sidecar<br/>8000/TCP HTTP/HTTPS
+    participant GW as Envoy Gateway<br/>80/TCP HTTP
+    participant EPP as EPP (ext-proc)<br/>9002/TCP gRPC
+    participant K8s as Kubernetes API<br/>443/TCP HTTPS
+    participant Sidecar as P/D Sidecar<br/>8000/TCP HTTPS
     participant Prefiller as vLLM Prefiller<br/>(remote)
-    participant Decoder as vLLM Decoder<br/>8001/TCP (local)
+    participant Decoder as vLLM Decoder<br/>8001/TCP
+    participant vLLMZMQ as vLLM KV-Events<br/>5556/TCP ZMQ
 
-    Note over EPP,K8sAPI: Flow 1: Inference Request Routing (EPP)
+    Note over Client,Decoder: Flow 1: Standard Inference (Non-Disaggregated)
 
-    EPP->>K8sAPI: Watch InferencePool CRs & Pods<br/>HTTPS/443, SA Token
-    EPP->>ZMQ: Subscribe KV-cache events<br/>ZMQ SUB/5556
+    Client->>GW: POST /v1/chat/completions<br/>HTTP
+    GW->>EPP: ext-proc callback<br/>gRPC (request headers)
+    EPP->>K8s: Watch InferencePool, Pods<br/>HTTPS, SA Token
+    Note over EPP: Plugin pipeline:<br/>Filters → Scorers → Select endpoint
+    EPP-->>GW: Routing decision<br/>(selected pod endpoint)
+    GW->>Decoder: Forward request<br/>HTTP/HTTPS
+    Decoder-->>GW: Inference response
+    GW-->>Client: JSON response
 
-    Client->>Envoy: POST /v1/chat/completions<br/>HTTP/80
-    Envoy->>EPP: ext-proc ProcessingRequest<br/>gRPC/9002 (request headers)
-    EPP->>Tokenizer: Tokenize prompt<br/>Unix Socket
-    Tokenizer-->>EPP: Token IDs
-    Note over EPP: Run filter chain:<br/>by-label, by-label-selector,<br/>decode-filter, roles-filter
-    Note over EPP: Run scorers:<br/>prefix-cache, session-affinity,<br/>load-aware, active-request
-    EPP-->>Envoy: ProcessingResponse<br/>Selected endpoint + headers
-    Envoy->>Decoder: Forward to selected vLLM pod<br/>HTTP/varies
+    Note over Client,Decoder: Flow 2: Disaggregated Prefill/Decode (NIXL v2)
 
-    Note over Sidecar,Decoder: Flow 2: Disaggregated P/D Inference (NIXL v2)
+    Client->>GW: POST /v1/chat/completions<br/>HTTP
+    GW->>EPP: ext-proc callback<br/>gRPC (request headers)
+    Note over EPP: Profile handler decides:<br/>disagg vs non-disagg<br/>(prefix-based or always-disagg)
+    EPP-->>GW: Routing decision with headers<br/>x-prefiller-host-port, target pod
+    GW->>Sidecar: Forward to decode pod<br/>HTTPS TLS 1.2+
+    Note over Sidecar: NIXL v2 connector activated
+    Sidecar->>Prefiller: POST /v1/completions<br/>HTTP/HTTPS (prefill request)
+    Prefiller-->>Sidecar: Prefill response<br/>(KV transfer params in body)
+    Note over Sidecar: Extract KV params:<br/>block IDs, cache tokens
+    Sidecar->>Decoder: POST /v1/completions<br/>HTTP/HTTPS (decode + KV params)
+    Decoder-->>Sidecar: Streaming response<br/>(token generation)
+    Sidecar-->>GW: Stream response back
+    GW-->>Client: Streaming JSON response
 
-    Envoy->>Sidecar: POST /v1/chat/completions<br/>HTTP(S)/8000
-    Note over Sidecar: Parse x-prefill-target header<br/>Validate against SSRF allowlist
-    Sidecar->>Prefiller: Clone request to prefiller<br/>HTTP(S)/varies
-    Prefiller-->>Sidecar: Response with kv_transfer_params<br/>(KV block metadata)
-    Note over Sidecar: Inject kv_transfer_params<br/>into decode request body
-    Sidecar->>Decoder: Forward to local decoder<br/>HTTP/8001 (with KV params)
-    Decoder-->>Sidecar: Inference response<br/>(streaming or non-streaming)
-    Sidecar-->>Envoy: Forward response to client
+    Note over Client,vLLMZMQ: Flow 3: KV Cache State Updates
 
-    Note over Sidecar,Decoder: Flow 3: E/P/D Multimodal Inference
-
-    Envoy->>Sidecar: POST /v1/chat/completions<br/>HTTP(S)/8000 (with images/audio)
-    Note over Sidecar: Detect multimodal content
-    par Concurrent Encoder Fanout
-        Sidecar->>Prefiller: Encode stage 1<br/>HTTP(S)/varies
-        Sidecar->>Prefiller: Encode stage N<br/>HTTP(S)/varies
+    loop Real-time KV Events
+        vLLMZMQ->>EPP: ZMQ PUB/SUB<br/>5556/TCP (cache events)
+        Note over EPP: KV-Block Indexer processes events<br/>Updates Prefix Store
+        Note over EPP: precise-prefix-cache-scorer<br/>uses updated state for routing
     end
-    Sidecar->>Prefiller: Prefill stage<br/>HTTP(S)/varies (after encode)
-    Prefiller-->>Sidecar: kv_transfer_params
-    Sidecar->>Decoder: Decode with KV params<br/>HTTP/8001
-    Decoder-->>Sidecar: Inference response
-    Sidecar-->>Envoy: Forward response
+
+    Note over Client,Decoder: Flow 4: EPD Mode (Multimodal, Encoder-Prefiller-Decoder)
+
+    Client->>GW: POST /v1/chat/completions<br/>HTTP (multimodal content)
+    GW->>EPP: ext-proc callback<br/>gRPC
+    Note over EPP: Multimodal decider detects<br/>image/video content
+    EPP-->>GW: Routing with headers<br/>x-encoder-hosts-ports, x-prefiller-host-port
+
+    rect rgb(255, 249, 196)
+        Note over Sidecar: EPD Protocol
+        GW->>Sidecar: Forward to decode pod<br/>HTTPS
+        Note over Sidecar: Fan-out: encode multimodal items
+        Sidecar->>Prefiller: Encode + Prefill stage<br/>HTTP/HTTPS
+        Prefiller-->>Sidecar: KV transfer params
+        Sidecar->>Decoder: Decode with KV context<br/>HTTP/HTTPS
+        Decoder-->>Sidecar: Streaming tokens
+        Sidecar-->>Client: Streaming response
+    end

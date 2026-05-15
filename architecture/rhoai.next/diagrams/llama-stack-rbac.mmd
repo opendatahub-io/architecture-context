@@ -1,115 +1,95 @@
 graph TD
-    subgraph AuthLayer["Authentication Layer"]
+    subgraph ClientAuth["Client Authentication"]
+        Client["Client / Application<br/>Bearer Token (JWT)"]
+    end
+
+    subgraph AuthStrategies["Authentication Strategies (Middleware)"]
         direction LR
-        OAuth2["OAuth2 JWT Provider<br/>(JWKS / Token Introspection)"]
-        CustomAuth["Custom Auth Provider<br/>(External HTTP Endpoint)"]
+        JWKSAuth["JWKS Validation<br/>Fetches public keys<br/>from OAuth2 provider<br/>Periodic key refresh"]
+        IntrospectionAuth["Token Introspection<br/>RFC 7662<br/>Client credentials<br/>Custom CA support"]
+        CustomAuthEP["Custom Auth Endpoint<br/>Sends token in body<br/>External validation"]
     end
 
-    subgraph MiddlewareChain["ASGI Middleware Chain"]
-        direction TB
-        AuthMW["AuthenticationMiddleware<br/>Validates Bearer Token<br/>Extracts Principal + Attributes"]
-        QuotaMW["QuotaMiddleware<br/>Per-Client Rate Limiting"]
-        ABACMW["AccessControlMiddleware<br/>Cedar-inspired Policy Engine"]
-    end
-
-    subgraph PrincipalAttrs["Principal Attributes (from Token Claims)"]
-        direction LR
-        Sub["sub → User Identity"]
-        Roles["groups → Roles"]
-        Teams["team → Team Membership"]
-        Projects["project → Project Scope"]
-        Namespaces["namespace → Namespace Scope"]
-    end
-
-    subgraph PolicyEngine["Cedar-Inspired Policy Engine"]
+    subgraph ABACSystem["ABAC Engine (Cedar-like Policy Language)"]
         direction TB
 
-        subgraph PolicyRules["Policy Rules (First Match Wins)"]
-            Rule1["permit<br/>principal: admin role<br/>actions: ALL<br/>resource: ALL"]
-            Rule2["permit<br/>principal: ANY<br/>actions: read<br/>resource: model::*<br/>when: user has 'viewer' in roles"]
-            Rule3["permit<br/>principal: ANY<br/>actions: create, read, update, delete<br/>resource: *<br/>when: user is owner"]
-            Rule4["forbid<br/>principal: ANY<br/>actions: delete<br/>resource: shield::*<br/>unless: user has 'admin' in roles"]
-            DefaultDeny["DEFAULT: DENY<br/>(no matching rule)"]
+        subgraph PolicyRules["Access Rules"]
+            PermitRule["PERMIT Rules<br/>when: user in owners roles<br/>when: user with admin in roles"]
+            ForbidRule["FORBID Rules<br/>unless: user has required attribute<br/>unless: resource.owner == user"]
+        end
+
+        subgraph UserAttributes["User Attributes (from JWT Claims)"]
+            UserID["user_id"]
+            Roles["roles[]"]
+            Teams["teams[]"]
+            Projects["projects[]"]
+            CustomAttrs["custom attributes"]
         end
     end
 
-    subgraph Actions["Supported Actions"]
-        direction LR
-        Create["create"]
-        Read["read"]
-        Update["update"]
-        Delete["delete"]
-    end
-
-    subgraph Resources["Resource Types (type-qualified)"]
-        direction TB
-        Models["model::*<br/>(Registered Models)"]
-        Shields["shield::*<br/>(Safety Shields)"]
-        VectorDBs["vector_db::*<br/>(Vector Databases)"]
-        Datasets["dataset::*<br/>(Datasets)"]
-        Agents["agent::*<br/>(Agents)"]
-        Benchmarks["benchmark::*<br/>(Eval Benchmarks)"]
-        ScoringFns["scoring_fn::*<br/>(Scoring Functions)"]
-        ToolGroups["toolgroup::*<br/>(Tool Groups)"]
-    end
-
     subgraph RateLimiting["Rate Limiting (QuotaMiddleware)"]
-        direction LR
-        AuthQuota["Authenticated Client<br/>1000 requests/day<br/>Identity: Token Hash"]
-        AnonQuota["Anonymous Client<br/>100 requests/day<br/>Identity: IP Address"]
-        QuotaStore["SQLite KV Store<br/>Counter Persistence"]
+        AnonQuota["Anonymous<br/>100 req/day"]
+        AuthQuota["Authenticated<br/>1000 req/day"]
     end
 
-    %% Auth flow
-    OAuth2 -->|"JWT claims"| AuthMW
-    CustomAuth -->|"principal + attributes"| AuthMW
+    subgraph ProtectedResources["Protected API Resources"]
+        direction LR
+        InferenceRes["Inference API<br/>/v1/inference/*<br/>/v1/openai/v1/*"]
+        AgentsRes["Agents API<br/>/v1/agents/*"]
+        SafetyRes["Safety API<br/>/v1/safety/*"]
+        VectorRes["Vector IO API<br/>/v1/vector-io/*"]
+        RegistryRes["Registry APIs<br/>/v1/models<br/>/v1/shields<br/>/v1/datasets"]
+        EvalRes["Eval / Scoring<br/>/v1/eval/*<br/>/v1/scoring/*"]
+        TelemetryRes["Telemetry API<br/>/v1/telemetry/*"]
+        ToolRes["Tool Runtime<br/>/v1/tool-runtime/*"]
+    end
 
-    %% Middleware chain
-    AuthMW -->|"extracts"| PrincipalAttrs
-    AuthMW --> QuotaMW
-    QuotaMW --> ABACMW
-
-    %% Policy evaluation
-    PrincipalAttrs -->|"principal"| PolicyEngine
-    Actions -->|"action"| PolicyEngine
-    Resources -->|"resource"| PolicyEngine
-    ABACMW -->|"evaluates"| PolicyEngine
-
-    %% Rate limiting
-    QuotaMW -->|"checks"| AuthQuota
-    QuotaMW -->|"checks"| AnonQuota
-    AuthQuota --> QuotaStore
-    AnonQuota --> QuotaStore
-
-    %% Public endpoints (bypass)
-    subgraph PublicEndpoints["Public Endpoints (No Auth Required)"]
+    subgraph PublicEndpoints["Public Endpoints (No Auth)"]
         Health["/v1/health"]
         Version["/v1/version"]
-        Docs["/docs, /redoc, /openapi.json"]
+        Docs["/docs, /redoc<br/>/openapi.json"]
     end
 
+    %% Flow
+    Client -->|"Bearer Token"| JWKSAuth
+    Client -->|"Bearer Token"| IntrospectionAuth
+    Client -->|"Bearer Token"| CustomAuthEP
+
+    JWKSAuth -->|"extracts claims"| UserAttributes
+    IntrospectionAuth -->|"extracts claims"| UserAttributes
+    CustomAuthEP -->|"extracts claims"| UserAttributes
+
+    UserAttributes -->|"evaluated against"| PolicyRules
+
+    PolicyRules -->|"PERMIT"| RateLimiting
+    PolicyRules -->|"FORBID → 403"| Denied["Request Denied<br/>403 Forbidden"]
+
+    AnonQuota -->|"within limit"| ProtectedResources
+    AuthQuota -->|"within limit"| ProtectedResources
+    AnonQuota -->|"exceeded"| RateDenied["Rate Limited<br/>429 Too Many Requests"]
+    AuthQuota -->|"exceeded"| RateDenied
+
+    Client -.->|"no auth required"| PublicEndpoints
+
     %% Styling
-    style AuthMW fill:#f5a623,stroke:#333,stroke-width:2px
-    style QuotaMW fill:#f5a623,stroke:#333,stroke-width:2px
-    style ABACMW fill:#f5a623,stroke:#333,stroke-width:2px
-    style OAuth2 fill:#4a90e2,stroke:#333,color:#fff
-    style CustomAuth fill:#4a90e2,stroke:#333,color:#fff
-    style Rule1 fill:#7ed321,stroke:#333
-    style Rule2 fill:#7ed321,stroke:#333
-    style Rule3 fill:#7ed321,stroke:#333
-    style Rule4 fill:#d32f2f,stroke:#333,color:#fff
-    style DefaultDeny fill:#d32f2f,stroke:#333,color:#fff
-    style Models fill:#e3f2fd,stroke:#1565c0
-    style Shields fill:#e3f2fd,stroke:#1565c0
-    style VectorDBs fill:#e3f2fd,stroke:#1565c0
-    style Datasets fill:#e3f2fd,stroke:#1565c0
-    style Agents fill:#e3f2fd,stroke:#1565c0
-    style Benchmarks fill:#e3f2fd,stroke:#1565c0
-    style ScoringFns fill:#e3f2fd,stroke:#1565c0
-    style ToolGroups fill:#e3f2fd,stroke:#1565c0
-    style Health fill:#c8e6c9,stroke:#333
-    style Version fill:#c8e6c9,stroke:#333
-    style Docs fill:#c8e6c9,stroke:#333
-    style AuthQuota fill:#fff9c4,stroke:#333
-    style AnonQuota fill:#fff9c4,stroke:#333
-    style QuotaStore fill:#fff2cc,stroke:#d6b656
+    style Client fill:#4a90e2,stroke:#333,color:#fff
+    style JWKSAuth fill:#fff3e0,stroke:#ef6c00
+    style IntrospectionAuth fill:#fff3e0,stroke:#ef6c00
+    style CustomAuthEP fill:#fff3e0,stroke:#ef6c00
+    style PermitRule fill:#c8e6c9,stroke:#2e7d32
+    style ForbidRule fill:#ffcdd2,stroke:#c62828
+    style AnonQuota fill:#fff9c4,stroke:#f57f17
+    style AuthQuota fill:#fff9c4,stroke:#f57f17
+    style Denied fill:#ef5350,stroke:#333,color:#fff
+    style RateDenied fill:#ef5350,stroke:#333,color:#fff
+    style InferenceRes fill:#e8f5e9,stroke:#2e7d32
+    style AgentsRes fill:#e8f5e9,stroke:#2e7d32
+    style SafetyRes fill:#e8f5e9,stroke:#2e7d32
+    style VectorRes fill:#e8f5e9,stroke:#2e7d32
+    style RegistryRes fill:#e8f5e9,stroke:#2e7d32
+    style EvalRes fill:#e8f5e9,stroke:#2e7d32
+    style TelemetryRes fill:#e8f5e9,stroke:#2e7d32
+    style ToolRes fill:#e8f5e9,stroke:#2e7d32
+    style Health fill:#e0f2f1,stroke:#00695c
+    style Version fill:#e0f2f1,stroke:#00695c
+    style Docs fill:#e0f2f1,stroke:#00695c

@@ -1,82 +1,88 @@
 graph TB
     subgraph EvalHub["Eval Hub Service"]
         direction TB
+        API["eval-hub<br/>Go REST API<br/>8080/TCP"]
+        AuthMiddleware["Auth Middleware<br/>TokenReview + SAR"]
+        ConfigLoader["Config Loader<br/>Hot-Reload (fsnotify)"]
+        K8sRuntime["Kubernetes Runtime<br/>Job Builder"]
 
-        subgraph APILayer["HTTP Handler Layer"]
-            Server["eval-hub API Server<br/>Go REST API<br/>8080/TCP"]
-            AuthN["AuthN Middleware<br/>K8s TokenReview<br/>2-min cache"]
-            AuthZ["AuthZ Middleware<br/>K8s SubjectAccessReview<br/>5-min allow / 30s deny cache"]
-            Server --> AuthN --> AuthZ
-        end
-
-        subgraph StorageLayer["Storage Abstraction"]
-            StorageIF["Storage Interface<br/>WithTenant / WithOwner"]
-            PostgreSQL["PostgreSQL Driver<br/>pgx"]
-            SQLite["SQLite Driver<br/>modernc.org/sqlite"]
-            StorageIF --> PostgreSQL
-            StorageIF --> SQLite
-        end
-
-        subgraph RuntimeLayer["Runtime Abstraction"]
-            RuntimeIF["Runtime Interface"]
-            K8sRuntime["Kubernetes Runtime<br/>Batch Jobs + ConfigMaps"]
-            LocalRuntime["Local Runtime<br/>Shell Subprocess"]
-            RuntimeIF --> K8sRuntime
-            RuntimeIF --> LocalRuntime
-        end
-
-        subgraph Observability["Observability"]
-            Prometheus["Prometheus Metrics<br/>/metrics endpoint"]
-            OTEL["OpenTelemetry<br/>OTLP gRPC/HTTP"]
-        end
-
-        AuthZ --> StorageIF
-        AuthZ --> RuntimeIF
+        API --> AuthMiddleware
+        API --> ConfigLoader
+        API --> K8sRuntime
     end
 
-    subgraph JobPod["Evaluation Job Pod (KEP-753)"]
-        direction LR
-        InitContainer["eval-runtime-init<br/>S3 Data Downloader"]
-        Sidecar["eval-runtime-sidecar<br/>HTTP Reverse Proxy<br/>8080/TCP localhost"]
-        Adapter["Evaluation Adapter<br/>(Lighteval / lm-eval / Garak / etc.)"]
-        InitContainer -.->|"completes before"| Adapter
-        Adapter -->|"localhost:8080"| Sidecar
+    subgraph EvalJobPod["Evaluation Job Pod"]
+        direction TB
+        InitContainer["eval-runtime-init<br/>Go CLI<br/>S3 Data Download"]
+        Sidecar["eval-runtime-sidecar<br/>Go HTTP Proxy<br/>8080/TCP (localhost)"]
+        Adapter["Eval Adapter Container<br/>(lm-eval / lighteval /<br/>garak / guideLLM)"]
+
+        InitContainer -.->|"shared volume"| Adapter
+        Adapter -->|"HTTP localhost:8080<br/>plaintext"| Sidecar
     end
 
-    subgraph MCPServer["evalhub-mcp"]
-        MCP["MCP Server<br/>stdio / HTTP:3001"]
+    subgraph MCPServer["MCP Server (Optional)"]
+        MCP["evalhub-mcp<br/>Go MCP Server<br/>3001/TCP"]
     end
 
-    Client["Client<br/>(Dashboard / API / CLI)"] -->|"HTTPS 8080<br/>Bearer Token"| Server
-    K8sRuntime -->|"creates"| JobPod
-    Sidecar -->|"HTTPS 8080<br/>SA Token"| Server
-    MCP -->|"REST API<br/>Bearer Token"| Server
+    %% External actors
+    Client["Client<br/>(Dashboard / CLI)"]
+    AIAgent["AI Agent<br/>(MCP Client)"]
 
-    Sidecar -->|"HTTPS<br/>Projected SA Token"| MLflow["MLflow Tracking Server"]
-    Sidecar -->|"HTTPS 443<br/>Bearer Token"| OCIRegistry["OCI Registry"]
-    InitContainer -->|"HTTPS 443<br/>AWS IAM"| S3["S3 Object Storage"]
+    %% External services
+    K8sAPI["Kubernetes API<br/>443/TCP"]
+    PostgreSQL["PostgreSQL<br/>5432/TCP"]
+    MLflow["MLflow Tracking<br/>Server"]
+    S3["S3 Storage"]
+    OCI["OCI Registry<br/>(Quay)"]
+    OTEL["OTEL Collector<br/>4317/4318"]
+    Prometheus["Prometheus"]
 
-    K8sRuntime -->|"HTTPS 443<br/>SA Token"| K8sAPI["Kubernetes API Server"]
-    AuthN -->|"TokenReview<br/>HTTPS 443"| K8sAPI
-    AuthZ -->|"SAR<br/>HTTPS 443"| K8sAPI
+    %% Client flows
+    Client -->|"HTTPS 8080<br/>Bearer Token"| API
+    AIAgent -->|"HTTP/stdio<br/>3001/TCP"| MCP
 
-    style Server fill:#4a90e2,color:#fff
-    style AuthN fill:#4a90e2,color:#fff
-    style AuthZ fill:#4a90e2,color:#fff
-    style StorageIF fill:#4a90e2,color:#fff
-    style RuntimeIF fill:#4a90e2,color:#fff
-    style Sidecar fill:#4a90e2,color:#fff
-    style InitContainer fill:#4a90e2,color:#fff
-    style MCP fill:#4a90e2,color:#fff
-    style Prometheus fill:#50c878,color:#fff
-    style OTEL fill:#50c878,color:#fff
-    style PostgreSQL fill:#336791,color:#fff
-    style SQLite fill:#003b57,color:#fff
-    style K8sRuntime fill:#326ce5,color:#fff
-    style LocalRuntime fill:#326ce5,color:#fff
-    style Client fill:#f5a623,color:#fff
-    style MLflow fill:#0194e2,color:#fff
-    style OCIRegistry fill:#999,color:#fff
-    style S3 fill:#e47911,color:#fff
-    style K8sAPI fill:#326ce5,color:#fff
-    style Adapter fill:#7ed321,color:#fff
+    %% API to external
+    API -->|"HTTPS 443"| K8sAPI
+    API -->|"SQL 5432"| PostgreSQL
+    API -->|"HTTPS"| MLflow
+    API -->|"OTLP"| OTEL
+    K8sRuntime -->|"creates Jobs"| K8sAPI
+
+    %% MCP to API
+    MCP -->|"HTTPS 8080"| API
+
+    %% Sidecar egress
+    Sidecar -->|"HTTPS 8080<br/>SA token"| API
+    Sidecar -->|"HTTPS<br/>Projected SA token"| MLflow
+    Sidecar -->|"HTTPS 443<br/>Docker config"| OCI
+
+    %% Init container
+    InitContainer -->|"HTTPS 443<br/>AWS creds"| S3
+
+    %% Prometheus scrape
+    Prometheus -.->|"scrape /metrics<br/>8080/TCP"| API
+
+    %% ConfigMap
+    ConfigMap["ConfigMap<br/>(Provider/Collection YAML)"]
+    ConfigMap -.->|"volume mount<br/>hot-reload"| ConfigLoader
+
+    %% Styling
+    style API fill:#4a90e2,stroke:#333,color:#fff
+    style AuthMiddleware fill:#4a90e2,stroke:#333,color:#fff
+    style ConfigLoader fill:#4a90e2,stroke:#333,color:#fff
+    style K8sRuntime fill:#4a90e2,stroke:#333,color:#fff
+    style Sidecar fill:#50a0d2,stroke:#333,color:#fff
+    style InitContainer fill:#50a0d2,stroke:#333,color:#fff
+    style Adapter fill:#e8e8e8,stroke:#333
+    style MCP fill:#6ba0d2,stroke:#333,color:#fff
+    style Client fill:#f5a623,stroke:#333
+    style AIAgent fill:#f5a623,stroke:#333
+    style K8sAPI fill:#999,stroke:#333,color:#fff
+    style PostgreSQL fill:#999,stroke:#333,color:#fff
+    style MLflow fill:#7ed321,stroke:#333
+    style S3 fill:#999,stroke:#333,color:#fff
+    style OCI fill:#999,stroke:#333,color:#fff
+    style OTEL fill:#999,stroke:#333,color:#fff
+    style Prometheus fill:#999,stroke:#333,color:#fff
+    style ConfigMap fill:#fff2cc,stroke:#d6b656

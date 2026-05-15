@@ -3,85 +3,97 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (Gateway Layer)"]
-        Gateway["Gateway<br/>(Istio / agentgateway / GKE)<br/>80/TCP HTTP<br/>TLS: Provider-dependent<br/>Auth: Provider-dependent"]
-        EPP["llm-d-inference-scheduler (EPP)<br/>9002/TCP gRPC ext_proc<br/>8081/TCP HTTP<br/>No encryption / No auth"]
+    subgraph Ingress["INGRESS (Gateway / Proxy Layer)"]
+        Gateway["Gateway API Implementation<br/>(AgentGateway / Istio / kgateway)<br/>80/TCP HTTP (base)<br/>TLS: Configurable per impl<br/>Auth: Gateway-level policies"]
     end
 
-    subgraph DataPlane["DATA PLANE (Model Serving)"]
+    subgraph Scheduling["SCHEDULING LAYER (Cluster-Internal)"]
+        EPP["EPP (Inference Scheduler)<br/>9002/TCP gRPC ext-proc<br/>9090/TCP HTTP metrics<br/>SA: chart-defined"]
+        Tokenizer["UDS Tokenizer<br/>Unix Domain Socket"]
+        LatPredictor["Latency Predictor<br/>localhost HTTP"]
+        KVIndexer["KV Cache Indexer<br/>ZMQ PUB/SUB"]
+    end
+
+    subgraph ModelServers["MODEL SERVER LAYER (Cluster-Internal, No Auth, No TLS)"]
         direction TB
 
-        subgraph Standard["Standard Topology"]
-            vLLM_std["vLLM Model Server<br/>8000/TCP HTTP plaintext<br/>UID: 2000, GID: 0<br/>automountSAToken: false<br/>No auth"]
+        subgraph DecodeOnly["Topology: Decode-Only"]
+            Decode["Decode Model Server<br/>8000/TCP HTTP<br/>SA: automountToken=false<br/>Image: llm-d-{cuda,rocm,hpu,cpu}"]
         end
 
-        subgraph PD["P/D Disaggregation Topology"]
-            Prefill["Prefill vLLM<br/>8000/TCP HTTP<br/>5600/TCP NIXL<br/>role: prefill"]
-            Sidecar["routing-sidecar<br/>(init container)<br/>8000/TCP HTTP"]
-            Decode_PD["Decode vLLM<br/>8200/TCP HTTP<br/>5600/TCP NIXL<br/>role: decode"]
+        subgraph PDDisagg["Topology: P/D Disaggregation"]
+            Prefill["Prefill Server<br/>8000/TCP HTTP<br/>5600/TCP NIXL out"]
+            RoutingSidecar["Routing Sidecar<br/>8000/TCP HTTP"]
+            DecodePD["Decode Server<br/>8200/TCP HTTP<br/>5600/TCP NIXL in"]
         end
 
-        subgraph WideEP["Wide-EP Topology (Multi-Node)"]
-            Leader["Leader Pod<br/>8000/TCP HTTP<br/>5555/TCP DP RPC"]
-            Workers["Worker Pods<br/>5600/TCP NIXL<br/>IB/RoCE RDMA"]
+        subgraph WideEP["Topology: Wide-EP (LWS)<br/>ROOT UID 0<br/>IPC_LOCK + SYS_RAWIO"]
+            Leader["Worker 0 (Leader)<br/>5555/TCP gRPC DP-RPC"]
+            Followers["Workers 1..N<br/>NVSHMEM ibgda RDMA"]
         end
-    end
-
-    subgraph Observability["OBSERVABILITY PLANE"]
-        Prometheus["Prometheus<br/>9090/TCP HTTP<br/>Optional TLS"]
-        OTEL["OTEL Collector<br/>4317/TCP gRPC OTLP<br/>No encryption"]
-        Jaeger["Jaeger<br/>16686/TCP HTTP"]
-        Grafana["Grafana<br/>Dashboards"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        HuggingFace["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: HF_TOKEN"]
-        RDMA["RDMA/IB Fabric<br/>L2 Transport<br/>No encryption<br/>No auth"]
+        HF["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: HF_TOKEN Bearer"]
+        GHCR["ghcr.io<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Pull secret"]
+        NVCR["nvcr.io<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+    end
+
+    subgraph Observability["OBSERVABILITY (Cluster-Internal)"]
+        Prom["Prometheus<br/>Scrape: 8000,9090/TCP HTTP<br/>TLS: Configurable (WVA)"]
+        OTELCol["OTEL Collector<br/>4317/TCP gRPC<br/>No TLS"]
+        WVA["WVA Autoscaler<br/>Reads Prometheus<br/>Auth: controller-manager-token"]
     end
 
     %% External → Ingress
-    Client -->|"HTTP/80<br/>No encryption (provider-dependent)<br/>No auth (provider-dependent)"| Gateway
+    Client -->|"HTTP/80 or HTTPS/443<br/>TLS: Configurable<br/>Auth: Gateway policies"| Gateway
 
-    %% Ingress → EPP
-    Gateway -->|"gRPC/9002<br/>ext_proc<br/>No encryption"| EPP
+    %% Ingress → Scheduling
+    Gateway -->|"gRPC/9002<br/>ext-proc<br/>No TLS, No Auth"| EPP
 
-    %% EPP → Model Servers
-    EPP -->|"HTTP/8000<br/>Plaintext<br/>No auth"| vLLM_std
-    EPP -->|"HTTP/8000<br/>Plaintext"| Prefill
-    EPP -->|"HTTP/8000<br/>Plaintext"| Sidecar
+    %% EPP sidecars
+    EPP --- Tokenizer
+    EPP --- LatPredictor
+    EPP --- KVIndexer
 
-    %% P/D internal flows
-    Prefill -->|"NIXL/5600<br/>RDMA/TCP<br/>No encryption (L2)"| Decode_PD
-    Sidecar -->|"HTTP/8200<br/>Plaintext"| Decode_PD
+    %% Scheduling → Model Servers (via Gateway)
+    Gateway -->|"HTTP/8000<br/>No TLS, No Auth"| Decode
+    Gateway -->|"HTTP/8000<br/>No TLS, No Auth"| Prefill
+    Gateway -->|"HTTP/8000<br/>No TLS, No Auth"| RoutingSidecar
 
-    %% Wide-EP internal flows
-    Leader -->|"DP RPC/5555<br/>No encryption"| Workers
-    Leader -->|"NVSHMEM/NCCL<br/>IB/RoCE RDMA<br/>No encryption (L2)"| Workers
+    %% P/D disaggregation internal
+    Prefill -->|"NIXL/5600<br/>RDMA or TCP<br/>No TLS, No Auth<br/>KV cache transfer"| DecodePD
+    RoutingSidecar -->|"HTTP/8200"| DecodePD
 
-    %% Observability
-    Prometheus -->|"HTTP/8000<br/>Scrape /metrics"| vLLM_std
-    Prometheus -->|"HTTP/9002<br/>Scrape metrics"| EPP
-    vLLM_std -->|"OTLP gRPC/4317<br/>No encryption"| OTEL
-    OTEL -->|"HTTP/16686"| Jaeger
+    %% Wide-EP internal
+    Leader -->|"gRPC/5555<br/>No TLS"| Followers
+    Leader <-->|"NVSHMEM RDMA<br/>ibgda transport<br/>No encryption"| Followers
 
     %% Egress
-    vLLM_std -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HuggingFace
-    Prefill -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HuggingFace
-    Prefill -->|"RDMA<br/>L2 (no encryption)"| RDMA
-    Decode_PD -->|"RDMA<br/>L2 (no encryption)"| RDMA
-    Workers -->|"RDMA<br/>L2 (no encryption)"| RDMA
+    Decode -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HF
+    Decode -.->|"HTTPS/443"| GHCR
+    Decode -.->|"HTTPS/443"| NVCR
+
+    %% Observability
+    Decode -->|"HTTP/8000 /metrics"| Prom
+    Prefill -->|"HTTP/8000 /metrics"| Prom
+    EPP -->|"HTTP/9090 /metrics"| Prom
+    Decode -.->|"gRPC/4317 traces"| OTELCol
+    WVA -->|"HTTP/9090<br/>TLS configurable"| Prom
 
     %% Styling
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px,color:#333
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px,color:#333
-    classDef dataplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px,color:#333
-    classDef observability fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px,color:#333
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px,color:#333
-    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px,color:#333
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef scheduling fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef modelserver fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef wideep fill:#f8cecc,stroke:#b85450,stroke-width:2px,stroke-dasharray: 5 5
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef observability fill:#e6e6fa,stroke:#9370db,stroke-width:1px
 
     class Client external
-    class Gateway,EPP ingress
-    class vLLM_std,Prefill,Sidecar,Decode_PD,Leader,Workers dataplane
-    class Prometheus,OTEL,Jaeger,Grafana observability
-    class HuggingFace externalservice
-    class RDMA warning
+    class Gateway ingress
+    class EPP,Tokenizer,LatPredictor,KVIndexer scheduling
+    class Decode,Prefill,RoutingSidecar,DecodePD modelserver
+    class Leader,Followers wideep
+    class HF,GHCR,NVCR externalservice
+    class Prom,OTELCol,WVA observability

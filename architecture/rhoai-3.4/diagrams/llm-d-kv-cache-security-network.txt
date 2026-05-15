@@ -1,167 +1,135 @@
-┌─────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                   │
-│                                                                          │
-│  [HuggingFace Hub - huggingface.co]                                      │
-│  - Purpose: Download tokenizer model files                               │
-│  - Auth: Bearer Token (HF_TOKEN)                                         │
-│  - Encryption: TLS 1.2+                                                  │
-│         ▲                                                                │
-│         │ Port: 443/TCP                                                  │
-│         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS 1.2+                                           │
-│         │ Auth: Bearer Token (HF_TOKEN env var)                          │
-│         │                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (OpenShift Route)                                              │
-│                                                                          │
-│  [OpenShift Route]                                                       │
-│  - Port: 8080/TCP (backend)                                             │
-│  - TLS Termination: Edge (OpenShift default)                            │
-│  - Auth: None                                                            │
-│  - Exposure: External                                                    │
-│         │                                                                │
-│         │ Port: 8080/TCP                                                 │
-│         │ Protocol: HTTP                                                 │
-│         │ Encryption: None (internal)                                    │
-│         │ Auth: None                                                     │
-│         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  CLUSTER INTERNAL (Kubernetes Network)                                  │
-│                                                                          │
-│  ┌────────────────────────────────────────────────────────────────┐     │
-│  │  Pod: llm-d-kv-cache (StatefulSet)                             │     │
-│  │  Namespace: ${NAMESPACE}                                        │     │
-│  │                                                                  │     │
-│  │  ┌──────────────────────────────────────────────────────┐       │     │
-│  │  │  Container: KV-Cache Manager (Go)                     │       │     │
-│  │  │                                                        │       │     │
-│  │  │  [KV-Cache Indexer]                                    │       │     │
-│  │  │  - Port: 8080/TCP (HTTP - metrics, scoring API)       │       │     │
-│  │  │  - Encryption: None                                    │       │     │
-│  │  │  - Auth: None                                          │       │     │
-│  │  │                                                        │       │     │
-│  │  │  [KV Events Pool]                                      │       │     │
-│  │  │  - Port: 5557/TCP (ZMQ SUB - event ingestion)         │       │     │
-│  │  │  - Encryption: None                                    │       │     │
-│  │  │  - Auth: None                                          │       │     │
-│  │  │                                                        │       │     │
-│  │  │  [Indexer gRPC Service]                                │       │     │
-│  │  │  - Port: 50051/TCP (gRPC)                              │       │     │
-│  │  │  - Encryption: None (grpc.WithInsecure())              │       │     │
-│  │  │  - Auth: None                                          │       │     │
-│  │  │         │                                              │       │     │
-│  │  │         │ UDS gRPC (in-pod)                            │       │     │
-│  │  │         ▼                                              │       │     │
-│  │  └──────────────────────────────────────────────────────┘       │     │
-│  │                                                                  │     │
-│  │  ┌──────────────────────────────────────────────────────┐       │     │
-│  │  │  Container: UDS Tokenizer (Python - Konflux built)    │       │     │
-│  │  │  Image: quay.io/rhoai/odh-llm-d-kv-cache-rhel9       │       │     │
-│  │  │                                                        │       │     │
-│  │  │  [gRPC Server]                                         │       │     │
-│  │  │  - Port: UDS /tmp/tokenizer/tokenizer-uds.socket      │       │     │
-│  │  │  - Protocol: gRPC                                      │       │     │
-│  │  │  - Encryption: None (UDS - filesystem permissions)     │       │     │
-│  │  │  - Auth: None (UDS file permissions, UID 65532)        │       │     │
-│  │  │                                                        │       │     │
-│  │  │  [Health Check]                                        │       │     │
-│  │  │  - Port: 8082/TCP (HTTP)                               │       │     │
-│  │  │  - Encryption: None                                    │       │     │
-│  │  │  - Auth: None                                          │       │     │
-│  │  └──────────────────────────────────────────────────────┘       │     │
-│  │                                                                  │     │
-│  │  Shared Volume: emptyDir → /tmp/tokenizer/ (UDS socket)         │     │
-│  └────────────────────────────────────────────────────────────────┘     │
-│                                                                          │
-│  CLUSTER-INTERNAL CONNECTIONS:                                          │
-│                                                                          │
-│  [vLLM/SGLang Inference Pods]                                            │
-│         │                                                                │
-│         │ Port: 5557/TCP                                                 │
-│         │ Protocol: ZMQ PUB/SUB                                          │
-│         │ Serialization: MessagePack                                     │
-│         │ Encryption: None (plaintext)                                   │
-│         │ Auth: None                                                     │
-│         ▼                                                                │
-│  [KV Events Pool] ◄──── (event ingestion)                               │
-│                                                                          │
-│  [llm-d-inference-scheduler]                                             │
-│         │                                                                │
-│         │ Protocol: Go library API (in-process)                          │
-│         │ Method: Indexer.GetPodScores()                                 │
-│         │ Encryption: N/A (in-process)                                   │
-│         │ Auth: N/A                                                      │
-│         ▼                                                                │
-│  [KV-Cache Indexer] ◄──── (pod scoring)                                 │
-│                                                                          │
-│  [Kubernetes API Server]                                                 │
-│         │                                                                │
-│         │ Port: 6443/TCP                                                 │
-│         │ Protocol: HTTPS                                                │
-│         │ Encryption: mTLS (ServiceAccount token)                        │
-│         │ Auth: ServiceAccount token                                     │
-│         ▼                                                                │
-│  [KV Events Pool] ◄──── (pod auto-discovery via controller-runtime)     │
-│                                                                          │
-│  [Prometheus]                                                            │
-│         │                                                                │
-│         │ Port: 8080/TCP                                                 │
-│         │ Protocol: HTTP                                                 │
-│         │ Encryption: None                                               │
-│         │ Auth: None                                                     │
-│         ▼                                                                │
-│  [KV-Cache Manager] ◄──── (GET /metrics, OpenMetrics format)            │
-│                                                                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│  OPTIONAL EXTERNAL SERVICES                                             │
-│                                                                          │
-│  [Redis/Valkey]                                                          │
-│  - Port: 6379/TCP                                                        │
-│  - Protocol: RESP (Redis protocol)                                       │
-│  - Encryption: None default, TLS via rediss:// scheme                   │
-│  - Auth: None default, Redis ACL optional                                │
-│  - Purpose: Distributed KV-block index backend                           │
-│  - Operations: HSET, HKEYS, Lua scripts for atomic eviction             │
-│                                                                          │
-│  [OpenTelemetry Collector]                                               │
-│  - Port: 4317/TCP                                                        │
-│  - Protocol: gRPC (OTLP)                                                │
-│  - Encryption: None (insecure default)                                   │
-│  - Auth: None                                                            │
-│  - Purpose: Distributed trace export                                     │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  CLUSTER-INTERNAL (Trusted - Kubernetes Network)                             │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │  POD BOUNDARY (Inference Scheduler Pod)                             │     │
+│  │                                                                     │     │
+│  │  [llm-d-inference-scheduler]                                        │     │
+│  │  - Embeds kvcache.Indexer as Go library                             │     │
+│  │  - Embeds kvevents.Pool as Go library                               │     │
+│  │  - SA: (configured by consuming deployment)                         │     │
+│  │         │                                                           │     │
+│  │         │ Transport: Unix Domain Socket                             │     │
+│  │         │ Path: /tmp/tokenizer/tokenizer-uds.socket                 │     │
+│  │         │ Protocol: gRPC                                            │     │
+│  │         │ Encryption: None (local IPC)                              │     │
+│  │         │ Auth: None (filesystem permissions)                       │     │
+│  │         ▼                                                           │     │
+│  │  [UDS Tokenizer Sidecar]                                            │     │
+│  │  - Image: odh-llm-d-kv-cache-rhel9                                 │     │
+│  │  - Language: Python 3.12 (vLLM CPU runtime)                         │     │
+│  │  - Health: 8082/TCP HTTP (readiness probe)                          │     │
+│  │  - gRPC: UDS socket only                                            │     │
+│  │  - SA: (shared with scheduler pod)                                  │     │
+│  │                                                                     │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│         │                                          │                         │
+│         │                                          │                         │
+│         │ Port: 5557/TCP (per vLLM pod)            │ Port: 443/TCP           │
+│         │ Protocol: ZMQ PUB/SUB                    │ Protocol: HTTPS         │
+│         │ Serialization: msgpack                   │ Encryption: TLS         │
+│         │ Encryption: None                         │ Auth: ServiceAccount    │
+│         │ Auth: None                               │       token             │
+│         ▼                                          ▼                         │
+│  [vLLM Pod 1]    [vLLM Pod 2]    [vLLM Pod N]   [Kubernetes API Server]     │
+│  - ZMQ PUB 5557/TCP                              - Pod watch (get, list,    │
+│  - Publishes KVEvents:                             watch) for label          │
+│    BlockStored, BlockRemoved,                      llm-d.ai/                 │
+│    AllBlocksCleared                                inferenceServing=true     │
+│  - Label: llm-d.ai/inferenceServing=true                                    │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │  OPTIONAL: vLLM Pod with PVC Evictor                               │     │
+│  │                                                                     │     │
+│  │  [PVC Evictor]                                                      │     │
+│  │  - N+2 process architecture                                         │     │
+│  │  - Monitors /mnt/pvc for disk usage                                 │     │
+│  │  - Cleanup threshold: 90% → Target: 70%                            │     │
+│  │  - No network ports exposed                                         │     │
+│  │                                                                     │     │
+│  │  [llmd_fs_backend]                                                  │     │
+│  │  - CUDA-accelerated tensor I/O                                      │     │
+│  │  - Zero-copy GPU-to-storage transfers                               │     │
+│  │  - Shared PVC/NFS volume                                            │     │
+│  │                                                                     │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  OPTIONAL BACKENDS:                                                          │
+│         │                                                                    │
+│         │ Port: 6379/TCP                                                     │
+│         │ Protocol: Redis / Redis-compatible                                 │
+│         │ Encryption: Optional TLS (rediss:// URL)                           │
+│         │ Auth: None (credentials via connection URL)                        │
+│         ▼                                                                    │
+│  [Redis / Valkey]                                                            │
+│  - Purpose: External KV-block index backend                                  │
+│  - Alternative to in-memory LRU                                              │
+│  - Pipelined operations + Lua scripts for atomics                            │
+│                                                                              │
+│  OPTIONAL OBSERVABILITY:                                                     │
+│         │                                                                    │
+│         │ Port: 4317/TCP                                                     │
+│         │ Protocol: gRPC (OTLP)                                              │
+│         │ Encryption: Insecure (configurable)                                │
+│         │ Auth: None                                                         │
+│         ▼                                                                    │
+│  [OTLP Collector]                                                            │
+│  - Purpose: Distributed tracing export                                       │
+│                                                                              │
+│  [Prometheus]                                                                │
+│  - Purpose: Metrics scrape (kvcache index metrics)                           │
+│  - Protocol: HTTP (controller-runtime default port)                          │
+│  - Metrics: admissions, evictions, lookups, latency                          │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                                  │
+│                                                                              │
+│  [Hugging Face Hub - huggingface.co]                                         │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: Bearer Token (optional)                                             │
+│  - Purpose: Download tokenizer files and model configs                       │
+│  - Consumer: UDS Tokenizer sidecar                                           │
+│                                                                              │
+│  [ModelScope (optional) - modelscope.cn]                                     │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: Token (optional)                                                    │
+│  - Purpose: Alternative model download source                                │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- Role: exec-rbac-role (deploy/rbac/)
+- Role: (pod reconciler - defined by consuming deployment)
   - API Groups: "" (core)
-  - Resources: pods, pods/exec
-  - Verbs: get, list, create
-
-- RoleBinding: exec-rbac-rolebinding
-  - Namespace: ${NAMESPACE}
-  - Role: exec-rbac-role
-  - ServiceAccount: operator-controller-manager
+  - Resources: pods
+  - Verbs: get, list, watch
+  - Label Selector: llm-d.ai/inferenceServing=true
+  - Note: RBAC bindings are configured by consuming deployment
+         (e.g., llm-d-inference-scheduler), not by this library
 
 Secrets:
-- HF Token secret (Opaque) - HuggingFace Hub auth for tokenizer downloads
-  - Provisioned by: Manual / Helm
-  - Auto-rotate: No
-
-Authentication & Authorization Summary:
-- UDS Tokenizer gRPC: No auth (UDS file permissions, UID 65532, pod-local only)
-- Health check /healthz: No auth (open, Kubernetes probes only)
-- ZMQ event subscription: No auth (network-level isolation, cluster-internal)
-- Redis/Valkey: No auth default (Redis ACL optional)
-- HuggingFace Hub: Bearer Token (HF_TOKEN env var)
-- Kubernetes API: ServiceAccount token (mTLS)
-- OpenTelemetry: No auth (insecure gRPC default)
+- No secrets directly consumed by the library
+- Redis/Valkey credentials: Passed via connection URL (redis:// or rediss://)
+- HuggingFace tokens: Passed via environment variables by consuming deployment
+- No TLS certificates managed by this component
 
 Security Notes:
-- All internal communication is plaintext by default (design trade-off for performance)
-- ZMQ PUB/SUB has no encryption or authentication - relies on network-level isolation
-- Redis backend supports TLS via rediss:// URL scheme for encrypted transit
-- UDS tokenizer communication is pod-local via Unix Domain Socket (filesystem isolation)
-- Production deployments should evaluate NetworkPolicies or service mesh mTLS
-- FIPS: UBI base image with system OpenSSL; no custom TLS config; CGO_ENABLED=1 for Go
-- No MD5, RC4, DES, or weak cipher usage detected
+- ALL internal communication is PLAINTEXT (architecturally intentional):
+  - ZMQ PUB/SUB (5557/TCP): No encryption, no authentication
+  - gRPC over UDS: No encryption (local IPC, filesystem permissions only)
+  - IndexerService gRPC (50051/TCP, example only): No encryption, no auth
+  - OTLP export (4317/TCP): Insecure gRPC by default
+- Security boundary: Relies entirely on Kubernetes network policies
+  and namespace isolation
+- Redis/Valkey: Supports optional TLS via rediss:// URL scheme
+- External egress (Hugging Face Hub): Uses TLS 1.2+
+
+FIPS Compliance Notes:
+- CGO_ENABLED=1 (required for Python/ZMQ cgo linking)
+- No explicit GOEXPERIMENT=strictfipsruntime build flag
+- UBI 9 base image includes OpenSSL
+- gRPC connections use insecure.NewCredentials() (plaintext)
+- Non-FIPS crypto risks: ZMQ, gRPC, OTLP all use plaintext by default

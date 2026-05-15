@@ -1,92 +1,75 @@
 graph TB
-    subgraph Client["CLIENT ENVIRONMENT (Jupyter Notebook / Python Script)"]
-        SDK["CodeFlare SDK<br/>Python Client Library<br/>Auth: kube-authkit<br/>TLS: cryptography 46.0.7<br/>RSA 3072-bit, SHA-256"]
+    subgraph ClientSide["CLIENT SIDE (User Environment)"]
+        User["Data Scientist<br/>Jupyter Notebook / Python<br/>codeflare-sdk"]
     end
 
-    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP<br/>TLS 1.2+<br/>AuthZ: RBAC"]
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE (Trusted)"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>AuthN: Bearer Token / kubeconfig / SA token<br/>AuthZ: RBAC"]
     end
 
-    subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-applications)"]
-        KubeRay["KubeRay Operator<br/>Watches: RayCluster, RayJob<br/>Creates: Pods, Services, CA Secrets"]
-        Kueue["Kueue Controller<br/>Watches: Workloads<br/>Manages: Admission, Quotas"]
+    subgraph OperatorNS["OPERATOR NAMESPACE (Trusted)"]
+        KubeRay["KubeRay Operator<br/>Watches: RayCluster CR"]
+        CFOperator["CodeFlare Operator<br/>AppWrapper Controller<br/>Watches: AppWrapper CR"]
+        KueueCtrl["Kueue Controller<br/>Watches: LocalQueue CR"]
     end
 
-    subgraph UserNS["USER NAMESPACE (Ray Workload)"]
+    subgraph UserNS["USER NAMESPACE (Workload)"]
         direction TB
-        RayHead["Ray Head Pod<br/>{cluster}-head-svc (ClusterIP)"]
 
-        subgraph Ports["Head Service Ports"]
-            P6379["6379/TCP GCS<br/>mTLS (optional)"]
-            P8265["8265/TCP Dashboard<br/>mTLS (optional)"]
-            P10001["10001/TCP Client<br/>mTLS (optional)"]
+        subgraph RayCluster["Ray Cluster"]
+            RayHead["Ray Head Pod<br/>Image: quay.io/modh/ray<br/>Volumes: odh-trusted-ca-bundle"]
+            RayWorkers["Ray Worker Pods<br/>Image: quay.io/modh/ray<br/>Volumes: odh-trusted-ca-bundle"]
         end
 
-        RayWorker["Ray Worker Pods<br/>Image: quay.io/modh/ray"]
+        HeadSvc["{cluster}-head-svc (ClusterIP)<br/>6379/TCP (GCS) - No TLS<br/>8265/TCP (Dashboard) - No TLS<br/>10001/TCP (Ray Client) - Opt. TLS"]
 
-        subgraph Secrets["Secrets"]
-            CASec["{cluster}-ca-secret<br/>CA cert for mTLS<br/>By: KubeRay Operator"]
-            FileSec["{job}-files<br/>Local files (base64)<br/>By: SDK"]
-        end
+        CASecret["{cluster}-ca-secret-*<br/>Opaque: ca.key, ca.crt<br/>RSA-2048 / SHA256"]
     end
 
-    subgraph IngressLayer["INGRESS LAYER (Dashboard Access)"]
-        HTTPRoute["HTTPRoute (Gateway API)<br/>443/TCP HTTPS<br/>TLS: SIMPLE<br/>Priority 1"]
-        OSRoute["OpenShift Route<br/>443/TCP HTTPS<br/>TLS: edge/passthrough<br/>Priority 2"]
-        K8sIngress["Kubernetes Ingress<br/>80/TCP HTTP<br/>Priority 3"]
+    subgraph IngressLayer["INGRESS LAYER"]
+        OCPRoute["OpenShift Route<br/>ray-dashboard-{name}<br/>443/TCP HTTPS<br/>TLS: edge/passthrough<br/>Auth: Bearer Token (OAuth)"]
+        K8sIngress["Kubernetes Ingress<br/>ray-dashboard-{name}<br/>80 or 443/TCP<br/>Auth: None"]
     end
 
-    subgraph ExternalSvc["EXTERNAL SERVICES"]
-        Registry["Container Registry<br/>quay.io/modh/ray<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Image pull secret"]
-        Redis["Redis Server (optional)<br/>User-configured port<br/>TCP<br/>Auth: Password (K8s Secret)"]
-    end
+    %% SDK → K8s API (primary control path)
+    User -->|"HTTPS/6443<br/>TLS 1.2+<br/>Bearer Token / kubeconfig"| K8sAPI
 
-    %% Client to K8s API
-    SDK -->|"HTTPS/6443<br/>TLS 1.2+<br/>Bearer Token / OIDC /<br/>mTLS / kubeconfig"| K8sAPI
+    %% K8s API → Operators (internal reconciliation)
+    K8sAPI -.->|"RayCluster CR reconcile"| KubeRay
+    K8sAPI -.->|"AppWrapper CR reconcile"| CFOperator
+    K8sAPI -.->|"LocalQueue scheduling"| KueueCtrl
 
-    %% K8s API to Operators
-    K8sAPI -->|"Watch CRDs<br/>Service Account"| KubeRay
-    K8sAPI -->|"Watch Workloads<br/>Service Account"| Kueue
+    %% Operators → Workload creation
+    KubeRay -.->|"Creates Pods + Services"| RayHead
+    KubeRay -.->|"Creates Pods"| RayWorkers
 
-    %% Operators to User NS
-    KubeRay -->|"Creates pods,<br/>services, secrets"| RayHead
-    Kueue -->|"Admission control<br/>suspend/unsuspend"| K8sAPI
+    %% Ray internal communication
+    RayHead -->|"6379/TCP GCS<br/>None or mTLS"| RayWorkers
+    RayHead --- HeadSvc
 
-    %% SDK to Ray (via ingress or direct)
-    SDK -->|"HTTP(S)/8265<br/>mTLS (optional)<br/>Client certificate"| P8265
-    SDK -->|"TCP/6379<br/>mTLS (optional)<br/>Client certificate"| P6379
-    SDK -->|"TCP/10001<br/>mTLS (optional)<br/>Client certificate"| P10001
+    %% Dashboard access via ingress
+    OCPRoute -->|"8265/TCP internal<br/>No TLS"| HeadSvc
+    K8sIngress -->|"8265/TCP internal<br/>No TLS"| HeadSvc
 
-    %% Ingress to Ray
-    HTTPRoute -->|"→ 8265/TCP"| RayHead
-    OSRoute -->|"→ 8265/TCP"| RayHead
-    K8sIngress -->|"→ 8265/TCP"| RayHead
+    %% SDK → Dashboard (data path)
+    User -->|"HTTPS/443 (OpenShift)<br/>TLS, Bearer Token"| OCPRoute
+    User -->|"HTTP/8265 (vanilla K8s)<br/>No TLS, No Auth"| K8sIngress
 
-    %% SDK discovers ingress
-    SDK -.->|"discovers"| HTTPRoute
-    SDK -.->|"fallback"| OSRoute
-    SDK -.->|"fallback"| K8sIngress
-
-    %% External services
-    RayHead -->|"HTTPS/443<br/>TLS 1.2+<br/>Image pull secret"| Registry
-    RayHead -->|"TCP<br/>Password auth"| Redis
-
-    %% Head to workers
-    RayHead -->|"mTLS (optional)"| RayWorker
+    %% TLS cert secret
+    CASecret -.->|"mounted in pods"| RayHead
+    CASecret -.->|"mounted in pods"| RayWorkers
 
     %% Styling
     classDef client fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    classDef controlplane fill:#fce4ec,stroke:#c62828,stroke-width:2px
-    classDef operator fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
-    classDef workload fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    classDef ingress fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    classDef external fill:#fff9c4,stroke:#f57f17,stroke-width:2px
-    classDef secret fill:#ffebee,stroke:#b71c1c,stroke-width:1px
+    classDef controlplane fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    classDef operator fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    classDef workload fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef ingress fill:#ffe0b2,stroke:#d79b00,stroke-width:2px
+    classDef secret fill:#ffcdd2,stroke:#c62828,stroke-width:2px
 
-    class SDK client
+    class User client
     class K8sAPI controlplane
-    class KubeRay,Kueue operator
-    class RayHead,RayWorker,P6379,P8265,P10001 workload
-    class HTTPRoute,OSRoute,K8sIngress ingress
-    class Registry,Redis external
-    class CASec,FileSec secret
+    class KubeRay,CFOperator,KueueCtrl operator
+    class RayHead,RayWorkers,HeadSvc workload
+    class OCPRoute,K8sIngress ingress
+    class CASecret secret

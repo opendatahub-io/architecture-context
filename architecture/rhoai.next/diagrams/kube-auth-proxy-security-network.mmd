@@ -1,67 +1,71 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Browser["User Browser"]
+        Browser["Browser User"]
+        APIClient["API Client"]
     end
 
-    subgraph Ingress["INGRESS (Gateway API / Route)"]
-        EnvoyGW["Envoy Gateway / OpenShift Route<br/>443/TCP<br/>TLS 1.3 Termination<br/>Managed by rhods-operator"]
+    subgraph Ingress["INGRESS (Platform-managed)"]
+        Route["HTTPRoute / OpenShift Route<br/>443/TCP → sidecar port<br/>TLS 1.2+ SIMPLE<br/>Created by rhods-operator"]
     end
 
-    subgraph Pod["POD (Sidecar Pattern)"]
+    subgraph Pod["POD (Sidecar Architecture)"]
         direction TB
 
-        subgraph AuthModeZone["Auth Mode (PROXY_MODE=auth)"]
-            AuthProxy["kube-auth-proxy<br/>4180/TCP HTTP | 443/TCP HTTPS<br/>OIDC / OpenShift OAuth / JWT / K8s SA Token<br/>FIPS: strictfipsruntime"]
+        subgraph ProxyContainer["kube-auth-proxy Container"]
+            direction LR
+
+            subgraph AuthMode["AUTH MODE"]
+                AuthProxy["kube-auth-proxy<br/>4180/HTTP, 4443/HTTPS<br/>TLS 1.2+<br/>Auth: OAuth2 session /<br/>Bearer / K8s token / Basic<br/>CSRF: PKCE + Nonce"]
+            end
+
+            subgraph RBACModeBox["RBAC MODE (default)"]
+                RBACProxy["kube-rbac-proxy<br/>8443/HTTPS<br/>TLS 1.2+<br/>Auth: Bearer / x509 cert<br/>Authz: SAR (cached)<br/>HTTP/2 disabled"]
+            end
         end
 
-        subgraph RBACModeZone["RBAC Mode (PROXY_MODE=rbac)"]
-            RBACProxy["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS 1.2+ (configurable ciphers)<br/>Bearer + TokenReview + SAR<br/>FIPS: strictfipsruntime"]
-        end
-
-        UpstreamApp["Upstream Application<br/>(same pod, localhost)<br/>configurable port"]
+        UpstreamApp["Upstream Application<br/>(same pod)<br/>Configurable port<br/>HTTP/HTTPS/Unix/h2c"]
     end
 
-    subgraph ClusterInternal["CLUSTER-INTERNAL (Trusted)"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+ (in-cluster CA)<br/>ServiceAccount token"]
-
-        Redis["Redis (optional)<br/>6379/TCP<br/>Optional TLS<br/>Password/ACL<br/>AES-GCM encrypted sessions"]
+    subgraph ClusterServices["CLUSTER SERVICES (Internal)"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA token auth"]
+        Prometheus["OpenShift Prometheus<br/>Scrapes /metrics<br/>Hardcoded allow:<br/>openshift-monitoring:prometheus-k8s"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        OIDC["OIDC Provider<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>OAuth2 client credentials"]
-
-        OShiftOAuth["OpenShift OAuth Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>OAuth2 client credentials"]
+        OIDC["OIDC / OpenShift OAuth Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Client credentials"]
+        Redis["Redis (optional)<br/>6379/TCP<br/>TLS optional<br/>Password auth optional<br/>Standalone / Sentinel / Cluster"]
     end
 
-    %% Flows - External to Ingress
-    Browser -->|"HTTPS/443<br/>TLS 1.3<br/>Cookie / Bearer / None"| EnvoyGW
+    %% External → Ingress
+    Browser -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth2 session"| Route
+    APIClient -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer token"| Route
 
-    %% Flows - Ingress to Pod
-    EnvoyGW -->|"HTTP/4180 (ext_authz)<br/>No encryption (pod-local)<br/>Forwarded headers"| AuthProxy
-    EnvoyGW -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer token"| RBACProxy
+    %% Ingress → Pod
+    Route -->|"HTTPS/4443<br/>TLS 1.2+<br/>Re-encrypt"| AuthProxy
+    Route -->|"HTTPS/8443<br/>TLS 1.2+<br/>Re-encrypt"| RBACProxy
 
-    %% Flows - Sidecar to Upstream
-    AuthProxy -->|"HTTP/HTTPS/h2c<br/>Optional TLS<br/>X-Forwarded-User/Email/Groups"| UpstreamApp
-    RBACProxy -->|"HTTP/HTTPS/h2c<br/>Optional TLS<br/>x-remote-user/groups"| UpstreamApp
+    %% Pod internal (sidecar → upstream)
+    AuthProxy -->|"HTTP/HTTPS/Unix<br/>Configurable<br/>GAP-Auth headers"| UpstreamApp
+    RBACProxy -->|"HTTP/HTTPS/h2c<br/>Configurable<br/>Auth headers (optional)"| UpstreamApp
 
-    %% Flows - to Cluster Internal
+    %% Proxy → Cluster Services
     AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>TokenReview"| K8sAPI
     RBACProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>TokenReview + SAR"| K8sAPI
-    AuthProxy -->|"Redis/6379<br/>Optional TLS<br/>Password/ACL"| Redis
+    Prometheus -->|"HTTPS/8443<br/>TLS 1.2+<br/>Auto-allowed SA"| RBACProxy
 
-    %% Flows - to External
-    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth2 client creds"| OIDC
-    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth2 client creds"| OShiftOAuth
+    %% Proxy → External Services
+    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>client_id + secret"| OIDC
+    AuthProxy -->|"TCP/6379<br/>TLS optional<br/>Password optional"| Redis
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef pod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef clusterinternal fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef cluster fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
-    class Browser external
-    class EnvoyGW ingress
+    class Browser,APIClient external
+    class Route ingress
     class AuthProxy,RBACProxy,UpstreamApp pod
-    class K8sAPI,Redis clusterinternal
-    class OIDC,OShiftOAuth externalservice
+    class K8sAPI,Prometheus cluster
+    class OIDC,Redis externalservice

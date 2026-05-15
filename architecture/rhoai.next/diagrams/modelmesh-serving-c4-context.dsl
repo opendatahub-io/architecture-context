@@ -1,75 +1,68 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and deploys ML models for inference via Predictor or InferenceService CRs"
+        dataScientist = person "Data Scientist" "Creates and deploys ML models for inference serving"
+        mlEngineer = person "ML Engineer" "Configures serving runtimes and manages model deployments"
 
-        modelmeshServing = softwareSystem "ModelMesh Serving" "Kubernetes operator for multi-model serving with intelligent model placement, scaling, and routing via an etcd-backed state store" {
-            controller = container "modelmesh-controller" "Manages ServingRuntime deployments, Predictor lifecycle, Service reconciliation, HPA autoscaling, and etcd secret propagation" "Go Operator (controller-runtime)"
-            webhook = container "ServingRuntime Webhook" "Validates ServingRuntime and ClusterServingRuntime create/update operations for autoscaler config correctness" "Validating Webhook (9443/TCP)"
-            eventStream = container "ModelMesh Event Stream" "Watches etcd for model and vmodel state changes, dispatches events to predictor reconciler" "etcd Watcher"
-            grpcResolver = container "gRPC Resolver" "Custom gRPC resolver using kube:// scheme for Kubernetes Endpoints-based ModelMesh service discovery" "Kubernetes Service Discovery"
+        modelMeshServing = softwareSystem "ModelMesh Serving" "Kubernetes operator that manages distributed multi-model inference serving via ModelMesh" {
+            controller = container "modelmesh-controller" "Manages ServingRuntime Deployments, Predictor model registration, Service reconciliation, and HPA autoscaling" "Go Operator (controller-runtime)"
+            webhookServer = container "Webhook Server" "Validates ServingRuntime and ClusterServingRuntime resources (autoscaler config rules)" "Go HTTPS Server" "9443/TCP"
+            modelMeshContainer = container "ModelMesh Container" "Distributed model serving runtime - handles model placement, routing, caching, and inference" "Java Sidecar" "8033/TCP gRPC"
+            restProxy = container "REST Proxy" "Translates KServe v2 REST API to gRPC for ModelMesh" "Go Sidecar" "8008/TCP HTTP"
+            oauthProxy = container "oauth-proxy" "Authentication proxy for inference endpoints in RHOAI" "OpenShift OAuth Proxy" "8443/TCP HTTPS"
+            storagePuller = container "Storage Puller" "Downloads and caches model artifacts from storage backends" "Go Sidecar" "8086/TCP gRPC"
+            modelRuntime = container "Model Runtime" "Actual model inference execution (Triton, MLServer, OVMS, TorchServe)" "ML Framework Container"
         }
 
-        modelmeshDataPlane = softwareSystem "ModelMesh Data Plane" "Model serving runtime pods with ModelMesh, runtime containers, puller, REST proxy, and oauth-proxy sidecars" {
-            mmContainer = container "ModelMesh Container" "Inference routing, model lifecycle management, etcd state coordination" "Java/gRPC (8033/TCP)"
-            runtimeContainer = container "Runtime Container" "Framework-specific model serving (Triton, MLServer, OVMS, TorchServe)" "Various"
-            pullerSidecar = container "Puller Sidecar" "Downloads model artifacts from external storage (S3, GCS, Azure, PVC, HTTP)" "Go gRPC (8086/TCP)"
-            restProxy = container "REST Proxy" "HTTP REST to gRPC protocol translation for inference requests" "Go HTTP (8008/TCP)"
-            oauthProxy = container "OAuth Proxy" "OpenShift OAuth authentication proxy with SAR-based access control" "Go HTTPS (8443/TCP)"
-        }
+        etcd = softwareSystem "etcd" "Distributed key-value store for model state coordination and event streaming" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API Server" "Kubernetes control plane for CRD management and resource orchestration" "External"
+        istio = softwareSystem "Istio / Service Mesh" "Service mesh for traffic management (optional, used by platform)" "External"
+        certManager = softwareSystem "cert-manager" "TLS certificate management for webhook server" "External"
+        prometheusOperator = softwareSystem "Prometheus" "Metrics collection for inference and controller metrics" "External"
+        kserve = softwareSystem "KServe" "ML inference serving platform - provides CRD types and optional InferenceService integration" "Internal RHOAI"
+        rhodsOperator = softwareSystem "rhods-operator" "Platform operator that deploys and configures modelmesh-serving" "Internal RHOAI"
+        odhModelController = softwareSystem "odh-model-controller" "ODH model controller that manages webhooks for InferenceService" "Internal RHOAI"
 
-        etcd = softwareSystem "etcd" "Distributed key-value store for model registry state, vmodel routing, and event streaming" "External"
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API for CRD CRUD, Deployment, Service, HPA, Secret, ConfigMap management" "External"
-        certManager = softwareSystem "cert-manager" "TLS certificate management for webhook serving" "External (Optional)"
-        prometheusOperator = softwareSystem "Prometheus Operator" "Monitoring via ServiceMonitor CRDs" "External (Optional)"
+        s3Storage = softwareSystem "S3-Compatible Storage" "Model artifact storage (AWS S3, MinIO, Ceph)" "External"
+        gcsStorage = softwareSystem "Google Cloud Storage" "Model artifact storage (GCS)" "External"
+        azureStorage = softwareSystem "Azure Blob Storage" "Model artifact storage (Azure)" "External"
 
-        s3 = softwareSystem "S3-Compatible Storage" "Model artifact storage (AWS S3, MinIO, etc.)" "External"
-        gcs = softwareSystem "GCS Storage" "Google Cloud model artifact storage" "External"
-        azureBlob = softwareSystem "Azure Blob Storage" "Azure model artifact storage" "External"
+        # User interactions
+        dataScientist -> modelMeshServing "Creates Predictor / InferenceService CRs via kubectl"
+        dataScientist -> oauthProxy "Sends inference requests" "HTTPS/8443"
+        mlEngineer -> modelMeshServing "Configures ServingRuntimes"
 
-        kserve = softwareSystem "KServe" "Peer component providing InferenceService CRD types and additional webhooks" "Internal RHOAI"
-        odhModelController = softwareSystem "ODH Model Controller" "Peer component with mutating/validating webhooks on InferenceService" "Internal RHOAI"
-        rhodsOperator = softwareSystem "RHODS Operator" "Platform operator defining connection webhooks for InferenceService" "Internal RHOAI"
+        # Internal container relationships
+        controller -> webhookServer "Delegates validation"
+        controller -> modelMeshContainer "Registers/unregisters models" "gRPC/8033"
+        controller -> etcd "Watches model state events" "gRPC/2379 TLS"
+        oauthProxy -> restProxy "Forwards authenticated requests" "HTTP/8008"
+        restProxy -> modelMeshContainer "Translates REST to gRPC" "gRPC/8033"
+        modelMeshContainer -> modelRuntime "Forwards inference" "gRPC (UDS/TCP)"
+        modelMeshContainer -> storagePuller "Triggers model download" "gRPC/8086"
+        modelMeshContainer -> etcd "State synchronization" "gRPC/2379 TLS mTLS"
 
-        # Relationships - Controller
-        user -> modelmeshServing "Creates Predictor/InferenceService/ServingRuntime CRs via kubectl"
-        controller -> k8sAPI "CRUD for CRDs, Deployments, Services, HPA, Secrets, ConfigMaps" "HTTPS/443 TLS"
-        controller -> etcd "Reads etcd secret, copies to user namespaces with namespace-specific root prefix"
-        controller -> mmContainer "registerModel, setVModel, getVModelStatus, unregisterModel" "gRPC/8033 Optional TLS/mTLS"
-        eventStream -> etcd "Watches model and vmodel key changes" "gRPC/2379 Optional TLS/mTLS"
-        webhook -> k8sAPI "Called by API server for admission validation" "HTTPS/9443 TLS"
+        # External dependencies
+        controller -> kubernetesAPI "Watches/manages CRDs, Deployments, Services, Secrets" "HTTPS/443"
+        kubernetesAPI -> webhookServer "Admission webhook calls" "HTTPS/9443"
+        storagePuller -> s3Storage "Downloads model artifacts" "HTTPS/443"
+        storagePuller -> gcsStorage "Downloads model artifacts" "HTTPS/443"
+        storagePuller -> azureStorage "Downloads model artifacts" "HTTPS/443"
+        certManager -> webhookServer "Provisions TLS certificates"
+        prometheusOperator -> modelMeshContainer "Scrapes metrics" "HTTPS/2112"
 
-        # Relationships - Data Plane
-        user -> oauthProxy "REST inference requests" "HTTPS/8443 TLS OAuth"
-        user -> mmContainer "gRPC inference requests" "gRPC/8033 Optional TLS/mTLS"
-        oauthProxy -> restProxy "Forwards authenticated requests" "HTTP/8008 localhost"
-        restProxy -> mmContainer "Translates HTTP to gRPC" "gRPC/8033"
-        mmContainer -> runtimeContainer "Forwards inference to loaded model" "gRPC localhost/UDS"
-        mmContainer -> etcd "Model registry state, vmodel routing" "gRPC/2379 Optional TLS/mTLS"
-        pullerSidecar -> s3 "Downloads model artifacts" "HTTPS/443 TLS AWS IAM"
-        pullerSidecar -> gcs "Downloads model artifacts" "HTTPS/443 TLS GCP creds"
-        pullerSidecar -> azureBlob "Downloads model artifacts" "HTTPS/443 TLS Azure creds"
-        pullerSidecar -> runtimeContainer "Loads model via adapter" "gRPC/8085 or UDS"
-
-        # Relationships - Optional/Peer
-        controller -> certManager "Requests TLS certificates for webhook" "CRD"
-        controller -> prometheusOperator "Creates ServiceMonitor for metrics scraping" "CRD"
-        kserve -> modelmeshServing "Provides InferenceService/ServingRuntime CRD types; external webhooks intercept resources"
-        odhModelController -> modelmeshServing "Mutating/validating webhooks on InferenceService"
-        rhodsOperator -> modelmeshServing "Connection webhook on InferenceService"
+        # Platform relationships
+        rhodsOperator -> modelMeshServing "Deploys via kustomize manifests"
+        kserve -> modelMeshServing "Provides CRD types (ServingRuntime, InferenceService)"
+        odhModelController -> modelMeshServing "Webhook interception for InferenceService"
     }
 
     views {
-        systemContext modelmeshServing "SystemContext" {
+        systemContext modelMeshServing "SystemContext" {
             include *
             autoLayout
         }
 
-        container modelmeshServing "ControllerContainers" {
-            include *
-            autoLayout
-        }
-
-        container modelmeshDataPlane "DataPlaneContainers" {
+        container modelMeshServing "Containers" {
             include *
             autoLayout
         }
@@ -79,12 +72,13 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "External (Optional)" {
-                background #bbbbbb
-                color #ffffff
-            }
             element "Internal RHOAI" {
                 background #7ed321
+                color #ffffff
+            }
+            element "Person" {
+                shape person
+                background #4a90e2
                 color #ffffff
             }
             element "Software System" {
@@ -94,11 +88,6 @@ workspace {
             element "Container" {
                 background #438dd5
                 color #ffffff
-            }
-            element "Person" {
-                background #08427b
-                color #ffffff
-                shape person
             }
         }
     }

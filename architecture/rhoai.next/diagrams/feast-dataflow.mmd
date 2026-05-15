@@ -1,56 +1,37 @@
 sequenceDiagram
-    autonumber
-
-    participant Client as ML Model / Client
-    participant Route as OpenShift Route<br/>443/TCP HTTPS TLS edge
-    participant FS as Feature Server<br/>6566/TCP HTTP/HTTPS
-    participant SM as SecurityManager<br/>(in-process)
-    participant Redis as Online Store (Redis)<br/>6379/TCP TLS optional
-    participant BQ as Offline Store (BigQuery)<br/>443/TCP HTTPS TLS 1.2+
-    participant Operator as Feast Operator
-    participant Registry as Registry REST API<br/>8001/TCP TLS
+    participant Client as ML Inference Client
+    participant OnlineSvc as feast-online Service<br/>6566/TCP or 6567/TCP (TLS)
+    participant FeatureServer as Feature Server Pod<br/>(Python + Go)
+    participant OnlineStore as Online Store Backend<br/>(Redis 6379 / PostgreSQL 5432 / DynamoDB 443)
+    participant RegistrySvc as feast-registry Service<br/>6570/TCP gRPC or 6571/TCP (TLS)
+    participant CronJob as Materialization CronJob
+    participant OfflineStore as Offline Store Backend<br/>(BigQuery / Snowflake 443)
+    participant Operator as feast-operator
+    participant RegistryREST as Registry REST API<br/>6572/TCP or 6573/TCP (TLS)
     participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
 
-    rect rgb(230, 245, 255)
-        Note over Client,Redis: Flow 1: Online Feature Retrieval
-        Client->>Route: POST /get-online-features<br/>Auth: Bearer Token (OIDC/K8s)
-        Route->>FS: Forward (TLS termination)
-        FS->>SM: Validate permissions<br/>Permission: READ_ONLINE
-        SM-->>FS: Authorized
-        FS->>Redis: Get feature values<br/>Auth: Password
-        Redis-->>FS: Feature data
-        FS-->>Route: JSON Response
-        Route-->>Client: Feature values
-    end
+    Note over Client,OnlineStore: Flow 1: Online Feature Retrieval
+    Client->>OnlineSvc: POST /get-online-features<br/>Auth: OIDC/K8s token/None
+    OnlineSvc->>FeatureServer: Forward request
+    FeatureServer->>OnlineStore: Read features<br/>Backend-specific protocol + auth
+    OnlineStore-->>FeatureServer: Feature values
+    FeatureServer-->>OnlineSvc: Response
+    OnlineSvc-->>Client: JSON/gRPC Response
 
-    rect rgb(255, 245, 230)
-        Note over Operator,Redis: Flow 2: Feature Materialization (CronJob)
-        Note right of Operator: CronJob triggers kubectl exec<br/>into Feature Server pod
-        Operator->>FS: kubectl exec (ServiceAccount RBAC)
-        FS->>BQ: Read offline features<br/>Auth: GCP credentials
-        BQ-->>FS: Historical feature data
-        FS->>Redis: Write to online store<br/>Auth: Password
-        Redis-->>FS: Write confirmed
-    end
+    Note over CronJob,OnlineStore: Flow 2: Feature Materialization (CronJob)
+    CronJob->>RegistrySvc: Fetch feature definitions<br/>gRPC, SA token auth
+    RegistrySvc-->>CronJob: Feature metadata
+    CronJob->>OfflineStore: Read historical features<br/>HTTPS/TLS, backend credentials
+    OfflineStore-->>CronJob: Feature data
+    CronJob->>OnlineStore: Write to online store<br/>Backend-specific, backend credentials
 
-    rect rgb(245, 255, 230)
-        Note over Client,BQ: Flow 3: Feature Push (with offline batching)
-        Client->>Route: POST /push<br/>Auth: Bearer Token
-        Route->>FS: Forward (TLS termination)
-        FS->>SM: Validate permissions<br/>Permission: WRITE_ONLINE / WRITE_OFFLINE
-        SM-->>FS: Authorized
-        FS->>Redis: Write to online store
-        Redis-->>FS: Write confirmed
-        FS-->>Route: Push acknowledged
-        Route-->>Client: 200 OK
-        Note right of FS: Background thread batches<br/>offline writes (size/time flush)
-        FS->>BQ: Batch write to offline store<br/>Auth: GCP credentials
-    end
+    Note over Operator,K8sAPI: Flow 3: Operator Auto-Access RBAC Sync
+    Operator->>RegistryREST: GET /api/v1/permissions<br/>Bearer JWT (intra-communication)
+    RegistryREST-->>Operator: Permission policies
+    Operator->>K8sAPI: Create/update RBAC resources<br/>HTTPS/TLS, SA token
+    K8sAPI-->>Operator: Confirmation
 
-    rect rgb(245, 230, 255)
-        Note over Operator,K8sAPI: Flow 4: Operator Auto-Access RBAC
-        Operator->>Registry: GET /api/v1/permissions<br/>Auth: Intra-communication JWT
-        Registry-->>Operator: Permission policies
-        Operator->>K8sAPI: Create/Update RBAC resources<br/>Auth: ServiceAccount token
-        K8sAPI-->>Operator: RBAC resources created
-    end
+    Note over Operator,K8sAPI: Flow 4: Notebook Integration (ODH)
+    K8sAPI-->>Operator: Watch event: Notebook created<br/>(kubeflow.org/v1 with feast label)
+    Operator->>K8sAPI: Read FeatureStore ConfigMaps<br/>HTTPS/TLS, SA token
+    Operator->>K8sAPI: Create/update notebook ConfigMap<br/>with feature_store.yaml

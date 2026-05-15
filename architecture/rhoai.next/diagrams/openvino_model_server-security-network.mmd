@@ -1,79 +1,81 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client<br/>Inference Consumer"]
+        Client["External Client<br/>Application"]
     end
 
-    subgraph PlatformSecurity["PLATFORM SECURITY LAYER (RHOAI)"]
-        direction TB
-        KubeRBACProxy["kube-rbac-proxy Sidecar<br/>8443/TCP<br/>TLS 1.2+<br/>K8s TokenReview + SubjectAccessReview"]
-        IstioSidecar["Istio Envoy Sidecar<br/>(optional)<br/>mTLS STRICT<br/>SPIFFE Identity"]
+    subgraph Ingress["INGRESS (Platform-Managed)"]
+        Gateway["Istio Gateway /<br/>OpenShift Route<br/>443/TCP<br/>TLS 1.2+"]
     end
 
-    subgraph OVMSPod["OVMS POD (KServe InferenceService)<br/>UID: 5000 / GID: 5000 (non-root)<br/>No K8s API access"]
+    subgraph Pod["OVMS POD (Trust Boundary)"]
         direction TB
 
-        subgraph RESTEndpoint["REST Endpoint (Drogon)"]
-            REST["HTTP/1.1 Plaintext<br/>configurable/TCP<br/>Workers: 10"]
-            V1API["/v1/* TFS v1<br/>No auth"]
-            V2API["/v2/* KServe v2<br/>No auth"]
-            V3API["/v3/* OpenAI/Cohere<br/>API key (optional)"]
-            MetricsAPI["/metrics Prometheus<br/>No auth"]
+        subgraph AuthProxy["AUTH PROXY (Sidecar)"]
+            KRBP["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>RBAC Authorization"]
         end
 
-        subgraph GRPCEndpoint["gRPC Endpoint"]
-            GRPC["gRPC HTTP/2 Plaintext<br/>InsecureServerCredentials<br/>configurable/TCP<br/>Memory Quota: 2GB"]
+        subgraph OVMSContainer["OVMS Container (UID 5000, UBI 9)"]
+            direction TB
+            RESTServer["Drogon HTTP Server<br/>8080/TCP HTTP<br/>API Key (optional)<br/><br/>v1: TFS predict/metadata<br/>v2: KServe infer/health<br/>v3: OpenAI chat/embed/rerank<br/>/metrics: Prometheus"]
+            GRPCServer["gRPC Server<br/>8085/TCP HTTP/2<br/>No built-in auth<br/><br/>KServe v2 Inference<br/>TFS Prediction/Model"]
         end
-
-        InferenceCore["Inference Core<br/>OpenVINO Runtime 2026.0"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (Model Storage)"]
-        S3["Amazon S3<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
-        GCS["Google Cloud Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>GCP Service Account"]
+    subgraph KServeControl["KSERVE (Control Plane)"]
+        KServeCtrl["KServe Controller<br/>Manages InferenceService<br/>Creates/configures pods"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
+        HF["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>HF Token (optional)"]
+        S3["AWS S3<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
         Azure["Azure Blob Storage<br/>*.blob.core.windows.net<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Connection String"]
-        HuggingFace["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>HF_TOKEN Bearer"]
+        GCS["Google Cloud Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>GCP Credentials"]
+    end
+
+    subgraph LocalStorage["LOCAL STORAGE"]
+        PVC["PVC / Local Filesystem<br/>No network<br/>POSIX permissions (UID 5000)"]
     end
 
     subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>Scrapes /metrics<br/>HTTP configurable/TCP"]
+        Prometheus["Prometheus /<br/>OpenShift Monitoring<br/>Scrapes /metrics"]
+        K8sProbes["Kubernetes Probes<br/>GET /v2/health/live<br/>GET /v2/health/ready"]
     end
 
-    %% Ingress flows
-    Client -->|"HTTPS/8443<br/>TLS 1.2+<br/>K8s Bearer Token"| KubeRBACProxy
-    KubeRBACProxy -->|"HTTP/configurable<br/>Plaintext (localhost)<br/>No auth"| REST
-    Client -.->|"HTTP or gRPC<br/>(direct, non-RHOAI)"| REST
-    Client -.->|"gRPC/configurable<br/>Plaintext<br/>No auth"| GRPC
-    IstioSidecar -.->|"mTLS envelope<br/>SPIFFE identity"| OVMSPod
+    %% Inbound flows
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Gateway
+    Gateway -->|"HTTPS/8443<br/>TLS<br/>Service Identity"| KRBP
+    KRBP -->|"HTTP/8080<br/>plaintext (pod-local)<br/>Authenticated"| RESTServer
+    KRBP -->|"gRPC/8085<br/>plaintext (pod-local)<br/>Authenticated"| GRPCServer
 
-    %% Internal routing
-    REST --- V1API
-    REST --- V2API
-    REST --- V3API
-    REST --- MetricsAPI
-    V1API --> InferenceCore
-    V2API --> InferenceCore
-    V3API --> InferenceCore
-    GRPC --> InferenceCore
+    %% Control plane
+    KServeCtrl -.->|"deploys &<br/>manages pod"| Pod
 
     %% Egress flows
-    InferenceCore -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM credentials"| S3
-    InferenceCore -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP SA JSON"| GCS
-    InferenceCore -->|"HTTPS/443<br/>TLS 1.2+<br/>Azure conn string"| Azure
-    InferenceCore -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN Bearer"| HuggingFace
+    OVMSContainer -->|"HTTPS/443<br/>TLS 1.2+<br/>HF Token"| HF
+    OVMSContainer -->|"HTTPS/443<br/>TLS 1.2+<br/>IAM creds"| S3
+    OVMSContainer -->|"HTTPS/443<br/>TLS 1.2+<br/>Conn string"| Azure
+    OVMSContainer -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP creds"| GCS
+    OVMSContainer -->|"filesystem<br/>POSIX"| PVC
 
     %% Monitoring
-    Prometheus -->|"HTTP/configurable<br/>No auth"| MetricsAPI
+    Prometheus -.->|"HTTP GET<br/>/metrics<br/>No auth"| RESTServer
+    K8sProbes -.->|"HTTP GET<br/>/v2/health/*<br/>No auth"| RESTServer
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef platform fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef app fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef authproxy fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef noauth fill:#f8cecc,stroke:#b85450,stroke-width:1px
+    classDef storage fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef monitoring fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef control fill:#f5f5f5,stroke:#666,stroke-width:1px,stroke-dasharray: 5 5
 
     class Client external
-    class KubeRBACProxy,IstioSidecar platform
-    class REST,GRPC,InferenceCore,V1API,V2API,V3API,MetricsAPI app
-    class S3,GCS,Azure,HuggingFace externalservice
-    class Prometheus monitoring
+    class Gateway ingress
+    class KRBP authproxy
+    class RESTServer,GRPCServer application
+    class HF,S3,Azure,GCS externalservice
+    class PVC storage
+    class Prometheus,K8sProbes monitoring
+    class KServeCtrl control

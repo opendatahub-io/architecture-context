@@ -1,56 +1,46 @@
 sequenceDiagram
-    participant User as User / Data Scientist
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant User as Data Scientist
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
     participant Webhook as Kueue Webhook<br/>9443/TCP HTTPS TLS
-    participant Controller as Kueue Controller<br/>(Job Reconciler)
-    participant Cache as In-Memory Cache<br/>(Queue + ClusterQueue)
-    participant Scheduler as Kueue Scheduler<br/>(Scheduling Loop)
-    participant RemoteAPI as Remote Cluster API<br/>6443/TCP HTTPS TLS 1.2+
-    participant Autoscaler as Cluster Autoscaler
+    participant Controller as Kueue Controller<br/>(controller-runtime)
+    participant Scheduler as Kueue Scheduler<br/>(in-process goroutine)
+    participant Cache as In-Memory Cache
+    participant RemoteK8s as Remote Kueue Cluster<br/>443/TCP HTTPS TLS 1.2+
 
-    Note over User,Scheduler: Flow 1: Job Admission
+    Note over User,Cache: Flow 1: Job Admission (Standard Path)
 
-    User->>K8sAPI: Submit Job (e.g., PyTorchJob)<br/>Auth: User credentials
-    K8sAPI->>Webhook: Mutating webhook call<br/>9443/TCP TLS (internal certs)<br/>Auth: API server webhook auth
-    Webhook->>Webhook: Default queue label,<br/>suspend job, set managedBy
-    Webhook-->>K8sAPI: Mutated Job
-    K8sAPI->>Webhook: Validating webhook call<br/>9443/TCP TLS
-    Webhook->>Webhook: Validate queue-name,<br/>TAS annotations, constraints
-    Webhook-->>K8sAPI: Admission allowed
+    User->>K8sAPI: kubectl apply -f pytorchjob.yaml<br/>Auth: Bearer Token / Client Cert
+    K8sAPI->>Webhook: POST /mutate (admission review)<br/>mTLS (API server cert)
+    Webhook->>Webhook: Apply defaults: queue-name label,<br/>suspend=true, managed-by annotation
+    Webhook-->>K8sAPI: Mutated admission response
+    K8sAPI->>Webhook: POST /validate (admission review)<br/>mTLS (API server cert)
+    Webhook->>Webhook: Validate queue-name, TAS annotations,<br/>immutability constraints
+    Webhook-->>K8sAPI: Validated admission response
+    K8sAPI-->>User: Job created (suspended)
 
-    K8sAPI-->>Controller: Watch event: Job created
-    Controller->>Controller: Create Workload CR<br/>with PodSets & resource reqs
-    Controller->>K8sAPI: Create Workload<br/>Auth: ServiceAccount token
+    Controller->>K8sAPI: Watch event: new PyTorchJob<br/>Auth: ServiceAccount Bearer Token
+    Controller->>Controller: Create Workload CR from job spec<br/>(pod sets, resource requirements)
+    Controller->>K8sAPI: Create Workload CR<br/>Auth: ServiceAccount Bearer Token
 
-    K8sAPI-->>Cache: Watch event: Workload created
-    Cache->>Cache: Update queue snapshot
+    Scheduler->>Cache: Read ClusterQueue state<br/>(quotas, flavors, utilization)
+    Scheduler->>Scheduler: Evaluate admission:<br/>quota check, priority, fair sharing,<br/>flavor assignment, preemption
+    Scheduler->>K8sAPI: Update Workload.status.admission<br/>Auth: ServiceAccount Bearer Token
 
-    Scheduler->>Cache: Take snapshot of<br/>pending workloads
-    Scheduler->>Scheduler: Evaluate against ClusterQueue<br/>quotas, priorities, fair sharing
-    Scheduler->>Scheduler: Assign ResourceFlavors,<br/>check borrowing limits
-    alt Preemption needed
-        Scheduler->>K8sAPI: Evict lower-priority workloads<br/>Auth: ServiceAccount token
-    end
-    Scheduler->>K8sAPI: Admit Workload<br/>(set admission status)<br/>Auth: ServiceAccount token
+    Controller->>K8sAPI: Resume job (set suspend=false)<br/>Auth: ServiceAccount Bearer Token
+    K8sAPI-->>User: Job pods created and scheduled
 
-    K8sAPI-->>Controller: Watch event: Workload admitted
-    Controller->>K8sAPI: Unsuspend Job<br/>(set suspend=false)<br/>Auth: ServiceAccount token
-    K8sAPI-->>User: Job pods scheduled & running
+    Note over Controller,RemoteK8s: Flow 2: MultiKueue Workload Distribution
 
-    Note over User,Autoscaler: Flow 2: Provisioning Request Integration
+    Controller->>K8sAPI: Watch admitted Workload<br/>with MultiKueue AdmissionCheck
+    Controller->>RemoteK8s: Create remote Workload + Job<br/>Auth: kubeconfig from Secret
+    RemoteK8s-->>Controller: Remote Workload status updates<br/>Auth: kubeconfig watch
+    Controller->>K8sAPI: Sync remote status to local Workload<br/>Auth: ServiceAccount Bearer Token
 
-    Scheduler->>Scheduler: Workload needs nodes<br/>not yet available
-    Scheduler->>K8sAPI: Create ProvisioningRequest CR<br/>Auth: ServiceAccount token
-    K8sAPI-->>Autoscaler: Watch: ProvisioningRequest created
-    Autoscaler->>Autoscaler: Provision nodes via<br/>cloud provider API (443/TCP)
-    Autoscaler->>K8sAPI: Update ProvisioningRequest status<br/>Auth: Autoscaler SA
-    K8sAPI-->>Controller: Watch: PR status updated
-    Controller->>K8sAPI: Update AdmissionCheck → Ready<br/>Auth: ServiceAccount token
+    Note over Controller,K8sAPI: Flow 3: Provisioning Request (Autoscaler Integration)
+
+    Controller->>K8sAPI: Workload needs unavailable resources
+    Controller->>K8sAPI: Create ProvisioningRequest CR<br/>Auth: ServiceAccount Bearer Token
+    Note right of K8sAPI: Cluster Autoscaler processes<br/>ProvisioningRequest, provisions nodes
+    K8sAPI-->>Controller: ProvisioningRequest status: Provisioned
+    Controller->>Scheduler: Re-evaluate admission with new capacity
     Scheduler->>K8sAPI: Admit Workload
-
-    Note over Controller,RemoteAPI: Flow 3: MultiKueue Federation (disabled in RHOAI)
-
-    Controller->>K8sAPI: Read MultiKueue kubeconfig Secret<br/>Auth: ServiceAccount token
-    Controller->>RemoteAPI: Create remote Workload<br/>Auth: Kubeconfig credentials
-    RemoteAPI-->>Controller: Remote Workload admitted
-    Controller->>K8sAPI: Sync status to local Workload<br/>Auth: ServiceAccount token

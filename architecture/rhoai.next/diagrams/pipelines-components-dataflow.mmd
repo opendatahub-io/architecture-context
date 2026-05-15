@@ -1,56 +1,104 @@
 sequenceDiagram
-    participant Init as Init Container<br/>(odh-pipelines-components)
-    participant Vol as Shared Volume<br/>/config/managed-pipelines
-    participant KFP as KFP API Server
-    participant User as Data Scientist
-    participant S3 as AWS S3<br/>443/TCP HTTPS
-    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant PVC as PVC Workspace<br/>Filesystem
-    participant K8s as Kubernetes API<br/>443/TCP HTTPS
-    participant Trainer as Kubeflow Trainer<br/>Worker Pods
-    participant vLLM as vLLM Engine<br/>Local
-    participant MR as Model Registry<br/>8080/TCP HTTP
-    participant LS as Llama Stack API<br/>HTTPS
+    autonumber
 
-    rect rgb(230, 245, 255)
-        Note over Init,KFP: Flow 1: Managed Pipeline Staging (Platform Startup)
-        Init->>Init: generate_managed_pipelines.py<br/>Compiles pipeline.py → YAML
-        Init->>Vol: Copy compiled YAMLs<br/>Filesystem
-        KFP->>Vol: Read managed pipelines<br/>Filesystem
+    %% ========================================
+    %% Flow 1: Fine-Tuning Pipeline (LoRA/SFT/OSFT)
+    %% ========================================
+
+    rect rgb(240, 248, 255)
+    Note over HFHub,ModelRegistry: Flow 1: Fine-Tuning Pipeline (LoRA/SFT/OSFT)
+
+    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant DatasetDL as dataset_download<br/>Component
+    participant PVC as Shared PVC<br/>(50Gi)
+    participant Trainer as train_model<br/>(Kubeflow Trainer)
+    participant Evaluator as universal_llm_evaluator<br/>(lm-eval + vLLM)
+    participant ModelRegistry as Model Registry<br/>8080/TCP HTTP
+
+    DatasetDL->>HFHub: GET datasets<br/>Auth: Bearer HF_TOKEN<br/>TLS 1.2+
+    HFHub-->>DatasetDL: Dataset (JSONL)
+    DatasetDL->>S3: GET training data<br/>Auth: AWS Signature V4<br/>TLS 1.2+
+    S3-->>DatasetDL: CSV/JSONL files
+    DatasetDL->>PVC: Write train/eval splits<br/>Filesystem
+    PVC->>Trainer: Read training data<br/>Filesystem
+    Note over Trainer: LoRA (Unsloth) / SFT (InstructLab) / OSFT (mini-trainer)<br/>GPU accelerated via TrainJob CRD
+    Trainer->>PVC: Write model artifacts<br/>Filesystem
+    PVC->>Evaluator: Read model + eval data<br/>Filesystem
+    Note over Evaluator: lm-eval harness with vLLM backend
+    Evaluator-->>Evaluator: Evaluation metrics (KFP Artifact)
+    Evaluator->>ModelRegistry: POST model registration<br/>Auth: ServiceAccount<br/>plaintext (cluster-internal)
     end
 
-    rect rgb(255, 245, 230)
-        Note over User,MR: Flow 2: Fine-Tuning Pipeline (LoRA/OSFT/SFT)
-        User->>KFP: Submit fine-tuning pipeline
-        KFP->>S3: dataset_download<br/>HTTPS/443 | AWS IAM
-        KFP->>HF: dataset_download<br/>HTTPS/443 | HF_TOKEN
-        KFP->>PVC: Store dataset<br/>Filesystem
-        KFP->>K8s: train_model: Create TrainingJob CR<br/>HTTPS/443 | SA Token
-        K8s->>Trainer: Schedule worker pods
-        Trainer->>PVC: Write model checkpoints<br/>Filesystem
-        Trainer-->>KFP: Stream training logs
-        KFP->>vLLM: universal_llm_evaluator<br/>Load model, run benchmarks
-        vLLM-->>KFP: Evaluation metrics
-        KFP->>MR: Register model + metadata<br/>HTTP/8080 | No auth (insecure)
+    %% ========================================
+    %% Flow 2: AutoML Tabular Pipeline
+    %% ========================================
+
+    rect rgb(240, 255, 240)
+    Note over S3,Leaderboard: Flow 2: AutoML Tabular/Timeseries Pipeline
+
+    participant DataLoader as data_loader<br/>(odh-automl image)
+    participant AutoGluon as models_training<br/>(AutoGluon)
+    participant Leaderboard as leaderboard_evaluation<br/>(AutoGluon)
+
+    DataLoader->>S3: GET training CSV<br/>Auth: AWS Signature V4<br/>TLS 1.2+
+    S3-->>DataLoader: CSV data files
+    DataLoader->>PVC: Write train/test splits<br/>Filesystem
+    PVC->>AutoGluon: Read data splits<br/>Filesystem
+    Note over AutoGluon: AutoGluon TabularPredictor / TimeSeriesPredictor<br/>Automated model selection + training
+    AutoGluon->>PVC: Write trained models<br/>Filesystem
+    PVC->>Leaderboard: Read models + test data<br/>Filesystem
+    Note over Leaderboard: Generates HTML leaderboard (KFP Artifact)
     end
 
-    rect rgb(230, 255, 230)
-        Note over User,LS: Flow 3: AutoRAG Optimization Pipeline
-        User->>KFP: Submit AutoRAG pipeline
-        KFP->>S3: test_data_loader: Load test JSON<br/>HTTPS/443 | AWS IAM
-        KFP->>S3: documents_discovery: List objects<br/>HTTPS/443 | AWS IAM
-        KFP->>S3: text_extraction: Download docs<br/>HTTPS/443 | AWS IAM
-        KFP->>KFP: text_extraction: Docling extraction<br/>Local
-        KFP->>LS: search_space_preparation<br/>HTTPS | Bearer token
-        KFP->>LS: rag_templates_optimization<br/>Indexing + inference | API key
-        KFP->>KFP: leaderboard_evaluation<br/>Local (pattern.json)
+    %% ========================================
+    %% Flow 3: AutoRAG Optimization Pipeline
+    %% ========================================
+
+    rect rgb(255, 248, 240)
+    Note over S3,Milvus: Flow 3: AutoRAG Optimization Pipeline
+
+    participant Discovery as documents_discovery<br/>(odh-autorag image)
+    participant Extraction as text_extraction<br/>(docling)
+    participant Indexing as documents_indexing<br/>(OGX client)
+    participant OGXAPI as OGX API<br/>443/TCP HTTPS
+    participant Milvus as Milvus Vector DB<br/>19530/TCP gRPC
+    participant RAGOptim as rag_templates_optimization<br/>(ai4rag)
+    participant ResponsesBuilder as prepare_responses<br/>api_requests
+
+    Discovery->>S3: LIST objects (documents)<br/>Auth: AWS Signature V4<br/>TLS 1.2+
+    S3-->>Discovery: Document manifest
+    Note over Discovery: Produces JSON manifest (KFP Artifact)
+    Extraction->>S3: GET documents (PDF, DOCX, PPTX)<br/>Auth: AWS Signature V4<br/>TLS 1.2+
+    S3-->>Extraction: Raw documents
+    Note over Extraction: docling extracts text to Markdown
+    Extraction-->>Extraction: Markdown files (KFP Artifact)
+    Indexing->>OGXAPI: POST embeddings<br/>Auth: Bearer OGX_CLIENT_API_KEY<br/>TLS 1.2+
+    OGXAPI->>Milvus: Store vectors<br/>gRPC/19530<br/>TLS 1.2+
+    Milvus-->>OGXAPI: Index confirmation
+    OGXAPI-->>Indexing: Indexing complete
+    Note over RAGOptim: Iterative RAG template optimization
+    RAGOptim->>OGXAPI: POST evaluate patterns<br/>Auth: Bearer OGX_CLIENT_API_KEY<br/>TLS 1.2+
+    OGXAPI-->>RAGOptim: Evaluation results
+    Note over RAGOptim: Produces optimized pattern.json (KFP Artifact)
+    RAGOptim->>ResponsesBuilder: Optimized RAG patterns
+    Note over ResponsesBuilder: Generates OGX /v1/responses request bodies
     end
 
-    rect rgb(255, 240, 245)
-        Note over User,PVC: Flow 4: AutoML Tabular Training Pipeline
-        User->>KFP: Submit AutoML pipeline
-        KFP->>S3: automl_data_loader: Stream CSV<br/>HTTPS/443 | AWS IAM
-        KFP->>PVC: Store train/test splits<br/>Filesystem
-        KFP->>PVC: autogluon_models_training<br/>Local AutoGluon training
-        KFP->>PVC: leaderboard_evaluation<br/>Local model metrics
+    %% ========================================
+    %% Flow 4: SDG Pipeline
+    %% ========================================
+
+    rect rgb(255, 240, 255)
+    Note over InputData,SDGOutput: Flow 4: SDG (Synthetic Data Generation) Pipeline
+
+    participant InputData as Input Dataset<br/>(Artifact/PVC)
+    participant SDG as sdg component<br/>(sdg-hub + LiteLLM)
+    participant LLMAPI as LLM API<br/>443/TCP HTTPS
+    participant SDGOutput as Output JSONL<br/>(Artifact + PVC)
+
+    InputData->>SDG: Read input data<br/>Filesystem/KFP Artifact
+    SDG->>LLMAPI: POST generate synthetic data<br/>Auth: Bearer LLM_API_KEY<br/>TLS 1.2+
+    LLMAPI-->>SDG: Generated synthetic samples
+    SDG->>SDGOutput: Write JSONL output<br/>Filesystem/KFP Artifact
     end

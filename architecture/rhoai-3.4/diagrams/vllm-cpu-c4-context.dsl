@@ -1,54 +1,69 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and deploys ML models for inference on CPU hardware"
+        datascientist = person "Data Scientist" "Deploys and queries LLM models for inference"
+        application = person "Application / Client" "Sends inference requests via OpenAI-compatible API"
 
-        vllmCpu = softwareSystem "vLLM CPU" "CPU-only LLM inference server providing OpenAI-compatible API for large language model serving" {
-            apiServer = container "vLLM API Server" "OpenAI-compatible REST API server handling chat completions, text completions, embeddings, and model management" "Python (FastAPI/Uvicorn)" "Service"
-            asyncEngine = container "AsyncLLM Engine" "Async inference engine managing model loading, continuous batching, scheduling, and token generation" "Python" "Engine"
-            cpuKernels = container "C/C++ CPU Kernels" "CPU-optimized attention, quantization, and MoE kernels compiled via CMake" "C/C++" "Library"
-            grpcServer = container "gRPC Server" "Optional gRPC interface for inference via smg-grpc-servicer" "Python (gRPC)" "Service"
-            promMetrics = container "Prometheus Metrics" "Exposes /metrics endpoint with inference and request metrics" "Python" "Middleware"
-            otelTracing = container "OpenTelemetry Tracing" "Distributed tracing via OTLP exporter for observability" "Python" "Module"
+        vllmCpu = softwareSystem "vLLM CPU" "CPU-optimized LLM inference server exposing OpenAI-compatible API, Anthropic Messages API, and gRPC interface" {
+            apiServer = container "OpenAI API Server" "FastAPI + Uvicorn HTTP server exposing /v1/chat/completions, /v1/completions, /v1/embeddings, and 20+ endpoints" "Python (FastAPI)" "Web Server"
+            grpcServer = container "gRPC Server" "Optional gRPC interface for LLM inference via VllmEngine protobuf service" "Python (gRPC)" "Service"
+            asyncEngine = container "AsyncLLM Engine (v1)" "Core inference engine with PagedAttention, continuous batching, and model execution" "Python" "Engine"
+            modelExecutor = container "Model Executor" "Loads model weights, manages 150+ model architectures, executes inference" "Python" "Library"
+            csrcKernels = container "CPU Kernels (csrc)" "Native CPU-optimized kernels for attention, quantization, tensor ops" "C/C++ (CMake)" "Native Library"
+            authMiddleware = container "Auth Middleware" "ASGI middleware validating Bearer token via SHA-256 comparison" "Python" "Security"
         }
 
-        kserve = softwareSystem "KServe" "Manages InferenceService lifecycle, routing, scaling, and model storage initialization" "Internal RHOAI"
-        huggingfaceHub = softwareSystem "Hugging Face Hub" "Model weight and tokenizer repository" "External"
-        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for model weight artifacts" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal Platform"
-        otlpCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing backend" "Internal Platform"
+        kserve = softwareSystem "KServe" "Manages ServingRuntime lifecycle, scaling, and routing for inference services" "Internal RHOAI"
+        rhoaiGateway = softwareSystem "RHOAI Gateway (Envoy)" "Platform ingress via HTTPRoute (Gateway API) for external access" "Internal RHOAI"
+        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Authentication/authorization sidecar injected by RHOAI platform" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus" "Metrics collection via /metrics endpoint scraping" "Internal RHOAI"
+        otel = softwareSystem "OpenTelemetry Collector" "Distributed trace collection via OTLP" "Internal RHOAI"
 
-        # External relationships
-        user -> vllmCpu "Submits inference requests via" "HTTPS/443 (through KServe)"
-        kserve -> vllmCpu "Deploys and manages as inference runtime via" "InferenceService CRD"
-        vllmCpu -> huggingfaceHub "Downloads model weights and tokenizer configs" "HTTPS/443, Bearer Token"
-        vllmCpu -> s3Storage "Downloads model weights from object storage" "HTTPS/443, AWS IAM"
-        prometheus -> vllmCpu "Scrapes inference metrics from /metrics" "HTTP/8000"
-        vllmCpu -> otlpCollector "Exports distributed traces" "gRPC/4317"
+        hfHub = softwareSystem "Hugging Face Hub" "Model weights, tokenizer, and config hosting" "External"
+        s3Storage = softwareSystem "S3-Compatible Storage" "Alternative model artifact storage" "External"
 
-        # Internal container relationships
-        apiServer -> asyncEngine "Submits inference requests" "Python async (in-process)"
-        asyncEngine -> cpuKernels "Executes CPU-optimized operations" "C FFI (in-process)"
-        grpcServer -> asyncEngine "Submits gRPC inference requests" "Python async (in-process)"
-        promMetrics -> apiServer "Instruments HTTP requests" "FastAPI middleware"
-        otelTracing -> otlpCollector "Exports traces" "gRPC/4317"
+        # Relationships - External
+        application -> rhoaiGateway "Sends inference requests" "HTTPS/443, TLS 1.2+, Bearer Token (OAuth/OIDC)"
+        datascientist -> kserve "Deploys InferenceService" "kubectl / RHOAI Dashboard"
+
+        # Relationships - Ingress chain
+        rhoaiGateway -> kubeRbacProxy "Forwards requests" "HTTPS/8443, TLS 1.2+"
+        kubeRbacProxy -> vllmCpu "Forwards authenticated requests" "HTTP/8000, plaintext (localhost)"
+
+        # Relationships - Internal
+        apiServer -> authMiddleware "Validates API keys" "In-process"
+        authMiddleware -> asyncEngine "Passes validated requests" "In-process / ZeroMQ IPC"
+        grpcServer -> asyncEngine "Sends inference requests" "In-process / ZeroMQ IPC"
+        asyncEngine -> modelExecutor "Executes inference" "In-process"
+        modelExecutor -> csrcKernels "Calls optimized kernels" "In-process (C FFI)"
+
+        # Relationships - Egress
+        vllmCpu -> hfHub "Downloads model weights, tokenizer, config" "HTTPS/443, TLS 1.2+, Bearer Token (HF_TOKEN)"
+        vllmCpu -> s3Storage "Downloads model artifacts" "HTTPS/443, TLS 1.2+, AWS IAM"
+
+        # Relationships - Observability
+        prometheus -> vllmCpu "Scrapes metrics" "HTTP/8000, GET /metrics"
+        vllmCpu -> otel "Exports traces" "gRPC/4317 or HTTP/4318, OTLP, TLS 1.2+"
+
+        # Relationships - Platform
+        kserve -> vllmCpu "Manages container lifecycle, scaling" "Kubernetes API"
     }
 
     views {
         systemContext vllmCpu "SystemContext" {
             include *
             autoLayout
-            description "System context showing vLLM CPU in the RHOAI ecosystem"
+            description "vLLM CPU system context showing external users, platform components, and dependencies"
         }
 
         container vllmCpu "Containers" {
             include *
             autoLayout
-            description "Internal structure of the vLLM CPU inference server"
+            description "vLLM CPU internal container architecture showing API servers, engine, and execution layers"
         }
 
         styles {
             element "Software System" {
-                background #438DD5
+                background #438dd5
                 color #ffffff
             }
             element "External" {
@@ -59,33 +74,25 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal Platform" {
-                background #85C1E9
-                color #ffffff
-            }
             element "Person" {
-                background #08427B
-                color #ffffff
                 shape person
+                background #08427b
+                color #ffffff
             }
             element "Container" {
-                background #438DD5
+                background #438dd5
                 color #ffffff
             }
-            element "Service" {
-                shape RoundedBox
+            element "Web Server" {
+                shape WebBrowser
             }
-            element "Engine" {
-                shape Hexagon
+            element "Security" {
+                background #e74c3c
+                color #ffffff
             }
-            element "Library" {
-                shape Component
-            }
-            element "Middleware" {
-                shape Pipe
-            }
-            element "Module" {
-                shape Folder
+            element "Native Library" {
+                background #2ecc71
+                color #ffffff
             }
         }
     }

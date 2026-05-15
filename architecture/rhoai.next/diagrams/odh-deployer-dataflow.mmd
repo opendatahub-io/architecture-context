@@ -1,38 +1,52 @@
 sequenceDiagram
-    participant DeploySH as deploy.sh Container<br/>(UBI8 + oc CLI)
-    participant K8sAPI as OpenShift API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant ODHOp as ODH Operator<br/>(KfDef Controller)
-    participant Manifests as odh-manifests<br/>(file:// tarball)
-    participant Prom as Prometheus<br/>9090/TCP + 9091/TCP OAuth
-    participant AM as Alertmanager<br/>9093/TCP + 10443/TCP OAuth
-    participant BBE as Blackbox Exporter<br/>9114/TCP TLS
-    participant ClusterProm as Cluster Prometheus<br/>openshift-monitoring<br/>9091/TCP HTTPS
-    participant Components as Platform Components<br/>(Dashboard, NBC, ModelMesh,<br/>DSPO, Model Controller)<br/>8080/TCP HTTP
-    participant PD as PagerDuty API<br/>443/TCP HTTPS
+    participant DeploySH as deploy.sh<br/>(Init Container)
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+
+    participant Operator as rhods-operator<br/>(opendatahub operator)
+    participant Prom as RHODS Prometheus<br/>9091/TCP HTTPS
+    participant OcpProm as OpenShift Prometheus<br/>(openshift-monitoring)<br/>9091/TCP HTTPS
+    participant Components as Component Metrics<br/>8080/TCP HTTP
+    participant BBE as Blackbox Exporter<br/>9114/TCP HTTPS
+    participant AM as Alertmanager<br/>10443/TCP HTTPS
+    participant PD as PagerDuty<br/>443/TCP HTTPS
+    participant SMTP as SMTP Server<br/>TLS STARTTLS
     participant DMS as Dead Man's Snitch<br/>443/TCP HTTPS
-    participant SMTP as SMTP Server<br/>STARTTLS
 
-    Note over DeploySH,K8sAPI: Flow 1: Platform Deployment
+    Note over DeploySH,K8sAPI: Flow 1: Platform Bootstrap
 
     DeploySH->>K8sAPI: Create namespaces<br/>(redhat-ods-applications,<br/>redhat-ods-monitoring,<br/>rhods-notebooks)<br/>Auth: ServiceAccount Token
-    DeploySH->>K8sAPI: Check addon-managed-odh-catalog<br/>CatalogSource (env detection)
-    DeploySH->>K8sAPI: oc apply KfDef CRs<br/>Auth: ServiceAccount Token
-    K8sAPI-->>ODHOp: KfDef CR watch notification
-    ODHOp->>Manifests: Read manifests from<br/>/opt/manifests/odh-manifests.tar.gz<br/>Protocol: file://
-    ODHOp->>K8sAPI: Create component Deployments<br/>Auth: ServiceAccount Token
-    DeploySH->>K8sAPI: oc apply monitoring stack<br/>(Prometheus, Alertmanager, Blackbox)
-    DeploySH->>K8sAPI: oc apply network policies<br/>oc apply dashboard CRDs/ISVs<br/>oc apply RBAC bindings
+    K8sAPI-->>DeploySH: Namespaces created
 
-    Note over Prom,ClusterProm: Flow 2: Prometheus Metrics Federation
+    DeploySH->>K8sAPI: Apply CRDs<br/>(OdhApplication, OdhDocument,<br/>OdhQuickStart, OdhDashboardConfig)
+    K8sAPI-->>DeploySH: CRDs applied
 
-    Prom->>ClusterProm: Federate HAProxy, pod,<br/>cluster metrics<br/>9091/TCP HTTPS<br/>TLS (service CA)<br/>Auth: Bearer Token (SA)
-    Prom->>Components: Scrape /metrics<br/>8080/TCP HTTP<br/>No encryption<br/>Auth: None
-    Prom->>BBE: Scrape probe results<br/>9114/TCP HTTPS<br/>TLS<br/>Auth: Bearer Token
-    BBE->>Components: Probe user-facing endpoints<br/>(dashboard :8443, spawner, DSPO)<br/>HTTPS/HTTP<br/>Auth: Bearer Token (SA)
+    DeploySH->>K8sAPI: Create KfDef CRs<br/>(dashboard, nbc, model-mesh,<br/>dspo, monitoring, anaconda)
+    K8sAPI-->>DeploySH: KfDef CRs created
 
-    Note over Prom,SMTP: Flow 3: Alert Notification (Managed Service)
+    DeploySH->>K8sAPI: Apply Dashboard CRs<br/>(OdhApplication ISV tiles,<br/>OdhDashboardConfig,<br/>OdhDocument, OdhQuickStart)
+    K8sAPI-->>DeploySH: Dashboard CRs applied
 
-    Prom->>AM: Fire alert rules<br/>9093/TCP HTTP<br/>loopback<br/>Auth: None
-    AM->>PD: Critical SLO alerts<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Service Key
-    AM->>SMTP: User notification emails<br/>Configurable port<br/>STARTTLS<br/>Auth: Username/Password
-    AM->>DMS: Watchdog heartbeat<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: URL Token
+    DeploySH->>K8sAPI: Deploy monitoring stack<br/>(Prometheus, Alertmanager,<br/>Blackbox Exporter)
+    K8sAPI-->>DeploySH: Monitoring deployed
+
+    DeploySH->>K8sAPI: Apply NetworkPolicies<br/>+ Pod Security RBAC
+    K8sAPI-->>DeploySH: Security resources applied
+
+    Operator->>K8sAPI: Watch KfDef CRs
+    K8sAPI-->>Operator: KfDef events
+    Operator->>K8sAPI: Reconcile: deploy components<br/>(dashboard, notebooks,<br/>model-mesh, DSPO, anaconda)
+
+    Note over Prom,DMS: Flow 2: Monitoring Data Pipeline (managed service)
+
+    Prom->>OcpProm: Federation scrape<br/>9091/TCP HTTPS<br/>Auth: Bearer Token (SA)
+    OcpProm-->>Prom: haproxy, controller_runtime,<br/>resource metrics
+
+    Prom->>Components: Scrape metrics<br/>8080/TCP HTTP plaintext<br/>Auth: None
+    Components-->>Prom: Component metrics<br/>(notebook-ctrl, model-ctrl,<br/>modelmesh-ctrl, DSPO, operator)
+
+    BBE->>K8sAPI: Probe endpoints<br/>(dashboard, notebook spawner, DSPO)
+    K8sAPI-->>BBE: Probe results
+
+    Prom->>AM: Fire alerts<br/>9093/TCP HTTP plaintext
+    AM->>PD: Critical alerts<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Service Key
+    AM->>SMTP: User notifications<br/>Auth: SMTP credentials
+    AM->>DMS: Heartbeat<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: URL secret<br/>(every 5 min)

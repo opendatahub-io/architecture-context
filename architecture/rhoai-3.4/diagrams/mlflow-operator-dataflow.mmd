@@ -1,58 +1,64 @@
 sequenceDiagram
-    participant Admin as Platform Admin
+    participant PlatformOp as Platform Operator<br/>(rhods-operator)
     participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant Operator as MLflow Operator<br/>8081/TCP health<br/>8443/TCP metrics
-    participant Helm as HelmRenderer<br/>(in-process)
-    participant Gateway as data-science-gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant MLflow as MLflow Server<br/>8443/TCP HTTPS TLS (service-CA)
-    participant PG as PostgreSQL<br/>5432/TCP TLS verify-full
-    participant S3 as S3 Storage<br/>9000/443/TCP HTTPS
-
-    Note over Admin,S3: Flow 1: MLflow CR Reconciliation
-
-    Admin->>K8sAPI: Create/Update MLflow CR<br/>(mlflow.opendatahub.io/v1)
-    K8sAPI->>Operator: Watch event (informer)<br/>HTTPS/6443, SA token
-    Operator->>Helm: Render embedded Helm chart<br/>(translate CR spec → values)
-    Helm-->>Operator: Unstructured manifests<br/>(Deployment, Service, SA,<br/>NetworkPolicy, PVC, ServiceMonitor)
-    Operator->>K8sAPI: Server-Side Apply manifests<br/>HTTPS/6443, SA token
-    Operator->>K8sAPI: Create/Update HTTPRoute<br/>(parent ref: data-science-gateway)<br/>HTTPS/6443, SA token
-    Operator->>K8sAPI: Create/Update ConsoleLink<br/>(OpenShift console menu)<br/>HTTPS/6443, SA token
-    Operator->>K8sAPI: Update MLflow CR status<br/>HTTPS/6443, SA token
-    K8sAPI-->>Operator: Status confirmed
-
-    Note over Admin,S3: Flow 2: Client Request via Gateway API
-
+    participant Operator as MLflow Operator<br/>(controller-runtime)
+    participant Helm as Helm Renderer<br/>(in-process)
     participant Client as External Client
+    participant Gateway as data-science-gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant MLflow as MLflow Server<br/>8443/TCP HTTPS (service-ca)
+    participant InitCA as combine-ca-bundles<br/>(init container)
+    participant InitMig as db-migration<br/>(init container)
+    participant PG as PostgreSQL<br/>5432/TCP TLS
+    participant S3 as S3 Storage<br/>9000/TCP HTTPS
 
-    Client->>Gateway: POST /mlflow/api/...<br/>HTTPS/443, Bearer Token (K8s)
-    Gateway->>MLflow: Forward via HTTPRoute<br/>HTTPS/8443, TLS (service-CA)<br/>Passthrough Bearer Token
-    MLflow->>K8sAPI: SelfSubjectAccessReview<br/>HTTPS/6443, Delegated Bearer Token
-    K8sAPI-->>MLflow: Allow/Deny
+    Note over PlatformOp,S3: Flow 1: MLflow CR Reconciliation
+
+    PlatformOp->>K8sAPI: Create MLflow CR (cluster-scoped, singleton)
+    K8sAPI-->>Operator: Watch event (MLflow CR created/updated)
+    Operator->>Helm: Render charts/mlflow with CR spec values
+    Helm-->>Operator: Unstructured Kubernetes objects
+    Note over Operator: Post-render: inject db-migration<br/>init container (migration.go)
+    Operator->>K8sAPI: Server-Side Apply (Deployment, Service,<br/>NetworkPolicy, PVC, RBAC, ServiceMonitor)
+    Operator->>K8sAPI: Create/Update HTTPRoute<br/>(parentRef: data-science-gateway)
+    Operator->>K8sAPI: Create/Update ConsoleLink<br/>(OpenShift console menu)
+    Operator->>K8sAPI: Update MLflow CR status<br/>(URLs, conditions)
+
+    Note over PlatformOp,S3: Flow 2: Pod Startup (CA Bundle + Migration)
+
+    K8sAPI-->>InitCA: Pod scheduled, init containers start
+    InitCA->>InitCA: Read system CA (/etc/pki/tls/certs/ca-bundle.crt)
+    InitCA->>InitCA: Read platform CA (odh-trusted-ca-bundle ConfigMap)
+    InitCA->>InitCA: Read custom CA (optional ConfigMap)
+    InitCA->>InitCA: Write combined CA to emptyDir volume
+    InitCA-->>InitMig: Init container complete
+    InitMig->>PG: Connect (TLS verify-full)<br/>Connection string credentials
+    InitMig->>InitMig: mlflow db fix-migration-gap<br/>(Alembic schema migration)
+    InitMig-->>MLflow: Init container complete, server starts
+
+    Note over PlatformOp,S3: Flow 3: External Client Request
+
+    Client->>Gateway: POST /api/2.0/mlflow/...<br/>Auth: Bearer Token
+    Gateway->>MLflow: Forward (HTTPS/8443)<br/>Token passthrough
+    MLflow->>K8sAPI: SelfSubjectAccessReview<br/>(user's token, mlflow.kubeflow.org resources)
+    K8sAPI-->>MLflow: Allowed/Denied
     alt Authorized
-        MLflow->>PG: Query/Store metadata<br/>PostgreSQL/5432<br/>TLS verify-full, credentials
-        PG-->>MLflow: Result set
-        MLflow->>S3: Store/Retrieve artifacts<br/>HTTPS/9000 or 443<br/>TLS, AWS IAM credentials
+        MLflow->>PG: Query metadata<br/>TLS verify-full, connection string creds
+        PG-->>MLflow: Metadata results
+        MLflow->>S3: Get/Put artifacts<br/>HTTPS, AWS IAM credentials
         S3-->>MLflow: Artifact data
-        MLflow-->>Gateway: JSON Response
+        MLflow-->>Gateway: JSON Response (200 OK)
         Gateway-->>Client: JSON Response
     else Denied
         MLflow-->>Gateway: 403 Forbidden
         Gateway-->>Client: 403 Forbidden
     end
 
-    Note over Admin,S3: Flow 3: CA Bundle Assembly (Pod Init)
-
-    participant InitCA as combine-ca-bundles<br/>(init container)
-    participant Watcher as ca-bundle-watcher<br/>(sidecar)
-
-    InitCA->>InitCA: Read system CAs +<br/>odh-trusted-ca-bundle +<br/>custom CA ConfigMap
-    InitCA->>InitCA: Concatenate → combined PEM<br/>(emptyDir: combined-ca-bundle)
-    Note over InitCA: Init complete, pod starts
+    Note over PlatformOp,S3: Flow 4: CA Bundle Watcher (continuous)
 
     loop Every 30 seconds
-        Watcher->>Watcher: Poll ConfigMap volumes<br/>for changes
-        alt CA bundle changed
-            Watcher->>Watcher: Regenerate combined PEM<br/>(emptyDir: combined-ca-bundle)
-            Note over MLflow: Picks up new CAs<br/>without pod restart
+        Note over MLflow: ca-bundle-watcher sidecar
+        MLflow->>MLflow: Poll source CA files for changes
+        alt CA files changed
+            MLflow->>MLflow: Regenerate combined CA bundle
         end
     end

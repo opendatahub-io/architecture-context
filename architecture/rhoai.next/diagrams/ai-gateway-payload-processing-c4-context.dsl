@@ -1,62 +1,49 @@
 workspace {
     model {
-        user = person "Application Developer" "Deploys ExternalModel CRs to expose LLM models via Gateway API"
-        client = person "Inference Consumer" "Sends inference requests to Gateway API endpoint"
+        user = person "Data Scientist / Application" "Sends inference requests to external LLM providers via AI Gateway"
 
-        aiGatewayPayloadProcessing = softwareSystem "AI Gateway Payload Processing" "BBR ExtProc host providing model resolution, API translation, credential injection, and guardrails for Gateway API inference requests" {
-            extprocServer = container "ExtProc gRPC Server" "Hosts BBR plugin pipeline, receives request/response bodies from Envoy" "Go Service, 9004/TCP gRPC"
-            modelProviderResolver = container "model-provider-resolver" "Watches ExternalModel CRDs, resolves model names to provider info via CycleState" "Go BBR Plugin"
-            apiTranslation = container "api-translation" "Translates OpenAI Chat Completions format to/from provider-native formats" "Go BBR Plugin"
-            apikeyInjection = container "apikey-injection" "Watches labeled Secrets, injects provider-specific auth headers" "Go BBR Plugin"
-            nemoRequestGuard = container "nemo-request-guard" "Enforces input content policies via NeMo Guardrails" "Go BBR Plugin"
-            nemoResponseGuard = container "nemo-response-guard" "Enforces output content policies via NeMo Guardrails" "Go BBR Plugin"
-            healthCheck = container "Health Check" "Liveness/readiness probe endpoint" "HTTP, 9005/TCP"
+        aiGatewayPayloadProcessing = softwareSystem "AI Gateway Payload Processing" "BBR plugin host providing model resolution, API translation, credential injection, and guardrail enforcement for external LLM provider traffic" {
+            bbrPluginHost = container "BBR Plugin Host" "Envoy ext_proc filter hosting the plugin pipeline for request/response mutation" "Go Service"
+            modelProviderResolver = container "model-provider-resolver" "Resolves model names to provider info via ExternalModel CRD watch" "BBR RequestProcessor Plugin"
+            apiTranslation = container "api-translation" "Translates between OpenAI Chat Completions and provider-native API formats" "BBR Request+Response Processor Plugin"
+            apikeyInjection = container "apikey-injection" "Injects provider API keys from Kubernetes Secrets into request headers" "BBR RequestProcessor Plugin"
+            nemoGuards = container "NeMo Guards" "Enforces content safety guardrails via NeMo Guardrails API" "BBR Request+Response Processor Plugins"
+            externalModelController = container "ExternalModel Controller" "Reconciles ExternalModel CRs → creates HTTPRoutes for model routing" "Go Controller (controller-runtime)"
+            externalProviderController = container "ExternalProvider Controller" "Reconciles ExternalProvider CRs → creates Service, ServiceEntry, DestinationRule" "Go Controller (controller-runtime)"
         }
 
-        gatewayAPI = softwareSystem "Gateway API (Envoy)" "Kubernetes Gateway API with Envoy proxy for inference traffic routing" "External"
-        istio = softwareSystem "Istio" "Service mesh providing EnvoyFilter attachment for ExtProc" "External"
-        k8sAPI = softwareSystem "Kubernetes API Server" "Control plane API for CRD and Secret watches" "External"
-        nemoGuardrails = softwareSystem "NeMo Guardrails Service" "Content policy enforcement service" "Internal Platform"
-        maasController = softwareSystem "MaaS Controller" "Creates ExternalModel CRs for models-as-a-service" "Internal Platform"
+        istioGateway = softwareSystem "Istio Gateway (Envoy)" "Service mesh ingress gateway with EnvoyFilter for ext_proc attachment" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "API server for CR watches and resource creation" "External"
+        maasController = softwareSystem "MaaS Controller" "Models-as-a-Service controller providing ExternalModel CRDs (maas.opendatahub.io)" "Internal RHOAI"
+        nemoGuardrails = softwareSystem "NeMo Guardrails" "NVIDIA NeMo content safety guardrail service" "External (Optional)"
+        kuadrant = softwareSystem "Kuadrant" "API management with WASM plugin (EnvoyFilter anchor)" "Internal RHOAI (Optional)"
 
-        openai = softwareSystem "OpenAI API" "LLM inference provider" "External Provider"
-        anthropic = softwareSystem "Anthropic API" "LLM inference provider" "External Provider"
-        azureOpenai = softwareSystem "Azure OpenAI API" "LLM inference provider" "External Provider"
-        bedrock = softwareSystem "AWS Bedrock API" "LLM inference provider" "External Provider"
-        vertexAI = softwareSystem "Google Vertex AI API" "LLM inference provider" "External Provider"
+        openai = softwareSystem "OpenAI API" "External LLM provider - api.openai.com" "External Provider"
+        anthropic = softwareSystem "Anthropic API" "External LLM provider - api.anthropic.com" "External Provider"
+        azureOpenAI = softwareSystem "Azure OpenAI API" "External LLM provider - *.openai.azure.com" "External Provider"
+        bedrock = softwareSystem "AWS Bedrock API" "External LLM provider - bedrock.amazonaws.com" "External Provider"
+        vertexAI = softwareSystem "Vertex AI API" "External LLM provider - *-aiplatform.googleapis.com" "External Provider"
 
-        # User interactions
-        user -> k8sAPI "Creates ExternalModel/ExternalProvider CRs" "kubectl/HTTPS"
-        client -> gatewayAPI "Sends inference requests" "HTTPS/443"
+        user -> istioGateway "Sends inference requests" "HTTPS/443"
+        istioGateway -> bbrPluginHost "Forwards request/response bodies via ext_proc" "gRPC/9004"
+        bbrPluginHost -> modelProviderResolver "Resolves model → provider"
+        bbrPluginHost -> apiTranslation "Translates API format"
+        bbrPluginHost -> apikeyInjection "Injects credentials"
+        bbrPluginHost -> nemoGuards "Enforces guardrails"
 
-        # Gateway to ExtProc
-        gatewayAPI -> aiGatewayPayloadProcessing "Sends request/response bodies via ExtProc" "gRPC/9004 plaintext"
-        istio -> gatewayAPI "Attaches ExtProc via EnvoyFilter" "EnvoyFilter CR"
+        modelProviderResolver -> k8sAPI "Watches MaaS ExternalModel CRDs" "HTTPS/443"
+        apikeyInjection -> k8sAPI "Watches labeled Secrets" "HTTPS/443"
+        nemoGuards -> nemoGuardrails "Content safety checks" "HTTP POST"
+        externalModelController -> k8sAPI "Watches ExternalModel CRs, creates HTTPRoutes" "HTTPS/443"
+        externalProviderController -> k8sAPI "Watches ExternalProvider CRs, creates Service/ServiceEntry/DestinationRule" "HTTPS/443"
 
-        # Internal container interactions
-        extprocServer -> modelProviderResolver "Delegates request processing" "in-process"
-        extprocServer -> apiTranslation "Delegates request/response processing" "in-process"
-        extprocServer -> apikeyInjection "Delegates request processing" "in-process"
-        extprocServer -> nemoRequestGuard "Delegates request processing" "in-process"
-        extprocServer -> nemoResponseGuard "Delegates response processing" "in-process"
+        istioGateway -> openai "Routes translated inference requests" "HTTPS/443"
+        istioGateway -> anthropic "Routes translated inference requests" "HTTPS/443"
+        istioGateway -> azureOpenAI "Routes translated inference requests" "HTTPS/443"
+        istioGateway -> bedrock "Routes translated inference requests" "HTTPS/443"
+        istioGateway -> vertexAI "Routes translated inference requests" "HTTPS/443"
 
-        # Control plane watches
-        modelProviderResolver -> k8sAPI "Watches ExternalModel CRDs" "HTTPS/443 SA Bearer"
-        apikeyInjection -> k8sAPI "Watches labeled Secrets" "HTTPS/443 SA Bearer"
-
-        # NeMo calls
-        nemoRequestGuard -> nemoGuardrails "POST /v1/guardrail/checks (input)" "HTTP plaintext"
-        nemoResponseGuard -> nemoGuardrails "POST /v1/guardrail/checks (output)" "HTTP plaintext"
-
-        # Provider egress (via Envoy)
-        gatewayAPI -> openai "Proxies translated inference requests" "HTTPS/443"
-        gatewayAPI -> anthropic "Proxies translated inference requests" "HTTPS/443"
-        gatewayAPI -> azureOpenai "Proxies translated inference requests" "HTTPS/443"
-        gatewayAPI -> bedrock "Proxies translated inference requests" "HTTPS/443"
-        gatewayAPI -> vertexAI "Proxies translated inference requests" "HTTPS/443"
-
-        # MaaS integration
-        maasController -> k8sAPI "Creates ExternalModel CRs" "HTTPS/443"
+        maasController -> k8sAPI "Creates ExternalModel CRDs (maas.opendatahub.io)" "HTTPS/443"
     }
 
     views {
@@ -76,11 +63,19 @@ workspace {
                 color #ffffff
             }
             element "External Provider" {
-                background #f5a623
+                background #f8cecc
+                color #333333
+            }
+            element "Internal RHOAI" {
+                background #7ed321
                 color #ffffff
             }
-            element "Internal Platform" {
-                background #7ed321
+            element "Internal RHOAI (Optional)" {
+                background #a8d86e
+                color #333333
+            }
+            element "External (Optional)" {
+                background #bbbbbb
                 color #ffffff
             }
             element "Software System" {
@@ -88,7 +83,7 @@ workspace {
                 color #ffffff
             }
             element "Container" {
-                background #6bb3f0
+                background #438dd5
                 color #ffffff
             }
             element "Person" {

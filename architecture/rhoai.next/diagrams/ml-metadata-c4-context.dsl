@@ -1,40 +1,30 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Creates and runs ML pipelines that generate metadata"
-        mlEngineer = person "ML Engineer" "Queries lineage and artifact provenance"
+        datascientist = person "Data Scientist" "Creates and runs ML pipelines that produce metadata"
+        pipelinedev = person "Pipeline Developer" "Queries lineage and metadata for debugging/auditing"
 
-        mlmd = softwareSystem "ML Metadata (MLMD)" "gRPC server that records and retrieves metadata (artifacts, executions, contexts, lineage) for ML workflows" {
-            grpcServer = container "metadata_store_server" "C++ gRPC service exposing MetadataStoreService API (46 RPCs) for metadata CRUD and lineage queries" "C++ / gRPC / HTTP2"
-            protoAPI = container "Protocol Buffer Definitions" "Defines data model (Artifact, Execution, Context, Event) and gRPC service interface" "Protocol Buffers"
-            pythonClient = container "ml-metadata Python Library" "Python client for interacting with the gRPC server or in-process metadata store" "Python / PyPI"
+        mlmd = softwareSystem "ML Metadata (MLMD)" "gRPC server that records and retrieves metadata associated with ML workflows — artifacts, executions, contexts, and lineage" {
+            server = container "metadata_store_server" "Main gRPC server exposing MetadataStoreService API for CRUD operations on ML metadata entities" "C++ gRPC Service"
+            core = container "metadata_store (core)" "Core metadata store logic including database access, query execution, and transaction management" "C++ Library"
+            queryEngine = container "Query Engine" "SQL query construction and filter parsing using ZetaSQL for flexible metadata queries" "C++ Library"
+
+            server -> core "Delegates persistence operations"
+            core -> queryEngine "Constructs SQL queries with ZetaSQL"
         }
 
-        dsp = softwareSystem "Data Science Pipelines (DSP)" "Pipeline orchestrator that records pipeline run metadata, artifact provenance, and lineage" "Internal RHOAI"
-        pipelinesUI = softwareSystem "Kubeflow Pipelines UI" "Web UI that reads artifact and lineage data for visualization" "Internal RHOAI"
-        platformOperator = softwareSystem "Platform Operator" "rhods-operator / opendatahub-operator — deploys and configures MLMD server" "Internal RHOAI"
+        dsp = softwareSystem "Data Science Pipelines" "ML pipeline orchestration system that records pipeline run metadata" "Internal RHOAI"
+        tfx = softwareSystem "TFX / Kubeflow Pipelines" "Legacy pipeline system integration" "External"
+        mysql = softwareSystem "MySQL / MariaDB" "Relational database for production metadata storage" "External"
+        postgresql = softwareSystem "PostgreSQL" "Alternative relational database for production metadata storage" "External"
+        pythonLib = softwareSystem "ml_metadata Python Library" "Client library for interacting with MLMD via Python" "PyPI Package"
 
-        mysql = softwareSystem "MySQL / MariaDB" "Relational database for persistent metadata storage (production)" "External"
-        postgresql = softwareSystem "PostgreSQL" "Alternative relational database for persistent metadata storage" "External"
-        certManager = softwareSystem "cert-manager" "Provisions TLS certificates for optional gRPC TLS/mTLS" "External"
-
-        # Relationships
-        datascientist -> dsp "Submits ML pipelines"
-        mlEngineer -> pipelinesUI "Queries lineage and artifacts"
-
-        dsp -> mlmd "Records pipeline metadata, artifacts, executions, events, lineage" "gRPC/8080"
-        pipelinesUI -> mlmd "Reads artifact and lineage data" "gRPC/8080"
-
-        mlmd -> mysql "Persists metadata" "MySQL/3306"
-        mlmd -> postgresql "Persists metadata (alternative)" "PostgreSQL/5432"
-        platformOperator -> mlmd "Deploys and configures"
-        certManager -> mlmd "Provisions TLS certificates" "kubernetes.io/tls"
-
-        # Container-level relationships
-        dsp -> grpcServer "PutArtifacts, PutExecutions, PutEvents, PutContexts, PutExecution" "gRPC/8080"
-        pipelinesUI -> grpcServer "GetLineageSubgraph, GetArtifactsByContext" "gRPC/8080"
-        pythonClient -> grpcServer "MetadataStoreService RPCs" "gRPC/8080"
-        grpcServer -> mysql "SQL queries (metadata CRUD)" "MySQL/3306"
-        grpcServer -> postgresql "SQL queries (metadata CRUD)" "PostgreSQL/5432"
+        datascientist -> dsp "Runs ML pipelines"
+        pipelinedev -> pythonLib "Queries metadata and lineage"
+        dsp -> mlmd "Records pipeline artifacts, executions, events, and contexts" "gRPC/HTTP2 8080/TCP"
+        tfx -> mlmd "Records lineage metadata" "gRPC/HTTP2 8080/TCP"
+        pythonLib -> mlmd "CRUD operations on metadata entities" "gRPC/HTTP2 8080/TCP"
+        mlmd -> mysql "Stores and retrieves metadata entities" "MySQL wire protocol 3306/TCP"
+        mlmd -> postgresql "Stores and retrieves metadata entities" "PostgreSQL wire protocol"
     }
 
     views {
@@ -57,17 +47,21 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
+            element "PyPI Package" {
+                background #6cb4ee
+                color #ffffff
+            }
             element "Person" {
                 shape Person
-                background #4a90e2
+                background #08427B
                 color #ffffff
             }
             element "Software System" {
-                background #4a90e2
+                background #1168BD
                 color #ffffff
             }
             element "Container" {
-                background #438dd5
+                background #438DD5
                 color #ffffff
             }
         }

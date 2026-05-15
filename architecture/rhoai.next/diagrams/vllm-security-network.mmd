@@ -3,61 +3,63 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (DMZ)"]
-        Gateway["KServe Gateway / Istio Ingress<br/>443/TCP → 8000,8033/TCP<br/>TLS 1.2+<br/>AuthN: Bearer Token / OAuth"]
+    subgraph Ingress["INGRESS (Platform-Managed)"]
+        Gateway["RHOAI Gateway / HTTPRoute<br/>443/TCP → 8000/TCP<br/>TLS 1.2+ (SIMPLE)<br/>Model Endpoint Hostname"]
     end
 
-    subgraph ServiceMesh["SERVICE MESH (mTLS STRICT)"]
+    subgraph PodBoundary["POD BOUNDARY (KServe-Managed)"]
         direction TB
 
-        subgraph IstioProxy["Istio Sidecar Proxy"]
-            Sidecar["Sidecar Proxy<br/>mTLS STRICT<br/>Service Identity"]
+        Proxy["kube-rbac-proxy Sidecar<br/>Auth Enforcement<br/>Bearer Token Validation"]
+
+        subgraph Container["vLLM Container (User 2000)"]
+            direction TB
+            HTTPAPI["OpenAI HTTP API<br/>8000/TCP<br/>/v1/completions<br/>/v1/chat/completions<br/>/v1/models<br/>/v1/embeddings<br/>/health"]
+            GRPCAPI["TGIS gRPC Service<br/>8033/TCP<br/>GenerationService"]
+            VLLMEngine["vLLM Engine<br/>PagedAttention<br/>Continuous Batching"]
         end
 
-        subgraph AppPod["vLLM Inference Pod<br/>User: 2000 (non-root)"]
-            vLLMHTTP["vLLM HTTP Server<br/>8000/TCP HTTP<br/>OpenAI-compatible API<br/>/v1/completions<br/>/v1/chat/completions<br/>/v1/models<br/>/health"]
-            TGISAdapter["vllm_tgis_adapter<br/>8033/TCP gRPC<br/>TGIS GenerationService"]
-        end
+        GPU["NVIDIA GPU<br/>CUDA Compute"]
 
-        TGISAdapter -->|"HTTP/8000<br/>localhost"| vLLMHTTP
+        Proxy -->|"HTTP/8000<br/>Plaintext<br/>Pre-verified"| HTTPAPI
+        HTTPAPI --> VLLMEngine
+        GRPCAPI --> VLLMEngine
+        VLLMEngine -->|"CUDA API"| GPU
     end
 
-    subgraph GPULayer["GPU RESOURCES"]
-        GPU["NVIDIA GPU<br/>CUDA VRAM<br/>nvidia.com/gpu"]
+    subgraph ClusterInternal["CLUSTER-INTERNAL (Trusted)"]
+        InternalSvc["Internal Service"]
+        KServe["KServe Operator<br/>ServingRuntime CR<br/>InferenceService CR"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        S3["S3 / Object Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: AWS IAM"]
-        HuggingFace["Hugging Face Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Bearer (optional)"]
-        PVC["PVC Storage<br/>Filesystem<br/>Auth: ServiceAccount"]
+    subgraph ExternalServices["EGRESS (External Services)"]
+        ModelStorage["Model Storage<br/>S3 / HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token / AWS IAM"]
     end
 
-    %% Ingress Flows
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token / OAuth"| Gateway
-    Gateway -->|"HTTP/8000<br/>mTLS STRICT<br/>Service Identity"| Sidecar
-    Gateway -->|"gRPC/8033<br/>mTLS STRICT<br/>Service Identity"| Sidecar
-    Sidecar -->|"HTTP/8000<br/>plaintext (localhost)"| vLLMHTTP
-    Sidecar -->|"gRPC/8033<br/>plaintext (localhost)"| TGISAdapter
+    %% External flows
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Gateway
+    Gateway -->|"HTTP/8000<br/>TLS Terminated<br/>Auth Header"| Proxy
 
-    %% GPU Flow
-    vLLMHTTP -->|"CUDA<br/>Model inference"| GPU
+    %% Internal flows
+    InternalSvc -->|"gRPC/8033<br/>Plaintext<br/>No Auth (cluster-internal)"| GRPCAPI
+    KServe -.->|"Kubernetes API<br/>Manages lifecycle"| Container
 
-    %% Egress Flows
-    vLLMHTTP -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM / SA"| S3
-    vLLMHTTP -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HuggingFace
-    vLLMHTTP -->|"Filesystem<br/>ServiceAccount"| PVC
+    %% Egress flows
+    VLLMEngine -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer / AWS IAM<br/>Model download at startup"| ModelStorage
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef gpulayer fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef pod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef container fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef gpu fill:#f5a623,stroke:#333,stroke-width:2px,color:#fff
+    classDef internal fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef app fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
 
     class Client external
     class Gateway ingress
-    class Sidecar servicemesh
-    class vLLMHTTP,TGISAdapter app
-    class GPU gpulayer
-    class S3,HuggingFace,PVC externalservice
+    class Proxy pod
+    class HTTPAPI,GRPCAPI,VLLMEngine container
+    class GPU gpu
+    class InternalSvc,KServe internal
+    class ModelStorage externalservice

@@ -1,66 +1,94 @@
 graph TB
+    subgraph Orchestrator["FMS Guardrails Orchestrator"]
+        OrchestratorSvc["Orchestrator Service<br/>Invokes detectors on<br/>text generation I/O"]
+    end
+
     subgraph GuardrailsDetectors["Guardrails Detectors"]
         direction TB
 
-        subgraph Common["Common Framework (detectors/common/)"]
-            BaseAPI["DetectorBaseAPI<br/>FastAPI Base Class"]
-            Schemas["API Schemas<br/>ContentAnalysisHttpRequest<br/>ContentsAnalysisResponse"]
-            Instrumentation["Prometheus Instrumentation<br/>request_count, detection_count<br/>error_count, runtime_latency"]
-            HealthEndpoint["/health Endpoint"]
+        subgraph BuiltIn["odh-built-in-detector<br/>Port: 8080/TCP"]
+            BuiltInAPI["FastAPI / uvicorn<br/>(4 workers)"]
+            RegexReg["RegexDetectorRegistry<br/>PII: email, CC, SSN,<br/>phone, IP"]
+            FileTypeReg["FileTypeDetectorRegistry<br/>JSON, XML, YAML<br/>+ schema validation"]
+            CustomReg["CustomDetectorRegistry<br/>User Python functions<br/>(AST-checked)"]
+            BuiltInAPI --> RegexReg
+            BuiltInAPI --> FileTypeReg
+            BuiltInAPI --> CustomReg
         end
 
-        subgraph BuiltIn["Built-in Detector (port 8080)"]
-            direction TB
-            BuiltInApp["app.py<br/>FastAPI + uvicorn (4 workers)"]
-            RegexRegistry["RegexDetectorRegistry<br/>PII: email, credit card,<br/>SSN, phone, IP"]
-            FileTypeRegistry["FileTypeDetectorRegistry<br/>JSON, XML, YAML<br/>+ optional schema validation"]
-            CustomRegistry["CustomDetectorRegistry<br/>User-defined Python functions<br/>Static code analysis sandbox"]
-            BuiltInApp --> RegexRegistry
-            BuiltInApp --> FileTypeRegistry
-            BuiltInApp --> CustomRegistry
+        subgraph HFDetector["odh-guardrails-detector-huggingface-runtime<br/>Port: 8000/TCP"]
+            HFAPI["FastAPI / uvicorn<br/>(1 worker)"]
+            SeqClassifier["AutoModelForSequenceClassification<br/>Toxicity, content classifiers"]
+            GraniteLM["GraniteForCausalLM<br/>Risk categories: harm, bias,<br/>jailbreak, profanity, etc."]
+            HFAPI --> SeqClassifier
+            HFAPI --> GraniteLM
         end
 
-        subgraph HF["HuggingFace Detector (port 8000)"]
-            direction TB
-            HFApp["app.py<br/>FastAPI + uvicorn (1 worker)"]
-            SeqClassifier["AutoModelForSequenceClassification<br/>Multi-label classification<br/>Configurable SAFE_LABELS"]
-            GraniteLM["GraniteForCausalLM<br/>Generative safe/unsafe labels<br/>Log-probability scoring"]
-            HFApp --> SeqClassifier
-            HFApp --> GraniteLM
+        subgraph JudgeDetector["guardrails-detector-llm-judge<br/>Port: 8000/TCP"]
+            JudgeAPI["FastAPI / uvicorn<br/>(1 worker)"]
+            VLLMJudge["vllm_judge Library<br/>Metrics: safety, toxicity,<br/>accuracy, helpfulness, clarity"]
+            JudgeAPI --> VLLMJudge
         end
-
-        subgraph LLMJudge["LLM Judge Detector (port 8000)"]
-            direction TB
-            JudgeApp["app.py<br/>FastAPI + uvicorn"]
-            VLLMJudgeLib["vllm_judge Library<br/>LLM-as-a-judge evaluation"]
-            MetricsCatalog["Metrics Catalog<br/>safety, toxicity, accuracy"]
-            JudgeApp --> VLLMJudgeLib
-            JudgeApp --> MetricsCatalog
-        end
-
-        BuiltInApp -.->|extends| BaseAPI
-        HFApp -.->|extends| BaseAPI
-        JudgeApp -.->|extends| BaseAPI
     end
 
-    Orchestrator["FMS Guardrails<br/>Orchestrator"] -->|POST /api/v1/text/contents<br/>8080/TCP| BuiltInApp
-    Orchestrator -->|POST /api/v1/text/contents<br/>8000/TCP| HFApp
-    Orchestrator -->|POST /api/v1/text/contents<br/>8000/TCP| JudgeApp
+    subgraph SharedFramework["Common Framework (detectors/common/)"]
+        BaseAPI["DetectorBaseAPI"]
+        Schemas["Pydantic Schemas<br/>IBM Detector API"]
+        Instrumented["InstrumentedDetector<br/>trustyai_guardrails_* metrics"]
+    end
 
-    KServe["KServe<br/>InferenceService"] -->|manages lifecycle| HFApp
-    KServe -->|manages lifecycle| JudgeApp
+    subgraph ExternalServices["External Services"]
+        S3["S3/MinIO<br/>Model Storage<br/>9000/TCP"]
+        vLLM["vLLM Server<br/>OpenAI-compatible<br/>8080/TCP"]
+        HFHub["HuggingFace Hub<br/>443/TCP HTTPS"]
+    end
 
-    S3["S3/MinIO<br/>Model Storage"] -->|model files<br/>9000/TCP| HFApp
-    VLLMServer["vLLM Inference<br/>Server"] -->|LLM evaluation<br/>8080/TCP| JudgeApp
+    subgraph Platform["Platform Infrastructure"]
+        KServe["KServe<br/>InferenceService<br/>(RawDeployment)"]
+        Istio["Istio Service Mesh<br/>mTLS STRICT"]
+        Prometheus["Prometheus<br/>Metrics Scraping"]
+    end
 
-    Prometheus["Prometheus"] -->|scrapes /metrics| Instrumentation
+    %% Orchestrator calls detectors
+    OrchestratorSvc -->|"POST /api/v1/text/contents<br/>Istio mTLS"| BuiltInAPI
+    OrchestratorSvc -->|"POST /api/v1/text/contents<br/>Istio mTLS"| HFAPI
+    OrchestratorSvc -->|"POST /api/v1/text/contents<br/>Istio mTLS"| JudgeAPI
 
-    style BuiltInApp fill:#4a90e2,color:#fff
-    style HFApp fill:#4a90e2,color:#fff
-    style JudgeApp fill:#4a90e2,color:#fff
-    style BaseAPI fill:#6c5ce7,color:#fff
-    style Orchestrator fill:#00b894,color:#fff
-    style KServe fill:#e8e8e8,stroke:#333
-    style S3 fill:#f5a623,color:#fff
-    style VLLMServer fill:#f5a623,color:#fff
-    style Prometheus fill:#e8e8e8,stroke:#333
+    %% External dependencies
+    HFDetector -->|"Model download<br/>AWS credentials"| S3
+    HFDetector -.->|"Model download<br/>(init container)"| HFHub
+    VLLMJudge -->|"LLM evaluation<br/>HTTP"| vLLM
+
+    %% Platform dependencies
+    KServe -->|hosts| BuiltIn
+    KServe -->|hosts| HFDetector
+    KServe -->|hosts| JudgeDetector
+    Istio -->|mTLS sidecar| BuiltIn
+    Istio -->|mTLS sidecar| HFDetector
+    Istio -->|mTLS sidecar| JudgeDetector
+    Prometheus -->|"scrape /metrics"| BuiltIn
+    Prometheus -->|"scrape /metrics"| HFDetector
+    Prometheus -->|"scrape /metrics"| JudgeDetector
+
+    %% Shared framework
+    BuiltInAPI -.->|extends| BaseAPI
+    HFAPI -.->|extends| BaseAPI
+    JudgeAPI -.->|extends| BaseAPI
+
+    %% Styling
+    style BuiltInAPI fill:#4a90e2,color:#fff
+    style HFAPI fill:#4a90e2,color:#fff
+    style JudgeAPI fill:#4a90e2,color:#fff
+    style RegexReg fill:#7ed321,color:#fff
+    style FileTypeReg fill:#7ed321,color:#fff
+    style CustomReg fill:#7ed321,color:#fff
+    style SeqClassifier fill:#f5a623,color:#fff
+    style GraniteLM fill:#f5a623,color:#fff
+    style VLLMJudge fill:#f5a623,color:#fff
+    style S3 fill:#e8e8e8,stroke:#333
+    style vLLM fill:#e8e8e8,stroke:#333
+    style HFHub fill:#e8e8e8,stroke:#333
+    style KServe fill:#ddd,stroke:#333
+    style Istio fill:#ddd,stroke:#333
+    style Prometheus fill:#ddd,stroke:#333
+    style OrchestratorSvc fill:#9b59b6,color:#fff

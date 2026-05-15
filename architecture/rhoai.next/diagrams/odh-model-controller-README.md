@@ -1,7 +1,7 @@
 # Architecture Diagrams for odh-model-controller
 
 Generated from: `../odh-model-controller.md`
-Date: 2026-05-13
+Date: 2026-05-15
 
 **Note**: Diagram filenames use base component name without version (directory is already versioned).
 
@@ -10,23 +10,23 @@ Date: 2026-05-13
 Mermaid diagrams are available as `.mmd` source files. Use GitHub/GitLab's built-in Mermaid rendering, or https://mermaid.live to view and edit.
 
 ### For Developers
-- [Component Structure](./odh-model-controller-component.mmd) - Internal components, controllers, webhooks, and resources created
-- [Data Flows](./odh-model-controller-dataflow.mmd) - Sequence diagrams of InferenceService deployment, NIM provisioning, gateway discovery, and LLM auth flows
-- [Dependencies](./odh-model-controller-dependencies.mmd) - Component dependency graph showing required vs optional dependencies
+- [Component Structure](./odh-model-controller-component.mmd) - Internal components (controllers, sub-reconcilers, webhooks, API server)
+- [Data Flows](./odh-model-controller-dataflow.mmd) - Sequence diagrams of all 5 reconciliation and API flows
+- [Dependencies](./odh-model-controller-dependencies.mmd) - Component dependency graph (required, conditional, internal, external)
 
 ### For Architects
 - [C4 Context](./odh-model-controller-c4-context.dsl) - System context in C4 format (Structurizr)
 - [Component Overview](./odh-model-controller-component.mmd) - High-level component view
 
 ### For Security Teams
-- [Security Network Diagram (Mermaid)](./odh-model-controller-security-network.mmd) - Visual network topology with trust zones (editable)
-- [Security Network Diagram (ASCII)](./odh-model-controller-security-network.txt) - Precise text format for SAR submissions with RBAC, secrets, and FIPS details
-- [RBAC Visualization](./odh-model-controller-rbac.mmd) - RBAC permissions and bindings for both operator and API server
+- [Security Network Diagram (Mermaid)](./odh-model-controller-security-network.mmd) - Visual network topology (editable)
+- [Security Network Diagram (ASCII)](./odh-model-controller-security-network.txt) - Precise text format for SAR submissions
+- [RBAC Visualization](./odh-model-controller-rbac.mmd) - RBAC permissions and bindings
 
 ## How to Use
 
 ### Mermaid Source Files (.mmd files)
-- **In GitHub/GitLab**: Paste into markdown with ````mermaid` code blocks - renders automatically!
+- **In GitHub/GitLab**: Paste into markdown with ` ```mermaid ` code blocks - renders automatically!
 - **Live editor**: https://mermaid.live (paste code, edit, export)
 - **Editable**: Modify and regenerate if needed
 

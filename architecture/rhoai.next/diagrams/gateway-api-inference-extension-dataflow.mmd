@@ -1,47 +1,38 @@
 sequenceDiagram
     participant Client as External Client
-    participant Gateway as Envoy-Compatible Gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant BBR as Body-Based Router (BBR)<br/>9004/TCP gRPC TLS
-    participant EPP as Endpoint Picker (EPP)<br/>9002/TCP gRPC TLS
+    participant Gateway as Envoy Gateway<br/>443/TCP HTTPS TLS
+    participant BBR as Body Based Router<br/>9004/TCP gRPC/h2 TLS
+    participant EPP as Endpoint Picker<br/>9002/TCP gRPC/h2 TLS
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant ModelServer as Model Server Pod<br/>(vLLM/SGLang/Triton)
-    participant MetricsEP as Model Server /metrics<br/>HTTP
+    participant ModelServer as Model Server Pod<br/>Configurable Port
+    participant TrainSrv as Latency Training Server<br/>8000/TCP HTTP
+    participant PredSrv as Latency Prediction Server<br/>8001/TCP HTTP
 
-    Note over EPP,K8sAPI: Startup: Watch CRDs & Pods
-    EPP->>K8sAPI: Watch InferencePool, InferenceObjective,<br/>InferenceModelRewrite, Pods
-    K8sAPI-->>EPP: CRD & Pod events (streaming)
-    BBR->>K8sAPI: Watch ConfigMaps (bbr-managed=true)
-    K8sAPI-->>BBR: ConfigMap events (streaming)
+    Note over Client,ModelServer: Flow 1: Inference Request Scheduling (EPP only)
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTPS/443, TLS
+    Gateway->>EPP: ext-proc ProcessingRequest<br/>gRPC/9002, TLS (self-signed)
+    EPP->>K8sAPI: Watch InferencePool, Pods<br/>HTTPS/443, ServiceAccount token
+    K8sAPI-->>EPP: Pod endpoints + CRD config
+    EPP->>ModelServer: GET /metrics<br/>HTTP(S), InsecureSkipVerify
+    ModelServer-->>EPP: Prometheus metrics<br/>(KV cache, queue depth, running reqs)
+    EPP-->>Gateway: ext-proc ProcessingResponse<br/>Selected endpoint + headers
+    Gateway->>ModelServer: Forward inference request<br/>HTTP or gRPC
 
-    Note over EPP,MetricsEP: Continuous: Metrics Scraping (every 50ms default)
-    loop Every refresh-metrics-interval
-        EPP->>MetricsEP: GET /metrics<br/>HTTP (InsecureSkipVerify)
-        MetricsEP-->>EPP: KV cache util, queue depth,<br/>running requests, LoRA info
-    end
+    Note over Client,ModelServer: Flow 2: Body-Based Routing (BBR + EPP)
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTPS/443, TLS
+    Gateway->>BBR: ext-proc ProcessingRequest<br/>gRPC/9004, TLS (self-signed)
+    BBR->>K8sAPI: Watch ConfigMaps<br/>(bbr-managed=true)
+    K8sAPI-->>BBR: Adapter-to-base-model mappings
+    BBR-->>Gateway: ext-proc Response<br/>Headers: x-gateway-model-name, x-gateway-base-model
+    Gateway->>EPP: ext-proc ProcessingRequest<br/>gRPC/9002, TLS (self-signed)
+    EPP-->>Gateway: ext-proc Response<br/>Selected endpoint
+    Gateway->>ModelServer: Forward inference request<br/>to selected model server pod
 
-    Note over Client,ModelServer: Flow 1: Inference Request with Body-Based Routing
-    Client->>Gateway: POST /v1/chat/completions<br/>HTTPS TLS 1.2+, Bearer Token
-    Gateway->>BBR: ext-proc ProcessingRequest<br/>gRPC/HTTP2 TLS (self-signed)
-    Note right of BBR: Parse JSON body,<br/>extract model name,<br/>resolve LoRA→base model
-    BBR-->>Gateway: ProcessingResponse<br/>(inject model-name header)
-
-    Gateway->>EPP: ext-proc ProcessingRequest<br/>gRPC/HTTP2 TLS (self-signed)
-    Note right of EPP: Flow control admission<br/>→ Filter endpoints<br/>→ Score endpoints<br/>→ Pick best endpoint
-    EPP-->>Gateway: ProcessingResponse<br/>(set target-endpoint header)
-
-    Gateway->>ModelServer: Forward inference request<br/>to selected endpoint
-    ModelServer-->>Gateway: Inference response<br/>(streaming or unary)
-    Gateway-->>Client: Response<br/>HTTPS TLS 1.2+
-
-    Note over Client,ModelServer: Flow 2: Direct Routing (no BBR)
-    Client->>Gateway: POST /v1/completions<br/>HTTPS, model in header
-    Gateway->>EPP: ext-proc ProcessingRequest<br/>gRPC/HTTP2 TLS
-    EPP-->>Gateway: ProcessingResponse<br/>(target-endpoint header)
-    Gateway->>ModelServer: Forward to selected endpoint
-    ModelServer-->>Gateway: Inference response
-    Gateway-->>Client: Response
-
-    Note over EPP,MetricsEP: Flow 3: Metrics Collection
-    EPP->>MetricsEP: GET /metrics<br/>HTTP/HTTPS (configurable)
-    MetricsEP-->>EPP: Prometheus metrics
-    Note right of EPP: Update datastore:<br/>KV cache utilization,<br/>queue depth,<br/>running requests,<br/>LoRA adapter status
+    Note over EPP,PredSrv: Flow 3: Latency Prediction Training Loop
+    EPP->>TrainSrv: POST /train<br/>HTTP/8000, latency observations
+    TrainSrv->>TrainSrv: Train ML model<br/>(XGBoost/LightGBM/BayesianRidge)
+    TrainSrv-->>TrainSrv: Save model to shared PVC
+    PredSrv->>PredSrv: Load model from shared PVC<br/>(sync every 30s)
+    EPP->>PredSrv: POST /predict/bulk<br/>HTTP/8001, request features
+    PredSrv-->>EPP: TTFT/TPOT predictions
+    Note over EPP: Use predictions in<br/>scheduling decisions

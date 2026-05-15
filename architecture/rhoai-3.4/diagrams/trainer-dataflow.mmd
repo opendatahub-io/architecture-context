@@ -1,39 +1,44 @@
 sequenceDiagram
-    participant User as User / Platform UI
+    participant User as User / Data Scientist
     participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant Webhook as Validating Webhook<br/>9443/TCP HTTPS TLS
-    participant Controller as Trainer Controller<br/>(opendatahub namespace)
-    participant JobSetAPI as JobSet API<br/>443/TCP HTTPS
-    participant JobSetCtrl as JobSet Controller
-    participant Master as Training Pod 0 (Master)<br/>29500/TCP TCP
-    participant Workers as Training Pods 1..N (Workers)<br/>29500/TCP TCP
-    participant Progression as RHAI Progression Tracker
+    participant Webhook as Webhook Server<br/>9443/TCP HTTPS TLS
+    participant Controller as trainer-controller-manager<br/>Go Operator
+    participant TrainingPod as Training Pod (node-0)<br/>29500/TCP, 28080/TCP
+    participant WorkerPods as Training Worker Pods<br/>29500/TCP
+    participant CacheHead as data-cache (head)<br/>Arrow Flight gRPC
+    participant CacheWorker as data-cache (worker)<br/>Arrow Flight gRPC
 
-    Note over User,Workers: Flow 1: TrainJob Submission and Execution
+    Note over User,Controller: Flow 1: TrainJob Reconciliation
 
-    User->>K8sAPI: POST TrainJob CR<br/>Auth: Bearer Token (RBAC)
-    K8sAPI->>Webhook: POST /validate-trainer-...-trainjob<br/>9443/TCP HTTPS<br/>Auth: API server client cert
-    Webhook-->>K8sAPI: Admission Response (allow/deny)
+    User->>K8sAPI: Create TrainJob CR<br/>Auth: Bearer Token / OIDC
+    K8sAPI->>Webhook: POST /validate-trainer-kubeflow-org-v1alpha1-trainjob<br/>9443/TCP HTTPS, TLS auto-rotated<br/>Auth: API Server client cert
+    Webhook-->>K8sAPI: AdmissionReview response
     K8sAPI-->>User: TrainJob created
 
-    K8sAPI->>Controller: Watch event: TrainJob created
-    Controller->>K8sAPI: Resolve TrainingRuntime/ClusterTrainingRuntime<br/>Auth: ServiceAccount token
-    Controller->>JobSetAPI: Create JobSet CR<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: ServiceAccount token
-    Controller->>K8sAPI: Create NetworkPolicy (per-TrainJob)<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: ServiceAccount token
-    Controller->>K8sAPI: Create PodGroup (if gang-scheduling)<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: ServiceAccount token
+    Controller->>K8sAPI: Watch TrainJob + read referenced runtime<br/>443/TCP HTTPS, TLS 1.2+<br/>Auth: ServiceAccount token
+    Controller->>K8sAPI: Server-side apply: JobSet, PodGroup,<br/>NetworkPolicy, SSH Secret/ConfigMap<br/>443/TCP HTTPS, TLS 1.2+<br/>Auth: ServiceAccount token
 
-    JobSetCtrl->>K8sAPI: Create batch Jobs + Pods<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: ServiceAccount token
+    Note over Controller,WorkerPods: Flow 2: Distributed Training (PyTorch)
 
-    Master->>Workers: NCCL/gRPC distributed training<br/>29500/TCP plaintext<br/>Auth: None (NetworkPolicy restricted)
-    Workers-->>Master: Gradient synchronization
+    K8sAPI-->>TrainingPod: Pods scheduled via JobSet
+    K8sAPI-->>WorkerPods: Worker pods scheduled
 
-    Note over Controller,Master: Flow 2: RHAI Progression Tracking
+    WorkerPods->>TrainingPod: torchrun rendezvous<br/>29500/TCP, No encryption
+    TrainingPod->>WorkerPods: NCCL all-reduce<br/>Dynamic/TCP, No encryption<br/>(gradient synchronization)
 
-    loop Every 30s (configurable 5s-300s)
-        Progression->>Master: GET /metrics<br/>28080/TCP HTTP plaintext<br/>Auth: None (NetworkPolicy restricted)
-        Master-->>Progression: JSON metrics<br/>(progressPercentage, currentStep,<br/>totalSteps, currentEpoch)
-        Progression->>K8sAPI: PATCH TrainJob annotations<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: ServiceAccount token
-    end
+    Note over Controller,TrainingPod: Flow 3: RHAI Progression Tracking
 
-    Note over Progression,Master: On job complete/fail
-    Progression->>Master: Read pod termination message<br/>(final metrics capture)
+    Controller->>K8sAPI: List pods (find primary pod IP)<br/>443/TCP HTTPS, TLS 1.2+<br/>Auth: ServiceAccount token
+    Controller->>TrainingPod: GET http://podIP:28080/metrics<br/>28080/TCP HTTP, No encryption<br/>Auth: None (NetworkPolicy enforced)
+    TrainingPod-->>Controller: JSON metrics (progress %, epoch, ETA)
+    Controller->>K8sAPI: Patch TrainJob annotations<br/>with trainer status JSON<br/>443/TCP HTTPS, TLS 1.2+<br/>Auth: ServiceAccount token
+
+    Note over CacheHead,CacheWorker: Flow 4: Data Cache (Optional)
+
+    CacheHead->>CacheHead: Read Iceberg metadata<br/>(METADATA_LOC)
+    CacheHead->>CacheWorker: do_put: assign data files<br/>Arrow Flight gRPC
+    CacheWorker->>CacheWorker: Load data into<br/>in-memory Arrow tables
+    TrainingPod->>CacheHead: Query partition endpoints<br/>Arrow Flight gRPC
+    CacheHead-->>TrainingPod: Worker endpoint list
+    TrainingPod->>CacheWorker: do_get: fetch data rows<br/>Arrow Flight gRPC
+    CacheWorker-->>TrainingPod: Arrow RecordBatch data

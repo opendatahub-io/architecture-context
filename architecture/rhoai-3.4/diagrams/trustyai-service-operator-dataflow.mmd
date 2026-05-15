@@ -1,60 +1,69 @@
 sequenceDiagram
-    participant User as User / Client
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
-    participant TASCtrl as TAS Controller<br/>Operator Pod
-    participant LMESCtrl as LMES Controller<br/>Operator Pod
-    participant GORCHCtrl as GORCH Controller<br/>Operator Pod
-    participant EVALCtrl as EvalHub Controller<br/>Operator Pod
-    participant TrustyAISvc as TrustyAI Service<br/>8443/TCP HTTPS
-    participant KServeISVC as KServe<br/>InferenceService
-    participant LMEvalPod as LMEvalJob Pod<br/>18080/TCP HTTP
-    participant Orchestrator as Guardrails<br/>Orchestrator<br/>8432/TCP HTTPS
-    participant EvalHubSvc as EvalHub API<br/>8443/TCP HTTPS
-    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant PostgreSQL as PostgreSQL<br/>TCP TLS
-    participant MLFlow as MLFlow<br/>HTTPS
+    autonumber
 
-    rect rgb(230, 240, 255)
-        Note over User,KServeISVC: Flow 1: TrustyAI Model Monitoring Setup
-        User->>K8sAPI: Create TrustyAIService CR<br/>Bearer Token
-        K8sAPI->>TASCtrl: Watch event
-        TASCtrl->>K8sAPI: Create Deployment, Service, Route<br/>SA Token
-        TASCtrl->>K8sAPI: Patch KServe InferenceService<br/>(add inference logger)
-        KServeISVC->>TrustyAISvc: Inference logging data<br/>HTTPS/8443 TLS
-        User->>TrustyAISvc: Query explainability/fairness<br/>via Route 443/TCP<br/>kube-rbac-proxy SAR
+    rect rgb(240, 248, 255)
+        Note over Client, PVC: Flow 1: Model Prediction Logging (TAS)
+        participant Client as External Client
+        participant KServeISvc as KServe InferenceService
+        participant TASService as TrustyAI Service<br/>8080/TCP HTTP or 443/TCP HTTPS
+        participant PVC as PVC / PostgreSQL DB
+
+        Client->>KServeISvc: POST /v1/models/{model}:predict
+        KServeISvc->>TASService: InferenceLogger payload<br/>HTTP/8080 or HTTPS/443
+        TASService->>PVC: Store prediction data<br/>filesystem or JDBC/TLS
+        Note over TASService: Bias detection &<br/>fairness metrics computed
+
+        participant Prometheus as Prometheus
+        Prometheus->>TASService: GET /metrics (HTTP/80)<br/>via ServiceMonitor
     end
 
-    rect rgb(255, 240, 230)
-        Note over User,S3: Flow 2: LMEvalJob Execution
+    rect rgb(255, 248, 240)
+        Note over User, OCI: Flow 2: LMEval Job Execution (LMES)
+        participant User as User
+        participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS
+        participant Controller as LMES Controller
+        participant EvalPod as Evaluation Pod
+        participant S3 as S3 Storage<br/>443/TCP HTTPS
+        participant OCI as OCI Registry<br/>443/TCP HTTPS
+        participant ModelEndpoint as Model Endpoint
+
         User->>K8sAPI: Create LMEvalJob CR<br/>Bearer Token
-        K8sAPI->>LMESCtrl: Watch event
-        LMESCtrl->>K8sAPI: Create evaluation Pod<br/>SA Token
-        Note over LMEvalPod: Init: ta-lmes-driver copies<br/>binary to shared volume
-        LMEvalPod->>HFHub: Download model/dataset (if online)<br/>HTTPS/443 TLS 1.2+
-        LMEvalPod->>S3: Download offline models<br/>HTTPS/443 AWS IAM
-        LMESCtrl->>LMEvalPod: Poll /GetStatus<br/>HTTP/18080 (pod exec)
-        LMEvalPod-->>LMESCtrl: Progress (state, completion %)
-        LMEvalPod->>S3: Upload results<br/>HTTPS/443 AWS IAM
-        Note over LMESCtrl: Update LMEvalJob status
+        K8sAPI-->>Controller: Watch event
+        Controller->>K8sAPI: Create Pod<br/>ServiceAccount token
+        Note over EvalPod: Init: copy ta-lmes-driver<br/>to shared EmptyDir
+
+        opt Offline mode
+            EvalPod->>S3: Download HuggingFace assets<br/>HTTPS/TLS, AWS IAM
+        end
+
+        EvalPod->>ModelEndpoint: lm-eval inference requests<br/>HTTP/HTTPS
+        ModelEndpoint-->>EvalPod: Model responses
+
+        Controller->>EvalPod: kubectl exec (SPDY/TLS)<br/>GET /GetStatus on :18080
+        EvalPod-->>Controller: LMEvalJobStatus JSON<br/>(progress bars)
+
+        opt OCI upload
+            EvalPod->>OCI: Upload results artifact<br/>HTTPS/TLS, credentials
+        end
     end
 
-    rect rgb(230, 255, 230)
-        Note over User,KServeISVC: Flow 3: Guardrails Orchestration
-        User->>Orchestrator: POST request via Route<br/>HTTPS/443 reencrypt<br/>kube-rbac-proxy SAR
-        GORCHCtrl->>K8sAPI: List InferenceServices<br/>(label: trustyai/guardrails=true)
-        GORCHCtrl->>K8sAPI: Auto-generate orchestrator config
-        Orchestrator->>KServeISVC: Generation request<br/>HTTP/HTTPS TLS (auto-detected)
-        Orchestrator->>KServeISVC: Detector request<br/>HTTP/HTTPS TLS (auto-detected)
-        Orchestrator-->>User: Guardrailed response
-    end
+    rect rgb(240, 255, 240)
+        Note over GClient, DetectorISvc: Flow 3: Guardrails Orchestration (GORCH)
+        participant GClient as Client
+        participant KRBP as kube-rbac-proxy<br/>8432/TCP HTTPS TLS
+        participant Orchestrator as Guardrails Orchestrator<br/>8032/TCP HTTP
+        participant GenISvc as Generation<br/>InferenceService
+        participant DetectorISvc as Detector<br/>InferenceServices
+        participant BuiltIn as Built-in Regex Detector<br/>8080/TCP HTTP
 
-    rect rgb(255, 230, 255)
-        Note over User,MLFlow: Flow 4: EvalHub Multi-Tenant Evaluation
-        User->>EvalHubSvc: POST evaluation request<br/>via Route HTTPS/443<br/>kube-rbac-proxy SAR + X-Tenant
-        EvalHubSvc->>PostgreSQL: Store evaluation data<br/>TCP TLS (optional)
-        EvalHubSvc->>MLFlow: Track experiment<br/>HTTPS, projected SA Token (3600s TTL)
-        EVALCtrl->>K8sAPI: Watch batch Jobs for failures
-        Note over EVALCtrl: Detect OOMKilled,<br/>CrashLoopBackOff,<br/>ImagePullBackOff
-        EVALCtrl->>EvalHubSvc: POST failure event<br/>HTTPS/8443 TLS 1.2+<br/>Bearer SA Token
+        GClient->>KRBP: POST (HTTPS/8432)<br/>Bearer Token (SAR check)
+        KRBP->>Orchestrator: Forward (HTTP/8032)<br/>loopback
+        Orchestrator->>GenISvc: Generation request<br/>HTTPS/TLS (auto-discovered)
+        GenISvc-->>Orchestrator: LLM response
+        Orchestrator->>DetectorISvc: Safety detection<br/>HTTPS/TLS (auto-discovered)
+        DetectorISvc-->>Orchestrator: Detection results
+        Orchestrator->>BuiltIn: Regex detection<br/>HTTP/8080 (loopback)
+        BuiltIn-->>Orchestrator: Regex results
+        Orchestrator-->>KRBP: Guardrailed response
+        KRBP-->>GClient: HTTPS response
     end

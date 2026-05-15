@@ -1,41 +1,35 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and deploys LLM inference workloads"
-        mlEngineer = person "ML Engineer" "Manages model serving infrastructure and runtimes"
+        dataScientist = person "Data Scientist" "Deploys and queries ML models for inference"
+        platformAdmin = person "Platform Admin" "Configures KServe ServingRuntimes and model serving"
 
-        vllmSpyre = softwareSystem "vLLM Spyre" "IBM Spyre-accelerated vLLM inference runtime with TGIS gRPC adapter for high-performance LLM serving on RHEL 9" {
-            httpApi = container "HTTP API Server" "OpenAI-compatible REST API for text/chat completions" "Python (uvicorn)" "8000/TCP"
-            grpcApi = container "gRPC TGIS Server" "IBM Text Generation Inference Server protocol for KServe model serving" "Python (gRPC)" "8033/TCP"
-            vllmEngine = container "vLLM Inference Engine" "Core inference engine with IBM Spyre hardware acceleration" "Python"
-            tgisAdapter = container "vllm_tgis_adapter" "Entrypoint module bridging vLLM with TGIS gRPC protocol" "Python"
+        vllmSpyre = softwareSystem "vllm-spyre" "IBM Spyre-accelerated vLLM inference server with TGIS gRPC adapter for RHOAI model serving" {
+            tgisAdapter = container "vllm-tgis-adapter" "Bridges vLLM OpenAI API to TGIS gRPC protocol; serves HTTP (8000) and gRPC (8033)" "Python"
+            vllmEngine = container "vLLM Engine" "High-throughput LLM inference engine with Spyre plugin" "Python/C++"
+            spyrePlugin = container "vllm-spyre Plugin" "IBM Spyre accelerator integration for vLLM" "Python"
         }
 
-        kserve = softwareSystem "KServe" "Standardized serverless ML inference platform — deploys vllm-spyre as InferenceService runtime" "Internal RHOAI"
-        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator — manages ServingRuntime CRs and image lifecycle" "Internal RHOAI"
-        servingRuntime = softwareSystem "ServingRuntime CR" "Custom resource referencing vllm-spyre container image for KServe deployments" "Internal RHOAI"
+        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Authentication and authorization sidecar proxy" "Platform-Injected"
+        kserve = softwareSystem "KServe" "Kubernetes-native model serving platform managing InferenceService lifecycle" "Internal RHOAI"
+        modelMesh = softwareSystem "ModelMesh" "Multi-model serving infrastructure for KServe" "Internal RHOAI"
+        spyreHardware = softwareSystem "IBM Spyre Accelerator" "AI inference accelerator hardware (VFIO passthrough)" "Hardware"
+        modelStorage = softwareSystem "Model Storage" "Pre-downloaded HuggingFace model weights (PVC)" "Storage"
+        baseImage = softwareSystem "rhaiis/vllm-spyre-rhel9" "Pre-built base image with all runtime components" "External"
+        konflux = softwareSystem "Konflux Pipeline" "Build system for supply chain provenance attestation" "Build Infrastructure"
 
-        s3Storage = softwareSystem "S3-compatible Storage" "Object storage for model weights and artifacts" "External"
-        huggingFace = softwareSystem "Hugging Face Hub" "Public model repository for weights and tokenizers" "External"
-        spyreHardware = softwareSystem "IBM Spyre Accelerator" "Hardware AI accelerator card for inference workloads" "External Hardware"
+        dataScientist -> vllmSpyre "Sends inference requests via HTTPS/8443"
+        platformAdmin -> kserve "Configures ServingRuntime CRs"
 
-        # Relationships
-        dataScientist -> kserve "Creates InferenceService via kubectl/dashboard"
-        mlEngineer -> rhodsOperator "Configures ServingRuntime CRs"
+        kubeRbacProxy -> tgisAdapter "Forwards authenticated requests (HTTP/8000, gRPC/8033)" "HTTP/gRPC localhost"
+        tgisAdapter -> vllmEngine "In-process Python calls" "Python"
+        vllmEngine -> spyrePlugin "Dispatches to accelerator plugin" "Python"
+        spyrePlugin -> spyreHardware "Model inference computation" "VFIO passthrough"
 
-        kserve -> vllmSpyre "Deploys as model serving runtime container" "HTTP/8000, gRPC/8033"
-        rhodsOperator -> servingRuntime "Manages lifecycle"
-        servingRuntime -> vllmSpyre "References container image"
-
-        vllmSpyre -> spyreHardware "Executes inference" "Hardware interface"
-        vllmSpyre -> s3Storage "Downloads model weights at startup" "HTTPS/443, TLS 1.2+, AWS IAM"
-        vllmSpyre -> huggingFace "Downloads model weights/tokenizers" "HTTPS/443, TLS 1.2+, Bearer Token"
-
-        # Internal relationships
-        tgisAdapter -> httpApi "Manages"
-        tgisAdapter -> grpcApi "Manages"
-        httpApi -> vllmEngine "Delegates inference"
-        grpcApi -> vllmEngine "Delegates inference"
-        vllmEngine -> spyreHardware "Hardware acceleration"
+        kserve -> vllmSpyre "Deploys as ServingRuntime container"
+        modelMesh -> vllmSpyre "Routes inference requests via gRPC/TGIS"
+        modelStorage -> vllmEngine "Model weights mounted as volume" "Filesystem"
+        baseImage -> konflux "Source base image for rebuild" "Container Registry"
+        konflux -> vllmSpyre "Produces attested container image" "Container Image"
     }
 
     views {
@@ -50,29 +44,41 @@ workspace {
         }
 
         styles {
-            element "External" {
-                background #999999
+            element "Software System" {
+                background #438DD5
                 color #ffffff
             }
-            element "External Hardware" {
-                background #e8563a
+            element "Person" {
+                shape person
+                background #08427B
+                color #ffffff
+            }
+            element "Container" {
+                background #438DD5
+                color #ffffff
+            }
+            element "Platform-Injected" {
+                background #f5a623
                 color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
-                color #000000
-            }
-            element "Person" {
-                shape Person
-                background #4a90e2
                 color #ffffff
             }
-            element "Software System" {
-                background #4a90e2
+            element "Hardware" {
+                background #e74c3c
                 color #ffffff
             }
-            element "Container" {
-                background #438dd5
+            element "Storage" {
+                background #f5a623
+                color #333333
+            }
+            element "External" {
+                background #999999
+                color #ffffff
+            }
+            element "Build Infrastructure" {
+                background #999999
                 color #ffffff
             }
         }

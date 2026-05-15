@@ -2,87 +2,76 @@ graph TD
     subgraph MLServerSecurity["MLServer Security Model"]
         direction TB
 
-        Note["MLServer is a user-space application (not an operator)<br/>No Kubernetes RBAC roles defined<br/>Authentication and authorization delegated to external infrastructure"]
-    end
-
-    subgraph ExternalAuth["External Authentication/Authorization"]
-        direction TB
-
-        subgraph KubeRbacProxy["kube-rbac-proxy Sidecar (RHOAI 3.x)"]
-            KRBP["kube-rbac-proxy<br/>Port: 8443/TCP (external)<br/>→ 8080/TCP (MLServer REST)"]
-            KRBP_Auth["AuthN: Bearer Token<br/>AuthZ: Kubernetes RBAC<br/>TLS: Terminates TLS"]
+        subgraph NoK8sRBAC["Kubernetes RBAC"]
+            NoRoles["No ClusterRoles<br/>No RoleBindings<br/>No ServiceAccount RBAC<br/><br/>MLServer does not interact<br/>with Kubernetes API directly"]
         end
 
-        subgraph KServeGW["KServe Gateway (Gateway API)"]
-            GW["Envoy / Istio Gateway<br/>Port: 443/TCP (external)"]
-            GW_Auth["AuthN: Bearer Token<br/>AuthZ: Gateway policies<br/>TLS: TLS 1.2+ termination"]
+        subgraph PlatformAuth["Platform-Level Auth (Delegated)"]
+            Gateway["RHOAI Gateway<br/>+ kube-rbac-proxy sidecar"]
+            BearerToken["Bearer Token Validation"]
+            K8sRBAC["Kubernetes RBAC<br/>Authorization"]
+            Gateway --> BearerToken
+            BearerToken --> K8sRBAC
+        end
+
+        subgraph RuntimeSecurity["Runtime Security (Application-Level)"]
+            direction TB
+            TrustedFile["/etc/mlserver/trusted-runtimes.json<br/>(baked at container build time)"]
+            ProdMode["Production Mode<br/>(file exists)"]
+            DevMode["Development Mode<br/>(file absent)"]
+
+            TrustedFile -->|"exists"| ProdMode
+            TrustedFile -->|"absent"| DevMode
+
+            subgraph ProdRestrictions["Production Mode Restrictions"]
+                AllowList["Only allowlisted runtime<br/>import paths permitted"]
+                NoCustEnv["Custom Python environments<br/>REJECTED"]
+                NoCORS["Wildcard CORS origins<br/>REJECTED"]
+                BuildValidation["Build-time validation:<br/>is_valid_runtime_import_path()"]
+            end
+
+            ProdMode --> ProdRestrictions
+
+            subgraph DevPermissions["Development Mode Permissions"]
+                AllRuntimes["All runtime implementations<br/>ALLOWED"]
+                CustEnv["Custom Python environments<br/>ALLOWED"]
+                CORS["Wildcard CORS origins<br/>ALLOWED"]
+            end
+
+            DevMode --> DevPermissions
+        end
+
+        subgraph FilesystemAccess["Filesystem Access (Read-Only)"]
+            ModelDir["/mnt/models<br/>Model artifacts<br/>(PVC/S3 mount)"]
+            SANamespace["/var/run/secrets/kubernetes.io/<br/>serviceaccount/namespace<br/>(CloudEvents headers)"]
+        end
+
+        subgraph NoSecrets["Kubernetes Secrets"]
+            NoSecretsNote["No secrets defined or required<br/>TLS certs: platform gateway<br/>Storage creds: KServe storage initializer"]
         end
     end
 
-    subgraph RuntimeSecurity["Application-Level Security Controls"]
-        direction TB
-
-        TrustedAllowlist["Trusted Runtimes Allowlist<br/>/etc/mlserver/trusted-runtimes.json<br/>(read-only, baked into image at build)"]
-
-        subgraph Controls["Enforcement Points"]
-            ModelValidation["Model Settings Validation<br/>Rejects non-allowlisted<br/>implementation import paths<br/>(early rejection)"]
-            ImplAccess["Implementation Access Check<br/>Defense-in-depth validation<br/>at model load time"]
-            EnvBlock["Custom Environment Blocking<br/>Blocks environment_tarball<br/>and environment_path<br/>in production mode"]
-            CORSBlock["CORS Restriction<br/>Wildcard CORS origins<br/>blocked in production mode"]
-        end
-
-        TrustedAllowlist -->|restricts| ModelValidation
-        TrustedAllowlist -->|restricts| ImplAccess
-        TrustedAllowlist -->|triggers| EnvBlock
-        TrustedAllowlist -->|triggers| CORSBlock
-    end
-
-    subgraph AllowedRuntimes["Allowed Runtime Implementations (Production)"]
-        SKLearn["mlserver_sklearn.SKLearnModel"]
-        XGBoost["mlserver_xgboost.XGBoostModel"]
-        LightGBM["mlserver_lightgbm.LightGBMModel"]
-        ONNX["mlserver_onnx.ONNXModel"]
-    end
-
-    subgraph Blocked["Blocked in Production Mode"]
-        ArbitraryImpl["Arbitrary Python import paths<br/>(prevents code execution)"]
-        CustomEnv["Custom environment tarballs<br/>(prevents sys.path injection)"]
-        CustomPath["Custom environment paths<br/>(prevents path manipulation)"]
-        WildcardCORS["Wildcard CORS origins<br/>(prevents cross-origin abuse)"]
-    end
-
-    %% Flows
-    KRBP -->|"proxies authenticated<br/>requests to"| MLServerSecurity
-    GW -->|"proxies authenticated<br/>requests to"| MLServerSecurity
-
-    ModelValidation -->|allows| AllowedRuntimes
-    ModelValidation -->|rejects| ArbitraryImpl
-    EnvBlock -->|blocks| CustomEnv
-    EnvBlock -->|blocks| CustomPath
-    CORSBlock -->|blocks| WildcardCORS
-
-    %% Network access control
-    subgraph NetworkSecurity["Network-Level Controls"]
-        NP["NetworkPolicy<br/>Restricts access to<br/>metrics port 8082<br/>(Prometheus only)"]
-    end
+    %% External flow
+    Client["External Client"] -->|"HTTPS/443<br/>Bearer Token"| Gateway
+    Gateway -->|"HTTP/8080 (plaintext)<br/>No Auth"| MLServerPod["MLServer Pod<br/>(no application-level auth)"]
 
     %% Styling
-    style Note fill:#fff3cd,stroke:#ffc107,stroke-width:2px
-    style KRBP fill:#4a90e2,stroke:#333,color:#fff
-    style KRBP_Auth fill:#bbdefb,stroke:#333
-    style GW fill:#4a90e2,stroke:#333,color:#fff
-    style GW_Auth fill:#bbdefb,stroke:#333
-    style TrustedAllowlist fill:#e74c3c,stroke:#333,color:#fff
-    style ModelValidation fill:#f5a623,stroke:#333
-    style ImplAccess fill:#f5a623,stroke:#333
-    style EnvBlock fill:#f5a623,stroke:#333
-    style CORSBlock fill:#f5a623,stroke:#333
-    style SKLearn fill:#7ed321,stroke:#333
-    style XGBoost fill:#7ed321,stroke:#333
-    style LightGBM fill:#7ed321,stroke:#333
-    style ONNX fill:#7ed321,stroke:#333
-    style ArbitraryImpl fill:#e57373,stroke:#333,color:#fff
-    style CustomEnv fill:#e57373,stroke:#333,color:#fff
-    style CustomPath fill:#e57373,stroke:#333,color:#fff
-    style WildcardCORS fill:#e57373,stroke:#333,color:#fff
-    style NP fill:#dae8fc,stroke:#6c8ebf
+    style NoRoles fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    style Gateway fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    style BearerToken fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    style K8sRBAC fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    style TrustedFile fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    style ProdMode fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    style DevMode fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    style AllowList fill:#f8cecc,stroke:#b85450
+    style NoCustEnv fill:#f8cecc,stroke:#b85450
+    style NoCORS fill:#f8cecc,stroke:#b85450
+    style BuildValidation fill:#f8cecc,stroke:#b85450
+    style AllRuntimes fill:#fff2cc,stroke:#d6b656
+    style CustEnv fill:#fff2cc,stroke:#d6b656
+    style CORS fill:#fff2cc,stroke:#d6b656
+    style ModelDir fill:#e1d5e7,stroke:#9673a6
+    style SANamespace fill:#e1d5e7,stroke:#9673a6
+    style NoSecretsNote fill:#d5e8d4,stroke:#82b366
+    style Client fill:#f9f9f9,stroke:#999
+    style MLServerPod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px

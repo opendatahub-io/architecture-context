@@ -1,60 +1,43 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates experiments, logs metrics, registers models via Python SDK"
-        mlEngineer = person "ML Engineer" "Manages model lifecycle, deploys models, reviews experiment results"
-        platformAdmin = person "Platform Admin" "Manages MLflow deployment, configures workspaces and auth"
+        datascientist = person "Data Scientist" "Creates and tracks ML experiments, registers models, browses results via UI"
+        platformadmin = person "Platform Admin" "Manages MLflow deployment via MLflow Operator"
 
-        mlflow = softwareSystem "MLflow" "ML experiment tracking, model registry, and artifact management server (v3.10.1+rhaiv.3)" {
-            trackingServer = container "MLflow Tracking Server" "Hybrid WSGI/ASGI server providing REST API and GraphQL for experiment tracking and model registry" "Python (Flask + FastAPI)"
-            webUI = container "MLflow Web UI" "Single-page application for visualizing experiments, runs, metrics, and models" "React (TypeScript)"
-            authModule = container "Auth Module" "Pluggable authentication with Kubernetes SA token validation and workspace-scoped authorization" "Python (Flask plugin + FastAPI middleware)"
-            cryptoModule = container "Crypto Module" "Envelope encryption (AES-256-GCM + PBKDF2) for secrets management with KEK rotation" "Python (cryptography)"
-            storeLayer = container "Store Layer" "Database abstraction with workspace-aware query filtering" "Python (SQLAlchemy)"
-            artifactRepo = container "Artifact Repository" "Pluggable artifact storage supporting S3, Azure Blob, GCS" "Python (boto3, azure-storage-blob)"
-            jobRunner = container "Job Runner" "Background task execution system" "Python (Huey, SQLite-backed)"
-            prometheusExporter = container "Prometheus Exporter" "Gunicorn-integrated metrics exporter" "Python (prometheus_flask_exporter)"
+        mlflow = softwareSystem "MLflow" "Experiment tracking, model registry, and ML lifecycle management for RHOAI" {
+            trackingServer = container "MLflow Tracking Server" "REST API for experiment tracking, model registry, artifact management, and workspace isolation" "Python (FastAPI + Flask)"
+            kubeAuthPlugin = container "kubernetes-auth Plugin" "Authenticates and authorizes requests via K8s SelfSubjectAccessReview" "Python Module"
+            kubeWorkspaceProvider = container "kubernetes:// Workspace Store" "Maps Kubernetes namespaces to MLflow workspaces" "Python Module"
+            envelopeEncryption = container "Envelope Encryption Engine" "AES-256-GCM secrets encryption with KEK/DEK key management" "Python Module"
+            mlflowUI = container "MLflow UI" "Web interface for browsing experiments, runs, metrics, models, and traces" "React SPA"
+            dbMigrations = container "Database Migration System" "40+ schema migrations for PostgreSQL backends" "Alembic"
         }
 
-        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Authentication/authorization sidecar proxy" "Sidecar"
-        platformGateway = softwareSystem "Platform Gateway (Envoy)" "External ingress routing via RHOAI platform Gateway" "External"
-        rhodsOperator = softwareSystem "rhods-operator" "Deploys MLflow pods, manages HTTPRoute and kube-rbac-proxy sidecar" "Internal RHOAI"
+        rhoaiGateway = softwareSystem "RHOAI Data Science Gateway" "Platform Gateway API ingress (Envoy) exposing MLflow at /mlflow" "Internal RHOAI"
+        mlflowOperator = softwareSystem "MLflow Operator" "Deploys and configures the MLflow server, creates MLflow CR" "Internal RHOAI"
+        kubernetesAPI = softwareSystem "Kubernetes API Server" "Namespace listing, SelfSubjectAccessReview, MLflowConfig CR reads" "External"
+        postgresql = softwareSystem "PostgreSQL" "Backend store for tracking data, model registry, auth, and workspaces" "External"
+        objectStorage = softwareSystem "S3/GCS/Azure Storage" "Model artifact storage backend" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection via /metrics scrape endpoint" "Internal RHOAI"
+        otelCollector = softwareSystem "OpenTelemetry Collectors" "OTLP/HTTP trace ingestion at /v1/traces" "External"
 
-        postgresql = softwareSystem "PostgreSQL" "Backend store for experiments, runs, metrics, models, auth, workspaces" "External"
-        s3Storage = softwareSystem "S3-Compatible Storage" "Artifact storage for experiment data and model files (MinIO/Ceph)" "External"
-        k8sAPI = softwareSystem "Kubernetes API Server" "ServiceAccount token validation, namespace listing for workspaces" "External"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing export" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
+        # External interactions
+        datascientist -> mlflow "Logs experiments, registers models via SDK and UI" "HTTPS/443"
+        platformadmin -> mlflowOperator "Configures MLflow deployment"
 
-        # Relationships - External Users
-        dataScientist -> mlflow "Creates experiments, logs metrics, registers models" "Python SDK / HTTPS"
-        mlEngineer -> mlflow "Reviews experiments, manages model versions" "Web UI / HTTPS"
-        platformAdmin -> rhodsOperator "Configures MLflow deployment" "Kubernetes API"
+        # System interactions
+        rhoaiGateway -> mlflow "Routes /mlflow traffic" "HTTPRoute, 443→5000"
+        mlflowOperator -> mlflow "Deploys and manages lifecycle" "Helm"
+        mlflow -> kubernetesAPI "Authorization checks, namespace enumeration, config reads" "HTTPS/6443"
+        mlflow -> postgresql "Stores tracking data, model registry, workspace metadata" "PostgreSQL/5432"
+        mlflow -> objectStorage "Reads/writes model artifacts" "HTTPS/443"
+        prometheus -> mlflow "Scrapes metrics" "HTTP/5000"
+        otelCollector -> mlflow "Sends trace spans" "HTTP/5000 OTLP"
 
-        # Relationships - Ingress Chain
-        dataScientist -> platformGateway "HTTPS/443, Bearer Token (K8s SA)"
-        mlEngineer -> platformGateway "HTTPS/443, Bearer Token (K8s SA)"
-        platformGateway -> kubeRbacProxy "HTTPS/8443, TLS 1.2+"
-        kubeRbacProxy -> trackingServer "HTTP/5000, localhost"
-
-        # Relationships - Internal
-        trackingServer -> authModule "Authenticates requests"
-        trackingServer -> storeLayer "Reads/writes experiment data"
-        trackingServer -> artifactRepo "Manages artifact uploads/downloads"
-        trackingServer -> cryptoModule "Encrypts/decrypts gateway secrets"
-        trackingServer -> jobRunner "Submits background tasks"
-        trackingServer -> prometheusExporter "Exports metrics"
-        webUI -> trackingServer "AJAX API calls" "HTTP/5000"
-        authModule -> storeLayer "Queries permissions and workspaces"
-
-        # Relationships - External Dependencies
-        storeLayer -> postgresql "SQL queries" "PostgreSQL/5432, TLS"
-        artifactRepo -> s3Storage "S3 API (PUT/GET objects)" "HTTPS/443, AWS IAM"
-        authModule -> k8sAPI "Token validation, namespace listing" "HTTPS/6443, Bearer Token"
-        trackingServer -> otelCollector "Trace/span export" "OTLP/4317 gRPC"
-        prometheus -> trackingServer "Metrics scrape" "HTTP/5000"
-
-        # Relationships - Operator
-        rhodsOperator -> mlflow "Deploys and manages" "Kubernetes API"
+        # Container interactions
+        trackingServer -> kubeAuthPlugin "Authenticates requests"
+        kubeAuthPlugin -> kubeWorkspaceProvider "Resolves workspace from namespace"
+        trackingServer -> envelopeEncryption "Encrypts/decrypts gateway secrets"
+        trackingServer -> dbMigrations "Runs schema migrations on startup"
     }
 
     views {
@@ -69,27 +52,26 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
             element "Person" {
-                shape person
-                background #08427B
+                shape Person
+                background #08427b
                 color #ffffff
             }
-            element "Container" {
-                background #438DD5
+            element "Software System" {
+                background #1168bd
                 color #ffffff
             }
             element "External" {
                 background #999999
+                color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
+                color #ffffff
             }
-            element "Sidecar" {
-                background #e67e22
+            element "Container" {
+                background #438dd5
+                color #ffffff
             }
         }
     }

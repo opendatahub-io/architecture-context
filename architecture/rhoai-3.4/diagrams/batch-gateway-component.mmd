@@ -1,93 +1,57 @@
 graph TB
-    subgraph BatchGateway["Batch Gateway System"]
-        direction TB
-
+    subgraph BatchGateway["Batch Gateway"]
         subgraph APIServer["API Server (8000/TCP, 8081/TCP)"]
-            Router[HTTP Router]
-            TenantMW[Tenant Middleware<br/>X-MaaS-Username]
-            SecurityMW[Security Headers MW]
-            RecoveryMW[Recovery MW]
             BatchHandler[Batch Handler<br/>/v1/batches]
             FileHandler[File Handler<br/>/v1/files]
-            HealthHandler[Health/Ready/Metrics<br/>:8081]
-
-            Router --> TenantMW
-            TenantMW --> SecurityMW
-            SecurityMW --> RecoveryMW
-            RecoveryMW --> BatchHandler
-            RecoveryMW --> FileHandler
-            Router --> HealthHandler
+            TenantMiddleware[Tenant Middleware<br/>X-MaaS-Username]
+            SecurityHeaders[Security Headers<br/>Middleware]
+            HealthAPI[Health/Ready/Metrics<br/>8081/TCP]
         end
 
-        subgraph Processor["Processor (9090/TCP observability)"]
-            Poller[Job Poller<br/>poll_interval: 5s]
-            Workers[Worker Pool<br/>num_workers goroutines]
-            Preprocessor[Preprocessor<br/>FNV-32a hash sorting]
-            Planner[Planner<br/>SLO scoring]
-            Executor[Executor<br/>Concurrency control]
-            Finalizer[Finalizer<br/>Result upload]
+        subgraph Processor["Batch Processor (9090/TCP obs)"]
+            Poller[Queue Poller<br/>poll_interval: 5s]
+            Preprocessor[Preprocessor<br/>JSONL parsing]
+            Planner[Planner<br/>Binary plan files]
+            Executor[Executor<br/>Concurrent dispatch]
+            Finalizer[Finalizer<br/>Output assembly]
             Recovery[Recovery Manager<br/>Crash recovery]
-            CancelHandler[Cancel Handler]
-
-            Poller --> Workers
-            Workers --> Preprocessor
-            Preprocessor --> Planner
-            Planner --> Executor
-            Executor --> Finalizer
-            Recovery -.->|startup| Workers
-            CancelHandler -.->|event| Workers
+            ConcurrencyCtrl[Concurrency Control<br/>Global: 100 / Per-model: 10]
+            HealthProc[Health/Ready/Metrics<br/>9090/TCP]
         end
 
         subgraph GC["Garbage Collector"]
-            Scanner[Expiry Scanner<br/>interval: 1h]
-            Deleter[Batch Deleter<br/>max_concurrency: 10]
-            Scanner --> Deleter
+            Collector[Collector<br/>interval: 30m]
         end
     end
 
-    %% External clients
-    Client[External Client] -->|POST /v1/batches<br/>POST /v1/files| Router
-    Client -->|GET /v1/batches/{id}<br/>POST /v1/batches/{id}/cancel| Router
+    Client[External Client] -->|POST /v1/batches<br/>Tenant header| TenantMiddleware
+    Client -->|POST /v1/files<br/>multipart/form-data| TenantMiddleware
+    TenantMiddleware --> SecurityHeaders
+    SecurityHeaders --> BatchHandler
+    SecurityHeaders --> FileHandler
 
-    %% Data layer
-    subgraph DataLayer["Data Layer"]
-        PostgreSQL[(PostgreSQL<br/>5432/TCP)]
-        Redis[(Redis<br/>6379/TCP)]
-        S3[(S3-compatible Storage<br/>443/TCP)]
-    end
+    BatchHandler -->|Enqueue job| Redis
+    FileHandler -->|Store metadata| PostgreSQL[(PostgreSQL)]
+    FileHandler -->|Upload content| S3[S3 Storage]
 
-    %% API Server connections
-    BatchHandler -->|metadata CRUD| PostgreSQL
-    BatchHandler -->|PQ enqueue/cancel| Redis
-    FileHandler -->|file metadata| PostgreSQL
-    FileHandler -->|upload/download| S3
+    Poller -->|Dequeue (sorted set)| Redis[(Redis)]
+    Poller --> Preprocessor
+    Preprocessor --> Planner
+    Planner -->|FNV-32a sort<br/>16-byte binary format| Executor
+    Executor -->|HTTP POST<br/>Bearer token| InferenceGW[Inference Gateway]
+    Executor --> ConcurrencyCtrl
+    Finalizer -->|Upload results| S3
 
-    %% Processor connections
-    Poller -->|ZMPOP dequeue| Redis
-    Executor -->|HTTP/HTTPS inference| InferenceGW[Inference Gateway]
-    Executor -->|progress updates| Redis
-    Preprocessor -->|download input| S3
-    Finalizer -->|upload output| S3
-    Finalizer -->|status update| PostgreSQL
+    Collector -->|Query expired| PostgreSQL
+    Collector -->|Delete files| S3
 
-    %% GC connections
-    Deleter -->|delete expired| PostgreSQL
-    Deleter -->|delete files| S3
-    Deleter -->|delete keys| Redis
+    Recovery -->|Scan work_dir<br/>Phase-aware recovery| Poller
 
-    %% Observability
-    Prometheus[Prometheus] -.->|scrape :8081| HealthHandler
-    Prometheus -.->|scrape :9090| Processor
-    OTel[OTLP Collector] -.->|traces| Processor
-
-    %% Styling
-    style APIServer fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
-    style Processor fill:#7ed321,stroke:#333,stroke-width:2px,color:#fff
-    style GC fill:#f5a623,stroke:#333,stroke-width:2px,color:#fff
+    style APIServer fill:#4a90e2,stroke:#333,color:#fff
+    style Processor fill:#7ed321,stroke:#333,color:#fff
+    style GC fill:#f5a623,stroke:#333,color:#fff
+    style Client fill:#f9f9f9,stroke:#999
     style PostgreSQL fill:#336791,stroke:#333,color:#fff
     style Redis fill:#dc382d,stroke:#333,color:#fff
     style S3 fill:#ff9900,stroke:#333,color:#fff
     style InferenceGW fill:#9b59b6,stroke:#333,color:#fff
-    style Client fill:#e8e8e8,stroke:#333
-    style Prometheus fill:#e8e8e8,stroke:#333
-    style OTel fill:#e8e8e8,stroke:#333

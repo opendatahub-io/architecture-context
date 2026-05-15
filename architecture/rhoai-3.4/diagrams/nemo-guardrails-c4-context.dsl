@@ -1,47 +1,54 @@
 workspace {
     model {
-        user = person "Application Developer" "Builds LLM-powered applications with safety guardrails"
-        securityEngineer = person "Security Engineer" "Configures guardrail policies and Colang flows"
+        user = person "Data Scientist / Application" "Sends prompts and receives guardrailed LLM responses"
 
-        nemoGuardrails = softwareSystem "NeMo Guardrails" "Programmable guardrails toolkit for adding safety, security, and topic controls to LLM-based conversational systems" {
-            server = container "Guardrails Server" "OpenAI-compatible FastAPI server with guardrails enforcement" "Python / FastAPI / 8000/TCP"
-            llmRailsEngine = container "LLMRails Engine" "Full-featured guardrails engine with LLM generation, dialog flows, and retrieval" "Python"
-            ioRailsEngine = container "IORails Engine" "Optimized fast-path engine for pure content safety checks without LLM generation" "Python"
-            colangRuntime = container "Colang Runtime" "Executes guardrail flows defined in Colang 1.0/2.x DSL" "Python / Lark Parser"
-            guardrailsLibrary = container "Guardrails Library" "11 open-source guardrail modules (self-check, content safety, injection detection, PII, topic safety, regex, hallucination, fact-checking)" "Python"
-            knowledgeBase = container "Knowledge Base" "Markdown document chunking with embedding-based relevance search" "Python / Annoy"
-            embeddingsSystem = container "Embeddings System" "Pluggable embedding providers (FastEmbed, Sentence Transformers)" "Python / ONNX Runtime"
-            actionsServer = container "Actions Server" "Separate FastAPI server for remote action execution" "Python / FastAPI / 8001/TCP"
-            tracingAdapter = container "Tracing Adapter" "OpenTelemetry library-mode integration for span export" "Python / OpenTelemetry API"
+        nemoGuardrails = softwareSystem "NeMo Guardrails" "Programmable safety guardrails for LLM-based conversational systems" {
+            server = container "Guardrails Server" "FastAPI/Uvicorn OpenAI-compatible API server with programmable guardrails" "Python/FastAPI" "Port 8000"
+            actionsServer = container "Actions Server" "Secondary server for custom guardrail action execution" "Python/FastAPI" "Port 8001"
+            iorailsEngine = container "IORails Engine" "Optimized execution engine for standard safety flows" "Python Module"
+            llmrailsEngine = container "LLMRails Engine" "Full Colang runtime engine with v1.0 and v2.x support" "Python Module"
+            guardrailsLibrary = container "Guardrails Library" "30+ built-in guardrail types: content safety, hallucination, jailbreak, SDD, self-check" "Python Module"
+            colangParser = container "Colang Parser" "Parser and runtime for NVIDIA's Colang DSL" "Python Module"
+            embeddingSystem = container "Embedding System" "Multi-provider embedding framework with Annoy vector search and caching" "Python Module"
+            lfuCache = container "LFU Cache" "Least Frequently Used cache for LLM responses with SHA-256 keys" "Python Module"
         }
 
-        upstreamLLM = softwareSystem "Upstream LLM Server" "LLM inference service (OpenAI, NVIDIA NIM, or custom endpoint)" "External"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed trace collection and export" "Internal RHOAI"
-        redis = softwareSystem "Redis" "Optional conversation thread persistence" "External"
-        rhoaiPlatform = softwareSystem "RHOAI Platform Operator" "Deploys and manages NeMo Guardrails container" "Internal RHOAI"
-        rhoaiGateway = softwareSystem "RHOAI Gateway" "Ingress routing, TLS termination, and authentication" "Internal RHOAI"
+        rhoaiPlatform = softwareSystem "RHOAI Platform" "Red Hat OpenShift AI platform operator managing ingress, auth, and deployment" "Internal RHOAI"
 
-        # User relationships
-        user -> nemoGuardrails "Sends chat completions and guardrail check requests" "HTTPS via platform gateway"
-        securityEngineer -> nemoGuardrails "Defines guardrail flows in Colang DSL" "Configuration files"
+        openai = softwareSystem "OpenAI API" "LLM text generation and chat completions" "External"
+        anthropic = softwareSystem "Anthropic API" "LLM text generation via Claude models" "External"
+        azureOpenai = softwareSystem "Azure OpenAI" "LLM text generation via Azure-hosted models" "External"
+        cohere = softwareSystem "Cohere API" "LLM text generation and embedding" "External"
+        selfHostedLLM = softwareSystem "vLLM / NIM / TRT-LLM" "Self-hosted LLM inference endpoints" "External"
 
-        # Internal container relationships
-        server -> llmRailsEngine "Delegates complex guardrailed requests"
-        server -> ioRailsEngine "Delegates safety-only checks"
-        llmRailsEngine -> colangRuntime "Executes Colang flow definitions"
-        llmRailsEngine -> guardrailsLibrary "Applies input/output guardrail modules"
-        ioRailsEngine -> guardrailsLibrary "Applies content safety modules"
-        llmRailsEngine -> knowledgeBase "Retrieves relevant context for RAG"
-        knowledgeBase -> embeddingsSystem "Generates embeddings for similarity search"
-        server -> actionsServer "Executes remote actions" "HTTP/8001"
-        server -> tracingAdapter "Exports trace spans"
+        contentSafetyModel = softwareSystem "Content Safety Model" "LLM-based content safety classification" "External"
+        jailbreakDetection = softwareSystem "Jailbreak Detection Endpoint" "Heuristic and model-based jailbreak classification" "External"
 
-        # External relationships
-        nemoGuardrails -> upstreamLLM "LLM inference calls via LangChain" "HTTPS/443 Bearer Token"
-        nemoGuardrails -> otelCollector "Exports distributed traces" "OTLP gRPC/4317"
-        nemoGuardrails -> redis "Persists conversation threads (optional)" "TCP/6379"
-        rhoaiPlatform -> nemoGuardrails "Deploys and manages container lifecycle"
-        rhoaiGateway -> nemoGuardrails "Routes traffic with TLS termination and auth" "HTTP/8000"
+        redis = softwareSystem "Redis" "Distributed conversation thread state persistence" "External"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing and observability" "External"
+
+        user -> nemoGuardrails "Sends chat completions and guardrail checks" "HTTP/8000"
+        rhoaiPlatform -> nemoGuardrails "Manages ingress, TLS, auth, deployment" "HTTPRoute/Route"
+
+        nemoGuardrails -> openai "LLM generation, model listing" "HTTPS/443, Bearer Token"
+        nemoGuardrails -> anthropic "LLM generation" "HTTPS/443, x-api-key"
+        nemoGuardrails -> azureOpenai "LLM generation" "HTTPS/443, api-key"
+        nemoGuardrails -> cohere "LLM generation, embedding" "HTTPS/443, Bearer Token"
+        nemoGuardrails -> selfHostedLLM "LLM inference" "HTTP(S), configurable"
+
+        nemoGuardrails -> contentSafetyModel "Input/output content safety checks" "HTTP(S), API key"
+        nemoGuardrails -> jailbreakDetection "Jailbreak detection checks" "HTTP(S), API key"
+
+        nemoGuardrails -> redis "Thread state persistence" "TCP/6379, optional TLS"
+        nemoGuardrails -> otelCollector "Export traces" "OTLP, configurable"
+
+        server -> iorailsEngine "Standard guardrail flows"
+        server -> llmrailsEngine "Complex Colang flows"
+        iorailsEngine -> guardrailsLibrary "Execute rail checks"
+        llmrailsEngine -> colangParser "Parse Colang definitions"
+        llmrailsEngine -> guardrailsLibrary "Execute rail checks"
+        server -> embeddingSystem "Knowledge base search"
+        server -> lfuCache "Cache LLM responses"
     }
 
     views {
@@ -65,8 +72,16 @@ workspace {
                 color #ffffff
             }
             element "Person" {
-                shape Person
                 background #4a90e2
+                color #ffffff
+                shape Person
+            }
+            element "Software System" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Container" {
+                background #5ba3f5
                 color #ffffff
             }
         }

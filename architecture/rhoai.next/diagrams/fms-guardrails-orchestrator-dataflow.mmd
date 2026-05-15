@@ -1,61 +1,69 @@
 sequenceDiagram
     participant Client as External Client
-    participant Orch as Guardrails Orchestrator<br/>8033/TCP HTTP(S)
-    participant Chunker as Caikit Chunker<br/>8085/TCP gRPC
-    participant Detector as Detector Services<br/>8080/TCP HTTP(S)
-    participant TGIS as TGIS / Caikit NLP<br/>8033-8085/TCP gRPC
-    participant OpenAI as OpenAI / vLLM<br/>8080/TCP HTTP(S)
-    participant OTLP as OTLP Collector<br/>4317/TCP
+    participant Orch as Guardrails Orchestrator<br/>8033/TCP HTTP/HTTPS<br/>TLS 1.2+ (optional)
+    participant Health as Health Server<br/>8034/TCP HTTP<br/>Plaintext
+    participant TGIS as TGIS Generation<br/>8033/TCP gRPC<br/>TLS (optional)
+    participant NLP as Caikit NLP<br/>8085/TCP gRPC<br/>TLS (optional)
+    participant Chunker as Caikit Chunkers<br/>8085/TCP gRPC<br/>TLS (optional)
+    participant Detector as Detector Services<br/>8080/TCP HTTP/HTTPS<br/>Bearer (optional)
+    participant OpenAI as OpenAI Server<br/>8080/TCP HTTP/HTTPS<br/>Bearer (optional)
 
-    Note over Client,OTLP: Flow 1: Classification with Text Generation (v1 API)
-    Client->>Orch: POST /api/v1/task/classification-with-text-generation<br/>Optional TLS, Header passthrough
-    Orch->>Chunker: ChunkerTokenizationTaskPredict (gRPC)<br/>Optional TLS
+    Note over Client,Detector: Flow 1: Classification with Text Generation (v1 Unary)
+    Client->>Orch: POST /api/v1/task/classification-with-text-generation<br/>Headers: passthrough (X-Forwarded-Access-Token)
+    Orch->>Chunker: ChunkerTokenizationTaskPredict (gRPC)<br/>Chunk input text
     Chunker-->>Orch: Chunked text segments
-    Orch->>Detector: POST /api/v1/text/contents (parallel per detector)<br/>Optional TLS, Optional Bearer
-    Detector-->>Orch: Input detection results
-    alt Input detections trigger threshold
-        Orch-->>Client: 200 OK with input detection warnings
-    else Input passes
-        Orch->>TGIS: Generate / TextGenerationTaskPredict (gRPC)<br/>Optional TLS
+    Orch->>Detector: POST /api/v1/text/contents<br/>Input detection on chunks<br/>Auth: Bearer (optional)
+    Detector-->>Orch: Detection scores per chunk
+    Note over Orch: Evaluate input detections<br/>against thresholds
+    alt Input blocked
+        Orch-->>Client: 200 OK with detection results (blocked)
+    else Input passed
+        Orch->>TGIS: Generate (gRPC)<br/>Text generation request
         TGIS-->>Orch: Generated text
-        Orch->>Detector: POST /api/v1/text/contents (parallel, output)<br/>Optional TLS, Optional Bearer
-        Detector-->>Orch: Output detection results
-        Orch-->>Client: 200 OK with generated text + detections
+        Orch->>Detector: POST /api/v1/text/generation<br/>Output detection on generated text
+        Detector-->>Orch: Output detection scores
+        Note over Orch: Evaluate output detections<br/>against thresholds
+        Orch-->>Client: 200 OK with generation + detection results
     end
-    Orch-)OTLP: Trace spans (async)
 
-    Note over Client,OTLP: Flow 2: OpenAI Chat Completions with Detection (v2 API)
-    Client->>Orch: POST /api/v2/chat/completions-detection<br/>Optional TLS, Header passthrough
-    Orch->>Detector: POST /api/v1/text/chat (input detection on last message)<br/>Optional TLS, Optional Bearer
-    Detector-->>Orch: Input detection results
-    alt Streaming mode
-        Orch->>OpenAI: POST /v1/chat/completions (stream=true)<br/>Optional TLS, Optional Bearer
-        loop SSE chunks arrive
-            OpenAI-->>Orch: SSE data chunk (per choice)
-            Orch->>Orch: Accumulate in CompletionState (DashMap)
-            Orch->>Chunker: BidiStreamingChunkerTokenizationTaskPredict<br/>Optional TLS
-            Chunker-->>Orch: Chunked output segments
-            Orch->>Detector: POST /api/v1/text/generation (parallel per detector)<br/>Optional TLS, Optional Bearer
-            Detector-->>Orch: Output detection batch
-            Orch->>Orch: DetectionBatcherManager aggregates results
-            Orch-->>Client: SSE event with chunk + detections
+    Note over Client,OpenAI: Flow 2: OpenAI Chat Completions with Detection (v2 Streaming)
+    Client->>Orch: POST /api/v2/chat/completions-detection<br/>Headers: passthrough
+    Orch->>Detector: POST /api/v1/text/chat<br/>Input detection on chat messages
+    Detector-->>Orch: Input detection scores
+    Note over Orch: Evaluate input detections
+    alt Input passed
+        Orch->>OpenAI: POST /v1/chat/completions<br/>stream=true<br/>Auth: Bearer (optional)
+        loop SSE Stream
+            OpenAI-->>Orch: SSE chunk
+            Orch-->>Client: SSE forwarded chunk
         end
-    else Unary mode
-        Orch->>OpenAI: POST /v1/chat/completions<br/>Optional TLS, Optional Bearer
-        OpenAI-->>Orch: Complete response
-        Orch->>Detector: POST /api/v1/text/generation (parallel per detector)<br/>Optional TLS, Optional Bearer
-        Detector-->>Orch: Output detections
-        Orch-->>Client: JSON response with detections
+        Orch->>Detector: POST /api/v1/text/generation<br/>Output detection on accumulated text
+        Detector-->>Orch: Output detection scores
+        Orch-->>Client: SSE final chunk with detections
     end
-    Orch-)OTLP: Trace spans (async)
 
-    Note over Client,OTLP: Flow 3: Streaming Content Detection (v2 API)
-    Client->>Orch: POST /api/v2/text/detection/stream-content (ND-JSON stream)<br/>Optional TLS, Header passthrough
-    loop ND-JSON chunks arrive from client
-        Orch->>Chunker: BidiStreamingChunkerTokenizationTaskPredict (bidirectional)<br/>Optional TLS
-        Chunker-->>Orch: Sentence-level chunks
-        Orch->>Detector: POST /api/v1/text/contents (concurrent, batched)<br/>Optional TLS, Optional Bearer
-        Detector-->>Orch: Detection results per chunk
-        Orch-->>Client: ND-JSON stream with detection results
+    Note over Client,Chunker: Flow 3: Streaming Content Detection (NDJSON)
+    Client->>Orch: POST /api/v2/text/detection/stream-content<br/>NDJSON stream
+    Orch->>Chunker: BidiStreamingChunkerTokenizationTaskPredict (gRPC)<br/>Bidirectional streaming
+    loop NDJSON Stream
+        Client->>Orch: NDJSON line (text segment)
+        Orch->>Chunker: Stream text chunk
+        Chunker-->>Orch: Tokenized chunk
+        Orch->>Detector: POST /api/v1/text/contents<br/>Detection on chunk
+        Detector-->>Orch: Detection scores
+        Orch-->>Client: NDJSON response line with detections
     end
-    Orch-)OTLP: Trace spans (async)
+
+    Note over Client,Health: Health Check Flow
+    Client->>Health: GET /health (8034/TCP, plaintext)
+    Health-->>Client: 200 OK (package info)
+    Client->>Health: GET /info (8034/TCP, plaintext)
+    Health->>TGIS: grpc.health.v1.Health.Check
+    Health->>NLP: grpc.health.v1.Health.Check
+    Health->>Chunker: grpc.health.v1.Health.Check
+    Health->>Detector: GET /health (8081/TCP)
+    TGIS-->>Health: Health status
+    NLP-->>Health: Health status
+    Chunker-->>Health: Health status
+    Detector-->>Health: Health status
+    Health-->>Client: 200 OK (all service health statuses)

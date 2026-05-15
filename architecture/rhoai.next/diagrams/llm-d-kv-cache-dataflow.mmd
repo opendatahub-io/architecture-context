@@ -1,52 +1,38 @@
 sequenceDiagram
-    participant VLLMPod as vLLM/SGLang Pod<br/>5557/TCP ZMQ PUB
-    participant ZMQSub as ZMQ Subscriber<br/>5557/TCP ZMQ SUB
-    participant Pool as KV-Events Pool<br/>(4 sharded workers)
+    participant vLLM as vLLM Pod<br/>5557/TCP ZMQ
+    participant ZMQ as ZMQ SUB Pool<br/>(kvevents.Pool)<br/>FNV-1a sharded
     participant Adapter as Engine Adapter<br/>(vLLM/SGLang)
-    participant Index as Block Index<br/>(InMemory/Ristretto/Redis)
-    participant EPP as EPP Scheduler<br/>(Host Process)
-    participant Indexer as KV-Cache Indexer<br/>(Go Library)
-    participant TokenPool as Tokenization Pool
-    participant UDSTok as UDS Tokenizer<br/>gRPC (UDS socket)
-    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
+    participant TokenProc as Token Processor<br/>(FNV-64a CBOR)
+    participant Index as Block Index<br/>(LRU/Ristretto/Redis)
+    participant UDS as UDS Tokenizer<br/>UDS gRPC Sidecar
+    participant EPP as llm-d EPP<br/>(Inference Scheduler)
+    participant Scorer as Block Scorer
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant FS as Shared Storage<br/>(PVC / S3)
 
-    rect rgb(230, 245, 255)
-        Note over VLLMPod,Index: Flow 1: KV-Event Ingestion (Write Path)
-        VLLMPod->>ZMQSub: BlockStored/BlockRemoved/AllBlocksCleared<br/>ZMQ msgpack, 5557/TCP, No Encryption
-        ZMQSub->>Pool: Raw ZMQ message<br/>(in-process Go channel)
-        Note over Pool: FNV-1a hash of pod ID<br/>→ deterministic worker assignment
-        Pool->>Adapter: Decode message<br/>(msgpack → Go struct)
-        Adapter->>Index: Add(engineKey, requestKey, podID)<br/>or Evict(engineKey)
-        Note over Index: Dual-key mapping:<br/>engineKey ↔ requestKey
-    end
+    Note over vLLM,Index: Flow 1: KV-Event Ingestion (Write Path)
+    vLLM->>ZMQ: BlockStored / BlockRemoved<br/>ZMQ PUB 5557/TCP (msgpack)
+    ZMQ->>Adapter: Route to shard worker<br/>(FNV-1a hash of pod ID)
+    Adapter->>TokenProc: Parse event, extract tokens
+    TokenProc->>Index: Update block residency<br/>(in-process or Redis 6379/TCP)
 
-    rect rgb(255, 245, 230)
-        Note over EPP,Index: Flow 2: Pod Scoring (Read Path)
-        EPP->>Indexer: ScoreTokens(modelID, tokens, candidates)<br/>(in-process Go API)
-        Indexer->>TokenPool: Tokenize prompt (if needed)
-        TokenPool->>UDSTok: gRPC Tokenize request<br/>UDS socket, No Encryption
-        UDSTok->>UDSTok: vLLM OpenAIServingRender<br/>(CPU mode)
-        UDSTok-->>TokenPool: Token IDs
-        TokenPool-->>Indexer: Token IDs
-        Note over Indexer: Compute FNV-64a block hashes<br/>from token chunks
-        Indexer->>Index: Lookup(requestKeys)
-        Index-->>Indexer: Pod → block hit map
-        Note over Indexer: Score candidates by<br/>prefix cache coverage
-        Indexer-->>EPP: map[podID]float64 scores
-    end
+    Note over EPP,Scorer: Flow 2: Pod Scoring (Read Path)
+    EPP->>EPP: Receive inference request
+    EPP->>UDS: Tokenize prompt<br/>gRPC over UDS
+    UDS->>UDS: Apply chat template<br/>(vLLM renderer)
+    UDS-->>EPP: Token IDs + offsets
+    EPP->>TokenProc: Hash token blocks<br/>(chained FNV-64a over CBOR)
+    TokenProc->>Index: Lookup block residency<br/>(per-pod cache hits)
+    Index-->>TokenProc: Block locations per pod
+    TokenProc->>Scorer: Score pods by prefix match
+    Scorer-->>EPP: Ranked pod list<br/>(cache-hit scores)
 
-    rect rgb(230, 255, 230)
-        Note over UDSTok,HFHub: Flow 3: Tokenizer Initialization
-        UDSTok->>HFHub: Download tokenizer model files<br/>HTTPS/443, TLS 1.2+, HF Token (optional)
-        HFHub-->>UDSTok: Tokenizer files
-        Note over UDSTok: Cache tokenizer locally<br/>in TOKENIZERS_DIR
-    end
+    Note over UDS,HF: Flow 3: Tokenizer Initialization
+    UDS->>HF: Download tokenizer model<br/>HTTPS 443/TCP, Bearer HF_TOKEN
+    HF-->>UDS: Tokenizer files
+    UDS->>UDS: InitializeTokenizer<br/>(load model + renderer)
 
-    rect rgb(255, 230, 245)
-        Note over VLLMPod,Index: Flow 4: KV-Cache Offloading (fs_backend)
-        Note over VLLMPod: vLLM OffloadingConnector API
-        VLLMPod->>VLLMPod: llmd_fs_backend<br/>StorageOffloadingHandlers
-        Note over VLLMPod: GPU → Host memory copy<br/>(C++/CUDA)
-        VLLMPod->>VLLMPod: Write KV blocks to<br/>Shared Storage (POSIX I/O)
-        Note over VLLMPod: PVC Evictor manages<br/>disk space (N+2 processes)
-    end
+    Note over vLLM,FS: Flow 4: KV-Cache Offloading (fs-backend)
+    vLLM->>vLLM: KV blocks in GPU memory
+    vLLM->>FS: Offload blocks<br/>POSIX I/O / GDS / NIXL S3<br/>(hash-partitioned directories)
+    FS-->>vLLM: Load cached blocks<br/>(content-addressable lookup)

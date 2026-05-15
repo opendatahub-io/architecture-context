@@ -1,88 +1,69 @@
 graph TB
-    subgraph Orchestrator["FMS Guardrails Orchestrator (Rust/axum)"]
+    subgraph Orchestrator["FMS Guardrails Orchestrator (Rust/axum+tonic)"]
         direction TB
-        subgraph APIServer["API Server (port 8033)"]
-            V1API["v1 API Routes<br/>/api/v1/task/*"]
-            V2API["v2 API Routes<br/>/api/v2/text/*<br/>/api/v2/chat/*"]
-            TLSLayer["TLS/mTLS Layer<br/>rustls + ring"]
-        end
+        Router["HTTP Router<br/>(axum routes.rs)"]
+        Handlers["Orchestration Handlers<br/>(Handle&lt;Task&gt; trait)"]
+        StreamPipeline["Streaming Pipeline<br/>(broadcast channels,<br/>DetectionBatcher,<br/>CompletionState)"]
 
-        subgraph HealthServer["Health Server (port 8034)"]
-            HealthEP["/health endpoint"]
-            InfoEP["/info endpoint<br/>(aggregated backend health)"]
-        end
-
-        subgraph OrchestratorCore["Orchestrator Core"]
-            Handlers["Request Handlers<br/>(unary + streaming)"]
-            Tasks["Task Pipeline<br/>(buffer_unordered, broadcast)"]
-            HeaderFilter["Header Filter<br/>(X-Forwarded-Access-Token rewrite)"]
-        end
-
-        subgraph Clients["Backend Clients"]
-            TGISClient["TGIS Client<br/>(tonic gRPC)"]
-            NLPClient["Caikit NLP Client<br/>(tonic gRPC)"]
+        subgraph Clients["Client Layer"]
+            GenClient["Generation Client<br/>(tonic gRPC)"]
             ChunkerClient["Chunker Client<br/>(tonic gRPC)"]
             DetectorClient["Detector Client<br/>(reqwest HTTP)"]
             OpenAIClient["OpenAI Client<br/>(reqwest HTTP)"]
+            OTELExporter["OTLP Exporter<br/>(opentelemetry)"]
         end
 
-        subgraph Observability["Observability"]
-            OTelTracing["OpenTelemetry Tracing<br/>(W3C Trace Context)"]
-            OTelMetrics["OpenTelemetry Metrics<br/>(request counts, durations)"]
+        subgraph TLS["TLS Layer"]
+            ServerTLS["Server TLS<br/>(rustls/ring)"]
+            ClientTLS["Client TLS<br/>(per-service config)"]
+            mTLSVerifier["mTLS Verifier<br/>(WebPkiClientVerifier)"]
         end
+
+        Router --> Handlers
+        Handlers --> StreamPipeline
+        Handlers --> GenClient
+        Handlers --> ChunkerClient
+        Handlers --> DetectorClient
+        Handlers --> OpenAIClient
+        StreamPipeline --> GenClient
+        StreamPipeline --> ChunkerClient
+        StreamPipeline --> DetectorClient
     end
 
-    %% Client interaction
-    Client[AI Application Client] -->|"POST HTTP/HTTPS<br/>8033/TCP"| V1API
-    Client -->|"POST HTTP/HTTPS<br/>8033/TCP"| V2API
-    K8sProbe[Kubernetes Probes] -->|"GET HTTP<br/>8034/TCP"| HealthEP
+    subgraph HealthServer["Health Server (:8034)"]
+        HealthEndpoint["/health, /info"]
+    end
 
-    %% Internal flow
-    V1API --> Handlers
-    V2API --> Handlers
-    TLSLayer -.->|"enforces"| V1API
-    TLSLayer -.->|"enforces"| V2API
-    Handlers --> Tasks
-    Handlers --> HeaderFilter
+    Client[Client Application] -->|"HTTP/HTTPS :8033<br/>TLS 1.2+ (optional)<br/>mTLS (optional)"| Router
 
-    %% Backend connections
-    Tasks --> TGISClient
-    Tasks --> NLPClient
-    Tasks --> ChunkerClient
-    Tasks --> DetectorClient
-    Tasks --> OpenAIClient
+    GenClient -->|"gRPC :8033<br/>mTLS (configurable)"| TGIS["TGIS Generation<br/>Server"]
+    GenClient -->|"gRPC :8085<br/>mTLS (configurable)"| CaikitNLP["Caikit NLP<br/>Generation Server"]
+    ChunkerClient -->|"gRPC :8085<br/>mTLS (configurable)"| Chunker["Caikit Chunker<br/>Service"]
+    DetectorClient -->|"HTTP :8080<br/>TLS (configurable)"| Detectors["Detector Service(s)<br/>(HAP, PII, etc.)"]
+    OpenAIClient -->|"HTTP :8080<br/>TLS (configurable)"| vLLM["OpenAI-compatible<br/>Service (vLLM)"]
+    OTELExporter -->|"gRPC :4317 /<br/>HTTP :4318"| OTLPCollector["OTLP Collector"]
 
-    %% External backends
-    TGISClient -->|"gRPC/8033<br/>Optional TLS/mTLS"| TGIS["TGIS Server"]
-    NLPClient -->|"gRPC/8085<br/>Optional TLS/mTLS"| CaikitNLP["Caikit NLP Runtime"]
-    ChunkerClient -->|"gRPC/8085<br/>Optional TLS/mTLS"| CaikitChunker["Caikit Chunker Service"]
-    DetectorClient -->|"HTTP/8080<br/>Optional TLS/mTLS"| Detectors["Detector Services<br/>(HAP, PII, etc.)"]
-    OpenAIClient -->|"HTTP/8080<br/>Optional TLS"| OpenAISvr["OpenAI-compatible Server<br/>(vLLM, etc.)"]
+    K8sProbe["Kubernetes Probes"] -->|"HTTP :8034"| HealthEndpoint
 
-    %% Telemetry
-    OTelTracing -->|"gRPC/4317 or HTTP/4318"| OTLPCollector["OTLP Collector"]
-    OTelMetrics -->|"gRPC/4317 or HTTP/4318"| OTLPCollector
-
-    %% Health checks
-    HealthEP -.->|"health checks"| TGIS
-    HealthEP -.->|"health checks"| CaikitNLP
-    HealthEP -.->|"health checks"| CaikitChunker
-    HealthEP -.->|"health checks"| Detectors
-    HealthEP -.->|"health checks"| OpenAISvr
-
-    %% Styling
-    style Orchestrator fill:#e8f0fe,stroke:#4a90e2,stroke-width:3px
-    style APIServer fill:#d5e8d4,stroke:#82b366
-    style HealthServer fill:#d5e8d4,stroke:#82b366
-    style OrchestratorCore fill:#fff2cc,stroke:#d6b656
-    style Clients fill:#ffe6cc,stroke:#d79b00
-    style Observability fill:#f8cecc,stroke:#b85450
-
-    style Client fill:#f9f9f9,stroke:#333
-    style K8sProbe fill:#f9f9f9,stroke:#333
-    style TGIS fill:#e8e8e8,stroke:#666
-    style CaikitNLP fill:#e8e8e8,stroke:#666
-    style CaikitChunker fill:#e8e8e8,stroke:#666
-    style Detectors fill:#e8e8e8,stroke:#666
-    style OpenAISvr fill:#e8e8e8,stroke:#666
-    style OTLPCollector fill:#e8e8e8,stroke:#666
+    style Orchestrator fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    style Router fill:#5ba0f2,stroke:#333,color:#fff
+    style Handlers fill:#5ba0f2,stroke:#333,color:#fff
+    style StreamPipeline fill:#5ba0f2,stroke:#333,color:#fff
+    style GenClient fill:#6cb0f5,stroke:#333,color:#fff
+    style ChunkerClient fill:#6cb0f5,stroke:#333,color:#fff
+    style DetectorClient fill:#6cb0f5,stroke:#333,color:#fff
+    style OpenAIClient fill:#6cb0f5,stroke:#333,color:#fff
+    style OTELExporter fill:#6cb0f5,stroke:#333,color:#fff
+    style ServerTLS fill:#8cc0f8,stroke:#333
+    style ClientTLS fill:#8cc0f8,stroke:#333
+    style mTLSVerifier fill:#8cc0f8,stroke:#333
+    style HealthServer fill:#7ed321,stroke:#333
+    style HealthEndpoint fill:#8fe332,stroke:#333
+    style TGIS fill:#e8e8e8,stroke:#333
+    style CaikitNLP fill:#e8e8e8,stroke:#333
+    style Chunker fill:#e8e8e8,stroke:#333
+    style Detectors fill:#e8e8e8,stroke:#333
+    style vLLM fill:#e8e8e8,stroke:#333
+    style OTLPCollector fill:#e8e8e8,stroke:#333
+    style Client fill:#f5a623,stroke:#333
+    style K8sProbe fill:#f5a623,stroke:#333

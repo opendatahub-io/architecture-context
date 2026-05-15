@@ -1,43 +1,45 @@
 sequenceDiagram
-    participant Client as Client / KServe Gateway
-    participant Auth as Auth Middleware<br/>Bearer Token (SHA256)
-    participant API as vLLM API Server<br/>8000/TCP HTTP(S)
-    participant Input as InputProcessor<br/>Tokenizer
-    participant Engine as EngineCore<br/>Scheduler + KV Cache
-    participant Runner as CPU Model Runner<br/>PyTorch CPU
-    participant Output as OutputProcessor<br/>Detokenizer
-    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant Prom as Prometheus<br/>8000/TCP HTTP
-    participant OTLP as OTLP Collector<br/>gRPC/HTTP
+    participant Client as External Client
+    participant KServe as KServe Gateway<br/>(Route/HTTPRoute)
+    participant API as OpenAI API Server<br/>8000/TCP HTTP
+    participant Engine as V1 AsyncLLM Engine<br/>(in-process)
+    participant PyTorch as PyTorch CPU Backend<br/>(in-process C++)
+    participant HF as Hugging Face Hub<br/>443/TCP HTTPS
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
 
-    Note over Client,OTLP: Flow 1: Inference Request Processing
+    Note over API,PyTorch: Flow 1: OpenAI Chat Completion Request
 
-    Client->>API: POST /v1/chat/completions<br/>HTTP(S) 8000/TCP<br/>Configurable TLS
-    API->>Auth: Validate Bearer Token<br/>SHA256 hash, constant-time compare
-    Auth-->>API: 200 OK / 401 Unauthorized
-    API->>Input: Process request
-    Input->>Input: Tokenize input text<br/>(HuggingFace tokenizers)
-    Input->>Engine: Submit tokens + params
-    Engine->>Engine: Schedule request<br/>KV cache allocation<br/>Continuous batching
-    Engine->>Runner: Execute model forward pass
-    Runner->>Runner: PyTorch CPU inference<br/>NUMA-aware, OMP pinned
-    Runner-->>Engine: Logits / output tokens
-    Engine->>Output: Process output tokens
-    Output->>Output: Incremental detokenization
-    Output-->>API: Streaming SSE chunks / JSON
-    API-->>Client: Response (SSE stream or JSON)
+    Client->>KServe: POST /v1/chat/completions<br/>HTTP, Optional TLS
+    KServe->>API: Forward request<br/>HTTP 8000/TCP
+    API->>API: AuthenticationMiddleware<br/>Validate API Key (if configured)
+    API->>Engine: generate() call<br/>(in-process Python)
+    Engine->>PyTorch: Tensor computation<br/>(Python/C++ FFI)
+    PyTorch-->>Engine: Generated tokens
+    Engine-->>API: Token stream
+    API-->>KServe: SSE stream (streaming)<br/>or JSON response
+    KServe-->>Client: Response
 
-    Note over Client,OTLP: Flow 2: Model Loading (Startup)
+    Note over Engine,S3: Flow 2: Model Loading at Startup
 
-    API->>HF: GET model config<br/>HTTPS 443/TCP TLS 1.2+<br/>Auth: Bearer HF_TOKEN
-    HF-->>API: Model config JSON
-    API->>HF: GET model weights<br/>HTTPS 443/TCP TLS 1.2+<br/>Auth: Bearer HF_TOKEN
-    HF-->>API: SafeTensors / PyTorch weights
-    API->>Runner: Load parameters to CPU memory
-    Runner->>Runner: Initialize tensors<br/>Architecture-specific optimizations
+    Engine->>HF: GET model weights & tokenizer<br/>HTTPS 443/TCP TLS 1.2+<br/>Auth: Bearer HF_TOKEN
+    HF-->>Engine: Model artifacts
+    Engine->>Engine: Load to local filesystem
+    Engine->>PyTorch: Load model weights<br/>(in-process Python/C++)
+    PyTorch-->>Engine: Model ready
 
-    Note over Client,OTLP: Flow 3: Observability
+    alt S3 Model Source
+        Engine->>S3: GET model weights<br/>HTTPS 443/TCP TLS 1.2+<br/>Auth: AWS IAM (S3_ACCESS_KEY_ID)
+        S3-->>Engine: Model artifacts
+    end
 
-    Prom->>API: GET /metrics<br/>HTTP 8000/TCP<br/>Configurable TLS
-    API-->>Prom: Prometheus metrics<br/>(prometheus_client)
-    API->>OTLP: Export traces<br/>gRPC (insecure default)<br/>OpenTelemetry SDK
+    Note over Client,API: Flow 3: gRPC Inference Request
+
+    participant GRPCClient as gRPC Client
+    participant GRPC as gRPC Server<br/>50051/TCP Insecure
+
+    GRPCClient->>GRPC: gRPC Inference Request<br/>HTTP/2 50051/TCP<br/>No TLS, No Auth
+    GRPC->>Engine: generate() call<br/>(in-process Python)
+    Engine->>PyTorch: Tensor computation<br/>(Python/C++ FFI)
+    PyTorch-->>Engine: Generated tokens
+    Engine-->>GRPC: Token stream
+    GRPC-->>GRPCClient: gRPC Response<br/>HTTP/2 50051/TCP

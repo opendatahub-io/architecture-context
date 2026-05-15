@@ -1,65 +1,78 @@
 sequenceDiagram
     participant Client as External Client
-    participant LLS as Llama Stack Server<br/>8321/TCP HTTP
-    participant Inline as Ragas Inline Provider<br/>(in-process)
-    participant InfAPI as Inference API<br/>(in-process)
-    participant DSIO as DatasetIO API<br/>(in-process)
-    participant Remote as Ragas Remote Provider<br/>(in-process)
-    participant KFP as Kubeflow Pipelines API<br/>443/TCP HTTPS TLS 1.2+
-    participant KFPPod1 as KFP Pod: retrieve_data<br/>(ephemeral)
-    participant KFPPod2 as KFP Pod: run_ragas<br/>(ephemeral)
-    participant S3 as S3 Object Storage<br/>443/TCP HTTPS TLS 1.2+
-    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant LlamaStack as Llama Stack Server<br/>8321/TCP HTTP
+    participant InlineProvider as RagasEvaluatorInline<br/>(in-process)
+    participant RemoteProvider as RagasEvaluatorRemote<br/>(in-process)
+    participant DatasetIO as Llama Stack DatasetIO<br/>(in-process)
+    participant Inference as Llama Stack Inference<br/>(in-process)
+    participant Ollama as Ollama/vLLM<br/>11434/TCP HTTP
+    participant KFP as Kubeflow Pipelines<br/>443/TCP HTTPS
+    participant KFPPod as KFP Pipeline Pod<br/>(Kubernetes)
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
 
-    rect rgb(220, 240, 255)
-        Note over Client,DSIO: Flow 1: Inline Evaluation
-        Client->>LLS: POST /alpha/eval/run-eval<br/>(inline mode)
-        LLS->>Inline: Dispatch to inline::trustyai_ragas
-        Inline->>DSIO: get_rows_paginated()<br/>(in-process)
-        DSIO-->>Inline: Dataset rows
-        Inline->>InfAPI: LLM completions via LlamaStackInlineLLM<br/>(in-process, max_workers=1)
-        InfAPI-->>Inline: LLM responses
-        Inline->>InfAPI: Embeddings via LlamaStackInlineEmbeddings<br/>(in-process)
-        InfAPI-->>Inline: Embedding vectors
-        Note over Inline: Ragas evaluate() via asyncio.to_thread()
-        Inline-->>LLS: EvalResult (scores + metrics)
-        LLS-->>Client: JSON Response
+    rect rgb(230, 245, 255)
+        Note over Client,Ollama: Flow 1: Inline Evaluation
+        Client->>LlamaStack: POST /alpha/eval/run-eval<br/>HTTP 8321/TCP
+        LlamaStack->>InlineProvider: dispatch eval request
+        InlineProvider->>DatasetIO: get_rows_paginated()<br/>Python API (in-process)
+        DatasetIO-->>InlineProvider: dataset rows
+        InlineProvider->>Inference: chat_completion()<br/>Python API (in-process)
+        Inference->>Ollama: POST /api/chat<br/>HTTP 11434/TCP
+        Ollama-->>Inference: LLM completion
+        Inference-->>InlineProvider: completion result
+        InlineProvider->>Inference: embeddings()<br/>Python API (in-process)
+        Inference->>Ollama: POST /api/embeddings<br/>HTTP 11434/TCP
+        Ollama-->>Inference: embedding vectors
+        Inference-->>InlineProvider: embedding result
+        Note over InlineProvider: Ragas evaluate()<br/>answer_relevancy, context_precision,<br/>faithfulness, context_recall
+        InlineProvider-->>LlamaStack: evaluation scores + generations
+        LlamaStack-->>Client: JSON response<br/>HTTP 8321/TCP
     end
 
-    rect rgb(255, 235, 220)
+    rect rgb(255, 243, 224)
         Note over Client,S3: Flow 2: Remote Evaluation (Kubeflow Pipelines)
-        Client->>LLS: POST /alpha/eval/run-eval<br/>(remote mode)
-        LLS->>Remote: Dispatch to remote::trustyai_ragas
+        Client->>LlamaStack: POST /alpha/eval/run-eval<br/>HTTP 8321/TCP
+        LlamaStack->>RemoteProvider: dispatch eval request
 
-        Remote->>K8s: Read ConfigMap trustyai-service-operator-config<br/>Auth: Bearer Token (kubeconfig)
-        K8s-->>Remote: ragas-provider-image value
+        RemoteProvider->>K8sAPI: GET ConfigMap<br/>trustyai-service-operator-config<br/>HTTPS 6443/TCP, SA Token
+        K8sAPI-->>RemoteProvider: ragas-provider-image
 
-        Remote->>KFP: create_run_from_pipeline_func()<br/>Auth: Bearer Token (OpenShift OAuth)
-        KFP-->>Remote: Run ID
-        Remote-->>LLS: Job ID (KFP Run ID)
-        LLS-->>Client: Job submitted
+        RemoteProvider->>KFP: POST /healthz<br/>HTTPS 443/TCP, Bearer Token
+        KFP-->>RemoteProvider: healthy
 
-        Note over KFPPod1,KFPPod2: Pipeline executes asynchronously
+        RemoteProvider->>KFP: create_run_from_pipeline_func()<br/>HTTPS 443/TCP, Bearer Token
+        KFP-->>RemoteProvider: run_id
 
-        KFPPod1->>LLS: GET datasets/rows<br/>HTTP/8321
-        LLS-->>KFPPod1: Dataset rows (JSON)
+        RemoteProvider-->>LlamaStack: job_id (KFP run_id)
+        LlamaStack-->>Client: job submitted response
 
-        KFPPod2->>LLS: LLM inference + embeddings<br/>HTTP/8321
-        LLS-->>KFPPod2: Inference responses
-        Note over KFPPod2: Ragas evaluate()
-        KFPPod2->>S3: Write results.jsonl<br/>Auth: AWS IAM credentials
+        Note over KFPPod: KFP Pipeline Execution
+        KFP->>KFPPod: schedule pipeline pods
 
-        Client->>LLS: GET /alpha/eval/job-status (polling)
-        LLS->>Remote: Check job status
-        Remote->>KFP: get_run(run_id)<br/>Auth: Bearer Token
-        KFP-->>Remote: Run status
-        Remote-->>LLS: Status response
-        LLS-->>Client: Job status
+        KFPPod->>LlamaStack: Step 1: retrieve_data<br/>GET datasets<br/>HTTP 8321/TCP
+        LlamaStack-->>KFPPod: dataset rows
 
-        Client->>LLS: GET /alpha/eval/job-result
-        LLS->>Remote: Get job result
-        Remote->>S3: Read results.jsonl<br/>Auth: AWS IAM (via s3fs/pandas)
-        S3-->>Remote: Evaluation results
-        Remote-->>LLS: EvalResult
-        LLS-->>Client: JSON Response (scores + metrics)
+        KFPPod->>LlamaStack: Step 2: run_ragas<br/>POST completions + embeddings<br/>HTTP 8321/TCP
+        LlamaStack->>Ollama: inference requests<br/>HTTP 11434/TCP
+        Ollama-->>LlamaStack: inference responses
+        LlamaStack-->>KFPPod: inference results
+
+        Note over KFPPod: Ragas evaluate()
+        KFPPod->>S3: PUT results.jsonl<br/>HTTPS 443/TCP, AWS IAM
+        S3-->>KFPPod: stored
+
+        Client->>LlamaStack: GET /alpha/eval/job/status<br/>HTTP 8321/TCP
+        LlamaStack->>RemoteProvider: check status
+        RemoteProvider->>KFP: get_run()<br/>HTTPS 443/TCP, Bearer Token
+        KFP-->>RemoteProvider: run status
+        RemoteProvider-->>LlamaStack: status
+        LlamaStack-->>Client: job status
+
+        Client->>LlamaStack: GET /alpha/eval/job/result<br/>HTTP 8321/TCP
+        LlamaStack->>RemoteProvider: get results
+        RemoteProvider->>S3: GET results.jsonl<br/>HTTPS 443/TCP, AWS IAM (s3fs)
+        S3-->>RemoteProvider: evaluation results
+        RemoteProvider-->>LlamaStack: scores + generations
+        LlamaStack-->>Client: JSON response
     end

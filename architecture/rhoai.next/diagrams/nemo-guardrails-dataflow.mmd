@@ -1,57 +1,81 @@
 sequenceDiagram
-    participant Client as Client / Platform
+    participant Client as Client Application
     participant Server as NeMo Guardrails Server<br/>8000/TCP HTTP
-    participant InputRails as Input Rails Pipeline
-    participant Embeddings as Embedding Provider<br/>(local or HTTPS/443)
+    participant InputRails as Input Rails<br/>(Content Safety, Jailbreak,<br/>Sensitive Data, Topic)
+    participant Models as Embedded ML Models<br/>(spaCy, Sentence Transformers,<br/>FastEmbed, NLTK)
     participant LLM as Upstream LLM Provider<br/>443/TCP HTTPS TLS 1.2+
-    participant OutputRails as Output Rails Pipeline
+    participant OutputRails as Output Rails<br/>(Hallucination, Content Safety,<br/>Sensitive Data)
+    participant Redis as Redis (Optional)<br/>6379/TCP
+    participant OTel as OTel Collector (Optional)<br/>4317/4318 TCP
 
-    Note over Client,OutputRails: Flow 1: Chat Completion with Guardrails
+    Note over Client,OTel: Flow 1: Chat Completion with Guardrails
 
-    Client->>Server: POST /v1/chat/completions<br/>Authorization: Bearer {token}
-    Server->>InputRails: Execute input rails<br/>(content safety, jailbreak, PII)
+    Client->>Server: POST /v1/chat/completions<br/>HTTP :8000 (plaintext)<br/>Authorization: Bearer {token}
+    activate Server
 
-    alt Embedding-based rail evaluation
-        InputRails->>Embeddings: Generate embeddings<br/>(FastEmbed local or API)
-        Embeddings-->>InputRails: Embedding vectors
-        InputRails->>InputRails: Annoy ANN similarity check
-    end
+    Server->>Redis: Load thread history (if thread_id)<br/>Redis protocol :6379
+    Redis-->>Server: Previous messages
 
-    alt Input blocked
-        InputRails-->>Server: BLOCKED (rail violation)
-        Server-->>Client: 200 OK (blocked message)
-    else Input passed
-        InputRails-->>Server: PASSED
-        Server->>LLM: POST /v1/chat/completions<br/>Authorization: Bearer {forwarded token}<br/>TLS 1.2+
+    Server->>InputRails: Apply input rails
+    activate InputRails
+    InputRails->>Models: Content safety check (in-process)
+    Models-->>InputRails: Safety score
+    InputRails->>Models: Jailbreak detection (in-process)
+    Models-->>InputRails: Jailbreak score
+    InputRails->>Models: Sensitive data scan (in-process)<br/>(Presidio NER via spaCy)
+    Models-->>InputRails: PII entities detected
+    InputRails-->>Server: Rails result (pass/block)
+    deactivate InputRails
+
+    alt Input blocked by rails
+        Server-->>Client: 200 OK (blocked message)<br/>HTTP :8000
+    else Input passes rails
+        Server->>LLM: POST /v1/chat/completions<br/>HTTPS :443 TLS 1.2+<br/>Authorization: Bearer {forwarded_token}
         LLM-->>Server: Chat completion response
-        Server->>OutputRails: Execute output rails<br/>(hallucination, content safety)
 
-        alt Output blocked/modified
-            OutputRails-->>Server: MODIFIED (sanitized response)
-        else Output passed
-            OutputRails-->>Server: PASSED
-        end
+        Server->>OutputRails: Apply output rails
+        activate OutputRails
+        OutputRails->>Models: Hallucination check (in-process)
+        Models-->>OutputRails: Hallucination score
+        OutputRails->>Models: Content safety check (in-process)
+        Models-->>OutputRails: Safety score
+        OutputRails-->>Server: Rails result (pass/modify/block)
+        deactivate OutputRails
 
-        Server-->>Client: JSON response (completion or blocked)
+        Server->>Redis: Save thread state<br/>Redis protocol :6379
+        Server-->>Client: 200 OK (JSON or SSE stream)<br/>HTTP :8000
     end
 
-    Note over Client,OutputRails: Flow 2: Guardrail Check (No LLM Generation)
+    Server->>OTel: Export traces (async)<br/>OTLP gRPC :4317 or HTTP :4318<br/>GenAI semantic conventions
 
-    Client->>Server: POST /v1/guardrail/checks<br/>Authorization: Bearer {token}
-    Server->>InputRails: Validate messages against rails<br/>(role-based routing)
+    deactivate Server
 
-    alt Content safety model needed
-        InputRails->>LLM: POST content safety check<br/>Bearer Token / API key<br/>HTTPS/443 TLS 1.2+
-        LLM-->>InputRails: Safety evaluation result
-    end
+    Note over Client,OTel: Flow 2: Guardrail Checks (Fork-Specific, No LLM Call)
 
-    InputRails-->>Server: RailsResult<br/>(PASSED / MODIFIED / BLOCKED)
-    Server-->>Client: 200 OK {status, output}
+    Client->>Server: POST /v1/guardrail/checks<br/>HTTP :8000 (plaintext)<br/>Authorization: Bearer {token}
+    activate Server
 
-    Note over Client,OutputRails: Flow 3: Embedding-based Guardrail Evaluation
+    Server->>InputRails: Apply input rails only
+    activate InputRails
+    InputRails->>Models: Run all configured checks (in-process)
+    Models-->>InputRails: Check results
+    InputRails-->>Server: Rail check results
+    deactivate InputRails
 
-    Server->>Embeddings: Generate embeddings<br/>(FastEmbed local or OpenAI/NIM API)
-    Embeddings-->>Server: Embedding vectors
-    Server->>Server: Annoy Index lookup<br/>(approximate nearest neighbor)
-    Server->>LLM: Similarity-based rail evaluation<br/>HTTPS/443 TLS 1.2+ Bearer Token
-    LLM-->>Server: Evaluation result
+    Server->>OutputRails: Apply output rails only
+    activate OutputRails
+    OutputRails->>Models: Run all configured checks (in-process)
+    Models-->>OutputRails: Check results
+    OutputRails-->>Server: Rail check results
+    deactivate OutputRails
+
+    Server-->>Client: 200 OK (NDJSON streaming)<br/>HTTP :8000<br/>Per-rail pass/fail results
+
+    deactivate Server
+
+    Note over Client,OTel: Flow 3: Model Listing (Proxy)
+
+    Client->>Server: GET /v1/models<br/>HTTP :8000<br/>Authorization: Bearer {token}
+    Server->>LLM: GET /v1/models<br/>HTTPS :443 TLS 1.2+<br/>Authorization: Bearer {forwarded_token}
+    LLM-->>Server: Models list
+    Server-->>Client: 200 OK (Models list)<br/>HTTP :8000

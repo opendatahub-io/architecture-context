@@ -1,89 +1,71 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["Data Scientist / Client<br/>(UI, Python SDK, curl)"]
+        Client["Data Scientist / Client"]
     end
 
-    subgraph Ingress["INGRESS (DMZ)"]
-        Gateway["Kubeflow Gateway<br/>(Istio VirtualService)<br/>443/TCP → 8080/TCP<br/>TLS Termination<br/>Route: /api/model_registry/*"]
+    subgraph Ingress["INGRESS (Platform-Managed)"]
+        Gateway["Istio VirtualService<br/>→ kubeflow-gateway<br/>8080/TCP<br/>TLS Mode: ISTIO_MUTUAL<br/>AuthorizationPolicy: ALLOW"]
     end
 
-    subgraph ServiceMesh["SERVICE MESH (Istio mTLS)"]
+    subgraph ClusterInternal["CLUSTER INTERNAL (Service Mesh / Trusted)"]
         direction TB
 
         subgraph NS_MR["Namespace: model-registry"]
-            Proxy["model-registry (proxy)<br/>SA: model-registry<br/>8080/TCP HTTP<br/>91 REST operations<br/>FIPS: strictfipsruntime"]
-            DB_MySQL["MySQL 8.3+<br/>3306/TCP<br/>Auth: user/pass"]
-            DB_Postgres["PostgreSQL 16+<br/>5432/TCP<br/>Auth: user/pass"]
-            MRUI["model-registry-ui<br/>SA: model-registry-ui<br/>8080/TCP HTTP<br/>Frontend + BFF"]
+            MRAPI["Model Registry REST API<br/>model-registry-service (ClusterIP)<br/>8080/TCP HTTP<br/>SA: model-registry<br/>FIPS: strictfipsruntime<br/>Auth: None (platform delegates)"]
+            MRDB["Database<br/>model-registry-db (ClusterIP)<br/>MySQL 3306/TCP or PostgreSQL 5432/TCP<br/>Auth: username/password<br/>Encryption: Optional TLS 1.2+"]
         end
 
-        subgraph NS_Controller["Namespace: controller"]
-            Controller["controller-manager<br/>SA: system:controller-manager<br/>8081/TCP (health)<br/>8443/TCP HTTPS (metrics)<br/>⚠️ InsecureSkipVerify=true"]
+        subgraph NS_Controller["Namespace: controller-system"]
+            Controller["MR Controller<br/>SA: controller-manager<br/>Health: 8081/TCP HTTP<br/>Metrics: 8443/TCP HTTPS<br/>⚠ InsecureSkipVerify=true<br/>⚠ CGO_ENABLED=0 (no FIPS)"]
         end
 
-        subgraph NS_KServe["Namespace: KServe pods"]
-            CSI["mr-storage-initializer<br/>(KServe init container)<br/>Resolves model-registry:// URIs"]
+        subgraph NS_KServe["KServe Init Container"]
+            CSI["mr-storage-initializer<br/>model-registry:// protocol<br/>Resolves URIs via MR API"]
         end
 
-        subgraph NS_Jobs["Namespace: jobs"]
-            AsyncJob["async-upload job<br/>Python 3.12 batch<br/>Hermetic build (cachi2)"]
+        subgraph NS_Job["On-Demand Job"]
+            AsyncJob["async-upload Job<br/>Python 3.12 on UBI9<br/>FIPS: System OpenSSL<br/>No listener (batch)"]
         end
-    end
-
-    subgraph K8s["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA bearer token"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
-        OCI["OCI Registries<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>username/password"]
-        Sigstore["Sigstore/Rekor<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>OIDC identity"]
+        S3["S3 Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
+        OCIReg["OCI Registry<br/>(Quay/DockerHub)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Docker auth"]
+        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>HF API key"]
+        SigstoreSvc["Sigstore<br/>(Fulcio/Rekor/TUF)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>OIDC identity"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>ServiceAccount token"]
     end
 
-    %% External → Ingress
-    Client -->|"HTTPS/443<br/>TLS 1.2+"| Gateway
+    %% Flows
+    Client -->|"HTTP/8080<br/>Platform Auth Proxy<br/>Istio mTLS"| Gateway
+    Gateway -->|"HTTP/8080<br/>ISTIO_MUTUAL mTLS<br/>Service Identity"| MRAPI
+    MRAPI -->|"MySQL/3306 or PG/5432<br/>Optional TLS 1.2+<br/>username/password"| MRDB
 
-    %% Ingress → Service
-    Gateway -->|"HTTP/8080<br/>Istio mTLS (ISTIO_MUTUAL)<br/>AuthorizationPolicy"| Proxy
+    Controller -->|"HTTP/8080<br/>⚠ InsecureSkipVerify<br/>No auth"| MRAPI
+    Controller -->|"HTTPS/443<br/>TLS<br/>SA token"| K8sAPI
 
-    %% Proxy → Database
-    Proxy -->|"TCP/3306<br/>Optional TLS<br/>user/pass"| DB_MySQL
-    Proxy -->|"TCP/5432<br/>Optional TLS<br/>user/pass"| DB_Postgres
+    CSI -->|"HTTP/8080<br/>Resolve URIs"| MRAPI
+    CSI -->|"HTTPS/443<br/>TLS 1.2+<br/>Storage creds"| S3
 
-    %% UI → Proxy
-    MRUI -->|"HTTP/8080<br/>REST API"| Proxy
-    MRUI -->|"HTTPS/6443<br/>Service discovery + SAR"| K8sAPI
-
-    %% Controller flows
-    K8sAPI -->|"Watch stream<br/>InferenceService CRs<br/>SA token"| Controller
-    Controller -->|"HTTP/8080<br/>⚠️ InsecureSkipVerify=true<br/>Bearer Token"| Proxy
-
-    %% CSI flows
-    CSI -->|"HTTP/8080<br/>No Auth"| Proxy
-    CSI -->|"HTTPS/443<br/>TLS 1.2+<br/>Provider-specific"| S3
-
-    %% Async job flows
-    AsyncJob -->|"HTTP/8080<br/>Bearer Token (opt)"| Proxy
+    AsyncJob -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer token"| MRAPI
     AsyncJob -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    AsyncJob -->|"HTTPS/443<br/>TLS 1.2+<br/>user/pass"| OCI
-    AsyncJob -->|"HTTPS/443<br/>TLS 1.2+<br/>OIDC"| Sigstore
-
-    %% Prometheus
-    Prometheus["Prometheus<br/>ServiceMonitor"] -->|"HTTPS/8443<br/>TLS 1.2+<br/>TokenReview + SAR"| Controller
+    AsyncJob -->|"HTTPS/443<br/>TLS 1.2+<br/>Docker auth"| OCIReg
+    AsyncJob -->|"HTTPS/443<br/>TLS 1.2+<br/>HF API key"| HFHub
+    AsyncJob -->|"HTTPS/443<br/>TLS 1.2+<br/>OIDC identity"| SigstoreSvc
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef k8s fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef database fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef warning fill:#fff2cc,stroke:#d79b00,stroke-width:2px,stroke-dasharray: 5 5
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef database fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef externalservice fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
     class Client external
     class Gateway ingress
-    class Proxy,MRUI,CSI,AsyncJob servicemesh
+    class MRAPI internal
+    class MRDB database
     class Controller warning
-    class K8sAPI k8s
-    class S3,OCI,Sigstore,Prometheus externalservice
-    class DB_MySQL,DB_Postgres database
+    class CSI internal
+    class AsyncJob internal
+    class S3,OCIReg,HFHub,SigstoreSvc,K8sAPI externalservice

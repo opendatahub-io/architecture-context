@@ -1,75 +1,67 @@
 sequenceDiagram
-    participant User as Platform Admin
-    participant CLI as kubectl-odh
-    participant K8s as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
-    participant FS as Local Filesystem
-    participant GH as GitHub<br/>443/TCP HTTPS
+    participant User as User / CI Pipeline
+    participant CLI as odh-cli<br/>(rhai-cli / kubectl-odh)
+    participant K8s as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
+    participant OLM as OLM<br/>(Subscriptions / CSVs)
+    participant GitHub as GitHub<br/>443/TCP HTTPS
 
     rect rgb(232, 245, 233)
         Note over User,K8s: Flow 1: Lint / Upgrade Readiness Assessment
-        User->>CLI: kubectl odh lint [--checks=...] [--output=json]
-        CLI->>K8s: GET DataScienceCluster (singleton)<br/>Auth: Bearer Token
-        K8s-->>CLI: DSC spec + status
-        CLI->>K8s: GET DSCInitialization (singleton)<br/>Auth: Bearer Token
-        K8s-->>CLI: DSCI spec + status
-        CLI->>K8s: GET ClusterVersion<br/>Auth: Bearer Token
-        K8s-->>CLI: OpenShift version
-        CLI->>K8s: LIST OLM Subscriptions, CSVs, PackageManifests<br/>Auth: Bearer Token
-        K8s-->>CLI: Operator status + versions
-        CLI->>K8s: LIST Notebooks, InferenceServices, ServingRuntimes,<br/>DSPA, RayClusters, PyTorchJobs, ClusterQueues,<br/>GuardrailsOrchestrators, LlamaStack, LLMInference<br/>Auth: Bearer Token
-        K8s-->>CLI: Workload CRs (all namespaces)
-        Note over CLI: Execute 37 checks across 5 groups<br/>(dependency, service, platform, component, workload)<br/>Version-gated: IsUpgradeFrom2xTo3x()
-        CLI-->>User: DiagnosticResults<br/>(Prohibited > Blocking > Advisory > None)<br/>Table / JSON / YAML output
-    end
-
-    rect rgb(255, 249, 196)
-        Note over User,FS: Flow 2: Backup Workloads
-        User->>CLI: kubectl odh backup [--workload=notebooks] [--namespace=...]
-        CLI->>K8s: LIST target workloads (Discovery Stage)<br/>Auth: Bearer Token
+        User->>CLI: rhai-cli lint --target-version=3.0
+        CLI->>K8s: GET DSC/DSCI CRDs<br/>Auth: kubeconfig Bearer Token
+        K8s-->>CLI: DSC/DSCI resources
+        CLI->>K8s: GET OLM Subscriptions/CSVs<br/>Auth: kubeconfig Bearer Token
+        K8s-->>CLI: Operator versions & status
+        CLI->>K8s: LIST Notebooks, InferenceServices,<br/>RayClusters, PyTorchJobs, AppWrappers<br/>Auth: kubeconfig Bearer Token
         K8s-->>CLI: Workload resources
-        par Dependency Resolution (concurrent workers)
-            CLI->>K8s: GET ConfigMaps referenced by workloads<br/>Auth: Bearer Token
-            K8s-->>CLI: ConfigMap data
-            CLI->>K8s: GET Secrets referenced by workloads<br/>Auth: Bearer Token
-            K8s-->>CLI: Secret data
-            CLI->>K8s: GET PVCs referenced by workloads<br/>Auth: Bearer Token
-            K8s-->>CLI: PVC specs
-        end
-        Note over CLI: Notebook resolver: pod spec volumes + container env vars<br/>DSPA resolver: 9 JQ paths for storage/DB/CA/custom configs
-        CLI->>FS: Write YAML files (workloads + dependencies)
-        CLI-->>User: Backup complete (file paths listed)
-    end
-
-    rect rgb(243, 229, 245)
-        Note over User,K8s: Flow 3: Migration (Kueue → RHBOK)
-        User->>CLI: kubectl odh migrate prepare --action=kueue-rhbok
-        CLI->>K8s: LIST ClusterQueues, LocalQueues, ConfigMaps<br/>Auth: Bearer Token
-        K8s-->>CLI: Current Kueue resources
-        CLI->>FS: Write backup YAML (ClusterQueues, ConfigMaps)
-        CLI-->>User: Prepare complete (backup files written)
-
-        User->>CLI: kubectl odh migrate run --action=kueue-rhbok [--dry-run]
-        CLI->>K8s: CREATE OLM Subscription (RHBOK operator)<br/>Auth: Bearer Token
-        K8s-->>CLI: Subscription created
-        CLI->>K8s: PATCH ConfigMaps (prevent DSC reconciliation)<br/>Auth: Bearer Token
-        K8s-->>CLI: ConfigMaps annotated
-        CLI->>K8s: PATCH DataScienceCluster (managementState)<br/>Auth: Bearer Token
-        K8s-->>CLI: DSC updated
-        CLI->>K8s: LIST ClusterQueues, LocalQueues (verify preserved)<br/>Auth: Bearer Token
-        K8s-->>CLI: Resources verified intact
-        CLI-->>User: Migration complete (StepRecorder tree output)
+        Note over CLI: Execute 37 checks across<br/>5 groups (Dep→Svc→Platform→<br/>Component→Workload)
+        CLI-->>User: DiagnosticResults<br/>(table/JSON/YAML)<br/>Exit code 0-5
     end
 
     rect rgb(227, 242, 253)
-        Note over User,GH: Flow 4: Dependency Check (with optional refresh)
-        User->>CLI: kubectl odh deps [--refresh]
-        opt --refresh flag
-            CLI->>GH: GET raw.githubusercontent.com/odh-gitops/.../values.yaml<br/>No Auth (public)
-            GH-->>CLI: Dependency manifest YAML
+        Note over User,OLM: Flow 2: Dependency Installation
+        User->>CLI: rhai-cli deps install
+        CLI->>K8s: LIST OLM Subscriptions<br/>Auth: kubeconfig Bearer Token
+        K8s-->>CLI: Existing subscriptions
+        Note over CLI: Compare against<br/>odh-gitops manifest
+        CLI->>K8s: CREATE Namespace<br/>Auth: kubeconfig Bearer Token
+        K8s-->>CLI: Namespace created
+        CLI->>K8s: CREATE OperatorGroup<br/>Auth: kubeconfig Bearer Token
+        K8s-->>CLI: OperatorGroup created
+        CLI->>K8s: CREATE OLM Subscription<br/>Auth: kubeconfig Bearer Token
+        K8s-->>CLI: Subscription created
+        loop Poll for completion
+            CLI->>K8s: GET ClusterServiceVersion<br/>Auth: kubeconfig Bearer Token
+            K8s-->>CLI: CSV status (Pending/Installing/Succeeded)
         end
-        Note over CLI: Parse embedded or fetched manifest<br/>(go:embed from odh-gitops pinned commit)
-        CLI->>K8s: LIST OLM Subscriptions + Deployments<br/>Auth: Bearer Token
-        K8s-->>CLI: Installed operator state
-        Note over CLI: Compare required vs. installed dependencies
-        CLI-->>User: Dependency status table (installed / missing / version mismatch)
+        CLI-->>User: Installation result
+    end
+
+    rect rgb(255, 243, 224)
+        Note over User,K8s: Flow 3: Kueue RHBOK Migration
+        User->>CLI: rhai-cli migrate prepare kueue-rhbok
+        CLI->>K8s: GET DSC (check Kueue state)<br/>Auth: kubeconfig Bearer Token
+        K8s-->>CLI: DSC with Kueue Managed
+        CLI->>K8s: GET ClusterQueues, ConfigMaps<br/>Auth: kubeconfig Bearer Token
+        K8s-->>CLI: Resources (backup)
+        CLI->>K8s: PATCH ConfigMap<br/>annotate managed=false<br/>Auth: kubeconfig Bearer Token
+        K8s-->>CLI: ConfigMap patched
+        User->>CLI: rhai-cli migrate run kueue-rhbok
+        CLI->>K8s: CREATE RHBOK Subscription<br/>Auth: kubeconfig Bearer Token
+        K8s-->>CLI: Subscription created
+        CLI->>K8s: PATCH DSC (Kueue→Unmanaged)<br/>Auth: kubeconfig Bearer Token
+        Note over CLI: Exponential backoff<br/>with jitter for<br/>conflict resolution
+        K8s-->>CLI: DSC patched
+        CLI-->>User: Migration complete
+    end
+
+    rect rgb(243, 229, 245)
+        Note over CLI,GitHub: Flow 4: Dependency Manifest Refresh
+        User->>CLI: rhai-cli deps check --refresh
+        CLI->>GitHub: GET values.yaml, Chart.yaml<br/>from odh-gitops repo<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: None (public)
+        GitHub-->>CLI: Updated manifest files
+        Note over CLI: Parse Helm charts<br/>for operator dependencies
+        CLI->>K8s: LIST OLM Subscriptions/CSVs<br/>Auth: kubeconfig Bearer Token
+        K8s-->>CLI: Current operator state
+        CLI-->>User: Dependency status report
     end

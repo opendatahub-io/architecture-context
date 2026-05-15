@@ -1,46 +1,50 @@
 sequenceDiagram
     participant Client as External Client
-    participant KRBP as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
-    participant VLLM as vLLM API Server<br/>8000/TCP HTTP
-    participant Worker0 as HPU Worker (rank 0)<br/>Model Runner
-    participant WorkerN as HPU Workers (ranks 1..N)<br/>Model Runners
-    participant HPU as Gaudi HPU<br/>Accelerator
+    participant Ingress as Platform Ingress<br/>443/TCP HTTPS TLS 1.2+
+    participant API as vLLM API Server<br/>8000/TCP HTTP
+    participant Runner as HPU Model Runner<br/>(in-process)
+    participant HPU as Gaudi HPU Device<br/>(HPU DMA)
+    participant Peer as HPU Workers<br/>(TP rank 1..N)
+    participant NIXL_A as NIXL Buffer<br/>(Node A)
+    participant NIXL_B as NIXL Buffer<br/>(Node B)
     participant Storage as Model Storage<br/>(PVC/S3)
-    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
 
     Note over Client,Storage: Flow 1: Model Inference Request
-    Client->>KRBP: POST /v1/chat/completions<br/>Auth: Bearer Token / OpenShift OAuth
-    KRBP->>KRBP: Validate token via<br/>Kubernetes RBAC
-    KRBP->>VLLM: Forward request<br/>HTTP/8000 (localhost, plaintext)
-    VLLM->>Worker0: Schedule inference<br/>In-process call
-    Worker0->>HPU: Execute model forward pass<br/>PCIe/RDMA
-    HPU-->>Worker0: Tensor output
-    Worker0-->>VLLM: Generated tokens
-    VLLM-->>KRBP: JSON Response (streaming or batch)
-    KRBP-->>Client: HTTPS Response
 
-    Note over Worker0,WorkerN: Flow 2: Multi-Card Tensor Parallel Inference
-    Worker0->>WorkerN: Broadcast input tensors<br/>HCCL/TCP (dynamic ports, no encryption)
-    WorkerN->>HPU: Execute model shard<br/>PCIe/RDMA
-    HPU-->>WorkerN: Partial results
-    WorkerN->>Worker0: HCCL all-reduce<br/>Aggregate partial results
-    Worker0-->>VLLM: Combined output
+    Client->>Ingress: POST /v1/chat/completions<br/>Auth: Bearer Token (platform SSO)
+    Ingress->>API: Forward request<br/>HTTP/8000 (cluster-internal, plaintext)
+    API->>Runner: Python function call<br/>(in-process)
 
-    Note over Worker0,WorkerN: Flow 3: Disaggregated Prefill (NIXL)
-    rect rgb(255, 245, 230)
-        participant PrefillW as Prefill Worker
-        participant DecodeW as Decode Worker
-        PrefillW->>PrefillW: HPU→CPU KV cache copy
-        PrefillW->>DecodeW: NIXL KV transfer<br/>RDMA/TCP (dynamic port, no encryption)
-        DecodeW->>DecodeW: CPU→HPU KV cache copy
-        DecodeW->>HPU: Continue decode with<br/>transferred KV cache
+    Note over Runner: Bucketing: quantize input dims<br/>to pre-compiled graph shapes
+
+    Runner->>HPU: Execute model forward pass<br/>habana_frameworks API (HPU DMA)
+
+    Note over HPU: Attention backend selected:<br/>Standard / MLA / Unified / UnifiedMLA
+
+    alt Tensor Parallel (multi-card)
+        HPU->>Peer: HCCL all-reduce / all-gather<br/>RDMA/TCP (Dynamic port, No encryption)
+        Peer-->>HPU: Collective result
     end
 
-    Note over VLLM,HFHub: Flow 4: Model Loading (Startup)
-    VLLM->>Storage: Load model weights<br/>Filesystem (PVC) or HTTPS (S3)
-    Storage-->>VLLM: Model artifacts
-    VLLM->>HFHub: Download tokenizer/config (if not cached)<br/>HTTPS/443, TLS 1.2+, API Token (optional)
-    HFHub-->>VLLM: Tokenizer files
-    VLLM->>Worker0: Initialize model on HPU
-    Worker0->>HPU: Load weights, compile HPU graphs<br/>Bucket-based compilation
-    HPU-->>Worker0: Ready
+    HPU-->>Runner: Inference result
+    Runner-->>API: Generated tokens
+    API-->>Ingress: JSON response<br/>HTTP/8000
+    Ingress-->>Client: Response<br/>HTTPS/443 TLS 1.2+
+
+    Note over NIXL_A,NIXL_B: Flow 2: Multi-Node KV Cache Transfer (NIXL)
+
+    Runner->>NIXL_A: Memory copy to host<br/>transfer buffer (CPU)
+    NIXL_A->>NIXL_B: NIXL transfer<br/>RDMA/TCP (Dynamic port, No encryption)
+    NIXL_B->>Runner: Memory copy from<br/>host buffer to HPU
+
+    Note over Runner,Storage: Flow 3: Model Loading (startup)
+
+    Runner->>Storage: Load model weights<br/>(PVC mount or HTTPS/443 to S3)
+    Storage-->>Runner: Model artifacts<br/>(safetensors / bin)
+
+    Note over Runner,HPU: Flow 4: FP8 Calibration (offline)
+
+    Runner->>HPU: Calibration forward passes<br/>habana_frameworks API
+    HPU-->>Runner: Measurement data<br/>(activation/weight statistics)
+    Runner->>Runner: Compute FP8 scales<br/>(INC quantization)
+    Runner->>Storage: Save quantized scales<br/>to model artifacts (File I/O)

@@ -1,59 +1,59 @@
 sequenceDiagram
     participant Client as External Client
-    participant HTTPServer as HTTP Server (FastAPI)<br/>8080/TCP<br/>Optional TLS/mTLS
-    participant GRPCServer as gRPC Server<br/>8085/TCP<br/>Optional TLS/mTLS
-    participant PredictSvc as GlobalPredictServicer
-    participant TrainSvc as GlobalTrainServicer
-    participant ModelMgr as ModelManager
-    participant LoadedModel as LoadedModel<br/>(Module.run)
-    participant ModelMesh as Model Mesh Controller<br/>Unix Socket / 8085/TCP
+    participant GW as KServe/Istio Gateway<br/>443/TCP HTTPS
+    participant GRPC as Caikit gRPC Server<br/>runtime.grpc.port/TCP
+    participant HTTP as Caikit HTTP Server<br/>runtime.http.port/TCP
+    participant Predict as GlobalPredictServicer
+    participant Train as GlobalTrainServicer
+    participant MM as ModelManager
+    participant Module as Loaded Module
+    participant MMesh as ModelMesh Controller
     participant MRSvc as ModelRuntimeServicer
     participant Loader as CoreModelLoader
-    participant S3 as S3 / Filesystem
-    participant OTEL as OpenTelemetry Collector<br/>4317/TCP gRPC
-    participant Prom as Prometheus<br/>8086/TCP HTTP
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
 
-    Note over Client, S3: Flow 1: HTTP Model Inference
-    Client->>HTTPServer: POST /api/v1/{task}/...<br/>HTTP/HTTPS, Optional TLS
-    HTTPServer->>PredictSvc: Route to servicer<br/>(Python in-process)
-    PredictSvc->>ModelMgr: Retrieve loaded model
-    ModelMgr->>LoadedModel: Module.run(request)
-    LoadedModel-->>ModelMgr: Prediction result
-    ModelMgr-->>PredictSvc: Result
-    PredictSvc-->>HTTPServer: Response
-    HTTPServer-->>Client: JSON response<br/>(or SSE stream)
+    Note over Client,S3: Flow 1: Model Inference (gRPC)
+    Client->>GW: Inference request
+    GW->>GRPC: gRPC request<br/>TLS/mTLS/plaintext (configurable)
+    GRPC->>Predict: Route to servicer
+    Predict->>MM: Retrieve loaded model
+    MM->>Module: Module.run()
+    Module-->>MM: Prediction result
+    MM-->>Predict: Result
+    Predict-->>GRPC: gRPC response
+    GRPC-->>GW: Response
+    GW-->>Client: Inference result
 
-    Note over Client, S3: Flow 2: gRPC Model Inference
-    Client->>GRPCServer: {TaskName}Service RPC<br/>gRPC, Optional TLS/mTLS
-    GRPCServer->>PredictSvc: CaikitRuntimeServerWrapper<br/>routes dynamic RPC
-    PredictSvc->>ModelMgr: Retrieve loaded model
-    ModelMgr->>LoadedModel: Module.run(request)
-    LoadedModel-->>ModelMgr: Prediction result
-    ModelMgr-->>PredictSvc: Result
-    PredictSvc-->>GRPCServer: Response
-    GRPCServer-->>Client: gRPC Response<br/>(unary or server-stream)
+    Note over Client,S3: Flow 2: Model Inference (HTTP with SSE streaming)
+    Client->>GW: POST /{prefix}/task/{task_name}
+    GW->>HTTP: HTTP/HTTPS request<br/>TLS/mTLS/plaintext (configurable)
+    HTTP->>Predict: FastAPI handler → servicer
+    Predict->>MM: Retrieve loaded model
+    MM->>Module: Module.run() (streaming)
+    Module-->>MM: Stream of results
+    MM-->>Predict: Result stream
+    Predict-->>HTTP: SSE event stream
+    HTTP-->>GW: Server-Sent Events
+    GW-->>Client: SSE streaming response
 
-    Note over ModelMesh, S3: Flow 3: Model Loading via Model Mesh
-    ModelMesh->>MRSvc: loadModel(modelId, modelPath)<br/>gRPC via Unix socket
-    MRSvc->>ModelMgr: load_model(model_id, path)
-    ModelMgr->>Loader: CoreModelLoader.load()
-    Loader->>S3: Download model artifacts<br/>HTTPS/443, TLS, IAM Auth
-    S3-->>Loader: Model files
-    Loader-->>ModelMgr: Loaded module instance
-    ModelMgr-->>MRSvc: Load complete
-    MRSvc-->>ModelMesh: LoadModelResponse(sizeInBytes)
+    Note over MMesh,S3: Flow 3: Model Loading (ModelMesh Sidecar)
+    MMesh->>MRSvc: loadModel()<br/>Unix socket or gRPC/TCP
+    MRSvc->>MM: load_model()
+    MM->>Loader: CoreModelLoader
+    Loader->>S3: Download model artifacts<br/>HTTPS/443, HMAC/IAM auth
+    S3-->>Loader: Model artifacts
+    Loader-->>MM: Model loaded in memory
+    MM-->>MRSvc: Load success + model size
+    MRSvc-->>MMesh: ModelResponse(sizeInBytes)
 
-    Note over Client, S3: Flow 4: Training Job
-    Client->>HTTPServer: POST /api/v1/{module}/train<br/>HTTP/HTTPS, multipart form
-    HTTPServer->>TrainSvc: Route to train servicer
-    TrainSvc->>LoadedModel: Module.train(data) [async]
-    LoadedModel->>S3: Read training data<br/>HTTPS/443 (S3Files plugin)
-    S3-->>LoadedModel: Training data
-    LoadedModel->>S3: Save trained model<br/>Local filesystem / S3
-    Client->>HTTPServer: GET /api/v1/training/status<br/>Poll for completion
-    HTTPServer-->>Client: TrainingStatus response
-
-    Note over HTTPServer, Prom: Observability
-    HTTPServer->>OTEL: Push traces<br/>gRPC/4317 or HTTP/4318<br/>Optional TLS/mTLS
-    GRPCServer->>OTEL: Push traces<br/>gRPC/4317 or HTTP/4318
-    Prom->>HTTPServer: Scrape /metrics<br/>HTTP/8086 plaintext
+    Note over Client,S3: Flow 4: Model Training
+    Client->>HTTP: POST /{prefix}/{train_rpc}<br/>Training request
+    HTTP->>Train: FastAPI handler → servicer
+    Train->>MM: train()
+    MM->>Module: Module.train()<br/>(thread/subprocess)
+    Module->>S3: Save trained model<br/>HTTPS/443
+    S3-->>Module: Confirmation
+    Module-->>MM: Training complete
+    MM-->>Train: TrainingJob status
+    Train-->>HTTP: Training ID + status
+    HTTP-->>Client: 200 OK (training_id)

@@ -1,286 +1,211 @@
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                       │
-│                                                                              │
-│  [Client Application]                                                        │
-│         │                                                                    │
-│         │ Port: 8321/TCP                                                     │
-│         │ Protocol: HTTP/HTTPS                                               │
-│         │ Encryption: Configurable TLS (TLS 1.2+)                            │
-│         │ Auth: Bearer Token (OAuth2 JWT or Custom)                          │
-│         ▼                                                                    │
+│                                                                             │
+│  [Client / Application]                                                     │
+│         │                                                                   │
+│         │ Port: 8321/TCP                                                    │
+│         │ Protocol: HTTP/HTTPS                                              │
+│         │ Encryption: Optional TLS 1.2+ (uvicorn ssl_keyfile/ssl_certfile)  │
+│         │ Auth: Bearer Token (JWT via JWKS, OAuth2 Introspection, or        │
+│         │       Custom Auth Endpoint)                                       │
+│         │ Rate Limit: 100 req/day (anon), 1000 req/day (auth)              │
+│         ▼                                                                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  LLAMA STACK SERVER (Application Boundary)                                   │
-│                                                                              │
-│  [FastAPI / Uvicorn - 8321/TCP]                                              │
-│  - Service Type: ClusterIP (internal, configurable)                          │
-│  - TLS: Configurable via tls_certfile, tls_keyfile, tls_cafile               │
-│  - mTLS: Supported (ssl.CERT_REQUIRED with tls_cafile)                       │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │  MIDDLEWARE STACK (ASGI Pipeline)                                    │     │
-│  │                                                                      │     │
-│  │  1. AuthenticationMiddleware                                         │     │
-│  │     - OAuth2 JWT: Validates via JWKS URI or RFC 7662 introspection   │     │
-│  │     - Custom: Delegates to external auth endpoint                    │     │
-│  │     - Extracts: sub, groups, team, project, tenant, namespace        │     │
-│  │     - Bypass: /v1/health, /v1/version, /docs, /redoc, /openapi.json │     │
-│  │                                                                      │     │
-│  │  2. QuotaMiddleware (Rate Limiting)                                  │     │
-│  │     - Authenticated: 1000 requests/day (default)                     │     │
-│  │     - Anonymous: 100 requests/day (default)                          │     │
-│  │     - Identity: Token (auth) / IP address (anon)                     │     │
-│  │     - Backend: SQLite KV store                                       │     │
-│  │                                                                      │     │
-│  │  3. AccessControlMiddleware (ABAC)                                   │     │
-│  │     - Cedar-inspired policy evaluation                               │     │
-│  │     - Actions: create, read, update, delete                          │     │
-│  │     - Scoped by: principal, resource (type-qualified)                 │     │
-│  │     - Conditions: role match, ownership, group membership            │     │
-│  │     - Default: DENY (first-match wins)                               │     │
-│  │                                                                      │     │
-│  │  4. TracingMiddleware                                                │     │
-│  │     - W3C Trace Context propagation                                  │     │
-│  │     - OpenTelemetry integration                                      │     │
-│  └─────────────────────────────────────────────────────────────────────┘     │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │  API ROUTING LAYER                                                   │     │
-│  │                                                                      │     │
-│  │  InferenceRouter → routes to configured inference provider           │     │
-│  │  SafetyRouter    → routes to configured safety provider              │     │
-│  │  Agent Provider  → orchestrates multi-turn with tools                │     │
-│  │  VectorIORouter  → routes to configured vector DB provider           │     │
-│  └─────────────────────────────────────────────────────────────────────┘     │
-│                                                                              │
+│  APPLICATION LAYER (Llama Stack Server)                                     │
+│                                                                             │
+│  [Llama Stack Server - FastAPI/uvicorn]                                     │
+│  - Port: 8321/TCP (configurable)                                           │
+│  - TLS: Optional (ssl_keyfile, ssl_certfile, ssl_ca_certs via uvicorn)     │
+│  - mTLS: Supported (ssl.CERT_REQUIRED when tls_cafile configured)          │
+│  - Auth: ASGI AuthenticationMiddleware                                      │
+│  - ABAC: Cedar-like policy rules (permit/forbid with when/unless)          │
+│  - Rate Limiting: QuotaMiddleware (SQLite-backed)                          │
+│  - Tracing: x-trace-id header on all responses                             │
+│                                                                             │
+│  Middleware Chain:                                                           │
+│    ClientVersionMiddleware → AuthenticationMiddleware →                      │
+│    QuotaMiddleware → TracingMiddleware → Route Handlers                     │
+│                                                                             │
+│  Public Endpoints (no auth required):                                       │
+│    - GET /v1/health                                                         │
+│    - GET /v1/version                                                        │
+│    - GET /docs, /redoc, /openapi.json                                      │
+│                                                                             │
+│  Protected Endpoints (auth + ABAC):                                         │
+│    - All /v1/* API endpoints                                                │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ Provider Plugin System                                              │    │
+│  │                                                                     │    │
+│  │ Inline Providers (in-process):                                      │    │
+│  │  - vLLM (local), FAISS, sentence-transformers, sqlite-vec           │    │
+│  │  - Safety shields (in-process)                                      │    │
+│  │                                                                     │    │
+│  │ Remote Providers (HTTP adapters):                                   │    │
+│  │  - vLLM, OpenAI, Anthropic, Bedrock, Gemini, etc.                  │    │
+│  │  - pgvector, Chroma, Qdrant, Milvus, Weaviate                     │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│         │                                                                   │
+│         │ (multiple egress paths below)                                     │
+│         ▼                                                                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  EGRESS: AUTH PROVIDERS                                                      │
-│                                                                              │
-│  [OIDC Provider / Keycloak - JWKS]                                           │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: None (public JWKS endpoint)                                         │
-│  - Purpose: JWT public key retrieval for token validation                    │
-│                                                                              │
-│  [Token Introspection Endpoint]                                              │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: Client Credentials (RFC 7662)                                       │
-│  - Purpose: OAuth2 token validation                                          │
-│                                                                              │
-│  [Custom Auth Endpoint]                                                      │
-│  - Port: Configurable                                                        │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: Configurable                                                  │
-│  - Auth: None (sends token for validation)                                   │
-│  - Purpose: External auth delegation                                         │
-│                                                                              │
+│  AUTHENTICATION PROVIDERS (Egress)                                          │
+│                                                                             │
+│  [OAuth2/OIDC JWKS Endpoint]                                                │
+│  - Port: 443/TCP                                                           │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS 1.2+                                                    │
+│  - Auth: None (public key retrieval)                                        │
+│  - Purpose: JWT public key fetch for token validation                      │
+│  - Refresh: Periodic key rotation                                          │
+│                                                                             │
+│  [OAuth2 Introspection Endpoint]                                            │
+│  - Port: 443/TCP                                                           │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS 1.2+ (custom CA supported via tls_cafile)              │
+│  - Auth: Client credentials (client_id/client_secret)                      │
+│  - Purpose: Token introspection (RFC 7662)                                 │
+│                                                                             │
+│  [Custom Auth Endpoint]                                                     │
+│  - Port: configurable                                                      │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS 1.2+                                                    │
+│  - Auth: None (sends token in request body)                                │
+│  - Purpose: External custom token validation                               │
+│                                                                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  EGRESS: INFERENCE PROVIDERS                                                 │
-│                                                                              │
-│  [vLLM - Primary RHOAI Backend]                                              │
-│  - Port: 8000/TCP (configurable)                                             │
-│  - Protocol: HTTP/HTTPS                                                      │
-│  - Encryption: Configurable (tls_verify)                                     │
-│  - Auth: Bearer Token (api_token)                                            │
-│  - Purpose: LLM inference requests                                           │
-│                                                                              │
-│  [Ollama - Local Backend]                                                    │
-│  - Port: 11434/TCP (configurable)                                            │
-│  - Protocol: HTTP                                                            │
-│  - Encryption: None (local)                                                  │
-│  - Auth: None                                                                │
-│  - Purpose: Local LLM inference                                              │
-│                                                                              │
-│  [OpenAI API]                                                                │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: Bearer Token (API key)                                              │
-│  - Purpose: Remote inference provider                                        │
-│                                                                              │
-│  [Anthropic API]                                                             │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: Bearer Token (API key)                                              │
-│  - Purpose: Remote inference provider                                        │
-│                                                                              │
-│  [AWS Bedrock]                                                               │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: AWS IAM credentials                                                 │
-│  - Purpose: Remote inference and safety provider                             │
-│                                                                              │
-│  [NVIDIA NIM]                                                                │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: Bearer Token (API key)                                              │
-│  - Purpose: Remote inference, eval, and post-training                        │
-│                                                                              │
-│  [Fireworks / Together / Groq / SambaNova / Gemini]                          │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: Bearer Token (API key)                                              │
-│  - Purpose: Additional remote inference providers                            │
-│                                                                              │
+│  INFERENCE BACKENDS (Egress)                                                │
+│                                                                             │
+│  [vLLM Server]                                                              │
+│  - Port: 8000/TCP                                                          │
+│  - Protocol: HTTP/HTTPS (OpenAI-compatible)                                │
+│  - Encryption: Optional TLS (configurable tls_verify)                      │
+│  - Auth: Bearer Token (optional api_token)                                 │
+│  - Purpose: Primary LLM inference backend for RHOAI                       │
+│                                                                             │
+│  [Ollama Server]                                                            │
+│  - Port: 11434/TCP                                                         │
+│  - Protocol: HTTP                                                           │
+│  - Encryption: None (typically internal)                                   │
+│  - Auth: None                                                               │
+│  - Purpose: Alternative local LLM inference                                │
+│                                                                             │
+│  [Cloud Inference APIs]                                                     │
+│  - OpenAI API:        443/TCP, HTTPS, TLS 1.2+, Bearer Token (API key)    │
+│  - Anthropic API:     443/TCP, HTTPS, TLS 1.2+, Bearer Token (API key)    │
+│  - AWS Bedrock:       443/TCP, HTTPS, TLS 1.2+ (SigV4), AWS IAM creds    │
+│  - Google Gemini:     443/TCP, HTTPS, TLS 1.2+, API key                   │
+│  - NVIDIA NIM:        443/TCP, HTTPS, TLS 1.2+, API key                   │
+│  - Groq API:          443/TCP, HTTPS, TLS 1.2+, Bearer Token              │
+│  - Together AI:       443/TCP, HTTPS, TLS 1.2+, Bearer Token              │
+│  - Fireworks AI:      443/TCP, HTTPS, TLS 1.2+, Bearer Token              │
+│  - SambaNova:         443/TCP, HTTPS, TLS 1.2+, Bearer Token              │
+│  - IBM watsonx:       443/TCP, HTTPS, TLS 1.2+, Bearer Token              │
+│  - HuggingFace TGI:   configurable, HTTP/HTTPS, Optional TLS              │
+│                                                                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  EGRESS: VECTOR DATABASE PROVIDERS                                           │
-│                                                                              │
-│  [PostgreSQL / pgvector]                                                     │
-│  - Port: 5432/TCP                                                            │
-│  - Protocol: PostgreSQL                                                      │
-│  - Encryption: Configurable TLS                                              │
-│  - Auth: Username/Password                                                   │
-│  - Purpose: Vector storage for RAG                                           │
-│                                                                              │
-│  [ChromaDB]                                                                  │
-│  - Port: Configurable                                                        │
-│  - Protocol: HTTP/HTTPS                                                      │
-│  - Encryption: Configurable                                                  │
-│  - Auth: None                                                                │
-│  - Purpose: Vector storage for RAG                                           │
-│                                                                              │
-│  [Qdrant]                                                                    │
-│  - Port: Configurable                                                        │
-│  - Protocol: HTTP/gRPC                                                       │
-│  - Encryption: Configurable                                                  │
-│  - Auth: API key                                                             │
-│  - Purpose: Vector storage for RAG                                           │
-│                                                                              │
-│  [Milvus]                                                                    │
-│  - Port: Configurable                                                        │
-│  - Protocol: gRPC                                                            │
-│  - Encryption: Configurable                                                  │
-│  - Auth: Token                                                               │
-│  - Purpose: Vector storage for RAG                                           │
-│                                                                              │
-│  [Weaviate]                                                                  │
-│  - Port: Configurable                                                        │
-│  - Protocol: HTTP/HTTPS                                                      │
-│  - Encryption: Configurable                                                  │
-│  - Auth: API key                                                             │
-│  - Purpose: Vector storage for RAG                                           │
-│                                                                              │
+│  DATA STORES (Egress)                                                       │
+│                                                                             │
+│  [PostgreSQL + pgvector]                                                    │
+│  - Port: 5432/TCP                                                          │
+│  - Protocol: PostgreSQL wire protocol                                      │
+│  - Encryption: Optional TLS                                                │
+│  - Auth: Password                                                           │
+│  - Purpose: Vector storage (RAG), KV store, SQL store (inference state)    │
+│                                                                             │
+│  [Redis]                                                                    │
+│  - Port: 6379/TCP                                                          │
+│  - Protocol: Redis                                                          │
+│  - Encryption: Optional TLS                                                │
+│  - Auth: Optional password                                                 │
+│  - Purpose: KV store for metadata, quota tracking, session state           │
+│                                                                             │
+│  [MongoDB]                                                                  │
+│  - Port: 27017/TCP                                                         │
+│  - Protocol: MongoDB                                                        │
+│  - Encryption: Optional TLS                                                │
+│  - Auth: Optional credentials                                              │
+│  - Purpose: Alternative KV store backend                                   │
+│                                                                             │
+│  [Vector Databases]                                                         │
+│  - Chroma:     8000/TCP, HTTP, None (internal)                             │
+│  - Qdrant:     6333/TCP, HTTP/gRPC, Optional TLS, Optional API key        │
+│  - Milvus:     19530/TCP, gRPC, Optional TLS, Optional credentials        │
+│  - Weaviate:   8080/TCP, HTTP, Optional TLS, Optional API key             │
+│                                                                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  EGRESS: KV STORE BACKENDS                                                   │
-│                                                                              │
-│  [SQLite - Default]                                                          │
-│  - Port: N/A (file I/O)                                                      │
-│  - Encryption: N/A                                                           │
-│  - Auth: N/A                                                                 │
-│  - Purpose: Default persistence (registry, agents, traces, quotas)           │
-│                                                                              │
-│  [Redis]                                                                     │
-│  - Port: 6379/TCP                                                            │
-│  - Protocol: Redis                                                           │
-│  - Encryption: Configurable TLS                                              │
-│  - Auth: Password                                                            │
-│  - Purpose: KV store backend option                                          │
-│                                                                              │
-│  [MongoDB]                                                                   │
-│  - Port: 27017/TCP                                                           │
-│  - Protocol: MongoDB                                                         │
-│  - Encryption: Configurable TLS                                              │
-│  - Auth: Username/Password                                                   │
-│  - Purpose: KV store backend option                                          │
-│                                                                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  EGRESS: TOOL PROVIDERS                                                      │
-│                                                                              │
-│  [Brave Search API]                                                          │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: Bearer Token (API key)                                              │
-│  - Purpose: Web search tool for agents                                       │
-│                                                                              │
-│  [Tavily Search API]                                                         │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: Bearer Token (API key)                                              │
-│  - Purpose: Web search tool for agents                                       │
-│                                                                              │
-│  [Wolfram Alpha API]                                                         │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: Bearer Token (API key)                                              │
-│  - Purpose: Computation tool for agents                                      │
-│                                                                              │
-│  [MCP Servers]                                                               │
-│  - Port: Configurable                                                        │
-│  - Protocol: REST/SSE (Model Context Protocol)                               │
-│  - Encryption: Configurable                                                  │
-│  - Auth: Configurable                                                        │
-│  - Purpose: External tool integration                                        │
-│                                                                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  EGRESS: TELEMETRY & DATA                                                    │
-│                                                                              │
-│  [OpenTelemetry Collector]                                                   │
-│  - Port: Configurable                                                        │
-│  - Protocol: HTTP (OTLP)                                                     │
-│  - Encryption: Configurable                                                  │
-│  - Auth: None                                                                │
-│  - Purpose: Distributed tracing export                                       │
-│                                                                              │
-│  [HuggingFace Hub]                                                           │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: Bearer Token (HF token)                                             │
-│  - Purpose: Dataset/model downloads                                          │
-│                                                                              │
+│  EXTERNAL SERVICES (Egress)                                                 │
+│                                                                             │
+│  [HuggingFace Hub]                                                          │
+│  - Port: 443/TCP                                                           │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS 1.2+                                                    │
+│  - Auth: Bearer Token (HF token)                                          │
+│  - Purpose: Model weight downloads                                         │
+│                                                                             │
+│  [Search APIs]                                                              │
+│  - Tavily Search: 443/TCP, HTTPS, TLS 1.2+, API key                      │
+│  - Brave Search:  443/TCP, HTTPS, TLS 1.2+, API key                      │
+│  - Wolfram Alpha: 443/TCP, HTTPS, TLS 1.2+, API key                      │
+│                                                                             │
+│  [OpenTelemetry Collector]                                                  │
+│  - Port: configurable                                                      │
+│  - Protocol: HTTP (OTLP)                                                   │
+│  - Encryption: Optional TLS                                                │
+│  - Auth: None                                                               │
+│  - Purpose: Distributed tracing and metrics export                         │
+│                                                                             │
+│  [MCP Servers]                                                              │
+│  - Port: configurable                                                      │
+│  - Protocol: HTTP/HTTPS (Model Context Protocol)                           │
+│  - Encryption: Optional TLS                                                │
+│  - Auth: Varies                                                             │
+│  - Purpose: External tool integration                                      │
+│                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 
-Application-Level Access Control (No Kubernetes RBAC):
+AUTHENTICATION & AUTHORIZATION:
+- AuthenticationMiddleware (ASGI): Validates tokens before routing
+  - Strategy 1: JWT validation via JWKS (periodic key refresh)
+  - Strategy 2: Token introspection (RFC 7662) with client credentials
+  - Strategy 3: Custom auth endpoint (sends token in body)
+- ABAC (Cedar-like): Attribute-based access control
+  - Rules: permit/forbid with when/unless conditions
+  - Attributes: Extracted from JWT claims (user, roles, groups)
+  - Resource-level: Per-resource access policies
+- Rate Limiting: QuotaMiddleware
+  - Anonymous: 100 req/day
+  - Authenticated: 1000 req/day (configurable)
 
-  Llama Stack implements application-level access control, not Kubernetes RBAC.
-  No ClusterRoles, Roles, or RoleBindings are defined.
+SECRETS:
+- TLS key/cert pair (file-based: tls_keyfile, tls_certfile)
+  - Purpose: HTTPS for server
+  - Provisioned: Manual or cert-manager
+  - Rotation: Manual (requires restart)
+- TLS CA certificate (file-based: tls_cafile)
+  - Purpose: mTLS client cert validation
+  - Provisioned: Manual
+- Provider API keys (environment variables / config)
+  - Purpose: Auth to remote inference providers (OpenAI, Anthropic, etc.)
+  - Provisioned: Manual
+- OAuth2 introspection client secret (config)
+  - Purpose: Token introspection with OAuth2 provider
+  - Provisioned: Manual
+- PostgreSQL credentials (config: host, user, password)
+  - Purpose: Database auth for pgvector, KV store, SQL store
+  - Provisioned: Manual
+- Redis password (config)
+  - Purpose: Redis authentication
+  - Provisioned: Manual
+- HuggingFace token (environment variable)
+  - Purpose: Model downloads from HuggingFace Hub
+  - Provisioned: Manual
 
-  Access Control Model:
-  - Engine: Cedar-inspired policy language (permit/forbid rules)
-  - Actions: create, read, update, delete
-  - Resource scoping: type-qualified (e.g., model::my-model, shield::llama-guard)
-  - Principal attributes: roles, teams, projects, namespaces
-  - Conditions: when/unless clauses, ownership checks, group membership
-  - Evaluation: First match wins, default deny
-
-  Authentication Providers:
-  - OAuth2 JWT: JWKS URI or RFC 7662 Token Introspection
-    - Claim mapping: sub → user, groups → roles, team/project/namespace → attributes
-    - Configurable: audience, issuer, TLS verification
-  - Custom: External HTTP endpoint delegation
-    - Sends: token + request context
-    - Receives: principal + attributes
-
-  Rate Limiting:
-  - Authenticated clients: 1000 requests/day (configurable)
-  - Anonymous clients: 100 requests/day (configurable)
-  - Identity: Token hash (auth) / IP address (anon)
-  - Backend: SQLite KV store
-
-Secrets:
-
-  | Secret                  | Type           | Purpose                              | Rotation |
-  |-------------------------|----------------|--------------------------------------|----------|
-  | TLS certificate         | File (PEM)     | HTTPS server encryption              | Manual   |
-  | TLS private key         | File (PEM)     | HTTPS server encryption              | Manual   |
-  | TLS CA certificate      | File (PEM)     | Mutual TLS client verification       | Manual   |
-  | Provider API keys       | Env var        | Auth to remote providers (OpenAI...) | Manual   |
-  | OAuth2 client secret    | Config (YAML)  | Token introspection auth             | Manual   |
-  | Database passwords      | Env var/Config | PostgreSQL, Redis, MongoDB auth      | Manual   |
-
-FIPS Compliance Notes:
-
-  - Pure Python service; FIPS relies on UBI base image OpenSSL
-  - RISK: python-jose uses pure-Python RSA/ECDSA (bypasses FIPS OpenSSL)
-  - Mitigation: Migrate to PyJWT with cryptography backend
-  - hashlib.md5(usedforsecurity=False) usage is FIPS-compliant per PEP 456
-  - No Konflux Dockerfile on upstream main branch (expected on release branches)
+FIPS COMPLIANCE NOTES:
+- Python ssl module: Inherits OpenSSL FIPS mode from OS (RHEL/UBI base)
+- Crypto libs: python-jose (JWT), ecdsa, rsa — use Python stdlib/OpenSSL backend
+- hashlib.md5: Used with usedforsecurity=False (PEP 452 compliant)
+  - cli/verify_download.py (download verification)
+  - providers/inline/vector_io/sqlite_vec/sqlite_vec.py (deterministic UUIDs)
+  - providers/remote/vector_io/milvus/milvus.py (content hashes)
+- No Konflux Dockerfile in repo — FIPS posture depends on downstream build

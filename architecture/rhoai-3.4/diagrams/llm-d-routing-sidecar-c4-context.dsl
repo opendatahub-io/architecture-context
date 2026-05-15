@@ -1,70 +1,70 @@
 workspace {
     model {
-        client = person "Client / Upstream Gateway" "Sends OpenAI-compatible inference requests (chat completions, completions)"
+        scheduler = person "llm-d-inference-scheduler (EPP)" "Routes inference requests to appropriate decoder pods, sets x-prefiller-host-port header for disaggregated P/D"
 
-        sidecar = softwareSystem "llm-d-routing-sidecar" "Reverse proxy sidecar implementing disaggregated prefill/decode routing for LLM inference" {
-            proxyListener = container "Proxy Listener" "HTTPS listener on port 8000 with TLS 1.2+ and AEAD cipher suites" "Go HTTP Server"
-            nixlv2 = container "NIXL v2 Connector" "Two-phase prefill/decode orchestration with kv_transfer_params exchange" "Go Protocol Handler"
-            allowlistValidator = container "AllowlistValidator" "SSRF protection via InferencePool pod IP allowlist" "Go K8s Informer"
-            lruCache = container "LRU Cache" "Caches prefiller reverse proxy handlers (capacity: 16)" "hashicorp/golang-lru"
+        routingSidecar = softwareSystem "llm-d-routing-sidecar" "Reverse proxy sidecar that routes LLM inference requests between prefill and decode workers in disaggregated P/D architecture" {
+            proxy = container "HTTP Reverse Proxy" "Intercepts OpenAI-compatible requests on port 8000 and orchestrates P/D protocol" "Go net/http"
+            nixlv2Connector = container "NIXL V2 Connector" "Implements two-phase prefill/decode protocol with kv_transfer_params exchange" "Go"
+            nixlv1Connector = container "NIXL V1 Connector (deprecated)" "Legacy protocol with individual field exchange" "Go"
+            lmcacheConnector = container "LMCache Connector (deprecated)" "Legacy LMCache protocol" "Go"
+            allowlistValidator = container "AllowlistValidator" "Watches InferencePool CRs and pods to build SSRF protection allowlist" "Go · Kubernetes dynamic client"
+            lruCache = container "LRU Cache" "Caches prefiller reverse proxy handlers" "hashicorp/golang-lru"
         }
 
-        vllmDecoder = softwareSystem "vLLM Decoder" "Local LLM decoder instance for token generation" "Runtime Dependency"
-        vllmPrefiller = softwareSystem "vLLM Prefiller" "Remote prefiller pods for KV-cache prefilling" "Runtime Dependency"
-        k8sAPI = softwareSystem "Kubernetes API Server" "Control plane API for watching InferencePool CRs and Pods" "Platform"
-        inferencePool = softwareSystem "InferencePool CR" "Gateway API inference extension CRD defining pod selectors for prefill targets" "Platform CRD"
+        vllmDecoder = softwareSystem "vLLM Decoder" "Local vLLM decoder instance running in the same pod, serves token generation" "Internal"
+        vllmPrefiller = softwareSystem "vLLM Prefiller" "Remote vLLM prefill workers that compute KV cache blocks" "Internal"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Provides watch API for InferencePool and Pod resources" "External"
+        inferencePool = softwareSystem "InferencePool CR" "Gateway API CRD defining valid inference worker pools" "External"
 
-        # User interactions
-        client -> sidecar "POST /v1/chat/completions, /v1/completions" "HTTPS/8000, TLS 1.2+"
+        # Relationships
+        scheduler -> routingSidecar "Sends OpenAI-compatible requests with x-prefiller-host-port header" "HTTPS/8000 · TLS 1.2+"
+        routingSidecar -> vllmDecoder "Forwards decode requests with KV cache params" "HTTP(S)/8001 · localhost"
+        routingSidecar -> vllmPrefiller "Sends prefill requests, receives kv_transfer_params" "HTTP(S)/configurable · Optional TLS"
+        routingSidecar -> k8sAPI "Watches InferencePool and Pod resources for SSRF allowlist" "HTTPS/443 · ServiceAccount token"
+        k8sAPI -> inferencePool "Serves InferencePool CRs" "inference.networking.x-k8s.io/v1alpha2"
 
-        # Internal container interactions
-        proxyListener -> nixlv2 "Routes P/D requests (x-prefiller-host-port header)" "Internal"
-        nixlv2 -> allowlistValidator "Validates prefiller IP" "Internal"
-        nixlv2 -> lruCache "Caches/retrieves proxy handlers" "Internal"
-
-        # External interactions
-        nixlv2 -> vllmPrefiller "Phase 1: Prefill request with kv_transfer_params" "HTTP(S), TLS 1.2+ configurable"
-        nixlv2 -> vllmDecoder "Phase 2: Decode with kv_transfer_params from prefiller" "HTTP(S)/8001, TLS 1.2+ configurable"
-        proxyListener -> vllmDecoder "Direct passthrough (no P/D header)" "HTTP(S)/8001"
-        allowlistValidator -> k8sAPI "Watch InferencePool + Pods" "HTTPS/443, ServiceAccount token"
-        k8sAPI -> inferencePool "Serves InferencePool resources" "API"
+        # Internal container relationships
+        proxy -> nixlv2Connector "Routes completion requests through default connector"
+        proxy -> nixlv1Connector "Routes via legacy connector (if configured)"
+        proxy -> lmcacheConnector "Routes via LMCache connector (if configured)"
+        proxy -> allowlistValidator "Validates prefill targets before forwarding"
+        nixlv2Connector -> lruCache "Caches prefiller proxy handlers"
+        allowlistValidator -> k8sAPI "Watches InferencePool and Pod resources" "HTTPS/443"
     }
 
     views {
-        systemContext sidecar "SystemContext" {
+        systemContext routingSidecar "SystemContext" {
             include *
             autoLayout
+            description "System context diagram for llm-d-routing-sidecar showing its role in the disaggregated P/D inference stack"
         }
 
-        container sidecar "Containers" {
+        container routingSidecar "Containers" {
             include *
             autoLayout
+            description "Container diagram showing internal components of the routing sidecar"
         }
 
         styles {
             element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
-            element "Runtime Dependency" {
-                background #9b59b6
-                color #ffffff
-            }
-            element "Platform" {
-                background #999999
-                color #ffffff
-            }
-            element "Platform CRD" {
-                background #999999
+                background #4a90e2
                 color #ffffff
             }
             element "Person" {
-                shape person
-                background #08427b
+                background #3498db
                 color #ffffff
+                shape Person
             }
             element "Container" {
-                background #438dd5
+                background #6c5ce7
+                color #ffffff
+            }
+            element "External" {
+                background #999999
+                color #ffffff
+            }
+            element "Internal" {
+                background #7ed321
                 color #ffffff
             }
         }

@@ -1,62 +1,61 @@
 workspace {
     model {
-        datascientist = person "Data Scientist / ML Engineer" "Deploys and serves LLM models via InferencePool resources"
-        client = person "API Client" "Sends inference requests (chat/completions) to served models"
+        dataScientist = person "Data Scientist / ML Engineer" "Deploys models and sends inference requests"
+        sre = person "SRE / Platform Admin" "Monitors and manages the inference platform"
 
-        llmdScheduler = softwareSystem "llm-d Inference Scheduler" "Optimized inference request scheduler and routing sidecar for the llm-d disaggregated LLM serving framework" {
-            epp = container "EPP (Endpoint Picker)" "Scheduling control plane — makes per-request routing decisions using pluggable filters, scorers, and profile handlers via Envoy ext-proc" "Go Service, gRPC ext-proc" {
-                filterChain = component "Filter Chain" "by-label, by-label-selector, decode-filter, roles-filter" "Go Plugins"
-                scorerChain = component "Scorer Chain" "prefix-cache, session-affinity, load-aware, active-request, no-hit-LRU" "Go Plugins"
-                profileHandler = component "Profile Handler" "disagg-profile, pd-profile, dp-profile handlers" "Go Plugins"
-                kvEventProcessor = component "KV Event Processor" "Processes ZMQ KV-cache events for prefix cache scoring" "ZMQ Subscriber"
+        llmdScheduler = softwareSystem "llm-d Inference Scheduler" "Optimized inference request scheduling and routing for the llm-d framework via Gateway API Inference Extension" {
+            epp = container "Endpoint Picker Processor (EPP)" "Makes intelligent routing decisions for inference requests using pluggable filters, scorers, and profile handlers" "Go Service (ext-proc gRPC server)" {
+                extProcServer = component "ext-proc gRPC Server" "Receives routing callbacks from Envoy and returns endpoint selections" "gRPC/9002"
+                pluginSystem = component "Plugin System" "Filters, scorers, profile handlers for customizable routing" "Go Plugin Framework"
+                kvCacheEngine = component "KV Cache Engine" "KV-Block Indexer and Prefix Store for cache-aware routing" "In-memory index"
+                metricsEndpoint = component "Metrics Endpoint" "Exposes Prometheus metrics on 9090/TCP" "HTTP"
             }
-            sidecar = container "Routing Sidecar (pd-sidecar)" "Runtime sidecar for disaggregated inference orchestration — coordinates Prefill, Decode, and Encode stages with KV cache transfer" "Go Service, HTTP Reverse Proxy" {
-                nixlConnector = component "NIXL v2 Connector" "Sequential prefill-then-decode with kv_transfer_params" "Go"
-                sharedStorageConnector = component "Shared Storage Connector" "Optimistic decode-first with cache_hit_threshold" "Go"
-                sglangConnector = component "SGLang Connector" "Concurrent prefill and decode with bootstrap coordination" "Go"
-                ssrfProtection = component "SSRF Protection" "InferencePool-based pod IP allowlist" "Go, K8s Informers"
+            pdSidecar = container "P/D Routing Sidecar" "Orchestrates disaggregated prefill/decode inference with KV cache transfer coordination" "Go HTTP Reverse Proxy" {
+                httpProxy = component "HTTP Reverse Proxy" "Proxies inference requests between prefill, decode, and encode stages" "HTTPS/8000"
+                nixlv2Connector = component "NIXL v2 Connector" "Sequential prefill-then-decode KV transfer protocol" "Default"
+                sharedStorageConnector = component "Shared Storage Connector" "Decode-first optimization with cache hit checking" "Optional"
+                sglangConnector = component "SGLang Connector" "Concurrent prefill and decode for lower TTFT" "Optional"
+                epdConnector = component "EPD Connector" "Encoder-Prefiller-Decoder for multimodal workloads" "Experimental"
+                ssrfValidator = component "SSRF Allowlist Validator" "Validates prefill/encoder targets against InferencePool pod list" "Security"
             }
-            tokenizer = container "UDS Tokenizer" "Tokenization service communicating via Unix Domain Socket for precise token count computation" "Sidecar Container"
+            udsTokenizer = container "UDS Tokenizer Sidecar" "Provides tokenization over Unix Domain Socket for prompt analysis" "External gRPC Service"
         }
 
-        envoyGateway = softwareSystem "Envoy Gateway" "Data plane gateway with ext-proc filter support (Gateway API implementation)" "External"
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform" "External" {
-            apiServer = container "API Server" "Kubernetes API for CRD watches and pod discovery" "HTTPS/443"
-        }
-        vllm = softwareSystem "vLLM" "Model serving engine with KV-cache event emission" "External" {
-            decoderPod = container "Decoder Pod" "Local decode-stage model server" "HTTP/8001"
-            prefillerPod = container "Prefiller Pod" "Remote prefill-stage model server" "HTTP(S)/varies"
-            encoderPod = container "Encoder Pod" "Remote encode-stage model server (multimodal)" "HTTP(S)/varies"
-        }
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
-        otlpCollector = softwareSystem "OTLP Collector" "OpenTelemetry distributed tracing" "External"
-        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API CRDs (Gateway, HTTPRoute, InferencePool)" "External"
+        envoyGateway = softwareSystem "Envoy Gateway" "Kubernetes Gateway API implementation — routes traffic and sends ext-proc callbacks" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane — provides resource watching and RBAC" "External"
+        vllm = softwareSystem "vLLM Model Servers" "LLM inference engines — prefill, decode, and encode workers" "External"
+        gie = softwareSystem "Gateway API Inference Extension (GIE)" "Core scheduling framework (forked: red-hat-data-services)" "External Library"
+        kvCacheLib = softwareSystem "llm-d-kv-cache" "KV cache indexing library for precise prefix cache scoring" "External Library"
 
-        # Relationships - External
-        client -> envoyGateway "Sends inference requests" "HTTP/80"
-        datascientist -> kubernetes "Creates InferencePool CRs" "kubectl/HTTPS"
+        prometheus = softwareSystem "Prometheus" "Metrics collection via ServiceMonitor/PodMonitor" "Optional"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing export via OTLP/gRPC" "Optional"
+        huggingface = softwareSystem "HuggingFace Hub" "Tokenizer model downloads" "External"
 
-        # Relationships - Envoy to llm-d
-        envoyGateway -> epp "ext-proc callback (request headers)" "gRPC/9002"
-        envoyGateway -> sidecar "Routed inference requests" "HTTP(S)/8000"
-        epp -> envoyGateway "Routing decision (selected endpoint)" "gRPC/9002"
+        # Relationships
+        dataScientist -> envoyGateway "Sends inference requests" "HTTP/80"
+        sre -> prometheus "Monitors inference metrics"
 
-        # Relationships - EPP internals
-        epp -> kubernetes "Watch InferencePool CRs, Pods" "HTTPS/443, SA Token"
-        epp -> vllm "Subscribe KV-cache events" "ZMQ/5556"
-        epp -> vllm "Query model metadata" "HTTP/varies"
-        epp -> tokenizer "Tokenize prompts" "Unix Socket"
+        envoyGateway -> epp "Sends ext-proc routing callbacks" "gRPC/9002"
+        envoyGateway -> pdSidecar "Routes requests to selected pods" "HTTPS/8000"
 
-        # Relationships - Sidecar
-        sidecar -> decoderPod "Forward decode requests" "HTTP/8001"
-        sidecar -> prefillerPod "Forward prefill requests" "HTTP(S)/varies"
-        sidecar -> encoderPod "Forward encode requests (multimodal)" "HTTP(S)/varies"
-        sidecar -> kubernetes "Watch InferencePool for SSRF allowlist" "HTTPS/443, SA Token"
+        epp -> k8sAPI "Watches InferencePool, Pod resources" "HTTPS/443, SA Token"
+        epp -> vllm "Scrapes /v1/models for model metadata" "HTTP"
+        epp -> vllm "Subscribes to KV cache events" "ZMQ SUB/5556"
+        epp -> udsTokenizer "Tokenizes prompts for prefix cache" "gRPC/UDS"
+        epp -> otelCollector "Exports traces" "gRPC/4317"
+        epp -> huggingface "Downloads tokenizer models" "HTTPS/443"
 
-        # Relationships - Observability
-        prometheus -> epp "Scrape metrics" "HTTP/9090"
-        epp -> otlpCollector "Export traces" "gRPC/4317"
-        sidecar -> otlpCollector "Export traces" "gRPC/4317"
+        pdSidecar -> vllm "Sends prefill requests (remote)" "HTTP(S)"
+        pdSidecar -> vllm "Sends decode requests (local)" "HTTP(S)/8001"
+        pdSidecar -> vllm "Sends encode requests (EPD)" "HTTP(S)"
+        pdSidecar -> k8sAPI "Watches InferencePool for SSRF allowlist" "HTTPS/443"
+        pdSidecar -> otelCollector "Exports traces" "gRPC/4317"
+
+        prometheus -> epp "Scrapes metrics" "HTTP/9090"
+
+        # Library dependencies (compile-time)
+        epp -> gie "Uses scheduling framework" "Go library"
+        epp -> kvCacheLib "Uses KV cache indexing" "Go library"
     }
 
     views {
@@ -75,7 +74,7 @@ workspace {
             autoLayout
         }
 
-        component sidecar "Sidecar-Components" {
+        component pdSidecar "Sidecar-Components" {
             include *
             autoLayout
         }
@@ -85,10 +84,19 @@ workspace {
                 background #999999
                 color #ffffff
             }
+            element "External Library" {
+                background #bbbbbb
+                color #ffffff
+                shape RoundedBox
+            }
+            element "Optional" {
+                background #cccccc
+                color #333333
+            }
             element "Person" {
-                shape Person
                 background #08427b
                 color #ffffff
+                shape Person
             }
             element "Software System" {
                 background #1168bd

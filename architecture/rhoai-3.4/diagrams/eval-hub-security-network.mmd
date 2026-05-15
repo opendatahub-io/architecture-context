@@ -1,79 +1,64 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User / Dashboard"]
+        Client["Client (Dashboard / SDK)"]
     end
 
-    subgraph Platform["PLATFORM LAYER (Operator-managed)"]
-        KRBACProxy["kube-rbac-proxy<br/>TLS termination<br/>8443/TCP"]
-    end
-
-    subgraph EvalHubNS["EVAL-HUB SERVICE (Namespace-scoped)"]
+    subgraph PlatformNS["PLATFORM NAMESPACE (Managed by TrustyAI Operator)"]
         direction TB
-        EvalHubAPI["eval-hub API Server<br/>ClusterIP: 8080/TCP<br/>HTTP (TLS optional)<br/>SA: eval-hub<br/>Image: quay.io/rhoai/odh-eval-hub-rhel9"]
+        API["eval-hub API Server<br/>ClusterIP Service<br/>8080/TCP (HTTP) or 8443/TCP (HTTPS)<br/>TLS 1.2-1.3<br/>FIPS: strictfipsruntime"]
     end
 
-    subgraph K8sControl["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+"]
-    end
-
-    subgraph EvalJobPod["EVALUATION JOB POD (Batch v1 Job)"]
+    subgraph TenantNS["TENANT NAMESPACE (Evaluation Job Pod)"]
         direction TB
-        InitCont["eval-runtime-init<br/>(Init Container)<br/>S3 test data download"]
-        AdapterCont["Evaluation Adapter<br/>(lm-eval / LightEval /<br/>Garak / GuideLLM)<br/>Provider-defined image"]
-        SidecarCont["eval-runtime-sidecar<br/>(Native Sidecar KEP-753)<br/>8080/TCP HTTP<br/>restartPolicy: Always"]
+
+        subgraph JobPod["batch/v1 Job Pod"]
+            direction TB
+            Init["eval-runtime-init<br/>(init container)<br/>No listener"]
+            Sidecar["eval-runtime-sidecar<br/>(KEP-753 native sidecar)<br/>8080/TCP localhost<br/>HTTP plaintext (pod-local)"]
+            Adapter["Framework Adapter<br/>lm-eval-harness / RAGAS /<br/>Garak / GuideLLM / LightEval / MTEB"]
+        end
     end
 
-    subgraph DataPersistence["DATA PERSISTENCE"]
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>Password auth<br/>No encryption (in-cluster)"]
+    subgraph InternalServices["INTERNAL SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>Password auth"]
+        MLflow["MLflow Tracking Server<br/>5000/TCP HTTPS<br/>TLS 1.2+"]
+        OTEL["OTEL Collector<br/>4317/TCP gRPC<br/>TLS (configurable)"]
+        Prometheus["Prometheus<br/>Scrapes /metrics"]
+        ServiceCA["OpenShift Service CA<br/>ConfigMap mount"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM credentials"]
-        OCI["OCI Registry<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer (challenge/response)"]
-        MLflow["MLflow Tracking Server<br/>5000/TCP HTTP/HTTPS<br/>TLS optional (custom CA)<br/>Bearer Token"]
+        S3["AWS S3<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
+        OCIRegistry["OCI Registry<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token"]
     end
 
-    %% External → Platform
-    User -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer Token (K8s SA)"| KRBACProxy
+    %% External to Platform
+    Client -->|"HTTPS/8080-8443<br/>TLS 1.2-1.3<br/>Bearer Token (K8s SA)"| API
 
-    %% Platform → EvalHub
-    KRBACProxy -->|"HTTP/8080<br/>pod-local<br/>pre-authenticated"| EvalHubAPI
+    %% Platform to Internal Services
+    API -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>TokenReview + SAR + Jobs"| K8sAPI
+    API -->|"TCP/5432<br/>Configurable TLS<br/>Password (secret file)"| PostgreSQL
+    API -->|"HTTPS/5000<br/>TLS 1.2+<br/>Bearer Token (projected SA)"| MLflow
+    API -.->|"gRPC/4317<br/>TLS<br/>No auth"| OTEL
+    Prometheus -.->|"HTTP(S)/8080<br/>Scrape /metrics"| API
 
-    %% EvalHub → K8s API
-    EvalHubAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>In-cluster SA token<br/>TokenReview + SAR"| K8sAPI
-    EvalHubAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>Job/ConfigMap CRUD"| K8sAPI
-
-    %% EvalHub → Data
-    EvalHubAPI -->|"TCP/5432<br/>No encryption<br/>Password (DB_URL)"| PostgreSQL
-    EvalHubAPI -->|"HTTP(S)/5000<br/>TLS optional<br/>Bearer Token"| MLflow
-
-    %% K8s creates Job
-    K8sAPI -.->|"creates"| EvalJobPod
-
-    %% Init container → S3
-    InitCont -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM (static key pair)"| S3
-
-    %% Adapter → Sidecar (pod-local)
-    AdapterCont -->|"HTTP/8080<br/>localhost<br/>No auth (pod-internal)"| SidecarCont
-
-    %% Sidecar → upstream services
-    SidecarCont -->|"HTTPS/8080<br/>TLS 1.2+<br/>Bearer SA token<br/>/api/v1/evaluations/*"| EvalHubAPI
-    SidecarCont -->|"HTTPS/5000<br/>TLS 1.2+<br/>Bearer token (5min cache)<br/>/api/2.0/mlflow/*"| MLflow
-    SidecarCont -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer (challenge/response)<br/>/{oci-repo-path}"| OCI
+    %% Job Pod Flows
+    Init -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM creds"| S3
+    Adapter -->|"HTTP/8080<br/>plaintext<br/>No auth (pod-local)"| Sidecar
+    Sidecar -->|"HTTPS/8443<br/>TLS 1.2+<br/>SA Token (file)"| API
+    Sidecar -->|"HTTPS/5000<br/>TLS 1.2+<br/>Projected SA Token"| MLflow
+    Sidecar -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (challenge)"| OCIRegistry
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef platform fill:#e6d5f7,stroke:#8e44ad,stroke-width:2px
-    classDef service fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef k8s fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef jobpod fill:#d5f5e3,stroke:#27ae60,stroke-width:2px
-    classDef persistence fill:#fdebd0,stroke:#e67e22,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef tenant fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef internal fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef extservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
-    class User external
-    class KRBACProxy platform
-    class EvalHubAPI service
-    class K8sAPI k8s
-    class InitCont,AdapterCont,SidecarCont jobpod
-    class PostgreSQL persistence
-    class S3,OCI,MLflow externalservice
+    class Client external
+    class API platform
+    class Init,Sidecar,Adapter tenant
+    class K8sAPI,PostgreSQL,MLflow,OTEL,Prometheus,ServiceCA internal
+    class S3,OCIRegistry extservice

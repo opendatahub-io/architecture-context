@@ -1,79 +1,94 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
+        User["User / kubectl"]
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (Cluster Edge)"]
-        IngressCtrl["OpenShift Ingress Controller<br/>80/TCP → 8321/TCP<br/>HTTP, No TLS"]
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Client certs / Bearer tokens"]
     end
 
-    subgraph ClusterInternal["CLUSTER INTERNAL (NetworkPolicy Enforced)"]
+    subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-applications)"]
         direction TB
 
-        subgraph NS_Operator["Namespace: redhat-ods-applications"]
-            Operator["llama-stack-k8s-operator<br/>SA: controller-manager<br/>Ports: 8081 (health), 8443 (metrics)"]
-            MetricsSvc["controller-manager-metrics-service<br/>8443/TCP HTTPS<br/>Bearer Token + kube-rbac-proxy"]
+        Webhook["Validating Webhook<br/>9443/TCP HTTPS<br/>TLS (serving cert)<br/>K8s API server mTLS<br/>FailurePolicy: Fail"]
+
+        subgraph OperatorPod["Operator Pod"]
+            Operator["OGX K8s Operator<br/>SA: controller-manager"]
+            RBACProxy["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>Bearer Token auth<br/>TokenReview + SAR"]
+            Probes["Health Probes<br/>8081/TCP HTTP<br/>/healthz, /readyz"]
+            Metrics["Metrics<br/>127.0.0.1:8080/TCP<br/>/metrics"]
         end
 
-        subgraph NS_Instance["Namespace: {user-namespace}"]
-            LlamaStack["Llama Stack Server Pod<br/>SA: {instance}-sa<br/>SCC: anyuid<br/>8321/TCP HTTP"]
-            InstanceSvc["{instance}-service<br/>ClusterIP 8321/TCP<br/>HTTP, No Auth"]
-            NetPol["NetworkPolicy<br/>Allow: same-ns + operator-ns"]
-            CABundle["{instance}-ca-bundle<br/>ConfigMap<br/>mounted at /etc/ssl/certs/"]
-        end
+        RBACProxy -->|proxies| Metrics
     end
 
-    subgraph PlatformServices["PLATFORM SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Bearer Token"]
-        Prometheus["Prometheus<br/>(optional)"]
+    subgraph InstanceNS["INSTANCE NAMESPACE (per OGXServer)"]
+        direction TB
+
+        OGXPod["OGX Server Pod<br/>SA: {name}-sa<br/>SCC: anyuid<br/>Port: 8321/TCP (default)<br/>HTTP or HTTPS (configurable)"]
+        InstanceSvc["Instance Service<br/>ClusterIP<br/>{port}/TCP"]
+        InstanceIngress["Ingress (optional)<br/>80/TCP HTTP<br/>externalAccess.enabled"]
+        InstanceNP["NetworkPolicy<br/>kube-dns egress auto-inject<br/>same-ns + operator-ns peers"]
     end
 
-    subgraph ConfigSources["CONFIG SOURCES"]
-        ODHBundle["odh-trusted-ca-bundle<br/>ConfigMap"]
-        UserCABundle["User CA Bundle<br/>ConfigMap"]
-        OperatorConfig["llama-stack-operator-config<br/>ConfigMap"]
+    subgraph ExternalProviders["EXTERNAL SERVICES (from OGX server)"]
+        vLLM["vLLM<br/>Configurable<br/>HTTP/HTTPS"]
+        OpenAI["OpenAI API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API key"]
+        Azure["Azure OpenAI<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API key"]
+        Bedrock["AWS Bedrock<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
+        VertexAI["Google VertexAI<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA JSON"]
+        Watsonx["IBM Watsonx<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API key"]
+        VectorDBs["PGVector / Milvus / Qdrant<br/>Configurable TCP<br/>Password / Token"]
+        S3["S3 Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS credentials"]
     end
 
-    %% External access flow
-    Client -->|"HTTP/80<br/>No TLS<br/>No Auth<br/>(when exposeRoute=true)"| IngressCtrl
-    IngressCtrl -->|"HTTP/8321<br/>No TLS<br/>No Auth"| InstanceSvc
+    subgraph Monitoring["MONITORING & TLS"]
+        Prometheus["Prometheus<br/>ServiceMonitor"]
+        CertProvider["cert-manager /<br/>OpenShift service-ca"]
+    end
 
-    %% Operator to managed server
-    Operator -->|"HTTP/8321<br/>No TLS, No Auth<br/>/v1/health, /v1/providers,<br/>/v1/version"| LlamaStack
+    %% External flows
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>kubeconfig"| K8sAPI
+    Client -->|"HTTP or HTTPS/{port}<br/>Application-level auth"| InstanceIngress
 
-    %% Operator to K8s API
-    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>ServiceAccount Token<br/>CR CRUD, leader election"| K8sAPI
+    %% Control plane flows
+    K8sAPI -->|"HTTPS/9443<br/>TLS (serving cert)<br/>mTLS"| Webhook
+    K8sAPI -->|"Watch events<br/>HTTPS/443<br/>SA token"| Operator
+    Operator -->|"CRUD resources<br/>HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
 
-    %% Prometheus scraping
-    Prometheus -.->|"HTTPS/8443<br/>TLS<br/>Bearer Token"| MetricsSvc
+    %% Operator to instance
+    Operator -->|"Health check<br/>HTTP/8321<br/>No auth"| OGXPod
 
-    %% Config reads
-    Operator -.->|"directGet<br/>via K8s API"| ODHBundle
-    Operator -.->|"directGet<br/>via K8s API"| UserCABundle
-    Operator -.->|"directGet<br/>via K8s API"| OperatorConfig
+    %% Instance networking
+    InstanceIngress -->|"forwards"| InstanceSvc
+    InstanceSvc -->|"routes to"| OGXPod
 
-    %% CA bundle flow
-    ODHBundle -.->|"aggregated into"| CABundle
-    UserCABundle -.->|"aggregated into"| CABundle
-    CABundle -.->|"volume mount"| LlamaStack
+    %% OGX server to external providers
+    OGXPod -->|"HTTPS/443<br/>TLS 1.2+<br/>API key"| OpenAI
+    OGXPod -->|"HTTPS/443<br/>TLS 1.2+<br/>API key"| Azure
+    OGXPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| Bedrock
+    OGXPod -->|"HTTPS/443<br/>TLS 1.2+<br/>SA JSON"| VertexAI
+    OGXPod -->|"HTTPS/443<br/>TLS 1.2+<br/>API key"| Watsonx
+    OGXPod -->|"HTTP/HTTPS<br/>Configurable"| vLLM
+    OGXPod -->|"TCP<br/>Password/Token"| VectorDBs
+    OGXPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS creds"| S3
 
-    %% Service routing
-    InstanceSvc -->|"8321/TCP"| LlamaStack
-
-    %% NetworkPolicy enforcement
-    NetPol -.->|"protects"| LlamaStack
+    %% Monitoring
+    Prometheus -->|"HTTPS/8443<br/>TLS<br/>Bearer Token"| RBACProxy
+    CertProvider -->|"provisions TLS<br/>webhook-cert"| Webhook
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef config fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef security fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef operatorns fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef instancens fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef monitoring fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
-    class Client external
-    class IngressCtrl ingress
-    class Operator,LlamaStack,InstanceSvc,MetricsSvc,CABundle internal
-    class K8sAPI,Prometheus platform
-    class ODHBundle,UserCABundle,OperatorConfig config
-    class NetPol security
+    class User,Client external
+    class K8sAPI controlplane
+    class Operator,Webhook,RBACProxy,Probes,Metrics operatorns
+    class OGXPod,InstanceSvc,InstanceIngress,InstanceNP instancens
+    class vLLM,OpenAI,Azure,Bedrock,VertexAI,Watsonx,VectorDBs,S3 externalservice
+    class Prometheus,CertProvider monitoring

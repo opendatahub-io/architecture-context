@@ -1,73 +1,59 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client<br/>(via KServe Route)"]
+        Client["External Client<br/>(Data Scientist / Application)"]
     end
 
-    subgraph AuthEnforcement["AUTH ENFORCEMENT (kube-rbac-proxy Sidecar)"]
-        KRBP["kube-rbac-proxy<br/>8443/TCP → 8000/TCP<br/>TLS 1.2+ termination<br/>Bearer Token / OpenShift OAuth<br/>Kubernetes RBAC AuthZ"]
+    subgraph Ingress["INGRESS (Platform-Managed TLS Termination)"]
+        Gateway["Platform Ingress<br/>(Gateway API / OpenShift Route)<br/>443/TCP → 8000/TCP<br/>TLS 1.2+<br/>Auth: Bearer Token (SSO)"]
     end
 
-    subgraph Application["APPLICATION (vllm-gaudi Container)"]
+    subgraph KServeLayer["KSERVE ORCHESTRATION"]
+        KServe["KServe Controller<br/>Manages InferenceService lifecycle<br/>RBAC: KServe-managed"]
+    end
+
+    subgraph PodBoundary["POD BOUNDARY (UID 2000, GID 0)"]
         direction TB
 
-        subgraph PodSecurity["Pod Security Context"]
-            SecurityCtx["UID: 2000, GID: 0 (non-root)<br/>Image: quay.io/rhoai/odh-vllm-gaudi-rhel9<br/>Base: UBI 9.6<br/>FIPS: DISABLED"]
-        end
-
-        subgraph APIEndpoints["vLLM API Server (port 8000, plaintext HTTP)"]
-            V1API["/v1/completions<br/>/v1/chat/completions<br/>/v1/models<br/>/v1/embeddings"]
-            HealthAPI["/health (unrestricted)"]
-            MetricsAPI["/metrics"]
+        subgraph Container["vllm-gaudi Container<br/>Image: odh-vllm-gaudi-rhel9<br/>Non-root: UID 2000, GID 0<br/>⚠ FIPS: openssl-fips-provider REMOVED"]
+            APIServer["vLLM OpenAI API Server<br/>8000/TCP HTTP (plaintext)<br/>Auth: None (delegated)"]
+            ModelRunner["HPU Model Runner<br/>(in-process)"]
+            Worker["HPU Worker<br/>(device management)"]
         end
     end
 
-    subgraph InterNode["INTER-NODE COMMUNICATION (No Encryption)"]
-        direction TB
-        HCCL["HCCL Collective Comm<br/>Dynamic ports / TCP<br/>No encryption, No auth<br/>Tensor/Pipeline/Expert Parallelism"]
-        NIXL["NIXL KV Transfer<br/>Dynamic ports / RDMA or TCP<br/>No encryption, No auth<br/>Disaggregated Prefill"]
+    subgraph DistComm["DISTRIBUTED COMMUNICATION (Unencrypted)"]
+        direction LR
+        HCCL["HCCL Peer Workers<br/>Dynamic Port<br/>Protocol: HCCL (RDMA/TCP)<br/>Encryption: None<br/>Auth: None"]
+        NIXL["NIXL Peer Nodes<br/>Dynamic Port<br/>Protocol: NIXL (RDMA/TCP)<br/>Encryption: None<br/>Auth: None"]
     end
 
-    subgraph Hardware["HARDWARE LAYER"]
-        HPU["Intel Gaudi 2/3<br/>HPU Accelerators<br/>PCIe / RDMA"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        ModelStore["Model Storage<br/>(PVC mount / S3)<br/>Protocol: Filesystem / HTTPS<br/>Encryption: Varies<br/>Auth: Platform-mounted credentials"]
+        HabanaRepo["vault.habana.ai<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>(BUILD-TIME ONLY)"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        ModelStorage["Model Storage<br/>(PVC/NFS/S3)<br/>Varies / HTTPS<br/>IAM / None"]
-        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Token (optional)"]
-        Prometheus["Prometheus<br/>Metrics Scrape"]
-    end
-
-    subgraph BuildTime["BUILD TIME ONLY"]
-        Habana["Habana Artifactory<br/>vault.habana.ai<br/>443/TCP HTTPS<br/>Non-hermetic fetch"]
-    end
-
-    %% Flows
-    Client -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer Token / OAuth"| KRBP
-    KRBP -->|"HTTP/8000<br/>Plaintext (localhost)<br/>No auth (pre-authenticated)"| V1API
-
-    V1API -->|"In-process"| HPU
-    V1API -->|"HCCL/TCP<br/>No encryption"| HCCL
-    HCCL -->|"RDMA/PCIe"| HPU
-
-    V1API -->|"NIXL RDMA/TCP<br/>No encryption"| NIXL
-
-    V1API -->|"Filesystem/HTTPS<br/>Startup only"| ModelStorage
-    V1API -->|"HTTPS/443<br/>TLS 1.2+"| HFHub
-    Prometheus -.->|"HTTP/8000<br/>scrape /metrics"| MetricsAPI
+    %% Network Flows
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (SSO)"| Gateway
+    Gateway -->|"HTTP/8000<br/>Plaintext<br/>No Auth (cluster-internal)"| APIServer
+    KServe -->|"Deploys & manages"| Container
+    APIServer --> ModelRunner
+    ModelRunner --> Worker
+    Worker -->|"HCCL (RDMA/TCP)<br/>Dynamic Port<br/>⚠ No Encryption"| HCCL
+    Worker -->|"NIXL (RDMA/TCP)<br/>Dynamic Port<br/>⚠ No Encryption"| NIXL
+    Container -->|"Model weight loading<br/>Filesystem or HTTPS"| ModelStore
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef auth fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef app fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef internode fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef hardware fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef buildtime fill:#f5f5f5,stroke:#666,stroke-width:1px,stroke-dasharray: 5 5
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef kserve fill:#e6d0de,stroke:#996185,stroke-width:2px
+    classDef pod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef distcomm fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:3px
 
     class Client external
-    class KRBP auth
-    class SecurityCtx,V1API,HealthAPI,MetricsAPI app
-    class HCCL,NIXL internode
-    class HPU hardware
-    class ModelStorage,HFHub,Prometheus egress
-    class Habana buildtime
+    class Gateway ingress
+    class KServe kserve
+    class APIServer,ModelRunner,Worker pod
+    class HCCL,NIXL distcomm
+    class ModelStore,HabanaRepo externalservice

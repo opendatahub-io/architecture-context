@@ -1,82 +1,111 @@
 graph TD
-    subgraph PodSecurity["Pod Security Context"]
-        OVMSProcess["OVMS Process<br/>UID: 5000 / GID: 5000<br/>User: ovms<br/>Non-root"]
+    subgraph Legend["Legend"]
+        direction LR
+        L1["🟦 Container Security"]
+        L2["🟩 Auth Mechanism"]
+        L3["🟧 Endpoints"]
+        L4["🟥 External Enforcement"]
     end
 
-    subgraph NoK8sRBAC["Kubernetes RBAC (None Defined)"]
+    subgraph ContainerSecurity["Container Security Context"]
         direction TB
-        NoRoles["No ClusterRoles"]
-        NoBindings["No RoleBindings"]
-        NoSA["No custom ServiceAccount"]
-        Note1["OVMS does not define its own<br/>RBAC resources. Pod has no<br/>Kubernetes API access."]
+        Container["OVMS Container<br/>Image: quay.io/modh/openvino_model_server<br/>Base: UBI 9 (RHEL 9)"]
+        RunAs["Runs as:<br/>UID 5000 / GID 5000<br/>(non-root)"]
+        NoCaps["No privileged capabilities<br/>No host network<br/>No host PID"]
+        Container --> RunAs
+        Container --> NoCaps
     end
 
-    subgraph PlatformAuth["Platform-Level Auth (RHOAI)"]
+    subgraph AuthMechanisms["Authentication Mechanisms"]
         direction TB
 
-        subgraph KRBACProxy["kube-rbac-proxy Sidecar"]
-            TokenReview["TokenReview<br/>Validates K8s Bearer Token"]
-            SAReview["SubjectAccessReview<br/>RBAC-based authorization"]
+        subgraph APIKeyAuth["REST API Key Auth (Optional)"]
+            APIKeyFile["--api_key_file flag<br/>(file-based API key)"]
+            AuthCheck["HttpRestApiHandler<br/>::isAuthorized()"]
+            APIKeyFile -->|"loaded at startup"| AuthCheck
         end
 
-        subgraph IstioAuth["Istio Service Mesh (Optional)"]
-            PeerAuth["PeerAuthentication<br/>mTLS STRICT"]
-            AuthzPolicy["AuthorizationPolicy<br/>Service identity-based access"]
-        end
-    end
-
-    subgraph AppLevelAuth["Application-Level Auth (OVMS)"]
-        direction TB
-
-        subgraph V3Auth["OpenAI v3 API Auth"]
-            APIKeyCheck["isAuthorized()<br/>HTTP handler check"]
-            BearerToken["API Key<br/>Bearer token in header"]
-        end
-
-        subgraph OpenEndpoints["Open Endpoints (No Auth)"]
-            V1Open["/v1/* TFS v1<br/>No authentication"]
-            V2Open["/v2/* KServe v2<br/>No authentication"]
-            GRPCOpen["gRPC services<br/>InsecureServerCredentials"]
-            MetricsOpen["/metrics<br/>No authentication"]
+        subgraph SidecarAuth["kube-rbac-proxy (Sidecar)"]
+            KRBP["kube-rbac-proxy<br/>Port: 8443/TCP HTTPS<br/>RBAC Authorization"]
+            KRBPNote["Enforces Kubernetes RBAC<br/>for ALL external access<br/>in RHOAI deployments"]
+            KRBP --> KRBPNote
         end
     end
 
-    subgraph SecretAccess["Secrets Accessed by OVMS"]
+    subgraph Endpoints["Endpoint Auth Matrix"]
         direction TB
-        HFToken["HF_TOKEN<br/>Environment variable<br/>HuggingFace Hub auth<br/>User-provisioned"]
-        AWSCreds["AWS Credentials<br/>Env vars or IAM role (IRSA)<br/>S3 model storage"]
-        GCSCreds["GCS Credentials<br/>Service account JSON<br/>GCS model storage"]
-        AzureCreds["Azure Connection String<br/>Environment variable<br/>Azure Blob storage"]
+
+        subgraph Authenticated["API Key Protected (when enabled)"]
+            TFS["/v1/models/** (TFS v1)<br/>GET, POST"]
+            KFS["/v2/models/*/infer (KServe v2)<br/>POST"]
+            V3["/v3/v1/** (OpenAI v3)<br/>chat, embed, rerank, image, audio<br/>POST"]
+        end
+
+        subgraph Unauthenticated["Always Unauthenticated"]
+            HealthLive["/v2/health/live<br/>GET - Liveness probe"]
+            HealthReady["/v2/health/ready<br/>GET - Readiness probe"]
+            Metrics["/metrics<br/>GET - Prometheus metrics"]
+        end
+
+        subgraph NoBuiltInAuth["No Built-In Auth"]
+            GRPC["gRPC Services<br/>inference.GRPCInferenceService<br/>tensorflow.serving.*<br/><br/>Relies on kube-rbac-proxy sidecar"]
+        end
     end
 
-    %% Connections
-    OVMSProcess -->|"no API access"| NoK8sRBAC
-    TokenReview -->|"authenticates requests<br/>before reaching OVMS"| OVMSProcess
-    SAReview -->|"authorizes access"| OVMSProcess
-    PeerAuth -.->|"encrypts traffic"| OVMSProcess
-    BearerToken -->|"validated by"| APIKeyCheck
-    OVMSProcess -->|"reads at startup"| HFToken
-    OVMSProcess -->|"reads for model loading"| AWSCreds
-    OVMSProcess -->|"reads for model loading"| GCSCreds
-    OVMSProcess -->|"reads for model loading"| AzureCreds
+    subgraph SecretsManagement["Secrets"]
+        direction TB
+        S1["API Key File<br/>Type: Opaque (file)<br/>Provisioned: User/platform<br/>Rotation: Manual"]
+        S2["HuggingFace Token<br/>Type: Opaque (env)<br/>Provisioned: User<br/>Rotation: Manual"]
+        S3["Azure Connection String<br/>Type: Opaque (env)<br/>Provisioned: User/platform<br/>Rotation: Manual"]
+        S4["GCS Credentials<br/>Type: Opaque (file)<br/>Provisioned: User/platform<br/>Rotation: Manual"]
+        S5["S3 Credentials<br/>Type: Opaque (env)<br/>Provisioned: User/platform<br/>Rotation: Manual"]
+    end
+
+    %% Flow connections
+    AuthCheck -->|"validates"| TFS
+    AuthCheck -->|"validates"| KFS
+    AuthCheck -->|"validates"| V3
+    AuthCheck -.-x|"exempted"| HealthLive
+    AuthCheck -.-x|"exempted"| HealthReady
+    AuthCheck -.-x|"exempted"| Metrics
+
+    KRBP -->|"proxies to REST<br/>HTTP/8080"| Authenticated
+    KRBP -->|"proxies to gRPC<br/>gRPC/8085"| GRPC
+
+    S1 -.->|"provides key"| APIKeyFile
+    S2 -.->|"HF downloads"| Container
+    S3 -.->|"Azure access"| Container
+    S4 -.->|"GCS access"| Container
+    S5 -.->|"S3 access"| Container
 
     %% Styling
-    style OVMSProcess fill:#4a90e2,stroke:#333,color:#fff
-    style NoRoles fill:#f8cecc,stroke:#b85450
-    style NoBindings fill:#f8cecc,stroke:#b85450
-    style NoSA fill:#f8cecc,stroke:#b85450
-    style Note1 fill:#f8cecc,stroke:#b85450
-    style TokenReview fill:#ffe6cc,stroke:#d79b00
-    style SAReview fill:#ffe6cc,stroke:#d79b00
-    style PeerAuth fill:#ffe6cc,stroke:#d79b00
-    style AuthzPolicy fill:#ffe6cc,stroke:#d79b00
-    style APIKeyCheck fill:#d5e8d4,stroke:#82b366
-    style BearerToken fill:#d5e8d4,stroke:#82b366
-    style V1Open fill:#f9f9f9,stroke:#999
-    style V2Open fill:#f9f9f9,stroke:#999
-    style GRPCOpen fill:#f9f9f9,stroke:#999
-    style MetricsOpen fill:#f9f9f9,stroke:#999
-    style HFToken fill:#fff2cc,stroke:#d6b656
-    style AWSCreds fill:#fff2cc,stroke:#d6b656
-    style GCSCreds fill:#fff2cc,stroke:#d6b656
-    style AzureCreds fill:#fff2cc,stroke:#d6b656
+    style ContainerSecurity fill:#bbdefb,stroke:#1565c0,stroke-width:2px
+    style Container fill:#1565c0,color:#fff
+    style RunAs fill:#42a5f5,color:#fff
+    style NoCaps fill:#42a5f5,color:#fff
+
+    style APIKeyAuth fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
+    style SidecarAuth fill:#ffcdd2,stroke:#c62828,stroke-width:2px
+    style APIKeyFile fill:#43a047,color:#fff
+    style AuthCheck fill:#43a047,color:#fff
+    style KRBP fill:#c62828,color:#fff
+    style KRBPNote fill:#ef9a9a,stroke:#c62828
+
+    style Authenticated fill:#fff9c4,stroke:#f9a825,stroke-width:2px
+    style Unauthenticated fill:#e8f5e9,stroke:#66bb6a,stroke-width:2px
+    style NoBuiltInAuth fill:#fff3e0,stroke:#ff9800,stroke-width:2px
+
+    style TFS fill:#fdd835
+    style KFS fill:#fdd835
+    style V3 fill:#fdd835
+    style HealthLive fill:#66bb6a,color:#fff
+    style HealthReady fill:#66bb6a,color:#fff
+    style Metrics fill:#66bb6a,color:#fff
+    style GRPC fill:#ffb74d
+
+    style SecretsManagement fill:#fce4ec,stroke:#c62828,stroke-width:2px
+    style S1 fill:#ef9a9a
+    style S2 fill:#ef9a9a
+    style S3 fill:#ef9a9a
+    style S4 fill:#ef9a9a
+    style S5 fill:#ef9a9a

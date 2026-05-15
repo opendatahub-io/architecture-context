@@ -1,162 +1,175 @@
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                        │
-│                                                                              │
-│  [External Client]                                                           │
-│         │                                                                    │
-│         │ Port: 8000/TCP (via Gateway)                                       │
-│         │ Protocol: HTTP/HTTPS                                               │
-│         │ Encryption: TLS 1.2+ (optional, depends on parent Gateway)         │
-│         │ Auth: Tenant header (X-MaaS-Username)                              │
-│         │       + pass-through headers (e.g., Envoy ext_authz)               │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (Gateway API)                                                       │
-│                                                                              │
-│  [HTTPRoute → Parent Gateway]                                                │
-│  - Paths: /v1/batches, /v1/files                                             │
-│  - TLS: Depends on parent Gateway configuration                              │
-│  - Routing: Path-based to batch-gateway-apiserver Service                    │
-│         │                                                                    │
-│         │ Port: 8000/TCP                                                     │
-│         │ Protocol: HTTP/HTTPS                                               │
-│         │ Encryption: TLS 1.2+ (configurable via apiserver.tls.enabled)      │
-│         │ Auth: Tenant header forwarded                                      │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  INTERNAL SERVICES (Cluster Network)                                         │
-│                                                                              │
-│  [batch-gateway-apiserver]                                                   │
-│  - Service: ClusterIP                                                        │
-│  - Ports: 8000/TCP (API), 8081/TCP (observability)                          │
-│  - Image: quay.io/rhoai/odh-llm-d-batch-gateway-apiserver-rhel9             │
-│  - TLS: Optional (cert-manager Certificate or manual)                       │
-│  - Auth: Tenant isolation via X-MaaS-Username header                        │
-│  - Security headers: X-Content-Type-Options, X-Frame-Options, CSP           │
-│  - Slowloris protection: read_header_timeout=10s                            │
-│  - Max upload: 200MB / 50K lines                                            │
-│         │                                                                    │
-│         │ (no direct connection to Processor — decoupled via Redis)          │
-│         ▼                                                                    │
-│  [batch-gateway-processor]                                                   │
-│  - No Service (no inbound connections)                                       │
-│  - Port: 9090/TCP (observability only, PodMonitor scrape)                   │
-│  - Image: quay.io/rhoai/odh-llm-d-batch-gateway-processor-rhel9             │
-│  - Concurrency: global=100, per_model=10                                    │
-│  - Crash recovery: scans work_dir on startup                                │
-│         │                                                                    │
-│  [batch-gateway-gc]                                                          │
-│  - No Service, no inbound ports                                              │
-│  - Image: quay.io/rhoai/odh-llm-d-batch-gateway-gc-rhel9                    │
-│  - Single replica (avoids concurrent deletes)                                │
-│  - Dry-run mode available                                                    │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  EGRESS — DATA LAYER                                                         │
-│                                                                              │
-│  [PostgreSQL]                                                                │
-│  - Port: 5432/TCP                                                            │
-│  - Protocol: PostgreSQL wire protocol                                        │
-│  - Encryption: TLS (configurable via sslmode in connection string)           │
-│  - Auth: Connection string credentials (from batch-gateway-secrets)          │
-│  - Purpose: Persistent metadata for batch jobs and files                     │
-│  - Accessed by: apiserver, processor, gc                                     │
-│  - Auto-creates tables with embedded SQL schemas                             │
-│                                                                              │
-│  [Redis]                                                                     │
-│  - Port: 6379/TCP                                                            │
-│  - Protocol: Redis protocol                                                  │
-│  - Encryption: TLS (configurable)                                            │
-│  - Auth: Connection string credentials (from batch-gateway-secrets)          │
-│  - Purpose: Priority queue (ZADD/ZMPOP), events (RPUSH/BLMPOP),            │
-│             real-time status (SET/GET), Lua scripted queries                 │
-│  - Accessed by: apiserver, processor, gc                                     │
-│                                                                              │
-│  [S3-compatible Storage]                                                     │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS (AWS SDK v2)                                              │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: IAM credentials or static access keys (from batch-gateway-secrets)  │
-│  - Purpose: Input/output file storage                                        │
-│  - Supports: AWS S3, MinIO, Ceph RGW                                        │
-│  - Auto-creates buckets                                                      │
-│  - Accessed by: apiserver, processor, gc                                     │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  EGRESS — INFERENCE                                                          │
-│                                                                              │
-│  [Inference Gateway (global or per-model)]                                   │
-│  - Port: Configurable                                                        │
-│  - Protocol: HTTP/HTTPS                                                      │
-│  - Encryption: TLS 1.2+ (supports custom CA, mTLS with client certs)        │
-│  - Auth: Bearer token / API key (from batch-gateway-secrets)                 │
-│  - Headers: x-slo-ttft-ms, x-gateway-inference-objective                    │
-│  - Purpose: Downstream LLM inference for batch requests                      │
-│  - Accessed by: processor only                                               │
-│  - InsecureSkipVerify: available but disabled by default                      │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  EGRESS — OBSERVABILITY                                                      │
-│                                                                              │
-│  [OTLP Collector]                                                            │
-│  - Port: Configurable                                                        │
-│  - Protocol: gRPC                                                            │
-│  - Encryption: Configurable (plaintext default)                              │
-│  - Auth: None                                                                │
-│  - Purpose: OpenTelemetry distributed traces (W3C Trace Context)            │
-│  - Accessed by: processor                                                    │
-│                                                                              │
-│  [Prometheus]                                                                │
-│  - Scrape: 8081/TCP (apiserver ServiceMonitor)                              │
-│  - Scrape: 9090/TCP (processor PodMonitor)                                  │
-│  - Protocol: HTTP                                                            │
-│  - Encryption: None                                                          │
-│  - Auth: None                                                                │
-│  - Purpose: Metrics collection                                               │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+================================================================================
+  SECURITY NETWORK DIAGRAM: Batch Gateway
+  Distribution: RHOAI 3.4
+================================================================================
 
-Secrets:
-┌─────────────────────────────┬──────────┬─────────────────────────────────────────────────┬──────────────┐
-│ Secret Name                 │ Type     │ Contents                                        │ Auto-Rotate  │
-├─────────────────────────────┼──────────┼─────────────────────────────────────────────────┼──────────────┤
-│ batch-gateway-secrets       │ Opaque   │ redis-url, postgresql-url,                      │ No           │
-│                             │          │ inference-api-key, s3-secret-access-key          │              │
-├─────────────────────────────┼──────────┼─────────────────────────────────────────────────┼──────────────┤
-│ batch-gateway-apiserver-tls │ tls      │ TLS cert + key (when TLS enabled)               │ Yes (cert-   │
-│                             │          │                                                 │ manager)     │
-└─────────────────────────────┴──────────┴─────────────────────────────────────────────────┴──────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                             │
+│  [External Client]                                                          │
+│         │                                                                   │
+│         │ Port: 8000/TCP                                                    │
+│         │ Protocol: HTTP/HTTPS                                              │
+│         │ Encryption: TLS 1.2+ (optional, via cert-manager or manual)       │
+│         │ Auth: Tenant header (X-MaaS-Username, configurable)               │
+│         │       Pass-through headers for external auth (Envoy ext_authz)    │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Optional - Gateway API)                                           │
+│                                                                             │
+│  [HTTPRoute → Parent Gateway]                                               │
+│  - Paths: /v1/batches, /v1/files                                           │
+│  - TLS Mode: SIMPLE (depends on parent Gateway)                            │
+│  - Port: 8000/TCP                                                           │
+│         │                                                                   │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (Kubernetes)                                              │
+│                                                                             │
+│  ┌───────────────────────────────────────────────┐                          │
+│  │  batch-gateway-apiserver                       │                          │
+│  │  - Service: {release}-apiserver (ClusterIP)    │                          │
+│  │  - Port: 8000/TCP (API)                        │                          │
+│  │  - Port: 8081/TCP (observability: health,      │                          │
+│  │    readiness, metrics)                         │                          │
+│  │  - ServiceAccount: {release}-apiserver          │                          │
+│  │  - Image: batch-gateway-apiserver               │                          │
+│  │  - TLS: Optional (cert-manager Certificate      │                          │
+│  │    or manual secret)                            │                          │
+│  │  - Auth: Tenant ID extraction from HTTP header  │                          │
+│  │  - Security: Read header timeout (10s),         │                          │
+│  │    max upload 200MB, max 50K lines              │                          │
+│  └──────────┬──────────────┬───────────────────────┘                          │
+│             │              │                                                 │
+│  ┌──────────▼──────────────▼─────────────────────┐                          │
+│  │  batch-gateway-processor                       │                          │
+│  │  - No Service (pod-only, PodMonitor)           │                          │
+│  │  - Port: 9090/TCP (observability only)         │                          │
+│  │  - ServiceAccount: {release}-processor          │                          │
+│  │  - Image: batch-gateway-processor               │                          │
+│  │  - WorkDir: /var/lib/batch-gateway/processor    │                          │
+│  │    (emptyDir: 10Gi)                             │                          │
+│  │  - Concurrency: 100 global, 10 per-model       │                          │
+│  │  - Auth: Bearer token for inference gateway     │                          │
+│  │          mTLS client cert (optional)            │                          │
+│  └──────────┬──────────────────────────────────────┘                          │
+│             │                                                                │
+│  ┌──────────▼──────────────────────────────────────┐                          │
+│  │  batch-gateway-gc                               │                          │
+│  │  - No Service, no network listeners             │                          │
+│  │  - Single replica (prevents concurrent deletes) │                          │
+│  │  - ServiceAccount: {release}-gc                  │                          │
+│  │  - Image: batch-gateway-gc                       │                          │
+│  │  - Interval: 30m                                │                          │
+│  └─────────────────────────────────────────────────┘                          │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS - DATA LAYER                                                        │
+│                                                                             │
+│  [PostgreSQL]                                                               │
+│  - Port: 5432/TCP                                                           │
+│  - Protocol: PostgreSQL wire protocol                                       │
+│  - Encryption: TLS (optional, via sslmode in connection URL)               │
+│  - Auth: Connection string credentials                                      │
+│  - Purpose: Batch/file metadata storage (JSONB), expiry queries            │
+│  - Accessed by: API Server, Processor, GC                                  │
+│                                                                             │
+│  [Redis]                                                                    │
+│  - Port: 6379/TCP                                                           │
+│  - Protocol: Redis protocol                                                 │
+│  - Encryption: TLS (optional, enableTLS config)                            │
+│  - Auth: Connection string credentials                                      │
+│  - Purpose: Priority queue (sorted sets), event pub/sub (lists),           │
+│    status cache (TTL strings), optional metadata backend                    │
+│  - Accessed by: API Server, Processor                                      │
+│                                                                             │
+│  [S3-compatible Storage]                                                    │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS 1.2+                                                     │
+│  - Auth: AWS IAM credentials (access key + secret key)                     │
+│  - Purpose: Batch input/output/error file content storage                  │
+│  - Accessed by: API Server, Processor, GC                                  │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS - INFERENCE                                                         │
+│                                                                             │
+│  [Inference Gateway (llm-d / vLLM)]                                        │
+│  - Port: Configurable                                                       │
+│  - Protocol: HTTP/HTTPS                                                     │
+│  - Encryption: TLS 1.2+ (optional, supports custom CA and mTLS)           │
+│  - Auth: Bearer token (API key from /etc/.secrets/)                        │
+│           mTLS client certificate (optional)                               │
+│  - Headers: x-slo-ttft-ms, x-gateway-inference-objective,                 │
+│    pass-through headers from batch creation                                │
+│  - Purpose: Dispatch batch inference requests                              │
+│  - Accessed by: Processor only                                             │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS - OBSERVABILITY                                                     │
+│                                                                             │
+│  [OpenTelemetry Collector]                                                  │
+│  - Port: 4317/TCP                                                           │
+│  - Protocol: gRPC (OTLP)                                                    │
+│  - Encryption: plaintext (configurable)                                    │
+│  - Auth: None                                                               │
+│  - Purpose: Distributed trace export                                       │
+│  - Accessed by: API Server, Processor                                      │
+│                                                                             │
+│  [Prometheus (via ServiceMonitor/PodMonitor)]                              │
+│  - Scrape: 8081/TCP (API Server), 9090/TCP (Processor)                    │
+│  - Protocol: HTTP                                                           │
+│  - Encryption: None                                                         │
+│  - Auth: None                                                               │
+│  - Purpose: Metrics scraping                                               │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 
-Authentication & Authorization:
-┌─────────────────────┬──────────┬────────────────────────┬──────────────────────┬───────────────────────────────┐
-│ Endpoint            │ Methods  │ Auth Mechanism          │ Enforcement Point    │ Policy                        │
-├─────────────────────┼──────────┼────────────────────────┼──────────────────────┼───────────────────────────────┤
-│ /v1/batches/*       │ GET,POST │ Tenant header           │ API server MW        │ Tenant isolation; cross-      │
-│                     │          │ (X-MaaS-Username)       │                      │ tenant returns 404 (not 403)  │
-├─────────────────────┼──────────┼────────────────────────┼──────────────────────┼───────────────────────────────┤
-│ /v1/files/*         │ GET,POST │ Tenant header           │ API server MW        │ File ops scoped by tenant     │
-│                     │ DELETE   │ (X-MaaS-Username)       │                      │                               │
-├─────────────────────┼──────────┼────────────────────────┼──────────────────────┼───────────────────────────────┤
-│ /v1/batches (POST)  │ POST     │ Pass-through headers    │ API server handler   │ Captures ext auth headers     │
-│                     │          │ (e.g., Envoy ext_authz) │                      │ for audit + inference fwd     │
-├─────────────────────┼──────────┼────────────────────────┼──────────────────────┼───────────────────────────────┤
-│ /health, /ready,    │ GET      │ None                    │ None                 │ Unauthenticated on :8081/9090 │
-│ /metrics            │          │                         │                      │                               │
-└─────────────────────┴──────────┴────────────────────────┴──────────────────────┴───────────────────────────────┘
+SECRETS:
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Secret Name              │ Type              │ Contents                     │
+├──────────────────────────┼───────────────────┼──────────────────────────────┤
+│ batch-gateway-secrets    │ Opaque            │ redis-url                    │
+│                          │                   │ postgresql-url               │
+│                          │                   │ s3-secret-access-key         │
+│                          │                   │ inference-api-key            │
+│                          │ Provisioned By:   │ Manual (kubectl)             │
+│                          │ Auto-Rotate:      │ No                           │
+├──────────────────────────┼───────────────────┼──────────────────────────────┤
+│ {release}-apiserver-tls  │ kubernetes.io/tls │ tls.crt, tls.key             │
+│                          │ Provisioned By:   │ cert-manager (optional)      │
+│                          │ Auto-Rotate:      │ Yes (if cert-manager)        │
+└──────────────────────────┴───────────────────┴──────────────────────────────┘
 
-RBAC Summary:
-- No ClusterRole or Role resources defined in Helm chart
-- ServiceAccounts created with no explicit RBAC bindings
-- Relies on external RBAC configuration or workload identity
+AUTHENTICATION & AUTHORIZATION:
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Endpoint              │ Auth Mechanism          │ Enforcement Point          │
+├───────────────────────┼─────────────────────────┼────────────────────────────┤
+│ /v1/batches           │ Tenant header           │ API server middleware      │
+│ /v1/files             │ (X-MaaS-Username)       │ All DB queries filtered    │
+│                       │                         │ by tenant ID               │
+├───────────────────────┼─────────────────────────┼────────────────────────────┤
+│ /v1/batches           │ Pass-through headers    │ Envoy ext_authz            │
+│ /v1/files             │ for external auth       │ (external, pre-gateway)    │
+├───────────────────────┼─────────────────────────┼────────────────────────────┤
+│ Inference requests    │ Bearer token            │ Processor HTTP client      │
+│                       │ (API key from secret)   │ Authorization header       │
+├───────────────────────┼─────────────────────────┼────────────────────────────┤
+│ Inference requests    │ mTLS client cert        │ Processor TLS config       │
+│ (optional)            │ (optional)              │ Client cert/key loaded     │
+└───────────────────────┴─────────────────────────┴────────────────────────────┘
 
-FIPS Compliance Notes:
-- CGO_ENABLED=0 (static builds) — does NOT use OpenSSL
-- Pure Go crypto implementation — will FAIL check-payload FIPS validation
-- Requires CGO_ENABLED=1 + GOEXPERIMENT=strictfipsruntime for FIPS compliance
-- TLS config uses crypto/tls with MinVersion TLS 1.2 (configurable)
-- InsecureSkipVerify available for testing (disabled by default)
-- No MD5/RC4/DES usage detected
+RBAC:
+  None — Batch Gateway does not define RBAC roles. It operates as a user-space
+  application with no Kubernetes API access. Each component uses a dedicated
+  ServiceAccount with automount enabled but no RBAC bindings.
 
-Build Hermeticity:
-- Tekton pipelines: hermetic=true with gomod prefetch (Hermeto)
-- go.sum present for language-level dependency locking
-- No rpms.lock.yaml found on this branch
+FIPS COMPLIANCE WARNING:
+  CGO_ENABLED=0 in all Konflux Dockerfiles → static Go binaries with pure-Go
+  crypto. Will fail check-payload FIPS validation. No GOEXPERIMENT=strictfipsruntime
+  flag present. TLS 1.2+ minimum with stdlib crypto/tls (no MD5/RC4/DES).
+
+SERVICE MESH:
+  Not configured — Batch Gateway does not use Istio/OSSM sidecar injection
+  or PeerAuthentication policies. mTLS to inference gateway is application-level
+  (configured via TLS client cert/key in processor config).

@@ -1,84 +1,66 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["MLflow Client<br/>(Python SDK)"]
-        Browser["Browser<br/>(Web UI)"]
+        SDKClient["ML SDK Client<br/>(Notebook / Pipeline)"]
+        BrowserUser["Browser<br/>(RHOAI Dashboard)"]
     end
 
-    subgraph Ingress["INGRESS (Platform-Managed)"]
-        Gateway["Platform Gateway (Envoy)<br/>443/TCP<br/>TLS 1.2+<br/>HTTPRoute"]
-        KRP["kube-rbac-proxy (Sidecar)<br/>8443/TCP → 5000/TCP<br/>TLS 1.2+<br/>SubjectAccessReview"]
+    subgraph Ingress["INGRESS (Platform Gateway)"]
+        Gateway["RHOAI Data Science Gateway<br/>(Envoy)<br/>HTTPRoute: /mlflow<br/>443/TCP → 5000/TCP<br/>TLS 1.2+ (SIMPLE)"]
     end
 
     subgraph Application["APPLICATION (MLflow Server Pod)"]
         direction TB
 
-        subgraph AuthZone["Auth Layer"]
-            AuthMW["Auth Middleware<br/>Flask: before_request<br/>FastAPI: ASGI middleware<br/>Permissions: READ/USE/EDIT/MANAGE"]
-            K8sAuth["K8s Auth Provider<br/>SA Token Validation<br/>60s TTL Cache"]
-            WorkspaceAuth["Workspace Resolver<br/>Namespace → Workspace<br/>10k-entry Permission Cache"]
+        KubeRBACProxy["kube-rbac-proxy<br/>(sidecar, operator-managed)<br/>TLS termination"]
+
+        subgraph ServerInternal["MLflow Tracking Server<br/>SA: mlflow-server<br/>Image: UBI9 ubi-minimal:9.7"]
+            SecurityMW["Security Middleware<br/>Host validation, CORS,<br/>CSP, Content-Type"]
+            KubeAuthPlugin["kubernetes-auth Plugin<br/>SelfSubjectAccessReview<br/>Token cache: 60s TTL"]
+            FastAPI["FastAPI + Flask<br/>(ASGI/WSGI)"]
+            EncryptionEngine["Envelope Encryption<br/>AES-256-GCM<br/>PBKDF2-HMAC-SHA256<br/>600k iterations"]
         end
 
-        subgraph AppZone["Application"]
-            MLflowServer["MLflow Tracking Server<br/>5000/TCP HTTP (plaintext)<br/>Service: mlflow-server (ClusterIP)<br/>Image: odh-mlflow-rhel9"]
-            CryptoMod["Crypto Module<br/>AES-256-GCM (DEK)<br/>PBKDF2-HMAC-SHA256 (KEK)<br/>600k iterations"]
-        end
+        KubeRBACProxy --> SecurityMW
+        SecurityMW --> FastAPI
+        FastAPI --> KubeAuthPlugin
+        FastAPI --> EncryptionEngine
     end
 
-    subgraph BackendStore["BACKEND STORE"]
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>PostgreSQL wire protocol<br/>TLS (configurable)<br/>Auth: Username/password"]
+    subgraph EgressK8s["EGRESS - Kubernetes"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA Bearer Token"]
     end
 
-    subgraph ArtifactStorage["ARTIFACT STORAGE"]
-        S3["S3-Compatible Storage<br/>(MinIO/Ceph)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: AWS IAM / Access Key"]
-        Azure["Azure Blob Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Connection string"]
-        GCS["Google Cloud Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: ADC"]
+    subgraph EgressDB["EGRESS - Database"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS (configurable)<br/>DB credentials"]
     end
 
-    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Bearer Token (SA)"]
+    subgraph EgressStorage["EGRESS - Object Storage (Optional)"]
+        ObjectStore["S3 / GCS / Azure Blob<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>IAM / SA / Azure creds"]
     end
 
-    subgraph Observability["OBSERVABILITY"]
-        OTel["OpenTelemetry Collector<br/>4317/TCP gRPC or 4318/TCP HTTP<br/>TLS (configurable)"]
-        Prometheus["Prometheus<br/>5000/TCP HTTP scrape<br/>No encryption (cluster-internal)"]
-    end
+    %% External → Ingress
+    SDKClient -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (K8s SA)<br/>X-MLFLOW-WORKSPACE"| Gateway
+    BrowserUser -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth session"| Gateway
 
-    %% Inbound Flows
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (K8s SA)"| Gateway
-    Browser -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (K8s SA)"| Gateway
-    Gateway -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer Token"| KRP
-    KRP -->|"HTTP/5000<br/>Plaintext (localhost)<br/>Proxied Token"| MLflowServer
+    %% Ingress → Application
+    Gateway -->|"HTTP/5000<br/>Plaintext (cluster-internal)<br/>Token passthrough"| KubeRBACProxy
 
-    %% Internal Auth
-    MLflowServer --> AuthMW
-    AuthMW --> K8sAuth
-    AuthMW --> WorkspaceAuth
-    MLflowServer --> CryptoMod
-
-    %% Egress Flows
-    MLflowServer -->|"PostgreSQL/5432<br/>TLS (configurable)<br/>Username/password"| PostgreSQL
-    MLflowServer -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    MLflowServer -.->|"HTTPS/443<br/>TLS 1.2+<br/>Connection string"| Azure
-    MLflowServer -.->|"HTTPS/443<br/>TLS 1.2+<br/>ADC"| GCS
-    K8sAuth -->|"HTTPS/6443<br/>TLS 1.2+<br/>Bearer Token"| K8sAPI
-    MLflowServer -.->|"OTLP/4317<br/>TLS (configurable)"| OTel
-    Prometheus -.->|"HTTP/5000<br/>scrape"| MLflowServer
+    %% Application → Egress
+    KubeAuthPlugin -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token<br/>SelfSubjectAccessReview<br/>Namespace list/watch<br/>MLflowConfig read"| K8sAPI
+    FastAPI -->|"PostgreSQL/5432<br/>TLS (configurable)<br/>DB credentials<br/>Tracking, Registry, Auth"| PostgreSQL
+    FastAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>Cloud credentials<br/>Artifact read/write"| ObjectStore
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef auth fill:#fff3cd,stroke:#d79b00,stroke-width:2px
-    classDef backend fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef controlplane fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef observability fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef security fill:#e1bee7,stroke:#8e24aa,stroke-width:2px
+    classDef crypto fill:#ffcdd2,stroke:#c62828,stroke-width:2px
 
-    class Client,Browser external
-    class Gateway,KRP ingress
-    class MLflowServer,CryptoMod application
-    class AuthMW,K8sAuth,WorkspaceAuth auth
-    class PostgreSQL backend
-    class S3,Azure,GCS storage
-    class K8sAPI controlplane
-    class OTel,Prometheus observability
+    class SDKClient,BrowserUser external
+    class Gateway ingress
+    class KubeRBACProxy,SecurityMW,KubeAuthPlugin security
+    class FastAPI application
+    class EncryptionEngine crypto
+    class K8sAPI,PostgreSQL,ObjectStore egress

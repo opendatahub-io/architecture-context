@@ -1,77 +1,72 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User Browser"]
+        User["Data Scientist<br/>User Browser"]
     end
 
-    subgraph Ingress["INGRESS (Platform-Managed)"]
-        Gateway["Platform Gateway (Envoy)<br/>HTTPRoute<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ SIMPLE<br/>OAuth/OIDC cookie"]
+    subgraph Ingress["INGRESS (Platform Gateway)"]
+        Gateway["Platform Gateway (Envoy)<br/>443/TCP<br/>TLS 1.2+ SIMPLE<br/>HTTPRoute (Gateway API)"]
     end
 
-    subgraph AuthSidecar["AUTH SIDECAR (Injected by Notebook Controller)"]
-        KRBAC["kube-rbac-proxy<br/>8443/TCP → 8888/TCP<br/>Validates Bearer token<br/>Enforces namespace RBAC"]
+    subgraph AuthBoundary["AUTH BOUNDARY (Sidecar)"]
+        KRBP["kube-rbac-proxy Sidecar<br/>8443/TCP HTTPS<br/>TLS 1.2+<br/>OAuth/OIDC Token Validation"]
     end
 
-    subgraph WorkbenchPod["WORKBENCH POD (Application)"]
+    subgraph WorkbenchPod["WORKBENCH POD (localhost only)"]
         direction TB
-        Jupyter["JupyterLab<br/>8888/TCP HTTP"]
-        CS["code-server<br/>nginx:8888 → code-server:8080<br/>HTTP"]
-        RS["RStudio<br/>nginx:8888 → rstudio:8787<br/>HTTP"]
+
+        subgraph JupyterStack["Jupyter Workbench"]
+            Jupyter["JupyterLab<br/>8888/TCP HTTP<br/>No auth (behind sidecar)"]
+            Elyra["Elyra Extension<br/>Pipeline Editor"]
+        end
+
+        subgraph CodeServerStack["Code-Server Workbench"]
+            NginxProxy["nginx Reverse Proxy<br/>80/TCP HTTP<br/>JSON access logging"]
+            CodeServerProc["code-server<br/>8787/TCP HTTP<br/>--auth none"]
+            HttpdCGI["httpd CGI Gateway<br/>8080/TCP HTTP<br/>access.cgi idle culling"]
+        end
     end
 
-    subgraph ControlPlane["PLATFORM CONTROL PLANE"]
-        direction TB
-        Konflux["Konflux Build System<br/>102 Tekton PipelineRuns"]
-        Operator["rhods-operator"]
-        Dashboard["ODH Dashboard"]
-        NotebookCtrl["ODH Notebook Controller"]
-        K8sAPI["OpenShift API<br/>6443/TCP HTTPS"]
+    subgraph PlatformServices["PLATFORM SERVICES (Internal)"]
+        DSPA["Data Science Pipelines (DSPA)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Token"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Token"]
+        NotebookController["Notebook Controller Culler<br/>Polls /api/kernels/<br/>via 8443/TCP HTTPS"]
     end
 
-    subgraph ImageRegistry["CONTAINER REGISTRIES"]
-        RHIO["registry.redhat.io<br/>443/TCP HTTPS TLS 1.2+"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        Registry["Container Registry<br/>registry.redhat.io / quay.io<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Token Auth"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (User-Initiated Egress)"]
-        PyPI["PyPI / Package Registries<br/>443/TCP HTTPS<br/>Auth: None"]
-        Git["Git Repositories<br/>443/TCP HTTPS<br/>Auth: User credentials"]
-        S3["S3-Compatible Storage<br/>443/TCP HTTPS<br/>Auth: AWS IAM / S3 creds"]
-        MongoDB["MongoDB<br/>27017/TCP<br/>Auth: Credentials"]
-        ODBC["ODBC Data Sources<br/>Varies/TCP<br/>Auth: Credentials"]
-    end
+    %% Inbound flows
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth/OIDC"| Gateway
+    Gateway -->|"HTTPS/8443<br/>TLS 1.2+<br/>OAuth Token"| KRBP
 
-    %% User access flow
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth/OIDC cookie"| Gateway
-    Gateway -->|"HTTPS/8443<br/>TLS (in-cluster)<br/>Bearer token"| KRBAC
-    KRBAC -->|"HTTP/8888<br/>No encryption (pod-local)<br/>Pre-authenticated"| Jupyter
-    KRBAC -->|"HTTP/8888<br/>No encryption (pod-local)<br/>Pre-authenticated"| CS
-    KRBAC -->|"HTTP/8888<br/>No encryption (pod-local)<br/>Pre-authenticated"| RS
+    %% Sidecar to workbench
+    KRBP -->|"HTTP/8888<br/>plaintext (localhost)<br/>No auth"| Jupyter
+    KRBP -->|"HTTP/80<br/>plaintext (localhost)<br/>No auth"| NginxProxy
 
-    %% Control plane flows
-    Konflux -->|"HTTPS/443<br/>TLS 1.2+<br/>SA auth"| RHIO
-    Operator -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    Dashboard -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    NotebookCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    %% Code-Server internal
+    NginxProxy -->|"HTTP/8787<br/>localhost"| CodeServerProc
+    HttpdCGI -->|"HTTP/8888<br/>healthz poll"| CodeServerProc
 
-    %% Egress flows
-    WorkbenchPod -->|"HTTPS/443<br/>TLS 1.2+"| PyPI
-    WorkbenchPod -->|"HTTPS/443<br/>TLS 1.2+"| Git
-    WorkbenchPod -->|"HTTPS/443<br/>TLS 1.2+"| S3
-    WorkbenchPod -->|"TCP/27017<br/>TLS optional"| MongoDB
-    WorkbenchPod -->|"TCP/varies"| ODBC
+    %% Idle culling
+    NotebookController -->|"HTTPS/8443<br/>TLS 1.2+<br/>SA Token"| KRBP
+
+    %% Egress
+    Elyra -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| DSPA
+    Jupyter -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    WorkbenchPod -.->|"HTTPS/443<br/>TLS 1.2+<br/>Token"| Registry
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef auth fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef workbench fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef controlplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef registry fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef authboundary fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef workbench fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class User external
     class Gateway ingress
-    class KRBAC auth
-    class Jupyter,CS,RS workbench
-    class Konflux,Operator,Dashboard,NotebookCtrl,K8sAPI controlplane
-    class RHIO registry
-    class PyPI,Git,S3,MongoDB,ODBC externalservice
+    class KRBP authboundary
+    class Jupyter,Elyra,NginxProxy,CodeServerProc,HttpdCGI workbench
+    class DSPA,K8sAPI,NotebookController platform
+    class Registry externalservice

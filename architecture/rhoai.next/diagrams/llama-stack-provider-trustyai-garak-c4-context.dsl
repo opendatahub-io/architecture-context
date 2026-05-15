@@ -1,71 +1,56 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Creates and runs LLM vulnerability scans and red-team evaluations"
+        dataScientist = person "Data Scientist" "Runs red-teaming benchmarks against LLMs to evaluate model safety"
+        securityEngineer = person "Security Engineer" "Reviews vulnerability scan results and compliance reports"
 
-        garakProvider = softwareSystem "TrustyAI Garak LLS Provider" "Out-of-tree Llama Stack evaluation provider and eval-hub adapter for automated LLM red-teaming using NVIDIA Garak" {
-            inlineProvider = container "Inline Provider" "Runs garak as subprocess within Llama Stack server process" "Python Module"
-            remoteProvider = container "Remote Provider" "Submits garak scans as Kubeflow Pipeline runs" "Python Module"
-            evalHubAdapter = container "Eval-Hub Adapter" "Standalone adapter for RHOAI evaluation platform (simple + kfp modes)" "Python Module"
-            coreModule = container "Core Module" "Shared pipeline step logic: validation, taxonomy, SDG, scan execution, result parsing" "Python Module"
-            configModule = container "Config Module" "Benchmark profiles (OWASP, AVID, CWE, intents), deep-merge config, API key resolution" "Python Module"
-            garakRunner = container "Garak Runner" "Process management: subprocess spawn, output streaming, timeout + SIGTERM/SIGKILL" "Python Module"
-            containerImage = container "odh-trustyai-garak-lls-provider-dsp" "Production container image for KFP pipeline steps and eval-hub K8s Job pods" "Container (UBI9, Python 3.12)"
+        garakProvider = softwareSystem "llama-stack-provider-trustyai-garak" "Out-of-tree Llama Stack evaluation provider and eval-hub adapter for NVIDIA Garak red-teaming scans" {
+            inlineProvider = container "Inline Provider" "Runs Garak scans locally in-process with asyncio semaphore concurrency" "Python Library"
+            remoteProvider = container "Remote Provider" "Submits Garak scan pipelines to KFP, polls for completion" "Python Library"
+            evalHubAdapter = container "Eval-Hub Garak Adapter" "FrameworkAdapter for eval-hub platform integration" "Python FrameworkAdapter"
+            evalHubKFPAdapter = container "Eval-Hub KFP Adapter" "Forces KFP execution mode for eval-hub jobs" "Python FrameworkAdapter"
+            coreModules = container "Core Modules" "Shared business logic: config resolution, command building, garak execution, result parsing" "Python Module"
+            shieldScan = container "Shield Scan Orchestrator" "Wraps LLM inference with safety shields for vulnerability assessment" "Python Module"
+            intentsModule = container "Intents Module" "Policy taxonomy loading, intent stub generation, context-aware scanning" "Python Module"
+            sdgModule = container "SDG Module" "Synthetic adversarial prompt generation via sdg-hub" "Python Module"
+            garakConfig = container "Garak Command Config" "Pydantic models mapping to Garak CLI config (system, run, plugins, reporting, CAS)" "Python Module"
+            resultUtils = container "Result Utilities" "Parses JSONL/AVID reports, computes TBSA scores, generates HTML reports" "Python Module"
+
+            inlineProvider -> coreModules "Uses for scan execution"
+            remoteProvider -> coreModules "Uses for pipeline construction"
+            evalHubAdapter -> coreModules "Uses for scan execution"
+            evalHubKFPAdapter -> evalHubAdapter "Extends (forces KFP mode)"
+            inlineProvider -> shieldScan "Wraps inference with shields"
+            inlineProvider -> intentsModule "Loads taxonomy for intent scanning"
+            evalHubAdapter -> intentsModule "Loads taxonomy for intent scanning"
+            intentsModule -> sdgModule "Generates adversarial prompts"
+            coreModules -> garakConfig "Builds garak CLI configuration"
+            coreModules -> resultUtils "Parses scan results"
         }
 
-        llamaStack = softwareSystem "Llama Stack Distribution" "Hosts AI providers as plugins, manages server lifecycle" "Internal RHOAI"
-        dspa = softwareSystem "Data Science Pipelines (KFP/DSPA)" "Kubeflow Pipelines for running ML workflows in Kubernetes" "Internal RHOAI"
-        evalHub = softwareSystem "Eval-Hub Service" "RHOAI evaluation platform orchestrating adapter pods" "Internal RHOAI"
-        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Provides ConfigMap with garak-provider-image for KFP base image resolution" "Internal RHOAI"
+        llamaStack = softwareSystem "Llama Stack Distribution" "Meta's LLM application framework providing inference, safety, files, and benchmark APIs" "Internal"
+        kfp = softwareSystem "Kubeflow Pipelines (DSP)" "Pipeline orchestration for remote scan execution" "Internal RHOAI"
+        evalHub = softwareSystem "Eval-Hub Platform" "RHOAI evaluation orchestration platform" "Internal RHOAI"
+        vllm = softwareSystem "vLLM / Model Serving" "Target LLM serving endpoint (OpenAI-compatible)" "Internal RHOAI"
+        s3 = softwareSystem "S3-Compatible Storage" "Artifact storage for scan results and SDG outputs" "External"
+        mlflow = softwareSystem "MLflow Tracking" "Experiment tracking and metric logging" "External"
+        ociRegistry = softwareSystem "OCI Registry" "Persistent scan artifact storage" "External"
+        sdgHub = softwareSystem "sdg-hub" "Synthetic data generation library for adversarial prompts" "External Library"
+        garak = softwareSystem "NVIDIA Garak" "Core LLM vulnerability scanner (0.14.1+rhaiv.8)" "External Library"
+        postgresql = softwareSystem "PostgreSQL" "Persistent state storage for Llama Stack Distribution" "External"
 
-        vllm = softwareSystem "Target LLM (vLLM)" "Inference endpoint being scanned for vulnerabilities" "External"
-        sdgModel = softwareSystem "SDG Model Endpoint" "Model for synthetic data generation (intents benchmarks)" "External"
-        judgeModels = softwareSystem "Judge/Attacker/Evaluator Models" "Auxiliary models for intents TAP attack, classification, evaluation" "External"
-        shieldModels = softwareSystem "Shield Models (Llama Guard, Prompt Guard)" "Input/output guardrail models for safety testing" "External"
+        dataScientist -> garakProvider "Runs benchmarks via Llama Stack API" "HTTP/8321"
+        securityEngineer -> garakProvider "Reviews scan results and compliance reports"
 
-        s3 = softwareSystem "S3 Object Storage" "Artifact transfer: scan reports, SDG outputs, taxonomy files" "External"
-        ociRegistry = softwareSystem "OCI Registry" "Persistent storage for scan artifact bundles" "External"
-        mlflow = softwareSystem "MLflow" "Experiment tracking and artifact logging" "External"
-        postgresql = softwareSystem "PostgreSQL" "Llama Stack distribution state storage" "External"
-        k8sApi = softwareSystem "Kubernetes API" "Secrets and ConfigMap access" "Infrastructure"
-
-        # User interactions
-        user -> llamaStack "Creates InferenceService eval runs via Llama Stack API" "HTTP/8321"
-        user -> evalHub "Triggers evaluations via eval-hub UI/API"
-
-        # Llama Stack hosting
-        llamaStack -> garakProvider "Loads inline + remote providers as plugins" "In-process"
-
-        # Provider to KFP
-        garakProvider -> dspa "Submits pipeline runs (remote + kfp modes)" "HTTPS/443, Bearer Token"
-
-        # Model scanning
-        garakProvider -> vllm "Sends probe prompts for vulnerability assessment" "HTTPS/443, Bearer Token"
-        garakProvider -> sdgModel "Generates synthetic red-team prompts" "HTTPS/443, Bearer Token"
-        garakProvider -> judgeModels "TAP attack, judge classification, evaluation" "HTTPS/443, per-role API keys"
-        garakProvider -> shieldModels "Shield scan orchestration (guardrail testing)" "HTTP/8321"
-
-        # Eval-hub orchestration
-        evalHub -> garakProvider "Orchestrates adapter pod lifecycle via K8s Job" "K8s Job + ConfigMap"
-
-        # Storage
-        garakProvider -> s3 "Upload/download scan artifacts" "HTTPS/443, AWS IAM"
-        garakProvider -> ociRegistry "Push scan artifact bundles (eval-hub mode)" "HTTPS/443, TLS"
-        garakProvider -> mlflow "Log metrics, artifacts, run metadata" "HTTPS/443"
-        llamaStack -> postgresql "Distribution state storage" "PostgreSQL/5432"
-
-        # Infrastructure
-        garakProvider -> k8sApi "Read Secrets (model auth, S3 creds), ConfigMaps" "HTTPS/443, mTLS SA Token"
-        trustyaiOperator -> garakProvider "Provides garak-provider-image ConfigMap key" "K8s ConfigMap"
-
-        # Internal container relationships
-        inlineProvider -> coreModule "Uses shared logic"
-        remoteProvider -> coreModule "Uses shared logic"
-        evalHubAdapter -> coreModule "Uses shared logic"
-        inlineProvider -> garakRunner "Spawns garak subprocess"
-        evalHubAdapter -> garakRunner "Spawns garak subprocess"
-        inlineProvider -> configModule "Deep-merge benchmark profiles"
-        remoteProvider -> configModule "Deep-merge benchmark profiles"
-        evalHubAdapter -> configModule "Deep-merge benchmark profiles"
+        garakProvider -> llamaStack "Model inference, shield execution, file storage, benchmark registry" "HTTP/8321"
+        garakProvider -> kfp "Pipeline submission, run polling, experiment management" "HTTPS/443"
+        garakProvider -> vllm "Target model for vulnerability scanning" "HTTPS or HTTP/443 or 8080"
+        garakProvider -> s3 "Artifact upload/download (eval-hub KFP mode)" "HTTPS/443"
+        garakProvider -> mlflow "Experiment tracking (optional)" "HTTP/HTTPS"
+        garakProvider -> ociRegistry "Scan artifact persistence (eval-hub mode)" "HTTPS/443"
+        garakProvider -> garak "Core vulnerability scanning" "CLI/Python"
+        garakProvider -> sdgHub "Adversarial prompt generation" "Python API"
+        evalHub -> garakProvider "Creates evaluation jobs" "ConfigMap/JobSpec"
+        llamaStack -> postgresql "Persistent state storage" "TCP/5432"
     }
 
     views {
@@ -80,25 +65,27 @@ workspace {
         }
 
         styles {
+            element "Software System" {
+                background #438dd5
+                color #ffffff
+            }
             element "External" {
                 background #999999
-                color #ffffff
+            }
+            element "External Library" {
+                background #775599
+            }
+            element "Internal" {
+                background #438dd5
             }
             element "Internal RHOAI" {
                 background #7ed321
-                color #ffffff
-            }
-            element "Infrastructure" {
-                background #4a90e2
                 color #ffffff
             }
             element "Person" {
                 shape person
                 background #08427b
                 color #ffffff
-            }
-            element "Software System" {
-                shape roundedBox
             }
             element "Container" {
                 background #438dd5

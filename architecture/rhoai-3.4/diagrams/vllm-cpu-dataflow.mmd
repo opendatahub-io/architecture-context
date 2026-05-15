@@ -1,49 +1,43 @@
 sequenceDiagram
     participant Client as External Client
-    participant KServeGW as KServe Gateway<br/>443/TCP HTTPS<br/>TLS 1.2+
-    participant APIServer as vLLM API Server<br/>(FastAPI/Uvicorn)<br/>8000/TCP HTTP
-    participant Engine as AsyncLLM Engine<br/>(in-process)
+    participant Gateway as RHOAI Gateway<br/>(Envoy)<br/>443/TCP HTTPS TLS 1.2+
+    participant KRBAC as kube-rbac-proxy<br/>(Sidecar)<br/>8443/TCP HTTPS
+    participant API as vLLM OpenAI API<br/>(FastAPI)<br/>8000/TCP HTTP
+    participant Engine as AsyncLLM Engine<br/>(v1 Engine)
     participant HFHub as Hugging Face Hub<br/>443/TCP HTTPS
     participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant Prometheus as Prometheus
-    participant OTLP as OTLP Collector<br/>4317/TCP gRPC
 
-    Note over APIServer,Engine: === Flow 1: Model Loading (Startup) ===
+    Note over Client,S3: Flow 1: Inference Request (OpenAI-compatible)
 
-    APIServer->>HFHub: GET model config & weights<br/>HTTPS/443, TLS 1.2+<br/>Auth: Bearer HF_TOKEN
-    HFHub-->>APIServer: Model artifacts (safetensors, config.json)
+    Client->>Gateway: POST /v1/chat/completions<br/>Auth: Bearer Token (OAuth/OIDC)<br/>TLS 1.2+
+    Gateway->>KRBAC: Forward request<br/>HTTPS/8443<br/>Service Account Token
+    KRBAC->>API: Forward (authed)<br/>HTTP/8000 plaintext (localhost)<br/>Bearer Token (API key, optional)
 
-    alt S3 model source
-        APIServer->>S3: GET model weights<br/>HTTPS/443, TLS 1.2+<br/>Auth: AWS IAM (S3_ACCESS_KEY_ID)
-        S3-->>APIServer: Model artifacts
+    Note over API,Engine: AuthenticationMiddleware validates<br/>SHA-256 hash of bearer token
+
+    API->>Engine: Inference request<br/>(in-process or ZeroMQ IPC)
+    Engine->>Engine: PagedAttention +<br/>Continuous Batching
+
+    alt Streaming Response (SSE)
+        Engine-->>API: Token chunks (async generator)
+        API-->>KRBAC: SSE stream chunks
+        KRBAC-->>Gateway: SSE stream
+        Gateway-->>Client: text/event-stream<br/>HTTPS/443 TLS 1.2+
+    else Non-Streaming Response
+        Engine-->>API: Complete response
+        API-->>KRBAC: JSON response
+        KRBAC-->>Gateway: Forward response
+        Gateway-->>Client: application/json<br/>HTTPS/443 TLS 1.2+
     end
 
-    APIServer->>Engine: Load model into CPU memory<br/>(in-process, Python async)
-    Note over Engine: Model loaded into<br/>PagedAttention KV-cache
+    Note over Client,S3: Flow 2: Model Loading (Startup)
 
-    Note over Client,OTLP: === Flow 2: Inference Request (Chat Completion) ===
+    Engine->>HFHub: GET model weights/tokenizer/config<br/>HTTPS/443 TLS 1.2+<br/>Auth: Bearer Token (HF_TOKEN)
+    HFHub-->>Engine: Model artifacts (safetensors/bin)
 
-    Client->>KServeGW: POST /v1/chat/completions<br/>HTTPS/443, TLS 1.2+<br/>Auth: Platform auth
-    KServeGW->>APIServer: POST /v1/chat/completions<br/>HTTP/8000 (internal)<br/>Auth: API Key (optional)
-
-    APIServer->>APIServer: AuthenticationMiddleware<br/>validates API key (if set)
-    APIServer->>Engine: Submit inference request<br/>(Python async, in-process)
-
-    Note over Engine: Continuous batching<br/>Token generation<br/>CPU kernels (csrc/)
-
-    loop Streaming tokens (SSE)
-        Engine-->>APIServer: Generated token(s)
-        APIServer-->>KServeGW: SSE event (HTTP streaming)<br/>HTTP/8000
-        KServeGW-->>Client: SSE event<br/>HTTPS/443
+    alt Alternative: S3 Storage
+        Engine->>S3: GET model artifacts<br/>HTTPS/443 TLS 1.2+<br/>Auth: AWS IAM (S3_ACCESS_KEY_ID/SECRET)
+        S3-->>Engine: Model artifacts
     end
 
-    Engine-->>APIServer: Final response
-    APIServer-->>KServeGW: HTTP 200 (complete)<br/>HTTP/8000
-    KServeGW-->>Client: HTTP 200<br/>HTTPS/443
-
-    Note over Prometheus,OTLP: === Flow 3: Observability ===
-
-    Prometheus->>APIServer: GET /metrics<br/>HTTP/8000<br/>Auth: None
-    APIServer-->>Prometheus: Prometheus metrics<br/>(inference latency, tokens/s, etc.)
-
-    APIServer->>OTLP: Export traces<br/>gRPC/4317<br/>TLS (configurable)
+    Engine->>Engine: Load weights to memory<br/>(CPU, quantized INT4/INT8/FP8)

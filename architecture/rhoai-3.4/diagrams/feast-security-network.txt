@@ -1,216 +1,304 @@
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                        │
-│                                                                              │
-│  [ML Model / Application]                                                    │
-│         │                                                                    │
-│         │ Port: 443/TCP (via OpenShift Route, UI only)                       │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS (reencrypt)                                        │
-│         │ Auth: OIDC Bearer token or Kubernetes SA token                     │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  INGRESS                                                                     │
-│                                                                              │
-│  [OpenShift Route: feast-{name}-ui]                                          │
-│  - Port: 443/TCP (external) → 8443/TCP (internal)                           │
-│  - TLS Mode: Reencrypt                                                       │
-│  - Purpose: UI service exposure (OpenShift only)                             │
-│                                                                              │
-│  Note: Online/offline/registry services are ClusterIP only                   │
-│  (no external ingress by default)                                            │
-│         │                                                                    │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  CLUSTER NETWORK (Internal - No Service Mesh Required)                       │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │  Namespace: redhat-ods-applications (Operator)                      │     │
-│  │                                                                     │     │
-│  │  [Feast Operator]                                                   │     │
-│  │  - Image: quay.io/rhoai/odh-feast-operator-rhel9                   │     │
-│  │  - ServiceAccount: feast-operator-controller-manager                │     │
-│  │  - Port: 8081/TCP (health probes, plaintext, no auth)              │     │
-│  │  - GOMEMLIMIT: 230MiB                                              │     │
-│  │  - Leader election enabled                                          │     │
-│  │         │                                                           │     │
-│  │         │ Port: 443/TCP                                             │     │
-│  │         │ Protocol: HTTPS                                           │     │
-│  │         │ Encryption: TLS                                           │     │
-│  │         │ Auth: ServiceAccount token                                │     │
-│  │         ▼                                                           │     │
-│  │  [Kubernetes API Server]                                            │     │
-│  │  - CRUD: Deployments, Services, ConfigMaps, RBAC,                  │     │
-│  │    PVCs, CronJobs, HPA, PDB, ServiceMonitors, Routes              │     │
-│  └─────────────────────────────────────────────────────────────────────┘     │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │  Namespace: {user-namespace} (FeatureStore)                         │     │
-│  │                                                                     │     │
-│  │  [Feature Server Pod - Multi-container]                             │     │
-│  │  - Image: quay.io/rhoai/odh-feature-server-rhel9                   │     │
-│  │  - ServiceAccount: {name}                                           │     │
-│  │                                                                     │     │
-│  │  Exposed Services (ClusterIP):                                      │     │
-│  │                                                                     │     │
-│  │  feast-{name}-online                                                │     │
-│  │  - Port: 80/TCP → 6566 (HTTP, plaintext, OIDC/K8s RBAC)           │     │
-│  │  - Port: 443/TCP → 6567 (HTTPS, TLS service cert, OIDC/K8s RBAC)  │     │
-│  │  - Endpoints: /get-online-features, /push, /materialize            │     │
-│  │                                                                     │     │
-│  │  feast-{name}-offline                                               │     │
-│  │  - Port: 80/TCP → 8815 (HTTP, plaintext, OIDC/K8s RBAC)           │     │
-│  │  - Port: 443/TCP → 8816 (HTTPS, TLS service cert, OIDC/K8s RBAC)  │     │
-│  │                                                                     │     │
-│  │  feast-{name}-registry (gRPC)                                       │     │
-│  │  - Port: 80/TCP → 6570 (gRPC, plaintext, OIDC/K8s RBAC)           │     │
-│  │  - Port: 443/TCP → 6571 (gRPC, TLS service cert, OIDC/K8s RBAC)   │     │
-│  │  - Service: feast.registry.RegistryServer                           │     │
-│  │                                                                     │     │
-│  │  feast-{name}-registry-rest                                         │     │
-│  │  - Port: 80/TCP → 6572 (HTTP, plaintext, Bearer intra-comm)        │     │
-│  │  - Port: 443/TCP → 6573 (HTTPS, TLS service cert, Bearer)          │     │
-│  │  - Endpoint: /api/v1/permissions                                    │     │
-│  │                                                                     │     │
-│  │  feast-{name}-ui                                                    │     │
-│  │  - Port: 80/TCP → 8888 (HTTP, plaintext, no auth)                  │     │
-│  │  - Port: 443/TCP → 8443 (HTTPS, TLS service cert, no auth)         │     │
-│  │                                                                     │     │
-│  │  feast-{name}-online (metrics)                                      │     │
-│  │  - Port: 8000/TCP (HTTP, plaintext, no auth, Prometheus scrape)     │     │
-│  │                                                                     │     │
-│  │  [CronJob Pod]                                                      │     │
-│  │  - Image: registry.redhat.io/openshift4/ose-cli                    │     │
-│  │  - Purpose: kubectl exec → feast apply / materialize                │     │
-│  └─────────────────────────────────────────────────────────────────────┘     │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │  Operator → Feature Server (Intra-cluster)                          │     │
-│  │                                                                     │     │
-│  │  [Feast Operator] ──────────────────► [Registry REST API]           │     │
-│  │  - Port: 6572/TCP (HTTP) or 6573/TCP (HTTPS)                       │     │
-│  │  - Protocol: HTTP/HTTPS                                             │     │
-│  │  - Encryption: None or TLS (InsecureSkipVerify=true)                │     │
-│  │  - Auth: Intra-communication JWT (HS256, ":::" prefix)             │     │
-│  │  - Purpose: Fetch permissions for auto-access RBAC                  │     │
-│  └─────────────────────────────────────────────────────────────────────┘     │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES (Egress)                                                  │
-│                                                                              │
-│  [Redis]                                                                     │
-│  - Port: 6379/TCP                                                            │
-│  - Protocol: Redis wire protocol                                             │
-│  - Encryption: Optional TLS                                                  │
-│  - Auth: Password from Secret                                                │
-│  - Purpose: Online feature storage and retrieval                             │
-│                                                                              │
-│  [PostgreSQL]                                                                │
-│  - Port: 5432/TCP                                                            │
-│  - Protocol: PostgreSQL wire protocol                                        │
-│  - Encryption: Optional TLS                                                  │
-│  - Auth: Credentials from Secret                                             │
-│  - Purpose: Online/offline store and SQL registry persistence                │
-│                                                                              │
-│  [S3-compatible Storage]                                                     │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: AWS IAM / access key                                                │
-│  - Purpose: Registry file persistence (s3:// paths)                          │
-│                                                                              │
-│  [GCS]                                                                       │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: GCP service account                                                 │
-│  - Purpose: Registry file persistence (gs:// paths)                          │
-│                                                                              │
-│  [Snowflake]                                                                 │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: Snowflake credentials from Secret                                   │
-│  - Purpose: Online/offline store and registry persistence                    │
-│                                                                              │
-│  [OIDC Identity Provider]                                                    │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: Client credentials                                                  │
-│  - Purpose: Token validation for OIDC authorization mode                     │
-│                                                                              │
-│  [DynamoDB]                                                                  │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: AWS IAM                                                             │
-│  - Purpose: Online feature storage                                           │
-│                                                                              │
-│  [Elasticsearch]                                                             │
-│  - Port: 9200/TCP                                                            │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: API key / basic auth                                                │
-│  - Purpose: Online feature storage and vector search                         │
-└──────────────────────────────────────────────────────────────────────────────┘
+================================================================================
+  FEAST SECURITY NETWORK DIAGRAM
+  Component: Feast Feature Store (RHOAI 3.4)
+  Version: 0.62.0
+================================================================================
 
-RBAC Summary:
++--------------------------------------------------------------------------+
+|  EXTERNAL (Untrusted)                                                    |
+|                                                                          |
+|  [ML Application / Client]                                               |
+|         |                                                                |
+|         | Port: 6566/TCP (Python) or 8080/TCP (Go)                       |
+|         | Protocol: HTTP / gRPC                                          |
+|         | Encryption: TLS (configurable)                                 |
+|         | Auth: OIDC JWT / Kubernetes SA Token / None                    |
+|         v                                                                |
++--------------------------------------------------------------------------+
+|  INGRESS (OpenShift Routes - Edge TLS)                                   |
+|                                                                          |
+|  [{name}-ui Route]                                                       |
+|  - Port: 443/TCP (external) -> 8080/TCP (internal)                      |
+|  - TLS Termination: Edge (service serving cert)                          |
+|  - Auth: None                                                            |
+|  - Exposure: External                                                    |
+|                                                                          |
+|  [{name}-registry-rest Route] (optional)                                 |
+|  - Port: 443/TCP (external) -> 8080/TCP (internal)                      |
+|  - TLS Termination: Edge (service serving cert)                          |
+|  - Auth: Bearer JWT                                                      |
+|  - Exposure: External                                                    |
+|         |                                                                |
++--------------------------------------------------------------------------+
+|  CLUSTER INTERNAL (Namespace: redhat-ods-applications)                   |
+|                                                                          |
+|  [feast-operator-controller-manager]                                     |
+|  - Image: odh-feast-operator-rhel9                                       |
+|  - Language: Go 1.24 (controller-runtime)                                |
+|  - ServiceAccount: feast-operator-controller-manager                     |
+|  - Ports:                                                                |
+|    - 8081/TCP: Health probes (HTTP, no TLS, no auth)                     |
+|    - 8443/TCP: Prometheus metrics (HTTPS, TLS, Bearer Token RBAC)        |
+|  - Memory limit: GOMEMLIMIT=230MiB                                      |
+|  - Leader election: enabled                                              |
+|  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1                   |
+|         |                                                                |
+|         | Port: 6443/TCP                                                 |
+|         | Protocol: HTTPS                                                |
+|         | Encryption: TLS 1.2+                                           |
+|         | Auth: ServiceAccount token                                     |
+|         v                                                                |
+|  [Kubernetes API Server]                                                 |
+|  - CRD management (FeatureStore)                                         |
+|  - Resource CRUD (Deployments, Services, ConfigMaps, CronJobs,           |
+|    HPA, PDB, Routes, RBAC, ServiceMonitors)                              |
+|  - Leader election                                                       |
+|  - TokenReview (K8s auth validation)                                     |
+|                                                                          |
++--------------------------------------------------------------------------+
+|  CLUSTER INTERNAL (Namespace: {user-namespace})                          |
+|                                                                          |
+|  [Python Feature Server]                                                 |
+|  - Image: odh-feature-server-rhel9                                       |
+|  - Language: Python 3.12 (FastAPI/Gunicorn)                              |
+|  - Ports:                                                                |
+|    - 6566/TCP: REST API (HTTP/HTTPS, TLS configurable)                   |
+|    - 8000/TCP: Prometheus metrics (HTTP, no TLS)                         |
+|  - Auth: OIDC JWT / K8s SA Token / None (permission-based RBAC)          |
+|  - FIPS: UBI9 Python 3.12 base (OpenSSL-backed)                         |
+|         |                                                                |
+|  [Go Feature Server]                                                     |
+|  - Image: (embedded in feature-server)                                   |
+|  - Language: Go (net/http + gRPC)                                        |
+|  - Ports:                                                                |
+|    - 8080/TCP: HTTP + gRPC (TLS configurable)                            |
+|    - 9090/TCP: Prometheus metrics (HTTP, no TLS)                         |
+|  - Auth: None (no OIDC/RBAC in Go server)                                |
+|  - FIPS: GOEXPERIMENT=strictfipsruntime (when built via Konflux)         |
+|         |                                                                |
+|  [Feature Registry]                                                      |
+|  - Ports:                                                                |
+|    - 6570/TCP: gRPC (TLS configurable)                                   |
+|    - 8080/TCP: REST API (HTTP/HTTPS, TLS configurable)                   |
+|  - Auth: Bearer JWT (intra-comm HMAC-SHA256 token)                       |
+|  - Note: InsecureSkipVerify=true for intra-cluster registry client       |
+|         |                                                                |
+|  [Feast UI]                                                              |
+|  - Port: 8080/TCP (HTTP/HTTPS, TLS configurable)                        |
+|  - Auth: None                                                            |
+|         |                                                                |
+|  [{name}-online Service]   ClusterIP  80/443 -> 8080  HTTP/HTTPS         |
+|  [{name}-offline Service]  ClusterIP  80/443 -> 8815  gRPC               |
+|  [{name}-registry Service] ClusterIP  80/443 -> 6570  gRPC               |
+|  [{name}-registry-rest]    ClusterIP  80/443 -> 8080  HTTP/HTTPS         |
+|  [{name}-ui Service]       ClusterIP  80/443 -> 8080  HTTP/HTTPS         |
+|                                                                          |
++--------------------------------------------------------------------------+
+|  INTER-SERVICE COMMUNICATION                                             |
+|                                                                          |
+|  Feature Server --> Registry                                             |
+|  - Port: 6570/TCP (gRPC) or 8080/TCP (REST)                             |
+|  - Encryption: TLS (configurable)                                        |
+|  - Auth: Bearer JWT (intra-comm token, HMAC-SHA256 signed)               |
+|  - Token stored in: ConfigMap (not encrypted at rest)                    |
+|                                                                          |
+|  Operator --> Registry REST API                                          |
+|  - Port: 8080/TCP                                                        |
+|  - Encryption: TLS (optional, InsecureSkipVerify=true)                   |
+|  - Auth: Bearer JWT (intra-comm token)                                   |
+|  - Purpose: Fetch permissions for auto-access RBAC                       |
+|                                                                          |
+|  Operator --> Kubernetes API                                             |
+|  - Port: 6443/TCP                                                        |
+|  - Encryption: TLS 1.2+                                                  |
+|  - Auth: ServiceAccount token                                            |
+|                                                                          |
++--------------------------------------------------------------------------+
+|  EXTERNAL SERVICES (Egress)                                              |
+|                                                                          |
+|  [Redis]                                                                 |
+|  - Port: 6379/TCP                                                        |
+|  - Protocol: TCP                                                         |
+|  - Encryption: TLS (optional, configurable)                              |
+|  - Auth: Password (optional)                                             |
+|  - Purpose: Online feature storage read/write                            |
+|                                                                          |
+|  [PostgreSQL]                                                            |
+|  - Port: 5432/TCP                                                        |
+|  - Protocol: TCP                                                         |
+|  - Encryption: TLS (sslmode: disable/require/verify-ca/verify-full)      |
+|  - Auth: Username/Password                                               |
+|  - Purpose: Online/offline feature storage                               |
+|                                                                          |
+|  [DynamoDB - dynamodb.amazonaws.com]                                     |
+|  - Port: 443/TCP                                                         |
+|  - Protocol: HTTPS                                                       |
+|  - Encryption: TLS 1.2+                                                  |
+|  - Auth: AWS IAM credentials                                             |
+|  - Purpose: Online feature storage read/write                            |
+|                                                                          |
+|  [BigQuery API - bigquery.googleapis.com]                                |
+|  - Port: 443/TCP                                                         |
+|  - Protocol: HTTPS                                                       |
+|  - Encryption: TLS 1.2+                                                  |
+|  - Auth: GCP service account                                             |
+|  - Purpose: Offline feature storage                                      |
+|                                                                          |
+|  [Snowflake]                                                             |
+|  - Port: 443/TCP                                                         |
+|  - Protocol: HTTPS                                                       |
+|  - Encryption: TLS 1.2+                                                  |
+|  - Auth: Username/Password                                               |
+|  - Purpose: Online/offline feature storage                               |
+|                                                                          |
+|  [S3 - s3.amazonaws.com]                                                 |
+|  - Port: 443/TCP                                                         |
+|  - Protocol: HTTPS                                                       |
+|  - Encryption: TLS 1.2+                                                  |
+|  - Auth: AWS IAM credentials                                             |
+|  - Purpose: Registry storage                                             |
+|                                                                          |
+|  [GCS - storage.googleapis.com]                                          |
+|  - Port: 443/TCP                                                         |
+|  - Protocol: HTTPS                                                       |
+|  - Encryption: TLS 1.2+                                                  |
+|  - Auth: GCP service account                                             |
+|  - Purpose: Registry storage                                             |
+|                                                                          |
+|  [OIDC Provider]                                                         |
+|  - Port: 443/TCP                                                         |
+|  - Protocol: HTTPS                                                       |
+|  - Encryption: TLS 1.2+                                                  |
+|  - Auth: None (discovery endpoint)                                       |
+|  - Purpose: OIDC discovery, JWKS key fetch for JWT validation            |
+|  - CA: odh-trusted-ca-bundle ConfigMap (/etc/pki/tls/custom-certs/)      |
+|                                                                          |
+|  [OTEL Collector]                                                        |
+|  - Port: variable                                                        |
+|  - Protocol: HTTP                                                        |
+|  - Encryption: TLS (optional)                                            |
+|  - Auth: None                                                            |
+|  - Purpose: Distributed tracing export (Go server only)                  |
+|                                                                          |
+|  [Git Repository]                                                        |
+|  - Port: 443/TCP (HTTPS) or 22/TCP (SSH)                                |
+|  - Protocol: HTTPS / SSH                                                 |
+|  - Encryption: TLS / SSH                                                 |
+|  - Auth: Token / SSH key                                                 |
+|  - Purpose: Feature repo clone (init containers for CronJobs)            |
+|                                                                          |
++--------------------------------------------------------------------------+
+
+================================================================================
+  RBAC SUMMARY
+================================================================================
 
 ClusterRoles:
-- manager-role (bound to feast-operator-controller-manager SA)
-  - feast.dev: featurestores, featurestores/status, featurestores/finalizers [get,list,watch,create,update,patch,delete]
-  - apps: deployments [get,list,create,update,watch,delete]
-  - core: services, configmaps, persistentvolumeclaims, serviceaccounts [get,list,create,update,watch,delete]
-  - core: namespaces [get,list,watch,patch,update]
-  - core: secrets, pods [get,list,watch]
-  - core: pods/exec [create]
-  - rbac.authorization.k8s.io: roles, rolebindings, clusterroles, clusterrolebindings, subjectaccessreviews [get,list,create,update,watch,delete]
-  - route.openshift.io: routes [get,list,create,update,watch,delete]
-  - batch: cronjobs [get,list,watch,create,update,patch,delete]
-  - autoscaling: horizontalpodautoscalers [get,list,watch,create,update,patch,delete]
-  - policy: poddisruptionbudgets [get,list,watch,create,update,patch,delete]
-  - monitoring.coreos.com: servicemonitors [get,list,watch,create,patch,delete]
-  - authentication.k8s.io: tokenreviews [create]
-  - kubeflow.org: notebooks [get,list,watch]
-  - apiextensions.k8s.io: customresourcedefinitions [get,list]
-
-- featurestore-editor-role (aggregated to admin/edit)
-  - feast.dev: featurestores, featurestores/status [create,delete,get,list,patch,update,watch]
-
-- featurestore-viewer-role (aggregated to view)
-  - feast.dev: featurestores, featurestores/status [get,list,watch]
+- manager-role (feast-operator-controller-manager)
+  - feast.dev: featurestores, featurestores/status, featurestores/finalizers
+    Verbs: get, list, watch, create, update, patch, delete
+  - apps: deployments
+    Verbs: get, list, create, update, watch, delete
+  - core: configmaps, services, persistentvolumeclaims, serviceaccounts
+    Verbs: get, list, create, update, watch, delete
+  - rbac.authorization.k8s.io: roles, rolebindings, clusterroles, clusterrolebindings
+    Verbs: get, list, create, update, watch, delete
+  - batch: cronjobs
+    Verbs: get, list, watch, create, update, patch, delete
+  - autoscaling: horizontalpodautoscalers
+    Verbs: get, list, watch, create, update, patch, delete
+  - policy: poddisruptionbudgets
+    Verbs: get, list, watch, create, update, patch, delete
+  - monitoring.coreos.com: servicemonitors
+    Verbs: get, list, watch, create, patch, delete
+  - route.openshift.io: routes
+    Verbs: get, list, create, update, watch, delete
+  - authentication.k8s.io: tokenreviews
+    Verbs: create
+  - core: namespaces
+    Verbs: get, list, watch, patch, update
+  - core: pods, secrets
+    Verbs: get, list, watch
+  - core: pods/exec
+    Verbs: create
+  - apiextensions.k8s.io: customresourcedefinitions
+    Verbs: get, list
+  - kubeflow.org: notebooks
+    Verbs: get, list, watch
 
 - feast-discover-namespaces
-  - core: namespaces [get,list,watch]
+  - core: namespaces
+    Verbs: get, list
 
-- feast-token-review-cluster-role
-  - authentication.k8s.io: tokenreviews [create]
-  - rbac.authorization.k8s.io: subjectaccessreviews [create]
-  - core: namespaces, roles, clusterroles [get,list,watch]
+- featurestore-editor-role
+  - feast.dev: featurestores
+    Verbs: create, delete, get, list, patch, update, watch
 
-Authentication & Authorization:
-- Online/Registry serving: Kubernetes RBAC (SubjectAccessReview) OR OIDC (Bearer token JWT validation)
-- Operator → Registry: Intra-communication JWT (HS256) with ":::" prefix to bypass per-user auth
-- Health probes: Unauthenticated (8081/TCP)
-- Metrics: Unauthenticated (8000/TCP, Prometheus scrape)
+- featurestore-viewer-role
+  - feast.dev: featurestores
+    Verbs: get, list, watch
 
-TLS Configuration:
-- Service serving certificates: Auto-provisioned by OpenShift Service CA
-  - Annotation: service.beta.openshift.io/serving-cert-secret-name
-  - Secret type: kubernetes.io/tls
-  - Auto-rotated by OpenShift
-- Custom CA bundles: Mounted from ConfigMaps at /etc/pki/tls/custom-certs/
-- OIDC CA certs: Mounted at /etc/pki/tls/oidc-ca/
-- ODH CA bundle: Auto-detected from odh-trusted-ca-bundle ConfigMap
+- metrics-reader
+  - Non-resource: /metrics
+    Verbs: get
 
-Secrets:
-- feast-{name}-{service}-tls (kubernetes.io/tls) - Service TLS cert/key, OpenShift Service CA, auto-rotated
-- (user-provided, Opaque) - Database credentials for persistence backends, manual management
-- (user-provided, Opaque) - OIDC client credentials (client_id, client_secret, auth_discovery_url), manual
-- (user-provided, Opaque) - Git authentication tokens for project directory cloning, manual
+RoleBindings:
+- manager-rolebinding (Cluster) -> manager-role -> feast-operator-controller-manager
+- leader-election-rolebinding (feast-operator-system) -> leader-election-role
+- metrics-auth-rolebinding (feast-operator-system) -> metrics-auth-role
+- feast-{ns}--{name}-discover (Cluster) -> feast-discover-namespaces
+- feast-{ns}--{name}-viewer ({namespace}) -> feast-{ns}--{name}-viewer (Role)
 
-FIPS Compliance:
-- Operator (Go): CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime -tags strictfipsruntime
-- Feature Server (Python): Relies on UBI9 base image system OpenSSL
-- Risk: InsecureSkipVerify=true used for intra-cluster registry REST calls
-- Risk: Go Redis client uses default tls.Config{} without explicit cipher suites
+================================================================================
+  SECRETS
+================================================================================
+
+| Secret Name                    | Type              | Purpose                          | Provisioned By                  | Auto-Rotate |
+|--------------------------------|-------------------|----------------------------------|---------------------------------|-------------|
+| {name}-{service}-tls           | kubernetes.io/tls | TLS certs for feast services     | OpenShift serving cert ctrl     | Yes (auto)  |
+| User-provided TLS secret       | kubernetes.io/tls | Custom TLS certs                 | Manual                          | No          |
+| OIDC client secret             | Opaque            | OIDC client_id, client_secret    | Manual                          | No          |
+| Git auth secret                | Opaque            | Git credentials for repo clone   | Manual                          | No          |
+| Intra-comm JWT token           | ConfigMap         | HMAC-SHA256 JWT for inter-svc    | Operator (auto-generated)       | No          |
+
+================================================================================
+  AUTHENTICATION & AUTHORIZATION
+================================================================================
+
+| Endpoint                | Auth Mechanism                   | Enforcement Point                    |
+|-------------------------|----------------------------------|--------------------------------------|
+| /get-online-features    | OIDC JWT / K8s SA Token / None   | FastAPI middleware (inject_user)      |
+| /push                   | OIDC JWT / K8s SA Token / None   | FastAPI middleware                    |
+| /materialize            | OIDC JWT / K8s SA Token / None   | FastAPI middleware                    |
+| /metrics (operator)     | Bearer Token                     | controller-runtime auth filter       |
+| Registry REST API       | Bearer JWT (intra-comm token)    | Feast registry server                |
+| Inter-service calls     | Bearer JWT (HMAC-SHA256 signed)  | Feast server middleware              |
+
+OIDC Token Validation:
+- Algorithm: RS256
+- JWKS validation: Yes (fetched from OIDC discovery endpoint)
+- Leeway: 10 seconds
+- verify_aud: False (audience not validated)
+- K8s SA token detection: via "kubernetes.io" claim
+
+================================================================================
+  FIPS COMPLIANCE
+================================================================================
+
+Build-Time:
+- feast-operator: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1 (dynamic linking)
+- feature-server: UBI9 Python 3.12 base (OpenSSL-backed)
+- Base image: UBI9 ubi-minimal
+
+Application-Level:
+- TLS: Go stdlib crypto/tls, HTTP/2 disabled (NextProtos: ["http/1.1"])
+- No custom cipher suites configured
+- Redis TLS: default tls.Config{} (inherits system defaults)
+- OIDC: PyJWT RS256 with JWKS
+
+Risks:
+- InsecureSkipVerify=true for intra-cluster registry HTTP client
+- Intra-comm JWT token stored in ConfigMap (not encrypted at rest)
+- No rpms.lock.yaml for OS package pinning
+
+================================================================================

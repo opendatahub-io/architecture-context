@@ -1,0 +1,76 @@
+sequenceDiagram
+    participant User as User Script
+    participant TH as training-hub API
+    participant Alg as Algorithm<br/>(SFT/OSFT/LoRA/GRPO)
+    participant Backend as Backend<br/>(ILT/MiniTrainer/<br/>Unsloth/ART/verl)
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS TLS 1.2+
+    participant GPU as GPU / torchrun<br/>29500/TCP
+    participant FS as Local Filesystem
+    participant Tracker as Experiment Tracker<br/>(W&B / MLflow)<br/>443/TCP HTTPS
+
+    rect rgb(232, 240, 254)
+        Note over User,Tracker: Flow 1: Fine-Tuning Execution
+        User->>TH: sft() / osft() / lora_sft() / lora_grpo()<br/>kwargs: model, data_path, output_dir, ...
+        TH->>Alg: AlgorithmRegistry.create()<br/>Validate params (required + optional)
+        Alg->>Backend: backend.train(**validated_params)
+
+        Backend->>HF: Download model weights + tokenizer<br/>Auth: HF_TOKEN env var
+        HF-->>Backend: Model artifacts
+
+        alt Multi-GPU (torchrun)
+            Backend->>GPU: torchrun launch<br/>--nproc_per_node, --master_addr<br/>Port: 29500/TCP (default)
+            Note over GPU: Distributed gradient sync<br/>No encryption (local network)
+        else Single-GPU
+            Backend->>GPU: Direct training loop
+        end
+
+        loop Training Epochs
+            GPU->>GPU: Forward + backward pass
+            GPU->>FS: Save checkpoint<br/>(trainer_state.json, model weights)
+            opt Experiment tracking enabled
+                GPU->>Tracker: Log metrics (loss, lr, throughput)<br/>Auth: API Key env var
+            end
+        end
+
+        GPU-->>Backend: Training complete
+        Backend-->>Alg: Return output directory path
+        Alg-->>TH: Result
+        TH-->>User: Trained model checkpoint path
+    end
+
+    rect rgb(255, 242, 204)
+        Note over User,FS: Flow 2: Memory Estimation
+        User->>TH: estimate(model_name, algorithm, ...)
+        TH->>HF: Fetch model config (num_params, hidden_size)<br/>Auth: HF_TOKEN
+        HF-->>TH: Model metadata
+        TH->>FS: Cache model metadata<br/>(model_metadata.csv)
+        TH->>TH: Calculate memory estimate<br/>(params + gradients + optimizer + activations)
+        TH-->>User: Memory report<br/>(per-GPU requirement in GB)
+    end
+
+    rect rgb(214, 234, 214)
+        Note over User,FS: Flow 3: Visualization
+        User->>TH: plot_loss(checkpoint_dir)
+        TH->>FS: Read trainer_state.json<br/>or JSONL logs
+        FS-->>TH: Training metrics
+        TH->>FS: Save loss plot (matplotlib PNG)
+        TH-->>User: Loss curve displayed / saved
+    end
+
+    rect rgb(250, 219, 216)
+        Note over User,GPU: Flow 4: LoRA GRPO with ART Backend
+        User->>TH: lora_grpo(model, reward_fn, ...)
+        TH->>Alg: LoRAGRPOAlgorithm
+        Alg->>Backend: ARTLoRAGRPOBackend
+
+        Note over Backend: Create seed LoRA checkpoint<br/>(vLLM V1 workaround)
+        Backend->>GPU: Launch vLLM inference server<br/>(co-located process)
+        Backend->>GPU: Launch ART training subprocess
+        loop GRPO Training
+            GPU->>GPU: Generate rollouts (vLLM)
+            GPU->>GPU: Compute rewards (tool_call/binary)
+            GPU->>GPU: Policy gradient update
+        end
+        GPU-->>Backend: Training complete
+        Backend-->>User: LoRA adapter checkpoint
+    end

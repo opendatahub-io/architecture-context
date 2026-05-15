@@ -2,88 +2,89 @@ workspace {
     model {
         dataScientist = person "Data Scientist" "Creates and manages Ray clusters and jobs from Jupyter notebooks"
 
-        codeflareSdk = softwareSystem "CodeFlare SDK" "Python client library for managing Ray clusters and jobs on Kubernetes" {
-            rayClusterModule = container "ray.cluster" "RayCluster CR lifecycle management (create, apply, delete, status, wait_ready)" "Python Module"
-            rayJobsModule = container "ray.rayjobs" "RayJob CR submission and management with managed cluster support" "Python Module"
-            rayClientModule = container "ray.client" "Wrapper around Ray JobSubmissionClient for direct job submission" "Python Module"
-            kubeClusterModule = container "common.kubernetes_cluster" "Kubernetes authentication via kube-authkit and API client management" "Python Module"
-            kueueModule = container "common.kueue" "Kueue LocalQueue and WorkloadPriorityClass discovery and validation" "Python Module"
-            generateCertModule = container "common.utils.generate_cert" "TLS certificate generation for mTLS (RSA 3072-bit, SHA-256)" "Python Module"
-            widgetsModule = container "common.widgets" "Jupyter notebook ipywidgets for interactive cluster management UI" "Python Module"
-            vendoredClient = container "vendored.python_client" "Vendored KubeRay Python client for RayCluster and RayJob API operations" "Python Module"
+        codeflareSDK = softwareSystem "CodeFlare SDK" "Python client library for RayCluster and RayJob lifecycle management on Kubernetes/OpenShift" {
+            clusterAPI = container "Cluster API" "High-level Python API for RayCluster lifecycle (apply, down, status, dashboard)" "Python Module"
+            rayJobAPI = container "RayJob API" "High-level Python API for RayJob submission and monitoring" "Python Module"
+            rayJobClient = container "RayJobClient" "Ray dashboard-based job submission client" "Python Module"
+            authModule = container "Auth Module" "Kubernetes authentication via kube-authkit (auto-detect, OIDC, OAuth, token)" "Python Module"
+            tlsGenerator = container "TLS Cert Generator" "Generates mTLS client certs from KubeRay CA secrets (RSA-3072, SHA-256)" "Python Module"
+            kueueUtils = container "Kueue Utilities" "Queue discovery, validation, and admission status checking" "Python Module"
+            jupyterWidgets = container "Jupyter Widgets" "Interactive ipywidgets for cluster management in notebooks" "Python Module"
+            kuberayClient = container "Vendored KubeRay Client" "Thin wrapper around CustomObjectsApi for RayCluster/RayJob CRUD" "Python Module"
         }
 
-        kubeRayOperator = softwareSystem "KubeRay Operator" "Reconciles RayCluster and RayJob CRs, creates Ray head/worker pods" "Internal Platform"
-        kueue = softwareSystem "Kueue" "Queue management and admission control for Ray clusters" "Internal Platform"
-        rhoaiGateway = softwareSystem "RHOAI Gateway (Gateway API)" "Dashboard URL discovery via HTTPRoute in RHOAI 3.x" "Internal Platform"
-        openshiftRouter = softwareSystem "OpenShift Router" "Dashboard URL discovery via Routes (legacy)" "Internal Platform"
-        odhTrustedCA = softwareSystem "ODH Trusted CA Bundle" "CA certificate bundle mounted into Ray cluster pods" "Internal Platform"
+        kuberayOperator = softwareSystem "KubeRay Operator" "Reconciles RayCluster and RayJob CRs into running Ray clusters" "Internal RHOAI"
+        kueueController = softwareSystem "Kueue" "Workload queuing and admission control with priority scheduling" "Internal RHOAI"
+        rhoaiGateway = softwareSystem "RHOAI Gateway" "Gateway API (HTTPRoute) for Ray dashboard URL routing" "Internal RHOAI"
+        openshiftRouter = softwareSystem "OpenShift Router" "OpenShift Route-based ingress (fallback for dashboard access)" "Internal OpenShift"
+        k8sAPIServer = softwareSystem "Kubernetes API Server" "Kubernetes control plane API for CRD and resource management" "External"
+        rayHead = softwareSystem "Ray Head Service" "Ray cluster head node providing client and dashboard endpoints" "Runtime"
+        odhTrustedCA = softwareSystem "ODH Trusted CA Bundle" "Custom CA trust bundle mounted into Ray pods" "Internal RHOAI"
 
-        k8sApiServer = softwareSystem "Kubernetes API Server" "Kubernetes control plane API" "External"
-        rayHeadNode = softwareSystem "Ray Head Node" "Ray cluster head node with dashboard, client, and GCS ports" "External"
-        kubeAuthkit = softwareSystem "kube-authkit" "Kubernetes authentication abstraction library" "External"
-
-        # Person relationships
-        dataScientist -> codeflareSdk "Creates Ray clusters and submits jobs via" "Python API"
+        # User interactions
+        dataScientist -> codeflareSDK "Creates clusters, submits jobs via Python API"
 
         # SDK to Kubernetes API
-        codeflareSdk -> k8sApiServer "CRD CRUD operations (RayCluster, RayJob, Secrets, Kueue, HTTPRoute)" "HTTPS/6443 TLS 1.2+ Bearer Token"
+        codeflareSDK -> k8sAPIServer "Creates/manages RayCluster, RayJob CRs; queries Kueue, Gateway, Route resources" "HTTPS/6443"
 
-        # SDK to Ray Head
-        codeflareSdk -> rayHeadNode "Job submission and monitoring via dashboard" "HTTPS/443 TLS 1.2+ Bearer Token"
-        codeflareSdk -> rayHeadNode "Ray client connection for direct job submission" "gRPC/10001 mTLS Client Certificate"
+        # SDK to Ray
+        codeflareSDK -> rayHead "Interactive Ray client connections" "mTLS/10001"
+        codeflareSDK -> rayHead "Job submission via Ray dashboard API" "HTTP/8265"
 
-        # SDK dependencies on platform components
-        codeflareSdk -> kubeRayOperator "Creates RayCluster and RayJob CRs reconciled by" "K8s API CRD"
-        codeflareSdk -> kueue "Reads LocalQueue, Workload, WorkloadPriorityClass for queue mgmt" "K8s API CRD"
-        codeflareSdk -> rhoaiGateway "Discovers dashboard URL via HTTPRoute labels" "K8s API CRD"
-        codeflareSdk -> openshiftRouter "Discovers dashboard URL via Routes (fallback)" "K8s API CRD"
-        codeflareSdk -> kubeAuthkit "Kubernetes authentication abstraction" "Library import"
+        # SDK to dashboard via gateway
+        codeflareSDK -> rhoaiGateway "Dashboard URL resolution and access" "HTTPS/443"
 
-        # Container relationships
-        rayClusterModule -> kubeClusterModule "Uses for K8s auth"
-        rayClusterModule -> kueueModule "Uses for queue assignment"
-        rayClusterModule -> generateCertModule "Uses for mTLS cert generation"
-        rayClusterModule -> vendoredClient "Uses for KubeRay API calls"
-        rayJobsModule -> kubeClusterModule "Uses for K8s auth"
-        rayJobsModule -> kueueModule "Uses for queue assignment"
-        rayJobsModule -> vendoredClient "Uses for KubeRay API calls"
-        rayClientModule -> kubeClusterModule "Uses for K8s auth"
-        widgetsModule -> rayClusterModule "Wraps cluster operations for Jupyter UI"
+        # Operator interactions (via K8s API)
+        kuberayOperator -> k8sAPIServer "Watches and reconciles ray.io/v1 CRs" "HTTPS/6443"
+        kueueController -> k8sAPIServer "Manages workload admission" "HTTPS/6443"
+
+        # KubeRay creates runtime resources
+        kuberayOperator -> rayHead "Creates and manages Ray head/worker pods" "Internal"
+
+        # Fallback route
+        codeflareSDK -> openshiftRouter "Dashboard URL fallback (pre-3.x)" "HTTPS/443"
     }
 
     views {
-        systemContext codeflareSdk "SystemContext" {
+        systemContext codeflareSDK "SystemContext" {
             include *
             autoLayout
         }
 
-        container codeflareSdk "Containers" {
+        container codeflareSDK "Containers" {
             include *
             autoLayout
         }
 
         styles {
-            element "Internal Platform" {
-                background #7ed321
-                color #ffffff
-            }
-            element "External" {
-                background #999999
-                color #ffffff
-            }
             element "Person" {
                 shape Person
                 background #4a90e2
                 color #ffffff
             }
             element "Software System" {
-                background #438dd5
+                background #4a90e2
+                color #ffffff
+            }
+            element "Internal RHOAI" {
+                background #7ed321
+                color #ffffff
+            }
+            element "Internal OpenShift" {
+                background #50e3c2
+                color #333333
+            }
+            element "External" {
+                background #999999
+                color #ffffff
+            }
+            element "Runtime" {
+                background #f5a623
                 color #ffffff
             }
             element "Container" {
-                background #85bbf0
-                color #000000
+                background #438dd5
+                color #ffffff
             }
         }
     }

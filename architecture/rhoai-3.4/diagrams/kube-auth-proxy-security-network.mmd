@@ -1,76 +1,70 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["Browser / External Client"]
+        Browser["User Browser"]
     end
 
-    subgraph Ingress["INGRESS (RHOAI Gateway)"]
-        Envoy["Envoy Proxy<br/>443/TCP → internal<br/>TLS 1.3 termination<br/>ext_authz delegation"]
+    subgraph ClusterIngress["CLUSTER INTERNAL"]
+        Gateway["RHOAI Gateway (Envoy)<br/>Ingress traffic routing"]
+        Prometheus["Prometheus<br/>SA: openshift-monitoring/prometheus-k8s"]
     end
 
-    subgraph Pod["SIDECAR CONTAINER (Pod-level trust boundary)"]
+    subgraph PodBoundary["POD BOUNDARY (Sidecar Container)"]
         direction TB
 
-        subgraph AuthMode["Auth Mode"]
-            AuthProxy["kube-auth-proxy<br/>8080/TCP HTTP | 8443/TCP HTTPS<br/>TLS 1.2+, FIPS<br/>AuthN: OIDC / OpenShift OAuth /<br/>JWT / K8s SA / Cookie"]
+        subgraph AuthModeBox["Auth Mode (PROXY_MODE=auth)"]
+            AuthProxy["kube-auth-proxy<br/>4180/TCP HTTP / 443/TCP HTTPS<br/>TLS 1.2-1.3 (configurable)<br/>OAuth2 Cookie / JWT / K8s Token / Basic Auth"]
         end
 
-        subgraph RBACMode["RBAC Mode (default)"]
-            RBACProxy["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS 1.2+, FIPS, hot-reload certs<br/>AuthN: TokenReview / OIDC JWT / client cert<br/>AuthZ: SubjectAccessReview"]
+        subgraph RBACModeBox["RBAC Mode (PROXY_MODE=rbac)"]
+            RBACProxy["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS 1.2+ (self-signed fallback)<br/>Bearer Token / mTLS / OIDC JWT<br/>SubjectAccessReview per request"]
         end
 
-        UpstreamApp["Upstream Application<br/>(RHOAI Component)<br/>localhost, no auth required<br/>Identity headers injected"]
+        Upstream["Upstream Application<br/>(protected by proxy sidecar)"]
     end
 
-    subgraph EgressServices["EGRESS (Outbound)"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA token auth<br/>TokenReview + SAR APIs"]
-        OIDC["OIDC Provider (Keycloak)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Client credentials<br/>Token exchange + JWKS"]
-        OSAuth["OpenShift OAuth Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA token auth<br/>OAuth flow + token deletion"]
-        Redis["Redis (optional)<br/>6379/TCP<br/>TCP or TLS<br/>Password auth<br/>Session storage"]
+    subgraph ClusterServices["CLUSTER SERVICES (Trusted)"]
+        K8sAPI["Kubernetes API Server<br/>kubernetes.default.svc<br/>443/TCP HTTPS<br/>TLS 1.2+ (cluster CA)<br/>TokenReview + SAR + OAuthAccessToken"]
     end
 
-    subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>(openshift-monitoring)<br/>SA: prometheus-k8s<br/>Hardcoded allow for /metrics"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        OIDC["OIDC Provider<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>OAuth2 Client Credentials"]
+        OAuthServer["OpenShift OAuth Server<br/>443/TCP HTTPS<br/>TLS 1.2+ (custom CA)<br/>SA Bearer Token"]
+        Redis["Redis (optional)<br/>6379/TCP<br/>Optional TLS<br/>Password / Sentinel Auth"]
     end
 
-    %% External flows
-    Client -->|"HTTPS/443<br/>TLS 1.3<br/>Bearer / Cookie"| Envoy
+    %% External to proxy flows
+    Browser -->|"HTTP(S)/4180 or 443<br/>TLS 1.2+ configurable<br/>OAuth2 Cookie / JWT"| AuthProxy
 
-    %% Envoy to auth proxy
-    Envoy -->|"HTTP/8080 (in-pod)<br/>No encryption<br/>ext_authz: /oauth2/auth<br/>Returns 202 or 401"| AuthProxy
+    %% Gateway flows
+    Gateway -->|"HTTP/4180 ext_authz<br/>No encryption (pod-local)<br/>Authorization check"| AuthProxy
+    Gateway -->|"HTTPS/8443<br/>TLS 1.2+<br/>K8s SA Bearer Token"| RBACProxy
 
-    %% Auth proxy to upstream
-    AuthProxy -->|"HTTP/HTTPS (localhost)<br/>Configurable<br/>X-Forwarded-User/Email/Groups"| UpstreamApp
+    %% Prometheus
+    Prometheus -->|"HTTPS/8443<br/>TLS 1.2+<br/>Hardcoded SA allow"| RBACProxy
 
-    %% RBAC proxy to upstream
-    RBACProxy -->|"HTTP/HTTPS/H2C (localhost)<br/>Configurable<br/>x-remote-user/x-remote-groups"| UpstreamApp
+    %% Proxy to upstream
+    AuthProxy -->|"HTTP(S)/configurable<br/>X-Forwarded-User headers"| Upstream
+    RBACProxy -->|"HTTP(S)/h2c configurable<br/>mTLS supported<br/>x-remote-user headers"| Upstream
 
-    %% Direct client to RBAC proxy
-    Client -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer / Client cert"| RBACProxy
+    %% Proxy to cluster services
+    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+ (cluster CA)<br/>In-cluster SA token<br/>TokenReview + OAuthAccessToken"| K8sAPI
+    RBACProxy -->|"HTTPS/443<br/>TLS 1.2+ (cluster CA)<br/>In-cluster SA token<br/>TokenReview + SAR"| K8sAPI
 
-    %% Egress - Auth proxy
-    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>Client credentials"| OIDC
-    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| OSAuth
-    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    AuthProxy -->|"TCP or TLS/6379<br/>Password"| Redis
-
-    %% Egress - RBAC proxy
-    RBACProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>TokenReview + SAR"| K8sAPI
-    RBACProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>JWKS retrieval"| OIDC
-
-    %% Monitoring
-    Prometheus -->|"HTTPS/8443<br/>TLS 1.2+<br/>Hardcoded SA auth"| RBACProxy
+    %% Proxy to external services
+    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth2 client credentials"| OIDC
+    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+ (custom CA)<br/>SA bearer token"| OAuthServer
+    AuthProxy -.->|"TCP/6379<br/>Optional TLS<br/>Password auth"| Redis
+    RBACProxy -.->|"HTTPS/443<br/>TLS 1.2+<br/>JWKS retrieval"| OIDC
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef sidecar fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef upstream fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef monitoring fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef pod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef clusterservice fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
-    class Client external
-    class Envoy ingress
-    class AuthProxy,RBACProxy sidecar
-    class UpstreamApp upstream
-    class K8sAPI,OIDC,OSAuth,Redis egress
-    class Prometheus monitoring
+    class Browser external
+    class Gateway,Prometheus ingress
+    class AuthProxy,RBACProxy,Upstream pod
+    class K8sAPI clusterservice
+    class OIDC,OAuthServer,Redis externalservice

@@ -1,96 +1,46 @@
 sequenceDiagram
-    participant Client as AI Application Client
-    participant Orch as Orchestrator<br/>8033/TCP HTTP/HTTPS<br/>Optional TLS/mTLS
-    participant Health as Health Server<br/>8034/TCP HTTP
-    participant Chunker as Caikit Chunker<br/>8085/TCP gRPC<br/>Optional TLS/mTLS
-    participant Detector as Detector Service(s)<br/>8080/TCP HTTP/HTTPS<br/>Optional TLS/mTLS
-    participant TGIS as TGIS Server<br/>8033/TCP gRPC<br/>Optional TLS/mTLS
-    participant OpenAI as OpenAI Server<br/>8080/TCP HTTP/HTTPS<br/>Optional TLS
-    participant OTLP as OTLP Collector<br/>4317/4318
+    participant Client as Client Application
+    participant Orch as Orchestrator<br/>8033/TCP HTTP/HTTPS<br/>TLS 1.2+ (optional)
+    participant Chunker as Chunker Service<br/>8085/TCP gRPC<br/>mTLS (configurable)
+    participant Detector as Detector Service(s)<br/>8080/TCP HTTP<br/>TLS (configurable)
+    participant GenSvc as Generation Service<br/>(TGIS 8033 / Caikit 8085)<br/>gRPC mTLS (configurable)
+    participant vLLM as OpenAI Service (vLLM)<br/>8080/TCP HTTP<br/>TLS (configurable)
 
-    Note over Client,OTLP: Flow 1: Unary Text Content Detection (/api/v2/text/detection/content)
+    Note over Client,vLLM: Flow 1: Unary Generation with Detection (v2 API)
+    Client->>Orch: POST /api/v2/text/generation-detection<br/>mTLS (optional)
+    Orch->>Chunker: Chunk input text<br/>mm-model-id header
+    Chunker-->>Orch: Text chunks
+    Orch->>Detector: POST /api/v1/text/contents<br/>Bearer token — input detection
+    Detector-->>Orch: Input detection results
+    Orch->>GenSvc: Generate(prompt)<br/>mm-model-id header
+    GenSvc-->>Orch: Generated text
+    Orch->>Chunker: Chunk generated text<br/>mm-model-id header
+    Chunker-->>Orch: Output chunks
+    Orch->>Detector: POST /api/v1/text/contents<br/>Bearer token — output detection
+    Detector-->>Orch: Output detection results
+    Orch-->>Client: Combined generation + detection response
 
-    Client->>Orch: POST /api/v2/text/detection/content<br/>Header passthrough (Bearer token)
-    activate Orch
-    Orch->>OTLP: Trace span start (W3C traceparent)
+    Note over Client,vLLM: Flow 2: Streaming Chat Completions (OpenAI-compatible)
+    Client->>Orch: POST /api/v2/chat/completions-detection<br/>SSE stream, mTLS (optional)
+    Orch->>Detector: POST /api/v1/text/chat<br/>Bearer token — input detection on last message
+    Detector-->>Orch: Input detection result
 
-    Orch->>Chunker: tokenization_task_predict (gRPC)<br/>Client certs auth
-    activate Chunker
-    Chunker-->>Orch: Chunked text tokens
-    deactivate Chunker
-
-    par Concurrent detector requests (buffer_unordered)
-        Orch->>Detector: POST /api/v1/text/contents<br/>Bearer token + detector-id header
-        activate Detector
-        Detector-->>Orch: Detection results (HAP/PII/etc.)
-        deactivate Detector
+    Orch->>vLLM: POST /v1/chat/completions<br/>Bearer token — SSE streaming
+    loop Streaming tokens via broadcast channels
+        vLLM-->>Orch: SSE chunk (token)
+        Orch->>Chunker: BidiStreaming chunk tokens<br/>mm-model-id header
+        Chunker-->>Orch: Assembled text chunk
+        Orch->>Detector: POST /api/v1/text/contents<br/>Bearer token — output detection on chunk
+        Detector-->>Orch: Chunk detection result
+        Note over Orch: DetectionBatcher orders results<br/>(CompletionBatcher for multi-choice)
+        Orch-->>Client: SSE event (token + detection)
     end
+    Orch-->>Client: SSE [DONE]
 
-    Orch->>OTLP: Trace span end + metrics
-    Orch-->>Client: JSON response with detections
-    deactivate Orch
-
-    Note over Client,OTLP: Flow 2: OpenAI Chat Completions with Detection (/api/v2/chat/completions-detection)
-
-    Client->>Orch: POST /api/v2/chat/completions-detection<br/>Header passthrough
-    activate Orch
-    Orch->>OTLP: Trace span start (W3C traceparent)
-
-    Orch->>OpenAI: POST /v1/chat/completions<br/>Bearer token (api_token)
-    activate OpenAI
-    OpenAI-->>Orch: Chat completion response (or SSE stream)
-    deactivate OpenAI
-
-    Orch->>Chunker: tokenization (gRPC)<br/>Client certs
-    activate Chunker
-    Chunker-->>Orch: Chunked tokens
-    deactivate Chunker
-
-    par Concurrent detector requests
-        Orch->>Detector: POST /api/v1/text/contents<br/>or /chat or /generation
-        activate Detector
-        Detector-->>Orch: Detection results
-        deactivate Detector
-    end
-
-    Orch->>OTLP: Trace span end + metrics
-    Orch-->>Client: SSE stream or JSON with detections
-    deactivate Orch
-
-    Note over Client,OTLP: Flow 3: Classification with Text Generation (v1 Legacy)
-
-    Client->>Orch: POST /api/v1/task/classification-with-text-generation<br/>Header passthrough
-    activate Orch
-    Orch->>OTLP: Trace span start (W3C traceparent)
-
-    Orch->>TGIS: generate (gRPC)<br/>Client certs auth
-    activate TGIS
-    TGIS-->>Orch: Generated text
-    deactivate TGIS
-
-    Orch->>Chunker: tokenization (gRPC)<br/>Client certs
-    activate Chunker
-    Chunker-->>Orch: Chunked tokens
-    deactivate Chunker
-
-    par Concurrent detector requests
-        Orch->>Detector: POST /api/v1/text/contents<br/>Bearer token + detector-id
-        activate Detector
-        Detector-->>Orch: Classification results
-        deactivate Detector
-    end
-
-    Orch->>OTLP: Trace span end + metrics
-    Orch-->>Client: JSON with classification + generated text
-    deactivate Orch
-
-    Note over Client,Health: Health Check Flow
-
-    Client->>Health: GET /health (8034/TCP, plaintext)
-    activate Health
-    Health->>TGIS: gRPC Health.check()
-    Health->>Chunker: gRPC Health.check()
-    Health->>Detector: HTTP GET /health
-    Health->>OpenAI: HTTP GET /health
-    Health-->>Client: Aggregated health status
-    deactivate Health
+    Note over Client,vLLM: Flow 3: Standalone Content Detection
+    Client->>Orch: POST /api/v2/text/detection/content<br/>mTLS (optional)
+    Orch->>Chunker: Chunk input text<br/>mm-model-id header
+    Chunker-->>Orch: Text chunks
+    Orch->>Detector: POST /api/v1/text/contents<br/>Bearer token
+    Detector-->>Orch: Detection results
+    Orch-->>Client: Detection response

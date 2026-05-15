@@ -1,89 +1,69 @@
 sequenceDiagram
-    autonumber
+    participant Client as API Client
+    participant LLS as Llama Stack Server<br/>Configurable/HTTPS
+    participant Provider as Garak Provider<br/>(Plugin)
+    participant Files as Files API<br/>(Llama Stack)
+    participant Garak as Garak Subprocess<br/>(Local)
+    participant KFP as Kubeflow Pipelines<br/>HTTPS
+    participant S3 as S3 Object Storage<br/>443/TCP HTTPS
+    participant LLM as Target LLM<br/>(Under Test)
+    participant Safety as Safety API<br/>(Llama Stack)
+    participant Inference as Inference API<br/>(Llama Stack)
 
-    participant Client as Client
-    participant LLS as Llama Stack Server<br/>8321/TCP HTTP
-    participant Inline as GarakInlineEvalAdapter
-    participant Remote as GarakRemoteEvalAdapter
-    participant Garak as Garak Subprocess
-    participant KFP as KFP API Server<br/>443/TCP HTTPS
-    participant KFPPod as KFP Pipeline Pods
-    participant vLLM as vLLM Inference<br/>443/TCP HTTPS
-    participant Files as Llama Stack Files API<br/>8321/TCP HTTP
-    participant S3 as S3/MinIO<br/>443/TCP HTTPS
-    participant Safety as Llama Stack Safety API<br/>8321/TCP HTTP
+    Note over Client, LLM: Flow 1: Inline Scan Lifecycle
 
-    rect rgb(230, 245, 255)
-        Note over Client,Files: Flow 1: Inline Garak Scan (Llama Stack)
-        Client->>LLS: POST /alpha/eval/run-eval<br/>Bearer Token
-        LLS->>Inline: Route to provider (in-process)
-        Inline->>Inline: Resolve config cascade<br/>(predefined + user overrides)
-        Inline->>Garak: Launch subprocess<br/>(os.setsid, SIGTERM/SIGKILL)
-        Garak->>vLLM: Inference requests<br/>HTTPS, API key
-        vLLM-->>Garak: Model responses
-        Garak-->>Inline: Scan results (JSONL)
-        Inline->>Inline: Parse results, compute TBSA score
-        Inline->>Files: Upload report artifacts<br/>Bearer Token
-        Inline-->>LLS: Job ID + status
-        LLS-->>Client: Job ID
-        Client->>LLS: GET /alpha/eval/jobs/status
-        LLS-->>Client: Status (running/completed)
-        Client->>LLS: GET /alpha/eval/jobs/retrieve
-        LLS-->>Client: Scores + metrics
+    Client->>LLS: POST run_eval()<br/>HTTPS, TLS, API key
+    LLS->>Provider: run_eval() dispatch
+    Provider->>Files: Download benchmark config<br/>HTTP, API key
+    Files-->>Provider: Scan configuration
+    Provider->>Garak: Launch subprocess<br/>Process I/O
+    Garak->>LLM: Adversarial prompts<br/>HTTPS, TLS, API key
+    LLM-->>Garak: Completions
+    Garak-->>Provider: JSONL reports + AVID + hit logs
+    Provider->>Provider: Parse results + TBSA scoring
+    Provider->>Files: Upload reports<br/>HTTP, API key
+    Provider-->>LLS: Job created (job_id)
+    LLS-->>Client: EvaluateResponse<br/>HTTPS, TLS
+
+    Note over Client, LLM: Flow 2: Remote (KFP) Scan Lifecycle
+
+    Client->>LLS: POST run_eval()<br/>HTTPS, TLS, API key
+    LLS->>Provider: run_eval() dispatch (remote mode)
+    Provider->>KFP: Submit 6-step pipeline<br/>HTTPS, TLS, Bearer token
+    KFP-->>Provider: Pipeline run ID
+    Note right of KFP: KFP Pipeline Execution
+    KFP->>Files: Download scan config<br/>HTTPS, TLS, API key
+    KFP->>Garak: garak_scan step
+    Garak->>LLM: Adversarial prompts<br/>HTTPS, TLS, API key
+    LLM-->>Garak: Completions
+    KFP->>Files: Upload parsed results<br/>HTTPS, TLS, API key
+    loop Poll status
+        Provider->>KFP: Get run status<br/>HTTPS, TLS, Bearer token
+        KFP-->>Provider: Status (in_progress/completed)
     end
+    Provider->>Files: Retrieve results<br/>HTTP, API key
+    Provider-->>LLS: EvaluateResponse
+    LLS-->>Client: Results<br/>HTTPS, TLS
 
-    rect rgb(255, 245, 230)
-        Note over Client,S3: Flow 2: Remote KFP Scan (Llama Stack)
-        Client->>LLS: POST /alpha/eval/run-eval<br/>Bearer Token
-        LLS->>Remote: Route to provider (in-process)
-        Remote->>Remote: Build KFP pipeline<br/>(resolve container image)
-        Remote->>KFP: Submit pipeline run<br/>HTTPS, Bearer Token
-        KFP->>KFPPod: Step 1: validate
-        KFPPod->>LLS: Validate config<br/>HTTP, Bearer Token
-        KFP->>KFPPod: Step 2: resolve_taxonomy
-        KFPPod->>Files: Download taxonomy<br/>HTTP, Bearer Token
-        KFP->>KFPPod: Step 3: sdg_generate
-        KFPPod->>KFPPod: Generate adversarial prompts<br/>via sdg-hub
-        KFP->>KFPPod: Step 4: prepare_prompts
-        KFPPod->>Files: Upload prompts<br/>HTTP, Bearer Token
-        KFP->>KFPPod: Step 5: garak_scan
-        KFPPod->>vLLM: Vulnerability scan<br/>HTTPS, API key
-        KFPPod->>Files: Upload results<br/>HTTP, Bearer Token
-        KFP->>KFPPod: Step 6: parse_results
-        KFPPod->>Files: Upload reports<br/>HTTP, Bearer Token
-        Remote->>KFP: Poll status<br/>HTTPS, Bearer Token
-        Remote->>Files: Retrieve results<br/>HTTP, Bearer Token
-        Remote-->>LLS: Scores + metrics
-        LLS-->>Client: Results
-    end
+    Note over Client, S3: Flow 3: EvalHub KFP Scan Lifecycle
 
-    rect rgb(230, 255, 230)
-        Note over Client,S3: Flow 3: Eval-Hub KFP Scan
-        Note right of Client: Eval-Hub Controller creates K8s Job
-        Client->>Inline: GarakAdapter.run()<br/>Eval-Hub SDK
-        Inline->>KFP: Submit S3-based pipeline<br/>HTTPS, Bearer Token
-        KFP->>KFPPod: Step 1-2: validate + taxonomy
-        KFPPod->>S3: Read/write artifacts<br/>HTTPS, AWS IAM
-        KFP->>KFPPod: Step 3-4: SDG + prompts
-        KFPPod->>S3: Store prompts<br/>HTTPS, AWS IAM
-        KFP->>KFPPod: Step 5: garak_scan
-        KFPPod->>vLLM: Vulnerability scan<br/>HTTPS, API key
-        KFPPod->>S3: Store results<br/>HTTPS, AWS IAM
-        KFP->>KFPPod: Step 6: write_kfp_outputs
-        KFPPod->>S3: Final artifacts<br/>HTTPS, AWS IAM
-        Inline->>S3: Download results<br/>HTTPS, AWS IAM
-        Inline->>Inline: Parse + generate HTML report
-    end
+    Note left of Provider: EvalHub Platform triggers<br/>GarakAdapter (K8s Job)
+    Provider->>KFP: Submit pipeline<br/>HTTPS, TLS, Bearer token
+    KFP->>S3: Download scan config<br/>HTTPS, TLS, AWS IAM
+    KFP->>Garak: garak_scan step
+    Garak->>LLM: Adversarial prompts<br/>HTTPS, TLS, API key
+    LLM-->>Garak: Completions
+    KFP->>S3: Upload results<br/>HTTPS, TLS, AWS IAM
+    Provider->>S3: Download results<br/>HTTPS, TLS, AWS IAM
+    Note left of Provider: Report to EvalHub callbacks
 
-    rect rgb(255, 230, 255)
-        Note over Client,Safety: Flow 4: Shield Scan (Guardrail Testing)
-        Client->>LLS: Run shield scan
-        LLS->>Inline: Shield scan request
-        Inline->>Safety: Run input shield<br/>HTTP, Bearer Token
-        Safety-->>Inline: Shield result (pass/block)
-        Inline->>vLLM: Forward to model<br/>HTTPS, API key
-        vLLM-->>Inline: Model response
-        Inline->>Safety: Run output shield<br/>HTTP, Bearer Token
-        Safety-->>Inline: Shield result (pass/block)
-        Inline-->>LLS: Combined results
-    end
+    Note over Garak, Safety: Flow 4: Shield Scan (SimpleShieldOrchestrator)
+
+    Garak->>Provider: Adversarial prompt<br/>Function call (local)
+    Provider->>Safety: Input shield check<br/>HTTPS, TLS, API key
+    Safety-->>Provider: Shield result (pass/violation)
+    Provider->>Inference: LLM call<br/>HTTPS, TLS, API key
+    Inference-->>Provider: LLM response
+    Provider->>Safety: Output shield check<br/>HTTPS, TLS, API key
+    Safety-->>Provider: Shield result (pass/violation)
+    Provider-->>Garak: Response + violations<br/>Function call (local)

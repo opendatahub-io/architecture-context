@@ -1,60 +1,69 @@
 sequenceDiagram
+    autonumber
+
     participant User as User / kubectl
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant Webhook as odh-model-controller<br/>Webhook Server<br/>9443/TCP HTTPS
-    participant Controller as odh-model-controller<br/>Controller Manager
-    participant Route as OpenShift Route<br/>443/TCP HTTPS
-    participant Client as External Client
-    participant NGC as NVIDIA NGC API<br/>443/TCP HTTPS
+    participant Webhook as odh-model-controller<br/>Webhook 9443/TCP
+    participant Controller as odh-model-controller<br/>8081/TCP Health
+    participant Route as OpenShift Router<br/>443/TCP HTTPS
+    participant Predictor as Predictor Service
     participant Dashboard as RHOAI Dashboard
-    participant ServingAPI as model-serving-api<br/>8443/TCP HTTPS
+    participant APIServer as model-serving-api<br/>8443/TCP HTTPS
+    participant Gateway as Gateway (Envoy)<br/>443/TCP HTTPS
+    participant Authorino as Authorino<br/>50051/TCP gRPC
+    participant NGC as NVIDIA NGC API<br/>443/TCP HTTPS
+    participant NVCR as nvcr.io Registry<br/>443/TCP HTTPS
 
-    Note over User,Route: Flow 1: InferenceService Deployment
-
-    User->>K8sAPI: POST InferenceService CR<br/>Auth: OIDC/Bearer Token
-    K8sAPI->>Webhook: Validating/Mutating Webhook<br/>TLS (cluster-internal)
-    Webhook-->>K8sAPI: Admit (validated + defaulted)
-    K8sAPI-->>User: InferenceService created
-
-    Controller->>K8sAPI: Watch InferenceService events<br/>ServiceAccount Token
-    Note over Controller: Delta processing:<br/>compute desired state,<br/>compare with existing
-
-    par Create supplementary resources
-        Controller->>K8sAPI: Create OpenShift Route<br/>TLS 1.2+, SA Token
-        Controller->>K8sAPI: Create ServiceMonitor<br/>TLS 1.2+, SA Token
-        Controller->>K8sAPI: Create NetworkPolicy<br/>TLS 1.2+, SA Token
-        Controller->>K8sAPI: Create ClusterRoleBinding<br/>TLS 1.2+, SA Token
-        Controller->>K8sAPI: Create Metrics Service<br/>TLS 1.2+, SA Token
-        Controller->>K8sAPI: Create KEDA TriggerAuth<br/>TLS 1.2+, SA Token
+    rect rgb(230, 240, 255)
+        Note over User,Predictor: Flow 1: InferenceService Deployment (Traditional)
+        User->>K8sAPI: POST InferenceService<br/>HTTPS TLS 1.2+ / User credential
+        K8sAPI->>Webhook: Admission webhook<br/>HTTPS TLS 1.2+ / Webhook TLS cert
+        Webhook-->>K8sAPI: Admit (validated)
+        K8sAPI-->>Controller: Watch event
+        Controller->>K8sAPI: Create Route, ServiceMonitor,<br/>Metrics Service, KEDA TriggerAuth<br/>HTTPS TLS 1.2+ / SA token
+        Note over Controller: Sub-reconcilers:<br/>Route, Metrics, SM,<br/>Dashboard, CRB, KEDA
+        User->>Route: Inference request<br/>HTTPS TLS Edge/Reencrypt
+        Route->>Predictor: Forward<br/>HTTP/HTTPS
+        Predictor-->>Route: Prediction response
+        Route-->>User: Response
     end
 
-    Client->>Route: Inference Request<br/>HTTPS TLS (edge/re-encrypt)
-    Route-->>Client: Prediction Response
-
-    Note over Controller,NGC: Flow 2: NIM Account Reconciliation
-
-    Controller->>K8sAPI: Watch NIM Account CR<br/>ServiceAccount Token
-    Controller->>NGC: POST /proxy_auth (nvcr.io)<br/>HTTPS TLS 1.2+, API Key
-    NGC-->>Controller: Runtime Token
-    Controller->>NGC: GET /v2/org/models (api.ngc.nvidia.com)<br/>HTTPS TLS 1.2+, API Key
-    NGC-->>Controller: Model Catalog
-
-    par Create NIM resources
-        Controller->>K8sAPI: Create Pull Secret<br/>(dockerconfigjson)
-        Controller->>K8sAPI: Create/Update ConfigMap<br/>(model catalog)
-        Controller->>K8sAPI: Create Templates<br/>(NIM ServingRuntimes)
+    rect rgb(255, 240, 230)
+        Note over User,Authorino: Flow 2: LLMInferenceService Deployment (Gateway API)
+        User->>K8sAPI: POST LLMInferenceService<br/>HTTPS TLS 1.2+ / User credential
+        K8sAPI-->>Controller: Watch event
+        Controller->>K8sAPI: Create AuthPolicy (Kuadrant)<br/>HTTPS TLS 1.2+ / SA token
+        Controller->>K8sAPI: Create EnvoyFilter (Istio)<br/>HTTPS TLS 1.2+ / SA token
+        User->>Gateway: Inference request<br/>HTTPS TLS 1.2+ / Bearer token
+        Gateway->>Authorino: Auth check (via EnvoyFilter)<br/>gRPC/HTTP2 TLS service-ca.crt / mTLS
+        Authorino->>K8sAPI: TokenReview + SAR<br/>HTTPS TLS 1.2+ / SA token
+        K8sAPI-->>Authorino: Auth decision
+        Authorino-->>Gateway: Allow/Deny
+        Gateway->>Predictor: Forward (post-auth)<br/>HTTP/HTTPS
+        Predictor-->>Gateway: Response
+        Gateway-->>User: Response
     end
 
-    Note over Dashboard,ServingAPI: Flow 3: Gateway Discovery
+    rect rgb(240, 255, 240)
+        Note over User,NVCR: Flow 3: NIM Account Lifecycle
+        User->>K8sAPI: POST NIM Account<br/>HTTPS TLS 1.2+ / User credential
+        K8sAPI->>Webhook: Singleton validation<br/>HTTPS TLS 1.2+
+        Webhook-->>K8sAPI: Admit
+        K8sAPI-->>Controller: Watch event
+        Controller->>NGC: Validate API key<br/>HTTPS TLS 1.2+ / Bearer token
+        NGC-->>Controller: Key valid
+        Controller->>NGC: Fetch runtime catalog<br/>HTTPS TLS 1.2+ / Bearer token
+        NGC-->>Controller: Runtime catalog
+        Controller->>K8sAPI: Create pull Secret,<br/>ConfigMap, OCP Templates<br/>HTTPS TLS 1.2+ / SA token
+        Note over NVCR: KServe uses pull secret<br/>for nvcr.io image pull
+    end
 
-    Dashboard->>ServingAPI: GET /api/v1/gateways?namespace=ns<br/>HTTPS TLS 1.2+ (FIPS ciphers)<br/>Auth: Bearer Token (user token)
-    ServingAPI->>K8sAPI: SelfSubjectAccessReview<br/>HTTPS TLS 1.2+, User Token
-    K8sAPI-->>ServingAPI: Allowed/Denied
-
-    alt Authorized
-        ServingAPI->>K8sAPI: List Gateways<br/>HTTPS TLS 1.2+, SA Token
-        K8sAPI-->>ServingAPI: Gateway List
-        ServingAPI-->>Dashboard: JSON Gateway Response
-    else Unauthorized
-        ServingAPI-->>Dashboard: 403 Forbidden
+    rect rgb(255, 245, 230)
+        Note over Dashboard,K8sAPI: Flow 4: Gateway Discovery (Dashboard)
+        Dashboard->>APIServer: GET /api/v1/gateways<br/>HTTPS TLS 1.2+ / Bearer token (user)
+        APIServer->>K8sAPI: SelfSubjectAccessReview<br/>HTTPS TLS 1.2+ / Bearer token passthrough
+        K8sAPI-->>APIServer: Access granted
+        APIServer->>K8sAPI: List Gateways<br/>HTTPS TLS 1.2+ / SA token
+        K8sAPI-->>APIServer: Gateway list
+        APIServer-->>Dashboard: Filtered gateways<br/>HTTPS TLS 1.2+
     end

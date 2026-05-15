@@ -1,0 +1,62 @@
+sequenceDiagram
+    participant User as External User<br/>(Browser)
+    participant Route as OpenShift Route<br/>443/TCP TLS Edge
+    participant UI as Streamlit UI<br/>8501/TCP HTTP
+    participant API as FastAPI Backend<br/>8000/TCP HTTP
+    participant Ollama as Ollama LLM<br/>11434/TCP HTTP
+    participant PG as PostgreSQL 16<br/>5432/TCP
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant MC as RHOAI Model Catalog<br/>8443/TCP HTTPS
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+
+    Note over User,K8s: Flow 1: Recommendation Workflow
+
+    User->>Route: POST /api/v1/recommend<br/>HTTPS TLS Edge
+    Route->>UI: Forward<br/>HTTP (in-cluster)
+    UI->>API: POST /api/v1/extract<br/>HTTP (pod-to-pod)
+    API->>Ollama: Chat completion<br/>granite3.3:2b / qwen2.5:7b
+    Ollama-->>API: DeploymentIntent JSON<br/>(model, use_case, priority, users)
+    API->>API: Clean LLM output<br/>(_clean_llm_output)
+    API->>HF: GET model config<br/>Bearer Token (optional)
+    HF-->>API: Model architecture<br/>(layers, heads, hidden_size)
+    API->>PG: Query benchmarks<br/>SLO-filtered, window functions
+    PG-->>API: Matching GPU configurations
+
+    alt No benchmarks found
+        API->>API: Roofline estimation<br/>(BentoML llm-optimizer)
+        API->>PG: Cache estimated results
+    end
+
+    API->>API: Multi-criteria scoring<br/>(accuracy, price, latency, complexity)
+    API->>API: Generate 5 ranked views
+    API->>API: Generate KServe YAML<br/>(Jinja2 templates)
+    API-->>UI: Ranked recommendations + YAML
+    UI-->>Route: Response
+    Route-->>User: JSON Response
+
+    Note over User,K8s: Flow 2: RHOAI Model Catalog Sync (Background)
+
+    API->>MC: GET /api/model_catalog/v1alpha1/models<br/>Bearer Token, TLS (service-serving CA)
+    MC-->>API: Model listings + performance artifacts
+    API->>PG: Upsert benchmark data<br/>psycopg2
+
+    Note over User,K8s: Flow 3: Kubernetes Deployment
+
+    User->>Route: POST /api/v1/deploy-to-cluster<br/>HTTPS
+    Route->>API: Forward
+    API->>API: Generate InferenceService YAML<br/>+ HPA + ServiceMonitor
+    API->>K8s: Apply YAML<br/>SA Token, HTTPS/6443
+    K8s-->>API: Created
+
+    loop Poll Status
+        API->>K8s: GET InferenceService status<br/>SA Token
+        K8s-->>API: Status (Ready/Pending/Failed)
+    end
+    API-->>Route: Deployment status
+    Route-->>User: Response
+
+    Note over User,K8s: Flow 4: GPU Detection
+
+    API->>K8s: LIST nodes<br/>SA Token (planner-gpu-reader ClusterRole)
+    K8s-->>API: Node list with<br/>nvidia.com/gpu.product labels
+    API->>API: Cache GPU types<br/>(TTL: 300s)

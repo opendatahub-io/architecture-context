@@ -1,56 +1,53 @@
 sequenceDiagram
     autonumber
 
-    participant User as User / kubectl
-    participant K8sAPI as K8s API Server<br/>443/TCP HTTPS
-    participant Webhook as Admission Webhook<br/>9443/TCP HTTPS
-    participant Operator as Model Registry Operator<br/>(controller-runtime)
-    participant KubeRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS
-    participant Registry as Model Registry REST<br/>8080/TCP HTTP
-    participant Catalog as Model Catalog<br/>8080/TCP HTTP
-    participant PostgreSQL as PostgreSQL<br/>5432/TCP
-    participant Client as API Client
-    participant Route as OpenShift Route<br/>443/TCP HTTPS
+    participant Client as External Client
+    participant Router as OpenShift Router<br/>443/TCP HTTPS
+    participant KRBP as kube-rbac-proxy Sidecar<br/>8443/TCP HTTPS TLS
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS
+    participant REST as REST Container<br/>8080/TCP HTTP
+    participant DB as PostgreSQL / MySQL<br/>5432/3306 TCP
 
-    rect rgb(240, 248, 255)
-        Note over User, Operator: Flow 1: Model Registry Instance Deployment
-        User->>K8sAPI: Create ModelRegistry CR<br/>Bearer Token / TLS 1.2+
-        K8sAPI->>Webhook: Validate & Mutate<br/>9443/TCP HTTPS (cert-manager TLS)
-        Webhook-->>K8sAPI: Defaults applied, validated
-        K8sAPI-->>User: CR created
-        K8sAPI->>Operator: Watch event (ModelRegistry)
-        Operator->>K8sAPI: Create Deployment<br/>(registry REST + kube-rbac-proxy sidecar)<br/>SA Token / TLS
-        Operator->>K8sAPI: Create Service (8443/TCP)<br/>SA Token / TLS
-        Operator->>K8sAPI: Create Route (reencrypt TLS)<br/>SA Token / TLS
-        Operator->>K8sAPI: Create PostgreSQL Deployment + Service<br/>SA Token / TLS
-        Operator->>K8sAPI: Create RBAC (Role, RoleBinding, Group)<br/>SA Token / TLS
-        Operator->>K8sAPI: Create NetworkPolicies<br/>SA Token / TLS
+    rect rgb(230, 245, 255)
+        Note over Client,DB: Flow 1: Model Registry REST API Request (External)
+        Client->>Router: POST /v1/model_registry/{id}/...<br/>HTTPS TLS (edge)
+        Router->>KRBP: Forward request<br/>HTTPS TLS (reencrypt)
+        KRBP->>K8sAPI: TokenReview<br/>HTTPS TLS, SA token
+        K8sAPI-->>KRBP: Token valid
+        KRBP->>K8sAPI: SubjectAccessReview<br/>(services/get on registry Service)
+        K8sAPI-->>KRBP: Authorized
+        KRBP->>REST: Forward (pre-authorized)<br/>HTTP localhost:8080
+        REST->>DB: Query/Write metadata<br/>DB protocol, configurable SSL<br/>username/password auth
+        DB-->>REST: Result set
+        REST-->>KRBP: JSON Response
+        KRBP-->>Router: HTTPS Response
+        Router-->>Client: HTTPS Response
     end
 
-    rect rgb(255, 248, 240)
-        Note over Client, PostgreSQL: Flow 2: Model Registry REST API Access (kube-rbac-proxy)
-        Client->>Route: POST /v1/model_registry/<br/>443/TCP HTTPS, Bearer Token
-        Route->>KubeRBAC: Forward request<br/>8443/TCP HTTPS (reencrypt TLS)
-        KubeRBAC->>K8sAPI: SubjectAccessReview<br/>443/TCP HTTPS, SA Token<br/>(can user GET services/{name}?)
-        K8sAPI-->>KubeRBAC: Allowed / Denied
-        KubeRBAC->>Registry: Forward to localhost<br/>8080/TCP HTTP (loopback, no auth)
-        Registry->>PostgreSQL: Query metadata<br/>5432/TCP, Password auth<br/>Optional SSL
-        PostgreSQL-->>Registry: Results
-        Registry-->>KubeRBAC: JSON Response
-        KubeRBAC-->>Route: Encrypted response
-        Route-->>Client: JSON Response
+    participant Operator as Model Registry Operator<br/>controller-runtime
+    participant OSConfig as OpenShift Config API
+
+    rect rgb(255, 245, 230)
+        Note over K8sAPI,OSConfig: Flow 2: Model Registry Reconciliation
+        K8sAPI->>Operator: Watch event (ModelRegistry CR change)<br/>HTTPS TLS, SA token
+        Operator->>K8sAPI: Create/Update resources<br/>(Deployment, Service, Route,<br/>NetworkPolicy, RBAC, Secrets)<br/>HTTPS TLS, SA token
+        Operator->>OSConfig: Read ingress domain<br/>(config.openshift.io/ingresses)<br/>HTTPS TLS, SA token
+        OSConfig-->>Operator: Cluster domain
+        Operator->>K8sAPI: Read pod logs<br/>(error detection)<br/>HTTPS TLS, SA token
+        K8sAPI-->>Operator: Pod log stream
     end
 
-    rect rgb(240, 255, 240)
-        Note over Client, PostgreSQL: Flow 3: Model Catalog Access
-        Client->>Route: GET /api/model_catalog/<br/>443/TCP HTTPS, Bearer Token
-        Route->>KubeRBAC: Forward request<br/>8443/TCP HTTPS (reencrypt TLS)
-        KubeRBAC->>K8sAPI: SubjectAccessReview<br/>443/TCP HTTPS, SA Token<br/>(can user GET services/model-catalog?)
-        K8sAPI-->>KubeRBAC: Allowed / Denied
-        KubeRBAC->>Catalog: Forward to localhost<br/>8080/TCP HTTP (loopback, no auth)
-        Catalog->>PostgreSQL: Query catalog data<br/>5432/TCP, Password auth
-        PostgreSQL-->>Catalog: Results
-        Catalog-->>KubeRBAC: JSON Response
-        KubeRBAC-->>Route: Encrypted response
-        Route-->>Client: JSON Response
+    participant InitCatalog as Init Containers<br/>(catalog-data + benchmark)
+    participant CatalogREST as Catalog Container<br/>8080/TCP
+    participant CatalogDB as Catalog PostgreSQL<br/>5432/TCP
+    participant ConfigMaps as Catalog Source<br/>ConfigMaps
+
+    rect rgb(245, 255, 230)
+        Note over InitCatalog,ConfigMaps: Flow 3: Model Catalog Startup
+        InitCatalog->>InitCatalog: Copy catalog data YAML<br/>to emptyDir volume
+        InitCatalog->>InitCatalog: Copy benchmark data<br/>to emptyDir volume
+        CatalogREST->>CatalogDB: Connect<br/>PostgreSQL plaintext<br/>username/password (Secret)
+        CatalogDB-->>CatalogREST: Connection established
+        CatalogREST->>ConfigMaps: Read catalog sources<br/>(mounted volumes)
+        ConfigMaps-->>CatalogREST: Source definitions
     end

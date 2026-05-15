@@ -1,57 +1,55 @@
 sequenceDiagram
-    participant Browser as Browser<br/>(Data Scientist)
-    participant Gateway as Gateway API<br/>443/TCP HTTPS
-    participant KRBP as kube-rbac-proxy<br/>8443/TCP HTTPS
-    participant K8sAuth as Kubernetes API<br/>6443/TCP (Auth)
-    participant Fastify as Fastify Backend<br/>8080/TCP HTTP
-    participant BFF as BFF Sidecar<br/>(e.g., Gen AI 8143/TCP)
+    participant Browser as User Browser
+    participant Gateway as Platform Gateway<br/>(Envoy) 443/TCP
+    participant KRBP as kube-rbac-proxy<br/>8443/TCP TLS
+    participant Backend as Dashboard Backend<br/>8080/TCP HTTP
+    participant BFF as BFF Sidecar<br/>(e.g., gen-ai 8143/TCP)
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
     participant Upstream as Upstream Service<br/>(e.g., LlamaStack)
-    participant K8sAPI as Kubernetes API<br/>6443/TCP (Data)
 
-    Note over Browser,K8sAPI: Flow 1: User Request to Dashboard UI
+    rect rgb(240, 248, 255)
+        Note over Browser,K8sAPI: Flow 1: Authenticated Dashboard Request
+        Browser->>Gateway: GET /api/config<br/>HTTPS TLS 1.3<br/>Session Cookie
+        Gateway->>KRBP: Forward<br/>HTTPS TLS (serving cert)<br/>Gateway-injected headers
+        KRBP->>Backend: Forward<br/>HTTP (localhost)<br/>X-Forwarded-Access-Token<br/>X-Auth-Request-User<br/>X-Auth-Request-Groups
+        Backend->>K8sAPI: GET /api/v1/configmaps<br/>HTTPS TLS 1.2+<br/>SA token or User token
+        K8sAPI-->>Backend: ConfigMap data
+        Backend-->>KRBP: JSON Response
+        KRBP-->>Gateway: Response
+        Gateway-->>Browser: Dashboard Config
+    end
 
-    Browser->>Gateway: GET / (HTTPS/443)<br/>TLS 1.2+
-    Gateway->>KRBP: Forward (HTTPS/8443)<br/>TLS (service cert)
-    KRBP->>K8sAuth: SubjectAccessReview<br/>(can user list projects?)
-    K8sAuth-->>KRBP: Allowed
-    KRBP->>Fastify: Forward (HTTP/8080)<br/>Headers: x-forwarded-access-token,<br/>x-auth-request-user,<br/>x-auth-request-groups
-    Fastify-->>KRBP: Static assets (React SPA)
-    KRBP-->>Gateway: Response
-    Gateway-->>Browser: Dashboard HTML/JS/CSS
+    rect rgb(240, 255, 240)
+        Note over Browser,Upstream: Flow 2: Federated Module API Call (BFF)
+        Browser->>Gateway: POST /api/v1/responses<br/>HTTPS TLS 1.3<br/>Session Cookie
+        Gateway->>KRBP: Forward<br/>HTTPS TLS (serving cert)
+        KRBP->>Backend: Forward<br/>HTTP (localhost)<br/>User identity headers
+        Backend->>BFF: Proxy request<br/>HTTPS TLS (shared cert)<br/>x-forwarded-access-token
+        BFF->>BFF: SubjectAccessReview check
+        BFF->>Upstream: POST /inference<br/>HTTPS TLS 1.2+<br/>User JWT (Bearer)
+        Upstream-->>BFF: Streaming response
+        BFF-->>Backend: SSE stream
+        Backend-->>KRBP: SSE stream
+        KRBP-->>Gateway: SSE stream
+        Gateway-->>Browser: Streamed LLM response
+    end
 
-    Note over Browser,K8sAPI: Flow 2: Module Federation API Call (e.g., Gen AI)
+    rect rgb(255, 248, 240)
+        Note over Browser,K8sAPI: Flow 3: WebSocket Watch Stream
+        Browser->>Gateway: GET /api/wss/k8s/*<br/>WSS TLS 1.3<br/>Upgrade: websocket
+        Gateway->>KRBP: WebSocket Upgrade<br/>WSS TLS (serving cert)
+        KRBP->>Backend: WS (localhost)<br/>OAuth token via subprotocol
+        Backend->>Backend: Extract Bearer token<br/>from base64 subprotocol
+        Backend->>K8sAPI: Watch request<br/>WSS TLS 1.2+<br/>User Bearer token
+        K8sAPI-->>Backend: Watch events (streaming)
+        Backend-->>KRBP: WS frames
+        KRBP-->>Gateway: WSS frames
+        Gateway-->>Browser: Resource watch updates
+    end
 
-    Browser->>Gateway: POST /_mf/gen-ai/api/v1/responses<br/>HTTPS/443, Bearer Token
-    Gateway->>KRBP: Forward (HTTPS/8443)
-    KRBP->>Fastify: Forward with auth headers<br/>x-forwarded-access-token
-    Fastify->>BFF: Proxy (HTTPS/8143)<br/>x-forwarded-access-token passthrough
-    BFF->>K8sAPI: SubjectAccessReview<br/>(BFF middleware auth check)
-    K8sAPI-->>BFF: Allowed
-    BFF->>Upstream: POST /v1/responses<br/>HTTPS, Bearer Token (forwarded)
-    Upstream-->>BFF: AI Response
-    BFF-->>Fastify: JSON Response
-    Fastify-->>KRBP: Response
-    KRBP-->>Gateway: Response
-    Gateway-->>Browser: JSON Response
-
-    Note over Browser,K8sAPI: Flow 3: Kubernetes Watch Stream (WebSocket)
-
-    Browser->>Gateway: Upgrade: websocket<br/>WSS/443
-    Gateway->>KRBP: Forward WSS/8443
-    KRBP->>Fastify: WS /wss/k8s/*<br/>Token in WebSocket subprotocol<br/>(base64url-encoded)
-    Fastify->>K8sAPI: Watch request<br/>WSS/6443, User Token
-    K8sAPI-->>Fastify: Stream: resource events
-    Fastify-->>KRBP: Stream: events
-    KRBP-->>Gateway: Stream: events
-    Gateway-->>Browser: Stream: real-time updates
-
-    Note over Browser,K8sAPI: Flow 4: Inter-BFF Communication (Gen AI → MaaS token delegation)
-
-    Browser->>Gateway: POST /_mf/gen-ai/api/v1/tokens/bff<br/>HTTPS/443
-    Gateway->>KRBP: Forward
-    KRBP->>Fastify: Forward with auth
-    Fastify->>BFF: Proxy to Gen AI BFF (8143)
-    BFF->>BFF: Inter-BFF call to MaaS BFF<br/>HTTPS/8243 via K8s Service DNS<br/>odh-dashboard.ns.svc.cluster.local:8243
-    Note right of BFF: Token delegation:<br/>user token forwarded<br/>to sibling BFF
-    BFF-->>Fastify: Delegated token response
-    Fastify-->>Browser: Response
+    rect rgb(255, 240, 255)
+        Note over BFF,BFF: Flow 4: Inter-BFF Communication
+        Note right of BFF: Gen-AI BFF needs MaaS token
+        BFF->>BFF: POST /api/v1/bff/maas/tokens<br/>HTTPS 8243/TCP TLS (shared cert)<br/>User token or kubeflow-userid
+        BFF-->>BFF: Ephemeral API key
+    end

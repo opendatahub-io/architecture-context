@@ -1,69 +1,58 @@
 graph TB
-    subgraph PipelinePods["PIPELINE STEP PODS (Ephemeral Argo Workflow Pods)"]
+    subgraph Cluster["KUBERNETES CLUSTER"]
         direction TB
 
-        subgraph InitPhase["Init Container Phase"]
-            InitContainer["odh-pipelines-components<br/>(Init Container)<br/>SA: KFP API Server pod SA"]
-            SharedVol["Shared Volume<br/>/config/managed-pipelines/"]
-            KFPServer["KFP API Server"]
+        subgraph KFPPod["KFP API Server Pod"]
+            InitContainer["Init Container<br/>pipelines-components<br/>UBI9/python-311<br/>No ports exposed"]
+            SharedVol["/config/managed-pipelines<br/>(Shared Volume)"]
+            KFPServer["KFP API Server<br/>Pipeline registration"]
+            InitContainer -->|"Filesystem<br/>shutil.copy2<br/>path-escape validation"| SharedVol
+            SharedVol -->|"Volume mount<br/>(read)"| KFPServer
         end
 
-        subgraph RuntimePhase["Pipeline Step Execution"]
-            StepPod["Pipeline Step Pod<br/>SA: KFP pipeline runner<br/>Namespace: user namespace"]
+        subgraph PipelinePods["PIPELINE STEP PODS (Argo Workflow)"]
+            direction TB
+            AutoML["AutoML Pods<br/>Image: odh-automl<br/>rhai/base-image-cpu-rhel9"]
+            AutoRAG["AutoRAG Pods<br/>Image: odh-autorag<br/>rhai/base-image-cpu-rhel9"]
+            Finetune["Finetuning Pods<br/>LoRA / OSFT / SFT"]
+            Utility["Utility Pods<br/>dataset_download, sdg<br/>lm_eval, model_registry"]
         end
-
-        subgraph RuntimeImages["Runtime Container Images"]
-            AutoMLImg["odh-automl<br/>quay.io/rhoai/odh-automl-rhel9<br/>AutoGluon runtime"]
-            AutoRAGImg["odh-autorag<br/>quay.io/rhoai/odh-autorag-rhel9<br/>docling + ai4rag runtime"]
-        end
     end
 
-    subgraph ClusterInternal["CLUSTER-INTERNAL SERVICES (No Encryption)"]
-        vLLM["vLLM Inference<br/>8000/TCP HTTP<br/>No auth"]
-        ModelRegistry["Kubeflow Model Registry<br/>8080/TCP HTTP<br/>No auth"]
-        Milvus["Milvus Vector Store<br/>19530/TCP gRPC<br/>TLS optional, Token optional"]
+    subgraph ExternalSecure["EXTERNAL SERVICES (TLS)"]
+        S3["S3 Storage<br/>(AWS/MinIO)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM credentials"]
+        HF["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer token (optional)"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA bearer token"]
+        LiteLLM["LiteLLM Endpoint<br/>Custom port HTTPS<br/>TLS 1.2+<br/>LLM_API_KEY"]
+        OCI["OCI Registry<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>dockerconfigjson"]
     end
 
-    subgraph ExternalTLS["EXTERNAL SERVICES (TLS 1.2+)"]
-        S3["S3/MinIO Storage<br/>443/TCP or 9000/TCP<br/>HTTPS, TLS 1.2+<br/>AWS Signature V4<br/>Secret: s3-secret"]
-        HuggingFace["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)<br/>Secret: hf-token"]
-        LlamaStack["Llama Stack API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key (header)<br/>Secret: llama_stack_secret_name"]
-        LiteLLM["LiteLLM API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key (env)<br/>Secret: llm-credentials"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Token<br/>Secret: kubernetes-credentials"]
+    subgraph InternalInsecure["INTERNAL SERVICES (Security Gaps)"]
+        LS["LlamaStack Server<br/>8321/TCP HTTP/HTTPS<br/>TLS: Optional<br/>API key auth"]
+        MR["Model Registry<br/>8080/TCP HTTP<br/>TLS: NONE<br/>Auth: NONE"]
     end
 
-    subgraph BuildTime["BUILD-TIME (Konflux)"]
-        RHPyPI["Red Hat Internal PyPI<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>No auth"]
-        PyPI["PyPI (pypi.org)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>No auth"]
-    end
+    %% Secure egress flows
+    AutoML -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM (s3-secret)"| S3
+    AutoRAG -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM (s3-secret)<br/>verify=False fallback"| S3
+    Finetune -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN (hf-token)"| HF
+    Finetune -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    Utility -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HF
+    Utility -->|"HTTPS<br/>TLS 1.2+<br/>LLM_API_KEY"| LiteLLM
+    Utility -->|"HTTPS/443<br/>TLS 1.2+<br/>dockerconfigjson"| OCI
 
-    %% Init container flow
-    InitContainer -->|"Filesystem copy"| SharedVol
-    KFPServer -->|"Filesystem read"| SharedVol
-
-    %% Runtime image usage
-    AutoMLImg -.->|"base_image"| StepPod
-    AutoRAGImg -.->|"base_image"| StepPod
-
-    %% Egress to external TLS services
-    StepPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS Sig V4"| S3
-    StepPod -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HuggingFace
-    StepPod -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| LlamaStack
-    StepPod -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| LiteLLM
-    StepPod -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-
-    %% Egress to cluster-internal services
-    StepPod -->|"HTTP/8000<br/>No encryption"| vLLM
-    StepPod -->|"HTTP/8080<br/>No encryption"| ModelRegistry
-    StepPod -->|"gRPC/19530<br/>TLS optional"| Milvus
+    %% Insecure egress flows
+    AutoRAG -->|"HTTP/8321<br/>TLS: Optional<br/>API key (llama-stack-secret)"| LS
+    Utility -->|"HTTP/8080<br/>NO TLS<br/>NO AUTH"| MR
 
     %% Styling
-    classDef pipeline fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef internal fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef external fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef buildtime fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef cluster fill:#e8f4f8,stroke:#2c3e50,stroke-width:2px
+    classDef pod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef secure fill:#dff0d8,stroke:#3c763d,stroke-width:2px
+    classDef insecure fill:#f2dede,stroke:#a94442,stroke-width:2px
+    classDef initcontainer fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
 
-    class InitContainer,SharedVol,KFPServer,StepPod,AutoMLImg,AutoRAGImg pipeline
-    class vLLM,ModelRegistry,Milvus internal
-    class S3,HuggingFace,LlamaStack,LiteLLM,K8sAPI external
-    class RHPyPI,PyPI buildtime
+    class InitContainer,SharedVol,KFPServer initcontainer
+    class AutoML,AutoRAG,Finetune,Utility pod
+    class S3,HF,K8sAPI,LiteLLM,OCI secure
+    class LS,MR insecure

@@ -1,49 +1,44 @@
 workspace {
     model {
-        operator = person "Platform Operator" "Deploys and configures guardrails detectors"
-        dataScientist = person "Data Scientist" "Configures guardrails policies via Orchestrator"
+        orchestrator = person "FMS Guardrails Orchestrator" "Calls detector endpoints for content analysis as part of the guardrails pipeline"
 
-        guardrailsDetectors = softwareSystem "Guardrails Detectors" "Collection of text detection microservices for content safety and PII detection" {
-            builtInDetector = container "Built-in Detector" "Regex-based PII detection, file-type validation, custom Python detectors" "Python FastAPI/uvicorn, 8080/TCP"
-            hfDetector = container "HuggingFace Detector" "ML model inference for content classification using HuggingFace transformers" "Python FastAPI/uvicorn + PyTorch, 8000/TCP"
-            judgeDetector = container "LLM Judge Detector" "LLM-as-a-Judge evaluation using vllm_judge library" "Python FastAPI/uvicorn, 8000/TCP"
-            commonLib = container "Common Library" "Shared FastAPI base class, Pydantic schemas, Prometheus instrumentation, logging" "Python Library"
+        guardrailsDetectors = softwareSystem "Guardrails Detectors" "Collection of detector algorithm microservices for text content safety analysis" {
+            builtInDetector = container "Built-in Detector" "Lightweight text detection via regex (PII), file-type validation, and custom Python detectors" "Python FastAPI/uvicorn" "Service"
+            huggingfaceDetector = container "HuggingFace Detector" "ML model-based content classification using HuggingFace Transformers and PyTorch" "Python FastAPI/uvicorn" "Service"
+            llmJudgeDetector = container "LLM Judge Detector" "LLM-as-a-judge content evaluation via external vLLM server (upstream only)" "Python FastAPI/uvicorn" "Upstream"
+            commonFramework = container "Common Framework" "Shared FastAPI base class, Pydantic schemas, Prometheus instrumentation, logging" "Python Library" "Library"
         }
 
-        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "Orchestrates content analysis across multiple detectors" "Internal RHOAI"
-        kserve = softwareSystem "KServe" "Serverless ML inference platform for deploying detectors" "Internal RHOAI"
-        istio = softwareSystem "Istio Service Mesh" "mTLS enforcement and traffic management" "External"
-        s3 = softwareSystem "S3/MinIO Storage" "Model artifact storage" "External"
-        vllmServer = softwareSystem "vLLM Server" "OpenAI-compatible LLM inference backend" "External"
+        kserve = softwareSystem "KServe" "Kubernetes inference serving platform for deploying ML models" "External"
+        istio = softwareSystem "Istio Service Mesh" "Service mesh providing mTLS and traffic management" "External"
+        s3Storage = softwareSystem "S3/Minio Storage" "Object storage for HuggingFace model artifacts" "External"
+        vllmServer = softwareSystem "vLLM Server" "External vLLM-compatible LLM server for judge evaluation" "External"
         prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
-        hfHub = softwareSystem "HuggingFace Hub" "Pre-trained model repository" "External"
+        huggingfaceHub = softwareSystem "HuggingFace Hub" "Model repository for downloading pre-trained models" "External"
 
-        # Relationships - External
-        orchestrator -> guardrailsDetectors "Sends content analysis requests" "HTTP REST"
-        kserve -> guardrailsDetectors "Deploys HuggingFace and LLM Judge detectors as InferenceServices"
-        operator -> kserve "Configures ServingRuntimes and InferenceServices" "kubectl/oc"
+        # Relationships - System Context
+        orchestrator -> guardrailsDetectors "Calls detector endpoints for content analysis" "HTTP REST"
 
-        # Relationships - Internal
-        builtInDetector -> commonLib "Extends DetectorBaseAPI"
-        hfDetector -> commonLib "Extends DetectorBaseAPI"
-        judgeDetector -> commonLib "Extends DetectorBaseAPI"
+        # Relationships - Container Level
+        orchestrator -> builtInDetector "POST /api/v1/text/contents" "HTTP/8080"
+        orchestrator -> huggingfaceDetector "POST /api/v1/text/contents" "HTTP/8000"
+        orchestrator -> llmJudgeDetector "POST /api/v1/text/contents, /api/v1/text/generation" "HTTP/8000"
 
-        orchestrator -> builtInDetector "POST /api/v1/text/contents" "HTTP/8080 mTLS"
-        orchestrator -> hfDetector "POST /api/v1/text/contents" "HTTP/8000 mTLS"
-        orchestrator -> judgeDetector "POST /api/v1/text/contents" "HTTP/8000 mTLS"
+        builtInDetector -> commonFramework "extends DetectorBaseAPI"
+        huggingfaceDetector -> commonFramework "extends DetectorBaseAPI"
+        llmJudgeDetector -> commonFramework "extends DetectorBaseAPI"
 
-        hfDetector -> s3 "Downloads model files via KServe Storage Initializer" "HTTP/9000 AWS IAM"
-        judgeDetector -> vllmServer "Sends evaluation requests to LLM" "HTTP/8080"
+        llmJudgeDetector -> vllmServer "Delegates LLM-as-a-judge evaluation" "HTTP (OpenAI-compatible)"
+        huggingfaceDetector -> s3Storage "Downloads model artifacts via KServe storage initializer" "HTTP/9000"
+        huggingfaceDetector -> huggingfaceHub "Downloads pre-trained models (init)" "HTTPS/443"
 
-        prometheus -> builtInDetector "Scrapes metrics" "HTTP GET /metrics"
-        prometheus -> hfDetector "Scrapes metrics" "HTTP GET /metrics"
-        prometheus -> judgeDetector "Scrapes metrics" "HTTP GET /metrics"
+        kserve -> huggingfaceDetector "Deploys as InferenceService/ServingRuntime"
+        kserve -> llmJudgeDetector "Deploys as InferenceService/ServingRuntime"
+        istio -> guardrailsDetectors "Provides sidecar mTLS and traffic management"
 
-        istio -> builtInDetector "Enforces mTLS" "sidecar injection"
-        istio -> hfDetector "Enforces mTLS" "sidecar injection"
-        istio -> judgeDetector "Enforces mTLS" "sidecar injection"
-
-        hfDetector -> hfHub "Downloads models (init container, example only)" "HTTPS/443"
+        prometheus -> builtInDetector "Scrapes /metrics" "HTTP/8080"
+        prometheus -> huggingfaceDetector "Scrapes /metrics" "HTTP/8000"
+        prometheus -> llmJudgeDetector "Scrapes /metrics" "HTTP/8000"
     }
 
     views {
@@ -59,24 +54,28 @@ workspace {
 
         styles {
             element "Software System" {
-                background #1168bd
+                background #438dd5
                 color #ffffff
             }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Upstream" {
+                background #f5a623
+                color #ffffff
+            }
+            element "Service" {
                 background #7ed321
+                color #ffffff
+            }
+            element "Library" {
+                background #4a90e2
                 color #ffffff
             }
             element "Person" {
                 shape person
                 background #08427b
-                color #ffffff
-            }
-            element "Container" {
-                background #438dd5
                 color #ffffff
             }
         }

@@ -1,56 +1,72 @@
 sequenceDiagram
     participant Client as External Client
-    participant Gateway as KServe Gateway /<br/>kube-rbac-proxy<br/>443/TCP HTTPS TLS 1.2+
+    participant Gateway as RHOAI Gateway<br/>443/TCP HTTPS TLS 1.2+
     participant REST as MLServer REST<br/>8080/TCP HTTP
-    participant gRPC as MLServer gRPC<br/>8081/TCP gRPC (HTTP/2)
-    participant DataPlane as DataPlane<br/>V2 Protocol Handler
-    participant Registry as Model Registry
-    participant Allowlist as Trusted Runtimes<br/>Allowlist
+    participant GRPC as MLServer gRPC<br/>8081/TCP gRPC (insecure)
+    participant DP as DataPlane Handler
+    participant Batcher as Adaptive Batcher<br/>(asyncio queue)
+    participant Cache as Response Cache<br/>(in-memory FIFO)
+    participant Codecs as Codec System
     participant Model as MLModel Runtime<br/>(sklearn/xgboost/lightgbm/onnx)
-    participant Pool as InferencePool<br/>(multiprocessing workers)
-    participant Metrics as Metrics Server<br/>8082/TCP HTTP
-    participant Prometheus as Prometheus
-    participant Kafka as Kafka Broker<br/>9092/TCP
-    participant KafkaSrv as MLServer KafkaServer
-    participant OTel as OpenTelemetry<br/>Collector
+    participant Parallel as Parallel Worker Pool<br/>(multiprocessing.Queue IPC)
+    participant Storage as Model Storage<br/>/mnt/models (PVC/S3)
 
-    Note over Client,Gateway: Flow 1: REST Inference Request
-    Client->>Gateway: POST /v2/models/{model}/infer<br/>Auth: Bearer Token
-    Gateway->>REST: HTTP/8080 (pod-internal)<br/>No encryption
-    REST->>DataPlane: infer(payload)
-    DataPlane->>Registry: get_model(name)
-    Registry->>Allowlist: validate implementation
-    Allowlist-->>Registry: allowed
-    DataPlane->>Model: predict(request)
-    Model-->>DataPlane: InferenceResponse
-    DataPlane-->>REST: response
-    REST-->>Gateway: JSON Response
-    Gateway-->>Client: HTTPS Response
+    Note over Client,Storage: Flow 1: REST Inference Request
+    Client->>Gateway: POST /v2/models/{name}/infer<br/>Auth: Bearer Token (kube-rbac-proxy)
+    Gateway->>REST: HTTP 8080/TCP<br/>No encryption (cluster-internal)
+    REST->>DP: In-process routing
+    DP->>Cache: Check cache (request hash)
+    alt Cache Hit
+        Cache-->>DP: Cached response
+    else Cache Miss
+        DP->>Codecs: Decode request inputs<br/>(numpy/pandas/string)
+        Codecs->>Model: MLModel.predict()
+        Model-->>Codecs: Prediction result
+        Codecs-->>DP: Encoded response
+        DP->>Cache: Store in cache
+    end
+    DP-->>REST: InferenceResponse
+    REST-->>Gateway: HTTP response
+    Gateway-->>Client: HTTPS response<br/>TLS 1.2+
 
-    Note over Client,Gateway: Flow 2: gRPC Inference Request
-    Client->>Gateway: ModelInfer RPC<br/>Auth: Bearer Token
-    Gateway->>gRPC: gRPC/8081 (pod-internal)<br/>No encryption
-    gRPC->>DataPlane: infer(payload)
-    DataPlane->>Pool: dispatch (parallel mode)
-    Pool->>Model: predict(request) [worker process]
-    Model-->>Pool: InferenceResponse
-    Pool-->>DataPlane: response
-    DataPlane-->>gRPC: response
-    gRPC-->>Gateway: gRPC Response
-    Gateway-->>Client: HTTPS/gRPC Response
+    Note over Client,Storage: Flow 2: gRPC Inference Request
+    Client->>Gateway: gRPC ModelInfer<br/>Auth: Bearer Token
+    Gateway->>GRPC: gRPC 8081/TCP<br/>No encryption (cluster-internal)
+    GRPC->>DP: In-process routing
+    DP->>Codecs: Decode tensor inputs
+    Codecs->>Model: MLModel.predict()
+    Model-->>Codecs: Prediction result
+    Codecs-->>DP: Encoded response
+    DP-->>GRPC: ModelInferResponse
+    GRPC-->>Gateway: gRPC response
+    Gateway-->>Client: gRPC/HTTP2 response<br/>TLS 1.2+
 
-    Note over Kafka,KafkaSrv: Flow 3: Kafka Event-Driven Inference
-    Kafka->>KafkaSrv: consume message<br/>TCP/9092
-    KafkaSrv->>DataPlane: infer(payload)
-    DataPlane->>Model: predict(request)
-    Model-->>DataPlane: InferenceResponse
-    DataPlane-->>KafkaSrv: response
-    KafkaSrv->>Kafka: produce response<br/>TCP/9092
+    Note over Client,Storage: Flow 3: Adaptive Batching
+    par Multiple concurrent requests
+        Client->>REST: POST /v2/models/{name}/infer (req 1)
+        Client->>REST: POST /v2/models/{name}/infer (req 2)
+        Client->>REST: POST /v2/models/{name}/infer (req 3)
+    end
+    REST->>DP: 3 concurrent requests
+    DP->>Batcher: Enqueue all 3 requests
+    Batcher->>Batcher: _merge_requests()<br/>Combine into single batch
+    Batcher->>Model: MLModel.predict(batched)
+    Model-->>Batcher: Batched prediction
+    Batcher->>Batcher: split_response()<br/>Separate individual results
+    Batcher-->>DP: Individual responses (x3)
+    DP-->>REST: Responses
+    REST-->>Client: Individual HTTP responses
 
-    Note over Prometheus,Metrics: Flow 4: Metrics Scraping
-    Prometheus->>Metrics: GET /metrics<br/>HTTP/8082
-    Metrics-->>Prometheus: Prometheus metrics<br/>(counters, histograms)
+    Note over Client,Storage: Flow 4: Parallel Worker Inference
+    REST->>DP: Inference request
+    DP->>Parallel: ParallelModel proxy
+    Parallel->>Parallel: Dispatcher (round-robin)<br/>Select worker process
+    Parallel->>Model: multiprocessing.Queue IPC<br/>to subprocess worker
+    Model->>Model: MLModel.predict()<br/>(in isolated subprocess)
+    Model-->>Parallel: Response via IPC queue
+    Parallel-->>DP: Inference result
+    DP-->>REST: Response
 
-    Note over REST,OTel: Flow 5: Distributed Tracing (Optional)
-    REST->>OTel: OTLP spans export<br/>gRPC (insecure)
-    gRPC->>OTel: OTLP spans export<br/>gRPC (insecure)
+    Note over Client,Storage: Model Loading (Startup)
+    Storage->>Model: Load model artifacts<br/>from /mnt/models
+    Model->>Model: Parse model-settings.json<br/>Initialize runtime

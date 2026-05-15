@@ -1,62 +1,71 @@
 sequenceDiagram
     participant Client as External Client
-    participant Envoy as Envoy Gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant BBR as Payload Processing BBR<br/>9004/TCP gRPC mTLS
-    participant MPR as model-provider-resolver<br/>plugin
-    participant AT as api-translation<br/>plugin
-    participant AKI as apikey-injection<br/>plugin
-    participant NeMo as NeMo Guardrails<br/>(optional)
-    participant K8s as Kubernetes API<br/>443/TCP HTTPS
+    participant Gateway as Istio Gateway (Envoy)<br/>443/TCP HTTPS TLS 1.2+
+    participant ExtProc as Payload Processing<br/>9004/TCP gRPC plaintext
+    participant ModelRes as model-provider-resolver<br/>(in-process plugin)
+    participant APITrans as api-translation<br/>(in-process plugin)
+    participant APIKey as apikey-injection<br/>(in-process plugin)
+    participant NemoGrd as nemo-request-guard<br/>(optional plugin)
+    participant NemoSvc as NeMo Guardrails<br/>Service
     participant Provider as External AI Provider<br/>443/TCP HTTPS
 
-    Note over Client,Provider: Flow 1: External Model Inference Request Processing
+    Note over Client,Provider: Flow 1: External Model Inference Request Pipeline
 
-    Client->>Envoy: POST /v1/chat/completions<br/>Auth: Bearer Token (optional)<br/>Body: OpenAI Chat Completions format
+    Client->>Gateway: POST /v1/chat/completions<br/>Auth: Bearer Token (user)<br/>Body: OpenAI format
+    Gateway->>ExtProc: ext_proc ProcessingRequest<br/>gRPC/9004 (pod-local, plaintext)
 
-    Note over Envoy,BBR: ext_proc filter intercepts request
-    Envoy->>BBR: gRPC ext_proc RequestBody<br/>mTLS (Istio mesh)
+    Note over ExtProc: body-field-to-header extracts<br/>model name → X-Gateway-Model-Name
 
-    Note over BBR: Plugin 1: body-field-to-header<br/>Extracts "model" field → X-Gateway-Model-Name header
+    ExtProc->>ModelRes: RequestProcess()
+    Note over ModelRes: Reads modelInfoStore (in-memory)<br/>Pre-cached via ExternalModel reconciler
+    ModelRes-->>ExtProc: CycleState: provider, targetModel, credRef
 
-    BBR->>MPR: Execute RequestProcessor
-    Note over MPR,K8s: Uses in-memory cache<br/>(controller-runtime watch)
-    MPR-->>BBR: CycleState: {provider, model,<br/>credential-ref-name, credential-ref-namespace}
+    ExtProc->>APITrans: RequestProcess()
+    Note over APITrans: Reads CycleState.ProviderName<br/>Translates OpenAI → provider format<br/>(Anthropic, Vertex, Azure, Bedrock)
+    APITrans-->>ExtProc: Mutated body + headers<br/>Strips original Authorization header
 
-    BBR->>AT: Execute RequestProcessor
-    Note over AT: Reads provider from CycleState<br/>Translates body to provider format<br/>(Anthropic: full translation,<br/>Azure/OpenAI/Vertex/Bedrock: path rewrite)
-    AT-->>BBR: Mutated request body + headers
+    ExtProc->>APIKey: RequestProcess()
+    Note over APIKey: Reads CycleState.CredentialRef<br/>Reads secretStore (in-memory)<br/>Injects provider-specific auth header
+    APIKey-->>ExtProc: Added auth header<br/>(Bearer / x-api-key / api-key)
 
-    BBR->>AKI: Execute RequestProcessor
-    Note over AKI,K8s: Reads credential-ref from CycleState<br/>Looks up Secret in in-memory store
-    AKI-->>BBR: Injected auth header<br/>(Authorization/x-api-key/api-key)
+    ExtProc-->>Gateway: ext_proc ProcessingResponse<br/>Mutated headers + body
 
-    opt NeMo Guardrails Enabled
-        BBR->>NeMo: POST /v1/guardrail/checks<br/>HTTP, configurable timeout (360s)
-        NeMo-->>BBR: HTTP 200 {status: "success" | "blocked"}
-        Note over BBR: If blocked → 403 Forbidden<br/>Short-circuits pipeline
+    Gateway->>Provider: Forwarded request<br/>Provider-native format<br/>Auth: Injected API key
+    Provider-->>Gateway: Provider-native response
+
+    Gateway->>ExtProc: ext_proc ProcessingRequest (response phase)
+    ExtProc->>APITrans: ResponseProcess()
+    Note over APITrans: Translates provider response<br/>→ OpenAI format
+    APITrans-->>ExtProc: Translated response body
+    ExtProc-->>Gateway: ext_proc ProcessingResponse
+
+    Gateway-->>Client: OpenAI-format response
+
+    Note over Client,Provider: Flow 2: NeMo Guardrails Check (Optional - when enabled)
+
+    Client->>Gateway: POST /v1/chat/completions
+    Gateway->>ExtProc: ext_proc ProcessingRequest
+    ExtProc->>NemoGrd: RequestProcess()
+    NemoGrd->>NemoSvc: POST /v1/rails/check<br/>Body: last user message<br/>Timeout: 360s
+    NemoSvc-->>NemoGrd: Rail evaluation result
+    alt Rails pass
+        NemoGrd-->>ExtProc: Continue pipeline
+    else Rails block
+        NemoGrd-->>ExtProc: Return error (blocked)
+        ExtProc-->>Gateway: Error response
+        Gateway-->>Client: 400/403 Blocked by guardrails
     end
 
-    BBR-->>Envoy: gRPC ext_proc response<br/>Mutated headers + body
+    Note over Client,Provider: Flow 3: Background Reconciliation (async, continuous)
 
-    Envoy->>Provider: POST (provider-specific path)<br/>HTTPS/443, TLS 1.2+<br/>Provider API key header
+    loop ExternalModel Reconciler
+        ModelRes->>ModelRes: Watch ExternalModel CRDs<br/>via controller-runtime
+        Note over ModelRes: K8s API 443/TCP HTTPS<br/>Auth: ServiceAccount token
+        ModelRes->>ModelRes: Update modelInfoStore
+    end
 
-    Provider-->>Envoy: Provider-native response
-
-    Note over Envoy,BBR: ext_proc filter intercepts response
-    Envoy->>BBR: gRPC ext_proc ResponseBody<br/>mTLS (Istio mesh)
-
-    BBR->>AT: Execute ResponseProcessor
-    Note over AT: Translates provider response<br/>back to OpenAI format<br/>(Anthropic: full translation,<br/>Azure: field stripping)
-    AT-->>BBR: Normalized OpenAI response body
-
-    BBR-->>Envoy: gRPC ext_proc response<br/>Translated response body
-
-    Envoy-->>Client: OpenAI Chat Completions response<br/>HTTPS/443, TLS 1.2+
-
-    Note over Client,Provider: Flow 2: Background Reconciliation (continuous)
-
-    K8s-->>MPR: Watch ExternalModel CRDs<br/>(maas.opendatahub.io/v1alpha1)
-    Note over MPR: Updates in-memory model store<br/>Maps model name → provider metadata
-
-    K8s-->>AKI: Watch Secrets<br/>(label: inference.networking.k8s.io/bbr-managed=true)
-    Note over AKI: Updates in-memory credential store<br/>Maps namespace/name → credential data
+    loop Secret Reconciler
+        APIKey->>APIKey: Watch labeled Secrets<br/>(bbr-managed=true)
+        Note over APIKey: K8s API 443/TCP HTTPS<br/>Auth: ServiceAccount token
+        APIKey->>APIKey: Update secretStore
+    end

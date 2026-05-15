@@ -1,53 +1,46 @@
 sequenceDiagram
-    participant Admin as Admin / User
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
-    participant Operator as llama-stack-k8s-operator<br/>Reconciler
-    participant Kustomize as Kustomize Pipeline<br/>(in-process)
-    participant LlamaStack as Llama Stack Server<br/>8321/TCP HTTP
-    participant ODHBundle as odh-trusted-ca-bundle<br/>ConfigMap
-    participant UserCM as User ConfigMaps
+    participant User as User / kubectl
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
+    participant Webhook as Validating Webhook<br/>9443/TCP HTTPS TLS
+    participant Operator as OGX K8s Operator<br/>(controller-runtime)
+    participant Kustomize as Embedded Kustomize<br/>Engine
+    participant OGXPod as OGX Server Pod<br/>8321/TCP HTTP
+    participant Provider as Remote Provider<br/>(vLLM/OpenAI/Azure/etc.)<br/>443/TCP HTTPS TLS 1.2+
+    participant VectorDB as Vector DB<br/>(PGVector/Milvus/Qdrant)
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
 
-    Note over Admin,UserCM: Flow 1: LlamaStackDistribution Reconciliation
+    Note over User,S3: Flow 1: OGXServer Reconciliation
 
-    Admin->>K8sAPI: kubectl apply LlamaStackDistribution CR
-    K8sAPI->>Operator: Watch event (CR change)<br/>ServiceAccount Bearer Token
-    Operator->>K8sAPI: Get CR spec & status<br/>HTTPS/443 TLS 1.2+
+    User->>K8sAPI: kubectl apply OGXServer CR
+    K8sAPI->>Webhook: POST /validate-ogx-io-v1beta1-ogxserver<br/>HTTPS/9443, K8s API mTLS
+    Webhook-->>K8sAPI: Admission Response (allow/deny)
+    K8sAPI-->>User: CR created/rejected
 
-    Note over Operator,Kustomize: Manifest Rendering
-    Operator->>Kustomize: Render base manifests
-    Kustomize->>Kustomize: 1. Name Prefixer
-    Kustomize->>Kustomize: 2. Namespace Setter
-    Kustomize->>Kustomize: 3. Field Mutator (ports, replicas, storage)
-    Kustomize->>Kustomize: 4. NetworkPolicy Transformer
-    Kustomize-->>Operator: Rendered K8s resources
+    K8sAPI->>Operator: Watch event (OGXServer changed)<br/>HTTPS/443, ServiceAccount token
+    Operator->>Kustomize: Render manifests from<br/>base templates + CR spec
+    Kustomize-->>Operator: Rendered K8s resources<br/>(Deployment, Service, NP, PVC, HPA, PDB)
+    Operator->>K8sAPI: Create/Update Deployment<br/>HTTPS/443, ServiceAccount token
+    Operator->>K8sAPI: Create/Update Service, NetworkPolicy,<br/>PVC, HPA, PDB, Ingress, ConfigMap
+    Operator->>OGXPod: GET /v1/providers, /v1/version<br/>HTTP/8321, health check
+    OGXPod-->>Operator: Provider info, version
+    Operator->>K8sAPI: Update OGXServer status<br/>HTTPS/443, ServiceAccount token
 
-    Note over Operator,UserCM: CA Bundle Aggregation
-    Operator->>ODHBundle: directGet odh-trusted-ca-bundle<br/>HTTPS/443 TLS 1.2+
-    ODHBundle-->>Operator: Platform CA certificates
-    Operator->>UserCM: directGet user CA bundle<br/>HTTPS/443 TLS 1.2+
-    UserCM-->>Operator: User CA certificates
-    Operator->>Operator: Validate PEM/X.509 certs<br/>(max 10MB, 1000 certs)
-    Operator->>K8sAPI: Create/Update {instance}-ca-bundle ConfigMap
+    Note over User,S3: Flow 2: OGX Server Inference Request
 
-    Note over Operator,K8sAPI: Resource Application (SSA)
-    Operator->>K8sAPI: Apply Deployment, Service, SA,<br/>PVC, NP, PDB, HPA, RoleBinding
-    K8sAPI-->>Operator: Resources applied
+    User->>OGXPod: POST /v1/inference<br/>HTTP or HTTPS/{port}<br/>Application-level auth
+    OGXPod->>Provider: Forward to remote provider<br/>HTTPS/443, API key / IAM credentials
+    Provider-->>OGXPod: Inference response
+    OGXPod->>VectorDB: Vector I/O query<br/>TCP, password/token auth
+    VectorDB-->>OGXPod: Vector results
+    OGXPod->>S3: File storage operations<br/>HTTPS/443, AWS credentials
+    S3-->>OGXPod: File data
+    OGXPod-->>User: Inference response
 
-    Note over Operator,LlamaStack: Status Probing
-    Operator->>LlamaStack: GET /v1/health<br/>HTTP/8321
-    LlamaStack-->>Operator: Health status
-    Operator->>LlamaStack: GET /v1/providers<br/>HTTP/8321
-    LlamaStack-->>Operator: Provider info
-    Operator->>LlamaStack: GET /v1/version<br/>HTTP/8321
-    LlamaStack-->>Operator: Version info
-    Operator->>K8sAPI: Update CR status<br/>HTTPS/443 TLS 1.2+
+    Note over User,S3: Flow 3: Legacy Adoption Migration
 
-    Note over Admin,LlamaStack: Flow 2: External Client Access (exposeRoute=true)
-
-    participant Client as External Client
-    participant Ingress as Ingress Controller<br/>80/TCP HTTP
-
-    Client->>Ingress: HTTP request<br/>80/TCP
-    Ingress->>LlamaStack: Forward to {instance}-service<br/>8321/TCP HTTP
-    LlamaStack-->>Ingress: Response
-    Ingress-->>Client: Response
+    User->>K8sAPI: Create OGXServer CR with<br/>adoption annotations<br/>(ogx.io/adopt-storage,<br/>ogx.io/adopt-networking)
+    K8sAPI->>Operator: Watch event (OGXServer with adoption)
+    Operator->>K8sAPI: Scale legacy LlamaStackDistribution<br/>Deployment to 0 replicas
+    Operator->>K8sAPI: Wait for legacy pods to terminate
+    Operator->>K8sAPI: Relabel PVCs, update Service selectors,<br/>transfer Ingress ownership
+    Operator->>K8sAPI: Record adoption timestamps<br/>in OGXServer annotations

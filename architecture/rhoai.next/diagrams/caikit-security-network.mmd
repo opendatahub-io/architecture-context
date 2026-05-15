@@ -1,60 +1,72 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client / Data Scientist"]
+        Client["External Client"]
     end
 
-    subgraph Platform["PLATFORM BOUNDARY (RHOAI)"]
-        KRBAC["kube-rbac-proxy sidecar<br/>(RHOAI only)<br/>Bearer Token Auth<br/>K8s TokenReview"]
+    subgraph Platform["PLATFORM LAYER (KServe / Istio)"]
+        Gateway["KServe / Istio Gateway<br/>443/TCP<br/>TLS 1.2+<br/>Platform AuthN/AuthZ"]
     end
 
-    subgraph CaikitRuntime["CAIKIT RUNTIME (Application Boundary)"]
+    subgraph CaikitPod["CAIKIT RUNTIME POD"]
         direction TB
 
-        HTTPServer["HTTP Server (FastAPI/Uvicorn)<br/>8080/TCP HTTP/1.1<br/>Optional TLS/mTLS<br/>Endpoints: /api/v1/{task}/..., /health, /models"]
-        GRPCServer["gRPC Server<br/>8085/TCP gRPC (HTTP/2)<br/>Optional TLS/mTLS<br/>Services: {Task}Service, ModelRuntime, Health"]
-        Metrics["Prometheus Metrics<br/>8086/TCP HTTP<br/>Plaintext (no encryption)<br/>No Auth"]
+        subgraph Servers["Network Listeners"]
+            GRPCServer["gRPC Server<br/>runtime.grpc.port/TCP<br/>gRPC/HTTP2<br/>Configurable: TLS/mTLS/plaintext"]
+            HTTPServer["HTTP Server (FastAPI)<br/>runtime.http.port/TCP<br/>HTTP/1.1 + SSE<br/>Configurable: TLS/mTLS/plaintext"]
+            MetricsServer["Metrics Server<br/>runtime.metrics.port/TCP<br/>HTTP plaintext"]
+        end
+
+        subgraph Sidecar["ModelMesh Sidecar Interface"]
+            ModelRuntime["ModelRuntime gRPC<br/>Unix socket (preferred)<br/>No encryption (local)"]
+        end
+
+        subgraph Processing["Processing Layer"]
+            Servicers["GlobalPredictServicer<br/>GlobalTrainServicer<br/>ModelManager"]
+        end
+
+        GRPCServer --> Servicers
+        HTTPServer --> Servicers
+        ModelRuntime --> Servicers
     end
 
-    subgraph Sidecar["SIDECAR / LOCAL"]
-        ModelMesh["Model Mesh Controller<br/>Unix: /tmp/mmesh/grpc.sock<br/>Fallback: 8085/TCP gRPC<br/>Optional TLS, No Auth"]
-        HealthProbe["caikit_health_probe<br/>K8s liveness/readiness<br/>Probes both servers<br/>Full TLS handshake"]
+    subgraph PodLocal["POD-LOCAL"]
+        ModelMesh["ModelMesh Controller<br/>Unix socket<br/>gRPC ModelRuntime protocol"]
     end
 
-    subgraph EgressZone["EGRESS (Outbound)"]
-        OTEL["OpenTelemetry Collector<br/>4317/TCP gRPC or 4318/TCP HTTP<br/>Optional TLS/mTLS"]
-        S3["S3-Compatible Storage<br/>443/TCP HTTPS<br/>TLS, AWS IAM / Access Key"]
-        RemoteCaikit["Remote Caikit Servers<br/>Configurable port<br/>gRPC or HTTP<br/>Optional TLS/mTLS"]
+    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
+        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>HMAC / IAM Auth"]
+        OTel["OTel Collector<br/>configurable/TCP<br/>gRPC or HTTP (OTLP)<br/>Configurable TLS/mTLS"]
+        RemoteCaikit["Remote Caikit Runtime<br/>configurable/TCP<br/>gRPC or HTTP<br/>Configurable TLS/mTLS/Bearer"]
     end
 
-    %% External flows
-    Client -->|"HTTP/8080 or gRPC/8085<br/>Optional TLS/mTLS<br/>Optional mTLS cert"| KRBAC
-    KRBAC -->|"Authenticated request<br/>Bearer → TokenReview"| HTTPServer
-    KRBAC -->|"Authenticated request<br/>Bearer → TokenReview"| GRPCServer
+    subgraph Monitoring["MONITORING (Inbound)"]
+        Prometheus["Prometheus<br/>HTTP scrape<br/>plaintext"]
+    end
 
-    %% Sidecar flows
-    ModelMesh -->|"gRPC Unix socket<br/>/tmp/mmesh/grpc.sock<br/>loadModel/unloadModel"| GRPCServer
-    HealthProbe -->|"HTTP GET /api/v1/health<br/>+ gRPC health.v1.Health<br/>Full TLS verification"| HTTPServer
-    HealthProbe -->|"gRPC health check<br/>Full TLS verification"| GRPCServer
+    %% Flows
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Platform Auth"| Gateway
+    Gateway -->|"gRPC or HTTP<br/>Configurable TLS/mTLS<br/>Client cert (optional)"| GRPCServer
+    Gateway -->|"HTTP/HTTPS<br/>Configurable TLS/mTLS<br/>Client cert (optional)"| HTTPServer
 
-    %% Egress flows
-    CaikitRuntime -->|"Traces: gRPC/4317<br/>or HTTP/4318<br/>Optional TLS/mTLS"| OTEL
-    CaikitRuntime -->|"Model artifacts<br/>HTTPS/443<br/>TLS, IAM Auth"| S3
-    CaikitRuntime -->|"Remote inference<br/>gRPC or HTTP<br/>Optional TLS/mTLS"| RemoteCaikit
+    ModelMesh -->|"gRPC (Unix socket)<br/>No encryption<br/>Pod-local only"| ModelRuntime
 
-    %% Monitoring
-    Prom["Prometheus"] -->|"Scrape HTTP/8086<br/>Plaintext"| Metrics
+    Servicers -->|"HTTPS/443<br/>TLS 1.2+<br/>HMAC/IAM"| S3
+    Servicers -->|"gRPC or HTTP<br/>Configurable TLS/mTLS"| OTel
+    Servicers -->|"gRPC or HTTP<br/>TLS/mTLS/Bearer"| RemoteCaikit
+
+    Prometheus -->|"HTTP scrape<br/>plaintext<br/>No auth"| MetricsServer
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef platform fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef runtime fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef sidecar fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef caikitpod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef podlocal fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef monitoring fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
 
     class Client external
-    class KRBAC platform
-    class HTTPServer,GRPCServer,Metrics runtime
-    class ModelMesh,HealthProbe sidecar
-    class OTEL,S3,RemoteCaikit egress
-    class Prom monitoring
+    class Gateway platform
+    class GRPCServer,HTTPServer,MetricsServer,ModelRuntime,Servicers caikitpod
+    class ModelMesh podlocal
+    class S3,OTel,RemoteCaikit externalservice
+    class Prometheus monitoring

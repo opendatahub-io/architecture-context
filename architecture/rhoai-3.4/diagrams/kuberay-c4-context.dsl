@@ -1,53 +1,58 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and manages Ray distributed computing clusters, jobs, and serving deployments"
+        // People
+        dataScientist = person "Data Scientist" "Creates Ray clusters, submits jobs, and deploys serving workloads"
+        platformAdmin = person "Platform Admin" "Deploys and configures the KubeRay operator via RHOAI"
 
-        kuberay = softwareSystem "KubeRay Operator" "Manages lifecycle of Ray clusters, jobs, and serving deployments on Kubernetes via CRDs" {
-            rayClusterReconciler = container "RayClusterReconciler" "Core cluster orchestration — creates head/worker pods, services, ingress/routes, RBAC, Redis cleanup" "Go Controller"
-            rayJobReconciler = container "RayJobReconciler" "Job submission and lifecycle — creates RayClusters, submitter K8s Jobs, interacts with Ray Dashboard API" "Go Controller"
-            rayServiceReconciler = container "RayServiceReconciler" "Ray Serve deployment — zero-downtime upgrades via active/pending cluster switching" "Go Controller"
-            authController = container "AuthenticationController" "OAuth/OIDC auth infrastructure — HTTPRoutes, ReferenceGrants, kube-rbac-proxy ConfigMaps" "Go Controller"
-            networkPolicyCtrl = container "NetworkPolicyController" "Network access control — creates NetworkPolicies for head and worker pods" "Go Controller"
-            mtlsController = container "RayClusterMTLSController" "mTLS certificate management — cert-manager Issuers and Certificates with dynamic pod IP SANs" "Go Controller"
-            webhook = container "Admission Webhooks" "Mutating: defaults OpenShift settings; Validating: DNS1035 name, worker group uniqueness" "Go Webhook Server"
+        // Primary System
+        kuberay = softwareSystem "KubeRay Operator" "Manages Ray cluster lifecycle, jobs, and serving workloads on OpenShift with integrated security" {
+            rayClusterController = container "RayCluster Controller" "Reconciles RayCluster CRs — creates head/worker Pods, Services, autoscaler RBAC" "Go (controller-runtime)"
+            rayJobController = container "RayJob Controller" "Reconciles RayJob CRs — creates transient RayClusters and K8s Job submitters" "Go (controller-runtime)"
+            rayServiceController = container "RayService Controller" "Reconciles RayService CRs — manages zero-downtime upgrades for Serve workloads" "Go (controller-runtime)"
+            authController = container "Authentication Controller" "Creates HTTPRoutes, ReferenceGrants, kube-rbac-proxy ConfigMaps for dashboard auth" "Go (controller-runtime)" "OpenShift-specific"
+            npController = container "NetworkPolicy Controller" "Creates per-cluster head and worker NetworkPolicies for pod isolation" "Go (controller-runtime)" "OpenShift-specific"
+            mtlsController = container "mTLS Controller" "Manages cert-manager Issuers and Certificates for intra-cluster mTLS" "Go (controller-runtime)" "OpenShift-specific"
+            webhookServer = container "Webhook Server" "Mutating + validating admission webhooks for RayCluster resources" "Go (9443/TCP HTTPS)"
         }
 
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform providing API server, scheduling, and resource management" "External"
-        ray = softwareSystem "Ray Runtime" "Distributed computing framework running in head and worker pods managed by operator" "External"
-        certManager = softwareSystem "cert-manager" "X.509 certificate management — provides CA issuers and pod certificates for mTLS" "External"
-        gateway = softwareSystem "RHOAI Gateway" "Platform Gateway API endpoint (data-science-gateway) for HTTPRoute-based ingress" "Internal RHOAI"
-        openshiftOAuth = softwareSystem "OpenShift OAuth" "OpenShift built-in OAuth server for IntegratedOAuth authentication mode" "External"
-        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Sidecar for OIDC-based RBAC enforcement via TokenReview and SubjectAccessReview" "External"
-        redis = softwareSystem "Redis" "Optional external storage for Ray GCS fault tolerance" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring platform" "External"
-        volcano = softwareSystem "Volcano" "Optional batch scheduler for gang scheduling of Ray pods" "External"
-        yunikorn = softwareSystem "YuniKorn" "Optional batch scheduler with task group annotations for gang scheduling" "External"
-        schedulerPlugins = softwareSystem "scheduler-plugins" "Optional Kubernetes scheduler-plugins for coscheduling via PodGroups" "External"
-        s3 = softwareSystem "Object Storage" "Model and artifact storage (S3-compatible) accessed by Ray workloads" "External"
+        // Internal ODH/RHOAI Components
+        rhoaiOperator = softwareSystem "RHOAI Operator" "Deploys and manages KubeRay operator lifecycle" "Internal ODH"
+        gateway = softwareSystem "data-science-gateway" "Platform Gateway (Gateway API) for centralized ingress and TLS termination" "Internal ODH"
+        prometheus = softwareSystem "Prometheus" "Monitoring and metrics collection platform" "Internal ODH"
 
-        user -> kuberay "Creates RayCluster, RayJob, RayService via kubectl" "HTTPS/443"
-        kuberay -> kubernetes "CRD CRUD, pod/service/secret management, leader election" "HTTPS/443"
-        kuberay -> ray "Manages lifecycle, submits jobs, updates serve configs" "HTTP/8265"
-        kuberay -> certManager "Creates Issuer and Certificate CRs for mTLS" "HTTPS/443"
-        kuberay -> gateway "Creates HTTPRoutes for per-cluster dashboard access" "Gateway API"
-        kuberay -> openshiftOAuth "Reads cluster auth configuration, delegates via oauth-proxy" "HTTPS/443"
-        kuberay -> kubeRbacProxy "Injects sidecar for RBAC enforcement" "HTTPS/8443"
-        kuberay -> redis "GCS fault tolerance storage, cleanup on deletion" "Redis/6379"
-        kuberay -> volcano "Creates PodGroup CRs for gang scheduling" "HTTPS/443"
-        kuberay -> yunikorn "Adds task group annotations for gang scheduling" "Pod Annotations"
-        kuberay -> schedulerPlugins "Creates PodGroup CRs for coscheduling" "HTTPS/443"
-        prometheus -> kuberay "Scrapes operator and cluster metrics" "HTTP/8080"
-        ray -> s3 "Downloads model artifacts and data" "HTTPS/443"
-        user -> gateway "Accesses Ray Dashboard via authenticated gateway" "HTTPS/443"
+        // External Dependencies
+        k8sAPI = softwareSystem "Kubernetes API Server" "Kubernetes control plane for resource management" "External"
+        certManager = softwareSystem "cert-manager" "X.509 certificate lifecycle management" "External"
+        istio = softwareSystem "Istio / Service Mesh" "Service mesh for mTLS and traffic management" "External"
 
-        rayClusterReconciler -> kubernetes "Creates pods, services, secrets, RBAC" "HTTPS/443"
-        rayJobReconciler -> ray "Submits jobs, polls status" "HTTP/8265"
-        rayJobReconciler -> kubernetes "Creates submitter K8s Jobs" "HTTPS/443"
-        rayServiceReconciler -> ray "Updates serve configs, health checks" "HTTP/8265"
-        authController -> gateway "Creates HTTPRoutes, ReferenceGrants" "Gateway API"
-        authController -> kubernetes "Creates ServiceAccounts, ConfigMaps" "HTTPS/443"
-        mtlsController -> certManager "Creates Issuer and Certificate CRs" "HTTPS/443"
-        networkPolicyCtrl -> kubernetes "Creates NetworkPolicies" "HTTPS/443"
+        // Ray Runtime (managed resources)
+        rayCluster = softwareSystem "Ray Cluster" "Distributed computing cluster (head + workers) managed by KubeRay" "Managed"
+
+        // Relationships - People
+        dataScientist -> kuberay "Creates RayCluster, RayJob, RayService CRs via kubectl/UI"
+        dataScientist -> gateway "Accesses Ray Dashboard via HTTPS/443 (OIDC/OAuth)" "HTTPS/443 TLS 1.3"
+        platformAdmin -> rhoaiOperator "Configures KubeRay deployment"
+
+        // Relationships - KubeRay to external
+        kuberay -> k8sAPI "CRUD operations on Pods, Services, HTTPRoutes, NetworkPolicies, Secrets" "HTTPS/443 TLS 1.2+"
+        kuberay -> certManager "Creates Issuers and Certificates for mTLS PKI" "CRD API"
+        kuberay -> rayCluster "Creates and manages head/worker Pods, monitors dashboard" "HTTP/8265, TCP/6379"
+        kuberay -> gateway "Creates HTTPRoutes in platform namespace for dashboard access" "CRD API"
+
+        // Relationships - Internal
+        rhoaiOperator -> kuberay "Deploys via kustomize manifests"
+        gateway -> rayCluster "Routes dashboard traffic to kube-rbac-proxy sidecar" "HTTPS/8443"
+        prometheus -> kuberay "Scrapes operator metrics" "HTTP/8080"
+        prometheus -> rayCluster "Scrapes Ray cluster metrics" "HTTP/8080"
+
+        // Internal container relationships
+        rayClusterController -> k8sAPI "Creates Pods, Services, RBAC" "HTTPS/443"
+        rayJobController -> rayCluster "Submits jobs via Dashboard REST API" "HTTP/8265"
+        rayServiceController -> rayCluster "Manages Serve applications via Dashboard API" "HTTP/8265"
+        authController -> k8sAPI "Creates HTTPRoutes, ReferenceGrants, ConfigMaps" "HTTPS/443"
+        npController -> k8sAPI "Creates NetworkPolicies" "HTTPS/443"
+        mtlsController -> certManager "Creates Issuers and Certificates" "CRD API"
+        rayClusterController -> authController "Waits for AuthenticationReady condition" "Internal"
     }
 
     views {
@@ -62,21 +67,29 @@ workspace {
         }
 
         styles {
+            element "Software System" {
+                background #4a90e2
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal ODH" {
                 background #7ed321
+                color #ffffff
+            }
+            element "Managed" {
+                background #f5a623
+                color #ffffff
+            }
+            element "OpenShift-specific" {
+                background #e67e22
                 color #ffffff
             }
             element "Person" {
                 shape Person
-                background #4a90e2
-                color #ffffff
-            }
-            element "Software System" {
-                background #4a90e2
+                background #08427b
                 color #ffffff
             }
             element "Container" {

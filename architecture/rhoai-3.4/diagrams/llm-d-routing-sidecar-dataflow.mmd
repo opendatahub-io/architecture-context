@@ -1,39 +1,51 @@
 sequenceDiagram
-    participant Client as External Client
-    participant Proxy as Sidecar Proxy<br/>8000/TCP HTTPS<br/>TLS 1.2+
-    participant Validator as AllowlistValidator<br/>(SSRF Protection)
-    participant Prefiller as Remote Prefiller Pod<br/>Variable Port<br/>HTTP(S)
-    participant Decoder as Local vLLM Decoder<br/>8001/TCP<br/>HTTP(S)
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant EPP as llm-d-inference-scheduler<br/>(EPP)
+    participant Sidecar as Routing Sidecar<br/>8000/TCP · HTTPS · TLS 1.2+
+    participant Allowlist as SSRF Allowlist<br/>(In-Process)
+    participant Prefiller as Remote Prefiller<br/>HTTP(S) · Configurable Port
+    participant Decoder as Local vLLM Decoder<br/>8001/TCP · HTTP(S)
 
-    rect rgb(240, 248, 255)
-        Note over Client,Decoder: Flow 1: Disaggregated Prefill/Decode (NIXL v2)
-        Client->>Proxy: POST /v1/chat/completions<br/>Header: x-prefiller-host-port=<host:port>
-        Proxy->>Validator: Validate prefiller IP against allowlist
-        Validator-->>Proxy: IP allowed (or SSRF disabled)
+    Note over EPP,Decoder: Flow 1: Disaggregated Prefill/Decode (NIXL V2)
 
-        Note over Proxy: Phase 1: Prefill Request<br/>Inject kv_transfer_params {do_remote_decode: true}<br/>Set max_tokens=1, disable streaming
-        Proxy->>Prefiller: Modified completion request<br/>HTTP(S) / TLS 1.2+
-        Prefiller-->>Proxy: Prefill response with<br/>kv_transfer_params (block IDs,<br/>engine ID, host, port)
+    EPP->>Sidecar: POST /v1/chat/completions<br/>Header: x-prefiller-host-port: <host:port><br/>Body: OpenAI-compatible request
 
-        Note over Proxy: Phase 2: Decode Request<br/>Restore original streaming/token settings<br/>Inject prefiller's kv_transfer_params
-        Proxy->>Decoder: Modified request with<br/>kv_transfer_params<br/>HTTP(S)/8001
-        Decoder-->>Proxy: Decoded response (tokens)
-        Proxy-->>Client: Final response<br/>HTTPS/TLS 1.2+
+    Sidecar->>Allowlist: Validate prefiller host<br/>(if SSRF protection enabled)
+
+    alt Host not in allowlist
+        Allowlist-->>Sidecar: REJECT
+        Sidecar-->>EPP: HTTP 403 Forbidden
+    else Host allowed (or SSRF disabled)
+        Allowlist-->>Sidecar: ALLOW
+
+        Note over Sidecar,Prefiller: Phase 1: Prefill
+        Sidecar->>Prefiller: POST /v1/chat/completions<br/>+ kv_transfer_params: {do_remote_decode: true}<br/>+ max_completion_tokens: 1
+        Prefiller-->>Sidecar: Response with kv_transfer_params:<br/>{block_ids, engine_id, host, port, tokens}
+
+        Note over Sidecar,Decoder: Phase 2: Decode with KV Cache
+        Sidecar->>Decoder: POST /v1/chat/completions<br/>+ kv_transfer_params from prefiller<br/>+ Original request body
+        Decoder-->>Sidecar: Streaming/Full completion response
+        Sidecar-->>EPP: Forward response to caller
     end
 
-    rect rgb(255, 248, 240)
-        Note over Client,Decoder: Flow 2: Direct Decode (No Prefill Header)
-        Client->>Proxy: POST /v1/chat/completions<br/>(no x-prefiller-host-port header)
-        Proxy->>Decoder: Passthrough request<br/>HTTP(S)/8001
-        Decoder-->>Proxy: Response
-        Proxy-->>Client: Response<br/>HTTPS/TLS 1.2+
-    end
+    Note over EPP,Decoder: Flow 2: Direct Decode (No Prefill Header)
 
-    rect rgb(240, 255, 240)
-        Note over Validator,K8sAPI: Flow 3: SSRF Allowlist Maintenance (Background)
-        Validator->>K8sAPI: Watch InferencePool CR<br/>HTTPS/443 (ServiceAccount token)
-        K8sAPI-->>Validator: InferencePool with pod selectors
-        Validator->>K8sAPI: Watch Pods matching selectors<br/>HTTPS/443
-        K8sAPI-->>Validator: Pod IPs for allowlist<br/>(30s resync period)
+    EPP->>Sidecar: POST /v1/chat/completions<br/>(no x-prefiller-host-port header)
+    Sidecar->>Decoder: Forward request directly<br/>HTTP(S)/8001
+    Decoder-->>Sidecar: Completion response
+    Sidecar-->>EPP: Forward response to caller
+
+    Note over EPP,Decoder: Flow 3: Passthrough (Non-Completion Endpoints)
+
+    EPP->>Sidecar: ANY /* (catch-all)<br/>HTTPS/8000
+    Sidecar->>Decoder: Forward as-is<br/>HTTP(S)/8001
+    Decoder-->>Sidecar: Response
+    Sidecar-->>EPP: Forward response
+
+    Note over Sidecar,Allowlist: Background: SSRF Allowlist Maintenance
+
+    Sidecar->>Allowlist: Start InferencePool watcher<br/>(if --ssrf-allowlist enabled)
+    loop Every 30s resync + event-driven
+        Allowlist->>Allowlist: Watch InferencePool CR<br/>(inference.networking.x-k8s.io/v1alpha2)
+        Allowlist->>Allowlist: Watch Pods matching<br/>InferencePool label selector
+        Allowlist->>Allowlist: Rebuild allowed<br/>IPs/hostnames set
     end

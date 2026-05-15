@@ -1,54 +1,59 @@
 workspace {
     model {
-        client = person "ML Application / Client" "Sends REST inference requests using KServe V2 Predict Protocol"
+        restClient = person "REST Client" "Application or user sending KServe V2 REST inference requests"
 
-        restProxy = softwareSystem "rest-proxy" "gRPC-to-REST reverse proxy translating KServe V2 REST requests into gRPC calls for ModelMesh Serving" {
-            httpListener = container "HTTP Listener" "Accepts REST requests on port 8008, optional TLS" "Go net/http"
-            grpcGateway = container "gRPC-Gateway" "Auto-generated REST-to-gRPC routing from grpc_predict_v2.proto" "grpc-gateway v2.15.0"
-            customMarshaler = container "Custom Marshaler" "Transforms JSON tensors (nested arrays, base64 BYTES, multi-dimensional shapes) to/from protobuf tensor contents" "Go"
+        modelMeshServing = softwareSystem "ModelMesh Serving" "Multi-model serving platform that manages inference backends" {
+            restProxy = container "rest-proxy" "Translates KServe V2 REST API calls to gRPC V2 Predict Protocol" "Go 1.23.6 / gRPC-Gateway" "Sidecar"
+            grpcInferenceServer = container "gRPC Inference Server" "Serves ML model inference via gRPC V2 Predict Protocol" "Runtime Container"
+            modelMeshController = container "ModelMesh Controller" "Manages model serving pods, injects sidecar containers" "Go Operator"
         }
 
-        modelMeshServing = softwareSystem "ModelMesh Serving" "gRPC-native model serving infrastructure that hosts and serves ML models" "Internal RHOAI"
-        modelMeshOperator = softwareSystem "ModelMesh Serving Operator" "Deploys and manages ModelMesh pods, injects rest-proxy as sidecar" "Internal RHOAI"
-        kserveV2Protocol = softwareSystem "KServe V2 Predict Protocol" "Standard ML inference protocol specification (protobuf)" "External Standard"
+        platformIngress = softwareSystem "Platform Ingress" "Handles external traffic routing, TLS termination, and authentication" "External"
+        certManager = softwareSystem "cert-manager" "Provisions and rotates TLS certificates" "External"
+        k8sAPI = softwareSystem "Kubernetes API" "Kubernetes control plane for ConfigMaps and pod management" "External"
 
-        client -> restProxy "Sends inference & metadata requests" "HTTP(S)/8008"
-        restProxy -> modelMeshServing "Forwards translated gRPC inference calls" "gRPC/8033 (localhost)"
-        modelMeshOperator -> restProxy "Deploys as sidecar via model-serving-config ConfigMap" ""
-        restProxy -> kserveV2Protocol "Implements REST API specification" ""
+        # Relationships
+        restClient -> platformIngress "Sends REST inference requests" "HTTPS/443"
+        platformIngress -> restProxy "Routes to ModelMesh pod" "HTTP or HTTPS/8008"
+        restProxy -> grpcInferenceServer "Translates REST to gRPC" "gRPC/8033 (localhost, TLS optional)"
+        modelMeshController -> restProxy "Injects as sidecar container via model-serving-config ConfigMap"
+        modelMeshController -> k8sAPI "Reads ConfigMaps, manages pods" "HTTPS/6443"
+        certManager -> restProxy "Provisions TLS certificates" "File mount"
     }
 
     views {
-        systemContext restProxy "SystemContext" {
+        systemContext modelMeshServing "SystemContext" {
             include *
             autoLayout
+            description "System context showing rest-proxy within the ModelMesh Serving ecosystem"
         }
 
-        container restProxy "Containers" {
+        container modelMeshServing "Containers" {
             include *
             autoLayout
+            description "Container view showing rest-proxy sidecar alongside inference server"
         }
 
         styles {
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Internal RHOAI" {
-                background #7ed321
-                color #ffffff
-            }
-            element "External Standard" {
+            element "External" {
                 background #999999
+                color #ffffff
+            }
+            element "Sidecar" {
+                background #4a90e2
                 color #ffffff
             }
             element "Person" {
                 shape Person
-                background #08427b
+                background #f5a623
+                color #ffffff
+            }
+            element "Software System" {
+                background #7ed321
                 color #ffffff
             }
             element "Container" {
-                background #438dd5
+                background #4a90e2
                 color #ffffff
             }
         }

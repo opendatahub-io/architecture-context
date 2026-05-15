@@ -1,75 +1,50 @@
 sequenceDiagram
     participant Client as External Client
-    participant Istio as Istio Sidecar<br/>mTLS Proxy
-    participant REST as Drogon HTTP Server<br/>REST port/TCP HTTP
-    participant gRPC as gRPC Server<br/>gRPC port/TCP HTTP2
-    participant Handler as http_rest_api_handler<br/>API Key Check
-    participant KFS as KFS gRPC Service
-    participant MM as ModelManager
-    participant MP as MediaPipe Graph<br/>Executor
-    participant LLMCalc as HttpLLMCalculator
-    participant GenAI as GenAI Servable<br/>Continuous Batching
+    participant KRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
+    participant REST as OVMS REST Handler<br/>REST port/TCP HTTP
+    participant V3 as OpenAI V3 Handler
+    participant MM as Model Manager<br/>Watcher + Cleaner Threads
+    participant LLM as LLMExecutor<br/>Continuous Batching<br/>Worker Thread
     participant OV as OpenVINO Runtime<br/>CPU/GPU/NPU
-    participant FSFactory as FilesystemFactory
-    participant Cloud as Cloud Storage<br/>S3/Azure/GCS<br/>443/TCP HTTPS TLS 1.2+
+    participant GenAI as OpenVINO GenAI<br/>ContinuousBatchingPipeline
+    participant S3 as Cloud Storage<br/>S3/GCS/Azure<br/>443/TCP HTTPS
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
 
-    Note over Client,Cloud: Flow 1: REST Inference Request (TFS v1 / KServe v2)
+    Note over Client,HF: Flow 1: REST Inference Request (KServe v2)
+    Client->>KRBAC: POST /v2/models/{name}/infer<br/>Auth: Bearer Token (platform)
+    KRBAC->>REST: Forward (HTTP localhost)<br/>No encryption
+    REST->>MM: getModel() + infer()
+    MM->>OV: ov::InferRequest::infer()
+    OV-->>MM: Inference result
+    MM-->>REST: Prediction response
+    REST-->>KRBAC: JSON response
+    KRBAC-->>Client: HTTPS response
 
-    Client->>Istio: POST /v1/models/{name}:predict<br/>or /v2/models/{name}/infer
-    Istio->>REST: Forward (plaintext)<br/>mTLS terminated at sidecar
-    REST->>Handler: Route request<br/>API Key validated (if configured)
-    Handler->>MM: Get model instance
-    MM->>OV: Execute inference<br/>InferRequest
-    OV-->>MM: Inference result tensor
-    MM-->>Handler: Format response
-    Handler-->>REST: JSON response
-    REST-->>Istio: HTTP response
-    Istio-->>Client: Encrypted response
-
-    Note over Client,Cloud: Flow 2: gRPC Streaming LLM Inference (OpenAI-compatible via gRPC)
-
-    Client->>Istio: ModelStreamInfer RPC<br/>gRPC/HTTP2
-    Istio->>gRPC: Forward (plaintext)<br/>InsecureServerCredentials
-    gRPC->>KFS: Route to KFS service
-    KFS->>MP: Execute MediaPipe graph
-    MP->>LLMCalc: Process through<br/>HttpLLMCalculator
-    LLMCalc->>GenAI: Continuous batching<br/>inference request
-    GenAI->>OV: Token generation loop<br/>OpenVINO GenAI Runtime
-
-    loop Streaming tokens
-        OV-->>GenAI: Next token
-        GenAI-->>LLMCalc: Generated token
-        LLMCalc-->>MP: Loopback control signal
-        MP-->>KFS: Streaming partial response
-        KFS-->>gRPC: gRPC stream chunk
-        gRPC-->>Istio: Stream forward
-        Istio-->>Client: Encrypted stream chunk
-    end
-
-    Note over Client,Cloud: Flow 3: REST Chat Completions (OpenAI-compatible SSE)
-
-    Client->>Istio: POST /v1/chat/completions<br/>{"stream": true}
-    Istio->>REST: Forward (plaintext)
-    REST->>Handler: Route to OpenAI handler
-    Handler->>MP: Execute LLM graph
-    MP->>LLMCalc: Process chat template<br/>(Jinja2)
-    LLMCalc->>GenAI: Tokenize + generate
-    GenAI->>OV: Inference loop
-
+    Note over Client,HF: Flow 2: LLM Chat Completion (Streaming)
+    Client->>REST: POST /v3/chat/completions<br/>Auth: Bearer API key (optional)<br/>stream: true
+    REST->>V3: OpenAIChatCompletionsHandler
+    V3->>LLM: addRequestToPipeline()<br/>Returns GenerationHandle
+    LLM->>GenAI: pipeline.step() [tight loop]
+    GenAI->>OV: Token generation
+    OV-->>GenAI: Next token
+    GenAI-->>LLM: GenerationOutput
     loop SSE Streaming
-        OV-->>GenAI: Next token
-        GenAI-->>LLMCalc: Token + finish reason
-        LLMCalc-->>Handler: SSE event
-        Handler-->>REST: data: {"choices":[...]}
-        REST-->>Istio: SSE chunk
-        Istio-->>Client: Encrypted SSE
+        LLM-->>V3: Token via GenerationHandle
+        V3-->>REST: SSE data chunk
+        REST-->>Client: text/event-stream
     end
 
-    Note over Client,Cloud: Flow 4: Model Loading from Cloud Storage
+    Note over Client,HF: Flow 3: Model Loading from Cloud Storage
+    MM->>MM: Watcher thread detects<br/>config change (MD5)
+    MM->>S3: GET model artifacts<br/>Auth: AWS IAM / OAuth2 / Azure MI
+    S3-->>MM: Model files (HTTPS/TLS 1.2+)
+    MM->>OV: loadModel()
+    OV-->>MM: Model ready
 
-    MM->>FSFactory: Resolve model path<br/>(s3://, az://, gs://)
-    FSFactory->>Cloud: List objects / Download<br/>HTTPS/443 TLS 1.2+<br/>Auth: AWS IAM / Azure SDK / GCS SA
-    Cloud-->>FSFactory: Model artifacts
-    FSFactory-->>MM: Local cached model files
-    MM->>OV: LoadModel(path)<br/>Compile for target device
-    OV-->>MM: Model loaded successfully
+    Note over Client,HF: Flow 4: HuggingFace Model Pull
+    MM->>HF: GET /api/models/{repo}<br/>Auth: HF_TOKEN Bearer
+    HF-->>MM: Repository metadata
+    MM->>HF: git clone via libgit2<br/>HTTPS/TLS 1.2+
+    HF-->>MM: Model repo + LFS objects
+    MM->>OV: loadModel()
+    OV-->>MM: Model ready
