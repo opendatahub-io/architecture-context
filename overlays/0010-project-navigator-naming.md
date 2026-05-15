@@ -8,7 +8,9 @@ affects:
   - llm-d-planner
 release:
   - "3.4"
+  - "3.4-ea.2"
   - "3.5"
+  - "3.5-ea.1"
   - "next"
 provenance:
   - https://issues.redhat.com/browse/RHAIFIRST-23
