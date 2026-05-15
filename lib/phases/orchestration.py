@@ -1,6 +1,7 @@
 """Orchestration: run_all_phases and main dispatch."""
 
 import re
+import shutil
 import sys
 from argparse import Namespace
 from pathlib import Path
@@ -16,6 +17,87 @@ from lib.phases.manifest import run_manifest_phase
 from lib.phases.platform import run_generate_platform_architecture_phase
 from lib.phases.static_analysis import run_static_analysis_phase
 from lib.phases.webhooks import run_webhook_inventory_phase
+
+CHECKOUT_GENERATED_FILES = [
+    "GENERATED_ARCHITECTURE.md",
+    "component-architecture.json",
+]
+CHECKOUT_GENERATED_DIRS = ["contracts"]
+
+
+def _clean_generated_outputs(
+    platform: str,
+    platform_config: dict,
+    suffix: str,
+) -> None:
+    """Delete all generated artifacts so phases rebuild from scratch."""
+    print("\n" + "=" * 60)
+    print("CLEAN: removing generated outputs")
+    print("=" * 60 + "\n")
+
+    # Collect all checkout directories for this platform
+    checkout_dirs: list[Path] = []
+    for org in platform_config.get("orgs", []):
+        checkout_dirs.append(Path("checkouts") / f"{org}.{suffix}")
+    for entry in platform_config.get("extra_orgs", []):
+        org_name = (
+            entry.get("org") if isinstance(entry, dict) else entry
+        )
+        org_suffix = (
+            entry.get("suffix")
+            if isinstance(entry, dict)
+            else None
+        ) or suffix
+        checkout_dirs.append(
+            Path("checkouts") / f"{org_name}.{org_suffix}"
+        )
+    for entry in platform_config.get("extra_repos", []):
+        repo_suffix = entry.get("suffix") or suffix
+        d = Path("checkouts") / f"{entry['org']}.{repo_suffix}"
+        if d not in checkout_dirs:
+            checkout_dirs.append(d)
+
+    # Clean generated files from checkout repos
+    cleaned = 0
+    for checkout_dir in checkout_dirs:
+        if not checkout_dir.exists():
+            continue
+        for repo_dir in checkout_dir.iterdir():
+            if not repo_dir.is_dir():
+                continue
+            for fname in CHECKOUT_GENERATED_FILES:
+                f = repo_dir / fname
+                if f.exists():
+                    f.unlink()
+                    cleaned += 1
+            for dname in CHECKOUT_GENERATED_DIRS:
+                d = repo_dir / dname
+                if d.is_dir():
+                    shutil.rmtree(d)
+                    cleaned += 1
+    print(f"  Cleaned {cleaned} generated file(s) from checkouts")
+
+    # Clean architecture directory for this platform
+    arch_base = Path("architecture")
+    arch_cleaned = 0
+    for arch_dir in arch_base.iterdir():
+        if not arch_dir.is_dir() or arch_dir.is_symlink():
+            continue
+        if not arch_dir.name.startswith(platform):
+            continue
+        remainder = arch_dir.name[len(platform):]
+        if remainder and not remainder.startswith("-"):
+            continue
+        for item in list(arch_dir.iterdir()):
+            if item.name == "README.md":
+                continue
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+            arch_cleaned += 1
+    print(f"  Cleaned {arch_cleaned} file(s) from architecture/")
+    print()
 
 
 async def run_all_phases(args) -> None:
@@ -55,6 +137,12 @@ async def run_all_phases(args) -> None:
             extracted = version_match.group(1)
             if not args.platform.endswith(f"-{extracted}"):
                 target_version = extracted
+
+    clean = getattr(args, 'clean', False)
+    force = getattr(args, 'force', False) or clean
+
+    if clean:
+        _clean_generated_outputs(args.platform, platform_config, suffix)
 
     print("\n" + "=" * 80)
     print("RUNNING ALL PHASES")
@@ -100,6 +188,7 @@ async def run_all_phases(args) -> None:
         entry_repo=None,
         exclude=None,
         model=getattr(args, 'model', 'opus'),
+        force=force,
     )
     await run_discover_components_phase(discover_args)
 
@@ -109,7 +198,7 @@ async def run_all_phases(args) -> None:
         architecture_dir="architecture",
         max_concurrent=10,
         component=None,
-        force=False,
+        force=force,
         skip_schemas=False,
     )
     await run_static_analysis_phase(static_analysis_args)
@@ -122,7 +211,7 @@ async def run_all_phases(args) -> None:
         max_concurrent=max_concurrent,
         limit=None,
         component=None,
-        force=False,
+        force=force,
         model=getattr(args, 'model', 'opus'),
         tier=getattr(args, 'tier', 'all'),
     )
@@ -184,7 +273,7 @@ async def run_all_phases(args) -> None:
         architecture_dir="architecture",
         version=target_version,
         component=None,
-        force=False,
+        force=force,
         model=getattr(args, 'model', 'sonnet'),
         max_concurrent=getattr(args, 'max_concurrent', 5),
     )
@@ -198,6 +287,7 @@ async def run_all_phases(args) -> None:
         version=target_version,
         max_concurrent=max_concurrent,
         limit=None,
+        force=force,
         model=getattr(args, 'model', 'opus')
     )
     await run_generate_platform_architecture_phase(platform_arch_args)
@@ -213,7 +303,7 @@ async def run_all_phases(args) -> None:
             max_concurrent=max_concurrent,
             limit=None,
             component=None,
-            force_regenerate=False,
+            force_regenerate=force,
             export_png=getattr(args, 'export_png', False),
             model=getattr(args, 'model', 'opus'),
         )

@@ -426,6 +426,12 @@ def parse_args():
         help="Limit number of platforms to process (for testing)"
     )
     platform_arch_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Force regeneration of PLATFORM.md even if up-to-date"
+    )
+    platform_arch_parser.add_argument(
         "--model",
         choices=["sonnet", "opus", "haiku"],
         default="opus",
@@ -552,6 +558,25 @@ def parse_args():
         "--pull",
         action="store_true",
         help="Pull latest changes in existing repos during fetch phase"
+    )
+    all_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help=(
+            "Force regeneration of all outputs"
+            " (component maps, architectures,"
+            " diagrams, etc.)"
+        )
+    )
+    all_parser.add_argument(
+        "--clean",
+        action="store_true",
+        default=False,
+        help=(
+            "Delete all generated outputs before"
+            " running (implies --force)"
+        )
     )
     all_parser.add_argument(
         "--no-diagrams",

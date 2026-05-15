@@ -87,6 +87,7 @@ async def run_generate_platform_architecture_phase(args) -> None:
             return
 
     # Check each directory for component files and staleness
+    force = getattr(args, 'force', False)
     platform_dirs = []
     for item in scan_dirs:
         component_files = [
@@ -100,7 +101,12 @@ async def run_generate_platform_architecture_phase(args) -> None:
         has_platform_md = platform_md.exists()
 
         needs_generation = not has_platform_md
-        if has_platform_md:
+        if has_platform_md and force:
+            needs_generation = True
+            print(f"  Deleting PLATFORM.md for {item.name} (--force)")
+            platform_md.unlink()
+            has_platform_md = False
+        elif has_platform_md:
             platform_mtime = platform_md.stat().st_mtime
             for comp_file in component_files:
                 if comp_file.stat().st_mtime > platform_mtime:
