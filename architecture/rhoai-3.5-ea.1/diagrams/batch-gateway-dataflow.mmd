@@ -1,0 +1,81 @@
+sequenceDiagram
+    participant Client as External Client
+    participant GW as Gateway API<br/>(HTTPRoute)
+    participant API as API Server<br/>8000/TCP HTTP/HTTPS
+    participant Redis as Redis/Valkey<br/>6379/TCP
+    participant PG as PostgreSQL<br/>5432/TCP
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant Proc as Batch Processor<br/>9090/TCP (observability)
+    participant LLM as Inference Gateway<br/>HTTP/HTTPS
+    participant GC as Garbage Collector
+
+    Note over Client,GC: Flow 1: Batch Job Submission
+
+    Client->>GW: POST /v1/files (multipart JSONL)<br/>Header: X-MaaS-Username
+    GW->>API: Forward request
+    API->>S3: Upload JSONL file<br/>TLS 1.2+ / AWS IAM
+    S3-->>API: File stored (SHA256 tenant folder)
+    API->>Redis: Store file metadata (hash set)<br/>TLS optional
+    Redis-->>API: OK
+    API-->>Client: 200 File object {id, purpose, bytes}
+
+    Client->>GW: POST /v1/batches {input_file_id, endpoint, model}<br/>Header: X-MaaS-Username
+    GW->>API: Forward request
+    API->>Redis: Create batch metadata<br/>Status: validating
+    API->>Redis: Enqueue to priority queue (sorted set)<br/>Score: SLO-derived priority
+    Redis-->>API: Queued
+    API-->>Client: 200 Batch object {id, status: validating}
+
+    Note over Client,GC: Flow 2: Batch Job Processing
+
+    loop Poll interval (5s)
+        Proc->>Redis: BZPOPMIN (blocking dequeue)<br/>task_wait_time: 1s
+    end
+    Redis-->>Proc: Job dequeued
+
+    Proc->>Redis: Update status: validating -> in_progress
+    Proc->>S3: Read input JSONL file<br/>TLS 1.2+ / AWS IAM
+    S3-->>Proc: JSONL content (streamed)
+
+    loop For each JSONL line (global_concurrency: 100, per_model: 10)
+        Proc->>LLM: POST /v1/chat/completions<br/>Auth: Bearer token<br/>Header: x-gateway-inference-objective
+        LLM-->>Proc: Inference result
+        Proc->>Redis: Update progress (key-value TTL)<br/>progress_ttl: 24h
+    end
+
+    Proc->>S3: Write output JSONL file<br/>TLS 1.2+ / AWS IAM
+    Proc->>S3: Write error JSONL file (if any)
+    Proc->>Redis: Update status: completed<br/>Set output_file_id, error_file_id
+
+    Note over Client,GC: Flow 3: Result Retrieval
+
+    Client->>GW: GET /v1/batches/{batch_id}<br/>Header: X-MaaS-Username
+    GW->>API: Forward request
+    API->>Redis: Query batch metadata (tenant-scoped)
+    Redis-->>API: Batch object (status, output_file_id)
+    API-->>Client: 200 Batch object {status: completed}
+
+    Client->>GW: GET /v1/files/{output_file_id}/content<br/>Header: X-MaaS-Username
+    GW->>API: Forward request
+    API->>S3: Download output file<br/>TLS 1.2+ / AWS IAM
+    S3-->>API: Binary stream
+    API-->>Client: 200 JSONL output content
+
+    Note over Client,GC: Flow 4: Cancellation
+
+    Client->>GW: POST /v1/batches/{batch_id}/cancel<br/>Header: X-MaaS-Username
+    GW->>API: Forward request
+    API->>Redis: Remove from priority queue
+    API->>Redis: Push cancel event (blocking list)
+    Redis-->>Proc: Cancel signal received
+    Proc->>S3: Upload partial results
+    Proc->>Redis: Update status: cancelled<br/>Preserve partial output_file_id
+
+    Note over Client,GC: Flow 5: Garbage Collection (periodic, interval: 30m)
+
+    loop Every 30 minutes
+        GC->>Redis: Scan for expired batches & files<br/>max_concurrency: 10
+        Redis-->>GC: Expired items list
+        GC->>S3: Delete expired file objects
+        GC->>Redis: Delete expired metadata
+    end

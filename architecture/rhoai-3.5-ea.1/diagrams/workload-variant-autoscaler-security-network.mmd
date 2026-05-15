@@ -1,0 +1,89 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Admin["Platform Admin / SRE"]
+    end
+
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token / Client Certs"]
+    end
+
+    subgraph WVANamespace["WVA NAMESPACE (workload-variant-autoscaler-system)"]
+        direction TB
+        WVAPod["WVA Controller Manager<br/>SA: controller-manager<br/>Image: llm-d-workload-variant-autoscaler:v0.5.1<br/>FIPS: strictfipsruntime + CGO_ENABLED=1<br/>HTTP/2: DISABLED"]
+
+        subgraph Ports["Exposed Ports"]
+            MetricsPort["8443/TCP /metrics<br/>HTTPS TLS<br/>Bearer Token + SAR"]
+            HealthPort["8081/TCP /healthz /readyz<br/>HTTP Plaintext<br/>No Auth (probes only)"]
+        end
+
+        WVAPod --- MetricsPort
+        WVAPod --- HealthPort
+    end
+
+    subgraph Monitoring["MONITORING NAMESPACE"]
+        Prometheus["Prometheus / Thanos Querier<br/>9090/TCP (vanilla)<br/>9091/TCP (OpenShift)<br/>HTTPS TLS 1.2+"]
+        PromAdapter["Prometheus Adapter<br/>(optional)<br/>Bridges metrics → k8s custom API"]
+    end
+
+    subgraph AutoscalerLayer["AUTOSCALER LAYER"]
+        HPA["HPA"]
+        KEDA["KEDA"]
+    end
+
+    subgraph UserNamespaces["MODEL SERVING NAMESPACES"]
+        ModelServers["Model Server Pods<br/>(vLLM, etc.)<br/>Emit KV cache, queue metrics"]
+        InferencePool["InferencePool CRs<br/>(Gateway API)"]
+        ScaleTargets["Deployments / LWS<br/>(scale targets)"]
+    end
+
+    subgraph ClusterNodes["CLUSTER NODES"]
+        GPUNodes["GPU Nodes<br/>GFD Labels: NVIDIA/AMD/Intel"]
+    end
+
+    %% External → Control Plane
+    Admin -->|"HTTPS/443<br/>TLS 1.2+<br/>kubeconfig/OIDC"| K8sAPI
+
+    %% WVA ↔ K8s API
+    WVAPod -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>Watch: VAs, Deployments, LWS,<br/>Pods, Nodes, ConfigMaps,<br/>InferencePools, Secrets"| K8sAPI
+
+    %% WVA → Prometheus (outbound queries)
+    WVAPod -->|"HTTPS/9090-9091<br/>TLS 1.2+<br/>Bearer Token (SA)<br/>Optional: mTLS client cert<br/>PromQL queries"| Prometheus
+
+    %% Prometheus → WVA /metrics (scrape)
+    Prometheus -->|"HTTPS/8443<br/>TLS<br/>Bearer Token + SAR<br/>ServiceMonitor scrape"| MetricsPort
+
+    %% Model Servers → Prometheus
+    ModelServers -->|"Emit vLLM metrics"| Prometheus
+
+    %% Prometheus → Adapter → HPA/KEDA
+    Prometheus --> PromAdapter
+    PromAdapter -->|"custom metrics API"| HPA
+    Prometheus -->|"ScaledObject query"| KEDA
+
+    %% HPA/KEDA → Scale
+    HPA -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>Patch scale"| K8sAPI
+    KEDA -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>Patch scale"| K8sAPI
+    K8sAPI -->|"Scale"| ScaleTargets
+
+    %% WVA direct scale-from-zero
+    WVAPod -->|"HTTPS/443<br/>SA Token<br/>Direct patch replicas<br/>(scale-from-zero only)"| K8sAPI
+
+    %% GPU Discovery
+    WVAPod -->|"HTTPS/443<br/>SA Token<br/>Read GFD labels"| K8sAPI
+
+    %% NetworkPolicy
+    style WVANamespace fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    style External fill:#f9f9f9,stroke:#999,stroke-width:2px
+    style ControlPlane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    style Monitoring fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    style AutoscalerLayer fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    style UserNamespaces fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    style ClusterNodes fill:#f8cecc,stroke:#b85450,stroke-width:2px
+
+    classDef wvaNode fill:#4a90e2,stroke:#333,color:#fff
+    classDef metricsNode fill:#d4edda,stroke:#333
+    classDef externalNode fill:#f9f9f9,stroke:#999
+
+    class WVAPod wvaNode
+    class MetricsPort,HealthPort metricsNode
+    class Admin externalNode

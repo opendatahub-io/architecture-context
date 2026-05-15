@@ -1,0 +1,48 @@
+sequenceDiagram
+    participant User as User / Dashboard
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
+    participant Webhook as Webhook Server<br/>9443/TCP HTTPS TLS
+    participant Controller as Trainer Controller<br/>(opendatahub namespace)
+    participant JobSetOp as JobSet Operator
+    participant TrainingPod as Training Pod<br/>(user namespace)
+
+    Note over User,TrainingPod: Flow 1: TrainJob Reconciliation
+
+    User->>K8sAPI: POST TrainJob CR<br/>Auth: Bearer Token / Client Cert
+    K8sAPI->>Webhook: POST /validate-trainer-...-trainjob<br/>9443/TCP HTTPS, TLS (self-managed)<br/>Auth: API server client cert
+    Webhook-->>K8sAPI: Admission Response (allow/deny)
+    K8sAPI-->>User: TrainJob created
+
+    K8sAPI->>Controller: Watch event: TrainJob created
+    Controller->>K8sAPI: GET TrainingRuntime/ClusterTrainingRuntime<br/>443/TCP HTTPS, TLS 1.2+<br/>Auth: ServiceAccount Bearer Token
+    K8sAPI-->>Controller: Runtime template
+
+    Note over Controller: Plugin Framework processes:<br/>1. EnforceMLPolicy (Torch/MPI/TorchTune)<br/>2. EnforcePodGroupPolicy (Coscheduling/Volcano)<br/>3. ComponentBuilder (JobSet)
+
+    Controller->>K8sAPI: CREATE JobSet CR (server-side apply)<br/>443/TCP HTTPS, TLS 1.2+<br/>Auth: ServiceAccount Bearer Token
+    Controller->>K8sAPI: CREATE NetworkPolicy (RHAI)<br/>443/TCP HTTPS, TLS 1.2+
+    K8sAPI-->>Controller: JobSet created
+
+    JobSetOp->>K8sAPI: CREATE Jobs + Pods<br/>443/TCP HTTPS, TLS 1.2+
+    K8sAPI-->>JobSetOp: Pods scheduled
+
+    Note over User,TrainingPod: Flow 2: RHAI Progression Tracking
+
+    Controller->>K8sAPI: LIST Pods (APIReader, no cache)<br/>443/TCP HTTPS, TLS 1.2+<br/>Auth: ServiceAccount Bearer Token
+    K8sAPI-->>Controller: Pod list (primary pod IP)
+
+    loop Every 30s (configurable 5s-300s)
+        Controller->>TrainingPod: GET /metrics<br/>28080/TCP HTTP plaintext<br/>Auth: None (NetworkPolicy enforced)
+        TrainingPod-->>Controller: Metrics JSON<br/>(step, total_steps, epoch, loss, ETA)
+        Controller->>K8sAPI: PATCH TrainJob annotations<br/>443/TCP HTTPS, TLS 1.2+<br/>Auth: ServiceAccount Bearer Token
+    end
+
+    Note over User,TrainingPod: Flow 3: MPI Training Setup (when MPI policy)
+
+    Controller->>K8sAPI: CREATE Secret ({name}-mpi-ssh-auth)<br/>SSH key pair for inter-node auth<br/>443/TCP HTTPS, TLS 1.2+
+    Controller->>K8sAPI: CREATE ConfigMap ({name}-mpi-hostfile)<br/>Worker endpoints and slots<br/>443/TCP HTTPS, TLS 1.2+
+
+    Note over TrainingPod: MPI Launcher pod
+    participant MPIWorker as MPI Worker Pods<br/>(user namespace)
+    TrainingPod->>MPIWorker: SSH connection<br/>22/TCP SSH<br/>Auth: SSH key pair from Secret
+    MPIWorker-->>TrainingPod: Training results

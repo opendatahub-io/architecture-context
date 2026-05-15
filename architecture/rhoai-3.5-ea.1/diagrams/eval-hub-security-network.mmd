@@ -1,0 +1,79 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["Client / SDK / AI Agent"]
+    end
+
+    subgraph PlatformIngress["INGRESS (Platform-managed)"]
+        Gateway["Platform Gateway / HTTPRoute<br/>Managed by TrustyAI Operator"]
+    end
+
+    subgraph ClusterInternal["CLUSTER INTERNAL (Namespace-scoped)"]
+        direction TB
+
+        subgraph EvalHubPod["eval-hub Pod"]
+            EvalHubAPI["eval-hub API Server<br/>ClusterIP: 8080/TCP<br/>HTTP/HTTPS, TLS 1.2+<br/>FIPS: strictfipsruntime<br/>Auth: TokenReview + SAR"]
+        end
+
+        subgraph EvalJobPod["Evaluation Job Pod (per job)"]
+            direction TB
+
+            InitContainer["eval-runtime-init<br/>(Init Container)<br/>non-root, SeccompProfile: RuntimeDefault<br/>all capabilities dropped"]
+
+            AdapterContainer["Adapter Container<br/>(lm-eval-harness / RAGAS / Garak /<br/>GuideLLM / LightEval / MTEB)<br/>non-root, SeccompProfile: RuntimeDefault<br/>all capabilities dropped"]
+
+            SidecarProxy["eval-runtime-sidecar<br/>(KEP-753 Sidecar)<br/>8080/TCP HTTP<br/>Token cache: 5m TTL<br/>non-root, all caps dropped"]
+        end
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+ (cluster CA)"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>Configurable encryption"]
+        MLflow["MLflow Tracking Server<br/>HTTPS, TLS 1.2+<br/>Configurable CA"]
+        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+        OCIRegistry["OCI Registry<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+        OTLPCollector["OTLP Collector<br/>4317/TCP gRPC or 4318/TCP HTTP"]
+    end
+
+    %% External to Ingress
+    Client -->|"HTTP/HTTPS 8080<br/>TLS 1.2+<br/>K8s Bearer Token"| Gateway
+
+    %% Ingress to Service
+    Gateway -->|"ClusterIP routing"| EvalHubAPI
+
+    %% eval-hub egress
+    EvalHubAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>In-cluster SA Token"| K8sAPI
+    EvalHubAPI -->|"SQL/5432<br/>DB credentials (Secret)"| PostgreSQL
+    EvalHubAPI -->|"HTTPS<br/>TLS 1.2+<br/>SA Token / Static Token"| MLflow
+    EvalHubAPI -->|"gRPC or HTTP<br/>TLS configurable<br/>No auth"| OTLPCollector
+
+    %% eval-hub creates job
+    EvalHubAPI -.->|"Creates K8s Job"| EvalJobPod
+
+    %% Init container
+    InitContainer -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS Static Credentials"| S3
+
+    %% Adapter to Sidecar (pod-internal)
+    AdapterContainer -->|"HTTP/8080<br/>plaintext (localhost)<br/>No auth"| SidecarProxy
+
+    %% Sidecar egress
+    SidecarProxy -->|"HTTPS/8080<br/>TLS 1.2+<br/>SA Token"| EvalHubAPI
+    SidecarProxy -->|"HTTPS<br/>TLS 1.2+<br/>Projected SA Token"| MLflow
+    SidecarProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth2 Bearer (challenge)"| OCIRegistry
+
+    %% Prometheus scrape
+    Prometheus["Prometheus"] -->|"HTTP/8080 scrape<br/>/metrics<br/>No auth"| EvalHubAPI
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef clusterinternal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef jobcontainer fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef monitoring fill:#e8e8e8,stroke:#999
+
+    class Client external
+    class Gateway ingress
+    class EvalHubAPI clusterinternal
+    class InitContainer,AdapterContainer,SidecarProxy jobcontainer
+    class K8sAPI,PostgreSQL,MLflow,S3,OCIRegistry,OTLPCollector externalservice
+    class Prometheus monitoring

@@ -1,0 +1,44 @@
+sequenceDiagram
+    participant Client as Client Application
+    participant Gateway as vllm-orchestrator-gateway<br/>8090/TCP HTTP
+    participant Orchestrator as FMS Guardrails Orchestrator<br/>8085/TCP HTTP/HTTPS
+    participant Detector as Detector Service<br/>(e.g., regex-language)
+    participant vLLM as vLLM Model Server
+
+    rect rgb(240, 248, 255)
+        Note over Client,vLLM: Flow 1: Non-Streaming Chat Completion with Detection
+        Client->>Gateway: POST /{route_name}/v1/chat/completions<br/>Authorization: Bearer token<br/>Content-Type: application/json<br/>{"stream": false, "messages": [...]}
+        Note over Gateway: Load route config<br/>Inject detector definitions<br/>Set stream=false
+        Gateway->>Orchestrator: POST /api/v2/chat/completions-detection<br/>Authorization: Bearer token (forwarded)<br/>x-forwarded-* headers<br/>Optional mTLS client cert<br/>{"detectors": {...}, "messages": [...]}
+        Orchestrator->>Detector: Content detection request<br/>(input detectors)
+        Detector-->>Orchestrator: Detection results
+        Orchestrator->>vLLM: Chat completion request<br/>{"messages": [...]}
+        vLLM-->>Orchestrator: LLM response
+        Orchestrator->>Detector: Content detection request<br/>(output detectors)
+        Detector-->>Orchestrator: Detection results
+        Orchestrator-->>Gateway: JSON response with detections
+        alt Detections found & fallback_message configured
+            Note over Gateway: Replace response choices<br/>with fallback_message
+            Gateway-->>Client: Modified JSON response<br/>(fallback message)
+        else No detections or no fallback
+            Gateway-->>Client: Original JSON response
+        end
+    end
+
+    rect rgb(255, 248, 240)
+        Note over Client,vLLM: Flow 2: Streaming Chat Completion with Detection (SSE)
+        Client->>Gateway: POST /{route_name}/v1/chat/completions<br/>Authorization: Bearer token<br/>{"stream": true, "messages": [...]}
+        Note over Gateway: Load route config<br/>Inject detector definitions<br/>Set stream=true
+        Gateway->>Orchestrator: POST /api/v2/chat/completions-detection<br/>Authorization: Bearer token (forwarded)<br/>Optional mTLS client cert<br/>{"stream": true, "detectors": {...}}
+        loop SSE byte stream
+            Orchestrator-->>Gateway: data: {"choices": [...], "detections": [...]}\n\n
+            alt Detection in chunk & fallback_message configured
+                Note over Gateway: Apply fallback_message<br/>to first chunk
+                Gateway-->>Client: data: {"choices": [{"delta": {"content": "fallback"}}]}\n\n
+            else No detection in chunk
+                Gateway-->>Client: data: {"choices": [{"delta": {"content": "..."}}]}\n\n
+            end
+        end
+        Orchestrator-->>Gateway: data: [DONE]\n\n
+        Gateway-->>Client: data: [DONE]\n\n
+    end

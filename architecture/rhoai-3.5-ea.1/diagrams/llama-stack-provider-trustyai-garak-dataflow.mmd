@@ -1,0 +1,83 @@
+sequenceDiagram
+    autonumber
+
+    participant Client as Client
+    participant LLS as Llama Stack Server<br/>8321/TCP HTTP
+    participant Provider as Garak Provider<br/>(in-process)
+    participant Garak as Garak Subprocess
+    participant vLLM as vLLM Inference<br/>443/TCP HTTPS
+    participant Safety as Llama Stack Safety API<br/>8321/TCP
+    participant FilesAPI as Llama Stack Files API<br/>8321/TCP
+    participant KFP as KFP API (DSPA)<br/>443/TCP HTTPS
+    participant KFPPod as KFP Pipeline Pod
+    participant S3 as S3/MinIO<br/>443/TCP HTTPS
+    participant EvalHub as eval-hub Sidecar<br/>gRPC
+
+    rect rgb(230, 245, 255)
+        Note over Client,FilesAPI: Flow 1: Inline Garak Scan
+        Client->>LLS: POST /v1/eval/run<br/>HTTP (no auth)
+        LLS->>Provider: register_benchmark + run_eval<br/>(in-process)
+        Provider->>Garak: asyncio.create_subprocess_exec<br/>(semaphore-gated)
+        Garak->>vLLM: Probe prompts<br/>HTTPS/443 Bearer Token
+        vLLM-->>Garak: Model responses
+        Garak-->>Provider: report.jsonl, avid.jsonl,<br/>hitlog.jsonl, report.html
+        Provider->>FilesAPI: Upload scan artifacts<br/>HTTP/8321
+        Provider-->>LLS: EvaluateResponse (TBSA scores)
+        LLS-->>Client: JSON response
+    end
+
+    rect rgb(255, 243, 224)
+        Note over Client,S3: Flow 2: Remote KFP Scan
+        Client->>LLS: POST /v1/eval/run<br/>HTTP (no auth)
+        LLS->>Provider: run_eval (remote mode)<br/>(in-process)
+        Provider->>KFP: Submit pipeline DAG<br/>HTTPS/443 SA Token
+        KFP->>KFPPod: Step 1: validate
+        KFP->>KFPPod: Step 2: resolve_taxonomy
+        KFPPod->>LLS: Fetch policy file<br/>HTTP/8321
+        KFP->>KFPPod: Step 3: sdg_generate
+        KFPPod->>LLS: LLM calls for adversarial prompts<br/>HTTP/8321
+        KFP->>KFPPod: Step 4: prepare_prompts (CAS topology)
+        KFP->>KFPPod: Step 5: garak_scan
+        KFPPod->>vLLM: Scan target model<br/>HTTPS/443 Bearer Token
+        vLLM-->>KFPPod: Model responses
+        KFP->>KFPPod: Step 6: parse_results
+        KFPPod->>LLS: Upload artifacts to Files API<br/>HTTP/8321
+        Provider->>KFP: Poll run status<br/>HTTPS/443 SA Token
+        KFP-->>Provider: Run completed
+        Provider->>FilesAPI: Retrieve results<br/>(in-process)
+        Provider-->>LLS: EvaluateResponse
+        LLS-->>Client: JSON response
+    end
+
+    rect rgb(232, 245, 233)
+        Note over Client,EvalHub: Flow 3: eval-hub Adapter Execution
+        EvalHub->>Provider: Initialize (gRPC callback)
+        Provider->>EvalHub: Acknowledge init<br/>gRPC
+        Provider->>Garak: Execute scan<br/>(subprocess or KFP)
+        Garak->>vLLM: Probe prompts<br/>HTTPS/443
+        vLLM-->>Garak: Model responses
+        Provider->>S3: Upload artifacts<br/>HTTPS/443 AWS IAM
+        Provider->>EvalHub: Persist (OCI push)<br/>gRPC
+        Provider->>EvalHub: Log metrics (MLflow)<br/>gRPC
+    end
+
+    rect rgb(243, 229, 245)
+        Note over Provider,Safety: Flow 4: Shield Scan (Guardrail Testing)
+        Provider->>Garak: function.Single generator
+        Garak->>Safety: Run input shields<br/>HTTP/8321
+        Safety-->>Garak: Shield result (pass/violation)
+        Garak->>LLS: LLM inference (if no violation)<br/>HTTP/8321
+        LLS-->>Garak: LLM response
+        Garak->>Safety: Run output shields<br/>HTTP/8321
+        Safety-->>Garak: Shield result
+        Garak-->>Provider: Response or violation text
+    end
+
+    rect rgb(255, 249, 230)
+        Note over Provider,FilesAPI: Flow 5: Synthetic Data Generation (SDG)
+        Provider->>Provider: sdg-hub FlowRegistry<br/>(discover flow, in-process)
+        Provider->>LLS: Generate adversarial prompts<br/>HTTP/8321
+        LLS-->>Provider: Generated prompts
+        Provider->>Provider: Intents Engine<br/>(generate CAS topology)
+        Note right of Provider: Writes to<br/>$XDG_DATA_HOME/garak/data/cas/
+    end

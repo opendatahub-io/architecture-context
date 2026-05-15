@@ -1,0 +1,121 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Clients]                                                      │
+│  - Prometheus (openshift-monitoring/prometheus-k8s)                      │
+│  - ODH Dashboard                                                         │
+│  - Other Kubernetes clients (kubectl, controllers)                       │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+ (configurable via --tls-min-version)      │
+│         │ Auth: Bearer Token (K8s ServiceAccount) /                      │
+│         │       mTLS (client cert vs --client-ca-file) /                 │
+│         │       OIDC JWT (validated vs --oidc-issuer)                    │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SIDECAR PROXY (Trust Boundary - authn/authz enforcement)               │
+│                                                                          │
+│  [kube-rbac-proxy]                                                       │
+│  - Deployment: Sidecar container in component Pods                       │
+│  - Namespace: Same as parent component                                   │
+│  - ServiceAccount: Same as parent component                              │
+│  - Image: registry.redhat.io/rhoai/odh-kube-rbac-proxy-rhel9            │
+│  - Listen: 0.0.0.0:8443 (HTTPS)                                         │
+│  - TLS Termination: TLS 1.2+ (CertReloader, 1min poll)                  │
+│  - Cipher Suites: Go defaults (FIPS-compliant under strictfipsruntime)   │
+│                                                                          │
+│  Filter Chain:                                                           │
+│  1. WithAllowPaths (--ignore-paths bypass)                               │
+│  2. WithAuthentication (TokenReview / mTLS / OIDC)                       │
+│  3. WithAuthorization (SubjectAccessReview / hardcoded metrics)          │
+│  4. WithAuthHeaders (inject x-remote-user, x-remote-groups)             │
+│         │                                                                │
+│         │ EGRESS 1: Authentication delegation                            │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token (in-cluster kubeconfig)             │
+│         │ API: POST authentication.k8s.io/v1/tokenreviews               │
+│         │                                                                │
+│         │ EGRESS 2: Authorization delegation                             │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token (in-cluster kubeconfig)             │
+│         │ API: POST authorization.k8s.io/v1/subjectaccessreviews        │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE (Trusted)                                      │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - AuthN: ServiceAccount token (auto-mounted)                            │
+│  - Services Used:                                                        │
+│    - authentication.k8s.io/v1 TokenReview (authn delegation)             │
+│    - authorization.k8s.io/v1 SubjectAccessReview (authz delegation)     │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  LOCALHOST (Pod-internal, Trusted)                                        │
+│                                                                          │
+│  [Upstream Application Container]                                        │
+│  - Port: 8081/TCP (configurable via --upstream flag)                     │
+│  - Protocol: HTTP (typical localhost) or HTTPS (via --upstream-ca-file)  │
+│  - Encryption: None (localhost default) or TLS (when configured)         │
+│  - Auth: None (localhost) or mTLS (--upstream-client-cert-file)          │
+│  - Purpose: Actual service (metrics, API, web UI)                        │
+│  - Headers received: x-remote-user, x-remote-groups (optional config)   │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Optional)                                            │
+│                                                                          │
+│  [OIDC Identity Provider]                                                │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+ (CA from --oidc-ca-file)                        │
+│  - Auth: None                                                            │
+│  - Purpose: OIDC discovery (.well-known) and JWKS key fetching           │
+│  - Usage: Only when --oidc-issuer is configured                          │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- Required ClusterRole permissions:
+  - API Group: authentication.k8s.io
+    - Resource: tokenreviews
+    - Verbs: create
+  - API Group: authorization.k8s.io
+    - Resource: subjectaccessreviews
+    - Verbs: create
+- Provisioned by: rhods-operator (per-component RBAC)
+- ServiceAccount: Inherits from parent component Pod
+
+Hardcoded Authorization:
+- SA: system:serviceaccount:openshift-monitoring:prometheus-k8s
+  - Allowed: GET /metrics (unconditional, no SAR check)
+  - Purpose: OpenShift Monitoring Prometheus metrics scraping
+  - Note: Planned removal when Cluster Monitoring Operator adds static authorizer
+
+Secrets:
+- TLS cert/key (kubernetes.io/tls) - Server TLS, cert-manager, hot-reload 1min poll
+- Client CA (Opaque, optional) - mTLS client verification, DynamicFileCAContent reload
+- Upstream client cert (kubernetes.io/tls, optional) - Proxy-to-upstream mTLS, no auto-rotate
+- OIDC CA (Opaque, optional) - OIDC issuer TLS verification, DynamicFileCAContent reload
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- Runtime: stdlib crypto/tls via OpenSSL (UBI 9 base image)
+- TLS: Configurable min version (default TLS 1.2), Go default cipher suites
+- No non-FIPS crypto detected (no MD5, RC4, DES usage)
+
+Authentication Methods:
+1. Bearer Token → Kubernetes TokenReview API (delegation)
+2. mTLS Client Certificate → Validated against --client-ca-file CA bundle
+3. OIDC JWT → Validated against --oidc-issuer discovery/JWKS
+
+Authorization Methods:
+1. Kubernetes SubjectAccessReview → Format1 (top-level) or Format2 (path-scoped)
+2. Hardcoded Metrics Authorizer → prometheus-k8s SA + GET /metrics
+3. Path Bypass → --ignore-paths (no authn/authz, proxy directly)

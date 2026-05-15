@@ -1,0 +1,64 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as KServe Gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant REST as MLServer REST<br/>8080/TCP HTTP
+    participant GRPC as MLServer gRPC<br/>8081/TCP gRPC/HTTP2
+    participant DP as DataPlane Handler
+    participant Batch as Adaptive Batcher
+    participant Cache as Response Cache
+    participant Registry as Model Registry
+    participant Runtime as Model Runtime<br/>(sklearn/xgboost/lgbm/onnx)
+    participant Dispatcher as Parallel Dispatcher
+    participant Worker as Worker Process<br/>(multiprocessing)
+    participant KafkaBroker as Kafka Broker<br/>9092/TCP
+
+    Note over Client,Runtime: Flow 1: REST Inference Request
+    Client->>Gateway: POST /v2/models/{name}/infer<br/>Auth: Bearer Token / mTLS
+    Gateway->>REST: HTTP/8080<br/>No TLS (pod-internal)
+    REST->>DP: InferenceRequest
+    DP->>Cache: Check cache
+    alt Cache Hit
+        Cache-->>DP: Cached response
+    else Cache Miss
+        DP->>Batch: Queue request
+        Note over Batch: Collect until max_batch_size<br/>or max_batch_time expires
+        Batch->>Registry: Batched predict()
+        Registry->>Runtime: Model.predict(batch)
+        Runtime-->>Registry: InferenceResponse[]
+        Registry-->>Batch: Batch result
+        Batch-->>DP: Individual response
+        DP->>Cache: Store in cache
+    end
+    DP-->>REST: InferenceResponse
+    REST-->>Gateway: HTTP 200 JSON
+    Gateway-->>Client: HTTPS Response
+
+    Note over Client,Runtime: Flow 2: gRPC Inference Request
+    Client->>Gateway: ModelInfer RPC<br/>Auth: Bearer Token / mTLS
+    Gateway->>GRPC: gRPC/8081<br/>No TLS (pod-internal)
+    GRPC->>DP: InferenceRequest
+    DP->>Registry: predict()
+    Registry->>Runtime: Model.predict()
+    Runtime-->>Registry: InferenceResponse
+    Registry-->>DP: Result
+    DP-->>GRPC: InferenceResponse
+    GRPC-->>Gateway: ModelInferResponse
+    Gateway-->>Client: gRPC Response
+
+    Note over KafkaBroker,Runtime: Flow 3: Kafka Async Inference
+    KafkaBroker->>REST: Kafka Consumer polls<br/>9092/TCP
+    REST->>DP: InferenceRequest (from message)
+    DP->>Registry: predict()
+    Registry->>Runtime: Model.predict()
+    Runtime-->>Registry: InferenceResponse
+    Registry-->>DP: Result
+    DP-->>REST: InferenceResponse
+    REST->>KafkaBroker: Kafka Producer publishes<br/>9092/TCP
+
+    Note over DP,Worker: Flow 4: Parallel Inference (Multi-Worker)
+    DP->>Dispatcher: ParallelModel.predict()
+    Dispatcher->>Worker: IPC multiprocessing.Queue
+    Worker->>Runtime: Model.predict() in subprocess
+    Runtime-->>Worker: Result
+    Worker-->>Dispatcher: IPC multiprocessing.Queue
+    Dispatcher-->>DP: asyncio.Future resolved

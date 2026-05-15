@@ -1,0 +1,69 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Gateway (Envoy)<br/>443/TCP HTTPS TLS 1.2+
+    participant BBR as BBR ext-proc Service<br/>9004/TCP gRPC plaintext
+    participant MPR as model-provider-resolver<br/>Plugin
+    participant AT as api-translation<br/>Plugin
+    participant AKI as apikey-injection<br/>Plugin
+    participant NRQ as nemo-request-guard<br/>Plugin
+    participant NRS as nemo-response-guard<br/>Plugin
+    participant K8s as Kubernetes API<br/>443/TCP HTTPS
+    participant NeMo as NeMo Guardrails<br/>HTTP
+    participant Provider as External LLM Provider<br/>443/TCP HTTPS TLS 1.2+
+
+    Note over Client,Provider: Flow 1: Inference Request Processing
+
+    Client->>Gateway: POST /{ns}/{model}/chat/completions<br/>HTTPS/443, TLS 1.2+, Gateway-level auth
+    Gateway->>BBR: ext-proc request<br/>gRPC/9004, plaintext (mesh-internal)
+
+    BBR->>MPR: Process request body
+    MPR->>K8s: Watch ExternalModel CRs<br/>HTTPS/443, ServiceAccount token
+    K8s-->>MPR: ExternalModel spec (provider, model, format)
+    MPR-->>BBR: CycleState: provider info set
+
+    BBR->>AT: Translate request
+    Note over AT: In-process translation<br/>OpenAI→Anthropic/Azure/Bedrock/Vertex
+    AT-->>BBR: CycleState: translated body
+
+    BBR->>AKI: Inject API key
+    AKI->>K8s: Watch labeled Secrets<br/>HTTPS/443, ServiceAccount token
+    K8s-->>AKI: Secret data (api-key)
+    AKI-->>BBR: Auth header injected
+
+    Note over Client,Provider: Flow 2: NeMo Content Moderation (optional)
+
+    BBR->>NRQ: Check request content
+    NRQ->>NeMo: POST /v1/rails/check<br/>HTTP, configurable port
+    NeMo-->>NRQ: Allow / Block
+    alt Blocked
+        NRQ-->>Gateway: 403 Forbidden
+        Gateway-->>Client: 403 Forbidden
+    end
+
+    Note over Client,Provider: Flow 1 continued: Forward to provider
+
+    Gateway->>Provider: POST inference request<br/>HTTPS/443, TLS 1.2+ (Istio SIMPLE origination)<br/>Provider API key header
+    Provider-->>Gateway: Inference response
+
+    Gateway->>BBR: ext-proc response
+    BBR->>NRS: Check response content
+    NRS->>NeMo: POST /v1/rails/check<br/>HTTP, configurable port
+    NeMo-->>NRS: Allow / Block
+    BBR->>AT: Translate response
+    Note over AT: Reverse translation<br/>Anthropic/Azure/Bedrock/Vertex→OpenAI
+    AT-->>BBR: Translated response body
+    BBR-->>Gateway: Processed response
+    Gateway-->>Client: JSON Response
+
+    Note over Client,Provider: Flow 3: ExternalProvider Reconciliation
+
+    rect rgb(240, 248, 255)
+        Note over K8s: Controller watches ExternalProvider CRDs
+        K8s->>K8s: ExternalProvider CR created/updated
+        K8s-->>BBR: Watch event
+        BBR->>K8s: GET Secret (credentials)<br/>HTTPS/443, ServiceAccount token
+        K8s-->>BBR: Secret data
+        BBR->>K8s: Create/Update Service (ExternalName)<br/>HTTPS/443
+        BBR->>K8s: Create/Update Istio ServiceEntry<br/>HTTPS/443
+        BBR->>K8s: Create/Update Istio DestinationRule<br/>HTTPS/443
+    end

@@ -1,0 +1,193 @@
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                            │
+│                                                                                  │
+│  [External Client]                                                               │
+│         │                                                                        │
+│         │ Port: 443/TCP                                                          │
+│         │ Protocol: HTTPS                                                        │
+│         │ Encryption: TLS 1.2+                                                   │
+│         │ Auth: Gateway-level (depends on Gateway configuration)                 │
+│         ▼                                                                        │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway)                                                               │
+│                                                                                  │
+│  [Gateway (Envoy) — maas-default-gateway]                                        │
+│  - Ingress: 443/TCP (external) via HTTPRoute (per ExternalModel)                │
+│  - TLS Termination: TLS 1.2+                                                    │
+│  - Auth: Gateway-level authentication                                            │
+│  - EnvoyFilter: ext-proc filter attached for BBR processing                      │
+│         │                                                                        │
+│         │ Port: 9004/TCP                                                         │
+│         │ Protocol: gRPC (ext-proc)                                              │
+│         │ Encryption: plaintext (mesh-internal)                                  │
+│         │ Auth: None                                                             │
+│         ▼                                                                        │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Internal — mesh-internal traffic)                                 │
+│                                                                                  │
+│  [BBR ext-proc Service — payload-processing]                                     │
+│  - Namespace: {release-namespace}                                                │
+│  - ServiceAccount: {bbr-name}-{release}                                          │
+│  - Ports: 9004/TCP (gRPC ext-proc), 9005/TCP (HTTP health)                      │
+│  - Image: quay.io/rhoai/odh-ai-gateway-payload-processing-rhel9                 │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1                           │
+│                                                                                  │
+│  Plugin Pipeline (in-process, sequential):                                       │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
+│  │ 1. model-provider-resolver                                                  │ │
+│  │    - Watches: maas.opendatahub.io/v1alpha1 ExternalModel (unstructured)    │ │
+│  │    - Resolves client model name → provider + target model + API format     │ │
+│  │                                                                             │ │
+│  │ 2. api-translation                                                          │ │
+│  │    - Translates request/response between OpenAI ↔ provider API formats     │ │
+│  │    - Supports: OpenAI, Anthropic, Azure, Bedrock, Vertex AI                │ │
+│  │                                                                             │ │
+│  │ 3. apikey-injection                                                         │ │
+│  │    - Reads labeled Secrets (bbr-managed) from in-memory cache              │ │
+│  │    - Injects provider-specific auth headers:                                │ │
+│  │      OpenAI: Authorization: Bearer {key}                                    │ │
+│  │      Anthropic: x-api-key: {key}                                           │ │
+│  │      Azure: api-key: {key}                                                  │ │
+│  │      Bedrock: Authorization: Bearer {token}                                 │ │
+│  │      Vertex: Authorization: Bearer {token}                                  │ │
+│  │                                                                             │ │
+│  │ 4. nemo-request-guard (optional)                                            │ │
+│  │    - Content moderation on request body                                     │ │
+│  │    - Blocks with 403 Forbidden if violated                                  │ │
+│  │                                                                             │ │
+│  │ 5. nemo-response-guard (optional)                                           │ │
+│  │    - Content moderation on response body                                    │ │
+│  │    - Blocks with 403 Forbidden if violated                                  │ │
+│  └─────────────────────────────────────────────────────────────────────────────┘ │
+│         │                                        │                               │
+│         │ Port: 443/TCP                          │ Port: configurable             │
+│         │ Protocol: HTTPS                        │ Protocol: HTTP                 │
+│         │ Encryption: TLS                        │ Encryption: configurable       │
+│         │ Auth: ServiceAccount token             │ Auth: None                     │
+│         ▼                                        ▼                               │
+│  [Kubernetes API Server]                  [NeMo Guardrails Service]              │
+│  - Watch: ExternalModel, ExternalProvider - Content moderation                   │
+│  - Watch: Secrets (bbr-managed labeled)   - Input/output rails validation        │
+│  - CRUD: HTTPRoutes, Services,            - No application-level TLS             │
+│    ServiceEntries, DestinationRules         (relies on network-level security)   │
+│                                                                                  │
+│  [ExternalModel Controller]                                                      │
+│  - Watches: inference.opendatahub.io/v1alpha1 ExternalModel                     │
+│  - Creates: HTTPRoute (Gateway API) per ExternalModel                            │
+│  - Updates: ExternalModel status (Ready/Failed)                                  │
+│                                                                                  │
+│  [ExternalProvider Controller]                                                   │
+│  - Watches: inference.opendatahub.io/v1alpha1 ExternalProvider                  │
+│  - Creates: Service (ExternalName), Istio ServiceEntry, DestinationRule         │
+│  - Updates: ExternalProvider status (Ready/Failed)                               │
+│                                                                                  │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (External LLM Providers — via Istio TLS origination)                     │
+│                                                                                  │
+│  Traffic path: Gateway → HTTPRoute → ExternalName Service → ServiceEntry         │
+│                → DestinationRule (TLS SIMPLE origination) → External endpoint    │
+│                                                                                  │
+│  [api.openai.com]                                                                │
+│  - Port: 443/TCP | Protocol: HTTPS | Encryption: TLS 1.2+ (SIMPLE)             │
+│  - Auth: Authorization: Bearer {api-key}                                         │
+│                                                                                  │
+│  [api.anthropic.com]                                                             │
+│  - Port: 443/TCP | Protocol: HTTPS | Encryption: TLS 1.2+ (SIMPLE)             │
+│  - Auth: x-api-key: {api-key}                                                   │
+│                                                                                  │
+│  [{resource}.openai.azure.com]                                                   │
+│  - Port: 443/TCP | Protocol: HTTPS | Encryption: TLS 1.2+ (SIMPLE)             │
+│  - Auth: api-key: {api-key}                                                      │
+│                                                                                  │
+│  [AWS Bedrock endpoint]                                                          │
+│  - Port: 443/TCP | Protocol: HTTPS | Encryption: TLS 1.2+ (SIMPLE)             │
+│  - Auth: Authorization: Bearer {token}                                           │
+│                                                                                  │
+│  [Vertex AI endpoint]                                                            │
+│  - Port: 443/TCP | Protocol: HTTPS | Encryption: TLS 1.2+ (SIMPLE)             │
+│  - Auth: Authorization: Bearer {token}                                           │
+│                                                                                  │
+│  [NeMo Guardrails service]                                                       │
+│  - Port: configurable | Protocol: HTTP | Encryption: configurable               │
+│  - Auth: None                                                                    │
+│  - ⚠ No application-level TLS — relies on network-level security (Istio mTLS)  │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+
+  Service Account: {bbr-name}-{release}
+
+  ClusterRole: {release}-externalmodels-reader (multi-namespace mode)
+    - API Groups: ""
+      Resources: secrets
+      Verbs: get, list, watch
+    - API Groups: maas.opendatahub.io
+      Resources: externalmodels
+      Verbs: get, list, watch
+
+  ClusterRole: ExternalModel controller (kubebuilder-generated)
+    - API Groups: inference.opendatahub.io
+      Resources: externalmodels
+      Verbs: get, list, watch
+    - API Groups: inference.opendatahub.io
+      Resources: externalmodels/status
+      Verbs: get, update, patch
+    - API Groups: inference.opendatahub.io
+      Resources: externalmodels/finalizers
+      Verbs: update
+    - API Groups: inference.opendatahub.io
+      Resources: externalproviders
+      Verbs: get, list, watch
+    - API Groups: gateway.networking.k8s.io
+      Resources: httproutes
+      Verbs: get, list, watch, create, update, delete
+
+  ClusterRole: ExternalProvider controller (kubebuilder-generated)
+    - API Groups: inference.opendatahub.io
+      Resources: externalproviders
+      Verbs: get, list, watch
+    - API Groups: inference.opendatahub.io
+      Resources: externalproviders/status
+      Verbs: get, update, patch
+    - API Groups: inference.opendatahub.io
+      Resources: externalproviders/finalizers
+      Verbs: update
+    - API Groups: ""
+      Resources: secrets
+      Verbs: get, list, watch
+    - API Groups: ""
+      Resources: services
+      Verbs: get, list, watch, create, update, delete
+    - API Groups: networking.istio.io
+      Resources: serviceentries
+      Verbs: get, list, watch, create, update, delete
+    - API Groups: networking.istio.io
+      Resources: destinationrules
+      Verbs: get, list, watch, create, update, delete
+
+Secrets:
+
+  {provider}-credentials (e.g., openai-credentials, anthropic-credentials)
+    - Type: Opaque
+    - Data field: api-key
+    - Label: inference.networking.k8s.io/bbr-managed: "true"
+    - Provisioned by: Manual (user-created)
+    - Auto-rotate: No
+
+FIPS Compliance:
+
+  - Build flags: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+  - Linking: Dynamic (CGO_ENABLED=1) — uses system OpenSSL from UBI9
+  - Base image: registry.access.redhat.com/ubi9/ubi-minimal (pinned digest in E2E)
+  - Crypto: stdlib only, no custom TLS config, no InsecureSkipVerify
+  - Non-FIPS risks: None detected (no MD5, RC4, DES, or custom RNG)
+
+Security Notes:
+
+  - NeMo Guardrails uses plain HTTP client with no TLS config
+    → Relies on network-level security (Istio mTLS) rather than app-level encryption
+  - Credential caching: API keys are cached in thread-safe in-memory stores
+    → Label-based filtering (bbr-managed=true) limits Secret watch blast radius
+  - Dual CRD schema: maas.opendatahub.io (legacy) + inference.opendatahub.io (current)
+    → Transition period; legacy schema watched via unstructured client

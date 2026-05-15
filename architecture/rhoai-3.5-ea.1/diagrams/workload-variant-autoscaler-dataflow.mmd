@@ -1,0 +1,45 @@
+sequenceDiagram
+    participant Admin as Platform Admin
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant WVA as WVA Controller Manager
+    participant SatEngine as Saturation Engine<br/>(60s interval)
+    participant SFZEngine as Scale-from-Zero Engine
+    participant Prom as Prometheus / Thanos<br/>9090-9091/TCP HTTPS
+    participant Metrics as WVA /metrics<br/>8443/TCP HTTPS TLS
+    participant HPAKEDA as HPA / KEDA
+    participant Targets as Deployments / LWS
+
+    Note over Admin,Targets: Flow 1: Saturation-Based Autoscaling Decision
+
+    Admin->>K8sAPI: Create VariantAutoscaling CR<br/>(model, scale target, variant cost)
+    K8sAPI->>WVA: Informer: VA CR event
+    WVA->>WVA: Reconcile: register variant<br/>in DecisionCache
+
+    loop Every 60s (GLOBAL_OPT_INTERVAL)
+        SatEngine->>Prom: PromQL: vllm_kv_cache_usage,<br/>vllm_queue_depth, request_rates<br/>Auth: Bearer Token (SA)
+        Prom-->>SatEngine: Metrics response (cached w/ TTL)
+        SatEngine->>SatEngine: SaturationV2Analyzer:<br/>compute optimal replicas<br/>(KV cache threshold=0.80,<br/>queue threshold=5)
+        SatEngine->>SatEngine: Greedy optimizer:<br/>allocate cheapest variant first,<br/>remove most expensive
+        SatEngine->>SatEngine: Store decisions in DecisionCache
+        SatEngine->>Metrics: Emit wva_optimal_replicas,<br/>wva_saturation metrics
+    end
+
+    Prom->>Metrics: Scrape /metrics<br/>Auth: Bearer Token + SAR
+    Metrics-->>Prom: WVA optimization metrics
+    HPAKEDA->>Prom: Query custom metrics<br/>Auth: Bearer Token
+    Prom-->>HPAKEDA: wva_optimal_replicas
+    HPAKEDA->>K8sAPI: Patch scale subresource<br/>Auth: SA Token
+    K8sAPI->>Targets: Scale replicas
+
+    Note over Admin,Targets: Flow 2: Scale-from-Zero
+
+    K8sAPI->>SFZEngine: Informer: InferencePool CR event
+    SFZEngine->>SFZEngine: Detect pending requests<br/>on pool with 0 replicas
+    SFZEngine->>K8sAPI: Patch Deployment/LWS replicas<br/>(0 → minReplicas)<br/>Auth: SA Token
+    K8sAPI->>Targets: Scale from zero
+
+    Note over Admin,Targets: Flow 3: Dynamic Configuration Update
+
+    Admin->>K8sAPI: Update ConfigMap<br/>(saturation thresholds)
+    K8sAPI->>WVA: Informer: ConfigMap event<br/>(labeled app.kubernetes.io/name:<br/>workload-variant-autoscaler)
+    WVA->>WVA: ConfigMapReconciler:<br/>update thresholds live<br/>(no pod restart)

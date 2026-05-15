@@ -1,0 +1,63 @@
+sequenceDiagram
+    participant MM as ModelMesh<br/>Payload Logger
+    participant KS as KServe<br/>Inference Logger
+    participant Consumer as TrustyAI<br/>ConsumerEndpoint<br/>8080/TCP HTTP
+    participant CloudEvt as TrustyAI<br/>CloudEventConsumer<br/>8080/TCP HTTP
+    participant MMRecon as ModelMesh<br/>PayloadReconciler
+    participant KSRecon as KServe<br/>PayloadReconciler
+    participant Storage as Storage Backend<br/>(PVC/MinIO/DB)
+    participant Scheduler as Prometheus<br/>Scheduler<br/>(cron 5s)
+    participant Fairness as Fairness Engine<br/>(SPD, DIR)
+    participant Drift as Drift Engine<br/>(KS, FourierMMD)
+    participant Publisher as Prometheus<br/>Publisher
+    participant Prom as Prometheus<br/>Server
+    participant Client as API Client
+    participant Explainer as Explainer Engine<br/>(LIME, SHAP, CF)
+    participant ModelSrv as KServe<br/>Model Server
+
+    Note over MM,Storage: Flow 1: ModelMesh Inference Data Ingestion
+    MM->>Consumer: POST /consumer/kserve/v2<br/>HTTP 8080/TCP (no TLS)
+    Consumer->>MMRecon: Partial payload (input or output)
+    Note right of MMRecon: Matches request/response<br/>pairs by inference ID<br/>(strips __isvc suffix)
+    MMRecon->>Storage: Store matched record<br/>(PVC: File I/O | MinIO: HTTP | DB: JDBC)
+
+    Note over KS,Storage: Flow 2: KServe CloudEvent Inference Data Ingestion
+    KS->>CloudEvt: CloudEvent POST<br/>HTTP 8080/TCP (no TLS)
+    CloudEvt->>KSRecon: Partial payload (request or response)
+    Note right of KSRecon: Matches request/response<br/>pairs by inference ID
+    KSRecon->>Storage: Store matched record
+
+    Note over Scheduler,Prom: Flow 3: Scheduled Metric Computation & Prometheus Publication
+    Scheduler->>Storage: Read inference data
+    Storage-->>Scheduler: Dataframes
+    Scheduler->>Fairness: Compute SPD, DIR
+    Fairness-->>Scheduler: Metric values
+    Scheduler->>Drift: Compute KS, FourierMMD, Meanshift
+    Drift-->>Scheduler: Metric values
+    Scheduler->>Publisher: Publish as Prometheus gauges<br/>(trustyai_ prefix)
+    Prom->>Consumer: GET /q/metrics<br/>HTTP 8080/TCP
+    Consumer-->>Prom: Prometheus text format
+
+    Note over Client,ModelSrv: Flow 4: Explainer Prediction (disabled in RHOAI)
+    Client->>Consumer: POST /explainers/local/lime<br/>HTTP 8080/TCP
+    Consumer->>Explainer: Explanation request
+    loop Multiple prediction calls (Semaphore: max 5)
+        Explainer->>ModelSrv: gRPC inference request<br/>(plaintext, per-request channel)
+        ModelSrv-->>Explainer: Prediction response
+    end
+    Explainer-->>Consumer: Explanation result<br/>(feature importances)
+    Consumer-->>Client: JSON response
+
+    Note over Client,Storage: Flow 5: Data Upload (with gzip support)
+    Client->>Consumer: POST /data/upload<br/>HTTP 8080/TCP<br/>(Content-Encoding: gzip)
+    Note right of Consumer: GzipRequestFilter<br/>decompresses payload
+    Consumer->>Storage: Store batch data<br/>+ ground truth labels
+    Storage-->>Consumer: Confirmation
+    Consumer-->>Client: 200 OK
+
+    Note over Client,Storage: Flow 6: Metric Scheduling via API
+    Client->>Consumer: POST /metrics/group/fairness/spd/request<br/>Schedule recurring SPD
+    Consumer->>Scheduler: Register metric computation<br/>(model, protected attr, thresholds)
+    Note right of Scheduler: Recalculated each cycle<br/>SPD threshold: -0.1 to 0.1<br/>DIR threshold: 0.8 to 1.2
+    Scheduler-->>Consumer: Confirmation
+    Consumer-->>Client: 200 OK

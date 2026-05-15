@@ -1,0 +1,57 @@
+sequenceDiagram
+    participant Client as External Client
+    participant GW as Gateway<br/>(Envoy/Istio/agentgateway)<br/>80 or 443/TCP
+    participant EPP as llm-d EPP<br/>(Inference Scheduler)<br/>ext-proc gRPC
+    participant Prefill as Prefill Model Server<br/>vLLM 8000/TCP
+    participant Decode as Decode Model Server<br/>vLLM 8000/TCP
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant OTEL as OTEL Collector<br/>4317/TCP gRPC
+
+    Note over Client, Decode: Flow 1: Gateway Mode - Standard Inference Request
+
+    Client->>GW: POST /v1/chat/completions<br/>HTTP/HTTPS
+    GW->>EPP: ext-proc CheckRequest<br/>gRPC
+    EPP->>Prefill: Scrape /metrics<br/>HTTP 8000/TCP (queue depth, KV utilization)
+    Prefill-->>EPP: Prometheus metrics
+    EPP-->>GW: PickEndpoint response<br/>gRPC (selected pod IP)
+    GW->>Prefill: Forward request<br/>HTTP 8000/TCP
+    Prefill-->>GW: Streamed response (SSE)
+    GW-->>Client: Streamed completion response
+
+    Note over Client, Decode: Flow 2: Prefill/Decode Disaggregation (P/D Split)
+
+    Client->>GW: POST /v1/chat/completions<br/>HTTP/HTTPS
+    GW->>EPP: ext-proc CheckRequest<br/>gRPC
+    EPP-->>GW: Route to Prefill server<br/>gRPC
+    GW->>Prefill: Forward request<br/>HTTP 8000/TCP
+    Note over Prefill: Compute KV cache<br/>for input tokens
+
+    Prefill->>Decode: Transfer KV cache<br/>RDMA/TCP via NIXL/UCX<br/>(zero-copy when possible)
+
+    EPP-->>GW: Route decode to Decode server
+    GW->>Decode: Forward decode request<br/>HTTP 8000/TCP
+    Note over Decode: Generate tokens<br/>using transferred KV cache
+    Decode-->>GW: Streamed token response
+    GW-->>Client: Streamed completion response
+
+    Note over Client, OTEL: Flow 3: KV Cache Events (Precise Prefix Cache Routing)
+
+    Prefill->>EPP: KV cache block events<br/>ZMQ 5556/TCP (publish)
+    Note over EPP: Update internal<br/>prefix cache index
+    Client->>GW: POST /v1/chat/completions<br/>(with matching prefix)
+    GW->>EPP: ext-proc CheckRequest
+    Note over EPP: Score pods by prefix<br/>cache hit ratio
+    EPP-->>GW: Route to pod with<br/>highest cache hit
+
+    Note over Client, OTEL: Flow 4: Startup - Model Loading
+
+    Note over Prefill: Pod starts
+    Prefill->>HF: GET model weights<br/>HTTPS 443/TCP, Bearer HF_TOKEN
+    HF-->>Prefill: Model artifacts (safetensors)
+    Note over Prefill: Load model into<br/>GPU memory
+
+    Note over Client, OTEL: Observability Flows
+
+    Prefill->>OTEL: Export traces<br/>gRPC 4317/TCP (OpenTelemetry)
+    Decode->>OTEL: Export traces<br/>gRPC 4317/TCP
+    EPP->>OTEL: Export traces<br/>gRPC 4317/TCP

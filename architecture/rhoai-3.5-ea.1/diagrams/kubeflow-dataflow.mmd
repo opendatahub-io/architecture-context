@@ -1,0 +1,56 @@
+sequenceDiagram
+    participant User as User / Dashboard
+    participant APIServer as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
+    participant MutatingWH as odh-notebook-controller<br/>Mutating Webhook<br/>443/TCP HTTPS
+    participant ImageStream as OpenShift ImageStream API<br/>6443/TCP HTTPS
+    participant NBC as notebook-controller<br/>8080/TCP metrics
+    participant ODHC as odh-notebook-controller<br/>8080/TCP metrics
+    participant Gateway as data-science-gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant RBACProxy as kube-rbac-proxy Sidecar<br/>8443/TCP HTTPS
+    participant TokenReview as Kubernetes TokenReview<br/>6443/TCP HTTPS
+    participant SAR as Kubernetes SubjectAccessReview<br/>6443/TCP HTTPS
+    participant Notebook as Notebook Pod (JupyterLab)<br/>8888/TCP HTTP
+
+    rect rgb(220, 240, 255)
+        Note over User,Notebook: Flow 1: Notebook Creation
+        User->>APIServer: POST Notebook CR<br/>Auth: Bearer Token (user)
+        APIServer->>MutatingWH: Admission Webhook Call<br/>HTTPS/443 TLS (serving cert)
+        MutatingWH->>ImageStream: Resolve container image<br/>HTTPS/6443 SA token
+        ImageStream-->>MutatingWH: Resolved image reference
+        Note over MutatingWH: Injects: kube-rbac-proxy sidecar,<br/>CA trust bundles, proxy env vars,<br/>DSPA/MLflow/Feast config
+        MutatingWH-->>APIServer: Mutated Notebook spec
+        APIServer-->>User: Notebook created
+
+        APIServer->>NBC: Watch event: Notebook created<br/>HTTPS/6443 SA token
+        NBC->>APIServer: Create StatefulSet + Service<br/>HTTPS/6443 SA token
+
+        APIServer->>ODHC: Watch event: Notebook created<br/>HTTPS/6443 SA token
+        ODHC->>APIServer: Create HTTPRoute, NetworkPolicy,<br/>ReferenceGrant, RBAC resources<br/>HTTPS/6443 SA token
+    end
+
+    rect rgb(220, 255, 220)
+        Note over User,Notebook: Flow 2: Notebook Access via Gateway API
+        User->>Gateway: GET /notebook/{ns}/{name}<br/>HTTPS/443 TLS 1.2+ Bearer Token (OIDC)
+        Gateway->>RBACProxy: Forward request<br/>HTTPS/8443 TLS (serving cert)
+        RBACProxy->>TokenReview: Validate bearer token<br/>HTTPS/6443 SA token
+        TokenReview-->>RBACProxy: Token valid (user identity)
+        RBACProxy->>SAR: Check "get notebooks" permission<br/>HTTPS/6443 SA token
+        SAR-->>RBACProxy: Access granted
+        RBACProxy->>Notebook: Forward request<br/>HTTP/8888 (localhost)<br/>X-Auth-Request-User header
+        Notebook-->>RBACProxy: JupyterLab response
+        RBACProxy-->>Gateway: Response
+        Gateway-->>User: HTTPS response
+    end
+
+    rect rgb(255, 240, 220)
+        Note over User,Notebook: Flow 3: Idle Notebook Culling
+        loop Every IDLENESS_CHECK_PERIOD minutes
+            NBC->>Notebook: GET /api/kernels, /api/terminals<br/>HTTP/8888 (cluster-internal)
+            Notebook-->>NBC: Kernel/terminal status
+            Note over NBC: Check idle time against<br/>CULL_IDLE_TIME threshold
+            alt Notebook idle > threshold
+                NBC->>APIServer: Patch annotation:<br/>kubeflow-resource-stopped<br/>HTTPS/6443 SA token
+                Note over NBC: StatefulSet scaled to 0
+            end
+        end
+    end

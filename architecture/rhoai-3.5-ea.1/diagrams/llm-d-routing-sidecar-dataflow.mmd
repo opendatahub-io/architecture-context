@@ -1,0 +1,42 @@
+sequenceDiagram
+    participant Client as Client / Gateway API Router
+    participant Scheduler as llm-d-inference-scheduler
+    participant Sidecar as Routing Sidecar<br/>8000/TCP HTTPS TLS 1.2+
+    participant Allowlist as AllowlistValidator<br/>(SSRF Protection)
+    participant Prefiller as Remote Prefiller (vLLM)<br/>dynamic port HTTP(S)
+    participant Decoder as Local Decoder (vLLM)<br/>8001/TCP HTTP(S)
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+
+    Note over Client,Decoder: Flow 1: Disaggregated Prefill/Decode (NIXL v2 Protocol)
+
+    Scheduler->>Client: Sets x-prefiller-host-port header
+    Client->>Sidecar: POST /v1/chat/completions<br/>Header: x-prefiller-host-port
+
+    alt SSRF Protection Enabled
+        Sidecar->>Allowlist: Validate prefiller host
+        Allowlist-->>Sidecar: Allowed / 403 Forbidden
+    end
+
+    Sidecar->>Prefiller: Forward prefill request<br/>HTTP(S) TLS 1.2+
+    Prefiller-->>Sidecar: Response with kv_transfer_params<br/>(block_ids, engine_id, host, port)
+
+    Sidecar->>Decoder: Decode request with kv_transfer_params<br/>HTTP(S)/8001 TLS 1.2+
+    Decoder-->>Sidecar: Streamed token response
+    Sidecar-->>Client: Streamed response<br/>HTTPS TLS 1.2+
+
+    Note over Client,Decoder: Flow 2: Direct Decode (No Prefiller Header)
+
+    Client->>Sidecar: POST /v1/chat/completions<br/>(no x-prefiller-host-port)
+    Sidecar->>Decoder: Passthrough request<br/>HTTP(S)/8001
+    Decoder-->>Sidecar: Streamed token response
+    Sidecar-->>Client: Streamed response<br/>HTTPS TLS 1.2+
+
+    Note over Allowlist,K8sAPI: Flow 3: SSRF Protection Allowlist Updates
+
+    loop Every 30s Resync
+        Allowlist->>K8sAPI: Watch InferencePool CRs<br/>HTTPS/443 ServiceAccount Token
+        K8sAPI-->>Allowlist: InferencePool events<br/>(pod selectors)
+        Allowlist->>K8sAPI: Watch Pods matching selectors<br/>HTTPS/443
+        K8sAPI-->>Allowlist: Pod events<br/>(IPs, hostnames)
+        Note over Allowlist: Update IP/hostname allowlist
+    end

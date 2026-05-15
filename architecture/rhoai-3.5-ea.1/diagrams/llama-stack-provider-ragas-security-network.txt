@@ -1,0 +1,151 @@
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                            │
+│                                                                                  │
+│  [User / Client]                                                                 │
+│         │                                                                        │
+│         │ Port: 8321/TCP                                                         │
+│         │ Protocol: HTTP                                                         │
+│         │ Encryption: None (delegated to Llama Stack server)                     │
+│         │ Auth: None (delegated to Llama Stack server)                           │
+│         ▼                                                                        │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (Llama Stack Server)                                                │
+│                                                                                  │
+│  [Llama Stack Server]                                                            │
+│  - Service: llama-stack (ClusterIP)                                              │
+│  - Port: 8321/TCP (HTTP, no TLS)                                                │
+│  - Auth: None                                                                    │
+│  - Hosts: llama-stack-provider-ragas as eval provider plugin                     │
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────┐     │
+│  │  [llama-stack-provider-ragas - Inline Mode]                             │     │
+│  │  - Runs in-process within Llama Stack Server                            │     │
+│  │  - No separate network identity                                         │     │
+│  │  - API: Eval + BenchmarksProtocolPrivate (in-process Python)            │     │
+│  │  - LLM/Embedding calls: in-process via Llama Stack Inference API        │     │
+│  │  - Job tracking: in-memory dict (lost on restart)                       │     │
+│  └─────────────────────────────────────────────────────────────────────────┘     │
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────┐     │
+│  │  [llama-stack-provider-ragas - Remote Mode]                             │     │
+│  │  - Runs in-process within Llama Stack Server (pipeline orchestrator)    │     │
+│  │  - Submits KFP pipelines that run as separate pods                      │     │
+│  │  - Job tracking: in-memory dict (lost on restart)                       │     │
+│  │                                                                         │     │
+│  │         │                                                               │     │
+│  │         │ Port: 443/TCP                                                 │     │
+│  │         │ Protocol: HTTPS                                               │     │
+│  │         │ Encryption: TLS 1.2+                                          │     │
+│  │         │ Auth: Bearer Token (OpenShift OAuth)                          │     │
+│  │         │ Source: KUBEFLOW_PIPELINES_TOKEN or kubeconfig extraction      │     │
+│  │         ▼                                                               │     │
+│  └─────────────────────────────────────────────────────────────────────────┘     │
+│         │                                                                        │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER SERVICES (Internal)                                                     │
+│                                                                                  │
+│  [Kubeflow Pipelines API (Data Science Pipelines)]                               │
+│  - Port: 443/TCP                                                                 │
+│  - Protocol: HTTPS                                                               │
+│  - Encryption: TLS 1.2+                                                          │
+│  - Auth: Bearer Token (OpenShift OAuth)                                          │
+│  - Purpose: Submit evaluation pipeline runs, monitor status, terminate runs      │
+│  - Methods: create_run, get_run, terminate_run                                   │
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────┐     │
+│  │  [KFP Pipeline Pods]                                                    │     │
+│  │  - Image: odh-trustyai-ragas-lls-provider-dsp-rhel9                     │     │
+│  │    (resolved via TrustyAI ConfigMap or KUBEFLOW_BASE_IMAGE env)         │     │
+│  │  - Step 1: retrieve_data_from_llama_stack                               │     │
+│  │    - Calls Llama Stack Server at 8321/TCP HTTP, no auth                 │     │
+│  │  - Step 2: run_ragas_evaluation                                         │     │
+│  │    - Calls Llama Stack Server at 8321/TCP HTTP for LLM + embeddings     │     │
+│  │    - Writes results to S3 at 443/TCP HTTPS, AWS IAM                     │     │
+│  │  - Secrets injected via KFP secret mechanism:                           │     │
+│  │    - S3 credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)          │     │
+│  │    - Inference model config (INFERENCE_MODEL, VLLM_URL, etc.)           │     │
+│  └─────────────────────────────────────────────────────────────────────────┘     │
+│                                                                                  │
+│  [Kubernetes API Server]                                                         │
+│  - Port: 6443/TCP                                                                │
+│  - Protocol: HTTPS                                                               │
+│  - Encryption: TLS 1.2+                                                          │
+│  - Auth: ServiceAccount token / kubeconfig                                       │
+│  - Purpose: Read ConfigMap (trustyai-service-operator-config) for base image     │
+│  - Purpose: Load kubeconfig for KFP token extraction                             │
+│  - Namespaces: redhat-ods-applications, opendatahub                              │
+│                                                                                  │
+│  [Ollama / vLLM Inference Backend]                                               │
+│  - Port: 11434/TCP (Ollama default) or custom                                   │
+│  - Protocol: HTTP                                                                │
+│  - Encryption: Configurable (VLLM_TLS_VERIFY)                                   │
+│  - Auth: Bearer Token (VLLM_API_TOKEN) or None                                  │
+│  - Purpose: LLM completions and embedding generation for Ragas metrics           │
+│                                                                                  │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                               │
+│                                                                                  │
+│  [S3-compatible Object Storage]                                                  │
+│  - Port: 443/TCP                                                                 │
+│  - Protocol: HTTPS                                                               │
+│  - Encryption: TLS 1.2+                                                          │
+│  - Auth: AWS IAM credentials (AccessKey / SecretKey)                             │
+│  - Purpose: Store evaluation result JSONL files (from KFP component)             │
+│  - Purpose: Retrieve evaluation results (from remote provider)                   │
+│  - Direction: Bidirectional (PUT from KFP pod, GET from provider)                │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No RBAC resources (ClusterRoles, RoleBindings) defined by this component
+- KFP pipeline components require:
+  - ConfigMap read access (for base image resolution)
+  - Secret read access (for S3 credentials)
+  - Handled by KFP's built-in secret injection mechanism
+
+Secrets:
+- (user-defined S3 credentials) (Opaque) - AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+  AWS_DEFAULT_REGION — Manual provisioning, no auto-rotation
+- kubeflow-pipelines-token (Opaque) - KFP API auth token — Manual or kubeconfig extraction,
+  no auto-rotation
+- llama-stack-inference-model-secret (Opaque) - INFERENCE_MODEL, VLLM_URL, VLLM_TLS_VERIFY,
+  VLLM_API_TOKEN — Manual provisioning, no auto-rotation
+- aws-credentials (Opaque) - AWS credentials for S3 access from Llama Stack pod (demo) —
+  Manual provisioning, no auto-rotation
+
+Authentication & Authorization:
+- Kubeflow Pipelines API:
+  - Methods: POST (create_run), GET (get_run), POST (terminate_run)
+  - Auth: Bearer Token (OpenShift OAuth)
+  - Enforcement: KFP server
+  - Token source: kubeconfig or KUBEFLOW_PIPELINES_TOKEN env var
+- S3 Object Storage:
+  - Methods: GET, PUT
+  - Auth: AWS IAM credentials (AccessKey/SecretKey)
+  - Enforcement: S3 service
+  - Injected via Kubernetes Secret into KFP pipeline components
+- Llama Stack Server:
+  - Methods: POST (eval, inference, datasetio)
+  - Auth: None (local API)
+  - Enforcement: Llama Stack server
+  - Provider runs in-process (inline) or as KFP component (remote)
+
+FIPS Compliance:
+- Base image: UBI 9 (registry.redhat.io/ubi9/python-312) — OpenSSL available
+- Crypto library: cryptography==46.0.2 (FIPS-capable via OpenSSL backend on UBI)
+- No custom TLS configuration — delegates to Llama Stack server and upstream libraries
+- No non-FIPS crypto risks detected (no MD5, RC4, DES, or custom crypto)
+
+Build Hermeticity:
+- Python deps: Pinned with SHA256 hashes in requirements.txt (uv pip compile) + uv.lock
+- OS packages: rpms.lock.yaml ABSENT — hermeticity gap
+- Hermeto/cachi2 prefetch: NOT present — pip install fetches from PyPI at build time
+
+Architectural Notes:
+- In-memory job tracking: Both inline and remote providers use in-memory dicts for job state.
+  Server restart loses all job references. KFP pipeline runs continue but provider cannot
+  recover orphaned jobs.
+- Base image resolution (remote mode): 3-tier fallback —
+  (1) KUBEFLOW_BASE_IMAGE env var
+  (2) trustyai-service-operator-config ConfigMap (redhat-ods-applications or opendatahub ns)
+  (3) Default: quay.io/trustyai/llama-stack-provider-ragas:latest

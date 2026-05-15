@@ -1,0 +1,207 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as ODH Dashboard<br/>(7 BFF Plugins)
+    participant K8sAPI as Kubernetes API
+    participant KServe as KServe Controller
+    participant StorageInit as storage-initializer<br/>(init container)
+    participant ModelPod as Model Server<br/>(vLLM/OVMS/MLServer)
+    participant ODHModelCtrl as odh-model-controller
+    participant ModelReg as Model Registry
+    participant Prometheus as Prometheus
+    participant S3 as S3 Storage
+    participant Gateway as Gateway API<br/>(Envoy)
+    participant Client as External Client
+
+    Note over User,Client: Workflow 1: Model Deployment via Dashboard
+
+    User->>Dashboard: Login via IntegratedOAuth/OIDC
+    Dashboard-->>User: Show project overview (gen-ai BFF)
+    User->>Dashboard: Create InferenceService via UI form
+    Dashboard->>K8sAPI: POST InferenceService CR<br/>(bearer token forwarding)
+    K8sAPI-->>KServe: InferenceService watch triggered
+    KServe->>K8sAPI: Create Deployment, Service,<br/>HTTPRoute, HPA/KEDA ScaledObject
+    KServe->>StorageInit: Inject init container into pod spec
+    StorageInit->>S3: Download model artifacts<br/>(HTTPS/443, AWS IAM)
+    S3-->>StorageInit: model.bin + config.json
+    StorageInit-->>ModelPod: Model ready in shared volume
+    Note over ModelPod: Model server starts,<br/>loads model into memory
+    ODHModelCtrl->>K8sAPI: Create NetworkPolicy,<br/>ServiceMonitor for pod
+    ODHModelCtrl->>Prometheus: Register scrape target
+    ModelReg->>KServe: Sync InferenceService status<br/>to registry metadata
+    KServe->>Gateway: Configure HTTPRoute<br/>for external access
+
+    Note over Client,Gateway: Production inference begins
+    Client->>Gateway: POST /v1/models/my-model:predict<br/>(HTTPS/443, Bearer Token)
+    Gateway->>ModelPod: Forward request via HTTPRoute
+    ModelPod-->>Gateway: Prediction result (JSON)
+    Gateway-->>Client: Response (HTTPS)
+
+    User->>Dashboard: View model metrics + status
+    Dashboard->>K8sAPI: Query InferenceService status
+    Dashboard->>ModelReg: Get model metadata<br/>(model-registry BFF)
+    Dashboard-->>User: Model health, latency, throughput
+
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Gateway API<br/>(Envoy)
+    participant AIGW as ai-gateway-payload-processing<br/>(ext-proc)
+    participant EPP as EPP<br/>(llm-d-inference-scheduler)
+    participant VLLM as vLLM Pod<br/>(llm-d stack)
+    participant GuardOrch as FMS Guardrails<br/>Orchestrator
+    participant Detectors as Guardrails Detectors<br/>(regex, ML, LLM judge)
+    participant NeMo as NeMo Guardrails
+    participant WVA as WVA Controller
+    participant Prometheus as Prometheus
+
+    Note over Client,Prometheus: Workflow 2: LLM Inference with Guardrails (llm-d Stack)
+
+    Client->>Gateway: POST /v1/chat/completions<br/>(HTTPS/443, OpenAI-compatible)
+    Gateway->>AIGW: ext-proc: ProcessingRequest
+    Note over AIGW: Resolve model name,<br/>translate API format,<br/>inject provider credentials
+    AIGW-->>Gateway: Modified request
+    Gateway->>EPP: ext-proc: Route selection
+    Note over EPP: Run scheduling plugins:<br/>KV-cache scorer,<br/>saturation filter,<br/>profile handler
+    EPP-->>Gateway: Selected target vLLM pod
+    Gateway->>VLLM: Forward to optimal pod<br/>(KV-cache aware routing)
+
+    alt Guardrails Enabled
+        VLLM->>GuardOrch: Route through guardrails pipeline
+        GuardOrch->>Detectors: Dispatch to detection backends
+        Detectors-->>GuardOrch: Detection results
+        GuardOrch->>NeMo: Content safety check
+        NeMo-->>GuardOrch: Safety verdict
+        GuardOrch-->>VLLM: Approved/blocked response
+    end
+
+    VLLM-->>Gateway: Chat completion response<br/>(streaming SSE or JSON)
+    Gateway-->>Client: Response (HTTPS)
+
+    Note over WVA,Prometheus: Autoscaling loop (continuous)
+    WVA->>Prometheus: Query KV-cache utilization,<br/>queue depth metrics
+    Prometheus-->>WVA: Current metrics
+    Note over WVA: Apply queueing theory models,<br/>calculate target replicas
+    WVA->>VLLM: Adjust replica count<br/>via HPA/KEDA metrics
+
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as ODH Dashboard<br/>(pipeline UI)
+    participant KFPSDK as KFP SDK<br/>(kfp.Client)
+    participant DSPAPI as DSP API Server
+    participant ArgoCtrl as Argo Workflows<br/>Controller
+    participant Driver as DSP Driver
+    participant Launcher as DSP Launcher
+    participant S3 as S3/SeaweedFS<br/>(Artifact Store)
+    participant MLMD as ML Metadata DB
+    participant PersistAgent as DSP Persistence<br/>Agent
+
+    Note over User,PersistAgent: Workflow 3: Data Science Pipeline Execution
+
+    alt Via Dashboard
+        User->>Dashboard: Submit pipeline run via UI
+        Dashboard->>DSPAPI: POST pipeline run<br/>(bearer token forwarding)
+    else Via SDK
+        User->>KFPSDK: kfp.Client().create_run()
+        KFPSDK->>DSPAPI: POST pipeline run<br/>(SA token or user token)
+    end
+
+    DSPAPI->>DSPAPI: Store pipeline spec in DB
+    DSPAPI->>ArgoCtrl: Create Argo Workflow CR
+    ArgoCtrl->>ArgoCtrl: Parse DAG, create pod<br/>per pipeline step
+
+    loop For each pipeline step
+        ArgoCtrl->>Driver: Launch driver container
+        Note over Driver: Resolve inputs,<br/>evaluate conditions,<br/>check cache
+        Driver->>Launcher: Generate pod patches,<br/>launch user code container
+        Launcher->>Launcher: Execute user code
+        Launcher->>S3: Upload output artifacts<br/>(HTTPS/443)
+        Launcher->>MLMD: Publish execution metadata
+    end
+
+    PersistAgent->>ArgoCtrl: Watch Workflow status
+    PersistAgent->>DSPAPI: Persist run results to DB
+
+    User->>Dashboard: View pipeline run results
+    Dashboard->>DSPAPI: GET run details + artifacts
+    Dashboard-->>User: Pipeline visualization,<br/>metrics, artifact links
+
+sequenceDiagram
+    participant User as Data Scientist
+    participant NotebookCtrl as Kubeflow Notebook<br/>Controller
+    participant Notebook as JupyterLab Workbench<br/>(StatefulSet)
+    participant TrainingHub as training-hub SDK
+    participant Trainer as Kubeflow Trainer<br/>(v2 controller)
+    participant JobSet as JobSet Controller
+    participant TrainingPods as Training Pods<br/>(distributed)
+    participant Kueue as Kueue
+    participant S3 as S3 Storage
+    participant Dashboard as ODH Dashboard
+
+    Note over User,Dashboard: Workflow 4: Notebook-to-Training Pipeline
+
+    User->>NotebookCtrl: Create Notebook CR via Dashboard
+    NotebookCtrl->>Notebook: Create StatefulSet with:<br/>GPU/CPU resources,<br/>kube-rbac-proxy sidecar,<br/>Feast config injection
+    Note over Notebook: JupyterLab workbench ready
+
+    User->>Notebook: Develop model code
+    Notebook->>S3: Download training data<br/>(HTTPS/443, AWS IAM)
+    Note over Notebook: Local prototyping +<br/>experimentation
+
+    User->>TrainingHub: Submit distributed training<br/>via training-hub SDK
+    TrainingHub->>Trainer: Create TrainJob CR +<br/>TrainingRuntime selection
+    Trainer->>Trainer: Reconcile TrainJob:<br/>apply Torch/MPI/TorchTune<br/>plugin configurations
+    Trainer->>JobSet: Create JobSet resource
+    JobSet->>Kueue: Request resource quota<br/>(gang-scheduling PodGroup)
+    Kueue-->>JobSet: Quota approved
+    JobSet->>TrainingPods: Create distributed<br/>training pods
+
+    loop Training execution
+        TrainingPods->>S3: Read training data,<br/>write checkpoints<br/>(HTTPS/443)
+        TrainingPods->>TrainingPods: Distributed gradient sync
+    end
+
+    Trainer->>TrainingPods: Poll HTTP metrics<br/>for real-time progress
+    Trainer->>Trainer: Store progress in<br/>TrainJob annotations
+
+    User->>Dashboard: View training progress
+    Dashboard->>Trainer: Query TrainJob status
+    Dashboard-->>User: Training metrics,<br/>loss curves, ETA
+
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as ODH Dashboard<br/>(eval-hub-ui BFF)
+    participant EvalHubAPI as EvalHub API
+    participant EvalJob as Evaluation Job<br/>(lm-eval/RAGAS/Garak)
+    participant ModelEndpoint as Target Model<br/>(KServe endpoint)
+    participant MLflow as MLflow<br/>(Experiment Tracking)
+    participant OCIReg as OCI Registry<br/>(Result Artifacts)
+    participant TrustyAI as TrustyAI Operator<br/>(failure reconciler)
+    participant Kueue as Kueue
+
+    Note over User,Kueue: Workflow 5: Model Evaluation and Safety Scanning
+
+    User->>Dashboard: Configure evaluation job:<br/>select model, benchmarks,<br/>evaluation providers
+    Dashboard->>EvalHubAPI: POST evaluation request<br/>(eval-hub BFF, kube-rbac-proxy auth)
+    EvalHubAPI->>Kueue: Submit evaluation workload<br/>(resource quota check)
+    Kueue-->>EvalHubAPI: Quota approved
+    EvalHubAPI->>EvalJob: Create evaluation Job in<br/>tenant namespace with:<br/>eval-runtime-sidecar,<br/>init container
+
+    loop Per evaluation backend
+        EvalJob->>ModelEndpoint: Execute benchmarks against<br/>model endpoint (HTTPS)
+        ModelEndpoint-->>EvalJob: Model predictions
+        Note over EvalJob: Compute evaluation metrics<br/>(accuracy, latency, safety)
+    end
+
+    EvalJob->>OCIReg: Upload results as<br/>OCI artifacts (HTTPS/443)
+    EvalJob->>EvalHubAPI: POST evaluation callback<br/>(results summary)
+    EvalHubAPI->>MLflow: Record results in<br/>MLflow experiment tracking
+    EvalHubAPI->>EvalHubAPI: Aggregate scores<br/>across providers
+
+    alt Job failure (OOM, image pull error)
+        TrustyAI->>EvalJob: Detect operator-only failure<br/>(crashed container cannot self-report)
+        TrustyAI->>EvalHubAPI: Report structured<br/>failure event
+    end
+
+    User->>Dashboard: View evaluation results
+    Dashboard->>EvalHubAPI: GET evaluation results
+    Dashboard->>MLflow: GET experiment data<br/>(mlflow BFF)
+    Dashboard-->>User: Evaluation dashboard:<br/>scores, comparisons,<br/>safety verdicts

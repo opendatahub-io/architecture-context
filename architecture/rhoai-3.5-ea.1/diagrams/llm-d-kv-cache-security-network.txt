@@ -1,0 +1,184 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [Hugging Face Hub - huggingface.co]                                         │
+│  - Purpose: Download tokenizer model files                                   │
+│  - Auth: HF Token (optional)                                                 │
+│  - Encryption: TLS 1.2+                                                      │
+│                                                                              │
+│  [AIPCC Package Index]                                                       │
+│  - Purpose: Python package resolution (build-time only)                      │
+│  - Auth: None                                                                │
+│  - Encryption: TLS 1.2+                                                      │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+         ▲
+         │ Port: 443/TCP
+         │ Protocol: HTTPS
+         │ Encryption: TLS 1.2+
+         │ Auth: HF Token (optional)
+         │
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  INFERENCE SCHEDULER POD                                                     │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────┐      │
+│  │  Main Container: llm-d-inference-scheduler (Go binary)             │      │
+│  │                                                                    │      │
+│  │  [KV-Cache Indexer]  ←─── Go library import (in-process)           │      │
+│  │  - Scores pods for cache-aware routing                             │      │
+│  │  - Block key computation: FNV-64a over CBOR                        │      │
+│  │                                                                    │      │
+│  │  [KV-Events Processor]                                             │      │
+│  │  - Sharded worker pool (FNV-1a pod-ID routing)                     │      │
+│  │  - Ingests KVEvents from vLLM/SGLang                               │      │
+│  │                                                                    │      │
+│  │  [Tokenization Pool]                                               │      │
+│  │  - Worker pool with CompositeTokenizer fallback chain              │      │
+│  │         │                                                          │      │
+│  │         │ Protocol: gRPC                                           │      │
+│  │         │ Transport: Unix Domain Socket                            │      │
+│  │         │ Path: /tmp/tokenizer/tokenizer-uds.socket                │      │
+│  │         │ Encryption: None (pod-local, same pod boundary)          │      │
+│  │         │ Auth: None                                               │      │
+│  │         ▼                                                          │      │
+│  └────────────────────────────────────────────────────────────────────┘      │
+│  ┌────────────────────────────────────────────────────────────────────┐      │
+│  │  Sidecar Container: UDS Tokenizer Service (Python 3.12)            │      │
+│  │  - Image: quay.io/rhoai/odh-llm-d-kv-cache-rhel9                  │      │
+│  │  - Port: UDS (/tmp/tokenizer/tokenizer-uds.socket)                 │      │
+│  │  - Port: 8082/TCP HTTP (health check /healthz)                     │      │
+│  │  - gRPC Services: Tokenize, RenderChatCompletion, etc.             │      │
+│  │  - Runtime: vLLM 0.18.0+rhaiv.4                                    │      │
+│  └────────────────────────────────────────────────────────────────────┘      │
+│                                                                              │
+│  Shared Volume: /tmp/tokenizer/ (UDS socket)                                 │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+         │                              │                              │
+         │                              │                              │
+    ┌────┘                              │                              └────┐
+    │                                   │                                   │
+    │ ZMQ PUB/SUB                       │ 6379/TCP                          │ 443/TCP
+    │ ⚠ No encryption                   │ Redis protocol                    │ HTTPS
+    │ ⚠ No authentication               │ Optional TLS (rediss://)          │ mTLS
+    │                                   │ No auth by default                │ SA Token
+    ▼                                   ▼                                   ▼
+┌──────────────────────┐  ┌──────────────────────┐  ┌──────────────────────┐
+│  vLLM/SGLang Pods    │  │  Redis/Valkey         │  │  Kubernetes API      │
+│                      │  │  (Optional)            │  │                      │
+│  - ZMQ PUB endpoint  │  │  - 6379/TCP            │  │  - 443/TCP HTTPS     │
+│  - KVEvents:         │  │  - Optional TLS via    │  │  - mTLS              │
+│    block stored      │  │    rediss:// scheme     │  │  - ServiceAccount    │
+│    block evicted     │  │  - No auth configured   │  │    Token auth        │
+│    block cleared     │  │    by default           │  │  - Pod discovery     │
+│  - msgpack encoding  │  │  - Lua scripts for     │  │    for dynamic ZMQ   │
+│  - ⚠ Cache topology  │  │    atomic cleanup      │  │    subscribers       │
+│    info exposed      │  │                        │  │                      │
+│                      │  │  Pipelined commands:   │  └──────────────────────┘
+│  Shared PVC:         │  │  single-RTT batches    │
+│  /kv-cache/          │  └──────────────────────┘
+│  (NFS/PVC for        │
+│   offloading)        │
+│         │            │
+│         ▼            │
+│  [PVC Evictor]       │
+│  - Python 3.12       │
+│  - No network svc    │
+│  - File I/O only     │
+│  - Evicts stale      │
+│    cache files       │
+│  - Multi-process     │
+│    (1-16 crawlers)   │
+└──────────────────────┘
+         │
+         │
+         ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  OBSERVABILITY                                                               │
+│                                                                              │
+│  [OpenTelemetry Collector]                                                   │
+│  - Port: 4317/TCP                                                            │
+│  - Protocol: gRPC (OTLP)                                                     │
+│  - Encryption: None (configurable)                                           │
+│  - Auth: None                                                                │
+│  - Purpose: Distributed tracing export                                       │
+│                                                                              │
+│  [Prometheus]                                                                │
+│  - Port: Configurable                                                        │
+│  - Protocol: HTTP scrape                                                     │
+│  - Encryption: None                                                          │
+│  - Auth: None                                                                │
+│  - Purpose: Metrics collection (via controller-runtime registry)             │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+RBAC Summary
+================================================================================
+
+ClusterRole: ${PROJECT_NAME}-exec-rbac-role
+  - API Groups: "" (core)
+  - Resources: pods/exec
+  - Verbs: create
+
+ClusterRoleBinding: ${PROJECT_NAME}-exec-rbac-rolebinding
+  - Namespace: ${NAMESPACE} (default: hc4ai-operator)
+  - Role: ${PROJECT_NAME}-exec-rbac-role
+  - ServiceAccount: operator-controller-manager
+
+================================================================================
+Authentication & Authorization Summary
+================================================================================
+
+| Endpoint              | Auth Mechanism          | Encryption         | Risk Level |
+|-----------------------|-------------------------|--------------------| -----------|
+| UDS Tokenizer gRPC    | None (pod-local UDS)    | None               | Low        |
+| UDS Tokenizer /healthz| None                    | None (HTTP)        | Low        |
+| ZMQ Subscriber        | None                    | None               | MEDIUM     |
+| Redis/Valkey          | Address-based           | Optional (rediss://)| MEDIUM    |
+| Hugging Face Hub      | HF Token (optional)     | TLS 1.2+           | Low        |
+| Kubernetes API        | ServiceAccount Token    | mTLS               | Low        |
+| OTLP Collector        | None                    | None (configurable)| Low        |
+| Prometheus            | None                    | None               | Low        |
+
+================================================================================
+Security Observations
+================================================================================
+
+⚠  ZMQ transport between vLLM/SGLang pods and the indexer has NO encryption
+   and NO authentication. KVEvents contain block hashes and metadata (not model
+   weights or inference data), but cache topology information could leak which
+   models are being served and usage patterns in multi-tenant environments.
+
+⚠  Redis/Valkey connection has no authentication configured by default.
+   TLS is available via rediss:// scheme but must be explicitly configured.
+
+⚠  No GOEXPERIMENT=strictfipsruntime build flag set for the Go binary.
+   The Go crypto stack does not use FIPS-validated primitives.
+
+✓  UDS Tokenizer uses Unix Domain Sockets (pod-local), minimizing attack surface.
+✓  Kubernetes API access uses mTLS with ServiceAccount tokens.
+✓  UBI9 base image provides system-level OpenSSL (FIPS-capable).
+✓  Python dependencies use hash-pinned requirements.txt for supply chain integrity.
+
+================================================================================
+Secrets
+================================================================================
+
+No secrets defined in manifests.
+- Redis/Valkey credentials: Passed via address string configuration (env var)
+- HF Token: Passed as environment variable (not a Kubernetes Secret)
+- TLS certificates: System trust store (default Go/Python behavior)
+
+================================================================================
+FIPS Compliance Summary
+================================================================================
+
+| Aspect                  | Status                                            |
+|-------------------------|---------------------------------------------------|
+| Go FIPS build flag      | ⚠ Not set (no GOEXPERIMENT=strictfipsruntime)     |
+| CGO_ENABLED             | Yes (for Python/ZMQ interop)                      |
+| Dynamic linking         | Yes (satisfies check-payload requirement)         |
+| OpenSSL in image        | Yes (via UBI9 base)                               |
+| OLM FIPS annotation     | N/A (not an OLM-managed operator)                 |
+| Python crypto           | Uses system OpenSSL via vLLM dependency           |

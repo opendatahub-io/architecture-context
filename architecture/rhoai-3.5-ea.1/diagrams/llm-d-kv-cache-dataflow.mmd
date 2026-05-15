@@ -1,0 +1,46 @@
+sequenceDiagram
+    participant vLLM as vLLM/SGLang Pod<br/>ZMQ PUB
+    participant ZMQ as ZMQ Subscriber<br/>ZMQ SUB (no encryption)
+    participant Adapter as Engine Adapter<br/>vLLM/SGLang msgpack
+    participant Pool as Event Pool<br/>Sharded Workers<br/>FNV-1a routing
+    participant Index as KV-Block Index<br/>InMemory/CostAware/Redis
+    participant Scheduler as Inference Scheduler<br/>Go library import
+    participant Indexer as KV-Cache Indexer<br/>GetPodScores
+    participant TokPool as Tokenization Pool<br/>Worker pool
+    participant UDS as UDS Tokenizer<br/>UDS gRPC<br/>/tmp/tokenizer/*.socket
+    participant HF as Hugging Face Hub<br/>443/TCP HTTPS
+    participant Redis as Redis/Valkey<br/>6379/TCP (optional TLS)
+    participant OTLP as OTLP Collector<br/>4317/TCP gRPC
+
+    Note over vLLM,Index: Flow 1: KV-Cache Event Ingestion (Write Path)
+    vLLM->>ZMQ: KVEvents (block stored/evicted/cleared)<br/>ZMQ PUB/SUB, No encryption
+    ZMQ->>Adapter: Raw message bytes
+    Adapter->>Adapter: msgpack decode<br/>Positional field access
+    Adapter->>Pool: Parsed KVEvent<br/>Go channels, FNV-1a(podID) sharding
+    Pool->>Index: Update block index<br/>Go method calls
+    Index-->>Redis: Store/evict blocks (if Redis backend)<br/>Pipelined commands, Optional TLS
+
+    Note over Scheduler,Redis: Flow 2: Pod Scoring (Read Path)
+    Scheduler->>Indexer: GetPodScores(prompt, model, pods)<br/>In-process Go API
+    Indexer->>TokPool: Tokenize prompt<br/>Go channels
+    TokPool->>UDS: TokenizeRequest(input, model_name)<br/>gRPC via Unix Domain Socket, No encryption
+    UDS-->>TokPool: TokenizeResponse(input_ids)<br/>gRPC via UDS
+    TokPool-->>Indexer: Token IDs
+    Indexer->>Indexer: Compute block keys<br/>FNV-64a over CBOR chunks<br/>Hash chaining
+    Indexer->>Index: Lookup block locality<br/>Go method calls
+    Index-->>Redis: Query block locations (if Redis)<br/>Pipelined GET, Optional TLS
+    Redis-->>Index: Block locality data
+    Index-->>Indexer: Per-pod cache hit ratios
+    Indexer-->>Scheduler: PodScores[]
+
+    Note over UDS,HF: Flow 3: Tokenizer Model Initialization
+    Scheduler->>Indexer: First request for model
+    Indexer->>TokPool: Need tokenizer for model_name
+    TokPool->>UDS: InitializeTokenizer(model_name)<br/>gRPC via UDS
+    UDS->>HF: Download tokenizer files<br/>HTTPS/443, TLS 1.2+, HF Token (optional)
+    HF-->>UDS: Tokenizer model artifacts
+    UDS->>UDS: Cache to /app/tokenizers<br/>File I/O
+    UDS-->>TokPool: InitializeTokenizerResponse(success)
+
+    Note over Indexer,OTLP: Observability
+    Indexer-->>OTLP: OpenTelemetry traces<br/>gRPC/4317, OTLP protocol

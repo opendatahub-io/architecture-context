@@ -1,0 +1,84 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Prometheus["Prometheus<br/>(openshift-monitoring)<br/>SA: prometheus-k8s"]
+        Dashboard["ODH Dashboard"]
+        K8sClient["Other K8s Clients"]
+    end
+
+    subgraph PodBoundary["COMPONENT POD (Trust Boundary)"]
+        direction TB
+
+        subgraph ProxyContainer["kube-rbac-proxy Sidecar"]
+            direction TB
+            Listener["HTTPS Listener<br/>0.0.0.0:8443/TCP<br/>TLS 1.2+ (configurable)<br/>FIPS: strictfipsruntime"]
+            PathFilter["Path Filter<br/>(--ignore-paths bypass)"]
+            AuthN["Authentication<br/>Bearer → TokenReview<br/>mTLS → client-ca-file<br/>OIDC → issuer JWKS"]
+            AuthZ["Authorization<br/>SAR (Format1/Format2)<br/>Hardcoded: prometheus-k8s"]
+            HeaderInject["Header Injection<br/>x-remote-user<br/>x-remote-groups"]
+            CertReload["CertReloader<br/>1min poll interval"]
+
+            Listener --> PathFilter
+            PathFilter --> AuthN
+            AuthN --> AuthZ
+            AuthZ --> HeaderInject
+        end
+
+        subgraph AppContainer["Upstream Application"]
+            UpstreamApp["Application Process<br/>127.0.0.1:8081/TCP<br/>HTTP (localhost)"]
+        end
+    end
+
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE (Trusted)"]
+        APIServer["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+        TokenReviewAPI["TokenReview<br/>authentication.k8s.io/v1"]
+        SARAPI["SubjectAccessReview<br/>authorization.k8s.io/v1"]
+
+        APIServer --- TokenReviewAPI
+        APIServer --- SARAPI
+    end
+
+    subgraph ExternalSvc["EXTERNAL SERVICES (Optional)"]
+        OIDCProvider["OIDC Identity Provider<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>(.well-known + JWKS)"]
+    end
+
+    subgraph PlatformOps["PLATFORM OPERATIONS"]
+        CertMgr["cert-manager<br/>TLS certificate provisioning"]
+        Operator["rhods-operator<br/>Sidecar injection + RBAC"]
+    end
+
+    %% Ingress flows
+    Prometheus -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer Token (SA)"| Listener
+    Dashboard -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer Token"| Listener
+    K8sClient -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer/mTLS/OIDC"| Listener
+
+    %% AuthN egress
+    AuthN -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token (in-cluster)<br/>POST tokenreviews"| TokenReviewAPI
+
+    %% AuthZ egress
+    AuthZ -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token (in-cluster)<br/>POST subjectaccessreviews"| SARAPI
+
+    %% OIDC egress
+    AuthN -.->|"HTTPS/443<br/>TLS 1.2+<br/>No auth<br/>OIDC discovery"| OIDCProvider
+
+    %% Upstream forwarding
+    HeaderInject -->|"HTTP/8081<br/>localhost (no encryption)<br/>No auth<br/>+ x-remote-user headers"| UpstreamApp
+
+    %% Platform operations
+    CertMgr -.->|"provisions certs"| CertReload
+    Operator -.->|"deploys + configures"| ProxyContainer
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef proxy fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    classDef proxyInternal fill:#5ba3f5,stroke:#333,color:#fff
+    classDef upstream fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controlplane fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef externalsvc fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef platform fill:#e8e8e8,stroke:#999,stroke-width:1px
+
+    class Prometheus,Dashboard,K8sClient external
+    class Listener,PathFilter,AuthN,AuthZ,HeaderInject,CertReload proxyInternal
+    class UpstreamApp upstream
+    class APIServer,TokenReviewAPI,SARAPI controlplane
+    class OIDCProvider externalsvc
+    class CertMgr,Operator platform

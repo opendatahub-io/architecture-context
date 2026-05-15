@@ -1,0 +1,119 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  KUBERNETES CONTROL PLANE                                                    │
+│                                                                              │
+│  [TrustyAI LMEval Operator]                                                  │
+│  - Namespace: {operator-namespace}                                           │
+│  - Creates Job Pods from image: quay.io/rhoai/odh-ta-lmes-job-rhel9          │
+│  - Mounts: /meta/job.json (ConfigMap), model auth secrets, test data PVC     │
+│         │                                                                    │
+│         │ Action: Pod creation                                               │
+│         │ Protocol: Kubernetes API                                           │
+│         │ Auth: ServiceAccount                                               │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  JOB POD (Ephemeral - Batch Execution)                                       │
+│                                                                              │
+│  [lm-evaluation-harness Job Pod]                                             │
+│  - Namespace: {user-namespace}                                               │
+│  - User: 65532:65532 (non-root)                                              │
+│  - No privilege escalation                                                   │
+│  - Image: quay.io/rhoai/odh-ta-lmes-job-rhel9                               │
+│  - Volumes:                                                                  │
+│    - /meta/job.json (ConfigMap - job specification)                           │
+│    - /test_data (PVC - optional, offline tokenizers + datasets)               │
+│    - model auth secret (projected volume)                                     │
+│                                                                              │
+│  Internal Components:                                                        │
+│  ┌─────────────────────────────────────────────────────────────┐             │
+│  │  LMEval Adapter (main.py)                                   │             │
+│  │  - Reads /meta/job.json (path confined to /meta/)           │             │
+│  │  - Path traversal protection (_resolve_job_spec_path)       │             │
+│  │  - Symlink rejection for CA bundle paths                    │             │
+│  │  - Credential sanitization in error messages                │             │
+│  │  - auto-offline detection via /test_data                    │             │
+│  ├─────────────────────────────────────────────────────────────┤             │
+│  │  lm_eval Library (evaluation engine)                        │             │
+│  │  - local-completions model backend (outbound only)          │             │
+│  │  - num_concurrent bounded to max 128                        │             │
+│  │  - hashlib.sha256 for request caching (FIPS-approved)       │             │
+│  └─────────────────────────────────────────────────────────────┘             │
+│         │              │              │             │           │             │
+│         │              │              │             │           │             │
+├─────────┼──────────────┼──────────────┼─────────────┼───────────┼────────────┤
+│  EGRESS │(all outbound)│              │             │           │             │
+│         │              │              │             │           │             │
+│         │ Port: varies │ Port: 443/TCP│ Port:443/TCP│ Port:443  │ Port:varies │
+│         │ (8080/443)   │              │             │ /TCP      │             │
+│         │ Proto: HTTP/ │ Proto: HTTPS │ Proto:HTTPS │ Proto:    │ Proto:HTTP/ │
+│         │   HTTPS      │ Encrypt: TLS │ Encrypt:TLS │  HTTPS    │  HTTPS      │
+│         │ Encrypt:     │ Auth: Bearer │ Auth:       │ Encrypt:  │ Auth: via   │
+│         │  Configurable│  Token       │  Registry   │  TLS 1.2+ │  evalhub    │
+│         │  TLS (custom │ (evalhub SDK)│  creds      │ Auth:     │  SDK        │
+│         │  CA support) │              │  (docker-   │  HF_TOKEN │             │
+│         │ Auth: Bearer │              │  config or  │  (opt.)   │             │
+│         │  (OPENAI_    │              │  user/pass) │           │             │
+│         │  API_KEY)    │              │             │           │             │
+│         ▼              ▼              ▼             ▼           ▼             │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                           │
+│                                                                              │
+│  [Model Inference Endpoint]          [EvalHub Service]                       │
+│  - e.g., vLLM, TGI, OpenAI-compat   - callback_url from job spec            │
+│  - Endpoint: model.url/v1/completions- Receives status updates & results     │
+│  - Auth: OPENAI_API_KEY Bearer Token - Auth: Bearer Token (evalhub SDK)      │
+│  - TLS: configurable, custom CA      - TLS: HTTPS/443                        │
+│    bundle via verify_certificate                                             │
+│                                                                              │
+│  [OCI Registry (e.g., Quay)]         [HuggingFace Hub]                       │
+│  - Purpose: Store eval result        - huggingface.co                        │
+│    artifacts as OCI images           - Purpose: Tokenizers, datasets,        │
+│  - Auth: REGISTRY_USERNAME/PASSWORD    evaluation metrics                    │
+│    or dockerconfigjson               - Auth: HF_TOKEN (optional, for         │
+│  - TLS: HTTPS/443                      gated datasets)                       │
+│  - Push via skopeo                   - TLS: HTTPS/443, TLS 1.2+             │
+│                                      - DISABLED in offline mode              │
+│                                                                              │
+│  [MLflow Tracking Server]            [S3-compatible Storage]                 │
+│  - Purpose: Experiment tracking,     - Purpose: Dataset/model artifact       │
+│    metric logging                      storage                               │
+│  - Auth: via evalhub SDK             - Auth: AWS IAM / HMAC creds (boto3)    │
+│  - Port/Encryption: configurable     - TLS: HTTPS/443                        │
+│  - Optional integration                                                      │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No RBAC definitions in this repository
+- RBAC is managed by the TrustyAI LMEval Operator that creates the Job pods
+- Pod runs as non-root user 65532:65532
+
+Secrets:
+- Model auth secret (model.auth.secret_ref):
+  - Type: Opaque
+  - Keys: api_key, Authorization, hf-token (optional), ca_cert (optional)
+  - Provisioned by: User / TrustyAI Operator
+  - Auto-rotate: No
+- Registry credentials:
+  - Type: dockerconfigjson or username/password
+  - Purpose: OCI registry auth for artifact push
+  - Provisioned by: User / Platform
+  - Auto-rotate: No
+
+Security Controls:
+- Credential sanitization: Bearer tokens, API keys, passwords, URL credentials
+  redacted from error messages before EvalHub callbacks (_sanitize_error_message)
+- Path traversal protection: Job spec reads confined to /meta/ directory
+  (_resolve_job_spec_path_for_read) - CWE-22 mitigation
+- Symlink rejection: CA bundle paths checked with raw_path.is_symlink()
+  - CWE-61 mitigation
+- Container: non-root user 65532:65532, no privilege escalation
+- TLS: System OpenSSL via UBI9 base; ssl.create_default_context() with
+  optional custom CA bundle; verify_certificate parameter support
+- Crypto: Only FIPS-approved algorithms (SHA-256 for hashing, system TLS)
+- No inbound network services (egress-only batch job)
+
+FIPS Compliance:
+- Base image: UBI9 (ubi9/python-311) with system OpenSSL
+- Crypto: hashlib.sha256 (FIPS-approved), Python ssl module (system OpenSSL)
+- No non-FIPS crypto detected (no MD5, RC4, DES, custom RNG)
+- Build: hermetic: false (EA release), poetry.lock fully pinned

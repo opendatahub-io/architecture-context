@@ -1,0 +1,62 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Platform Gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant QP as Queue Proxy<br/>(sidecar)
+    participant Server as autogluonserver<br/>8080/TCP HTTP
+    participant AG as AutoGluon Predictor<br/>(in-process)
+    participant FS as /mnt/models<br/>(filesystem)
+    participant StorageInit as Storage Initializer<br/>(init container)
+    participant Remote as Remote Storage<br/>443/TCP HTTPS
+
+    Note over StorageInit,Remote: Flow 1: Model Loading (pod startup)
+
+    StorageInit->>Remote: Download model artifacts<br/>HTTPS/443 TLS 1.2+<br/>Auth: Storage credentials (Secret)
+    Remote-->>StorageInit: Model files
+    StorageInit->>FS: Write to /mnt/models
+
+    Note over Server,AG: Model Auto-Detection
+
+    Server->>FS: Read model directory
+    FS-->>Server: Model files
+    Server->>AG: Try TimeSeriesPredictor.load()
+    alt TimeSeriesPredictor found
+        AG-->>Server: TimeSeriesPredictor loaded
+    else Fallback to TabularPredictor
+        Server->>AG: TabularPredictor.load()
+        AG-->>Server: TabularPredictor loaded
+    end
+
+    Note over Client,AG: Flow 2: Tabular Inference (v1 REST)
+
+    Client->>Gateway: POST /v1/models/{name}:predict<br/>HTTPS/443 TLS 1.2+<br/>Auth: Bearer Token / mTLS
+    Gateway->>QP: Forward request
+    QP->>Server: HTTP/8080<br/>(pod-internal, no TLS)
+    Server->>AG: TabularPredictor.predict()<br/>(in-process)
+    AG-->>Server: Prediction result
+    Server-->>QP: JSON response
+    QP-->>Gateway: Forward response
+    Gateway-->>Client: JSON prediction result
+
+    Note over Client,AG: Flow 3: Time Series Inference (v1 REST)
+
+    Client->>Gateway: POST /v1/models/{name}:predict<br/>HTTPS/443 TLS 1.2+<br/>Auth: Bearer Token / mTLS
+    Gateway->>QP: Forward request
+    QP->>Server: HTTP/8080<br/>JSON: {instances, known_covariates}
+    Server->>AG: TimeSeriesPredictor.predict()<br/>use_cache=False<br/>(in-process)
+    AG-->>Server: Forecast result
+    Server-->>QP: JSON response
+    QP-->>Gateway: Forward response
+    Gateway-->>Client: JSON forecast result
+
+    Note over Client,AG: Flow 4: Tabular Inference (v2 REST)
+
+    Client->>Gateway: POST /v2/models/{name}/infer<br/>HTTPS/443 TLS 1.2+<br/>Auth: Bearer Token / mTLS
+    Gateway->>QP: Forward request
+    QP->>Server: HTTP/8080<br/>v2 InferRequest (tensors)
+    Server->>Server: _infer_request_to_dataframe()<br/>Map tensors → DataFrame
+    Server->>AG: TabularPredictor.predict()<br/>(in-process)
+    AG-->>Server: Prediction result
+    Server->>Server: _build_v2_outputs()<br/>regression/classification/proba/quantile
+    Server-->>QP: v2 InferResponse
+    QP-->>Gateway: Forward response
+    Gateway-->>Client: v2 tensor response

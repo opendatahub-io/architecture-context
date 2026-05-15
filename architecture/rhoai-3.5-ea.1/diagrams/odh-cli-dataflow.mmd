@@ -1,0 +1,86 @@
+sequenceDiagram
+    participant Admin as Cluster Admin
+    participant CLI as rhai-cli<br/>(kubectl-odh)
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
+    participant FS as Local Filesystem
+    participant GH as raw.githubusercontent.com<br/>443/TCP HTTPS TLS 1.2+
+
+    Note over Admin,GH: Flow 1: Lint / Upgrade Readiness Assessment
+
+    Admin->>CLI: rhai-cli lint --from=2.x --to=3.x<br/>[--output json|yaml|table]
+    CLI->>K8sAPI: GET datascienceclusters<br/>Auth: Bearer Token (kubeconfig)
+    K8sAPI-->>CLI: DSC resource (version detection)
+    CLI->>K8sAPI: GET dscinitializations<br/>Auth: Bearer Token
+    K8sAPI-->>CLI: DSCI resource (platform init state)
+
+    loop 30+ Sequential Lint Checks
+        Note right of CLI: CanApply: semver check<br/>(version applicability)
+        CLI->>K8sAPI: GET/LIST target CRDs<br/>(Notebooks, ISVCs, Kueue,<br/>ServingRuntimes, DSPA, etc.)<br/>Auth: Bearer Token
+        K8sAPI-->>CLI: Resource data
+        Note right of CLI: Validate: condition-based<br/>DiagnosticResult
+    end
+
+    CLI-->>Admin: DiagnosticResult table/JSON/YAML<br/>Exit code: 0=OK, 1=BLOCKING, 2=ADVISORY
+
+    Note over Admin,GH: Flow 2: Workload Backup
+
+    Admin->>CLI: rhai-cli backup --output-dir=/backups<br/>[--include notebooks,inferenceservices]
+    CLI->>K8sAPI: LIST workloads across namespaces<br/>(Notebooks, ISVCs, RayClusters, etc.)<br/>Auth: Bearer Token
+    K8sAPI-->>CLI: Workload resources
+
+    loop Dependency Resolution (per workload)
+        CLI->>K8sAPI: GET referenced ConfigMaps,<br/>PVCs, Secrets<br/>Auth: Bearer Token
+        K8sAPI-->>CLI: Dependency resources
+    end
+
+    CLI->>FS: Write YAML manifests<br/>to --output-dir (0644 perms)
+    CLI-->>Admin: Backup summary (count, output path)
+
+    Note over Admin,GH: Flow 3: Dependency Installation
+
+    Admin->>CLI: rhai-cli deps install [--refresh]
+
+    opt --refresh flag
+        CLI->>GH: GET odh-gitops/values.yaml<br/>Auth: None
+        GH-->>CLI: Dependency manifest YAML
+    end
+
+    Note right of CLI: Validate catalog source<br/>against allowlist:<br/>redhat-operators,<br/>community-operators,<br/>certified-operators,<br/>redhat-marketplace
+
+    Note right of CLI: Reject system namespaces:<br/>kube-*, openshift-*
+
+    CLI->>K8sAPI: CREATE Namespace,<br/>OperatorGroup, Subscription<br/>Auth: Bearer Token
+    K8sAPI-->>CLI: Resources created
+
+    loop Poll CSV Status (5s interval, 3 concurrent)
+        CLI->>K8sAPI: GET ClusterServiceVersion<br/>Auth: Bearer Token
+        K8sAPI-->>CLI: CSV status (Pending → Installing → Succeeded)
+    end
+
+    CLI-->>Admin: Installation summary<br/>(operator status table)
+
+    Note over Admin,GH: Flow 4: Status / Health Check
+
+    Admin->>CLI: rhai-cli status
+    CLI->>K8sAPI: GET DSC, DSCI, Component CRs<br/>Auth: Bearer Token
+    K8sAPI-->>CLI: Platform resources
+
+    par 8 Concurrent Health Sections
+        CLI->>K8sAPI: GET operator pods, deployments<br/>Auth: Bearer Token
+        K8sAPI-->>CLI: Resource status
+    end
+
+    CLI-->>Admin: Health status table<br/>with envelope output
+
+    Note over Admin,GH: Flow 5: Log Aggregation
+
+    Admin->>CLI: rhai-cli logs [--component kserve]
+    CLI->>K8sAPI: LIST/WATCH pods in operator namespace<br/>Auth: Bearer Token
+    K8sAPI-->>CLI: Pod list with containers
+
+    par Multi-Container Log Streaming
+        CLI->>K8sAPI: GET pods/log<br/>Auth: Bearer Token
+        K8sAPI-->>CLI: Log stream (chunked)
+    end
+
+    CLI-->>Admin: Aggregated logs (stdout)

@@ -1,0 +1,57 @@
+sequenceDiagram
+    autonumber
+
+    participant Client as External Client
+    participant IstioGW as Istio Ingress Gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant Proxy as Model Registry Proxy<br/>8080/TCP HTTP (Istio mTLS)
+    participant DB as MySQL/PostgreSQL<br/>3306/5432/TCP
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Controller as MR Controller<br/>8081/TCP (health)
+    participant CSI as MR CSI Init Container
+    participant KServePod as KServe Predictor Pod
+    participant AsyncJob as Async Upload Job
+    participant S3 as S3 / Object Store<br/>443/TCP HTTPS
+    participant OCI as OCI Registry<br/>443/TCP HTTPS
+    participant Sigstore as Sigstore<br/>443/TCP HTTPS
+
+    Note over Client,DB: Flow 1: Model Registration via REST API
+
+    Client->>IstioGW: POST /api/model_registry/v1alpha3/registered_models<br/>Auth: oauth2-proxy
+    IstioGW->>Proxy: Forward (mTLS)<br/>kubeflow-userid header
+    Proxy->>DB: INSERT registered_model<br/>Auth: Username/Password
+    DB-->>Proxy: Row created
+    Proxy-->>IstioGW: 201 Created (JSON)
+    IstioGW-->>Client: Response
+
+    Note over Controller,DB: Flow 2: InferenceService Reconciliation
+
+    Controller->>K8sAPI: Watch InferenceService CRDs<br/>Auth: ServiceAccount Token
+    K8sAPI-->>Controller: InferenceService event (CREATE/UPDATE)
+    Controller->>Proxy: POST/PATCH /api/.../inference_services<br/>Auth: Bearer Token (mTLS)
+    Proxy->>DB: Upsert inference service record
+    DB-->>Proxy: Row upserted
+    Proxy-->>Controller: 200 OK
+
+    Note over CSI,S3: Flow 3: Model Download via CSI Storage Initializer
+
+    KServePod->>CSI: Init container starts<br/>storageUri: model-registry://model/v1
+    CSI->>Proxy: GET /api/.../model_artifacts/{id}<br/>Auth: None (same mesh)
+    Proxy->>DB: SELECT artifact URI
+    DB-->>Proxy: s3://bucket/model.tar.gz
+    Proxy-->>CSI: Artifact metadata (storage URI)
+    CSI->>S3: Download model artifacts<br/>Auth: Provider credentials (TLS 1.2+)
+    S3-->>CSI: Model files
+    CSI-->>KServePod: Model ready at /mnt/models
+
+    Note over AsyncJob,Sigstore: Flow 4: Async Model Upload Job
+
+    AsyncJob->>S3: Download model from source<br/>Auth: AWS IAM credentials
+    S3-->>AsyncJob: Model artifacts
+    AsyncJob->>OCI: Push model as OCI image (Skopeo)<br/>Auth: Docker config
+    OCI-->>AsyncJob: Push complete
+    AsyncJob->>Sigstore: Sign artifact (OIDC)<br/>Fulcio cert + Rekor log
+    Sigstore-->>AsyncJob: Signature recorded
+    AsyncJob->>Proxy: PATCH /api/.../model_artifacts/{id}<br/>Update URI + signature
+    Proxy->>DB: UPDATE artifact record
+    DB-->>Proxy: Updated
+    Proxy-->>AsyncJob: 200 OK

@@ -1,0 +1,64 @@
+sequenceDiagram
+    autonumber
+
+    participant Client as Client<br/>(SDK / kubectl)
+    participant EvalHub as eval-hub API<br/>8080/TCP HTTP/HTTPS<br/>TLS 1.2+
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant MLflow as MLflow Tracking<br/>HTTPS TLS 1.2+
+    participant InitC as eval-runtime-init<br/>(Init Container)
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant Adapter as Adapter Container<br/>(lm-eval-harness, RAGAS, etc.)
+    participant Sidecar as eval-runtime-sidecar<br/>8080/TCP HTTP (localhost)
+    participant OCI as OCI Registry<br/>443/TCP HTTPS
+
+    rect rgb(240, 248, 255)
+        Note over Client,MLflow: Flow 1: Evaluation Job Submission
+        Client->>EvalHub: POST /api/v1/evaluations/jobs<br/>Auth: K8s Bearer Token
+        EvalHub->>K8sAPI: TokenReview + SubjectAccessReview<br/>Auth: In-cluster SA
+        K8sAPI-->>EvalHub: Auth decision (allow/deny)
+        EvalHub->>MLflow: Create MLflow Experiment<br/>Auth: SA Token
+        MLflow-->>EvalHub: Experiment ID
+        EvalHub->>K8sAPI: Create Job + ConfigMaps<br/>(adapter + sidecar + init containers)
+        K8sAPI-->>EvalHub: Job created
+        EvalHub-->>Client: 201 Created (job_id, experiment_id)
+    end
+
+    rect rgb(255, 248, 240)
+        Note over InitC,S3: Flow 2: Test Data Initialization
+        K8sAPI->>InitC: Schedule init container
+        InitC->>S3: Download test data<br/>Auth: AWS credentials (Secret)
+        S3-->>InitC: Test data artifacts
+        Note over InitC: Writes to /test_data/ (emptyDir)
+    end
+
+    rect rgb(240, 255, 240)
+        Note over Adapter,OCI: Flow 3: Evaluation Execution
+        Note over Adapter: Adapter starts after init completes
+        Adapter->>Sidecar: POST /api/v1/evaluations/jobs/{id}/events<br/>localhost:8080 (plaintext)
+        Sidecar->>EvalHub: Forward status event<br/>Auth: SA Token, TLS 1.2+
+        EvalHub-->>Sidecar: 200 OK
+        Sidecar-->>Adapter: 200 OK
+
+        Note over Adapter: Run benchmarks...
+        Adapter->>Sidecar: PUT /api/2.0/mlflow/runs/update<br/>localhost:8080 (plaintext)
+        Sidecar->>MLflow: Forward MLflow tracking<br/>Auth: Projected SA Token, TLS 1.2+
+        MLflow-->>Sidecar: 200 OK
+        Sidecar-->>Adapter: 200 OK
+
+        Adapter->>Sidecar: POST /{oci-repo}/blobs/uploads/<br/>localhost:8080 (plaintext)
+        Sidecar->>OCI: Push model artifacts<br/>Auth: OAuth2 Bearer (challenge), TLS 1.2+
+        OCI-->>Sidecar: 201 Created
+        Sidecar-->>Adapter: 201 Created
+
+        Adapter->>Sidecar: POST /api/v1/evaluations/jobs/{id}/events<br/>(completed status)
+        Sidecar->>EvalHub: Forward completion event
+        EvalHub-->>Sidecar: 200 OK
+        Sidecar-->>Adapter: 200 OK
+    end
+
+    rect rgb(248, 240, 255)
+        Note over Client,EvalHub: Flow 4: MCP Tool Invocation (optional)
+        participant MCPClient as MCP Client<br/>(AI Agent)
+        MCPClient->>MCPClient: evalhub-mcp<br/>3001/TCP or stdio
+        Note over MCPClient: submit_evaluation tool →<br/>eval-hub API call
+    end
