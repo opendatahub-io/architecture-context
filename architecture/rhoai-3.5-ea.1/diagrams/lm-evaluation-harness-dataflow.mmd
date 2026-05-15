@@ -1,0 +1,51 @@
+sequenceDiagram
+    participant Operator as TrustyAI LMEval<br/>Operator
+    participant Pod as Job Pod<br/>(lm-evaluation-harness)
+    participant JobSpec as /meta/job.json<br/>(ConfigMap)
+    participant EvalHub as EvalHub Service<br/>443/TCP HTTPS
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant Model as Model Endpoint<br/>(vLLM/TGI/OpenAI)<br/>Configurable Port
+    participant OCI as OCI Registry<br/>443/TCP HTTPS
+    participant MLflow as MLflow Server<br/>Configurable Port
+
+    rect rgb(240, 248, 255)
+        Note over Operator,Pod: Flow 1: Online Evaluation Job Execution
+        Operator->>Pod: Create Pod (mount job.json,<br/>secrets, volumes)
+        Pod->>JobSpec: Read job spec<br/>(filesystem read)
+        Pod->>EvalHub: POST status: INITIALIZING<br/>Bearer Token
+        Pod->>HF: GET tokenizer files<br/>HF_TOKEN (optional)
+        HF-->>Pod: AutoTokenizer artifacts
+        Pod->>EvalHub: POST status: LOADING_DATA<br/>Bearer Token
+        Pod->>EvalHub: POST status: RUNNING_EVALUATION<br/>Bearer Token
+
+        loop For each evaluation prompt (num_concurrent <= 128)
+            Pod->>Model: POST /v1/completions<br/>OPENAI_API_KEY Bearer Token
+            Model-->>Pod: Completion response
+        end
+
+        Pod->>EvalHub: POST status: POST_PROCESSING<br/>Bearer Token
+        Pod->>EvalHub: POST status: PERSISTING_ARTIFACTS<br/>Bearer Token
+        Pod->>OCI: Push OCI artifact<br/>(via skopeo)<br/>Registry credentials
+        OCI-->>Pod: Push confirmation
+        Pod->>MLflow: Log experiment metrics<br/>(optional, via evalhub SDK)
+        Pod->>EvalHub: POST results + status: COMPLETE<br/>Bearer Token
+    end
+
+    rect rgb(240, 255, 240)
+        Note over Operator,Model: Flow 2: Offline / Air-Gapped Evaluation
+        Operator->>Pod: Create Pod (mount /test_data PVC,<br/>job.json, secrets)
+        Pod->>JobSpec: Read job spec
+        Note over Pod: Auto-detect /test_data:<br/>tokenizer + dataset_dict.json<br/>Set HF_HUB_OFFLINE=1<br/>HF_DATASETS_OFFLINE=1<br/>TRANSFORMERS_OFFLINE=1
+        Pod->>EvalHub: POST status: INITIALIZING<br/>Bearer Token
+        Note over Pod: Load tokenizer from<br/>/test_data (local)
+        Note over Pod: Load datasets from<br/>/test_data (local)
+        Note over Pod: Load metrics from<br/>metrics/ directory (local)
+        Pod->>EvalHub: POST status: RUNNING_EVALUATION
+
+        loop For each evaluation prompt
+            Pod->>Model: POST /v1/completions<br/>(internal cluster endpoint)<br/>Custom CA support
+            Model-->>Pod: Completion response
+        end
+
+        Pod->>EvalHub: POST results + status: COMPLETE
+    end

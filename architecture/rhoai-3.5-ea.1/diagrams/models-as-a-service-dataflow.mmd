@@ -1,0 +1,60 @@
+sequenceDiagram
+    autonumber
+
+    participant Client as External Client
+    participant Gateway as maas-default-gateway<br/>443/TCP HTTPS TLS Terminate
+    participant Authorino as Kuadrant Authorino<br/>mTLS (mesh)
+    participant MaaSAPI as maas-api<br/>8080/TCP HTTP
+    participant PayloadProc as payload-processing<br/>9004/TCP gRPC TLS
+    participant Model as Model Endpoint<br/>(KServe / External)
+    participant PostgreSQL as PostgreSQL<br/>5432/TCP
+    participant ExtProvider as External LLM Provider<br/>443/TCP HTTPS
+
+    rect rgb(240, 248, 255)
+        Note over Client,Model: Flow 1: Model Inference via API Key
+        Client->>Gateway: POST /{ns}/{model}/v1/chat/completions<br/>Auth: Bearer sk-oai-* API key<br/>HTTPS/443 TLS Terminate
+        Gateway->>Authorino: AuthN/AuthZ evaluation<br/>mTLS (mesh-internal)
+        Authorino->>MaaSAPI: POST /internal/v1/api-keys/validate<br/>HTTP/8080 (NetworkPolicy restricted)
+        MaaSAPI->>PostgreSQL: SELECT key hash<br/>SHA-256 constant-time compare
+        PostgreSQL-->>MaaSAPI: Key valid + metadata
+        MaaSAPI-->>Authorino: 200 OK (user identity)
+        Authorino->>MaaSAPI: POST /internal/v1/subscriptions/select<br/>HTTP/8080 (NetworkPolicy restricted)
+        MaaSAPI-->>Authorino: Selected subscription + rate limit tier
+        Authorino-->>Gateway: AuthZ result (allow + headers)
+        Gateway->>PayloadProc: ext_proc request processing<br/>gRPC/9004 TLS (SIMPLE)
+        Note over PayloadProc: Plugins execute sequentially:<br/>1. model-extractor (body → header)<br/>2. model-provider-resolver<br/>3. api-translation<br/>4. apikey-injection
+        PayloadProc-->>Gateway: Modified request (credentials injected)
+        Gateway->>Model: Forward inference request<br/>HTTPS/443
+        Model-->>Gateway: Inference response
+        Gateway->>PayloadProc: ext_proc response processing
+        PayloadProc-->>Gateway: Translated response
+        Gateway-->>Client: JSON Response<br/>HTTPS/443
+    end
+
+    rect rgb(255, 248, 240)
+        Note over Client,PostgreSQL: Flow 2: API Key Creation
+        Client->>Gateway: POST /maas-api/v1/api-keys<br/>Auth: Bearer OpenShift token<br/>HTTPS/443 TLS Terminate
+        Gateway->>Authorino: AuthN evaluation<br/>mTLS (mesh-internal)
+        Authorino->>Authorino: K8s TokenReview<br/>HTTPS/6443
+        Authorino-->>Gateway: AuthZ result (X-MaaS-Username/Group headers)
+        Gateway->>MaaSAPI: POST /v1/api-keys<br/>HTTP/8080 + identity headers
+        MaaSAPI->>PostgreSQL: INSERT key hash<br/>(SHA-256, show-once pattern)
+        PostgreSQL-->>MaaSAPI: Stored
+        MaaSAPI-->>Gateway: 201 Created + plaintext key<br/>(shown once, never stored)
+        Gateway-->>Client: API key response
+    end
+
+    rect rgb(240, 255, 240)
+        Note over Client,ExtProvider: Flow 3: External Model Routing
+        Client->>Gateway: POST /{ns}/{external-model}/*<br/>Auth: Bearer token<br/>HTTPS/443 TLS Terminate
+        Gateway->>Authorino: AuthN/AuthZ (same as Flow 1)
+        Authorino-->>Gateway: Authorized
+        Gateway->>PayloadProc: ext_proc processing<br/>gRPC/9004 TLS (SIMPLE)
+        Note over PayloadProc: model-provider-resolver:<br/>resolves to external endpoint<br/>apikey-injection:<br/>injects provider API key from Secret
+        PayloadProc-->>Gateway: Request with provider credentials
+        Gateway->>ExtProvider: Forward via ServiceEntry<br/>HTTPS/443 TLS (SIMPLE, DestinationRule)<br/>Auth: Provider API Key (injected header)
+        ExtProvider-->>Gateway: Provider response
+        Gateway->>PayloadProc: ext_proc response translation
+        PayloadProc-->>Gateway: Translated to unified format
+        Gateway-->>Client: Unified JSON response
+    end

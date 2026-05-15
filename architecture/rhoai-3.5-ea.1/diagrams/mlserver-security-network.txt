@@ -1,0 +1,133 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token / mTLS                                      │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (KServe-Managed)                                               │
+│                                                                          │
+│  [KServe Gateway / Istio / Gateway API]                                  │
+│  - Port: 443/TCP (external) → 8080/TCP, 8081/TCP (internal)            │
+│  - TLS Termination: TLS 1.2+                                            │
+│  - AuthN: Bearer Token / mTLS (delegated to infrastructure)             │
+│  - Routing: HTTPRoute / VirtualService / Route                          │
+│         │                                                                │
+│         │ Ports: 8080/TCP (REST), 8081/TCP (gRPC)                       │
+│         │ Protocol: HTTP / gRPC-HTTP2                                    │
+│         │ Encryption: None (pod-internal, TLS terminated upstream)       │
+│         │ Auth: None (delegated to KServe/mesh)                         │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  POD (MLServer Container - KServe InferenceService Pod)                 │
+│                                                                          │
+│  [MLServer REST Server]                                                  │
+│  - Port: 8080/TCP                                                        │
+│  - Protocol: HTTP (FastAPI/Uvicorn)                                      │
+│  - Encryption: None (TLS terminated upstream)                            │
+│  - Endpoints: /v2/*, /v2/models/{name}/infer, /v2/health/*             │
+│                                                                          │
+│  [MLServer gRPC Server]                                                  │
+│  - Port: 8081/TCP                                                        │
+│  - Protocol: gRPC/HTTP2 (grpc.aio)                                      │
+│  - Encryption: None (TLS terminated upstream)                            │
+│  - Services: inference.GRPCInferenceService/*                           │
+│                                                                          │
+│  [MLServer Metrics Server]                                               │
+│  - Port: 8082/TCP                                                        │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: None                                                      │
+│  - Endpoint: /metrics (Prometheus scrape)                                │
+│                                                                          │
+│  [Trusted Runtime Allowlist]                                             │
+│  - File: /etc/mlserver/trusted-runtimes.json (read-only 0444)          │
+│  - Mode: PRODUCTION (blocks unauthorized runtimes)                      │
+│  - Validation: Pydantic validator + property getter (defense-in-depth)  │
+│         │                                                                │
+│         │ (Egress connections)                                           │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (Outbound from MLServer)                                        │
+│                                                                          │
+│  [Kafka Brokers]                                                         │
+│  - Port: 9092/TCP                                                        │
+│  - Protocol: TCP                                                         │
+│  - Encryption: Configurable                                              │
+│  - Auth: Configurable                                                    │
+│  - Purpose: Async inference (when kafka_enabled=True)                   │
+│                                                                          │
+│  [OpenTelemetry Collector]                                               │
+│  - Port: 4317/TCP                                                        │
+│  - Protocol: gRPC (OTLP)                                                │
+│  - Encryption: Insecure (no TLS)                                        │
+│  - Auth: None                                                            │
+│  - Purpose: Distributed trace export                                    │
+│                                                                          │
+│  [Model Storage (S3/PVC)]                                                │
+│  - Port: Varies (443/TCP for S3, filesystem for PVC)                    │
+│  - Protocol: HTTPS or filesystem                                         │
+│  - Encryption: Varies (TLS for S3)                                      │
+│  - Auth: Varies (AWS IAM for S3, Kubernetes volumes for PVC)            │
+│  - Purpose: Model artifact loading from /mnt/models                     │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MONITORING                                                              │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - Scrapes: 8082/TCP /metrics                                            │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: None                                                      │
+│  - Auth: None                                                            │
+│  - Metrics: Request latency, throughput, model counts                   │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- MLServer does NOT define any RBAC resources
+- Runs as a workload inside KServe-managed pods
+- Uses KServe-defined service accounts
+- All Kubernetes RBAC is managed by KServe operator
+
+Authentication & Authorization:
+- Application-level: None (all V2 endpoints are unauthenticated)
+- Infrastructure-level: Auth delegated to KServe sidecar / kube-rbac-proxy / Istio
+- Runtime Security: Trusted runtime allowlist in PRODUCTION mode blocks unauthorized runtimes
+- Runtime Security: DEVELOPMENT mode allows all runtimes (not for production use)
+- Endpoint /v2/runtimes exposes current security mode and active allowlist
+
+Secrets:
+- MLServer does NOT manage secrets directly
+- Model storage credentials are injected by KServe
+- TLS certificates are managed by KServe/Istio infrastructure
+
+FIPS Compliance:
+- Python application — inherits FIPS from UBI base image OpenSSL
+- No TLS termination in application (handled upstream by KServe/Istio)
+- No direct crypto library usage (uses Python stdlib ssl backed by system OpenSSL)
+- No non-FIPS crypto risks detected (no MD5, RC4, or custom RNG)
+- Batch processing CLI has --use-ssl flag but does not configure custom cipher suites
+
+Build Hermeticity:
+- Konflux build: hermetic=true
+- Dependency prefetch: Hermeto pip prefetch with SHA-256 pinned requirements
+- Source: Red Hat internal PyPI mirror (packages.redhat.com)
+- Lock files: 11 Poetry lock files + requirements-cpu.txt (hash-pinned)
+- Base image: quay.io/aipcc/base-images/cpu:3.5.0-ea.1 (UBI-based)
+- Output: quay.io/rhoai/odh-mlserver-rhel9
+
+Network Ports Summary:
+┌──────────┬──────────┬────────────┬────────────┬─────────────────────┐
+│ Port     │ Protocol │ Direction  │ Encryption │ Purpose             │
+├──────────┼──────────┼────────────┼────────────┼─────────────────────┤
+│ 443/TCP  │ HTTPS    │ Ingress    │ TLS 1.2+   │ Client requests     │
+│ 8080/TCP │ HTTP     │ Internal   │ None       │ REST V2 Dataplane   │
+│ 8081/TCP │ gRPC     │ Internal   │ None       │ gRPC V2 Dataplane   │
+│ 8082/TCP │ HTTP     │ Internal   │ None       │ Prometheus metrics  │
+│ 9092/TCP │ TCP      │ Egress     │ Config     │ Kafka brokers       │
+│ 4317/TCP │ gRPC     │ Egress     │ None       │ OTEL trace export   │
+│ Varies   │ HTTPS/FS │ Egress     │ Varies     │ Model storage       │
+└──────────┴──────────┴────────────┴────────────┴─────────────────────┘

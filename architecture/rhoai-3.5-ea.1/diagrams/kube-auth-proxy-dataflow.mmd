@@ -1,0 +1,63 @@
+sequenceDiagram
+    participant Browser as Client Browser
+    participant AuthProxy as kube-auth-proxy<br/>4180/TCP HTTP/HTTPS
+    participant RBACProxy as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant OIDC as OIDC Provider<br/>443/TCP HTTPS
+    participant OAuthSrv as OpenShift OAuth Server<br/>443/TCP HTTPS
+    participant UserAPI as OpenShift User API<br/>443/TCP HTTPS
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS
+    participant Redis as Redis (optional)<br/>6379/TCP
+    participant Upstream as Upstream Application
+
+    rect rgb(220, 240, 255)
+        Note over Browser,Upstream: Flow 1: OIDC Authentication (Auth Mode)
+        Browser->>AuthProxy: GET /oauth2/start<br/>HTTP/HTTPS, No Auth
+        AuthProxy->>Browser: 302 Redirect to OIDC Provider<br/>state + PKCE challenge
+        Browser->>OIDC: Authorization Request<br/>HTTPS/443, User credentials
+        OIDC->>Browser: 302 Redirect with auth code
+        Browser->>AuthProxy: GET /oauth2/callback?code=...&state=...<br/>HTTP/HTTPS, Authorization code
+        AuthProxy->>OIDC: POST token endpoint<br/>HTTPS/443, Client ID/Secret + code + PKCE verifier
+        OIDC-->>AuthProxy: Access Token + ID Token + Refresh Token
+        AuthProxy->>Redis: Store session (if Redis mode)<br/>TCP/TLS 6379, Password
+        Redis-->>AuthProxy: OK
+        AuthProxy->>Browser: Set-Cookie: _oauth2_proxy (AES encrypted)<br/>302 Redirect to original URL
+        Browser->>AuthProxy: Request with session cookie<br/>HTTP/HTTPS
+        AuthProxy->>Upstream: Forward request<br/>Headers: X-Forwarded-User, X-Forwarded-Email, X-Forwarded-Groups
+        Upstream-->>AuthProxy: Response
+        AuthProxy-->>Browser: Proxied Response
+    end
+
+    rect rgb(255, 240, 220)
+        Note over Browser,Upstream: Flow 2: OpenShift OAuth Token Validation (Auth Mode)
+        Browser->>AuthProxy: Request with Bearer sha256~token<br/>HTTP/HTTPS 4180
+        AuthProxy->>UserAPI: GET /apis/user.openshift.io/v1/users/~<br/>HTTPS/443, Bearer sha256~token
+        UserAPI-->>AuthProxy: User info (name, email, groups)
+        AuthProxy->>Upstream: Forward request<br/>Headers: X-Forwarded-User, X-Forwarded-Email
+        Upstream-->>AuthProxy: Response
+        AuthProxy-->>Browser: Proxied Response
+    end
+
+    rect rgb(220, 255, 220)
+        Note over Browser,Upstream: Flow 3: Kubernetes SA Token + RBAC Authorization (RBAC Mode)
+        Browser->>RBACProxy: Request with Bearer SA token<br/>HTTPS/8443, Bearer token
+        RBACProxy->>K8sAPI: POST /apis/authentication.k8s.io/v1/tokenreviews<br/>HTTPS/443, SA token
+        K8sAPI-->>RBACProxy: TokenReview result (user, groups)
+        RBACProxy->>K8sAPI: POST /apis/authorization.k8s.io/v1/subjectaccessreviews<br/>HTTPS/443, SA token
+        K8sAPI-->>RBACProxy: SubjectAccessReview result (allowed/denied)
+        alt Authorized
+            RBACProxy->>Upstream: Forward request<br/>HTTP/HTTPS/H2C
+            Upstream-->>RBACProxy: Response
+            RBACProxy-->>Browser: Proxied Response
+        else Denied
+            RBACProxy-->>Browser: 403 Forbidden
+        end
+    end
+
+    rect rgb(245, 245, 245)
+        Note over Browser,Upstream: Flow 4: Hardcoded Prometheus Metrics Access (RBAC Mode)
+        Browser->>RBACProxy: GET /metrics<br/>HTTPS/8443, Bearer token
+        Note right of RBACProxy: Check: system:serviceaccount:<br/>openshift-monitoring:prometheus-k8s<br/>(hardcoded allowlist)
+        RBACProxy->>Upstream: Forward to metrics endpoint<br/>(no SAR needed)
+        Upstream-->>RBACProxy: Metrics response
+        RBACProxy-->>Browser: Prometheus metrics
+    end

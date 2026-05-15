@@ -1,0 +1,69 @@
+sequenceDiagram
+    autonumber
+
+    participant User as User / Data Scientist
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant MutWH as Mutating Webhook<br/>9443/TCP HTTPS
+    participant ValWH as Validating Webhook<br/>9443/TCP HTTPS
+    participant AuthCtrl as Authentication Controller
+    participant mTLSCtrl as mTLS Controller
+    participant NPCtrl as NetworkPolicy Controller
+    participant RCCtrl as RayCluster Controller
+    participant Gateway as Platform Gateway<br/>443/TCP HTTPS
+    participant KRBP as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant RayHead as Ray Head Pod<br/>8265/TCP HTTP
+    participant CertMgr as cert-manager<br/>443/TCP HTTPS
+
+    rect rgb(230, 245, 255)
+        Note over User,CertMgr: Flow 1: RayCluster Provisioning (RHOAI/OpenShift)
+        User->>K8sAPI: POST RayCluster CR<br/>Auth: Bearer Token
+        K8sAPI->>MutWH: Mutate RayCluster<br/>TLS / API server mTLS
+        Note right of MutWH: Sets enable-secure-trusted-network=true<br/>Forces enableIngress=false
+        MutWH-->>K8sAPI: Mutated CR
+        K8sAPI->>ValWH: Validate RayCluster<br/>TLS / API server mTLS
+        Note right of ValWH: Validates DNS name format<br/>Checks unique worker groups
+        ValWH-->>K8sAPI: Admitted
+
+        K8sAPI-->>AuthCtrl: Watch: RayCluster created
+        AuthCtrl->>K8sAPI: Create HTTPRoute, ReferenceGrant,<br/>ServiceAccount, ConfigMap<br/>HTTPS / SA Token
+        AuthCtrl->>K8sAPI: Set condition: AuthenticationReady=True
+
+        K8sAPI-->>mTLSCtrl: Watch: RayCluster created
+        mTLSCtrl->>CertMgr: Create Issuer + Certificate CRs<br/>HTTPS / SA Token
+        CertMgr-->>mTLSCtrl: TLS secrets provisioned<br/>(head + worker + CA)
+
+        K8sAPI-->>NPCtrl: Watch: RayCluster created
+        NPCtrl->>K8sAPI: Create NetworkPolicy<br/>HTTPS / SA Token
+
+        K8sAPI-->>RCCtrl: Watch: RayCluster created
+        Note right of RCCtrl: Waits for AuthenticationReady condition
+        RCCtrl->>K8sAPI: Create Head Pod + Services<br/>HTTPS / SA Token
+        RCCtrl->>K8sAPI: Create Worker Pods<br/>HTTPS / SA Token
+    end
+
+    rect rgb(255, 243, 224)
+        Note over User,CertMgr: Flow 2: RayJob Execution
+        User->>K8sAPI: POST RayJob CR<br/>Auth: Bearer Token
+        Note right of K8sAPI: RayJob Controller creates<br/>RayCluster (if needed)
+        K8sAPI-->>RCCtrl: Triggers cluster provisioning
+        K8sAPI->>K8sAPI: Create Submitter Job/Pod
+        K8sAPI->>RayHead: Submit Ray job<br/>HTTP/8265 (in-cluster)
+        RayHead-->>K8sAPI: Job ID
+        loop Poll job status
+            K8sAPI->>RayHead: GET job status<br/>HTTP/8265
+            RayHead-->>K8sAPI: Status
+        end
+    end
+
+    rect rgb(232, 245, 233)
+        Note over User,CertMgr: Flow 3: User Access to Ray Dashboard (RHOAI Gateway API)
+        User->>Gateway: GET /ray/{ns}/{cluster}<br/>HTTPS/443 / OIDC Token
+        Gateway->>KRBP: Forward via HTTPRoute<br/>HTTPS/8443 / TLS
+        Note right of KRBP: SubjectAccessReview<br/>on Service GET
+        KRBP->>K8sAPI: SubjectAccessReview<br/>HTTPS/443 / SA Token
+        K8sAPI-->>KRBP: Allowed
+        KRBP->>RayHead: Proxy to dashboard<br/>HTTP/8265 (localhost)
+        RayHead-->>KRBP: Dashboard HTML/API response
+        KRBP-->>Gateway: Response
+        Gateway-->>User: Dashboard content
+    end

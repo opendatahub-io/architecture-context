@@ -1,0 +1,98 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        HFHub["Hugging Face Hub<br/>huggingface.co<br/>TLS 1.2+<br/>HF Token (optional)"]
+        AIPCC["AIPCC Package Index<br/>(build-time only)<br/>TLS 1.2+"]
+    end
+
+    subgraph Cluster["KUBERNETES CLUSTER"]
+        direction TB
+
+        subgraph SchedulerPod["Inference Scheduler Pod"]
+            direction TB
+
+            subgraph MainContainer["Main Container: Inference Scheduler"]
+                SchedulerBin["llm-d-inference-scheduler<br/>Go binary<br/>Imports pkg/kvcache"]
+                KVIndexer["KV-Cache Indexer<br/>(in-process library)"]
+                EventProc["KV-Events Processor<br/>(in-process library)"]
+                TokenPool["Tokenization Pool<br/>(in-process)"]
+                SchedulerBin --- KVIndexer
+                SchedulerBin --- EventProc
+                SchedulerBin --- TokenPool
+            end
+
+            subgraph SidecarContainer["Sidecar: UDS Tokenizer"]
+                UDSTokenizer["UDS Tokenizer Service<br/>Python 3.12<br/>gRPC via UDS<br/>Health: 8082/TCP HTTP"]
+            end
+
+            SharedVol["Shared Volume<br/>/tmp/tokenizer/<br/>tokenizer-uds.socket"]
+            TokenPool ---|"gRPC via UDS<br/>No encryption<br/>No auth<br/>(pod-local)"| SharedVol
+            SharedVol ---|"gRPC via UDS"| UDSTokenizer
+        end
+
+        subgraph InferenceNS["Namespace: inference workloads"]
+            direction TB
+
+            subgraph vLLMPods["vLLM/SGLang Pods"]
+                vLLM1["vLLM Pod 1<br/>ZMQ PUB"]
+                vLLM2["vLLM Pod 2<br/>ZMQ PUB"]
+                vLLMN["vLLM Pod N<br/>ZMQ PUB"]
+            end
+
+            subgraph PVCEvictorDeploy["PVC Evictor Deployment"]
+                PVCEvictor["PVC Evictor<br/>Python 3.12<br/>No network services<br/>File I/O only"]
+            end
+
+            SharedPVC[("Shared PVC<br/>/kv-cache/<br/>NFS/PVC")]
+        end
+
+        subgraph OptionalBackend["Optional: Redis Backend"]
+            Redis[("Redis/Valkey<br/>6379/TCP<br/>Redis protocol<br/>Optional TLS (rediss://)")]
+        end
+
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>mTLS<br/>ServiceAccount Token"]
+    end
+
+    subgraph Observability["OBSERVABILITY"]
+        OTLP["OTLP Collector<br/>4317/TCP gRPC<br/>No encryption (configurable)"]
+        Prometheus["Prometheus<br/>HTTP scrape<br/>No encryption"]
+    end
+
+    %% External flows
+    UDSTokenizer -->|"HTTPS/443<br/>TLS 1.2+<br/>HF Token (optional)"| HFHub
+
+    %% ZMQ flows (NO ENCRYPTION)
+    vLLM1 -->|"ZMQ PUB/SUB<br/>⚠ No encryption<br/>⚠ No auth"| EventProc
+    vLLM2 -->|"ZMQ PUB/SUB<br/>⚠ No encryption"| EventProc
+    vLLMN -->|"ZMQ PUB/SUB<br/>⚠ No encryption"| EventProc
+
+    %% Redis flow
+    KVIndexer -->|"6379/TCP<br/>Redis protocol<br/>Optional TLS (rediss://)<br/>No auth by default"| Redis
+
+    %% K8s API for pod discovery
+    EventProc -->|"HTTPS/443<br/>mTLS<br/>SA Token"| K8sAPI
+
+    %% Shared storage
+    vLLM1 ---|"File I/O"| SharedPVC
+    PVCEvictor ---|"File I/O<br/>Evict stale cache"| SharedPVC
+
+    %% Observability
+    KVIndexer -.->|"gRPC/4317<br/>OTLP traces"| OTLP
+    KVIndexer -.->|"HTTP<br/>Metrics scrape"| Prometheus
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef sidecar fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef observability fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+
+    class HFHub,AIPCC external
+    class SchedulerBin,KVIndexer,EventProc,TokenPool internal
+    class UDSTokenizer sidecar
+    class vLLM1,vLLM2,vLLMN warning
+    class Redis,SharedPVC storage
+    class OTLP,Prometheus observability
+    class K8sAPI internal
+    class PVCEvictor sidecar

@@ -1,0 +1,65 @@
+sequenceDiagram
+    participant Admin as Platform Admin
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant Webhook as Webhook Server<br/>9443/TCP HTTPS (cert-manager)
+    participant DSCCtrl as DSC Controller
+    participant DSCICtrl as DSCI Controller
+    participant GWCtrl as Gateway Controller
+    participant CompCtrl as Component Controller<br/>(e.g. KServe, Dashboard)
+    participant Kustomize as Kustomize Renderer
+    participant Envoy as Istio/Envoy Gateway<br/>443/TCP HTTPS
+    participant AuthProxy as kube-auth-proxy<br/>8443/TCP HTTPS
+    participant OAuth as OpenShift OAuth<br/>443/TCP HTTPS
+    participant User as End User Browser
+
+    rect rgb(230, 245, 255)
+        Note over Admin,K8s: Flow 1: Platform Initialization
+        Admin->>K8s: Create DSCInitialization CR
+        K8s->>Webhook: POST /validate-dscinitialization-v2<br/>mTLS (kube-apiserver cert)
+        Webhook-->>K8s: Admit (singleton check passed)
+        K8s-->>Admin: CR created
+        K8s->>DSCICtrl: Reconcile event
+        DSCICtrl->>K8s: Create namespaces, trusted CA ConfigMaps<br/>ServiceAccount token auth
+        DSCICtrl->>GWCtrl: Trigger gateway reconcile
+        GWCtrl->>K8s: Create Gateway, GatewayClass, EnvoyFilter CRs<br/>ServiceAccount token auth
+        GWCtrl->>K8s: Create kube-auth-proxy Deployment + Service<br/>ServiceAccount token auth
+        GWCtrl->>K8s: Create OAuthClient CR<br/>ServiceAccount token auth
+    end
+
+    rect rgb(230, 255, 230)
+        Note over Admin,CompCtrl: Flow 2: Component Deployment
+        Admin->>K8s: Create DataScienceCluster CR
+        K8s->>Webhook: POST /validate-datasciencecluster-v2<br/>mTLS
+        Webhook-->>K8s: Admit (singleton + component rules)
+        K8s->>Webhook: POST /mutate-datasciencecluster-v2<br/>mTLS
+        Webhook-->>K8s: Defaulted (ModelRegistry namespace)
+        K8s-->>Admin: CR created
+        K8s->>DSCCtrl: Reconcile event
+        DSCCtrl->>K8s: Create component CRs (Dashboard, KServe, etc.)<br/>ServiceAccount token
+        K8s->>CompCtrl: Component CR reconcile event
+        CompCtrl->>Kustomize: Render manifests from prefetched-manifests/
+        Kustomize-->>CompCtrl: Rendered resources
+        CompCtrl->>K8s: ServerSideApply rendered resources<br/>ServiceAccount token
+        CompCtrl->>K8s: Check Deployment readiness
+        K8s-->>CompCtrl: Deployment status
+        CompCtrl->>K8s: Update component CR status
+    end
+
+    rect rgb(255, 245, 230)
+        Note over User,OAuth: Flow 3: External User Request via Gateway
+        User->>Envoy: GET https://dashboard.apps.cluster.example.com<br/>HTTPS TLS 1.2+
+        Envoy->>AuthProxy: ext_authz check<br/>HTTPS 8443/TCP (TLS service-ca)
+        AuthProxy->>OAuth: OAuth2 redirect<br/>HTTPS 443/TCP (TLS 1.2+)
+        OAuth-->>User: Login page
+        User->>OAuth: Credentials
+        OAuth-->>AuthProxy: OAuth token
+        AuthProxy-->>Envoy: Auth OK + bearer token
+        Envoy->>K8s: Forward to backend (via HTTPRoute)<br/>Bearer token forwarded
+    end
+
+    rect rgb(255, 230, 230)
+        Note over User,Envoy: Flow 4: Legacy Dashboard Redirect
+        User->>K8s: GET https://old-dashboard.apps.cluster.example.com<br/>HTTPS TLS (Edge)
+        Note over K8s: OpenShift Route → nginx
+        K8s-->>User: HTTP 301 → new Gateway URL
+    end

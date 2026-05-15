@@ -1,0 +1,59 @@
+sequenceDiagram
+    participant User as User / Admin
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
+    participant MutWH as Mutating Webhook<br/>9443/TCP HTTPS TLS
+    participant ValWH as Validating Webhook<br/>9443/TCP HTTPS TLS
+    participant MRCtrl as ModelRegistryReconciler
+    participant MCCtrl as ModelCatalogReconciler
+    participant Router as OpenShift Router<br/>443/TCP HTTPS
+    participant KRBP as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
+    participant REST as rest-container<br/>8080/TCP HTTP
+    participant PG as PostgreSQL<br/>5432/TCP
+    participant Client as API Client
+
+    Note over User,PG: Flow 1: Model Registry Instance Provisioning
+
+    User->>K8sAPI: kubectl apply ModelRegistry CR<br/>HTTPS/443 | User credentials
+    K8sAPI->>MutWH: Mutate request<br/>HTTPS/9443 | API server mTLS
+    MutWH-->>K8sAPI: Defaulted CR<br/>(DB config, kube-rbac-proxy, OAuth→KRBP migration)
+    K8sAPI->>ValWH: Validate request<br/>HTTPS/9443 | API server mTLS
+    ValWH-->>K8sAPI: Admission response<br/>(namespace check, unique name, DB config)
+    K8sAPI-->>User: CR created/updated
+
+    K8sAPI->>MRCtrl: Watch event: ModelRegistry CR
+    MRCtrl->>K8sAPI: Create Deployment<br/>(rest-container + kube-rbac-proxy)
+    MRCtrl->>K8sAPI: Create Service (8443/TCP)
+    MRCtrl->>K8sAPI: Create SA, Role, RoleBinding
+    MRCtrl->>K8sAPI: Create NetworkPolicy
+    MRCtrl->>K8sAPI: Create Route (reencrypt TLS)
+    MRCtrl->>K8sAPI: Create Group (OpenShift)
+    MRCtrl->>K8sAPI: Create ClusterRoleBinding<br/>(system:auth-delegator)
+    opt Auto-provision PostgreSQL
+        MRCtrl->>K8sAPI: Create PostgreSQL Deployment + Service + PVC
+    end
+
+    Note over Client,PG: Flow 2: Model Registry REST API Access (with kube-rbac-proxy)
+
+    Client->>Router: GET/POST /api/model_registry/...<br/>HTTPS/443 | Bearer token
+    Router->>KRBP: Forward request<br/>HTTPS/8443 | TLS reencrypt
+    KRBP->>K8sAPI: SubjectAccessReview<br/>HTTPS/443 | Verify user can GET Service
+    K8sAPI-->>KRBP: Allowed/Denied
+    KRBP->>REST: Proxy request<br/>HTTP/8080 | localhost (no auth)
+    REST->>PG: Query metadata<br/>PostgreSQL/5432 | Username/password
+    PG-->>REST: Query results
+    REST-->>KRBP: JSON response
+    KRBP-->>Router: HTTPS response
+    Router-->>Client: JSON response
+
+    Note over Client,PG: Flow 3: Model Catalog Service
+
+    Client->>Router: GET /api/model_catalog/...<br/>HTTPS/443 | Bearer token
+    Router->>KRBP: Forward request<br/>HTTPS/8443 | TLS reencrypt
+    KRBP->>K8sAPI: SubjectAccessReview<br/>HTTPS/443 | Verify user can GET catalog Service
+    K8sAPI-->>KRBP: Allowed/Denied
+    KRBP->>REST: Proxy to catalog container<br/>HTTP/8080 | localhost
+    REST->>PG: Query catalog DB<br/>PostgreSQL/5432 | Username/password (Secret)
+    PG-->>REST: Catalog data
+    REST-->>KRBP: JSON response
+    KRBP-->>Router: HTTPS response
+    Router-->>Client: JSON response

@@ -1,0 +1,137 @@
+================================================================================
+  SECURITY NETWORK DIAGRAM: vllm-orchestrator-gateway
+  Component: vllm-orchestrator-gateway (Rust / axum)
+  Distribution: RHOAI 3.5-ea.1
+================================================================================
+
++--------------------------------------------------------------------------+
+|  EXTERNAL (Untrusted)                                                    |
+|                                                                          |
+|  [Client Application]                                                    |
+|         |                                                                |
+|         | Port: 8090/TCP                                                 |
+|         | Protocol: HTTP                                                 |
+|         | Encryption: None (plaintext)                                   |
+|         | Auth: Authorization header (pass-through, not validated)       |
+|         | Note: Gateway does NOT enforce auth; relies on upstream        |
+|         |       proxy or orchestrator for authentication                 |
+|         v                                                                |
++--------------------------------------------------------------------------+
+|  PLATFORM INGRESS (Optional - managed externally)                        |
+|                                                                          |
+|  [HTTPRoute / OpenShift Route]                                           |
+|  - Not defined in this repository                                        |
+|  - Managed by platform operator                                          |
+|  - Expected to provide TLS termination and auth enforcement              |
+|         |                                                                |
+|         | Port: 8090/TCP                                                 |
+|         | Protocol: HTTP                                                 |
+|         | Encryption: None at gateway level                              |
+|         v                                                                |
++--------------------------------------------------------------------------+
+|  GATEWAY SERVICE (Internal - ClusterIP)                                  |
+|                                                                          |
+|  [vllm-orchestrator-gateway]                                             |
+|  - Service Type: ClusterIP                                               |
+|  - Port: 8090/TCP -> 8090/TCP                                           |
+|  - Protocol: HTTP (plaintext)                                            |
+|  - Auth: None (pass-through only)                                        |
+|  - Endpoints: POST /{route_name}/v1/chat/completions                    |
+|  - Runtime: Rust (axum 0.7.9, tokio 1.41.1)                             |
+|  - Image: Built from Dockerfile.konflux (UBI base)                       |
+|  - Config: YAML file defining routes, detectors, orchestrator URL        |
+|                                                                          |
+|  Functions:                                                              |
+|  - Route matching (named detector pipelines)                             |
+|  - Detector config injection (policy injection pattern)                  |
+|  - Streaming SSE chunk processing and fallback application               |
+|  - Non-streaming JSON response processing and fallback application       |
+|  - Authorization + x-forwarded-* header forwarding                       |
+|         |                                                                |
+|         | Port: 8085/TCP (configurable)                                  |
+|         | Protocol: HTTP or HTTPS                                        |
+|         | Encryption: Optional mTLS                                      |
+|         |   - Client cert: /etc/tls/private/tls.crt                     |
+|         |   - Client key:  /etc/tls/private/tls.key                     |
+|         |   - CA cert:     /etc/tls/ca/service-ca.crt                   |
+|         |   - Identity: PKCS#12 (constructed from PEM via openssl crate)|
+|         |   - Backend: native-tls via reqwest                           |
+|         |   - Note: danger_accept_invalid_hostnames(true) for localhost  |
+|         | Auth: Authorization header forwarded + optional mTLS cert      |
+|         v                                                                |
++--------------------------------------------------------------------------+
+|  BACKEND SERVICES (Internal)                                             |
+|                                                                          |
+|  [FMS Guardrails Orchestrator]                                           |
+|  - Endpoint: /api/v2/chat/completions-detection                         |
+|  - Port: 8085/TCP (configurable via gateway config YAML)                |
+|  - Protocol: HTTP or HTTPS                                               |
+|  - Encryption: Optional mTLS (server-side)                               |
+|  - Auth: Receives forwarded Authorization header                         |
+|  - Purpose: Performs actual content detection and LLM inference routing   |
+|         |                                                                |
+|         |--- [Detector Services (e.g., regex-language)]                  |
+|         |    - Interaction: Direct (from orchestrator)                   |
+|         |    - Port: Varies                                              |
+|         |    - Purpose: Content detection (PII, toxicity, etc.)          |
+|         |    - Auth: Varies (managed by orchestrator)                    |
+|         |                                                                |
+|         |--- [vLLM Model Server]                                         |
+|              - Interaction: Direct (from orchestrator)                    |
+|              - Port: Varies                                               |
+|              - Purpose: LLM inference (chat completions)                  |
+|              - Auth: Varies (managed by orchestrator)                     |
+|                                                                          |
++--------------------------------------------------------------------------+
+
+SECRETS:
++--------------------------------------------------------------------------+
+| Secret / Mount Path              | Type             | Purpose            |
+|----------------------------------|------------------|--------------------|
+| /etc/tls/private/tls.crt        | kubernetes.io/tls| Client TLS cert    |
+|                                  |                  | for mTLS to orch.  |
+|                                  |                  | Prov: cert-manager |
+|                                  |                  |   / service-ca     |
+|----------------------------------|------------------|--------------------|
+| /etc/tls/private/tls.key        | kubernetes.io/tls| Private key for    |
+|                                  |                  | mTLS client ident. |
+|                                  |                  | Prov: cert-manager |
+|                                  |                  |   / service-ca     |
+|----------------------------------|------------------|--------------------|
+| /etc/tls/ca/service-ca.crt      | Opaque           | Custom CA cert for |
+|                                  |                  | validating orch.   |
+|                                  |                  | TLS cert           |
+|                                  |                  | Prov: service-ca   |
+|                                  |                  |   / manual         |
++--------------------------------------------------------------------------+
+
+RBAC Summary:
+  None — this is a stateless HTTP service with no Kubernetes API interactions.
+  No ClusterRoles, Roles, or RoleBindings defined.
+
+Authentication & Authorization:
+  - Gateway does NOT enforce any authentication or authorization
+  - Authorization header is forwarded as-is to the orchestrator
+  - x-forwarded-* headers are forwarded for upstream identity propagation
+  - Auth enforcement is expected at:
+    * Network level (kube-rbac-proxy sidecar, service mesh, HTTPRoute)
+    * Orchestrator level
+    * Platform ingress level
+
+TLS Configuration:
+  - Inbound: Plaintext HTTP on 8090/TCP (no TLS termination at gateway)
+  - Outbound: Optional mTLS to orchestrator
+    * Enabled when TLS cert files exist at well-known paths
+    * Falls back to plaintext HTTP when TLS files are absent
+    * Uses openssl crate for PKCS#12 identity construction
+    * Uses native-tls backend via reqwest
+    * danger_accept_invalid_hostnames(true) when host is localhost only
+
+FIPS Compliance Notes:
+  - No FIPS-specific build flags
+  - Dynamically links against system OpenSSL (UBI base image)
+  - compat-openssl11 installed in release image
+  - Relies on system OpenSSL FIPS configuration from UBI base
+  - No explicit FIPS mode opt-in in application code
+  - Cargo.lock provides deterministic Rust dependency resolution
+  - Build is NOT hermetic (hermetic: false in Tekton pipeline)

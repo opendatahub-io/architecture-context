@@ -1,0 +1,93 @@
+sequenceDiagram
+    participant Client as User / Client
+    participant LLS as Llama Stack Server<br/>8321/TCP HTTP
+    participant InlineEval as RagasEvaluatorInline<br/>(in-process)
+    participant DatasetIO as DatasetIO API<br/>(in-process)
+    participant Ragas as Ragas evaluate()<br/>(in-process)
+    participant InlineLLM as LlamaStackInlineLLM<br/>(wrapper)
+    participant InlineEmbed as LlamaStackInlineEmbeddings<br/>(wrapper)
+    participant Inference as Ollama / vLLM<br/>11434/TCP HTTP
+
+    Note over Client,Inference: Flow 1: Inline Evaluation
+
+    Client->>LLS: POST /alpha/eval/run_eval<br/>HTTP 8321/TCP
+    LLS->>InlineEval: Delegate eval (in-process)
+    InlineEval->>DatasetIO: iterrows() - retrieve dataset<br/>(in-process Python call)
+    DatasetIO-->>InlineEval: EvaluationDataset rows
+    InlineEval->>Ragas: evaluate(dataset, metrics)<br/>(in-process Python call)
+
+    loop For each metric evaluation
+        Ragas->>InlineLLM: generate_text(prompt)<br/>(BaseRagasLLM interface)
+        InlineLLM->>LLS: openai_completion()<br/>(in-process API)
+        LLS->>Inference: LLM completion<br/>HTTP 11434/TCP
+        Inference-->>LLS: Completion result
+        LLS-->>InlineLLM: LLMResult
+        InlineLLM-->>Ragas: LLMResult / Generation
+
+        Ragas->>InlineEmbed: embed_text(texts)<br/>(BaseRagasEmbeddings interface)
+        InlineEmbed->>LLS: openai_embeddings()<br/>(in-process API)
+        LLS->>Inference: Embedding request<br/>HTTP 11434/TCP
+        Inference-->>LLS: Embedding vectors
+        LLS-->>InlineEmbed: Embeddings
+        InlineEmbed-->>Ragas: List[float]
+    end
+
+    Ragas-->>InlineEval: EvaluationResult (scores)
+    InlineEval-->>LLS: Job result stored (in-memory)
+    LLS-->>Client: Job ID
+
+    Client->>LLS: GET /alpha/eval/job_result
+    LLS-->>Client: Evaluation scores (JSON)
+
+    Note over Client,Inference: Flow 2: Remote Evaluation (Kubeflow Pipelines)
+
+    participant RemoteEval as RagasEvaluatorRemote
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant KFP as Kubeflow Pipelines API<br/>443/TCP HTTPS
+    participant KFPData as KFP: retrieve_data<br/>(pipeline step 1)
+    participant KFPRagas as KFP: run_ragas_eval<br/>(pipeline step 2)
+    participant S3 as S3 Object Storage<br/>443/TCP HTTPS
+
+    Client->>LLS: POST /alpha/eval/run_eval<br/>HTTP 8321/TCP
+    LLS->>RemoteEval: Delegate eval
+    RemoteEval->>K8sAPI: Read ConfigMap<br/>trustyai-service-operator-config<br/>HTTPS 6443/TCP, SA Token
+    K8sAPI-->>RemoteEval: Base image URL
+    RemoteEval->>RemoteEval: Compile KFP pipeline YAML
+    RemoteEval->>KFP: create_run(pipeline)<br/>HTTPS 443/TCP, Bearer Token (OAuth)
+    KFP-->>RemoteEval: Run ID
+    RemoteEval-->>LLS: Job ID (stored in-memory)
+    LLS-->>Client: Job ID
+
+    KFP->>KFPData: Execute step 1
+    KFPData->>LLS: GET dataset rows<br/>HTTP 8321/TCP
+    LLS-->>KFPData: Dataset rows
+    KFPData->>KFPRagas: Pass dataset
+
+    loop For each metric evaluation
+        KFPRagas->>LLS: LLM completion<br/>HTTP 8321/TCP
+        LLS->>Inference: Forward to backend<br/>HTTP 11434/TCP
+        Inference-->>LLS: Result
+        LLS-->>KFPRagas: Completion
+
+        KFPRagas->>LLS: Embedding request<br/>HTTP 8321/TCP
+        LLS->>Inference: Forward to backend<br/>HTTP 11434/TCP
+        Inference-->>LLS: Vectors
+        LLS-->>KFPRagas: Embeddings
+    end
+
+    KFPRagas->>S3: PUT results JSONL<br/>HTTPS 443/TCP, AWS IAM
+    KFPRagas-->>KFP: Step complete
+
+    Client->>LLS: GET /alpha/eval/job_status
+    LLS->>RemoteEval: Check status
+    RemoteEval->>KFP: get_run(run_id)<br/>HTTPS 443/TCP, Bearer Token
+    KFP-->>RemoteEval: Run status
+    RemoteEval-->>LLS: Job status
+    LLS-->>Client: Status (completed)
+
+    Client->>LLS: GET /alpha/eval/job_result
+    LLS->>RemoteEval: Get results
+    RemoteEval->>S3: GET results JSONL<br/>HTTPS 443/TCP, AWS IAM
+    S3-->>RemoteEval: Evaluation results
+    RemoteEval-->>LLS: Parsed results
+    LLS-->>Client: Evaluation scores (JSON)

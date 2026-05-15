@@ -1,0 +1,82 @@
+sequenceDiagram
+    participant User as User Workstation<br/>(kubectl rhaii-validate)
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant Controller as Controller<br/>(in-process)
+    participant GPUJob as GPU Check Job Pod<br/>(per GPU node)
+    participant HostGPU as Host GPU<br/>(nvidia-smi / rocm-smi)
+    participant HostSys as Host sysfs<br/>(/sys/class/infiniband)
+    participant IperfSrv as iperf3 Server Pod<br/>5201/TCP
+    participant IperfCli as iperf3 Client Pod
+    participant RDMASrv as ib_write_bw Server Pod<br/>18515/TCP RDMA
+    participant RDMACli as ib_write_bw Client Pod
+    participant CM as ConfigMap<br/>rhaii-validate-report
+
+    Note over User,CM: Flow 1: Full Cluster Validation (kubectl rhaii-validate all)
+
+    rect rgb(230, 240, 255)
+        Note over User,Controller: Phase 1 — Tier 1: API-Level Checks
+        User->>K8sAPI: kubectl rhaii-validate all<br/>Auth: Bearer Token (kubeconfig)
+        Controller->>K8sAPI: GET CRDs (Gateway API, InferencePool,<br/>LeaderWorkerSet, cert-manager)
+        K8sAPI-->>Controller: CRD existence & version info
+        Controller->>K8sAPI: LIST pods in cert-manager,<br/>istio-system, openshift-lws-operator
+        K8sAPI-->>Controller: Pod status (Running / CrashLoopBackOff)
+    end
+
+    rect rgb(255, 243, 224)
+        Note over Controller,HostSys: Phase 2 — Tier 2: Per-Node GPU/RDMA Checks
+        Controller->>K8sAPI: Create ServiceAccount + ClusterRole + ClusterRoleBinding
+        Controller->>K8sAPI: Create GPU check Job (per node)<br/>Auth: Bearer Token (SA)
+        K8sAPI->>GPUJob: Schedule Job pod on GPU node<br/>(privileged, hostPID)
+        GPUJob->>HostGPU: nvidia-smi / rocm-smi<br/>(local exec, device mount)
+        HostGPU-->>GPUJob: Driver version, ECC status, GPU count
+        GPUJob->>HostSys: Read /sys/class/infiniband<br/>(hostPath mount)
+        HostSys-->>GPUJob: RDMA devices, link layer, topology
+        GPUJob-->>K8sAPI: Exit (results in pod logs)
+        Controller->>K8sAPI: GET pod logs<br/>Auth: Bearer Token (SA)
+        K8sAPI-->>Controller: GPU/RDMA check results (JSON)
+    end
+
+    rect rgb(224, 255, 230)
+        Note over Controller,RDMACli: Phase 3 — Multi-Node Bandwidth Tests
+        Controller->>K8sAPI: Create iperf3 server Job
+        K8sAPI->>IperfSrv: Schedule server pod
+        Controller->>K8sAPI: Create iperf3 client Job(s)
+        K8sAPI->>IperfCli: Schedule client pod(s)
+        IperfCli->>IperfSrv: TCP bandwidth test<br/>5201/TCP, No encryption
+        IperfSrv-->>IperfCli: Bandwidth results
+
+        Controller->>K8sAPI: Create ib_write_bw server Job
+        K8sAPI->>RDMASrv: Schedule RDMA server pod
+        Controller->>K8sAPI: Create ib_write_bw client Job(s)
+        K8sAPI->>RDMACli: Schedule RDMA client pod(s)
+        RDMACli->>RDMASrv: RDMA write bandwidth test<br/>18515/TCP RDMA verbs, No encryption
+        RDMASrv-->>RDMACli: RDMA bandwidth results
+    end
+
+    rect rgb(255, 230, 230)
+        Note over Controller,CM: Phase 4 — Report Generation
+        Controller->>K8sAPI: Collect all pod logs
+        K8sAPI-->>Controller: Test results (JSON)
+        Controller->>K8sAPI: Create/Update ConfigMap<br/>rhaii-validate-report
+        K8sAPI->>CM: Store structured JSON report
+        Controller-->>User: Display results (table/JSON)
+    end
+
+    Note over User,CM: Flow 2: RDMA Connectivity Pingmesh
+
+    rect rgb(240, 230, 255)
+        participant PingSrv as ibv_rc_pingpong Server<br/>variable/TCP RDMA
+        participant PingCli as ibv_rc_pingpong Client
+        participant CMFail as ConfigMap<br/>rhaii-validate-pingmesh-failures
+
+        Controller->>K8sAPI: GET ConfigMap rhaii-validate-report<br/>(load topology)
+        K8sAPI-->>Controller: Node topology data
+        Controller->>K8sAPI: Deploy pingmesh server/client pairs<br/>(pairwise topology, round-robin)
+        K8sAPI->>PingSrv: Schedule server pod
+        K8sAPI->>PingCli: Schedule client pod
+        PingCli->>PingSrv: ibv_rc_pingpong<br/>RDMA verbs, No encryption
+        PingSrv-->>PingCli: Connectivity result
+        Note over Controller: Retry up to 3x per pair
+        Controller->>K8sAPI: Store failures ConfigMap<br/>rhaii-validate-pingmesh-failures
+        K8sAPI->>CMFail: Failure records
+    end

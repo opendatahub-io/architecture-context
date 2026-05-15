@@ -1,0 +1,63 @@
+sequenceDiagram
+    autonumber
+
+    participant User as User / Data Scientist
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
+    participant Webhook as Training Operator Webhook<br/>9443/TCP HTTPS TLS
+    participant Operator as Training Operator<br/>(controller-runtime)
+    participant Pods as Worker/Master Pods
+    participant HeadlessSvc as Headless Service<br/>(inter-pod DNS)
+    participant Prometheus as Prometheus<br/>8080/TCP HTTP
+
+    rect rgb(230, 245, 255)
+        Note over User,Operator: Flow 1: Training Job Lifecycle
+        User->>K8sAPI: POST PyTorchJob/TFJob/etc CR<br/>Auth: Bearer Token / kubeconfig
+        K8sAPI->>Webhook: Admission Review<br/>HTTPS/9443 TLS Certificate
+        Webhook-->>K8sAPI: Admission Response (Allow/Deny)
+        K8sAPI-->>User: CR Created
+
+        K8sAPI->>Operator: Watch Event (CR created)<br/>HTTPS/443 TLS 1.2+, SA Token
+
+        Operator->>K8sAPI: Create Pods + Headless Services<br/>HTTPS/443 TLS 1.2+, SA Token
+        K8sAPI-->>Operator: Resources Created
+
+        Pods->>HeadlessSvc: Inter-pod communication<br/>framework-specific/TCP, No encryption
+        Note over Pods,HeadlessSvc: PyTorch: MASTER_ADDR/WORLD_SIZE<br/>TensorFlow: TF_CONFIG JSON<br/>XGBoost: Rabit tracker
+
+        Operator->>K8sAPI: Update Job Status<br/>HTTPS/443 TLS 1.2+, SA Token
+    end
+
+    rect rgb(255, 240, 230)
+        Note over Operator,Pods: Flow 2: MPI Job Execution
+        Operator->>K8sAPI: Create ConfigMap<br/>(hostfile + kubexec.sh)
+        Operator->>K8sAPI: Create SA + Role + RoleBinding<br/>(pods/exec permission)
+        Operator->>K8sAPI: Create Launcher Pod<br/>(init container: kubectl-delivery)
+
+        participant LauncherPod as MPI Launcher Pod
+        participant WorkerPods as MPI Worker Pods
+
+        LauncherPod->>K8sAPI: kubectl exec on workers<br/>HTTPS/443 TLS 1.2+, Launcher SA Token
+        K8sAPI->>WorkerPods: pods/exec
+        WorkerPods-->>LauncherPod: MPI process output
+    end
+
+    rect rgb(230, 255, 230)
+        Note over Operator,Pods: Flow 3: PyTorch Elastic Training
+        Operator->>K8sAPI: Create HPA<br/>(when ElasticPolicy.Metrics defined)
+        Operator->>K8sAPI: Create NetworkPolicy<br/>(pod-to-pod + monitoring whitelist)
+
+        participant MasterPod as PyTorch Master Pod<br/>(rendezvous)
+        participant ElasticWorkers as Elastic Worker Pods
+
+        ElasticWorkers->>MasterPod: Rendezvous registration<br/>MASTER_PORT/TCP, No encryption
+        Note over ElasticWorkers,MasterPod: PET_NNODES, PET_RDZV_*<br/>torchrun env vars
+
+        participant HPA as HPA Controller
+        HPA->>K8sAPI: Scale worker replicas<br/>based on custom metrics
+    end
+
+    rect rgb(245, 245, 245)
+        Note over Prometheus,Operator: Monitoring
+        Prometheus->>Operator: Scrape /metrics<br/>HTTP/8080, No auth
+        Operator-->>Prometheus: training_operator_jobs_* metrics
+    end

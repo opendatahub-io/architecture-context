@@ -1,0 +1,126 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["External Client"]
+    end
+
+    subgraph Ingress["INGRESS LAYER"]
+        direction TB
+
+        subgraph IngressISVC["Path A: InferenceService"]
+            GW_ISVC["Gateway API Gateway<br/>443/TCP → 80/TCP<br/>TLS Gateway-managed<br/>Auth: OAuth / Kuadrant"]
+            HTTPRoute_ISVC["{isvc}-predictor HTTPRoute<br/>Host: {isvc}.{domain}"]
+        end
+
+        subgraph IngressIstio["Path B: InferenceService (Istio)"]
+            GW_Istio["Istio Gateway<br/>443/TCP → 80/TCP<br/>TLS Gateway-level"]
+            VS_ISVC["{isvc} VirtualService<br/>Host: {isvc}.{ns}.{domain}"]
+        end
+
+        subgraph IngressLLM["Path C: LLMInferenceService"]
+            GW_LLM["Gateway<br/>443/TCP<br/>TLS Gateway-managed<br/>Auth: Kuadrant AuthPolicy"]
+            HTTPRoute_LLM["{llmisvc} HTTPRoute<br/>BackendRef: InferencePool"]
+        end
+    end
+
+    subgraph KServeNS["Namespace: kserve (Control Plane)"]
+        direction TB
+
+        ISVC_Ctrl["kserve-controller-manager<br/>SA: kserve-controller-manager<br/>8081/health, 9443/webhook<br/>FIPS: strictfipsruntime"]
+        LLMISVC_Ctrl["llmisvc-controller-manager<br/>SA: llmisvc-controller-manager<br/>8081/health, 9443/webhook<br/>FIPS: strictfipsruntime"]
+        LM_Ctrl["localmodel-controller-manager<br/>SA: localmodel-controller-manager<br/>8081/health, 9443/webhook<br/>FIPS: NOT compliant (CGO=0)"]
+
+        WH_ISVC["kserve-webhook-server-service<br/>443→9443 TLS mTLS"]
+        WH_LLM["llmisvc-webhook-server-service<br/>443→9443 TLS mTLS"]
+        WH_LM["localmodel-webhook-server-service<br/>443→9443 TLS mTLS"]
+    end
+
+    subgraph UserNS["Namespace: {user-namespace} (Data Plane)"]
+        direction TB
+
+        subgraph ISVCPod["InferenceService Pod"]
+            Predictor["Predictor Container<br/>8080/TCP HTTP"]
+            OAuthProxy["OAuth Proxy (optional)<br/>8443/TCP HTTPS<br/>Auth: SubjectAccessReview"]
+            StorageInit["storage-initializer<br/>(Init Container)"]
+            Agent["kserve-agent<br/>9000/TCP (sidecar)"]
+        end
+
+        subgraph LLMPod["LLMInferenceService Pod"]
+            LLMWorkload["LLM Workload Container<br/>8000/TCP HTTPS (self-signed)<br/>SCC: openshift-ai-llminferenceservice-scc"]
+        end
+
+        subgraph EPPPod["Scheduler (EPP) Pod"]
+            EPP["Endpoint Picker<br/>SA: {name}-epp-sa<br/>9002/TCP gRPC TLS (self-signed)<br/>9003/TCP health<br/>5557/TCP ZMQ"]
+        end
+
+        SVC_ISVC["{isvc}-predictor Service<br/>8080/TCP or 8443/TCP"]
+        SVC_LLM["{llmisvc}-kserve-workload-svc<br/>8000/TCP HTTPS"]
+        SVC_EPP["{llmisvc}-epp-svc<br/>9002/gRPC, 9003/health"]
+    end
+
+    subgraph ControlPlane["CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>Auth: ServiceAccount Token"]
+    end
+
+    subgraph ExternalSvcs["EXTERNAL SERVICES (Egress)"]
+        S3["Amazon S3<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS IAM"]
+        GCS["Google Cloud Storage<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: ADC"]
+        Azure["Azure Blob Storage<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: SP / Access Key / SAS"]
+        HF["HuggingFace Hub<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: HF Token"]
+        Prom["Prometheus<br/>HTTPS TLS<br/>Auth: Bearer Token"]
+    end
+
+    %% External to Ingress
+    Client -->|"HTTPS/443<br/>TLS 1.2+"| GW_ISVC
+    Client -->|"HTTPS/443<br/>TLS 1.2+"| GW_Istio
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>AuthPolicy"| GW_LLM
+
+    %% Ingress routing
+    GW_ISVC --> HTTPRoute_ISVC
+    GW_Istio --> VS_ISVC
+    GW_LLM --> HTTPRoute_LLM
+
+    HTTPRoute_ISVC -->|"HTTP/8080"| SVC_ISVC
+    VS_ISVC -->|"HTTP/8080"| SVC_ISVC
+    HTTPRoute_LLM -->|"gRPC/9002<br/>TLS self-signed"| SVC_EPP
+
+    %% Service to Pod
+    SVC_ISVC -->|"HTTP/8080"| Predictor
+    SVC_ISVC -->|"HTTPS/8443<br/>OAuth SAR"| OAuthProxy
+    SVC_EPP -->|"gRPC/9002<br/>TLS"| EPP
+    EPP -->|"HTTPS/8000<br/>TLS self-signed"| SVC_LLM
+    SVC_LLM -->|"HTTPS/8000"| LLMWorkload
+
+    %% Controllers to K8s API
+    ISVC_Ctrl -->|"HTTPS/443<br/>SA Token"| K8sAPI
+    LLMISVC_Ctrl -->|"HTTPS/443<br/>SA Token"| K8sAPI
+    LM_Ctrl -->|"HTTPS/443<br/>SA Token"| K8sAPI
+
+    %% K8s API to Webhooks
+    K8sAPI -->|"HTTPS/443<br/>mTLS"| WH_ISVC
+    K8sAPI -->|"HTTPS/443<br/>mTLS"| WH_LLM
+    K8sAPI -->|"HTTPS/443<br/>mTLS"| WH_LM
+
+    %% Egress
+    StorageInit -->|"HTTPS/443<br/>TLS 1.2+<br/>Cloud Creds"| S3
+    StorageInit -->|"HTTPS/443<br/>TLS 1.2+"| GCS
+    StorageInit -->|"HTTPS/443<br/>TLS 1.2+"| Azure
+    StorageInit -->|"HTTPS/443<br/>TLS 1.2+"| HF
+    Agent -->|"HTTPS/443<br/>TLS 1.2+"| S3
+    LLMISVC_Ctrl -->|"HTTPS<br/>Bearer Token"| Prom
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px,color:#333
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px,color:#333
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px,color:#333
+    classDef dataplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px,color:#333
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px,color:#333
+    classDef fipswarn fill:#f8cecc,stroke:#b85450,stroke-width:2px,color:#333
+    classDef webhook fill:#e1d5e7,stroke:#9673a6,stroke-width:2px,color:#333
+
+    class Client external
+    class GW_ISVC,GW_Istio,GW_LLM,HTTPRoute_ISVC,VS_ISVC,HTTPRoute_LLM ingress
+    class ISVC_Ctrl,LLMISVC_Ctrl,K8sAPI controlplane
+    class LM_Ctrl fipswarn
+    class Predictor,OAuthProxy,StorageInit,Agent,LLMWorkload,EPP,SVC_ISVC,SVC_LLM,SVC_EPP dataplane
+    class S3,GCS,Azure,HF,Prom externalservice
+    class WH_ISVC,WH_LLM,WH_LM webhook

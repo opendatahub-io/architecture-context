@@ -1,0 +1,148 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                             │
+│  [External Client]                                                          │
+│         │                                                                   │
+│         │ Port: 80/TCP or 443/TCP                                           │
+│         │ Protocol: HTTP/HTTPS                                              │
+│         │ Encryption: None (HTTP) or TLS (HTTPS, if configured)             │
+│         │ Auth: Gateway-dependent (configurable per provider)               │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway Layer)                                                    │
+│                                                                             │
+│  [Gateway Controller - Envoy/Istio/agentgateway/kgateway]                   │
+│  - Port: 80/TCP (external, default) or 443/TCP (HTTPS)                     │
+│  - TLS Termination: Provider-dependent (not configured by default)          │
+│  - CRDs: Gateway (gateway.networking.k8s.io/v1),                           │
+│           HTTPRoute → InferencePool                                         │
+│         │                                                                   │
+│         │ Port: varies (ext-proc)                                           │
+│         │ Protocol: gRPC                                                    │
+│         │ Encryption: None                                                  │
+│         │ Auth: None                                                        │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ROUTING LAYER (Cluster Internal)                                           │
+│                                                                             │
+│  [llm-d EPP (Inference Scheduler)]                                          │
+│  - Namespace: deployment namespace                                          │
+│  - ServiceAccount: {release-name}-epp                                       │
+│  - Ports:                                                                   │
+│    - 80/TCP (standalone proxy mode, HTTP)                                   │
+│    - 9090/TCP (Prometheus metrics, HTTP)                                    │
+│  - ext-proc gRPC interface for Gateway routing decisions                    │
+│         │                                                                   │
+│         │ Port: 8000/TCP                                                    │
+│         │ Protocol: HTTP                                                    │
+│         │ Encryption: None                                                  │
+│         │ Auth: None                                                        │
+│         │ Purpose: Metrics scraping + routing                               │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INFERENCE LAYER (Cluster Internal)                                         │
+│                                                                             │
+│  [Model Server Pods - vLLM (llm-d-cuda / llm-d-rocm / llm-d-hpu / cpu)]   │
+│  - Namespace: deployment namespace                                          │
+│  - User: 2000 (CUDA image, non-root), root (CPU/HPU/ROCm images)           │
+│  - Ports:                                                                   │
+│    - 8000/TCP (HTTP) - OpenAI-compatible API + Prometheus metrics           │
+│    - 5556/TCP (ZMQ) - KV cache events (precise prefix cache mode)          │
+│  - Image: ghcr.io/llm-d/llm-d-cuda:v0.2.1 (or variant)                    │
+│  - APIs: /v1/chat/completions, /v1/completions, /v1/embeddings,            │
+│           /v1/models, /health, /metrics                                     │
+│  - Encryption: None (TLS delegated to Gateway layer)                        │
+│  - Auth: None (open access within cluster)                                  │
+│         │                                                                   │
+│         ├──────────────────────────────────────────────────────┐             │
+│         │ Port: varies                                        │             │
+│         │ Protocol: RDMA/IB                                   │             │
+│         │ Encryption: None                                    │             │
+│         │ Auth: None                                          │             │
+│         │ Purpose: Multi-GPU shared memory (NVSHMEM)          │             │
+│         ▼                                                     │             │
+│  [NVSHMEM Peers - GPU-to-GPU]                                 │             │
+│  - Inter-GPU communication for expert parallelism             │             │
+│                                                               │             │
+│         ├──────────────────────────────────────────────────────┘             │
+│         │ Port: varies                                                      │
+│         │ Protocol: RDMA/TCP                                                │
+│         │ Encryption: None                                                  │
+│         │ Auth: None                                                        │
+│         │ Purpose: KV cache transfer (NIXL/UCX)                             │
+│         ▼                                                                   │
+│  [NIXL/UCX Peers - Inter-Node KV Cache Transfer]                            │
+│  - P/D disaggregation: prefill → decode KV transfer                        │
+│  - Zero-copy RDMA when available, TCP fallback                              │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  OBSERVABILITY (Cluster Internal)                                           │
+│                                                                             │
+│  [Prometheus]                                                               │
+│  - Scrapes model server /metrics (8000/TCP, HTTP)                           │
+│  - Scrapes EPP metrics (9090/TCP, HTTP)                                     │
+│  - WVA queries via HTTPS/443 with Bearer/cert auth                          │
+│  - ⚠ PROMETHEUS_TLS_INSECURE_SKIP_VERIFY=true in WVA configs               │
+│                                                                             │
+│  [OpenTelemetry Collector]                                                  │
+│  - Port: 4317/TCP (gRPC)                                                    │
+│  - Receives distributed traces from vLLM and EPP                            │
+│  - Encryption: None                                                         │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                   │
+│                                                                             │
+│  [Kubernetes API Server]                                                    │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: mTLS                                                         │
+│  - Auth: ServiceAccount token                                               │
+│  - EPP watches: Pods, InferencePool, InferenceObjective CRDs               │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                          │
+│                                                                             │
+│  [HuggingFace Hub - huggingface.co]                                         │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS 1.2+                                                     │
+│  - Auth: Bearer (HF_TOKEN from llm-d-hf-token Secret)                      │
+│  - Purpose: Model weight downloads at pod startup                           │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- Role: (EPP chart-managed)
+  - API Groups: "" (core)
+  - Resources: pods
+  - Verbs: get, list, watch
+
+- Role: (EPP chart-managed)
+  - API Groups: inference.networking.x-k8s.io
+  - Resources: inferencepools, inferenceobjectives
+  - Verbs: get, list, watch
+
+- RoleBinding: (EPP chart-managed)
+  - Namespace: deployment namespace
+  - ServiceAccount: {release-name}-epp
+
+- RoleBinding: metrics-reader
+  - Namespace: deployment namespace
+  - ServiceAccount: {release-name}-epp
+
+Secrets:
+- llm-d-hf-token (Opaque) - HuggingFace API token for gated model downloads
+  - Provisioned: Manual
+  - Auto-Rotate: No
+- controller-manager-token (Opaque) - EPP token for WVA metrics access
+  - Provisioned: Manual
+  - Auto-Rotate: No
+
+Security Notes:
+- No TLS on inference endpoints (8000/TCP) by default — TLS termination at Gateway
+- CUDA image runs as non-root (UID 2000); CPU, HPU, ROCm images run as root
+- No FIPS-specific build flags or cryptographic hardening
+- PROMETHEUS_TLS_INSECURE_SKIP_VERIFY=true in WVA autoscaler configs
+- RDMA/IB traffic between pods is unencrypted (performance-critical path)
+- KV cache ZMQ events (5556/TCP) are unencrypted
+- Gateway auth is provider-dependent and not configured by default

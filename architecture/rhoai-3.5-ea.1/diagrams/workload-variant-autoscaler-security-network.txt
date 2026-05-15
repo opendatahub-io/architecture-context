@@ -1,0 +1,183 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                              │
+│  [Platform Admin / SRE]                                                      │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: kubeconfig / OIDC / client certificate                       │
+│         ▼                                                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                    │
+│                                                                              │
+│  [Kubernetes API Server]                                                     │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS 1.2+                                                     │
+│  - Auth: ServiceAccount Token, client certificates                          │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: ServiceAccount Token (controller-manager)                    │
+│         ▼                                                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  WVA NAMESPACE (workload-variant-autoscaler-system)                         │
+│                                                                              │
+│  [WVA Controller Manager Pod]                                                │
+│  - ServiceAccount: controller-manager                                        │
+│  - Image: ghcr.io/llm-d/llm-d-workload-variant-autoscaler:v0.5.1           │
+│  - Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1 (FIPS)              │
+│  - HTTP/2 disabled (CVE mitigation: GHSA-qppj-fm5r-hxr3)                   │
+│                                                                              │
+│    Exposed Ports:                                                            │
+│    ┌─────────────────────────────────────────────────────────┐               │
+│    │ 8443/TCP - /metrics endpoint                            │               │
+│    │   Protocol: HTTPS                                       │               │
+│    │   Encryption: TLS (self-signed or cert-manager)         │               │
+│    │   Auth: Bearer Token + SubjectAccessReview              │               │
+│    │   Consumers: Prometheus (ServiceMonitor)                │               │
+│    ├─────────────────────────────────────────────────────────┤               │
+│    │ 8081/TCP - /healthz, /readyz endpoints                  │               │
+│    │   Protocol: HTTP                                        │               │
+│    │   Encryption: None (internal probes only)               │               │
+│    │   Auth: None                                            │               │
+│    │   Consumers: kubelet (liveness/readiness probes)        │               │
+│    └─────────────────────────────────────────────────────────┘               │
+│         │                                                                    │
+│         │ OUTBOUND CONNECTIONS                                               │
+│         │                                                                    │
+│         ├──── Port: 9090/TCP or 9091/TCP (OpenShift Thanos)                 │
+│         │     Protocol: HTTPS                                                │
+│         │     Encryption: TLS 1.2+                                           │
+│         │     Auth: Bearer Token (SA token)                                  │
+│         │     CA: service-ca.crt (OpenShift) or configurable CA path         │
+│         │     Optional: mTLS client cert (prometheus-client-cert secret)     │
+│         │     Dest: Prometheus / Thanos Querier                              │
+│         │                                                                    │
+│         └──── Port: 443/TCP                                                  │
+│               Protocol: HTTPS                                                │
+│               Encryption: TLS 1.2+                                           │
+│               Auth: ServiceAccount Token                                     │
+│               Dest: Kubernetes API Server                                    │
+│               Operations: Watch/patch VAs, Deployments, LWS, Pods,          │
+│                           Nodes, ConfigMaps, InferencePools, Secrets         │
+│                                                                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  MONITORING NAMESPACE                                                        │
+│                                                                              │
+│  [Prometheus / Thanos Querier]                                               │
+│  - Port: 9090/TCP (vanilla) or 9091/TCP (OpenShift Thanos)                 │
+│  - Purpose: Source of vLLM inference metrics; target for WVA metrics         │
+│  - Scrapes WVA /metrics at 8443/TCP via ServiceMonitor                      │
+│  - Auth (inbound): Bearer Token + SubjectAccessReview                       │
+│  - Auth (outbound to WVA): metrics-reader-token (SA token)                  │
+│                                                                              │
+│  [Prometheus Adapter] (optional)                                             │
+│  - Bridges WVA Prometheus metrics → Kubernetes custom metrics API           │
+│  - Used by HPA to read wva_optimal_replicas                                 │
+│                                                                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  AUTOSCALER LAYER                                                            │
+│                                                                              │
+│  [HPA / KEDA]                                                                │
+│  - Reads WVA optimization metrics from Prometheus / custom metrics API      │
+│  - Scales Deployments/LWS via Kubernetes API (scale subresource)            │
+│  - Port: 443/TCP to K8s API                                                │
+│  - Protocol: HTTPS, TLS 1.2+                                               │
+│  - Auth: ServiceAccount Token                                               │
+│                                                                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  USER / MODEL SERVING NAMESPACES                                             │
+│                                                                              │
+│  [Model Server Deployments / LeaderWorkerSets]                               │
+│  - Scale targets managed by HPA/KEDA (or WVA direct for scale-from-zero)   │
+│  - Emit vLLM metrics to Prometheus (KV cache, queue depth, request rates)   │
+│                                                                              │
+│  [InferencePool CRs]                                                         │
+│  - Gateway API Inference Extension                                           │
+│  - Watched by WVA for scale-from-zero pending request detection             │
+│                                                                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER NODES                                                               │
+│                                                                              │
+│  [GPU Nodes]                                                                 │
+│  - Labels: GFD (GPU Feature Discovery) - NVIDIA, AMD, Intel                │
+│  - WVA reads labels for GPU capacity discovery                              │
+│  - Access: Kubernetes API (list, watch, patch nodes)                        │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+NETWORK POLICY:
+- NetworkPolicy: allow-metrics-traffic
+  - Ingress: Allow TCP/8443 from Prometheus namespace (ServiceMonitor scraping)
+  - No other ingress rules (8081 accessible only via kubelet probes)
+
+RBAC Summary:
+- ClusterRole: manager-role
+  - API Groups: llmd.ai
+  - Resources: variantautoscalings, variantautoscalings/status, variantautoscalings/finalizers
+  - Verbs: create, delete, get, list, patch, update, watch
+
+  - API Groups: "" (core)
+  - Resources: configmaps, events, namespaces, pods, secrets, services, nodes, nodes/status
+  - Verbs: get, list, watch, update, patch, create
+
+  - API Groups: apps
+  - Resources: deployments, deployments/scale, replicasets, statefulsets
+  - Verbs: get, list, watch, update, patch
+
+  - API Groups: leaderworkerset.x-k8s.io
+  - Resources: leaderworkersets, leaderworkersets/scale
+  - Verbs: get, list, watch, update, patch
+
+  - API Groups: monitoring.coreos.com
+  - Resources: servicemonitors
+  - Verbs: get, list, watch
+
+  - API Groups: inference.networking.k8s.io, inference.networking.x-k8s.io
+  - Resources: inferencepools
+  - Verbs: get, list, watch
+
+- ClusterRole: metrics-auth-role
+  - Resources: tokenreviews (authentication.k8s.io), subjectaccessreviews (authorization.k8s.io)
+  - Verbs: create
+
+- ClusterRole: metrics-reader
+  - Non-resource URL: /metrics
+  - Verbs: get
+
+- ClusterRole: epp-metrics-reader-role
+  - Non-resource URLs: /metrics, /debug/pprof/*
+  - Verbs: get
+
+- ClusterRole: variantautoscaling-admin-role → all verbs on VAs
+- ClusterRole: variantautoscaling-editor-role → CRUD on VAs
+- ClusterRole: variantautoscaling-viewer-role → read-only on VAs
+
+RBAC Bindings:
+- manager-rolebinding → manager-role → system:controller-manager (cluster)
+- leader-election-rolebinding → leader-election-role → system:controller-manager (namespace: system)
+- metrics-auth-rolebinding → metrics-auth-role → controller-manager (cluster)
+- metrics-reader-rolebinding → metrics-reader → kube-prometheus-stack-prometheus (cluster)
+- prometheus-metrics-auth-rolebinding → metrics-auth-role → kube-prometheus-stack-prometheus (cluster)
+- epp-metrics-reader-role-binding → epp-metrics-reader-role → epp-metrics-reader (cluster)
+- cluster-monitoring-view (OpenShift) → cluster-monitoring-view → controller-manager (cluster)
+
+Secrets:
+- prometheus-client-cert (kubernetes.io/tls, optional) - mTLS client cert for Prometheus, Manual/cert-manager, No auto-rotate
+- epp-metrics-token (kubernetes.io/service-account-token) - EPP metrics bearer token, auto-generated, Yes auto-rotate
+- metrics-reader-token (OpenShift, kubernetes.io/service-account-token) - Prometheus ServiceMonitor auth, auto-generated, Yes auto-rotate
+
+TLS Configuration:
+- MinVersion: TLS 1.2 (crypto/tls)
+- InsecureSkipVerify: configurable (default true vanilla / false OpenShift)
+- CA cert: configurable path (service-ca.crt on OpenShift)
+- Client certs: optional mTLS (prometheus-client-cert secret)
+- HTTP/2: DISABLED (CVE mitigation)
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- Base image: registry.access.redhat.com/ubi9/ubi-minimal (OpenSSL included)
+- No non-FIPS crypto detected (no MD5, RC4, DES)

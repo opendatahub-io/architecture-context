@@ -1,0 +1,170 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.3                                            │
+│         │ Auth: Bearer Token (JWT)                                       │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ) — RHOAI Platform Layer                                   │
+│                                                                          │
+│  [RHOAI Gateway (Envoy)]                                                 │
+│  - Port: 443/TCP (external) → 8443/TCP (internal)                      │
+│  - TLS Termination: TLS 1.3                                             │
+│  - AuthN: JWT validation at gateway level                               │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS                                                │
+│         │ Auth: Service account token                                    │
+│         ▼                                                                │
+│  [kube-rbac-proxy sidecar]                                               │
+│  - Port: 8443/TCP (external) → 8321/TCP (localhost)                     │
+│  - AuthZ: Kubernetes RBAC-based authorization                           │
+│         │                                                                │
+│         │ Port: 8321/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (localhost loopback)                          │
+│         │ Auth: None (proxied, auth already verified)                    │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (OGX Server)                                                │
+│                                                                          │
+│  [OGX Server — odh-ogx-core]                                            │
+│  - Namespace: user-defined                                               │
+│  - Port: 8321/TCP (HTTP, plaintext)                                     │
+│  - User: non-root (CNB_USER_ID:CNB_GROUP_ID)                           │
+│  - Image: quay.io/rhoai/odh-ogx-core-rhel9:rhoai-3.5-ea.1             │
+│  - Auth Middleware: OAuth2 JWT (conditional via AUTH_ISSUER)             │
+│    - Validates JWT via JWKS endpoint (AUTH_JWKS_URI)                    │
+│    - Audience: AUTH_AUDIENCE (default: ogx)                             │
+│    - Policy: system resources=public, user resources=authenticated,     │
+│              owned resources=owner-only                                  │
+│         │                                                                │
+│         ├─── REQUIRED EGRESS ────────────────────────────────────────   │
+│         │                                                                │
+│         │  Port: 5432/TCP                                                │
+│         │  Protocol: TCP (PostgreSQL wire protocol)                      │
+│         │  Encryption: plaintext (typical in-cluster)                    │
+│         │  Auth: Username/password (POSTGRES_USER/POSTGRES_PASSWORD)     │
+│         │  ▼                                                             │
+│         │  [PostgreSQL]                                                   │
+│         │  - Database: ogx                                               │
+│         │  - Tables: ogx_kvstore, inference_store, agents_responses,     │
+│         │    openai_conversations, files_metadata, batches, connectors   │
+│         │                                                                │
+│         ├─── PRIMARY INFERENCE EGRESS ───────────────────────────────   │
+│         │                                                                │
+│         │  Port: configurable                                            │
+│         │  Protocol: HTTP/HTTPS                                          │
+│         │  Encryption: TLS (verify: VLLM_TLS_VERIFY, default true)      │
+│         │  Auth: Bearer Token (VLLM_API_TOKEN)                          │
+│         │  ▼                                                             │
+│         │  [vLLM Inference Server]                                       │
+│         │  - Activated via: VLLM_URL env var                             │
+│         │                                                                │
+│         │  Port: configurable                                            │
+│         │  Protocol: HTTP/HTTPS                                          │
+│         │  Encryption: TLS (verify: VLLM_EMBEDDING_TLS_VERIFY)          │
+│         │  Auth: Bearer Token (VLLM_EMBEDDING_API_TOKEN)                │
+│         │  ▼                                                             │
+│         │  [vLLM Embedding Server]                                       │
+│         │  - Activated via: VLLM_EMBEDDING_URL env var                   │
+│         │                                                                │
+│         ├─── OPTIONAL CLOUD INFERENCE EGRESS ────────────────────────   │
+│         │                                                                │
+│         │  Port: 443/TCP                                                 │
+│         │  Protocol: HTTPS │ Encryption: TLS 1.2+                       │
+│         │  ▼                                                             │
+│         │  [AWS Bedrock] — Auth: Bearer token                           │
+│         │  [IBM watsonx]  — Auth: API key (WATSONX_API_KEY)             │
+│         │  [Azure OpenAI] — Auth: API key (AZURE_API_KEY)               │
+│         │  [Google Vertex AI] — Auth: Application Default Credentials   │
+│         │  [OpenAI API]  — Auth: API key (OPENAI_API_KEY)               │
+│         │  Each conditionally activated via respective env vars          │
+│         │                                                                │
+│         ├─── OPTIONAL VECTOR DB EGRESS ──────────────────────────────   │
+│         │                                                                │
+│         │  [Milvus (remote)]                                             │
+│         │  - Port: configurable                                          │
+│         │  - Protocol: TCP                                               │
+│         │  - Encryption: TLS (optional, CA: MILVUS_CA_PEM_PATH)         │
+│         │  - Auth: Token (MILVUS_TOKEN)                                 │
+│         │                                                                │
+│         │  [pgvector]                                                    │
+│         │  - Port: 5432/TCP                                              │
+│         │  - Protocol: TCP (PostgreSQL)                                  │
+│         │  - Encryption: plaintext                                       │
+│         │  - Auth: Username/password                                     │
+│         │                                                                │
+│         │  [Qdrant]                                                      │
+│         │  - Port: 6333/TCP (HTTP) or 6334/TCP (gRPC)                   │
+│         │  - Protocol: HTTP or gRPC                                      │
+│         │  - Encryption: HTTPS (optional)                                │
+│         │  - Auth: API key                                               │
+│         │                                                                │
+│         ├─── OPTIONAL TOOL/STORAGE EGRESS ───────────────────────────   │
+│         │                                                                │
+│         │  [S3 / S3-compatible] — 443/TCP HTTPS, AWS IAM credentials    │
+│         │  [Brave Search API] — 443/TCP HTTPS, API key                  │
+│         │  [Tavily Search API] — 443/TCP HTTPS, API key                 │
+│         │  [MCP Servers] — configurable protocol                        │
+│         │                                                                │
+│         ├─── OPTIONAL OBSERVABILITY EGRESS ──────────────────────────   │
+│         │                                                                │
+│         │  [OTEL Collector] — configurable port, OTLP/HTTP, no auth     │
+│         │                                                                │
+│         └─── AUTH VERIFICATION EGRESS ───────────────────────────────   │
+│                                                                          │
+│            Port: 443/TCP                                                 │
+│            Protocol: HTTPS                                               │
+│            Encryption: TLS (verify: AUTH_VERIFY_TLS, default true)       │
+│            Auth: None (public JWKS endpoint)                            │
+│            ▼                                                             │
+│            [OAuth2 / OIDC Provider — JWKS endpoint]                     │
+│            - Purpose: JWT token validation                               │
+│            - Recheck period: AUTH_JWKS_RECHECK_PERIOD (default 3600s)   │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+  No Kubernetes RBAC resources — this is a container image, not an operator.
+  RBAC enforcement is handled by:
+  - kube-rbac-proxy sidecar (Kubernetes SA-based authorization)
+  - OGX built-in auth middleware (OAuth2 JWT, resource ownership policy)
+
+Application-Level Access Policy:
+  - System resources: All users can read (public)
+  - User resources: Authenticated users can create
+  - Owned resources: Only resource owners can read/update/delete
+
+Secrets (injected via environment variables):
+  - VLLM_API_TOKEN (Bearer) — vLLM inference auth
+  - VLLM_EMBEDDING_API_TOKEN (Bearer) — vLLM embedding auth
+  - POSTGRES_PASSWORD (Opaque) — PostgreSQL auth
+  - AWS_BEARER_TOKEN_BEDROCK — AWS Bedrock (optional)
+  - WATSONX_API_KEY — IBM watsonx (optional)
+  - AZURE_API_KEY — Azure OpenAI (optional)
+  - OPENAI_API_KEY — OpenAI API (optional)
+  - MILVUS_TOKEN — Milvus vector DB (optional)
+  - BRAVE_SEARCH_API_KEY — Brave Search (optional)
+  - TAVILY_SEARCH_API_KEY — Tavily Search (optional)
+
+Build-Time Secrets (Konflux pipeline):
+  - git_auth_secret (kubernetes.io/basic-auth) — Tekton Git auth
+  - rhel-ai-private-index-auth (Opaque) — RHAI private PyPI index
+  - rhel-subscription-activation-key (Opaque) — RHEL subscription
+
+FIPS Compliance:
+  - Base image: quay.io/aipcc/base-images/cpu:3.5.0-ea.1 (UBI9, FIPS-capable)
+  - Python ssl module: Delegates to system OpenSSL (FIPS-certified on RHEL 9)
+  - No independent crypto libraries introduced by distribution layer
+  - TLS verification: Enabled by default for all outbound connections
+
+Build Hermeticity:
+  ⚠ No lock files (rpms.lock.yaml, uv.lock, requirements.txt) present
+  ⚠ Push pipeline: hermetic=false (live PyPI resolution at build time)
+  ⚠ Critical packages pinned (boto3, pymilvus, tiktoken) but majority unpinned

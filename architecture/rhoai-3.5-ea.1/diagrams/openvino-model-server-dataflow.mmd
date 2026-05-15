@@ -1,0 +1,63 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant REST as DrogonHttpServer<br/>configurable/TCP HTTP
+    participant gRPC as GRPCServerModule<br/>configurable/TCP gRPC
+    participant Handler as HttpRestApiHandler<br/>(Bearer Token check)
+    participant Model as ModelInstance<br/>(Classical ML)
+    participant MPExec as MediaPipeGraphExecutor<br/>(Pipeline Engine)
+    participant GenAI as GenAiServable<br/>(LLM Engine)
+    participant OVRuntime as OpenVINO Runtime
+    participant OVGenAI as OpenVINO GenAI<br/>(Continuous Batching)
+    participant Cloud as Cloud Storage<br/>443/TCP HTTPS TLS
+    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS TLS
+
+    Note over Client,HFHub: Flow 1: Classical Model Inference (REST)
+    Client->>Proxy: POST /v1/models/{model}:predict<br/>HTTPS/8443, Bearer Token
+    Proxy->>REST: Forward (HTTP, plaintext)<br/>Auth validated by proxy
+    REST->>Handler: Route request
+    Handler->>Handler: isAuthorized() check<br/>(api_key_file if configured)
+    Handler->>Model: Inference request
+    Model->>OVRuntime: Execute inference
+    OVRuntime-->>Model: Prediction result
+    Model-->>Handler: Response
+    Handler-->>REST: JSON response
+    REST-->>Proxy: HTTP response
+    Proxy-->>Client: HTTPS response
+
+    Note over Client,HFHub: Flow 2: LLM Chat Completion (Streaming)
+    Client->>Proxy: POST /v3/chat/completions<br/>HTTPS/8443, Bearer Token
+    Proxy->>REST: Forward (HTTP, plaintext)
+    REST->>Handler: Route to OpenAI handler
+    Handler->>MPExec: Dispatch to streaming thread pool
+    MPExec->>GenAI: LLM calculator invocation
+    GenAI->>GenAI: Jinja2 chat template processing
+    GenAI->>OVGenAI: Schedule in continuous batch
+    loop Streaming tokens
+        OVGenAI-->>GenAI: Generated token
+        GenAI-->>MPExec: Token chunk
+        MPExec-->>REST: SSE event
+        REST-->>Proxy: HTTP SSE chunk
+        Proxy-->>Client: HTTPS SSE chunk
+    end
+
+    Note over Client,HFHub: Flow 3: gRPC Inference (KServe v2)
+    Client->>gRPC: ModelInfer RPC<br/>gRPC/HTTP2, InsecureCredentials
+    gRPC->>Model: KFS inference request
+    Model->>OVRuntime: Execute inference
+    OVRuntime-->>Model: Result tensors
+    Model-->>gRPC: InferResponse
+    gRPC-->>Client: gRPC response
+
+    Note over Client,HFHub: Flow 4: Model Loading from Cloud Storage
+    activate Model
+    Model->>Cloud: GET model artifacts<br/>HTTPS/443, TLS<br/>AWS IAM / Azure Conn String / GCP Creds
+    Cloud-->>Model: Model files (encrypted in transit)
+    Model->>OVRuntime: Load model from local cache
+    deactivate Model
+
+    Note over Client,HFHub: Flow 5: HuggingFace Model Pull
+    activate HFHub
+    Note right of HFHub: libgit2 + Git LFS<br/>or GGUF Downloader
+    HFHub-->>Model: Model artifacts<br/>HTTPS/443, TLS, HF Token
+    deactivate HFHub

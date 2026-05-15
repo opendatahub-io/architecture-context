@@ -1,0 +1,209 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                    │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 80/TCP                                                   │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None                                               │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway API)                                                   │
+│                                                                          │
+│  [Envoy Gateway - inference-gateway]                                     │
+│  - Type: Gateway (gateway.networking.k8s.io)                             │
+│  - Port: 80/TCP (external) → ext-proc → 8000/TCP (backend)              │
+│  - Encryption: None (HTTP)                                               │
+│  - Routing: HTTPRoute routes / to InferencePool on port 8000             │
+│  - ext-proc: gRPC call to EPP for routing decisions                      │
+│         │                                                                │
+│         │ Port: 9002/TCP                                                 │
+│         │ Protocol: gRPC/HTTP2 (ext-proc)                                │
+│         │ Encryption: None (cluster-internal)                            │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (EPP - Scheduling Control Plane)                       │
+│                                                                          │
+│  [Endpoint Picker (EPP)]                                                 │
+│  - Namespace: ${NAMESPACE}                                               │
+│  - ServiceAccount: ${EPP_NAME}                                           │
+│  - Image: odh-llm-d-inference-scheduler                                  │
+│  - Ports:                                                                │
+│    - 9002/TCP  gRPC ext-proc (receives requests from Envoy)              │
+│    - 9003/TCP  gRPC health check (liveness/readiness)                    │
+│    - 9090/TCP  HTTP Prometheus metrics                                   │
+│    - 5557/TCP  ZMQ subscriber (KV-cache events)                          │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1                   │
+│         │                                                                │
+│         ├──→ Port: 443/TCP                                               │
+│         │    Protocol: HTTPS                                             │
+│         │    Encryption: TLS 1.2+                                        │
+│         │    Auth: ServiceAccount token (Bearer)                         │
+│         │    Dest: Kubernetes API Server                                  │
+│         │    Purpose: Watch InferencePool, Pod resources                  │
+│         │                                                                │
+│         ├──→ Port: UDS (/tmp/tokenizer/tokenizer-uds.socket)             │
+│         │    Protocol: gRPC over Unix Domain Socket                      │
+│         │    Encryption: None (local socket)                             │
+│         │    Auth: None                                                  │
+│         │    Dest: UDS Tokenizer sidecar                                 │
+│         │    Purpose: Tokenize prompts for prefix cache scoring           │
+│         │                                                                │
+│         ├──→ Port: 5555-5557/TCP                                         │
+│         │    Protocol: ZMQ (SUB)                                         │
+│         │    Encryption: None                                            │
+│         │    Auth: None                                                  │
+│         │    Dest: vLLM model servers                                    │
+│         │    Purpose: Subscribe to KV-cache events                       │
+│         │                                                                │
+│         └──→ Port: 4317/TCP                                              │
+│              Protocol: gRPC                                              │
+│              Encryption: None (insecure default)                         │
+│              Auth: None                                                  │
+│              Dest: OTLP Collector                                        │
+│              Purpose: Export distributed traces                           │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (P/D Sidecar - Data Plane Proxy)                       │
+│                                                                          │
+│  [P/D Routing Sidecar (pd-sidecar)]                                     │
+│  - Runs as: Native sidecar (init container, restartPolicy: Always)       │
+│  - Co-located with: vLLM decode pods                                     │
+│  - ServiceAccount: Pod's SA                                              │
+│  - Image: odh-llm-d-routing-sidecar                                     │
+│  - Port: 8000/TCP  HTTP/HTTPS proxy                                     │
+│  - TLS: Configurable (--secure-proxy, --cert-path)                       │
+│  - TLS Ciphers: ECDHE+AES-GCM, ECDHE+ChaCha20 (FIPS-compatible)        │
+│  - FIPS: -tags strictfipsruntime, CGO_ENABLED=1                          │
+│  - SSRF Protection: InferencePool-based pod IP allowlist                  │
+│         │                                                                │
+│         ├──→ Port: 8001/TCP                                              │
+│         │    Protocol: HTTP/HTTPS                                        │
+│         │    Encryption: TLS 1.2+ (configurable)                         │
+│         │    Auth: None                                                  │
+│         │    Dest: vLLM Decoder (localhost)                               │
+│         │    Purpose: Forward decode/generation requests                  │
+│         │                                                                │
+│         ├──→ Port: configurable (from x-prefiller-host-port header)      │
+│         │    Protocol: HTTP/HTTPS                                        │
+│         │    Encryption: TLS 1.2+ (configurable)                         │
+│         │    Auth: None                                                  │
+│         │    Dest: vLLM Prefiller (remote)                               │
+│         │    Purpose: Send prefill-stage requests in P/D mode             │
+│         │                                                                │
+│         ├──→ Port: configurable (from x-encoder-hosts-ports header)      │
+│         │    Protocol: HTTP/HTTPS                                        │
+│         │    Encryption: TLS 1.2+ (configurable)                         │
+│         │    Auth: None                                                  │
+│         │    Dest: vLLM Encoder (remote)                                 │
+│         │    Purpose: Send encode-stage requests in E/P/D mode            │
+│         │                                                                │
+│         ├──→ Port: 443/TCP                                               │
+│         │    Protocol: HTTPS                                             │
+│         │    Encryption: TLS 1.2+                                        │
+│         │    Auth: ServiceAccount token (Bearer)                         │
+│         │    Dest: Kubernetes API Server                                  │
+│         │    Purpose: Watch InferencePool/Pods for SSRF allowlist         │
+│         │                                                                │
+│         └──→ Port: 4317/TCP                                              │
+│              Protocol: gRPC                                              │
+│              Encryption: None (insecure default)                         │
+│              Auth: None                                                  │
+│              Dest: OTLP Collector                                        │
+│              Purpose: Export distributed traces                           │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OBSERVABILITY                                                           │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - Scrapes: EPP /metrics on 9090/TCP HTTP, every 15s                     │
+│  - ServiceMonitor: monitoring.coreos.com ServiceMonitor                  │
+│                                                                          │
+│  [OTLP Collector]                                                        │
+│  - Receives: gRPC traces on 4317/TCP                                     │
+│  - Encryption: None (insecure by default)                                │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [HuggingFace Hub - huggingface.co]                                      │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: HF_TOKEN (env var, Bearer)                                      │
+│  - Purpose: Download tokenizer models                                    │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: ServiceAccount token (Bearer, auto-mounted)                     │
+│  - Purpose: Watch InferencePool, Pod resources                            │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- Role: ${EPP_NAME}
+  - API Groups: inference.networking.x-k8s.io
+  - Resources: inferencepools, inferenceobjectives, inferencemodelrewrites
+  - Verbs: get, watch, list
+
+  - API Groups: inference.networking.k8s.io
+  - Resources: inferencepools
+  - Verbs: get, watch, list
+
+  - API Groups: "" (core)
+  - Resources: pods
+  - Verbs: get, watch, list
+
+  - API Groups: authentication.k8s.io
+  - Resources: tokenreviews
+  - Verbs: create
+
+  - API Groups: authorization.k8s.io
+  - Resources: subjectaccessreviews
+  - Verbs: create
+
+- RoleBinding: ${EPP_NAME}-binding
+  - Namespace: ${NAMESPACE}
+  - Binds: ${EPP_NAME} (Role) → ${EPP_NAME} (ServiceAccount)
+
+SSRF Protection:
+- Sidecar watches InferencePool resources
+- Maintains allowlist of pod IPs from pool
+- Validates prefiller/encoder targets from request headers against allowlist
+- Prevents header-injection attacks redirecting traffic to arbitrary hosts
+- Enabled via --enable-ssrf-protection flag
+
+TLS Configuration:
+- Sidecar server: TLS 1.2+ with FIPS-compatible cipher suites
+  - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+  - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+  - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+  - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+  - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+  - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+- Self-signed certificates: 4096-bit RSA, 10-year validity (auto-generated)
+- Certificate auto-reload supported via fsnotify
+- InsecureSkipVerify configurable per stage (prefiller, decoder, encoder) — disabled by default
+
+Secrets:
+- TLS cert/key (sidecar) - kubernetes.io/tls - Self-signed or mounted via --cert-path
+  - No auto-rotation for self-signed; cert-manager rotation if mounted externally
+
+Security Risks / Notes:
+- gRPC ext-proc (9002/TCP): No encryption, relies on cluster network isolation
+- ZMQ connections (5555-5557/TCP): No encryption, no authentication
+- OTLP exporter: Uses insecure gRPC by default
+- InsecureSkipVerify: Configurable per P/D stage — potential MITM if enabled
+- Gateway ingress: HTTP only (port 80), no TLS termination at gateway level
+- SSRF protection is opt-in (--enable-ssrf-protection), not enabled by default
+
+Admission Webhooks:
+- 4 mutating webhooks (Istio sidecar injection on pods)
+- 1 validating webhook (Istio revision validation)
+- External webhooks intercept this component's pod resources:
+  - inferenceservice.kserve-webhook-server.pod-mutator (kserve)
+  - mutating.pod.odh-model-controller.opendatahub.io
+  - mutate-pod.sparkoperator.k8s.io

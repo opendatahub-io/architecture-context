@@ -1,0 +1,70 @@
+sequenceDiagram
+    participant Client as Client / Platform Component
+    participant Ingress as RHOAI Platform Ingress<br/>TLS Termination
+    participant Server as NeMo Guardrails Server<br/>8000/TCP HTTP
+    participant InputRails as Input Rails<br/>Content Safety, Jailbreak,<br/>Topic Safety, SDD
+    participant EmbedModels as Local NLP Models<br/>SpaCy, SentenceTransformers,<br/>FastEmbed (in-process)
+    participant LLM as Upstream LLM Provider<br/>443/TCP HTTPS
+    participant OutputRails as Output Rails<br/>Hallucination, Content Safety,<br/>Sensitive Data
+    participant Redis as Redis (optional)<br/>6379/TCP
+    participant OTEL as OpenTelemetry Collector
+
+    Note over Client,OTEL: Flow 1: Chat Completion with Guardrails
+
+    Client->>Ingress: POST /v1/chat/completions<br/>Authorization: Bearer Token<br/>HTTPS/TLS 1.2+
+    Ingress->>Server: Forward request<br/>HTTP/8000 (TLS terminated)<br/>Authorization header forwarded
+
+    Server->>Server: Parse GuardrailsChatCompletionRequest<br/>Select config, resolve thread
+
+    opt Thread Persistence Enabled
+        Server->>Redis: Load thread state<br/>Redis protocol/6379<br/>Optional TLS
+        Redis-->>Server: Thread history
+    end
+
+    Server->>InputRails: Execute input rails pipeline
+    InputRails->>EmbedModels: Semantic similarity check<br/>(in-process, no network)
+    EmbedModels-->>InputRails: Embedding vectors
+    InputRails-->>Server: Input validation result<br/>(pass / blocked with reason)
+
+    alt Input Rails Pass
+        Server->>LLM: POST /v1/chat/completions<br/>HTTPS/443, TLS 1.2+<br/>Bearer Token / API Key
+        LLM-->>Server: LLM Response
+
+        Server->>OutputRails: Execute output rails pipeline
+        OutputRails->>EmbedModels: Hallucination / safety check<br/>(in-process)
+        EmbedModels-->>OutputRails: Embedding vectors
+        OutputRails-->>Server: Output validation result<br/>(pass / modified / blocked)
+    else Input Rails Block
+        Server->>Server: Generate blocked response<br/>(no LLM call made)
+    end
+
+    opt Thread Persistence Enabled
+        Server->>Redis: Save updated thread state<br/>Redis protocol/6379
+    end
+
+    Server->>OTEL: Export trace spans<br/>HTTP or gRPC<br/>Configurable endpoint
+    Server-->>Ingress: JSON Response<br/>HTTP/8000
+    Ingress-->>Client: JSON Response<br/>HTTPS/TLS 1.2+
+
+    Note over Client,OTEL: Flow 2: Standalone Guardrail Check
+
+    Client->>Ingress: POST /v1/guardrail/checks<br/>Authorization: Bearer Token
+    Ingress->>Server: Forward request<br/>HTTP/8000
+
+    Server->>InputRails: Execute rails on message
+    InputRails->>EmbedModels: Evaluate message<br/>(in-process)
+    EmbedModels-->>InputRails: Results
+
+    opt Rail Requires LLM Evaluation
+        InputRails->>LLM: LLM-based rail check<br/>HTTPS/443
+        LLM-->>InputRails: LLM judgment
+    end
+
+    InputRails-->>Server: Validation result
+
+    Server-->>Ingress: Check result (pass/fail + details)
+    Ingress-->>Client: JSON Response
+
+    Note over Client,OTEL: Flow 3: OpenTelemetry Trace Export
+
+    Server->>OTEL: Export spans<br/>HTTP/gRPC (configurable)<br/>OTEL_EXPORTER_OTLP_ENDPOINT

@@ -1,0 +1,58 @@
+sequenceDiagram
+    participant Client as ML Training Code<br/>(MLflow Client SDK)
+    participant OTel as OpenTelemetry SDK<br/>(MLflow Tracing)
+    participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant MLflow as MLflow Server<br/>5000/TCP HTTP
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS
+    participant PG as PostgreSQL<br/>5432/TCP
+    participant S3 as S3/GCS/Azure<br/>443/TCP HTTPS
+
+    Note over Client,S3: Flow 1: Experiment Run Logging
+
+    Client->>Proxy: POST /api/2.0/mlflow/runs/create<br/>Auth: Bearer Token (K8s SA)<br/>TLS 1.2+
+    Proxy->>Proxy: Validate SA Token<br/>(TokenReview API)
+    Proxy->>MLflow: Forward to localhost:5000<br/>HTTP (plaintext)
+    MLflow->>MLflow: CORSBlockingMiddleware<br/>HostValidationMiddleware
+    MLflow->>MLflow: kubernetes-auth plugin<br/>Permission check (CREATE)
+    MLflow->>K8sAPI: Resolve workspace namespace<br/>Auth: SA Bearer Token<br/>TLS 1.2+
+    K8sAPI-->>MLflow: Namespace metadata
+    MLflow->>PG: INSERT INTO runs<br/>Auth: Username/Password<br/>TLS (configurable)
+    PG-->>MLflow: Run ID
+    MLflow-->>Proxy: 200 OK + Run metadata
+    Proxy-->>Client: JSON Response
+
+    Note over Client,S3: Flow 1b: Log Metrics + Artifacts
+
+    Client->>Proxy: POST /api/2.0/mlflow/runs/log-batch<br/>Auth: Bearer Token
+    Proxy->>MLflow: Forward (localhost)
+    MLflow->>PG: INSERT INTO metrics, params, tags<br/>Auth: Username/Password
+    PG-->>MLflow: OK
+    MLflow-->>Proxy: 200 OK
+    Proxy-->>Client: JSON Response
+
+    Client->>Proxy: POST /api/2.0/mlflow/artifacts<br/>Auth: Bearer Token<br/>Multipart upload
+    Proxy->>MLflow: Forward (localhost)
+    MLflow->>S3: PUT Object<br/>Auth: AWS IAM / STS<br/>TLS 1.2+
+    S3-->>MLflow: Upload confirmation
+    MLflow-->>Proxy: 200 OK
+    Proxy-->>Client: JSON Response
+
+    Note over Client,S3: Flow 2: OTLP Trace Ingestion
+
+    OTel->>MLflow: POST /v1/traces<br/>Auth: Bearer Token (K8s SA)<br/>Content-Type: application/x-protobuf<br/>X-MLFlow-Experiment-ID: <id>
+    MLflow->>MLflow: Validate experiment ID<br/>kubernetes-auth permission check
+    MLflow->>PG: INSERT INTO traces<br/>Auth: Username/Password
+    PG-->>MLflow: Trace ID
+    MLflow-->>OTel: 200 OK
+
+    Note over Client,S3: Flow 3: Kubernetes Authentication
+
+    Client->>MLflow: Any API request<br/>Auth: Bearer Token from<br/>/var/run/secrets/.../token
+    MLflow->>MLflow: kubernetes-auth provider<br/>Read SA token (60s TTL cache)
+    MLflow->>K8sAPI: TokenReview / Namespace lookup<br/>Auth: Server SA Bearer Token<br/>TLS 1.2+
+    K8sAPI-->>MLflow: Token valid + identity
+    MLflow->>MLflow: Map namespace → workspace<br/>(mlflow-kubernetes-plugins)
+    MLflow->>MLflow: Set workspace context<br/>(Python ContextVar)
+    MLflow->>PG: Query with workspace filter
+    PG-->>MLflow: Workspace-scoped results
+    MLflow-->>Client: JSON Response

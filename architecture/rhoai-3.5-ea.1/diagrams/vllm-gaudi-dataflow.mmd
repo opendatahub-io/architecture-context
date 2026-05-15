@@ -1,0 +1,53 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
+    participant vLLM as vLLM API Server<br/>8000/TCP HTTP (localhost)
+    participant HPU as Intel Gaudi HPU<br/>In-process
+    participant HF as Hugging Face Hub<br/>443/TCP HTTPS
+    participant S3 as Model Storage<br/>(PVC / S3)
+
+    rect rgb(240, 248, 255)
+        Note over Client,S3: Flow 1: Model Inference Request
+        Client->>Proxy: POST /v1/chat/completions<br/>Auth: Bearer Token (RBAC)
+        Proxy->>Proxy: Validate RBAC authorization
+        Proxy->>vLLM: Forward request<br/>HTTP/8000 (localhost, pre-authenticated)
+        vLLM->>HPU: Submit inference batch<br/>In-process (HPU graph execution)
+        HPU-->>vLLM: Inference result<br/>In-process
+        vLLM-->>Proxy: JSON response<br/>HTTP/8000
+        Proxy-->>Client: JSON response<br/>HTTPS/8443
+    end
+
+    rect rgb(255, 248, 240)
+        Note over Client,S3: Flow 1a: Model Loading (startup)
+        vLLM->>HF: GET model weights<br/>HTTPS/443 TLS 1.2+<br/>Auth: HF Token (env var)
+        HF-->>vLLM: Model artifacts
+        vLLM->>S3: Load model from PVC/S3<br/>(alternative to HF Hub)
+        S3-->>vLLM: Model weights
+        vLLM->>HPU: Transfer weights to HPU memory
+    end
+
+    rect rgb(240, 255, 240)
+        Note over Client,S3: Flow 2: Multi-Card Distributed Inference (Tensor Parallelism)
+        participant Ray as Ray Head
+        participant W0 as HPU Worker rank 0
+        participant W1 as HPU Worker rank 1..N
+        vLLM->>Ray: Initialize distributed workers
+        Ray->>W0: Assign rank 0
+        Ray->>W1: Assign rank 1..N
+        W0->>W1: HCCL all-reduce / all-gather<br/>HCCL fabric (no encryption)
+        W1-->>W0: Collective results
+        W0-->>vLLM: Merged inference output
+    end
+
+    rect rgb(255, 240, 255)
+        Note over Client,S3: Flow 3: Disaggregated Serving (NIXL KV Transfer)
+        participant Prefill as Prefill Instance<br/>HPU
+        participant NIXL as NIXL Agent<br/>Network
+        participant Decode as Decode Instance<br/>HPU
+        Client->>Proxy: POST /v1/completions
+        Proxy->>Prefill: Forward to prefill instance
+        Prefill->>NIXL: Transfer KV cache<br/>NIXL protocol (no encryption)
+        NIXL->>Decode: Deliver KV blocks<br/>(block size conversion if heterogeneous)
+        Decode-->>Proxy: Generate tokens → response
+        Proxy-->>Client: Streaming response
+    end

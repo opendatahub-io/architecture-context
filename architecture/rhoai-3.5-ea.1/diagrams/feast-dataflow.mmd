@@ -1,0 +1,45 @@
+sequenceDiagram
+    autonumber
+
+    participant Client as External Client
+    participant Route as OpenShift Route<br/>443/TCP HTTPS TLS edge
+    participant OnlineSvc as feast-{name}-online<br/>ClusterIP 80/443→6566
+    participant FeatureServer as Feature Server (Python)<br/>FastAPI 6566/TCP
+    participant AuthProvider as Auth Provider<br/>(OIDC / K8s API)<br/>443/TCP HTTPS
+    participant OnlineStore as Online Store<br/>(Redis 6379 / PG 5432 /<br/>DynamoDB 443)
+    participant OfflineStore as Offline Store<br/>(Snowflake / BigQuery /<br/>DuckDB)
+    participant Registry as Registry Backend<br/>(SQL / S3 / GCS)
+
+    Note over Client,OnlineStore: Flow 1: Online Feature Retrieval
+    Client->>Route: POST /get-online-features<br/>HTTPS/443, Bearer Token (JWT)
+    Route->>OnlineSvc: TLS edge termination
+    OnlineSvc->>FeatureServer: HTTP/6566 (TLS optional)
+    FeatureServer->>AuthProvider: Validate JWT token<br/>HTTPS/443, TLS 1.2+
+    AuthProvider-->>FeatureServer: Token valid + user claims
+    FeatureServer->>OnlineStore: Fetch feature values<br/>Provider-specific protocol
+    OnlineStore-->>FeatureServer: Feature values
+    FeatureServer-->>OnlineSvc: JSON response
+    OnlineSvc-->>Route: Response
+    Route-->>Client: JSON response
+
+    Note over Client,OfflineStore: Flow 2: Feature Materialization (CronJob)
+    participant CronJob as Materialization<br/>CronJob Pod
+    participant Operator as feast-operator<br/>8081/TCP health
+
+    Operator->>CronJob: Creates CronJob<br/>(scheduled materialization)
+    CronJob->>FeatureServer: POST /materialize<br/>HTTP/6566, Intra-comm JWT (HMAC-SHA256)
+    FeatureServer->>OfflineStore: Read historical features<br/>Provider-specific, TLS optional
+    OfflineStore-->>FeatureServer: Feature data batches
+    FeatureServer->>OnlineStore: Write materialized features<br/>Provider-specific, TLS optional
+    OnlineStore-->>FeatureServer: Write confirmation
+    FeatureServer-->>CronJob: Materialization complete
+
+    Note over Operator,Registry: Flow 3: Operator Auto-Access RBAC Reconciliation
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+
+    Operator->>FeatureServer: GET /api/v1/permissions<br/>HTTP(S)/80|443, Intra-comm JWT<br/>TLS InsecureSkipVerify
+    FeatureServer->>Registry: Fetch permission policies
+    Registry-->>FeatureServer: Permission definitions
+    FeatureServer-->>Operator: Permission policies JSON
+    Operator->>K8sAPI: Create/Update Roles & RoleBindings<br/>HTTPS/443, SA token, TLS 1.2+
+    K8sAPI-->>Operator: RBAC resources created

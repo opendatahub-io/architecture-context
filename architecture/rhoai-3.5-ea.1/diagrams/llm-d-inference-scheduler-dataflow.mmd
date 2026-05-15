@@ -1,0 +1,47 @@
+sequenceDiagram
+    autonumber
+
+    participant Client as External Client
+    participant Gateway as Envoy Gateway<br/>80/TCP HTTP
+    participant EPP as Endpoint Picker (EPP)<br/>9002/TCP gRPC ext-proc
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant UDS as UDS Tokenizer<br/>gRPC over UDS
+    participant KVIndex as KV-Cache Index<br/>(in-memory)
+    participant Sidecar as P/D Sidecar<br/>8000/TCP HTTP/HTTPS
+    participant Prefiller as vLLM Prefiller<br/>(remote)
+    participant Decoder as vLLM Decoder<br/>8001/TCP (local)
+    participant vLLMEngine as vLLM Engine<br/>ZMQ 5555-5557/TCP
+
+    rect rgb(240, 248, 255)
+        Note over Client,Decoder: Flow 1: Inference Request Routing (EPP)
+        Client->>Gateway: POST /v1/chat/completions<br/>HTTP/80
+        Gateway->>EPP: gRPC ext-proc ProcessingRequest<br/>9002/TCP
+        EPP->>K8sAPI: Watch InferencePool, Pods<br/>HTTPS/443 (ServiceAccount token)
+        EPP->>UDS: Tokenize prompt<br/>gRPC over /tmp/tokenizer/*.socket
+        UDS-->>EPP: Token IDs
+        EPP->>KVIndex: Score endpoints by prefix cache match
+        KVIndex-->>EPP: Endpoint scores
+        Note over EPP: Run plugins: Filter → Score →<br/>ProfileHandler.Pick → PreRequest
+        EPP-->>Gateway: ProcessingResponse with<br/>x-prefiller-host-port,<br/>x-encoder-hosts-ports headers
+        Gateway->>Sidecar: Forward to selected pod<br/>HTTP/HTTPS 8000/TCP
+    end
+
+    rect rgb(255, 248, 240)
+        Note over Sidecar,Decoder: Flow 2: P/D Disaggregated Inference (NIXL v2)
+        Note over Sidecar: Read x-prefiller-host-port header
+        Sidecar->>Prefiller: POST /v1/completions<br/>HTTP/HTTPS (TLS 1.2+ configurable)
+        Note over Prefiller: Execute prefill stage,<br/>compute KV cache
+        Prefiller-->>Sidecar: kv_transfer_params<br/>(cache metadata)
+        Sidecar->>Decoder: POST /v1/completions<br/>with kv_transfer_params<br/>HTTP/HTTPS 8001/TCP
+        Note over Decoder: Transfer KV cache via NIXL,<br/>execute decode/generation
+        Decoder-->>Sidecar: SSE stream response
+        Sidecar-->>Gateway: SSE stream response
+        Gateway-->>Client: SSE stream<br/>generated tokens
+    end
+
+    rect rgb(240, 255, 240)
+        Note over vLLMEngine,KVIndex: Flow 3: KV-Cache Event Tracking
+        vLLMEngine->>EPP: ZMQ PUB/SUB KV events<br/>5555-5557/TCP
+        EPP->>KVIndex: Update block index<br/>add/remove/update entries
+        Note over KVIndex: Speculative indexing:<br/>predicted entries (TTL 2s)<br/>confirmed by real events
+    end

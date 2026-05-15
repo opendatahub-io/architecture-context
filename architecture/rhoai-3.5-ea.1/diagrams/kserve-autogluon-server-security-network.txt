@@ -1,0 +1,117 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]                                                           │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: Bearer Token / mTLS (platform-enforced)                      │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Platform-Managed)                                                  │
+│                                                                              │
+│  [Platform Gateway / Istio Gateway]                                          │
+│  - Port: 443/TCP (external) → 8080/TCP (internal)                           │
+│  - TLS Termination: TLS 1.2+                                                │
+│  - AuthN: Platform-level (kube-rbac-proxy / Gateway API)                     │
+│  - Routing: HTTPRoute or OpenShift Route                                     │
+│  - Host: {isvc-name}.{namespace}.{domain}                                    │
+│         │                                                                    │
+│         │ Port: 8080/TCP                                                     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: mTLS (Istio sidecar) or None (pod-internal)            │
+│         │ Auth: Service Identity (Istio) or None                             │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  POD BOUNDARY (InferenceService Pod)                                         │
+│                                                                              │
+│  [Queue Proxy] (sidecar)                                                     │
+│  - Purpose: Request routing, concurrency control                             │
+│         │                                                                    │
+│         │ Port: 8080/TCP                                                     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (localhost / pod-internal)                         │
+│         │ Auth: None                                                         │
+│         ▼                                                                    │
+│  [autogluonserver] (main container)                                          │
+│  - REST Port: 8080/TCP (FastAPI/uvicorn)                                     │
+│  - gRPC Port: 8081/TCP (grpcio)                                             │
+│  - Image: Red Hat UBI base (registry.redhat.io/rhai/base-image-cpu-rhel9)   │
+│  - Runs as: non-root                                                         │
+│  - Filesystem: /mnt/models (read-only, from init container)                  │
+│  - No direct Kubernetes API access                                           │
+│  - No application-level TLS (relies on platform)                             │
+│  - No application-level auth (relies on platform)                            │
+│                                                                              │
+│  [Storage Initializer] (init container - runs before main)                   │
+│  - Purpose: Download model artifacts to /mnt/models                          │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: Storage credentials (mounted Secret)                         │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                                  │
+│                                                                              │
+│  [S3-Compatible Storage]                                                     │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: AWS IAM credentials (Secret)                                        │
+│  - Purpose: Download model artifacts                                         │
+│                                                                              │
+│  [Google Cloud Storage]                                                      │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: GCP service account (Secret)                                        │
+│  - Purpose: Download model artifacts                                         │
+│                                                                              │
+│  [Azure Blob Storage]                                                        │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: Azure credentials (Secret)                                          │
+│  - Purpose: Download model artifacts                                         │
+│                                                                              │
+│  [HuggingFace Hub]                                                           │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: HF token (optional)                                                 │
+│  - Purpose: Download model artifacts                                         │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+MONITORING:
+- Prometheus scrapes /metrics on 8080/TCP (HTTP, no auth)
+- Annotations: prometheus.kserve.io/port: '8080', prometheus.kserve.io/path: "/metrics"
+
+RBAC Summary:
+- No RBAC roles or bindings. This component is a model server container
+  that does not access the Kubernetes API. RBAC is managed by KServe controller.
+
+Secrets:
+- (storage credentials) (Opaque) - S3/GCS/Azure/HF credentials for downloading
+  model artifacts. Provisioned by user/platform admin. No auto-rotation.
+- Mounted into pod by KServe controller based on InferenceService storageUri
+  and ServiceAccount annotations.
+
+Authentication & Authorization:
+- No application-level authentication or authorization
+- All auth enforced by RHOAI platform ingress stack:
+  - Gateway API + kube-rbac-proxy for external access
+  - Istio mTLS for service-to-service within mesh
+- Endpoint auth: None at server level, platform-enforced at ingress
+
+FIPS Compliance:
+- Python component on UBI base image (registry.redhat.io/rhai/base-image-cpu-rhel9)
+- Crypto: cryptography==46.0.7 binds to system OpenSSL (FIPS-compatible)
+- No application-level TLS or custom crypto operations
+- FIPS compliance inherited from base image OpenSSL configuration
+
+Build Hermeticity:
+- Hermetic build via Konflux (hermetic: "true" in Tekton PipelineRun)
+- Python deps from Red Hat internal PyPI index
+- Multi-arch: x86_64, ppc64le, s390x, arm64

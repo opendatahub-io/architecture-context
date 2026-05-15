@@ -1,0 +1,170 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]                                                           │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: Bearer Token (Kubernetes ServiceAccount token)               │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Platform Gateway)                                                  │
+│                                                                              │
+│  [data-science-gateway (Envoy)]                                              │
+│  - Namespace: openshift-ingress                                              │
+│  - Port: 443/TCP (external) → 8443/TCP (internal)                           │
+│  - TLS: Terminates external TLS, re-encrypts to backend                     │
+│  - Routing: HTTPRoute rewrites /mlflow/api/* → /api/*                       │
+│             HTTPRoute rewrites /mlflow/v1/* → /v1/*                          │
+│         │                                                                    │
+│         │ Port: 8443/TCP                                                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (service-ca provisioned cert)                      │
+│         │ Auth: Token passthrough                                            │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION LAYER (Operator-managed namespace)                              │
+│                                                                              │
+│  [MLflow Server]                                                             │
+│  - Namespace: {target-namespace} (default: opendatahub)                      │
+│  - ServiceAccount: mlflow-sa                                                 │
+│  - Image: rhoai/odh-mlflow-rhel9 (configurable via MLFLOW_IMAGE)            │
+│  - Port: 8443/TCP (HTTPS, uvicorn + service-ca TLS cert)                    │
+│  - AuthN: kubernetes-auth app (SelfSubjectAccessReview)                      │
+│  - AuthZ: RBAC via mlflow.kubeflow.org pseudo-resources                     │
+│  - Security middleware: MLFLOW_SERVER_DISABLE_SECURITY_MIDDLEWARE="false"    │
+│    (hardcoded, CEL validation rejects override attempts)                     │
+│  - FIPS: Python ssl module backed by system OpenSSL                          │
+│  - Cipher profile: UVICORN_SSL_CIPHERS=PROFILE=SYSTEM (OpenShift)           │
+│         │                    │                    │                           │
+│         │                    │                    │                           │
+│    ┌────┘                    │                    └────┐                      │
+│    │                         │                         │                      │
+│    │ Port: 6443/TCP          │ Port: 5432/TCP          │ Port: 443/TCP        │
+│    │ Protocol: HTTPS         │   or 3306/TCP           │   9000/TCP           │
+│    │ Encryption: TLS 1.2+    │ Protocol: PG/MySQL      │   8333/8334/TCP      │
+│    │ Auth: SA Token          │   wire protocol         │ Protocol: HTTPS/HTTP │
+│    │ (SelfSubjectAccess-     │ Encryption: TLS         │ Encryption: TLS      │
+│    │  Review)                │   (PGSSLMODE=           │   (via CA bundle)    │
+│    ▼                         │    verify-full)         │ Auth: AWS IAM creds  │
+│                              │ Auth: Connection        │   (from envFrom      │
+│  [Kubernetes API]            │   string credentials    │    Secret)           │
+│                              │   (from Secret/URI)     ▼                      │
+│                              ▼                                                │
+│                         [PostgreSQL/MySQL]         [S3-compatible Storage]    │
+│                                                    (MinIO/SeaweedFS/AWS S3)   │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR CONTROL PLANE                                                      │
+│                                                                              │
+│  [mlflow-operator controller-manager]                                        │
+│  - Namespace: redhat-ods-applications (RHOAI)                                │
+│  - ServiceAccount: controller-manager                                        │
+│  - Image: rhoai/odh-mlflow-operator-rhel9                                   │
+│  - Port: 8081/TCP (health probes, HTTP, no auth)                            │
+│  - Port: 8443/TCP (metrics, HTTPS, Bearer Token + TokenReview)              │
+│  - Leader election: enabled (RHOAI overlay)                                  │
+│  - FIPS: CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime                       │
+│  - HTTP/2 disabled on metrics endpoint (rapid-reset mitigation)             │
+│         │                                                                    │
+│         │ Port: 6443/TCP                                                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: ServiceAccount Bearer Token                                  │
+│         │ Operations: Watch MLflow CR, SSA patch resources                   │
+│         ▼                                                                    │
+│  [Kubernetes API Server]                                                     │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  MONITORING                                                                  │
+│                                                                              │
+│  [Prometheus]                                                                │
+│         │                                                                    │
+│         │ Port: 8443/TCP                                                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (service-ca verified via openshift-service-ca.crt) │
+│         │ Auth: Bearer Token                                                 │
+│         │ Config: ServiceMonitor CR                                          │
+│         ▼                                                                    │
+│  [MLflow /metrics] + [Operator /metrics]                                    │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM INTEGRATION                                                        │
+│                                                                              │
+│  [OpenShift service-ca operator]                                             │
+│  - Watches: Service annotation service.beta.openshift.io/                   │
+│             serving-cert-secret-name                                         │
+│  - Provisions: mlflow-tls Secret (kubernetes.io/tls)                        │
+│  - Auto-rotate: Yes                                                          │
+│                                                                              │
+│  [OpenShift Console]                                                         │
+│  - ConsoleLink CR adds MLflow to application menu                           │
+│                                                                              │
+│  [odh-trusted-ca-bundle ConfigMap]                                           │
+│  - Platform-wide CA certificate bundle                                       │
+│  - Mounted into MLflow pods via init container + ca-bundle-watcher sidecar  │
+│  - Sets: SSL_CERT_FILE, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE,                │
+│          AWS_CA_BUNDLE, PGSSLROOTCERT, MLFLOW_MYSQL_CA                      │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+NetworkPolicy (deployed by Helm chart):
+  Ingress:
+  - Allow: Any namespace → MLflow 8443/TCP (HTTPS)
+    Reason: Gateway and Prometheus source namespaces vary
+
+  Egress:
+  - Allow: DNS 53/UDP, 53/TCP, 5353/UDP, 5353/TCP
+  - Allow: HTTPS 443/TCP (external services)
+  - Allow: Kubernetes API 6443/TCP
+  - Allow: PostgreSQL 5432/TCP
+  - Allow: MySQL 3306/TCP
+  - Allow: S3-compatible 9000/TCP (MinIO)
+  - Allow: S3-compatible 8333/TCP, 8334/TCP (SeaweedFS)
+  - Extensible: networkPolicyAdditionalEgressRules in CR spec
+
+RBAC Summary:
+  Operator ServiceAccount: controller-manager
+  - ClusterRole: manager-role
+    - mlflow.opendatahub.io: mlflows, mlflows/status, mlflows/finalizers (full CRUD)
+    - "": namespaces (get, list, watch)
+    - "": secrets/mlflow-artifact-connection (get, list, watch)
+    - console.openshift.io: consolelinks (full CRUD)
+    - gateway.networking.k8s.io: httproutes (full CRUD)
+    - mlflow.kubeflow.org: mlflowconfigs (get, list, watch)
+    - rbac.authorization.k8s.io: clusterroles, clusterrolebindings (full CRUD)
+  - Role (namespace-scoped): manager-role
+    - "": configmaps, pvcs, secrets, serviceaccounts, services (full CRUD)
+    - apps: deployments (full CRUD)
+    - networking.k8s.io: networkpolicies (full CRUD)
+    - monitoring.coreos.com: servicemonitors (full CRUD)
+  - ClusterRole: metrics-auth-role
+    - authentication.k8s.io: tokenreviews (create)
+    - authorization.k8s.io: subjectaccessreviews (create)
+
+  Deployed MLflow ServiceAccount: mlflow-sa
+  - ClusterRole: mlflow
+    - "": namespaces (get, list, watch)
+    - "": secrets/mlflow-artifact-connection (get, list, watch)
+    - mlflow.kubeflow.org: mlflowconfigs (get, list, watch)
+
+  Aggregate Roles (extend built-in roles):
+  - mlflow-view (→ view): mlflows, mlflowconfigs, datasets, experiments, registeredmodels (read)
+  - mlflow-edit (→ edit/admin): mlflows, mlflowconfigs, datasets, experiments (read/write)
+  - mlflow-integration: datasets, experiments, registeredmodels, gatewayendpoints (read/write)
+
+Secrets:
+  - mlflow-tls (kubernetes.io/tls)
+    Purpose: TLS certificate for MLflow server HTTPS
+    Provisioned by: OpenShift service-ca operator (auto-rotated)
+  - mlflow-artifact-connection (Opaque)
+    Purpose: S3-compatible artifact storage credentials (per-namespace)
+    Provisioned by: User-managed (no auto-rotation)
+
+FIPS Compliance:
+  - Operator: CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime -tags strictfipsruntime
+  - MLflow server: Python ssl module backed by system OpenSSL (UBI 9)
+  - Cipher profile: UVICORN_SSL_CIPHERS=PROFILE=SYSTEM (on OpenShift)
+  - S3 TLS: MLFLOW_S3_IGNORE_TLS=false enforced
+  - PostgreSQL: PGSSLMODE=verify-full enforced

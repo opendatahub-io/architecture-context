@@ -1,0 +1,100 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["External Client<br/>(Data Scientist / Application)"]
+    end
+
+    subgraph Ingress["INGRESS — openshift-ingress namespace<br/>(TLS Termination + Default Deny)"]
+        Gateway["maas-default-gateway<br/>80/TCP + 443/TCP<br/>TLS Terminate<br/>Default: DENY unconfigured paths<br/>Rate: 0 tokens/min unconfigured"]
+
+        subgraph GatewayProcessing["Gateway Processing"]
+            PayloadProc["payload-processing<br/>SA: payload-processing<br/>9004/TCP gRPC (TLS SIMPLE)<br/>9005/TCP metrics<br/>Plugins: model-extractor,<br/>provider-resolver, api-translation,<br/>apikey-injection"]
+        end
+    end
+
+    subgraph KuadrantZone["KUADRANT POLICY ENGINE (mTLS STRICT)"]
+        Authorino["Kuadrant Authorino<br/>AuthN: API key validation +<br/>OIDC TokenReview<br/>AuthZ: OPA subscription rules"]
+        Limitador["Kuadrant Limitador<br/>Rate limit enforcement<br/>TokenRateLimitPolicy"]
+    end
+
+    subgraph AppPlane["APPLICATION PLANE — opendatahub namespace"]
+        direction TB
+
+        subgraph ControlPlane["Control Plane"]
+            Controller["maas-controller<br/>SA: maas-controller<br/>8080/TCP metrics<br/>8081/TCP health<br/>Manages: 6 CRDs +<br/>Kuadrant + Istio + Gateway API"]
+        end
+
+        subgraph DataPlaneBox["Data Plane"]
+            MaaSAPI["maas-api<br/>SA: maas-api<br/>8080/TCP HTTP (or 8443 HTTPS)<br/>9090/TCP metrics<br/>Auth: X-MaaS-Username/Group<br/>Internal: NetworkPolicy restricted"]
+        end
+    end
+
+    subgraph DataStore["DATA STORE"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>Auth: DB credentials (Secret)<br/>Data: SHA-256 hashed API keys<br/>(plaintext never stored)"]
+    end
+
+    subgraph K8sPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>Auth: ServiceAccount Tokens"]
+    end
+
+    subgraph ModelServing["MODEL SERVING"]
+        KServeModels["KServe LLMInferenceService<br/>Namespace: user-namespace<br/>HTTPS (InsecureSkipVerify<br/>for internal probes)"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES (TLS 1.2+)"]
+        ExtLLM["External LLM Providers<br/>(api.openai.com, etc.)<br/>443/TCP HTTPS<br/>TLS SIMPLE (DestinationRule)<br/>Auth: Provider API Key<br/>(injected by payload-processing)"]
+    end
+
+    %% External → Gateway
+    Client -->|"HTTPS/443<br/>TLS Terminate<br/>Bearer: sk-oai-* or OCP token"| Gateway
+
+    %% Gateway → Authorino (AuthN/AuthZ)
+    Gateway -->|"mTLS STRICT<br/>AuthN/AuthZ eval"| Authorino
+
+    %% Authorino → maas-api callbacks
+    Authorino -->|"HTTP/8080<br/>No encryption (mesh-internal)<br/>NetworkPolicy restricted<br/>/internal/v1/api-keys/validate"| MaaSAPI
+    Authorino -->|"HTTP/8080<br/>/internal/v1/subscriptions/select"| MaaSAPI
+
+    %% Gateway → Limitador
+    Gateway -->|"Rate limit check<br/>mTLS"| Limitador
+
+    %% Gateway → payload-processing
+    Gateway -->|"gRPC/9004<br/>TLS SIMPLE<br/>ext_proc filter"| PayloadProc
+
+    %% Gateway → Model endpoints
+    Gateway -->|"HTTPS/443<br/>Per-model HTTPRoute<br/>Per-model AuthPolicy"| KServeModels
+    Gateway -->|"HTTPS/443<br/>ServiceEntry + DestinationRule<br/>Provider API Key injected"| ExtLLM
+
+    %% maas-api → PostgreSQL
+    MaaSAPI -->|"TCP/5432<br/>DB credentials<br/>(maas-db-config Secret)"| PostgreSQL
+
+    %% Controller → K8s API
+    Controller -->|"HTTPS/6443<br/>SA Token<br/>CRD CRUD, leader election"| K8sAPI
+
+    %% maas-api → K8s API
+    MaaSAPI -->|"HTTPS/6443<br/>SA Token<br/>Informers, SAR"| K8sAPI
+
+    %% payload-processing → K8s API
+    PayloadProc -->|"HTTPS/6443<br/>SA Token<br/>Read CRs, Secrets"| K8sAPI
+
+    %% Controller deploys
+    Controller -.->|"kustomize deploy<br/>(server-side apply)"| MaaSAPI
+    Controller -.->|"kustomize deploy"| PayloadProc
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef kuadrant fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef appplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef datastore fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef k8s fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef modelserving fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
+
+    class Client external
+    class Gateway,PayloadProc ingress
+    class Authorino,Limitador kuadrant
+    class Controller,MaaSAPI appplane
+    class PostgreSQL datastore
+    class K8sAPI k8s
+    class KServeModels modelserving
+    class ExtLLM externalservice

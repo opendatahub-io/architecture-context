@@ -1,0 +1,66 @@
+sequenceDiagram
+    participant Client as External Client
+    participant GW as Gateway / Ingress<br/>443/TCP HTTPS TLS 1.2+
+    participant Route as HTTPRoute /<br/>VirtualService
+    participant SVC as {isvc}-predictor Service<br/>8080/TCP HTTP
+    participant Pod as Predictor Pod<br/>8080/TCP HTTP
+    participant SDK as KServe SDK<br/>(v1/v2/OpenAI)
+    participant S3 as Cloud Storage<br/>443/TCP HTTPS
+
+    Note over Client,SDK: Flow 1: InferenceService Model Serving (Raw Deployment)
+
+    Client->>GW: POST /v1/models/{name}:predict<br/>Auth: OAuth / Kuadrant
+    GW->>Route: Forward (in-cluster)<br/>Header injection
+    Route->>SVC: Route to Service<br/>8080/TCP HTTP
+    SVC->>Pod: Forward to Pod<br/>8080/TCP HTTP
+    Pod->>SDK: Inference Request
+    SDK-->>Pod: Prediction Result
+    Pod-->>SVC: Response
+    SVC-->>Route: Response
+    Route-->>GW: Response
+    GW-->>Client: JSON Response
+
+    Note over Client,S3: Flow 2: LLMInferenceService with Scheduler (P/D Disaggregated)
+
+    participant GW2 as Gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant IPool as InferencePool /<br/>HTTPRoute
+    participant EPP as Scheduler (EPP)<br/>9002/TCP gRPC TLS
+    participant Decode as Decode Pod<br/>8000/TCP HTTPS (self-signed)
+    participant Prefill as Prefill Pod<br/>8000/TCP HTTPS (self-signed)
+
+    Client->>GW2: POST /v1/chat/completions<br/>Auth: AuthPolicy
+    GW2->>IPool: Route via HTTPRoute<br/>to InferencePool
+    IPool->>EPP: gRPC PickEndpoint<br/>9002/TCP TLS (self-signed)
+    EPP->>Decode: Forward to Decode<br/>8000/TCP HTTPS (self-signed)
+    Decode->>Prefill: Prefill request (P/D)<br/>8000/TCP HTTPS (self-signed)
+    Prefill-->>Decode: Prefill KV-cache
+    Decode-->>EPP: Inference Result
+    EPP-->>IPool: Response
+    IPool-->>GW2: Response
+    GW2-->>Client: Streaming JSON Response
+
+    Note over Client,S3: Flow 3: Model Download (Storage Initializer)
+
+    participant PodInit as Pod Init Phase
+    participant SI as storage-initializer<br/>(Python Init Container)
+    participant FS as Local Filesystem<br/>/mnt/models
+
+    PodInit->>SI: Start init container
+    SI->>S3: Download model artifacts<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS IAM / GCP ADC / Azure SP / HF Token
+    S3-->>SI: Model artifacts
+    SI->>FS: Write to /mnt/models
+    SI-->>PodInit: Init complete
+
+    Note over Client,S3: Flow 4: WVA Autoscaling
+
+    participant LCtrl as llmisvc-controller
+    participant VWA as WVA Controller<br/>(llmd.ai)
+    participant Prom as Prometheus
+    participant HPA as HPA / KEDA
+
+    LCtrl->>VWA: Create VariantAutoscaling CR<br/>K8s API HTTPS
+    VWA->>Prom: Query metrics<br/>HTTPS Bearer Token
+    Prom-->>VWA: wva_desired_replicas
+    VWA->>VWA: Publish external metric
+    HPA->>Prom: Read external metric<br/>HTTPS Bearer Token
+    HPA->>LCtrl: Scale Deployment / LWS replicas<br/>K8s API HTTPS
