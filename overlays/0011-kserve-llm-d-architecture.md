@@ -533,8 +533,8 @@ The distro build adds RBAC markers for OCP resources the controller manages:
   and listeners use appropriate `AllowedRoutes` policies for UI discoverability.
 - On OCP, KServe creates Istio DestinationRules for TLS origination between the gateway and backend services. The
   scheduler and shadow service DRs use `InsecureSkipVerify=true` because the scheduler doesn't yet support certificate
-  auto-reload. Strategies involving TLS hardening or certificate rotation should track upstream fix
-  (gateway-api-inference-extension#1765) adoption.
+  auto-reload, and we need to support existing running services. Strategies involving TLS hardening or certificate
+  rotation should track upstream fix (https://github.com/kubernetes-sigs/gateway-api-inference-extension/issues/1765) adoption.
 - The `distro` build tag creates a compile-time split between upstream KServe and OCP-specific behavior. Strategies
   involving KServe upstream contributions must ensure OCP-specific code (Istio DRs, service-ca signing,
   AuthPolicy preconditions) remains behind `//go:build distro` and that corresponding no-op `!distro` stubs exist.
