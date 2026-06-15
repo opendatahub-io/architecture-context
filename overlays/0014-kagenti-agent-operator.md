@@ -20,7 +20,7 @@ superseded_by: null
 
 ## Fact
 
-**Kagenti** is the agent platform for RHOAI. It consists of three repositories: **kagenti-operator** (Go, controller-runtime), **kagenti** (FastAPI backend, React UI, Helm charts), and **kagenti-extensions** (AuthBridge sidecar proxy). The operator manages agent workloads through the **AgentRuntime** custom resource (`agent.kagenti.dev/v1alpha1`). There is no separate "agent lifecycle controller" or "AIAgent" CRD. AgentRuntime is the single CRD that handles agent registration, discovery, sidecar injection, and lifecycle management.
+**Kagenti** is the agent platform for RHOAI. The two repositories relevant for midstream/downstream strategies are: **kagenti-operator** (Go, controller-runtime) and **kagenti-extensions** (AuthBridge sidecar proxy). The upstream **kagenti** repo (FastAPI backend, React UI, Helm charts) is used for upstream development and demos but is not directly part of the midstream/downstream product. The operator manages agent workloads through the **AgentRuntime** custom resource (`agent.kagenti.dev/v1alpha1`). There is no separate "agent lifecycle controller" or "AIAgent" CRD. AgentRuntime is the single CRD that handles agent registration, discovery, sidecar injection, and lifecycle management.
 
 Upstream repos live in the `kagenti` GitHub organization. Midstream forks live in `opendatahub-io` (e.g., `opendatahub-io/kagenti-operator`). The upstream-first policy means significant changes go upstream before being pulled into midstream.
 
@@ -53,8 +53,8 @@ The webhook is idempotent and supports reinvocation. Sidecar mode is resolved fr
 The operator runs six controllers:
 
 1. **AgentRuntimeReconciler**: applies labels to target workload, computes config hash, triggers rolling updates on config change.
-2. **AgentCardSyncReconciler**: auto-creates AgentCard CRs for labeled workloads that expose protocol labels (`protocol.kagenti.io/a2a`).
-3. **AgentCardReconciler**: fetches agent metadata from the workload's `/.well-known/agent.json` endpoint, verifies JWS signatures via SPIRE.
+2. **AgentCardSyncReconciler**: auto-creates AgentCard CRs for labeled workloads that expose protocol labels (`protocol.kagenti.io/a2a`). Card discovery is enabled by default.
+3. **AgentCardReconciler**: fetches agent metadata from the workload's `/.well-known/agent.json` endpoint via mTLS (verified fetch enabled by default). The AgentCard flow is evolving: JWS signature verification is being deprecated in favor of mTLS-based transport security (see kagenti/kagenti-operator#408).
 4. **AgentCardNetworkPolicyReconciler**: creates permissive NetworkPolicies for verified agents, restrictive policies otherwise.
 5. **MLflowReconciler**: auto-discovers MLflow instances, creates per-agent experiments, injects tracking env vars.
 6. **ClientRegistrationController**: manages OAuth2 client registration with Keycloak for sidecar credentials.
@@ -70,11 +70,9 @@ AuthBridge is a Go-based sidecar proxy providing zero-trust authentication for a
 
 AuthBridge is NOT part of rhods-operator. It is built and maintained in `kagenti/kagenti-extensions`.
 
-### Backend and UI (kagenti)
+### Backend and UI
 
-The kagenti backend is a **stateless FastAPI** service that exposes REST APIs for agent management. It passes AgentRuntime manifests through to the Kubernetes API. It does NOT contain operator logic or CRD controllers.
-
-The React UI provides a dashboard for agent deployment, management, and monitoring. Both are deployed via Helm charts into the `kagenti-system` namespace.
+The upstream kagenti repo contains a stateless FastAPI backend and a React UI for development and demos. These are NOT part of the midstream/downstream product. For RHOAI, agent discovery and management views are being built by the RHOAI dashboard team as part of the existing ODH Dashboard (AAA page), not as a separate kagenti UI.
 
 ### Namespace conventions
 
@@ -93,7 +91,7 @@ The ARC is a planned extension to the operator (RHAIRFE-2389) that formalizes th
 - **AgentRuntime is the single CRD** for agent workload management. It references existing Deployments/StatefulSets via `spec.targetRef`. Strategies should not propose alternative registration mechanisms.
 - **Sidecar injection is handled by the operator's mutating webhook**, not by a separate init container or volume projection pattern. The webhook fires on Pod creation for workloads labeled `kagenti.io/type: agent`.
 - **AuthBridge is the mTLS proxy sidecar**, built in kagenti-extensions. It is NOT part of rhods-operator or kube-rbac-proxy. Strategies involving agent authentication should reference AuthBridge, not kube-rbac-proxy.
-- **The backend is stateless**. It does not reconcile CRDs or manage operator logic. Strategies should not assign controller responsibilities to the backend.
+- **The upstream kagenti backend/UI is not part of the midstream product**. For RHOAI, agent views are built into the ODH Dashboard by the dashboard team. Strategies should not reference the kagenti React UI or FastAPI backend as RHOAI components.
 - **Upstream-first policy**: changes go to `kagenti/*` repos first, then are pulled into `opendatahub-io/*` midstream forks.
 - **DSC integration**: kagenti-operator is enabled as a component in the DataScienceCluster CR, following the standard RHOAI component controller pattern.
 - **Agent Runtime Contract (ARC)**: strategies involving agent configuration injection (env vars, mount paths, credentials, MCP discovery) should reference the ARC spec and the kagenti-operator as the implementation target, not rhods-operator.
