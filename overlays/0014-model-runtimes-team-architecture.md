@@ -382,7 +382,8 @@ Source: `odh-model-controller/config/runtimes/vllm-*.yaml` (all declare REST); P
 - **Template**: None — not in `odh-model-controller/config/runtimes/`; test creates ServingRuntime CRD directly
 - **Image**: `nvcr.io/nvidia/tritonserver:25.02-py3` (from NVIDIA GPU Cloud, not `registry.redhat.io`)
   - Version 25.02 is pinned as the **last release** with TensorFlow backend included
-  - TensorFlow backend deprecated in 25.03, completely removed in 26.x+
+  - TensorFlow backend deprecated and removed starting with 25.03 (v2.56.0)
+  - The 25.02 pin is deliberate: the current test matrix requires the TensorFlow backend. No CVE support applies — Triton is not shipped with RHOAI (`registry.redhat.io` / CSV `relatedImages`); the image is sourced directly from NVIDIA (`nvcr.io`) for T&V validation only. Red Hat supports the deployment and integration layer (custom runtime via KServe), not the vendor image itself
   - Image version managed in `tests/model_serving/model_runtime/triton/constant.py`
 - **Supported formats**: TensorRT, TensorFlow 1/2, ONNX, PyTorch (LibTorch), Triton (ensemble), XGBoost, Python, FIL (Forest Inference Library), DALI (GPU data pipeline), Keras
 - **Protocols**: REST (port 8080, v2 inference) + gRPC (port 9000, KServe Predict V2)
@@ -598,7 +599,7 @@ Source: `utilities/serving_runtime.py`, `utilities/inference_utils.py`, `tests/m
 - Triton support is bounded by the 7x2 validation matrix (7 formats, 2 protocols)
 - Features outside this matrix (dynamic batching, BLS, custom backends, model ensembles beyond tested patterns)
   are NOT part of the Tested & Verified designation
-- TensorFlow backend has limited shelf life (deprecated 25.03, removed 26.x+)
+- TensorFlow backend has limited shelf life (deprecated and removed from 25.03 onward) — the 25.02 pin is a deliberate test-matrix constraint, not a platform shipping decision. No CVE tracking applies to the NVIDIA-managed vendor image
 
 ### Testing Modernization (Source: PRs #1667, #1713, #1704, #1720)
 

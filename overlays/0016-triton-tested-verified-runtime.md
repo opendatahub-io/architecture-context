@@ -45,9 +45,8 @@ Pinned version rationale: 25.02 is the last release with TensorFlow backend
 
 | Version | TensorFlow Status |
 |---------|-------------------|
-| 25.02 | Included (last release) |
-| 25.03 | Deprecated |
-| 26.x+ | Removed completely |
+| 25.02 | Included (last release; current test pin — no CVE support, NVIDIA-managed image) |
+| 25.03+ | Deprecated and removed (v2.56.0) |
 
 The image version is managed in `tests/model_serving/model_runtime/triton/constant.py`:
 
@@ -112,7 +111,7 @@ Pod name from get_pods_by_isvc_label() -> portforward.forward(pod, namespace, po
 gRPC uses the `grpcurl` CLI tool with `utilities/manifests/common/grpc_predict_v2.proto`. For large
 payloads (>8KB), input is passed via stdin from a temp file rather than inline `-d`.
 
-Migration to external routes (following PR #1713 pattern) is pending.
+Migration to external routes (following PR #1713 pattern) is tracked but has no committed release target. Port-forwarding remains acceptable for the T&V validation scope — tests exercise KServe/ODH Model Controller reconciliation and inference correctness, not production route-exposure patterns.
 
 ### Validation Pattern
 
@@ -204,9 +203,8 @@ kserve-triton-fil-rest-input.json       kserve-triton-fil-gRPC-input.json
   be coordinated with Model Runtimes team as they define the support boundary.
 - Strategies proposing Triton features outside the validated scope (e.g., dynamic batching, model ensembles,
   BLS) should explicitly note these are not covered by Tested & Verified designation.
-- The TensorFlow backend deprecation means strategies relying on TF models via Triton have a limited shelf
-  life — eventually the image will need to drop TF tests or find an alternative.
-- Migration from port-forward to external routes is pending and should be included in test modernization strategies.
+- The TensorFlow backend was deprecated and removed from 25.03 onward (v2.56.0). Strategies relying on TF models via Triton have a limited shelf life — the deliberate 25.02 pin preserves TF coverage for the current test matrix, but migration will eventually require dropping TF tests or finding an alternative backend. No CVE support applies — Red Hat does not ship the Triton image; we support the deployment integration layer only
+- Migration from port-forward to external routes is tracked (no committed release target) and should be included in test modernization strategies when scheduled.
 
 ## Context
 

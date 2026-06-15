@@ -41,9 +41,11 @@ accelerator or CPU architecture:
 
 Additional templates exist for multi-node (`vllm-multinode-template.yaml`) and Spyre ppc64le/s390x variants.
 
+OOTB vLLM templates reference `registry.redhat.io` images by SHA256 digest (via operator `params.env`; GPU variants managed by RHAII, CPU/Spyre variants by IBM teams) — not floating tags. Digest alignment is verified by `image_validation/` tests in `opendatahub-tests`.
+
 The `TEMPLATE_MAP` in `tests/model_serving/model_runtime/vllm/constant.py` resolves accelerator type to template:
 
-```
+```text
 nvidia  -> vllm-cuda-runtime-template
 amd     -> vllm-rocm-runtime-template
 gaudi   -> vllm-gaudi-runtime-template
@@ -104,7 +106,7 @@ covered by the RHAII team:
 
 ### Current Test Directory Structure
 
-```
+```text
 tests/model_serving/model_runtime/vllm/
 ├── conftest.py          # Main fixtures: serving_runtime, vllm_inference_service (external_route=True)
 ├── constant.py          # TEMPLATE_MAP, ACCELERATOR_IDENTIFIER, queries with keywords
@@ -156,7 +158,7 @@ tests/model_serving/model_runtime/vllm/
 
 All vLLM tests deploy with `external_route: True` and access REST inference via `get_exposed_isvc_url(isvc)`:
 
-```
+```text
 InferenceService (external_route=True) -> ODH Model Controller creates Route
                                        -> status.url populated with external hostname
                                        -> Tests call get_exposed_isvc_url(isvc) -> base URL
@@ -176,7 +178,7 @@ Port-forwarding has been completely removed from vLLM tests (PR #1713). The `pod
 
 All vLLM tests use `validate_text_inference_fuzzy()` with keyword-based validation:
 
-```
+```python
 COMPLETION_QUERY = [
     {"text": "List the top five breeds of dogs...", "keywords": ["dog", "breed", "labrador", ...]},
     ...
