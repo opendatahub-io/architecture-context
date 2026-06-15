@@ -50,14 +50,13 @@ The webhook is idempotent and supports reinvocation. Sidecar mode is resolved fr
 
 ### Controllers
 
-The operator runs six controllers:
+The operator runs three controllers:
 
 1. **AgentRuntimeReconciler**: applies labels to target workload, computes config hash, triggers rolling updates on config change.
-2. **AgentCardSyncReconciler**: auto-creates AgentCard CRs for labeled workloads that expose protocol labels (`protocol.kagenti.io/a2a`). Card discovery is enabled by default.
-3. **AgentCardReconciler**: fetches agent metadata from the workload's `/.well-known/agent.json` endpoint via mTLS (verified fetch enabled by default). The AgentCard flow is evolving: JWS signature verification is being deprecated in favor of mTLS-based transport security (see kagenti/kagenti-operator#408).
-4. **AgentCardNetworkPolicyReconciler**: creates permissive NetworkPolicies for verified agents, restrictive policies otherwise.
-5. **MLflowReconciler**: auto-discovers MLflow instances, creates per-agent experiments, injects tracking env vars.
-6. **ClientRegistrationController**: manages OAuth2 client registration with Keycloak for sidecar credentials.
+2. **MLflowReconciler**: auto-discovers MLflow instances, creates per-agent experiments, injects tracking env vars.
+3. **ClientRegistrationController**: manages OAuth2 client registration with Keycloak for sidecar credentials.
+
+The AgentCard CRD and its associated controllers (AgentCardSyncReconciler, AgentCardReconciler, AgentCardNetworkPolicyReconciler) are deprecated and will not be released. Agent metadata discovery will use direct A2A endpoint fetching via mTLS, not a separate CRD. Strategies MUST NOT reference AgentCard as a CRD or propose AgentCard-based workflows.
 
 ### AuthBridge (kagenti-extensions)
 
@@ -95,7 +94,7 @@ The ARC is a planned extension to the operator (RHAIRFE-2389) that formalizes th
 - **Upstream-first policy**: changes go to `kagenti/*` repos first, then are pulled into `opendatahub-io/*` midstream forks.
 - **DSC integration**: kagenti-operator is enabled as a component in the DataScienceCluster CR, following the standard RHOAI component controller pattern.
 - **Agent Runtime Contract (ARC)**: strategies involving agent configuration injection (env vars, mount paths, credentials, MCP discovery) should reference the ARC spec and the kagenti-operator as the implementation target, not rhods-operator.
-- **Metadata extraction**: agent capability metadata is fetched from the workload's `/.well-known/agent.json` endpoint by the AgentCardReconciler in kagenti-operator.
+- **Metadata extraction**: agent capability metadata is fetched from the workload's `/.well-known/agent.json` endpoint via mTLS by kagenti-operator. The AgentCard CRD is deprecated and will not be released. Strategies must not reference AgentCard.
 - **OGX is unrelated to agent workloads**: OGX (formerly Llama Stack) is an inference API server with pluggable providers. It is NOT an agent framework, agent operator, or agent runtime. OGX components (`ogx-k8s-operator`, `ogx-distribution`, etc.) manage model serving deployments, not agent workloads. Agent-related strategies MUST NOT reference OGX components, load OGX architecture context files, or include OGX in affected components, out-of-scope sections, or supporting documentation. If overlay 0003 (OGX rename) matches during context loading, exclude OGX component files from agent-scoped strategies.
 
 ## Context
