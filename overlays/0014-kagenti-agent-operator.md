@@ -97,7 +97,8 @@ The ARC is a planned extension to the operator (RHAIRFE-2389) that formalizes th
 - **Upstream-first policy**: changes go to `kagenti/*` repos first, then are pulled into `opendatahub-io/*` midstream forks.
 - **DSC integration**: kagenti-operator is enabled as a component in the DataScienceCluster CR, following the standard RHOAI component controller pattern.
 - **Agent Runtime Contract (ARC)**: strategies involving agent configuration injection (env vars, mount paths, credentials, MCP discovery) should reference the ARC spec and the kagenti-operator as the implementation target, not rhods-operator.
-- **Metadata extraction**: agent capability metadata is fetched from the workload's `/.well-known/agent.json` endpoint by the AgentCardReconciler in kagenti-operator. Strategies should not propose building this on top of OGX or other unrelated operators.
+- **Metadata extraction**: agent capability metadata is fetched from the workload's `/.well-known/agent.json` endpoint by the AgentCardReconciler in kagenti-operator.
+- **OGX is unrelated to agent workloads**: OGX (formerly Llama Stack) is an inference API server with pluggable providers. It is NOT an agent framework, agent operator, or agent runtime. OGX components (`ogx-k8s-operator`, `ogx-distribution`, etc.) manage model serving deployments, not agent workloads. Agent-related strategies MUST NOT reference OGX components, load OGX architecture context files, or include OGX in affected components, out-of-scope sections, or supporting documentation. If overlay 0003 (OGX rename) matches during context loading, exclude OGX component files from agent-scoped strategies.
 
 ## Context
 
