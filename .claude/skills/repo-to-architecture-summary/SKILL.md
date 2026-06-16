@@ -140,6 +140,45 @@ The intent drives the Sub-Component Details section in the output.
 
 See [Konflux Component Discovery](references/konflux-component-discovery.md) for the full procedure.
 
+### Step 3c: AIPCC Ecosystems Detection
+
+For every Konflux Dockerfile that installs Python packages (via `pip`
+or `uv`), check for indicators that the project uses the output of the
+AIPCC Ecosystems team:
+
+- References `quay.io/aipcc/base-images/*` in FROM lines
+- Uses build args (`BASE_IMAGE`, `AIPCC_IMAGE`, `FROM_IMAGE`, etc.) that may resolve to AIPCC images
+- Has filename suffixes indicating accelerator variants (`.cpu`, `.cuda*`, `.rocm*`, `.gaudi`, `.spyre`, `.neuron`, `.tpu`)
+- References AIPCC tooling paths (the string `rhaipcc`, per overlay 0017: `/usr/libexec/rhaipcc/dnf`, `/etc/rhaipcc/env`)
+
+**Always include the `## AIPCC Ecosystems Use` section when any Konflux Dockerfile installs Python packages.** The section documents both actual AIPCC usage AND the absence of AIPCC usage. Components that install Python packages but do NOT use AIPCC base images represent a gap that architects need to track. Skip this section only when no Konflux Dockerfile installs Python packages.
+
+**When AIPCC indicators are found:**
+1. Read `overlays/0017-aipcc-base-images.md` from the architecture-context repo (the repo
+   containing this skill) to get the authoritative catalog of accelerator variants,
+   their current versions, architectures, and status. Do NOT rely on cached or remembered
+   values -- always read the overlay file to get current data.
+2. For each matching Dockerfile:
+   a. Extract the exact base image reference (including SHA256 digest if present).
+   b. Match the image name or Dockerfile suffix against the variant catalog from overlay 0017
+      to determine: Accelerator type, Version, Architectures, Status.
+   c. If the image name matches an AIPCC pattern not listed in overlay 0017, document it
+      as-is with Status "Unknown" and note it may be a new or unlisted variant.
+   d. If the image is a non-AIPCC Python base, document base image; set Accelerator and
+      Status to "N/A".
+3. Check whether the Dockerfile adds pip/uv configuration beyond what the AIPCC base
+   provides, and list any additional packages installed on top.
+4. Check whether the Dockerfile calls `/usr/libexec/rhaipcc/dnf` or sources `/etc/rhaipcc/env`.
+5. Write all findings into the `## AIPCC Ecosystems Use` section.
+
+**When NO AIPCC indicators are found but Python packages are installed:**
+1. Still include the `## AIPCC Ecosystems Use` section.
+2. For each Dockerfile that installs Python packages but uses a non-AIPCC base image,
+   document the base image used and note that it does not use the AIPCC Ecosystems.
+3. State that the component must be migrated to use AIPCC base images
+   to comply with Red Hat's product security requirements for secure
+   builds regardless of whether it uses accelerator-specific libraries.
+
 ### Step 3b: Select Analysis Strategy
 
 Based on what you found in Steps 3 and 3a, select which reference doc(s) to use for deep code analysis in Step 4a:
@@ -413,8 +452,11 @@ Follow the template exactly as defined in [architecture template](references/arc
 - If a section has no data (e.g., no gRPC services), keep the heading and empty table header row, omit data rows
 - Document current behavior based on code analysis, not assumptions
 
+**AIPCC Ecosystems Use** (conditional):
+If any Konflux Dockerfile installs Python packages (via pip or uv), write the `## AIPCC Ecosystems Use` section immediately after `## Architecture Components`. Include it whether or not AIPCC base images are actually used -- documenting the absence is as important as documenting usage. Omit the section only when no Konflux Dockerfile installs Python packages.
+
 **Sub-Component Details** (multi-component repos only):
-When the component inventory from Step 3a contains multiple Konflux Dockerfiles, add a **Sub-Component Details** section after Architecture Components. Each Dockerfile-derived component gets its own `###` subsection with: intent (1-2 sentences on why it exists and when it's deployed), API routes, upstream dependencies, and configuration tables. For single-Dockerfile repos, skip this section — the Purpose section covers intent. Every sub-component MUST be analyzed — do not sample or skip any.
+When the component inventory from Step 3a contains multiple Konflux Dockerfiles, add a **Sub-Component Details** section after Architecture Components (and after AIPCC Ecosystems Use if present). Each Dockerfile-derived component gets its own `###` subsection with: intent (1-2 sentences on why it exists and when it's deployed), API routes, upstream dependencies, and configuration tables. For single-Dockerfile repos, skip this section -- the Purpose section covers intent. Every sub-component MUST be analyzed -- do not sample or skip any.
 
 When writing the intent for init containers and utility images: the Dockerfile `CMD` is the image default for standalone use. In Kubernetes, the consuming deployment typically overrides it via `command:`/`args:`. Describe the deployed behavior (what the pod actually runs), not just the image default. If the runtime command is specified in a deployment manifest within the repo (or a sibling checkout), use that. If it cannot be determined, note the Dockerfile CMD as the default and that the runtime command is set by the consuming deployment.
 

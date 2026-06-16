@@ -17,9 +17,11 @@ superseded_by: null
 ## Fact
 
 The AIPCC base images provide RHEL-based application containers with
-runtime dependencies for hardware accelerators used in AI workloads.
-Downstream teams extend these images by installing Python wheels and
-additional packages to create product containers (e.g., vLLM, InstructLab).
+runtime dependencies for hardware accelerators used in AI
+workloads. The images also provide access to versions of python
+packages built in Red Hat's secure build pipelines.  Downstream teams
+extend these images by installing Python wheels and additional
+packages to create product containers (e.g., vLLM, InstructLab).
 
 Images follow a layout similar to
 [s2i-base-containers](https://github.com/sclorg/s2i-base-container)
