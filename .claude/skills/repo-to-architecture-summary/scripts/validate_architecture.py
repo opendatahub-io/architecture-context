@@ -48,6 +48,15 @@ REQUIRED_H3_SUBSECTIONS = {
     ],
 }
 
+# Optional H2 sections defined by the skill instructions (conditional on repo type).
+# These should not trigger warnings when present.
+OPTIONAL_H2_SECTIONS = [
+    "AIPCC Ecosystems Use",
+    "Sub-Component Details",
+    "Deployment Manifests",
+    "Architectural Analysis",
+]
+
 REQUIRED_METADATA_FIELDS = [
     "Repository",
     "Version",
@@ -59,22 +68,71 @@ REQUIRED_METADATA_FIELDS = [
 
 EXPECTED_TABLE_HEADERS = {
     "Architecture Components": ["Component", "Type", "Purpose"],
-    "Custom Resource Definitions (CRDs)": ["Group", "Version", "Kind", "Scope", "Purpose"],
-    "HTTP Endpoints": ["Path", "Method", "Port", "Protocol", "Encryption", "Auth", "Purpose"],
+    "Custom Resource Definitions (CRDs)": [
+        "Group",
+        "Version",
+        "Kind",
+        "Scope",
+        "Purpose",
+    ],
+    "HTTP Endpoints": [
+        "Path",
+        "Method",
+        "Port",
+        "Protocol",
+        "Encryption",
+        "Auth",
+        "Purpose",
+    ],
     "gRPC Services": ["Service", "Port", "Protocol", "Encryption", "Auth", "Purpose"],
     "External Dependencies": ["Component", "Version", "Required", "Purpose"],
     "Internal Platform Dependencies": ["Component", "Interaction Type", "Purpose"],
-    "Services": ["Service Name", "Type", "Port", "Target Port", "Protocol", "Encryption", "Auth", "Exposure"],
-    "Ingress": ["Name", "Type", "Hosts", "Port", "Protocol", "Encryption", "TLS Mode", "Exposure"],
+    "Services": [
+        "Service Name",
+        "Type",
+        "Port",
+        "Target Port",
+        "Protocol",
+        "Encryption",
+        "Auth",
+        "Exposure",
+    ],
+    "Ingress": [
+        "Name",
+        "Type",
+        "Hosts",
+        "Port",
+        "Protocol",
+        "Encryption",
+        "TLS Mode",
+        "Exposure",
+    ],
     "Egress": ["Destination", "Port", "Protocol", "Encryption", "Auth", "Purpose"],
     "RBAC - Cluster Roles": ["Role Name", "API Group", "Resources", "Verbs"],
     "RBAC - Role Bindings": ["Binding Name", "Namespace", "Role", "Service Account"],
     "Secrets": ["Secret Name", "Type", "Purpose", "Provisioned By", "Auto-Rotate"],
-    "Authentication & Authorization": ["Endpoint", "Methods", "Auth Mechanism", "Enforcement Point", "Policy"],
-    "Integration Points": ["Component", "Interaction Type", "Port", "Protocol", "Encryption", "Purpose"],
+    "Authentication & Authorization": [
+        "Endpoint",
+        "Methods",
+        "Auth Mechanism",
+        "Enforcement Point",
+        "Policy",
+    ],
+    "Integration Points": [
+        "Component",
+        "Interaction Type",
+        "Port",
+        "Protocol",
+        "Encryption",
+        "Purpose",
+    ],
     "Recent Changes": ["Version", "Date", "Changes"],
     "Files Analyzed": ["File", "Lines", "Sections Informed"],
-    "Grep/Search Results Used": ["Search Pattern", "Files Matched", "Sections Informed"],
+    "Grep/Search Results Used": [
+        "Search Pattern",
+        "Files Matched",
+        "Sections Informed",
+    ],
 }
 
 
@@ -82,7 +140,7 @@ def _parse_headings(text: str) -> list[tuple[int, str]]:
     """Extract (level, title) for all markdown headings."""
     headings = []
     for line in text.splitlines():
-        m = re.match(r'^(#{1,6})\s+(.+)$', line)
+        m = re.match(r"^(#{1,6})\s+(.+)$", line)
         if m:
             headings.append((len(m.group(1)), m.group(2).strip()))
     return headings
@@ -97,16 +155,16 @@ def _parse_tables(text: str) -> dict[str, list[str]]:
     current_section = None
 
     for line in text.splitlines():
-        m = re.match(r'^(#{2,3})\s+(.+)$', line)
+        m = re.match(r"^(#{2,3})\s+(.+)$", line)
         if m:
             current_section = m.group(2).strip()
             # Strip "Flow N:" prefix for data flows
-            current_section = re.sub(r'^Flow \d+:\s*', '', current_section)
+            current_section = re.sub(r"^Flow \d+:\s*", "", current_section)
             continue
 
         if current_section and current_section not in tables:
-            if line.strip().startswith('|') and '---' not in line:
-                cols = [c.strip() for c in line.strip().strip('|').split('|')]
+            if line.strip().startswith("|") and "---" not in line:
+                cols = [c.strip() for c in line.strip().strip("|").split("|")]
                 cols = [c for c in cols if c]
                 if cols:
                     tables[current_section] = cols
@@ -119,13 +177,13 @@ def _parse_metadata_fields(text: str) -> list[str]:
     fields = []
     in_metadata = False
     for line in text.splitlines():
-        if re.match(r'^##\s+Metadata\s*$', line):
+        if re.match(r"^##\s+Metadata\s*$", line):
             in_metadata = True
             continue
-        if in_metadata and re.match(r'^##\s+', line):
+        if in_metadata and re.match(r"^##\s+", line):
             break
         if in_metadata:
-            m = re.match(r'^-\s+\*\*(.+?)\*\*:', line)
+            m = re.match(r"^-\s+\*\*(.+?)\*\*:", line)
             if m:
                 fields.append(m.group(1))
     return fields
@@ -166,12 +224,12 @@ def validate(path: str) -> tuple[list[str], list[str]]:
     expected_order = [s for s in REQUIRED_H2_SECTIONS if s in found_required]
     if found_required != expected_order:
         errors.append(
-            f"Sections out of order. Expected: {expected_order}, "
-            f"got: {found_required}"
+            f"Sections out of order. Expected: {expected_order}, got: {found_required}"
         )
 
     # Warn on extra H2 sections
-    extra_h2 = [s for s in h2s if s not in REQUIRED_H2_SECTIONS]
+    known_h2 = set(REQUIRED_H2_SECTIONS) | set(OPTIONAL_H2_SECTIONS)
+    extra_h2 = [s for s in h2s if s not in known_h2]
     for section in extra_h2:
         warnings.append(f"Unexpected section: ## {section} (not in template)")
 
