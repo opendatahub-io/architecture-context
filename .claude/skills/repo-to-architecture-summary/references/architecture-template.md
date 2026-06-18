@@ -21,9 +21,45 @@
 |-----------|------|---------|
 | [name] | [Go Operator / Python Service / React Frontend / etc.] | [what it does] |
 
+## AIPCC Ecosystems Use
+
+_Include this section when any Konflux Dockerfile installs Python packages (via pip or uv), whether or not AIPCC base images are actually used. Documenting the absence of AIPCC usage is as important as documenting usage -- components that install Python packages without AIPCC base images represent a gap that architects need to track. Omit this section only when no Konflux Dockerfile installs Python packages. Cross-reference with overlay 0017 (overlays/0017-aipcc-base-images.md) for base image status._
+
+### Accelerator Build Variants
+
+| Variant | Dockerfile | Base Image | Accelerator | Version | Architectures | Status |
+|---------|-----------|------------|-------------|---------|---------------|--------|
+| [variant name from overlay 0017] | [Dockerfile.konflux.cpu] | [quay.io/aipcc/base-images/... or digest-pinned ref] | [CPU / NVIDIA CUDA / AMD ROCm / Intel Gaudi / IBM Spyre / AWS Neuron / Google TPU] | [version from overlay 0017] | [architectures from overlay 0017] | [Active / Disabled / In development / Retired] |
+
+Status values (from overlay 0017):
+- **Active** -- supported and built in CI
+- **In development** -- under active development, not yet GA
+- **Disabled** -- configuration exists but builds are skipped
+- **Retired** -- removed from the repository
+
+### AIPCC Package Index
+
+_AIPCC base images ship with pip.conf and uv.toml pre-configured to use the RHEL AI Python Package Index (per overlay 0017). Document any additional pip/uv configuration or packages the component adds on top._
+
+| Scope | Details |
+|-------|---------|
+| **Uses RHEL AI PyPI** | [Yes -- inherited from AIPCC base / No] |
+| **pip.conf / uv.toml configured** | [Inherited from base image / Overridden / No] |
+| **Additional packages installed** | [List key packages added on top of base, or "None"] |
+| **Source** | [Dockerfile path:line] |
+
+### AIPCC Tooling
+
+_Document use of AIPCC-specific helper scripts and environment metadata defined in overlay 0017._
+
+| Tool / Path | Purpose | Used By |
+|-------------|---------|---------|
+| [`/usr/libexec/rhaipcc/dnf`] | [Enable vendor repos for additional RPM installs] | [Dockerfile RUN step] |
+| [`/etc/rhaipcc/env`] | [Shell variables for variant, versions, repo info] | [Entrypoint / runtime config] |
+
 ## Sub-Component Details
 
-_Include this section when the repo produces multiple deployable artifacts (multiple Konflux Dockerfiles, multiple cmd/ entry points, sidecar containers, etc.). For single-component repos, skip this section — the Purpose section covers intent._
+_Include this section when the repo produces multiple deployable artifacts (multiple Konflux Dockerfiles, multiple cmd/ entry points, sidecar containers, etc.). For single-component repos, skip this section -- the Purpose section covers intent._
 
 ### [component-name]
 

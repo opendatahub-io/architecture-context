@@ -40,14 +40,37 @@ For each Dockerfile, extract:
 | **Dep install commands** | How deps are fetched — hermetic vs network | `go mod download`, `pip install --require-hashes --no-deps`, `npm ci`, `pip install -r requirements.txt` (non-hermetic) |
 | **User** | Runtime user for security analysis | `USER 65532:65532`, `USER 1001` |
 
+## Step 2a: Detect AIPCC Ecosystems Usage
+
+Run these greps to identify AIPCC base images and tooling usage:
+
+```bash
+# Direct AIPCC base image references in FROM lines
+grep -rn "aipcc/base-images" --include="Dockerfile*" --include="Containerfile*" .
+
+# Build args that parameterize the base image
+grep -rn "BASE_IMAGE\|AIPCC_IMAGE\|FROM_IMAGE" --include="Dockerfile*" --include="Containerfile*" .
+
+# AIPCC helper scripts and environment metadata (paths from overlay 0017)
+grep -rn "rhaipcc" --include="Dockerfile*" --include="Containerfile*" .
+
+# Accelerator-specific build args that distinguish variants
+grep -rn "CUDA_VERSION\|ROCM_VERSION\|GAUDI_VERSION\|SPYRE_VERSION\|NEURON_VERSION" \
+  --include="Dockerfile*" --include="Containerfile*" .
+```
+
+Record any matches -- they feed into the `## AIPCC Ecosystems Use` section of the architecture output.
+
 ## Step 3: Build component inventory table
 
 Produce a table mapping each Dockerfile to a component:
 
-| Dockerfile | Component | Intent | Language | Source Dirs | Port | Entry | Base Image |
-|-----------|-----------|--------|----------|-------------|------|-------|------------|
-| `Dockerfile.konflux` | main | Primary service | Go | `cmd/`, `pkg/`, `internal/` | 8080 | `/manager` | ubi9/go-toolset → ubi9-minimal |
-| `Dockerfile.konflux.genai` | genai | Sidecar module | Go+TS | `packages/gen-ai/bff/`, `packages/gen-ai/frontend/` | 8080 | `/bff` | go-toolset + nodejs-22 → ubi9-minimal |
+| Dockerfile | Component | Intent | Language | Source Dirs | Port | Entry | Base Image | AIPCC Variant |
+|-----------|-----------|--------|----------|-------------|------|-------|------------|---------------|
+| `Dockerfile.konflux` | main | Primary service | Go | `cmd/`, `pkg/`, `internal/` | 8080 | `/manager` | ubi9/go-toolset -> ubi9-minimal | none |
+| `Dockerfile.konflux.genai` | genai | Sidecar module | Go+TS | `packages/gen-ai/bff/`, `packages/gen-ai/frontend/` | 8080 | `/bff` | go-toolset + nodejs-22 -> ubi9-minimal | none |
+
+The **AIPCC Variant** column contains the matched variant name from overlay 0017, or "none" for non-AIPCC images.
 
 **Intent values** — classify each component:
 - **Primary service**: The main binary/server the repo exists to produce
@@ -116,3 +139,4 @@ The component inventory table feeds into the architecture template:
 - **Security → FIPS Compliance**: FIPS build flags from Dockerfiles (`GOEXPERIMENT=strictfipsruntime`, `CGO_ENABLED=1`, `-tags strictfipsruntime`) MUST be written into the FIPS Compliance table. If NO FIPS flags were found in any Dockerfile, document that absence — it is architecturally significant (the component may rely on base image FIPS mode or may not be FIPS-compliant at all)
 - **Security → Build Hermeticity**: Document lock files found at each layer (RPM: `rpms.lock.yaml`, language: `go.sum`/`uv.lock`/`poetry.lock`/`Pipfile.lock`/`package-lock.json`/`yarn.lock`/`Cargo.lock`/`pixi.lock`, artifacts: `artifacts.lock.yaml`) and Hermeto (formerly cachi2) prefetch usage from the Dockerfile. Note hermeticity gaps — a missing layer means that layer's deps are not reproducibly locked. Also note if the branch is upstream (lock files often absent) vs downstream release (lock files added during hardening)
 - **Security**: runtime user, base image provenance
+- **AIPCC Ecosystems Use** section: populate when any Konflux Dockerfile installs Python packages (via pip or uv), whether or not AIPCC base images are used. Omit only when no Konflux Dockerfile installs Python packages.
