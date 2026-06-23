@@ -1,88 +1,90 @@
 graph TB
-    subgraph External["USER WORKSTATION (Trusted)"]
-        User["User / SRE<br/>kubeconfig credentials"]
+    subgraph UserZone["USER WORKSTATION (Trusted)"]
+        User["User / SRE<br/>Auth: kubeconfig"]
     end
 
-    subgraph K8sControl["KUBERNETES CONTROL PLANE"]
-        APIServer["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AuthN: ServiceAccount Token / kubeconfig"]
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE (Trusted)"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: ServiceAccount Token"]
     end
 
-    subgraph MustGatherPod["MUST-GATHER POD (Ephemeral)"]
+    subgraph MustGatherPod["MUST-GATHER POD (Ephemeral Diagnostic)"]
         direction TB
 
-        subgraph CoreFramework["Core Framework"]
-            GatherSH["gather.sh<br/>SA: must-gather / must-gather-sa"]
-            CommonSH["common.sh"]
-            XksSH["xks_util.sh"]
+        subgraph PodMeta["Pod Identity"]
+            SA_OCP["OpenShift SA<br/>cluster-admin<br/>(oc adm must-gather)"]
+            SA_XKS["xKS SA: must-gather-sa<br/>ClusterRole: must-gather-reader<br/>Verbs: get, list, watch"]
         end
 
-        subgraph ComponentCollectors["RHOAI Component Collectors (Parallel)"]
-            direction LR
-            Serving["gather_serving.sh"]
-            DSP["gather_dsp.sh"]
-            Notebooks["gather_notebooks.sh"]
-            Dashboard["gather_dashboard.sh"]
-            KubeRay["gather_kuberay.sh"]
-            Kueue["gather_kueue.sh"]
-            KFTO["gather_kfto.sh"]
-            MR["gather_mr.sh"]
-            TrustyAI["gather_trustyai.sh"]
-            Feast["gather_feastoperator.sh"]
-            LLS["gather_lls.sh"]
-            MLflow["gather_mlflow.sh"]
-            Spark["gather_sparkoperator.sh"]
-            MaaS["gather_maas.sh"]
+        subgraph Tools["Bundled CLI Tools"]
+            OC_CLI["oc CLI<br/>(from base image)"]
+            Kubectl_CLI["kubectl v1.33.3<br/>(from ose-cli-rhel9)"]
+            Helm_CLI["helm v4.1.4<br/>(Git LFS binary)"]
         end
 
-        subgraph LLMDCollectors["LLM-D Collectors"]
-            direction LR
-            LLMD["gather_llmd.sh"]
-            WVA["gather_wva.sh<br/>(opt-in: ENABLE_WVA)"]
-            O11y["gather_o11y.sh"]
-            ClusterInfo["gather_cluster.sh"]
-        end
-
-        subgraph DepCollectors["LLM-D Dependency Collectors"]
-            direction LR
-            CertMgr["cert-manager.sh"]
-            Sail["sail.sh<br/>(Istio/Sail)"]
-            LWS["lws.sh"]
+        subgraph Scripts["Collection Scripts"]
+            GatherSH["gather.sh<br/>Platform detection +<br/>dispatch orchestrator"]
+            OCPScripts["OpenShift: 13 scripts<br/>parallel execution<br/>oc adm inspect"]
+            XKSScripts["xKS: gather_llmd.sh<br/>kubectl_inspect +<br/>auto_discover_resources"]
         end
     end
 
-    subgraph Output["OUTPUT"]
-        FS["/must-gather/<br/>YAML manifests, logs,<br/>Helm values, summary"]
+    subgraph TargetResources["TARGET RESOURCES (Read-Only Access)"]
+        direction TB
+
+        subgraph PlatformCRDs["Platform CRDs"]
+            DSC["DSCInitialization<br/>DataScienceCluster"]
+        end
+
+        subgraph ComponentCRDs["Component CRDs (20+ types)"]
+            Serving["InferenceService<br/>ServingRuntime<br/>LLMInferenceService"]
+            ML["RayCluster, PyTorchJob<br/>ModelRegistry, MLflow"]
+            AI["TrustyAIService<br/>FeatureStore<br/>LlamaStackDistribution"]
+        end
+
+        subgraph NetworkCRDs["Networking CRDs"]
+            GatewayAPI["Gateway, HTTPRoute<br/>GRPCRoute, GatewayClass"]
+            IstioCRDs["VirtualService<br/>AuthorizationPolicy<br/>PeerAuthentication"]
+        end
+
+        subgraph CoreK8s["Core Kubernetes"]
+            Pods["Pods, Deployments<br/>Services, Events<br/>ConfigMaps"]
+            Logs["Pod Logs<br/>(current + previous)"]
+            Nodes["Nodes, Namespaces<br/>API Resources"]
+        end
+
+        subgraph HelmData["Helm Data"]
+            HelmSecrets["Helm Release Secrets<br/>(helm.sh/release.v1)<br/>Values + Manifests"]
+        end
+    end
+
+    subgraph OutputZone["COLLECTION OUTPUT (Pod-Local)"]
+        Output["/must-gather/ (OpenShift)<br/>/tmp/must-gather/ (xKS)<br/>Resource YAMLs, logs,<br/>Helm values, cluster metadata"]
     end
 
     %% Flows
-    User -->|"oc adm must-gather /<br/>kubectl create Job<br/>HTTPS/443 TLS 1.2+<br/>kubeconfig auth"| APIServer
+    User -->|"oc adm must-gather<br/>or kubectl apply job.yaml"| K8sAPI
+    K8sAPI -->|"Creates pod"| MustGatherPod
 
-    APIServer -->|"Creates Pod"| GatherSH
+    GatherSH -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Bearer Token<br/>GET, LIST only"| K8sAPI
 
-    GatherSH -->|"dispatches"| ComponentCollectors
-    GatherSH -->|"dispatches"| LLMDCollectors
-    LLMD -->|"triggers"| DepCollectors
+    K8sAPI -.->|read| PlatformCRDs
+    K8sAPI -.->|read| ComponentCRDs
+    K8sAPI -.->|read| NetworkCRDs
+    K8sAPI -.->|read| CoreK8s
+    K8sAPI -.->|read| HelmData
 
-    ComponentCollectors -->|"GET, LIST, WATCH<br/>HTTPS/443 TLS 1.2+<br/>ServiceAccount Token<br/>(read-only)"| APIServer
-    LLMDCollectors -->|"GET, LIST, WATCH<br/>HTTPS/443 TLS 1.2+<br/>ServiceAccount Token<br/>(read-only)"| APIServer
-    DepCollectors -->|"GET, LIST, WATCH<br/>HTTPS/443 TLS 1.2+<br/>ServiceAccount Token<br/>(read-only)"| APIServer
-
-    GatherSH -->|"writes collected data<br/>(no encryption at rest)"| FS
-    FS -->|"oc rsync / kubectl cp<br/>to user workstation"| User
+    GatherSH -->|"writes"| Output
+    User -->|"oc adm (auto) /<br/>kubectl cp (manual)"| Output
 
     %% Styling
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef controlplane fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef pod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef output fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef collector fill:#dae8fc,stroke:#6c8ebf,stroke-width:1px
-    classDef llmd fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
-    classDef dep fill:#f8cecc,stroke:#b85450,stroke-width:1px
+    classDef userzone fill:#e8f4fd,stroke:#2196f3,stroke-width:2px
+    classDef controlplane fill:#fff3e0,stroke:#ff9800,stroke-width:2px
+    classDef pod fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
+    classDef target fill:#fce4ec,stroke:#e91e63,stroke-width:1px
+    classDef output fill:#f3e5f5,stroke:#9c27b0,stroke-width:2px
 
-    class User external
-    class APIServer controlplane
-    class GatherSH,CommonSH,XksSH pod
-    class Serving,DSP,Notebooks,Dashboard,KubeRay,Kueue,KFTO,MR,TrustyAI,Feast,LLS,MLflow,Spark,MaaS collector
-    class LLMD,WVA,O11y,ClusterInfo llmd
-    class CertMgr,Sail,LWS dep
-    class FS output
+    class User userzone
+    class K8sAPI controlplane
+    class SA_OCP,SA_XKS,OC_CLI,Kubectl_CLI,Helm_CLI,GatherSH,OCPScripts,XKSScripts pod
+    class DSC,Serving,ML,AI,GatewayAPI,IstioCRDs,Pods,Logs,Nodes,HelmSecrets target
+    class Output output

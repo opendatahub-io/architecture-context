@@ -1,65 +1,68 @@
 sequenceDiagram
-    participant User as User Script / Notebook
-    participant API as training_hub API<br/>sft() / lora_grpo() / grpo()
-    participant Registry as AlgorithmRegistry<br/>create_algorithm()
-    participant Algo as Algorithm Instance<br/>train()
-    participant Backend as Backend Instance<br/>execute_training()
-    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant GPU as GPU Cluster<br/>TCP NCCL
-    participant FS as Filesystem<br/>Checkpoints
-    participant Tracker as WandB / MLflow<br/>443/TCP HTTPS
+    participant User as User Code<br/>(Notebook / Script)
+    participant API as training-hub API<br/>sft() / osft() / lora_sft()<br/>lora_grpo() / grpo()
+    participant Algo as Algorithm<br/>validate() + run()
+    participant Backend as Backend<br/>train()
+    participant Torchrun as torchrun<br/>(Subprocess)
+    participant Framework as Training Framework<br/>(instructlab / mini-trainer<br/>/ Unsloth+TRL / ART / verl)
+    participant vLLM as vLLM Engine<br/>(GRPO only)
+    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
+    participant Disk as Local Filesystem<br/>Checkpoints + Metrics
 
-    Note over User, Tracker: Flow 1: Supervised Fine-Tuning (SFT)
-    User->>API: sft(model_path, data_path, ...)
-    API->>Registry: create_algorithm('sft')
-    Registry-->>API: SFTAlgorithm + InstructLabTrainingSFTBackend
-    API->>Algo: train()
-    Algo->>Backend: execute_training(algorithm_params)
-    Backend->>HF: Download model weights & tokenizer<br/>HTTPS / Token auth (optional)
-    HF-->>Backend: Model artifacts
-    Backend->>GPU: torchrun distributed training<br/>DDP/FSDP via NCCL
-    loop Training Loop
-        GPU->>GPU: Forward/backward pass<br/>Gradient sync
-    end
-    Backend->>FS: Write checkpoints, metrics JSONL
-    opt Experiment Tracking Enabled
-        Backend->>Tracker: Upload metrics<br/>HTTPS / API Key
-    end
-    Backend-->>Algo: Training complete
-    Algo-->>User: Checkpoint path
+    Note over User,Disk: Flow 1: SFT / OSFT Training
 
-    Note over User, Tracker: Flow 2: LoRA+GRPO (ART Backend - Single GPU)
-    User->>API: lora_grpo(model_path, data_path,<br/>reward_funcs, backend='art')
-    API->>Registry: create_algorithm('lora_grpo', backend='art')
-    Registry-->>API: LoRAGRPOAlgorithm + ARTLoRAGRPOBackend
-    API->>Algo: train()
-    Algo->>Algo: _decompose_multiturn_traces()<br/>N-turn → N per-turn samples
-    Algo->>Backend: execute_training(algorithm_params)
-    Backend->>Backend: _create_seed_lora_checkpoint()<br/>vLLM V1 compatibility
-    Backend->>GPU: Launch ART subprocess<br/>Co-located vLLM + LoRA training
+    User->>API: sft(model_path, data_path,<br/>num_epochs, ...)
+    API->>Algo: create_algorithm("sft", backend="instructlab")
+    Algo->>Algo: validate() - type check params
+    Algo->>Backend: run() → backend.train()
+    Backend->>Torchrun: subprocess: torchrun<br/>--nproc_per_node=N
+    Torchrun->>Framework: Execute training workers
+    Framework->>HFHub: Download model/tokenizer<br/>Bearer: HF_TOKEN
+    HFHub-->>Framework: Model artifacts
+    Framework->>Disk: Save checkpoints + metrics.jsonl
+    Framework-->>Torchrun: Training complete
+    Torchrun-->>Backend: Exit code 0
+    Backend-->>Algo: Return
+    Algo-->>API: Return
+    API-->>User: Training complete
 
+    Note over User,Disk: Flow 2: LoRA GRPO Training (ART Backend - Single GPU)
+
+    User->>API: lora_grpo(model, dataset,<br/>reward_funcs, ...)
+    API->>Algo: create_algorithm("lora_grpo",<br/>backend="art")
+    Algo->>Algo: validate() - check reward config
+    Algo->>Backend: run() → backend.train()
+    Backend->>vLLM: Start vLLM subprocess<br/>(rollout engine)
+    Backend->>Backend: Create seed LoRA checkpoint<br/>(vLLM V1 compatibility)
     loop GRPO Training Loop
-        GPU->>GPU: vLLM rollout generation<br/>HTTP localhost
-        GPU->>GPU: Compute rewards<br/>tool_call_reward / binary_reward
-        GPU->>GPU: LoRA adapter update<br/>GRPO loss
+        Backend->>vLLM: POST prompts for generation<br/>HTTP (dynamic port)
+        vLLM-->>Backend: Completions
+        Backend->>Backend: Evaluate with reward function<br/>tool_call_reward / binary_reward
+        Backend->>Backend: Compute GRPO policy gradient
+        Backend->>Backend: Update LoRA adapter weights
     end
-    Backend->>FS: Write LoRA adapter checkpoints
-    Backend-->>User: Adapter checkpoint path
+    Backend->>Disk: Save LoRA adapter checkpoint
+    Backend->>vLLM: Shutdown vLLM subprocess
+    Backend-->>User: Training complete
 
-    Note over User, Tracker: Flow 3: LoRA+GRPO (verl Backend - Multi GPU)
-    User->>API: lora_grpo(model_path, data_path,<br/>reward_funcs, backend='verl')
-    API->>Registry: create_algorithm('lora_grpo', backend='verl')
-    Registry-->>API: LoRAGRPOAlgorithm + VeRLLoRAGRPOBackend
-    API->>Algo: train()
-    Algo->>Backend: execute_training(algorithm_params)
-    Backend->>Backend: Convert data to Parquet<br/>prompt/reward columns
-    Backend->>GPU: Launch verl subprocess<br/>verl.trainer.main_ppo with FSDP config
+    Note over User,Disk: Flow 3: LoRA GRPO Training (verl Backend - Multi GPU)
 
-    loop Dr. GRPO Training Loop
-        GPU->>GPU: Distributed vLLM rollout workers<br/>TCP
-        GPU->>GPU: FSDP gradient sync<br/>NCCL
-        GPU->>GPU: Dr. GRPO with token-level<br/>loss normalization
-    end
-    Backend->>Backend: Parse live metrics<br/>from verl stdout
-    Backend->>FS: Normalize checkpoints<br/>Merge tokenizer into adapter dirs
-    Backend-->>User: Normalized checkpoint path
+    User->>API: grpo(model, dataset,<br/>backend="verl", ...)
+    API->>Algo: create_algorithm("lora_grpo",<br/>backend="verl")
+    Algo->>Backend: run() → backend.train()
+    Backend->>Backend: Convert dataset to Parquet
+    Backend->>Torchrun: subprocess: verl CLI<br/>with Hydra config overrides
+    Torchrun->>Framework: Distribute across GPUs<br/>(NCCL / torch.distributed)
+    Framework->>Disk: Save checkpoints
+    Framework-->>Torchrun: Training complete
+    Backend->>Backend: Post-process: merge tokenizer<br/>into adapter directories
+    Backend-->>User: Training complete
+
+    Note over User,Disk: Flow 4: GPU Memory Estimation
+
+    User->>API: estimate(model_name,<br/>algorithm="sft", gpu_mem=80)
+    API->>HFHub: GET model config<br/>HTTPS 443/TCP
+    HFHub-->>API: Model metadata<br/>(param count, hidden size, ...)
+    API->>API: Compute VRAM:<br/>model + gradients + optimizer<br/>+ activations + buffer
+    API->>Disk: Cache model info (CSV)
+    API-->>User: Estimated VRAM: 72.3 GB

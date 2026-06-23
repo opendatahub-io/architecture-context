@@ -1,87 +1,80 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["Client<br/>(Dashboard / CLI / SDK)"]
+        Client["External Client<br/>(UI / CLI / API)"]
     end
 
-    subgraph Ingress["INGRESS (DMZ)"]
-        Gateway["Istio Gateway<br/>(kubeflow-gateway)<br/>443/TCP → 8080/TCP<br/>TLS Termination<br/>AuthorizationPolicy"]
+    subgraph Ingress["INGRESS (DMZ) - Istio"]
+        Gateway["Istio Ingress Gateway<br/>kubeflow-gateway<br/>443/TCP → 8080/TCP<br/>TLS 1.2+ / ISTIO_MUTUAL<br/>AuthorizationPolicy"]
     end
 
-    subgraph ServiceMesh["SERVICE MESH (Istio mTLS)"]
+    subgraph ServiceMesh["SERVICE MESH (Istio mTLS STRICT)"]
         direction TB
 
-        subgraph NS_MR["Namespace: kubeflow / redhat-ods-applications"]
-            Proxy["model-registry proxy<br/>8080/TCP HTTP<br/>Image: odh-model-registry-container<br/>FIPS: strictfipsruntime"]
-            CatalogSvc["model-catalog<br/>8080/TCP HTTP"]
-        end
+        subgraph NS_MR["Namespace: {model-registry-namespace}"]
+            Proxy["Model Registry Proxy<br/>SA: model-registry<br/>:8080/TCP HTTP<br/>FIPS: strictfipsruntime<br/>TLS 1.2+ min, FIPS ciphers"]
 
-        subgraph NS_Controller["Controller (optional)"]
-            Controller["model-registry controller<br/>8081/TCP (health)<br/>INFERENCE_SERVICE_CONTROLLER=managed"]
-        end
+            Catalog["Model Registry Catalog<br/>:8080/TCP HTTP<br/>Leader election: pglock<br/>/api/model_catalog/v1alpha1/*<br/>/api/mcp_catalog/v1alpha1/*"]
 
-        subgraph NS_KServe["KServe Inference Pods"]
+            Controller["ISVC Controller<br/>SA: controller-manager<br/>:8081/TCP health<br/>:8443/TCP metrics (HTTPS)<br/>Authn/Authz: TokenReview"]
+
             CSI["CSI Storage Initializer<br/>(init container)<br/>model-registry:// URI"]
-        end
 
-        subgraph Databases["Database Layer"]
-            MySQL[("MySQL 8.3<br/>3306/TCP<br/>TLS 1.2+ optional")]
-            PostgreSQL[("PostgreSQL 16+<br/>5432/TCP<br/>TLS optional")]
-            CatalogDB[("Catalog PostgreSQL<br/>5432/TCP")]
+            UI["model-registry-ui<br/>:8080/TCP HTTP<br/>No auth (platform-delegated)"]
+
+            UploadJob["Async Upload Job<br/>(K8s Job, on-demand)<br/>Python + skopeo"]
         end
     end
 
-    subgraph BatchJobs["BATCH WORKLOADS"]
-        AsyncUpload["async-upload Job<br/>(Python 3.12)<br/>UBI9 + OpenSSL"]
+    subgraph DataStores["INTERNAL DATA STORES"]
+        MySQL[("MySQL 8.3+<br/>:3306/TCP<br/>Optional TLS<br/>Auth: user/pass")]
+        PostgresProxy[("PostgreSQL 16+<br/>:5432/TCP<br/>Optional TLS<br/>Auth: user/pass")]
+        PostgresCatalog[("Catalog PostgreSQL<br/>:5432/TCP<br/>No encryption<br/>Auth: user/pass")]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        S3["S3 Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
-        OCIReg["OCI Registry<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Docker creds"]
-        HF["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>HF API Token"]
-        SigstoreSvc["Sigstore (Fulcio/Rekor)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>OIDC Token"]
+    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
+        HF["HuggingFace API<br/>huggingface.co<br/>:443 HTTPS TLS 1.2+<br/>Auth: Bearer (HF_API_KEY)"]
+        S3["AWS S3<br/>s3.amazonaws.com<br/>:443 HTTPS TLS 1.2+<br/>Auth: AWS IAM"]
+        OCIReg["OCI Registry<br/>:443 HTTPS TLS<br/>Auth: Docker registry"]
+        SigstoreSvc["Sigstore<br/>(Fulcio/Rekor/TUF)<br/>:443 HTTPS TLS 1.2+<br/>Auth: Identity token"]
+        K8sAPI["Kubernetes API<br/>:443 HTTPS TLS<br/>Auth: SA token"]
     end
-
-    K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token"]
 
     %% External → Ingress
-    Client -->|"HTTPS/443<br/>TLS 1.3<br/>AuthorizationPolicy"| Gateway
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth/OIDC"| Gateway
 
-    %% Ingress → Service Mesh
-    Gateway -->|"HTTP/8080<br/>mTLS (ISTIO_MUTUAL)<br/>Service Identity"| Proxy
+    %% Ingress → Services
+    Gateway -->|"HTTP/8080<br/>Istio mTLS STRICT<br/>AuthorizationPolicy"| Proxy
+    Gateway -->|"HTTP/8080<br/>Istio mTLS STRICT<br/>AuthorizationPolicy"| Catalog
 
-    %% Internal flows
-    Controller -->|"HTTP/8080<br/>Bearer Token (SA)"| Proxy
-    Controller -->|"HTTPS/443<br/>SA Token"| K8sAPI
-    CSI -->|"HTTP/8080<br/>No Auth"| Proxy
+    %% Internal service flows
+    Controller -->|"HTTP/8080<br/>No encryption<br/>Bearer token (optional)"| Proxy
+    Controller -->|"HTTPS/443<br/>TLS<br/>SA token"| K8sAPI
+    CSI -->|"HTTP/8080<br/>No encryption<br/>No auth"| Proxy
+    UI -->|"HTTP/8080<br/>No encryption"| Proxy
+    UI -->|"HTTP/8080<br/>No encryption"| Catalog
+    UploadJob -->|"HTTP(S)/8080-443<br/>Configurable<br/>Bearer token"| Proxy
 
-    %% Database connections
-    Proxy -->|"MySQL/3306<br/>TLS 1.2+ (optional)<br/>Username/Password"| MySQL
-    Proxy -->|"PostgreSQL/5432<br/>TLS (optional)<br/>Username/Password"| PostgreSQL
-    CatalogSvc -->|"PostgreSQL/5432<br/>Username/Password"| CatalogDB
+    %% Service → Data stores
+    Proxy -->|"MySQL/3306 or PG/5432<br/>Optional TLS<br/>user/pass"| MySQL
+    Proxy -->|"MySQL/3306 or PG/5432<br/>Optional TLS<br/>user/pass"| PostgresProxy
+    Catalog -->|"PG/5432<br/>No encryption<br/>user/pass"| PostgresCatalog
 
-    %% Catalog → External
-    CatalogSvc -->|"HTTPS/443<br/>TLS 1.2+<br/>HF API Token"| HF
-
-    %% Async upload flows
-    AsyncUpload -->|"HTTP(S)/8080<br/>Bearer Token (opt)"| Proxy
-    AsyncUpload -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    AsyncUpload -->|"HTTPS/443<br/>TLS 1.2+<br/>Docker creds"| OCIReg
-    AsyncUpload -->|"HTTPS/443<br/>TLS 1.2+<br/>HF Token"| HF
-    AsyncUpload -->|"HTTPS/443<br/>TLS 1.2+<br/>OIDC Token"| SigstoreSvc
+    %% Service → External
+    Catalog -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer HF_API_KEY"| HF
+    UploadJob -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    UploadJob -->|"HTTPS/443<br/>TLS<br/>Docker auth"| OCIReg
+    UploadJob -->|"HTTPS/443<br/>TLS 1.2+<br/>Identity token"| SigstoreSvc
+    CSI -->|"HTTPS/443<br/>TLS 1.2+<br/>Provider auth"| S3
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef database fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef externalservice fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef batch fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef k8s fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef datastore fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class Client external
     class Gateway ingress
-    class Proxy,CatalogSvc,Controller,CSI servicemesh
-    class MySQL,PostgreSQL,CatalogDB database
-    class S3,OCIReg,HF,SigstoreSvc externalservice
-    class AsyncUpload batch
-    class K8sAPI k8s
+    class Proxy,Catalog,Controller,CSI,UI,UploadJob servicemesh
+    class MySQL,PostgresProxy,PostgresCatalog datastore
+    class HF,S3,OCIReg,SigstoreSvc,K8sAPI externalservice

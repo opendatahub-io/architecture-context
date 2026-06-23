@@ -1,59 +1,65 @@
 workspace {
     model {
-        restClient = person "REST Client" "Application or user sending KServe V2 REST inference requests"
+        client = person "ML Client" "Sends inference requests via REST API"
 
-        modelMeshServing = softwareSystem "ModelMesh Serving" "Multi-model serving platform that manages inference backends" {
-            restProxy = container "rest-proxy" "Translates KServe V2 REST API calls to gRPC V2 Predict Protocol" "Go 1.23.6 / gRPC-Gateway" "Sidecar"
-            grpcInferenceServer = container "gRPC Inference Server" "Serves ML model inference via gRPC V2 Predict Protocol" "Runtime Container"
-            modelMeshController = container "ModelMesh Controller" "Manages model serving pods, injects sidecar containers" "Go Operator"
+        restProxy = softwareSystem "rest-proxy" "Reverse-proxy that translates KServe V2 REST inference requests into gRPC calls for ModelMesh backends" {
+            httpListener = container "HTTP/HTTPS Listener" "Receives KServe V2 REST requests on port 8008/TCP" "Go net/http"
+            jsonMarshaler = container "CustomJSONPb Marshaler" "Transforms JSON tensor data to/from protobuf with support for BOOL, INT8-64, UINT8-64, FP32, FP64, BYTES types" "Go gRPC-Gateway"
+            grpcClient = container "gRPC Client" "Forwards protobuf inference requests to ModelMesh via gRPC on port 8033/TCP" "Go google.golang.org/grpc"
         }
 
-        platformIngress = softwareSystem "Platform Ingress" "Handles external traffic routing, TLS termination, and authentication" "External"
-        certManager = softwareSystem "cert-manager" "Provisions and rotates TLS certificates" "External"
-        k8sAPI = softwareSystem "Kubernetes API" "Kubernetes control plane for ConfigMaps and pod management" "External"
+        modelMesh = softwareSystem "ModelMesh Serving" "Multi-model serving platform with gRPC inference interface" "Internal Platform"
+
+        grpcGateway = softwareSystem "gRPC-Gateway v2" "Framework for gRPC-to-REST reverse proxy generation" "External Library"
+        protobuf = softwareSystem "Protocol Buffers" "Serialization framework for gRPC messages" "External Library"
 
         # Relationships
-        restClient -> platformIngress "Sends REST inference requests" "HTTPS/443"
-        platformIngress -> restProxy "Routes to ModelMesh pod" "HTTP or HTTPS/8008"
-        restProxy -> grpcInferenceServer "Translates REST to gRPC" "gRPC/8033 (localhost, TLS optional)"
-        modelMeshController -> restProxy "Injects as sidecar container via model-serving-config ConfigMap"
-        modelMeshController -> k8sAPI "Reads ConfigMaps, manages pods" "HTTPS/6443"
-        certManager -> restProxy "Provisions TLS certificates" "File mount"
+        client -> restProxy "Sends inference and metadata requests" "HTTP/HTTPS 8008/TCP"
+        restProxy -> modelMesh "Forwards inference/metadata as gRPC calls" "gRPC 8033/TCP (localhost)"
+
+        # Internal container relationships
+        httpListener -> jsonMarshaler "Passes request body"
+        jsonMarshaler -> grpcClient "Sends protobuf message"
+        grpcClient -> modelMesh "gRPC ModelInfer / ModelMetadata RPC"
+
+        # Library dependencies
+        restProxy -> grpcGateway "Uses for HTTP-to-gRPC translation" "Go import"
+        restProxy -> protobuf "Uses for message serialization" "Go import"
     }
 
     views {
-        systemContext modelMeshServing "SystemContext" {
+        systemContext restProxy "SystemContext" {
             include *
             autoLayout
-            description "System context showing rest-proxy within the ModelMesh Serving ecosystem"
+            description "rest-proxy in the context of ModelMesh Serving"
         }
 
-        container modelMeshServing "Containers" {
+        container restProxy "Containers" {
             include *
             autoLayout
-            description "Container view showing rest-proxy sidecar alongside inference server"
+            description "Internal structure of the rest-proxy sidecar"
         }
 
         styles {
-            element "External" {
-                background #999999
-                color #ffffff
-            }
-            element "Sidecar" {
+            element "Software System" {
                 background #4a90e2
                 color #ffffff
             }
-            element "Person" {
-                shape Person
-                background #f5a623
-                color #ffffff
-            }
-            element "Software System" {
+            element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
+            element "External Library" {
+                background #999999
+                color #ffffff
+            }
+            element "Person" {
+                background #f5a623
+                color #ffffff
+                shape person
+            }
             element "Container" {
-                background #4a90e2
+                background #5ba3f5
                 color #ffffff
             }
         }

@@ -1,0 +1,73 @@
+sequenceDiagram
+    participant User as User Workstation<br/>(kubectl rhaii-validate all)
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant Controller as Controller<br/>(same binary, CLI mode)
+    participant GPUJob as GPU Check Job Pod<br/>(per-node, privileged)
+    participant Host as Host Filesystem<br/>(/host chroot)
+    participant RDMAJob as RDMA Node Check Job<br/>(per-node, privileged)
+    participant IperfServer as iperf3 Server Pod<br/>5201/TCP
+    participant IperfClient as iperf3 Client Pod
+    participant TCPServer as TCP Latency Server<br/>12865/TCP
+    participant TCPClient as TCP Latency Client
+    participant PingServer as ibv_rc_pingpong Server<br/>18515+N/TCP
+    participant PingClient as ibv_rc_pingpong Client
+    participant BWServer as ib_write_bw Server<br/>18515/TCP GPUDirect
+    participant BWClient as ib_write_bw Client
+    participant CM as ConfigMap<br/>(JSON Report)
+
+    Note over User,CM: Phase 1: Setup & API Checks (Tier 1)
+    User->>K8s: kubectl rhaii-validate all<br/>Auth: kubeconfig Bearer Token
+    K8s->>Controller: Start validation
+    Controller->>K8s: Create Namespace + RBAC<br/>rhaii-validation namespace
+    Controller->>K8s: List nodes (detect platform)<br/>Scan all nodes for labels
+    Controller->>K8s: Create ConfigMap (platform config)
+    Controller->>K8s: Check CRDs (Gateway API,<br/>InferencePool, LeaderWorkerSet,<br/>cert-manager)
+    Controller->>K8s: Check operator health<br/>(cert-manager, Istio, LWS)
+
+    Note over User,CM: Phase 2: Per-Node GPU Checks (Tier 2)
+    Controller->>K8s: Deploy per-node GPU check Jobs
+    K8s->>GPUJob: Schedule privileged Job pods
+    GPUJob->>Host: chroot /host<br/>nvidia-smi / rocm-smi
+    Host-->>GPUJob: GPU driver status, ECC errors,<br/>PCIe topology, NUMA mapping
+    GPUJob-->>K8s: JSON report (pod logs)
+    K8s-->>Controller: Collect reports from pod logs
+
+    Note over User,CM: Phase 3: Per-Node RDMA Checks (Tier 2)
+    Controller->>K8s: Deploy per-node RDMA check Jobs
+    K8s->>RDMAJob: Schedule privileged Job pods
+    RDMAJob->>Host: chroot /host<br/>ibv_devices, ibstat, sysfs
+    Host-->>RDMAJob: RDMA devices, NIC status,<br/>GPU-NIC-NUMA topology
+    RDMAJob-->>K8s: JSON report (pod logs)
+    K8s-->>Controller: Collect reports
+
+    Note over User,CM: Phase 4: Multi-Node Network Tests
+    Controller->>K8s: Deploy iperf3 server + client Jobs
+    K8s->>IperfServer: Start iperf3 -s
+    K8s->>IperfClient: Start iperf3 -c
+    IperfClient->>IperfServer: TCP bandwidth test<br/>5201/TCP, no encryption
+    IperfServer-->>IperfClient: Bandwidth results
+
+    Controller->>K8s: Deploy TCP latency server + client Jobs
+    K8s->>TCPServer: Start tcp-lat-server
+    K8s->>TCPClient: Start tcp-lat-client
+    TCPClient->>TCPServer: TCP echo round-trip<br/>12865/TCP, no encryption
+    TCPServer-->>TCPClient: Latency measurements
+
+    Note over User,CM: Phase 5: RDMA Connectivity & Bandwidth
+    Controller->>K8s: Deploy ibv_rc_pingpong Jobs (mesh)
+    K8s->>PingServer: Start pingpong server
+    K8s->>PingClient: Start pingpong client
+    PingClient->>PingServer: RDMA connectivity test<br/>18515+N/TCP per NIC pair
+    PingServer-->>PingClient: Connectivity results
+
+    Controller->>K8s: Deploy ib_write_bw Jobs
+    K8s->>BWServer: Start ib_write_bw server
+    K8s->>BWClient: Start ib_write_bw client
+    BWClient->>BWServer: RDMA bandwidth test<br/>18515/TCP GPUDirect CUDA
+    BWServer-->>BWClient: Bandwidth results
+
+    Note over User,CM: Phase 6: Report & Cleanup
+    Controller->>K8s: Store JSON report in ConfigMap
+    K8s->>CM: Persist results
+    Controller->>K8s: Clean up Jobs + RBAC
+    Controller-->>User: Display results<br/>(table or JSON output)

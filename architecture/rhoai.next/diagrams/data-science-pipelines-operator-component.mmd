@@ -1,84 +1,68 @@
 graph TB
     subgraph DSPO["Data Science Pipelines Operator"]
-        Controller["DSPO Controller Manager<br/>Go Operator<br/>Reconciles DSPA CRs"]
-        Webhook["PipelineVersion Webhook<br/>443/TCP HTTPS<br/>Validates/Mutates PipelineVersions"]
-        Controller -->|deploys| Webhook
+        Controller["DSPO Controller Manager<br/>(Go Operator)"]
+        Webhook["Pipeline Version Webhook<br/>8443/TCP HTTPS"]
+        Controller -->|deploys & reconciles| ManagedComponents
+        Controller -->|registers| Webhook
     end
 
-    subgraph DSPAComponents["DSPA Child Resources (per namespace)"]
-        direction TB
-
-        subgraph APIServerGroup["API Server Stack"]
-            KubeRBACProxy["kube-rbac-proxy<br/>Sidecar 8443/TCP<br/>RBAC Auth"]
-            APIServer["DS Pipeline API Server<br/>8888/TCP HTTP, 8887/TCP gRPC<br/>Pipeline CRUD & Execution"]
-            ManagedPipelinesInit["Managed Pipelines<br/>Init Container<br/>OCI Pipeline Import"]
-            KubeRBACProxy -->|proxy to| APIServer
-            ManagedPipelinesInit -.->|pre-loads pipelines| APIServer
-        end
-
-        subgraph WorkflowGroup["Workflow & Agents"]
-            WorkflowController["Workflow Controller<br/>Argo Workflows<br/>Pipeline Orchestration"]
-            PersistenceAgent["Persistence Agent<br/>Artifact & Metadata Sync"]
-            ScheduledWorkflow["Scheduled Workflow<br/>Cron-based Execution"]
-        end
-
-        subgraph MLMDGroup["ML Metadata Stack"]
-            MLMDEnvoy["MLMD Envoy Proxy<br/>9090/TCP gRPC, 8443/TCP HTTPS<br/>TLS Termination"]
-            MLMDgRPC["MLMD gRPC Server<br/>8080/TCP gRPC<br/>Metadata Storage"]
-            MLMDEnvoy -->|proxy to| MLMDgRPC
-        end
-
-        subgraph DataBackends["Data Backends"]
-            MariaDB["MariaDB<br/>3306/TCP MySQL<br/>Pipeline Metadata"]
-            MinIO["MinIO<br/>9000/TCP S3<br/>Artifact Storage"]
-        end
+    subgraph ManagedComponents["Managed Components (per DSPA instance)"]
+        APIServer["DS Pipelines API Server<br/>8888/TCP REST, 8887/TCP gRPC<br/>8443/TCP HTTPS (kube-rbac-proxy)"]
+        PersistenceAgent["Persistence Agent<br/>Syncs Argo → KFP"]
+        ScheduledWF["Scheduled Workflow Controller<br/>Cron-triggered runs"]
+        ArgoController["Argo Workflows Controller<br/>Pipeline step orchestration"]
+        MLMD["MLMD gRPC Server<br/>8080/TCP gRPC"]
+        MLMDEnvoy["MLMD Envoy Proxy<br/>8443/TCP HTTPS (kube-rbac-proxy)"]
     end
 
-    %% Operator deploys all components
-    Controller -->|"deploys & manages"| APIServerGroup
-    Controller -->|"deploys & manages"| WorkflowGroup
-    Controller -->|"deploys & manages"| MLMDGroup
-    Controller -->|"deploys & manages"| DataBackends
+    subgraph OptionalComponents["Optional Components (per DSPA)"]
+        MariaDB["MariaDB<br/>3306/TCP MySQL"]
+        MinIO["MinIO<br/>9000/TCP S3"]
+    end
 
-    %% User interaction
-    User[User / Dashboard] -->|"HTTPS 8443"| KubeRBACProxy
-
-    %% DSPA CR
-    DSPACR["DataSciencePipelinesApplication CR"]
-    User -.->|creates| DSPACR
+    %% CRDs
+    User[User / Dashboard] -->|creates| DSPACR["DataSciencePipelinesApplication CR"]
     DSPACR -->|watched by| Controller
 
-    %% Internal data flows
-    APIServer -->|"MySQL 3306"| MariaDB
-    APIServer -->|"S3 9000"| MinIO
-    PersistenceAgent -->|"HTTP 8888"| APIServer
-    PersistenceAgent -->|"gRPC 8080"| MLMDgRPC
-    WorkflowController -->|"creates Workflow CRs"| K8sAPI[Kubernetes API]
-    ScheduledWorkflow -->|"creates Workflow CRs"| K8sAPI
+    PipelineCR["Pipeline CR<br/>pipelines.kubeflow.org/v2beta1"] -->|validated by| Webhook
+    PipelineVersionCR["PipelineVersion CR<br/>pipelines.kubeflow.org/v2beta1"] -->|validated/mutated by| Webhook
 
-    %% External dependencies
-    Controller -->|"HTTPS 443"| K8sAPI
-    Controller -->|"HTTPS 443"| OCIRegistry[OCI Registry]
+    %% Runtime flow
+    User -->|pipeline operations| APIServer
+    APIServer -->|creates Workflow CRs| ArgoController
+    ArgoController -->|executes| PipelinePod["Pipeline Step Pods"]
+    PipelinePod -->|artifact lineage| MLMD
+    MLMD -->|proxied via| MLMDEnvoy
+    PersistenceAgent -->|syncs state| APIServer
 
-    %% Platform integrations
-    Route["OpenShift Route<br/>TLS Reencrypt"] -->|"8443"| KubeRBACProxy
-    Prometheus["Prometheus<br/>User Workload Monitoring"] -->|"scrapes 8888"| APIServer
+    %% Storage
+    APIServer -->|metadata| MariaDB
+    APIServer -->|artifacts| MinIO
+    PipelinePod -->|artifacts| MinIO
+
+    %% Health checks
+    Controller -->|health check| MariaDB
+    Controller -->|health check| MinIO
+
+    %% External
+    Controller -->|fetches bundles| OCIRegistry["OCI Registry"]
+    Route["OpenShift Route<br/>443/TCP HTTPS Reencrypt"] -->|proxies| APIServer
+    RouteMLMD["OpenShift Route<br/>443/TCP HTTPS Reencrypt"] -->|proxies| MLMDEnvoy
 
     %% Styling
     style Controller fill:#4a90e2,stroke:#333,color:#fff
     style Webhook fill:#4a90e2,stroke:#333,color:#fff
     style APIServer fill:#50c878,stroke:#333,color:#fff
-    style KubeRBACProxy fill:#f5a623,stroke:#333,color:#fff
-    style ManagedPipelinesInit fill:#87ceeb,stroke:#333
-    style WorkflowController fill:#50c878,stroke:#333,color:#fff
     style PersistenceAgent fill:#50c878,stroke:#333,color:#fff
-    style ScheduledWorkflow fill:#50c878,stroke:#333,color:#fff
-    style MLMDEnvoy fill:#dda0dd,stroke:#333
-    style MLMDgRPC fill:#50c878,stroke:#333,color:#fff
-    style MariaDB fill:#ff6b6b,stroke:#333,color:#fff
-    style MinIO fill:#ff6b6b,stroke:#333,color:#fff
-    style DSPACR fill:#f5a623,stroke:#333
-    style K8sAPI fill:#e8e8e8,stroke:#333
-    style OCIRegistry fill:#e8e8e8,stroke:#333
-    style Route fill:#e8e8e8,stroke:#333
-    style Prometheus fill:#e8e8e8,stroke:#333
+    style ScheduledWF fill:#50c878,stroke:#333,color:#fff
+    style ArgoController fill:#50c878,stroke:#333,color:#fff
+    style MLMD fill:#50c878,stroke:#333,color:#fff
+    style MLMDEnvoy fill:#50c878,stroke:#333,color:#fff
+    style MariaDB fill:#f5a623,stroke:#333,color:#fff
+    style MinIO fill:#f5a623,stroke:#333,color:#fff
+    style DSPACR fill:#e8c44a,stroke:#333
+    style PipelineCR fill:#e8c44a,stroke:#333
+    style PipelineVersionCR fill:#e8c44a,stroke:#333
+    style Route fill:#999,stroke:#333,color:#fff
+    style RouteMLMD fill:#999,stroke:#333,color:#fff
+    style OCIRegistry fill:#999,stroke:#333,color:#fff

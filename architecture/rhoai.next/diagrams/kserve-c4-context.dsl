@@ -1,79 +1,89 @@
 workspace {
     model {
-        # People
-        dataScientist = person "Data Scientist" "Creates and deploys ML models as InferenceServices"
-        mlEngineer = person "ML Engineer" "Deploys and manages LLM workloads via LLMInferenceService"
-        platformAdmin = person "Platform Admin" "Manages KServe configuration and cluster resources"
+        // People
+        dataScientist = person "Data Scientist" "Creates and deploys ML models via InferenceService and LLMInferenceService CRDs"
+        platformAdmin = person "Platform Admin" "Manages RHOAI platform configuration and KServe deployment"
+        externalClient = person "External Client" "Sends inference requests to deployed models"
 
-        # KServe System
-        kserve = softwareSystem "KServe" "Kubernetes-native model serving platform for ML inference with serverless, raw deployment, and LLM-optimized modes" {
-            kserveController = container "kserve-controller-manager" "Reconciles InferenceService, InferenceGraph, TrainedModel CRDs; manages deployments, services, ingress, autoscaling" "Go Operator (controller-runtime)" "Controller"
-            llmisvcController = container "llmisvc-controller-manager" "Reconciles LLMInferenceService CRD; manages LLM workloads with P/D disaggregation, Gateway API routing, WVA autoscaling" "Go Operator (controller-runtime)" "Controller"
-            localmodelController = container "localmodel-controller" "Reconciles LocalModelCache CRDs; manages PVs/PVCs and download jobs for node-local model caching" "Go Operator (controller-runtime)" "Controller"
-            localmodelAgent = container "localmodelnode-agent" "DaemonSet managing local model downloads on each node" "Go Agent (controller-runtime)" "Agent"
-            storageInitializer = container "storage-initializer" "Downloads model artifacts from cloud storage into serving containers" "Python 3.11 Init Container" "InitContainer"
-            router = container "router" "Implements InferenceGraph routing: sequence, splitter, ensemble, switch patterns" "Go Service" "Router"
-            agent = container "agent" "Sidecar for request logging and batching in inference pods" "Go Sidecar" "Sidecar"
-            webhookServer = container "Webhook Server" "Validates and mutates InferenceService, LLMInferenceService, ServingRuntime CRDs; injects storage-initializer and agent sidecars" "Go Webhook (9443/TCP)" "Webhook"
+        // KServe System
+        kserve = softwareSystem "KServe" "Kubernetes-native model serving platform for deploying, scaling, and managing ML inference services" {
+            controllerManager = container "kserve-controller-manager" "Manages InferenceService, TrainedModel, and InferenceGraph CRDs with Knative, raw K8s, and ModelMesh modes" "Go Operator" "Primary"
+            llmisvcController = container "llmisvc-controller" "Dedicated controller for LLMInferenceService with LoRA, multi-node, DRA, disaggregated serving" "Go Operator" "Primary"
+            localmodelController = container "localmodel-controller" "Manages LocalModelCache and LocalModelNamespaceCache CRDs for pre-caching models" "Go Operator" "Primary"
+            localmodelnodeAgent = container "localmodelnode-agent" "Per-node DaemonSet agent for model downloads and filesystem permissions" "Go DaemonSet" "Utility"
+            kserveAgent = container "kserve-agent" "Sidecar for model pulling, request logging, batching, and metrics" "Go Sidecar" "Sidecar"
+            kserveRouter = container "kserve-router" "HTTP router for InferenceGraph traffic (sequence, splitter, ensemble, switch)" "Go Service" "Primary"
+            storageInitializer = container "kserve-storage-initializer" "Init container for downloading models from S3, GCS, Azure, HuggingFace, OCI" "Python Init Container" "Utility"
+            moduleController = container "kserve-module-controller" "Component controller for ODH/RHOAI platform operator — deploys KServe via kustomize" "Go Operator" "Platform"
+            eppScheduler = container "EPP Scheduler" "Endpoint Picker Protocol scheduler for LLM request routing" "Go/gRPC" "Primary"
         }
 
-        # Internal Platform Dependencies
-        rhodsOperator = softwareSystem "rhods-operator / opendatahub-operator" "Deploys KServe components via Kustomize manifests" "Internal RHOAI"
-        rhoaiGateway = softwareSystem "RHOAI Gateway (data-science-gateway)" "Platform Gateway for LLMInferenceService HTTPRoutes" "Internal RHOAI"
+        // External Dependencies
+        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform runtime" "External"
+        istio = softwareSystem "Istio / Service Mesh" "Service mesh for VirtualService routing, DestinationRules, mTLS" "External"
+        knative = softwareSystem "Knative Serving" "Serverless autoscaling platform for scale-to-zero deployments" "External"
+        certManager = softwareSystem "cert-manager" "TLS certificate management for non-OpenShift deployments" "External"
+        gatewayAPI = softwareSystem "Gateway API" "HTTPRoute-based ingress routing" "External"
+        keda = softwareSystem "KEDA" "Event-driven autoscaling for inference workloads" "External"
+        leaderWorkerSet = softwareSystem "LeaderWorkerSet" "Multi-node LLM inference workload orchestration" "External"
+        otelOperator = softwareSystem "OpenTelemetry Operator" "Distributed tracing and metrics collection" "External"
+        prometheusOperator = softwareSystem "Prometheus Operator" "Metrics scraping via PodMonitor/ServiceMonitor" "External"
 
-        # External Platform Dependencies
-        k8sAPI = softwareSystem "Kubernetes API Server" "Kubernetes control plane API" "External Platform"
-        knativeServing = softwareSystem "Knative Serving" "Serverless autoscaling platform (v0.48.1)" "External Platform"
-        istio = softwareSystem "Istio Service Mesh" "Traffic management, VirtualService, DestinationRule (v1.27.1)" "External Platform"
-        gatewayAPI = softwareSystem "Gateway API" "HTTPRoute and Gateway management (v1.4.2)" "External Platform"
-        inferenceGatewayExt = softwareSystem "Inference Gateway Extension" "InferencePool CRD for scheduler routing (v1.3.1)" "External Platform"
-        certManager = softwareSystem "cert-manager" "TLS certificate lifecycle management" "External Platform"
-        keda = softwareSystem "KEDA" "External metric autoscaling (v2.17.3)" "External Platform"
-        leaderWorkerSet = softwareSystem "LeaderWorkerSet" "Multi-node workload orchestration (v0.8.0)" "External Platform"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and querying" "External Platform"
-        kuadrant = softwareSystem "Kuadrant / Red Hat Connectivity Link" "AuthPolicy for LLMInferenceService" "External Platform"
-        serviceCA = softwareSystem "OpenShift service-ca" "CA signing key for workload TLS certificates" "External Platform"
+        // Internal ODH/RHOAI Platform
+        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator — creates Kserve CR" "Internal ODH"
+        odhModelController = softwareSystem "odh-model-controller" "Additional model serving reconciliation for ODH" "Internal ODH"
+        wva = softwareSystem "Workload Variant Autoscaler" "LLM workload variant-aware autoscaling" "Internal ODH"
+        vllm = softwareSystem "vLLM" "Default LLM serving runtime" "Internal ODH"
+        llmdScheduler = softwareSystem "llm-d Inference Scheduler" "Endpoint Picker Protocol scheduler container" "Internal ODH"
 
-        # External Cloud Services
-        s3 = softwareSystem "AWS S3" "Model artifact storage" "External Cloud"
-        gcs = softwareSystem "Google Cloud Storage" "Model artifact storage" "External Cloud"
-        azure = softwareSystem "Azure Blob Storage" "Model artifact storage" "External Cloud"
-        huggingface = softwareSystem "HuggingFace Hub" "Public model repository" "External Cloud"
-        ociRegistry = softwareSystem "OCI Container Registries" "Model image registries" "External Cloud"
+        // External Services
+        s3 = softwareSystem "S3-compatible Storage" "Model artifact storage (AWS S3, MinIO, etc.)" "External Service"
+        gcs = softwareSystem "Google Cloud Storage" "Model artifact storage on GCP" "External Service"
+        azureBlob = softwareSystem "Azure Blob Storage" "Model artifact storage on Azure" "External Service"
+        huggingface = softwareSystem "HuggingFace Hub" "Pre-trained model repository" "External Service"
+        ociRegistry = softwareSystem "OCI Container Registry" "OCI model image storage" "External Service"
 
-        # Relationships - Users
-        dataScientist -> kserve "Creates InferenceService via kubectl/API"
-        mlEngineer -> kserve "Creates LLMInferenceService via kubectl/API"
-        platformAdmin -> kserve "Configures ServingRuntimes, inferenceservice-config"
+        // Relationships - People
+        dataScientist -> kserve "Creates InferenceService / LLMInferenceService via kubectl/API"
+        platformAdmin -> rhodsOperator "Configures RHOAI platform"
+        externalClient -> kserve "Sends inference requests via HTTPS/gRPC"
 
-        # Relationships - Internal Platform
-        rhodsOperator -> kserve "Deploys via Kustomize manifests"
-        kserve -> rhoaiGateway "References as HTTPRoute parent" "Gateway API"
+        // Relationships - KServe internal
+        controllerManager -> kserveAgent "Injects as sidecar via pod webhook"
+        controllerManager -> storageInitializer "Injects as init container via pod webhook"
+        controllerManager -> kserveRouter "Creates per InferenceGraph"
+        llmisvcController -> eppScheduler "Creates per LLMInferenceService"
 
-        # Relationships - External Platform
-        kserveController -> k8sAPI "CRUD on Deployments, Services, Ingress" "HTTPS/6443 SA Token"
-        llmisvcController -> k8sAPI "CRUD on LWS, HTTPRoutes, InferencePools" "HTTPS/6443 SA Token"
-        localmodelController -> k8sAPI "CRUD on PVs, PVCs, Jobs" "HTTPS/6443 SA Token"
-        kserveController -> knativeServing "Creates Knative Services" "via K8s API"
-        kserveController -> istio "Creates VirtualServices" "via K8s API"
-        llmisvcController -> istio "Creates DestinationRules (OCP)" "via K8s API"
-        kserveController -> gatewayAPI "Creates HTTPRoutes" "via K8s API"
-        llmisvcController -> gatewayAPI "Creates HTTPRoutes" "via K8s API"
-        llmisvcController -> inferenceGatewayExt "Creates InferencePools" "via K8s API"
-        kserve -> certManager "Provisions webhook TLS certs"
-        kserveController -> keda "Creates ScaledObjects" "via K8s API"
-        llmisvcController -> keda "Creates ScaledObjects" "via K8s API"
-        llmisvcController -> leaderWorkerSet "Creates LeaderWorkerSets" "via K8s API"
-        kserve -> prometheus "Exposes and queries metrics" "HTTPS Bearer Token"
-        llmisvcController -> kuadrant "Checks AuthPolicy CRD availability" "via K8s API"
-        llmisvcController -> serviceCA "Reads CA signing key" "via K8s API"
+        // Relationships - External Dependencies
+        controllerManager -> kubernetes "CRD CRUD, resource management" "HTTPS/443"
+        controllerManager -> istio "VirtualService routing, mTLS" "HTTPS/443"
+        controllerManager -> knative "Knative Service lifecycle" "HTTPS/443"
+        controllerManager -> gatewayAPI "HTTPRoute management" "HTTPS/443"
+        controllerManager -> keda "ScaledObject management" "HTTPS/443"
+        controllerManager -> otelOperator "OpenTelemetryCollector management" "HTTPS/443"
+        controllerManager -> prometheusOperator "PodMonitor/ServiceMonitor management" "HTTPS/443"
+        llmisvcController -> kubernetes "CRD CRUD, resource management" "HTTPS/443"
+        llmisvcController -> gatewayAPI "HTTPRoute, Gateway management" "HTTPS/443"
+        llmisvcController -> istio "DestinationRule management (ODH)" "HTTPS/443"
+        llmisvcController -> leaderWorkerSet "Multi-node inference" "HTTPS/443"
+        llmisvcController -> keda "ScaledObject management" "HTTPS/443"
+        localmodelController -> kubernetes "PV/PVC management" "HTTPS/443"
+        localmodelnodeAgent -> kubernetes "Job management" "HTTPS/443"
+        moduleController -> kubernetes "Kustomize manifest deployment" "HTTPS/443"
 
-        # Relationships - Cloud Storage
-        storageInitializer -> s3 "Downloads model artifacts" "HTTPS/443 IAM"
-        storageInitializer -> gcs "Downloads model artifacts" "HTTPS/443 SA JSON"
-        storageInitializer -> azure "Downloads model artifacts" "HTTPS/443 Azure ID"
-        storageInitializer -> huggingface "Downloads model artifacts" "HTTPS/443 HF Token"
-        storageInitializer -> ociRegistry "Pulls model images" "HTTPS/443 Registry creds"
+        // Relationships - Internal Platform
+        rhodsOperator -> kserve "Creates Kserve CR"
+        moduleController -> odhModelController "Deploys via kustomize"
+        moduleController -> wva "Deploys via kustomize"
+        llmisvcController -> vllm "Manages vLLM workload pods"
+        eppScheduler -> llmdScheduler "Uses EPP container image"
+
+        // Relationships - External Services (Egress)
+        storageInitializer -> s3 "Downloads model artifacts" "HTTPS/443"
+        storageInitializer -> gcs "Downloads model artifacts" "HTTPS/443"
+        storageInitializer -> azureBlob "Downloads model artifacts" "HTTPS/443"
+        storageInitializer -> huggingface "Downloads model artifacts" "HTTPS/443"
+        storageInitializer -> ociRegistry "Pulls model images" "HTTPS/443"
     }
 
     views {
@@ -88,50 +98,38 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
-            element "External Platform" {
+            element "External" {
                 background #999999
                 color #ffffff
             }
-            element "External Cloud" {
+            element "External Service" {
                 background #f5a623
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal ODH" {
                 background #7ed321
                 color #ffffff
             }
-            element "Person" {
-                shape person
-                background #08427B
-                color #ffffff
-            }
-            element "Controller" {
+            element "Primary" {
                 background #4a90e2
-                color #ffffff
-            }
-            element "Agent" {
-                background #7b68ee
-                color #ffffff
-            }
-            element "InitContainer" {
-                background #e8a838
-                color #ffffff
-            }
-            element "Router" {
-                background #50c878
                 color #ffffff
             }
             element "Sidecar" {
-                background #e8a838
+                background #9b59b6
                 color #ffffff
             }
-            element "Webhook" {
-                background #4a90e2
+            element "Utility" {
+                background #50c878
                 color #ffffff
+            }
+            element "Platform" {
+                background #e67e22
+                color #ffffff
+            }
+            element "Person" {
+                background #08427b
+                color #ffffff
+                shape Person
             }
         }
     }

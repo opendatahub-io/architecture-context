@@ -1,116 +1,88 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client"]
+        Client["External Client / User"]
     end
 
-    subgraph Ingress["INGRESS (OpenShift Router / DMZ)"]
-        HTTPSRoute["OpenShift Route (HTTPS)<br/>443/TCP<br/>TLS reencrypt<br/>Host: {name}-rest.{domain}"]
-        HTTPRoute["OpenShift Route (HTTP)<br/>80/TCP<br/>No encryption"]
-        CatalogRoute["Catalog Route (HTTPS)<br/>443/TCP<br/>TLS reencrypt<br/>Host: model-catalog-rest.{domain}"]
+    subgraph Ingress["INGRESS (DMZ)"]
+        direction TB
+        Route["OpenShift Route<br/>{name}-https<br/>443/TCP → 8443/TCP<br/>TLS Passthrough"]
+        Gateway["Data Science Gateway (Envoy)<br/>443/TCP → 8443/TCP<br/>TLS Gateway-terminated<br/>HTTPRoute: /model-registry/{name}/"]
     end
 
-    subgraph OperatorNS["OPERATOR NAMESPACE (Trusted)"]
+    subgraph AppLayer["APPLICATION LAYER (Cluster Internal)"]
         direction TB
 
-        subgraph OperatorPod["Operator Pod"]
-            OperatorMain["model-registry-operator<br/>SA: controller-manager"]
-            MetricsEP["Metrics Endpoint<br/>8443/TCP HTTPS<br/>TLS (serving cert)<br/>Bearer Token + SAR"]
-            WebhookEP["Webhook Endpoint<br/>9443/TCP HTTPS<br/>TLS (serving cert)<br/>K8s API server auth"]
-            HealthEP["Health Probes<br/>8081/TCP HTTP<br/>No auth"]
+        subgraph RegistryPod["Per-Instance Registry Pod"]
+            KRBAC["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>OpenShift serving cert<br/>TokenReview + SAR"]
+            MR["model-registry REST<br/>8080/TCP HTTP<br/>No auth (localhost)"]
         end
 
-        MetricsSvc["controller-manager-metrics-service<br/>ClusterIP 8443/TCP HTTPS"]
-        WebhookSvc["webhook-service<br/>ClusterIP 443 to 9443/TCP HTTPS"]
+        subgraph CatalogPod["Model Catalog Pod (Singleton)"]
+            CatKRBAC["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>OpenShift serving cert"]
+            CatMR["model-catalog<br/>8080/TCP HTTP"]
+        end
     end
 
-    subgraph RegistryNS["REGISTRY NAMESPACE (per ModelRegistry)"]
-        direction TB
+    subgraph DataLayer["DATA LAYER"]
+        AutoPG["PostgreSQL 16<br/>Auto-provisioned<br/>5432/TCP<br/>Password auth<br/>NetworkPolicy restricted"]
+        ExternalDB["External PostgreSQL/MySQL<br/>5432/3306 TCP<br/>Configurable SSL<br/>Password + cert auth"]
+    end
 
-        subgraph RegistryPod["Registry Pod"]
-            KRBP["kube-rbac-proxy Sidecar<br/>8443/TCP HTTPS<br/>TLS (serving cert)<br/>SubjectAccessReview"]
-            RESTContainer["model-registry REST<br/>8080/TCP HTTP<br/>No auth (pre-authorized)"]
+    subgraph ControlPlane["OPERATOR CONTROL PLANE"]
+        Operator["model-registry-operator<br/>SA: controller-manager<br/>NS: redhat-ods-applications"]
+
+        subgraph WebhookEP["Webhook Endpoints"]
+            WHMutate["Mutating: /mutate-...<br/>9443/TCP HTTPS<br/>API server cert auth"]
+            WHValidate["Validating: /validate-...<br/>9443/TCP HTTPS<br/>API server cert auth"]
         end
 
-        RegistrySvc["Registry Service<br/>ClusterIP 8443/TCP HTTPS"]
-        RegistrySvcHTTP["Registry Service (direct)<br/>ClusterIP 8080/TCP HTTP"]
-        NetPolicy["NetworkPolicy<br/>Allow: openshift-ingress,<br/>odh-generated namespaces"]
-
-        subgraph PostgresPod["PostgreSQL Pod (optional)"]
-            Postgres["PostgreSQL<br/>5432/TCP<br/>Configurable SSL<br/>Username/password"]
-        end
-
-        PostgresSvc["postgres Service<br/>ClusterIP 5432/TCP"]
-        PostgresNetPol["PostgreSQL NetworkPolicy<br/>Allow: registry pod only"]
+        Metrics["Metrics: /metrics<br/>8443/TCP HTTPS<br/>Bearer Token RBAC"]
+        Health["Health: /healthz /readyz<br/>8081/TCP HTTP<br/>No auth"]
     end
 
-    subgraph CatalogNS["CATALOG NAMESPACE"]
-        direction TB
-
-        subgraph CatalogPod["Catalog Pod"]
-            CatalogKRBP["kube-rbac-proxy Sidecar<br/>8443/TCP HTTPS<br/>TLS (serving cert)<br/>SubjectAccessReview"]
-            CatalogREST["model-catalog REST<br/>8080/TCP HTTP"]
-        end
-
-        CatalogSvc["model-catalog Service<br/>ClusterIP 8443/TCP HTTPS"]
-
-        subgraph CatalogDBPod["Catalog PostgreSQL Pod"]
-            CatalogDB["PostgreSQL<br/>5432/TCP plaintext<br/>Username/password (Secret)"]
-        end
-
-        CatalogDBSvc["model-catalog-postgres<br/>ClusterIP 5432/TCP"]
+    subgraph K8sAPI["KUBERNETES / OPENSHIFT API"]
+        APIServer["API Server<br/>6443/TCP HTTPS TLS<br/>SA token auth"]
     end
 
-    subgraph K8sControl["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS<br/>SA token auth"]
-    end
+    %% External → Ingress
+    Client -->|"HTTPS/443<br/>TLS<br/>Bearer Token"| Route
+    Client -->|"HTTPS/443<br/>TLS<br/>Bearer Token"| Gateway
 
-    subgraph ExternalDB["EXTERNAL SERVICES (optional)"]
-        ExtPostgres["External PostgreSQL<br/>5432/TCP<br/>SSL configurable<br/>Username/password + SSL certs"]
-        ExtMySQL["External MySQL<br/>3306/TCP<br/>SSL configurable<br/>Username/password + SSL certs"]
-    end
+    %% Ingress → App Layer
+    Route -->|"HTTPS/8443<br/>TLS Passthrough<br/>Bearer Token"| KRBAC
+    Gateway -->|"HTTPS/8443<br/>URLRewrite<br/>Bearer Token"| KRBAC
 
-    %% External Client Flows
-    Client -->|"HTTPS/443<br/>TLS (edge)"| HTTPSRoute
-    Client -->|"HTTP/80"| HTTPRoute
-    Client -->|"HTTPS/443<br/>TLS (edge)"| CatalogRoute
+    %% kube-rbac-proxy auth delegation
+    KRBAC -->|"HTTPS/6443<br/>TokenReview + SAR<br/>SA token"| APIServer
+    CatKRBAC -->|"HTTPS/6443<br/>TokenReview + SAR<br/>SA token"| APIServer
 
-    %% Ingress to Services
-    HTTPSRoute -->|"HTTPS/8443<br/>TLS reencrypt"| KRBP
-    HTTPRoute -->|"HTTP/8080"| RESTContainer
-    CatalogRoute -->|"HTTPS/8443<br/>TLS reencrypt"| CatalogKRBP
+    %% kube-rbac-proxy → backend
+    KRBAC -->|"HTTP/8080<br/>localhost<br/>No auth"| MR
+    CatKRBAC -->|"HTTP/8080<br/>localhost<br/>No auth"| CatMR
 
-    %% kube-rbac-proxy auth flows
-    KRBP -->|"HTTPS/6443<br/>TokenReview + SAR<br/>SA token"| K8sAPI
-    KRBP -->|"HTTP/8080<br/>localhost<br/>pre-authorized"| RESTContainer
-    CatalogKRBP -->|"HTTPS/6443<br/>TokenReview + SAR<br/>SA token"| K8sAPI
-    CatalogKRBP -->|"HTTP/8080<br/>localhost<br/>pre-authorized"| CatalogREST
+    %% App → Data
+    MR -->|"PostgreSQL/5432<br/>Configurable SSL<br/>Password"| AutoPG
+    MR -->|"PostgreSQL·MySQL<br/>5432·3306<br/>SSL configurable<br/>Password"| ExternalDB
+    CatMR -->|"PostgreSQL/5432<br/>Password"| AutoPG
 
-    %% Database flows
-    RESTContainer -->|"PostgreSQL/5432<br/>configurable SSL<br/>user/pass"| Postgres
-    RESTContainer -->|"PostgreSQL/5432<br/>configurable SSL"| ExtPostgres
-    RESTContainer -->|"MySQL/3306<br/>configurable SSL"| ExtMySQL
-    CatalogREST -->|"PostgreSQL/5432<br/>plaintext<br/>user/pass (Secret)"| CatalogDB
+    %% Operator → K8s API
+    Operator -->|"HTTPS/6443<br/>TLS<br/>SA token<br/>CRUD + Watch"| APIServer
 
-    %% Operator flows
-    OperatorMain -->|"HTTPS/6443<br/>TLS, SA token<br/>CRUD resources"| K8sAPI
-    K8sAPI -->|"Watch events<br/>HTTPS/TLS"| OperatorMain
-    WebhookEP -->|"Called by<br/>K8s API server"| K8sAPI
+    %% K8s API → Webhooks
+    APIServer -->|"HTTPS/9443<br/>TLS<br/>API server cert"| WHMutate
+    APIServer -->|"HTTPS/9443<br/>TLS<br/>API server cert"| WHValidate
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef registry fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef catalog fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef controlplane fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef externaldb fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef netpol fill:#ffcccc,stroke:#cc0000,stroke-dasharray: 5 5
+    classDef appLayer fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef dataLayer fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef controlPlane fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef k8sapi fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class Client external
-    class HTTPSRoute,HTTPRoute,CatalogRoute ingress
-    class OperatorMain,MetricsEP,WebhookEP,HealthEP,MetricsSvc,WebhookSvc operator
-    class KRBP,RESTContainer,RegistrySvc,RegistrySvcHTTP,Postgres,PostgresSvc registry
-    class CatalogKRBP,CatalogREST,CatalogSvc,CatalogDB,CatalogDBSvc catalog
-    class K8sAPI controlplane
-    class ExtPostgres,ExtMySQL externaldb
-    class NetPolicy,PostgresNetPol netpol
+    class Route,Gateway ingress
+    class KRBAC,MR,CatKRBAC,CatMR appLayer
+    class AutoPG,ExternalDB dataLayer
+    class Operator,WHMutate,WHValidate,Metrics,Health controlPlane
+    class APIServer k8sapi

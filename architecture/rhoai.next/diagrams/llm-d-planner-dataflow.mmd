@@ -1,52 +1,58 @@
 sequenceDiagram
     participant User as User (Browser)
-    participant Route as OpenShift Router<br/>443/TCP HTTPS<br/>TLS Edge
+    participant Route as OpenShift Route<br/>443/TCP HTTPS (edge)
     participant UI as Streamlit UI<br/>8501/TCP HTTP
     participant API as Backend API<br/>8000/TCP HTTP
     participant Ollama as Ollama LLM<br/>11434/TCP HTTP
     participant PG as PostgreSQL<br/>5432/TCP Password
-    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant BentoML as BentoML llm-optimizer<br/>(in-process)
+    participant LLMOpt as llm-optimizer<br/>(in-process)
     participant K8s as Kubernetes API<br/>6443/TCP HTTPS
-    participant MC as RHOAI Model Catalog<br/>8443/TCP HTTPS
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant MCat as Model Catalog<br/>8443/TCP HTTPS
 
-    rect rgb(230, 240, 255)
-        Note over User,BentoML: Flow 1: Recommendation Workflow
-        User->>Route: Open Planner UI
-        Route->>UI: HTTPS→HTTP proxy (TLS edge termination)
-        User->>UI: Describe deployment needs (natural language)
-        UI->>API: POST /api/v1/extract<br/>HTTP/8000
-        API->>Ollama: POST /api/chat<br/>HTTP/11434<br/>(intent extraction prompt)
-        Ollama-->>API: Structured intent JSON
-        API->>PG: SELECT benchmarks<br/>WHERE model/gpu/slo match<br/>5432/TCP Password auth
-        PG-->>API: Benchmark results
-        API->>HF: GET model config<br/>HTTPS/443 TLS 1.2+<br/>Bearer Token (optional)
-        HF-->>API: Model architecture metadata
-        alt No benchmark data available
-            API->>BentoML: Roofline estimation<br/>(in-process Python call)
-            BentoML-->>API: Estimated TTFT, ITL, throughput
-        end
-        API->>API: Score & rank configurations<br/>(accuracy, price, latency, complexity)
-        API-->>UI: Ranked recommendations with YAML
-        UI-->>User: Display 5 ranked views<br/>+ deployment specs
-    end
+    Note over User,MCat: Flow 1: Recommendation Pipeline
 
-    rect rgb(255, 240, 230)
-        Note over User,K8s: Flow 2: Kubernetes Deployment
-        User->>UI: Click "Deploy to Cluster"
-        UI->>API: POST /api/v1/deploy-to-cluster<br/>HTTP/8000
-        API->>API: Jinja2 template rendering<br/>(InferenceService + HPA + ServiceMonitor)
-        API->>K8s: kubectl apply -f<br/>HTTPS/6443 SA Token<br/>(subprocess call)
-        K8s-->>API: Deployment result
-        API-->>UI: Deployment status + YAML contents
-        UI-->>User: Deployment confirmation
-    end
+    User->>Route: HTTPS request
+    Route->>UI: HTTP/8501 (TLS terminated)
+    UI->>API: POST /api/v1/extract<br/>HTTP/8000 (no auth)
+    API->>Ollama: POST /api/chat<br/>HTTP/11434 (no auth)
+    Ollama-->>API: Structured DeploymentIntent
+    API-->>UI: Extracted intent + specification
 
-    rect rgb(230, 255, 230)
-        Note over API,MC: Flow 3: Model Catalog Sync (Background)
-        Note right of API: Triggered when<br/>PLANNER_BENCHMARK_SOURCE=model_catalog
-        API->>MC: GET /api/model_registry/v1alpha3/...<br/>HTTPS/8443 TLS (service-serving CA)<br/>Bearer Token / SA Token
-        MC-->>API: Model + artifact list
-        API->>PG: UPSERT benchmark data<br/>5432/TCP Password auth
-        API->>API: Refresh in-memory catalogs<br/>(ModelCatalog, UseCaseQualityScorer)
-    end
+    UI->>API: POST /api/v1/ranked-recommend-from-spec<br/>HTTP/8000 (no auth)
+    API->>PG: SELECT benchmarks<br/>PostgreSQL/5432 (password)
+    PG-->>API: Benchmark results
+    API->>LLMOpt: Roofline estimation<br/>(library call, in-process)
+    LLMOpt-->>API: Performance estimates
+    API-->>UI: 5 ranked recommendation views
+
+    UI->>API: POST /api/v1/deploy<br/>HTTP/8000 (no auth)
+    API-->>UI: Generated YAML contents<br/>(KServe, HPA, ServiceMonitor)
+
+    Note over User,MCat: Flow 2: Deployment to Cluster
+
+    UI->>API: POST /api/v1/deploy-to-cluster<br/>HTTP/8000 (no auth)
+    API->>K8s: kubectl apply<br/>HTTPS/6443 (SA token, TLS 1.2+)
+    K8s-->>API: Deployment created
+    API-->>UI: Deployment status
+
+    UI->>API: GET /api/v1/deployments/{id}/k8s-status<br/>HTTP/8000
+    API->>K8s: kubectl get<br/>HTTPS/6443 (SA token)
+    K8s-->>API: InferenceService status
+    API-->>UI: K8s deployment status
+
+    Note over User,MCat: Flow 3: Model Catalog Sync (background)
+
+    API->>MCat: GET /api/model_catalog/v1alpha1<br/>HTTPS/8443 (Bearer token, service CA)
+    MCat-->>API: Benchmark data + model artifacts
+    API->>PG: INSERT benchmarks<br/>PostgreSQL/5432 (password)
+
+    Note over User,MCat: Flow 4: Capacity Planning
+
+    UI->>API: POST /api/v1/model-info<br/>HTTP/8000 (no auth)
+    API->>HF: GET model metadata<br/>HTTPS/443 (Bearer HF_TOKEN, optional)
+    HF-->>API: Model config + safetensors info
+    API-->>UI: Model metadata
+
+    UI->>API: POST /api/v1/calculate<br/>HTTP/8000 (no auth)
+    API-->>UI: GPU memory estimates<br/>(weights, KV cache, activation)

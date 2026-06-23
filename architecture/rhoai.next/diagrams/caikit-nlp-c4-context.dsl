@@ -1,48 +1,53 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Deploys and queries ML models for NLP tasks"
-        mlEngineer = person "ML Engineer" "Fine-tunes models using prompt tuning"
+        dataScientist = person "Data Scientist" "Creates, trains, and deploys NLP models for inference"
+        mlEngineer = person "ML Engineer" "Configures and operates the NLP serving infrastructure"
 
-        caikitNlp = softwareSystem "caikit-nlp" "Python NLP module library providing text generation, embedding, reranking, classification, and tokenization capabilities for the caikit runtime" {
-            embeddingModule = container "EmbeddingModule" "Sentence embedding, similarity, and reranking using sentence-transformers" "Python / sentence-transformers"
-            crossEncoderModule = container "CrossEncoderModule" "Cross-encoder based reranking and tokenization" "Python / sentence-transformers"
-            textGeneration = container "TextGeneration" "Local text generation using HuggingFace CausalLM and Seq2SeqLM" "Python / transformers"
-            textGenerationTGIS = container "TextGenerationTGIS" "Remote text generation via TGIS backend with streaming" "Python / gRPC"
-            peftPromptTuning = container "PeftPromptTuning" "PEFT-based prompt tuning for text generation with local inference" "Python / PEFT + Accelerate"
-            peftPromptTuningTGIS = container "PeftPromptTuningTGIS" "Remote PEFT prompt tuning inference via TGIS with prompt vector caching" "Python / gRPC"
-            sequenceClassification = container "SequenceClassification" "Sequence classification using HuggingFace AutoModelForSequenceClassification" "Python / transformers"
-            filteredSpanClassification = container "FilteredSpanClassification" "Token classification via span splitting and filtered classification" "Python / transformers"
-            regexSentenceSplitter = container "RegexSentenceSplitter" "Regex-based sentence splitting / tokenization" "Python"
-            tgisAutoFinder = container "TGISAutoFinder" "Automatic discovery of text generation models on remote TGIS servers" "Python / gRPC"
+        caikitNlp = softwareSystem "caikit-nlp" "Python NLP library providing text generation, embeddings, reranking, classification, and tokenization modules for the caikit runtime" {
+            textGeneration = container "TextGeneration" "Local text generation using HuggingFace CausalLM/Seq2Seq models" "Caikit Module (Python)"
+            textGenerationTGIS = container "TextGenerationTGIS" "Remote text generation delegating to TGIS backend over gRPC" "Caikit Module (Python)"
+            embeddingModule = container "EmbeddingModule" "Bi-encoder embeddings, similarity, and reranking using sentence-transformers" "Caikit Module (Python)"
+            crossEncoderModule = container "CrossEncoderModule" "Cross-encoder reranking and tokenization using sentence-transformers CrossEncoder" "Caikit Module (Python)"
+            peftPromptTuning = container "PeftPromptTuning" "PEFT prompt tuning with local training and inference (multi-GPU via torchrun)" "Caikit Module (Python)"
+            peftPromptTuningTGIS = container "PeftPromptTuningTGIS" "PEFT prompt tuning inference via remote TGIS backend" "Caikit Module (Python)"
+            sequenceClassification = container "SequenceClassification" "Text classification using HuggingFace SequenceClassification models" "Caikit Module (Python)"
+            filteredSpanClassification = container "FilteredSpanClassification" "Token classification by splitting text into spans" "Caikit Module (Python)"
+            regexSentenceSplitter = container "RegexSentenceSplitter" "Sentence splitting using configurable regular expressions" "Caikit Module (Python)"
+            tgisAutoFinder = container "TGISAutoFinder" "Automatic discovery of TGIS-compatible text generation models" "Model Finder (Python)"
         }
 
-        caikitRuntime = softwareSystem "caikit Runtime" "AI toolkit framework providing gRPC and HTTP serving infrastructure" "Internal RHOAI"
-        kserve = softwareSystem "KServe" "Standardized serverless ML inference platform" "Internal RHOAI"
-        tgis = softwareSystem "TGIS" "Text Generation Inference Server for remote model serving" "Internal RHOAI"
-        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator managing component deployment" "Internal RHOAI"
+        caikitRuntime = softwareSystem "Caikit Runtime" "AI toolkit runtime server exposing NLP modules via gRPC/HTTP" "Internal Platform"
+        tgisServer = softwareSystem "TGIS" "Text Generation Inference Server for high-performance remote model serving" "Internal Platform"
+        huggingFaceHub = softwareSystem "HuggingFace Hub" "Model repository for downloading pretrained models and tokenizers" "External"
 
-        huggingfaceHub = softwareSystem "HuggingFace Hub" "Model and tokenizer repository" "External"
-        s3Storage = softwareSystem "S3 / Object Storage" "Model artifact storage" "External"
-        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server" "External"
+        caikitCore = softwareSystem "Caikit Core" "Core AI toolkit framework providing module system, data model, and runtime infrastructure" "Internal Platform"
+        caikitTgisBackend = softwareSystem "caikit-tgis-backend" "TGIS backend integration managing model connections and gRPC communication" "Internal Platform"
 
-        # User interactions
-        dataScientist -> caikitRuntime "Sends inference requests (embedding, generation, classification)" "HTTP/8080, gRPC/8085"
-        mlEngineer -> caikitRuntime "Submits training jobs (prompt tuning)" "gRPC/8085"
+        pytorch = softwareSystem "PyTorch" "Deep learning framework for model inference and distributed training" "External"
+        transformers = softwareSystem "HuggingFace Transformers" "Transformer model library for NLP" "External"
+        sentenceTransformers = softwareSystem "sentence-transformers" "Bi-encoder and cross-encoder models for embeddings and reranking" "External"
+        peft = softwareSystem "PEFT" "Parameter-Efficient Fine-Tuning library" "External"
 
-        # Runtime loads caikit-nlp
+        # Relationships
+        dataScientist -> caikitRuntime "Sends inference/training requests" "gRPC :8085 / HTTP :8080"
+        mlEngineer -> caikitRuntime "Configures and deploys" "runtime_config.yaml"
+
         caikitRuntime -> caikitNlp "Loads as runtime library" "RUNTIME_LIBRARY=caikit_nlp"
+        caikitNlp -> caikitCore "Extends module system" "Python import"
+        caikitNlp -> caikitTgisBackend "Uses TGIS client" "Python import"
 
-        # caikit-nlp module interactions
-        textGenerationTGIS -> tgis "Remote text generation inference" "gRPC / TLS optional"
-        peftPromptTuningTGIS -> tgis "Remote PEFT inference with prompt vectors" "gRPC / TLS optional"
-        tgisAutoFinder -> tgis "Model discovery" "gRPC"
-        embeddingModule -> huggingfaceHub "Model downloads (when allow_downloads=true)" "HTTPS/443"
-        textGeneration -> s3Storage "Load model artifacts" "HTTPS/443"
+        textGenerationTGIS -> tgisServer "Remote inference" "gRPC :8033, Optional TLS/mTLS"
+        peftPromptTuningTGIS -> tgisServer "Remote inference" "gRPC :8033, Optional TLS/mTLS"
+        tgisAutoFinder -> tgisServer "Discovers models" "gRPC"
 
-        # Platform interactions
-        kserve -> caikitRuntime "Deploys as InferenceService pod" "Kubernetes"
-        rhodsOperator -> kserve "Manages KServe configuration" "Kubernetes API"
-        kserve -> kubernetesAPI "Manages pods, services, routes" "HTTPS/6443"
+        textGeneration -> transformers "Loads models" "Python import"
+        textGeneration -> pytorch "Runs inference" "Python import"
+        embeddingModule -> sentenceTransformers "Loads models" "Python import"
+        crossEncoderModule -> sentenceTransformers "Loads models" "Python import"
+        peftPromptTuning -> peft "Fine-tunes models" "Python import"
+        peftPromptTuning -> pytorch "Distributed training" "torchrun / elastic_launch"
+
+        caikitNlp -> huggingFaceHub "Downloads models (optional)" "HTTPS :443, allow_downloads=true"
     }
 
     views {
@@ -57,21 +62,21 @@ workspace {
         }
 
         styles {
-            element "Person" {
-                shape Person
-                background #08427b
-                color #ffffff
-            }
-            element "Software System" {
-                background #1168bd
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal Platform" {
                 background #7ed321
+                color #ffffff
+            }
+            element "Person" {
+                shape Person
+                background #4a90e2
+                color #ffffff
+            }
+            element "Software System" {
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {

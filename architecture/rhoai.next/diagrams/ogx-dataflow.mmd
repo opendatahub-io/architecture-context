@@ -1,0 +1,81 @@
+sequenceDiagram
+    autonumber
+
+    participant Client as API Client
+    participant TLS as TLS/mTLS Layer<br/>8321/TCP
+    participant AuthMW as AuthenticationMiddleware<br/>(ASGI)
+    participant JWKS as OAuth2 JWKS/Introspection<br/>Endpoint (HTTPS)
+    participant ABAC as Cedar-like ABAC<br/>Policy Engine
+    participant Router as InferenceRouter<br/>(auto-route by model)
+    participant vLLM as vLLM Inference Server<br/>(HTTP/HTTPS)
+    participant Safety as Safety Shield Provider
+    participant Tools as Tool Runtime<br/>(Brave/Tavily/MCP)
+    participant VecIO as Vector IO Provider<br/>(ChromaDB/pgvector/etc.)
+    participant Embed as Embedding Provider
+
+    rect rgb(240, 248, 255)
+        Note over Client,vLLM: Flow 1: Chat Completion Request
+        Client->>TLS: POST /v1/inference/chat-completion<br/>Bearer Token
+        TLS->>AuthMW: Decrypt & forward
+        AuthMW->>JWKS: Validate JWT token<br/>HTTPS/TLS 1.2+<br/>Client credentials
+        JWKS-->>AuthMW: Token claims<br/>(roles, teams, projects)
+        AuthMW->>ABAC: Check access policy<br/>(permit/forbid rules)
+        ABAC-->>AuthMW: Authorized
+        AuthMW->>Router: Authenticated request<br/>with user attributes
+        Router->>Router: Lookup routing table<br/>(model → provider)
+        Router->>vLLM: Forward inference request<br/>HTTP/HTTPS<br/>Bearer Token / None
+        vLLM-->>Router: Completion response
+        Router-->>Client: JSON Response<br/>(or SSE stream if streaming)
+    end
+
+    rect rgb(255, 248, 240)
+        Note over Client,Tools: Flow 2: Agent Turn with Tool Calling
+        Client->>TLS: POST /v1/agents/{id}/session/{sid}/turn<br/>Bearer Token
+        TLS->>AuthMW: Decrypt & forward
+        AuthMW->>ABAC: Validate & authorize
+        ABAC-->>AuthMW: Authorized
+
+        Note over Router,Tools: Agent orchestration loop
+        AuthMW->>Router: Agent turn request
+        Router->>vLLM: Initial LLM call<br/>(determines tool use)
+        vLLM-->>Router: Response with tool_calls
+
+        Router->>Safety: Run safety shield<br/>on input/output
+        Safety-->>Router: Safety check passed
+
+        Router->>Tools: Invoke tool<br/>(Brave Search / Tavily / MCP)<br/>HTTPS :443, API Key
+        Tools-->>Router: Tool result
+
+        Router->>vLLM: 2nd LLM call<br/>(with tool results)
+        vLLM-->>Router: Final response
+
+        Router-->>Client: Agent turn response<br/>(SSE stream with steps)
+    end
+
+    rect rgb(240, 255, 240)
+        Note over Client,VecIO: Flow 3: RAG (Retrieval-Augmented Generation)
+        Client->>TLS: POST /v1/tool-runtime/rag-tool/insert<br/>Bearer Token
+        TLS->>AuthMW: Authenticate & authorize
+        AuthMW->>Router: Insert request
+
+        Router->>Embed: Generate embeddings<br/>HTTP/HTTPS
+        Embed-->>Router: Embedding vectors
+
+        Router->>VecIO: Store vectors<br/>(ChromaDB/pgvector/Qdrant)<br/>HTTP/PostgreSQL
+        VecIO-->>Router: Stored
+
+        Router-->>Client: Insert confirmed
+
+        Note over Client,VecIO: Query phase
+        Client->>TLS: POST /v1/tool-runtime/rag-tool/query<br/>Bearer Token
+        TLS->>AuthMW: Authenticate & authorize
+        AuthMW->>Router: Query request
+
+        Router->>Embed: Embed query text
+        Embed-->>Router: Query embedding
+
+        Router->>VecIO: Similarity search
+        VecIO-->>Router: Matching documents
+
+        Router-->>Client: RAG query results
+    end

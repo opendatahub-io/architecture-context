@@ -1,47 +1,41 @@
 sequenceDiagram
     participant Client as External Client
-    participant Route as OpenShift Route<br/>443/TCP HTTPS<br/>Edge TLS
-    participant Proxy as Routing Sidecar<br/>8000/TCP TLS 1.2+
-    participant Validator as AllowlistValidator<br/>(in-process)
-    participant Prefiller as Remote vLLM Prefiller<br/>Dynamic port HTTP(S)
-    participant Decoder as Local vLLM Decoder<br/>8001/TCP HTTP(S)
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Sidecar as llm-d-routing-sidecar<br/>8000/TCP HTTPS TLS 1.2+
+    participant Allowlist as AllowlistValidator<br/>(SSRF Protection)
+    participant Prefiller as Remote Prefiller Pod<br/>HTTP/HTTPS
+    participant Decoder as Local vLLM Decoder<br/>8001/TCP HTTP/HTTPS
 
-    Note over Client,Decoder: Flow 1: P/D Disaggregated Inference (NIXL v2 Protocol)
+    Note over Client,Decoder: Flow 1: Disaggregated Prefill/Decode (NIXLv2 Protocol)
 
-    Client->>Route: POST /v1/chat/completions<br/>Header: x-prefiller-host-port
-    Route->>Proxy: Forward (edge TLS terminated)
+    Client->>Sidecar: POST /v1/chat/completions<br/>Header: x-prefiller-host-port: <prefiller:port><br/>Body: {messages, model, ...}
 
     alt SSRF Protection Enabled
-        Proxy->>Validator: Validate prefill target
-        Validator-->>Proxy: Allowed / Rejected (403)
+        Sidecar->>Allowlist: Validate prefiller target host
+        Allowlist-->>Sidecar: Allowed / HTTP 403 Denied
     end
 
-    Proxy->>Prefiller: POST /v1/chat/completions<br/>Optional TLS 1.2+
-    Note right of Prefiller: Prefill phase:<br/>Compute KV cache
-    Prefiller-->>Proxy: Response with kv_transfer_params<br/>{remote_engine_id, block_ids,<br/>host, port}
+    Sidecar->>Prefiller: POST /v1/chat/completions<br/>(forwarded request)<br/>Optional TLS 1.2+
+    Prefiller-->>Sidecar: Response with kv_transfer_params<br/>{remote_block_ids, remote_engine_id,<br/>remote_host, remote_port, ...}
 
-    Proxy->>Decoder: POST /v1/chat/completions<br/>Body enriched with kv_transfer_params<br/>Optional TLS 1.2+
-    Note right of Decoder: Decode phase:<br/>Use transferred KV cache
-    Decoder-->>Proxy: Inference result (streaming or batch)
-    Proxy-->>Route: Response
-    Route-->>Client: JSON Response
+    Note over Sidecar: Extract kv_transfer_params<br/>from prefiller response
 
-    Note over Client,Decoder: Flow 2: Direct Decode (No x-prefiller-host-port header)
+    Sidecar->>Decoder: POST /v1/chat/completions<br/>Body: original request +<br/>kv_transfer_params injected<br/>Optional TLS 1.2+
+    Decoder-->>Sidecar: Inference Result<br/>(streaming or complete)
+    Sidecar-->>Client: Chat Completion Response<br/>TLS 1.2+
 
-    Client->>Route: POST /v1/chat/completions<br/>(no prefill header)
-    Route->>Proxy: Forward
-    Proxy->>Decoder: Passthrough to local decoder<br/>HTTP(S)/8001
-    Decoder-->>Proxy: Inference result
-    Proxy-->>Route: Response
-    Route-->>Client: JSON Response
+    Note over Client,Decoder: Flow 2: Direct Passthrough (No x-prefiller-host-port Header)
 
-    Note over Validator,K8sAPI: Flow 3: SSRF Allowlist Maintenance (Background)
+    Client->>Sidecar: POST /v1/chat/completions<br/>(no x-prefiller-host-port header)
+    Sidecar->>Decoder: Forward unmodified request<br/>Optional TLS 1.2+
+    Decoder-->>Sidecar: Inference Result
+    Sidecar-->>Client: Chat Completion Response<br/>TLS 1.2+
 
-    loop Every 30s resync
-        Validator->>K8sAPI: Watch InferencePool<br/>inference.networking.x-k8s.io/v1alpha2<br/>ServiceAccount token auth
-        K8sAPI-->>Validator: InferencePool spec<br/>(label selectors)
-        Validator->>K8sAPI: Watch Pods matching selectors
-        K8sAPI-->>Validator: Pod IPs + names<br/>(add/update/delete events)
-        Note right of Validator: Update in-memory<br/>IP/name allowlist
-    end
+    Note over Client,Decoder: Flow 3: SSRF Allowlist Updates (Background)
+
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+
+    Sidecar->>K8sAPI: Watch InferencePool CRs<br/>ServiceAccount Token
+    K8sAPI-->>Sidecar: InferencePool events<br/>(spec.selector changes)
+    Sidecar->>K8sAPI: Watch Pods matching<br/>InferencePool selectors
+    K8sAPI-->>Sidecar: Pod events<br/>(IPs, hostnames)
+    Note over Sidecar: Update internal allowlist<br/>(30s resync period)

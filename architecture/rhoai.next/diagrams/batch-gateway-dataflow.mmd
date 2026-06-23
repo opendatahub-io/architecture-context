@@ -1,77 +1,81 @@
 sequenceDiagram
     participant Client as External Client
-    participant GW as Gateway Layer<br/>(Kuadrant/Authorino)<br/>Envoy ext_authz
-    participant API as API Server<br/>8000/TCP HTTP/HTTPS
+    participant GW as Gateway API<br/>(HTTPRoute)
+    participant API as apiserver<br/>8080/TCP HTTP(S)
     participant PG as PostgreSQL<br/>5432/TCP
-    participant Redis as Redis/Valkey<br/>6379/TCP RESP
+    participant Redis as Redis / Valkey<br/>6379/TCP
     participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant Proc as Processor<br/>9090/TCP
-    participant Infer as Inference Gateway<br/>(llm-d / vLLM)
-    participant GCsvc as Garbage Collector
+    participant Proc as batch-processor<br/>Workers
+    participant Inf as llm-d Inference<br/>Gateway
+    participant GC as batch-gc
 
-    Note over Client,Infer: Flow 1: Batch Job Submission
+    Note over Client,S3: Flow 1: Batch Job Submission
 
-    Client->>GW: POST /v1/files<br/>Upload JSONL input file
-    GW->>GW: ext_authz: authenticate<br/>Append X-MaaS-Username
-    GW->>API: Forward with tenant header
-    API->>S3: Store input file content<br/>HTTPS/443, TLS 1.2+, AWS IAM
-    API->>PG: Create file metadata record<br/>TCP/5432, connection URL creds
-    API-->>Client: 200 OK (file_id)
+    Client->>GW: POST /v1/files (multipart)<br/>Tenant ID: X-MaaS-Username
+    GW->>API: Route request
+    API->>S3: Upload file content<br/>TLS, AWS credentials
+    S3-->>API: Upload confirmed
+    API->>PG: Store file metadata<br/>TCP, DSN credentials
+    PG-->>API: File record created
+    API-->>Client: 200 File object (file_id)
 
-    Client->>GW: POST /v1/batches<br/>input_file_id, model, endpoint
-    GW->>GW: ext_authz: authenticate
-    GW->>API: Forward with tenant header
-    API->>PG: Create batch record (validating)<br/>TCP/5432
-    API->>Redis: Enqueue job to priority queue<br/>TCP/6379, sorted set by SLO
-    API-->>Client: 200 OK (batch_id, status: validating)
+    Client->>GW: POST /v1/batches<br/>Tenant ID: X-MaaS-Username
+    GW->>API: Route request
+    API->>PG: Create batch record<br/>TCP, DSN credentials
+    PG-->>API: Batch created
+    API->>Redis: PQEnqueue (priority queue)<br/>TCP, URL credentials
+    Redis-->>API: Job enqueued
+    API-->>Client: 200 Batch object (batch_id, status=validating)
 
-    Note over Client,Infer: Flow 2: Batch Job Processing
+    Note over Proc,S3: Flow 2: Batch Job Processing
 
-    loop Poll interval (5s)
-        Proc->>Redis: BZPOPMIN from priority queue<br/>TCP/6379
-    end
-    Redis-->>Proc: Job payload (batch_id, priority)
-
-    Proc->>PG: Read batch + file metadata<br/>TCP/5432
-    Proc->>S3: Download input JSONL file<br/>HTTPS/443, TLS 1.2+, AWS IAM
-    S3-->>Proc: Input file content
-
-    Proc->>Proc: Pre-process: parse JSONL,<br/>build per-model execution plans
-
-    Proc->>PG: Update status: in_progress<br/>TCP/5432
-
-    loop For each inference request (up to 50,000)
-        Proc->>Proc: Acquire semaphores:<br/>per-model -> global
-        Proc->>Infer: POST /v1/chat/completions<br/>HTTP(S), Bearer token or mTLS<br/>x-slo-ttft-ms, x-gateway-inference-objective
-        Infer-->>Proc: Inference response
-        Proc->>Proc: Release semaphores
-        Proc->>Redis: Update progress counter<br/>TCP/6379
+    loop Poll for jobs
+        Proc->>Redis: PQDequeue (blocking)<br/>TCP, URL credentials
+        Redis-->>Proc: Job payload
     end
 
-    Proc->>S3: Upload output JSONL file<br/>HTTPS/443, TLS 1.2+, AWS IAM
-    opt Errors occurred
-        Proc->>S3: Upload error JSONL file<br/>HTTPS/443
+    Proc->>PG: Load batch metadata<br/>TCP, DSN credentials
+    PG-->>Proc: Batch record
+    Proc->>S3: Download input JSONL<br/>TLS, AWS credentials
+    S3-->>Proc: Input file stream
+
+    loop For each request in JSONL
+        Proc->>Inf: POST /v1/chat/completions<br/>HTTP(S), Bearer token or mTLS
+        Note over Proc,Inf: AIMD concurrency control<br/>Backoff on 429/5xx
+        Inf-->>Proc: Inference response
+        Proc->>Redis: Update progress counters<br/>TCP, URL credentials
     end
-    Proc->>PG: Update status: completed<br/>Set output_file_id, error_file_id<br/>TCP/5432
 
-    Note over Client,Infer: Flow 3: Status Check & Result Retrieval
+    Proc->>S3: Upload output JSONL<br/>TLS, AWS credentials
+    S3-->>Proc: Output file stored
+    Proc->>S3: Upload error JSONL (if errors)<br/>TLS, AWS credentials
+    Proc->>PG: Update batch status=completed<br/>TCP, DSN credentials
 
-    Client->>GW: GET /v1/batches/{batch_id}
-    GW->>API: Forward with tenant header
-    API->>PG: Read batch metadata<br/>TCP/5432
-    API->>Redis: Read progress status<br/>TCP/6379
-    API-->>Client: Batch status with progress counts
+    Note over Client,Redis: Flow 3: Batch Job Cancellation
 
-    Client->>GW: GET /v1/files/{output_file_id}/content
-    GW->>API: Forward with tenant header
-    API->>S3: Download output file<br/>HTTPS/443
-    API-->>Client: Stream output JSONL
+    Client->>GW: POST /v1/batches/{id}/cancel<br/>Tenant ID: X-MaaS-Username
+    GW->>API: Route request
+    API->>Redis: PQDelete (remove from queue)<br/>TCP, URL credentials
+    API->>Redis: ECProducerSendEvents (cancel event)<br/>TCP, URL credentials
+    API->>PG: Update status=cancelling<br/>TCP, DSN credentials
+    API-->>Client: 200 Batch (status=cancelling)
 
-    Note over GCsvc,S3: Flow 4: Garbage Collection (every 30m)
+    Proc->>Redis: Consume cancel event
+    Proc->>S3: Upload partial results<br/>TLS, AWS credentials
+    Proc->>PG: Update status=cancelled<br/>TCP, DSN credentials
 
-    loop GC interval (30m)
-        GCsvc->>PG: Query expired batches and files<br/>TCP/5432
-        PG-->>GCsvc: Expired items list
-        GCsvc->>S3: Delete expired file content<br/>HTTPS/443
-        GCsvc->>PG: Delete expired metadata records<br/>TCP/5432
+    Note over GC,S3: Background: Garbage Collection
+
+    loop Every 1h (configurable)
+        GC->>PG: Query expired batches/files
+        PG-->>GC: Expired items
+        GC->>S3: Delete expired file content
+        GC->>PG: Delete expired metadata
+        GC->>Redis: Clean expired status/queue entries
+    end
+
+    loop Every 60m (reconciler)
+        GC->>Redis: Check in-flight tracking
+        GC->>PG: Find orphaned jobs
+        GC->>Redis: Re-enqueue or fail orphans
     end

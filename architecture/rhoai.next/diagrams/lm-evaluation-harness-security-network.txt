@@ -1,0 +1,155 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  KUBERNETES CLUSTER (Internal)                                          │
+│                                                                          │
+│  [TrustyAI LMEval Operator]                                             │
+│  - Component: trustyai-service-operator                                  │
+│  - Creates: Kubernetes Job                                               │
+│  - Mounts: /meta/job.json (ConfigMap), model auth secret (Secret)       │
+│         │                                                                │
+│         │ Kubernetes API                                                 │
+│         │ Creates Job resource                                           │
+│         ▼                                                                │
+│  ┌───────────────────────────────────────────────────────────────────┐   │
+│  │  LM EVALUATION HARNESS JOB POD                                    │   │
+│  │                                                                    │   │
+│  │  Container: odh-ta-lmes-job-rhel9                                 │   │
+│  │  Base Image: registry.access.redhat.com/ubi9/python-311:latest    │   │
+│  │  ServiceAccount: managed by LMEval operator                       │   │
+│  │                                                                    │   │
+│  │  Volume Mounts:                                                    │   │
+│  │  - /meta/job.json (ConfigMap) — job specification                 │   │
+│  │  - /test_data (Volume) — offline datasets & tokenizers (optional) │   │
+│  │  - Model auth secret — OPENAI_API_KEY, HF_TOKEN, CA cert         │   │
+│  │                                                                    │   │
+│  │  ┌─────────────────────────────────────────────────────────────┐   │   │
+│  │  │  EvalHub Adapter (main.py)                                  │   │   │
+│  │  │  - Parses /meta/job.json                                    │   │   │
+│  │  │  - Credential sanitization (_sanitize_error_message)        │   │   │
+│  │  │  - Path traversal protection (_resolve_job_spec_path)       │   │   │
+│  │  └─────────────────────────────────────────────────────────────┘   │   │
+│  │  ┌─────────────────────────────────────────────────────────────┐   │   │
+│  │  │  lm_eval Core + local-completions Backend                   │   │   │
+│  │  │  - SSL: ssl.create_default_context() for custom CA          │   │   │
+│  │  │  - verify_certificate: rejects symlinks, validates path     │   │   │
+│  │  │  - Crypto: hashlib SHA-256 (caching), stdlib ssl only       │   │   │
+│  │  └─────────────────────────────────────────────────────────────┘   │   │
+│  └───────────────────────────────────────────────────────────────────┘   │
+│         │              │              │              │              │     │
+│         │              │              │              │              │     │
+├─────────┼──────────────┼──────────────┼──────────────┼──────────────┼─────┤
+│  EGRESS │(all outbound)│              │              │              │     │
+│         │              │              │              │              │     │
+│         ▼              ▼              ▼              ▼              ▼     │
+└─────────────────────────────────────────────────────────────────────────┘
+          │              │              │              │              │
+          │              │              │              │              │
+┌─────────┼──────────────┼──────────────┼──────────────┼──────────────┼─────┐
+│  EXTERNAL SERVICES     │              │              │              │     │
+│         │              │              │              │              │     │
+│         ▼              │              │              │              │     │
+│  [EvalHub Service]     │              │              │              │     │
+│  - Port: 443/TCP       │              │              │              │     │
+│  - Protocol: HTTPS     │              │              │              │     │
+│  - Encryption: TLS     │              │              │              │     │
+│  - Auth: Bearer Token  │              │              │              │     │
+│  - Purpose: Job status │              │              │              │     │
+│    callbacks (lifecycle│              │              │              │     │
+│    state transitions   │              │              │              │     │
+│    + final results)    │              │              │              │     │
+│                        ▼              │              │              │     │
+│  [Model Inference Endpoint]           │              │              │     │
+│  - Port: 443/TCP or custom            │              │              │     │
+│  - Protocol: HTTPS                    │              │              │     │
+│  - Encryption: TLS (custom CA         │              │              │     │
+│    via verify_certificate)            │              │              │     │
+│  - Auth: Bearer Token                 │              │              │     │
+│    (OPENAI_API_KEY env var)           │              │              │     │
+│  - Purpose: POST /v1/completions      │              │              │     │
+│    (batched eval prompts)             │              │              │     │
+│                                       ▼              │              │     │
+│  [OCI Registry]                                      │              │     │
+│  - Port: 443/TCP                                     │              │     │
+│  - Protocol: HTTPS                                   │              │     │
+│  - Encryption: TLS                                   │              │     │
+│  - Auth: Docker config.json or                       │              │     │
+│    OCI_USERNAME/OCI_PASSWORD                          │              │     │
+│  - Purpose: Push evaluation result                   │              │     │
+│    artifacts via skopeo                              │              │     │
+│                                                      ▼              │     │
+│  [HuggingFace Hub — huggingface.co]                                 │     │
+│  - Port: 443/TCP                                                    │     │
+│  - Protocol: HTTPS                                                  │     │
+│  - Encryption: TLS 1.2+                                             │     │
+│  - Auth: HF_TOKEN (optional, for gated datasets)                    │     │
+│  - Purpose: Download benchmark datasets & tokenizers                │     │
+│  - Note: DISABLED in air-gapped mode                                │     │
+│    (HF_HUB_OFFLINE=1, HF_DATASETS_OFFLINE=1)                       │     │
+│                                                                     ▼     │
+│  [MLflow Tracking Server]                                                 │
+│  - Port: 443/TCP or custom                                                │
+│  - Protocol: HTTPS                                                        │
+│  - Encryption: TLS                                                        │
+│  - Auth: Configured via EvalHub SDK                                       │
+│  - Purpose: Log evaluation metrics & results (optional)                   │
+│                                                                           │
+└───────────────────────────────────────────────────────────────────────────┘
+
+NETWORK TOPOLOGY NOTES:
+═══════════════════════
+- NO INBOUND TRAFFIC: This is a batch Job container with NO Services,
+  NO Ingress, NO exposed ports. All traffic is EGRESS-ONLY.
+- The Job pod is created by the TrustyAI LMEval operator and terminates
+  after evaluation completes (one-shot execution).
+
+RBAC Summary:
+═════════════
+- No RBAC resources defined by this component.
+- RBAC for the Job pod is managed by the LMEval operator
+  (trustyai-service-operator) which creates the Job.
+
+Secrets:
+════════
+- Model auth secret (Opaque)
+  - Keys: OPENAI_API_KEY, hf-token (HF_TOKEN), ca-cert
+  - Provisioned by: User / LMEval operator
+  - Auto-rotate: No
+
+- OCI registry auth (docker config.json)
+  - Purpose: Authentication for OCI artifact push
+  - Provisioned by: User / Platform
+  - Auto-rotate: No
+
+- git-auth (kubernetes.io/basic-auth)
+  - Purpose: Git authentication for Tekton pipeline builds
+  - Provisioned by: Pipelines as Code
+  - Auto-rotate: No
+
+Security Controls:
+══════════════════
+- Credential sanitization: _sanitize_error_message() redacts Bearer tokens,
+  API keys, passwords, and URL credentials from error messages before
+  sending to EvalHub callbacks
+- Path traversal protection: _resolve_job_spec_path_for_read() ensures
+  job spec resolves under /meta only
+- TLS validation: verify_certificate rejects symlinks, validates file
+  existence, uses ssl.create_default_context()
+- FIPS: Python on UBI 9 delegates to OpenSSL (FIPS-capable when enabled
+  at OS level); no non-FIPS crypto libraries detected
+
+Authentication Matrix:
+═════════════════════
+┌────────────────────────┬──────────┬──────────────────────┬───────────────┐
+│ Endpoint               │ Method   │ Auth Mechanism       │ Policy        │
+├────────────────────────┼──────────┼──────────────────────┼───────────────┤
+│ Model /v1/completions  │ POST     │ Bearer Token         │ OPENAI_API_KEY│
+│                        │          │ (OPENAI_API_KEY)     │ from secret   │
+├────────────────────────┼──────────┼──────────────────────┼───────────────┤
+│ EvalHub callback       │ POST     │ Bearer Token         │ EvalHub SDK   │
+│                        │          │                      │ managed       │
+├────────────────────────┼──────────┼──────────────────────┼───────────────┤
+│ HuggingFace Hub        │ GET      │ Bearer Token         │ Optional; for │
+│                        │          │ (HF_TOKEN)           │ gated datasets│
+├────────────────────────┼──────────┼──────────────────────┼───────────────┤
+│ OCI Registry           │ Push     │ Docker auth or       │ config.json   │
+│                        │          │ username/password    │ or env vars   │
+└────────────────────────┴──────────┴──────────────────────┴───────────────┘

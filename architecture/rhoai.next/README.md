@@ -1,7 +1,7 @@
 # RHOAI.NEXT unknown - Component Architectures
 
 Source: architecture/rhoai.next/component-map.json
-Date: 2026-05-15
+Date: 2026-06-22
 
 ## Components
 
@@ -30,10 +30,9 @@ Date: 2026-05-15
 | kube-auth-proxy | [kube-auth-proxy.md](./kube-auth-proxy.md) |
 | kube-rbac-proxy | [kube-rbac-proxy.md](./kube-rbac-proxy.md) |
 | kubeflow | [kubeflow.md](./kubeflow.md) |
+| kubeflow-sdk | [kubeflow-sdk.md](./kubeflow-sdk.md) |
 | kuberay | [kuberay.md](./kuberay.md) |
 | kueue | [kueue.md](./kueue.md) |
-| llama-stack | [llama-stack.md](./llama-stack.md) |
-| llama-stack-k8s-operator | [llama-stack-k8s-operator.md](./llama-stack-k8s-operator.md) |
 | llama-stack-provider-ragas | [llama-stack-provider-ragas.md](./llama-stack-provider-ragas.md) |
 | llama-stack-provider-trustyai-garak | [llama-stack-provider-trustyai-garak.md](./llama-stack-provider-trustyai-garak.md) |
 | llm-d | [llm-d.md](./llm-d.md) |
@@ -41,7 +40,7 @@ Date: 2026-05-15
 | llm-d-kv-cache | [llm-d-kv-cache.md](./llm-d-kv-cache.md) |
 | llm-d-planner | [llm-d-planner.md](./llm-d-planner.md) |
 | llm-d-routing-sidecar | [llm-d-routing-sidecar.md](./llm-d-routing-sidecar.md) |
-| ml-metadata | [ml-metadata.md](./ml-metadata.md) |
+| lm-evaluation-harness | [lm-evaluation-harness.md](./lm-evaluation-harness.md) |
 | mlflow | [mlflow.md](./mlflow.md) |
 | mlflow-operator | [mlflow-operator.md](./mlflow-operator.md) |
 | model-metadata-collection | [model-metadata-collection.md](./model-metadata-collection.md) |
@@ -59,10 +58,12 @@ Date: 2026-05-15
 | odh-dashboard | [odh-dashboard.md](./odh-dashboard.md) |
 | odh-deployer | [odh-deployer.md](./odh-deployer.md) |
 | odh-model-controller | [odh-model-controller.md](./odh-model-controller.md) |
+| ogx | [ogx.md](./ogx.md) |
 | ogx-k8s-operator | [ogx-k8s-operator.md](./ogx-k8s-operator.md) |
 | openvino_model_server | [openvino_model_server.md](./openvino_model_server.md) |
 | pipelines-components | [pipelines-components.md](./pipelines-components.md) |
 | rest-proxy | [rest-proxy.md](./rest-proxy.md) |
+| rhaii-cluster-validation | [rhaii-cluster-validation.md](./rhaii-cluster-validation.md) |
 | rhds-llama-stack-distribution | [rhds-llama-stack-distribution.md](./rhds-llama-stack-distribution.md) |
 | rhoai-mcp | [rhoai-mcp.md](./rhoai-mcp.md) |
 | rhods-operator | [rhods-operator.md](./rhods-operator.md) |
@@ -84,4 +85,4 @@ Date: 2026-05-15
 
 - **Platform**: RHOAI.NEXT
 - **Version**: unknown
-- **Components**: 72
+- **Components**: 73

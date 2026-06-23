@@ -1,75 +1,75 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
         UserBrowser["User Browser"]
-        RayClient["Ray Client SDK"]
+        RayClientApp["Ray Client Application"]
     end
 
     subgraph Ingress["INGRESS (OpenShift Router)"]
-        DashboardRoute["ray-dashboard Route<br/>443/TCP → 8443/TCP<br/>TLS Reencrypt<br/>OpenShift OAuth"]
-        ClientRoute["rayclient Route<br/>443/TCP → 10001/TCP<br/>TLS Passthrough<br/>mTLS"]
+        DashRoute["ray-dashboard-{cluster} Route<br/>443/TCP → 8443/TCP<br/>TLS Reencrypt<br/>Host: auto-generated"]
+        ClientRoute["rayclient-{cluster} Route<br/>443/TCP → 10001/TCP<br/>TLS Passthrough<br/>Host: {cluster}-{ns}.{domain}"]
     end
 
-    subgraph PodNetwork["POD NETWORK (RayCluster Namespace)<br/>NetworkPolicy: head + worker rules"]
+    subgraph WorkloadNS["WORKLOAD NAMESPACE ({user-namespace})"]
         direction TB
 
-        subgraph HeadPod["RayCluster Head Pod"]
-            OAuthProxy["OAuth Proxy Sidecar<br/>8443/TCP HTTPS<br/>TLS serving cert"]
-            RayDashboard["Ray Dashboard<br/>8265/TCP HTTP<br/>localhost only"]
-            RayHead["Ray Head Process<br/>10001/TCP gRPC mTLS<br/>6379/TCP GCS"]
-            InitCertHead["Init: create-cert<br/>openssl RSA 2048"]
+        subgraph HeadPod["Ray Head Pod"]
+            OAuthProxy["oauth-proxy sidecar<br/>8443/TCP HTTPS<br/>Image: ose-oauth-proxy<br/>TLS: service-serving-cert"]
+            RayDashboard["Ray Dashboard<br/>8265/TCP HTTP<br/>(localhost only)"]
+            HeadRay["Ray Head Process<br/>10001/TCP gRPC<br/>mTLS: per-cluster CA"]
         end
 
-        subgraph WorkerPods["RayCluster Worker Pod(s)"]
-            RayWorker["Ray Worker Process<br/>10001/TCP gRPC mTLS"]
-            InitCertWorker["Init: create-cert<br/>openssl RSA 2048"]
-        end
+        WorkerPod["Ray Worker Pod(s)<br/>10001/TCP gRPC<br/>mTLS: per-cluster CA<br/>Init: cert generation"]
+
+        NetPol["NetworkPolicies<br/>- Allow Router → 8443<br/>- Allow KubeRay NS<br/>- Allow intra-cluster"]
     end
 
-    subgraph OperatorNS["OPERATOR NAMESPACE"]
-        Operator["CodeFlare Operator Manager<br/>SA: controller-manager<br/>9443/TCP Webhooks (HTTPS)<br/>8081/TCP Health (HTTP)<br/>8080/TCP Metrics (HTTP)"]
+    subgraph OperatorNS["OPERATOR NAMESPACE (opendatahub)"]
+        Operator["CodeFlare Operator<br/>SA: controller-manager<br/>8081/TCP health (HTTP)<br/>8080/TCP metrics (HTTP)<br/>9443/TCP webhooks (HTTPS)"]
     end
 
-    subgraph Platform["PLATFORM SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token"]
-        OSOAuth["OpenShift OAuth Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>OAuth"]
-        OSIngress["OpenShift Ingress Config<br/>443/TCP HTTPS<br/>TLS 1.2+"]
-        Prometheus["Prometheus Monitoring<br/>8080/TCP HTTP"]
+    subgraph ControlPlane["CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
+        OSConfig["OpenShift Config API<br/>443/TCP HTTPS<br/>config.openshift.io/ingresses"]
+        OSOAuth["OpenShift OAuth Server<br/>443/TCP HTTPS<br/>OAuth flow"]
+        CertSigner["service-serving-cert-signer<br/>Provisions TLS certs"]
     end
 
     %% External → Ingress
-    UserBrowser -->|"HTTPS/443<br/>TLS 1.2+"| DashboardRoute
-    RayClient -->|"HTTPS/443<br/>TLS passthrough<br/>mTLS cert"| ClientRoute
+    UserBrowser -->|"HTTPS/443<br/>TLS 1.2+<br/>No Auth (→ OAuth redirect)"| DashRoute
+    RayClientApp -->|"HTTPS/443<br/>TLS passthrough<br/>mTLS (cluster CA)"| ClientRoute
 
-    %% Ingress → Pods
-    DashboardRoute -->|"HTTPS/8443<br/>TLS reencrypt<br/>OAuth"| OAuthProxy
-    ClientRoute -->|"gRPC/10001<br/>mTLS passthrough"| RayHead
+    %% Ingress → Workload
+    DashRoute -->|"HTTPS/8443<br/>TLS reencrypt<br/>OAuth token"| OAuthProxy
+    ClientRoute -->|"gRPC/10001<br/>mTLS passthrough<br/>Client cert"| HeadRay
 
-    %% Intra-pod
-    OAuthProxy -->|"HTTP/8265<br/>localhost<br/>post-auth"| RayDashboard
+    %% Within Head Pod
+    OAuthProxy -->|"HTTP/8265<br/>localhost<br/>No encryption"| RayDashboard
 
-    %% Inter-node mTLS
-    RayHead <-->|"gRPC/10001<br/>mTLS<br/>CA-signed certs"| RayWorker
+    %% Head-Worker mTLS
+    HeadRay <-->|"gRPC/10001<br/>mTLS<br/>per-cluster CA certs"| WorkerPod
 
-    %% OAuth delegation
-    OAuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth delegation"| OSOAuth
-
-    %% Operator → Platform
+    %% Operator → Control Plane
     Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| OSIngress
+    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| OSConfig
 
-    %% Prometheus scrape
-    Prometheus -.->|"HTTP/8080<br/>metrics scrape"| Operator
+    %% OAuth flow
+    OAuthProxy -.->|"OAuth redirect<br/>HTTPS/443"| OSOAuth
+    CertSigner -.->|"Provisions<br/>proxy-tls-secret"| OAuthProxy
+
+    %% API Server → Webhooks
+    K8sAPI -->|"HTTPS/9443<br/>TLS<br/>Webhook calls"| Operator
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef podnetwork fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef workload fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef secret fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef controlplane fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef netpol fill:#f8cecc,stroke:#b85450,stroke-width:1px,stroke-dasharray: 5
 
-    class UserBrowser,RayClient external
-    class DashboardRoute,ClientRoute ingress
-    class OAuthProxy,RayDashboard,RayHead,RayWorker,InitCertHead,InitCertWorker podnetwork
+    class UserBrowser,RayClientApp external
+    class DashRoute,ClientRoute ingress
+    class OAuthProxy,RayDashboard,HeadRay,WorkerPod workload
     class Operator operator
-    class K8sAPI,OSOAuth,OSIngress,Prometheus platform
+    class K8sAPI,OSConfig,OSOAuth,CertSigner controlplane
+    class NetPol netpol

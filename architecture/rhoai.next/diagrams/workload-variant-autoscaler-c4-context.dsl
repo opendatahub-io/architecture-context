@@ -1,42 +1,61 @@
 workspace {
     model {
-        admin = person "Platform Admin" "Creates VariantAutoscaling resources defining scaling parameters for LLM model variants"
+        admin = person "Platform Admin" "Configures autoscaling parameters via ConfigMaps and manages scaling policies"
+        datascientist = person "Data Scientist" "Deploys ML models with HPA/KEDA annotations for autoscaling"
 
-        wva = softwareSystem "Workload Variant Autoscaler (WVA)" "Kubernetes operator that computes optimal replica counts for LLM inference workloads using saturation metrics, KV cache analysis, and queueing theory" {
-            controllerManager = container "Controller Manager" "Reconciles VariantAutoscaling CRs, manages lifecycle, patches status with scaling decisions" "Go Operator (controller-runtime)"
-            saturationEngine = container "Saturation Engine" "Polls Prometheus every 30s, runs V1/V2/QM analyzers, computes desired replicas per variant" "Go (goroutine)"
-            scaleFromZeroEngine = container "Scale-From-Zero Engine" "Polls EPP pods every 100ms for pending requests on inactive variants, triggers immediate scale-up" "Go (goroutine)"
-            decisionCache = container "Decision Cache" "In-memory shared state between engines and controller for fast decision propagation" "Go (in-memory)"
-            datastore = container "Datastore" "Tracks InferencePool state and namespace-to-resource mappings" "Go (in-memory)"
+        wva = softwareSystem "Workload Variant Autoscaler (WVA)" "Global autoscaler for LLM inference model servers using saturation, queueing theory, and cost optimization across GPU variant configurations" {
+            controllerManager = container "controller-manager" "Reconciles VAs, HPAs, ScaledObjects, ConfigMaps, InferencePools; runs saturation and scale-from-zero engines; emits scaling metrics" "Go Operator (controller-runtime)"
+            saturationEngine = container "Saturation Engine" "Runs V1 (% KV cache), V2 (absolute tokens), or Queueing Model (M/M/c) analysis to determine desired replicas" "Go"
+            scaleFromZeroEngine = container "Scale-from-Zero Engine" "Detects queued requests via EPP metrics and directly scales zero-replica deployments" "Go"
+            datastore = container "In-Memory Datastore" "Stores variant configurations, namespace tracking, replica metrics, and decision cache" "Go"
+            configSystem = container "Configuration System" "Three-tier resolution: namespace-local > global > system defaults via ConfigMap reconciler" "Go"
+            metricsEndpoint = container "Metrics Endpoint" "Exposes 25+ custom Prometheus metrics for scaling decisions, saturation, capacity, and health" "HTTPS/8443"
         }
 
-        prometheus = softwareSystem "Prometheus (Thanos Querier)" "Time-series metrics database providing vLLM inference server metrics via PromQL" "External"
-        vllm = softwareSystem "vLLM Inference Servers" "Model serving instances emitting saturation metrics (KV cache, queue depth, token rates)" "External"
-        k8sApi = softwareSystem "Kubernetes API Server" "Cluster API for watching/updating CRs, Deployments, ConfigMaps" "External"
-        hpa = softwareSystem "HPA / KEDA" "External autoscaler that consumes WVA metrics to perform actual scaling" "External"
-        inferencePool = softwareSystem "InferencePool (Gateway API IE)" "CRD for workload pool configuration and EPP discovery" "Internal Platform"
-        eppPods = softwareSystem "EPP (Endpoint Picker) Pods" "Endpoint picker pods providing flow control queue metrics for scale-from-zero" "Internal Platform"
-        gpuOperator = softwareSystem "GPU Operator" "Provides GPU node labels for cost-aware GPU resource allocation" "External"
-        lwsController = softwareSystem "LeaderWorkerSet Controller" "Manages multi-node inference workloads (conditional scale target)" "External"
+        prometheus = softwareSystem "Prometheus / Thanos Querier" "Metrics collection and querying platform; source of vLLM metrics and target for WVA metrics" "External"
+        k8sapi = softwareSystem "Kubernetes API Server" "Kubernetes control plane for resource management and watch events" "External"
+        hpa = softwareSystem "HPA (autoscaling/v2)" "Standard Kubernetes horizontal pod autoscaler consuming WVA external metrics" "External"
+        keda = softwareSystem "KEDA" "Event-driven autoscaler consuming WVA metrics via ScaledObject" "External"
+        vllm = softwareSystem "vLLM Model Servers" "LLM inference servers exposing KV cache, queue, and throughput metrics" "External"
+        epp = softwareSystem "EPP (Endpoint Picker Proxy)" "Gateway API Inference Extension exposing flow control queue size for scale-from-zero" "Internal Platform"
+        inferencePool = softwareSystem "InferencePool" "Gateway API Inference Extension CRD defining model endpoint pools" "Internal Platform"
+        leaderWorkerSet = softwareSystem "LeaderWorkerSet" "Optional alternative scale target for distributed inference workloads" "External"
+        certManager = softwareSystem "cert-manager" "Optional TLS certificate management for metrics and webhook endpoints" "External"
+        kalmanFilter = softwareSystem "llm-d Kalman Filter" "Kalman filter library for SLO parameter tuning in queueing model analyzer" "External"
 
-        admin -> wva "Creates VariantAutoscaling CRs via kubectl"
-        wva -> prometheus "Queries vLLM metrics via PromQL" "HTTPS/9091"
-        vllm -> prometheus "Emits inference metrics" "Scraped by Prometheus"
-        wva -> k8sApi "Watch/CRUD VariantAutoscaling, Deployment, ConfigMap, InferencePool" "HTTPS/6443"
-        wva -> eppPods "Scrape flow_control_queue_size" "HTTP/configurable"
-        wva -> hpa "Emits wva_desired_replicas, wva_current_replicas, wva_desired_ratio" "HTTPS/8443"
-        hpa -> k8sApi "Scales Deployments based on WVA metrics" "HTTPS/6443"
-        wva -> gpuOperator "Reads GPU node labels for limited mode" "HTTPS/6443 (via API)"
-        wva -> lwsController "Scales LeaderWorkerSet for multi-node inference" "HTTPS/6443 (via API)"
-        inferencePool -> wva "Watched by controller for EPP config discovery" "HTTPS/6443 (via API)"
+        # User interactions
+        admin -> wva "Configures scaling parameters via ConfigMaps" "kubectl / HTTPS"
+        datascientist -> hpa "Creates HPAs with llm-d.ai/managed=true annotation" "kubectl / HTTPS"
+        datascientist -> keda "Creates ScaledObjects with llm-d.ai/managed=true annotation" "kubectl / HTTPS"
 
-        saturationEngine -> prometheus "PromQL: kv_cache_usage_perc, num_requests_waiting" "HTTPS/9091"
-        saturationEngine -> decisionCache "Writes scaling decisions"
-        scaleFromZeroEngine -> eppPods "Reads queue size" "HTTP"
-        scaleFromZeroEngine -> decisionCache "Writes scale-up decisions"
-        scaleFromZeroEngine -> k8sApi "Direct /scale subresource PATCH" "HTTPS/6443"
-        decisionCache -> controllerManager "DecisionTrigger channel"
-        controllerManager -> k8sApi "Patches VA status" "HTTPS/6443"
+        # WVA internal flows
+        controllerManager -> saturationEngine "Triggers optimization cycle" ""
+        controllerManager -> scaleFromZeroEngine "Runs scale-from-zero check" ""
+        controllerManager -> datastore "Reads/writes variant state" ""
+        controllerManager -> configSystem "Reads configuration" ""
+        saturationEngine -> datastore "Reads replica metrics" ""
+        scaleFromZeroEngine -> datastore "Reads/writes decision cache" ""
+        configSystem -> datastore "Updates configuration state" ""
+
+        # WVA external interactions
+        wva -> prometheus "Queries vLLM metrics (KV cache, queue, tokens)" "HTTPS/9090-9091, Bearer Token"
+        wva -> k8sapi "Watches CRDs, ConfigMaps, HPAs, Deployments, Nodes" "HTTPS/6443, SA Token"
+        wva -> epp "Scrapes queue_size for scale-from-zero" "HTTPS, Bearer Token"
+        wva -> k8sapi "Updates scale subresource (scale-from-zero only)" "HTTPS/6443, SA Token"
+
+        # Metrics flow
+        prometheus -> metricsEndpoint "Scrapes WVA metrics" "HTTPS/8443, Bearer Token"
+        vllm -> prometheus "Exposes inference metrics" "HTTP"
+        hpa -> prometheus "Reads wva_desired_replicas external metric" "HTTPS/9090"
+        keda -> prometheus "Reads wva_desired_replicas external metric" "HTTPS/9090"
+        hpa -> k8sapi "Updates scale subresource" "HTTPS/6443"
+        keda -> k8sapi "Updates scale subresource" "HTTPS/6443"
+
+        # Optional dependencies
+        wva -> certManager "TLS certificate management" "Optional"
+        saturationEngine -> kalmanFilter "SLO parameter tuning" "In-process library"
+        wva -> inferencePool "Discovers model endpoint pools" "CRD Watch"
+        wva -> leaderWorkerSet "Alternative scale target" "CRD Watch + Scale, Optional"
     }
 
     views {
@@ -51,6 +70,15 @@ workspace {
         }
 
         styles {
+            element "Person" {
+                shape Person
+                background #08427b
+                color #ffffff
+            }
+            element "Software System" {
+                background #1168bd
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -59,17 +87,8 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Person" {
-                shape Person
-                background #4a90e2
-                color #ffffff
-            }
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
             element "Container" {
-                background #6ba5e7
+                background #438dd5
                 color #ffffff
             }
         }

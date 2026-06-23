@@ -1,159 +1,164 @@
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                       │
-│                                                                             │
-│  [External Client]                                                          │
-│         │                                                                   │
-│         │ Port: 443/TCP                                                     │
-│         │ Protocol: HTTPS                                                   │
-│         │ Encryption: TLS 1.2+                                              │
-│         │ Auth: Managed by KServe/platform (Bearer/mTLS)                    │
-│         ▼                                                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  PLATFORM LAYER (KServe / ModelMesh / Istio)                                │
-│                                                                             │
-│  [KServe ServingRuntime / Istio Gateway]                                    │
-│  - TLS termination at gateway                                               │
-│  - AuthN/AuthZ managed by platform operator                                 │
-│  - Routes traffic to Caikit containers                                      │
-│         │                                                                   │
-│         │ Port: runtime.grpc.port/TCP or runtime.http.port/TCP              │
-│         │ Protocol: gRPC or HTTP                                            │
-│         │ Encryption: Configurable (TLS/mTLS/plaintext)                     │
-│         │ Auth: Configurable (mTLS client cert / None)                      │
-│         ▼                                                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  CAIKIT RUNTIME POD (Trusted - pod-internal)                                │
-│                                                                             │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  [gRPC Server]                                                      │    │
-│  │  - Port: runtime.grpc.port/TCP                                      │    │
-│  │  - Protocol: gRPC/HTTP2                                             │    │
-│  │  - Encryption: Configurable (TLS, mTLS, or plaintext)               │    │
-│  │  - Auth: Configurable (mTLS client cert verification)               │    │
-│  │  - Services: {Domain}Service, TrainingService, InfoService,         │    │
-│  │              ModelManagement, TrainingManagement,                    │    │
-│  │              grpc.health.v1.Health                                   │    │
-│  └─────────────────┬───────────────────────────────────────────────────┘    │
-│                    │                                                        │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  [HTTP Server (FastAPI/uvicorn)]                                    │    │
-│  │  - Port: runtime.http.port/TCP                                      │    │
-│  │  - Protocol: HTTP/1.1                                               │    │
-│  │  - Encryption: Configurable (TLS, mTLS, or plaintext)               │    │
-│  │  - Auth: Configurable (mTLS client cert verification)               │    │
-│  │  - Endpoints: /health, /info/*, /management/*, /task/*              │    │
-│  │  - Streaming: SSE (Server-Sent Events) for inference                │    │
-│  └─────────────────┬───────────────────────────────────────────────────┘    │
-│                    │                                                        │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  [Metrics Server]                                                   │    │
-│  │  - Port: runtime.metrics.port/TCP                                   │    │
-│  │  - Protocol: HTTP                                                   │    │
-│  │  - Encryption: plaintext                                            │    │
-│  │  - Auth: None                                                       │    │
-│  │  - Metrics: Prometheus format (counters, gauges, histograms)        │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                    │                                                        │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  [ModelRuntime Sidecar Interface]                                   │    │
-│  │  - Port: Unix socket (preferred) or gRPC port/TCP                   │    │
-│  │  - Protocol: gRPC                                                   │    │
-│  │  - Encryption: N/A (Unix socket) or TLS                             │    │
-│  │  - Auth: N/A (pod-local)                                            │    │
-│  │  - RPCs: loadModel, unloadModel, predictModelSize,                  │    │
-│  │          modelSize, runtimeStatus                                   │    │
-│  └─────────────────┬───────────────────────────────────────────────────┘    │
-│                    │                                                        │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  [Shared Processing Layer]                                          │    │
-│  │  - GlobalPredictServicer → ModelManager → Module.run()              │    │
-│  │  - GlobalTrainServicer → ModelManager → Module.train()              │    │
-│  │  - Request Batcher (configurable)                                   │    │
-│  │  - CoreModelLoader (local FS + S3)                                  │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  POD-LOCAL CONNECTIONS                                                      │
-│                                                                             │
-│  [ModelMesh Controller]                                                     │
-│  - Connects via: Unix socket (preferred) or gRPC/TCP                       │
-│  - Protocol: gRPC (ModelRuntime sidecar protocol)                          │
-│  - Encryption: N/A (Unix socket) or TLS                                    │
-│  - Auth: N/A (pod-local)                                                   │
-│  - Purpose: Model lifecycle management                                      │
-│         │                                                                   │
-│         │ Port: Unix socket                                                 │
-│         │ Protocol: gRPC                                                    │
-│         │ Encryption: N/A (local)                                           │
-│         │ Auth: N/A (local)                                                 │
-│         ▼                                                                   │
-│  [ModelRuntime Sidecar Interface] (see above)                               │
-│                                                                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  EGRESS TO EXTERNAL SERVICES                                                │
-│                                                                             │
-│  [Caikit Runtime] ──────────────────────────────────────────────────►       │
-│         │                                                                   │
-│         ├──► [S3-compatible Storage]                                        │
-│         │    - Destination: s3.amazonaws.com (or compatible)                │
-│         │    - Port: 443/TCP                                                │
-│         │    - Protocol: HTTPS                                              │
-│         │    - Encryption: TLS 1.2+                                         │
-│         │    - Auth: HMAC (accessKey/secretKey) or IAM                      │
-│         │    - Purpose: Model artifact & training data storage              │
-│         │                                                                   │
-│         ├──► [OpenTelemetry Collector]                                      │
-│         │    - Destination: configurable                                    │
-│         │    - Port: configurable/TCP                                       │
-│         │    - Protocol: gRPC or HTTP (OTLP)                               │
-│         │    - Encryption: Configurable (TLS/mTLS/plaintext)               │
-│         │    - Auth: Configurable (mTLS client cert)                       │
-│         │    - Purpose: Distributed trace export                            │
-│         │                                                                   │
-│         └──► [Remote Caikit Runtime]                                        │
-│              - Destination: configurable                                    │
-│              - Port: configurable/TCP                                       │
-│              - Protocol: gRPC or HTTP                                       │
-│              - Encryption: Configurable (TLS/mTLS)                         │
-│              - Auth: Configurable (mTLS/Bearer)                            │
-│              - Purpose: Remote model proxy (client module)                  │
-│                                                                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  MONITORING (Inbound Scrape)                                                │
-│                                                                             │
-│  [Prometheus]                                                               │
-│  - Scrapes: runtime.metrics.port/TCP                                       │
-│  - Protocol: HTTP                                                           │
-│  - Encryption: plaintext                                                    │
-│  - Auth: None                                                               │
-│  - Metrics: prediction counters, model load gauges, latency histograms     │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Client Application]                                                    │
+│         │                                                                │
+│         │ Port: 8080/TCP (HTTP) or 8085/TCP (gRPC)                      │
+│         │ Protocol: HTTP/HTTPS or gRPC (HTTP/2)                         │
+│         │ Encryption: Configurable (None / TLS / mTLS)                  │
+│         │ Auth: None by default — platform-level auth                   │
+│         │       (kube-rbac-proxy, oauth-proxy) when deployed            │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CAIKIT RUNTIME (In-Pod)                                                │
+│                                                                          │
+│  NOTE: Caikit is a Python library, not a standalone deployment.         │
+│  It runs inside consuming container images (caikit-nlp,                 │
+│  caikit-tgis-serving) deployed via KServe or Model Mesh.                │
+│                                                                          │
+│  ┌──────────────────────────────────┐                                   │
+│  │  [HTTP Server (FastAPI/Uvicorn)] │                                   │
+│  │  - Port: 8080/TCP               │                                   │
+│  │  - Protocol: HTTP/HTTPS         │                                   │
+│  │  - Encryption: None/TLS/mTLS    │                                   │
+│  │    (configurable via config.yml) │                                   │
+│  │  - TLS: Python ssl module       │                                   │
+│  │    via Uvicorn                   │                                   │
+│  │  - mTLS: ssl_cert_reqs=         │                                   │
+│  │    CERT_REQUIRED                 │                                   │
+│  │  - Auth: None (default)         │                                   │
+│  │  - Endpoints:                   │                                    │
+│  │    GET  /health                 │                                    │
+│  │    GET  /info/models            │                                    │
+│  │    GET  /info/runtime           │                                    │
+│  │    POST /api/v1/tasks/*/predict │                                    │
+│  │    POST /api/v1/modules/*/train │                                    │
+│  │    POST /model_management/model │                                    │
+│  │    DEL  /model_management/model │                                    │
+│  │    GET  /training_management/*  │                                    │
+│  │    DEL  /training_management/*  │                                    │
+│  └──────────────────────────────────┘                                   │
+│                                                                          │
+│  ┌──────────────────────────────────┐                                   │
+│  │  [gRPC Server]                   │                                   │
+│  │  - Port: 8085/TCP               │                                   │
+│  │  - Protocol: gRPC (HTTP/2)      │                                   │
+│  │  - Encryption: None/TLS/mTLS    │                                   │
+│  │    (configurable via config.yml) │                                   │
+│  │  - TLS: grpcio ssl_server_      │                                   │
+│  │    credentials                  │                                    │
+│  │  - mTLS: require_client_auth    │                                   │
+│  │  - Auth: None (default)         │                                   │
+│  │  - Services:                    │                                    │
+│  │    InferenceService (dynamic)   │                                    │
+│  │    TrainingService (dynamic)    │                                    │
+│  │    ModelManagement              │                                    │
+│  │    TrainingManagement           │                                    │
+│  │    ModelRuntime                 │                                    │
+│  │    Info                         │                                    │
+│  │    grpc.health.v1.Health        │                                    │
+│  └──────────────────────────────────┘                                   │
+│                                                                          │
+│  ┌──────────────────────────────────┐                                   │
+│  │  [Prometheus Metrics]            │                                   │
+│  │  - Port: 8086/TCP               │                                   │
+│  │  - Protocol: HTTP               │                                   │
+│  │  - Encryption: None             │                                   │
+│  │  - Auth: None                   │                                   │
+│  │  - Exposure: Internal only      │                                   │
+│  └──────────────────────────────────┘                                   │
+│                                                                          │
+│  ┌──────────────────────────────────┐                                   │
+│  │  [caikit_health_probe]           │                                   │
+│  │  - Standalone binary process     │                                   │
+│  │  - Liveness: psutil process      │                                   │
+│  │    check                         │                                   │
+│  │  - Readiness: HTTP /health +     │                                   │
+│  │    gRPC Health.Check()           │                                   │
+│  │  - TLS: Reuses server TLS       │                                   │
+│  │    config for health calls       │                                   │
+│  └──────────────────────────────────┘                                   │
+│         │                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  POD-LOCAL COMMUNICATION                                                │
+│                                                                          │
+│  [Model Mesh Controller]                                                 │
+│         │                                                                │
+│         │ Socket: /tmp/mmesh/grpc.sock (Unix domain socket)             │
+│         │ Protocol: gRPC                                                │
+│         │ Encryption: None (local only)                                 │
+│         │ Auth: None (pod-local)                                        │
+│         │ API: ModelRuntime (loadModel, unloadModel, modelSize,         │
+│         │      runtimeStatus)                                            │
+│         ▼                                                                │
+│  [ModelRuntimeServicer] ←── Part of gRPC server                         │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (Outbound Connections)                                          │
+│                                                                          │
+│  [OpenTelemetry Collector]                                               │
+│  - Port: 4317/TCP (gRPC) or 4318/TCP (HTTP)                            │
+│  - Protocol: gRPC or HTTPS (OTLP)                                       │
+│  - Encryption: Configurable (None/TLS/mTLS)                             │
+│  - Auth: None                                                            │
+│  - Purpose: Distributed trace export                                     │
+│                                                                          │
+│  [S3-compatible Storage]                                                 │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS                                                       │
+│  - Auth: AWS IAM / S3 credentials                                        │
+│  - Purpose: Training data source (S3Files plugin)                        │
+│                                                                          │
+│  [Remote Caikit Servers] (optional)                                      │
+│  - Port: Configurable                                                    │
+│  - Protocol: gRPC or HTTP                                                │
+│  - Encryption: Configurable (TLS/mTLS)                                   │
+│  - Auth: Configurable                                                    │
+│  - Purpose: Remote model finder/initializer for distributed inference    │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MONITORING (Inbound Scrape)                                            │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - Port: 8086/TCP                                                        │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: None                                                      │
+│  - Auth: None                                                            │
+│  - Purpose: Scrape model counts, load times, predict durations,          │
+│             RPC counts                                                    │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- N/A — Caikit is a Python library/runtime, not a Kubernetes operator
-- No ClusterRoles, Roles, or RoleBindings defined
-- RBAC is managed by the platform operator (KServe/ModelMesh/ODH)
-
-Service Mesh Configuration:
-- N/A — Service mesh integration managed by platform operator
-- Caikit supports TLS/mTLS at the application level (configurable)
-- When deployed in a service mesh, sidecar handles mTLS transparently
-
-Secrets:
-- runtime.tls.server.key (TLS private key) — gRPC/HTTP server TLS termination
-  Provisioned by: KServe/platform operator, Auto-Rotate: N/A
-- runtime.tls.server.cert (TLS certificate) — gRPC/HTTP server TLS certificate
-  Provisioned by: KServe/platform operator, Auto-Rotate: N/A
-- runtime.tls.client.cert (TLS CA/client cert) — mTLS client authentication
-  Provisioned by: KServe/platform operator, Auto-Rotate: N/A
-- S3 credentials (HMAC keys or IAM API key) — S3 storage access
-  Provisioned by: User, Auto-Rotate: No
+- No Kubernetes RBAC — Caikit is a Python library, not a Kubernetes operator.
+- Access control is delegated to the consuming deployment:
+  - KServe: Uses kube-rbac-proxy or oauth-proxy sidecars
+  - Model Mesh: Pod-level RBAC managed by modelmesh-serving operator
+  - Platform-level auth enforced externally (not by Caikit itself)
 
 TLS Configuration:
-- Server TLS: Configurable via runtime.tls.server.key/cert config keys
-- Client mTLS: Configurable via runtime.tls.client.cert config key
-- Health probe: Supports TLS/mTLS for both gRPC and HTTP probing
-- Certificate loading: From file path or inline content
-- CA bundle support: For client cert validation
-- FIPS: Delegates to system OpenSSL via grpcio/uvicorn (UBI base image)
+- Server TLS Mode: Configurable via config.yml (runtime.tls section)
+  - Modes: None (default), TLS (server cert only), mTLS (mutual TLS)
+  - gRPC: ssl_server_credentials with optional require_client_auth
+  - HTTP: Uvicorn ssl_certfile/ssl_keyfile with optional ssl_cert_reqs=CERT_REQUIRED
+  - Certificate Sources: File paths or inline PEM content
+  - Crypto: Python ssl module → OpenSSL (FIPS depends on container image)
+- Health Probe TLS: Reuses the same TLS config as the runtime servers
+
+Secrets:
+- TLS server key/cert (kubernetes.io/tls) - gRPC and HTTP server TLS
+  - Provisioned by: Manual or cert-manager (via consuming deployment)
+  - Auto-Rotate: Depends on provisioner
+- TLS client CA cert (Opaque) - mTLS client certificate verification
+  - Provisioned by: Manual or cert-manager
+  - Auto-Rotate: Depends on provisioner
+- OTLP TLS CA/key/cert (Opaque) - TLS for OpenTelemetry trace exporter
+  - Provisioned by: Manual
+  - Auto-Rotate: No
+
+FIPS Compliance:
+- Caikit delegates TLS to the Python ssl module (via grpcio and uvicorn)
+- FIPS compliance determined by container image (UBI = FIPS-enabled OpenSSL)
+- No direct cryptographic operations in the library
+- No non-FIPS crypto risks detected (no MD5, RC4, DES, custom RNG)

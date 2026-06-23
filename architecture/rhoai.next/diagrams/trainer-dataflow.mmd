@@ -1,59 +1,61 @@
 sequenceDiagram
-    autonumber
-
-    participant User as User / SDK
+    participant User as Data Scientist
     participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant Webhook as Webhook Service<br/>9443/TCP HTTPS TLS
-    participant Controller as Trainer Controller<br/>(opendatahub namespace)
+    participant Controller as Trainer Controller<br/>opendatahub namespace
+    participant Plugins as Plugin Framework<br/>(in-process)
     participant JobSetCtrl as JobSet Controller
-    participant TrainingPod as Training Pods<br/>(user namespace)
-    participant PeerPod as Peer Training Pods
+    participant Scheduler as K8s Scheduler<br/>(CoScheduling/Volcano)
+    participant Rank0 as Training Pod (Rank 0)<br/>28080/TCP HTTP
+    participant Workers as Training Pods (Workers)<br/>29500/TCP TCP
+    participant DCHead as Data Cache Head<br/>gRPC Arrow Flight
+    participant DCWorker as Data Cache Workers<br/>gRPC Arrow Flight
+    participant Iceberg as Iceberg Metadata<br/>S3/HTTP
 
-    rect rgb(220, 240, 255)
-        note over User,TrainingPod: Flow 1: TrainJob Reconciliation (PyTorch Distributed)
+    Note over User,Workers: Flow 1: TrainJob Reconciliation
 
-        User->>K8sAPI: POST TrainJob CR<br/>Auth: Bearer Token / kubeconfig
-        K8sAPI->>Webhook: POST /validate-trainer-...-trainjob<br/>HTTPS/9443 TLS (self-signed)<br/>Auth: AdmissionReview
-        Webhook-->>K8sAPI: Allowed / Denied
-        K8sAPI-->>User: TrainJob created
+    User->>K8sAPI: kubectl apply TrainJob<br/>Bearer Token (ServiceAccount)
+    K8sAPI->>Controller: Watch event: TrainJob created<br/>HTTPS/443 TLS 1.2+
+    Controller->>K8sAPI: Fetch TrainingRuntime/ClusterTrainingRuntime<br/>HTTPS/443 TLS 1.2+
+    K8sAPI-->>Controller: Runtime definition
 
-        K8sAPI->>Controller: Watch event: TrainJob<br/>HTTPS/443 TLS 1.2+<br/>Auth: ServiceAccount token
+    Controller->>Plugins: Execute plugin chain
+    Note right of Plugins: 1. EnforceMLPolicy (PyTorch/MPI)<br/>2. EnforcePodGroupPolicy (CoSched/Volcano)<br/>3. PodNetwork (NetworkPolicy)<br/>4. ComponentBuilder (JobSet)
 
-        Controller->>K8sAPI: Create JobSet CR<br/>HTTPS/443 TLS 1.2+<br/>Auth: ServiceAccount token
-        Controller->>K8sAPI: Create PodGroup CR<br/>(if co-scheduling enabled)<br/>HTTPS/443 TLS 1.2+
-        Controller->>K8sAPI: Create NetworkPolicy<br/>(RHOAI: per-TrainJob isolation)<br/>HTTPS/443 TLS 1.2+
+    Controller->>K8sAPI: Create JobSet resource<br/>HTTPS/443 TLS 1.2+
+    Controller->>K8sAPI: Create PodGroup (if gang scheduling)<br/>HTTPS/443 TLS 1.2+
+    Controller->>K8sAPI: Create ConfigMap/Secret (if MPI)<br/>HTTPS/443 TLS 1.2+
 
-        K8sAPI->>JobSetCtrl: Watch event: JobSet
-        JobSetCtrl->>K8sAPI: Create Training Pods
-        K8sAPI-->>TrainingPod: Pods scheduled
+    K8sAPI->>JobSetCtrl: JobSet created
+    JobSetCtrl->>K8sAPI: Create training Pods
+    K8sAPI->>Scheduler: Schedule pods (gang scheduling)
+    Scheduler-->>K8sAPI: Pods scheduled
 
-        TrainingPod->>PeerPod: NCCL/gRPC rendezvous<br/>TCP/29500 plaintext<br/>NetworkPolicy: same-job pods only
-        PeerPod-->>TrainingPod: Distributed training communication
+    Controller->>K8sAPI: Update TrainJob status<br/>HTTPS/443 TLS 1.2+
+
+    Note over Controller,Workers: Flow 2: RHAI Progression Tracking (RHOAI only)
+
+    loop Every reconciliation cycle
+        Controller->>K8sAPI: List pods for TrainJob<br/>HTTPS/443 TLS 1.2+
+        K8sAPI-->>Controller: Pod list with IPs
+        Controller->>Rank0: GET /metrics<br/>HTTP/28080 (No TLS)<br/>NetworkPolicy restricted
+        Rank0-->>Controller: Training metrics JSON<br/>(progress, steps, epochs, loss)
+        Controller->>K8sAPI: Patch TrainJob annotations<br/>HTTPS/443 TLS 1.2+
+        Controller->>K8sAPI: Create/Update NetworkPolicy<br/>HTTPS/443 TLS 1.2+
     end
 
-    rect rgb(255, 240, 220)
-        note over Controller,TrainingPod: Flow 2: Progression Tracking (RHOAI-specific)
+    Note over Rank0,Workers: Flow 3: Distributed PyTorch Training (inter-pod)
 
-        Controller->>K8sAPI: List pods (APIReader direct etcd read)<br/>HTTPS/443 TLS 1.2+<br/>Auth: ServiceAccount token
-        K8sAPI-->>Controller: Pod IPs for TrainJob
+    Workers->>Rank0: Connect to master<br/>TCP/29500 (c10d rendezvous)<br/>No encryption, NetworkPolicy: same-job
+    Rank0-->>Workers: Rendezvous complete
+    Note over Rank0,Workers: NCCL/Gloo collective ops<br/>Dynamic ports, TCP/UDP<br/>No encryption, NetworkPolicy: same-job
 
-        loop Poll interval (5s-300s configurable)
-            Controller->>TrainingPod: GET /metrics (rank-0 pod)<br/>HTTP/28080 plaintext<br/>Auth: None (NetworkPolicy-secured)
-            TrainingPod-->>Controller: Training metrics JSON<br/>(sanitized: NaN/Infinity handled)
-        end
+    Note over DCHead,Iceberg: Flow 4: Data Cache Distribution (Optional)
 
-        Controller->>K8sAPI: PATCH TrainJob annotation<br/>(progress data)<br/>HTTPS/443 TLS 1.2+
-    end
-
-    rect rgb(240, 255, 240)
-        note over Controller,PeerPod: Flow 3: MPI Training Job
-
-        Controller->>K8sAPI: Create SSH Secret<br/>(ECDSA P-521 key pair, immutable)<br/>HTTPS/443 TLS 1.2+
-        Controller->>K8sAPI: Create hostfile ConfigMap<br/>(node endpoints + slot counts)<br/>HTTPS/443 TLS 1.2+
-        Controller->>K8sAPI: Create JobSet CR<br/>HTTPS/443 TLS 1.2+
-
-        K8sAPI->>JobSetCtrl: Watch event: JobSet
-        JobSetCtrl->>K8sAPI: Create MPI Pods
-
-        TrainingPod->>PeerPod: SSH (MPI launcher → workers)<br/>TCP/22<br/>ECDSA P-521 key exchange<br/>Auth: SSH key pair from Secret
-    end
+    Rank0->>DCHead: get_flight_info<br/>gRPC Arrow Flight (No TLS)
+    DCHead->>Iceberg: Read table metadata<br/>HTTP/S3
+    Iceberg-->>DCHead: Data file locations
+    DCHead->>DCWorker: do_put (distribute data)<br/>gRPC Arrow Flight (No TLS)
+    DCWorker-->>DCHead: Acknowledgment
+    DCHead-->>Rank0: Flight info (worker assignments)
+    Rank0->>DCWorker: do_get (query cached data)<br/>gRPC Arrow Flight (No TLS)
+    DCWorker-->>Rank0: Arrow RecordBatch data

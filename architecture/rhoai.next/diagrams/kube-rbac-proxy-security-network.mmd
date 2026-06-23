@@ -1,90 +1,81 @@
 graph TB
-    subgraph External["EXTERNAL / IN-CLUSTER CLIENTS (Untrusted)"]
-        Client["External Client / In-Cluster Service"]
-        Prometheus["Prometheus<br/>openshift-monitoring<br/>SA: prometheus-k8s"]
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["External Client<br/>(browser, SDK, curl)"]
+        Prometheus["prometheus-k8s<br/>NS: openshift-monitoring<br/>SA: prometheus-k8s"]
     end
 
-    subgraph SidecarBoundary["SIDECAR PROXY (Auth Boundary)"]
-        direction TB
+    subgraph Pod["COMPONENT POD (Same Network Namespace)"]
+        subgraph SidecarProxy["SIDECAR PROXY (AuthN/AuthZ Boundary)"]
+            KRP["kube-rbac-proxy<br/>Port: 8443/TCP HTTPS<br/>TLS 1.2+ (configurable)<br/>FIPS: strictfipsruntime<br/>Cert reload: hot-reload"]
 
-        subgraph ProxyContainer["kube-rbac-proxy Container"]
-            direction TB
-            Listener["Secure Listener<br/>0.0.0.0:8443/TCP<br/>TLS 1.2+ (configurable)<br/>FIPS: strictfipsruntime"]
-
-            subgraph AuthNBlock["Authentication"]
-                TokenReviewAuth["Delegating<br/>(TokenReview)"]
-                X509Auth["X.509 Client Cert<br/>(--client-ca-file)"]
-                OIDCAuth["OIDC JWT<br/>(--oidc-issuer)"]
+            subgraph AuthN["Authentication"]
+                TokenReview["Delegating Authenticator<br/>(TokenReview API)"]
+                OIDC["OIDC Authenticator<br/>(JWT validation)"]
+                X509["X.509 Client Cert<br/>(CA validation)"]
             end
 
-            subgraph AuthZBlock["Authorization"]
-                HardcodedAllow["Hardcoded Allow<br/>prometheus-k8s SA<br/>GET /metrics"]
-                SARCheck["SAR Authorizer<br/>SubjectAccessReview<br/>Format1 / Format2"]
+            subgraph AuthZ["Authorization (union, first-match)"]
+                Hardcoded["Hardcoded Metrics Authz<br/>(prometheus-k8s → /metrics)"]
+                Static["Static Authorizer"]
+                SAR["SAR Authorizer<br/>(SubjectAccessReview API)"]
             end
-
-            ProxyHandler["Reverse Proxy<br/>Injects: x-remote-user<br/>x-remote-groups"]
         end
 
-        SecurityInfo["UID: 65534 (non-root)<br/>allowPrivilegeEscalation: false<br/>Log sanitization: tokens masked"]
+        Upstream["Upstream Application<br/>Port: 8081/TCP HTTP<br/>Plaintext (localhost loopback)<br/>Receives: X-Remote-User,<br/>X-Remote-Groups headers"]
     end
 
-    subgraph PodLocal["UPSTREAM (Trusted - localhost)"]
-        UpstreamApp["Application Container<br/>localhost:8080/TCP<br/>HTTP (no encryption)<br/>Metrics / API endpoints"]
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        APIServer["Kubernetes API Server<br/>Port: 443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: SA Token"]
     end
 
-    subgraph K8sServices["KUBERNETES SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
+    subgraph ExternalIdP["EXTERNAL IDENTITY (Optional)"]
+        OIDCIssuer["OIDC Issuer<br/>Port: 443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: None"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (Optional)"]
-        OIDCProvider["OIDC Provider<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Public endpoint"]
+    subgraph HealthEndpoint["HEALTH CHECK (Separate Port)"]
+        Healthz["/healthz endpoint<br/>--proxy-endpoints-port<br/>HTTPS, No Auth<br/>Returns: ok"]
     end
 
-    subgraph Operators["PLATFORM OPERATORS"]
-        RhodsOperator["rhods-operator<br/>Injects sidecar container<br/>Provisions TLS certs"]
-        CertManager["cert-manager<br/>TLS certificate provisioning<br/>Auto-rotation"]
-    end
+    %% Inbound flows
+    Client -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer Token / OIDC JWT / X.509"| KRP
+    Prometheus -->|"HTTPS/8443<br/>TLS 1.2+<br/>SA Bearer Token<br/>GET /metrics"| KRP
 
-    %% Ingress flows
-    Client -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer Token / mTLS / OIDC JWT"| Listener
-    Prometheus -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer Token<br/>GET /metrics"| Listener
+    %% AuthN flows
+    KRP --> TokenReview
+    KRP --> OIDC
+    KRP --> X509
 
-    %% Internal proxy flow
-    Listener --> AuthNBlock
-    AuthNBlock --> AuthZBlock
-    AuthZBlock --> ProxyHandler
+    %% AuthN to external
+    TokenReview -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>POST tokenreviews"| APIServer
+    OIDC -->|"HTTPS/443<br/>TLS 1.2+<br/>JWKS fetch"| OIDCIssuer
 
-    %% Egress to upstream
-    ProxyHandler -->|"HTTP/8080<br/>No encryption (localhost)<br/>+ auth headers"| UpstreamApp
+    %% AuthZ flows
+    TokenReview --> Hardcoded
+    OIDC --> Hardcoded
+    X509 --> Hardcoded
+    Hardcoded --> Static
+    Static --> SAR
+    SAR -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>POST subjectaccessreviews"| APIServer
 
-    %% Egress to K8s API
-    TokenReviewAuth -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>POST tokenreviews"| K8sAPI
-    SARCheck -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>POST subjectaccessreviews"| K8sAPI
+    %% Proxy to upstream
+    SAR -->|"authorized"| Upstream
+    Hardcoded -->|"fast-path<br/>(prometheus-k8s)"| Upstream
 
-    %% Egress to OIDC
-    OIDCAuth -->|"HTTPS/443<br/>TLS 1.2+<br/>OIDC Discovery + JWKS"| OIDCProvider
-
-    %% Operator relationships
-    RhodsOperator -.->|"Injects sidecar<br/>Configures RBAC"| ProxyContainer
-    CertManager -.->|"Provisions TLS certs<br/>Auto-rotation"| ProxyContainer
-
-    %% Styling
+    %% Styling - Trust zones
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef proxy fill:#4a90e2,color:#fff,stroke:#2c5f9e,stroke-width:2px
-    classDef authn fill:#e67e22,color:#fff,stroke:#c0651a,stroke-width:1px
-    classDef authz fill:#e74c3c,color:#fff,stroke:#c0392b,stroke-width:1px
-    classDef upstream fill:#27ae60,color:#fff,stroke:#1e8449,stroke-width:2px
-    classDef k8s fill:#326ce5,color:#fff,stroke:#2553b0,stroke-width:2px
-    classDef extservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef operator fill:#ddd,stroke:#999,stroke-width:1px
-    classDef info fill:#f0f0f0,stroke:#ccc,stroke-width:1px,font-size:10px
+    classDef sidecar fill:#dbeafe,stroke:#2563eb,stroke-width:2px
+    classDef authn fill:#fef3c7,stroke:#d97706,stroke-width:2px
+    classDef authz fill:#fce7f3,stroke:#db2777,stroke-width:2px
+    classDef upstream fill:#d1fae5,stroke:#059669,stroke-width:2px
+    classDef controlplane fill:#e5e7eb,stroke:#6b7280,stroke-width:2px
+    classDef externalservice fill:#fff7ed,stroke:#c2410c,stroke-width:2px
+    classDef health fill:#f3e8ff,stroke:#7c3aed,stroke-width:2px
 
     class Client,Prometheus external
-    class Listener,ProxyHandler proxy
-    class TokenReviewAuth,X509Auth,OIDCAuth authn
-    class HardcodedAllow,SARCheck authz
-    class UpstreamApp upstream
-    class K8sAPI k8s
-    class OIDCProvider extservice
-    class RhodsOperator,CertManager operator
-    class SecurityInfo info
+    class KRP sidecar
+    class TokenReview,OIDC,X509 authn
+    class Hardcoded,Static,SAR authz
+    class Upstream upstream
+    class APIServer controlplane
+    class OIDCIssuer externalservice
+    class Healthz health

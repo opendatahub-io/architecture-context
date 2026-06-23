@@ -1,107 +1,83 @@
 workspace {
+    !identifiers hierarchical
+
     model {
-        agent = person "AI Agent" "Claude Desktop or Claude Code user interacting with RHOAI via MCP tools"
-        dataScientist = person "Data Scientist" "Creates and manages ML workloads through AI agent"
+        // Users / Actors
+        dataScientist = person "Data Scientist" "Creates and deploys ML models, manages workbenches and training jobs"
+        mlEngineer = person "ML Engineer" "Deploys models to production, manages serving infrastructure"
+        platformAdmin = person "Platform Admin" "Manages RHOAI platform, monitors cluster health"
 
-        rhoaiMcp = softwareSystem "RHOAI MCP Server" "Programmatic MCP interface for AI agents to manage RHOAI environments (60+ tools, 8 resources, 18 prompts)" {
-            fastmcpServer = container "FastMCP Server" "MCP transport layer supporting stdio, SSE, and streamable-http" "Python / FastMCP"
-            pluginManager = container "Plugin Manager" "Pluggy-based lifecycle management for 14 domain + composite plugins" "Python / pluggy"
-            k8sClient = container "K8sClient" "Kubernetes API abstraction supporting in-cluster, kubeconfig, and token auth" "Python / kubernetes"
-            responseBuilder = container "Response Builder" "Verbosity-controlled response formatting with 70-90% token savings" "Python"
-            portForwardManager = container "Port Forward Manager" "Async subprocess management for oc port-forward connections" "Python / asyncio"
-
-            domainProjects = container "Projects Domain" "5 tools: list, create, delete, set_model_serving_mode" "Python Plugin"
-            domainNotebooks = container "Notebooks Domain" "8 tools: list, create, start, stop workbenches" "Python Plugin"
-            domainInference = container "Inference Domain" "12 tools: deploy_model, list_serving_runtimes, estimate_resources" "Python Plugin"
-            domainPipelines = container "Pipelines Domain" "3 tools: get/create pipeline server" "Python Plugin"
-            domainConnections = container "Connections Domain" "4 tools: list/create data connections" "Python Plugin"
-            domainStorage = container "Storage Domain" "3 tools: list/create storage" "Python Plugin"
-            domainTraining = container "Training Domain" "21 tools: train, monitor, resume, estimate resources" "Python Plugin"
-            domainModelRegistry = container "Model Registry Domain" "10 tools: list models, benchmarks, artifacts" "Python Plugin"
-            domainQuickstarts = container "Quickstarts Domain" "3 tools: list, deploy quickstarts" "Python Plugin"
-
-            compositeCluster = container "Cluster Composite" "9 tools: cluster_summary, explore_cluster, diagnose_resource" "Python Plugin"
-            compositeTraining = container "Training Composite" "Orchestrates multi-step training workflows" "Python Plugin"
-            compositeMeta = container "Meta Composite" "2 tools: suggest_tools, list_tool_categories" "Python Plugin"
-            compositeNeuralNav = container "Neural Navigator Composite" "2 tools: recommend_model, get_deployment_config" "Python Plugin"
+        // Main System
+        rhoaiMcp = softwareSystem "RHOAI MCP Server" "MCP server enabling AI agents to interact with RHOAI environments through tools, resources, and workflow prompts" {
+            transport = container "Transport Layer" "Handles MCP protocol connections (stdio, SSE, streamable-http)" "Python (FastMCP)"
+            pluginManager = container "Plugin Manager" "Discovers, registers, and manages plugin lifecycle with health checks" "Python (pluggy)"
+            domainPlugins = container "Domain Plugins (10)" "CRUD operations for RHOAI resource types: projects, notebooks, inference, pipelines, connections, storage, training, model_registry, quickstarts, prompts" "Python Modules"
+            compositePlugins = container "Composite Plugins (4)" "Cross-cutting orchestration: cluster exploration, training workflows, meta/discovery, NeuralNav" "Python Modules"
+            k8sClient = container "K8s Client" "Abstraction over Kubernetes Python client with auth mode detection" "Python (kubernetes)"
+            portForwardMgr = container "Port Forward Manager" "Manages oc port-forward subprocesses for in-cluster service access" "Python (subprocess)"
+            config = container "Configuration" "Environment-based config with safety controls (read-only, dangerous ops)" "Python (pydantic-settings)"
         }
 
-        k8sApiServer = softwareSystem "Kubernetes API Server" "OpenShift cluster API for all resource operations" "External" {
-            tags "External"
-        }
+        // AI Agent Systems
+        aiAgent = softwareSystem "AI Agent" "Claude Desktop, Lightspeed, or custom LLM agent that invokes MCP tools" "External"
 
-        modelRegistrySvc = softwareSystem "Model Registry" "Kubeflow Model Registry for model metadata, versions, artifacts" "Internal RHOAI" {
-            tags "Internal RHOAI"
-        }
+        // RHOAI Platform Components
+        kubeflowNotebook = softwareSystem "Kubeflow Notebook Controller" "Manages Notebook CR lifecycle for workbenches" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Manages InferenceService and ServingRuntime CRs for model serving" "Internal RHOAI"
+        dspOperator = softwareSystem "Data Science Pipelines Operator" "Manages DSPA CRs for pipeline server provisioning" "Internal RHOAI"
+        trainingOperator = softwareSystem "Kubeflow Training Operator" "Manages TrainJob and ClusterTrainingRuntime CRs" "Internal RHOAI"
+        rhoaiOperator = softwareSystem "RHOAI Operator (rhods-operator)" "Platform lifecycle: DataScienceCluster and DSCInitialization CRs" "Internal RHOAI"
+        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "Web UI for RHOAI platform management" "Internal RHOAI"
+        modelRegistry = softwareSystem "Model Registry" "Model metadata, versions, and benchmark storage" "Internal RHOAI"
+        modelCatalog = softwareSystem "Red Hat AI Model Catalog" "Pre-curated model catalog with benchmarks" "Internal RHOAI"
 
-        modelCatalogSvc = softwareSystem "Model Catalog" "Red Hat AI Model Catalog for catalog models and sources" "Internal RHOAI" {
-            tags "Internal RHOAI"
-        }
+        // External Dependencies
+        neuralNavigator = softwareSystem "Neural Navigator" "Model recommendation and deployment config generation engine" "External"
+        k8sApiServer = softwareSystem "Kubernetes API Server" "Kubernetes/OpenShift cluster API" "External"
+        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for model artifacts and data" "External"
+        openshiftOAuth = softwareSystem "OpenShift OAuth" "Authentication for workbench routes" "External"
 
-        neuralNavigatorBE = softwareSystem "Neural Navigator" "AI-powered model recommendation and deployment config generation" "Internal RHOAI" {
-            tags "Internal RHOAI"
-        }
+        // Relationships - Users to AI Agent
+        dataScientist -> aiAgent "Uses AI agent to manage ML workflows"
+        mlEngineer -> aiAgent "Uses AI agent to deploy and monitor models"
+        platformAdmin -> aiAgent "Uses AI agent to explore and diagnose cluster"
 
-        github = softwareSystem "GitHub" "External repository for quickstart templates" "External" {
-            tags "External"
-        }
+        // AI Agent to MCP Server
+        aiAgent -> rhoaiMcp "Invokes MCP tools/resources/prompts" "MCP Protocol (stdio/SSE/HTTP) 8000/TCP"
 
-        imageRegistry = softwareSystem "Container Image Registry" "OpenShift internal registry for notebook images" "External" {
-            tags "External"
-        }
+        // MCP Server to Platform Components (all via K8s API)
+        rhoaiMcp -> k8sApiServer "All Kubernetes resource operations" "HTTPS/6443 Bearer Token"
+        rhoaiMcp -> kubeflowNotebook "Manages Notebook CRs" "via K8s API (CRD)"
+        rhoaiMcp -> kserve "Manages InferenceService and ServingRuntime CRs" "via K8s API (CRD)"
+        rhoaiMcp -> dspOperator "Manages DSPA CRs" "via K8s API (CRD)"
+        rhoaiMcp -> trainingOperator "Manages TrainJob and ClusterTrainingRuntime CRs" "via K8s API (CRD)"
+        rhoaiMcp -> rhoaiOperator "Reads DataScienceCluster status" "via K8s API (CRD, read-only)"
+        rhoaiMcp -> rhoaiDashboard "Compatible labeling (opendatahub.io/dashboard)" "Label convention"
+        rhoaiMcp -> modelRegistry "Queries model metadata, versions, benchmarks" "REST HTTP/8080 via port-forward"
+        rhoaiMcp -> modelCatalog "Queries pre-curated model catalog" "REST HTTP/8080 via port-forward"
+        rhoaiMcp -> neuralNavigator "Model recommendation and deploy config" "REST HTTP/8000 in-cluster"
+        rhoaiMcp -> s3Storage "Data connection validation" "HTTPS/443 AWS IAM"
 
-        # Person relationships
-        dataScientist -> agent "Instructs to manage RHOAI resources"
-        agent -> rhoaiMcp "Invokes MCP tools via stdio or SSE/HTTP" "MCP JSON-RPC"
-
-        # Internal container relationships
-        fastmcpServer -> pluginManager "Loads and registers plugins"
-        pluginManager -> domainProjects "Registers"
-        pluginManager -> domainNotebooks "Registers"
-        pluginManager -> domainInference "Registers"
-        pluginManager -> domainPipelines "Registers"
-        pluginManager -> domainConnections "Registers"
-        pluginManager -> domainStorage "Registers"
-        pluginManager -> domainTraining "Registers"
-        pluginManager -> domainModelRegistry "Registers"
-        pluginManager -> domainQuickstarts "Registers"
-        pluginManager -> compositeCluster "Registers"
-        pluginManager -> compositeTraining "Registers"
-        pluginManager -> compositeMeta "Registers"
-        pluginManager -> compositeNeuralNav "Registers"
-
-        compositeCluster -> domainProjects "Orchestrates"
-        compositeCluster -> domainNotebooks "Orchestrates"
-        compositeCluster -> domainInference "Orchestrates"
-        compositeTraining -> domainTraining "Orchestrates"
-        compositeTraining -> domainStorage "Orchestrates"
-        compositeTraining -> domainConnections "Orchestrates"
-
-        domainProjects -> k8sClient "Uses"
-        domainNotebooks -> k8sClient "Uses"
-        domainInference -> k8sClient "Uses"
-        domainPipelines -> k8sClient "Uses"
-        domainTraining -> k8sClient "Uses"
-        domainModelRegistry -> portForwardManager "Uses for out-of-cluster access"
-
-        # External system relationships
-        rhoaiMcp -> k8sApiServer "All K8s resource CRUD operations" "HTTPS/6443, Bearer Token"
-        rhoaiMcp -> modelRegistrySvc "List models, versions, artifacts, benchmarks" "HTTP/8080 or HTTPS/8443"
-        rhoaiMcp -> modelCatalogSvc "List catalog models, sources, artifacts" "HTTP/8080 or HTTPS/8443"
-        rhoaiMcp -> neuralNavigatorBE "Model recommendations and deployment configs" "HTTP/8000"
-        rhoaiMcp -> github "Clone quickstart repositories" "HTTPS/443"
-        rhoaiMcp -> imageRegistry "Discover notebook container images" "HTTPS/5000"
+        // Container relationships
+        transport -> pluginManager "Routes MCP calls"
+        pluginManager -> domainPlugins "Dispatches to domain handlers"
+        pluginManager -> compositePlugins "Dispatches to composite handlers"
+        domainPlugins -> k8sClient "Kubernetes operations"
+        compositePlugins -> k8sClient "Kubernetes operations"
+        compositePlugins -> portForwardMgr "Port-forward for in-cluster services"
     }
 
     views {
         systemContext rhoaiMcp "SystemContext" {
             include *
             autoLayout
+            description "RHOAI MCP Server in the context of AI agents and RHOAI platform components"
         }
 
         container rhoaiMcp "Containers" {
             include *
             autoLayout
+            description "Internal structure of the RHOAI MCP Server"
         }
 
         styles {
@@ -118,9 +94,9 @@ workspace {
                 color #ffffff
             }
             element "Person" {
+                shape Person
                 background #08427b
                 color #ffffff
-                shape person
             }
             element "Container" {
                 background #438dd5

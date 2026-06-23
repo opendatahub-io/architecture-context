@@ -1,132 +1,117 @@
-===============================================================================
-  SECURITY NETWORK DIAGRAM: vLLM CUDA Runtime (odh-vllm-cuda-rhel9)
-===============================================================================
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                       │
-│                                                                             │
-│  [External Client]                                                          │
-│         │                                                                   │
-│         │ Port: 443/TCP                                                     │
-│         │ Protocol: HTTPS                                                   │
-│         │ Encryption: TLS 1.2+                                              │
-│         │ Auth: Bearer Token (platform-managed)                             │
-│         ▼                                                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (Platform-Managed)                                                 │
-│                                                                             │
-│  [RHOAI Gateway / HTTPRoute (Gateway API)]                                  │
-│  - External Port: 443/TCP (HTTPS)                                           │
-│  - Internal Port: 8000/TCP (HTTP)                                           │
-│  - TLS Termination: TLS 1.2+ (SIMPLE mode)                                 │
-│  - Hostname: Model endpoint hostname (KServe-managed)                       │
-│         │                                                                   │
-│         │ Port: 8000/TCP                                                    │
-│         │ Protocol: HTTP                                                    │
-│         │ Encryption: None (pod-internal / sidecar proxy)                   │
-│         │ Auth: Verified by kube-rbac-proxy sidecar                         │
-│         ▼                                                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  POD BOUNDARY (KServe-Managed Pod)                                          │
-│                                                                             │
-│  [kube-rbac-proxy Sidecar]                                                  │
-│  - Purpose: Authentication & authorization enforcement                      │
-│  - Validates Bearer Token against platform auth policy                      │
-│  - Proxies authenticated requests to vLLM container                         │
-│         │                                                                   │
-│         │ Port: 8000/TCP (HTTP API)                                         │
-│         │ Protocol: HTTP                                                    │
-│         │ Encryption: None (localhost / pod-internal)                        │
-│         │ Auth: Pre-verified by proxy                                        │
-│         ▼                                                                   │
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [Client Application]                                                        │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.3                                                │
+│         │ Auth: Bearer Token (JWT)                                           │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Platform-Managed)                                                  │
+│                                                                              │
+│  [Platform Ingress - Gateway API (RHOAI 3.x) / Istio (RHOAI 2.x)]          │
+│  - Port: 443/TCP (external) → 8443/TCP (internal)                           │
+│  - TLS Termination: TLS 1.3                                                 │
+│  - AuthN: JWT validation (RequestAuthentication)                             │
+│         │                                                                    │
+│         │ Port: 8443/TCP                                                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS                                                    │
+│         │ Auth: JWT (validated by ingress)                                   │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  POD BOUNDARY (KServe-Managed Pod)                                           │
+│                                                                              │
+│  [kube-rbac-proxy Sidecar]                                                   │
+│  - Namespace: {user-namespace}                                               │
+│  - Port: 8443/TCP (inbound HTTPS) → 8000/TCP, 8033/TCP (outbound plaintext)│
+│  - Purpose: TLS termination + auth enforcement                               │
+│  - Auth: JWT validation, RBAC enforcement                                    │
+│         │                                                                    │
+│         │ Port: 8000/TCP (HTTP) and 8033/TCP (gRPC)                         │
+│         │ Protocol: HTTP / gRPC                                              │
+│         │ Encryption: None (plaintext, localhost only)                        │
+│         │ Auth: None (already validated by proxy)                            │
+│         ▼                                                                    │
 │  [vLLM Container - odh-vllm-cuda-rhel9]                                     │
-│  - User: 2000 (non-root)                                                    │
-│  - Entrypoint: python -m vllm_tgis_adapter                                 │
-│  - Base Image: rhaiis/vllm-cuda-rhel9:3.2.2                                │
-│  - FIPS: Delegated to RHAIIS base image (UBI9 OpenSSL)                     │
-│                                                                             │
-│  Exposed Ports:                                                             │
-│    ├── 8000/TCP (HTTP) - OpenAI-compatible REST API                         │
-│    │   ├── POST /v1/completions                                             │
-│    │   ├── POST /v1/chat/completions                                        │
-│    │   ├── GET  /v1/models                                                  │
-│    │   ├── POST /v1/embeddings                                              │
-│    │   └── GET  /health                                                     │
-│    │                                                                        │
-│    └── 8033/TCP (gRPC) - TGIS GenerationService                             │
-│         │                                                                   │
-│         │ CUDA API                                                          │
-│         │ Protocol: NVIDIA CUDA                                             │
-│         │ Encryption: N/A (device-level)                                    │
-│         │ Auth: N/A                                                         │
-│         ▼                                                                   │
-│  [NVIDIA GPU]                                                               │
-│  - Device: CUDA-capable GPU (allocated by Device Plugin)                    │
-│  - Purpose: Model inference compute (PagedAttention, batching)              │
-│                                                                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  CLUSTER-INTERNAL (Trusted)                                                 │
-│                                                                             │
-│  [Internal Service] ──── gRPC/8033 ────► [vLLM Container]                   │
-│  - Protocol: gRPC                                                           │
-│  - Encryption: None (cluster-internal)                                      │
-│  - Auth: None (platform-managed network policy)                             │
-│                                                                             │
-│  [KServe Operator]                                                          │
-│  - Manages: ServingRuntime CR, InferenceService CR                          │
-│  - Creates: ClusterIP Services (8000/TCP, 8033/TCP)                         │
-│  - Creates: HTTPRoute for external ingress                                  │
-│                                                                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  EGRESS (External Services)                                                 │
-│                                                                             │
-│  [vLLM Container] ──── HTTPS/443 ────► [Model Storage]                      │
-│  - Destinations: S3-compatible storage / HuggingFace Hub                    │
-│  - Port: 443/TCP                                                            │
-│  - Protocol: HTTPS                                                          │
-│  - Encryption: TLS 1.2+                                                     │
-│  - Auth: Bearer Token (HuggingFace) / AWS IAM (S3)                         │
-│  - Purpose: Download model weights at startup                               │
-│  - Timing: Pod initialization (one-time or on-demand)                       │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+│  - Image: rhoai/odh-vllm-cuda-rhel9                                         │
+│  - Base: registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.2.2                   │
+│  - UID: 2000 (non-root)                                                      │
+│  - Entrypoint: python3 -m vllm_tgis_adapter --uvicorn-log-level=warning     │
+│  - Ports exposed:                                                            │
+│    - 8000/TCP: OpenAI-compatible HTTP API (/v1/completions,                 │
+│                /v1/chat/completions, /v1/models, /health, /metrics)          │
+│    - 8033/TCP: TGIS gRPC GenerationService                                  │
+│  - Architectures: linux/amd64, linux/arm64                                   │
+│                                                                              │
+│         │                                                                    │
+│         │ CUDA API (device driver interface)                                 │
+│         ▼                                                                    │
+│  [NVIDIA GPU]                                                                │
+│  - Required: CUDA-compatible GPU                                             │
+│  - Driver: >=525.60.13 (CUDA 12.9 or higher)                               │
+│  - Purpose: LLM inference acceleration                                       │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (Outbound from vLLM Container)                                       │
+│                                                                              │
+│  [Hugging Face Hub - huggingface.co]                                         │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: Bearer Token (HF_TOKEN env var)                                     │
+│  - Purpose: Download model weights and tokenizer configs at startup          │
+│                                                                              │
+│  [S3-Compatible Object Storage]                                              │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: AWS IAM credentials or access key                                   │
+│  - Purpose: Retrieve model weights from object storage                       │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  MONITORING                                                                  │
+│                                                                              │
+│  [Prometheus]                                                                │
+│  - Scrapes: /metrics on port 8000/TCP                                        │
+│  - Protocol: HTTP                                                            │
+│  - Encryption: None (internal cluster)                                       │
+│  - Purpose: Inference telemetry and performance metrics                       │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
 
-===============================================================================
-  RBAC SUMMARY
-===============================================================================
+RBAC Summary:
+- This component defines NO RBAC resources (ClusterRoles, RoleBindings)
+- RBAC is entirely managed by KServe and the RHOAI platform operator
+- The container runs as non-root (UID 2000)
 
-No RBAC resources defined in this repository.
-RBAC is managed by KServe and RHOAI platform operators:
-  - KServe creates ServiceAccounts for inference pods
-  - RHOAI manages ClusterRoles/RoleBindings for model serving
+Authentication & Authorization:
+- Endpoint: /v1/* (HTTP API)
+  - Auth: Bearer Token (JWT)
+  - Enforcement: kube-rbac-proxy sidecar (RHOAI 3.x) or Istio AuthorizationPolicy (RHOAI 2.x)
+  - Policy: Platform-managed per InferenceService
+- Endpoint: TGIS gRPC (8033)
+  - Auth: Bearer Token (JWT)
+  - Enforcement: kube-rbac-proxy sidecar (RHOAI 3.x)
+  - Policy: Platform-managed
 
-===============================================================================
-  SECRETS
-===============================================================================
+Secrets:
+- (model-serving secret) (Opaque) - HF_TOKEN or S3 credentials for model download
+  - Provisioned by: User / platform admin
+  - Auto-rotate: No
+  - Injected via: Environment variables by KServe InferenceService configuration
 
-Secret Name                    Type      Purpose                        Provisioned By    Auto-Rotate
------------------------------  --------  -----------------------------  ----------------  -----------
-(model storage credentials)    Opaque    S3/HuggingFace access creds    User / RHOAI      No
+FIPS Compliance:
+- No TLS implemented in container (plaintext HTTP/gRPC)
+- TLS handled by platform sidecar (kube-rbac-proxy)
+- FIPS compliance delegated entirely to RHAIIS base image
+- OpenSSL inherited from RHEL 9.6 UBI base (via AIPCC → RHAIIS chain)
+- No compiled code, no cryptographic libraries added by this Dockerfile
 
-===============================================================================
-  AUTHENTICATION & AUTHORIZATION
-===============================================================================
-
-Endpoint         Methods     Auth Mechanism              Enforcement Point           Policy
----------------  ----------  --------------------------  --------------------------  ------------------
-/v1/* (HTTP)     GET, POST   Bearer Token (platform)     kube-rbac-proxy sidecar     Platform auth
-TGIS gRPC        Unary/Strm  None at container level     KServe networking           Internal only
-/health          GET         None                        Direct                      Open (health check)
-
-===============================================================================
-  CONTAINER SECURITY
-===============================================================================
-
-- Runs as non-root user (UID 2000)
-- No TLS at container level (plaintext HTTP/gRPC)
-- TLS termination at platform ingress layer
-- FIPS compliance delegated to RHAIIS base image (UBI9 + OpenSSL)
-- No compiled code in this layer (config-only Dockerfile)
-- Multi-arch build: amd64 + arm64
-- Build: Non-hermetic (hermetic: false), Konflux/Tekton pipeline
-- Vulnerability scanning: Clair (in build pipeline)
+Container Security:
+- Runs as non-root (UID 2000)
+- No package installation in Dockerfile (all deps from RHAIIS base)
+- Build: hermetic=false (no dependencies to lock at this layer)
+- Multi-arch: linux/amd64, linux/arm64

@@ -3,46 +3,62 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (Platform-Managed)"]
-        Gateway["Platform Ingress<br/>Gateway / Route<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ (SIMPLE)<br/>Managed by KServe Controller"]
+    subgraph Ingress["INGRESS (DMZ)"]
+        Gateway["Platform Ingress<br/>(Gateway API / Istio)<br/>443/TCP → 8080/TCP HTTP, 8081/TCP gRPC<br/>TLS 1.3 Termination<br/>AuthN: Platform-managed"]
     end
 
-    subgraph AuthSidecar["AUTH SIDECAR (Platform-Injected)"]
-        RBAC["kube-rbac-proxy<br/>Listen: 8443/TCP HTTPS<br/>Forward: 8080/TCP HTTP localhost<br/>Token Validation + RBAC"]
-    end
-
-    subgraph AppPod["APPLICATION POD"]
+    subgraph ClusterInternal["CLUSTER INTERNAL (Namespace-scoped)"]
         direction TB
-        AG["autogluonserver<br/>HTTP: 8080/TCP (uvicorn/fastapi)<br/>gRPC: 8081/TCP (grpcio)<br/>Image: kserve/autogluonserver<br/>Base: rhai/base-image-cpu-rhel9"]
-        Endpoints["Endpoints:<br/>POST /v1/models/:predict<br/>POST /v2/models/:infer<br/>GET /v2/models/{name}<br/>GET /metrics<br/>GET / (health)"]
-        AG --- Endpoints
+
+        subgraph NS_User["Namespace: {user-namespace}"]
+            AutoGluon["AutoGluon Server Pod<br/>UID: 1001 (non-root)<br/>Image: odh-kserve-autogluon-server<br/>Base: rhai/base-image-cpu-rhel9"]
+
+            SvcHTTP["{isvc-name}-predictor<br/>ClusterIP 8080/TCP HTTP"]
+            SvcGRPC["{isvc-name}-predictor<br/>ClusterIP 8081/TCP gRPC"]
+
+            SvcHTTP --> AutoGluon
+            SvcGRPC --> AutoGluon
+        end
+    end
+
+    subgraph ControlPlane["CONTROL PLANE"]
+        KServeCtrl["KServe Controller<br/>K8s API / mTLS<br/>ServiceAccount auth"]
+        Prometheus["Prometheus<br/>HTTP/8080 scrape<br/>No auth"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        S3["S3 Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS IAM"]
-        GCS["Google Cloud Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: GCP SA"]
-        Azure["Azure Blob Storage<br/>*.blob.core.windows.net<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Azure Identity"]
-        HFHub["Hugging Face Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: HF Token (optional)"]
+        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM / STS"]
+        GCS["Google Cloud Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>GCP Service Account"]
+        Azure["Azure Blob Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Azure Credentials"]
+        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
     end
 
-    %% Flows
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Gateway
-    Gateway -->|"HTTPS/8443<br/>TLS<br/>Token Validation"| RBAC
-    RBAC -->|"HTTP/8080<br/>None (localhost)<br/>Trusted"| AG
-    AG -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    AG -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP SA"| GCS
-    AG -->|"HTTPS/443<br/>TLS 1.2+<br/>Azure Identity"| Azure
-    AG -->|"HTTPS/443<br/>TLS 1.2+<br/>HF Token"| HFHub
+    %% External → Ingress
+    Client -->|"HTTPS/443<br/>TLS 1.3<br/>Platform Auth (Bearer/OAuth)"| Gateway
+
+    %% Ingress → Server
+    Gateway -->|"HTTP/8080<br/>No TLS (cluster-internal)<br/>No auth (delegated)"| SvcHTTP
+    Gateway -->|"gRPC/8081<br/>No TLS (cluster-internal)<br/>No auth (delegated)"| SvcGRPC
+
+    %% Control Plane → Server
+    KServeCtrl -->|"K8s API<br/>mTLS<br/>ServiceAccount"| AutoGluon
+    Prometheus -->|"HTTP/8080<br/>No encryption<br/>Metrics scrape"| AutoGluon
+
+    %% Server → External Services (Egress)
+    AutoGluon -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM / STS"| S3
+    AutoGluon -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP SA"| GCS
+    AutoGluon -->|"HTTPS/443<br/>TLS 1.2+<br/>Azure creds"| Azure
+    AutoGluon -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef auth fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef app fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef egress fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef clusterinternal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class Client external
     class Gateway ingress
-    class RBAC auth
-    class AG,Endpoints app
-    class S3,GCS,Azure,HFHub egress
+    class AutoGluon,SvcHTTP,SvcGRPC clusterinternal
+    class KServeCtrl,Prometheus controlplane
+    class S3,GCS,Azure,HFHub externalservice

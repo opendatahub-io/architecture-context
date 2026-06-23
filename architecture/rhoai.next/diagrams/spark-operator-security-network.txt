@@ -1,186 +1,195 @@
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                        │
-│                                                                              │
-│  [User / Data Scientist]                                                     │
-│         │                                                                    │
-│         │ Port: 443/TCP                                                      │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS 1.2+                                               │
-│         │ Auth: Bearer Token / kubeconfig                                    │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  KUBERNETES CONTROL PLANE (Trusted)                                          │
-│                                                                              │
-│  [Kubernetes API Server]                                                     │
-│  - Port: 443/TCP (external), 6443/TCP (internal)                            │
-│  - TLS Termination: TLS 1.2+                                                │
-│  - AuthN: Bearer Token, X.509 client certs, ServiceAccount tokens           │
-│         │                                                                    │
-│         │ Port: 9443/TCP                                                     │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS (self-signed or cert-manager)                      │
-│         │ Auth: Kubernetes API server client certificate                     │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  OPERATOR NAMESPACE (redhat-ods-applications / opendatahub)                  │
-│                                                                              │
-│  [spark-operator-controller]                                                 │
-│  - Deployment: spark-operator-controller                                     │
-│  - ServiceAccount: spark-operator-controller                                │
-│  - Ports:                                                                    │
-│    - 8080/TCP (metrics, HTTP, no encryption, no auth)                       │
-│    - 8081/TCP (health probes, HTTP, no encryption, no auth)                 │
-│  - Egress:                                                                   │
-│    → Kubernetes API Server: 443/TCP HTTPS TLS 1.2+ (SA token)              │
-│    → spark-submit: local subprocess exec                                    │
-│    → Volcano API (optional): 443/TCP HTTPS TLS 1.2+ (SA token)             │
-│         │                                                                    │
-│  [spark-operator-webhook]                                                    │
-│  - Deployment: spark-operator-webhook                                        │
-│  - ServiceAccount: spark-operator-webhook                                   │
-│  - Ports:                                                                    │
-│    - 9443/TCP (webhook endpoints, HTTPS, TLS, K8s API server auth)          │
-│    - 8080/TCP (metrics, HTTP, no encryption, no auth)                       │
-│    - 8081/TCP (health probes, HTTP, no encryption, no auth)                 │
-│  - Service: spark-operator-webhook-svc (ClusterIP 443 → 9443)              │
-│  - TLS: Self-signed CA (RSA 2048, 10yr validity) or cert-manager           │
-│  - Certificate rotation: 180-day forward validation window                  │
-│                                                                              │
-│  Webhook Endpoints:                                                          │
-│    POST /mutate-sparkapplication (9443/TCP HTTPS TLS)                       │
-│    POST /validate-sparkapplication (9443/TCP HTTPS TLS)                     │
-│    POST /validate-scheduledsparkapplication (9443/TCP HTTPS TLS)            │
-│    POST /mutate--v1-pod (9443/TCP HTTPS TLS)                               │
-│                                                                              │
-│  [Certificate Provider]                                                      │
-│  - Internal self-signed: RSA 2048-bit, 10-year validity                     │
-│  - External option: cert-manager integration                                │
-│         │                                                                    │
-│         │                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  USER NAMESPACES (Spark Workloads)                                           │
-│                                                                              │
-│  [Spark Driver Pod]                                                          │
-│  - ServiceAccount: spark-operator-spark                                     │
-│  - Label: sparkoperator.k8s.io/launched-by-spark-operator=true              │
-│  - Mutated by webhook (26 config categories injected)                       │
-│         │                                                                    │
-│         │ Spark RPC                                                          │
-│         ▼                                                                    │
-│  [Spark Executor Pods]                                                       │
-│  - ServiceAccount: spark-operator-spark                                     │
-│  - Label: sparkoperator.k8s.io/launched-by-spark-operator=true              │
-│  - Mutated by webhook                                                        │
-│                                                                              │
-│  [SparkConnect Service] (if SparkConnect CR)                                │
-│  - Ports: 7078/TCP (Spark RPC), 7079/TCP (Spark RPC),                      │
-│           4040/TCP (Spark UI), 15002/TCP (Spark Connect)                    │
-│  - Protocol: TCP                                                             │
-│  - Encryption: None                                                          │
-│  - Auth: None                                                                │
-│                                                                              │
-│  [{app}-ui-svc] (dynamic per SparkApplication)                              │
-│  - Port: spark.ui.port/TCP                                                   │
-│  - Protocol: HTTP                                                            │
-│  - Encryption: None                                                          │
-│  - Auth: None                                                                │
-│  - Exposure: Internal (ClusterIP)                                            │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  OPTIONAL INGRESS (if configured)                                            │
-│                                                                              │
-│  [{app}-ui-ingress] (dynamic)                                               │
-│  - Type: Ingress (networking.k8s.io/v1)                                     │
-│  - Hosts: Template-based (--ingress-url-format)                             │
-│  - Port: 80/TCP or 443/TCP                                                  │
-│  - TLS: Optional (configurable)                                             │
-│  - Exposure: External                                                        │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  OPTIONAL INTEGRATIONS                                                       │
-│                                                                              │
-│  [Prometheus]                                                                │
-│  - Scrapes: 8080/TCP HTTP (controller and webhook metrics)                  │
-│  - Via: PodMonitor                                                           │
-│  - Encryption: None                                                          │
-│  - Auth: None                                                                │
-│                                                                              │
-│  [JMX Exporter] (sidecar in Spark pods)                                     │
-│  - Port: 8090/TCP HTTP                                                       │
-│  - Purpose: Prometheus JMX metrics from Spark JVMs                          │
-│                                                                              │
-│  [Volcano Scheduler]                                                         │
-│  - Interaction: PodGroup CRD (scheduling.volcano.sh)                        │
-│  - Port: 443/TCP HTTPS TLS 1.2+                                             │
-│  - Auth: ServiceAccount token                                               │
-│  - Auto-detects CRD availability at startup                                 │
-│                                                                              │
-│  [Yunikorn Scheduler]                                                        │
-│  - Interaction: Pod annotations (yunikorn.apache.org/task-groups)           │
-│  - No direct network connection                                             │
-│                                                                              │
-│  [kube-scheduler PodGroups]                                                  │
-│  - Interaction: PodGroup CRD (scheduling.x-k8s.io)                         │
-│  - Port: 443/TCP HTTPS TLS 1.2+                                             │
-│  - Auth: ServiceAccount token                                               │
-│                                                                              │
-│  [cert-manager]                                                              │
-│  - Interaction: Secret watch for TLS certificates                           │
-│  - No direct network connection (watches Kubernetes Secrets)                │
-│                                                                              │
-│  [Kueue]                                                                     │
-│  - Interaction: Pod labels (kueue.x-k8s.io/ prefix)                        │
-│  - No direct network connection                                             │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
-
-NetworkPolicy:
-- ODH overlay: NetworkPolicy for Spark pods in opendatahub namespace
-- RHOAI overlay: NetworkPolicy for Spark pods in redhat-ods-applications namespace
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                             │
+│  [User / Data Scientist]                                                    │
+│         │                                                                   │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: Bearer token / kubeconfig                                   │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES API LAYER                                                       │
+│                                                                             │
+│  [Kubernetes API Server]                                                    │
+│  - Port: 443/TCP (HTTPS)                                                   │
+│  - Encryption: TLS 1.2+                                                    │
+│  - Auth: Bearer token, ServiceAccount tokens, client certs                 │
+│         │                                                                   │
+│         │ Admission Webhook Calls                                           │
+│         │ Port: 443→9443/TCP                                                │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS 1.2+ (cluster TLS security profile)              │
+│         │ Auth: K8s API server mTLS (client cert in AdmissionReview)       │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE (redhat-ods-applications)                               │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────┐        │
+│  │  [spark-operator-controller Deployment]                         │        │
+│  │  - SA: spark-operator-controller                                │        │
+│  │  - Leader Election: spark-operator-controller-lock              │        │
+│  │  - Ports:                                                       │        │
+│  │    - 8080/TCP (Prometheus metrics, HTTP, no auth)               │        │
+│  │    - 8081/TCP (healthz/readyz probes, HTTP, no auth)            │        │
+│  │         │                                                       │        │
+│  │         │ Port: 443/TCP                                         │        │
+│  │         │ Protocol: HTTPS                                       │        │
+│  │         │ Encryption: TLS 1.2+                                  │        │
+│  │         │ Auth: ServiceAccount token (Bearer)                   │        │
+│  │         │ Purpose: CRD watches, Pod/Service/Ingress/ConfigMap   │        │
+│  │         │          CRUD, Event creation, Lease management       │        │
+│  │         ▼                                                       │        │
+│  │  [Kubernetes API Server] ──────────────────────────────────── ──┤        │
+│  └─────────────────────────────────────────────────────────────────┘        │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────┐        │
+│  │  [spark-operator-webhook Deployment]                            │        │
+│  │  - SA: spark-operator-webhook                                   │        │
+│  │  - Leader Election: spark-operator-webhook-lock                 │        │
+│  │  - Service: spark-operator-webhook-svc (ClusterIP)              │        │
+│  │  - Ports:                                                       │        │
+│  │    - 9443/TCP (webhook endpoints, HTTPS, TLS 1.2+, K8s mTLS)  │        │
+│  │    - 8080/TCP (Prometheus metrics, HTTP, no auth)               │        │
+│  │    - 8081/TCP (healthz/readyz probes, HTTP, no auth)            │        │
+│  │                                                                 │        │
+│  │  Webhook Endpoints:                                             │        │
+│  │    POST /mutate--v1-pod                                         │        │
+│  │    POST /mutate-sparkoperator-k8s-io-v1beta2-sparkapplication   │        │
+│  │    POST /mutate-...-scheduledsparkapplication                   │        │
+│  │    POST /validate-sparkoperator-k8s-io-v1beta2-sparkapplication │        │
+│  │    POST /validate-...-scheduledsparkapplication                 │        │
+│  │    failurePolicy: Fail (blocks creation if unreachable)         │        │
+│  │                                                                 │        │
+│  │  TLS Configuration:                                             │        │
+│  │    - Reads OpenShift APIServer TLS security profile             │        │
+│  │    - Falls back to TLS 1.2 + Intermediate cipher suite          │        │
+│  │    - Maps OpenSSL cipher names to Go crypto/tls constants       │        │
+│  └─────────────────────────────────────────────────────────────────┘        │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  USER NAMESPACES (Spark Workloads)                                          │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────┐        │
+│  │  [Spark Driver Pod]                                             │        │
+│  │  - SA: spark-operator-spark                                     │        │
+│  │  - Ports:                                                       │        │
+│  │    - 7078/TCP (Spark RPC - block manager, TCP, no encryption)   │        │
+│  │    - 7079/TCP (Spark RPC - driver endpoint, TCP, no encryption) │        │
+│  │    - 4040/TCP (Spark Web UI, HTTP, no auth)                     │        │
+│  │         │                                                       │        │
+│  │         │ Port: 443/TCP                                         │        │
+│  │         │ Protocol: HTTPS, Encryption: TLS 1.2+                 │        │
+│  │         │ Auth: spark-operator-spark SA token                   │        │
+│  │         │ Purpose: Create/manage executor pods                  │        │
+│  │         │                                                       │        │
+│  │         │ Port: 7078,7079/TCP                                   │        │
+│  │         │ Protocol: TCP (Spark RPC)                              │        │
+│  │         │ Encryption: None                                      │        │
+│  │         │ Auth: None                                             │        │
+│  │         ▼                                                       │        │
+│  │  [Spark Executor Pods]                                          │        │
+│  │  - Ports:                                                       │        │
+│  │    - 7078/TCP (Spark RPC - block manager, TCP, no encryption)   │        │
+│  │    - 7079/TCP (Spark RPC - executor endpoint, TCP, no encrypt)  │        │
+│  └─────────────────────────────────────────────────────────────────┘        │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────┐        │
+│  │  [SparkConnect Server Pod]                                      │        │
+│  │  - Ports:                                                       │        │
+│  │    - 15002/TCP (gRPC - Spark Connect, no encryption, no auth)   │        │
+│  │    - 7078/TCP, 7079/TCP (Spark RPC, TCP, no encryption)         │        │
+│  │    - 4040/TCP (Spark Web UI, HTTP, no auth)                     │        │
+│  │  - Access: NetworkPolicy-restricted (RHOAI/ODH overlays)       │        │
+│  └─────────────────────────────────────────────────────────────────┘        │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────┐        │
+│  │  Services Created by Operator:                                  │        │
+│  │  - {app}-ui (ClusterIP, 4040/TCP, HTTP, no auth)                │        │
+│  │  - {sparkconnect}-svc (ClusterIP, 7078,7079,4040,15002/TCP)     │        │
+│  │  - {app}-driver-{port} (ClusterIP/LB/NodePort, configurable)    │        │
+│  └─────────────────────────────────────────────────────────────────┘        │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS LAYER (Optional)                                                   │
+│                                                                             │
+│  [{app}-ui-ingress]                                                         │
+│  - Type: Ingress (networking.k8s.io/v1)                                    │
+│  - Port: 80/TCP (HTTP) or 443/TCP (HTTPS, optional TLS)                   │
+│  - TLS Mode: SIMPLE (optional)                                             │
+│  - Auth: None                                                               │
+│  - Exposure: External (Spark Web UI)                                       │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM INTEGRATIONS                                                      │
+│                                                                             │
+│  [Prometheus]                                                               │
+│  - Scrapes: 8080/TCP (HTTP, no auth)                                       │
+│  - Metrics: spark_application_*, spark_executor_*                          │
+│  - PodMonitor with opendatahub.io/monitoring: "true"                       │
+│                                                                             │
+│  [OpenShift APIServer CR]                                                   │
+│  - Read via: config.openshift.io/v1 API                                    │
+│  - Port: 443/TCP, HTTPS, TLS 1.2+, SA token                               │
+│  - Purpose: Cluster TLS security profile for webhook ciphers              │
+│                                                                             │
+│  [rhods-operator / opendatahub-operator]                                   │
+│  - Interaction: Kustomize overlay consumption                              │
+│  - Deploys spark-operator manifests, substitutes images via params.env     │
+│                                                                             │
+│  [Volcano / Kube-scheduler plugins / YuniKorn] (Optional)                  │
+│  - Volcano: Creates PodGroup CRDs (scheduling.volcano.sh/v1beta1)          │
+│  - scheduler-plugins: Creates PodGroup CRDs (scheduling.x-k8s.io/v1alpha1)│
+│  - YuniKorn: Pod annotations (no CRD interaction)                          │
+│                                                                             │
+│  [Kueue] (Optional)                                                         │
+│  - Label-based: kueue.x-k8s.io/queue-name on driver pods                  │
+│                                                                             │
+│  [cert-manager] (Optional)                                                  │
+│  - Alternative to self-signed CA for webhook TLS certificates              │
+│  - CRD interaction via K8s API                                             │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
 
 ClusterRole: spark-operator-controller
-  - "" (core): pods [get, list, watch, create, update, patch, delete, deletecollection]
-  - "" (core): configmaps [get, list, create, update, patch, delete]
-  - "" (core): services [get, create, delete]
-  - "" (core): events [create, update, patch]
-  - "" (core): resourcequotas [get, list, watch]
-  - extensions: ingresses [get, list, watch, create, update, delete]
-  - networking.k8s.io: ingresses [get, list, watch, create, update, delete]
-  - apiextensions.k8s.io: customresourcedefinitions [get]
-  - sparkoperator.k8s.io: sparkapplications [get, list, watch, create, update, patch, delete]
-  - sparkoperator.k8s.io: sparkapplications/status [get, update, patch]
-  - sparkoperator.k8s.io: sparkapplications/finalizers [update]
-  - sparkoperator.k8s.io: scheduledsparkapplications [get, list, watch, create, update, patch, delete]
-  - sparkoperator.k8s.io: scheduledsparkapplications/status [get, update, patch]
-  - sparkoperator.k8s.io: scheduledsparkapplications/finalizers [update]
-  - sparkoperator.k8s.io: sparkconnects [get, list, watch, create, update, patch, delete]
-  - sparkoperator.k8s.io: sparkconnects/status [get, update, patch]
+  - SA: spark-operator-controller
+  - "": pods (create, delete, get, list, update, watch)
+  - "": configmaps (create, get, list, patch, update, watch)
+  - "": services (create, delete, get, list, patch, update, watch)
+  - "": persistentvolumeclaims (list, watch)
+  - "": events (create, patch, update)
+  - apiextensions.k8s.io: customresourcedefinitions (get)
+  - extensions, networking.k8s.io: ingresses (create, delete, get, update)
+  - sparkoperator.k8s.io: sparkapplications (create, delete, get, list, watch)
+  - sparkoperator.k8s.io: scheduledsparkapplications (get, list, watch)
+  - sparkoperator.k8s.io: sparkconnects (get, list, watch)
+  - sparkoperator.k8s.io: */status (update)
+  - sparkoperator.k8s.io: */finalizers (update, patch)
 
 ClusterRole: spark-operator-webhook
-  - admissionregistration.k8s.io: mutatingwebhookconfigurations [list, watch, get, update]
-  - admissionregistration.k8s.io: validatingwebhookconfigurations [list, watch, get, update]
-  - sparkoperator.k8s.io: sparkapplications, scheduledsparkapplications [get, list, watch]
-  - "" (core): pods [list, watch]
-
-Role: spark-operator-spark (user namespace)
-  - "" (core): pods, configmaps, persistentvolumeclaims, services [get, list, watch, create, update, patch, delete, deletecollection]
+  - SA: spark-operator-webhook
+  - admissionregistration.k8s.io: mutatingwebhookconfigurations (list, watch)
+  - admissionregistration.k8s.io: validatingwebhookconfigurations (list, watch)
+  - admissionregistration.k8s.io: *webhookconfigurations [spark-operator-webhook] (get, update)
+  - sparkoperator.k8s.io: sparkapplications, scheduledsparkapplications (get, list, watch)
+  - "": pods (list, watch)
+  - config.openshift.io: apiservers [cluster] (get)
 
 Secrets:
-  - spark-operator-webhook-certs (Opaque PEM or kubernetes.io/tls)
-    Purpose: TLS certificate and CA for webhook server
-    Provisioned by: Internal self-signed generator or cert-manager
-    Auto-rotate: Yes (180-day validation window, 10-year validity)
+  - spark-operator-webhook-certs (Opaque/PEM)
+    Purpose: TLS certificate and key for webhook HTTPS + CA cert for webhook config injection
+    Provisioned By: Self-signed CA (internal) or cert-manager
+    Auto-Rotate: Yes (180-day expiry check, auto-regenerate)
+    Key Details: RSA-2048, 10-year CA validity
 
-FIPS Compliance Concerns:
-  - CGO_ENABLED=0: Static linking uses pure-Go crypto, NOT OpenSSL
-  - Will FAIL check-payload FIPS validation
-  - crypto/md5 usage: Non-cryptographic only (name hashing) - not a security risk
-  - TLS config: Uses crypto/tls with default config
-  - HTTP/2 disabled as CVE mitigation (CVE-GHSA-qppj-fm5r-hxr3)
+NetworkPolicy (RHOAI overlay):
+  - Restricts Spark pod communication to same-namespace and workbench pods
+  - Applied via config/overlays/rhoai/networkpolicy.yaml
 
-Authentication & Authorization:
-  - Webhook endpoints: Only Kubernetes API server can call (client cert auth)
-  - /metrics: No auth (optional --secure-metrics for TLS)
-  - Spark pods: Dedicated SA (spark-operator-spark) with least-privilege Role
+FIPS Compliance:
+  - Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, dynamic linking
+  - TLS: OpenShift cluster TLS security profile integration
+  - Crypto: stdlib crypto/tls (FIPS-compliant via OpenSSL with strictfipsruntime)
+  - Risk: crypto/md5 in pkg/util/sparkapplication.go (non-cryptographic use - submission ID hashing)

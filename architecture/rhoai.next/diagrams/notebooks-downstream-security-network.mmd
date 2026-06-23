@@ -1,83 +1,87 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["Data Scientist / Developer"]
+        Browser["User Browser"]
     end
 
-    subgraph Ingress["INGRESS (Platform-Managed)"]
-        Gateway["Platform Gateway<br/>HTTPRoute / Route<br/>443/TCP → internal<br/>TLS 1.2+ SIMPLE<br/>Created by odh-notebook-controller"]
+    subgraph AuthLayer["AUTH SIDECAR (Pod-level, injected by controller)"]
+        KubeRBACProxy["kube-rbac-proxy (RHOAI 3.x)<br/>8443/TCP<br/>TLS 1.2+<br/>TokenReview + SubjectAccessReview"]
     end
 
-    subgraph AuthProxy["AUTH PROXY (Sidecar)"]
-        KRBAC["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>SubjectAccessReview<br/>Per-user OAuth validation"]
-    end
-
-    subgraph WorkbenchPod["WORKBENCH POD (User Namespace)"]
+    subgraph NotebookPod["NOTEBOOK POD (Application Container)"]
         direction TB
 
-        subgraph JupyterVariants["Jupyter Workbenches"]
-            JupyterLab["JupyterLab 4.2<br/>8888/TCP HTTP<br/>Token auth (configurable)<br/>Variants: minimal, datascience,<br/>pytorch, tensorflow, trustyai,<br/>rocm-pytorch, rocm-tensorflow"]
+        subgraph JupyterContainer["Jupyter Workbenches"]
+            Jupyter["JupyterLab<br/>8888/TCP HTTP<br/>Auth: DISABLED<br/>token='' password=''<br/>UID: 1001, GID: 0"]
         end
 
-        subgraph AltIDE["Code Server / RStudio"]
-            AltWorkbench["code-server 4.98 / RStudio Server<br/>8585/TCP HTTP (via NGINX 1.24)<br/>supervisor process mgmt<br/>Auth: None (platform-delegated)"]
+        subgraph CodeServerContainer["Code Server Workbench"]
+            Nginx1["nginx proxy<br/>8787/TCP HTTP"]
+            CS["code-server v4.98.0"]
+            Supervisord1["supervisord"]
+            Supervisord1 --> Nginx1
+            Supervisord1 --> CS
+        end
+
+        subgraph RStudioContainer["RStudio Workbench"]
+            Nginx2["nginx proxy<br/>8787/TCP HTTP"]
+            RS["RStudio 2024.12.1<br/>R 4.4.3"]
+            Supervisord2["supervisord"]
+            Supervisord2 --> Nginx2
+            Supervisord2 --> RS
         end
     end
 
-    subgraph InternalServices["INTERNAL SERVICES"]
-        K8sAPI["OpenShift API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount token"]
-        KFP["Kubeflow Pipelines API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount token"]
+    subgraph PipelinePod["PIPELINE RUNTIME POD (Headless)"]
+        Runtime["Runtime Container<br/>No listening port<br/>Batch execution only<br/>UID: 1001, GID: 0"]
     end
 
-    subgraph ExternalEgress["EXTERNAL EGRESS"]
-        CRAN["CRAN<br/>cran.r-project.org<br/>443/TCP HTTPS<br/>No auth"]
-        PyPI["PyPI<br/>pypi.org<br/>443/TCP HTTPS<br/>No auth"]
-        ExtDB["External Databases<br/>27017 / 1433 / 5432 TCP<br/>Connection credentials"]
+    subgraph PlatformServices["PLATFORM SERVICES (Cluster-Internal)"]
+        K8sAPI["OpenShift API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+"]
+        NotebookCtrl["odh-notebook-controller<br/>Injects sidecar"]
+        Operator["rhods-operator<br/>Deploys ImageStreams"]
     end
 
-    subgraph BuildPipeline["BUILD PIPELINE (Konflux CI)"]
-        direction LR
-        GitHub["GitHub PR<br/>Webhook"]
-        PaC["PipelinesAsCode"]
-        Tekton["Tekton PipelineRun<br/>buildah"]
-        Quay["quay.io/opendatahub<br/>443/TCP HTTPS"]
-
-        GitHub -->|"HTTPS/443<br/>Webhook"| PaC
-        PaC -->|"CEL filter"| Tekton
-        Tekton -->|"HTTPS/443<br/>Push Secret"| Quay
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        Quay["Container Registry<br/>quay.io/modh<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Image pull secret"]
+        S3["Object Storage (S3)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS credentials"]
     end
 
-    %% User to Gateway
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth"| Gateway
+    subgraph BuildTimeEgress["BUILD-TIME EGRESS (Image Build Only)"]
+        NVIDIA["developer.download.nvidia.com<br/>443/TCP HTTPS"]
+        ROCm["repo.radeon.com<br/>443/TCP HTTPS"]
+        PyPI["pypi.org<br/>443/TCP HTTPS"]
+        OpenShiftMirror["mirror.openshift.com<br/>443/TCP HTTPS"]
+    end
 
-    %% Gateway to Auth Proxy
-    Gateway -->|"HTTPS/8443<br/>TLS 1.2+<br/>OAuth token"| KRBAC
+    %% User access flow
+    Browser -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer Token (OIDC)"| KubeRBACProxy
+    KubeRBACProxy -->|"HTTP/8888<br/>No TLS (pod-local)<br/>No auth"| Jupyter
+    KubeRBACProxy -->|"HTTP/8787<br/>No TLS (pod-local)<br/>No auth"| Nginx1
+    KubeRBACProxy -->|"HTTP/8787<br/>No TLS (pod-local)<br/>No auth"| Nginx2
 
-    %% Auth Proxy to Workbenches
-    KRBAC -->|"HTTP/8888<br/>No encryption<br/>Trusted (post-auth)"| JupyterLab
-    KRBAC -->|"HTTP/8585<br/>No encryption<br/>Trusted (post-auth)"| AltWorkbench
+    %% Platform control
+    NotebookCtrl -->|"Creates StatefulSet<br/>Injects sidecar"| AuthLayer
+    Operator -->|"Deploys ImageStreams"| K8sAPI
 
-    %% Workbench Egress
-    JupyterLab -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    JupyterLab -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| KFP
-    JupyterLab -->|"HTTPS/443<br/>TLS 1.2+"| PyPI
-    JupyterLab -->|"TCP/varies<br/>Credentials"| ExtDB
-    AltWorkbench -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    AltWorkbench -->|"HTTPS/443<br/>TLS 1.2+"| CRAN
-    AltWorkbench -->|"HTTPS/443<br/>TLS 1.2+"| PyPI
+    %% Runtime egress from notebooks
+    Jupyter -->|"HTTPS/6443<br/>Bearer Token"| K8sAPI
+    Jupyter -->|"HTTPS/443<br/>Bearer Token"| Quay
+
+    %% Pipeline runtime
+    Runtime -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS credentials"| S3
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef authproxy fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef workbench fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef internal fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef externalegress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef build fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef auth fill:#ffcdd2,stroke:#c62828,stroke-width:3px
+    classDef app fill:#bbdefb,stroke:#1565c0,stroke-width:2px
+    classDef platform fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
+    classDef extservice fill:#fff9c4,stroke:#f9a825,stroke-width:2px
+    classDef buildtime fill:#e0e0e0,stroke:#616161,stroke-width:1px
 
-    class User external
-    class Gateway ingress
-    class KRBAC authproxy
-    class JupyterLab,AltWorkbench workbench
-    class K8sAPI,KFP internal
-    class CRAN,PyPI,ExtDB externalegress
-    class GitHub,PaC,Tekton,Quay build
+    class Browser external
+    class KubeRBACProxy auth
+    class Jupyter,Nginx1,CS,Supervisord1,Nginx2,RS,Supervisord2 app
+    class Runtime app
+    class K8sAPI,NotebookCtrl,Operator platform
+    class Quay,S3 extservice
+    class NVIDIA,ROCm,PyPI,OpenShiftMirror buildtime

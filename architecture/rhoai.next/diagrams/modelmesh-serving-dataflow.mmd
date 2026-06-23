@@ -1,46 +1,54 @@
 sequenceDiagram
-    participant Client as External Client
-    participant OAuthProxy as oauth-proxy Sidecar<br/>8443/TCP HTTPS TLS
+    autonumber
+
+    participant User as User / Pipeline
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Webhook as ServingRuntime Webhook<br/>9443/TCP HTTPS
+    participant Controller as modelmesh-controller<br/>(PredictorReconciler)
+    participant MM as ModelMesh (mm)<br/>8033/TCP gRPC
+    participant etcd as etcd Cluster<br/>2379/TCP gRPC
+    participant Puller as Puller Container<br/>8086/TCP gRPC
+    participant Storage as Storage Backend<br/>443/TCP HTTPS
+    participant Runtime as ML Runtime Container<br/>Unix Socket gRPC
+    participant OAuthProxy as OAuth Proxy<br/>8443/TCP HTTPS
     participant RESTProxy as REST Proxy<br/>8008/TCP HTTP
-    participant MM as ModelMesh Container<br/>8033/TCP gRPC
-    participant Runtime as Model Runtime<br/>UDS/TCP gRPC
-    participant etcd as etcd Cluster<br/>2379/TCP gRPC TLS
-    participant Puller as Storage Puller<br/>8086/TCP gRPC
-    participant S3 as Object Storage<br/>443/TCP HTTPS
+    participant Client as Inference Client
 
-    Note over Client,S3: Flow 1: gRPC Inference Request
-    Client->>MM: gRPC inference<br/>8033/TCP TLS (optional)<br/>mTLS (optional)
-    MM->>Runtime: Forward to model server<br/>UDS or TCP gRPC<br/>pod-internal (no encryption)
-    Runtime-->>MM: Prediction result
-    MM-->>Client: gRPC response
-    MM->>etcd: State sync<br/>2379/TCP gRPC TLS<br/>Username/password + client certs
+    rect rgb(230, 245, 255)
+        Note over User,Storage: Flow 1: Model Deployment (Predictor/InferenceService Creation)
+        User->>K8sAPI: Create Predictor/InferenceService<br/>HTTPS · Bearer Token
+        K8sAPI->>Controller: Watch event (CRD change)
+        Controller->>MM: gRPC SetVModel<br/>8033/TCP · Optional TLS/mTLS
+        MM->>etcd: Store model state<br/>2379/TCP · Optional TLS
+        MM->>Puller: Fetch model artifacts<br/>8086/TCP gRPC (pod-local)
+        Puller->>Storage: Download model<br/>443/TCP HTTPS · TLS 1.2+<br/>Backend-specific credentials
+        Storage-->>Puller: Model artifacts
+        Puller-->>MM: Model loaded<br/>Unix socket / 8085/TCP gRPC
+    end
 
-    Note over Client,S3: Flow 2: REST Inference Request (RHOAI)
-    Client->>OAuthProxy: POST /v2/models/{model}/infer<br/>8443/TCP HTTPS TLS<br/>OpenShift OAuth Bearer Token
-    OAuthProxy->>RESTProxy: Forward (authenticated)<br/>8008/TCP HTTP<br/>pod-internal (no encryption)
-    RESTProxy->>MM: Translate REST to gRPC<br/>8033/TCP gRPC TLS (optional)<br/>pod-internal
-    MM->>Runtime: Forward to model server<br/>UDS or TCP gRPC<br/>pod-internal
-    Runtime-->>MM: Prediction result
-    MM-->>RESTProxy: gRPC response
-    RESTProxy-->>OAuthProxy: HTTP JSON response
-    OAuthProxy-->>Client: HTTPS JSON response
+    rect rgb(230, 255, 230)
+        Note over Client,Runtime: Flow 2: Model Inference (gRPC)
+        Client->>MM: gRPC inference request<br/>8033/TCP · Optional TLS/mTLS<br/>Optional mTLS client certs
+        MM->>Runtime: Forward to runtime<br/>Unix socket · gRPC
+        Runtime-->>MM: Prediction result
+        MM-->>Client: gRPC response
+    end
 
-    Note over Client,S3: Flow 3: Model Registration (Predictor Reconciliation)
-    participant Controller as modelmesh-controller<br/>443/TCP HTTPS
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS
+    rect rgb(255, 245, 230)
+        Note over Client,Runtime: Flow 3: Model Inference (REST via OAuth)
+        Client->>OAuthProxy: HTTPS POST<br/>8443/TCP · TLS<br/>OpenShift OAuth token
+        OAuthProxy->>RESTProxy: HTTP forward<br/>8008/TCP (localhost)
+        RESTProxy->>MM: gRPC call<br/>8033/TCP · Optional TLS
+        MM->>Runtime: Forward to runtime<br/>Unix socket · gRPC
+        Runtime-->>MM: Prediction result
+        MM-->>RESTProxy: gRPC response
+        RESTProxy-->>OAuthProxy: HTTP response
+        OAuthProxy-->>Client: HTTPS JSON response
+    end
 
-    Controller->>K8sAPI: Watch Predictor CR<br/>443/TCP HTTPS TLS<br/>ServiceAccount token
-    K8sAPI-->>Controller: Predictor created/updated
-    Controller->>MM: registerModel (SetVModel)<br/>8033/TCP gRPC TLS (optional)<br/>kube:// resolver
-    MM->>etcd: Store model registration<br/>2379/TCP gRPC TLS<br/>Credentials from Secret
-    MM->>Puller: Download model<br/>8086/TCP gRPC<br/>pod-internal
-    Puller->>S3: Fetch model artifacts<br/>443/TCP HTTPS TLS<br/>Storage credentials
-    S3-->>Puller: Model artifacts
-    Puller-->>MM: Model cached locally
-    MM->>Runtime: Load model
-    Runtime-->>MM: Model loaded
-
-    Note over Client,S3: Flow 4: etcd Event Streaming
-    Controller->>etcd: EtcdRangeWatcher<br/>2379/TCP gRPC TLS mTLS<br/>Username/password + client certs
-    etcd-->>Controller: Model state change events<br/>(vmodels/ and registry/ prefixes)
-    Controller->>Controller: Update Predictor status
+    rect rgb(255, 230, 255)
+        Note over etcd,K8sAPI: Flow 4: Model State Event Streaming
+        etcd->>Controller: Watch event (model state change)<br/>2379/TCP gRPC · Optional TLS
+        Note over Controller: ModelMeshEventStream →<br/>PredictorReconciler<br/>(in-process Go channel)
+        Controller->>K8sAPI: Update Predictor/InferenceService status<br/>443/TCP HTTPS · ServiceAccount token
+    end

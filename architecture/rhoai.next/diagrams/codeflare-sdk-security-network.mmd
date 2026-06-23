@@ -1,75 +1,83 @@
 graph TB
-    subgraph ClientSide["CLIENT SIDE (User Environment)"]
-        User["Data Scientist<br/>Jupyter Notebook / Python<br/>codeflare-sdk"]
+    subgraph UserEnv["USER ENVIRONMENT (Client-Side)"]
+        SDK["CodeFlare SDK<br/>Python 3.9/3.11<br/>Runs in Workbench Pod"]
     end
 
-    subgraph ControlPlane["KUBERNETES CONTROL PLANE (Trusted)"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>AuthN: Bearer Token / kubeconfig / SA token<br/>AuthZ: RBAC"]
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>AuthN: Bearer Token / kubeconfig<br/>AuthZ: RBAC"]
     end
 
-    subgraph OperatorNS["OPERATOR NAMESPACE (Trusted)"]
-        KubeRay["KubeRay Operator<br/>Watches: RayCluster CR"]
-        CFOperator["CodeFlare Operator<br/>AppWrapper Controller<br/>Watches: AppWrapper CR"]
-        KueueCtrl["Kueue Controller<br/>Watches: LocalQueue CR"]
-    end
-
-    subgraph UserNS["USER NAMESPACE (Workload)"]
-        direction TB
-
-        subgraph RayCluster["Ray Cluster"]
-            RayHead["Ray Head Pod<br/>Image: quay.io/modh/ray<br/>Volumes: odh-trusted-ca-bundle"]
-            RayWorkers["Ray Worker Pods<br/>Image: quay.io/modh/ray<br/>Volumes: odh-trusted-ca-bundle"]
-        end
-
-        HeadSvc["{cluster}-head-svc (ClusterIP)<br/>6379/TCP (GCS) - No TLS<br/>8265/TCP (Dashboard) - No TLS<br/>10001/TCP (Ray Client) - Opt. TLS"]
-
-        CASecret["{cluster}-ca-secret-*<br/>Opaque: ca.key, ca.crt<br/>RSA-2048 / SHA256"]
+    subgraph OperatorPlane["OPERATOR PLANE"]
+        KubeRay["KubeRay Operator<br/>Watches: ray.io/v1 RayCluster"]
+        AppWrapperCtrl["AppWrapper Controller<br/>Watches: workload.codeflare.dev/v1beta2"]
+        Kueue["Kueue<br/>Manages: LocalQueue"]
     end
 
     subgraph IngressLayer["INGRESS LAYER"]
-        OCPRoute["OpenShift Route<br/>ray-dashboard-{name}<br/>443/TCP HTTPS<br/>TLS: edge/passthrough<br/>Auth: Bearer Token (OAuth)"]
-        K8sIngress["Kubernetes Ingress<br/>ray-dashboard-{name}<br/>80 or 443/TCP<br/>Auth: None"]
+        Route["OpenShift Route<br/>ray-dashboard-{name}<br/>443/TCP → 8265/TCP<br/>TLS edge/passthrough<br/>OAuth Proxy"]
+        K8sIngress["Kubernetes Ingress<br/>ray-dashboard-{name}<br/>80 or 443/TCP → 8265/TCP<br/>Optional TLS"]
     end
 
-    %% SDK → K8s API (primary control path)
-    User -->|"HTTPS/6443<br/>TLS 1.2+<br/>Bearer Token / kubeconfig"| K8sAPI
+    subgraph DataPlane["DATA PLANE (User Namespace)"]
+        subgraph RayCluster["Ray Cluster"]
+            RayHead["Ray Head Pod<br/>{name}-head-svc (ClusterIP)"]
+            RayWorkers["Ray Worker Pods"]
+        end
+        subgraph Ports["Head Service Ports"]
+            GCS["6379/TCP<br/>GCS<br/>No Encryption"]
+            Dashboard["8265/TCP<br/>Dashboard (HTTP)<br/>No Encryption (internal)"]
+            ClientPort["10001/TCP<br/>Ray Client<br/>Optional mTLS"]
+        end
+    end
 
-    %% K8s API → Operators (internal reconciliation)
-    K8sAPI -.->|"RayCluster CR reconcile"| KubeRay
-    K8sAPI -.->|"AppWrapper CR reconcile"| CFOperator
-    K8sAPI -.->|"LocalQueue scheduling"| KueueCtrl
+    subgraph Secrets["SECRETS / CERTIFICATES"]
+        CACert["{cluster_name}-ca-secret-*<br/>Type: Opaque<br/>Contents: ca.key, ca.crt<br/>Auto-Rotate: No"]
+        CABundle["odh-trusted-ca-bundle<br/>Type: ConfigMap<br/>Mounted in Ray pods"]
+    end
 
-    %% Operators → Workload creation
-    KubeRay -.->|"Creates Pods + Services"| RayHead
-    KubeRay -.->|"Creates Pods"| RayWorkers
+    %% Client to Control Plane
+    SDK -->|"HTTPS/6443<br/>TLS 1.2+<br/>Bearer Token<br/>CRD CRUD: RayCluster,<br/>AppWrapper, LocalQueue,<br/>Route, Ingress, Secret"| K8sAPI
 
-    %% Ray internal communication
-    RayHead -->|"6379/TCP GCS<br/>None or mTLS"| RayWorkers
-    RayHead --- HeadSvc
+    %% Client to Data Plane (via Ingress)
+    SDK -->|"HTTPS/443<br/>TLS (edge/passthrough)<br/>Bearer Token (OAuth)"| Route
+    SDK -->|"HTTP or HTTPS/80,443<br/>Optional TLS"| K8sIngress
 
-    %% Dashboard access via ingress
-    OCPRoute -->|"8265/TCP internal<br/>No TLS"| HeadSvc
-    K8sIngress -->|"8265/TCP internal<br/>No TLS"| HeadSvc
+    %% Client direct to Ray
+    SDK -->|"TCP/10001<br/>mTLS (optional)<br/>Client Cert (RSA 2048)"| ClientPort
 
-    %% SDK → Dashboard (data path)
-    User -->|"HTTPS/443 (OpenShift)<br/>TLS, Bearer Token"| OCPRoute
-    User -->|"HTTP/8265 (vanilla K8s)<br/>No TLS, No Auth"| K8sIngress
+    %% Ingress to Ray
+    Route -->|"HTTP/8265<br/>Internal"| Dashboard
+    K8sIngress -->|"HTTP/8265<br/>Internal"| Dashboard
 
-    %% TLS cert secret
-    CASecret -.->|"mounted in pods"| RayHead
-    CASecret -.->|"mounted in pods"| RayWorkers
+    %% Control Plane to Operators
+    K8sAPI -.->|"CRD Watch"| KubeRay
+    K8sAPI -.->|"CRD Watch"| AppWrapperCtrl
+
+    %% Operators to Data Plane
+    KubeRay -->|"Creates/Manages"| RayHead
+    KubeRay -->|"Creates/Manages"| RayWorkers
+
+    %% Internal Ray connections
+    RayHead --- GCS
+    RayHead --- Dashboard
+    RayHead --- ClientPort
+    RayWorkers -->|"TCP/6379<br/>No Encryption"| GCS
+
+    %% Certificate references
+    CACert -.->|"Used for mTLS"| ClientPort
+    CABundle -.->|"TLS trust chain"| RayHead
 
     %% Styling
-    classDef client fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    classDef controlplane fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
-    classDef operator fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    classDef workload fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
-    classDef ingress fill:#ffe0b2,stroke:#d79b00,stroke-width:2px
-    classDef secret fill:#ffcdd2,stroke:#c62828,stroke-width:2px
+    classDef userenv fill:#dbeafe,stroke:#3b82f6,stroke-width:2px,color:#1e3a5f
+    classDef controlplane fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f
+    classDef operatorplane fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#064e3b
+    classDef ingress fill:#ffe4e6,stroke:#e11d48,stroke-width:2px,color:#881337
+    classDef dataplane fill:#e0e7ff,stroke:#4f46e5,stroke-width:2px,color:#312e81
+    classDef secrets fill:#fde68a,stroke:#b45309,stroke-width:2px,color:#78350f
 
-    class User client
+    class SDK userenv
     class K8sAPI controlplane
-    class KubeRay,CFOperator,KueueCtrl operator
-    class RayHead,RayWorkers,HeadSvc workload
-    class OCPRoute,K8sIngress ingress
-    class CASecret secret
+    class KubeRay,AppWrapperCtrl,Kueue operatorplane
+    class Route,K8sIngress ingress
+    class RayHead,RayWorkers,GCS,Dashboard,ClientPort dataplane
+    class CACert,CABundle secrets

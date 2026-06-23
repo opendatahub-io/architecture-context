@@ -1,96 +1,56 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Registers, versions, and tracks ML models"
-        mlEngineer = person "ML Engineer" "Deploys models and manages inference services"
-        platformAdmin = person "Platform Admin" "Manages RHOAI platform components"
+        dataScientist = person "Data Scientist" "Creates, registers, and deploys ML models"
+        mlEngineer = person "ML Engineer" "Manages model lifecycle, serving environments, and async uploads"
 
-        modelRegistry = softwareSystem "Model Registry" "Central metadata repository for ML model registration, versioning, and tracking (OpenAPI v1alpha3)" {
-            proxy = container "model-registry proxy" "REST API server exposing OpenAPI v1alpha3 endpoints for model metadata CRUD" "Go REST Service (chi router)" {
-                tags "Primary"
-            }
-            catalog = container "model-registry catalog" "Unified catalog API for querying models from HuggingFace and MCP servers" "Go REST Service" {
-                tags "Optional"
-            }
-            controller = container "model-registry controller" "Watches KServe InferenceService CRDs and syncs lifecycle with registry metadata" "Go controller-runtime" {
-                tags "Optional"
-            }
-            csi = container "CSI Storage Initializer" "Downloads model artifacts from registry for KServe inference pods via model-registry:// URI" "Go CLI (KServe Provider)" {
-                tags "Sidecar"
-            }
-            asyncUpload = container "async-upload Job" "Transfers model artifacts between storage backends (S3, OCI, HTTP) and registers them" "Python 3.12 Kubernetes Job" {
-                tags "Batch"
-            }
+        modelRegistry = softwareSystem "Model Registry" "Central metadata repository for ML models, versions, artifacts, experiments, and catalog browsing" {
+            proxy = container "Model Registry Proxy" "REST API server for model metadata CRUD operations" "Go Service, chi router, GORM" "Primary"
+            catalog = container "Catalog Server" "Model and MCP server catalog browsing with plugin architecture and leader election" "Go Service, pglock"
+            controller = container "InferenceService Controller" "Watches KServe ISVCs and synchronizes metadata with model registry" "Go Controller, controller-runtime"
+            csi = container "CSI Storage Initializer" "Resolves model-registry:// URIs for KServe model serving" "Go CLI, init container"
+            asyncUpload = container "Async Upload Job" "Copies models between storage backends with optional Sigstore signing" "Python K8s Job, skopeo"
+            ui = container "Model Registry UI" "Web UI for model registry browsing and management" "Go BFF + React"
         }
 
-        # Internal Platform Systems
-        kserve = softwareSystem "KServe" "Standardized serverless ML inference platform" {
-            tags "Internal RHOAI"
-        }
-        istio = softwareSystem "Istio Service Mesh" "Service mesh for traffic management, mTLS, and authorization" {
-            tags "Internal RHOAI"
-        }
-        dashboard = softwareSystem "ODH Dashboard" "Web UI for RHOAI platform management" {
-            tags "Internal RHOAI"
-        }
-        pythonClient = softwareSystem "Model Registry Python Client" "Python SDK for programmatic model registration (pip: model-registry>=0.3.7)" {
-            tags "Internal RHOAI"
-        }
+        mysql = softwareSystem "MySQL" "Primary metadata storage for proxy server" "External Database"
+        postgresql = softwareSystem "PostgreSQL" "Metadata storage for proxy or catalog; leader election via pglock" "External Database"
+        kserve = softwareSystem "KServe" "Kubernetes-native ML model serving with InferenceService CRD" "Internal ODH"
+        istio = softwareSystem "Istio Service Mesh" "mTLS, AuthorizationPolicy, traffic routing via VirtualService" "Internal Platform"
+        huggingface = softwareSystem "HuggingFace Hub" "External model metadata source for catalog" "External"
+        s3 = softwareSystem "AWS S3" "Model artifact storage" "External"
+        ociRegistry = softwareSystem "OCI Registry" "Container/model image storage (Docker Registry v2)" "External"
+        sigstore = softwareSystem "Sigstore" "Model signing via Fulcio (certs), Rekor (transparency log), TUF (trust root)" "External"
+        k8sApi = softwareSystem "Kubernetes API" "Cluster API for resource management" "Internal Platform"
+        rhodsOperator = softwareSystem "rhods-operator" "Deploys model registry instances via kustomize manifests" "Internal RHOAI"
+        dashboard = softwareSystem "ODH Dashboard" "Platform UI that integrates with model registry" "Internal ODH"
 
-        # External Systems
-        mysql = softwareSystem "MySQL 8.3" "Relational database for model metadata storage" {
-            tags "Database"
-        }
-        postgresql = softwareSystem "PostgreSQL 16+" "Relational database for model/catalog metadata storage" {
-            tags "Database"
-        }
-        s3 = softwareSystem "S3-compatible Storage" "Object storage for model artifacts" {
-            tags "External"
-        }
-        ociRegistry = softwareSystem "OCI Registry" "Container/artifact registry for model images" {
-            tags "External"
-        }
-        huggingface = softwareSystem "HuggingFace Hub" "Public model hub for metadata and downloads" {
-            tags "External"
-        }
-        sigstore = softwareSystem "Sigstore (Fulcio/Rekor)" "Code signing and transparency log service" {
-            tags "External"
-        }
-        k8sApi = softwareSystem "Kubernetes API" "Cluster API server for resource management" {
-            tags "Infrastructure"
-        }
+        # User interactions
+        dataScientist -> modelRegistry "Registers models, creates versions, browses catalog via REST API"
+        mlEngineer -> modelRegistry "Manages serving environments, triggers async uploads"
 
-        # Person → System relationships
-        dataScientist -> modelRegistry "Registers models, versions, artifacts via REST API or Python SDK"
-        mlEngineer -> modelRegistry "Deploys models, manages inference services"
-        platformAdmin -> modelRegistry "Configures model registry, manages catalog sources"
+        # Internal container interactions
+        proxy -> mysql "Stores metadata" "MySQL/3306 TCP, Optional TLS, user/pass"
+        proxy -> postgresql "Stores metadata" "PostgreSQL/5432 TCP, Optional TLS, user/pass"
+        catalog -> postgresql "Catalog data + leader election" "PostgreSQL/5432 TCP, pglock"
+        catalog -> huggingface "Fetches model metadata" "HTTPS/443, Bearer HF_API_KEY"
+        controller -> proxy "Syncs ISVC metadata" "HTTP/8080, Bearer token"
+        controller -> k8sApi "Watches ISVCs, updates labels" "HTTPS/443, SA token"
+        csi -> proxy "Resolves model-registry:// URIs" "HTTP/8080"
+        csi -> s3 "Downloads model artifacts" "HTTPS/443, Provider auth"
+        asyncUpload -> s3 "Downloads models" "HTTPS/443, AWS IAM"
+        asyncUpload -> ociRegistry "Pushes models as OCI images" "HTTPS/443, Docker auth"
+        asyncUpload -> sigstore "Signs models" "HTTPS/443, Identity token"
+        asyncUpload -> proxy "Registers metadata" "HTTP(S)/8080-443, Bearer token"
+        ui -> proxy "REST API calls" "HTTP/8080"
+        ui -> catalog "REST API calls" "HTTP/8080"
 
-        # Container-level relationships
-        dataScientist -> proxy "POST/GET /api/model_registry/v1alpha3/*" "HTTP/8080"
-        dataScientist -> catalog "GET /api/model_catalog/v1alpha1/*" "HTTP/8080"
-
-        proxy -> mysql "Stores/retrieves model metadata" "MySQL protocol/3306"
-        proxy -> postgresql "Stores/retrieves model metadata" "PostgreSQL protocol/5432"
-
-        catalog -> postgresql "Stores/retrieves catalog metadata" "PostgreSQL protocol/5432"
-        catalog -> huggingface "Fetches model metadata" "HTTPS/443"
-
-        controller -> proxy "Syncs InferenceService metadata" "HTTP/8080 Bearer Token"
-        controller -> k8sApi "Watches InferenceService CRDs, updates labels/finalizers" "HTTPS/443 SA Token"
-
-        csi -> proxy "Resolves model artifacts by name/version" "HTTP/8080"
-        csi -> s3 "Downloads model files" "HTTPS/443"
-
-        asyncUpload -> proxy "Registers models and artifacts" "HTTP/8080"
-        asyncUpload -> s3 "Downloads/uploads model artifacts" "HTTPS/443 AWS IAM"
-        asyncUpload -> ociRegistry "Pushes model artifacts as OCI images" "HTTPS/443 Docker creds"
-        asyncUpload -> huggingface "Downloads models" "HTTPS/443 HF Token"
-        asyncUpload -> sigstore "Signs model artifacts" "HTTPS/443 OIDC"
-
-        # System-level relationships
-        istio -> modelRegistry "Routes traffic via VirtualService, enforces mTLS and AuthorizationPolicy"
-        dashboard -> modelRegistry "Reads/writes model metadata via REST API" "HTTP/8080"
-        pythonClient -> modelRegistry "Programmatic model registration" "HTTP(S)/8080"
-        kserve -> modelRegistry "InferenceService lifecycle sync (controller); model downloads (CSI)"
+        # Platform interactions
+        istio -> proxy "mTLS + AuthorizationPolicy"
+        istio -> catalog "mTLS + AuthorizationPolicy"
+        rhodsOperator -> modelRegistry "Deploys instances" "Kustomize manifests"
+        dashboard -> modelRegistry "UI integration" "REST API/8080"
+        kserve -> controller "InferenceService CRD events" "K8s API watch"
+        kserve -> csi "Triggers CSI for model-registry:// URIs" "ClusterStorageContainer"
     }
 
     views {
@@ -105,43 +65,36 @@ workspace {
         }
 
         styles {
-            element "Primary" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Optional" {
-                background #7ed321
-                color #ffffff
-            }
-            element "Sidecar" {
-                background #50e3c2
-                color #333333
-            }
-            element "Batch" {
-                background #b8e986
-                color #333333
-            }
-            element "Internal RHOAI" {
-                background #7ed321
-                color #ffffff
-            }
-            element "Database" {
-                background #f5a623
-                color #ffffff
-                shape Cylinder
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Infrastructure" {
-                background #bd10e0
+            element "External Database" {
+                background #999999
+                color #ffffff
+                shape Cylinder
+            }
+            element "Internal ODH" {
+                background #7ed321
+            }
+            element "Internal Platform" {
+                background #d5e8d4
+            }
+            element "Internal RHOAI" {
+                background #7ed321
+            }
+            element "Primary" {
+                background #4a90e2
                 color #ffffff
             }
             element "Person" {
                 background #08427b
                 color #ffffff
                 shape Person
+            }
+            element "Software System" {
+                background #1168bd
+                color #ffffff
             }
         }
     }

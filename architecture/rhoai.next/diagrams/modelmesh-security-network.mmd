@@ -1,75 +1,62 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["Client / KServe InferenceService"]
+        Client["External Client"]
     end
 
-    subgraph ClusterInternal["CLUSTER INTERNAL (Kubernetes Network)"]
+    subgraph PodBoundary["MODELMESH POD (Trust Boundary)"]
         direction TB
 
-        subgraph PodBoundary["ModelMesh Pod Boundary"]
-            direction TB
-
-            subgraph MeshSidecar["ModelMesh Container"]
-                API["ModelMeshApi (gRPC)<br/>Port: 8033/TCP<br/>Encryption: TLS (PKCS8, optional)<br/>Auth: mTLS (NONE/REQUIRE/OPTIONAL)"]
-                Mesh["SidecarModelMesh<br/>Distributed Cache & Router"]
-                Metrics["Prometheus Metrics<br/>Port: 2112/TCP<br/>Encryption: TLS (self-signed, optional)<br/>Auth: None"]
-                Health["Health Probes<br/>Port: 8089/TCP<br/>Encryption: None<br/>Auth: None"]
-                PreStop["PreStop Server<br/>Port: configurable/TCP<br/>Encryption: None<br/>Auth: None"]
-            end
-
-            subgraph RuntimeSidecar["Model Runtime Container"]
-                RuntimeGRPC["ModelRuntime gRPC<br/>Port: 8085/TCP or UDS<br/>Encryption: plaintext (localhost)<br/>Auth: None"]
-            end
-
-            Mesh -->|"gRPC 8085/TCP or UDS<br/>plaintext (localhost-only)<br/>No auth"| RuntimeGRPC
+        subgraph Sidecar["ModelMesh Sidecar (Java 21)"]
+            GRPCServer["ModelMeshApi gRPC Server<br/>8033/TCP<br/>TLS (optional)<br/>mTLS: NONE|REQUIRE|OPTIONAL"]
+            LitelinksRPC["Litelinks Inter-Pod RPC<br/>8080/TCP<br/>Thrift-over-TCP<br/>TLS (optional) + mTLS"]
+            MetricsSrv["Prometheus Metrics<br/>2112/TCP HTTPS<br/>TLS (self-signed, BouncyCastle)<br/>No Auth"]
+            HealthSrv["Health Probes<br/>8089/TCP HTTP<br/>No Encryption<br/>/ready, /live"]
+            PreStopSrv["PreStop Server<br/>8090/TCP HTTP<br/>No Encryption<br/>/prestop"]
         end
 
-        subgraph PeerPods["Other ModelMesh Pods (Same Deployment)"]
-            PeerMesh["Peer ModelMesh Instance<br/>Port: 8080/TCP<br/>Thrift (Litelinks)"]
+        subgraph RuntimeContainer["Model Runtime Container"]
+            RuntimeGRPC["ModelRuntime gRPC<br/>8085/TCP or UDS<br/>plaintext (localhost)<br/>No Auth"]
         end
 
-        Mesh <-->|"Thrift 8080/TCP<br/>TLS (optional, same keypair)<br/>mTLS (configurable via<br/>MM_INTRACLUSTER_CLIENTAUTH)"| PeerMesh
+        GRPCServer -->|"gRPC 8085/TCP or UDS<br/>plaintext<br/>Trusted sidecar"| RuntimeGRPC
     end
 
-    subgraph CoordinationStore["COORDINATION STORE"]
-        etcd["etcd Cluster<br/>Port: 2379/TCP<br/>gRPC<br/>TLS (configurable)<br/>Auth: Client cert (configurable)"]
+    subgraph ClusterInternal["CLUSTER INTERNAL (Pod-to-Pod)"]
+        OtherMM["Other ModelMesh Pods<br/>Headless Service: model-mesh<br/>clusterIP: None"]
+        PromServer["Prometheus"]
+        StatsD["StatsD Agent<br/>(localhost)"]
     end
 
-    subgraph Monitoring["MONITORING (Optional)"]
-        Prometheus["Prometheus Server"]
-        StatsD["StatsD / Sysdig<br/>Port: 8126/UDP<br/>No encryption<br/>No auth"]
-    end
-
-    subgraph ExternalServices["EXTERNAL SERVICES (Optional)"]
-        RemotePayload["Remote Payload Processor<br/>Port: configurable/TCP<br/>HTTP/HTTPS<br/>TLS (optional)<br/>Auth: None"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        etcd["etcd Cluster<br/>2379/TCP gRPC<br/>TLS + mTLS (configurable)<br/>Secret: model-mesh-icd-etcd"]
+        ModelStorage["Model Storage<br/>(S3 / PVC)<br/>443/TCP HTTPS (S3)<br/>IAM Auth (S3)"]
     end
 
     %% External flows
-    Client -->|"gRPC 8033/TCP<br/>TLS (PKCS8 key)<br/>mTLS client certs<br/>(NONE/REQUIRE/OPTIONAL)"| API
+    Client -->|"gRPC/8033<br/>TLS (optional)<br/>mTLS client certs"| GRPCServer
 
-    %% Internal flows
-    Mesh -->|"gRPC 2379/TCP<br/>TLS (configurable)<br/>Client cert (configurable)"| etcd
+    %% Inter-pod flows
+    LitelinksRPC <-->|"Thrift/8080<br/>TLS (optional)<br/>mTLS (optional)<br/>Cache miss forwarding"| OtherMM
 
-    Prometheus -->|"HTTP(S) 2112/TCP<br/>TLS (self-signed)<br/>No auth"| Metrics
+    %% Monitoring flows
+    PromServer -->|"HTTPS/2112<br/>TLS (self-signed)<br/>Scrape /metrics"| MetricsSrv
+    GRPCServer -.->|"UDP/8126<br/>StatsD<br/>No encryption"| StatsD
 
-    Mesh -->|"UDP 8126<br/>No encryption<br/>No auth"| StatsD
-
-    Mesh -->|"HTTP/HTTPS<br/>TLS (optional)<br/>No auth"| RemotePayload
+    %% External service flows
+    GRPCServer -->|"gRPC/2379<br/>TLS + mTLS<br/>Model registry,<br/>leader election"| etcd
+    RuntimeGRPC -->|"HTTPS/443 (S3)<br/>TLS + IAM<br/>Model artifacts"| ModelStorage
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef runtime fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef coordination fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef extsvc fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef pod fill:#dbeafe,stroke:#3b82f6,stroke-width:2px
+    classDef sidecar fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    classDef runtime fill:#7ed321,stroke:#333,stroke-width:2px,color:#fff
+    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef extservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef warning fill:#fecaca,stroke:#ef4444,stroke-width:2px
 
     class Client external
-    class API ingress
-    class Mesh,Health,PreStop,Metrics internal
+    class GRPCServer,LitelinksRPC,MetricsSrv,HealthSrv,PreStopSrv sidecar
     class RuntimeGRPC runtime
-    class PeerMesh internal
-    class etcd coordination
-    class Prometheus,StatsD monitoring
-    class RemotePayload extsvc
+    class OtherMM,PromServer,StatsD cluster
+    class etcd,ModelStorage extservice

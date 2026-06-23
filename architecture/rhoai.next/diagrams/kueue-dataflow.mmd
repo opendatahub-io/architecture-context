@@ -1,46 +1,55 @@
 sequenceDiagram
+    autonumber
+
     participant User as Data Scientist
     participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant Webhook as Kueue Webhook<br/>9443/TCP HTTPS TLS
+    participant MutWebhook as Kueue Mutating Webhook<br/>9443/TCP HTTPS TLS
+    participant ValWebhook as Kueue Validating Webhook<br/>9443/TCP HTTPS TLS
     participant Controller as Kueue Controller<br/>(controller-runtime)
-    participant Scheduler as Kueue Scheduler<br/>(in-process goroutine)
-    participant Cache as In-Memory Cache
-    participant RemoteK8s as Remote Kueue Cluster<br/>443/TCP HTTPS TLS 1.2+
+    participant Scheduler as Kueue Scheduler<br/>(in-process)
+    participant RemoteK8s as Remote K8s Cluster<br/>443/TCP HTTPS TLS 1.2+
 
-    Note over User,Cache: Flow 1: Job Admission (Standard Path)
+    Note over User,RemoteK8s: Flow 1: Workload Admission
 
-    User->>K8sAPI: kubectl apply -f pytorchjob.yaml<br/>Auth: Bearer Token / Client Cert
-    K8sAPI->>Webhook: POST /mutate (admission review)<br/>mTLS (API server cert)
-    Webhook->>Webhook: Apply defaults: queue-name label,<br/>suspend=true, managed-by annotation
-    Webhook-->>K8sAPI: Mutated admission response
-    K8sAPI->>Webhook: POST /validate (admission review)<br/>mTLS (API server cert)
-    Webhook->>Webhook: Validate queue-name, TAS annotations,<br/>immutability constraints
-    Webhook-->>K8sAPI: Validated admission response
-    K8sAPI-->>User: Job created (suspended)
+    User->>K8sAPI: kubectl create job/pytorchjob<br/>Auth: User credentials
+    K8sAPI->>MutWebhook: POST /mutate-*<br/>Auth: API server client cert
+    MutWebhook-->>K8sAPI: Defaults applied<br/>(queue label, suspend=true)
+    K8sAPI->>ValWebhook: POST /validate-*<br/>Auth: API server client cert
+    ValWebhook-->>K8sAPI: Validation passed
 
-    Controller->>K8sAPI: Watch event: new PyTorchJob<br/>Auth: ServiceAccount Bearer Token
-    Controller->>Controller: Create Workload CR from job spec<br/>(pod sets, resource requirements)
-    Controller->>K8sAPI: Create Workload CR<br/>Auth: ServiceAccount Bearer Token
+    Note over Controller: Watch event: new Job created
 
-    Scheduler->>Cache: Read ClusterQueue state<br/>(quotas, flavors, utilization)
-    Scheduler->>Scheduler: Evaluate admission:<br/>quota check, priority, fair sharing,<br/>flavor assignment, preemption
-    Scheduler->>K8sAPI: Update Workload.status.admission<br/>Auth: ServiceAccount Bearer Token
+    Controller->>K8sAPI: Watch Job/Workload resources<br/>Auth: ServiceAccount token
+    K8sAPI-->>Controller: Job event received
 
-    Controller->>K8sAPI: Resume job (set suspend=false)<br/>Auth: ServiceAccount Bearer Token
-    K8sAPI-->>User: Job pods created and scheduled
+    Controller->>K8sAPI: Create Workload CR<br/>Auth: ServiceAccount token
+    K8sAPI-->>Controller: Workload created
 
-    Note over Controller,RemoteK8s: Flow 2: MultiKueue Workload Distribution
+    Note over Scheduler: Scheduling cycle begins
 
-    Controller->>K8sAPI: Watch admitted Workload<br/>with MultiKueue AdmissionCheck
-    Controller->>RemoteK8s: Create remote Workload + Job<br/>Auth: kubeconfig from Secret
-    RemoteK8s-->>Controller: Remote Workload status updates<br/>Auth: kubeconfig watch
-    Controller->>K8sAPI: Sync remote status to local Workload<br/>Auth: ServiceAccount Bearer Token
+    Scheduler->>Scheduler: Evaluate pending Workloads<br/>against ClusterQueue quotas,<br/>priority, fair sharing
 
-    Note over Controller,K8sAPI: Flow 3: Provisioning Request (Autoscaler Integration)
+    Scheduler->>K8sAPI: Update Workload admission<br/>(assign ResourceFlavors, quotas)<br/>Auth: ServiceAccount token
+    K8sAPI-->>Scheduler: Workload admitted
 
-    Controller->>K8sAPI: Workload needs unavailable resources
-    Controller->>K8sAPI: Create ProvisioningRequest CR<br/>Auth: ServiceAccount Bearer Token
-    Note right of K8sAPI: Cluster Autoscaler processes<br/>ProvisioningRequest, provisions nodes
-    K8sAPI-->>Controller: ProvisioningRequest status: Provisioned
-    Controller->>Scheduler: Re-evaluate admission with new capacity
-    Scheduler->>K8sAPI: Admit Workload
+    Controller->>K8sAPI: Unsuspend Job<br/>(patch suspend=false,<br/>inject node affinity)<br/>Auth: ServiceAccount token
+    K8sAPI-->>Controller: Job unsuspended
+
+    Note over K8sAPI: Job pods now schedulable<br/>by kube-scheduler
+
+    Note over User,RemoteK8s: Flow 2: MultiKueue Cross-Cluster Dispatch
+
+    Controller->>K8sAPI: Read MultiKueueConfig<br/>Auth: ServiceAccount token
+    K8sAPI-->>Controller: Config with worker cluster list
+
+    Controller->>K8sAPI: Read kubeconfig Secret<br/>Auth: ServiceAccount token
+    K8sAPI-->>Controller: Kubeconfig credentials
+
+    Controller->>RemoteK8s: Create Workload + Job<br/>Auth: Kubeconfig credentials
+    RemoteK8s-->>Controller: Resources created
+
+    loop Status Synchronization
+        Controller->>RemoteK8s: Watch Workload status<br/>Auth: Kubeconfig credentials
+        RemoteK8s-->>Controller: Status updates
+        Controller->>K8sAPI: Sync status to local Workload<br/>Auth: ServiceAccount token
+    end

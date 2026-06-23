@@ -1,59 +1,61 @@
 sequenceDiagram
-    participant Client as MLflow SDK Client
-    participant Browser as Browser (ODH Dashboard)
-    participant Gateway as ODH Gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant MLflow as MLflow Server<br/>5000/TCP HTTP (TLS at pod)
-    participant K8sAuth as kubernetes-auth Plugin
-    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS
-    participant PG as PostgreSQL<br/>5432/TCP TLS 1.2+
-    participant S3 as S3-compatible Storage<br/>443/TCP HTTPS
+    participant Client as ML Client<br/>(mlflow-skinny)
+    participant AppClient as Client Application
+    participant OTelApp as Instrumented App<br/>(OTel SDK)
+    participant WebUser as Web Browser
+    participant MLflow as MLflow Server<br/>5000/TCP HTTP/HTTPS
+    participant Auth as Auth Module<br/>kubernetes-auth
+    participant PostgreSQL as PostgreSQL<br/>5432/TCP
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant LLM as LLM Provider<br/>(OpenAI/Anthropic/etc.)<br/>443/TCP HTTPS
 
-    Note over Client,S3: Flow 1: User SDK Request (Experiment Tracking)
-    Client->>Gateway: POST /mlflow/api/2.0/mlflow/runs/create<br/>Auth: Bearer Token (K8s SA)
-    Gateway->>MLflow: Forward HTTP/5000<br/>Bearer Token forwarded
-    MLflow->>K8sAuth: Authenticate request
-    K8sAuth->>K8sAPI: POST SelfSubjectAccessReview<br/>Auth: ServiceAccount Token
-    K8sAPI-->>K8sAuth: Allowed (mlflow.kubeflow.org)
-    K8sAuth-->>MLflow: Auth OK + workspace resolved
-    MLflow->>PG: INSERT run record<br/>Auth: Username/password
-    PG-->>MLflow: Row inserted
-    MLflow-->>Gateway: 200 OK (run_id)
-    Gateway-->>Client: JSON Response
+    Note over Client,S3: Flow 1: Experiment Run Logging
 
-    Note over Client,S3: Flow 2: Artifact Upload
-    Client->>Gateway: POST /mlflow/api/2.0/mlflow-artifacts/artifacts/*<br/>Auth: Bearer Token
-    Gateway->>MLflow: Forward HTTP/5000
-    MLflow->>K8sAuth: Authenticate request
-    K8sAuth->>K8sAPI: SelfSubjectAccessReview
-    K8sAPI-->>K8sAuth: Allowed
-    MLflow->>S3: PUT object<br/>Auth: AWS IAM / HMAC
-    S3-->>MLflow: 200 OK
-    MLflow-->>Gateway: 200 OK
-    Gateway-->>Client: Upload confirmed
+    Client->>MLflow: POST /api/2.0/mlflow/runs/create<br/>Auth: kubernetes-auth
+    MLflow->>Auth: Validate credentials & RBAC
+    Auth-->>MLflow: Authorized (workspace-scoped)
+    MLflow->>PostgreSQL: INSERT run metadata<br/>Auth: Password
+    PostgreSQL-->>MLflow: Run ID created
 
-    Note over Browser,S3: Flow 3: UI Access (Embedded in Dashboard)
-    Browser->>Gateway: GET /mlflow/<br/>Auth: Browser session (Bearer Token)
-    Gateway->>MLflow: Forward HTTP/5000
-    MLflow-->>Gateway: React UI (index.html + static assets)
-    Gateway-->>Browser: HTML/JS/CSS
-    Browser->>Gateway: GET /mlflow/ajax-api/2.0/mlflow/experiments/list<br/>X-MLFLOW-WORKSPACE + Authorization headers
-    Gateway->>MLflow: Forward with headers
-    MLflow->>K8sAuth: Authenticate (workspace-scoped)
-    K8sAuth->>K8sAPI: SelfSubjectAccessReview
-    K8sAPI-->>K8sAuth: Allowed
-    MLflow->>PG: SELECT experiments
-    PG-->>MLflow: Result set
-    MLflow-->>Gateway: JSON experiments list
-    Gateway-->>Browser: Render experiments
+    Client->>MLflow: POST /api/2.0/mlflow/runs/log-batch<br/>Metrics, Params, Tags
+    MLflow->>PostgreSQL: INSERT metrics/params/tags<br/>Auth: Password
+    PostgreSQL-->>MLflow: OK
 
-    Note over Client,S3: Flow 4: OpenTelemetry Trace Ingestion
-    participant OTel as OTel Collector / SDK
-    OTel->>Gateway: POST /v1/traces<br/>Auth: Bearer Token + x-mlflow-experiment-id
-    Gateway->>MLflow: Forward HTTP/5000
-    MLflow->>K8sAuth: Authenticate (experiment-scoped)
-    K8sAuth->>K8sAPI: SelfSubjectAccessReview
-    K8sAPI-->>K8sAuth: Allowed
-    MLflow->>PG: INSERT trace spans<br/>Auth: Username/password
-    PG-->>MLflow: Stored
-    MLflow-->>Gateway: 200 OK
-    Gateway-->>OTel: Trace accepted
+    Client->>MLflow: POST /api/2.0/mlflow/runs/log-artifact<br/>Binary artifact data
+    MLflow->>S3: PUT object<br/>Auth: AWS IAM / Access Keys<br/>Encryption: TLS 1.2+
+    S3-->>MLflow: Upload confirmed
+    MLflow-->>Client: Artifact logged
+
+    Note over AppClient,LLM: Flow 2: AI Gateway LLM Proxy
+
+    AppClient->>MLflow: POST /api/2.0/mlflow/gateway/routes/chat<br/>Auth: kubernetes-auth
+    MLflow->>Auth: Validate credentials & RBAC
+    Auth-->>MLflow: Authorized
+    MLflow->>PostgreSQL: Retrieve encrypted API key<br/>(KEK/DEK envelope)
+    PostgreSQL-->>MLflow: Encrypted secret
+    Note over MLflow: Decrypt with AES-256-GCM<br/>PBKDF2-derived KEK
+    MLflow->>LLM: POST /v1/chat/completions<br/>Auth: Decrypted API Key<br/>Encryption: TLS 1.2+
+    LLM-->>MLflow: Chat completion response
+    MLflow-->>AppClient: Proxied LLM response
+
+    Note over OTelApp,PostgreSQL: Flow 3: OpenTelemetry Trace Ingestion
+
+    OTelApp->>MLflow: POST /v1/traces<br/>OTLP protobuf payload<br/>Auth: kubernetes-auth
+    MLflow->>Auth: Validate credentials
+    Auth-->>MLflow: Authorized
+    MLflow->>PostgreSQL: INSERT trace spans<br/>Auth: Password
+    PostgreSQL-->>MLflow: Traces stored
+    MLflow-->>OTelApp: 200 OK
+
+    Note over WebUser,S3: Flow 4: Web UI Browse & Compare
+
+    WebUser->>MLflow: GET / (React SPA)<br/>Auth: kubernetes-auth
+    MLflow-->>WebUser: React bundle (module federation)
+    WebUser->>MLflow: GET /ajax-api/2.0/mlflow/experiments/search
+    MLflow->>PostgreSQL: SELECT experiments
+    PostgreSQL-->>MLflow: Experiment list
+    MLflow-->>WebUser: JSON response
+    WebUser->>MLflow: GET /ajax-api/2.0/mlflow/runs/search<br/>Compare runs view
+    MLflow->>PostgreSQL: SELECT runs + metrics
+    PostgreSQL-->>MLflow: Run data
+    MLflow-->>WebUser: Run comparison data

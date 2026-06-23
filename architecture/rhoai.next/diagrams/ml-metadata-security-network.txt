@@ -1,17 +1,18 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  INTERNAL CLIENTS (Cluster-Internal)                                    │
+│  INTERNAL CLIENTS (Platform Services)                                   │
 │                                                                          │
 │  [Data Science Pipelines (DSP Driver)]                                   │
 │  - Namespace: {dsp-namespace}                                            │
-│  - Purpose: Records pipeline run metadata, artifacts, lineage           │
+│  - Primary consumer of MLMD                                              │
 │         │                                                                │
 │         │ Port: 8080/TCP                                                 │
 │         │ Protocol: gRPC/HTTP2                                           │
-│         │ Encryption: Optional TLS (configurable via SSLConfig)          │
-│         │ Auth: Optional mTLS (client certificate signed by custom_ca)   │
+│         │ Encryption: Optional TLS (server cert validation)              │
+│         │ Auth: Optional mTLS (client certificate if client_verify=true) │
 │         ▼                                                                │
-│  [TFX / Kubeflow Pipelines]                                              │
-│  - Purpose: Legacy pipeline system integration                           │
+│                                                                          │
+│  [TFX / Kubeflow Pipelines] (Legacy)                                     │
+│  - Legacy pipeline system integration                                    │
 │         │                                                                │
 │         │ Port: 8080/TCP                                                 │
 │         │ Protocol: gRPC/HTTP2                                           │
@@ -19,30 +20,40 @@
 │         │ Auth: Optional mTLS                                            │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  MLMD SERVICE (Internal gRPC Server)                                    │
+│  MLMD SERVICE                                                            │
 │                                                                          │
-│  [metadata_store_server (odh-mlmd-grpc-server)]                          │
-│  - Type: ClusterIP (deployed externally by platform operator)            │
-│  - Port: 8080/TCP (gRPC/HTTP2)                                          │
+│  [odh-mlmd-grpc-server]                                                  │
 │  - Image: quay.io/opendatahub/mlmd-grpc-server:odh-stable               │
-│  - User: 65534:65534 (non-root)                                         │
-│  - TLS: Optional — SslServerCredentials when ssl_config provided         │
-│  - TLS Config:                                                           │
-│    - server_key: Private key for gRPC TLS                                │
-│    - server_cert: Certificate for gRPC TLS                               │
-│    - custom_ca: CA for client certificate verification                   │
-│    - client_verify: When true, requires valid client certificate          │
-│  - Without TLS: InsecureServerCredentials (no encryption, no auth)       │
-│  - Crypto: BoringSSL (via gRPC/Bazel — NOT system OpenSSL)              │
-│  - NOTE: No per-RPC authorization — any connected client can perform     │
-│          all operations including bulk deletes and schema modifications   │
+│  - Base: UBI9/ubi-minimal                                                │
+│  - User: 65534:65534 (non-root)                                          │
+│  - Service Type: ClusterIP                                               │
+│  - Port: 8080/TCP (gRPC/HTTP2)                                          │
+│  - TLS: Optional (SslServerCredentials via BoringSSL)                    │
+│    - Server key: ssl_config.server_key                                   │
+│    - Server cert: ssl_config.server_cert                                 │
+│    - Custom CA: ssl_config.custom_ca (for client verification)           │
+│    - Client verify: ssl_config.client_verify (mTLS enforcement)          │
+│  - Default: InsecureServerCredentials (no TLS)                           │
+│  - Auth: No per-RPC authorization — relies on network isolation          │
+│    or upstream proxy (kube-rbac-proxy)                                    │
+│                                                                          │
+│  Internal Architecture:                                                  │
+│  ┌──────────────────────────────────────────┐                            │
+│  │  metadata_store_server (C++ binary)      │                            │
+│  │  ├── MetadataStoreServiceImpl            │                            │
+│  │  │   └── New DB connection per RPC call  │                            │
+│  │  ├── metadata_store (core library)       │                            │
+│  │  │   └── Optimistic concurrency control  │                            │
+│  │  └── query_engine (ZetaSQL filters)      │                            │
+│  └──────────────────────────────────────────┘                            │
 │         │                                                                │
-│         │ EGRESS TO DATABASES                                            │
+│         │ EGRESS                                                         │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  DATABASE BACKENDS (Persistent Storage)                                  │
 │                                                                          │
-│  Option A: [MySQL / MariaDB]                                             │
+│  Option A:                                                               │
+│  [MySQL / MariaDB]                                                       │
 │  - Port: 3306/TCP                                                        │
 │  - Protocol: MySQL wire protocol                                         │
 │  - Encryption: Optional SSL                                              │
@@ -50,7 +61,8 @@
 │  - Auth: Username/password (mysql_config_password)                       │
 │  - Purpose: Production metadata storage                                  │
 │                                                                          │
-│  Option B: [PostgreSQL]                                                  │
+│  Option B:                                                               │
+│  [PostgreSQL]                                                            │
 │  - Port: Configurable/TCP                                                │
 │  - Protocol: PostgreSQL wire protocol                                    │
 │  - Encryption: Optional SSL                                              │
@@ -58,65 +70,52 @@
 │  - Auth: Username/password or passfile (postgres_config_password)        │
 │  - Purpose: Alternative production metadata storage                      │
 │                                                                          │
-│  Option C: [SQLite] (Dev/Test only)                                      │
-│  - Embedded database, no network connection                              │
-│  - No encryption, no auth                                                │
+│  Option C (dev/test only):                                               │
+│  [SQLite]                                                                │
+│  - Embedded in-process                                                   │
+│  - No network communication                                              │
 │  - Purpose: Development and testing                                      │
+│                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 
 INGRESS:
-  No ingress resources defined. Ingress is managed by the consuming
-  deployment (e.g., platform operator, service mesh sidecar, or
-  kube-rbac-proxy).
+  - No Kubernetes Ingress resources defined
+  - Service exposed as ClusterIP (internal only)
+  - External access managed by consuming deployment (e.g., kube-rbac-proxy)
 
 RBAC Summary:
-  No Kubernetes RBAC resources. MLMD runs as a standalone gRPC service.
-  Access control relies entirely on:
-  - Network-level isolation (ClusterIP, NetworkPolicies)
-  - Optional mTLS (client_verify in SSLConfig)
-  - Upstream proxy (e.g., kube-rbac-proxy in RHOAI)
+  - No Kubernetes RBAC resources (standalone gRPC service)
+  - No ClusterRoles, Roles, or RoleBindings
+  - No per-RPC authorization mechanism
+  - Access control relies on:
+    1. Network isolation (ClusterIP, no external exposure)
+    2. Optional mTLS (client certificate verification via custom_ca)
+    3. Upstream proxy (kube-rbac-proxy in RHOAI deployments)
 
 Secrets:
   - DB credentials (mysql_config_password / postgres_config_password)
-    Type: Opaque (env var / config file)
-    Provisioned By: Manual / platform operator
-    Auto-Rotate: No
-
+    Type: Opaque, Provisioned: Manual/platform operator, Auto-Rotate: No
   - SSL server key (ssl_config.server_key)
-    Type: TLS key
-    Provisioned By: Manual / cert-manager
-    Auto-Rotate: No
-
+    Type: TLS key, Provisioned: Manual/cert-manager, Auto-Rotate: No
   - SSL server cert (ssl_config.server_cert)
-    Type: TLS cert
-    Provisioned By: Manual / cert-manager
-    Auto-Rotate: No
-
+    Type: TLS cert, Provisioned: Manual/cert-manager, Auto-Rotate: No
   - SSL custom CA (ssl_config.custom_ca)
-    Type: CA cert
-    Provisioned By: Manual
-    Auto-Rotate: No
-
+    Type: CA cert, Provisioned: Manual, Auto-Rotate: No
   - MySQL SSL certs (sslcert, sslkey, sslrootcert)
-    Type: TLS
-    Provisioned By: Manual
-    Auto-Rotate: No
-
+    Type: TLS, Provisioned: Manual, Auto-Rotate: No
   - PostgreSQL SSL certs (sslcert, sslkey, sslrootcert)
-    Type: TLS
-    Provisioned By: Manual
-    Auto-Rotate: No
+    Type: TLS, Provisioned: Manual, Auto-Rotate: No
 
-FIPS Considerations:
-  - Crypto library: BoringSSL (statically linked via Bazel, NOT system OpenSSL)
-  - BoringSSL is FIPS-capable but FIPS mode is NOT explicitly enabled in this build
-  - C++ binary — no Go GOEXPERIMENT/strictfipsruntime flags applicable
-  - Risk: Server binary uses BoringSSL from Bazel rather than dynamically linking
-    against system OpenSSL, potentially bypassing FIPS enforcement on the host
+FIPS Compliance Notes:
+  - Crypto library: BoringSSL (via gRPC/Bazel), NOT system OpenSSL
+  - BoringSSL is FIPS-capable but FIPS mode NOT explicitly enabled in build
+  - Binary is statically linked against BoringSSL, not dynamically against system OpenSSL
+  - No GOEXPERIMENT or strictfipsruntime flags (C++ binary, not Go)
+  - UBI9 base image provides system OpenSSL but server binary uses BoringSSL
 
-Security Concerns:
-  - No per-RPC authorization: any authenticated client can perform all operations
-  - Default mode is InsecureServerCredentials (no TLS, no auth)
-  - No connection pooling (new DB connection per RPC) — potential DoS vector
-  - No RPM-level lock file — OS package versions not pinned
-  - No Hermeto/cachi2 prefetch — Bazel fetches from internet during build
+Security Considerations:
+  - No built-in per-RPC authorization — any client with network access can
+    perform any operation including bulk deletes and schema modifications
+  - New database connection created per RPC (no connection pooling)
+  - Default mode is InsecureServerCredentials (no TLS) when ssl_config not provided
+  - Relies on platform-level network policies and proxy for access control

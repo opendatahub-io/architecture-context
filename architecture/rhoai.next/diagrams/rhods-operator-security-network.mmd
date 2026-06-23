@@ -1,125 +1,112 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client"]
+        Client["External User / Client"]
     end
 
-    subgraph Ingress["INGRESS (DMZ) — Gateway Stack"]
+    subgraph Ingress["INGRESS — Gateway API Data Plane"]
         direction TB
-
-        Gateway["data-science-gateway<br/>Gateway API + Envoy<br/>443/TCP → 8443/TCP<br/>TLS Terminate (SIMPLE or Re-encrypt)"]
-
-        subgraph AuthStack["Authentication Stack"]
-            EnvoyFilter["EnvoyFilter<br/>data-science-authn-filter<br/>ext_authz + Lua script"]
-            AuthProxy["kube-auth-proxy<br/>8443/TCP HTTPS<br/>TLS: service-ca cert<br/>SA: kube-auth-proxy"]
-        end
-
-        EnvoyFilter -->|ext_authz<br/>8443/TCP HTTPS<br/>TLS service-ca| AuthProxy
+        Gateway["data-science-gateway<br/>(Gateway CR — Envoy)<br/>443/TCP → Envoy<br/>TLS 1.2+ Terminate<br/>Hostname: rh-ai.{domain}"]
+        EnvoyFilter["data-science-authn-filter<br/>(EnvoyFilter)<br/>ext_authz + Lua<br/>Strips cookies, injects Bearer"]
+        Gateway --> EnvoyFilter
     end
 
-    subgraph LegacyRedirect["LEGACY REDIRECT"]
-        LegacyRoute["OpenShift Route<br/>(legacy hostname)<br/>443/TCP Edge TLS"]
-        Nginx["dashboard-redirect<br/>nginx 8080/TCP HTTP<br/>→ 301 to new hostname"]
-        LegacyRoute -->|HTTP/8080<br/>No encryption| Nginx
+    subgraph AuthZone["AUTH PROXY ZONE (NetworkPolicy protected)"]
+        AuthProxy["kube-auth-proxy<br/>(OAuth2 Proxy)<br/>NS: openshift-ingress<br/>SA: kube-auth-proxy<br/>8443/TCP HTTPS (service-ca)<br/>9000/TCP HTTP (metrics)<br/>NetworkPolicy: only Gateway pods"]
     end
 
-    subgraph OAuthProviders["AUTHENTICATION PROVIDERS"]
-        OAuthServer["OpenShift OAuth Server<br/>443/TCP HTTPS TLS 1.2+<br/>OAuthClient credentials"]
-        OIDCProvider["External OIDC Provider<br/>443/TCP HTTPS TLS 1.2+<br/>OIDC client credentials"]
+    subgraph ExternalAuth["EXTERNAL AUTH (Identity Provider)"]
+        OAuth["OpenShift OAuth Server<br/>443/TCP HTTPS TLS 1.2+<br/>OAuthClient credentials"]
+        OIDC["External OIDC Provider<br/>443/TCP HTTPS TLS 1.2+<br/>Client credentials"]
     end
 
-    subgraph OperatorPlane["OPERATOR CONTROL PLANE"]
+    subgraph OperatorPlane["OPERATOR CONTROL PLANE (redhat-ods-operator NS)"]
         direction TB
-
-        subgraph NS_Operator["Namespace: redhat-ods-operator"]
-            Manager["rhods-operator (manager)<br/>SA: rhods-operator<br/>Ports: 8443 webhook, 8080 health, 8085 metrics"]
-            WebhookSvc["Webhook Service<br/>443/TCP → 9443/TCP<br/>HTTPS, TLS cert-manager/service-ca<br/>12 webhooks (7 mutating, 5 validating)"]
-        end
-
-        subgraph NS_Apps["Namespace: {applications-namespace}"]
-            AuthProxyDeploy["kube-auth-proxy<br/>Deployment + HPA"]
-            DashRedirectDeploy["dashboard-redirect<br/>Deployment"]
-        end
+        Manager["rhods-operator (manager)<br/>Image: quay.io/rhoai/odh-rhel8-operator<br/>SA: opendatahub-operator<br/>FIPS: strictfipsruntime"]
+        WebhookSvc["Webhook Service<br/>443 → 9443/TCP HTTPS<br/>TLS: cert-manager<br/>Auth: K8s API mTLS<br/>14 webhooks"]
+        HealthProbes["Health Probes<br/>8081/TCP HTTP<br/>/healthz, /readyz"]
+        Metrics["Metrics<br/>8080/TCP HTTP<br/>/metrics (Prometheus)"]
     end
 
-    subgraph Monitoring["MONITORING STACK"]
-        Prometheus["MonitoringStack<br/>(Prometheus)<br/>9090/TCP, 8443/TCP<br/>TLS web-tls"]
-        Tempo["Tempo<br/>Tracing Backend"]
-        OTEL["OpenTelemetry<br/>Collector"]
-        Perses["Perses<br/>Visualization"]
-    end
-
-    subgraph K8sInfra["KUBERNETES INFRASTRUCTURE"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+<br/>ServiceAccount token auth"]
-    end
-
-    subgraph ComponentPlane["MANAGED COMPONENTS (deployed by operator)"]
-        Dashboard["Dashboard<br/>8080/TCP HTTP"]
-        ModelRegistry["Model Registry<br/>8080/TCP HTTP"]
+    subgraph ComponentBackends["COMPONENT BACKENDS (redhat-ods-applications NS)"]
+        direction TB
+        Dashboard["Dashboard"]
         KServe["KServe"]
-        Kueue["Kueue"]
-        DSP["Data Science Pipelines"]
-        OtherComponents["Ray, TrustyAI, Trainer,<br/>Feast, OGX, MLflow,<br/>Spark, MaaS, ModelCtrl"]
+        Workbenches["Workbenches"]
+        DSP["DataSciencePipelines"]
+        OtherComps["+ 12 more components"]
     end
 
-    subgraph PlatformDeps["PLATFORM DEPENDENCIES"]
-        Istio["Istio / Sail Operator<br/>EnvoyFilter, DestinationRule"]
-        CertManager["cert-manager<br/>TLS certificates"]
-        LWS["LeaderWorkerSet<br/>Multi-node inference"]
-        COO["Cluster Observability<br/>Operator"]
+    subgraph MonitoringZone["MONITORING (redhat-ods-monitoring NS)"]
+        Collector["data-science-collector-prometheus<br/>8889/TCP HTTPS (service-ca)<br/>Bearer Token"]
+        OTel["OpenTelemetry Collector"]
+        Prometheus["Prometheus<br/>(MonitoringStack)"]
+        Thanos["Thanos Querier<br/>10902/TCP HTTP"]
+        Perses["Perses Dashboard<br/>9091/9092 HTTPS<br/>TLS (CA ConfigMap)<br/>Bearer Token"]
     end
 
-    %% External flows
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>No auth (initial)"| Gateway
-    Gateway -->|"ext_authz check"| EnvoyFilter
-    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth2 client creds"| OAuthServer
-    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>OIDC client creds"| OIDCProvider
-    Gateway -->|"HTTP(S) + Bearer Token<br/>(Lua-injected access token)"| Dashboard
-    Gateway -->|"HTTP(S) + Bearer Token"| ModelRegistry
-    Gateway -->|"HTTP(S) + Bearer Token"| KServe
+    subgraph CloudMgr["CLOUD MANAGER (Non-OpenShift only)"]
+        CloudManager["cloudmanager binary<br/>Same image, different entrypoint<br/>AWS / Azure / CoreWeave"]
+    end
 
-    %% Legacy redirect
-    Client -.->|"HTTPS/443<br/>legacy URL"| LegacyRoute
-    Nginx -.->|"301 redirect"| Client
+    subgraph ExternalSvc["EXTERNAL SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Token"]
+        Quay["quay.io/rhoai/*<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Pull Secret"]
+        HelmOCI["Helm OCI Registries<br/>443/TCP HTTPS<br/>Pull Secret"]
+    end
 
-    %% Operator → K8s API
-    Manager -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    K8sAPI -->|"HTTPS/443<br/>webhook client cert"| WebhookSvc
+    subgraph LegacyRedirects["LEGACY REDIRECTS"]
+        RedirectRoute["rhods-dashboard Route<br/>443/TCP HTTPS edge<br/>301 → Gateway hostname"]
+        DashRedirect["dashboard-redirect<br/>8080/TCP HTTP<br/>nginx redirect service"]
+    end
 
-    %% Operator → Components
-    Manager -->|"deploys via<br/>kustomize manifests"| Dashboard
-    Manager -->|"deploys"| KServe
-    Manager -->|"deploys"| Kueue
-    Manager -->|"deploys"| ModelRegistry
-    Manager -->|"deploys"| DSP
-    Manager -->|"deploys"| OtherComponents
+    %% Flows - External to Gateway
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>(no auth yet)"| Gateway
+    EnvoyFilter -->|"HTTPS/8443<br/>TLS (service-ca)<br/>OAuth2 proxy"| AuthProxy
+    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuthClient creds"| OAuth
+    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>Client creds"| OIDC
+    EnvoyFilter -->|"HTTP(S)/varies<br/>Bearer Token<br/>(injected by Lua)"| ComponentBackends
 
-    %% Monitoring
-    Manager -->|"deploys"| Prometheus
-    Manager -->|"deploys"| Tempo
-    Manager -->|"deploys"| OTEL
-    Prometheus -->|"scrapes<br/>8085/TCP HTTPS<br/>Bearer Token"| Manager
+    %% Operator flows
+    Manager -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Bearer Token"| K8sAPI
+    K8sAPI -->|"HTTPS/443→9443<br/>TLS (cert-manager)<br/>K8s API mTLS"| WebhookSvc
+    Manager --> HealthProbes
+    Manager --> Metrics
 
-    %% Platform deps
-    Manager -->|"creates<br/>EnvoyFilter, DestinationRule"| Istio
-    Manager -->|"watches CRDs"| CertManager
-    Manager -->|"watches CRDs"| LWS
-    Manager -->|"watches CRDs"| COO
+    %% Monitoring flows
+    OTel -->|"OTLP<br/>TLS (webTLSConfig)<br/>Bearer Token"| Prometheus
+    Prometheus --> Thanos
+    Perses -->|"HTTPS/9091-9092<br/>TLS (CA)<br/>Bearer Token"| Thanos
+    Collector --> OTel
+
+    %% Cloud Manager flows
+    CloudManager -->|"HTTPS/6443<br/>SA Token"| K8sAPI
+    CloudManager -->|"HTTPS/443<br/>Pull Secret"| HelmOCI
+
+    %% Image pull
+    Manager -->|"HTTPS/443<br/>Pull Secret"| Quay
+
+    %% Legacy
+    Client -.->|"301 redirect"| RedirectRoute
+    RedirectRoute -.-> DashRedirect
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef authzone fill:#fff2cc,stroke:#d6b656,stroke-width:2px
     classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef component fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef components fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef infra fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef auth fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef legacy fill:#f5f5f5,stroke:#666,stroke-width:1px,stroke-dasharray: 5 5
+    classDef externalsvc fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef cloud fill:#fff3e0,stroke:#f5a623,stroke-width:2px
+    classDef legacy fill:#e8e8e8,stroke:#999,stroke-width:1px,stroke-dasharray: 5 5
 
     class Client external
-    class Gateway,EnvoyFilter,AuthProxy ingress
-    class Manager,WebhookSvc operator
-    class Dashboard,ModelRegistry,KServe,Kueue,DSP,OtherComponents component
-    class Prometheus,Tempo,OTEL,Perses monitoring
-    class K8sAPI,Istio,CertManager,LWS,COO infra
-    class OAuthServer,OIDCProvider auth
-    class LegacyRoute,Nginx legacy
+    class Gateway,EnvoyFilter ingress
+    class AuthProxy authzone
+    class OAuth,OIDC external
+    class Manager,WebhookSvc,HealthProbes,Metrics operator
+    class Dashboard,KServe,Workbenches,DSP,OtherComps components
+    class Collector,OTel,Prometheus,Thanos,Perses monitoring
+    class K8sAPI,Quay,HelmOCI externalsvc
+    class CloudManager cloud
+    class RedirectRoute,DashRedirect legacy

@@ -1,50 +1,46 @@
 workspace {
     model {
-        dataSteward = person "Data Steward / Release Engineer" "Maintains model catalog definitions and triggers pipeline runs"
-        dataScientist = person "Data Scientist" "Browses model catalog in RHOAI Dashboard to discover available models"
+        maintainer = person "Platform Engineer" "Maintains model catalog data and pipeline configuration"
 
-        modelMetadataCollection = softwareSystem "Model Metadata Collection" "Build-time ETL pipeline that extracts, enriches, and catalogs AI model metadata from OCI registries and HuggingFace" {
-            modelExtractor = container "model-extractor" "Primary pipeline CLI: discovery, extraction, enrichment, catalog generation" "Go CLI (build-time only)"
-            metadataReport = container "metadata-report" "Generates metadata completeness and provenance reports" "Go CLI (build-time only)"
-            dataContainer = container "odh-model-metadata-collection" "Minimal data container shipping pre-generated YAML catalogs via volume mount" "ubi9-minimal Container (sleep infinity)"
+        modelMetadataCollection = softwareSystem "model-metadata-collection" "Build-time data pipeline that extracts, enriches, and catalogs AI model metadata and MCP server metadata into YAML catalogs shipped as a static data container" {
+            modelExtractor = container "model-extractor" "Main pipeline: extracts model metadata from OCI registries, enriches with HuggingFace data, generates YAML catalogs" "Go 1.24 CLI Tool"
+            metadataReport = container "metadata-report" "Generates metadata completeness reports analyzing data source coverage" "Go 1.24 CLI Tool"
+            dataContainer = container "odh-model-metadata-collection" "Static data container shipping pre-generated YAML catalog files at /app/data/ for volume mounting" "ubi9-minimal Container" "Data Container"
         }
 
-        huggingFace = softwareSystem "HuggingFace" "AI model hosting platform with collections, model cards, and metadata APIs" "External"
-        ociRegistry = softwareSystem "OCI Container Registry" "registry.redhat.io - hosts modelcar container images with model cards" "External"
-        ociRegistryMCP = softwareSystem "OCI Registries (MCP)" "Various registries hosting MCP server container images" "External"
-        quay = softwareSystem "Quay.io" "Container image registry for built images" "External"
-
-        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "Red Hat OpenShift AI Dashboard - model catalog UI" "Internal RHOAI"
-        konflux = softwareSystem "Konflux / Tekton" "CI/CD pipeline platform for building and pushing container images" "Internal Platform"
-        githubActions = softwareSystem "GitHub Actions" "CI/CD for upstream builds and testing" "External"
+        huggingface = softwareSystem "HuggingFace" "AI model hosting platform providing model metadata, collections, and README content" "External"
+        ociRegistry = softwareSystem "OCI Container Registry" "Container registries (registry.redhat.io) hosting modelcar images with embedded metadata" "External"
+        quay = softwareSystem "Quay.io" "Container image registry for published artifacts" "External"
+        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "Red Hat OpenShift AI Dashboard that displays model catalogs to users" "Internal RHOAI"
+        konflux = softwareSystem "Konflux CI/CD" "Tekton-based build pipeline for container image creation and publishing" "Internal Platform"
+        githubCI = softwareSystem "GitHub Actions CI" "Continuous integration for linting, testing, and image building" "External"
 
         # Build-time relationships
-        dataSteward -> modelMetadataCollection "Updates models-index.yaml and triggers builds"
-        modelExtractor -> huggingFace "Fetches collections, model details, READMEs" "HTTPS/443 TLS 1.2+ Bearer Token (optional)"
-        modelExtractor -> ociRegistry "Pulls manifests, config blobs, model card layers" "HTTPS/443 TLS 1.2+ OCI Distribution v2"
-        modelExtractor -> ociRegistryMCP "Inspects MCP server images for architecture data" "HTTPS/443 TLS 1.2+"
-        modelExtractor -> dataContainer "Produces YAML catalog files copied into image" "Filesystem (COPY in Dockerfile)"
-        metadataReport -> modelExtractor "Reads catalog output for completeness analysis" "Filesystem"
+        maintainer -> modelMetadataCollection "Configures model indexes, triggers pipeline runs"
+        modelExtractor -> huggingface "Fetches model collections, details, READMEs" "HTTPS/443, Bearer Token (optional)"
+        modelExtractor -> ociRegistry "Fetches container manifests, layer blobs, modelcards" "HTTPS/443, Public (no auth)"
+        modelExtractor -> metadataReport "Provides enrichment data for completeness reporting" "File I/O"
 
-        # CI/CD relationships
-        konflux -> dataContainer "Builds and pushes container image" "Tekton PipelineRun"
-        githubActions -> dataContainer "Builds and pushes container image (upstream)" "GitHub Actions workflow"
-        dataContainer -> quay "Pushed as odh-model-metadata-collection" "HTTPS/443 Registry Push Auth"
+        # Build pipeline relationships
+        konflux -> modelMetadataCollection "Builds and publishes data container image" "Tekton Pipeline"
+        githubCI -> modelMetadataCollection "Runs lint, tests; builds and pushes image on main" "GitHub Actions"
+        modelMetadataCollection -> quay "Publishes odh-model-metadata-collection image" "HTTPS/443, Registry credentials"
 
         # Runtime relationships
-        rhoaiDashboard -> dataContainer "Mounts /app/data volume to read catalog YAMLs" "Volume mount (no network)"
-        dataScientist -> rhoaiDashboard "Browses model catalog UI"
+        rhoaiDashboard -> dataContainer "Reads /app/data/*.yaml catalog files" "Volume Mount (File I/O)"
     }
 
     views {
         systemContext modelMetadataCollection "SystemContext" {
             include *
             autoLayout
+            description "System context showing model-metadata-collection in the RHOAI ecosystem"
         }
 
         container modelMetadataCollection "Containers" {
             include *
             autoLayout
+            description "Internal components: build-time CLI tools and shipped data container"
         }
 
         styles {
@@ -60,17 +56,18 @@ workspace {
                 background #4a90e2
                 color #ffffff
             }
+            element "Data Container" {
+                background #9b59b6
+                color #ffffff
+                shape RoundedBox
+            }
             element "Person" {
-                shape Person
                 background #08427b
                 color #ffffff
+                shape Person
             }
             element "Software System" {
                 background #1168bd
-                color #ffffff
-            }
-            element "Container" {
-                background #438dd5
                 color #ffffff
             }
         }

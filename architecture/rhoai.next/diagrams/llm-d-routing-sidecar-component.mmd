@@ -1,77 +1,86 @@
 graph TB
-    subgraph Sidecar["llm-d-routing-sidecar (Go HTTP Reverse Proxy)"]
-        direction TB
-        Proxy["Reverse Proxy Server<br/>Port: 8000/TCP<br/>TLS 1.2+"]
-        ChatHandler["/v1/chat/completions Handler"]
-        CompHandler["/v1/completions Handler"]
-        HealthHandler["/health Handler"]
-        CatchAll["/* Catch-All Handler"]
-
-        subgraph Connectors["P/D Protocol Connectors"]
-            NIXLv2["NIXL v2 Connector<br/>(current)"]
-            NIXLv1["NIXL v1 Connector<br/>(deprecated)"]
-            LMCache["LMCache Connector<br/>(deprecated)"]
-        end
-
-        subgraph Security["Security"]
-            AllowlistValidator["AllowlistValidator<br/>SSRF Protection"]
-            TLSConfig["TLS Config<br/>ECDHE + AES-GCM/ChaCha20"]
-        end
-
-        LRUCache["LRU Cache<br/>Prefiller Proxy Handlers<br/>(capacity: 16)"]
-
-        Proxy --> ChatHandler
-        Proxy --> CompHandler
-        Proxy --> HealthHandler
-        Proxy --> CatchAll
-
-        ChatHandler -->|SSRF check| AllowlistValidator
-        CompHandler -->|SSRF check| AllowlistValidator
-        ChatHandler -->|protocol dispatch| NIXLv2
-        ChatHandler -->|protocol dispatch| NIXLv1
-        ChatHandler -->|protocol dispatch| LMCache
-        CompHandler -->|protocol dispatch| NIXLv2
-
-        NIXLv2 -->|cache handler| LRUCache
-        NIXLv1 -->|cache handler| LRUCache
-        LMCache -->|cache handler| LRUCache
+    subgraph External["External Clients"]
+        Client[Client Application]
     end
 
-    Client[External Client] -->|"HTTPS/8000<br/>TLS 1.2+"| Proxy
+    subgraph Pod["Kubernetes Pod"]
+        subgraph Sidecar["llm-d-routing-sidecar"]
+            direction TB
+            Proxy["HTTP Reverse Proxy<br/>Port 8000/TCP<br/>TLS 1.2+"]
+            ChatHandler["Chat Completions Handler<br/>/v1/chat/completions"]
+            CompletionsHandler["Completions Handler<br/>/v1/completions"]
+            HealthHandler["Health Check<br/>/health"]
+            Passthrough["Catch-all Passthrough<br/>/*"]
 
-    subgraph K8sResources["Kubernetes Resources (Watched)"]
+            subgraph Connectors["Connector Protocols"]
+                NIXLv2["NIXLv2 Connector<br/>(current/recommended)"]
+                NIXLv1["NIXLv1 Connector<br/>(deprecated)"]
+                LMCache["LMCache Connector<br/>(deprecated)"]
+            end
+
+            subgraph Security["Security Subsystem"]
+                AllowlistValidator["AllowlistValidator<br/>(SSRF Protection)"]
+                TLSConfig["TLS Configuration<br/>FIPS-compatible ciphers"]
+            end
+
+            LRUCache["LRU Cache<br/>(capacity 16)<br/>Prefiller proxy handlers"]
+
+            Proxy --> ChatHandler
+            Proxy --> CompletionsHandler
+            Proxy --> HealthHandler
+            Proxy --> Passthrough
+
+            ChatHandler -->|validates target| AllowlistValidator
+            CompletionsHandler -->|validates target| AllowlistValidator
+            ChatHandler -->|selects protocol| NIXLv2
+            ChatHandler -->|selects protocol| NIXLv1
+            ChatHandler -->|selects protocol| LMCache
+            NIXLv2 -->|reuses handlers| LRUCache
+            NIXLv1 -->|reuses handlers| LRUCache
+            LMCache -->|reuses handlers| LRUCache
+        end
+
+        Decoder["vLLM Decoder<br/>Port 8001/TCP<br/>(local)"]
+    end
+
+    subgraph RemotePods["Remote Prefiller Pods"]
+        Prefiller["vLLM Prefiller<br/>(remote GPU worker)"]
+    end
+
+    subgraph K8sControl["Kubernetes Control Plane"]
+        APIServer["Kubernetes API Server<br/>443/TCP"]
         InferencePoolCR["InferencePool CR<br/>inference.networking.x-k8s.io/v1alpha2"]
-        Pods["Pods<br/>matching InferencePool selector"]
+        PodAPI["Pod API<br/>(watch/list)"]
     end
 
-    AllowlistValidator -->|"watch via K8s API<br/>HTTPS/443"| InferencePoolCR
-    AllowlistValidator -->|"watch via K8s API<br/>HTTPS/443"| Pods
+    Client -->|"POST /v1/chat/completions<br/>+ x-prefiller-host-port header"| Proxy
+    NIXLv2 -->|"prefill request"| Prefiller
+    NIXLv1 -->|"prefill request"| Prefiller
+    LMCache -->|"prefill request<br/>(max_tokens=1)"| Prefiller
+    Prefiller -->|"kv_transfer_params"| Sidecar
+    Passthrough -->|"forward request"| Decoder
+    NIXLv2 -->|"modified request<br/>+ KV transfer params"| Decoder
+    NIXLv1 -->|"modified request<br/>+ KV transfer params"| Decoder
+    LMCache -->|"original request"| Decoder
 
-    subgraph LocalDecoder["Co-located vLLM Instance"]
-        Decoder["vLLM Decoder<br/>Port: 8001/TCP"]
-    end
-
-    RemotePrefiller["Remote vLLM Prefiller(s)<br/>Dynamic port from header"]
-
-    NIXLv2 -->|"Step 1: prefill request<br/>HTTP(S)"| RemotePrefiller
-    RemotePrefiller -->|"KV cache transfer params"| NIXLv2
-    NIXLv2 -->|"Step 2: enriched decode<br/>HTTP(S)/8001"| Decoder
-
-    CatchAll -->|"passthrough<br/>HTTP(S)/8001"| Decoder
+    AllowlistValidator -->|"watch InferencePool + Pods"| APIServer
+    APIServer --- InferencePoolCR
+    APIServer --- PodAPI
 
     style Proxy fill:#4a90e2,stroke:#333,color:#fff
     style ChatHandler fill:#4a90e2,stroke:#333,color:#fff
-    style CompHandler fill:#4a90e2,stroke:#333,color:#fff
+    style CompletionsHandler fill:#4a90e2,stroke:#333,color:#fff
     style HealthHandler fill:#4a90e2,stroke:#333,color:#fff
-    style CatchAll fill:#4a90e2,stroke:#333,color:#fff
-    style NIXLv2 fill:#50c878,stroke:#333,color:#fff
+    style Passthrough fill:#4a90e2,stroke:#333,color:#fff
+    style NIXLv2 fill:#7ed321,stroke:#333,color:#fff
     style NIXLv1 fill:#999,stroke:#333,color:#fff
     style LMCache fill:#999,stroke:#333,color:#fff
-    style AllowlistValidator fill:#e8594f,stroke:#333,color:#fff
-    style TLSConfig fill:#e8594f,stroke:#333,color:#fff
-    style LRUCache fill:#f5a623,stroke:#333
+    style AllowlistValidator fill:#f5a623,stroke:#333,color:#fff
+    style TLSConfig fill:#f5a623,stroke:#333,color:#fff
+    style LRUCache fill:#9b59b6,stroke:#333,color:#fff
+    style Decoder fill:#e74c3c,stroke:#333,color:#fff
+    style Prefiller fill:#e74c3c,stroke:#333,color:#fff
     style InferencePoolCR fill:#f5a623,stroke:#333
-    style Pods fill:#f5a623,stroke:#333
-    style Decoder fill:#7ed321,stroke:#333
-    style RemotePrefiller fill:#7ed321,stroke:#333
-    style Client fill:#f9f9f9,stroke:#999,stroke-width:2px
+    style APIServer fill:#e8e8e8,stroke:#333
+    style PodAPI fill:#e8e8e8,stroke:#333
+    style Client fill:#e8e8e8,stroke:#333

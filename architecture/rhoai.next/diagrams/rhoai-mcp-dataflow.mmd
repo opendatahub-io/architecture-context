@@ -1,46 +1,56 @@
 sequenceDiagram
-    participant Agent as AI Agent<br/>(Claude Desktop/Code)
-    participant Route as OpenShift Route<br/>443/TCP HTTPS TLS edge
+    %% RHOAI MCP Server - Data Flow Diagram
+    %% Generated from: architecture/rhoai.next/rhoai-mcp.md
+
+    participant Agent as AI Agent<br/>(Claude Desktop / LLM)
+    participant Route as OpenShift Route<br/>443/TCP HTTPS TLS Edge
     participant MCP as RHOAI MCP Server<br/>8000/TCP HTTP
     participant K8s as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
-    participant MR as Model Registry API<br/>8080/TCP HTTP or 8443/TCP HTTPS
-    participant NN as Neural Navigator<br/>8000/TCP HTTP
-    participant GH as GitHub<br/>443/TCP HTTPS
+    participant NeuralNav as Neural Navigator<br/>8000/TCP HTTP In-Cluster
+    participant PortFwd as Port Forward<br/>(oc port-forward)
+    participant ModelReg as Model Registry<br/>8080/TCP HTTP In-Cluster
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
 
-    Note over Agent,MCP: Flow 1: MCP Tool Invocation (K8s Operations)
-    Agent->>Route: MCP JSON-RPC (HTTPS/443)
-    Route->>MCP: Forward (HTTP/8000, TLS terminated)
-    MCP->>K8s: REST API call (HTTPS/6443)<br/>Auth: Bearer Token (SA/kubeconfig)
-    K8s-->>MCP: K8s resource response
-    MCP-->>Route: MCP JSON-RPC response<br/>(verbosity-controlled)
-    Route-->>Agent: HTTPS response
+    Note over Agent,S3: Flow 1: Standard K8s Resource Operations (e.g. deploy model, create workbench)
 
-    Note over Agent,MCP: Flow 1b: stdio transport (local)
-    Agent->>MCP: MCP JSON-RPC (stdio)<br/>Auth: inherited kubeconfig
-    MCP->>K8s: REST API call (HTTPS/6443)<br/>Auth: Bearer Token
-    K8s-->>MCP: K8s resource response
-    MCP-->>Agent: MCP JSON-RPC response (stdio)
+    Agent->>Route: POST /mcp (MCP tool call)<br/>HTTPS/443, TLS 1.3
+    Route->>MCP: Forward (TLS edge termination)<br/>HTTP/8000
+    MCP->>MCP: Plugin Manager routes<br/>to domain plugin
+    MCP->>K8s: Create/Get/List/Update/Delete resource<br/>HTTPS/6443, Bearer Token (SA/kubeconfig)
+    K8s-->>MCP: Resource response<br/>HTTPS/6443
+    MCP->>MCP: ResponseBuilder formats<br/>(verbosity: minimal/standard/full)
+    MCP-->>Route: MCP tool result<br/>HTTP/8000
+    Route-->>Agent: JSON response<br/>HTTPS/443
 
-    Note over MCP,MR: Flow 2: Model Registry Query
-    MCP->>K8s: Query ModelRegistry CRD<br/>(auto-discover namespace)
-    K8s-->>MCP: Registry service info
-    alt Direct REST (port 8080)
-        MCP->>MR: GET /api/model_registry/v1alpha3/...<br/>HTTP/8080, No auth
-    else kube-rbac-proxy (port 8443)
-        MCP->>MR: GET /api/model_registry/v1alpha3/...<br/>HTTPS/8443, Bearer Token OAuth
-    end
-    MR-->>MCP: Model/version/artifact data
+    Note over Agent,S3: Flow 2: Model Recommendation via Neural Navigator
 
-    Note over MCP,NN: Flow 3: Neural Navigator Recommendation
-    MCP->>NN: POST /api/v1/extract<br/>HTTP/8000, No auth
-    NN-->>MCP: Deployment intent
-    MCP->>NN: POST /api/v1/ranked-recommend-from-spec<br/>HTTP/8000
-    NN-->>MCP: Ranked model recommendations
-    MCP->>NN: POST /api/v1/deploy<br/>HTTP/8000
-    NN-->>MCP: K8s deployment YAML
+    Agent->>MCP: recommend_model tool call<br/>(stdio or HTTP)
+    MCP->>NeuralNav: POST /api/v1/extract<br/>HTTP/8000, No Auth
+    NeuralNav-->>MCP: Extracted intent
+    MCP->>NeuralNav: POST /api/v1/ranked-recommend-from-spec<br/>HTTP/8000, No Auth
+    NeuralNav-->>MCP: Ranked model recommendations
+    MCP-->>Agent: Recommendation results
 
-    Note over MCP,GH: Flow 4: Quickstart Deployment
-    MCP->>GH: git clone (HTTPS/443)<br/>TLS 1.2+, No auth
-    GH-->>MCP: Repository contents
-    MCP->>K8s: helm upgrade / oc apply<br/>HTTPS/6443, Bearer Token
-    K8s-->>MCP: Deployment result
+    Agent->>MCP: get_deployment_config tool call
+    MCP->>NeuralNav: POST /api/v1/deploy<br/>HTTP/8000, No Auth
+    NeuralNav-->>MCP: K8s YAML (InferenceService, HPA, ServiceMonitor)
+    MCP-->>Agent: Ready-to-apply deployment configs
+
+    Note over Agent,S3: Flow 3: Model Registry Query with Port-Forward
+
+    Agent->>MCP: list_registered_models tool call<br/>(stdio or HTTP)
+    MCP->>MCP: Discover ModelRegistry CRs<br/>& Route endpoints
+    MCP->>PortFwd: Start oc port-forward<br/>to Model Registry pod
+    PortFwd->>ModelReg: TCP tunnel established<br/>local:dynamic → 8080/TCP
+    MCP->>ModelReg: GET /api/model_registry/v1alpha3/registered_models<br/>HTTP/8080, None/OAuth/Bearer
+    ModelReg-->>MCP: Model metadata response
+    MCP-->>Agent: Formatted model list
+
+    Note over Agent,S3: Flow 4: Data Connection Validation
+
+    Agent->>MCP: create_s3_data_connection tool call
+    MCP->>K8s: Create Secret (S3 credentials)<br/>HTTPS/6443, Bearer Token
+    K8s-->>MCP: Secret created
+    MCP->>S3: Validate S3 endpoint connectivity<br/>HTTPS/443, AWS IAM credentials
+    S3-->>MCP: Connection validated
+    MCP-->>Agent: Data connection created & validated

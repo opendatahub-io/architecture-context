@@ -1,84 +1,95 @@
 graph TB
-    subgraph External["EXTERNAL (Untrusted)"]
-        User["User / Client"]
+    subgraph Orchestration["ORCHESTRATION (Internal Platform)"]
+        EvalHub["eval-hub Service<br/>Creates K8s Job"]
     end
 
-    subgraph AppBoundary["LLAMA STACK SERVER (Application Boundary)"]
+    subgraph JobPod["JOB POD"]
         direction TB
-        LLSServer["Llama Stack Distribution<br/>8321/TCP HTTP<br/>SA: llamastack-garak-distribution-sa<br/>NS: tai-garak-lls"]
-        Provider["trustyai-garak Provider<br/>(Python library, no exposed ports)<br/>Image: odh-trustyai-garak-lls-provider-dsp"]
-        LLSServer -->|"Local Python API<br/>(in-process)"| Provider
+
+        subgraph AdapterContainer["Garak Adapter Container"]
+            Adapter["Garak Adapter<br/>SA: Job service account<br/>Mounts: /mnt/model-auth (optional)<br/>Env: Data Connection creds"]
+        end
+
+        subgraph SidecarContainer["eval-hub Sidecar"]
+            Sidecar["Sidecar<br/>Status callbacks<br/>Result reporting"]
+        end
+
+        Adapter -->|"localhost HTTP<br/>plaintext<br/>No Auth"| Sidecar
     end
 
-    subgraph EvalHubPath["EVAL-HUB PATH (Alternative Entry)"]
+    subgraph ModelEndpoints["MODEL ENDPOINTS (OpenAI-compatible /v1)"]
         direction TB
-        EvalHub["Eval-Hub Service"]
-        AdapterPod["GarakAdapter Job Pod<br/>Image: odh-trustyai-garak-lls-provider-dsp<br/>Vol: /mnt/model-auth (optional)"]
-        Sidecar["Eval-Hub Sidecar<br/>local HTTP, no encryption"]
-        EvalHub -->|"ConfigMap mount<br/>(JobSpec)"| AdapterPod
-        AdapterPod -->|"HTTP (local)<br/>No auth"| Sidecar
+        TargetModel["Target Model<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token / None"]
+        JudgeModel["Judge Model<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token"]
+        AttackerModel["Attacker Model<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token"]
+        EvaluatorModel["Evaluator Model<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token"]
+        SDGModel["SDG Model<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token"]
+        TranslationModel["Translation Model<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer / None"]
     end
 
-    subgraph KFPZone["KUBEFLOW PIPELINES (Internal)"]
-        KFPAPI["KFP API Server<br/>443/TCP HTTPS<br/>TLS"]
-        KFPPod["KFP Pipeline Pods<br/>Image: odh-trustyai-garak-lls-provider-dsp<br/>Secrets as env vars<br/>/mnt/model-auth (optional)"]
-        KFPAPI -->|"Schedules"| KFPPod
+    subgraph PlatformServices["PLATFORM SERVICES"]
+        direction TB
+        KFP["KFP API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token"]
+        MLflow["MLflow Tracking<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token"]
     end
 
-    subgraph ModelInference["TARGET MODEL INFERENCE (Egress)"]
-        vLLM["vLLM / Model Serving<br/>443 or 8080/TCP<br/>HTTPS/HTTP<br/>API Key auth"]
-        SDGModel["SDG Model Endpoint<br/>443 or 8080/TCP<br/>API Key (SDG_API_KEY)"]
-        JudgeModels["Judge/Attacker/Evaluator<br/>443 or 8080/TCP<br/>Per-role API Keys<br/>from /mnt/model-auth"]
+    subgraph ExternalStorage["EXTERNAL STORAGE / REGISTRY"]
+        direction TB
+        S3["S3-Compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
+        OCI["OCI Registry<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Registry creds"]
+        HF["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>None / HF Token"]
     end
 
-    subgraph StorageServices["STORAGE & ARTIFACT SERVICES (Egress)"]
-        S3["S3-Compatible Storage<br/>443/TCP HTTPS TLS<br/>AWS IAM Credentials"]
-        OCI["OCI Registry<br/>443/TCP HTTPS TLS<br/>OCI auth"]
-        MLflow["MLflow Tracking<br/>HTTP/HTTPS<br/>Configurable auth"]
+    subgraph KFPPods["KFP PIPELINE PODS (KFP mode only)"]
+        direction TB
+        Validate["validate"]
+        ResolveTax["resolve_taxonomy"]
+        SDGGen["sdg_generate"]
+        PrepPrompts["prepare_prompts"]
+        GarakScan["garak_scan"]
+        WriteOutputs["write_kfp_outputs"]
     end
 
-    subgraph ClusterInternal["KUBERNETES CLUSTER SERVICES"]
-        FilesAPI["Llama Stack Files API<br/>8321/TCP HTTP<br/>No auth (in-cluster)"]
-        ConfigMap["trustyai-service-operator-config<br/>ConfigMap<br/>Key: garak-provider-image"]
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>Indirect (via LLS Distribution)"]
-    end
+    %% Orchestration flow
+    EvalHub -->|"K8s Job creation<br/>RBAC"| Adapter
 
-    %% External flows
-    User -->|"HTTP/8321<br/>Configurable TLS<br/>Llama Stack auth"| LLSServer
+    %% Adapter egress to models
+    Adapter -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| TargetModel
+    Adapter -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| JudgeModel
+    Adapter -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| AttackerModel
+    Adapter -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| SDGModel
 
-    %% Provider to KFP
-    Provider -->|"HTTPS/443<br/>TLS<br/>Bearer Token (SA)"| KFPAPI
-    AdapterPod -->|"HTTPS/443<br/>TLS<br/>SA Token"| KFPAPI
+    %% Adapter egress to platform
+    Adapter -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| KFP
+    Adapter -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| MLflow
 
-    %% To target models
-    Provider -->|"HTTPS/443<br/>API Key"| vLLM
-    KFPPod -->|"HTTPS/443<br/>API Key (Secret)"| vLLM
-    KFPPod -->|"HTTPS/443<br/>API Key"| SDGModel
-    KFPPod -->|"HTTPS/443<br/>Per-role API Key"| JudgeModels
+    %% Adapter egress to storage
+    Adapter -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    Adapter -->|"HTTPS/443<br/>TLS 1.2+<br/>Registry creds"| OCI
 
-    %% To storage
-    KFPPod -->|"HTTPS/443<br/>TLS<br/>AWS IAM"| S3
-    AdapterPod -->|"HTTPS/443<br/>TLS<br/>AWS IAM"| S3
-    AdapterPod -->|"HTTPS/443<br/>TLS<br/>OCI auth"| OCI
-    AdapterPod -->|"HTTP/HTTPS<br/>Configurable"| MLflow
+    %% KFP pods
+    KFP -.->|"spawns"| KFPPods
+    GarakScan -->|"HTTPS/443<br/>Bearer Token"| TargetModel
+    SDGGen -->|"HTTPS/443<br/>Bearer Token"| SDGModel
+    Validate -->|"HTTPS/443<br/>AWS IAM"| S3
+    PrepPrompts -->|"HTTPS/443<br/>AWS IAM"| S3
+    GarakScan -->|"HTTPS/443<br/>AWS IAM"| S3
+    WriteOutputs -->|"HTTPS/443<br/>AWS IAM"| S3
 
-    %% Cluster internal
-    KFPPod -->|"HTTP/8321<br/>No auth"| FilesAPI
-    Provider -->|"K8s API<br/>ConfigMap read"| ConfigMap
+    %% HF downloads
+    Adapter -.->|"HTTPS/443<br/>TLS 1.2+<br/>None / HF Token"| HF
 
     %% Styling
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef appboundary fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef evalhub fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef kfp fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef model fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef orchestration fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef jobpod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef models fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef kfppods fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
-    class User external
-    class LLSServer,Provider appboundary
-    class EvalHub,AdapterPod,Sidecar evalhub
-    class KFPAPI,KFPPod kfp
-    class vLLM,SDGModel,JudgeModels model
-    class S3,OCI,MLflow storage
-    class FilesAPI,ConfigMap,PostgreSQL cluster
+    class EvalHub orchestration
+    class Adapter,Sidecar jobpod
+    class TargetModel,JudgeModel,AttackerModel,EvaluatorModel,SDGModel,TranslationModel models
+    class KFP,MLflow platform
+    class S3,OCI,HF storage
+    class Validate,ResolveTax,SDGGen,PrepPrompts,GarakScan,WriteOutputs kfppods

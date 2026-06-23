@@ -1,52 +1,46 @@
 sequenceDiagram
-    participant User as Data Scientist
-    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant Webhook as OGXServerValidator<br/>443/TCP HTTPS
-    participant Reconciler as OGXServerReconciler
-    participant Config as ogx-operator-config<br/>ConfigMap
-    participant Kustomize as Kustomize Pipeline
-    participant OGXServer as OGX Server Pod<br/>8321/TCP HTTP
+    participant User as User / kubectl
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
+    participant Webhook as OGX Webhook<br/>9443/TCP HTTPS<br/>service-serving-cert
+    participant Operator as OGX Operator Manager<br/>8080/8081/TCP
+    participant OCI as OCI Image Registry<br/>443/TCP HTTPS
+    participant OGXServer as OGX Server Instance<br/>8321/TCP HTTP
 
-    Note over User,OGXServer: Flow 1: OGXServer Reconciliation
+    Note over User,OGXServer: Flow 1: OGXServer CR Creation & Validation
 
-    User->>K8sAPI: kubectl apply OGXServer CR
-    K8sAPI->>Webhook: POST /validate-ogx-io-v1beta1-ogxserver<br/>TLS, K8s API Auth
-    Webhook-->>K8sAPI: Admit / Reject
-    K8sAPI-->>User: CR created/rejected
+    User->>K8sAPI: kubectl apply OGXServer CR<br/>Auth: User credentials
+    K8sAPI->>Webhook: POST /validate-ogx-io-v1beta1-ogxserver<br/>HTTPS/9443, TLS (service-serving-cert)<br/>Auth: API server CA
+    Webhook-->>K8sAPI: Admission Response<br/>(validates distribution, provider IDs,<br/>model refs, adoption annotations)
+    K8sAPI-->>User: CR accepted / rejected
 
-    K8sAPI->>Reconciler: Watch event (OGXServer changed)<br/>TLS 1.2+, ServiceAccount token
-    Reconciler->>K8sAPI: Read OGXServer spec<br/>HTTPS/443, ServiceAccount token
-    Reconciler->>Config: Read image overrides<br/>HTTPS/443, ServiceAccount token
-    Reconciler->>Kustomize: Render manifests
-    Kustomize-->>Reconciler: Deployment, Service, SA,<br/>PVC, NP, HPA, PDB, RB
-    Reconciler->>K8sAPI: Create/Update managed resources<br/>HTTPS/443, ServiceAccount token
+    Note over User,OGXServer: Flow 2: OGXServer Reconciliation
 
-    loop Health Check Polling
-        Reconciler->>OGXServer: GET /v1/health<br/>HTTP/8321, No Auth
-        OGXServer-->>Reconciler: Health status
-        Reconciler->>OGXServer: GET /v1/providers<br/>HTTP/8321, No Auth
-        OGXServer-->>Reconciler: Provider info
-        Reconciler->>OGXServer: GET /v1/version<br/>HTTP/8321, No Auth
-        OGXServer-->>Reconciler: Version info
-    end
+    K8sAPI->>Operator: Watch event: OGXServer created/updated<br/>HTTPS/6443, TLS 1.2+<br/>Auth: ServiceAccount token
+    Operator->>OCI: Fetch OCI labels for base config<br/>HTTPS/443, TLS 1.2+<br/>Auth: Registry credentials
+    OCI-->>Operator: OCI manifest labels<br/>(base config resolution)
 
-    Reconciler->>K8sAPI: Update OGXServer status<br/>HTTPS/443, ServiceAccount token
+    Note over Operator: Generate config.yaml from<br/>base config + declared providers<br/>(inference, vector I/O, tools, files)
 
-    Note over Reconciler,K8sAPI: Flow 2: Legacy Resource Adoption
+    Note over Operator: Render kustomize manifests:<br/>Deployment, Service, PVC, NetworkPolicy,<br/>PDB, HPA, Ingress, ServiceAccount,<br/>ConfigMap (content-hash, immutable)
 
-    Reconciler->>K8sAPI: Find legacy LlamaStackDistribution<br/>HTTPS/443
-    K8sAPI-->>Reconciler: Legacy Deployment found
-    Reconciler->>K8sAPI: Scale down legacy Deployment (replicas=0)<br/>HTTPS/443
-    Note over Reconciler: Wait for pods to terminate<br/>(release RWO PVC locks)
-    Reconciler->>K8sAPI: Strip old ownerRef from PVC<br/>HTTPS/443
-    Reconciler->>K8sAPI: Label PVC for new controller<br/>HTTPS/443
-    Reconciler->>K8sAPI: Transfer Service/Ingress ownerRefs<br/>HTTPS/443
+    Operator->>K8sAPI: Create/Patch resources (SSA)<br/>HTTPS/6443, TLS 1.2+<br/>Auth: ServiceAccount token
+    K8sAPI-->>Operator: Resource status
 
-    Note over Reconciler,K8sAPI: Flow 3: CA Bundle Assembly
+    Note over Operator: Poll OGX Server health
 
-    Reconciler->>K8sAPI: Read user CA ConfigMaps<br/>(spec.tls.trust.caCertificates)
-    K8sAPI-->>Reconciler: PEM certificates
-    Reconciler->>K8sAPI: Read odh-trusted-ca-bundle ConfigMap
-    K8sAPI-->>Reconciler: Platform CA certs
-    Note over Reconciler: Validate X.509 certs<br/>Strip non-cert blocks<br/>Enforce 10MB / 1000 cert limits
-    Reconciler->>K8sAPI: Create/Update {instance}-ca-bundle ConfigMap
+    Operator->>OGXServer: GET /v1/health<br/>HTTP/8321 (configurable)<br/>Auth: None (in-cluster)
+    OGXServer-->>Operator: Health status
+    Operator->>OGXServer: GET /v1/providers<br/>HTTP/8321
+    OGXServer-->>Operator: Provider info
+    Operator->>K8sAPI: Patch OGXServer/status<br/>HTTPS/6443
+
+    Note over User,OGXServer: Flow 3: Legacy Resource Adoption<br/>(LlamaStackDistribution → OGXServer)
+
+    Operator->>K8sAPI: Read LlamaStackDistribution resources<br/>HTTPS/6443
+    K8sAPI-->>Operator: Legacy Deployment, PVC, Service, Ingress
+
+    Note over Operator: Scale legacy Deployment to 0<br/>Wait for pod termination<br/>(prevents RWO PVC multi-attach)
+
+    Operator->>K8sAPI: Scale legacy Deployment → 0 replicas<br/>HTTPS/6443
+    Operator->>K8sAPI: Transfer PVC ownership (no ownerRef)<br/>Transfer Service/Ingress selectors<br/>HTTPS/6443
+    K8sAPI-->>Operator: Adoption complete

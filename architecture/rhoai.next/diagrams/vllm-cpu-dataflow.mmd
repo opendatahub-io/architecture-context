@@ -1,45 +1,42 @@
 sequenceDiagram
-    participant Client as External Client
-    participant KServe as KServe Gateway<br/>(Route/HTTPRoute)
-    participant API as OpenAI API Server<br/>8000/TCP HTTP
-    participant Engine as V1 AsyncLLM Engine<br/>(in-process)
-    participant PyTorch as PyTorch CPU Backend<br/>(in-process C++)
-    participant HF as Hugging Face Hub<br/>443/TCP HTTPS
+    participant Client as External Client<br/>(KServe Proxy / User)
+    participant KServeGW as KServe Gateway<br/>(Ingress managed)
+    participant API as vLLM OpenAI API Server<br/>8000/TCP HTTP(S)
+    participant Engine as vLLM Engine (V1)<br/>Continuous Batching
+    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
     participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant PVC as Local PVC<br/>Filesystem
+    participant Prom as Prometheus
 
-    Note over API,PyTorch: Flow 1: OpenAI Chat Completion Request
+    Note over Client,PVC: Flow 1: Model Inference Request
 
-    Client->>KServe: POST /v1/chat/completions<br/>HTTP, Optional TLS
-    KServe->>API: Forward request<br/>HTTP 8000/TCP
-    API->>API: AuthenticationMiddleware<br/>Validate API Key (if configured)
-    API->>Engine: generate() call<br/>(in-process Python)
-    Engine->>PyTorch: Tensor computation<br/>(Python/C++ FFI)
-    PyTorch-->>Engine: Generated tokens
-    Engine-->>API: Token stream
-    API-->>KServe: SSE stream (streaming)<br/>or JSON response
-    KServe-->>Client: Response
+    Client->>KServeGW: POST /v1/chat/completions<br/>Auth: Bearer API Key
+    KServeGW->>API: Forward request<br/>HTTP 8000/TCP<br/>TLS optional
 
-    Note over Engine,S3: Flow 2: Model Loading at Startup
-
-    Engine->>HF: GET model weights & tokenizer<br/>HTTPS 443/TCP TLS 1.2+<br/>Auth: Bearer HF_TOKEN
-    HF-->>Engine: Model artifacts
-    Engine->>Engine: Load to local filesystem
-    Engine->>PyTorch: Load model weights<br/>(in-process Python/C++)
-    PyTorch-->>Engine: Model ready
-
-    alt S3 Model Source
-        Engine->>S3: GET model weights<br/>HTTPS 443/TCP TLS 1.2+<br/>Auth: AWS IAM (S3_ACCESS_KEY_ID)
+    Note over Engine,PVC: Model Loading (first request or startup)
+    alt Model from HuggingFace
+        Engine->>HFHub: Download model weights<br/>HTTPS/443<br/>Auth: HF_TOKEN
+        HFHub-->>Engine: Model artifacts
+    else Model from S3
+        Engine->>S3: Load model weights<br/>HTTPS/443<br/>Auth: AWS IAM (S3_ACCESS_KEY_ID)
         S3-->>Engine: Model artifacts
+    else Model from PVC
+        Engine->>PVC: Read model weights<br/>Filesystem
+        PVC-->>Engine: Model artifacts
     end
 
-    Note over Client,API: Flow 3: gRPC Inference Request
+    API->>Engine: Inference request<br/>(continuous batching)
+    Note over Engine: CPU Attention Kernels<br/>KV Cache Management<br/>Quantization (INT4/INT8/FP8)
+    Engine-->>API: Generated tokens<br/>(streaming or batch)
+    API-->>KServeGW: JSON Response<br/>or SSE stream
+    KServeGW-->>Client: Response
 
-    participant GRPCClient as gRPC Client
-    participant GRPC as gRPC Server<br/>50051/TCP Insecure
+    Note over Prom,API: Flow 2: Prometheus Metrics Scraping
 
-    GRPCClient->>GRPC: gRPC Inference Request<br/>HTTP/2 50051/TCP<br/>No TLS, No Auth
-    GRPC->>Engine: generate() call<br/>(in-process Python)
-    Engine->>PyTorch: Tensor computation<br/>(Python/C++ FFI)
-    PyTorch-->>Engine: Generated tokens
-    Engine-->>GRPC: Token stream
-    GRPC-->>GRPCClient: gRPC Response<br/>HTTP/2 50051/TCP
+    Prom->>API: GET /metrics<br/>HTTP 8000/TCP<br/>No Auth
+    API-->>Prom: Prometheus metrics<br/>(token throughput, batch sizes,<br/>cache utilization)
+
+    Note over Client,API: Flow 3: Health Probes
+
+    Client->>API: GET /health<br/>HTTP 8000/TCP<br/>No Auth
+    API-->>Client: 200 OK (healthy)

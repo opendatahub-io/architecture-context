@@ -1,68 +1,62 @@
 sequenceDiagram
     participant Client as External Client
-    participant Gateway as Istio Gateway (Envoy)<br/>443/TCP HTTPS TLS 1.2+
-    participant BBR as Payload Processing (BBR)<br/>9004/TCP gRPC plaintext
-    participant Resolver as model-provider-resolver<br/>(in-memory store)
-    participant Translator as api-translation<br/>(in-process)
-    participant KeyInject as apikey-injection<br/>(in-memory store)
-    participant NeMoReq as nemo-request-guard<br/>(optional)
-    participant NeMoResp as nemo-response-guard<br/>(optional)
-    participant Provider as External LLM Provider<br/>443/TCP HTTPS TLS 1.2+
+    participant Gateway as AI Gateway<br/>Istio/Envoy<br/>443/TCP HTTPS
+    participant ExtProc as ext_proc Service<br/>9004/TCP gRPC
+    participant HeadersGuard as maas-headers-guard
+    participant Resolver as model-provider-resolver
+    participant Translation as api-translation
+    participant KeyInjection as apikey-injection
+    participant Provider as External LLM Provider<br/>443/TCP HTTPS
 
     Note over Client,Provider: Flow 1: External Model Inference Request
 
-    Client->>Gateway: POST /{ns}/{model-name}<br/>HTTPS/443, TLS 1.2+
-    Gateway->>BBR: ext_proc request body<br/>gRPC/9004, plaintext (mesh mTLS)
+    Client->>Gateway: POST /{ns}/{model}/v1/chat/completions<br/>Auth: Gateway-level auth<br/>TLS 1.2+
+    Gateway->>ExtProc: ext_proc request headers+body<br/>gRPC/HTTP2, mTLS (Istio)
 
-    rect rgb(230, 245, 255)
-        Note over BBR,NeMoReq: Plugin Pipeline (Request Phase)
-        BBR->>Resolver: Resolve model → provider<br/>(cached ExternalModel CR lookup)
-        Resolver-->>BBR: Provider info + target model
-        BBR->>Translator: Translate request body<br/>OpenAI → provider-native format
-        Translator-->>BBR: Translated body + headers
-        BBR->>KeyInject: Inject API credentials<br/>(cached Secret lookup)
-        KeyInject-->>BBR: Auth header set
-        opt NeMo Guardrails enabled
-            BBR->>NeMoReq: POST /v1/guardrail/checks<br/>HTTP, configurable
-            NeMoReq-->>BBR: Allow / Block verdict
-        end
+    rect rgb(230, 240, 255)
+        Note over ExtProc,KeyInjection: Request Plugin Pipeline (in-process)
+        ExtProc->>HeadersGuard: Process request
+        HeadersGuard-->>ExtProc: Strip x-maas-* headers
+        ExtProc->>Resolver: Resolve model
+        Resolver-->>ExtProc: Provider info from CRD cache<br/>(endpoint, auth, API format)
+        ExtProc->>Translation: Translate request
+        Translation-->>ExtProc: Convert to provider format<br/>(OpenAI→Anthropic/Azure/Bedrock/Vertex)
+        ExtProc->>KeyInjection: Inject credentials
+        KeyInjection-->>ExtProc: Add auth headers from Secret cache<br/>(Bearer/x-api-key/api-key/SigV4)
     end
 
-    BBR-->>Gateway: Mutated headers + body
-    Gateway->>Provider: Translated request<br/>HTTPS/443, TLS 1.2+ (DestinationRule SIMPLE)<br/>Provider API key (injected header)
-    Provider-->>Gateway: Provider response<br/>HTTPS/443
+    ExtProc-->>Gateway: Mutated headers + body
+    Gateway->>Provider: Forward request<br/>HTTPS/443, TLS 1.2+<br/>(via ExternalName Svc → ServiceEntry → DestinationRule)
+    Provider-->>Gateway: Provider response
+    Gateway->>ExtProc: ext_proc response headers+body<br/>gRPC/HTTP2, mTLS (Istio)
 
-    Gateway->>BBR: ext_proc response body<br/>gRPC/9004, plaintext
-
-    rect rgb(255, 245, 230)
-        Note over BBR,NeMoResp: Plugin Pipeline (Response Phase)
-        BBR->>Translator: Translate response body<br/>provider-native → OpenAI format
-        Translator-->>BBR: Translated response
-        opt NeMo Guardrails enabled
-            BBR->>NeMoResp: POST /v1/guardrail/checks<br/>HTTP, configurable
-            NeMoResp-->>BBR: Allow / Block verdict
-        end
+    rect rgb(255, 240, 230)
+        Note over ExtProc,Translation: Response Plugin Pipeline (in-process)
+        ExtProc->>Translation: Translate response
+        Translation-->>ExtProc: Convert to OpenAI format<br/>(strip provider-specific fields)
     end
 
-    BBR-->>Gateway: Mutated response body
+    ExtProc-->>Gateway: Mutated response
     Gateway-->>Client: JSON Response<br/>HTTPS/443, TLS 1.2+
 
     Note over Client,Provider: Flow 2: ExternalProvider Reconciliation
 
+    participant User as Platform Admin
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant EPCtrl as ExternalProvider<br/>Controller
 
-    Note right of K8sAPI: ExternalProvider CR created/updated
-    K8sAPI->>BBR: Watch event (controller-runtime)<br/>HTTPS/443, ServiceAccount token
-    BBR->>K8sAPI: Validate referenced Secret<br/>HTTPS/443, SA token
-    BBR->>K8sAPI: Create ExternalName Service<br/>HTTPS/443, SA token
-    BBR->>K8sAPI: Create ServiceEntry<br/>(MESH_EXTERNAL, DNS resolution)
-    BBR->>K8sAPI: Create DestinationRule<br/>(TLS origination, SIMPLE mode)
+    User->>K8sAPI: Create ExternalProvider CR<br/>HTTPS/443, User RBAC
+    K8sAPI->>EPCtrl: Watch event<br/>HTTPS/443, SA token
+    EPCtrl->>K8sAPI: Validate referenced Secret<br/>HTTPS/443, SA token
+    EPCtrl->>K8sAPI: Create ExternalName Service<br/>(points to provider FQDN)
+    EPCtrl->>K8sAPI: Create Istio ServiceEntry<br/>(MESH_EXTERNAL, DNS)
+    EPCtrl->>K8sAPI: Create DestinationRule<br/>(tls.mode: SIMPLE)
 
-    Note over Client,Provider: Flow 3: NeMo Guardrail Check (Optional)
+    Note over Client,Provider: Flow 3: ExternalModel Reconciliation
 
-    participant NeMo as NeMo Guardrails<br/>configurable port
+    participant EMCtrl as ExternalModel<br/>Controller
 
-    BBR->>NeMo: POST /v1/guardrail/checks<br/>Request content (OpenAI or MCP format)
-    NeMo-->>BBR: HTTP 200 { status: allow|block }
-    BBR->>NeMo: POST /v1/guardrail/checks<br/>Response content
-    NeMo-->>BBR: HTTP 200 { status: allow|block }
+    User->>K8sAPI: Create ExternalModel CR<br/>HTTPS/443, User RBAC
+    K8sAPI->>EMCtrl: Watch event<br/>HTTPS/443, SA token
+    EMCtrl->>K8sAPI: Get ExternalProvider CR<br/>HTTPS/443, SA token
+    EMCtrl->>K8sAPI: Create/Update HTTPRoute<br/>(path-prefix + header match,<br/>timeout: 300s)

@@ -1,75 +1,113 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["MLflow SDK Client"]
-        Browser["Browser<br/>(ODH Dashboard)"]
-        OTel["OTel Collector / SDK"]
+        Client["ML Client / Web Browser"]
     end
 
-    subgraph Ingress["INGRESS (Gateway API)"]
-        Gateway["ODH Data Science Gateway<br/>HTTPRoute /mlflow<br/>443/TCP → 5000/TCP<br/>TLS 1.2+ SIMPLE"]
+    subgraph Ingress["INGRESS (Optional - Helm Configurable)"]
+        K8sIngress["Kubernetes Ingress<br/>80/TCP or 443/TCP<br/>TLS: SIMPLE (configurable)<br/>Host: mlflow.local (default)"]
     end
 
-    subgraph Application["APPLICATION (MLflow Server Pod)"]
+    subgraph Application["APPLICATION (ClusterIP Service)"]
         direction TB
 
-        subgraph Server["MLflow Server (ClusterIP: mlflow-server)"]
-            FastAPI["FastAPI + Flask<br/>Port 5000/TCP<br/>TLS terminated at pod"]
-            AuthPlugin["kubernetes-auth Plugin<br/>SelfSubjectAccessReview<br/>mlflow.kubeflow.org resources"]
-            WorkspacePlugin["Kubernetes Workspace Provider<br/>Namespace → Workspace mapping"]
-            CryptoEngine["Secrets Encryption<br/>AES-256-GCM<br/>PBKDF2 600K iterations"]
+        subgraph SecurityLayer["Security Layer"]
+            SecurityMW["Security Middleware<br/>Host Validation (DNS rebinding)<br/>CORS Validation (CSRF)"]
+            AuthPlugin["Auth Module<br/>kubernetes-auth<br/>RBAC roles/permissions"]
         end
 
-        FastAPI -->|authenticates via| AuthPlugin
-        AuthPlugin -->|resolves| WorkspacePlugin
+        subgraph MLflowPod["MLflow Pod (UID 1000, read-only rootfs)"]
+            direction TB
+            TrackingServer["Tracking Server<br/>5000/TCP<br/>Flask + FastAPI/Uvicorn"]
+            ModelRegistry["Model Registry<br/>Versioning & Staging"]
+            AIGateway["AI Gateway<br/>LLM Proxy + Rate Limiting"]
+            Encryption["Envelope Encryption<br/>AES-256-GCM<br/>PBKDF2 KEK (600K iter)"]
+            OTLPEndpoint["OTLP Endpoint<br/>/v1/traces"]
+            JobExecutor["Job Executor<br/>Huey Task Queue"]
+        end
+
+        subgraph HealthEndpoints["Unauthenticated Endpoints"]
+            Health["/health - Liveness"]
+            Version["/version - Version Info"]
+            MetricsEP["/metrics - Prometheus"]
+        end
     end
 
-    subgraph InternalServices["INTERNAL SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA Bearer Token"]
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS 1.2+ (configurable)<br/>Username/password"]
-        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM / HMAC"]
+    subgraph BackendServices["BACKEND SERVICES (In-Cluster)"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>No Encryption (in-cluster)<br/>Auth: Password (Secret)"]
+        MySQL["MySQL (Alternative)<br/>3306/TCP<br/>No Encryption (in-cluster)<br/>Auth: Password (Secret)"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (disabled by default in RHOAI)"]
-        OpenAI["OpenAI API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key (encrypted)"]
-        Anthropic["Anthropic API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key (encrypted)"]
-        Gemini["Google Gemini API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key (encrypted)"]
+    subgraph ClusterServices["CLUSTER SERVICES"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: SA Token"]
+        DNS["CoreDNS<br/>53/UDP, 53/TCP<br/>5353/UDP, 5353/TCP"]
+        Prometheus["Prometheus<br/>Scrapes /metrics"]
     end
 
-    Prometheus["Prometheus<br/>Scrapes /metrics"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        S3["S3-Compatible Storage<br/>(AWS S3 / MinIO / Ceph)<br/>443/TCP, 9000/TCP<br/>TLS 1.2+<br/>Auth: AWS IAM / Access Keys"]
 
-    %% Ingress flows
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (K8s SA)"| Gateway
-    Browser -->|"HTTPS/443<br/>TLS 1.2+<br/>Browser session"| Gateway
-    OTel -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token + x-mlflow-experiment-id"| Gateway
-    Gateway -->|"HTTP/5000<br/>TLS at pod<br/>Bearer Token forwarded"| FastAPI
+        subgraph LLMProviders["LLM Providers (AI Gateway)"]
+            OpenAI["OpenAI<br/>443/TCP HTTPS<br/>API Key (encrypted)"]
+            Anthropic["Anthropic<br/>443/TCP HTTPS<br/>API Key (encrypted)"]
+            Bedrock["Amazon Bedrock<br/>443/TCP HTTPS<br/>AWS IAM"]
+            Gemini["Google Gemini<br/>443/TCP HTTPS<br/>API Key / OAuth"]
+            Mistral["Mistral<br/>443/TCP HTTPS<br/>API Key (encrypted)"]
+        end
+    end
 
-    %% Internal egress
-    AuthPlugin -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    WorkspacePlugin -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    FastAPI -->|"PostgreSQL/5432<br/>TLS 1.2+<br/>Username/password"| PostgreSQL
-    FastAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM / HMAC"| S3
+    %% External to Ingress
+    Client -->|"HTTP/HTTPS<br/>443/TCP or 5000/TCP<br/>TLS configurable<br/>Auth: kubernetes-auth"| K8sIngress
 
-    %% External egress (AI Gateway)
-    FastAPI -.->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| OpenAI
-    FastAPI -.->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| Anthropic
-    FastAPI -.->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| Gemini
+    %% Ingress to Application
+    K8sIngress -->|"HTTP/5000/TCP<br/>In-cluster"| SecurityMW
 
-    %% Metrics
-    Prometheus -.->|"HTTP/5000<br/>scrape"| FastAPI
+    %% Direct access (no ingress)
+    Client -.->|"Direct ClusterIP<br/>5000/TCP"| SecurityMW
+
+    %% Security chain
+    SecurityMW --> AuthPlugin
+    AuthPlugin --> TrackingServer
+
+    %% Internal component flows
+    TrackingServer --> ModelRegistry
+    TrackingServer --> AIGateway
+    AIGateway --> Encryption
+
+    %% Backend connections
+    TrackingServer -->|"SQL/5432/TCP<br/>No Encryption<br/>Password Auth"| PostgreSQL
+    TrackingServer -.->|"SQL/3306/TCP<br/>No Encryption<br/>Password Auth"| MySQL
+
+    %% Cluster service connections
+    TrackingServer -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    TrackingServer -->|"DNS/53"| DNS
+
+    %% External service connections
+    TrackingServer -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    AIGateway -->|"HTTPS/443<br/>TLS 1.2+<br/>Decrypted API Key"| OpenAI
+    AIGateway -->|"HTTPS/443<br/>TLS 1.2+<br/>Decrypted API Key"| Anthropic
+    AIGateway -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| Bedrock
+    AIGateway -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key/OAuth"| Gemini
+    AIGateway -->|"HTTPS/443<br/>TLS 1.2+<br/>Decrypted API Key"| Mistral
+
+    %% Prometheus scrape
+    Prometheus -.->|"HTTP scrape<br/>5000/TCP"| MetricsEP
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef internal fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef backend fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef clusterservice fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
     classDef security fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef llmprovider fill:#fff2cc,stroke:#d6b656
 
-    class Client,Browser,OTel external
-    class Gateway ingress
-    class FastAPI,WorkspacePlugin application
-    class AuthPlugin,CryptoEngine security
-    class K8sAPI,PostgreSQL,S3 internal
-    class OpenAI,Anthropic,Gemini externalservice
-    class Prometheus monitoring
+    class Client external
+    class K8sIngress ingress
+    class SecurityMW,AuthPlugin security
+    class TrackingServer,ModelRegistry,AIGateway,Encryption,OTLPEndpoint,JobExecutor application
+    class Health,Version,MetricsEP application
+    class PostgreSQL,MySQL backend
+    class K8sAPI,DNS,Prometheus clusterservice
+    class S3 externalservice
+    class OpenAI,Anthropic,Bedrock,Gemini,Mistral llmprovider

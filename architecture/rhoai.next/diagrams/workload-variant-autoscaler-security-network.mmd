@@ -1,54 +1,84 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        direction TB
-        Note1["No external ingress<br/>WVA is internal-only"]
+        Admin["Platform Admin"]
     end
 
-    subgraph ClusterInternal["CLUSTER INTERNAL (Kubernetes Network)"]
-        direction TB
-
-        subgraph NS_WVA["Namespace: workload-variant-autoscaler-system"]
-            CM["controller-manager<br/>SA: controller-manager<br/>Ports: 8443/TCP (metrics), 8081/TCP (probes)"]
-            MetricsSvc["controller-manager-metrics-service<br/>ClusterIP 8443/TCP<br/>HTTPS / TLS<br/>NetworkPolicy: restricted"]
-            CM --- MetricsSvc
-        end
-
-        subgraph NS_Monitoring["Namespace: openshift-monitoring"]
-            Prom["Prometheus (Thanos Querier)<br/>9091/TCP HTTPS<br/>TLS 1.2+"]
-        end
-
-        subgraph NS_Model["Namespace: {model-namespace}"]
-            EPP["EPP Pods<br/>configurable/TCP HTTP<br/>Plaintext"]
-            Deploy["Deployment / LWS<br/>(Scale Target)"]
-        end
-
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+"]
-        HPA["HPA / KEDA<br/>(External Autoscaler)"]
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA token / x509"]
     end
 
-    %% Egress from WVA
-    CM -->|"HTTPS/9091<br/>TLS 1.2+<br/>Bearer Token (SA token)<br/>PromQL queries"| Prom
-    CM -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token<br/>Watch/CRUD CRs"| K8sAPI
-    CM -->|"HTTP/configurable<br/>Plaintext ⚠️<br/>Bearer Token (EPP token)<br/>Flow control queue size"| EPP
+    subgraph WVANamespace["WVA NAMESPACE (wva-system)"]
+        direction TB
+        WVA["WVA controller-manager<br/>SA: controller-manager<br/>Image: llm-d-workload-variant-autoscaler:v0.7.0"]
 
-    %% Ingress to WVA
-    Prom -->|"HTTPS/8443<br/>TLS<br/>Bearer Token (prometheus SA)<br/>Scrape WVA metrics"| MetricsSvc
-    HPA -->|"HTTPS/8443<br/>TLS<br/>Bearer Token (metrics-reader)<br/>Custom scaling metrics"| MetricsSvc
+        subgraph Endpoints["Exposed Endpoints"]
+            Metrics["/metrics<br/>8443/TCP HTTPS<br/>TLS (self-signed/cert-manager)<br/>Bearer Token (TokenReview+SAR)"]
+            Health["/healthz, /readyz<br/>8081/TCP HTTP<br/>No encryption<br/>No auth"]
+        end
 
-    %% HPA/KEDA to targets
-    HPA -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token<br/>Scale Deployment"| K8sAPI
-    K8sAPI -.->|"update replicas"| Deploy
+        Service["controller-manager-metrics-service<br/>ClusterIP 8443/TCP<br/>HTTPS, TLS, Bearer Token"]
+
+        WVA --- Endpoints
+        Service -->|routes to| Metrics
+    end
+
+    subgraph Monitoring["MONITORING NAMESPACE"]
+        Prometheus["Prometheus<br/>kube-prometheus-stack<br/>9090/TCP HTTPS<br/>TLS 1.2+"]
+        Thanos["Thanos Querier (OpenShift)<br/>openshift-monitoring<br/>9091/TCP HTTPS<br/>TLS 1.2+<br/>Service CA cert"]
+    end
+
+    subgraph UserNS["USER NAMESPACES (Inference Workloads)"]
+        EPP["EPP Pods<br/>metricsPort/TCP HTTPS<br/>TLS<br/>Bearer Token (epp-metrics-reader)"]
+        vLLM["vLLM Model Servers<br/>Metrics: kv_cache, queue_length,<br/>output_tokens"]
+        Deployments["Deployments /<br/>LeaderWorkerSets<br/>(scale targets)"]
+    end
+
+    subgraph Actuators["SCALING ACTUATORS"]
+        HPA["HPA Controller<br/>(autoscaling/v2)"]
+        KEDA["KEDA<br/>(keda.sh/v1alpha1)"]
+    end
+
+    %% External flows
+    Admin -->|"HTTPS/6443<br/>TLS 1.2+<br/>User creds"| K8sAPI
+
+    %% WVA to K8s API
+    WVA -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token<br/>Watch CRDs, ConfigMaps,<br/>HPAs, Deployments, Nodes"| K8sAPI
+
+    %% WVA to Prometheus (egress)
+    WVA -->|"HTTPS/9090<br/>TLS 1.2+<br/>Bearer Token (SA)<br/>PromQL queries"| Prometheus
+    WVA -->|"HTTPS/9091<br/>TLS 1.2+<br/>Bearer Token (SA)<br/>Service CA cert"| Thanos
+
+    %% WVA to EPP (egress)
+    WVA -->|"HTTPS/metricsPort<br/>TLS<br/>Bearer Token<br/>(epp-metrics-reader SA)<br/>Scale-from-zero detection"| EPP
+
+    %% WVA scale-from-zero direct scaling
+    WVA -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token<br/>Scale subresource update"| K8sAPI
+
+    %% Prometheus scrapes WVA
+    Prometheus -->|"HTTPS/8443<br/>TLS<br/>Bearer Token<br/>ServiceMonitor scrape"| Service
+
+    %% vLLM to Prometheus
+    vLLM -->|"HTTP/metrics<br/>In-cluster<br/>Prometheus scrape"| Prometheus
+
+    %% HPA/KEDA read metrics and scale
+    HPA -->|"HTTPS/9090<br/>Read wva_desired_replicas"| Prometheus
+    KEDA -->|"HTTPS/9090<br/>Read wva_desired_replicas"| Prometheus
+    HPA -->|"HTTPS/6443<br/>Scale subresource"| K8sAPI
+    KEDA -->|"HTTPS/6443<br/>Scale subresource"| K8sAPI
 
     %% Styling
-    classDef wva fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
-    classDef monitoring fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef k8s fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef warning fill:#fff2cc,stroke:#d6b656,stroke-width:2px
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef controlplane fill:#e1f5fe,stroke:#0277bd,stroke-width:2px
+    classDef wva fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    classDef monitoring fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    classDef userns fill:#fce4ec,stroke:#c62828,stroke-width:2px
+    classDef actuator fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef endpoint fill:#c8e6c9,stroke:#388e3c,stroke-width:1px
 
-    class CM,MetricsSvc wva
-    class Prom monitoring
-    class EPP,Deploy internal
-    class K8sAPI,HPA k8s
-    class Note1 external
+    class Admin external
+    class K8sAPI controlplane
+    class WVA,Service wva
+    class Metrics,Health endpoint
+    class Prometheus,Thanos monitoring
+    class EPP,vLLM,Deployments userns
+    class HPA,KEDA actuator

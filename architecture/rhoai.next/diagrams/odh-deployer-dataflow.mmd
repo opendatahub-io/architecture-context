@@ -1,52 +1,54 @@
 sequenceDiagram
-    participant DeploySH as deploy.sh<br/>(Init Container)
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+
-    participant Operator as rhods-operator<br/>(opendatahub operator)
-    participant Prom as RHODS Prometheus<br/>9091/TCP HTTPS
-    participant OcpProm as OpenShift Prometheus<br/>(openshift-monitoring)<br/>9091/TCP HTTPS
-    participant Components as Component Metrics<br/>8080/TCP HTTP
-    participant BBE as Blackbox Exporter<br/>9114/TCP HTTPS
-    participant AM as Alertmanager<br/>10443/TCP HTTPS
-    participant PD as PagerDuty<br/>443/TCP HTTPS
-    participant SMTP as SMTP Server<br/>TLS STARTTLS
+    participant Deploy as deploy.sh<br/>(Init Container)
+    participant K8sAPI as OpenShift API Server<br/>443/TCP HTTPS TLS 1.2+
+    participant Operator as rhods-operator<br/>(KfDef Controller)
+    participant Components as Platform Components<br/>(Dashboard, NBC, ModelMesh, etc.)
+    participant Prom as Prometheus<br/>9091/TCP HTTPS
+    participant OSProm as OpenShift Prometheus<br/>9091/TCP HTTPS
+    participant Targets as Metrics Targets<br/>8080/TCP HTTP
+    participant BB as Blackbox Exporter<br/>9114/TCP HTTPS
+    participant AM as Alertmanager<br/>443/TCP HTTPS
+    participant PD as PagerDuty API<br/>443/TCP HTTPS
     participant DMS as Dead Man's Snitch<br/>443/TCP HTTPS
+    participant SMTP as SMTP Relay<br/>SMTP/TLS
 
-    Note over DeploySH,K8sAPI: Flow 1: Platform Bootstrap
+    rect rgb(220, 235, 250)
+        Note over Deploy,Components: Flow 1: Platform Bootstrap Deployment
+        Deploy->>K8sAPI: Create namespaces<br/>Auth: SA Bearer Token
+        K8sAPI-->>Deploy: Namespaces created<br/>(redhat-ods-applications,<br/>redhat-ods-monitoring,<br/>rhods-notebooks)
 
-    DeploySH->>K8sAPI: Create namespaces<br/>(redhat-ods-applications,<br/>redhat-ods-monitoring,<br/>rhods-notebooks)<br/>Auth: ServiceAccount Token
-    K8sAPI-->>DeploySH: Namespaces created
+        Deploy->>K8sAPI: Apply namespace labels<br/>(pod-security, monitoring)
+        Deploy->>K8sAPI: Apply Network Policies
+        Deploy->>K8sAPI: Apply RBAC (SCC bindings)
+        Deploy->>K8sAPI: Install Dashboard CRDs<br/>(OdhApplication, OdhDocument,<br/>OdhQuickStart, OdhDashboardConfig)
 
-    DeploySH->>K8sAPI: Apply CRDs<br/>(OdhApplication, OdhDocument,<br/>OdhQuickStart, OdhDashboardConfig)
-    K8sAPI-->>DeploySH: CRDs applied
+        Deploy->>K8sAPI: Apply KfDef CRs (x8)<br/>Auth: SA Bearer Token
+        K8sAPI-->>Operator: KfDef CR events
+        Operator->>Operator: Load odh-manifests tarball<br/>(file://)
+        Operator->>K8sAPI: Create component Deployments<br/>Auth: SA Bearer Token
+        K8sAPI-->>Components: Deploy components
 
-    DeploySH->>K8sAPI: Create KfDef CRs<br/>(dashboard, nbc, model-mesh,<br/>dspo, monitoring, anaconda)
-    K8sAPI-->>DeploySH: KfDef CRs created
+        Deploy->>K8sAPI: Apply ISV tiles + ConsoleLink
+        Deploy->>K8sAPI: Deploy Prometheus stack manifests
+        Deploy->>K8sAPI: Generate & apply secrets<br/>(openssl rand)
+    end
 
-    DeploySH->>K8sAPI: Apply Dashboard CRs<br/>(OdhApplication ISV tiles,<br/>OdhDashboardConfig,<br/>OdhDocument, OdhQuickStart)
-    K8sAPI-->>DeploySH: Dashboard CRs applied
+    rect rgb(255, 235, 220)
+        Note over Prom,SMTP: Flow 2: Monitoring Pipeline (Managed Service)
+        Prom->>OSProm: Federation scrape<br/>Auth: Bearer Token (SA)<br/>Encryption: TLS (service CA)
+        OSProm-->>Prom: haproxy, controller_runtime,<br/>container, kubelet, kube metrics
 
-    DeploySH->>K8sAPI: Deploy monitoring stack<br/>(Prometheus, Alertmanager,<br/>Blackbox Exporter)
-    K8sAPI-->>DeploySH: Monitoring deployed
+        loop Every scrape interval
+            Prom->>Targets: Scrape component metrics<br/>8080/TCP HTTP<br/>Auth: None, Encryption: None
+            Targets-->>Prom: Metrics response
+        end
 
-    DeploySH->>K8sAPI: Apply NetworkPolicies<br/>+ Pod Security RBAC
-    K8sAPI-->>DeploySH: Security resources applied
+        BB->>Components: Health check probes<br/>8443/TCP HTTPS, 8080/TCP HTTP<br/>Auth: Bearer Token (SA)
+        Components-->>BB: Probe response
 
-    Operator->>K8sAPI: Watch KfDef CRs
-    K8sAPI-->>Operator: KfDef events
-    Operator->>K8sAPI: Reconcile: deploy components<br/>(dashboard, notebooks,<br/>model-mesh, DSPO, anaconda)
-
-    Note over Prom,DMS: Flow 2: Monitoring Data Pipeline (managed service)
-
-    Prom->>OcpProm: Federation scrape<br/>9091/TCP HTTPS<br/>Auth: Bearer Token (SA)
-    OcpProm-->>Prom: haproxy, controller_runtime,<br/>resource metrics
-
-    Prom->>Components: Scrape metrics<br/>8080/TCP HTTP plaintext<br/>Auth: None
-    Components-->>Prom: Component metrics<br/>(notebook-ctrl, model-ctrl,<br/>modelmesh-ctrl, DSPO, operator)
-
-    BBE->>K8sAPI: Probe endpoints<br/>(dashboard, notebook spawner, DSPO)
-    K8sAPI-->>BBE: Probe results
-
-    Prom->>AM: Fire alerts<br/>9093/TCP HTTP plaintext
-    AM->>PD: Critical alerts<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Service Key
-    AM->>SMTP: User notifications<br/>Auth: SMTP credentials
-    AM->>DMS: Heartbeat<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: URL secret<br/>(every 5 min)
+        Note over AM,SMTP: Alert Routing (3 tiers)
+        Prom->>AM: Fire alert<br/>(SLO burn-rate breach)
+        AM->>PD: Critical SRE alert<br/>Auth: Service Key<br/>Encryption: TLS 1.2+
+        AM->>DMS: Heartbeat (Watchdog)<br/>Auth: URL-embedded token<br/>Encryption: TLS 1.2+
+        AM->>SMTP: User notification<br/>(PVC usage alerts)<br/>Auth: SMTP credentials<br/>Encryption: TLS
+    end

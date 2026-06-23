@@ -1,113 +1,86 @@
 graph TB
-    subgraph External["External Clients"]
-        Client[Client Application]
-    end
+    subgraph "llm-d Inference Stack"
+        direction TB
 
-    subgraph GatewayLayer["Proxy Layer"]
-        Gateway{"Gateway API<br/>(Envoy / AgentGateway / Istio)<br/>80/TCP HTTP"}
-    end
-
-    subgraph SchedulerLayer["Scheduling Layer"]
-        EPP["EPP<br/>(llm-d-inference-scheduler)<br/>9002/TCP gRPC ext-proc"]
-        Tokenizer["UDS Tokenizer<br/>(sidecar)<br/>Unix Domain Socket"]
-        LatencyPredictor["Latency Predictor<br/>(sidecar)<br/>XGBoost"]
-        EPP --- Tokenizer
-        EPP --- LatencyPredictor
-    end
-
-    subgraph PoolLayer["InferencePool Layer"]
-        InferencePoolCR["InferencePool CR<br/>(inference.networking.x-k8s.io/v1)"]
-        InferenceObjectiveCR["InferenceObjective CR<br/>(v1alpha2)"]
-        InferenceModelRewriteCR["InferenceModelRewrite CR<br/>(v1alpha2)"]
-    end
-
-    subgraph ModelServerLayer["Model Server Layer"]
-        subgraph DecodeOnly["Decode-Only Topology"]
-            DecodeServer["vLLM Model Server<br/>8000/TCP HTTP<br/>(OpenAI API)"]
+        subgraph ProxyLayer["Layer 1: Proxy Layer"]
+            Gateway["Gateway<br/>(Envoy / Istio / AgentGateway)<br/>Port: 80/443 TCP"]
+            HTTPRoute["HTTPRoute<br/>(gateway.networking.k8s.io/v1)"]
+            Gateway -->|routes via| HTTPRoute
         end
 
-        subgraph PDDisaggregation["P/D Disaggregation Topology"]
-            PrefillServer["Prefill Server<br/>8000/TCP HTTP"]
-            RoutingSidecar["Routing Sidecar<br/>8000/TCP HTTP"]
-            DecodeServerPD["Decode Server<br/>8200/TCP HTTP"]
-            PrefillServer -->|"5600/TCP NIXL<br/>KV Transfer"| DecodeServerPD
-            RoutingSidecar -->|fronts| DecodeServerPD
+        subgraph EPPLayer["Layer 2: Endpoint Picker (EPP)"]
+            EPP["llm-d-inference-scheduler<br/>(EPP)<br/>Port: 9002/TCP gRPC"]
+            LatencyPredictor["Latency Predictor<br/>(XGBoost sidecar)"]
+            KVIndexer["KV-Cache Indexer<br/>(ZMQ events)"]
+            EPP --- LatencyPredictor
+            EPP --- KVIndexer
         end
 
-        subgraph WideEP["Wide Expert-Parallelism (LWS)"]
-            Leader["Worker 0 (Leader)"]
-            Follower1["Worker 1"]
-            FollowerN["Worker N"]
-            Leader -->|"5555/TCP gRPC<br/>data-parallel RPC"| Follower1
-            Leader -->|"5555/TCP gRPC"| FollowerN
-            Follower1 <-->|"NVSHMEM/RDMA<br/>all-to-all"| FollowerN
+        subgraph PoolLayer["Layer 3: InferencePool"]
+            InferencePool["InferencePool CR<br/>(inference.networking.k8s.io/v1)"]
+            InferenceObjective["InferenceObjective CR<br/>(v1alpha2)"]
+            InferencePool --- InferenceObjective
+        end
+
+        subgraph ModelServers["Layer 4: Model Servers"]
+            direction LR
+            subgraph DecodeGroup["Decode Pods"]
+                DecodePod["Decode Pod<br/>vLLM :8000/TCP<br/>Routing Sidecar :8200/TCP"]
+            end
+            subgraph PrefillGroup["Prefill Pods (P/D mode)"]
+                PrefillPod["Prefill Pod<br/>vLLM :8000/TCP<br/>NIXL :5600/TCP RDMA"]
+            end
+            DecodePod <-->|"RDMA KV Transfer<br/>5600/TCP (NIXL)"| PrefillPod
         end
     end
 
-    subgraph AcceleratorImages["Container Images (per accelerator)"]
-        CUDA["llm-d-cuda<br/>NVIDIA GPU<br/>NVSHMEM + NIXL"]
-        ROCm["llm-d-rocm<br/>AMD GPU<br/>RIXL + UCX"]
-        HPU["llm-d-hpu<br/>Intel Gaudi<br/>vllm-gaudi"]
-        CPU["llm-d-cpu<br/>CPU<br/>amd64/arm64"]
-        XPU["llm-d-xpu<br/>Intel XPU"]
+    subgraph ContainerImages["Container Images"]
+        direction LR
+        CUDAImg["llm-d-cuda<br/>NVIDIA GPU<br/>CUDA 13.0"]
+        CPUImg["llm-d-cpu<br/>CPU x86/ARM"]
+        ROCmImg["llm-d-rocm<br/>AMD ROCm"]
+        HPUImg["llm-d-hpu<br/>Intel Gaudi"]
+        RDMATools["llm-d-rdma-tools<br/>Diagnostics"]
     end
 
-    subgraph Monitoring["Observability"]
-        Prometheus["Prometheus<br/>9090/TCP"]
-        OTEL["OTEL Collector<br/>4317/TCP gRPC"]
-    end
+    Client["External Client"] -->|"HTTP/HTTPS<br/>80/443 TCP"| Gateway
+    Gateway -->|"ext-proc gRPC<br/>9002/TCP"| EPP
+    HTTPRoute -->|"backend ref"| InferencePool
+    InferencePool -->|"pod selector"| DecodePod
+    InferencePool -->|"pod selector"| PrefillPod
+    EPP -->|"selects endpoint"| DecodePod
+    KVIndexer -.->|"ZMQ events"| DecodePod
+    KVIndexer -.->|"ZMQ events"| PrefillPod
 
-    subgraph Autoscaling["Autoscaling"]
-        WVA["Workload Variant<br/>Autoscaler (WVA)"]
-        KVCacheIndexer["KV Cache Indexer<br/>ZMQ PUB/SUB"]
-    end
+    ContainerImages -.->|"deployed as"| ModelServers
 
-    %% Request Flow
-    Client -->|"HTTP/80"| Gateway
-    Gateway -->|"gRPC ext-proc/9002"| EPP
-    EPP -->|"selects endpoint"| Gateway
-    Gateway -->|"HTTP/8000"| DecodeServer
-    Gateway -->|"HTTP/8000"| PrefillServer
-    Gateway -->|"HTTP/8000"| RoutingSidecar
+    %% External services
+    HFHub["HuggingFace Hub<br/>443/TCP HTTPS"]
+    OTelCollector["OpenTelemetry Collector<br/>4317/TCP gRPC"]
+    Prometheus["Prometheus<br/>(PodMonitor scrape)"]
 
-    %% CRD relationships
-    EPP -->|watches| InferencePoolCR
-    EPP -->|watches| InferenceObjectiveCR
-    EPP -->|watches| InferenceModelRewriteCR
-    InferencePoolCR -.->|groups| DecodeServer
-    InferencePoolCR -.->|groups| PrefillServer
-
-    %% Metrics
-    DecodeServer -->|"/metrics"| Prometheus
-    PrefillServer -->|"/metrics"| Prometheus
-    DecodeServer -.->|traces| OTEL
-    EPP -->|metrics/9090| Prometheus
-
-    %% Autoscaling
-    WVA -->|"reads metrics"| Prometheus
-    KVCacheIndexer -->|"cache events"| EPP
-
-    %% Image mapping
-    CUDA -.->|runs as| DecodeServer
-    ROCm -.->|runs as| DecodeServer
-    HPU -.->|runs as| DecodeServer
-    CPU -.->|runs as| DecodeServer
+    DecodePod -->|"model download<br/>HF_TOKEN"| HFHub
+    PrefillPod -->|"model download<br/>HF_TOKEN"| HFHub
+    DecodePod -.->|"OTLP traces<br/>4317/TCP"| OTelCollector
+    Prometheus -.->|"scrape /metrics<br/>8000/TCP"| DecodePod
+    Prometheus -.->|"scrape /metrics<br/>8000/TCP"| PrefillPod
 
     %% Styling
-    classDef gateway fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef scheduler fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef crd fill:#f5a623,stroke:#d79b00,stroke-width:1px
-    classDef modelserver fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef image fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
-    classDef monitoring fill:#fff2cc,stroke:#d6b656,stroke-width:1px
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef autoscale fill:#f8cecc,stroke:#b85450,stroke-width:1px
-
-    class Gateway gateway
-    class EPP,Tokenizer,LatencyPredictor scheduler
-    class InferencePoolCR,InferenceObjectiveCR,InferenceModelRewriteCR crd
-    class DecodeServer,PrefillServer,RoutingSidecar,DecodeServerPD,Leader,Follower1,FollowerN modelserver
-    class CUDA,ROCm,HPU,CPU,XPU image
-    class Prometheus,OTEL monitoring
-    class Client external
-    class WVA,KVCacheIndexer autoscale
+    style Gateway fill:#4a90e2,stroke:#333,color:#fff
+    style EPP fill:#4a90e2,stroke:#333,color:#fff
+    style InferencePool fill:#f5a623,stroke:#333,color:#fff
+    style InferenceObjective fill:#f5a623,stroke:#333,color:#fff
+    style DecodePod fill:#7ed321,stroke:#333,color:#fff
+    style PrefillPod fill:#7ed321,stroke:#333,color:#fff
+    style LatencyPredictor fill:#9b59b6,stroke:#333,color:#fff
+    style KVIndexer fill:#9b59b6,stroke:#333,color:#fff
+    style CUDAImg fill:#76b900,stroke:#333,color:#fff
+    style CPUImg fill:#3498db,stroke:#333,color:#fff
+    style ROCmImg fill:#ed1c24,stroke:#333,color:#fff
+    style HPUImg fill:#0071c5,stroke:#333,color:#fff
+    style RDMATools fill:#95a5a6,stroke:#333,color:#fff
+    style Client fill:#e8e8e8,stroke:#333
+    style HFHub fill:#ffd700,stroke:#333
+    style OTelCollector fill:#e8e8e8,stroke:#333
+    style Prometheus fill:#e6522c,stroke:#333,color:#fff
+    style HTTPRoute fill:#f5a623,stroke:#333,color:#fff

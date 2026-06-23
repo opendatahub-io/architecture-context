@@ -1,83 +1,68 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Submits evaluation benchmarks and retrieves Ragas metric scores via the Llama Stack Eval API"
+        datascientist = person "Data Scientist" "Runs LLM evaluations using Ragas metrics via Llama Stack eval API"
 
-        llamaStackWithRagas = softwareSystem "Llama Stack + Ragas Provider" "Llama Stack server with llama-stack-provider-ragas plugin providing Ragas evaluation over the Eval API" {
-            llamaStackServer = container "Llama Stack Server" "Hosts the Eval API on port 8321/TCP, dispatches to registered providers" "Python / Llama Stack Framework"
-            inlineProvider = container "Inline Provider" "Runs Ragas evaluation in-process using wrapped Llama Stack inference APIs" "Python Plugin (RagasEvaluatorInline)"
-            remoteProvider = container "Remote Provider" "Submits Ragas evaluation as Kubeflow Pipelines jobs for distributed execution" "Python Plugin (RagasEvaluatorRemote)"
-            llmWrappers = container "LLM/Embedding Wrappers" "Adapts Llama Stack inference API to LangChain/Ragas-compatible interfaces" "Python Adapters"
-            kfpComponents = container "KFP Pipeline Components" "Two-step pipeline: data retrieval + Ragas evaluation" "Python / KFP DSL"
-            compatLayer = container "Compatibility Layer" "Supports both llama_stack and llama_stack_api import paths" "Python Module"
+        llamaStackProviderRagas = softwareSystem "llama-stack-provider-ragas" "Ragas evaluation provider for Llama Stack, supporting inline and remote (Kubeflow) execution modes" {
+            inlineProvider = container "Inline Provider" "Runs Ragas evaluation in-process within Llama Stack server" "Python Llama Stack Provider"
+            remoteProvider = container "Remote Provider" "Submits Ragas evaluation as Kubeflow Pipeline runs" "Python Llama Stack Provider"
+            inlineWrappers = container "Inline LLM/Embedding Wrappers" "Adapts Llama Stack inference API to Ragas/LangChain interfaces" "Python Adapter Classes"
+            remoteWrappers = container "Remote LLM/Embedding Wrappers" "Adapts llama-stack-client SDK to Ragas/LangChain interfaces" "Python Adapter Classes"
+            kfpComponents = container "KFP Pipeline Components" "Two-step Kubeflow pipeline: data retrieval and Ragas evaluation" "Python KFP Components"
+            compatLayer = container "Compatibility Layer" "Handles llama_stack vs llama_stack_api package migration" "Python Module"
         }
 
-        ollama = softwareSystem "Ollama / vLLM" "LLM inference backend providing text completion and embedding generation" "External"
-        kfp = softwareSystem "Kubeflow Pipelines (Data Science Pipelines)" "Orchestrates evaluation pipeline runs as Kubernetes pods" "Internal RHOAI"
-        s3 = softwareSystem "S3-compatible Storage" "Stores and retrieves evaluation results in JSONL format (AWS S3 or MinIO)" "External"
-        k8sAPI = softwareSystem "Kubernetes API" "Provides ConfigMap reads and kubeconfig for service discovery" "Platform"
-        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Provides trustyai-service-operator-config ConfigMap for image resolution" "Internal RHOAI"
-        ragas = softwareSystem "Ragas Framework" "Core evaluation framework: answer_relevancy, context_precision, faithfulness, context_recall" "External Library"
+        llamaStackServer = softwareSystem "Llama Stack Server" "Hosts providers and exposes eval/inference/datasetIO APIs" "Internal"
+        kubeflowPipelines = softwareSystem "Kubeflow Pipelines (Data Science Pipelines)" "Kubernetes-native ML pipeline orchestration" "Internal Platform"
+        ollama = softwareSystem "Inference Provider (Ollama/vLLM)" "LLM inference and embedding generation" "Internal"
+        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Provides ConfigMap for base image resolution" "Internal Platform"
+        s3Storage = softwareSystem "S3-Compatible Storage" "MinIO or AWS S3 for evaluation result persistence" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server for ConfigMap/Secret access" "External"
 
-        # External relationships
-        dataScientist -> llamaStackWithRagas "Submits evaluations, checks status, retrieves results" "HTTP/8321"
-        llamaStackWithRagas -> ollama "LLM completions and embedding generation" "HTTP/11434"
-        llamaStackWithRagas -> kfp "Submits and monitors evaluation pipeline runs" "HTTPS/443"
-        llamaStackWithRagas -> s3 "Stores and retrieves evaluation results" "HTTPS/443"
-        llamaStackWithRagas -> k8sAPI "Reads ConfigMaps, loads kubeconfig" "HTTPS/6443"
-        llamaStackWithRagas -> trustyaiOperator "Reads ragas-provider-image from ConfigMap" "Kubernetes API"
+        datascientist -> llamaStackServer "Submits eval requests via HTTP" "HTTP/8321"
+        llamaStackServer -> llamaStackProviderRagas "Routes eval API calls to provider"
 
-        # Internal container relationships
-        llamaStackServer -> inlineProvider "Dispatches inline eval requests" "Python API"
-        llamaStackServer -> remoteProvider "Dispatches remote eval requests" "Python API"
-        inlineProvider -> llmWrappers "Uses inline wrappers for inference" "Python API"
-        remoteProvider -> llmWrappers "Uses remote wrappers for inference" "Python API"
-        remoteProvider -> kfpComponents "Submits pipeline definitions" "KFP SDK"
-        inlineProvider -> compatLayer "Resolves Llama Stack imports" "Python import"
-        remoteProvider -> compatLayer "Resolves Llama Stack imports" "Python import"
-        inlineProvider -> ragas "Executes Ragas evaluate()" "Python API"
-        kfpComponents -> ragas "Executes Ragas evaluate() in pipeline pods" "Python API"
+        inlineProvider -> inlineWrappers "Uses for LLM/embedding calls"
+        inlineWrappers -> llamaStackServer "In-process inference API calls" "Python API"
+
+        remoteProvider -> kubeflowPipelines "Submits pipeline runs" "HTTPS/443 Bearer Token"
+        remoteProvider -> s3Storage "Fetches evaluation results" "HTTPS/443 AWS IAM"
+        remoteProvider -> kubernetesAPI "Reads ConfigMaps for image resolution" "HTTPS/6443"
+
+        kfpComponents -> llamaStackServer "Retrieves datasets and runs inference" "HTTP/8321"
+        kfpComponents -> s3Storage "Persists evaluation results (JSONL)" "HTTPS/443 AWS IAM"
+        kfpComponents -> remoteWrappers "Uses for LLM/embedding calls in KFP pods"
+
+        llamaStackServer -> ollama "Delegates inference requests" "HTTP"
+        trustyaiOperator -> llamaStackProviderRagas "Provides ragas-provider-image via ConfigMap" "Kubernetes API"
     }
 
     views {
-        systemContext llamaStackWithRagas "SystemContext" {
+        systemContext llamaStackProviderRagas "SystemContext" {
             include *
             autoLayout
-            description "System context showing llama-stack-provider-ragas in the RHOAI ecosystem"
         }
 
-        container llamaStackWithRagas "Containers" {
+        container llamaStackProviderRagas "Containers" {
             include *
             autoLayout
-            description "Internal container view showing provider components and their relationships"
         }
 
         styles {
-            element "Person" {
-                shape Person
-                background #4a90e2
-                color #ffffff
-            }
-            element "Software System" {
-                background #999999
-                color #ffffff
-            }
             element "External" {
                 background #999999
+                color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal" {
                 background #7ed321
                 color #ffffff
             }
-            element "Platform" {
-                background #d79b00
-                color #ffffff
-            }
-            element "External Library" {
-                background #b8860b
-                color #ffffff
-            }
-            element "Container" {
+            element "Internal Platform" {
                 background #4a90e2
+                color #ffffff
+            }
+            element "Person" {
+                shape Person
+                background #08427b
                 color #ffffff
             }
         }

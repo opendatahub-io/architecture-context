@@ -1,81 +1,88 @@
 sequenceDiagram
-    participant User as User Workstation
-    participant OC as oc adm must-gather /<br/>kubectl Job
-    participant Pod as must-gather Pod<br/>(gather.sh)
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
-    participant Helm as helm CLI<br/>(local exec)
-    participant FS as /must-gather<br/>Local Filesystem
+    participant User as User / SRE
+    participant OC as oc CLI
+    participant Gather as gather.sh<br/>Entry Point
+    participant XksUtil as xks_util.sh<br/>Distro Detection
+    participant Common as common.sh<br/>Shared Functions
+    participant Components as Component Gather Scripts<br/>(13 scripts, parallel)
+    participant LLMD as gather_llmd.sh<br/>xKS Path
+    participant Deps as Dependency Scripts<br/>(cert-manager, sail, lws)
+    participant Helm as helm CLI
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
+    participant FS as Local Filesystem<br/>/must-gather/
 
     rect rgb(230, 245, 255)
-        Note over User,FS: Flow 1: OpenShift must-gather Collection
-        User->>OC: oc adm must-gather --image=...
-        OC->>Pod: Creates must-gather Pod
-        Pod->>K8sAPI: Detect K8s distribution<br/>GET infrastructures.config.openshift.io<br/>Auth: ServiceAccount token
-        K8sAPI-->>Pod: OpenShift detected
-        Pod->>K8sAPI: Collect platform resources<br/>GET DSCInitialization, DataScienceCluster<br/>Auth: ServiceAccount token
-        K8sAPI-->>Pod: Platform CRs
+        Note over User,FS: Flow 1: OpenShift Must-Gather Collection
+        User->>OC: oc adm must-gather --image=must-gather:tag
+        OC->>Gather: Executes in must-gather pod
+        Gather->>Common: source common.sh
+        Gather->>XksUtil: source xks_util.sh
+        XksUtil->>K8sAPI: GET /apis/config.openshift.io<br/>Auth: ServiceAccount token
+        K8sAPI-->>XksUtil: OpenShift detected
 
-        par Parallel Component Collection
-            Pod->>K8sAPI: gather_serving.sh<br/>GET InferenceService, ServingRuntime, AuthConfig<br/>+ DEFAULT_RESOURCES (Gateway, HTTPRoute, EnvoyFilter)
-            Pod->>K8sAPI: gather_data_science_pipelines.sh<br/>GET DataSciencePipelinesApplication, Workflow
-            Pod->>K8sAPI: gather_notebooks.sh<br/>GET Notebook, ImageStream
-            Pod->>K8sAPI: gather_dashboard.sh<br/>GET OdhDashboardConfig, AcceleratorProfile
-            Pod->>K8sAPI: gather_kuberay.sh<br/>GET RayCluster, RayJob, RayService
-            Pod->>K8sAPI: gather_kueue.sh<br/>GET ClusterQueue, LocalQueue, Workload
-            Pod->>K8sAPI: gather_kfto.sh<br/>GET PyTorchJob, TrainJob, TrainingRuntime
-            Pod->>K8sAPI: gather_mr.sh<br/>GET ModelRegistry
-            Pod->>K8sAPI: gather_trustyai.sh<br/>GET TrustyAIService, LMEvalJob, EvalHub
-            Pod->>K8sAPI: gather_feastoperator.sh<br/>GET FeatureStore
-            Pod->>K8sAPI: gather_mlflow.sh<br/>GET MLflow
-            Pod->>K8sAPI: gather_sparkoperator.sh<br/>GET SparkApplication, SparkConnect
-            Pod->>K8sAPI: gather_models_as_a_service.sh<br/>GET MaaSModelRef, MaaSAuthPolicy, Tenant
+        Gather->>K8sAPI: oc adm inspect namespace/redhat-ods-operator<br/>Auth: ServiceAccount token
+        K8sAPI-->>Gather: Operator namespace resources
+
+        Gather->>K8sAPI: Collect DSCInitialization, DataScienceCluster,<br/>Auth, Monitoring, GatewayConfig CRs
+        K8sAPI-->>Gather: Platform-level CRs
+
+        par 13 Component Scripts (parallel)
+            Gather->>Components: Dispatch all component gather scripts
+            Components->>Common: get_all_namespace(resources)
+            Common->>K8sAPI: GET CRDs across all namespaces<br/>Auth: ServiceAccount token
+            K8sAPI-->>Common: Namespace list
+            Components->>K8sAPI: oc adm inspect for each namespace<br/>Auth: ServiceAccount token
+            K8sAPI-->>Components: Component CRs + pods + logs + events
         end
 
-        K8sAPI-->>Pod: Component CRs + Logs
-        Pod->>FS: Write collected data
-        Pod-->>OC: Collection complete
-        OC->>User: oc rsync collected data
-    end
-
-    rect rgb(255, 243, 224)
-        Note over User,FS: Flow 2: xKS (Non-OpenShift) Collection
-        User->>K8sAPI: kubectl create Job must-gather
-        K8sAPI->>Pod: Job creates Pod
-        Pod->>K8sAPI: detect_k8s_distro<br/>Kernel version / Provider ID / OS image
-        K8sAPI-->>Pod: AKS / CKS / generic K8s
-        Pod->>K8sAPI: kubectl_inspect (auto-discovery)<br/>GET api-resources → iterate all types<br/>Auth: ServiceAccount token
-        K8sAPI-->>Pod: All namespaced + cluster resources
-        Pod->>K8sAPI: Collect pod logs<br/>GET pods/log (current + previous)
-        K8sAPI-->>Pod: Container logs
-        Pod->>FS: Write collected data
-        Note over Pod: sleep 600 (wait for user)
-        User->>Pod: kubectl cp must-gather-pod:/must-gather ./
-    end
-
-    rect rgb(232, 245, 233)
-        Note over User,FS: Flow 3: Helm Release Value Collection
-        Pod->>Helm: helm get values rhoai/rhaii
-        Helm->>K8sAPI: Read Helm secrets<br/>Auth: ServiceAccount token
+        Gather->>Helm: helm get values / helm get manifest
+        Helm->>K8sAPI: GET Helm secrets<br/>Auth: ServiceAccount token
         K8sAPI-->>Helm: Helm release data
-        Helm-->>Pod: Values YAML
-        Pod->>Helm: helm get manifest rhoai/rhaii
-        Helm-->>Pod: Rendered manifests
-        Pod->>FS: Write to $DST_DIR/namespaces/<ns>/helm/
+        Helm-->>Gather: Release values and manifests
+
+        Gather->>FS: Write all collected data to /must-gather/
+        OC-->>User: Tarball of /must-gather/ directory
     end
 
-    rect rgb(243, 229, 245)
-        Note over User,FS: Flow 4: LLM-D Collection (within main flow)
-        Pod->>K8sAPI: gather_llmd.sh<br/>GET LLMInferenceService, InferencePool,<br/>InferenceObjective, Gateway, HTTPRoute
-        K8sAPI-->>Pod: LLM-D resources
+    rect rgb(255, 245, 230)
+        Note over User,FS: Flow 2: xKS Kubernetes Job Collection (AKS/EKS/CKS)
+        User->>K8sAPI: kubectl apply -f job.yaml<br/>Auth: kubeconfig
+        K8sAPI->>Gather: Job pod starts, executes gather.sh
 
-        par LLM-D Dependency Collection (parallel)
-            Pod->>K8sAPI: cert-manager.sh<br/>GET Certificate, Issuer, ClusterIssuer
-            Pod->>K8sAPI: sail.sh<br/>GET Istio, VirtualService, DestinationRule,<br/>PeerAuthentication, AuthorizationPolicy
-            Pod->>K8sAPI: lws.sh<br/>GET LeaderWorkerSet
+        Gather->>XksUtil: source xks_util.sh
+        XksUtil->>K8sAPI: Probe node labels, provider IDs<br/>Auth: must-gather-sa token
+        K8sAPI-->>XksUtil: AKS/EKS/CKS detected
+
+        Gather->>LLMD: Dispatch llm-d collection path
+        LLMD->>K8sAPI: kubectl get cluster-info, nodes, api-resources<br/>Auth: must-gather-sa token
+        K8sAPI-->>LLMD: Cluster metadata
+
+        par Dependency Collection (parallel)
+            LLMD->>Deps: cert-manager.sh
+            Deps->>K8sAPI: GET Issuer, ClusterIssuer, Certificate CRs
+            K8sAPI-->>Deps: cert-manager resources
+
+            LLMD->>Deps: sail.sh
+            Deps->>K8sAPI: GET Istio, VirtualService, DestinationRule,<br/>AuthorizationPolicy, PeerAuthentication CRs
+            K8sAPI-->>Deps: Istio/Sail resources
+
+            LLMD->>Deps: lws.sh
+            Deps->>K8sAPI: GET LeaderWorkerSet CRs
+            K8sAPI-->>Deps: LWS resources
         end
 
-        Pod->>K8sAPI: gather_cluster.sh<br/>GET nodes, cluster-info, cluster-scoped CRs
-        Pod->>K8sAPI: gather_o11y.sh<br/>GET ServiceMonitor, PodMonitor, PrometheusRule<br/>or ama-metrics pods (AKS)
-        K8sAPI-->>Pod: Dependency + cluster data
-        Pod->>FS: Write LLM-D data
+        LLMD->>K8sAPI: auto_discover_resources: kubectl api-resources,<br/>GET all namespaced resource types
+        K8sAPI-->>LLMD: All discovered resources
+
+        LLMD->>K8sAPI: kubectl logs (current + previous) for all pods<br/>Auth: must-gather-sa token
+        K8sAPI-->>LLMD: Pod logs
+
+        LLMD->>Helm: helm get values / helm get manifest
+        Helm->>K8sAPI: GET Helm secrets
+        K8sAPI-->>Helm: Release data
+        Helm-->>LLMD: Helm values
+
+        LLMD->>FS: Write to /tmp/must-gather/
+        User->>K8sAPI: kubectl cp must-gather-pod:/tmp/must-gather ./
+        K8sAPI-->>User: Collected diagnostic data
     end

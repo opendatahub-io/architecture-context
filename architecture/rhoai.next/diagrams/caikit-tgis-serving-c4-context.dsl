@@ -1,66 +1,69 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Deploys and queries LLM models for text generation"
-        appDeveloper = person "Application Developer" "Integrates LLM inference into applications via HTTP/gRPC APIs"
+        dataScientist = person "Data Scientist" "Deploys and queries LLM models for text generation inference"
+        mlEngineer = person "ML Engineer" "Configures ServingRuntimes and manages model deployment"
 
-        caikitTGIS = softwareSystem "Caikit-TGIS-Serving" "Multi-container serving runtime that bridges Caikit AI toolkit with TGIS inference engine for LLM serving" {
-            caikitRuntime = container "Caikit Runtime" "Python runtime exposing HTTP (8080) and gRPC (8085) inference APIs with Caikit model management" "Python 3.11 / caikit"
-            tgisEngine = container "TGIS Engine" "Text Generation Inference Server — loads models and executes GPU-accelerated inference" "text-generation-launcher"
-            convertUtility = container "convert.py" "CLI utility to convert HuggingFace models to Caikit format" "Python CLI"
+        caikitTgisSvc = softwareSystem "Caikit-TGIS-Serving" "Container image providing Caikit AI runtime for LLM inference, acting as transformer layer between clients and TGIS backend" {
+            caikitRuntime = container "Caikit Runtime" "Runs python -m caikit.runtime; exposes HTTP/gRPC APIs for NLP tasks" "Python 3.11 (caikit 0.28.1)"
+            caikitNlp = container "caikit-nlp" "NLP module providing text generation task definitions and HuggingFace integration" "Python Library v0.5.14"
+            caikitTgisBackend = container "caikit-tgis-backend" "Backend connector that delegates model inference to TGIS over gRPC" "Python Library v0.1.39"
+            caikitConfig = container "caikit.yml" "Configuration: model directory, TGIS backend connection (localhost:8033), library modules" "YAML Config"
         }
 
-        kserve = softwareSystem "KServe" "Orchestrates model serving lifecycle via ServingRuntime and InferenceService CRDs" "Internal Platform"
-        knativeServing = softwareSystem "Knative Serving" "Provides serverless autoscaling, revision management, and traffic routing" "Internal Platform"
-        istio = softwareSystem "Istio Service Mesh" "Enforces mTLS, traffic management, and PeerAuthentication policies" "Internal Platform"
-        s3Storage = softwareSystem "S3-compatible Storage" "Model artifact storage (MinIO, AWS S3)" "External"
-        prometheus = softwareSystem "OpenShift User Workload Monitoring" "Prometheus-based metrics collection via ServiceMonitor" "Internal Platform"
-        huggingface = softwareSystem "HuggingFace Hub" "Public model repository for downloading pretrained models" "External"
+        tgis = softwareSystem "TGIS" "Text Generation Inference Server - GPU-accelerated LLM inference engine" "Internal Platform"
+        kserve = softwareSystem "KServe" "Standardized serverless ML inference platform managing ServingRuntime and InferenceService CRDs" "Internal Platform"
+        knative = softwareSystem "Knative Serving" "Serverless autoscaling, revision management, and traffic splitting" "Internal Platform"
+        istio = softwareSystem "Istio Service Mesh" "Service mesh providing mTLS, traffic management, and authorization policies" "Internal Platform"
+        prometheus = softwareSystem "Prometheus UWM" "OpenShift User Workload Monitoring for metrics collection" "Internal Platform"
+        s3 = softwareSystem "S3-Compatible Storage" "Model artifact storage (AWS S3, Ceph, MinIO)" "External Service"
+        huggingface = softwareSystem "HuggingFace Hub" "Public model repository for downloading base models (dev/test only)" "External Service"
 
         # User interactions
-        dataScientist -> kserve "Creates InferenceService CR specifying model and runtime"
-        appDeveloper -> caikitTGIS "Sends inference requests via HTTP/gRPC"
+        dataScientist -> caikitTgisSvc "Sends inference requests via HTTP POST or gRPC" "HTTPS/443, gRPC"
+        mlEngineer -> kserve "Creates InferenceService and ServingRuntime CRs" "kubectl / OpenShift Console"
 
-        # Internal flows
-        caikitRuntime -> tgisEngine "Delegates inference via gRPC/8033 (localhost)"
+        # Internal container relationships
+        caikitRuntime -> caikitNlp "Loads NLP task modules"
+        caikitRuntime -> caikitTgisBackend "Uses for TGIS communication"
+        caikitRuntime -> caikitConfig "Reads configuration"
 
-        # Platform dependencies
-        kserve -> caikitTGIS "Deploys and manages serving pod lifecycle"
-        knativeServing -> caikitTGIS "Provides autoscaling and traffic routing"
-        istio -> caikitTGIS "Injects sidecar for mTLS and traffic policies"
-
-        # External service access
-        caikitTGIS -> s3Storage "Downloads model artifacts (HTTPS/443, TLS 1.2+, IAM auth)"
-        prometheus -> caikitTGIS "Scrapes metrics (HTTP/8086, PERMISSIVE mTLS)"
-        convertUtility -> huggingface "Downloads models for conversion (HTTPS/443)"
+        # External relationships
+        caikitTgisSvc -> tgis "Delegates model inference" "gRPC/8033 (localhost, plaintext)"
+        caikitTgisSvc -> s3 "Model artifacts downloaded by KServe storage initializer" "HTTPS/443 (TLS 1.2+, AWS IAM)"
+        kserve -> caikitTgisSvc "Deploys and manages serving pods" "Kubernetes API"
+        knative -> caikitTgisSvc "Provides serverless scaling and traffic routing" "Kubernetes API"
+        istio -> caikitTgisSvc "Provides mTLS, AuthZ, traffic management" "Envoy sidecar"
+        prometheus -> caikitTgisSvc "Scrapes runtime metrics" "HTTP/8086 (PERMISSIVE mTLS)"
+        caikitTgisSvc -> huggingface "Downloads models for conversion (dev/test)" "HTTPS/443"
     }
 
     views {
-        systemContext caikitTGIS "SystemContext" {
+        systemContext caikitTgisSvc "SystemContext" {
             include *
             autoLayout
         }
 
-        container caikitTGIS "Containers" {
+        container caikitTgisSvc "Containers" {
             include *
             autoLayout
         }
 
         styles {
-            element "Software System" {
-                background #438dd5
+            element "Person" {
+                shape Person
+                background #08427b
                 color #ffffff
             }
-            element "External" {
-                background #999999
+            element "Software System" {
+                background #1168bd
                 color #ffffff
             }
             element "Internal Platform" {
-                background #7ed321
+                background #438dd5
                 color #ffffff
             }
-            element "Person" {
-                shape person
-                background #08427b
+            element "External Service" {
+                background #999999
                 color #ffffff
             }
             element "Container" {

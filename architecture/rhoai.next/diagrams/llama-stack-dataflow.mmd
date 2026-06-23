@@ -1,64 +1,67 @@
 sequenceDiagram
     participant Client as External Client
-    participant MW as Llama Stack<br/>Middleware Chain<br/>8321/TCP
-    participant Auth as OAuth2/JWKS<br/>Endpoint<br/>443/TCP HTTPS
-    participant Quota as QuotaMiddleware<br/>(SQLite KV)
-    participant Router as API Router<br/>(Dynamic Routes)
-    participant ABAC as ABAC Engine<br/>(Cedar-like)
-    participant Inference as Inference Provider<br/>(Router)
-    participant VLLM as vLLM Server<br/>8000/TCP
-    participant RAG as RAG Tool Runtime
-    participant VectorDB as Vector DB<br/>(pgvector :5432)
-    participant Safety as Safety Shield<br/>(Inline)
-    participant Tool as Tool Runtime<br/>(Web Search/MCP)
+    participant Server as Llama Stack Server<br/>8321/TCP HTTP/HTTPS
+    participant AuthMW as AuthenticationMiddleware
+    participant QuotaMW as QuotaMiddleware
+    participant OAuth as OAuth2/JWKS Endpoint<br/>443/TCP HTTPS TLS 1.2+
+    participant KVStore as SQLite KV Store<br/>(local file)
+    participant Router as Inference Router<br/>(Provider Plugin)
+    participant vLLM as vLLM Server<br/>8000/TCP HTTP/HTTPS
+    participant VectorDB as PostgreSQL + pgvector<br/>5432/TCP
+    participant Tools as Tool Runtime<br/>(Tavily/Brave/MCP)
 
-    Note over Client, VLLM: Flow 1: Chat Completion Request
-    Client->>MW: POST /v1/inference/chat-completion<br/>HTTP/HTTPS :8321<br/>Bearer Token (JWT)
-    MW->>Auth: Validate JWT (JWKS fetch)<br/>HTTPS :443 TLS 1.2+
-    Auth-->>MW: Token Valid + Claims
-    MW->>Quota: Check rate limit<br/>100/day anon, 1000/day auth
-    Quota-->>MW: Allowed
-    MW->>Router: Route to inference handler
-    Router->>ABAC: Evaluate access rules
-    ABAC-->>Router: Permitted
-    Router->>Inference: chat_completion(request)
-    Inference->>VLLM: POST /v1/chat/completions<br/>HTTP/HTTPS :8000<br/>Bearer Token (optional)
-    VLLM-->>Inference: SSE stream chunks
-    Inference-->>MW: SSE stream
-    MW-->>Client: text/event-stream<br/>x-trace-id header
+    Note over Client,Tools: Flow 1: Chat Completion Request
 
-    Note over Client, VectorDB: Flow 2: RAG Query (Vector IO + Inference)
-    Client->>MW: POST /v1/tool-runtime/rag-tool/query<br/>HTTP/HTTPS :8321<br/>Bearer Token
-    MW->>Auth: Validate JWT
-    Auth-->>MW: Valid
-    MW->>Router: Route to RAG handler
-    Router->>RAG: rag_query(request)
-    RAG->>Inference: Generate embeddings<br/>(inline or remote)
-    Inference-->>RAG: Embedding vectors
-    RAG->>VectorDB: Query similar chunks<br/>PostgreSQL :5432<br/>Optional TLS, Password auth
-    VectorDB-->>RAG: Relevant chunks
-    RAG->>Inference: Generate response with context<br/>HTTP :8000 → vLLM
-    Inference->>VLLM: POST /v1/chat/completions<br/>(with RAG context)
-    VLLM-->>Inference: Response
-    Inference-->>RAG: LLM response
-    RAG-->>MW: Final response
-    MW-->>Client: JSON response
+    Client->>Server: POST /v1/inference/chat-completion<br/>Auth: Bearer Token (JWT)
+    Server->>AuthMW: Validate token
+    AuthMW->>OAuth: GET /.well-known/jwks.json<br/>TLS 1.2+ (public keys)
+    OAuth-->>AuthMW: JWKS response
+    AuthMW-->>Server: User attributes extracted
 
-    Note over Client, Tool: Flow 3: Agent Turn with Tool Execution
-    Client->>MW: POST /v1/agents/{id}/session/{sid}/turn<br/>HTTP/HTTPS :8321 (SSE)<br/>Bearer Token
-    MW->>Auth: Validate JWT
-    Auth-->>MW: Valid
-    MW->>Router: Route to agent handler
-    Router->>Inference: Initial LLM call<br/>HTTP :8000 → vLLM
-    Inference->>VLLM: Chat completion
-    VLLM-->>Inference: Tool call response
-    Router->>Safety: Run safety shield<br/>(in-process)
-    Safety-->>Router: Safe
-    Router->>Tool: Execute tool<br/>HTTPS :443 (Tavily/Brave)<br/>API key auth
-    Tool-->>Router: Tool results
-    Router->>Inference: Final LLM call with tool results
-    Inference->>VLLM: POST /v1/chat/completions
-    VLLM-->>Inference: Final response (SSE)
-    Inference-->>Router: Stream chunks
-    Router-->>MW: SSE stream
-    MW-->>Client: text/event-stream<br/>x-trace-id header
+    Server->>QuotaMW: Check rate limit
+    QuotaMW->>KVStore: Query quota (SQLite)
+    KVStore-->>QuotaMW: Quota OK (1000 req/day auth)
+    QuotaMW-->>Server: Request allowed
+
+    Server->>Router: Route to inference provider
+    Router->>vLLM: POST /v1/chat/completions<br/>Optional TLS, Bearer Token
+    vLLM-->>Router: SSE stream: data chunks
+    Router-->>Server: Stream response
+    Server-->>Client: SSE stream: text/event-stream<br/>Header: x-trace-id
+
+    Note over Client,Tools: Flow 2: RAG Query (Vector IO + Inference)
+
+    Client->>Server: POST /v1/tool-runtime/rag-tool/query<br/>Auth: Bearer Token
+    Server->>AuthMW: Validate token
+    AuthMW-->>Server: Authorized
+
+    Server->>Router: Generate embedding
+    Router->>vLLM: POST /v1/embeddings<br/>Optional TLS
+    vLLM-->>Router: Embedding vector
+
+    Router->>VectorDB: SELECT with vector similarity<br/>pgvector cosine distance<br/>Optional TLS, Password auth
+    VectorDB-->>Router: Matching chunks (top-k)
+
+    Router->>vLLM: POST /v1/chat/completions<br/>Context: retrieved chunks
+    vLLM-->>Router: Generated response
+    Router-->>Server: RAG result
+    Server-->>Client: JSON response
+
+    Note over Client,Tools: Flow 3: Agent Turn with Tool Execution
+
+    Client->>Server: POST /v1/agents/{id}/session/{sid}/turn<br/>Auth: Bearer Token, SSE
+    Server->>AuthMW: Validate token
+    AuthMW-->>Server: Authorized
+
+    Server->>Router: Agent runtime: create turn
+    Router->>vLLM: POST /v1/chat/completions<br/>(determine tool calls)
+    vLLM-->>Router: Tool call decision<br/>(e.g., web_search)
+
+    Router->>Tools: POST search API<br/>HTTPS/443 TLS 1.2+<br/>API key auth
+    Tools-->>Router: Search results
+
+    Router->>vLLM: POST /v1/chat/completions<br/>(generate final response with tool results)
+    vLLM-->>Router: Final response stream
+
+    Router-->>Server: SSE agent turn events
+    Server-->>Client: SSE stream: agent steps + response

@@ -233,7 +233,7 @@ This component defines 1 webhook(s) (0 mutating, 1 validating).
 
 | Name | Type | Target Resources | Purpose |
 |------|------|-----------------|---------|
-| vogxserver.kb.io | validating | ogxservers | Validating webhook for OGXServer custom resources on create and update. It enforces that the distribution name is known, provider IDs are unique, model-to-provider references resolve to configured providers, and adoption annotations do not self-reference the CR name (which would cause Deployment name conflicts). |
+| vogxserver.kb.io | validating | ogxservers |  |
 
 ### External Webhooks
 

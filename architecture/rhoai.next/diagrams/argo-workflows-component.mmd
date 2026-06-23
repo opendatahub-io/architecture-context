@@ -1,94 +1,109 @@
 graph TB
-    subgraph ArgoWorkflows["Argo Workflows (RHOAI)"]
+    subgraph ArgoWorkflows["Argo Workflows"]
         direction TB
+
         subgraph Controller["workflow-controller"]
-            WC[Workflow Controller<br/>Go Operator<br/>Port: 9090/TCP metrics<br/>Port: 6060/TCP health]
-            CronCtrl[Cron Controller<br/>8 workers]
-            TTLCtrl[TTL GC Controller<br/>4 workers]
-            PodCleanup[Pod Cleanup<br/>4 workers]
-            ArchiveCtrl[Archive Controller<br/>8 workers]
-            WorkflowWorkers[Workflow Workers<br/>32 goroutines]
-            LeaderElection[Leader Election<br/>via Leases]
+            WFReconciler["Workflow Reconciler<br/>32 workers"]
+            CronCtrl["Cron Controller<br/>8 workers"]
+            GCCtrl["GC Controller<br/>4 TTL workers"]
+            PodCleanup["Pod Cleanup<br/>4 workers"]
+            ArtifactGC["Artifact GC"]
+            SyncMgr["Synchronization Manager<br/>(semaphores/mutexes)"]
+            LeaderElection["Leader Election"]
+            Metrics9090["Metrics :9090"]
+            Health6060["Health :6060"]
+        end
+
+        subgraph Server["argo-server"]
+            GRPCGW["gRPC-Gateway<br/>REST + gRPC :2746"]
+            Gatekeeper["Gatekeeper<br/>(AuthN/AuthZ)"]
+            SSOAuth["SSO/OIDC Auth"]
+            ArtifactSrv["Artifact Server"]
+            WebUI["Web UI"]
         end
 
         subgraph Executor["argoexec (sidecar)"]
-            InitContainer[Init Container<br/>Download artifacts<br/>Stage scripts]
-            WaitContainer[Wait/Emissary Sidecar<br/>Monitor execution<br/>Upload artifacts<br/>Report results]
-            FIPSBinary[/bin/argoexec-fips<br/>FIPS-compliant]
-            NonFIPSBinary[/bin/argoexec<br/>Non-FIPS default]
+            InitContainer["Init Container<br/>(load artifacts)"]
+            WaitContainer["Wait Container<br/>(save artifacts, report results)"]
         end
     end
 
     %% CRDs
-    subgraph CRDs["Custom Resource Definitions (argoproj.io/v1alpha1)"]
-        WorkflowCR[Workflow CR<br/>Namespaced]
-        WorkflowTemplateCR[WorkflowTemplate CR<br/>Namespaced]
-        ClusterWFTemplate[ClusterWorkflowTemplate CR<br/>Cluster]
-        CronWorkflowCR[CronWorkflow CR<br/>Namespaced]
-        WFTaskSet[WorkflowTaskSet CR<br/>Namespaced]
-        WFTaskResult[WorkflowTaskResult CR<br/>Namespaced]
-        WFArtifactGC[WorkflowArtifactGCTask CR<br/>Namespaced]
-        WFEventBinding[WorkflowEventBinding CR<br/>Namespaced]
-    end
+    WorkflowCR["Workflow CR"]
+    WFTemplateCR["WorkflowTemplate CR"]
+    ClusterWFT["ClusterWorkflowTemplate CR"]
+    CronWFCR["CronWorkflow CR"]
+    TaskResultCR["WorkflowTaskResult CR"]
+    TaskSetCR["WorkflowTaskSet CR"]
 
-    %% Internal Platform
-    subgraph DSP["Data Science Pipelines"]
-        DSPOperator[DSP Operator<br/>Deploys controller<br/>Configures argoexec]
-        DSPAPIServer[DSP API Server<br/>Creates Workflow CRs]
-    end
+    %% External Systems
+    User["User / DSP API"]
+    K8sAPI["Kubernetes API<br/>6443/TCP"]
+    PostgreSQL["PostgreSQL<br/>5432/TCP"]
+    S3["S3 / MinIO<br/>9000/TCP"]
+    Prometheus["Prometheus"]
+    DSPO["Data Science Pipelines<br/>Operator"]
 
-    %% External Dependencies
-    K8sAPI[Kubernetes API Server<br/>443/TCP HTTPS]
-    ObjectStorage[S3/MinIO Storage<br/>443/TCP HTTPS]
-    Database[(MariaDB/PostgreSQL<br/>3306/5432 TCP)]
-    Prometheus[Prometheus<br/>Scrapes 9090/TCP]
+    %% User interactions
+    User -->|"creates"| WorkflowCR
+    User -->|"HTTPS :2746"| GRPCGW
 
-    %% Relationships
-    DSPOperator -->|deploys & configures| WC
-    DSPOperator -->|sets executor image| WaitContainer
-    DSPAPIServer -->|creates| WorkflowCR
+    %% Controller watches
+    WorkflowCR -->|"watched by"| WFReconciler
+    CronWFCR -->|"watched by"| CronCtrl
+    WFTemplateCR -->|"referenced by"| WFReconciler
+    ClusterWFT -->|"referenced by"| WFReconciler
 
-    WC -->|watches| WorkflowCR
-    WC -->|watches| WorkflowTemplateCR
-    WC -->|watches| ClusterWFTemplate
-    CronCtrl -->|watches| CronWorkflowCR
-    CronCtrl -->|creates| WorkflowCR
-    WC -->|creates Pods with| InitContainer
-    WC -->|creates Pods with| WaitContainer
-    TTLCtrl -->|deletes expired| WorkflowCR
-    ArchiveCtrl -->|archives to| Database
+    %% Controller actions
+    WFReconciler -->|"creates pods"| K8sAPI
+    CronCtrl -->|"creates Workflows"| K8sAPI
+    GCCtrl -->|"deletes expired"| K8sAPI
+    WFReconciler -->|"archives"| PostgreSQL
+    LeaderElection -->|"lease"| K8sAPI
 
-    WC -->|API calls| K8sAPI
-    InitContainer -->|downloads artifacts| ObjectStorage
-    WaitContainer -->|uploads artifacts| ObjectStorage
-    WaitContainer -->|creates| WFTaskResult
+    %% Executor flows
+    InitContainer -->|"load artifacts"| S3
+    WaitContainer -->|"save artifacts"| S3
+    WaitContainer -->|"creates"| TaskResultCR
+    TaskResultCR -->|"watched by"| WFReconciler
 
-    Prometheus -->|scrapes metrics| WC
-    LeaderElection -->|Lease CRs| K8sAPI
+    %% Server flows
+    GRPCGW -->|"delegates auth"| Gatekeeper
+    Gatekeeper -->|"OIDC"| SSOAuth
+    GRPCGW -->|"queries"| K8sAPI
+    GRPCGW -->|"queries archive"| PostgreSQL
+    ArtifactSrv -->|"fetches"| S3
+
+    %% Monitoring
+    Prometheus -->|"scrapes"| Metrics9090
+    Prometheus -->|"scrapes"| GRPCGW
+
+    %% Deployment
+    DSPO -.->|"deploys"| Controller
+    DSPO -.->|"configures"| Executor
 
     %% Styling
-    style WC fill:#4a90e2,stroke:#333,color:#fff
-    style CronCtrl fill:#5a9ae2,stroke:#333,color:#fff
-    style TTLCtrl fill:#5a9ae2,stroke:#333,color:#fff
-    style PodCleanup fill:#5a9ae2,stroke:#333,color:#fff
-    style ArchiveCtrl fill:#5a9ae2,stroke:#333,color:#fff
-    style WorkflowWorkers fill:#5a9ae2,stroke:#333,color:#fff
-    style LeaderElection fill:#5a9ae2,stroke:#333,color:#fff
-    style InitContainer fill:#6ab0e2,stroke:#333,color:#fff
-    style WaitContainer fill:#6ab0e2,stroke:#333,color:#fff
-    style FIPSBinary fill:#7ed321,stroke:#333,color:#fff
-    style NonFIPSBinary fill:#f5a623,stroke:#333,color:#fff
-    style WorkflowCR fill:#f5a623,stroke:#333
-    style WorkflowTemplateCR fill:#f5a623,stroke:#333
-    style ClusterWFTemplate fill:#f5a623,stroke:#333
-    style CronWorkflowCR fill:#f5a623,stroke:#333
-    style WFTaskSet fill:#f5a623,stroke:#333
-    style WFTaskResult fill:#f5a623,stroke:#333
-    style WFArtifactGC fill:#f5a623,stroke:#333
-    style WFEventBinding fill:#f5a623,stroke:#333
-    style DSPOperator fill:#7ed321,stroke:#333
-    style DSPAPIServer fill:#7ed321,stroke:#333
-    style K8sAPI fill:#e8e8e8,stroke:#333
-    style ObjectStorage fill:#e8e8e8,stroke:#333
-    style Database fill:#e8e8e8,stroke:#333
-    style Prometheus fill:#e8e8e8,stroke:#333
+    style WFReconciler fill:#4a90e2,color:#fff
+    style CronCtrl fill:#4a90e2,color:#fff
+    style GCCtrl fill:#4a90e2,color:#fff
+    style PodCleanup fill:#4a90e2,color:#fff
+    style ArtifactGC fill:#4a90e2,color:#fff
+    style SyncMgr fill:#4a90e2,color:#fff
+    style LeaderElection fill:#4a90e2,color:#fff
+    style GRPCGW fill:#5b9bd5,color:#fff
+    style Gatekeeper fill:#5b9bd5,color:#fff
+    style SSOAuth fill:#5b9bd5,color:#fff
+    style ArtifactSrv fill:#5b9bd5,color:#fff
+    style WebUI fill:#5b9bd5,color:#fff
+    style InitContainer fill:#70ad47,color:#fff
+    style WaitContainer fill:#70ad47,color:#fff
+    style WorkflowCR fill:#f5a623
+    style WFTemplateCR fill:#f5a623
+    style ClusterWFT fill:#f5a623
+    style CronWFCR fill:#f5a623
+    style TaskResultCR fill:#f5a623
+    style TaskSetCR fill:#f5a623
+    style K8sAPI fill:#e8e8e8
+    style PostgreSQL fill:#e8e8e8
+    style S3 fill:#e8e8e8
+    style DSPO fill:#7ed321,color:#fff

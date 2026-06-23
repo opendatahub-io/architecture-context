@@ -1,112 +1,134 @@
-┌─────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                   │
-│                                                                          │
-│  [External Client]                                                       │
-│         │                                                                │
-│         │ Port: 443/TCP                                                  │
-│         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS 1.2+                                           │
-│         │ Auth: Bearer Token / OAuth (enforced at gateway)               │
-│         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (Platform-Managed)                                              │
-│                                                                          │
-│  [KServe Gateway / Gateway API]                                          │
-│  - Managed by: KServe + rhods-operator                                   │
-│  - TLS Termination: TLS 1.2+ at gateway                                 │
-│  - External Port: 443/TCP                                                │
-│         │                                                                │
-│         │ Port: varies (internal service port)                           │
-│         │ Protocol: HTTP                                                 │
-│         │ Encryption: Platform-managed (mTLS if service mesh enabled)    │
-│         │ Auth: Passed through from gateway                              │
-│         ▼                                                                │
-│  [Auth Proxy (kube-rbac-proxy / oauth-proxy)]                            │
-│  - RHOAI 3.x: kube-rbac-proxy sidecar                                   │
-│  - RHOAI 2.x: oauth-proxy sidecar                                       │
-│  - Purpose: Enforce authentication before reaching inference container   │
-│         │                                                                │
-│         │ Port: 8000/TCP (HTTP) or 8033/TCP (gRPC)                      │
-│         │ Protocol: HTTP or gRPC                                         │
-│         │ Encryption: None (pod-internal, localhost)                      │
-│         │ Auth: None (already enforced by proxy)                         │
-│         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  APPLICATION (Container)                                                 │
-│                                                                          │
-│  [vllm-rocm Container (odh-vllm-rocm-rhel9)]                            │
-│  - User: 2000 (non-root)                                                │
-│  - Base Image: rhaiis/vllm-rocm-rhel9:3.2.1                             │
-│  - Entrypoint: python -m vllm_tgis_adapter                              │
-│  - Namespace: {user-namespace} (KServe InferenceService namespace)       │
-│  - ServiceAccount: Managed by KServe                                     │
-│                                                                          │
-│  Listening Ports:                                                        │
-│    - 8000/TCP  HTTP   OpenAI-compatible API                              │
-│      - POST /v1/completions                                              │
-│      - POST /v1/chat/completions                                         │
-│      - GET  /v1/models                                                   │
-│      - GET  /health                                                      │
-│    - 8033/TCP  gRPC   TGIS Generation Service                            │
-│                                                                          │
-│  No TLS configured at application level                                  │
-│  No authentication configured at application level                       │
-│         │                                                                │
-│         │ (GPU access)                                                   │
-│         │ Interface: PCIe / HIP Runtime                                   │
-│         │ Protocol: Device API                                           │
-│         │ Encryption: N/A (hardware bus)                                  │
-│         │ Auth: N/A                                                      │
-│         ▼                                                                │
-│  [AMD ROCm GPU]                                                          │
-│  - Purpose: Tensor operations for LLM inference                          │
-│  - Interface: PCIe / HIP device API                                      │
-│  - Driver: Host-provided ROCm driver                                     │
-│                                                                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│  EGRESS (Outbound from Container)                                        │
-│                                                                          │
-│  [Model Storage (S3/PVC)]                                                │
-│  - Port: 443/TCP (S3) or N/A (PVC filesystem)                           │
-│  - Protocol: HTTPS or local filesystem                                   │
-│  - Encryption: TLS 1.2+ (S3) or N/A (PVC)                               │
-│  - Auth: AWS IAM / Service Account credentials / None                    │
-│  - Purpose: Download model weights at container startup                  │
-│                                                                          │
-│  [Hugging Face Hub - huggingface.co]                                     │
-│  - Port: 443/TCP                                                         │
-│  - Protocol: HTTPS                                                       │
-│  - Encryption: TLS 1.2+                                                  │
-│  - Auth: HF Token (optional)                                             │
-│  - Purpose: Download model weights/tokenizers (optional)                 │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
+================================================================================
+  SECURITY NETWORK DIAGRAM: vllm-rocm (AMD ROCm vLLM Inference Runtime)
+================================================================================
 
-RBAC Summary:
-- No RBAC resources defined in this repository
-- This is a container image, not an operator or controller
-- RBAC for the pod is managed by KServe InferenceService configuration
++--------------------------------------------------------------------------+
+|  EXTERNAL (Untrusted)                                                     |
+|                                                                           |
+|  [External Client]                                                        |
+|         |                                                                 |
+|         | Port: 443/TCP                                                   |
+|         | Protocol: HTTPS                                                |
+|         | Encryption: TLS 1.2+                                           |
+|         | Auth: Bearer Token (platform auth)                             |
+|         v                                                                 |
++--------------------------------------------------------------------------+
+|  INGRESS (Platform-Managed)                                               |
+|                                                                           |
+|  [Platform Ingress - Gateway API / HTTPRoute]                             |
+|  - Managed by: KServe + RHOAI platform operator                          |
+|  - Port: 443/TCP (external) --> internal routing                          |
+|  - TLS Termination: TLS 1.2+                                             |
+|  - Routing: HTTPRoute to InferenceService                                 |
+|         |                                                                 |
+|         | Port: 8443/TCP                                                  |
+|         | Protocol: HTTPS                                                |
+|         | Encryption: TLS                                                |
+|         | Auth: Platform RBAC (kube-rbac-proxy validates)                |
+|         v                                                                 |
++--------------------------------------------------------------------------+
+|  AUTH PROXY (Pod Sidecar)                                                 |
+|                                                                           |
+|  [kube-rbac-proxy]                                                        |
+|  - Namespace: {user-namespace}                                            |
+|  - Port: 8443/TCP (incoming) --> 8000/TCP or 8033/TCP (to vLLM)          |
+|  - Purpose: AuthN/AuthZ enforcement before reaching vLLM                  |
+|  - Auth: Kubernetes RBAC (SubjectAccessReview)                            |
+|         |                                          |                     |
+|         | Port: 8000/TCP                             | Port: 8033/TCP     |
+|         | Protocol: HTTP                             | Protocol: gRPC     |
+|         | Encryption: None                           | Encryption: None   |
+|         | (pod-internal)                             | (pod-internal)     |
+|         | Auth: None                                 | Auth: None         |
+|         |  (already verified)                        | (already verified) |
+|         v                                          v                     |
++--------------------------------------------------------------------------+
+|  INFERENCE RUNTIME (Pod)                                                  |
+|                                                                           |
+|  [vLLM Container - odh-vllm-rocm-rhel9]                                  |
+|  - Image: Based on registry.redhat.io/rhaiis/vllm-rocm-rhel9:3.2.1      |
+|  - User: 2000 (non-root)                                                 |
+|  - Namespace: {user-namespace}                                            |
+|  - Entrypoint: python3 -m vllm_tgis_adapter                              |
+|                                                                           |
+|    +-- OpenAI-compatible HTTP API --+   +-- TGIS gRPC API -----+         |
+|    | Port: 8000/TCP                 |   | Port: 8033/TCP        |         |
+|    | Endpoints:                     |   | Service: TGIS         |         |
+|    |   POST /v1/completions         |   | (vllm_tgis_adapter)   |         |
+|    |   POST /v1/chat/completions    |   +------------------------+        |
+|    |   GET  /v1/models              |                                     |
+|    |   GET  /health                 |                                     |
+|    +--------------------------------+                                     |
+|         |                                                                 |
+|         | Interface: HIP API (ROCm)                                       |
+|         | Auth: N/A (hardware interface)                                   |
+|         v                                                                 |
++--------------------------------------------------------------------------+
+|  GPU HARDWARE                                                             |
+|                                                                           |
+|  [AMD Instinct GPU - MI200/MI300 Series]                                  |
+|  - Driver: AMD ROCm 7.1.1-compatible                                     |
+|  - Libraries: HIP, MIOpen, RCCL, hipBLAS                                 |
+|  - Interface: HIP API                                                     |
++--------------------------------------------------------------------------+
 
-Service Mesh Configuration:
-- No service mesh configuration defined in this repository
-- Service mesh integration (mTLS, PeerAuthentication) managed by platform operator
-- Auth proxy sidecar injected by KServe (kube-rbac-proxy in RHOAI 3.x)
+                         EGRESS CONNECTIONS
 
-Secrets:
-- No secrets defined in this repository
-- Model storage credentials: Managed by KServe InferenceService storage config
-- HuggingFace tokens: Managed by KServe InferenceService environment configuration
-- TLS certificates: Not applicable (no TLS at application level)
++--------------------------------------------------------------------------+
+|  EXTERNAL SERVICES (Optional)                                             |
+|                                                                           |
+|  [Hugging Face Hub - huggingface.co]                                      |
+|  - Port: 443/TCP                                                          |
+|  - Protocol: HTTPS                                                        |
+|  - Encryption: TLS 1.2+                                                   |
+|  - Auth: Bearer Token (HF_TOKEN env var)                                  |
+|  - Purpose: Download gated model weights at startup                       |
+|  - Direction: Egress only                                                 |
+|                                                                           |
+|  [S3-Compatible Storage - s3.amazonaws.com or compatible]                  |
+|  - Port: 443/TCP                                                          |
+|  - Protocol: HTTPS                                                        |
+|  - Encryption: TLS 1.2+                                                   |
+|  - Auth: AWS IAM credentials / S3 access keys                             |
+|  - Purpose: Fetch model artifacts from object storage                     |
+|  - Direction: Egress only                                                 |
++--------------------------------------------------------------------------+
 
-Container Security:
-- Runs as non-root user (UID 2000)
-- Base image: UBI9 (rhaiis/vllm-rocm-rhel9)
-- FIPS: Delegated to base image system OpenSSL (FIPS mode when host node FIPS-enabled)
-- Build hermeticity: Non-hermetic (hermetic: false); deps inherited from RHAIIS base image
-- No lock files present on main branch
+================================================================================
+  RBAC SUMMARY
+================================================================================
 
-FIPS Compliance:
-- Python runtime (not Go) — Go FIPS build flags not applicable
-- System OpenSSL from UBI9 base operates in FIPS mode when host has FIPS enabled
-- No application-level TLS configuration
-- Crypto library usage inherited from base image (cannot assess from this repo)
+This component defines NO RBAC resources. RBAC is managed by KServe and
+the RHOAI platform operator.
+
+- Container runs as: USER 2000 (non-root)
+- Auth enforcement: kube-rbac-proxy sidecar (injected by KServe/platform)
+- Platform RBAC: SubjectAccessReview via kube-rbac-proxy
+
+================================================================================
+  SECRETS
+================================================================================
+
+| Secret Name       | Type    | Purpose                                    | Provisioned By       | Auto-Rotate |
+|-------------------|---------|--------------------------------------------|----------------------|-------------|
+| HF_TOKEN          | Opaque  | Hugging Face Hub auth for gated models     | User / platform admin| No          |
+| (S3 credentials)  | Opaque  | S3 access for model artifact storage       | User / platform admin| No          |
+
+================================================================================
+  FIPS COMPLIANCE
+================================================================================
+
+- No TLS configured at container level (relies on platform ingress)
+- Crypto libraries inherited from RHEL 9 UBI base (OpenSSL)
+- Python ssl module backed by system OpenSSL (FIPS-capable)
+- All crypto dependencies in RHAIIS base image (not this repo)
+
+================================================================================
+  BUILD SECURITY
+================================================================================
+
+- Build: Non-hermetic (hermetic: false in Tekton pipeline)
+- No packages installed in this layer (thin wrapper)
+- All dependencies inherited from AIPCC base image
+- Architecture: linux/amd64 only (ROCm x86_64 constraint)
+- Pipeline timeouts: 8h pipeline, 4h task (large GPU image)

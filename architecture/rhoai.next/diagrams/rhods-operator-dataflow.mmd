@@ -1,55 +1,49 @@
 sequenceDiagram
-    participant Client as External Client
-    participant Route as OpenShift Route / LB<br/>443/TCP HTTPS
-    participant Gateway as Gateway (Envoy)<br/>443/TCP TLS Terminate
-    participant EnvoyF as EnvoyFilter<br/>ext_authz
-    participant AuthProxy as kube-auth-proxy<br/>8443/TCP HTTPS TLS
+    participant User as External User
+    participant Gateway as Gateway (Envoy)<br/>443/TCP HTTPS<br/>TLS 1.2+ Terminate
+    participant EnvoyFilter as EnvoyFilter<br/>ext_authz + Lua
+    participant AuthProxy as kube-auth-proxy<br/>8443/TCP HTTPS<br/>TLS (service-ca)
     participant OAuth as OpenShift OAuth /<br/>OIDC Provider<br/>443/TCP HTTPS
-    participant Upstream as Upstream Component<br/>(Dashboard, Registry, etc.)
+    participant Component as Component Backend<br/>(HTTPRoute target)
 
-    Note over Client,Upstream: Flow 1: Gateway Authentication (OAuth/OIDC)
+    Note over User,Component: Flow 1: User Request → Component via Gateway API
 
-    Client->>Route: HTTPS Request (443/TCP)<br/>TLS 1.2+
-    Route->>Gateway: Re-encrypt / Passthrough
-    Gateway->>EnvoyF: Request interception
-    EnvoyF->>AuthProxy: ext_authz check (8443/TCP)<br/>HTTPS, TLS (service-ca)
-    AuthProxy->>OAuth: OAuth2/OIDC auth (443/TCP)<br/>HTTPS, TLS 1.2+<br/>Client credentials
-    OAuth-->>AuthProxy: Token / Auth response
-    AuthProxy-->>EnvoyF: Allow/Deny + headers
-    EnvoyF-->>Gateway: Authorized request
-    Gateway->>Upstream: Forward with Bearer Token<br/>(Lua filter injects access token)
-    Upstream-->>Gateway: Response
-    Gateway-->>Client: HTTPS Response
+    User->>Gateway: HTTPS/443 Request<br/>TLS 1.2+ (terminate)
+    Gateway->>EnvoyFilter: ext_authz check<br/>8443/TCP HTTPS
+    EnvoyFilter->>AuthProxy: Forward for auth<br/>8443/TCP TLS (service-ca)
+    AuthProxy->>OAuth: OAuth2/OIDC validation<br/>443/TCP HTTPS TLS 1.2+
+    OAuth-->>AuthProxy: Auth response + tokens
+    AuthProxy-->>EnvoyFilter: Auth OK + user info
+    Note over EnvoyFilter: Lua script strips OAuth cookies,<br/>injects Bearer token in<br/>Authorization header
+    EnvoyFilter->>Component: Forward request<br/>Bearer Token injected
+    Component-->>Gateway: Response
+    Gateway-->>User: HTTPS Response
 
-    Note over Client,Upstream: Flow 2: Component Lifecycle (DSC → Component)
-
-    participant Admin as Cluster Admin
     participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant Webhook as DSC Webhook<br/>443/TCP HTTPS TLS
     participant DSCCtrl as DSC Controller
+    participant Webhook as Webhook Server<br/>9443/TCP HTTPS
     participant CompCtrl as Component Controller
-    participant Manifests as Kustomize Manifests<br/>(filesystem)
+    participant Manifests as Manifest Engine<br/>(Kustomize/Helm)
 
-    Admin->>K8sAPI: Create/Update DSC CR<br/>Bearer Token, TLS 1.2+
-    K8sAPI->>Webhook: Admission Review (443/TCP)<br/>HTTPS, Webhook client cert
-    Webhook-->>K8sAPI: Validated (singleton check,<br/>Kueue guard, v1/v2 migration)
-    K8sAPI-->>Admin: CR Created
-    K8sAPI->>DSCCtrl: Watch event
-    DSCCtrl->>K8sAPI: Create Component CR<br/>(e.g., Kserve, Dashboard)<br/>ServiceAccount token
-    K8sAPI->>CompCtrl: Watch event
-    CompCtrl->>Manifests: Render kustomize
-    Manifests-->>CompCtrl: Rendered resources
-    CompCtrl->>K8sAPI: Apply manifests (6443/TCP)<br/>HTTPS, ServiceAccount token
-    CompCtrl-->>DSCCtrl: Status update
+    Note over User,Manifests: Flow 2: DSC Reconciliation → Component Deployment
 
-    Note over Client,Upstream: Flow 3: Dashboard Redirect (Legacy URL)
+    User->>K8sAPI: Create/Update DSC CR<br/>6443/TCP HTTPS TLS 1.2+<br/>RBAC auth
+    K8sAPI->>Webhook: Validation + Defaulting<br/>9443/TCP HTTPS TLS (cert-manager)
+    Webhook-->>K8sAPI: Admitted (validated)
+    K8sAPI-->>DSCCtrl: Watch event (DSC changed)
+    DSCCtrl->>K8sAPI: Create Component CRs<br/>(Dashboard, KServe, etc.)<br/>6443/TCP ServiceAccount
+    K8sAPI-->>CompCtrl: Watch event (Component CR)
+    CompCtrl->>Manifests: Render manifests<br/>(local, in-process)
+    CompCtrl->>K8sAPI: Deploy resources<br/>(Deployments, Services, etc.)<br/>6443/TCP ServiceAccount
 
-    participant LegacyClient as Client (legacy URL)
-    participant LegacyRoute as OpenShift Route<br/>(legacy hostname)<br/>443/TCP Edge TLS
-    participant Nginx as dashboard-redirect nginx<br/>8080/TCP HTTP
-    participant NewGateway as Gateway (new hostname)<br/>443/TCP HTTPS
+    participant OTel as OpenTelemetry<br/>Collector
+    participant Prometheus as Prometheus<br/>(MonitoringStack)
+    participant Thanos as Thanos Querier<br/>10902/TCP
+    participant Perses as Perses<br/>Dashboard
 
-    LegacyClient->>LegacyRoute: HTTPS (443/TCP)<br/>Edge termination
-    LegacyRoute->>Nginx: HTTP (8080/TCP)<br/>No encryption
-    Nginx-->>LegacyClient: HTTP 301 Redirect<br/>→ new gateway hostname
-    LegacyClient->>NewGateway: HTTPS (443/TCP)<br/>TLS Terminate → OAuth/OIDC flow
+    Note over OTel,Perses: Flow 3: Monitoring Stack Data Collection
+
+    OTel->>Component: Scrape metrics<br/>varies HTTP/HTTPS<br/>ServiceAccount
+    OTel->>Prometheus: Push via OTLP<br/>HTTP TLS (webTLSConfig)<br/>Bearer Token
+    Prometheus->>Thanos: Federation<br/>10902/TCP HTTP<br/>In-cluster
+    Perses->>Thanos: Query metrics<br/>9091/9092 HTTPS<br/>TLS (CA ConfigMap)<br/>Bearer Token

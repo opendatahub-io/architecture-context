@@ -1,85 +1,85 @@
 graph TB
-    subgraph Internal["INTERNAL PLATFORM (RHOAI Namespace)"]
-        direction TB
-        DSPOperator["DSP Operator<br/>(image reference only)"]
-        DSPAPIServer["DSP API Server<br/>Creates Workflow CRs"]
+    subgraph External["EXTERNAL (Untrusted)"]
+        User["User / DSP API Client"]
+        Client["Client / Dashboard"]
+        Webhooks["GitHub / GitLab / Bitbucket<br/>Webhook Sources"]
     end
 
-    subgraph ControllerPlane["CONTROLLER PLANE"]
+    subgraph ClusterServices["CLUSTER SERVICES (Internal)"]
         direction TB
-        WC["workflow-controller<br/>SA: argo<br/>FIPS: strictfipsruntime<br/>Leader Election: Leases"]
 
-        subgraph Ports["Exposed Ports"]
-            Metrics["9090/TCP Metrics<br/>HTTP/HTTPS<br/>TLS 1.2+ (self-signed ECDSA P-256)<br/>Auth: None"]
-            Health["6060/TCP Health<br/>HTTP<br/>No Encryption<br/>Auth: None"]
-        end
-    end
-
-    subgraph DataPlane["DATA PLANE (Workflow Step Pods)"]
-        direction TB
-        subgraph StepPod["Workflow Step Pod"]
-            Init["argoexec (init)<br/>Downloads artifacts<br/>Stages scripts"]
-            Main["Main Container<br/>Executes step logic"]
-            Wait["argoexec (wait/emissary)<br/>Monitors execution<br/>Uploads artifacts"]
-            SharedVol["/var/run/argo/<br/>Shared Volume"]
+        subgraph NS_Argo["Namespace: {install-namespace}"]
+            ArgoServer["argo-server<br/>SA: argo-server<br/>ClusterIP :2746/TCP<br/>HTTPS TLS 1.2+<br/>Auth: Bearer/SSO/Webhook"]
+            WFController["workflow-controller<br/>SA: argo<br/>:9090 metrics (HTTP)<br/>:6060 health (HTTP)<br/>Leader election"]
         end
 
-        FIPSNote["WARNING: Default ENTRYPOINT<br/>uses non-FIPS binary<br/>Override to /bin/argoexec-fips<br/>for FIPS compliance"]
+        subgraph NS_Workflow["Namespace: {workflow-namespace}"]
+            ArgoExec["argoexec (sidecar)<br/>SA: {workflow-sa}<br/>No inbound ports<br/>FIPS: dual binary"]
+            WorkflowPod["Workflow Pod<br/>(user workload)"]
+        end
+
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Token"]
     end
 
-    subgraph K8sControl["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS (HTTP/2)<br/>TLS 1.2+<br/>Auth: SA tokens + RBAC"]
+    subgraph DatabaseTier["DATABASE TIER"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>SSL optional<br/>Username/Password"]
+        MySQL["MySQL / MariaDB<br/>3306/TCP<br/>TLS optional<br/>Username/Password"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        S3["S3/MinIO Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: AccessKey/SecretKey"]
-        DB["PostgreSQL/MariaDB<br/>5432/3306 TCP<br/>Optional SSL/TLS<br/>Auth: Secret user/pass"]
-        GCS["GCS (Optional)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: SA JSON key"]
-        Azure["Azure Blob (Optional)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Azure SDK creds"]
-        HDFS["HDFS (Optional)<br/>8020/TCP<br/>Optional Kerberos"]
+    subgraph ArtifactStorage["ARTIFACT STORAGE"]
+        S3["S3 / MinIO<br/>443 or 9000/TCP<br/>HTTPS TLS 1.2+<br/>Access Key/IAM Role"]
+        GCS["Google Cloud Storage<br/>443/TCP HTTPS<br/>SA Key/Workload Identity"]
+        Azure["Azure Blob Storage<br/>443/TCP HTTPS<br/>Account Key/SAS/WI"]
+    end
+
+    subgraph ExternalAuth["EXTERNAL AUTH"]
+        OIDC["OIDC Provider<br/>(Keycloak)<br/>443/TCP HTTPS<br/>Client ID/Secret"]
     end
 
     subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>Scrapes metrics"]
+        Prometheus["Prometheus"]
     end
 
-    %% Internal Platform flows
-    DSPOperator -.->|deploys| WC
-    DSPAPIServer -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>Creates Workflow CRs"| K8sAPI
+    %% External → Cluster flows
+    User -->|"HTTPS/6443<br/>TLS 1.2+<br/>Bearer Token"| K8sAPI
+    Client -->|"HTTPS/2746<br/>TLS 1.2+<br/>Bearer Token / SSO"| ArgoServer
+    Webhooks -->|"HTTPS/2746<br/>TLS 1.2+<br/>HMAC-SHA256"| ArgoServer
 
-    %% Controller egress
-    WC -->|"HTTPS/443 (HTTP/2)<br/>TLS 1.2+<br/>SA token<br/>Watch CRs, Create Pods,<br/>Leases, Events"| K8sAPI
-    WC -->|"TCP/5432 or 3306<br/>Optional SSL/TLS<br/>Secret user/pass<br/>Workflow archiving"| DB
+    %% Internal flows
+    ArgoServer -->|"HTTPS/6443<br/>TLS 1.2+<br/>Delegated Token"| K8sAPI
+    WFController -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    ArgoExec -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
 
-    %% Data plane flows
-    Init -->|"HTTPS/443<br/>TLS 1.2+<br/>Secret creds<br/>Download artifacts"| S3
-    Wait -->|"HTTPS/443<br/>TLS 1.2+<br/>Secret creds<br/>Upload artifacts"| S3
-    Wait -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>Patch annotations,<br/>Create TaskResult"| K8sAPI
-    Init -.-> SharedVol
-    SharedVol -.-> Main
-    Main -.-> Wait
+    %% Database flows
+    WFController -->|"TCP/5432<br/>SSL optional<br/>Username/Password"| PostgreSQL
+    ArgoServer -->|"TCP/5432<br/>SSL optional<br/>Username/Password"| PostgreSQL
+    WFController -.->|"TCP/3306<br/>TLS optional"| MySQL
+    ArgoServer -.->|"TCP/3306<br/>TLS optional"| MySQL
 
-    %% Optional storage
-    Init -.->|"HTTPS/443<br/>TLS 1.2+"| GCS
-    Init -.->|"HTTPS/443<br/>TLS 1.2+"| Azure
-    Init -.->|"TCP/8020"| HDFS
+    %% Artifact flows
+    ArgoExec -->|"HTTPS/9000<br/>TLS 1.2+<br/>Access Key/Secret"| S3
+    ArgoServer -->|"HTTPS/9000<br/>TLS 1.2+<br/>Access Key/Secret"| S3
+    ArgoExec -.->|"HTTPS/443<br/>TLS 1.2+"| GCS
+    ArgoExec -.->|"HTTPS/443<br/>TLS 1.2+"| Azure
 
-    %% Monitoring
-    Prometheus -->|"HTTP(S)/9090<br/>TLS 1.2+ default<br/>No auth"| Metrics
+    %% Auth flows
+    ArgoServer -->|"HTTPS/443<br/>TLS 1.2+<br/>Client ID/Secret"| OIDC
+
+    %% Monitoring flows
+    Prometheus -->|"HTTP/9090<br/>TLS optional"| WFController
+    Prometheus -->|"HTTPS/2746<br/>TLS 1.2+<br/>Auth optional"| ArgoServer
 
     %% Styling
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef controller fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef dataplane fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef k8s fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef external fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef monitoring fill:#f5f5f5,stroke:#666,stroke-width:1px
-    classDef warning fill:#fff3cd,stroke:#856404,stroke-width:2px
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef database fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef auth fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
-    class DSPOperator,DSPAPIServer internal
-    class WC,Metrics,Health controller
-    class Init,Main,Wait,SharedVol dataplane
-    class K8sAPI k8s
-    class S3,DB,GCS,Azure,HDFS external
+    class User,Client,Webhooks external
+    class ArgoServer,WFController,ArgoExec,WorkflowPod,K8sAPI cluster
+    class PostgreSQL,MySQL database
+    class S3,GCS,Azure storage
+    class OIDC auth
     class Prometheus monitoring
-    class FIPSNote warning

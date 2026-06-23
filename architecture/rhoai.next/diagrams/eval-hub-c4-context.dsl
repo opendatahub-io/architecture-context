@@ -1,54 +1,66 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Creates and runs LLM evaluations via Dashboard or CLI"
-        aiagent = person "AI Agent" "Programmatically submits evaluations and queries results via MCP"
+        // Actors
+        datascientist = person "Data Scientist" "Creates and runs LLM evaluation jobs via Dashboard or CLI"
+        aiagent = person "AI Agent" "Claude, Cursor, or VS Code Copilot — invokes evaluations via MCP protocol"
 
-        evalhub = softwareSystem "Eval Hub" "Centralized evaluation orchestration service for running LLM benchmarks as Kubernetes Jobs" {
-            apiserver = container "eval-hub API" "REST API for evaluation job management, provider/collection CRUD, auth middleware" "Go Service, 8080/TCP"
-            sidecar = container "eval-runtime-sidecar" "Reverse proxy sidecar in evaluation job pods; injects auth for eval-hub, MLflow, OCI" "Go HTTP Proxy, KEP-753 native sidecar"
-            initcontainer = container "eval-runtime-init" "Init container that downloads test data from S3 before evaluation" "Go CLI"
-            mcpserver = container "evalhub-mcp" "MCP server exposing eval-hub capabilities as AI-consumable tools and resources" "Go MCP Server, 3001/TCP"
-            configloader = container "Config Loader" "Hot-reloads provider/collection YAML from ConfigMaps via fsnotify" "Go (embedded in API)"
+        // Main System
+        evalhub = softwareSystem "EvalHub" "Lightweight REST API service for orchestrating LLM evaluations across multiple backends, tracking experiments, and running natively on OpenShift" {
+            apiServer = container "eval-hub API Server" "HTTP REST API for evaluation orchestration, provider/collection management, and job lifecycle" "Go Service, 8080/TCP"
+            kubeRbacProxy = container "kube-rbac-proxy" "Authentication/authorization sidecar; validates Bearer tokens and sets X-Tenant + X-User headers" "Sidecar, 8443/TCP"
+            k8sRuntime = container "K8s Runtime" "Creates and manages Kubernetes Jobs, ConfigMaps, and Secrets for evaluation workloads" "Go Component"
+            storage = container "Storage Layer" "Persistent storage for jobs, providers, and collections with tenant-scoped multi-tenancy" "SQLite / PostgreSQL"
+            configWatcher = container "Config Watcher" "Watches provider/collection YAML files for live reloads via fsnotify" "Go Component"
+            mcpServer = container "evalhub-mcp" "Model Context Protocol server for AI agent integration; exposes tools, resources, and workflow prompts" "Go Service, 3001/TCP"
+            sidecar = container "eval-runtime-sidecar" "Reverse proxy sidecar in evaluation job pods; proxies eval-hub, MLflow, OCI, and model traffic with credential injection" "Go Sidecar (KEP-753)"
+            initContainer = container "eval-runtime-init" "Init container that downloads test data from S3-compatible storage" "Go Init Container"
         }
 
-        k8s = softwareSystem "Kubernetes API Server" "Manages Jobs, ConfigMaps, TokenReview, SubjectAccessReview" "External"
-        postgresql = softwareSystem "PostgreSQL" "Persistent storage for evaluations, providers, collections" "External"
-        mlflow = softwareSystem "MLflow Tracking Server" "Experiment creation and evaluation result tracking" "Internal RHOAI"
-        s3 = softwareSystem "S3-compatible Storage" "Test data download for evaluation benchmarks" "External"
-        ociregistry = softwareSystem "OCI Registry (Quay)" "Evaluation artifact export" "External"
-        otel = softwareSystem "OTEL Collector" "Distributed tracing and metrics export" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics scraping" "External"
-        kueue = softwareSystem "Kueue" "Optional job queue management" "Internal RHOAI"
-        rhoaioperator = softwareSystem "RHOAI Operator" "Deploys and manages eval-hub lifecycle" "Internal RHOAI"
-        serviceca = softwareSystem "OpenShift Service CA" "Internal TLS certificate authority" "External"
+        // Internal Platform Dependencies
+        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Deploys and manages eval-hub via EvalHub CR; creates ServiceAccount, RBAC, ConfigMaps, kube-rbac-proxy sidecar" "Internal RHOAI"
+        dashboard = softwareSystem "RHOAI Dashboard" "Web UI for submitting and monitoring evaluation jobs" "Internal RHOAI"
+        hardwareProfile = softwareSystem "HardwareProfile CRD" "Defines GPU/resource profiles for evaluation job pods (infrastructure.opendatahub.io/v1)" "Internal RHOAI"
+        kueue = softwareSystem "Kueue" "Optional workload queue management for GPU scheduling via ResourceFlavor admission" "Internal Platform"
 
-        lmeval = softwareSystem "LM Evaluation Harness" "Evaluation runtime adapter for language model benchmarks" "Eval Runtime"
-        lighteval = softwareSystem "Lighteval" "Lightweight evaluation runtime adapter" "Eval Runtime"
-        garak = softwareSystem "Garak" "Security evaluation runtime adapter" "Eval Runtime"
-        guidellm = softwareSystem "GuideLLM" "Performance evaluation runtime adapter" "Eval Runtime"
+        // External Dependencies
+        k8sApi = softwareSystem "Kubernetes API" "Cluster API server for Job, ConfigMap, Secret CRUD" "External"
+        mlflow = softwareSystem "MLflow Tracking Server" "Experiment creation, workspace management, and run tracking" "External"
+        s3Storage = softwareSystem "S3-compatible Storage" "Object storage for test data files referenced by benchmarks" "External"
+        ociRegistry = softwareSystem "OCI Registry" "Container/artifact registry for evaluation result export" "External"
+        modelEndpoint = softwareSystem "Model Inference Endpoint" "LLM model serving endpoints evaluated by benchmark frameworks" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection system" "External"
+        otelCollector = softwareSystem "OTEL Collector" "Distributed tracing, metrics, and logs collection" "External"
+        serviceCaOp = softwareSystem "OpenShift service-ca Operator" "Provides service-serving CA certificates via ConfigMap" "External"
 
-        datascientist -> evalhub "Submits evaluations, manages providers/collections" "HTTPS/8080, Bearer Token"
-        aiagent -> mcpserver "Submits evaluations, queries status via MCP" "HTTP/3001 or stdio"
+        // Relationships — Actors
+        datascientist -> evalhub "Submits evaluation jobs via HTTPS/8443" "HTTPS, Bearer Token"
+        datascientist -> dashboard "Uses web UI to submit evaluations"
+        aiagent -> mcpServer "Invokes evaluation tools via MCP protocol" "MCP JSON-RPC, stdio/HTTP"
 
-        mcpserver -> apiserver "Forwards MCP tool calls to REST API" "HTTPS/8080"
-        apiserver -> k8s "Creates/deletes Jobs and ConfigMaps; TokenReview; SAR" "HTTPS/443, SA token"
-        apiserver -> postgresql "Stores evaluation records, providers, collections" "SQL/5432, Password"
-        apiserver -> mlflow "Creates experiments for evaluation tracking" "HTTPS, Bearer token"
-        apiserver -> otel "Exports traces and metrics" "OTLP/4317-4318"
+        // Relationships — Internal containers
+        kubeRbacProxy -> apiServer "Forwards authenticated requests" "HTTP/8080, X-Tenant + X-User"
+        apiServer -> k8sRuntime "Delegates job creation"
+        apiServer -> storage "Reads/writes evaluation data"
+        configWatcher -> apiServer "Notifies config changes"
+        mcpServer -> apiServer "REST API calls" "HTTP/HTTPS"
+        k8sRuntime -> k8sApi "Creates Jobs, ConfigMaps, Secrets" "HTTPS/443, SA Token"
+        sidecar -> kubeRbacProxy "Reports job status" "HTTPS/8443, SA Token"
+        sidecar -> mlflow "Tracks experiments" "HTTPS, SA Projected Token"
+        sidecar -> ociRegistry "Pushes artifacts" "HTTPS/443, Docker v2 Bearer"
+        sidecar -> modelEndpoint "Model inference with credential injection" "HTTPS, API Key"
+        initContainer -> s3Storage "Downloads test data" "HTTPS/443, AWS IAM"
 
-        initcontainer -> s3 "Downloads test data files" "HTTPS/443, AWS credentials"
+        // Relationships — Platform
+        trustyaiOperator -> evalhub "Manages via EvalHub CR (trustyai.opendatahub.io/v1alpha1)"
+        dashboard -> evalhub "Submits jobs via API"
+        k8sRuntime -> hardwareProfile "Reads GPU/resource profiles" "HTTPS/443"
+        k8sRuntime -> kueue "Labels Jobs for queue-based GPU scheduling" "Label: kueue.x-k8s.io/queue-name"
 
-        sidecar -> apiserver "Forwards status updates from eval adapter" "HTTPS/8080, SA token"
-        sidecar -> mlflow "Forwards experiment tracking calls" "HTTPS, Projected SA token (1h)"
-        sidecar -> ociregistry "Forwards artifact push requests" "HTTPS/443, Docker config"
-
-        rhoaioperator -> evalhub "Deploys, configures, manages lifecycle"
-        prometheus -> apiserver "Scrapes /metrics endpoint" "HTTP(S)/8080"
-
-        apiserver -> lmeval "Creates K8s Job with adapter container"
-        apiserver -> lighteval "Creates K8s Job with adapter container"
-        apiserver -> garak "Creates K8s Job with adapter container"
-        apiserver -> guidellm "Creates K8s Job with adapter container"
+        // Relationships — External
+        apiServer -> mlflow "Creates experiments, manages workspaces" "HTTP/HTTPS, Bearer Token"
+        prometheus -> apiServer "Scrapes metrics" "HTTP/8081"
+        apiServer -> otelCollector "Exports traces, metrics, logs" "gRPC/HTTP"
+        serviceCaOp -> evalhub "Provides CA certificate ConfigMap"
     }
 
     views {
@@ -71,13 +83,22 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Eval Runtime" {
-                background #e8e8e8
+            element "Internal Platform" {
+                background #50e3c2
                 color #333333
             }
             element "Person" {
-                background #f5a623
-                shape Person
+                shape person
+                background #4a90e2
+                color #ffffff
+            }
+            element "Software System" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Container" {
+                background #438dd5
+                color #ffffff
             }
         }
     }

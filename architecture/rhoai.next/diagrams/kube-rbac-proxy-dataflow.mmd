@@ -1,64 +1,61 @@
 sequenceDiagram
-    autonumber
-
     participant Client as External Client
-    participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
+    participant KRP as kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS 1.2+
     participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS
-    participant Upstream as Upstream Application<br/>8080/TCP HTTP localhost
+    participant Upstream as Upstream Application<br/>8081/TCP HTTP<br/>(localhost)
 
-    rect rgb(240, 248, 255)
-        Note over Client,Upstream: Flow 1: Authenticated Request Proxying
-        Client->>Proxy: HTTPS/8443 Request<br/>Auth: Bearer Token / mTLS / OIDC JWT
-        Note right of Proxy: Path Filter checks<br/>--allow-paths / --ignore-paths
+    Note over Client,Upstream: Flow 1: Authenticated Request Proxying
 
-        alt Path matches --ignore-paths
-            Proxy->>Upstream: HTTP/8080 Forward (bypass auth)<br/>No encryption (localhost)
-            Upstream-->>Proxy: Response
-            Proxy-->>Client: HTTPS Response
-        else Path requires auth
-            Proxy->>K8sAPI: POST /apis/authentication.k8s.io/v1/tokenreviews<br/>Auth: ServiceAccount Token<br/>HTTPS/443 TLS 1.2+
-            K8sAPI-->>Proxy: TokenReview Response<br/>(authenticated: true/false, user info)
+    Client->>KRP: HTTPS Request<br/>Port: 8443/TCP<br/>Auth: Bearer Token / OIDC JWT / X.509 cert<br/>Encryption: TLS 1.2+
 
-            alt Authentication failed
-                Proxy-->>Client: 401 Unauthorized
-            else Authentication succeeded
-                Note right of Proxy: Build ResourceAttributes<br/>from Format1 or Format2 config
-                Proxy->>K8sAPI: POST /apis/authorization.k8s.io/v1/subjectaccessreviews<br/>Auth: ServiceAccount Token<br/>HTTPS/443 TLS 1.2+
-                K8sAPI-->>Proxy: SubjectAccessReview Response<br/>(allowed: true/false)
+    Note over KRP: Step 1: TLS termination
 
-                alt Authorization denied
-                    Proxy-->>Client: 403 Forbidden
-                else Authorization granted
-                    Note right of Proxy: Inject headers:<br/>x-remote-user<br/>x-remote-groups<br/>x-remote-extra-*
-                    Proxy->>Upstream: HTTP/8080 Forward<br/>+ auth headers<br/>No encryption (localhost)
-                    Upstream-->>Proxy: Response
-                    Proxy-->>Client: HTTPS Response
-                end
-            end
-        end
+    Note over KRP: Step 2: Authentication<br/>(WithAuthentication filter)
+
+    alt Bearer Token Authentication
+        KRP->>K8sAPI: POST /apis/authentication.k8s.io/v1/tokenreviews<br/>Port: 443/TCP<br/>Auth: Service Account Token<br/>Encryption: TLS 1.2+
+        K8sAPI-->>KRP: TokenReview Response<br/>(authenticated: true/false, user info)
+    else OIDC JWT Authentication
+        Note over KRP: Validate JWT locally<br/>against cached JWKS<br/>(fetched from OIDC issuer)
+    else X.509 Client Certificate
+        Note over KRP: Validate client cert<br/>against configured CA
     end
 
-    rect rgb(255, 248, 240)
-        Note over Client,Upstream: Flow 2: Prometheus Metrics Scraping (Hardcoded Allow)
-        participant Prom as Prometheus<br/>openshift-monitoring<br/>prometheus-k8s SA
+    Note over KRP: Step 3: Authorization<br/>(WithAuthorization filter)
 
-        Prom->>Proxy: GET /metrics HTTPS/8443<br/>Auth: Bearer Token (prometheus-k8s SA)<br/>TLS 1.2+
-        Note right of Proxy: TokenReview authenticates SA
-        Proxy->>K8sAPI: POST TokenReview<br/>HTTPS/443
-        K8sAPI-->>Proxy: Authenticated:<br/>system:serviceaccount:openshift-monitoring:prometheus-k8s
-        Note right of Proxy: Hardcoded Authorizer:<br/>Always ALLOW prometheus-k8s<br/>for GET /metrics<br/>(skips SAR check)
-        Proxy->>Upstream: GET /metrics HTTP/8080<br/>localhost, no auth
-        Upstream-->>Proxy: Metrics Response
-        Proxy-->>Prom: HTTPS Metrics Response
+    alt Hardcoded Metrics Path
+        Note over KRP: prometheus-k8s SA + GET /metrics<br/>→ Hardcoded ALLOW (no API call)
+    else Static Authorization Rules
+        Note over KRP: Check static rules<br/>(if configured)
+    else SubjectAccessReview
+        KRP->>K8sAPI: POST /apis/authorization.k8s.io/v1/subjectaccessreviews<br/>Port: 443/TCP<br/>Auth: Service Account Token<br/>Encryption: TLS 1.2+<br/>(Format1: resourceAttributes + rewrites<br/> or Format2: endpoint rules)
+        K8sAPI-->>KRP: SubjectAccessReview Response<br/>(allowed: true/false)
     end
 
-    rect rgb(240, 255, 240)
-        Note over Client,Upstream: Flow 3: OIDC Authentication (Alternative)
-        Client->>Proxy: HTTPS/8443 Request<br/>Auth: Bearer JWT (OIDC)
-        Note right of Proxy: OIDC Authenticator:<br/>Validates JWT via issuer discovery<br/>Extracts username/groups from claims
-        Proxy->>K8sAPI: POST SubjectAccessReview<br/>HTTPS/443 (user from JWT claims)
-        K8sAPI-->>Proxy: Authorization Decision
-        Proxy->>Upstream: HTTP/8080 Forward<br/>+ auth headers from JWT claims
-        Upstream-->>Proxy: Response
-        Proxy-->>Client: HTTPS Response
-    end
+    Note over KRP: Step 4: Set auth headers<br/>(WithAuthHeaders filter)<br/>X-Remote-User, X-Remote-Groups
+
+    KRP->>Upstream: HTTP Request<br/>Port: 8081/TCP<br/>Auth: None (or mTLS)<br/>Encryption: Plaintext (localhost)<br/>Headers: X-Remote-User, X-Remote-Groups
+
+    Upstream-->>KRP: HTTP Response
+
+    KRP-->>Client: HTTPS Response<br/>Port: 8443/TCP<br/>Encryption: TLS 1.2+
+
+    Note over Client,Upstream: Flow 2: Prometheus Metrics Scraping
+
+    participant Prom as prometheus-k8s SA<br/>(openshift-monitoring)
+
+    Prom->>KRP: GET /metrics<br/>Port: 8443/TCP<br/>Auth: SA Bearer Token<br/>Encryption: TLS 1.2+
+
+    Note over KRP: TokenReview authenticates SA
+
+    KRP->>K8sAPI: POST TokenReview<br/>Port: 443/TCP
+
+    K8sAPI-->>KRP: Authenticated as<br/>system:serviceaccount:<br/>openshift-monitoring:prometheus-k8s
+
+    Note over KRP: Hardcoded Authorizer:<br/>ALLOW (fast-path,<br/>no SAR needed)
+
+    KRP->>Upstream: GET /metrics<br/>Port: 8081/TCP<br/>Plaintext (localhost)
+
+    Upstream-->>KRP: Metrics Response<br/>(Prometheus format)
+
+    KRP-->>Prom: HTTPS Response<br/>Port: 8443/TCP<br/>TLS 1.2+

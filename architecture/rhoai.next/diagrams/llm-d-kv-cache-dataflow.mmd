@@ -1,38 +1,48 @@
 sequenceDiagram
-    participant vLLM as vLLM Pod<br/>5557/TCP ZMQ
-    participant ZMQ as ZMQ SUB Pool<br/>(kvevents.Pool)<br/>FNV-1a sharded
-    participant Adapter as Engine Adapter<br/>(vLLM/SGLang)
-    participant TokenProc as Token Processor<br/>(FNV-64a CBOR)
-    participant Index as Block Index<br/>(LRU/Ristretto/Redis)
-    participant UDS as UDS Tokenizer<br/>UDS gRPC Sidecar
-    participant EPP as llm-d EPP<br/>(Inference Scheduler)
-    participant Scorer as Block Scorer
+    autonumber
+
+    participant vLLM as vLLM/SGLang Engine<br/>5557/TCP ZMQ PUB
+    participant ZMQ as zmqSubscriber<br/>ZMQ SUB
+    participant Pool as kvevents.Pool<br/>Sharded Workers
+    participant Adapter as EngineAdapter<br/>(vLLM/SGLang)
+    participant Index as kvblock.Index<br/>(LRU/Ristretto/Redis)
+    participant EPP as llm-d EPP<br/>(Host Process)
+    participant Indexer as kvcache.Indexer
+    participant TP as TokenProcessor<br/>FNV-64a/CBOR
+    participant UDS as uds_tokenizer<br/>UDS gRPC
     participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant FS as Shared Storage<br/>(PVC / S3)
 
-    Note over vLLM,Index: Flow 1: KV-Event Ingestion (Write Path)
-    vLLM->>ZMQ: BlockStored / BlockRemoved<br/>ZMQ PUB 5557/TCP (msgpack)
-    ZMQ->>Adapter: Route to shard worker<br/>(FNV-1a hash of pod ID)
-    Adapter->>TokenProc: Parse event, extract tokens
-    TokenProc->>Index: Update block residency<br/>(in-process or Redis 6379/TCP)
+    rect rgb(230, 245, 255)
+        Note over vLLM,Index: Flow 1: KV-Event Ingestion (Write Path)
+        vLLM->>ZMQ: BlockStored / BlockRemoved / AllBlocksCleared<br/>ZMQ PUB/SUB 5557/TCP (msgpack)
+        ZMQ->>Pool: Raw event dispatch<br/>FNV-1a shard by pod ID
+        Pool->>Adapter: Parse engine-specific event
+        Adapter->>Index: Add / Evict / Clear blocks<br/>engineKey to requestKey mapping
+    end
 
-    Note over EPP,Scorer: Flow 2: Pod Scoring (Read Path)
-    EPP->>EPP: Receive inference request
-    EPP->>UDS: Tokenize prompt<br/>gRPC over UDS
-    UDS->>UDS: Apply chat template<br/>(vLLM renderer)
-    UDS-->>EPP: Token IDs + offsets
-    EPP->>TokenProc: Hash token blocks<br/>(chained FNV-64a over CBOR)
-    TokenProc->>Index: Lookup block residency<br/>(per-pod cache hits)
-    Index-->>TokenProc: Block locations per pod
-    TokenProc->>Scorer: Score pods by prefix match
-    Scorer-->>EPP: Ranked pod list<br/>(cache-hit scores)
+    rect rgb(255, 245, 230)
+        Note over EPP,TP: Flow 2: Pod Scoring (Read Path)
+        EPP->>Indexer: ScoreTokens(tokens, podSet)<br/>In-process Go API
+        Indexer->>TP: Compute block keys<br/>FNV-64a over CBOR tokens
+        TP-->>Indexer: Block key sequence
+        Indexer->>Index: Lookup(blockKeys, podSet)
+        Index-->>Indexer: Per-pod hit counts
+        Indexer-->>EPP: Scored pod rankings<br/>(sub-millisecond latency)
+    end
 
-    Note over UDS,HF: Flow 3: Tokenizer Initialization
-    UDS->>HF: Download tokenizer model<br/>HTTPS 443/TCP, Bearer HF_TOKEN
-    HF-->>UDS: Tokenizer files
-    UDS->>UDS: InitializeTokenizer<br/>(load model + renderer)
+    rect rgb(230, 255, 230)
+        Note over EPP,HF: Flow 3: Tokenization (Sidecar)
+        EPP->>UDS: RenderChatCompletion(request)<br/>gRPC over UDS (no encryption)
+        Note over UDS: First request for model
+        UDS->>HF: Download tokenizer files<br/>HTTPS 443/TCP, TLS 1.2+, Bearer Token
+        HF-->>UDS: Tokenizer model artifacts
+        UDS-->>EPP: Token IDs + multimodal features<br/>gRPC response over UDS
+    end
 
-    Note over vLLM,FS: Flow 4: KV-Cache Offloading (fs-backend)
-    vLLM->>vLLM: KV blocks in GPU memory
-    vLLM->>FS: Offload blocks<br/>POSIX I/O / GDS / NIXL S3<br/>(hash-partitioned directories)
-    FS-->>vLLM: Load cached blocks<br/>(content-addressable lookup)
+    rect rgb(255, 230, 255)
+        Note over vLLM,HF: Flow 4: KV-Cache Offloading
+        Note over vLLM: llmd_fs_backend plugin<br/>(in-process)
+        vLLM->>vLLM: GPU to CPU staging<br/>CUDA memcpy (async batch)
+        vLLM->>vLLM: CPU to Shared Storage<br/>POSIX I/O or S3 HTTPS/443
+        vLLM-->>ZMQ: ZMQ PUB event (optional)<br/>Block offloaded notification
+    end

@@ -1,87 +1,86 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Defines RAG templates, search spaces, and runs optimization experiments"
-        mlEngineer = person "ML Engineer" "Integrates ai4rag into Kubeflow Pipelines for automated RAG optimization"
+        dataScientist = person "Data Scientist" "Defines RAG templates, benchmark data, and search space parameters for optimization"
+        kfpPipeline = softwareSystem "Kubeflow Pipelines" "Orchestrates ML workflows including RAG optimization steps" "Internal RHOAI"
 
-        ai4rag = softwareSystem "ai4rag" "Provider-agnostic RAG hyperparameter optimization engine (Python library)" {
-            experiment = container "AI4RAGExperiment" "Orchestrates the full optimization loop: random exploration then GAM-guided search" "Python"
-            mps = container "ModelsPreSelector" "Pre-selects top-N foundation model / embedding model pairs before main optimization" "Python"
-            gamOptimizer = container "GAMOptimizer" "Bayesian-style optimization using Generalized Additive Models (pygam)" "Python"
-            searchSpace = container "AI4RAGSearchSpace" "Constraint-based hyperparameter space definition and pruning" "Python"
-            ragTemplate = container "SimpleRAGTemplate" "End-to-end RAG pipeline: chunk, embed, store, retrieve, generate" "Python"
-            evaluator = container "UnitxtEvaluator" "Evaluates RAG quality: answer correctness, faithfulness, context correctness" "Python"
-            eventHandler = container "EventHandler" "Emits experiment events (KFPEventHandler for pipelines, LocalEventHandler for dev)" "Python"
+        ai4rag = softwareSystem "ai4rag" "Provider-agnostic RAG optimization engine that finds optimal hyperparameters for RAG pipelines via automated experimentation" {
+            experimentEngine = container "AI4RAGExperiment" "Orchestrates the full optimization lifecycle: pre-selection, HPO loop, evaluation" "Python"
+            modelsPreSelector = container "ModelsPreSelector" "Pre-screens foundation and embedding models on sample data to narrow search space" "Python"
+            gamOptimizer = container "GAMOptimizer" "Uses Generalized Additive Models to predict promising parameter combinations" "Python / pygam"
+            randomOptimizer = container "RandomOptimizer" "Baseline random search optimizer for comparison" "Python"
+            searchSpace = container "AI4RAGSearchSpace" "Defines parameter space with constraint rules (chunk size, overlap, search mode consistency)" "Python / pydantic"
+            ragTemplate = container "SimpleRAGTemplate" "Executes single RAG evaluation: chunk → embed → store → retrieve → generate → evaluate" "Python"
+            retriever = container "Retriever" "Performs similarity and hybrid search against vector stores" "Python"
+            chunker = container "LangChainChunker" "Splits documents using RecursiveCharacterTextSplitter" "Python / langchain"
+            evaluator = container "UnitxtEvaluator" "Computes RAG quality metrics: faithfulness, answer correctness, context correctness" "Python / unitxt"
+            ogxProviders = container "OGX Provider Layer" "OGXFoundationModel, OGXEmbeddingModel, OGXVectorStore — abstractions over OGX API" "Python / ogx-client"
+            chromaStore = container "ChromaDB Vector Store" "In-memory vector store for models pre-selection and local experiments" "Python / langchain-chroma"
+            eventHandler = container "EventHandler" "Emits experiment progress events (LocalEventHandler, KFPEventHandler)" "Python"
         }
 
-        ogxServer = softwareSystem "OGX Server" "Unified API for embeddings, vector stores, and foundation model inference (formerly Llama Stack)" "External"
-        chromadb = softwareSystem "ChromaDB" "In-memory vector store for local development and MPS pre-selection" "In-Process"
-        kfp = softwareSystem "Kubeflow Pipelines" "Pipeline orchestration platform for ML workflows" "Internal RHOAI"
-        unitxt = softwareSystem "Unitxt" "IBM evaluation framework for NLP metrics with confidence intervals" "External Library"
-        pygam = softwareSystem "pygam" "Generalized Additive Models library for optimization" "External Library"
-        langchain = softwareSystem "LangChain" "Document handling and text splitting framework" "External Library"
+        ogxServer = softwareSystem "OGX Server" "Foundation model inference, embedding generation, and vector store operations (Milvus, Qdrant)" "External"
+        chromaDB = softwareSystem "ChromaDB" "In-memory vector database for local experiments" "Embedded"
 
-        # Relationships - Users
-        datascientist -> ai4rag "Defines RAG templates and runs search() via Python API"
-        mlEngineer -> ai4rag "Integrates into Kubeflow Pipeline steps"
+        # User interactions
+        dataScientist -> ai4rag "Defines search space, provides documents & benchmarks" "Python API"
+        kfpPipeline -> ai4rag "Invokes as pipeline component" "Python API"
 
-        # Relationships - Internal
-        experiment -> mps "Pre-selects models before main loop"
-        experiment -> gamOptimizer "Requests next configuration, updates with observations"
-        experiment -> searchSpace "Generates valid parameter combinations"
-        experiment -> ragTemplate "Instantiates and evaluates RAG patterns"
-        experiment -> evaluator "Scores predictions against references"
-        experiment -> eventHandler "Emits pattern results and status events"
+        # Internal flows
+        experimentEngine -> modelsPreSelector "Pre-selects top models"
+        experimentEngine -> gamOptimizer "Runs GAM-based HPO"
+        experimentEngine -> randomOptimizer "Runs random search HPO"
+        experimentEngine -> ragTemplate "Evaluates single RAG configuration"
+        experimentEngine -> searchSpace "Iterates parameter combinations"
+        experimentEngine -> evaluator "Computes quality metrics"
+        experimentEngine -> eventHandler "Emits progress events"
+        ragTemplate -> chunker "Splits documents"
+        ragTemplate -> retriever "Retrieves relevant chunks"
+        ragTemplate -> ogxProviders "Generates answers, embeds text"
+        retriever -> ogxProviders "Queries vector store"
+        modelsPreSelector -> chromaStore "Uses for quick local evaluation"
+        modelsPreSelector -> evaluator "Evaluates model pairs"
+        eventHandler -> kfpPipeline "Streams results via KFPEventHandler" "Python API"
 
-        # Relationships - External
-        ai4rag -> ogxServer "Embeddings, vector store CRUD, chat completions" "HTTPS/TLS 1.2+, API Key (Bearer)"
-        ai4rag -> chromadb "In-memory vector storage for dev and MPS" "In-process Python API"
-        ai4rag -> kfp "Streams experiment status via KFPEventHandler" "In-process Python API"
-        ai4rag -> unitxt "RAG evaluation metrics" "In-process Python API"
-        ai4rag -> pygam "GAM model training and prediction" "In-process Python API"
-        ai4rag -> langchain "Document handling and text splitting" "In-process Python API"
+        # External flows
+        ogxProviders -> ogxServer "Chat completions, embeddings, vector store CRUD" "HTTPS/TLS, API Key (Bearer)"
+        searchSpace -> ogxServer "Auto-discover available models" "HTTPS/TLS, API Key (Bearer)"
     }
 
     views {
         systemContext ai4rag "SystemContext" {
             include *
             autoLayout
-            description "ai4rag in the context of the RHOAI platform and external services"
         }
 
         container ai4rag "Containers" {
             include *
             autoLayout
-            description "Internal structure of the ai4rag optimization engine"
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
-            }
-            element "External Library" {
-                background #bbbbbb
-                color #333333
-            }
-            element "In-Process" {
-                background #bbbbbb
-                color #333333
             }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
+            element "Embedded" {
+                background #b8d4e3
+                color #333333
+            }
             element "Person" {
-                shape Person
-                background #08427B
+                shape person
+                background #4a90e2
+                color #ffffff
+            }
+            element "Software System" {
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {
-                background #438DD5
+                background #438dd5
                 color #ffffff
             }
         }

@@ -1,54 +1,58 @@
 sequenceDiagram
-    participant User as User / Client
-    participant LLS as Llama Stack Server<br/>8321/TCP HTTP
-    participant Inline as GarakInlineEvalAdapter
-    participant Remote as GarakRemoteEvalAdapter
-    participant KFP as Kubeflow Pipelines API<br/>443/TCP HTTPS
-    participant KFPPod as KFP Pipeline Pod
-    participant Target as Target Model (vLLM)<br/>443/TCP HTTPS
-    participant FilesAPI as Llama Stack Files API
+    participant EvalHub as eval-hub Service
+    participant Adapter as Garak Adapter Pod
+    participant Sidecar as eval-hub Sidecar<br/>(localhost HTTP)
+    participant KFP as KFP API Server<br/>443/TCP HTTPS
     participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant EvalHub as Eval-Hub Service
-    participant Adapter as GarakAdapter Pod
+    participant SDGModel as SDG Model<br/>443/TCP HTTPS
+    participant Target as Target Model<br/>443/TCP HTTPS
+    participant Judge as Judge Model<br/>443/TCP HTTPS
+    participant Attacker as Attacker Model<br/>443/TCP HTTPS
     participant OCI as OCI Registry<br/>443/TCP HTTPS
+    participant MLflow as MLflow<br/>443/TCP HTTPS
 
-    Note over User, FilesAPI: Flow 1: Inline Scan Execution (Llama Stack)
-    User->>LLS: POST /eval/run_benchmark<br/>Auth: Llama Stack auth
-    LLS->>Inline: invoke eval provider (local)
-    Inline->>Inline: garak subprocess<br/>(asyncio semaphore)
-    Inline->>Target: POST /v1/completions<br/>Auth: API Key
-    Target-->>Inline: Model response
-    Inline->>FilesAPI: Upload artifacts (local)<br/>Reports, JSONL, HTML
-    Inline-->>LLS: EvalResult (scores, artifacts)
-    LLS-->>User: Benchmark results
+    Note over EvalHub,Adapter: Flow 1: Simple Mode Scan
+    EvalHub->>Adapter: Create K8s Job<br/>(JobSpec via ConfigMap mount)
+    Adapter->>Sidecar: Status: INITIALIZING<br/>(HTTP plaintext)
+    Adapter->>Adapter: Resolve config, build command
+    Adapter->>Sidecar: Status: RUNNING_EVALUATION
+    Adapter->>Target: Garak probes (subprocess)<br/>POST /v1/chat/completions<br/>Auth: Bearer Token, TLS 1.2+
+    Target-->>Adapter: Model responses
+    Adapter->>Adapter: Parse results (JSONL/AVID)<br/>Compute ASR/TBSA metrics
+    Adapter->>Sidecar: Status: POST_PROCESSING
+    Adapter->>OCI: Upload scan artifacts<br/>Auth: Registry creds, TLS 1.2+
+    Adapter->>MLflow: Log metrics & artifacts<br/>Auth: Bearer Token, TLS 1.2+
+    Adapter->>Sidecar: Final results + Status: COMPLETE
 
-    Note over User, FilesAPI: Flow 2: Remote KFP Scan Execution (Llama Stack)
-    User->>LLS: POST /eval/run_benchmark<br/>Auth: Llama Stack auth
-    LLS->>Remote: invoke eval provider
-    Remote->>KFP: Create pipeline run<br/>Auth: Bearer Token (SA)
-    KFP->>KFPPod: Schedule 4-step pipeline
-    KFPPod->>Target: POST /v1/completions<br/>Auth: API Key (from Secret)
-    Target-->>KFPPod: Model response
-    KFPPod->>FilesAPI: Upload artifacts<br/>Auth: None (in-cluster)
-    loop Poll for completion
-        User->>LLS: GET /eval/job_status
-        LLS->>Remote: check status
-        Remote->>KFP: GET /apis/v2beta1/runs/{id}<br/>Auth: Bearer Token
-        KFP-->>Remote: Run status
-        Remote-->>LLS: Job status
-        LLS-->>User: Status response
-    end
+    Note over EvalHub,Adapter: Flow 2: KFP Mode Scan
+    EvalHub->>Adapter: Create K8s Job<br/>(JobSpec via ConfigMap mount)
+    Adapter->>Sidecar: Status: INITIALIZING
+    Adapter->>KFP: Submit 6-step pipeline<br/>Auth: SA Token, TLS 1.2+
+    KFP-->>Adapter: Pipeline run ID
 
-    Note over EvalHub, OCI: Flow 3: Eval-Hub KFP Scan Execution
-    EvalHub->>Adapter: Launch Job Pod<br/>ConfigMap mount (JobSpec)
-    Adapter->>KFP: Create 6-step pipeline run<br/>Auth: SA Token
-    KFP->>KFPPod: Schedule pipeline
-    KFPPod->>KFPPod: validate → resolve_taxonomy
-    KFPPod->>S3: Download custom taxonomy<br/>Auth: AWS IAM
-    KFPPod->>Target: SDG model calls<br/>Auth: API Key
-    KFPPod->>Target: Garak scan<br/>Auth: API Key (from /mnt/model-auth)
-    Target-->>KFPPod: Model responses
-    KFPPod->>S3: Upload results<br/>Auth: AWS IAM
+    Note over KFP,S3: KFP Pipeline Steps
+    KFP->>S3: Step 1: validate<br/>Auth: AWS IAM
+    KFP->>S3: Step 2: resolve_taxonomy<br/>Auth: AWS IAM
+    KFP->>SDGModel: Step 3: sdg_generate<br/>Auth: Bearer Token
+    SDGModel-->>KFP: Generated adversarial prompts
+    KFP->>S3: Step 4: prepare_prompts<br/>Upload normalized prompts<br/>Auth: AWS IAM
+    KFP->>Target: Step 5: garak_scan<br/>Auth: Bearer Token
+    Target-->>KFP: Scan results
+    KFP->>S3: Step 6: write_kfp_outputs<br/>Upload results<br/>Auth: AWS IAM
+
+    Adapter->>KFP: Poll run status<br/>Auth: SA Token
+    KFP-->>Adapter: Run complete
     Adapter->>S3: Download results<br/>Auth: AWS IAM
-    Adapter->>OCI: Push artifacts<br/>Auth: OCI auth
-    Adapter->>EvalHub: Report status/metrics<br/>(sidecar HTTP)
+    Adapter->>Sidecar: Final results + Status: COMPLETE
+
+    Note over Adapter,Attacker: Flow 3: Intents-Based Risk Assessment
+    Adapter->>SDGModel: Generate adversarial prompts<br/>from harm taxonomy<br/>Auth: Bearer Token
+    SDGModel-->>Adapter: SDG output
+    Adapter->>Target: Garak CAS scan<br/>(multi-probe pipeline)<br/>Auth: Bearer Token
+    Adapter->>Judge: MulticlassJudge<br/>score responses<br/>Auth: Bearer Token
+    Adapter->>Attacker: TAP attack model<br/>jailbreak generation<br/>Auth: Bearer Token
+    Adapter->>Attacker: TAP evaluator<br/>jailbreak scoring<br/>Auth: Bearer Token
+    Target-->>Adapter: Responses
+    Judge-->>Adapter: Scores
+    Attacker-->>Adapter: Attack results
+    Adapter->>Adapter: Aggregate by (intent, stub)<br/>Compute ASR per intent

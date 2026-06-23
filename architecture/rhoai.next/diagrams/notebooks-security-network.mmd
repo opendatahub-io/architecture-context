@@ -1,72 +1,78 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["Data Scientist<br/>User Browser"]
+        User["User Browser"]
     end
 
     subgraph Ingress["INGRESS (Platform Gateway)"]
-        Gateway["Platform Gateway (Envoy)<br/>443/TCP<br/>TLS 1.2+ SIMPLE<br/>HTTPRoute (Gateway API)"]
+        Gateway["RHOAI Gateway (Envoy)<br/>HTTPRoute 443/TCP → 8443/TCP<br/>TLS 1.3 (SIMPLE)<br/>OpenID Connect"]
     end
 
-    subgraph AuthBoundary["AUTH BOUNDARY (Sidecar)"]
-        KRBP["kube-rbac-proxy Sidecar<br/>8443/TCP HTTPS<br/>TLS 1.2+<br/>OAuth/OIDC Token Validation"]
+    subgraph AuthSidecar["AUTH SIDECAR (Pod Boundary)"]
+        KRBAC["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS 1.2+<br/>OAuth2/OIDC enforcement<br/>RBAC: access to Notebook CR"]
     end
 
-    subgraph WorkbenchPod["WORKBENCH POD (localhost only)"]
+    subgraph Application["APPLICATION (Workbench Containers)"]
         direction TB
 
-        subgraph JupyterStack["Jupyter Workbench"]
-            Jupyter["JupyterLab<br/>8888/TCP HTTP<br/>No auth (behind sidecar)"]
-            Elyra["Elyra Extension<br/>Pipeline Editor"]
+        subgraph NS_User["Namespace: {user-namespace}"]
+            JupyterLab["JupyterLab Workbench<br/>8888/TCP HTTP (plaintext)<br/>SA: {notebook-name}<br/>Endpoints: /lab, /api/*"]
+            CodeServer["code-server Workbench<br/>8787/TCP HTTP (nginx proxy)<br/>SA: {notebook-name}<br/>Endpoint: /"]
         end
-
-        subgraph CodeServerStack["Code-Server Workbench"]
-            NginxProxy["nginx Reverse Proxy<br/>80/TCP HTTP<br/>JSON access logging"]
-            CodeServerProc["code-server<br/>8787/TCP HTTP<br/>--auth none"]
-            HttpdCGI["httpd CGI Gateway<br/>8080/TCP HTTP<br/>access.cgi idle culling"]
-        end
-    end
-
-    subgraph PlatformServices["PLATFORM SERVICES (Internal)"]
-        DSPA["Data Science Pipelines (DSPA)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Token"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Token"]
-        NotebookController["Notebook Controller Culler<br/>Polls /api/kernels/<br/>via 8443/TCP HTTPS"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        Registry["Container Registry<br/>registry.redhat.io / quay.io<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Token Auth"]
+        K8sAPI["Kubernetes API<br/>kubernetes.default.svc<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount token"]
+        S3["S3-Compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS credentials"]
+        GitRepo["Git Repositories<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Personal access token"]
     end
 
-    %% Inbound flows
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth/OIDC"| Gateway
-    Gateway -->|"HTTPS/8443<br/>TLS 1.2+<br/>OAuth Token"| KRBP
+    subgraph BuildPipeline["BUILD PIPELINE (Konflux CI/CD)"]
+        direction TB
+        Tekton["Tekton PipelineRun"]
+        Cachi2["Cachi2 Prefetch"]
+        BuildahBuild["Buildah Build<br/>(HERMETIC — no network)"]
+    end
 
-    %% Sidecar to workbench
-    KRBP -->|"HTTP/8888<br/>plaintext (localhost)<br/>No auth"| Jupyter
-    KRBP -->|"HTTP/80<br/>plaintext (localhost)<br/>No auth"| NginxProxy
+    subgraph BuildExternal["BUILD EXTERNAL SERVICES"]
+        GitSrc["Git Repository<br/>443/TCP HTTPS"]
+        AIPCCPyPI["AIPCC PyPI Index<br/>packages.redhat.com<br/>443/TCP HTTPS<br/>Public (no auth)"]
+        RPMRepo["RPM Repositories<br/>443/TCP HTTPS<br/>Subscription certs"]
+        ContainerReg["Container Registry<br/>quay.io / registry.redhat.io<br/>443/TCP HTTPS<br/>Robot account"]
+    end
 
-    %% Code-Server internal
-    NginxProxy -->|"HTTP/8787<br/>localhost"| CodeServerProc
-    HttpdCGI -->|"HTTP/8888<br/>healthz poll"| CodeServerProc
+    %% Runtime flows
+    User -->|"HTTPS/443<br/>TLS 1.3<br/>OIDC"| Gateway
+    Gateway -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer token"| KRBAC
+    KRBAC -->|"HTTP/8888<br/>Plaintext (pod-internal)<br/>No auth"| JupyterLab
+    KRBAC -->|"HTTP/8787<br/>Plaintext (pod-internal)<br/>No auth"| CodeServer
+    JupyterLab -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    JupyterLab -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS creds"| S3
+    JupyterLab -->|"HTTPS/443<br/>TLS 1.2+<br/>PAT"| GitRepo
+    CodeServer -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    CodeServer -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS creds"| S3
+    CodeServer -->|"HTTPS/443<br/>TLS 1.2+<br/>PAT"| GitRepo
 
-    %% Idle culling
-    NotebookController -->|"HTTPS/8443<br/>TLS 1.2+<br/>SA Token"| KRBP
-
-    %% Egress
-    Elyra -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| DSPA
-    Jupyter -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    WorkbenchPod -.->|"HTTPS/443<br/>TLS 1.2+<br/>Token"| Registry
+    %% Build flows
+    Tekton -->|"HTTPS/443<br/>Git creds"| GitSrc
+    Tekton --> Cachi2
+    Cachi2 -->|"HTTPS/443<br/>Public"| AIPCCPyPI
+    Cachi2 -->|"HTTPS/443<br/>Sub certs"| RPMRepo
+    Cachi2 -->|"/cachi2/output/deps/"| BuildahBuild
+    BuildahBuild -->|"HTTPS/443<br/>Robot account"| ContainerReg
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef authboundary fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef workbench fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef authsidecar fill:#ffcccc,stroke:#cc0000,stroke-width:2px
+    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef buildpipeline fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef buildexternal fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
     class User external
     class Gateway ingress
-    class KRBP authboundary
-    class Jupyter,Elyra,NginxProxy,CodeServerProc,HttpdCGI workbench
-    class DSPA,K8sAPI,NotebookController platform
-    class Registry externalservice
+    class KRBAC authsidecar
+    class JupyterLab,CodeServer application
+    class K8sAPI,S3,GitRepo externalservice
+    class Tekton,Cachi2,BuildahBuild buildpipeline
+    class GitSrc,AIPCCPyPI,RPMRepo,ContainerReg buildexternal

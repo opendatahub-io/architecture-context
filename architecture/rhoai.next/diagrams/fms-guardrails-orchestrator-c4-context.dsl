@@ -1,64 +1,68 @@
 workspace {
     model {
-        user = person "AI Application Client" "Sends text generation and detection requests via REST API"
+        client = person "API Consumer" "Application or user sending text generation requests with content safety requirements"
+        platformAdmin = person "Platform Administrator" "Manages deployment and configuration via rhods-operator"
 
-        guardrailsOrch = softwareSystem "FMS Guardrails Orchestrator" "Rust-based REST API orchestrator coordinating AI text generation with content safety guardrails" {
-            guardrailsServer = container "Guardrails API Server" "Main REST API server handling generation and detection requests with optional TLS/mTLS" "Rust (axum)" {
-                v1Handlers = component "V1 Task Handlers" "Classification with text generation (unary and streaming)" "axum handlers"
-                v2Handlers = component "V2 Detection Handlers" "Content, chat, context, generated text detection" "axum handlers"
-                openaiHandlers = component "OpenAI Handlers" "Chat/text completions with guardrails (conditional)" "axum handlers"
-                orchestrator = component "Orchestration Engine" "Coordinates detection, chunking, and generation workflows" "Handle<Task> trait"
+        guardrailsOrch = softwareSystem "FMS Guardrails Orchestrator" "REST API middleware that orchestrates text generation with content safety detection across multiple downstream services" {
+            guardrailsServer = container "Guardrails API Server" "Handles all detection and generation requests with optional TLS/mTLS" "Rust (axum)" {
+                tags "Primary"
+                router = component "axum Router" "HTTP routing for v1 and v2 API endpoints" "axum 0.8.8"
+                orchestrator = component "Orchestrator" "Coordinates detection and generation workflows" "Rust"
+                clientMap = component "ClientMap" "Type-erased container holding generation, detector, chunker, and OpenAI clients" "Rust"
+                tlsLayer = component "TLS Layer" "rustls with ring crypto backend for TLS 1.2+ / mTLS" "rustls 0.23.36"
             }
-            healthServer = container "Health Server" "Plaintext HTTP server for health and service info endpoints" "Rust (axum)" {
+            healthServer = container "Health Server" "Reports service health and downstream status over plaintext HTTP" "Rust (axum)" {
                 tags "Health"
             }
-            genClient = container "Generation Client" "Unified gRPC client for TGIS and Caikit NLP backends with retry logic" "Rust (tonic)"
-            openaiClient = container "OpenAI Client" "HTTP client for OpenAI-compatible backends" "Rust (reqwest)"
-            chunkerClient = container "Chunker Client" "gRPC client for Caikit chunker service" "Rust (tonic)"
-            detectorClient = container "Detector Client" "HTTP client for content safety detector services" "Rust (reqwest)"
+            otelIntegration = container "OpenTelemetry Integration" "Distributed tracing and metrics with OTLP export" "opentelemetry 0.31.0" {
+                tags "Infrastructure"
+            }
         }
 
-        tgis = softwareSystem "TGIS" "Text Generation Inference Server - gRPC text generation backend" {
+        tgis = softwareSystem "TGIS" "Text Generation Inference Server - primary gRPC generation backend" {
             tags "Internal Platform"
         }
-        caikitNlp = softwareSystem "Caikit NLP" "Alternative gRPC text generation backend" {
+        caikitNlp = softwareSystem "caikit-nlp" "Alternative gRPC generation backend via caikit NLP service" {
             tags "Internal Platform"
         }
-        caikitChunkers = softwareSystem "Caikit Chunkers" "gRPC text chunking/tokenization service" {
+        chunkers = softwareSystem "caikit Chunkers" "Text chunking service for detection pipelines via gRPC" {
             tags "Internal Platform"
         }
-        detectors = softwareSystem "Detector Services" "Content safety detection services (HAP, PII, etc.)" {
+        detectors = softwareSystem "Detector Services" "Content safety detection services exposing REST APIs" {
             tags "Internal Platform"
         }
-        openaiServer = softwareSystem "OpenAI-compatible Server" "vLLM or similar chat/text completions backend" {
+        openaiServer = softwareSystem "OpenAI-compatible Server" "vLLM or similar server providing OpenAI-compatible chat/text completions" {
             tags "Internal Platform"
         }
-        otlpCollector = softwareSystem "OTLP Collector" "OpenTelemetry collector for traces and metrics" {
-            tags "Observability"
+        otlpCollector = softwareSystem "OTLP Collector" "OpenTelemetry Collector for traces and metrics aggregation" {
+            tags "External"
+        }
+        rhodsOperator = softwareSystem "rhods-operator" "Platform operator that creates deployment, service, and ingress resources" {
+            tags "Internal Platform"
         }
 
-        # User interactions
-        user -> guardrailsOrch "Sends generation/detection requests" "HTTP/HTTPS (8033/TCP)"
+        # Relationships - System Context
+        client -> guardrailsOrch "Sends generation and detection requests" "HTTP/HTTPS 8033/TCP"
+        platformAdmin -> rhodsOperator "Configures and deploys"
+        rhodsOperator -> guardrailsOrch "Deploys and manages" "Kubernetes resources"
 
-        # Internal container relationships
-        guardrailsServer -> genClient "Delegates generation" "Internal"
-        guardrailsServer -> openaiClient "Delegates OpenAI generation" "Internal"
-        guardrailsServer -> chunkerClient "Delegates chunking" "Internal"
-        guardrailsServer -> detectorClient "Delegates detection" "Internal"
+        guardrailsOrch -> tgis "Text generation and tokenization" "gRPC/HTTP2 8033/TCP, Optional TLS/mTLS"
+        guardrailsOrch -> caikitNlp "Alternative text generation" "gRPC/HTTP2 8085/TCP, Optional TLS/mTLS"
+        guardrailsOrch -> chunkers "Text chunking for detectors" "gRPC/HTTP2 8085/TCP, Optional TLS/mTLS"
+        guardrailsOrch -> detectors "Content safety detection" "HTTP/HTTPS 8080/TCP, Optional TLS/mTLS"
+        guardrailsOrch -> openaiServer "Chat/text completions" "HTTP/HTTPS 8080/TCP, Optional TLS, Bearer token"
+        guardrailsOrch -> otlpCollector "Exports traces and metrics" "gRPC 4317/TCP or HTTP 4318/TCP"
 
-        # Outbound dependencies
-        genClient -> tgis "Generate, GenerateStream, Tokenize, ModelInfo" "gRPC/HTTP2 (8033/TCP)"
-        genClient -> caikitNlp "TextGenerationTaskPredict, TokenizationTaskPredict" "gRPC/HTTP2 (8085/TCP)"
-        chunkerClient -> caikitChunkers "ChunkerTokenizationTaskPredict, BidiStreaming" "gRPC/HTTP2 (8085/TCP)"
-        detectorClient -> detectors "POST /api/v1/text/{contents,chat,context/doc,generation}" "HTTP/HTTPS (8080/TCP)"
-        openaiClient -> openaiServer "POST /v1/chat/completions, /v1/completions" "HTTP/HTTPS (8080/TCP)"
-        guardrailsOrch -> otlpCollector "Export traces and metrics" "gRPC (4317) or HTTP (4318)"
+        # Relationships - Container level
+        client -> guardrailsServer "POST /api/v1/*, /api/v2/*" "HTTP/HTTPS 8033/TCP, Optional TLS/mTLS"
+        client -> healthServer "GET /health, /info" "HTTP 8034/TCP (plaintext)"
 
-        # Health checks
-        healthServer -> tgis "gRPC health check" "gRPC"
-        healthServer -> caikitNlp "gRPC health check" "gRPC"
-        healthServer -> caikitChunkers "gRPC health check" "gRPC"
-        healthServer -> detectors "HTTP health check" "HTTP (8081/TCP)"
+        guardrailsServer -> tgis "Generate, GenerateStream, Tokenize, ModelInfo" "gRPC/HTTP2 8033/TCP"
+        guardrailsServer -> caikitNlp "TextGenerationTaskPredict, TokenizationTaskPredict" "gRPC/HTTP2 8085/TCP"
+        guardrailsServer -> chunkers "ChunkerTokenizationTaskPredict" "gRPC/HTTP2 8085/TCP"
+        guardrailsServer -> detectors "/api/v1/text/contents, /chat, /context/doc, /generation" "HTTP/HTTPS 8080/TCP"
+        guardrailsServer -> openaiServer "/v1/chat/completions, /v1/completions, /tokenize" "HTTP/HTTPS 8080/TCP"
+        otelIntegration -> otlpCollector "OTLP export" "gRPC 4317/TCP or HTTP 4318/TCP"
     }
 
     views {
@@ -79,33 +83,38 @@ workspace {
 
         styles {
             element "Software System" {
-                background #4a90e2
+                background #438DD5
                 color #ffffff
             }
             element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
-            element "Observability" {
+            element "External" {
                 background #999999
                 color #ffffff
             }
             element "Person" {
-                background #08427b
-                color #ffffff
                 shape person
+                background #08427B
+                color #ffffff
             }
             element "Container" {
-                background #438dd5
+                background #438DD5
                 color #ffffff
             }
-            element "Component" {
-                background #85bbf0
-                color #000000
+            element "Primary" {
+                background #4a90e2
             }
             element "Health" {
                 background #7ed321
-                color #ffffff
+            }
+            element "Infrastructure" {
+                background #bd10e0
+            }
+            element "Component" {
+                background #85BBF0
+                color #000000
             }
         }
     }

@@ -1,55 +1,70 @@
 sequenceDiagram
+    autonumber
+
+    %% Flow 1: API Key Authentication (Inference Request)
+    rect rgb(240, 248, 255)
+    Note over Client,ModelBackend: Flow 1: API Key Authentication (Inference Request)
+
     participant Client as External Client
-    participant Gateway as MaaS Gateway<br/>443/TCP HTTPS<br/>TLS Terminate
-    participant Wasm as Kuadrant Wasm Plugin<br/>(in-process)
-    participant Authorino as Authorino<br/>50051/TCP gRPC mTLS
-    participant MaaSAPI as maas-api<br/>8080/TCP HTTP
-    participant PG as PostgreSQL<br/>5432/TCP
-    participant ExtProc as payload-processing<br/>9004/TCP gRPC TLS
+    participant Gateway as Gateway<br/>maas-default-gateway<br/>443/TCP HTTPS
+    participant PreProc as payload-pre-processing<br/>9004/TCP gRPC TLS
+    participant Authorino as Authorino<br/>(Kuadrant)
+    participant MaaSAPI as maas-api<br/>8443/TCP HTTPS
+    participant PostgreSQL as PostgreSQL<br/>5432/TCP
+    participant PostProc as payload-processing<br/>9004/TCP gRPC TLS
+    participant ModelBackend as Model Backend<br/>(KServe / External)<br/>443/TCP HTTPS
+
+    Client->>Gateway: POST /v1/models/{model}:predict<br/>Auth: Bearer sk-oai-*<br/>TLS 1.2+
+    Gateway->>PreProc: ext_proc (pre-auth)<br/>gRPC/HTTP2, TLS SIMPLE<br/>Extract model name → X-Gateway-Model-Name
+    PreProc-->>Gateway: Header: X-Gateway-Model-Name
+    Gateway->>Authorino: Auth evaluation<br/>mTLS, internal
+    Authorino->>MaaSAPI: POST /internal/v1/api-keys/validate<br/>HTTPS TLS 1.2+<br/>NetworkPolicy-protected
+    MaaSAPI->>PostgreSQL: SELECT hash, verify SHA-256<br/>TLS, DB credentials
+    PostgreSQL-->>MaaSAPI: Key valid + metadata
+    MaaSAPI-->>Authorino: 200 OK (user identity)
+    Authorino->>MaaSAPI: POST /internal/v1/subscriptions/select<br/>HTTPS TLS 1.2+<br/>NetworkPolicy-protected
+    MaaSAPI-->>Authorino: Selected subscription + rate limit key
+    Authorino-->>Gateway: Auth success + metadata headers
+    Gateway->>PostProc: ext_proc (post-auth)<br/>gRPC/HTTP2, TLS SIMPLE<br/>API translation + credential injection
+    PostProc-->>Gateway: Transformed request + provider credentials
+    Gateway->>ModelBackend: Forward inference request<br/>HTTPS TLS/mTLS<br/>Injected provider credential
+    ModelBackend-->>Gateway: Inference response
+    Gateway-->>Client: JSON Response<br/>TLS 1.2+
+
+    end
+
+    %% Flow 2: Tenant Reconciliation
+    rect rgb(245, 255, 245)
+    Note over Controller,K8sAPI: Flow 2: Tenant Reconciliation
+
+    participant Controller as maas-controller<br/>(Operator)
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant Backend as Model Backend<br/>(KServe / External)<br/>443/TCP HTTPS
 
-    Note over Client,Backend: Flow 1: API Key Authentication and Model Inference
+    Controller->>K8sAPI: Watch Tenant CR<br/>HTTPS TLS 1.2+<br/>ServiceAccount token
+    K8sAPI-->>Controller: Tenant CR event
+    Controller->>K8sAPI: Validate Gateway exists<br/>HTTPS TLS 1.2+
+    K8sAPI-->>Controller: Gateway found
+    Controller->>Controller: Render kustomize manifests<br/>(embedded in image)
+    Controller->>K8sAPI: Server-side Apply:<br/>maas-api Deployment, Service,<br/>HTTPRoute, NetworkPolicies,<br/>PodMonitor, AuthPolicy,<br/>TokenRateLimitPolicy<br/>HTTPS TLS 1.2+
+    K8sAPI-->>Controller: Resources applied
 
-    Client->>Gateway: POST /v1/models/llama:predict<br/>Authorization: Bearer sk-oai-*<br/>TLS 1.3
-    Gateway->>Wasm: Route match → auth check
-    Wasm->>Authorino: gRPC auth request<br/>mTLS
-    Authorino->>MaaSAPI: POST /internal/v1/api-keys/validate<br/>NetworkPolicy protected
-    MaaSAPI->>PG: SELECT hash, subscription<br/>SHA-256 constant-time compare
-    PG-->>MaaSAPI: API key metadata + subscription
-    MaaSAPI-->>Authorino: 200 OK (user, groups, subscription)
-    Authorino->>MaaSAPI: POST /internal/v1/subscriptions/select<br/>NetworkPolicy protected
-    MaaSAPI-->>Authorino: Selected subscription + rate limit context
-    Authorino-->>Wasm: Auth response (identity + metadata)
-    Wasm-->>Gateway: Auth OK + rate limit check via Limitador
+    end
 
-    Gateway->>ExtProc: ext_proc request body<br/>gRPC TLS SIMPLE :9004
-    Note over ExtProc: Plugin pipeline:<br/>1. Extract model → X-Gateway-Model-Name<br/>2. Resolve provider endpoint<br/>3. Translate API format<br/>4. Inject backend credentials
-    ExtProc->>K8sAPI: GET Secret (backend API key)<br/>ServiceAccount token
-    K8sAPI-->>ExtProc: Secret data
-    ExtProc-->>Gateway: Modified headers + body<br/>(credential injected, API translated)
+    %% Flow 3: External Model Routing
+    rect rgb(255, 245, 238)
+    Note over Controller,ExternalLLM: Flow 3: External Model Routing
 
-    Gateway->>Backend: Proxied request<br/>HTTPS TLS 1.2+<br/>Injected API key
-    Backend-->>Gateway: Inference response
-    Gateway-->>Client: JSON response<br/>TLS 1.3
+    participant ExternalLLM as External LLM Provider<br/>(OpenAI, Anthropic)<br/>443/TCP HTTPS
 
-    Note over Client,Backend: Flow 2: Subscription and Policy Lifecycle
+    Controller->>K8sAPI: Watch ExternalModel CR<br/>HTTPS TLS 1.2+
+    K8sAPI-->>Controller: ExternalModel event
+    Controller->>K8sAPI: Create ExternalName Service<br/>HTTPS TLS 1.2+
+    Controller->>K8sAPI: Create Istio ServiceEntry<br/>(register provider in mesh)
+    Controller->>K8sAPI: Create Istio DestinationRule<br/>(TLS origination)
+    Controller->>K8sAPI: Create HTTPRoute<br/>(per-model routing)
+    K8sAPI-->>Controller: Resources created
 
-    participant Admin as Admin / Platform
-    participant Controller as maas-controller
+    Note over Gateway,ExternalLLM: Runtime: inference traffic flows through gateway
+    Gateway->>ExternalLLM: Forward via ServiceEntry<br/>HTTPS TLS 1.2+<br/>API key injected by payload-processing
 
-    Admin->>K8sAPI: Create MaaSSubscription CR<br/>HTTPS TLS 1.2+
-    Admin->>K8sAPI: Create MaaSAuthPolicy CR<br/>HTTPS TLS 1.2+
-    K8sAPI-->>Controller: Informer notification
-    Controller->>K8sAPI: Aggregate → Create AuthPolicy<br/>(per-model, CEL expressions)
-    Controller->>K8sAPI: Aggregate → Create TokenRateLimitPolicy<br/>(per-model, per-subscription limits)
-    K8sAPI-->>Authorino: Kuadrant reconciles AuthPolicy
-    Note over Authorino: Auth rules updated<br/>for model routes
-
-    Note over Client,Backend: Flow 3: Tenant Platform Reconcile
-
-    Admin->>K8sAPI: Enable modelsAsService on DSC
-    K8sAPI-->>Controller: LifecycleReconciler → Config CR
-    Controller->>K8sAPI: TenantReconciler reads Tenant CR
-    Note over Controller: Kustomize pipeline:<br/>render → post-render transforms<br/>→ server-side apply
-    Controller->>K8sAPI: Apply: Deployment, Service,<br/>HTTPRoute, AuthPolicy,<br/>NetworkPolicy, EnvoyFilter,<br/>DestinationRule, Telemetry, ...
+    end

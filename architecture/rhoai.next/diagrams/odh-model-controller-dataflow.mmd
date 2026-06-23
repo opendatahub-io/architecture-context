@@ -1,48 +1,68 @@
 sequenceDiagram
     participant User as User / kubectl
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant OMC as odh-model-controller<br/>Operator
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Controller as odh-model-controller<br/>8081/TCP health
+    participant Webhook as Webhook Server<br/>9443/TCP TLS
+    participant Route as OpenShift Router
+    participant Dashboard as RHOAI Dashboard
+    participant API as model-serving-api<br/>8443/TCP HTTPS
     participant NGC as NVIDIA NGC API<br/>443/TCP HTTPS
-    participant NVCR as nvcr.io Registry<br/>443/TCP HTTPS
-    participant MR as Model Registry<br/>443/TCP HTTPS
-    participant Client as Dashboard / CLI
-    participant MSA as model-serving-api<br/>8443/TCP HTTPS
+    participant NVCR as NVIDIA NVCR<br/>443/TCP HTTPS
+    participant Authorino as Authorino<br/>50051/TCP gRPC
 
-    Note over User,OMC: Flow 1: InferenceService Reconciliation
-    User->>K8sAPI: Create InferenceService
-    K8sAPI->>OMC: Watch event (HTTPS/6443)<br/>Auth: ServiceAccount token
-    OMC->>K8sAPI: Create Route (HTTPS/6443)<br/>Auth: ServiceAccount token
-    OMC->>K8sAPI: Create NetworkPolicy (HTTPS/6443)<br/>Auth: ServiceAccount token
-    OMC->>K8sAPI: Create ServiceMonitor (HTTPS/6443)<br/>Auth: ServiceAccount token
-    OMC->>K8sAPI: Create ClusterRoleBinding (HTTPS/6443)<br/>Auth: ServiceAccount token
+    rect rgb(230, 245, 255)
+        Note over User,Route: Flow 1: InferenceService Deployment (Raw KServe)
+        User->>K8sAPI: POST InferenceService<br/>Auth: Bearer Token
+        K8sAPI->>Webhook: Admission Review<br/>TLS (cert-manager)
+        Webhook-->>K8sAPI: Admit (validate name length,<br/>block protected namespace)
+        K8sAPI-->>User: InferenceService created
+        K8sAPI->>Controller: Watch event (InferenceService)<br/>Auth: ServiceAccount
+        Controller->>K8sAPI: Create Route<br/>Auth: ServiceAccount
+        Controller->>K8sAPI: Create metrics Service<br/>Auth: ServiceAccount
+        Controller->>K8sAPI: Create ServiceMonitor<br/>Auth: ServiceAccount
+        Controller->>K8sAPI: Create NetworkPolicy<br/>Auth: ServiceAccount
+        Controller->>K8sAPI: Create ClusterRoleBinding<br/>Auth: ServiceAccount
+        Note over Route: External access via OpenShift Route<br/>443/TCP HTTPS TLS reencrypt/edge
+    end
 
-    Note over User,OMC: Flow 2: LLMInferenceService AuthPolicy
-    User->>K8sAPI: Create LLMInferenceService
-    K8sAPI->>OMC: Watch event (HTTPS/6443)<br/>Auth: ServiceAccount token
-    OMC->>K8sAPI: Read LLMInferenceServiceConfig<br/>Auth: ServiceAccount token
-    OMC->>K8sAPI: Create/Update AuthPolicy<br/>targeting HTTPRoute<br/>Auth: ServiceAccount token
+    rect rgb(255, 245, 230)
+        Note over User,Authorino: Flow 2: LLMInferenceService Auth Setup
+        User->>K8sAPI: POST LLMInferenceService<br/>Auth: Bearer Token
+        K8sAPI->>Controller: Watch event (LLMInferenceService)<br/>Auth: ServiceAccount
+        Controller->>K8sAPI: Create AuthPolicy (HTTPRoute-scoped)<br/>Auth: ServiceAccount
+        K8sAPI->>Controller: Watch event (Gateway)<br/>Auth: ServiceAccount
+        Controller->>K8sAPI: Create EnvoyFilter (TLS bootstrap)<br/>Auth: ServiceAccount
+        Controller->>K8sAPI: Create AuthPolicy (Gateway-scoped)<br/>Auth: ServiceAccount
+        Note over Authorino: Envoy proxy → Authorino<br/>50051/TCP gRPC mTLS<br/>Service account CA
+    end
 
-    Note over User,OMC: Flow 3: Gateway EnvoyFilter + AuthPolicy
-    User->>K8sAPI: Create/Update Gateway
-    K8sAPI->>OMC: Watch event (HTTPS/6443)<br/>Auth: ServiceAccount token
-    OMC->>K8sAPI: Check Authorino TLS status<br/>Auth: ServiceAccount token
-    OMC->>K8sAPI: Create EnvoyFilter<br/>(TLS bootstrap)<br/>Auth: ServiceAccount token
-    OMC->>K8sAPI: Create AuthPolicy<br/>targeting Gateway<br/>Auth: ServiceAccount token
+    rect rgb(245, 255, 230)
+        Note over User,NVCR: Flow 3: NIM Account Integration
+        User->>K8sAPI: POST NIM Account<br/>Auth: Bearer Token
+        K8sAPI->>Webhook: Admission Review (singleton check)
+        Webhook-->>K8sAPI: Admit
+        K8sAPI->>Controller: Watch event (Account)<br/>Auth: ServiceAccount
+        Controller->>NGC: Validate API key<br/>443/TCP HTTPS<br/>Auth: API key bearer
+        NGC-->>Controller: Key validated
+        Controller->>NGC: Fetch model catalog<br/>443/TCP HTTPS<br/>Auth: NGC token
+        NGC-->>Controller: Model catalog data
+        Controller->>NVCR: Get registry token<br/>443/TCP HTTPS<br/>Auth: API key
+        NVCR-->>Controller: Registry OAuth token
+        Controller->>K8sAPI: Create pull Secret<br/>Auth: ServiceAccount
+        Controller->>K8sAPI: Create ConfigMap<br/>Auth: ServiceAccount
+        Controller->>K8sAPI: Create ServingRuntime Template<br/>Auth: ServiceAccount
+    end
 
-    Note over OMC,NVCR: Flow 4: NIM Account Validation
-    K8sAPI->>OMC: Watch NIM Account event<br/>Auth: ServiceAccount token
-    OMC->>NGC: Validate API key<br/>Auth: Bearer Token (NGC key)
-    NGC-->>OMC: API key valid + catalog data
-    OMC->>NVCR: Validate registry access<br/>Auth: Bearer Token (registry token)
-    NVCR-->>OMC: Token exchange success
-    OMC->>K8sAPI: Create ConfigMap (model catalog)<br/>Auth: ServiceAccount token
-    OMC->>K8sAPI: Create Secret (pull secret)<br/>Auth: ServiceAccount token
-    OMC->>K8sAPI: Create Template (NIM ServingRuntime)<br/>Auth: ServiceAccount token
-
-    Note over Client,MSA: Flow 5: Gateway Discovery API
-    Client->>MSA: GET /api/v1/gateways?namespace=X<br/>HTTPS/443, TLS 1.2+ FIPS<br/>Auth: Bearer Token (user's K8s token)
-    MSA->>K8sAPI: SelfSubjectAccessReview<br/>HTTPS/6443<br/>Auth: User's Bearer Token
-    K8sAPI-->>MSA: Access granted
-    MSA->>K8sAPI: List Gateways<br/>HTTPS/6443<br/>Auth: ServiceAccount token
-    K8sAPI-->>MSA: Gateway list
-    MSA-->>Client: JSON: filtered Gateways<br/>HTTPS/443, TLS 1.2+
+    rect rgb(245, 230, 255)
+        Note over Dashboard,API: Flow 4: Gateway Discovery (model-serving-api)
+        Dashboard->>API: GET /api/v1/gateways?namespace=X<br/>8443/TCP HTTPS TLS 1.2+ (FIPS)<br/>Auth: User bearer token
+        API->>K8sAPI: SelfSubjectAccessReview<br/>443/TCP HTTPS<br/>Auth: User bearer token
+        K8sAPI-->>API: Access decision
+        alt Access granted
+            API->>K8sAPI: List Gateways<br/>443/TCP HTTPS<br/>Auth: ServiceAccount token
+            K8sAPI-->>API: Gateway list
+            API-->>Dashboard: JSON: gateway list<br/>8443/TCP HTTPS
+        else Access denied
+            API-->>Dashboard: JSON: empty results<br/>(no error - prevents info leakage)
+        end
+    end

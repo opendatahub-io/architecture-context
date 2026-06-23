@@ -1,67 +1,74 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client"]
-        GRPCClient["gRPC Client"]
+        Client["External Client<br/>KServe Proxy / User"]
     end
 
-    subgraph Ingress["INGRESS (Platform-Managed by KServe)"]
-        KServeRoute["KServe Route/HTTPRoute<br/>TLS termination at platform level"]
+    subgraph Ingress["INGRESS (Managed by KServe)"]
+        KServeRoute["KServe Route / HTTPRoute<br/>TLS termination at gateway<br/>Auth policies by platform operator"]
     end
 
-    subgraph Service["SERVICE (ClusterIP - Internal)"]
+    subgraph Application["APPLICATION (vllm-cpu Container)<br/>UID: 2000 / GID: 0 (non-root)<br/>Image: odh-vllm-cpu-rhel9<br/>Base: UBI9 minimal"]
         direction TB
 
-        subgraph Pod["vllm-cpu Pod<br/>User: 2000 (non-root) | Group: 0<br/>Base: UBI9 ubi-minimal"]
-            direction TB
-
-            OpenAIAPI["OpenAI API Server (FastAPI)<br/>Service: vllm-openai<br/>8000/TCP HTTP<br/>Optional TLS (ssl module)<br/>Auth: API Key (optional)<br/>Cert reload: SSLCertRefresher"]
-
-            GRPCServer["gRPC Server<br/>Service: vllm-grpc<br/>50051/TCP gRPC (HTTP/2)<br/>⚠️ No TLS (add_insecure_port)<br/>⚠️ No Auth"]
-
-            Engine["V1 AsyncLLM Engine<br/>VLLM_USE_V1=1<br/>PyTorch CPU Backend<br/>x86_64 / ppc64le / s390x"]
+        subgraph HTTPService["HTTP API Server (FastAPI/Uvicorn)"]
+            APIEndpoints["/v1/* endpoints<br/>Port: 8000/TCP<br/>Protocol: HTTP/HTTPS<br/>Auth: Bearer API Key"]
+            HealthEndpoints["/health, /ping, /metrics<br/>Port: 8000/TCP<br/>Protocol: HTTP/HTTPS<br/>Auth: None"]
         end
+
+        subgraph GRPCService["gRPC Server"]
+            GRPCEndpoints["VllmEngineServicer<br/>Port: 50051/TCP<br/>Protocol: gRPC (HTTP/2)<br/>Encryption: None<br/>Auth: None"]
+        end
+
+        subgraph EngineCore["vLLM Engine (V1)"]
+            CPUKernels["CPU Kernels<br/>Attention, MoE, Quantization<br/>Intel DNNL, SGL GEMM"]
+        end
+
+        APIEndpoints --> EngineCore
+        GRPCEndpoints --> EngineCore
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        HFHub["Hugging Face Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer HF_TOKEN"]
-        S3["S3-compatible Storage<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS IAM<br/>(S3_ACCESS_KEY_ID)"]
-        OTel["OpenTelemetry Collector<br/>configurable port<br/>HTTPS/gRPC TLS 1.2+"]
-        MCP["MCP Tool Servers<br/>configurable port<br/>HTTP/HTTPS"]
+        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: HF_TOKEN"]
+        ModelScope["ModelScope<br/>modelscope.cn<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Token"]
+        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: AWS IAM"]
+        VLLMStats["vLLM Stats<br/>stats.vllm.ai<br/>443/TCP HTTPS<br/>Auth: None<br/>(disabled by default)"]
     end
 
-    subgraph Monitoring["MONITORING (Internal)"]
-        Prometheus["Prometheus<br/>Scrapes /metrics<br/>8000/TCP HTTP"]
+    subgraph LocalStorage["LOCAL STORAGE"]
+        PVC["PVC / Volume Mount<br/>Filesystem<br/>Model weights"]
     end
 
-    %% Ingress Flows
-    Client -->|"HTTP 8000/TCP<br/>Optional TLS<br/>API Key (Bearer)"| KServeRoute
-    KServeRoute -->|"HTTP 8000/TCP<br/>Optional TLS<br/>API Key forwarded"| OpenAIAPI
-    GRPCClient -->|"gRPC 50051/TCP<br/>⚠️ No TLS<br/>⚠️ No Auth"| GRPCServer
+    subgraph Monitoring["MONITORING"]
+        Prometheus["Prometheus<br/>Scrapes /metrics"]
+        OTel["OpenTelemetry Collector<br/>OTLP gRPC/HTTP<br/>TLS (optional)"]
+    end
 
-    %% Internal Flows
-    OpenAIAPI -->|"in-process<br/>Python call"| Engine
-    GRPCServer -->|"in-process<br/>Python call"| Engine
+    %% Inbound flows
+    Client -->|"HTTP(S)/8000<br/>TLS optional<br/>Bearer API Key"| KServeRoute
+    KServeRoute -->|"HTTP/8000<br/>mTLS if mesh enabled"| APIEndpoints
 
-    %% Egress Flows
-    Engine -->|"HTTPS 443/TCP<br/>TLS 1.2+<br/>Bearer HF_TOKEN"| HFHub
-    Engine -->|"HTTPS 443/TCP<br/>TLS 1.2+<br/>AWS IAM"| S3
-    Engine -->|"HTTPS/gRPC<br/>TLS 1.2+"| OTel
-    Engine -->|"HTTP/HTTPS<br/>Configurable"| MCP
+    %% Health/metrics (no auth)
+    Prometheus -->|"HTTP/8000<br/>GET /metrics<br/>No Auth"| HealthEndpoints
 
-    %% Monitoring
-    Prometheus -->|"HTTP 8000/TCP<br/>/metrics<br/>No Auth"| OpenAIAPI
+    %% Egress flows
+    EngineCore -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HFHub
+    EngineCore -->|"HTTPS/443<br/>TLS 1.2+<br/>Token"| ModelScope
+    EngineCore -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    EngineCore -->|"Filesystem"| PVC
+    EngineCore -.->|"HTTPS/443<br/>No Auth<br/>(disabled)"| VLLMStats
+    EngineCore -.->|"OTLP<br/>TLS<br/>(optional)"| OTel
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef service fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef application fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef monitoring fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef storage fill:#d5e8d4,stroke:#82b366,stroke-width:2px
 
-    class Client,GRPCClient external
+    class Client external
     class KServeRoute ingress
-    class OpenAIAPI,Engine service
-    class GRPCServer warning
-    class HFHub,S3,OTel,MCP externalservice
-    class Prometheus monitoring
+    class APIEndpoints,HealthEndpoints,GRPCEndpoints,CPUKernels application
+    class HFHub,ModelScope,S3,VLLMStats externalservice
+    class Prometheus,OTel monitoring
+    class PVC storage

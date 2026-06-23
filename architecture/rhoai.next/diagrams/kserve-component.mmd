@@ -1,92 +1,124 @@
 graph TB
-    subgraph KServe["KServe Platform (kserve namespace)"]
+    subgraph KServeCore["KServe Core Controllers"]
         direction TB
-
-        subgraph Controllers["Controllers"]
-            KServeCtrl["kserve-controller-manager<br/><i>Go Operator (controller-runtime)</i><br/>Webhook: 9443/TCP | Metrics: 8080/TCP"]
-            LLMISVCCtrl["llmisvc-controller-manager<br/><i>Go Operator (controller-runtime)</i><br/>Webhook: 9443/TCP | Metrics: 8443/TCP"]
-            LocalModelCtrl["localmodel-controller<br/><i>Go Operator (controller-runtime)</i>"]
-        end
-
-        subgraph NodeAgents["Node Agents"]
-            LocalModelAgent["localmodelnode-agent<br/><i>DaemonSet</i><br/>Manages per-node model downloads"]
-        end
-
-        subgraph Sidecars["Injected Sidecars / Init Containers"]
-            StorageInit["storage-initializer<br/><i>Python Init Container</i><br/>Downloads models from S3/GCS/Azure/HF/OCI"]
-            Agent["agent<br/><i>Go Sidecar</i><br/>Logging: 9081/TCP | Batching: 9082/TCP"]
-        end
-
-        subgraph Routing["Routing"]
-            Router["router<br/><i>Go Service</i><br/>InferenceGraph routing: 8080/TCP<br/>Sequence | Splitter | Ensemble | Switch"]
-        end
+        ControllerMgr["kserve-controller-manager<br/><i>Go Operator</i><br/>9443/TCP webhook, 8080/TCP metrics, 8081/TCP health"]
+        LLMController["llmisvc-controller<br/><i>Go Operator</i><br/>8443/TCP metrics (TLS), 9443/TCP webhook, 8081/TCP health"]
+        LocalModelCtrl["localmodel-controller<br/><i>Go Operator</i><br/>8080/TCP metrics, 9443/TCP webhook, 8081/TCP health"]
+        ModuleCtrl["kserve-module-controller<br/><i>Go Operator</i><br/>8081/TCP health"]
     end
 
-    %% CRDs watched by controllers
+    subgraph NodeAgents["Node-Level Components"]
+        LocalModelAgent["localmodelnode-agent<br/><i>DaemonSet</i><br/>8080/TCP metrics, 8081/TCP health"]
+    end
+
+    subgraph Sidecars["Injected Components"]
+        Agent["kserve-agent<br/><i>Sidecar</i><br/>9081/TCP proxy, 9083/TCP log"]
+        StorageInit["kserve-storage-initializer<br/><i>Init Container (Python)</i>"]
+    end
+
+    subgraph Routing["Routing Components"]
+        Router["kserve-router<br/><i>InferenceGraph Router</i><br/>8080/TCP"]
+    end
+
+    %% CRDs
     subgraph CRDs["Custom Resource Definitions"]
+        direction TB
         ISVC["InferenceService<br/><i>v1beta1</i>"]
-        LLMISVC["LLMInferenceService<br/><i>v1alpha2</i>"]
-        LLMISVCConfig["LLMInferenceServiceConfig<br/><i>v1alpha2, Cluster</i>"]
+        LLMISVC["LLMInferenceService<br/><i>v1alpha1/v1alpha2</i>"]
         IG["InferenceGraph<br/><i>v1alpha1</i>"]
-        SR["ServingRuntime<br/><i>v1alpha1</i>"]
-        CSR["ClusterServingRuntime<br/><i>v1alpha1, Cluster</i>"]
         TM["TrainedModel<br/><i>v1alpha1</i>"]
-        LMC["LocalModelCache<br/><i>v1alpha1, Cluster</i>"]
+        SR["ServingRuntime<br/><i>v1alpha1</i>"]
+        CSR["ClusterServingRuntime<br/><i>v1alpha1</i>"]
+        LMC["LocalModelCache<br/><i>v1alpha1</i>"]
         LMNC["LocalModelNamespaceCache<br/><i>v1alpha1</i>"]
-        LMN["LocalModelNode<br/><i>v1alpha1, Cluster</i>"]
+        LMN["LocalModelNode<br/><i>v1alpha1</i>"]
+        KserveCR["Kserve CR<br/><i>Platform</i>"]
     end
 
-    %% Controller → CRD relationships
-    KServeCtrl -->|reconciles| ISVC
-    KServeCtrl -->|reconciles| IG
-    KServeCtrl -->|reconciles| TM
-    KServeCtrl -->|reads| SR
-    KServeCtrl -->|reads| CSR
-
-    LLMISVCCtrl -->|reconciles| LLMISVC
-    LLMISVCCtrl -->|reads| LLMISVCConfig
-
+    %% Controller-CRD relationships
+    ControllerMgr -->|reconciles| ISVC
+    ControllerMgr -->|reconciles| TM
+    ControllerMgr -->|reconciles| IG
+    ControllerMgr -->|watches| SR
+    ControllerMgr -->|watches| CSR
+    LLMController -->|reconciles| LLMISVC
     LocalModelCtrl -->|reconciles| LMC
     LocalModelCtrl -->|reconciles| LMNC
     LocalModelAgent -->|reconciles| LMN
+    ModuleCtrl -->|reconciles| KserveCR
 
-    %% Resources created
-    KServeCtrl -->|creates| Deployments["Deployments<br/>Services<br/>HPA / KEDA"]
-    KServeCtrl -->|creates| IngressResources["HTTPRoutes<br/>VirtualServices<br/>Ingresses"]
+    %% Module controller deploys KServe
+    ModuleCtrl -.->|deploys| ControllerMgr
+    ModuleCtrl -.->|deploys| LLMController
+    ModuleCtrl -.->|deploys| LocalModelCtrl
 
-    LLMISVCCtrl -->|creates| LWSets["LeaderWorkerSets<br/>Deployments<br/>InferencePools"]
-    LLMISVCCtrl -->|creates| LLMRoutes["HTTPRoutes<br/>DestinationRules"]
-    LLMISVCCtrl -->|creates| Scaling["WVA VariantAutoscaling<br/>HPA / KEDA ScaledObjects"]
+    %% Sidecar injection
+    ControllerMgr -->|injects via webhook| Agent
+    ControllerMgr -->|injects via webhook| StorageInit
 
-    LocalModelCtrl -->|creates| PVs["PersistentVolumes<br/>PersistentVolumeClaims<br/>Download Jobs"]
+    %% Router relationship
+    ControllerMgr -->|creates per IG| Router
 
-    %% Webhook injection
-    KServeCtrl -.->|pod mutator injects| StorageInit
-    KServeCtrl -.->|pod mutator injects| Agent
+    %% LLM-specific resources
+    LLMController -->|creates| EPP["EPP Scheduler<br/>9002/TCP gRPC"]
+    LLMController -->|creates| HTTPRoute["HTTPRoute"]
+    LLMController -->|creates| InferencePool["InferencePool"]
+    LLMController -->|creates| LWS["LeaderWorkerSet"]
+
+    %% External dependencies
+    subgraph External["External Dependencies"]
+        Istio["Istio / Service Mesh"]
+        Knative["Knative Serving"]
+        CertMgr["cert-manager"]
+        GatewayAPI["Gateway API"]
+        KEDA_Ext["KEDA"]
+    end
+
+    ControllerMgr -->|VirtualService, mTLS| Istio
+    ControllerMgr -->|Knative Service| Knative
+    LLMController -->|DestinationRule| Istio
+    LLMController -->|HTTPRoute| GatewayAPI
+    LLMController -->|ScaledObject| KEDA_Ext
+
+    %% Internal platform
+    subgraph Platform["Internal Platform"]
+        ODHOperator["rhods-operator"]
+        ODHModelCtrl["odh-model-controller"]
+        WVA["Workload Variant Autoscaler"]
+        vLLM["vLLM Runtime"]
+    end
+
+    ODHOperator -->|creates| KserveCR
+    ModuleCtrl -.->|deploys| ODHModelCtrl
+    ModuleCtrl -.->|deploys| WVA
+    LLMISVC -->|uses| vLLM
 
     %% Styling
-    style KServeCtrl fill:#4a90e2,stroke:#333,color:#fff
-    style LLMISVCCtrl fill:#4a90e2,stroke:#333,color:#fff
-    style LocalModelCtrl fill:#4a90e2,stroke:#333,color:#fff
-    style LocalModelAgent fill:#7b68ee,stroke:#333,color:#fff
-    style StorageInit fill:#e8a838,stroke:#333,color:#fff
-    style Agent fill:#e8a838,stroke:#333,color:#fff
-    style Router fill:#50c878,stroke:#333,color:#fff
-
-    style ISVC fill:#f5a623,stroke:#333
-    style LLMISVC fill:#f5a623,stroke:#333
-    style LLMISVCConfig fill:#f5a623,stroke:#333
-    style IG fill:#f5a623,stroke:#333
-    style SR fill:#f5a623,stroke:#333
-    style CSR fill:#f5a623,stroke:#333
-    style TM fill:#f5a623,stroke:#333
-    style LMC fill:#f5a623,stroke:#333
-    style LMNC fill:#f5a623,stroke:#333
-    style LMN fill:#f5a623,stroke:#333
-
-    style Deployments fill:#d4edda,stroke:#333
-    style IngressResources fill:#d4edda,stroke:#333
-    style LWSets fill:#d4edda,stroke:#333
-    style LLMRoutes fill:#d4edda,stroke:#333
-    style Scaling fill:#d4edda,stroke:#333
-    style PVs fill:#d4edda,stroke:#333
+    style ControllerMgr fill:#4a90e2,color:#fff,stroke:#333,stroke-width:2px
+    style LLMController fill:#4a90e2,color:#fff,stroke:#333,stroke-width:2px
+    style LocalModelCtrl fill:#4a90e2,color:#fff,stroke:#333,stroke-width:2px
+    style ModuleCtrl fill:#4a90e2,color:#fff,stroke:#333,stroke-width:2px
+    style LocalModelAgent fill:#50c878,color:#fff,stroke:#333,stroke-width:2px
+    style Agent fill:#9b59b6,color:#fff,stroke:#333,stroke-width:2px
+    style StorageInit fill:#9b59b6,color:#fff,stroke:#333,stroke-width:2px
+    style Router fill:#e67e22,color:#fff,stroke:#333,stroke-width:2px
+    style EPP fill:#e67e22,color:#fff,stroke:#333,stroke-width:2px
+    style ISVC fill:#f5a623,stroke:#333,stroke-width:2px
+    style LLMISVC fill:#f5a623,stroke:#333,stroke-width:2px
+    style IG fill:#f5a623,stroke:#333,stroke-width:2px
+    style TM fill:#f5a623,stroke:#333,stroke-width:2px
+    style SR fill:#f5a623,stroke:#333,stroke-width:2px
+    style CSR fill:#f5a623,stroke:#333,stroke-width:2px
+    style LMC fill:#f5a623,stroke:#333,stroke-width:2px
+    style LMNC fill:#f5a623,stroke:#333,stroke-width:2px
+    style LMN fill:#f5a623,stroke:#333,stroke-width:2px
+    style KserveCR fill:#f5a623,stroke:#333,stroke-width:2px
+    style Istio fill:#999,stroke:#333
+    style Knative fill:#999,stroke:#333
+    style CertMgr fill:#999,stroke:#333
+    style GatewayAPI fill:#999,stroke:#333
+    style KEDA_Ext fill:#999,stroke:#333
+    style ODHOperator fill:#7ed321,stroke:#333,stroke-width:2px
+    style ODHModelCtrl fill:#7ed321,stroke:#333,stroke-width:2px
+    style WVA fill:#7ed321,stroke:#333,stroke-width:2px
+    style vLLM fill:#7ed321,stroke:#333,stroke-width:2px

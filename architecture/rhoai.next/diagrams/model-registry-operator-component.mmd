@@ -1,92 +1,91 @@
 graph TB
     subgraph Operator["Model Registry Operator"]
         direction TB
-        Controller["ModelRegistry Controller<br/>(controller-runtime)"]
-        CatalogCtrl["ModelCatalog Controller<br/>(embedded)"]
-        MigrationMgr["Storage Migration Manager<br/>(background goroutine)"]
-        Webhooks["Admission Webhooks<br/>(defaulting + validation + conversion)"]
 
-        Controller -->|"shares templates"| CatalogCtrl
-        MigrationMgr -->|"migrates v1alpha1 to v1beta1"| Controller
+        subgraph Controllers["Controllers"]
+            MRReconciler["ModelRegistryReconciler<br/>Reconciles per-instance<br/>ModelRegistry CRs"]
+            MCReconciler["ModelCatalogReconciler<br/>Manages singleton<br/>model-catalog deployment"]
+            TLSWatcher["TLS Security Profile Watcher<br/>Watches APIServer TLS changes<br/>triggers pod restart"]
+            SVM["StorageMigrationManager<br/>v1alpha1 → v1beta1<br/>CRD migration"]
+        end
+
+        subgraph Webhooks["Admission Webhooks (9443/TCP)"]
+            MutatingWH["Mutating Webhook<br/>Defaults fields, migrates<br/>Istio→OAuth→KubeRBACProxy"]
+            ValidatingWH["Validating Webhook<br/>DB config, namespace,<br/>unique name enforcement"]
+            ConversionWH["Conversion Webhook<br/>v1alpha1 ↔ v1beta1"]
+        end
     end
 
     %% CRDs
-    ModelRegistryCR["ModelRegistry CR<br/>(v1beta1)<br/>modelregistry.opendatahub.io"]
-    ModelRegistryCRLegacy["ModelRegistry CR<br/>(v1alpha1 - DEPRECATED)"]
+    ModelRegistryCR["ModelRegistry CR<br/>(modelregistry.opendatahub.io)<br/>v1beta1 / v1alpha1"]
+    AuthCR["Auth CR<br/>(services.platform.opendatahub.io)<br/>Admin groups config"]
+    ComponentCR["ModelRegistries CR<br/>(components.platform.opendatahub.io)<br/>Owner reference"]
 
-    %% Managed Resources per Registry
-    subgraph ManagedResources["Managed Resources (per ModelRegistry)"]
-        direction TB
-        RESTDeploy["REST API Deployment<br/>(model-registry image)"]
-        KRBPSidecar["kube-rbac-proxy Sidecar<br/>(port 8443)"]
-        RegistrySvc["Service<br/>(ClusterIP 8443/8080)"]
-        HTTPSRoute["HTTPS Route<br/>reencrypt"]
-        HTTPRoute["HTTP Route"]
-        NetPol["NetworkPolicy<br/>(ingress restriction)"]
-        RegistrySA["ServiceAccount +<br/>auth-delegator binding"]
-        UserGroup["OpenShift Group<br/>({name}-users)"]
-        PostgresDeploy["PostgreSQL Deployment<br/>(auto-provisioned, optional)"]
-        PostgresNetPol["PostgreSQL NetworkPolicy<br/>(pod-only access)"]
+    %% Per-Instance Resources
+    subgraph PerInstance["Per-Instance Resources (per ModelRegistry)"]
+        MRDeployment["Deployment<br/>model-registry + kube-rbac-proxy"]
+        MRService["Service<br/>8443/TCP (HTTPS)"]
+        MRSA["ServiceAccount"]
+        MRRoute["OpenShift Route<br/>{name}-https"]
+        MRHTTPRoute["HTTPRoute<br/>model-registry-{name}"]
+        MRNetPol["NetworkPolicy"]
+        MRGroup["OpenShift Group<br/>{name}-users"]
+        MRRBAC["Role + RoleBinding<br/>+ ClusterRoleBinding"]
     end
 
     %% Catalog Resources
     subgraph CatalogResources["Model Catalog Resources (singleton)"]
-        direction TB
-        CatalogDeploy["Catalog Deployment<br/>(REST + kube-rbac-proxy)"]
-        CatalogPostgres["Catalog PostgreSQL"]
-        CatalogSvc["Catalog Service<br/>(ClusterIP 8443)"]
-        CatalogRoute["Catalog HTTPS Route"]
-        CatalogCM["Catalog Source ConfigMaps<br/>(label discovery)"]
+        CatalogDeploy["Deployment<br/>model-catalog + kube-rbac-proxy<br/>+ init containers"]
+        CatalogService["Service<br/>8443/TCP (HTTPS)"]
+        CatalogRoute["OpenShift Route<br/>model-catalog-https"]
+        CatalogHTTPRoute["HTTPRoute<br/>model-catalog"]
+        CatalogPostgres["PostgreSQL 16<br/>Auto-provisioned"]
     end
 
+    %% Database
+    PostgreSQL["PostgreSQL / MySQL<br/>External or auto-provisioned"]
+
     %% Flows
-    ModelRegistryCR -->|"watched by"| Controller
-    ModelRegistryCRLegacy -->|"auto-converts"| Webhooks
-    Webhooks -->|"defaults + validates"| ModelRegistryCR
+    ModelRegistryCR -->|watched by| MRReconciler
+    AuthCR -->|read by| MCReconciler
+    ComponentCR -->|read by| MCReconciler
 
-    Controller -->|"reconciles"| RESTDeploy
-    Controller -->|"injects"| KRBPSidecar
-    Controller -->|"creates"| RegistrySvc
-    Controller -->|"creates"| HTTPSRoute
-    Controller -->|"creates"| HTTPRoute
-    Controller -->|"creates"| NetPol
-    Controller -->|"creates"| RegistrySA
-    Controller -->|"creates (non-BYOIDC)"| UserGroup
-    Controller -->|"creates (optional)"| PostgresDeploy
-    Controller -->|"creates"| PostgresNetPol
+    MRReconciler -->|creates/manages| MRDeployment
+    MRReconciler -->|creates| MRService
+    MRReconciler -->|creates| MRSA
+    MRReconciler -->|creates| MRRoute
+    MRReconciler -->|creates| MRHTTPRoute
+    MRReconciler -->|creates| MRNetPol
+    MRReconciler -->|creates| MRGroup
+    MRReconciler -->|creates| MRRBAC
 
-    CatalogCtrl -->|"manages"| CatalogDeploy
-    CatalogCtrl -->|"manages"| CatalogPostgres
-    CatalogCtrl -->|"manages"| CatalogSvc
-    CatalogCtrl -->|"manages"| CatalogRoute
-    CatalogCtrl -->|"discovers by label"| CatalogCM
+    MCReconciler -->|creates/manages| CatalogDeploy
+    MCReconciler -->|creates| CatalogService
+    MCReconciler -->|creates| CatalogRoute
+    MCReconciler -->|creates| CatalogHTTPRoute
+    MCReconciler -->|creates| CatalogPostgres
 
-    MigrationMgr -->|"creates SVM or manual re-read/write"| ModelRegistryCR
+    MRDeployment -->|connects| PostgreSQL
+    CatalogDeploy -->|connects| CatalogPostgres
 
-    %% External Dependencies
-    K8sAPI["Kubernetes API Server"]
-    OSConfig["OpenShift Config<br/>(ingress domain)"]
-    PlatformMR["components.platform.opendatahub.io<br/>ModelRegistry CR"]
-    PlatformAuth["services.platform.opendatahub.io<br/>Auth CR"]
+    ModelRegistryCR -->|validated by| ValidatingWH
+    ModelRegistryCR -->|defaulted by| MutatingWH
+    ModelRegistryCR -->|converted by| ConversionWH
 
-    Controller -->|"CRUD via"| K8sAPI
-    Controller -->|"reads domain"| OSConfig
-    CatalogCtrl -->|"owner ref"| PlatformMR
-    CatalogCtrl -->|"reads adminGroups"| PlatformAuth
+    TLSWatcher -->|restarts| MRDeployment
+    SVM -->|migrates CRDs| ModelRegistryCR
 
     %% Styling
-    style Controller fill:#4a90e2,color:#fff
-    style CatalogCtrl fill:#4a90e2,color:#fff
-    style MigrationMgr fill:#4a90e2,color:#fff
-    style Webhooks fill:#4a90e2,color:#fff
-    style ModelRegistryCR fill:#f5a623,color:#fff
-    style ModelRegistryCRLegacy fill:#d0021b,color:#fff
-    style RESTDeploy fill:#7ed321,color:#fff
-    style KRBPSidecar fill:#7ed321,color:#fff
-    style PostgresDeploy fill:#7ed321,color:#fff
-    style CatalogDeploy fill:#50e3c2,color:#333
-    style CatalogPostgres fill:#50e3c2,color:#333
-    style K8sAPI fill:#e8e8e8,color:#333
-    style OSConfig fill:#e8e8e8,color:#333
-    style PlatformMR fill:#bd10e0,color:#fff
-    style PlatformAuth fill:#bd10e0,color:#fff
+    style Operator fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    style MRReconciler fill:#5ba3f5,stroke:#333
+    style MCReconciler fill:#5ba3f5,stroke:#333
+    style TLSWatcher fill:#5ba3f5,stroke:#333
+    style SVM fill:#5ba3f5,stroke:#333
+    style MutatingWH fill:#9b59b6,stroke:#333,color:#fff
+    style ValidatingWH fill:#9b59b6,stroke:#333,color:#fff
+    style ConversionWH fill:#9b59b6,stroke:#333,color:#fff
+    style ModelRegistryCR fill:#f5a623,stroke:#333
+    style AuthCR fill:#f5a623,stroke:#333
+    style ComponentCR fill:#f5a623,stroke:#333
+    style PostgreSQL fill:#e8e8e8,stroke:#333
+    style CatalogPostgres fill:#e8e8e8,stroke:#333

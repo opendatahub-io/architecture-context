@@ -1,171 +1,196 @@
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                        │
-│                                                                              │
-│  [User / SDK / kubectl]                                                      │
-│         │                                                                    │
-│         │ Port: 443/TCP                                                      │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS 1.2+                                               │
-│         │ Auth: Bearer Token / kubeconfig                                    │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  KUBERNETES CONTROL PLANE (Trusted)                                          │
-│                                                                              │
-│  [Kubernetes API Server]                                                     │
-│  - Port: 443/TCP (external + internal)                                      │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: Bearer tokens, client certificates, ServiceAccount tokens          │
-│         │                                                                    │
-│         │ Port: 9443/TCP                                                     │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS (self-signed, cert-controller managed)             │
-│         │ Auth: AdmissionReview (API server → webhook)                       │
-│         │ Direction: API server calls webhook on CR create/update            │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  CONTROLLER NAMESPACE (opendatahub)                                          │
-│                                                                              │
-│  [trainer-controller-manager]                                                │
-│  - Namespace: opendatahub                                                    │
-│  - ServiceAccount: kubeflow-trainer-controller-manager                      │
-│  - Image: quay.io/opendatahub/trainer:odh-3.5-ea1                          │
-│  - Ports:                                                                    │
-│    - 8081/TCP (HTTP, health probes: /healthz, /readyz)                      │
-│    - 8443/TCP (HTTPS, Prometheus metrics: /metrics, TLS)                    │
-│    - 9443/TCP (HTTPS, validating webhooks, TLS self-signed)                 │
-│  - Cert management: cert-controller (OPA, self-signed CA, auto-rotation)    │
-│  - HTTP/2 disabled (CVE mitigation, NextProtos: http/1.1 only)             │
-│         │                                                                    │
-│         │ OUTBOUND CONNECTIONS:                                              │
-│         │                                                                    │
-│         ├── Port: 443/TCP ──────────────────────────────────────────┐        │
-│         │   Protocol: HTTPS                                         │        │
-│         │   Encryption: TLS 1.2+                                    │        │
-│         │   Auth: ServiceAccount token (Bearer)                     │        │
-│         │   Purpose: CRUD on CRDs, JobSets, PodGroups, Secrets,     │        │
-│         │            ConfigMaps, NetworkPolicies, Events, Leases     │        │
-│         │   Destination: Kubernetes API Server ─────────────────────┘        │
-│         │                                                                    │
-│         ├── Port: 28080/TCP (configurable) ─────────────────────────┐        │
-│         │   Protocol: HTTP                                          │        │
-│         │   Encryption: *** NONE (plaintext) ***                    │        │
-│         │   Auth: None (NetworkPolicy-secured)                      │        │
-│         │   Purpose: RHOAI progression tracking polls /metrics      │        │
-│         │   Destination: Training pod IP (rank-0, direct pod IP)    │        │
-│         │   Security: NetworkPolicy restricts access to controller  │        │
-│         │             namespace pods only ──────────────────────────┘        │
-│         │                                                                    │
-│         │ INBOUND CONNECTIONS:                                               │
-│         │                                                                    │
-│         ├── Port: 8443/TCP ◄── Prometheus / OpenShift Monitoring            │
-│         │   Protocol: HTTPS                                                  │
-│         │   Encryption: TLS                                                  │
-│         │   Auth: None (insecureSkipVerify in PodMonitor)                   │
-│         │   Purpose: Metrics scraping                                        │
-│         │                                                                    │
-│         └── Port: 9443/TCP ◄── Kubernetes API Server                        │
-│             Protocol: HTTPS                                                  │
-│             Encryption: TLS (self-signed cert)                               │
-│             Auth: AdmissionReview                                            │
-│             Purpose: Validating webhooks for TrainJob, TrainingRuntime,      │
-│                      ClusterTrainingRuntime                                  │
-│             failurePolicy: Fail                                              │
-│                                                                              │
-│  [kubeflow-trainer-controller-manager Service] (ClusterIP)                   │
-│  - 443/TCP → targetPort 9443 (webhook)                                      │
-│  - 8443/TCP → targetPort 8443 (metrics, RHOAI)                             │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  USER NAMESPACES (Training Workloads)                                        │
-│                                                                              │
-│  [Training Pods] (created by JobSet controller)                              │
-│  - Namespace: {user-namespace}                                               │
-│  - Images: quay.io/opendatahub/odh-th06-*                                  │
-│  - Ports:                                                                    │
-│    - 29500/TCP (NCCL/gRPC rendezvous, inter-pod, plaintext)                │
-│    - 28080/TCP (metrics endpoint, HTTP, plaintext)                          │
-│    - 22/TCP (SSH, MPI jobs only, ECDSA P-521)                              │
-│         │                                                                    │
-│         │ INTER-POD COMMUNICATION:                                           │
-│         │                                                                    │
-│         ├── Port: 29500/TCP                                                  │
-│         │   Protocol: TCP (NCCL/gRPC)                                       │
-│         │   Encryption: None (plaintext, intra-cluster)                      │
-│         │   Auth: None                                                       │
-│         │   Security: NetworkPolicy restricts to same-job pods only         │
-│         │                                                                    │
-│         └── Port: 22/TCP (MPI jobs only)                                    │
-│             Protocol: SSH                                                    │
-│             Encryption: ECDSA P-521 key exchange (FIPS-approved curve)      │
-│             Auth: SSH key pair from per-TrainJob Secret (immutable)          │
-│                                                                              │
-│  [NetworkPolicy] (per-TrainJob, created by RHAI module)                      │
-│  - Ingress: Allow from same-job pods (NCCL/gRPC)                           │
-│  - Ingress: Allow from controller namespace (metrics polling)               │
-│  - Default: Deny all other ingress to training pods                         │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  WORKLOAD ORCHESTRATION                                                      │
-│                                                                              │
-│  [JobSet Controller] (sigs.k8s.io/jobset)                                   │
-│  - Watches: JobSet CRs created by Trainer controller                        │
-│  - Creates: Training Pods per JobSet spec                                    │
-│  - Port: 443/TCP (via K8s API, HTTPS, TLS 1.2+)                           │
-│                                                                              │
-│  [scheduler-plugins / Volcano] (optional gang-scheduling)                    │
-│  - Watches: PodGroup CRs created by Coscheduling/Volcano plugins           │
-│  - Port: 443/TCP (via K8s API, HTTPS, TLS 1.2+)                           │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                             │
+│  [Data Scientist / kubectl / RHOAI Dashboard]                               │
+│         │                                                                   │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: Bearer Token (ServiceAccount / OIDC)                        │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE (Trusted)                                         │
+│                                                                             │
+│  [Kubernetes API Server]                                                    │
+│  - Port: 443/TCP                                                           │
+│  - Protocol: HTTPS                                                         │
+│  - Auth: Bearer Token, Client Certificates                                 │
+│         │                                                                   │
+│         ├──────────────────────────────────────────────────┐                │
+│         │ (Webhook validation)                              │                │
+│         │ Port: 9443/TCP                                    │                │
+│         │ Protocol: HTTPS                                   │                │
+│         │ Encryption: TLS (self-managed certs)              │                │
+│         │ Auth: mTLS (API server client certificate)        │                │
+│         ▼                                                   │                │
+├─────────────────────────────────────────────────────────────│────────────────┤
+│  NAMESPACE: opendatahub (Operator)                          │                │
+│                                                             │                │
+│  [trainer-controller-manager]                               │                │
+│  - ServiceAccount: kubeflow-trainer-controller-manager      │                │
+│  - Image: quay.io/opendatahub/trainer:odh-3.5-ea1          │                │
+│  - Replicas: 1                                              │                │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1      │                │
+│                                                             │                │
+│  Ports:                                                     │                │
+│    9443/TCP - Webhook (HTTPS, TLS self-managed, K8s mTLS)  ◄┘                │
+│    8443/TCP - Metrics (HTTPS, TLS, PodMonitor scrape)                       │
+│    8081/TCP - Health  (HTTP, plaintext, no auth)                             │
+│         │                                                                   │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: ServiceAccount Bearer Token                                 │
+│         ▼                                                                   │
+│  [Kubernetes API Server] (CRUD: JobSets, PodGroups,                        │
+│   ConfigMaps, Secrets, NetworkPolicies, TrainJob status)                    │
+│         │                                                                   │
+│         │ (RHAI Progression Tracking)                                       │
+│         │ Port: 28080/TCP                                                   │
+│         │ Protocol: HTTP                                                    │
+│         │ Encryption: None                                                  │
+│         │ Auth: None (NetworkPolicy restricted)                             │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  NAMESPACE: {user-namespace} (Training Workloads)                           │
+│                                                                             │
+│  [Training Pod - Rank 0 (Master)]                                           │
+│  - Managed by: JobSet → ReplicatedJob                                      │
+│  - Init containers: dataset-initializer, model-initializer                 │
+│  - Ports:                                                                   │
+│      29500/TCP - PyTorch c10d rendezvous (TCP, no encryption, no auth)     │
+│      28080/TCP - RHAI metrics endpoint (HTTP, no encryption, no auth)      │
+│         │                                                                   │
+│         │ Port: 29500/TCP                                                   │
+│         │ Protocol: TCP (PyTorch c10d)                                      │
+│         │ Encryption: None                                                  │
+│         │ Auth: None                                                        │
+│         │ Network restriction: NetworkPolicy (same-job pods only)           │
+│         ▼                                                                   │
+│  [Training Pod - Workers (1..N)]                                            │
+│  - Managed by: JobSet → ReplicatedJob                                      │
+│  - Ports:                                                                   │
+│      29500/TCP - PyTorch c10d (TCP, no encryption)                         │
+│      Dynamic   - NCCL/Gloo collective ops (TCP/UDP, no encryption)         │
+│                                                                             │
+│  NetworkPolicy Enforcement (RHAI, per-TrainJob):                            │
+│  ┌─────────────────────────────────────────────────────────┐               │
+│  │ Ingress:                                                 │               │
+│  │   - From: pods with controller labels (28080/TCP only)  │               │
+│  │   - From: pods with same TrainJob labels (all ports)    │               │
+│  │ Egress:                                                  │               │
+│  │   - To: same-job pods (all ports)                       │               │
+│  │ Owner: TrainJob (auto-cleanup on deletion)              │               │
+│  └─────────────────────────────────────────────────────────┘               │
+│                                                                             │
+│  ┌─── Data Cache (Optional, LeaderWorkerSet managed) ───┐                  │
+│  │                                                       │                  │
+│  │  [Data Cache Head]                                    │                  │
+│  │  - Port: Configurable (gRPC Arrow Flight)             │                  │
+│  │  - Protocol: gRPC/HTTP2                               │                  │
+│  │  - Encryption: None                                   │                  │
+│  │  - Auth: None                                         │                  │
+│  │         │                                             │                  │
+│  │         │ Arrow Flight do_put                         │                  │
+│  │         ▼                                             │                  │
+│  │  [Data Cache Workers]                                 │                  │
+│  │  - Port: Configurable (gRPC Arrow Flight)             │                  │
+│  │  - Protocol: gRPC/HTTP2                               │                  │
+│  │  - Encryption: None                                   │                  │
+│  │  - Auth: None                                         │                  │
+│  │                                                       │                  │
+│  └───────────────────────────────────────────────────────┘                  │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  MONITORING (OpenShift)                                                     │
+│                                                                             │
+│  [Prometheus / OpenShift Monitoring]                                        │
+│  - Scrapes: 8443/TCP                                                       │
+│  - Protocol: HTTPS                                                         │
+│  - Encryption: TLS (insecureSkipVerify in PodMonitor)                      │
+│  - Auth: None (network-level)                                              │
+│  - Configuration: PodMonitor resource                                      │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                          │
+│                                                                             │
+│  [Iceberg Metadata Store] (Data Cache only)                                │
+│  - Protocol: HTTP/S3                                                       │
+│  - Encryption: Varies                                                      │
+│  - Auth: Varies                                                            │
+│  - Purpose: Table metadata for data file discovery                         │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-  ClusterRole: kubeflow-trainer-controller-manager
-    - "" (core): configmaps, secrets → create, get, list, patch, update, watch
-    - "" (core): events → create, patch, update, watch
-    - "" (core): limitranges → get, list, watch
-    - "" (core): pods (RHOAI) → get, list
-    - admissionregistration.k8s.io: validatingwebhookconfigurations → get, list, update, watch
-    - coordination.k8s.io: leases → create, get, list, update
-    - jobset.x-k8s.io: jobsets → create, get, list, patch, update, watch
-    - node.k8s.io: runtimeclasses → get, list, watch
-    - scheduling.volcano.sh, scheduling.x-k8s.io: podgroups → create, get, list, patch, update, watch
-    - trainer.kubeflow.org: trainjobs, trainingruntimes, clustertrainingruntimes → get, list, patch, update, watch
-    - trainer.kubeflow.org: */finalizers, trainjobs/status → get, patch, update
-    - networking.k8s.io (RHOAI): networkpolicies → get, list, watch, create, update, patch
-
-  Aggregate ClusterRoles:
-    - training-edit: trainjobs CRUD; trainingruntimes, clustertrainingruntimes read-only
-    - training-admin: full CRUD on trainjobs, trainingruntimes, clustertrainingruntimes
-    - training-view: read-only on all trainer CRDs
-
-  ClusterRoleBinding: kubeflow-trainer-controller-manager
-    - ServiceAccount: kubeflow-trainer-controller-manager (namespace: opendatahub)
-    - ClusterRole: kubeflow-trainer-controller-manager
-
-Webhook Configuration:
-  ValidatingWebhookConfiguration (failurePolicy: Fail):
-    - validator.trainjob.trainer.kubeflow.org → trainjobs (CREATE, UPDATE)
-    - validator.trainingruntime.trainer.kubeflow.org → trainingruntimes (CREATE)
-    - validator.clustertrainingruntime.trainer.kubeflow.org → clustertrainingruntimes (CREATE, UPDATE)
-  Certificate: Self-signed CA via cert-controller (OPA), auto-rotation
-  Mount: /tmp/k8s-webhook-server/serving-certs
+┌───────────────────────────────────────────────────────────────────────────┐
+│ ClusterRole: kubeflow-trainer-controller-manager                         │
+│ ServiceAccount: kubeflow-trainer-controller-manager (opendatahub)        │
+│ Binding: ClusterRoleBinding (cluster-wide)                               │
+│                                                                          │
+│ API Groups & Resources:                                                  │
+│   "" (core):                                                             │
+│     configmaps, secrets    → create, get, list, patch, update, watch     │
+│     events                 → create, patch, update, watch                │
+│     limitranges            → get, list, watch                            │
+│     pods (RHOAI only)      → get, list                                   │
+│   admissionregistration.k8s.io:                                          │
+│     validatingwebhookconfigurations → get, list, update, watch           │
+│   coordination.k8s.io:                                                   │
+│     leases                 → create, get, list, update                   │
+│   jobset.x-k8s.io:                                                       │
+│     jobsets                → create, get, list, patch, update, watch     │
+│   networking.k8s.io (RHOAI only):                                        │
+│     networkpolicies        → get, list, watch, create, update, patch     │
+│   node.k8s.io:                                                           │
+│     runtimeclasses         → get, list, watch                            │
+│   scheduling.volcano.sh, scheduling.x-k8s.io:                           │
+│     podgroups              → create, get, list, patch, update, watch     │
+│   trainer.kubeflow.org:                                                   │
+│     clustertrainingruntimes, trainingruntimes, trainjobs                 │
+│                            → get, list, patch, update, watch             │
+│     */finalizers, trainjobs/status                                       │
+│                            → get, patch, update                          │
+├───────────────────────────────────────────────────────────────────────────┤
+│ User-facing Roles:                                                       │
+│   training-admin → full CRUD on trainjobs, trainingruntimes, CTRs       │
+│   training-edit  → full CRUD on trainjobs; read-only on runtimes        │
+│   training-view  → read-only on all trainer resources                   │
+└───────────────────────────────────────────────────────────────────────────┘
 
 Secrets:
-  - kubeflow-trainer-webhook-cert (Opaque) - Webhook TLS certs (CA + server)
-    Provisioned by: cert-controller (auto-generated, auto-rotated)
-  - {trainjob-name}-mpi-ssh-auth (kubernetes.io/ssh-auth) - ECDSA P-521 SSH key pair
-    Provisioned by: MPI plugin (per-TrainJob, immutable)
-    Purpose: MPI inter-node SSH communication
+┌───────────────────────────────────────────────────────────────────────────┐
+│ kubeflow-trainer-webhook-cert                                            │
+│   Type: kubernetes.io/tls                                                │
+│   Purpose: TLS certificate for webhook server (9443/TCP)                 │
+│   Provisioned by: cert-controller (open-policy-agent)                    │
+│   Auto-Rotate: Yes                                                       │
+│                                                                          │
+│ {trainjob}-mpi-ssh-auth                                                  │
+│   Type: Opaque                                                           │
+│   Purpose: ECDSA P521 SSH keypair for MPI inter-node communication      │
+│   Provisioned by: Controller (per TrainJob, on MPI plugin activation)    │
+│   Auto-Rotate: No (immutable, lifecycle-bound to TrainJob)              │
+│   ⚠ FIPS Note: Uses golang.org/x/crypto/ssh (not stdlib crypto)        │
+└───────────────────────────────────────────────────────────────────────────┘
 
 FIPS Compliance:
-  - Build: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime
-  - Base image: ubi9/ubi-minimal (OpenSSL included)
-  - TLS: HTTP/2 disabled (CVE mitigation), NextProtos: http/1.1
-  - SSH: ECDSA P-521 (FIPS-approved curve)
-  - Risk: Plaintext HTTP for training pod metrics polling (mitigated by NetworkPolicy)
-  - Risk: PodMonitor uses insecureSkipVerify for metrics scraping
+┌───────────────────────────────────────────────────────────────────────────┐
+│ Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1                     │
+│ Base: registry.access.redhat.com/ubi9/ubi-minimal (OpenSSL included)    │
+│ TLS: stdlib crypto/tls (FIPS via OpenSSL at build time)                 │
+│ HTTP/2: Disabled by default (CVE mitigation)                            │
+│ Risk: MPI SSH keys use golang.org/x/crypto/ssh (non-stdlib)             │
+└───────────────────────────────────────────────────────────────────────────┘
 
-Monitoring:
-  - PodMonitor: scrapes controller :8443/metrics via HTTPS (insecureSkipVerify)
-  - Endpoint: /metrics on port 8443/TCP (HTTPS, TLS)
+Admission Webhooks:
+┌───────────────────────────────────────────────────────────────────────────┐
+│ 3 Validating Webhooks (0 Mutating):                                      │
+│   /validate-trainer-kubeflow-org-v1alpha1-trainjob                      │
+│   /validate-trainer-kubeflow-org-v1alpha1-trainingruntime               │
+│   /validate-trainer-kubeflow-org-v1alpha1-clustertrainingruntime        │
+│                                                                          │
+│ Port: 9443/TCP HTTPS                                                     │
+│ Auth: K8s API server mTLS (client cert)                                  │
+│ Cert: Self-managed via cert-controller, auto-rotation                   │
+└───────────────────────────────────────────────────────────────────────────┘

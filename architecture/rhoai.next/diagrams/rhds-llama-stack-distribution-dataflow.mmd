@@ -1,44 +1,70 @@
 sequenceDiagram
     participant Client as External Client
+    participant Proxy as kube-rbac-proxy<br/>(Platform Auth)
     participant LS as Llama Stack Server<br/>8321/TCP HTTP
-    participant vLLM as vLLM Inference<br/>configurable/TCP
-    participant vLLMEmb as vLLM Embedding<br/>configurable/TCP
+    participant vLLM as vLLM Endpoint<br/>HTTPS TLS
     participant PG as PostgreSQL<br/>5432/TCP
-    participant Milvus as Milvus / pgvector / Qdrant<br/>configurable/TCP
-    participant TrustyAI as TrustyAI FMS<br/>configurable/TCP HTTPS
-    participant KFP as Kubeflow Pipelines<br/>configurable/TCP
+    participant VecDB as Vector DB<br/>(Milvus/PgVector/Qdrant)
+    participant KF as Kubeflow Pipelines<br/>HTTPS TLS 1.2+
     participant S3 as S3 Storage<br/>443/TCP HTTPS
 
-    Note over Client,S3: Flow 1: OpenAI-Compatible Chat Completion via vLLM
+    rect rgb(230, 245, 255)
+        Note over Client,PG: Flow 1: Chat Completion Request
+        Client->>Proxy: POST /v1/chat/completions<br/>Platform-managed auth
+        Proxy->>LS: HTTP/8321<br/>Forwarded request
+        LS->>vLLM: POST inference request<br/>HTTPS, Bearer token (VLLM_API_TOKEN)
+        vLLM-->>LS: Completion response<br/>HTTPS
+        LS->>PG: Store inference log<br/>PostgreSQL/5432, Username/password
+        PG-->>LS: ACK
+        LS-->>Proxy: JSON response
+        Proxy-->>Client: Chat completion result
+    end
 
-    Client->>LS: POST /v1/chat/completions<br/>HTTP, No Auth
-    LS->>vLLM: Forward inference request<br/>HTTP/HTTPS, Bearer Token
-    vLLM-->>LS: Completion response
-    LS->>PG: Log inference (async write queue)<br/>PostgreSQL, Username/Password
-    LS-->>Client: JSON Response (OpenAI-compatible)
+    rect rgb(230, 255, 230)
+        Note over Client,VecDB: Flow 2: RAG Query with Vector I/O
+        Client->>Proxy: POST /v1/vector-io/query<br/>Platform-managed auth
+        Proxy->>LS: HTTP/8321<br/>Forwarded request
+        LS->>vLLM: POST /v1/embeddings<br/>HTTPS, Bearer token<br/>Generate query embedding
+        vLLM-->>LS: Embedding vector
+        LS->>VecDB: Vector similarity search<br/>Protocol varies by backend<br/>Token/password auth
+        VecDB-->>LS: Relevant documents
+        LS->>vLLM: POST /v1/chat/completions<br/>HTTPS, Bearer token<br/>Context-augmented inference
+        vLLM-->>LS: Generated response
+        LS-->>Proxy: RAG response with citations
+        Proxy-->>Client: Augmented response
+    end
 
-    Note over Client,S3: Flow 2: RAG (Retrieval-Augmented Generation)
+    rect rgb(255, 245, 230)
+        Note over Client,S3: Flow 3: Model Evaluation via Kubeflow
+        Client->>Proxy: POST /v1/eval/run<br/>Platform-managed auth
+        Proxy->>LS: HTTP/8321<br/>Forwarded request
+        LS->>KF: Submit evaluation pipeline<br/>HTTPS/TLS 1.2+<br/>Bearer token (KUBEFLOW_PIPELINES_TOKEN)
+        KF->>S3: Read evaluation dataset<br/>HTTPS/443, AWS IAM
+        S3-->>KF: Dataset artifacts
+        KF->>vLLM: Run model inference<br/>HTTPS, Bearer token
+        vLLM-->>KF: Model outputs
+        KF-->>LS: Evaluation results<br/>HTTPS
+        LS->>PG: Store evaluation results<br/>PostgreSQL/5432
+        PG-->>LS: ACK
+        LS-->>Proxy: Evaluation summary
+        Proxy-->>Client: Evaluation results
+    end
 
-    Client->>LS: POST /v1/agents/*<br/>HTTP, No Auth
-    LS->>Milvus: Vector similarity search<br/>HTTP/gRPC/PostgreSQL, Token/Password
-    Milvus-->>LS: Relevant document chunks
-    LS->>vLLMEmb: Generate embeddings (if needed)<br/>HTTP/HTTPS, Bearer Token
-    vLLMEmb-->>LS: Embedding vectors
-    LS->>vLLM: Inference with retrieved context<br/>HTTP/HTTPS, Bearer Token
-    vLLM-->>LS: Augmented completion
-    LS-->>Client: Agent response with RAG context
-
-    Note over Client,S3: Flow 3: Model Evaluation via Kubeflow Pipelines
-
-    Client->>LS: POST /v1/eval/*<br/>HTTP, No Auth
-    LS->>KFP: Submit evaluation pipeline<br/>HTTP/HTTPS, Bearer Token (KUBEFLOW_PIPELINES_TOKEN)
-    KFP->>S3: Store evaluation results<br/>HTTPS/443, AWS credentials
-    KFP-->>LS: Pipeline run status + results
-    LS-->>Client: Evaluation results
-
-    Note over Client,S3: Flow 4: Safety Guardrail Check
-
-    Client->>LS: POST /v1/safety/*<br/>HTTP, No Auth
-    LS->>TrustyAI: Safety shield evaluation<br/>HTTPS, TLS (custom cert FMS_SSL_CERT_PATH)
-    TrustyAI-->>LS: Safety verdict (pass/fail/warn)
-    LS-->>Client: Safety evaluation result
+    rect rgb(255, 230, 230)
+        Note over Client,LS: Flow 4: Safety-Shielded Inference
+        participant FMS as TrustyAI FMS<br/>HTTPS TLS
+        Client->>Proxy: POST /v1/chat/completions<br/>(with safety shield)
+        Proxy->>LS: HTTP/8321
+        LS->>FMS: POST safety check (input)<br/>HTTPS, custom cert (FMS_SSL_CERT_PATH)
+        FMS-->>LS: Safety verdict (pass/block)
+        alt Input passes safety check
+            LS->>vLLM: POST inference<br/>HTTPS, Bearer token
+            vLLM-->>LS: Generated response
+            LS->>FMS: POST safety check (output)<br/>HTTPS, custom cert
+            FMS-->>LS: Safety verdict
+            LS-->>Proxy: Safe response
+        else Input blocked
+            LS-->>Proxy: Safety violation response
+        end
+        Proxy-->>Client: Final response
+    end

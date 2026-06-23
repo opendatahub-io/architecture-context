@@ -1,69 +1,70 @@
 sequenceDiagram
     participant Client as External Client
-    participant Orch as Guardrails Orchestrator<br/>8033/TCP HTTP/HTTPS<br/>TLS 1.2+ (optional)
-    participant Health as Health Server<br/>8034/TCP HTTP<br/>Plaintext
-    participant TGIS as TGIS Generation<br/>8033/TCP gRPC<br/>TLS (optional)
-    participant NLP as Caikit NLP<br/>8085/TCP gRPC<br/>TLS (optional)
-    participant Chunker as Caikit Chunkers<br/>8085/TCP gRPC<br/>TLS (optional)
-    participant Detector as Detector Services<br/>8080/TCP HTTP/HTTPS<br/>Bearer (optional)
-    participant OpenAI as OpenAI Server<br/>8080/TCP HTTP/HTTPS<br/>Bearer (optional)
+    participant Orch as Orchestrator<br/>8033/TCP HTTP/HTTPS<br/>Optional TLS/mTLS
+    participant Health as Health Server<br/>8034/TCP Plaintext
+    participant Detector as Detector Service(s)<br/>8080/TCP HTTP/HTTPS
+    participant Chunker as Chunker Service<br/>8085/TCP gRPC
+    participant TGIS as TGIS / caikit-nlp<br/>8033 or 8085/TCP gRPC
+    participant OpenAI as OpenAI-compatible<br/>8080/TCP HTTP/HTTPS
 
-    Note over Client,Detector: Flow 1: Classification with Text Generation (v1 Unary)
-    Client->>Orch: POST /api/v1/task/classification-with-text-generation<br/>Headers: passthrough (X-Forwarded-Access-Token)
-    Orch->>Chunker: ChunkerTokenizationTaskPredict (gRPC)<br/>Chunk input text
-    Chunker-->>Orch: Chunked text segments
-    Orch->>Detector: POST /api/v1/text/contents<br/>Input detection on chunks<br/>Auth: Bearer (optional)
-    Detector-->>Orch: Detection scores per chunk
-    Note over Orch: Evaluate input detections<br/>against thresholds
-    alt Input blocked
-        Orch-->>Client: 200 OK with detection results (blocked)
-    else Input passed
-        Orch->>TGIS: Generate (gRPC)<br/>Text generation request
+    Note over Client,OpenAI: Flow 1: Classification with Text Generation (v1 Unary)
+
+    Client->>Orch: POST /api/v1/task/classification-with-text-generation<br/>Headers: passthrough + X-Forwarded-Access-Token
+    activate Orch
+
+    rect rgb(255, 240, 220)
+        Note right of Orch: Input Detection Phase
+        Orch->>Chunker: ChunkerTokenizationTaskPredict<br/>gRPC/HTTP2, Optional TLS/mTLS
+        Chunker-->>Orch: Chunked text
+        Orch->>Detector: POST /api/v1/text/contents<br/>detector-id header, Optional TLS/mTLS
+        Detector-->>Orch: Detection results (input)
+    end
+
+    rect rgb(220, 240, 255)
+        Note right of Orch: Generation Phase
+        Orch->>TGIS: Generate RPC<br/>gRPC/HTTP2, Optional TLS/mTLS<br/>Header passthrough
         TGIS-->>Orch: Generated text
-        Orch->>Detector: POST /api/v1/text/generation<br/>Output detection on generated text
-        Detector-->>Orch: Output detection scores
-        Note over Orch: Evaluate output detections<br/>against thresholds
-        Orch-->>Client: 200 OK with generation + detection results
     end
 
-    Note over Client,OpenAI: Flow 2: OpenAI Chat Completions with Detection (v2 Streaming)
+    rect rgb(255, 240, 220)
+        Note right of Orch: Output Detection Phase
+        Orch->>Detector: POST /api/v1/text/contents<br/>detector-id header, Optional TLS/mTLS
+        Detector-->>Orch: Detection results (output)
+    end
+
+    Orch-->>Client: JSON Response<br/>(generated text + detection results)
+    deactivate Orch
+
+    Note over Client,OpenAI: Flow 2: OpenAI Chat Completions with Detection (v2)
+
     Client->>Orch: POST /api/v2/chat/completions-detection<br/>Headers: passthrough
-    Orch->>Detector: POST /api/v1/text/chat<br/>Input detection on chat messages
-    Detector-->>Orch: Input detection scores
-    Note over Orch: Evaluate input detections
-    alt Input passed
-        Orch->>OpenAI: POST /v1/chat/completions<br/>stream=true<br/>Auth: Bearer (optional)
-        loop SSE Stream
-            OpenAI-->>Orch: SSE chunk
-            Orch-->>Client: SSE forwarded chunk
-        end
-        Orch->>Detector: POST /api/v1/text/generation<br/>Output detection on accumulated text
-        Detector-->>Orch: Output detection scores
-        Orch-->>Client: SSE final chunk with detections
+    activate Orch
+
+    rect rgb(255, 240, 220)
+        Note right of Orch: Input Detection
+        Orch->>Detector: POST /api/v1/text/chat<br/>detector-id header, Optional TLS/mTLS
+        Detector-->>Orch: Input detection results
     end
 
-    Note over Client,Chunker: Flow 3: Streaming Content Detection (NDJSON)
-    Client->>Orch: POST /api/v2/text/detection/stream-content<br/>NDJSON stream
-    Orch->>Chunker: BidiStreamingChunkerTokenizationTaskPredict (gRPC)<br/>Bidirectional streaming
-    loop NDJSON Stream
-        Client->>Orch: NDJSON line (text segment)
-        Orch->>Chunker: Stream text chunk
-        Chunker-->>Orch: Tokenized chunk
-        Orch->>Detector: POST /api/v1/text/contents<br/>Detection on chunk
-        Detector-->>Orch: Detection scores
-        Orch-->>Client: NDJSON response line with detections
+    rect rgb(220, 240, 255)
+        Note right of Orch: Generation Phase
+        Orch->>OpenAI: POST /v1/chat/completions<br/>Bearer token (api_token), Optional TLS
+        OpenAI-->>Orch: Chat completion response (or SSE stream)
     end
+
+    rect rgb(255, 240, 220)
+        Note right of Orch: Output Detection
+        Orch->>Detector: POST /api/v1/text/contents<br/>detector-id header, Optional TLS/mTLS
+        Detector-->>Orch: Output detection results
+    end
+
+    Orch-->>Client: JSON or SSE Response<br/>(completion + detection results)
+    deactivate Orch
 
     Note over Client,Health: Health Check Flow
-    Client->>Health: GET /health (8034/TCP, plaintext)
-    Health-->>Client: 200 OK (package info)
-    Client->>Health: GET /info (8034/TCP, plaintext)
-    Health->>TGIS: grpc.health.v1.Health.Check
-    Health->>NLP: grpc.health.v1.Health.Check
-    Health->>Chunker: grpc.health.v1.Health.Check
-    Health->>Detector: GET /health (8081/TCP)
-    TGIS-->>Health: Health status
-    NLP-->>Health: Health status
-    Chunker-->>Health: Health status
-    Detector-->>Health: Health status
-    Health-->>Client: 200 OK (all service health statuses)
+
+    Client->>Health: GET /health (plaintext HTTP)
+    Health-->>Client: 200 OK + package version info
+
+    Client->>Health: GET /info (plaintext HTTP)
+    Health-->>Client: 200 OK + downstream service health status

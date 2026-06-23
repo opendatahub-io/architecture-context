@@ -1,31 +1,43 @@
 sequenceDiagram
     participant Client as External Client
+    participant KServeGW as KServe Ingress<br/>Gateway API / HTTPRoute
     participant RBAC as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
-    participant HTTP as vllm-tgis-adapter<br/>HTTP 8000/TCP
-    participant GRPC as vllm-tgis-adapter<br/>gRPC 8033/TCP
-    participant Engine as vLLM Engine<br/>(in-process)
-    participant Spyre as IBM Spyre Accelerator<br/>VFIO Passthrough
+    participant HTTP as vllm-spyre (HTTP)<br/>8000/TCP HTTP plaintext
+    participant gRPC as vllm-spyre (gRPC)<br/>8033/TCP gRPC plaintext
+    participant Storage as Model Storage<br/>PVC / S3 (443/TCP)
+    participant HF as Hugging Face Hub<br/>443/TCP HTTPS (optional)
 
-    Note over Client,Spyre: Flow 1: HTTP Inference Request (OpenAI-compatible)
+    Note over Client,Storage: Flow 1: HTTP Inference Request (OpenAI-Compatible API)
+    Client->>KServeGW: POST /v1/completions<br/>or /v1/chat/completions<br/>HTTPS
+    KServeGW->>RBAC: Forward request<br/>Platform-managed routing
+    RBAC->>HTTP: POST /v1/completions<br/>HTTP plaintext (localhost)<br/>Auth: proxy-authenticated
+    HTTP->>HTTP: vLLM engine processes<br/>on IBM Spyre accelerator
+    HTTP-->>RBAC: JSON Response<br/>(completion result)
+    RBAC-->>KServeGW: HTTPS Response
+    KServeGW-->>Client: JSON Response
 
-    Client->>RBAC: POST /v1/completions<br/>HTTPS/8443, Bearer Token (JWT)
-    RBAC->>RBAC: Validate token,<br/>enforce RBAC policy
-    RBAC->>HTTP: Forward to localhost:8000<br/>HTTP (no TLS, pre-authenticated)
-    HTTP->>Engine: Python in-process call<br/>Tokenize + schedule
-    Engine->>Spyre: Model inference<br/>VFIO device passthrough
-    Spyre-->>Engine: Inference result
-    Engine-->>HTTP: Generated tokens
-    HTTP-->>RBAC: JSON response
-    RBAC-->>Client: HTTPS response
+    Note over Client,Storage: Flow 2: gRPC Inference Request (TGIS Protocol)
+    Client->>KServeGW: gRPC GenerateStream<br/>TGIS protocol<br/>HTTPS
+    KServeGW->>RBAC: Forward request<br/>Platform-managed routing
+    RBAC->>gRPC: gRPC request<br/>plaintext (localhost)<br/>Auth: proxy-authenticated
+    gRPC->>gRPC: vLLM engine processes<br/>on IBM Spyre accelerator
+    gRPC-->>RBAC: gRPC Response<br/>(generated tokens)
+    RBAC-->>KServeGW: HTTPS Response
+    KServeGW-->>Client: gRPC Response
 
-    Note over Client,Spyre: Flow 2: gRPC Inference Request (TGIS Protocol)
+    Note over HTTP,HF: Flow 3: Model Loading (startup)
+    alt Model from PVC
+        HTTP->>Storage: Read model weights<br/>Filesystem mount<br/>No network (volume)
+        Storage-->>HTTP: Model artifacts
+    else Model from S3
+        HTTP->>Storage: GET model artifacts<br/>HTTPS/443<br/>Auth: AWS IAM credentials
+        Storage-->>HTTP: Model artifacts (TLS 1.2+)
+    else Model from Hugging Face
+        HTTP->>HF: GET model files<br/>HTTPS/443<br/>Auth: Bearer Token (HF_TOKEN)
+        HF-->>HTTP: Model artifacts (TLS 1.2+)
+    end
+    HTTP->>HTTP: Load model onto<br/>IBM Spyre accelerator
 
-    Client->>RBAC: gRPC GenerationService.Generate<br/>HTTPS/8443, Bearer Token
-    RBAC->>RBAC: Validate token,<br/>enforce RBAC policy
-    RBAC->>GRPC: Forward to localhost:8033<br/>gRPC (no TLS, pre-authenticated)
-    GRPC->>Engine: Python in-process call<br/>Tokenize + schedule
-    Engine->>Spyre: Model inference<br/>VFIO device passthrough
-    Spyre-->>Engine: Inference result
-    Engine-->>GRPC: Generated tokens (TGIS response)
-    GRPC-->>RBAC: gRPC response
-    RBAC-->>Client: HTTPS response
+    Note over Client,Storage: Flow 4: Health Check
+    Client->>HTTP: GET /health<br/>HTTP/8000
+    HTTP-->>Client: 200 OK

@@ -1,62 +1,55 @@
 sequenceDiagram
-    participant DSP as DSP API Server
-    participant K8s as Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+
-    participant WC as workflow-controller<br/>9090/TCP metrics<br/>6060/TCP health
-    participant Pod as Workflow Step Pod
-    participant Init as argoexec (init)<br/>Init Container
-    participant Wait as argoexec (wait)<br/>Emissary Sidecar
-    participant S3 as S3/MinIO Storage<br/>443/TCP HTTPS
-    participant DB as PostgreSQL/MariaDB<br/>5432/3306 TCP
+    participant User as User / DSP API
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant WFC as workflow-controller<br/>Informer Watch
+    participant Pod as Workflow Pod
+    participant Init as argoexec (init)<br/>Load Artifacts
+    participant Main as Main Container<br/>(User Code)
+    participant Wait as argoexec (wait)<br/>Save Artifacts
+    participant S3 as S3 / MinIO<br/>9000/TCP HTTPS
+    participant DB as PostgreSQL<br/>5432/TCP
 
-    Note over DSP,DB: Flow 1: Workflow Execution (Pipeline Run)
+    Note over User,DB: Flow 1: Workflow Execution
 
-    DSP->>K8s: POST Workflow CR<br/>Auth: ServiceAccount token
-    activate K8s
-    K8s-->>DSP: Workflow created
-    deactivate K8s
+    User->>K8s: POST Workflow CR<br/>Auth: Bearer Token<br/>TLS 1.2+
+    K8s-->>WFC: Watch event (Workflow created)<br/>TLS 1.2+ / ServiceAccount
+    WFC->>K8s: Create Pod spec<br/>TLS 1.2+ / ServiceAccount
 
-    WC->>K8s: Watch Workflow CRs<br/>Auth: ServiceAccount token
-    K8s-->>WC: New Workflow event
+    Note over Pod,Wait: Pod starts with init + wait containers
 
-    loop For each workflow step
-        WC->>K8s: Create Pod (with argoexec sidecar)<br/>Auth: ServiceAccount token
-        K8s-->>WC: Pod created
+    Init->>S3: Download input artifacts<br/>HTTPS TLS 1.2+<br/>Auth: Access Key/Secret
+    S3-->>Init: Artifact data
+    Init-->>Main: Artifacts available on volume
 
-        activate Pod
-        Note over Pod,Init: Pod starts - init container runs first
+    Main->>Main: Execute user workload
 
-        Init->>S3: Download input artifacts<br/>Auth: Secret-based credentials
-        S3-->>Init: Artifact data
-        Note over Init: Stage scripts to<br/>/var/run/argo/
+    Wait->>Wait: Detect main container completion
+    Wait->>S3: Upload output artifacts<br/>HTTPS TLS 1.2+<br/>Auth: Access Key/Secret
+    S3-->>Wait: Upload confirmed
+    Wait->>K8s: Create WorkflowTaskResult CR<br/>TLS 1.2+ / ServiceAccount
 
-        Note over Pod,Wait: Main container executes step
+    K8s-->>WFC: Watch event (TaskResult)<br/>TLS 1.2+ / ServiceAccount
+    WFC->>K8s: Update Workflow status<br/>TLS 1.2+ / ServiceAccount
+    WFC->>DB: Archive workflow<br/>SSL optional<br/>Auth: Username/Password
 
-        Wait->>K8s: Patch pod annotations (progress)<br/>Auth: ServiceAccount token
-        K8s-->>Wait: Updated
+    Note over User,DB: Flow 2: Argo Server API Request
 
-        Wait->>S3: Upload output artifacts<br/>Auth: Secret-based credentials
-        S3-->>Wait: Upload confirmed
+    participant Client as Client / Dashboard
+    participant Argo as argo-server<br/>2746/TCP HTTPS
 
-        Wait->>K8s: Create/Patch WorkflowTaskResult CR<br/>Auth: ServiceAccount token
-        K8s-->>Wait: Result recorded
-        deactivate Pod
-    end
+    Client->>Argo: GET/POST /api/*<br/>HTTPS TLS 1.2+<br/>Auth: Bearer Token / SSO
+    Argo->>K8s: Kubernetes API call<br/>HTTPS TLS 1.2+<br/>Auth: Delegated Bearer Token
+    K8s-->>Argo: API response
+    Argo->>DB: Query archived workflows<br/>SSL optional<br/>Auth: Username/Password
+    DB-->>Argo: Workflow data
+    Argo->>S3: Fetch artifact for download<br/>HTTPS TLS 1.2+<br/>Auth: Access Key/Secret
+    S3-->>Argo: Artifact data
+    Argo-->>Client: JSON/gRPC Response
 
-    WC->>K8s: Update Workflow status (completed)<br/>Auth: ServiceAccount token
-    K8s-->>WC: Status updated
+    Note over User,DB: Flow 3: CronWorkflow Scheduling
 
-    Note over DSP,DB: Flow 2: Workflow Archiving (Optional)
+    Note right of WFC: Cron controller (internal)<br/>syncs every 10s
 
-    WC->>K8s: Watch completed Workflows<br/>Auth: ServiceAccount token
-    K8s-->>WC: Completed Workflow event
-
-    WC->>DB: Archive workflow data<br/>Auth: Secret-based username/password<br/>Encryption: Optional SSL/TLS
-    DB-->>WC: Archived
-
-    Note over DSP,DB: Flow 3: CronWorkflow Scheduling
-
-    WC->>K8s: Watch CronWorkflow CRs<br/>Auth: ServiceAccount token
-    K8s-->>WC: CronWorkflow schedule triggered
-
-    WC->>K8s: Create Workflow CR from template<br/>Auth: ServiceAccount token
-    K8s-->>WC: Workflow created
+    WFC->>K8s: Create Workflow from CronWorkflow<br/>TLS 1.2+ / ServiceAccount
+    WFC->>K8s: Update CronWorkflow status<br/>TLS 1.2+ / ServiceAccount
+    WFC->>K8s: Delete old Workflows (history limit)<br/>TLS 1.2+ / ServiceAccount

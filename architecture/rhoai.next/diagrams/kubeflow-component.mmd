@@ -1,94 +1,91 @@
 graph TB
-    subgraph KubeflowNotebooks["Kubeflow Notebook Controllers"]
+    subgraph User["User / Dashboard"]
+        UserActor[Data Scientist / Admin]
+    end
+
+    subgraph KubeAPI["Kubernetes API Server"]
+        APIServer["API Server<br/>443/TCP HTTPS"]
+    end
+
+    subgraph Webhooks["Admission Webhooks"]
+        MutatingWH["Mutating Webhook<br/>/mutate-notebook-v1<br/>8443/TCP HTTPS"]
+        ValidatingWH["Validating Webhook<br/>/validate-notebook-v1<br/>8443/TCP HTTPS"]
+    end
+
+    subgraph KubeflowControllers["Kubeflow Notebook Controllers"]
         direction TB
 
-        subgraph UpstreamCtrl["kf-notebook-controller"]
-            KFController["KF Notebook Controller<br/>(controller-runtime)<br/>Port: 8081/TCP health"]
-            CullingCtrl["Culling Controller<br/>(idle detection)"]
-            KFController --- CullingCtrl
+        subgraph UpstreamCtrl["odh-kf-notebook-controller"]
+            NotebookReconciler["Notebook Reconciler<br/>StatefulSet + Service lifecycle"]
+            CullingReconciler["Culling Reconciler<br/>Idle notebook detection"]
+            UpstreamMetrics["Metrics :8080"]
+            UpstreamHealth["Health :8081"]
         end
 
         subgraph ODHCtrl["odh-notebook-controller"]
-            ODHController["ODH Notebook Controller<br/>(controller-runtime)<br/>Port: 8080/TCP metrics"]
-            MutatingWH["Mutating Webhook<br/>/mutate-notebook-v1<br/>Port: 8443/TCP HTTPS"]
-            ValidatingWH["Validating Webhook<br/>/validate-notebook-v1<br/>Port: 8443/TCP HTTPS"]
-            ODHController --- MutatingWH
-            ODHController --- ValidatingWH
+            ODHReconciler["ODH Reconciler<br/>HTTPRoute, NetworkPolicy,<br/>kube-rbac-proxy, CA certs"]
+            ODHMetrics["Metrics :8080"]
+            ODHHealth["Health :8081"]
         end
     end
 
-    %% CRDs
-    NotebookCR["Notebook CR<br/>kubeflow.org/v1"]
-    NotebookCRBeta["Notebook CR<br/>kubeflow.org/v1beta1<br/>(hub)"]
-    NotebookCRAlpha["Notebook CR<br/>kubeflow.org/v1alpha1<br/>(legacy)"]
+    subgraph NotebookPod["Notebook Pod"]
+        KubeRBACProxy["kube-rbac-proxy<br/>sidecar :8443"]
+        NotebookContainer["Jupyter Notebook<br/>:8888"]
+        KubeRBACProxy -->|localhost| NotebookContainer
+    end
 
-    %% Resources Created by KF Controller
-    StatefulSet["StatefulSet<br/>(1 replica per notebook)"]
-    NotebookSvc["ClusterIP Service<br/>80/TCP → 8888"]
-    VirtualSvc["VirtualService<br/>(optional, Istio)"]
+    subgraph CRDs["Custom Resources"]
+        NotebookCR["Notebook CR<br/>kubeflow.org/v1"]
+    end
 
-    %% Resources Created by ODH Controller
-    HTTPRoute["HTTPRoute<br/>nb-{ns}-{name}<br/>(Gateway API)"]
-    NetworkPolicy["NetworkPolicy"]
-    ReferenceGrant["ReferenceGrant<br/>(cross-namespace)"]
-    KubeRBACProxy["kube-rbac-proxy<br/>sidecar (8443/TCP)"]
+    subgraph NetworkResources["Network Resources"]
+        HTTPRoute["HTTPRoute<br/>Gateway API"]
+        ReferenceGrant["ReferenceGrant"]
+        NetworkPolicy["NetworkPolicy"]
+    end
 
-    %% User interaction
-    User["User<br/>(kubectl / Dashboard)"] -->|creates| NotebookCR
-    NotebookCR -.->|converts| NotebookCRBeta
-    NotebookCRAlpha -.->|converts| NotebookCRBeta
+    subgraph Gateway["Ingress"]
+        DSGateway["data-science-gateway<br/>443/TCP HTTPS"]
+    end
 
-    %% Webhook intercepts
-    NotebookCR -->|intercepted by| MutatingWH
-    MutatingWH -->|injects sidecar,<br/>CA bundles, secrets| NotebookCR
+    %% User flows
+    UserActor -->|"kubectl create"| APIServer
+    APIServer -->|"admission"| MutatingWH
+    APIServer -->|"admission"| ValidatingWH
 
-    %% KF Controller reconciles
-    NotebookCR -->|watched by| KFController
-    KFController -->|creates| StatefulSet
-    KFController -->|creates| NotebookSvc
-    KFController -->|creates (if Istio)| VirtualSvc
+    %% CRD watching
+    NotebookCR -->|"watched by"| NotebookReconciler
+    NotebookCR -->|"watched by"| ODHReconciler
 
-    %% ODH Controller reconciles
-    NotebookCR -->|watched by| ODHController
-    ODHController -->|creates| HTTPRoute
-    ODHController -->|creates| NetworkPolicy
-    ODHController -->|creates| ReferenceGrant
+    %% Upstream controller creates
+    NotebookReconciler -->|"creates"| StatefulSet["StatefulSet"]
+    NotebookReconciler -->|"creates"| NotebookSvc["Notebook Service :80"]
 
-    %% Culling
-    CullingCtrl -->|queries /api/kernels<br/>/api/terminals| NotebookPod["Notebook Pod<br/>8888/TCP"]
-    CullingCtrl -->|sets stop annotation| NotebookCR
+    %% ODH controller creates
+    ODHReconciler -->|"creates"| HTTPRoute
+    ODHReconciler -->|"creates"| ReferenceGrant
+    ODHReconciler -->|"creates"| NetworkPolicy
+    ODHReconciler -->|"creates"| KubeRBACProxySvc["kube-rbac-proxy Service :8443"]
+    MutatingWH -->|"injects"| KubeRBACProxy
 
-    %% Sidecar
-    MutatingWH -->|injects| KubeRBACProxy
+    %% Culling flow
+    CullingReconciler -->|"polls /api/kernels<br/>/api/terminals"| NotebookContainer
 
-    %% External dependencies
-    KFController -->|"REST 6443/TCP"| K8sAPI["Kubernetes API Server"]
-    ODHController -->|"REST 6443/TCP"| K8sAPI
-    HTTPRoute -->|parent ref| Gateway["data-science-gateway<br/>(Gateway API)"]
-    ODHController -->|reads| DSPA["DSPA<br/>(Pipeline Config)"]
-    ODHController -->|references| MLflow["MLflow Operator<br/>(ClusterRole)"]
-    ODHController -->|mounts| Feast["Feast<br/>(ConfigMap)"]
-    ODHController -->|resolves images| ImageStream["OpenShift<br/>ImageStreams"]
+    %% Gateway routing
+    DSGateway -->|"routes via"| HTTPRoute
+    HTTPRoute -->|"backends to"| KubeRBACProxy
 
     %% Styling
-    style KFController fill:#4a90e2,color:#fff
-    style CullingCtrl fill:#4a90e2,color:#fff
-    style ODHController fill:#4a90e2,color:#fff
-    style MutatingWH fill:#4a90e2,color:#fff
-    style ValidatingWH fill:#4a90e2,color:#fff
-    style NotebookCR fill:#f5a623,color:#fff
-    style NotebookCRBeta fill:#f5a623,color:#fff
-    style NotebookCRAlpha fill:#f5a623,color:#fff
-    style HTTPRoute fill:#7ed321,color:#fff
-    style NetworkPolicy fill:#7ed321,color:#fff
-    style ReferenceGrant fill:#7ed321,color:#fff
-    style StatefulSet fill:#7ed321,color:#fff
-    style NotebookSvc fill:#7ed321,color:#fff
-    style VirtualSvc fill:#7ed321,color:#fff
-    style KubeRBACProxy fill:#e74c3c,color:#fff
-    style K8sAPI fill:#e8e8e8
-    style Gateway fill:#e8e8e8
-    style DSPA fill:#e8e8e8
-    style MLflow fill:#e8e8e8
-    style Feast fill:#e8e8e8
-    style ImageStream fill:#e8e8e8
+    style NotebookReconciler fill:#4a90e2,stroke:#333,color:#fff
+    style CullingReconciler fill:#4a90e2,stroke:#333,color:#fff
+    style ODHReconciler fill:#4a90e2,stroke:#333,color:#fff
+    style MutatingWH fill:#9b59b6,stroke:#333,color:#fff
+    style ValidatingWH fill:#9b59b6,stroke:#333,color:#fff
+    style NotebookCR fill:#f5a623,stroke:#333,color:#fff
+    style KubeRBACProxy fill:#e74c3c,stroke:#333,color:#fff
+    style NotebookContainer fill:#2ecc71,stroke:#333,color:#fff
+    style DSGateway fill:#95a5a6,stroke:#333,color:#fff
+    style HTTPRoute fill:#3498db,stroke:#333,color:#fff
+    style ReferenceGrant fill:#3498db,stroke:#333,color:#fff
+    style NetworkPolicy fill:#3498db,stroke:#333,color:#fff

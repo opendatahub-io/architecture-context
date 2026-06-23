@@ -1,76 +1,98 @@
 graph TB
-    subgraph Image["kube-auth-proxy Container Image"]
-        Entrypoint["entrypoint<br/>(Go binary dispatcher)<br/>Selects mode via PROXY_MODE env"]
+    subgraph KAP["kube-auth-proxy"]
+        direction TB
 
-        subgraph AuthMode["Auth Mode (PROXY_MODE=auth)"]
-            AuthProxy["kube-auth-proxy<br/>(OAuth2/OIDC Proxy)<br/>Port: 4180/HTTP, 4443/HTTPS"]
-            MiddlewareChain["Authentication Chain<br/>(alice middleware)"]
-            K8sTokenValidator["K8s Token Validator"]
-            OAuthBearer["OAuth Bearer Validator"]
-            JWTBearer["JWT Bearer Validator"]
-            BasicAuth["Basic Auth (htpasswd)"]
-            StoredSession["Stored Session (Cookie/Redis)"]
-            CSRFProtection["CSRF Protection<br/>(PKCE + Nonce + Signed Cookie)"]
-
-            AuthProxy --> MiddlewareChain
-            MiddlewareChain --> K8sTokenValidator
-            K8sTokenValidator -->|pass| OAuthBearer
-            OAuthBearer -->|pass| JWTBearer
-            JWTBearer -->|pass| BasicAuth
-            BasicAuth -->|pass| StoredSession
-            AuthProxy --> CSRFProtection
+        subgraph Middleware["Middleware Chain (justinas/alice)"]
+            direction LR
+            Logging["Logging"]
+            HealthCheck["Health Check<br/>/ping, /ready"]
+            MetricsMW["Metrics<br/>Prometheus"]
+            HTTPSRedirect["HTTPS Redirect"]
         end
 
-        subgraph RBACMode["RBAC Mode (PROXY_MODE=rbac, default)"]
-            RBACProxy["kube-rbac-proxy<br/>(K8s RBAC Proxy)<br/>Port: 8443/HTTPS"]
-            DelegatingAuthn["Delegating Authenticator<br/>(TokenReview / OIDC / x509)"]
-            AuthzChain["Authorization Chain"]
-            HardcodedAuthz["Hardcoded Metrics Authorizer<br/>(auto-allow Prometheus SA)"]
-            StaticAuthz["Static YAML Authorizer"]
-            SARAuthz["SubjectAccessReview Authorizer<br/>(5min allow / 30s deny cache)"]
-
-            RBACProxy --> DelegatingAuthn
-            DelegatingAuthn --> AuthzChain
-            AuthzChain --> HardcodedAuthz
-            HardcodedAuthz -->|not metrics| StaticAuthz
-            StaticAuthz -->|no match| SARAuthz
+        subgraph SessionLoading["Session Loading Pipeline"]
+            direction LR
+            K8sTokenLoader["K8s Token<br/>Session Loader"]
+            JWTLoader["JWT/OAuth<br/>Session Loader"]
+            BasicAuthLoader["Basic Auth<br/>(htpasswd)"]
+            StoredSessionLoader["Stored Session<br/>Loader (Cookie)"]
         end
 
-        Entrypoint -->|"PROXY_MODE=auth"| AuthProxy
-        Entrypoint -->|"PROXY_MODE=rbac"| RBACProxy
+        subgraph Providers["Authentication Providers"]
+            direction LR
+            OIDCProvider["OIDC Provider<br/>pkg/providers/oidc/"]
+            OpenShiftProvider["OpenShift OAuth<br/>Provider"]
+        end
+
+        subgraph SessionStores["Session Stores"]
+            direction LR
+            CookieStore["Cookie Store<br/>AES-GCM + HMAC"]
+            RedisStore["Redis Store<br/>Standalone/Sentinel/Cluster"]
+        end
+
+        subgraph Handlers["Request Handlers"]
+            direction LR
+            AuthEndpoint["/oauth2/auth<br/>ext_authz (202/401)"]
+            SignIn["/oauth2/sign_in"]
+            Callback["/oauth2/callback"]
+            SignOut["/oauth2/sign_out"]
+            UserInfo["/oauth2/userinfo"]
+            MLflowHandler["MLflow Auth<br/>Denied Handler"]
+        end
+
+        UpstreamProxy["Upstream Proxy<br/>HTTP/HTTPS/Unix/WebSocket"]
+        MetricsServer["Metrics Server<br/>Prometheus endpoint"]
     end
 
     %% External actors
-    Browser["Browser User"] -->|"HTTPS/4443<br/>OAuth2 session"| AuthProxy
-    APIClient["API Client"] -->|"HTTPS/8443<br/>Bearer token"| RBACProxy
+    Browser["Browser / Client"]
+    K8sClient["K8s Client<br/>(SA Token)"]
+    Envoy["Envoy<br/>(ext_authz)"]
+    MLflow["MLflow<br/>Python SDK"]
 
-    %% External dependencies
-    AuthProxy -->|"HTTPS/443<br/>OIDC discovery + tokens"| OIDCProvider["OIDC / OpenShift<br/>OAuth Server"]
-    AuthProxy -->|"TCP/6379<br/>Session storage"| Redis["Redis<br/>(optional)"]
-    AuthProxy -->|"HTTPS/443<br/>TokenReview"| K8sAPI["Kubernetes<br/>API Server"]
-    RBACProxy -->|"HTTPS/443<br/>TokenReview + SAR"| K8sAPI
+    %% External services
+    OIDCIdP["OIDC Identity Provider<br/>443/TCP HTTPS"]
+    OSAuth["OpenShift OAuth Server<br/>443/TCP HTTPS"]
+    K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS"]
+    Redis["Redis<br/>6379/TCP"]
+    Upstream["Upstream Application"]
+    Prometheus["Prometheus"]
 
-    %% Upstream
-    AuthProxy -->|"HTTP/HTTPS<br/>Proxied request"| Upstream["Upstream<br/>Application"]
-    RBACProxy -->|"HTTP/HTTPS/h2c<br/>Proxied request"| Upstream
+    %% Incoming flows
+    Browser -->|"4180/TCP"| Middleware
+    K8sClient -->|"4180/TCP<br/>Bearer SA Token"| Middleware
+    Envoy -->|"4180/TCP<br/>/oauth2/auth"| AuthEndpoint
+    MLflow -->|"4180/TCP<br/>User-Agent detection"| MLflowHandler
 
-    %% Operator
-    Operator["rhods-operator"] -.->|"Injects sidecar<br/>Sets PROXY_MODE + flags"| Image
+    %% Internal flows
+    Middleware --> SessionLoading
+    SessionLoading --> Handlers
+    Handlers --> Providers
+    Providers --> SessionStores
+    Handlers --> UpstreamProxy
 
-    %% Prometheus
-    Prometheus["OpenShift Prometheus"] -->|"HTTPS/8443<br/>/metrics scrape"| RBACProxy
+    %% Outbound flows
+    OIDCProvider -->|"OIDC Discovery<br/>Token Exchange"| OIDCIdP
+    OpenShiftProvider -->|"OAuth Discovery<br/>Token Exchange"| OSAuth
+    K8sTokenLoader -->|"TokenReview API"| K8sAPI
+    OpenShiftProvider -->|"User Info<br/>Token Cleanup"| K8sAPI
+    RedisStore -->|"Session R/W"| Redis
+    UpstreamProxy -->|"Proxied Requests<br/>+ Identity Headers"| Upstream
+    MetricsServer -->|"Scrape"| Prometheus
 
     %% Styling
-    style Entrypoint fill:#9b59b6,stroke:#333,color:#fff
-    style AuthProxy fill:#4a90e2,stroke:#333,color:#fff
-    style RBACProxy fill:#4a90e2,stroke:#333,color:#fff
-    style MiddlewareChain fill:#5dade2,stroke:#333,color:#fff
-    style AuthzChain fill:#5dade2,stroke:#333,color:#fff
-    style OIDCProvider fill:#e8e8e8,stroke:#333
-    style K8sAPI fill:#e8e8e8,stroke:#333
-    style Redis fill:#e8e8e8,stroke:#333
-    style Upstream fill:#7ed321,stroke:#333
-    style Operator fill:#f5a623,stroke:#333
-    style Browser fill:#f9f9f9,stroke:#333
-    style APIClient fill:#f9f9f9,stroke:#333
-    style Prometheus fill:#e8e8e8,stroke:#333
+    style KAP fill:#e8f4fd,stroke:#4a90e2,stroke-width:3px
+    style Browser fill:#f9f9f9,stroke:#999
+    style K8sClient fill:#f9f9f9,stroke:#999
+    style Envoy fill:#f9f9f9,stroke:#999
+    style MLflow fill:#f9f9f9,stroke:#999
+    style OIDCIdP fill:#fff2cc,stroke:#d6b656
+    style OSAuth fill:#fff2cc,stroke:#d6b656
+    style K8sAPI fill:#fff2cc,stroke:#d6b656
+    style Redis fill:#fff2cc,stroke:#d6b656
+    style Upstream fill:#d5e8d4,stroke:#82b366
+    style Prometheus fill:#f9f9f9,stroke:#999
+    style OIDCProvider fill:#4a90e2,color:#fff
+    style OpenShiftProvider fill:#4a90e2,color:#fff
+    style AuthEndpoint fill:#f5a623,color:#fff
+    style UpstreamProxy fill:#7ed321,color:#fff

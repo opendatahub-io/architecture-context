@@ -1,67 +1,83 @@
 sequenceDiagram
-    participant MM as ModelMesh Container
+    participant MM as ModelMesh<br/>(modelmesh-serving)
     participant Puller as model-serving-puller<br/>8084/TCP gRPC
-    participant Storage as Cloud Storage<br/>443/TCP HTTPS TLS 1.2+
+    participant Storage as Cloud Storage<br/>443/TCP HTTPS
     participant Adapter as Runtime Adapter<br/>8085/TCP gRPC
-    participant Runtime as Model Runtime<br/>(Triton/OVMS/MLServer/TorchServe)
+    participant Runtime as Model Runtime<br/>(Triton/MLServer/OVMS/TorchServe)
     participant Client as External Client
 
-    rect rgb(200, 220, 255)
-        Note over MM,Runtime: Flow 1: Model Loading (Puller + Adapter Mode)
-        MM->>Puller: LoadModel(modelId, modelPath)<br/>gRPC / localhost / no auth
-        Puller->>Storage: Download model artifacts<br/>HTTPS / TLS 1.2+ / Provider credentials
-        Storage-->>Puller: Model files
-        Note over Puller: Write artifacts to<br/>/models/{modelId}/
-        Puller->>Adapter: LoadModel(modelId, localPath)<br/>gRPC / localhost / no auth
-        Note over Adapter: Adapt model layout<br/>to runtime format
-        alt Triton
-            Adapter->>Runtime: RepositoryModelLoad(modelName)<br/>gRPC / 8001 / localhost
-        else OVMS
-            Adapter->>Runtime: POST /v1/config/reload<br/>HTTP / 8001 / localhost
-        else MLServer
-            Adapter->>Runtime: RepositoryModelLoad(modelName)<br/>gRPC / 8001 / localhost
-        else TorchServe
-            Adapter->>Runtime: RegisterModel(marUrl)<br/>gRPC / 7071 / localhost
-        end
-        Runtime-->>Adapter: Load confirmation
-        Adapter-->>Puller: LoadModel response (size, maxConcurrency)
-        Puller-->>MM: LoadModel response
+    Note over MM,Runtime: Flow 1: Model Loading (Puller → Adapter → Runtime)
+
+    MM->>Puller: LoadModel(modelId, modelPath, modelType)<br/>gRPC :8084 | plaintext | no auth
+    activate Puller
+
+    Note over Puller: Parse storage config from<br/>/storage-config/{key}<br/>(K8s Secret volume mount)
+
+    Puller->>Storage: Download model artifacts<br/>HTTPS :443 | TLS 1.2+<br/>Auth: AWS IAM / GCP SA JWT /<br/>Azure SP / Custom Headers
+    activate Storage
+    Storage-->>Puller: Model files (binary stream)
+    deactivate Storage
+
+    Note over Puller: Write to /models/_anon_ibm_cos/{modelId}/<br/>Decompress .tar/.tgz/.zip if needed
+
+    Puller->>Adapter: LoadModel(modelId, localPath, modelType)<br/>gRPC :8085 | plaintext | no auth
+    activate Adapter
+
+    Note over Adapter: Adapt model layout:<br/>Triton: config.pbtxt + version dirs<br/>MLServer: model-settings.json<br/>OVMS: numeric version dirs<br/>TorchServe: .mar symlinks
+
+    alt Triton Adapter
+        Adapter->>Runtime: RepositoryModelLoad(modelName)<br/>gRPC :8001 | plaintext
+    else MLServer Adapter
+        Adapter->>Runtime: RepositoryModelLoad(modelName)<br/>gRPC :8001 | plaintext
+    else OVMS Adapter
+        Adapter->>Runtime: POST /v1/config/reload<br/>HTTP :8001 | plaintext
+    else TorchServe Adapter
+        Adapter->>Runtime: RegisterModel(url, modelName)<br/>gRPC :7071 | plaintext
+    end
+    activate Runtime
+
+    Runtime-->>Adapter: Load success / failure
+    deactivate Runtime
+    Adapter-->>Puller: LoadModel response (success/failure)
+    deactivate Adapter
+    Puller-->>MM: LoadModel response<br/>gRPC | plaintext
+    deactivate Puller
+
+    Note over MM,Runtime: Flow 2: Inference Request (bypasses adapter)
+
+    Client->>MM: Inference request<br/>gRPC | varies
+    activate MM
+    MM->>Runtime: Forward to loaded model<br/>gRPC/HTTP | plaintext | localhost
+    activate Runtime
+    Runtime-->>MM: Prediction result
+    deactivate Runtime
+    MM-->>Client: Inference response
+    deactivate MM
+
+    Note over Client,Runtime: Note: Runtime adapter is NOT in the inference path.<br/>It only handles model lifecycle (load/unload/status).
+
+    Note over MM,Runtime: Flow 3: Model Unloading
+
+    MM->>Puller: UnloadModel(modelId)<br/>gRPC :8084 | plaintext
+    activate Puller
+    Puller->>Adapter: UnloadModel(modelId)<br/>gRPC :8085 | plaintext
+    activate Adapter
+
+    alt Triton Adapter
+        Adapter->>Runtime: RepositoryModelUnload(modelName)<br/>gRPC :8001
+    else MLServer Adapter
+        Adapter->>Runtime: RepositoryModelUnload(modelName)<br/>gRPC :8001
+    else OVMS Adapter
+        Note over Adapter: Batch unload (3s wait)<br/>then POST /v1/config/reload
+        Adapter->>Runtime: POST /v1/config/reload<br/>HTTP :8001
+    else TorchServe Adapter
+        Adapter->>Runtime: UnregisterModel(modelName)<br/>gRPC :7071
     end
 
-    rect rgb(220, 255, 220)
-        Note over MM,Runtime: Flow 2: Model Loading (Embedded Puller Mode)
-        MM->>Adapter: LoadModel(modelId, modelPath)<br/>gRPC / localhost / no auth
-        Adapter->>Storage: Download model artifacts<br/>HTTPS / TLS 1.2+ / Provider credentials
-        Storage-->>Adapter: Model files
-        Note over Adapter: Download + adapt layout<br/>in single step
-        Adapter->>Runtime: Load model (runtime-specific)<br/>localhost / no auth
-        Runtime-->>Adapter: Load confirmation
-        Adapter-->>MM: LoadModel response
-    end
+    Runtime-->>Adapter: Unload complete
+    deactivate Adapter
 
-    rect rgb(255, 220, 220)
-        Note over Client,Runtime: Flow 3: Inference Request (Passthrough - bypasses adapter)
-        Client->>MM: Inference request<br/>gRPC / varies / varies
-        MM->>Runtime: Forward to runtime (direct)<br/>gRPC / localhost / no auth
-        Runtime-->>MM: Prediction result
-        MM-->>Client: Inference response
-    end
+    Note over Puller: Delete model files from<br/>/models/{modelId}/
 
-    rect rgb(255, 245, 200)
-        Note over MM,Runtime: Flow 4: Model Unloading
-        MM->>Puller: UnloadModel(modelId)<br/>gRPC / localhost / no auth
-        Puller->>Adapter: UnloadModel(modelId)<br/>gRPC / localhost / no auth
-        alt Triton
-            Adapter->>Runtime: RepositoryModelUnload(modelName)<br/>gRPC / 8001
-        else OVMS
-            Adapter->>Runtime: POST /v1/config/reload (remove from config)<br/>HTTP / 8001
-        else MLServer
-            Adapter->>Runtime: RepositoryModelUnload(modelName)<br/>gRPC / 8001
-        else TorchServe
-            Adapter->>Runtime: UnregisterModel(modelName)<br/>gRPC / 7071
-        end
-        Runtime-->>Adapter: Unload confirmation
-        Note over Puller: Delete model files from<br/>/models/{modelId}/
-        Adapter-->>Puller: UnloadModel response
-        Puller-->>MM: UnloadModel response
-    end
+    Puller-->>MM: UnloadModel response
+    deactivate Puller

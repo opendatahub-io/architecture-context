@@ -1,92 +1,136 @@
 graph TD
-    subgraph Callers["Request Callers"]
-        SDKClient["MLflow SDK Client<br/>(Bearer Token: K8s SA or User)"]
-        BrowserUser["Browser User<br/>(Bearer Token: Session)"]
-        OTelClient["OTel Collector<br/>(Bearer Token + Experiment ID)"]
+    subgraph Users["Users / Clients"]
+        MLClient["ML Client<br/>(mlflow-skinny)"]
+        WebUser["Web Browser User"]
+        AppDev["Application Developer"]
     end
 
-    subgraph AuthPlugin["kubernetes-auth Plugin (Per-Request Enforcement)"]
-        TokenExtract["Extract Bearer Token<br/>from Authorization header"]
-        WorkspaceResolve["Resolve Workspace<br/>from X-MLFLOW-WORKSPACE header"]
-        SAR["SelfSubjectAccessReview<br/>against mlflow.kubeflow.org"]
+    subgraph AuthFlow["Authentication Flow"]
+        direction TB
+        SecurityMW["Security Middleware<br/>━━━━━━━━━━━━━━━━━━━<br/>Host Header Validation<br/>(DNS rebinding protection)<br/>CORS Origin Validation<br/>(CSRF prevention)"]
+        AuthPlugin["Auth Module<br/>━━━━━━━━━━━━━━━━━━━<br/>--app-name kubernetes-auth<br/>Flask Plugin"]
     end
 
-    subgraph K8sRBAC["Kubernetes RBAC (Managed by MLflow Operator)"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS"]
+    subgraph RBAC["RBAC System (kubernetes-auth)"]
+        direction TB
+        RBACEngine["RBAC Engine<br/>━━━━━━━━━━━━━━━━━━━<br/>Role-based Access Control<br/>Workspace-scoped Permissions"]
 
-        subgraph PseudoResources["mlflow.kubeflow.org Pseudo-Resources"]
-            Experiments["experiments"]
-            Runs["runs"]
-            RegisteredModels["registered-models"]
-            ModelVersions["model-versions"]
-            Artifacts["artifacts"]
-            Traces["traces"]
-            GatewaySecrets["gateway-secrets"]
-            Workspaces["workspaces"]
+        subgraph Roles["Roles"]
+            AdminRole["Admin Role<br/>Full access to all resources"]
+            UserRole["User Role<br/>Scoped to owned experiments/runs"]
+            CustomRole["Custom Roles<br/>(Configurable via Helm<br/>namespace_rbac.extraRules<br/>cluster_rbac.extraRules)"]
         end
     end
 
-    subgraph Endpoints["Protected Endpoints"]
-        TrackingAPI["/api/2.0/mlflow/*<br/>Tracking API"]
-        ModelRegAPI["/api/2.0/mlflow/registered-models/*<br/>Model Registry"]
-        TraceAPI["/api/3.0/mlflow/traces/*<br/>Trace Management"]
-        GatewayAPI["/gateway/*<br/>AI Gateway"]
-        AjaxAPI["/ajax-api/*<br/>UI Backend"]
-        WorkspaceEndpoint["/api/3.0/mlflow/workspaces/*<br/>Workspace Mgmt"]
+    subgraph ServiceAccount["Kubernetes Service Account"]
+        SA["mlflow ServiceAccount<br/>━━━━━━━━━━━━━━━━━━━<br/>Namespace: {release-namespace}<br/>Token automount: disabled"]
     end
 
-    subgraph ExemptEndpoints["Exempt Endpoints (No Auth)"]
-        Health["/health"]
-        Version["/version"]
-        StaticFiles["/static-files/*"]
-        IndexHTML["/ (index.html)"]
+    subgraph K8sRBAC["Kubernetes RBAC (Helm-managed)"]
+        direction TB
+
+        subgraph NSScoped["Namespace-Scoped (when configured)"]
+            NSRole["Role<br/>(namespace_rbac.extraRules)"]
+            NSBinding["RoleBinding<br/>mlflow SA → Role"]
+        end
+
+        subgraph ClusterScoped["Cluster-Scoped (when configured)"]
+            ClusterRole["ClusterRole<br/>(cluster_rbac.extraRules)"]
+            ClusterBinding["ClusterRoleBinding<br/>mlflow SA → ClusterRole"]
+        end
     end
 
-    subgraph ServerSA["MLflow Server ServiceAccount"]
-        MLflowSA["mlflow-server SA<br/>(used for SAR submissions)"]
+    subgraph Resources["Protected API Resources"]
+        direction TB
+
+        subgraph AuthRequired["Auth Required (kubernetes-auth)"]
+            Experiments["/api/2.0/mlflow/experiments/*<br/>Experiment CRUD & Search"]
+            Runs["/api/2.0/mlflow/runs/*<br/>Run CRUD, Metrics, Params"]
+            Models["/api/2.0/mlflow/registered-models/*<br/>Model Registry CRUD"]
+            Versions["/api/2.0/mlflow/model-versions/*<br/>Version Management"]
+            Gateway["/api/2.0/mlflow/gateway/*<br/>AI Gateway Routes"]
+            Traces["/v1/traces<br/>OTLP Trace Ingestion"]
+            Jobs["/ajax-api/3.0/jobs/*<br/>Job Execution"]
+            AjaxAPI["/ajax-api/2.0/mlflow/*<br/>Frontend API"]
+        end
+
+        subgraph NoAuth["No Auth Required"]
+            Health["/health<br/>Liveness Probe"]
+            VersionEP["/version<br/>Server Version"]
+            MetricsEP["/metrics<br/>Prometheus Metrics"]
+        end
     end
 
-    subgraph Secrets["Secrets"]
-        KEK["MLFLOW_CRYPTO_KEK_PASSPHRASE<br/>Opaque env var<br/>KEK for AES-256-GCM"]
-        GWSecrets["Gateway Endpoint Secrets<br/>Encrypted in DB<br/>AES-256-GCM + DEK"]
-        TLSCerts["TLS Certificates<br/>kubernetes.io/tls<br/>cert-manager / Operator"]
+    subgraph K8sResources["Kubernetes API Resources"]
+        Namespaces["Namespaces<br/>(workspace resolution)"]
+        Pods["Pods<br/>(pod metadata)"]
     end
 
     %% Auth flow
-    SDKClient -->|"Bearer Token"| TokenExtract
-    BrowserUser -->|"Bearer Token"| TokenExtract
-    OTelClient -->|"Bearer Token"| TokenExtract
-    TokenExtract --> WorkspaceResolve
-    WorkspaceResolve --> SAR
-    SAR -->|"Submit caller's token<br/>as SAR"| K8sAPI
-    K8sAPI -->|"Check against"| PseudoResources
+    MLClient -->|"Bearer / kubernetes-auth"| SecurityMW
+    WebUser -->|"Session / kubernetes-auth"| SecurityMW
+    AppDev -->|"Bearer / kubernetes-auth"| SecurityMW
+    SecurityMW -->|"passes validation"| AuthPlugin
+    AuthPlugin -->|"checks permissions"| RBACEngine
 
-    %% Endpoint protection
-    SAR -->|"grants access"| TrackingAPI
-    SAR -->|"grants access"| ModelRegAPI
-    SAR -->|"grants access"| TraceAPI
-    SAR -->|"grants access"| GatewayAPI
-    SAR -->|"grants access"| AjaxAPI
-    SAR -->|"grants access"| WorkspaceEndpoint
+    %% RBAC to resources
+    RBACEngine -->|"authorized"| Experiments
+    RBACEngine -->|"authorized"| Runs
+    RBACEngine -->|"authorized"| Models
+    RBACEngine -->|"authorized"| Versions
+    RBACEngine -->|"authorized"| Gateway
+    RBACEngine -->|"authorized"| Traces
+    RBACEngine -->|"authorized"| Jobs
+    RBACEngine -->|"authorized"| AjaxAPI
 
-    %% Server SA
-    MLflowSA -->|"submits SARs<br/>lists namespaces<br/>gets MLflowConfig"| K8sAPI
+    %% Roles
+    AdminRole --> RBACEngine
+    UserRole --> RBACEngine
+    CustomRole --> RBACEngine
 
-    %% Secrets
-    MLflowSA -.->|"mounts"| KEK
-    MLflowSA -.->|"mounts"| TLSCerts
+    %% ServiceAccount bindings
+    SA -->|"bound via"| NSBinding
+    NSBinding -->|"grants"| NSRole
+    SA -->|"bound via"| ClusterBinding
+    ClusterBinding -->|"grants"| ClusterRole
+
+    %% K8s API access
+    SA -->|"HTTPS/6443<br/>SA token"| Namespaces
+    SA -->|"HTTPS/6443<br/>SA token"| Pods
+
+    %% No-auth endpoints (direct access)
+    MLClient -.->|"no auth"| Health
+    MLClient -.->|"no auth"| VersionEP
 
     %% Styling
-    style AuthPlugin fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    style K8sRBAC fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    style Endpoints fill:#d5e8d4,stroke:#82b366
-    style ExemptEndpoints fill:#f0f0f0,stroke:#999
-    style Secrets fill:#fff2cc,stroke:#d6b656
-    style Callers fill:#f9f9f9,stroke:#999
+    style SecurityMW fill:#b85450,color:#fff
+    style AuthPlugin fill:#b85450,color:#fff
+    style RBACEngine fill:#f5a623,color:#333
+    style AdminRole fill:#e6522c,color:#fff
+    style UserRole fill:#4a90e2,color:#fff
+    style CustomRole fill:#999,color:#fff
+    style SA fill:#326ce5,color:#fff
+    style NSRole fill:#7ed321,color:#fff
+    style NSBinding fill:#7ed321,color:#fff
+    style ClusterRole fill:#d6b656,color:#333
+    style ClusterBinding fill:#d6b656,color:#333
 
-    style SAR fill:#e6b8af,stroke:#b85450
-    style K8sAPI fill:#4a90e2,stroke:#333,color:#fff
-    style MLflowSA fill:#4a90e2,stroke:#333,color:#fff
-    style KEK fill:#f5a623,stroke:#333,color:#fff
-    style GWSecrets fill:#f5a623,stroke:#333,color:#fff
-    style TLSCerts fill:#f5a623,stroke:#333,color:#fff
+    style Experiments fill:#d5e8d4,stroke:#82b366
+    style Runs fill:#d5e8d4,stroke:#82b366
+    style Models fill:#d5e8d4,stroke:#82b366
+    style Versions fill:#d5e8d4,stroke:#82b366
+    style Gateway fill:#d5e8d4,stroke:#82b366
+    style Traces fill:#d5e8d4,stroke:#82b366
+    style Jobs fill:#d5e8d4,stroke:#82b366
+    style AjaxAPI fill:#d5e8d4,stroke:#82b366
+
+    style Health fill:#f5f5f5,stroke:#999
+    style VersionEP fill:#f5f5f5,stroke:#999
+    style MetricsEP fill:#f5f5f5,stroke:#999
+
+    style Namespaces fill:#dae8fc,stroke:#6c8ebf
+    style Pods fill:#dae8fc,stroke:#6c8ebf
+
+    style MLClient fill:#f9f9f9,stroke:#333
+    style WebUser fill:#f9f9f9,stroke:#333
+    style AppDev fill:#f9f9f9,stroke:#333

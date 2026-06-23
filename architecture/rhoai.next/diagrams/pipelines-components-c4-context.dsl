@@ -1,53 +1,67 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and runs ML pipelines for training, evaluation, and deployment"
-        mlEngineer = person "ML Engineer" "Builds reusable pipeline components and manages pipeline images"
+        datascientist = person "Data Scientist" "Creates and runs ML pipelines for training, evaluation, and deployment"
+        mlops = person "MLOps Engineer" "Manages pipeline configurations and deployment strategies"
 
-        pipelinesComponents = softwareSystem "Pipelines Components" "Centralized library of reusable KFP v2 components and pre-composed ML pipelines for RHOAI" {
-            kfpLibrary = container "kfp-components" "Installable Python package providing reusable KFP v2 components and pipelines" "Python Library"
-            initContainer = container "odh-pipelines-components" "Compiles managed pipeline YAMLs at build time, stages them to shared volume at runtime" "Init Container"
-            automlImage = container "odh-automl" "Runtime image with AutoGluon for tabular/timeseries AutoML pipeline steps" "Container Image"
-            autoragImage = container "odh-autorag" "Runtime image with ai4rag, docling, OGX for RAG optimization pipeline steps" "Container Image"
-            genManagedPipelines = container "generate_managed_pipelines" "Discovers managed pipelines, compiles via KFP compiler, generates manifest" "Build Script"
-            initManagedPipelines = container "init_managed_pipelines" "Copies pre-compiled pipeline YAMLs and manifest to shared volume" "Init Script"
+        pipelinesComponents = softwareSystem "Pipelines Components" "Reusable KFP v2 component library and managed pipeline init containers for AI/ML workflows on RHOAI" {
+            initContainer = container "odh-pipelines-components" "Stages compiled managed pipeline YAMLs to shared volume at pod startup" "Python 3.12 / UBI9 Init Container"
+            automlImage = container "odh-automl" "Runtime image with AutoGluon, PyTorch, scikit-learn for AutoML training" "Python 3.12 / AIPCC CPU Base"
+            autoragImage = container "odh-autorag" "Runtime image with Docling, ai4rag, OGX for RAG optimization" "Python 3.12 / AIPCC CPU Base"
+            kfpLibrary = container "kfp-components" "30+ reusable KFP v2 components for data processing, training, evaluation, deployment" "Python Library"
+            dataProcessing = container "Data Processing Components" "dataset_download, download_model, parse_and_chunk, documents_discovery, text_extraction, ingest_to_milvus, sdg" "KFP Components"
+            trainingComponents = container "Training Components" "LoRA, OSFT, SFT fine-tuning, AutoGluon tabular/timeseries, RAG optimization" "KFP Components"
+            evaluationComponents = container "Evaluation Components" "lm-eval, Eval Hub evaluator, leaderboard evaluation" "KFP Components"
+            deploymentComponents = container "Deployment Components" "model_deployment, deploy_embedding_model, kubeflow_model_registry" "KFP Components"
         }
 
-        kfpApiServer = softwareSystem "Kubeflow Pipelines API Server" "Orchestrates pipeline execution, reads managed pipeline specs" "Internal RHOAI"
-        kfpSdk = softwareSystem "Kubeflow Pipelines SDK (kfp)" "Pipeline compilation, component decorator, artifact management" "External Library"
-        kubeflowTrainer = softwareSystem "Kubeflow Trainer" "Orchestrates distributed fine-tuning jobs on GPU nodes via TrainJob CRD" "Internal RHOAI"
-        modelRegistry = softwareSystem "Kubeflow Model Registry" "Stores model metadata and provenance" "Internal RHOAI"
-        s3Storage = softwareSystem "S3-compatible Storage" "Object storage for training data, model artifacts, documents (MinIO / Ceph / AWS S3)" "External"
-        huggingfaceHub = softwareSystem "HuggingFace Hub" "Pre-trained models and datasets repository" "External"
-        ogxApi = softwareSystem "OGX API (RHOAI)" "OpenShift GenAI eXtensions for embedding, vector store, and generation" "External"
-        milvus = softwareSystem "Milvus" "Vector database for document embedding storage and retrieval" "External"
-        llmProvider = softwareSystem "LLM Provider (via LiteLLM)" "Language model API for synthetic data generation and evaluation" "External"
-        kubernetesApi = softwareSystem "Kubernetes API" "Manages Secrets, ConfigMaps, PVCs, and workload scheduling" "Infrastructure"
+        kfpServer = softwareSystem "KFP API Server" "Kubeflow Pipelines API server that executes pipeline workflows" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Standardized serverless ML inference platform (ServingRuntime, InferenceService)" "Internal RHOAI"
+        modelRegistry = softwareSystem "Model Registry" "Kubeflow Model Registry for model metadata and provenance" "Internal RHOAI"
+        evalHub = softwareSystem "Eval Hub" "Benchmark evaluation submission and result retrieval" "Internal RHOAI"
+        kuberay = softwareSystem "KubeRay Operator" "Ray cluster management for distributed processing" "Internal RHOAI"
+        trainingOperator = softwareSystem "Training Operator" "Distributed training runtime management" "Internal RHOAI"
+        hardwareProfile = softwareSystem "HardwareProfile CRD" "GPU resource profile definitions" "Internal RHOAI"
+
+        k8sApi = softwareSystem "Kubernetes API" "Cluster API server for CRD operations" "Infrastructure"
+        istio = softwareSystem "Istio / Service Mesh" "Service mesh for mTLS and traffic management" "Infrastructure"
+
+        s3 = softwareSystem "S3-Compatible Storage" "Object storage for datasets, documents, and model artifacts" "External"
+        huggingface = softwareSystem "HuggingFace Hub" "Model and dataset repository" "External"
+        ogx = softwareSystem "OGX API" "Vector store operations and embedding generation" "External"
+        milvus = softwareSystem "Milvus" "Vector database for document ingestion" "External"
+        llmApi = softwareSystem "LLM API" "OpenAI-compatible LLM backend for synthetic data generation" "External"
+        wandb = softwareSystem "Weights & Biases" "Optional training metrics logging" "External"
 
         # User interactions
-        dataScientist -> pipelinesComponents "Runs ML pipelines (fine-tuning, AutoML, AutoRAG, SDG) via KFP UI or SDK"
-        mlEngineer -> pipelinesComponents "Develops and packages reusable KFP components"
+        datascientist -> pipelinesComponents "Defines and runs ML pipelines via KFP SDK"
+        mlops -> pipelinesComponents "Configures managed pipelines and RELATED_IMAGE overrides"
 
-        # Init container delivers to KFP API Server
-        pipelinesComponents -> kfpApiServer "Delivers compiled pipeline YAMLs via init container shared volume" "Filesystem"
-        pipelinesComponents -> kfpSdk "Uses for pipeline/component definition and compilation" "Python Import"
+        # Init container flow
+        initContainer -> kfpServer "Stages pipeline YAMLs to shared volume" "Filesystem"
 
-        # Training and deployment
-        pipelinesComponents -> kubeflowTrainer "Creates TrainJob CRDs for distributed fine-tuning" "Kubernetes API"
-        pipelinesComponents -> modelRegistry "Registers trained models with provenance metadata" "HTTP/8080"
+        # Runtime image usage
+        automlImage -> trainingComponents "Provides base runtime for AutoML components" "Container Image"
+        autoragImage -> dataProcessing "Provides base runtime for RAG components" "Container Image"
 
-        # External data sources
-        pipelinesComponents -> s3Storage "Loads/stores training data, model artifacts, documents" "HTTPS/443"
-        pipelinesComponents -> huggingfaceHub "Downloads pre-trained models and datasets" "HTTPS/443"
-
-        # RAG-specific
-        pipelinesComponents -> ogxApi "Accesses embedding models, vector stores, generation models" "HTTPS/443"
-        ogxApi -> milvus "Persists and queries document embeddings" "gRPC/19530"
-
-        # SDG
-        pipelinesComponents -> llmProvider "Generates synthetic data and evaluates RAG patterns" "HTTPS/443"
+        # Internal RHOAI integrations
+        pipelinesComponents -> kfpServer "Pipeline YAMLs staged at init" "Filesystem / Volume Mount"
+        pipelinesComponents -> kserve "Creates/manages ServingRuntime and InferenceService CRDs" "HTTPS/6443 mTLS"
+        pipelinesComponents -> modelRegistry "Registers models with training provenance" "HTTP/8080"
+        pipelinesComponents -> evalHub "Submits evaluation benchmarks and retrieves results" "HTTPS/443"
+        pipelinesComponents -> kuberay "Creates RayJob CRDs for distributed doc processing" "HTTPS/6443 mTLS"
+        pipelinesComponents -> trainingOperator "Reads ClusterTrainingRuntime CRDs" "HTTPS/6443 mTLS"
+        pipelinesComponents -> hardwareProfile "Reads GPU resource profiles" "HTTPS/6443 mTLS"
 
         # Infrastructure
-        pipelinesComponents -> kubernetesApi "Reads Secrets, ConfigMaps, mounts PVCs" "HTTPS/6443"
+        pipelinesComponents -> k8sApi "CRD CRUD operations" "HTTPS/6443 mTLS"
+
+        # External egress
+        pipelinesComponents -> s3 "Downloads/uploads datasets, documents, model artifacts" "HTTPS/443 TLS 1.2+"
+        pipelinesComponents -> huggingface "Downloads models and datasets" "HTTPS/443 TLS 1.2+"
+        pipelinesComponents -> ogx "Vector store operations and embedding generation" "HTTPS/443 TLS 1.2+"
+        pipelinesComponents -> milvus "Ingests vectors for RAG document processing" "gRPC/19530 plaintext"
+        pipelinesComponents -> llmApi "Synthetic data generation via LiteLLM" "HTTPS/443 TLS 1.2+"
+        pipelinesComponents -> wandb "Optional training metrics logging" "HTTPS/443 TLS 1.2+"
     }
 
     views {
@@ -70,45 +84,21 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "External Library" {
-                background #bbbbbb
-                color #333333
-            }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
             element "Infrastructure" {
-                background #e8a820
+                background #f5a623
                 color #ffffff
             }
             element "Person" {
+                shape person
                 background #08427b
                 color #ffffff
-                shape person
             }
             element "Container" {
                 background #438dd5
-                color #ffffff
-            }
-            element "Container Image" {
-                background #f5a623
-                color #333333
-            }
-            element "Init Container" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Build Script" {
-                background #82b366
-                color #ffffff
-            }
-            element "Init Script" {
-                background #82b366
-                color #ffffff
-            }
-            element "Python Library" {
-                background #7ed321
                 color #ffffff
             }
         }

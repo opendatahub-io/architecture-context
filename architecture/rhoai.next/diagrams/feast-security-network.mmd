@@ -1,84 +1,92 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["ML Inference Client"]
-        DataScientist["Data Scientist / Notebook"]
+        Client["ML Application /<br/>External Client"]
     end
 
-    subgraph Ingress["INGRESS (OpenShift Route)"]
-        UIRoute["feast-ui Route<br/>443/TCP → 8888/8443<br/>TLS Passthrough<br/>Auth: None"]
+    subgraph Ingress["INGRESS (OpenShift Routes - reencrypt TLS)"]
+        RouteOnline["feast-online Route<br/>443/TCP → 6567/TCP<br/>TLS reencrypt"]
+        RouteRegistry["feast-registry Route<br/>443/TCP → 6573/TCP<br/>TLS reencrypt"]
+        RouteUI["feast-ui Route<br/>443/TCP → 8443/TCP<br/>TLS reencrypt"]
     end
 
-    subgraph Cluster["KUBERNETES CLUSTER (redhat-ods-applications)"]
+    subgraph ClusterInternal["CLUSTER INTERNAL"]
         direction TB
 
-        subgraph OperatorNS["Operator Deployment"]
-            Operator["feast-operator<br/>SA: feast-operator-controller-manager<br/>Image: odh-feast-operator-rhel9<br/>Health: 8081/TCP<br/>Metrics: 8443/TCP HTTPS"]
+        subgraph OperatorNS["Namespace: redhat-ods-applications"]
+            Operator["feast-operator<br/>SA: feast-operator-controller-manager<br/>Ports: 8443 (metrics), 8081 (health)<br/>FIPS: strictfipsruntime"]
+            OperatorMetrics["Operator Metrics Service<br/>8443/TCP HTTPS<br/>Auth: TokenReview"]
         end
 
-        subgraph FeatureStoreNS["FeatureStore Services (per-CR namespace)"]
-            Online["feast-online<br/>SA: feast-{name}<br/>6566/TCP REST+gRPC (or 6567 TLS)<br/>Metrics: 8000/TCP, 9090/TCP<br/>Auth: OIDC/K8s RBAC/None"]
-            Offline["feast-offline<br/>SA: feast-{name}<br/>8815/TCP Arrow Flight (or 8816 TLS)<br/>Auth: OIDC/K8s RBAC/None"]
-            Registry["feast-registry<br/>SA: feast-{name}<br/>6570/TCP gRPC (or 6571 TLS)<br/>6572/TCP REST (or 6573 TLS)<br/>Auth: OIDC/K8s RBAC + JWT intra"]
-            UI["feast-ui<br/>SA: feast-{name}<br/>8888/TCP (or 8443 TLS)<br/>Auth: None"]
-            CronJob["Materialization CronJob<br/>Image: ose-cli<br/>Auth: SA token"]
+        subgraph UserNS["Namespace: {user-namespace}"]
+            direction TB
+
+            OfflineSvc["feast-offline Service<br/>ClusterIP 80|443 → 8815|8816<br/>gRPC, TLS optional<br/>Auth: Bearer JWT"]
+            OnlineSvc["feast-online Service<br/>ClusterIP 80|443 → 6566|6567<br/>gRPC, TLS optional<br/>Auth: Bearer JWT"]
+            OnlineMetrics["feast-online Metrics<br/>8000/TCP HTTP<br/>No auth, no TLS"]
+            RegistrySvc["feast-registry Service<br/>ClusterIP 80|443 → 6570|6571<br/>gRPC, TLS optional<br/>Auth: Bearer JWT"]
+            RegistryREST["feast-registry-rest Service<br/>ClusterIP 80|443 → 6572|6573<br/>HTTP/HTTPS REST /api/v1/*<br/>Auth: Bearer JWT"]
+            UISvc["feast-ui Service<br/>ClusterIP 80|443 → 8888|8443<br/>HTTP/HTTPS<br/>Auth: Bearer JWT"]
+
+            subgraph Pod["FeatureStore Pod (Multi-Container)"]
+                OfflineC["offline container<br/>8815/8816"]
+                OnlineC["online container<br/>6566/6567, 8000"]
+                RegistryC["registry container<br/>6570/6571, 6572/6573"]
+                UIC["ui container<br/>8888/8443"]
+            end
+
+            OfflineSvc --> OfflineC
+            OnlineSvc --> OnlineC
+            OnlineMetrics --> OnlineC
+            RegistrySvc --> RegistryC
+            RegistryREST --> RegistryC
+            UISvc --> UIC
         end
     end
 
-    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: SA token"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA token auth"]
+        OIDC["OIDC Provider<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+        Redis["Redis<br/>6379/TCP<br/>TLS optional<br/>Credentials from Secret"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS optional<br/>Credentials from Secret"]
+        Snowflake["Snowflake<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Credentials from Secret"]
+        S3["S3/GCS<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>IAM credentials"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        Redis["Redis<br/>6379/TCP<br/>Optional TLS<br/>Auth: Password"]
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>Optional SSL<br/>Auth: User/Pass"]
-        MySQL["MySQL<br/>3306/TCP<br/>No TLS<br/>Auth: User/Pass"]
-        DynamoDB["AWS DynamoDB<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: AWS IAM"]
-        BigQuery["Google BigQuery<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: GCP SA"]
-        S3["AWS S3<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: AWS IAM"]
-        GCS["Google Cloud Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: GCP SA"]
-        Snowflake["Snowflake<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Snowflake creds"]
-        OIDCProvider["OIDC Provider<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Client creds"]
-    end
+    %% External flows
+    Client -->|"HTTPS/443<br/>Bearer JWT"| RouteOnline
+    Client -->|"HTTPS/443<br/>Bearer JWT"| RouteRegistry
+    Client -->|"HTTPS/443<br/>Bearer JWT"| RouteUI
 
-    %% External → Cluster flows
-    Client -->|"HTTP+gRPC/6566 or 6567<br/>None or TLS<br/>OIDC/K8s token"| Online
-    DataScientist -->|"Arrow Flight/8815 or 8816<br/>None or TLS<br/>OIDC/K8s token"| Offline
-    DataScientist -->|"HTTPS/443<br/>TLS Passthrough"| UIRoute
-    UIRoute -->|"HTTP/8888 or HTTPS/8443"| UI
+    %% Route to Service flows
+    RouteOnline -->|"TLS reencrypt<br/>6567/TCP"| OnlineSvc
+    RouteRegistry -->|"TLS reencrypt<br/>6573/TCP"| RegistryREST
+    RouteUI -->|"TLS reencrypt<br/>8443/TCP"| UISvc
 
-    %% Operator → internal flows
-    Operator -->|"HTTP/6572 or HTTPS/6573<br/>Bearer JWT intra-comm<br/>⚠ InsecureSkipVerify"| Registry
-    Operator -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    %% Operator flows
+    Operator -->|"HTTPS/443<br/>SA token"| K8sAPI
+    Operator -->|"HTTP(S)<br/>HMAC-SHA256 JWT<br/>InsecureSkipVerify"| RegistryREST
 
-    %% CronJob flows
-    CronJob -->|"gRPC/6570 or 6571<br/>None or TLS<br/>SA token"| Registry
-
-    %% Feature services → external stores
-    Online -->|"TCP/6379<br/>Optional TLS<br/>Password"| Redis
-    Online -->|"TCP/5432<br/>Optional SSL<br/>User/Pass"| PostgreSQL
-    Online -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| DynamoDB
-    Offline -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP SA"| BigQuery
-    Registry -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    Registry -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP SA"| GCS
-    Online -->|"TCP/3306<br/>No TLS<br/>User/Pass"| MySQL
-
-    %% Auth validation
-    Online -->|"HTTPS/443<br/>JWKS validation"| OIDCProvider
-
-    %% CronJob → stores
-    CronJob -->|"Backend-specific<br/>Backend creds"| Redis
-    CronJob -->|"HTTPS/443<br/>Backend creds"| BigQuery
+    %% Feature server egress
+    OnlineC -->|"Store-specific<br/>Credentials"| Redis
+    OnlineC -->|"Store-specific<br/>Credentials"| PostgreSQL
+    OfflineC -->|"Store-specific<br/>Credentials"| PostgreSQL
+    OfflineC -->|"HTTPS/443<br/>Credentials"| Snowflake
+    RegistryC -->|"HTTPS/443<br/>IAM creds"| S3
+    RegistryC -->|"Store-specific<br/>Credentials"| PostgreSQL
+    OnlineC -->|"HTTPS/443<br/>SA token"| K8sAPI
+    RegistryC -->|"HTTPS/443"| OIDC
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef cluster fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef controlplane fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef clusterinternal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef pod fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
 
-    class Client,DataScientist external
-    class UIRoute ingress
-    class Operator,Online,Offline,Registry,UI,CronJob cluster
-    class K8sAPI controlplane
-    class Redis,PostgreSQL,MySQL,DynamoDB,BigQuery,S3,GCS,Snowflake,OIDCProvider externalservice
+    class Client external
+    class RouteOnline,RouteRegistry,RouteUI ingress
+    class OfflineSvc,OnlineSvc,OnlineMetrics,RegistrySvc,RegistryREST,UISvc clusterinternal
+    class Operator,OperatorMetrics operator
+    class OfflineC,OnlineC,RegistryC,UIC pod
+    class K8sAPI,OIDC,Redis,PostgreSQL,Snowflake,S3 externalservice

@@ -1,49 +1,42 @@
 sequenceDiagram
-    participant Admin as Platform Admin
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
-    participant Controller as Controller Reconciler
-    participant SatEngine as Saturation Engine<br/>(30s loop)
-    participant Cache as Decision Cache<br/>(in-memory)
-    participant Prom as Prometheus (Thanos Querier)<br/>9091/TCP HTTPS TLS 1.2+
-    participant Metrics as /metrics Endpoint<br/>8443/TCP HTTPS TLS
+    autonumber
+
+    participant vLLM as vLLM Model Server<br/>metrics port/TCP
+    participant Prom as Prometheus / Thanos Querier<br/>9090-9091/TCP HTTPS
+    participant WVA as WVA controller-manager<br/>8443/TCP HTTPS
+    participant EPP as EPP (Endpoint Picker Proxy)<br/>metrics port/TCP HTTPS
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS
     participant HPA as HPA / KEDA
-    participant Deploy as Deployment / LWS
+    participant Admin as Platform Admin
+    participant Client as External Client
 
-    Note over Admin,Deploy: Flow 1: Saturation-Based Autoscaling Loop
-
-    Admin->>K8sAPI: Create VariantAutoscaling CR
-    K8sAPI-->>Controller: Watch event (VA created)
-    Controller->>K8sAPI: Read ConfigMaps<br/>(saturation, queueing model)
-
-    loop Every 30 seconds
-        SatEngine->>K8sAPI: List VariantAutoscaling CRs<br/>Auth: SA Token
-        K8sAPI-->>SatEngine: Active VA list
-        SatEngine->>Prom: PromQL: vllm:kv_cache_usage_perc,<br/>num_requests_waiting, token rates<br/>Auth: Bearer Token
-        Prom-->>SatEngine: Metrics response
-
-        Note over SatEngine: Run V1/V2/QM analyzers<br/>Apply GPU limiter if enabled
-
-        SatEngine->>Cache: Store scaling decision<br/>(desired replicas per VA)
-        Cache-->>Controller: DecisionTrigger channel
-        Controller->>K8sAPI: Patch VA status<br/>(desired replicas, conditions)<br/>Auth: SA Token
+    rect rgb(230, 245, 255)
+        Note over vLLM,HPA: Flow 1: Saturation-Based Autoscaling
+        vLLM->>Prom: Expose vllm_kv_cache_usage_fraction,<br/>vllm_scheduler_queue_length,<br/>vllm_avg_output_tokens<br/>(HTTP, in-cluster)
+        WVA->>Prom: PromQL queries for vLLM metrics<br/>(HTTPS, TLS 1.2+, Bearer Token SA)
+        Prom-->>WVA: Metric values (KV cache, queue depth,<br/>output tokens, request rates)
+        Note over WVA: Saturation Engine runs analysis:<br/>V1 (% KV cache) or V2 (absolute tokens)<br/>or Queueing Model (M/M/c theory)<br/>→ Pipeline: Optimizer → Limiter → Enforcer<br/>→ Emits wva_desired_replicas metric
+        WVA->>Prom: Prometheus scrapes /metrics<br/>(HTTPS/8443, TLS, Bearer Token)
+        HPA->>Prom: Read wva_desired_replicas external metric<br/>(HTTPS, TLS 1.2+, Bearer Token)
+        Prom-->>HPA: Desired replica count
+        HPA->>K8sAPI: Update scale subresource<br/>(HTTPS/6443, TLS 1.2+, SA token)
     end
 
-    Prom->>Metrics: Scrape wva_desired_replicas,<br/>wva_current_replicas,<br/>wva_desired_ratio<br/>Auth: Bearer Token
-    HPA->>Metrics: Read custom metrics<br/>Auth: Bearer Token
-    HPA->>K8sAPI: Scale Deployment<br/>Auth: SA Token
-    K8sAPI-->>Deploy: Update replicas
+    rect rgb(255, 243, 224)
+        Note over Client,K8sAPI: Flow 2: Scale-from-Zero
+        Client->>EPP: Request to scaled-down model<br/>(HTTP/gRPC)
+        Note over EPP: Queue builds up while<br/>replicas == 0
+        WVA->>EPP: Scrape inference_extension_flow_control_queue_size<br/>(HTTPS, TLS, Bearer Token epp-metrics-reader)
+        EPP-->>WVA: Queue size > 0 detected
+        Note over WVA: Scale-from-zero engine:<br/>Check DecisionCache for cooldown<br/>→ Scale target replicas directly
+        WVA->>K8sAPI: Update Deployment scale subresource<br/>(HTTPS/6443, TLS 1.2+, SA token)
+        WVA->>K8sAPI: Update VA status with scale event<br/>(HTTPS/6443, TLS 1.2+, SA token)
+    end
 
-    Note over Admin,Deploy: Flow 2: Scale-From-Zero Cold Start
-
-    participant SFZEngine as Scale-From-Zero Engine<br/>(100ms loop)
-    participant EPP as EPP Pods<br/>HTTP
-
-    loop Every 100ms
-        SFZEngine->>K8sAPI: List inactive VAs (replicas=0)<br/>Auth: SA Token
-        K8sAPI-->>SFZEngine: Inactive VA list
-        SFZEngine->>EPP: GET flow_control_queue_size<br/>Auth: Bearer Token (EPP token)
-        EPP-->>SFZEngine: Queue size > 0
-        SFZEngine->>K8sAPI: PATCH /scale subresource<br/>(set replicas=1)<br/>Auth: SA Token
-        K8sAPI-->>Deploy: Scale to 1 replica
-        SFZEngine->>Cache: Store decision (replicas=1)
+    rect rgb(232, 245, 233)
+        Note over Admin,WVA: Flow 3: Dynamic Configuration Update
+        Admin->>K8sAPI: Update ConfigMap<br/>(e.g. wva-saturation-scaling-config)<br/>(HTTPS/6443, TLS 1.2+, user creds)
+        K8sAPI-->>WVA: ConfigMap watch event
+        Note over WVA: ConfigMap Reconciler:<br/>3-tier resolution:<br/>namespace-local > global > defaults<br/>→ Update in-memory Config
+        Note over WVA: Next saturation cycle<br/>uses updated config<br/>(no restart needed)
     end

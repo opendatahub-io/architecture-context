@@ -1,89 +1,77 @@
 workspace {
     model {
-        # Actors
-        datascientist = person "Data Scientist" "Deploys and queries ML models for inference"
-        application = person "Application / Client" "Sends inference requests to deployed models"
-        platformAdmin = person "Platform Admin" "Manages RHOAI platform and model serving infrastructure"
+        dataScientist = person "Data Scientist" "Deploys and queries ML models for inference"
+        application = person "Client Application" "Sends inference requests to model endpoints"
 
-        # Core System
-        ovms = softwareSystem "OpenVINO Model Server" "High-performance C++ inference server for AI models via gRPC and REST APIs, optimized for Intel architectures" {
-            drogonServer = container "Drogon HTTP Server" "REST API frontend serving TFS v1, KServe v2, and OpenAI v3 endpoints" "C++ / Drogon Framework" "WebBrowser"
-            grpcServer = container "gRPC Server" "gRPC frontend for KServe v2 and TFS inference protocols" "C++ / gRPC"
-            tfsHandler = container "TFS v1 Handler" "TensorFlow Serving compatible predict and metadata API" "C++"
-            kfsHandler = container "KServe v2 Handler" "KServe inference protocol handler (infer, metadata, health)" "C++"
-            v3Handler = container "OpenAI v3 Handler" "OpenAI-compatible API for chat completions, embeddings, reranking, image gen, audio" "C++"
-            mediapipeEngine = container "MediaPipe Graph Executor" "Graph-based pipeline execution for composing inference workflows" "C++ / MediaPipe"
-            servableManager = container "Servable Manager" "Model lifecycle management, loading, versioning" "C++"
-            hfPullModule = container "HuggingFace Pull Module" "Downloads models from HuggingFace Hub via libgit2" "C++ / libgit2"
-            metricsModule = container "Metrics Module" "Prometheus metrics collection and exposition" "C++ / Prometheus Client"
-            pythonBinding = container "Python Binding" "pybind11 module for Jinja2 chat template rendering" "Python 3.12 / pybind11"
+        ovms = softwareSystem "OpenVINO Model Server (OVMS)" "High-performance AI model inference server built on OpenVINO, exposing TFS, KServe v2, and OpenAI-compatible APIs over gRPC and REST" {
+            httpServer = container "HTTP Server (Drogon)" "REST API handler for TFS, KServe v2, OpenAI, and metrics endpoints" "C++ / Drogon" "Port 8080/TCP"
+            grpcServer = container "gRPC Server" "TFS and KServe v2 gRPC inference services" "C++ / gRPC" "Port 8443/TCP"
+            modelManager = container "Model Manager" "Model lifecycle management, versioning, hot-reload, cloud storage backends" "C++"
+            mediapipeExecutor = container "MediaPipe Graph Executor" "Node-based pipeline framework for LLM, embeddings, rerank, image gen, audio" "C++ / MediaPipe"
+            llmServable = container "LLM Servable" "OpenAI-compatible chat/completion serving with continuous batching" "C++ / OpenVINO GenAI"
+            embeddingsServable = container "Embeddings Servable" "Text embedding generation with OpenAI API compatibility" "C++ / OpenVINO GenAI"
+            rerankServable = container "Rerank Servable" "Document reranking with Cohere API compatibility" "C++ / OpenVINO GenAI"
+            imageGenServable = container "Image Gen Servable" "Text-to-image, image-to-image, inpainting" "C++ / OpenVINO GenAI"
+            speechToText = container "Speech-to-Text" "Whisper-based speech recognition" "C++ / OpenVINO GenAI"
+            textToSpeech = container "Text-to-Speech" "Speech synthesis with speaker embeddings" "C++ / OpenVINO GenAI"
+            pythonBackend = container "Python Backend" "pybind11-based Python execution for Jinja2 templates and custom nodes" "C++ / pybind11"
+            metricsModule = container "Metrics Module" "Prometheus-compatible metrics collection and exposure" "C++"
+            hfPullModule = container "HF Pull Module" "Hugging Face model downloading via git clone, Optimum CLI, or GGUF" "C++ / libgit2"
         }
 
-        # Platform Dependencies
-        kserve = softwareSystem "KServe" "Manages InferenceService lifecycle, deploys OVMS pods" "Internal RHOAI"
-        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Authentication proxy sidecar in RHOAI deployments" "Internal RHOAI"
-        prometheus = softwareSystem "OpenShift Monitoring" "Metrics collection and alerting platform" "Internal Platform"
-        kubernetes = softwareSystem "Kubernetes API" "Container orchestration, health probes, pod management" "Internal Platform"
+        openvinoRuntime = softwareSystem "OpenVINO Runtime" "Intel's inference engine for model compilation and execution" "External"
+        openvinoGenAI = softwareSystem "OpenVINO GenAI" "LLM pipeline with continuous batching, tokenization, image gen, audio" "External"
+        kserve = softwareSystem "KServe" "Serverless ML inference platform - deploys OVMS as ServingRuntime" "Internal RHOAI"
+        rhoaiGateway = softwareSystem "RHOAI Gateway (Envoy)" "Platform ingress for TLS termination and traffic routing" "Internal RHOAI"
+        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Authentication/authorization sidecar for RHOAI deployments" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus" "Metrics scraping and monitoring" "Internal RHOAI"
+        s3Storage = softwareSystem "S3-compatible Storage" "Model artifact storage (AWS S3, MinIO, Ceph)" "External"
+        gcsStorage = softwareSystem "Google Cloud Storage" "Model artifact storage on GCP" "External"
+        azureStorage = softwareSystem "Azure Blob/File Storage" "Model artifact storage on Azure" "External"
+        hfHub = softwareSystem "Hugging Face Hub" "Model repository for downloading and converting models" "External"
 
-        # Runtime Libraries (linked, not networked)
-        openvinoRuntime = softwareSystem "OpenVINO Runtime" "Neural network inference engine optimized for Intel hardware" "Intel Library"
-        openvinoGenAI = softwareSystem "OpenVINO GenAI" "LLM/VLM inference pipelines with continuous batching" "Intel Library"
+        # System-level relationships
+        application -> ovms "Sends inference requests" "HTTPS/443 via Gateway, gRPC/8443"
+        dataScientist -> kserve "Creates InferenceService CR" "kubectl"
+        kserve -> ovms "Deploys as ServingRuntime container"
+        rhoaiGateway -> ovms "Routes external traffic" "HTTPS/443 → HTTP/8080"
+        kubeRbacProxy -> ovms "Enforces auth" "HTTPS/8443 → HTTP/8080"
+        ovms -> openvinoRuntime "Compiles and runs models" "In-process C++ API"
+        ovms -> openvinoGenAI "LLM/embedding/image/audio pipelines" "In-process C++ API"
+        ovms -> s3Storage "Downloads model artifacts" "HTTPS/443, AWS IAM"
+        ovms -> gcsStorage "Downloads model artifacts" "HTTPS/443, GCS SA"
+        ovms -> azureStorage "Downloads model artifacts" "HTTPS/443, Connection String"
+        ovms -> hfHub "Pulls models" "HTTPS/443, HF_TOKEN"
+        prometheus -> ovms "Scrapes metrics" "HTTP/8080 /metrics"
 
-        # External Services
-        huggingface = softwareSystem "HuggingFace Hub" "Model repository for downloading pre-trained models" "External Service"
-        s3 = softwareSystem "AWS S3" "Cloud object storage for model artifacts" "External Service"
-        azureBlob = softwareSystem "Azure Blob Storage" "Cloud object storage for model artifacts" "External Service"
-        gcs = softwareSystem "Google Cloud Storage" "Cloud object storage for model artifacts" "External Service"
-        localStorage = softwareSystem "PVC / Local Storage" "Kubernetes persistent volumes for model artifacts" "Internal Storage"
-
-        # Relationships - Actors
-        datascientist -> kserve "Creates InferenceService CR" "kubectl / ODH Dashboard"
-        application -> ovms "Sends inference requests" "REST/gRPC over HTTPS"
-        platformAdmin -> kserve "Configures serving runtimes" "kubectl / RHOAI Dashboard"
-
-        # Relationships - Platform
-        kserve -> ovms "Deploys as inference container in InferenceService pods"
-        kubeRbacProxy -> ovms "Proxies authenticated requests" "HTTPS/8443 → HTTP/8080,8085"
-        application -> kubeRbacProxy "Sends requests through auth proxy" "HTTPS/8443"
-        prometheus -> ovms "Scrapes metrics" "HTTP GET /metrics"
-        kubernetes -> ovms "Health probes" "HTTP GET /v2/health/*"
-
-        # Relationships - Internal containers
-        drogonServer -> tfsHandler "Routes /v1/** requests"
-        drogonServer -> kfsHandler "Routes /v2/** requests"
-        drogonServer -> v3Handler "Routes /v3/** requests"
-        drogonServer -> metricsModule "Routes /metrics requests"
-        grpcServer -> kfsHandler "Dispatches KServe v2 RPCs"
-        grpcServer -> tfsHandler "Dispatches TFS RPCs"
-        v3Handler -> mediapipeEngine "Executes LLM inference graphs"
-        tfsHandler -> servableManager "Executes model inference"
-        kfsHandler -> servableManager "Executes model inference"
-        mediapipeEngine -> openvinoGenAI "LLM/VLM pipeline execution" "C++ API"
-        servableManager -> openvinoRuntime "Neural network inference" "C++ API"
-        v3Handler -> pythonBinding "Jinja2 chat template rendering" "pybind11"
-
-        # Relationships - External
-        hfPullModule -> huggingface "Downloads model artifacts" "HTTPS/443, HF Token"
-        servableManager -> s3 "Loads model artifacts" "HTTPS/443, AWS IAM"
-        servableManager -> azureBlob "Loads model artifacts" "HTTPS/443, Connection String"
-        servableManager -> gcs "Loads model artifacts" "HTTPS/443, GCP Credentials"
-        servableManager -> localStorage "Loads model artifacts" "Filesystem"
+        # Container-level relationships
+        httpServer -> modelManager "TFS/KServe inference requests"
+        httpServer -> mediapipeExecutor "OpenAI API requests"
+        grpcServer -> modelManager "gRPC inference requests"
+        mediapipeExecutor -> llmServable "Chat/completion requests"
+        mediapipeExecutor -> embeddingsServable "Embedding requests"
+        mediapipeExecutor -> rerankServable "Reranking requests"
+        mediapipeExecutor -> imageGenServable "Image generation requests"
+        mediapipeExecutor -> speechToText "Audio transcription requests"
+        mediapipeExecutor -> textToSpeech "Speech synthesis requests"
+        llmServable -> pythonBackend "Jinja2 chat template processing"
+        modelManager -> hfPullModule "Model downloading"
+        httpServer -> metricsModule "Metrics exposure"
     }
 
     views {
-        systemContext ovms "SystemContext" "System context diagram for OpenVINO Model Server" {
+        systemContext ovms "SystemContext" {
             include *
-            exclude openvinoRuntime openvinoGenAI
             autoLayout
         }
 
-        container ovms "Containers" "Container diagram showing OVMS internal structure" {
+        container ovms "Containers" {
             include *
             autoLayout
         }
 
         styles {
-            element "External Service" {
+            element "External" {
                 background #999999
                 color #ffffff
             }
@@ -91,22 +79,10 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal Platform" {
-                background #4a90d9
-                color #ffffff
-            }
-            element "Intel Library" {
-                background #0071c5
-                color #ffffff
-            }
-            element "Internal Storage" {
-                background #e1d5e7
-                color #333333
-            }
             element "Person" {
+                shape Person
                 background #08427b
                 color #ffffff
-                shape Person
             }
             element "Software System" {
                 background #1168bd

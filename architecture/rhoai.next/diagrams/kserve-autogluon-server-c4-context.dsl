@@ -1,47 +1,46 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates InferenceService to serve AutoGluon models"
+        user = person "Data Scientist" "Deploys and queries AutoGluon models via InferenceService"
 
-        autogluonServer = softwareSystem "KServe AutoGluon Server" "Serves AutoGluon TabularPredictor and TimeSeriesPredictor models via KServe v1/v2 inference protocol" {
-            mainEntry = container "__main__.py" "Entry point, initializes model server" "Python"
-            predictorFactory = container "PredictorFactory" "Auto-detects model type (Tabular vs TimeSeries)" "Python"
-            tabularModel = container "AutoGluonTabularModel" "Serves tabular predictions via v1 JSON and v2 tensor protocol" "Python"
-            timeseriesModel = container "AutoGluonTimeSeriesModel" "Serves time series predictions via v1 JSON only" "Python"
-            kserveSDK = container "KServe SDK (vendored)" "HTTP/gRPC server framework, inference protocol types, model repository" "Python"
-            storageLib = container "kserve-storage (vendored)" "Model artifact download from S3, GCS, Azure, HF Hub" "Python"
+        autogluonServer = softwareSystem "KServe AutoGluon Server" "Serves AutoGluon TabularPredictor and TimeSeriesPredictor models via REST v1/v2 and gRPC inference protocols" {
+            serverProcess = container "AutoGluon Server" "Python ML inference server with auto-detection of model type (Tabular vs TimeSeries)" "Python 3.11 / uvicorn / grpcio"
+            tabularModel = container "Tabular Model Handler" "Handles TabularPredictor inference via v1 JSON, v2 tensor, and gRPC protocols; supports predict_proba" "Python / autogluon.tabular 1.5.0+rhaiv.3"
+            timeseriesModel = container "TimeSeries Model Handler" "Handles TimeSeriesPredictor forecasting via v1 JSON protocol with column metadata mapping" "Python / autogluon.timeseries 1.5.0+rhaiv.3"
+            kserveSDK = container "KServe Python SDK" "Model server framework providing inference protocol handling, health probes, and Prometheus metrics" "Python / kserve 0.19.0"
+            kserveStorage = container "KServe Storage" "Downloads model artifacts from cloud storage backends at startup" "Python / kserve-storage 0.19.0"
         }
 
-        kserveController = softwareSystem "KServe Controller" "Manages InferenceService lifecycle, creates pods" "Internal Platform"
-        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Auth enforcement sidecar injected by RHOAI platform" "Internal Platform"
-        platformIngress = softwareSystem "Platform Ingress" "Gateway/Route managed by KServe for external access" "Internal Platform"
+        kserveController = softwareSystem "KServe Controller" "Manages InferenceService pod lifecycle and ingress configuration" "Internal RHOAI"
+        clusterServingRuntime = softwareSystem "ClusterServingRuntime" "Defines runtime container image, resources, and model format configuration" "Internal RHOAI"
+        platformIngress = softwareSystem "Platform Ingress" "Routes external traffic and handles TLS termination and authentication" "Gateway API / Istio"
         prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal Platform"
 
-        s3 = softwareSystem "S3-Compatible Storage" "Model artifact storage (AWS S3)" "External"
-        gcs = softwareSystem "Google Cloud Storage" "Model artifact storage (GCS)" "External"
-        azure = softwareSystem "Azure Blob Storage" "Model artifact storage (Azure)" "External"
-        hfHub = softwareSystem "Hugging Face Hub" "Model artifact storage (HF Hub)" "External"
+        s3 = softwareSystem "S3-compatible Storage" "Model artifact storage" "External"
+        gcs = softwareSystem "Google Cloud Storage" "Model artifact storage" "External"
+        azureBlob = softwareSystem "Azure Blob Storage" "Model artifact storage" "External"
+        huggingfaceHub = softwareSystem "HuggingFace Hub" "Model repository and artifact storage" "External"
 
-        # Relationships
-        user -> platformIngress "Sends inference requests" "HTTPS/443"
-        platformIngress -> kubeRbacProxy "Forwards to auth sidecar" "HTTPS/8443"
-        kubeRbacProxy -> autogluonServer "Forwards after auth" "HTTP/8080 localhost"
+        # User interactions
+        user -> autogluonServer "Sends inference requests via HTTPS/443"
+        user -> kserveController "Creates InferenceService CR via kubectl"
 
-        kserveController -> autogluonServer "Creates pods with this image" "Kubernetes API"
-        prometheus -> autogluonServer "Scrapes /metrics" "HTTP/8080"
+        # Platform interactions
+        kserveController -> autogluonServer "Manages pod lifecycle" "K8s API / mTLS"
+        clusterServingRuntime -> kserveController "Defines runtime config" "CRD"
+        platformIngress -> autogluonServer "Routes inference traffic" "HTTP/8080, gRPC/8081"
+        prometheus -> autogluonServer "Scrapes metrics" "HTTP/8080"
 
-        autogluonServer -> s3 "Downloads model artifacts" "HTTPS/443"
-        autogluonServer -> gcs "Downloads model artifacts" "HTTPS/443"
-        autogluonServer -> azure "Downloads model artifacts" "HTTPS/443"
-        autogluonServer -> hfHub "Downloads model artifacts" "HTTPS/443"
+        # External service interactions
+        autogluonServer -> s3 "Downloads model artifacts" "HTTPS/443, TLS 1.2+, AWS IAM"
+        autogluonServer -> gcs "Downloads model artifacts" "HTTPS/443, TLS 1.2+, GCP SA"
+        autogluonServer -> azureBlob "Downloads model artifacts" "HTTPS/443, TLS 1.2+, Azure creds"
+        autogluonServer -> huggingfaceHub "Downloads model artifacts" "HTTPS/443, TLS 1.2+, Bearer Token"
 
-        # Internal relationships
-        mainEntry -> predictorFactory "Initializes"
-        mainEntry -> kserveSDK "Starts ModelServer"
-        mainEntry -> storageLib "Downloads model"
-        predictorFactory -> tabularModel "Creates if TabularPredictor"
-        predictorFactory -> timeseriesModel "Creates if TimeSeriesPredictor"
-        tabularModel -> kserveSDK "Implements Model interface"
-        timeseriesModel -> kserveSDK "Implements Model interface"
+        # Internal container relationships
+        serverProcess -> kserveSDK "Uses for serving framework"
+        serverProcess -> tabularModel "Delegates tabular inference"
+        serverProcess -> timeseriesModel "Delegates timeseries inference"
+        serverProcess -> kserveStorage "Downloads models at startup"
     }
 
     views {
@@ -60,17 +59,21 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal Platform" {
+            element "Internal RHOAI" {
                 background #7ed321
+                color #ffffff
+            }
+            element "Internal Platform" {
+                background #4a90e2
                 color #ffffff
             }
             element "Person" {
                 shape Person
-                background #4a90e2
+                background #08427b
                 color #ffffff
             }
             element "Software System" {
-                background #4a90e2
+                background #1168bd
                 color #ffffff
             }
             element "Container" {

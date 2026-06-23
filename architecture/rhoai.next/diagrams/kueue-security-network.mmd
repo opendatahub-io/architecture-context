@@ -1,82 +1,67 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["Data Scientist / User"]
+        User["Data Scientist / Admin"]
     end
 
-    subgraph K8sControl["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP<br/>TLS 1.2+<br/>Bearer Token / Client Cert / OIDC"]
+    subgraph K8sControl["KUBERNETES API SERVER"]
+        K8sAPI["kube-apiserver<br/>443/TCP<br/>TLS 1.2+<br/>RBAC"]
     end
 
-    subgraph KueueNS["KUEUE NAMESPACE: opendatahub"]
+    subgraph KueueNS["KUEUE NAMESPACE (opendatahub)<br/>NetworkPolicy: Ingress 9443 only"]
         direction TB
 
-        subgraph Controller["kueue-controller-manager"]
-            direction LR
-            WebhookPort["Webhook<br/>9443/TCP HTTPS<br/>TLS (cert-mgmt)<br/>mTLS (API server)"]
-            MetricsPort["Metrics<br/>8443/TCP HTTPS<br/>TLS<br/>Bearer Token"]
-            HealthPort["Health<br/>8081/TCP HTTP<br/>No Auth"]
+        subgraph KueuePod["kueue-controller-manager Pod<br/>SA: kueue-controller-manager<br/>FIPS: strictfipsruntime + UBI 9"]
+            Webhook["Webhook Server<br/>9443/TCP HTTPS<br/>TLS (self-signed/cert-manager)<br/>Auth: API server client cert<br/>failurePolicy: Fail<br/>36 webhooks"]
+            Metrics["Metrics Server<br/>8443/TCP HTTPS<br/>TLS (certwatcher)<br/>Auth: Bearer Token (SA)<br/>Filter: AuthN+AuthZ"]
+            Health["Health Probes<br/>8081/TCP HTTP<br/>No encryption<br/>No auth"]
+            Scheduler["Scheduler<br/>(in-process)"]
+            Controller["Controller<br/>(in-process)"]
         end
-
-        subgraph Services["ClusterIP Services"]
-            WebhookSvc["kueue-webhook-service<br/>443 → 9443/TCP<br/>HTTPS/TLS"]
-            MetricsSvc["kueue-metrics-service<br/>8443/TCP<br/>HTTPS/TLS<br/>Bearer Token"]
-        end
-
-        NetPol["NetworkPolicy<br/>Ingress: port 9443 only"]
     end
 
-    subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>Scrapes metrics"]
+    subgraph Monitoring["MONITORING (Internal)"]
+        Prometheus["Prometheus / OpenShift Monitoring<br/>ServiceMonitor scrape"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (optional)"]
-        RemoteKueue["Remote Kueue Clusters<br/>(MultiKueue - disabled in RHOAI)<br/>443/TCP HTTPS TLS 1.2+<br/>kubeconfig from Secret"]
-        ClusterAS["Cluster Autoscaler<br/>(ProvisioningRequest)<br/>Indirect via K8s API"]
+    subgraph ExternalServices["EXTERNAL SERVICES (MultiKueue)"]
+        RemoteK8s["Remote Kubernetes Cluster(s)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Kubeconfig credentials"]
     end
 
-    subgraph SecurityContext["CONTAINER SECURITY"]
-        SecCtx["UID: 65532 (non-root)<br/>runAsNonRoot: true<br/>Seccomp: RuntimeDefault<br/>Capabilities: ALL dropped<br/>FIPS: strictfipsruntime"]
+    subgraph WebhookSvc["Services"]
+        WS["kueue-webhook-service<br/>ClusterIP 443→9443"]
+        MS["kueue-metrics-service<br/>ClusterIP 8443→8443"]
     end
 
-    %% External → API Server
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token / Client Cert"| K8sAPI
+    %% External flows
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>User credentials"| K8sAPI
 
-    %% API Server → Webhook (admission reviews)
-    K8sAPI -->|"HTTPS/9443<br/>TLS<br/>mTLS (API server cert)<br/>36 webhooks"| WebhookSvc
-    WebhookSvc --> WebhookPort
-    NetPol -.->|restricts| WebhookPort
+    %% K8s API to Webhook
+    K8sAPI -->|"HTTPS/9443<br/>TLS<br/>API server client cert<br/>Admission webhooks"| Webhook
 
-    %% Controller → API Server (egress)
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Bearer Token<br/>CRD watches, status updates"| K8sAPI
+    %% Controller to K8s API (egress)
+    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>ServiceAccount token<br/>CRUD on CRDs/resources"| K8sAPI
 
-    %% Prometheus → Metrics
-    Prometheus -->|"HTTPS/8443<br/>TLS<br/>Bearer Token<br/>metrics-reader ClusterRole"| MetricsSvc
-    MetricsSvc --> MetricsPort
+    %% MultiKueue egress
+    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>Kubeconfig credentials<br/>Workload dispatch"| RemoteK8s
 
-    %% MultiKueue (optional)
-    Controller -.->|"HTTPS/443<br/>TLS 1.2+<br/>kubeconfig Secret<br/>(disabled: MultiKueue=false)"| RemoteKueue
+    %% Monitoring
+    Prometheus -->|"HTTPS/8443<br/>TLS<br/>Bearer Token (SA)<br/>Scrape /metrics"| Metrics
 
-    %% ProvisioningRequest (indirect)
-    Controller -.->|"Creates ProvisioningRequest CR<br/>via K8s API"| ClusterAS
-
-    %% Security context association
-    SecCtx -.->|applied to| Controller
+    %% Service routing
+    WS -.->|routes to| Webhook
+    MS -.->|routes to| Metrics
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef k8s fill:#326ce5,stroke:#333,stroke-width:2px,color:#fff
-    classDef kueue fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef service fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef extsvc fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef security fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef netpol fill:#ffe6cc,stroke:#d79b00,stroke-width:1px,stroke-dasharray: 5 5
+    classDef k8sapi fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef kueue fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
+    classDef monitoring fill:#fff9c4,stroke:#f9a825,stroke-width:2px
+    classDef extservice fill:#ffecb3,stroke:#ff8f00,stroke-width:2px
+    classDef service fill:#e0e0e0,stroke:#616161,stroke-width:1px,stroke-dasharray: 5 5
 
     class User external
-    class K8sAPI k8s
-    class Controller,WebhookPort,MetricsPort,HealthPort kueue
-    class WebhookSvc,MetricsSvc service
+    class K8sAPI k8sapi
+    class Webhook,Metrics,Health,Scheduler,Controller kueue
     class Prometheus monitoring
-    class RemoteKueue,ClusterAS extsvc
-    class SecCtx security
-    class NetPol netpol
+    class RemoteK8s extservice
+    class WS,MS service

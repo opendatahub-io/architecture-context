@@ -1,58 +1,64 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Orchestrator["FMS Guardrails Orchestrator<br/>(caller)"]
+        Orchestrator["FMS Guardrails Orchestrator"]
     end
 
-    subgraph Ingress["INGRESS (Istio - mTLS PASSTHROUGH)"]
-        direction TB
-        KServeHF["KServe InferenceService<br/>HuggingFace Detector<br/>8000/TCP<br/>Auth: security.opendatahub.io/enable-auth"]
-        KServeJudge["KServe InferenceService<br/>LLM Judge Detector<br/>8000/TCP<br/>Auth: security.opendatahub.io/enable-auth"]
-    end
-
-    subgraph ServiceMesh["SERVICE MESH (Internal)"]
+    subgraph IstioMesh["ISTIO SERVICE MESH (mTLS STRICT)"]
         direction TB
 
-        subgraph NS_Detectors["Namespace: (deployment ns)"]
-            BuiltIn["Built-in Detector<br/>ClusterIP 8080/TCP<br/>HTTP / No TLS (configurable)<br/>Image: rhoai/odh-built-in-detector-rhel9<br/>No auth"]
-            HFDetector["HuggingFace Detector<br/>ClusterIP 8000/TCP<br/>HTTP / Istio mTLS<br/>Image: rhoai/odh-guardrails-detector-hf-runtime-rhel9<br/>KServe auth"]
-            JudgeDetector["LLM Judge Detector<br/>ClusterIP 8000/TCP<br/>HTTP / Istio mTLS<br/>Image: quay.io/trustyai/guardrails-detector-llm-judge<br/>KServe auth (upstream only)"]
+        subgraph IstioIngress["Istio Sidecar Proxies"]
+            SidecarBI["Sidecar → Built-In<br/>Auth: Bearer (KServe)<br/>Passthrough: enabled"]
+            SidecarHF["Sidecar → HuggingFace<br/>Auth: Bearer (KServe)<br/>Passthrough: enabled"]
+            SidecarJudge["Sidecar → LLM Judge<br/>Auth: Bearer (KServe)<br/>Passthrough: enabled"]
         end
+
+        subgraph AppPods["APPLICATION PODS (KServe InferenceService)"]
+            direction TB
+
+            BuiltIn["odh-built-in-detector<br/>ClusterIP: 8080/TCP<br/>Image: rhoai/odh-built-in-detector-rhel9<br/>Endpoints: /api/v1/text/contents,<br/>/registry, /health, /metrics"]
+
+            HFDetector["odh-guardrails-detector-<br/>huggingface-runtime<br/>ClusterIP: 8000/TCP<br/>Image: rhoai/...-huggingface-runtime-rhel9<br/>Endpoints: /api/v1/text/contents,<br/>/health, /metrics"]
+
+            JudgeDetector["guardrails-detector-llm-judge<br/>ClusterIP: 8000/TCP<br/>Image: quay.io/trustyai/...-llm-judge<br/>Endpoints: /api/v1/text/contents,<br/>/api/v1/text/generation,<br/>/api/v1/metrics, /health, /metrics"]
+        end
+
+        Prometheus["Prometheus<br/>Scrapes /metrics<br/>HTTP (no auth)<br/>Prefix: trustyai_guardrails_*"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        vLLM["vLLM Server<br/>configurable port<br/>HTTP / No TLS<br/>No auth"]
-        S3["S3/Minio Storage<br/>9000/TCP<br/>HTTP / No TLS<br/>AWS credentials"]
-        HFHub["HuggingFace Hub<br/>443/TCP<br/>HTTPS / TLS<br/>Optional token"]
-        Prometheus["Prometheus<br/>Scrape: 8080, 8000/TCP<br/>HTTP / No auth"]
+    subgraph ExternalServices["EGRESS (External Services)"]
+        S3["S3 / MinIO<br/>9000/TCP HTTP<br/>No encryption<br/>Auth: AWS IAM credentials"]
+        vLLM["vLLM Server<br/>(OpenAI-compatible)<br/>8080/TCP HTTP<br/>No encryption<br/>Auth: None"]
+        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: None / HF token"]
     end
 
     %% Inbound flows
-    Orchestrator -->|"HTTP/8080<br/>No TLS (Istio mTLS in mesh)<br/>No app auth"| BuiltIn
-    Orchestrator -->|"HTTP/8000<br/>Istio mTLS<br/>KServe auth"| KServeHF
-    Orchestrator -->|"HTTP/8000<br/>Istio mTLS<br/>KServe auth"| KServeJudge
+    Orchestrator -->|"HTTP/8080<br/>mTLS (Istio)<br/>Bearer Token"| SidecarBI
+    Orchestrator -->|"HTTP/8000<br/>mTLS (Istio)<br/>Bearer Token"| SidecarHF
+    Orchestrator -->|"HTTP/8000<br/>mTLS (Istio)<br/>Bearer Token"| SidecarJudge
 
-    KServeHF --> HFDetector
-    KServeJudge --> JudgeDetector
+    SidecarBI -->|"HTTP/8080<br/>localhost"| BuiltIn
+    SidecarHF -->|"HTTP/8000<br/>localhost"| HFDetector
+    SidecarJudge -->|"HTTP/8000<br/>localhost"| JudgeDetector
 
-    %% Outbound flows
-    JudgeDetector -->|"HTTP/configurable<br/>No TLS<br/>No auth"| vLLM
-    HFDetector -.->|"HTTP/9000<br/>No TLS<br/>AWS credentials<br/>(KServe storage init)"| S3
-    HFDetector -.->|"HTTPS/443<br/>TLS<br/>HF token (init)"| HFHub
+    %% Egress flows
+    HFDetector -->|"HTTP/9000<br/>AWS credentials"| S3
+    JudgeDetector -->|"HTTP/8080<br/>No auth"| vLLM
+    HFDetector -.->|"HTTPS/443<br/>TLS 1.2+<br/>(init only)"| HFHub
 
     %% Metrics
-    Prometheus -.->|"HTTP scrape<br/>/metrics"| BuiltIn
-    Prometheus -.->|"HTTP scrape<br/>/metrics"| HFDetector
-    Prometheus -.->|"HTTP scrape<br/>/metrics"| JudgeDetector
+    Prometheus -->|"HTTP/8080,8000<br/>No auth"| BuiltIn
+    Prometheus -->|"HTTP/8080,8000<br/>No auth"| HFDetector
+    Prometheus -->|"HTTP/8080,8000<br/>No auth"| JudgeDetector
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef upstream fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
     class Orchestrator external
-    class KServeHF,KServeJudge ingress
-    class BuiltIn,HFDetector servicemesh
-    class JudgeDetector upstream
-    class vLLM,S3,HFHub,Prometheus externalservice
+    class SidecarBI,SidecarHF,SidecarJudge ingress
+    class BuiltIn,HFDetector,JudgeDetector servicemesh
+    class S3,vLLM,HFHub externalservice
+    class Prometheus monitoring

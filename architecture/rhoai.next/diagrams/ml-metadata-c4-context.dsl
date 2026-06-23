@@ -1,30 +1,38 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Creates and runs ML pipelines that produce metadata"
-        pipelinedev = person "Pipeline Developer" "Queries lineage and metadata for debugging/auditing"
+        datascientist = person "Data Scientist" "Runs ML pipelines that produce metadata"
+        platformadmin = person "Platform Admin" "Manages RHOAI platform and MLMD deployment"
 
-        mlmd = softwareSystem "ML Metadata (MLMD)" "gRPC server that records and retrieves metadata associated with ML workflows — artifacts, executions, contexts, and lineage" {
-            server = container "metadata_store_server" "Main gRPC server exposing MetadataStoreService API for CRUD operations on ML metadata entities" "C++ gRPC Service"
-            core = container "metadata_store (core)" "Core metadata store logic including database access, query execution, and transaction management" "C++ Library"
-            queryEngine = container "Query Engine" "SQL query construction and filter parsing using ZetaSQL for flexible metadata queries" "C++ Library"
-
-            server -> core "Delegates persistence operations"
-            core -> queryEngine "Constructs SQL queries with ZetaSQL"
+        mlmd = softwareSystem "ML Metadata (MLMD)" "gRPC server that records and retrieves metadata associated with ML workflows — artifacts, executions, contexts, and lineage relationships" {
+            server = container "metadata_store_server" "Main gRPC server binary exposing MetadataStoreService API" "C++ gRPC Service" {
+                serviceImpl = component "MetadataStoreServiceImpl" "Handles all gRPC RPCs, creates new DB connection per call" "C++ Class"
+                metadataStore = component "metadata_store (core)" "Core metadata store logic — CRUD, transactions, optimistic concurrency control" "C++ Library"
+                queryEngine = component "query_engine" "SQL query construction and ZetaSQL filter parsing for flexible metadata queries" "C++ Library"
+            }
+            pythonLib = container "ml_metadata Python Library" "Client library for interacting with MLMD via Python" "Python/PyPI"
         }
 
-        dsp = softwareSystem "Data Science Pipelines" "ML pipeline orchestration system that records pipeline run metadata" "Internal RHOAI"
+        dsp = softwareSystem "Data Science Pipelines (DSP)" "Primary consumer — orchestrates ML pipeline runs and records metadata" "Internal RHOAI"
         tfx = softwareSystem "TFX / Kubeflow Pipelines" "Legacy pipeline system integration" "External"
-        mysql = softwareSystem "MySQL / MariaDB" "Relational database for production metadata storage" "External"
-        postgresql = softwareSystem "PostgreSQL" "Alternative relational database for production metadata storage" "External"
-        pythonLib = softwareSystem "ml_metadata Python Library" "Client library for interacting with MLMD via Python" "PyPI Package"
 
-        datascientist -> dsp "Runs ML pipelines"
-        pipelinedev -> pythonLib "Queries metadata and lineage"
-        dsp -> mlmd "Records pipeline artifacts, executions, events, and contexts" "gRPC/HTTP2 8080/TCP"
-        tfx -> mlmd "Records lineage metadata" "gRPC/HTTP2 8080/TCP"
-        pythonLib -> mlmd "CRUD operations on metadata entities" "gRPC/HTTP2 8080/TCP"
-        mlmd -> mysql "Stores and retrieves metadata entities" "MySQL wire protocol 3306/TCP"
-        mlmd -> postgresql "Stores and retrieves metadata entities" "PostgreSQL wire protocol"
+        mysql = softwareSystem "MySQL / MariaDB" "Relational database for persistent metadata storage (production)" "External"
+        postgresql = softwareSystem "PostgreSQL" "Alternative relational database for persistent metadata storage" "External"
+
+        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Upstream proxy for access control in RHOAI deployments" "Internal RHOAI"
+
+        # Relationships
+        datascientist -> dsp "Submits ML pipeline runs"
+        dsp -> mlmd "Records pipeline metadata (artifacts, executions, events, contexts)" "gRPC/HTTP2 port 8080"
+        tfx -> mlmd "Records lineage metadata (legacy)" "gRPC/HTTP2 port 8080"
+
+        mlmd -> mysql "Persists all metadata entities" "MySQL wire protocol port 3306, Optional SSL"
+        mlmd -> postgresql "Persists all metadata entities (alternative)" "PostgreSQL wire protocol, Optional SSL"
+
+        kubeRbacProxy -> mlmd "Proxies authenticated requests" "gRPC/HTTP2"
+
+        # Internal relationships
+        serviceImpl -> metadataStore "Delegates operations"
+        metadataStore -> queryEngine "Parses filter expressions"
     }
 
     views {
@@ -38,6 +46,11 @@ workspace {
             autoLayout
         }
 
+        component server "Components" {
+            include *
+            autoLayout
+        }
+
         styles {
             element "External" {
                 background #999999
@@ -47,22 +60,22 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "PyPI Package" {
-                background #6cb4ee
-                color #ffffff
-            }
             element "Person" {
                 shape Person
-                background #08427B
+                background #4a90e2
                 color #ffffff
             }
             element "Software System" {
-                background #1168BD
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {
-                background #438DD5
+                background #438dd5
                 color #ffffff
+            }
+            element "Component" {
+                background #85bbf0
+                color #000000
             }
         }
     }

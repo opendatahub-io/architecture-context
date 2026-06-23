@@ -1,175 +1,242 @@
 sequenceDiagram
     participant User as Data Scientist
-    participant Dashboard as ODH Dashboard
-    participant ModelReg as Model Registry
-    participant KServe as KServe Controller
-    participant OdhMC as odh-model-controller
-    participant S3 as Object Storage (S3)
-    participant Gateway as data-science-gateway
-    participant KRBAC as kube-rbac-proxy
-    participant VLLM as vLLM Model Server
+    participant Dashboard as odh-dashboard<br/>(Module Federation)
+    participant KServeCtrl as KServe Controller<br/>(llmisvc-controller)
+    participant vLLM as vLLM Server<br/>(LLM Runtime)
+    participant EPP as llm-d EPP<br/>(Inference Scheduler)
+    participant ODMC as odh-model-controller
+    participant Envoy as Envoy Gateway
+    participant AuthProxy as kube-auth-proxy
+    participant Authorino as Kuadrant/Authorino
     participant Client as External Client
 
-    Note over User,Client: Workflow 1: Model Serving (Single-Model Inference)
+    Note over User,Client: Workflow 1: LLM Model Deployment and Inference
 
-    User->>Dashboard: Login via kube-rbac-proxy<br/>(TokenReview + SAR)
-    Dashboard-->>User: Show model registry & serving UI
+    %% Authentication
+    User->>Envoy: Access dashboard (HTTPS/443)
+    Envoy->>AuthProxy: ext_authz delegation
+    AuthProxy-->>Envoy: OIDC/OAuth token
+    Envoy->>Dashboard: Forward with Bearer token
 
-    %% Model registration
-    User->>Dashboard: Register model in Model Registry
-    Dashboard->>ModelReg: Create RegisteredModel +<br/>ModelVersion + ModelArtifact<br/>(REST 8080 or gRPC 9090)
-    ModelReg->>ModelReg: Store in MySQL/PostgreSQL
+    %% Model deployment
+    User->>Dashboard: Create LLMInferenceService via UI
+    Dashboard->>KServeCtrl: Create LLMInferenceService CR
 
-    %% Deploy model
-    User->>Dashboard: Deploy model as InferenceService
-    Dashboard->>KServe: Create InferenceService CR<br/>(K8s API)
-    KServe->>KServe: Create Deployment with<br/>vLLM container + storage initializer
-    KServe->>S3: Download model artifacts<br/>(HTTPS, AWS IAM)
-    KServe->>Gateway: Create HTTPRoute +<br/>optional AuthPolicy
-    OdhMC->>OdhMC: Watch InferenceService
-    OdhMC->>OdhMC: Create Route, NetworkPolicy,<br/>ServiceMonitor
-    OdhMC->>ModelReg: Sync deployment status<br/>(optional)
+    KServeCtrl->>KServeCtrl: Reconcile: create Deployment/LeaderWorkerSet
+    KServeCtrl->>vLLM: Create vLLM pods with model config
+    KServeCtrl->>EPP: Create EPP Deployment (ext_proc)
+    KServeCtrl->>KServeCtrl: Create InferencePool + HTTPRoute
 
-    %% Inference
-    Client->>Gateway: POST /v2/models/my-model/infer<br/>(HTTPS/443, TLS 1.2+)
-    Gateway->>KRBAC: Forward to kube-rbac-proxy<br/>(8443)
-    KRBAC->>KRBAC: TokenReview + SAR validation<br/>(FIPS 140-2 TLS)
-    KRBAC->>VLLM: Proxy to model server<br/>(8000)
-    VLLM-->>KRBAC: Prediction result
-    KRBAC-->>Gateway: Response
-    Gateway-->>Client: JSON response<br/>(HTTPS)
+    Note over vLLM: Download model from S3<br/>via storage-initializer<br/>(HTTPS/443, AWS IAM)
+
+    vLLM->>vLLM: Load model weights, start serving
+
+    ODMC->>ODMC: Watch InferenceService
+    ODMC->>Envoy: Create HTTPRoute + Gateway EnvoyFilter
+    ODMC->>Authorino: Create AuthPolicy for model endpoint
+    ODMC->>ODMC: Create ServiceMonitor + KEDA ScaledObject
+
+    %% Inference flow
+    Client->>Envoy: POST /v1/completions (HTTPS/443, TLS 1.2+)
+    Envoy->>Authorino: Validate Bearer token / API key
+    Authorino-->>Envoy: Auth OK
+    Envoy->>EPP: ext_proc: select best endpoint
+    EPP->>EPP: Score endpoints by queue depth,<br/>KV-cache utilization, latency prediction
+    EPP-->>Envoy: Selected vLLM endpoint
+    Envoy->>vLLM: Forward request to selected pod
+    vLLM-->>Envoy: Streaming response (SSE)
+    Envoy-->>Client: Streaming response (HTTPS)
+
+    %% Monitoring
+    Note over ODMC: ServiceMonitor scrapes<br/>vLLM metrics for Prometheus
+
+---
 
 sequenceDiagram
     participant User as Data Scientist
-    participant Notebook as Jupyter Notebook
-    participant Dashboard as ODH Dashboard
-    participant DSP as DS Pipelines API
-    participant DSPO as DS Pipelines Operator
-    participant Argo as Argo Workflows
-    participant S3 as Object Storage
+    participant Dashboard as odh-dashboard
+    participant NotebookCtrl as Kubeflow Notebook<br/>Controller
+    participant ODHCtrl as ODH Notebook<br/>Controller
+    participant Notebook as Notebook Pod<br/>(StatefulSet)
+    participant Envoy as Envoy Gateway
+    participant AuthProxy as kube-auth-proxy
+    participant DSPA as DSPA Instance
+    participant Feast as Feature Store
+    participant S3 as S3 Storage
+
+    Note over User,S3: Workflow 2: Notebook Workbench Lifecycle
+
+    %% Launch notebook
+    User->>Envoy: Access dashboard (HTTPS/443)
+    Envoy->>AuthProxy: ext_authz (OIDC/OAuth)
+    AuthProxy-->>Envoy: Bearer token
+    Envoy->>Dashboard: Forward authenticated request
+
+    User->>Dashboard: Select workbench image,<br/>configure resources, launch
+    Dashboard->>NotebookCtrl: Create Notebook CR in user namespace
+
+    NotebookCtrl->>NotebookCtrl: Reconcile Notebook CR
+    NotebookCtrl->>Notebook: Create StatefulSet + Service
+
+    ODHCtrl->>ODHCtrl: Watch Notebook CR
+    ODHCtrl->>Notebook: Inject kube-rbac-proxy sidecar
+    ODHCtrl->>Envoy: Create HTTPRoute for notebook access
+    ODHCtrl->>ODHCtrl: Create NetworkPolicy<br/>(allow Gateway + monitoring ingress)
+
+    %% Auto-inject connections
+    ODHCtrl->>ODHCtrl: Detect DSPA in namespace
+    ODHCtrl->>Notebook: Inject pipeline connection env vars
+    ODHCtrl->>ODHCtrl: Detect Feast in namespace
+    ODHCtrl->>Notebook: Inject feature_store.yaml ConfigMap
+
+    %% User works
+    User->>Envoy: Access notebook (HTTPS/443)
+    Envoy->>AuthProxy: ext_authz
+    AuthProxy-->>Envoy: Bearer token
+    Envoy->>Notebook: Forward to notebook backend
+
+    Notebook->>S3: Download training data (HTTPS/443, AWS IAM)
+    Note over Notebook: Train model locally
+    Notebook->>Feast: Query features (auto-injected connection)
+    Notebook->>S3: Upload model artifacts
+
+    %% Idle culling
+    Note over ODHCtrl: Culling loop polls<br/>Jupyter kernel activity API
+    ODHCtrl->>Notebook: No activity detected after timeout
+    ODHCtrl->>NotebookCtrl: Scale StatefulSet replicas to 0
+
+---
+
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as odh-dashboard
+    participant DSPAPI as DSP API Server
+    participant Argo as Argo Workflows<br/>Controller
+    participant Driver as DSP Driver
+    participant Cache as Cache Server<br/>(Webhook)
+    participant Launcher as DSP Launcher
     participant MLMD as ML Metadata
+    participant PersAgent as Persistence Agent
+    participant S3 as S3/Object Storage
+    participant ModelReg as Model Registry
     participant KServe as KServe
 
-    Note over User,KServe: Workflow 2: ML Pipeline Execution
+    Note over User,KServe: Workflow 3: ML Pipeline Execution
 
-    User->>Dashboard: Create pipeline via UI
-    Dashboard->>DSP: Submit pipeline definition<br/>(REST 8888)
+    User->>Dashboard: Upload pipeline, configure run params
+    Dashboard->>DSPAPI: Submit pipeline run
 
-    alt From Notebook
-        User->>Notebook: Import KFP SDK
-        Notebook->>DSP: Submit pipeline via SDK<br/>(REST 8888)
-    end
+    DSPAPI->>DSPAPI: Store pipeline spec
+    DSPAPI->>Argo: Create Argo Workflow CR
 
-    DSP->>DSP: Compile pipeline IR<br/>(Argo Workflow spec)
-    DSP->>Argo: Create Workflow CR
+    Argo->>Argo: Orchestrate workflow steps
 
     loop Each Pipeline Step
-        Argo->>Argo: Create pod for step<br/>(argoexec sidecar)
-        Note over Argo: Driver: resolve inputs,<br/>check execution cache
-        Argo->>S3: Download input artifacts<br/>(HTTPS)
-        Note over Argo: Launcher: execute user code
-        Argo->>S3: Upload output artifacts<br/>(HTTPS)
+        Argo->>Driver: Run Driver container
+        Driver->>Cache: Check cache (webhook) -<br/>skip if cached result exists
+        Driver->>MLMD: Create execution record (gRPC)
+        Driver->>Driver: Resolve input artifacts
+
+        Argo->>Launcher: Run Launcher container
+        Launcher->>S3: Download input artifacts (HTTPS/443)
+        Note over Launcher: Execute user container
+        Launcher->>S3: Upload output artifacts (HTTPS/443)
+        Launcher->>MLMD: Record output metadata (gRPC)
     end
 
-    Argo->>DSP: Persistence Agent watches<br/>Workflow status
-    DSP->>MLMD: Persist run state +<br/>artifact metadata<br/>(gRPC 8080)
-    DSP->>S3: Store pipeline artifacts
+    PersAgent->>Argo: Watch Workflow status (informers)
+    PersAgent->>DSPAPI: Sync execution state
 
-    %% Optional model deployment
-    Note over DSP,KServe: Optional: auto-deploy trained model
-    DSP->>KServe: Create InferenceService CR
+    %% Optional: register and deploy model
+    Note over User: Pipeline outputs trained model
+    User->>Dashboard: Register model from pipeline output
+    Dashboard->>ModelReg: Create RegisteredModel +<br/>ModelVersion + ModelArtifact (REST/gRPC)
+    ModelReg->>S3: Store artifact reference
+
+    User->>Dashboard: Deploy model to serving
+    Dashboard->>KServe: Create InferenceService CR
+    KServe->>S3: Download model via storage-initializer
+
+---
 
 sequenceDiagram
     participant User as ML Engineer
-    participant SDK as CodeFlare SDK
-    participant CF as CodeFlare Operator
-    participant Kueue as Kueue Controller
-    participant KubeRay as KubeRay Operator
-    participant RayHead as Ray Head Pod
-    participant RayWorker as Ray Worker Pods
-    participant CertMgr as cert-manager
-    participant OAuth as OAuth Proxy
+    participant Dashboard as odh-dashboard<br/>(eval-hub BFF)
+    participant EvalHub as EvalHub
+    participant Kueue as Kueue
+    participant EvalJob as Evaluation Job<br/>(lm-eval-harness)
+    participant Sidecar as eval-runtime-sidecar
+    participant vLLM as vLLM / KServe<br/>Model Endpoint
+    participant S3 as S3 Storage
+    participant MLflow as MLflow Tracking
 
-    Note over User,OAuth: Workflow 3: Distributed Training with Batch Scheduling
+    Note over User,MLflow: Workflow 4: Model Evaluation
 
-    User->>SDK: Define training job<br/>(resource requirements, GPU count)
-    SDK->>CF: Submit RayCluster wrapped<br/>in AppWrapper CR
+    User->>Dashboard: Select model endpoint,<br/>choose benchmarks, submit eval
+    Dashboard->>EvalHub: Create evaluation request
 
-    CF->>Kueue: Create Workload for<br/>quota admission
-    Kueue->>Kueue: Evaluate ClusterQueue/<br/>Cohort hierarchy
-    alt Resources Available
-        Kueue-->>CF: Admit Workload
-    else Resources Unavailable
-        Kueue-->>CF: Queue Workload<br/>(wait for quota)
-        Note over Kueue: Preemption or borrowing<br/>from Cohort if configured
-        Kueue-->>CF: Admit Workload (later)
+    EvalHub->>Kueue: Submit Workload for admission
+    Kueue-->>EvalHub: Workload admitted
+    EvalHub->>EvalJob: Create K8s Job<br/>(lm-evaluation-harness + sidecar)
+
+    Sidecar->>S3: Download test datasets (HTTPS/443)
+    Sidecar->>vLLM: Proxy inference requests<br/>with auth credentials
+
+    loop Benchmark Execution
+        EvalJob->>Sidecar: Send eval prompts
+        Sidecar->>vLLM: Forward to model endpoint
+        vLLM-->>Sidecar: Model responses
+        Sidecar-->>EvalJob: Proxied responses
+        EvalJob->>EvalHub: Report progress callback
     end
 
-    CF->>KubeRay: Create RayCluster CR
-    KubeRay->>CertMgr: Request CA certificate<br/>(per-RayCluster CA hierarchy)
-    CertMgr-->>KubeRay: Issue CA + node certs
-    KubeRay->>RayHead: Create head pod<br/>(GCS 6379, Dashboard 8265,<br/>Client 10001)
-    KubeRay->>RayWorker: Create worker pods<br/>(GPU-enabled)
+    EvalJob->>EvalHub: Final results
+    EvalHub->>MLflow: Record metrics in experiment (REST)
+    EvalHub->>EvalHub: Push artifacts to OCI registry
+    EvalHub-->>Dashboard: Evaluation complete
 
-    CF->>RayHead: Inject OAuth proxy sidecar<br/>(8443, OpenShift OAuth)
-    CF->>RayHead: Inject mTLS init container<br/>(openssl self-signed or cert-manager)
+    User->>Dashboard: View evaluation results
+    Dashboard->>MLflow: Fetch experiment metrics
+    Dashboard-->>User: Display benchmark scores,<br/>comparison charts
 
-    Note over RayHead,RayWorker: mTLS between all Ray nodes
-
-    CF->>CF: Create NetworkPolicy<br/>(deny-all + allow head-worker)
-    CF->>CF: Create Route for<br/>Ray Dashboard access
-
-    User->>OAuth: Access Ray Dashboard<br/>(HTTPS/443)
-    OAuth->>OAuth: OpenShift OAuth +<br/>SAR (pods:get)
-    OAuth->>RayHead: Proxy to Dashboard<br/>(8265)
-
-    User->>RayHead: Submit training job<br/>(Ray Client 10001)
-    RayHead->>RayWorker: Distribute tasks<br/>(mTLS, NCCL)
-    RayWorker-->>RayHead: Training results
+---
 
 sequenceDiagram
-    participant User as Platform User
-    participant Dashboard as ODH Dashboard
-    participant KServe as KServe Controller
-    participant VLLM_P as vLLM Prefill Pods
-    participant VLLM_D as vLLM Decode Pods
-    participant Scheduler as llm-d-inference-scheduler
-    participant KVCache as llm-d-kv-cache
-    participant TrustyAI as TrustyAI Service Operator
-    participant Orchestrator as FMS Guardrails Orchestrator
-    participant Detectors as Guardrails Detectors
-    participant Client as API Client
+    participant Admin as Platform Admin
+    participant Dashboard as odh-dashboard<br/>(maas BFF)
+    participant MaaS as MaaS Controller
+    participant AIGateway as AI Gateway<br/>Payload Processing
+    participant Authorino as Kuadrant/Authorino
+    participant Envoy as Envoy Gateway
+    participant MaaSAPI as maas-api
+    participant ExtProvider as External LLM Provider<br/>(OpenAI/Anthropic/Azure)
+    participant Client as API Consumer
 
-    Note over User,Client: Workflow 4: LLM Serving with Guardrails (Disaggregated P/D)
+    Note over Admin,Client: Workflow 5: Models as a Service (External LLM Providers)
 
-    User->>Dashboard: Create LLMInferenceService<br/>(guardrails label, P/D topology)
-    Dashboard->>KServe: Create LLMInferenceService CR
+    %% Admin setup
+    Admin->>Dashboard: Configure external model provider
+    Dashboard->>MaaS: Create MaaSModelRef +<br/>MaaSAuthPolicy + MaaSSubscription CRs
 
-    KServe->>VLLM_P: Create prefill Deployment<br/>(or LeaderWorkerSet for multi-node)
-    KServe->>VLLM_D: Create decode Deployment
-    KServe->>Scheduler: Configure llm-d-inference-scheduler<br/>as Envoy ext-proc sidecar
-    KServe->>KVCache: Configure KV transfer<br/>between P/D (gRPC)
+    MaaS->>Envoy: Create HTTPRoutes for model endpoints
+    MaaS->>Authorino: Create AuthPolicies<br/>(API key validation)
+    MaaS->>Authorino: Create RateLimitPolicies
+    MaaS->>MaaSAPI: Deploy maas-api service
 
-    TrustyAI->>TrustyAI: Auto-detect guardrails label<br/>on InferenceService
-    TrustyAI->>Orchestrator: Generate orchestrator config<br/>(detector endpoints, TLS settings)
+    AIGateway->>AIGateway: ExternalModel/ExternalProvider<br/>controllers reconcile
+    AIGateway->>AIGateway: Create Istio ServiceEntry +<br/>DestinationRule (TLS origination)
 
-    Note over Orchestrator,Detectors: Guardrails pipeline ready
+    %% Client request flow
+    Client->>Envoy: POST /v1/chat/completions<br/>(HTTPS/443, API key header)
 
-    Client->>Scheduler: POST inference request<br/>(HTTPS, Kuadrant AuthPolicy)
-    Scheduler->>Scheduler: Evaluate KV-cache utilization,<br/>prefix cache affinity,<br/>queue depth
-    Scheduler->>Orchestrator: Route to guardrails first
+    Envoy->>Envoy: ext_proc: payload-pre-processing<br/>(extract model name from body)
+    Envoy->>Authorino: Validate API key
+    Authorino->>MaaSAPI: Callback: verify subscription
+    MaaSAPI-->>Authorino: Subscription valid
+    Authorino-->>Envoy: Auth OK + rate limit check
 
-    Orchestrator->>Detectors: Content safety check<br/>(HuggingFace classifiers,<br/>LLM Judge)
-    Detectors-->>Orchestrator: Detection results
+    Envoy->>Envoy: ext_proc: payload-processing<br/>(inject provider credentials,<br/>translate API format if needed)
 
-    alt Content Safe
-        Orchestrator->>VLLM_P: Forward to prefill<br/>(optimal backend)
-        VLLM_P->>KVCache: Transfer KV cache<br/>(gRPC)
-        KVCache->>VLLM_D: KV cache to decode pod
-        VLLM_D-->>Orchestrator: Generated response
-        Orchestrator->>Detectors: Output safety check
-        Detectors-->>Orchestrator: Output safe
-        Orchestrator-->>Client: Final response
-    else Content Blocked
-        Orchestrator-->>Client: Content blocked response
-    end
+    Envoy->>ExtProvider: Forward to provider<br/>(HTTPS/443, TLS origination,<br/>provider API key injected)
+    ExtProvider-->>Envoy: Provider response
+    Envoy-->>Client: Response (HTTPS)

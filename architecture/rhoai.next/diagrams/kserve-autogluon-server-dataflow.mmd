@@ -1,62 +1,69 @@
 sequenceDiagram
     participant Client as External Client
-    participant Ingress as Platform Ingress<br/>443/TCP HTTPS TLS 1.2+
-    participant RBAC as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
-    participant AG as autogluonserver<br/>8080/TCP HTTP
-    participant Storage as kserve-storage<br/>(in-process)
-    participant Cloud as Cloud Storage<br/>443/TCP HTTPS TLS 1.2+
-    participant FS as Local Filesystem<br/>/mnt/models
+    participant Ingress as Platform Ingress<br/>(Gateway API / Istio)<br/>443/TCP HTTPS TLS 1.3
+    participant Server as AutoGluon Server Pod<br/>8080/TCP HTTP, 8081/TCP gRPC
+    participant Storage as Cloud Storage<br/>(S3/GCS/Azure/HF)<br/>443/TCP HTTPS TLS 1.2+
+    participant KServeCtrl as KServe Controller
+    participant FS as Local Filesystem
 
-    Note over AG,Cloud: Flow 2: Model Loading at Startup
+    Note over KServeCtrl,Server: Flow 1: Pod Lifecycle & Model Loading
 
-    AG->>AG: ensure_autogluon_runtime_paths()<br/>Set writable CWD for OpenShift
-    AG->>Storage: Storage.download(storageUri)
-    Storage->>Cloud: GET model artifacts<br/>Auth: Cloud credentials (IAM/SA/Token)
-    Cloud-->>Storage: Model files
-    Storage->>FS: Write to /mnt/models
-    AG->>AG: PredictorFactory.detect()<br/>Try TimeSeriesPredictor first
-    alt TimeSeriesPredictor detected
-        AG->>AG: TimeSeriesPredictor.load(/mnt/models)
-    else TabularPredictor fallback
-        AG->>AG: TabularPredictor.load(/mnt/models)
+    KServeCtrl->>Server: Create Pod (InferenceService CR)<br/>K8s API / mTLS / ServiceAccount
+
+    Note over Server: runtime_paths.py: Set writable CWD<br/>(non-root container UID 1001)
+
+    Server->>Storage: Storage.download() -- model artifacts<br/>HTTPS/443, TLS 1.2+<br/>Auth: AWS IAM / GCP SA / Azure / Bearer
+    Storage-->>Server: Model artifacts (tar.gz / directory)
+    Server->>FS: Write model to local path
+
+    Note over Server: Auto-Detection Sequence
+
+    rect rgb(232, 245, 233)
+        Note over Server: predictor_detect.py
+        Server->>Server: version_compat.py: Check model version<br/>(allow patch mismatch, reject major/minor)
+        Server->>Server: Try TimeSeriesPredictor.load()
+        alt TimeSeries model detected
+            Server->>Server: Return AutoGluonDetectedModel(TS)
+        else TimeSeries load fails
+            Server->>Server: Try TabularPredictor.load()
+            Server->>Server: Return AutoGluonDetectedModel(Tabular)
+        end
     end
-    AG->>AG: ModelServer.start()<br/>Listen 8080/TCP HTTP + 8081/TCP gRPC
 
-    Note over Client,AG: Flow 1: Tabular Inference (v1)
+    Note over Server: Model loaded, server ready
 
-    Client->>Ingress: POST /v1/models/{name}:predict<br/>Auth: Bearer Token
-    Ingress->>RBAC: Forward request<br/>8443/TCP HTTPS
-    RBAC->>RBAC: Validate token
-    RBAC->>AG: Forward 8080/TCP HTTP<br/>(localhost, no auth)
-    AG->>AG: Parse JSON → pandas DataFrame
-    AG->>AG: TabularPredictor.predict(df)
-    AG-->>RBAC: JSON prediction result
-    RBAC-->>Ingress: Response
-    Ingress-->>Client: HTTPS Response
+    Note over Client,Server: Flow 2: v1 REST Inference (Tabular + TimeSeries)
 
-    Note over Client,AG: Flow 1b: Tabular Inference (v2)
+    Client->>Ingress: POST /v1/models/{name}:predict<br/>HTTPS/443, TLS 1.3<br/>Auth: Platform auth (Bearer)
+    Ingress->>Server: Forward request<br/>HTTP/8080 (cluster internal, no TLS)
+    alt Tabular Model
+        Server->>Server: TabularPredictor.predict(DataFrame)<br/>or predict_proba (if PREDICT_PROBA=true)
+    else TimeSeries Model
+        Server->>Server: TimeSeriesPredictor.predict()<br/>Map columns via predictor_metadata.json
+    end
+    Server-->>Ingress: JSON prediction response
+    Ingress-->>Client: HTTPS response
 
-    Client->>Ingress: POST /v2/models/{name}/infer<br/>Auth: Bearer Token
-    Ingress->>RBAC: Forward request
-    RBAC->>AG: Forward 8080/TCP HTTP
-    AG->>AG: InferRequest tensors → DataFrame<br/>Map tensor names to columns
-    AG->>AG: TabularPredictor.predict(df)
-    AG-->>RBAC: InferResponse tensors
-    RBAC-->>Ingress: Response
-    Ingress-->>Client: HTTPS Response
+    Note over Client,Server: Flow 3: v2 REST Inference (Tabular Only)
 
-    Note over Client,AG: Flow 3: Time Series Inference (v1 only)
+    Client->>Ingress: POST /v2/models/{name}/infer<br/>HTTPS/443, TLS 1.3
+    Ingress->>Server: Forward request<br/>HTTP/8080
+    Server->>Server: Decode v2 tensor inputs → DataFrame<br/>Map v2 datatypes ↔ AutoGluon features
+    Server->>Server: TabularPredictor.predict(DataFrame)
+    Server-->>Ingress: v2 InferResponse (tensor outputs)
+    Ingress-->>Client: HTTPS response
 
-    Client->>Ingress: POST /v1/models/{name}:predict<br/>Auth: Bearer Token
-    Ingress->>RBAC: Forward request
-    RBAC->>AG: Forward 8080/TCP HTTP
-    AG->>AG: Parse JSON → TimeSeriesDataFrame
-    AG->>AG: TimeSeriesPredictor.predict(tsdf)
-    AG-->>RBAC: JSON prediction result
-    RBAC-->>Ingress: Response
-    Ingress-->>Client: HTTPS Response
+    Note over Client,Server: Flow 4: gRPC Inference (v2 Protocol)
 
-    Note over Client,AG: Metrics Scraping
+    Client->>Ingress: gRPC ModelInfer<br/>HTTPS/443, TLS 1.3
+    Ingress->>Server: Forward request<br/>gRPC/8081
+    Server->>Server: Process inference via GRPCInferenceService
+    Server-->>Ingress: gRPC InferResponse
+    Ingress-->>Client: gRPC response
 
-    Ingress->>AG: GET /metrics (8080/TCP)
-    AG-->>Ingress: Prometheus metrics
+    Note over Client,Server: Health & Metadata
+
+    Client->>Ingress: GET /v2/health/ready
+    Ingress->>Server: HTTP/8080
+    Server-->>Ingress: 200 OK (model loaded)
+    Ingress-->>Client: Health status

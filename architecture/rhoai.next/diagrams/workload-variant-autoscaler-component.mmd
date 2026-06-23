@@ -1,74 +1,112 @@
 graph TB
-    subgraph WVA["Workload Variant Autoscaler"]
+    subgraph WVA["Workload Variant Autoscaler (WVA)"]
         direction TB
         Controller["controller-manager<br/>(Go Operator / controller-runtime)"]
-        SatEngine["Saturation Engine<br/>(30s polling loop)"]
-        SFZEngine["Scale-From-Zero Engine<br/>(100ms polling loop)"]
-        DecisionCache["Decision Cache<br/>(in-memory)"]
-        Datastore["Datastore<br/>(in-memory)"]
 
-        SatEngine -->|"writes decisions"| DecisionCache
-        SFZEngine -->|"writes decisions"| DecisionCache
-        DecisionCache -->|"DecisionTrigger channel"| Controller
-        Controller -->|"tracks namespaces"| Datastore
-        SFZEngine -->|"reads InferencePool state"| Datastore
-
-        subgraph Analyzers["Analyzer Pipeline"]
-            V1["V1 Analyzer<br/>(percentage-based saturation)"]
-            V2["V2 Analyzer<br/>(token-based capacity)"]
-            QM["Queueing Model Analyzer<br/>(Kalman filter / M/M/c)"]
+        subgraph Reconcilers["Reconcilers"]
+            VAReconciler["VariantAutoscaling<br/>Reconciler"]
+            HPAReconciler["HPA Reconciler<br/>(llm-d.ai/managed=true)"]
+            SOReconciler["ScaledObject<br/>Reconciler"]
+            CMReconciler["ConfigMap<br/>Reconciler"]
+            IPReconciler["InferencePool<br/>Reconciler"]
         end
-        SatEngine --> V1
-        SatEngine --> V2
-        SatEngine --> QM
 
-        subgraph Pipeline["Optimization Pipeline"]
-            Limiter["DefaultLimiter<br/>(GPU-aware)"]
-            Greedy["GreedyBySaturation<br/>Algorithm"]
-            Limiter --> Greedy
+        subgraph Engines["Scaling Engines"]
+            SatEngine["Saturation Engine"]
+            SFZEngine["Scale-from-Zero Engine"]
+            Coordinator["Coordinator<br/>(experimental)"]
         end
-        V1 --> Limiter
-        V2 --> Limiter
-        QM --> Limiter
+
+        subgraph Analyzers["Analyzers"]
+            V1["V1 Saturation<br/>(% KV cache)"]
+            V2["V2 Token-based<br/>(absolute tokens)"]
+            QM["Queueing Model<br/>(M/M/c theory)"]
+            Throughput["Throughput<br/>Analyzer"]
+        end
+
+        subgraph Pipeline["Pipeline"]
+            CostOpt["Cost-Aware<br/>Optimizer"]
+            GreedyOpt["Greedy Score<br/>Optimizer"]
+            Limiter["Default Limiter<br/>(GPU capacity)"]
+            Enforcer["Enforcer<br/>(min/max bounds)"]
+        end
+
+        subgraph Config["Configuration"]
+            ManagerCfg["wva-manager-config"]
+            SatCfg["wva-saturation-scaling-config"]
+            STZCfg["wva-model-scale-to-zero-config"]
+            QMCfg["wva-qm-analyzer-config"]
+        end
+
+        subgraph Datastore["Datastore"]
+            DS["In-Memory Datastore<br/>(variants, namespaces,<br/>replica metrics)"]
+            DecisionCache["Decision Cache<br/>(scale-from-zero)"]
+        end
+
+        Controller --> Reconcilers
+        Controller --> Engines
+        SatEngine --> Analyzers
+        SatEngine --> Pipeline
+        SFZEngine --> DecisionCache
+        CMReconciler --> Config
+        Config --> DS
+        Reconcilers --> DS
+        Engines --> DS
     end
 
     %% External Resources
-    User["Platform Admin"] -->|"creates"| VACR["VariantAutoscaling CR<br/>(llmd.ai/v1alpha1)"]
-    VACR -->|"watched by"| Controller
-    Controller -->|"patches status"| VACR
+    VACR["VariantAutoscaling CR<br/>(llmd.ai/v1alpha1)<br/>DEPRECATED"]
+    HPACR["HPA<br/>(autoscaling/v2)<br/>llm-d.ai/managed=true"]
+    SOCR["ScaledObject<br/>(keda.sh/v1alpha1)<br/>llm-d.ai/managed=true"]
+    IPPool["InferencePool CR<br/>(inference.networking.k8s.io)"]
+    ConfigMaps["ConfigMaps<br/>(namespace-aware)"]
 
-    %% Scale Targets
-    Controller -->|"emits metrics"| MetricsEndpoint["/metrics<br/>8443/TCP HTTPS"]
-    MetricsEndpoint -->|"scraped by"| Prometheus["Prometheus"]
-    MetricsEndpoint -->|"consumed by"| HPA["HPA"]
-    MetricsEndpoint -->|"consumed by"| KEDA["KEDA"]
-    HPA -->|"scales"| Deployment["Deployment"]
-    KEDA -->|"scales"| Deployment
-    SFZEngine -->|"direct /scale"| Deployment
+    VACR -->|watched by| VAReconciler
+    HPACR -->|watched by| HPAReconciler
+    SOCR -->|watched by| SOReconciler
+    IPPool -->|watched by| IPReconciler
+    ConfigMaps -->|watched by| CMReconciler
 
-    %% Data Sources
-    Prometheus -->|"PromQL queries<br/>9091/TCP HTTPS"| SatEngine
-    InferencePool["InferencePool CR"] -->|"watched by"| Controller
-    EPP["EPP Pods"] -->|"HTTP metrics scraping"| SFZEngine
-    ConfigMaps["ConfigMaps<br/>(saturation, scale-to-zero,<br/>queueing model)"] -->|"watched by"| Controller
+    %% External Systems
+    Prometheus["Prometheus /<br/>Thanos Querier"]
+    K8sAPI["Kubernetes API<br/>6443/TCP"]
+    vLLM["vLLM Model Servers"]
+    EPP["EPP<br/>(Endpoint Picker Proxy)"]
+    HPA["HPA Controller"]
+    KEDA["KEDA"]
+
+    vLLM -->|exposes metrics| Prometheus
+    SatEngine -->|queries metrics<br/>9090-9091/TCP HTTPS| Prometheus
+    SatEngine -->|emits wva_desired_replicas<br/>8443/TCP HTTPS| MetricsEndpoint["/metrics endpoint<br/>8443/TCP HTTPS"]
+    SFZEngine -->|scrapes queue_size<br/>HTTPS| EPP
+    SFZEngine -->|scales directly<br/>6443/TCP| K8sAPI
+    HPA -->|reads external metric| Prometheus
+    KEDA -->|reads external metric| Prometheus
+    HPA -->|scales| K8sAPI
+    KEDA -->|scales| K8sAPI
 
     %% Styling
+    style WVA fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
     style Controller fill:#4a90e2,stroke:#333,color:#fff
     style SatEngine fill:#4a90e2,stroke:#333,color:#fff
     style SFZEngine fill:#4a90e2,stroke:#333,color:#fff
-    style DecisionCache fill:#4a90e2,stroke:#333,color:#fff
-    style Datastore fill:#4a90e2,stroke:#333,color:#fff
-    style V1 fill:#6ba5e7,stroke:#333,color:#fff
-    style V2 fill:#6ba5e7,stroke:#333,color:#fff
-    style QM fill:#6ba5e7,stroke:#333,color:#fff
-    style Limiter fill:#6ba5e7,stroke:#333,color:#fff
-    style Greedy fill:#6ba5e7,stroke:#333,color:#fff
+    style Coordinator fill:#90caf9,stroke:#333
+    style V1 fill:#81c784,stroke:#333
+    style V2 fill:#81c784,stroke:#333
+    style QM fill:#81c784,stroke:#333
+    style Throughput fill:#81c784,stroke:#333
+    style CostOpt fill:#ffb74d,stroke:#333
+    style GreedyOpt fill:#ffb74d,stroke:#333
+    style Limiter fill:#ffb74d,stroke:#333
+    style Enforcer fill:#ffb74d,stroke:#333
     style VACR fill:#f5a623,stroke:#333
-    style InferencePool fill:#f5a623,stroke:#333
-    style ConfigMaps fill:#f5a623,stroke:#333
+    style HPACR fill:#f5a623,stroke:#333
+    style SOCR fill:#f5a623,stroke:#333
+    style IPPool fill:#f5a623,stroke:#333
     style Prometheus fill:#e8e8e8,stroke:#333
-    style HPA fill:#e8e8e8,stroke:#333
-    style KEDA fill:#e8e8e8,stroke:#333
-    style EPP fill:#7ed321,stroke:#333
-    style Deployment fill:#e8e8e8,stroke:#333
-    style MetricsEndpoint fill:#d4edda,stroke:#333
+    style K8sAPI fill:#e8e8e8,stroke:#333
+    style vLLM fill:#e8e8e8,stroke:#333
+    style EPP fill:#e8e8e8,stroke:#333
+    style HPA fill:#ce93d8,stroke:#333
+    style KEDA fill:#ce93d8,stroke:#333
+    style MetricsEndpoint fill:#ef5350,stroke:#333,color:#fff

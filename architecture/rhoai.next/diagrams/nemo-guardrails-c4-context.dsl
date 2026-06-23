@@ -1,48 +1,40 @@
 workspace {
     model {
-        user = person "LLM Application Developer" "Builds applications that use LLMs with safety guardrails"
+        user = person "Application Developer" "Deploys LLM-based applications with guardrails"
+        platformOp = person "Platform Operator" "Configures and deploys NeMo Guardrails on RHOAI"
 
-        nemoGuardrails = softwareSystem "NeMo Guardrails" "Programmable safety guardrails middleware for LLM-based conversational systems; OpenAI-compatible API" {
-            server = container "Guardrails Server" "FastAPI server with OpenAI-compatible API, input/output rail enforcement, streaming support" "Python/FastAPI :8000"
-            colangRuntime = container "Colang Runtime" "Domain-specific language runtime (v1.0 and v2.x) for defining guardrail flows and dialogue policies" "Python/Lark"
-            guardrailsLibrary = container "Guardrails Library" "28+ built-in guardrail implementations: content safety, jailbreak detection, sensitive data, hallucination, topic safety" "Python Modules"
-            embeddingsEngine = container "Embeddings Engine" "Multi-provider embedding support: FastEmbed (ONNX), Sentence Transformers, OpenAI, Cohere, NIM" "Python/ONNX"
-            knowledgeBase = container "Knowledge Base" "Document indexing and embedding-based retrieval for grounded responses" "Python/Annoy"
-            actionsServer = container "Actions Server" "Extensible action dispatcher for custom guardrail logic" "Python/FastAPI :8001"
-            tracingSystem = container "Tracing System" "OpenTelemetry-compatible tracing with GenAI semantic conventions" "Python/OpenTelemetry"
-            embeddedModels = container "Embedded ML Models" "Pre-baked models: spaCy en_core_web_lg, Sentence Transformers, FastEmbed, NLTK punkt" "ONNX/PyTorch"
+        nemoGuardrails = softwareSystem "NeMo Guardrails" "Programmable guardrails toolkit that adds safety controls to LLM-based conversational systems" {
+            server = container "NeMo Guardrails Server" "FastAPI/uvicorn service exposing OpenAI-compatible API with guardrails applied" "Python 3.12 / FastAPI"
+            colangRuntime = container "Colang Runtime" "Domain-specific language runtime for defining guardrail flows (v1.0 and v2.x)" "Python Library"
+            guardrailsLibrary = container "Guardrails Library" "~14 open-source guardrail modules: content safety, hallucination detection, PII detection, injection detection, topic safety, regex filtering" "Python Library"
+            embeddingEngine = container "Embedding Engine" "FastEmbed and Sentence Transformers for semantic similarity, pre-downloaded at build time" "Python Library / ONNX Runtime"
+            langchainIntegration = container "LangChain LLM Integration" "Abstracts LLM provider calls, manages prompts and callbacks" "LangChain >=0.2.14"
+            tracingSystem = container "Tracing System" "OpenTelemetry-compatible tracing with pluggable adapters" "Python Library"
         }
 
-        openai = softwareSystem "OpenAI API" "LLM inference provider" "External"
-        azureOpenai = softwareSystem "Azure OpenAI" "Microsoft-hosted LLM inference" "External"
-        anthropic = softwareSystem "Anthropic API" "Anthropic LLM inference provider" "External"
-        cohere = softwareSystem "Cohere API" "LLM inference and embeddings provider" "External"
-        nvidiaNim = softwareSystem "NVIDIA NIM" "NVIDIA-hosted LLM inference via OpenAI-compatible API" "External"
-        vllm = softwareSystem "vLLM Server" "Self-hosted LLM inference" "Internal"
-        redis = softwareSystem "Redis" "Thread conversation state persistence" "Optional"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed trace aggregation and export" "Optional"
-        huggingface = softwareSystem "HuggingFace Hub" "Model weight downloads (build-time only)" "External"
+        llmProvider = softwareSystem "LLM Provider" "External LLM inference service (OpenAI, NVIDIA NIM, Azure, Anthropic, Cohere, vLLM)" "External"
+        rhoaiPlatform = softwareSystem "RHOAI Platform" "Red Hat OpenShift AI platform managing deployment and ingress" "Internal RHOAI"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing backend for observability" "External"
+        huggingFaceHub = softwareSystem "Hugging Face Hub" "Model registry for embedding models (build-time only)" "External"
 
-        # System context relationships
-        user -> nemoGuardrails "Sends chat completions and guardrail check requests via OpenAI-compatible API" "HTTP/8000"
-        nemoGuardrails -> openai "Forwards inference requests" "HTTPS/443 Bearer Token"
-        nemoGuardrails -> azureOpenai "Forwards inference requests" "HTTPS/443 API Key"
-        nemoGuardrails -> anthropic "Forwards inference requests" "HTTPS/443 API Key"
-        nemoGuardrails -> cohere "Forwards inference and embedding requests" "HTTPS/443 Bearer Token"
-        nemoGuardrails -> nvidiaNim "Forwards inference requests" "HTTPS/443 Bearer Token"
-        nemoGuardrails -> vllm "Forwards inference requests" "HTTP/HTTPS Bearer Token"
-        nemoGuardrails -> redis "Persists thread conversation state" "Redis/6379"
-        nemoGuardrails -> otelCollector "Exports distributed traces with GenAI semantic conventions" "OTLP/4317-4318"
+        # User interactions
+        user -> nemoGuardrails "Sends chat messages with guardrails via API" "HTTP/8000"
+        platformOp -> rhoaiPlatform "Deploys and configures guardrails service"
 
-        # Container relationships
-        server -> colangRuntime "Evaluates Colang dialogue flows"
-        server -> guardrailsLibrary "Applies input/output safety rails"
-        server -> embeddingsEngine "Generates embeddings for content checks"
-        server -> knowledgeBase "Retrieves grounded context"
-        server -> actionsServer "Dispatches custom actions" "HTTP/8001"
-        server -> tracingSystem "Records spans and traces"
-        guardrailsLibrary -> embeddedModels "Runs inference for safety checks"
-        embeddingsEngine -> embeddedModels "Runs local embedding inference"
+        # System interactions
+        rhoaiPlatform -> nemoGuardrails "Deploys and manages lifecycle"
+        nemoGuardrails -> llmProvider "LLM inference for guardrail evaluation and response generation" "HTTPS/443 Bearer Token"
+        nemoGuardrails -> otelCollector "Exports traces and spans (optional)" "gRPC/HTTP TLS"
+        nemoGuardrails -> huggingFaceHub "Downloads embedding models (build-time only)" "HTTPS/443"
+
+        # Container interactions
+        server -> colangRuntime "Evaluates input/output against Colang flows"
+        colangRuntime -> guardrailsLibrary "Invokes guardrail modules"
+        guardrailsLibrary -> embeddingEngine "Semantic similarity for knowledge base retrieval"
+        server -> langchainIntegration "LLM calls via abstraction layer"
+        langchainIntegration -> llmProvider "REST API calls" "HTTPS/443"
+        server -> tracingSystem "Emits trace spans"
+        tracingSystem -> otelCollector "Exports traces" "gRPC/HTTP"
     }
 
     views {
@@ -61,13 +53,14 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal" {
+            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Optional" {
-                background #e1d5e7
-                color #333333
+            element "Person" {
+                shape Person
+                background #4a90e2
+                color #ffffff
             }
             element "Software System" {
                 background #4a90e2
@@ -76,11 +69,6 @@ workspace {
             element "Container" {
                 background #438dd5
                 color #ffffff
-            }
-            element "Person" {
-                background #08427b
-                color #ffffff
-                shape person
             }
         }
     }
