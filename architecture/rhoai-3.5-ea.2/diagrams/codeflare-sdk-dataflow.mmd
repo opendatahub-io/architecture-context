@@ -1,0 +1,82 @@
+sequenceDiagram
+    participant User as Data Scientist<br/>(Jupyter Notebook)
+    participant SDK as CodeFlare SDK<br/>(Python Client)
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant KubeRay as KubeRay Operator<br/>Service Account
+    participant RayHead as Ray Head Node<br/>mTLS
+    participant Kueue as Kueue Controller
+
+    rect rgb(230, 245, 255)
+        Note over User,RayHead: Flow 1: Interactive RayCluster Lifecycle
+        User->>SDK: Cluster(config).up()
+        SDK->>K8sAPI: POST ray.io/v1 RayCluster CR<br/>Auth: Bearer Token / OIDC
+        K8sAPI-->>SDK: RayCluster created
+
+        KubeRay->>K8sAPI: Watch RayCluster CRs<br/>Auth: Service Account
+        KubeRay->>K8sAPI: Create head-svc, worker pods<br/>Ports: 6379, 8265, 10001
+
+        opt Kueue Integration
+            SDK->>K8sAPI: List LocalQueues<br/>kueue.x-k8s.io/v1beta1
+            K8sAPI-->>SDK: Default queue name
+            Note over SDK: Adds kueue.x-k8s.io/queue-name label
+        end
+
+        SDK->>K8sAPI: GET Secret {cluster}-ca-secret<br/>Auth: Bearer Token
+        K8sAPI-->>SDK: CA cert + key
+
+        SDK->>SDK: Generate client mTLS certs<br/>RSA 3072-bit, SHA-256<br/>Store ~/.local/share/codeflare/tls/
+
+        SDK->>RayHead: GET /api/version (readiness)<br/>8265/TCP HTTPS mTLS
+        RayHead-->>SDK: Dashboard ready
+
+        User->>SDK: ray.init()
+        SDK->>RayHead: Ray Client Protocol<br/>10001/TCP mTLS client cert
+        RayHead-->>SDK: Connected
+    end
+
+    rect rgb(255, 243, 224)
+        Note over User,Kueue: Flow 2: RayJob Batch Submission
+        User->>SDK: RayJob(config).submit()
+
+        opt Local Files
+            SDK->>SDK: Package entrypoint + working_dir<br/>zip + base64 encode
+            SDK->>K8sAPI: CREATE Secret {job}-files<br/>Auth: Bearer Token
+            K8sAPI-->>SDK: Secret created
+        end
+
+        opt Kueue Priority
+            SDK->>K8sAPI: GET WorkloadPriorityClass<br/>kueue.x-k8s.io/v1beta1
+            K8sAPI-->>SDK: Priority class validated
+        end
+
+        SDK->>K8sAPI: POST ray.io/v1 RayJob CR<br/>Auth: Bearer Token / OIDC
+        K8sAPI-->>SDK: RayJob created
+
+        KubeRay->>K8sAPI: Watch RayJob CRs
+        KubeRay->>K8sAPI: Create managed RayCluster<br/>(if cluster_config provided)
+
+        loop Poll Status
+            SDK->>K8sAPI: GET RayJob status<br/>Auth: Bearer Token
+            K8sAPI-->>SDK: deploymentStatus, jobStatus
+        end
+    end
+
+    rect rgb(232, 245, 233)
+        Note over SDK,K8sAPI: Flow 3: Dashboard URL Discovery (RHOAI 3.x)
+        SDK->>K8sAPI: LIST HTTPRoutes<br/>label: ray.io/cluster-name
+        K8sAPI-->>SDK: HTTPRoute found
+
+        alt HTTPRoute found
+            SDK->>K8sAPI: GET Gateway CR<br/>gateway.networking.k8s.io/v1
+            K8sAPI-->>SDK: Gateway hostname
+        else Fallback: OpenShift Route
+            SDK->>K8sAPI: LIST Routes<br/>route.openshift.io/v1
+            K8sAPI-->>SDK: Route host
+        else Fallback: GatewayConfig
+            SDK->>K8sAPI: GET GatewayConfig CR<br/>services.platform.opendatahub.io/v1alpha1
+            K8sAPI-->>SDK: Domain for URL construction
+        end
+
+        SDK->>SDK: Construct dashboard URL<br/>https://{host}/ray/{ns}/{cluster}
+        SDK-->>User: Dashboard URL
+    end

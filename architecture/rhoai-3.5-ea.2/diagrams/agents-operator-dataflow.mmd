@@ -1,0 +1,52 @@
+sequenceDiagram
+    participant User as User / kubectl
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Controller as AgentRuntime Controller<br/>kagenti-system
+    participant Webhook as Mutating Webhook<br/>9443/TCP HTTPS TLS 1.2+
+    participant Deployment as Target Deployment
+    participant Pod as Agent Pod
+    participant AuthBridge as AuthBridge Sidecar<br/>8080/TCP HTTP
+    participant SPIRE as SPIRE Workload API<br/>Unix Socket gRPC mTLS
+    participant Keycloak as Keycloak<br/>8080/443 TCP
+    participant BundleSvc as Bundle Service<br/>8080/TCP HTTP
+    participant AgentApp as Agent Container<br/>localhost
+
+    Note over User,AgentApp: Flow 1: Agent Enrollment via AgentRuntime
+
+    User->>K8sAPI: POST AgentRuntime CR<br/>Auth: kubeconfig
+    K8sAPI->>Controller: Watch event (informer)<br/>Auth: ServiceAccount token
+    Controller->>K8sAPI: Patch Deployment labels + config hash<br/>Auth: ServiceAccount token
+    K8sAPI->>Deployment: Rolling update triggered
+    Deployment->>K8sAPI: Create Pod
+    K8sAPI->>Webhook: AdmissionReview (POST)<br/>TLS 1.2+ / API server cert
+    Webhook->>Webhook: Inject AuthBridge sidecar<br/>+ init container + env vars
+    Webhook-->>K8sAPI: Mutated Pod spec
+    K8sAPI->>Pod: Schedule pod with sidecar
+
+    Note over User,AgentApp: Flow 2: Agent Card Verification (mTLS Verified Fetch)
+
+    participant CardCtrl as AgentCard Controller
+    participant AgentSvc as Agent Service<br/>8443/TCP mTLS
+
+    User->>K8sAPI: POST AgentCard CR
+    K8sAPI->>CardCtrl: Watch event
+    CardCtrl->>SPIRE: Request X.509 SVID<br/>Unix socket / mTLS
+    SPIRE-->>CardCtrl: X.509 SVID + trust bundle
+    CardCtrl->>AgentSvc: GET /.well-known/agent.json<br/>8443/TCP mTLS (SPIFFE)
+    AgentSvc-->>CardCtrl: A2A Agent Card (JSON)
+    CardCtrl->>CardCtrl: Verify JWS signature<br/>against SPIRE trust bundle
+    CardCtrl->>K8sAPI: Create/Update NetworkPolicy<br/>based on verification result
+
+    Note over User,AgentApp: Flow 3: AuthBridge Inbound Request Pipeline
+
+    participant Client as External Client
+
+    Client->>AuthBridge: Request to agent<br/>8080/TCP HTTP<br/>Auth: Bearer JWT
+    AuthBridge->>Keycloak: Fetch JWKS / validate JWT<br/>HTTPS/443 or HTTP/8080
+    Keycloak-->>AuthBridge: Token validation result
+    AuthBridge->>BundleSvc: Fetch OPA policy bundle<br/>8080/TCP HTTP
+    BundleSvc-->>AuthBridge: Rego policy bundle
+    AuthBridge->>AuthBridge: Evaluate OPA policy<br/>(ibac plugin)
+    AuthBridge->>AgentApp: Forward request<br/>localhost / plaintext
+    AgentApp-->>AuthBridge: Response
+    AuthBridge-->>Client: Response

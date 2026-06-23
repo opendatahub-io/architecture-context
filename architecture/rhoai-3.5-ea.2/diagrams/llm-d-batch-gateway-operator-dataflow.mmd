@@ -1,0 +1,69 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Gateway<br/>(HTTPRoute)
+    participant APIServer as API Server<br/>8000/TCP HTTP/HTTPS
+    participant DB as PostgreSQL<br/>5432/TCP
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant Processor as Processor<br/>9090/TCP
+    participant InfGW as Inference Gateway<br/>(llm-d/GIE/EPP)
+    participant GC as Garbage Collector<br/>9091/TCP
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Controller as Operator Controller
+
+    rect rgb(240, 248, 255)
+        Note over Client,S3: Flow 1: Batch Job Submission
+        Client->>Gateway: POST /v1/files<br/>Bearer Token (optional)
+        Gateway->>APIServer: Forward (HTTPRoute)
+        APIServer->>S3: Upload input file<br/>S3 access key, TLS
+        S3-->>APIServer: Upload confirmed
+        APIServer->>DB: Store file metadata<br/>Connection URL credentials
+        APIServer-->>Gateway: File ID
+        Gateway-->>Client: File ID response
+
+        Client->>Gateway: POST /v1/batches<br/>Bearer Token (optional)
+        Gateway->>APIServer: Forward (HTTPRoute)
+        APIServer->>DB: Create batch job record<br/>Connection URL credentials
+        APIServer-->>Gateway: Batch job ID
+        Gateway-->>Client: Batch ID response
+    end
+
+    rect rgb(240, 255, 240)
+        Note over Processor,S3: Flow 2: Batch Job Processing
+        Processor->>DB: Dequeue pending job<br/>Connection URL credentials
+        DB-->>Processor: Job details
+        Processor->>S3: Download input file<br/>S3 access key, TLS
+        S3-->>Processor: Input data (JSONL)
+        loop For each inference request (AIMD concurrency)
+            Processor->>InfGW: POST inference request<br/>Optional Bearer Token, TLS/mTLS
+            InfGW-->>Processor: Inference result
+        end
+        Processor->>S3: Upload output file<br/>S3 access key, TLS
+        Processor->>DB: Update job status → completed
+    end
+
+    rect rgb(255, 245, 238)
+        Note over GC,DB: Flow 3: Garbage Collection
+        GC->>DB: Query expired jobs/files<br/>Connection URL credentials
+        DB-->>GC: Expired records
+        GC->>S3: Delete expired files<br/>S3 access key, TLS
+        GC->>DB: Remove expired records
+    end
+
+    rect rgb(245, 240, 255)
+        Note over Controller,K8sAPI: Flow 4: Operator Reconciliation
+        K8sAPI-->>Controller: LLMBatchGateway CR event<br/>TLS 1.2+, SA token
+        Controller->>Controller: Helm chart rendering<br/>(in-process, specToHelmValues)
+        Controller->>K8sAPI: Server-Side Apply resources<br/>TLS 1.2+, SA token
+        K8sAPI-->>Controller: Apply confirmed
+        Controller->>Controller: deleteOrphanedResources()
+        Controller->>K8sAPI: Delete orphaned resources<br/>(if any disabled features)
+    end
+
+    rect rgb(255, 240, 245)
+        Note over Controller,K8sAPI: Flow 5: Cross-Namespace Secret Sync
+        Controller->>K8sAPI: List ReferenceGrants<br/>TLS 1.2+, SA token
+        K8sAPI-->>Controller: Matching grants
+        Controller->>K8sAPI: Read source Secret<br/>(cross-namespace)
+        K8sAPI-->>Controller: Secret data
+        Controller->>K8sAPI: Create/Update {name}-credentials<br/>in CR namespace (SSA)
+    end

@@ -1,0 +1,55 @@
+sequenceDiagram
+    participant User as User / Data Scientist
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
+    participant Webhook as Training Operator Webhook<br/>9443/TCP HTTPS TLS (self-signed)
+    participant Controller as Training Operator Controller<br/>(controller-runtime)
+    participant MasterPod as Master Pod
+    participant WorkerPod as Worker Pods
+    participant HeadlessSvc as Headless Service<br/>(inter-pod networking)
+    participant Volcano as Volcano Scheduler<br/>(optional)
+
+    Note over User,Volcano: Flow 1: Training Job Lifecycle (PyTorchJob example)
+
+    User->>K8sAPI: kubectl apply PyTorchJob CR<br/>Auth: Bearer Token / kubeconfig
+    K8sAPI->>Webhook: POST /validate-kubeflow-org-v1-pytorchjob<br/>9443/TCP HTTPS TLS (self-signed)<br/>Auth: API server TLS client cert
+    Webhook-->>K8sAPI: Admission Response (Allow/Deny)
+    K8sAPI-->>User: CR created
+
+    K8sAPI->>Controller: Watch event: PyTorchJob created
+    Controller->>K8sAPI: Create headless Service<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: ServiceAccount token
+
+    opt Gang Scheduling Enabled (Volcano)
+        Controller->>K8sAPI: Create PodGroup CR<br/>(scheduling.volcano.sh/v1beta1)<br/>minMember = total replicas
+        K8sAPI->>Volcano: PodGroup created
+        Volcano-->>K8sAPI: PodGroup status: Inqueue
+        Controller->>K8sAPI: Check PodGroup status
+    end
+
+    Controller->>K8sAPI: Create Master Pod<br/>with torch.distributed env vars
+    Controller->>K8sAPI: Create Worker Pods<br/>with MASTER_ADDR, MASTER_PORT, WORLD_SIZE
+
+    WorkerPod->>MasterPod: Distributed training communication<br/>via Headless Service<br/>23456/TCP (PyTorch default)<br/>No encryption
+
+    MasterPod-->>Controller: Pod status updates (via informer)
+    Controller->>K8sAPI: Update PyTorchJob status<br/>(Running → Succeeded/Failed)
+
+    Note over User,Volcano: Flow 2: MPI Job Launcher-Worker Communication
+
+    participant Launcher as Launcher Pod<br/>(with kubectl binary)
+    participant MPIWorker as MPI Worker Pods
+
+    Controller->>K8sAPI: Create ConfigMap<br/>(kubexec.sh, hostfile, discover_hosts.sh)
+    Controller->>K8sAPI: Create ServiceAccount + Role + RoleBinding<br/>(pods/exec permission for launcher)
+    Controller->>K8sAPI: Create Worker Pods
+    Controller->>K8sAPI: Create Launcher Pod<br/>(kubectl-delivery init container)
+
+    Launcher->>K8sAPI: kubectl exec into Worker Pods<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: launcher ServiceAccount token
+    K8sAPI->>MPIWorker: Execute MPI commands<br/>(SSH-less bootstrap)
+
+    Note over User,Volcano: Flow 3: Gang Scheduling with Volcano
+
+    Controller->>K8sAPI: Create Volcano PodGroup<br/>scheduling.volcano.sh/v1beta1<br/>minMember = total replicas
+    Controller->>K8sAPI: Check PodGroup status
+    K8sAPI-->>Controller: PodGroup status: Inqueue
+    Controller->>K8sAPI: Create all training Pods<br/>(with schedulerName annotation)
+    Volcano->>K8sAPI: Schedule all pods atomically<br/>(prevents resource deadlocks)

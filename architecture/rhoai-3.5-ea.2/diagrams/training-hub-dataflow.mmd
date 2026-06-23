@@ -1,0 +1,86 @@
+sequenceDiagram
+    actor User as User / RHOAI Component
+
+    box rgb(232, 244, 253) Training Hub SDK
+        participant Registry as Algorithm Registry
+        participant Algo as Algorithm<br/>(SFT/OSFT/LoRA/GRPO/GEPA)
+        participant Backend as Backend<br/>(pluggable)
+    end
+
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS TLS 1.2+
+    participant vLLM as vLLM Server<br/>HTTP (configurable port)
+    participant LLM as LLM Endpoint<br/>HTTPS via litellm
+    participant FS as Local Filesystem
+    participant Tracker as Experiment Tracker<br/>(W&B / MLflow / TB)
+
+    Note over User,Tracker: Flow 1: SFT / OSFT Training
+
+    User->>Registry: sft(model, data, output_dir, ...)<br/>or osft(model, data, ...)
+    Registry->>Algo: Create algorithm + select backend
+    Algo->>Backend: Validate params, configure backend
+    Backend->>HF: Download model & tokenizer<br/>HTTPS/443, Token (optional)
+    HF-->>Backend: Model artifacts
+    Backend->>Backend: Launch torchrun subprocess<br/>TCP (master_port), cluster-internal
+    Backend->>FS: Write checkpoints & metrics JSONL
+    Backend-->>Algo: Training complete
+    Algo-->>User: Output directory path
+
+    opt Experiment Tracking Enabled
+        Backend->>Tracker: Upload metrics<br/>HTTPS/443 (W&B) or HTTP (MLflow)
+    end
+
+    Note over User,Tracker: Flow 2: LoRA GRPO Training (ART Backend - Single GPU)
+
+    User->>Registry: lora_grpo(model, dataset, reward_funcs, backend="art")
+    Registry->>Algo: Create LoRAGRPOAlgorithm + ART backend
+    Algo->>Backend: Serialize reward functions, prepare config
+    Backend->>HF: Download base model<br/>HTTPS/443
+    HF-->>Backend: Model artifacts
+    Backend->>Backend: Create seed LoRA checkpoint<br/>(vLLM V1 compatibility)
+    Backend->>Backend: Spawn ART subprocess
+
+    loop GRPO Training Loop
+        Backend->>vLLM: Generate rollouts<br/>HTTP (configurable port), API Key
+        vLLM-->>Backend: Generated completions
+        Backend->>Backend: Evaluate reward functions
+        Backend->>Backend: Update model weights (LoRA)
+    end
+
+    Backend->>FS: Save LoRA adapter checkpoints
+    Backend-->>User: Output directory path
+
+    Note over User,Tracker: Flow 3: GRPO Training (verl Backend - Multi-GPU)
+
+    User->>Registry: grpo(model, dataset, reward_funcs)
+    Registry->>Algo: Create LoRAGRPOAlgorithm + verl backend
+    Algo->>Backend: Generate Hydra config, serialize rewards to files
+    Backend->>HF: Download base model<br/>HTTPS/443
+    HF-->>Backend: Model artifacts
+    Backend->>Backend: Spawn verl subprocess (Hydra)
+
+    loop Distributed GRPO Training
+        Backend->>Backend: FSDP distributed training<br/>NCCL/TCP (multi-GPU)
+        Backend->>Backend: vLLM rollout workers (in-process)
+        Backend->>Backend: Evaluate rewards (Dr. GRPO: token-level loss)
+    end
+
+    Backend->>FS: Save normalized LoRA checkpoints
+    Backend-->>User: Output directory path
+
+    Note over User,Tracker: Flow 4: GEPA Prompt Optimization
+
+    User->>Registry: gepa(model, prompts, eval_fn, ...)
+    Registry->>Algo: Create GEPAAlgorithm + backend
+    Algo->>Backend: Configure evolutionary search
+
+    loop Genetic-Pareto Optimization
+        Backend->>LLM: Evaluate prompt candidates<br/>HTTPS via litellm, API Key
+        LLM-->>Backend: Evaluation results
+        Backend->>Backend: Selection, crossover, mutation
+    end
+
+    Backend->>FS: Save optimized prompts
+    opt MLflow Backend
+        Backend->>Tracker: Register optimized prompts<br/>HTTP (configurable)
+    end
+    Backend-->>User: Optimized prompts

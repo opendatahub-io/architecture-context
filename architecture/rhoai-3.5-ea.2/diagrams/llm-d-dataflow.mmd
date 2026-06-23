@@ -1,0 +1,45 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Gateway API<br/>80/TCP HTTP
+    participant Envoy as Envoy Proxy<br/>8081/TCP HTTP/HTTP2
+    participant EPP as Endpoint Picker (EPP)<br/>9002/TCP gRPC ext_proc
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Prefill as Prefill Pod (vLLM)<br/>8000/TCP HTTP
+    participant Decode as Decode Pod (vLLM)<br/>8000/TCP HTTP
+    participant HF as Hugging Face Hub<br/>443/TCP HTTPS
+    participant OTEL as OTEL Collector<br/>4317/TCP gRPC
+
+    Note over Client,OTEL: Flow 1: Model Weight Loading (Startup)
+    Prefill->>HF: GET model weights<br/>HTTPS/443 TLS 1.2+<br/>Auth: Bearer HF_TOKEN
+    HF-->>Prefill: Model artifacts
+    Decode->>HF: GET model weights<br/>HTTPS/443 TLS 1.2+<br/>Auth: Bearer HF_TOKEN
+    HF-->>Decode: Model artifacts
+
+    Note over Client,OTEL: Flow 2: Standard Inference Request Routing
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTP/80
+    Gateway->>Envoy: Forward request<br/>HTTP/HTTP2 8081/TCP
+    Envoy->>EPP: ext_proc headers+body<br/>gRPC/9002 (localhost)
+    EPP->>K8sAPI: List pods, get metrics<br/>HTTPS/6443 TLS 1.2+<br/>Auth: ServiceAccount Token
+    K8sAPI-->>EPP: Pod list + endpoints
+    EPP->>Decode: Health/metrics probe<br/>HTTP/8000
+    Decode-->>EPP: Server status
+    EPP-->>Envoy: x-gateway-destination-endpoint<br/>(selected decode pod)
+    Envoy->>Decode: POST /v1/chat/completions<br/>HTTP/8000
+    Decode-->>Envoy: Inference response (streamed)
+    Envoy-->>Gateway: Forward response
+    Gateway-->>Client: JSON/SSE Response
+
+    Note over Client,OTEL: Flow 3: Prefill/Decode Disaggregation with KV Transfer
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTP/80 (long context)
+    Gateway->>Envoy: Forward request<br/>HTTP/HTTP2 8081/TCP
+    Envoy->>EPP: ext_proc routing decision<br/>gRPC/9002
+    EPP-->>Envoy: Route to prefill pod
+    Envoy->>Prefill: POST inference request<br/>HTTP/8000
+    Note over Prefill: Compute KV cache<br/>for input tokens
+    Prefill->>Decode: KV cache transfer<br/>nixl RDMA/TCP 5600/TCP<br/>via routing sidecar
+    Note over Decode: Decode tokens using<br/>transferred KV cache
+    Decode-->>Client: Streamed response<br/>HTTP/8000 (via gateway)
+
+    Note over Client,OTEL: Telemetry (continuous)
+    Prefill->>OTEL: Export traces<br/>gRPC OTLP/4317
+    Decode->>OTEL: Export traces<br/>gRPC OTLP/4317

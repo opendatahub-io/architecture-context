@@ -1,0 +1,45 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Platform Gateway<br/>(Envoy)<br/>443/TCP HTTPS TLS 1.3
+    participant KRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant REST as OVMS REST<br/>configurable/TCP HTTP
+    participant gRPC as OVMS gRPC<br/>configurable/TCP gRPC
+    participant OV as OpenVINO Runtime<br/>(in-process)
+    participant GenAI as OpenVINO GenAI<br/>(in-process)
+    participant S3 as S3 / Cloud Storage<br/>443/TCP HTTPS
+
+    Note over Client,S3: Flow 1: Model Inference (REST via Platform Gateway)
+    Client->>Gateway: POST /v2/models/{name}/infer<br/>Auth: Bearer Token (platform)
+    Gateway->>KRBAC: Forward request<br/>8443/TCP HTTPS<br/>Auth: Service Account Token
+    KRBAC->>REST: Forward to OVMS<br/>HTTP (localhost, plaintext)
+    REST->>OV: Execute inference<br/>(in-process C++ API)
+    OV-->>REST: Inference result
+    REST-->>KRBAC: JSON response
+    KRBAC-->>Gateway: Response
+    Gateway-->>Client: HTTPS response
+
+    Note over Client,S3: Flow 2: LLM Chat Completion (Streaming SSE)
+    Client->>Gateway: POST /v1/chat/completions<br/>stream: true<br/>Auth: Bearer Token
+    Gateway->>KRBAC: Forward<br/>HTTPS
+    KRBAC->>REST: Forward<br/>HTTP
+    REST->>GenAI: ContinuousBatchingPipeline<br/>(in-process)
+    loop SSE Stream Tokens
+        GenAI-->>REST: Generated token
+        REST-->>KRBAC: SSE: data: {"choices":[...]}
+        KRBAC-->>Gateway: SSE chunk
+        Gateway-->>Client: SSE chunk (HTTPS)
+    end
+    REST-->>Client: SSE: data: [DONE]
+
+    Note over Client,S3: Flow 3: gRPC Streaming Inference
+    Client->>gRPC: ModelStreamInfer (bidirectional)<br/>gRPC/HTTP2 (plaintext)
+    gRPC->>OV: Execute inference<br/>(in-process)
+    loop Streaming Response
+        OV-->>gRPC: Partial result
+        gRPC-->>Client: gRPC stream response
+    end
+
+    Note over Client,S3: Model Loading (Startup / Hot-reload)
+    REST->>S3: GET model artifacts<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS IAM / access keys
+    S3-->>REST: Model files
+    REST->>OV: Load model into OpenVINO

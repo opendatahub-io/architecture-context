@@ -1,0 +1,41 @@
+sequenceDiagram
+    participant Client as External Client
+    participant EnvoyGW as Envoy Gateway<br/>443/TCP HTTPS
+    participant EPP as EPP (Endpoint Picker)<br/>9002/TCP gRPC TLS
+    participant vLLMMetrics as vLLM Metrics<br/>HTTP/HTTPS
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Sidecar as Routing Sidecar<br/>8000/TCP HTTPS
+    participant Prefiller as Remote Prefiller<br/>HTTP/HTTPS
+    participant Decoder as Local vLLM Decoder<br/>8001/TCP
+    participant Encoder as Remote Encoder<br/>HTTP/HTTPS
+
+    Note over Client,Decoder: Flow 1: Inference Request Scheduling (EPP)
+    Client->>EnvoyGW: POST /v1/chat/completions<br/>HTTPS TLS 1.2+, Bearer Token
+    EnvoyGW->>EPP: ext-proc ProcessingRequest<br/>gRPC streaming, TLS (self-signed)
+    EPP->>K8sAPI: Watch InferencePool, Pod, Objectives<br/>HTTPS, ServiceAccount Token
+    K8sAPI-->>EPP: CRD state updates
+    EPP->>vLLMMetrics: Scrape metrics<br/>HTTP/HTTPS, InsecureSkipVerify
+    vLLMMetrics-->>EPP: queue_depth, kv_cache_util, running_requests
+    Note over EPP: Filter → Score → Pick pipeline<br/>(KV cache, load, session affinity)
+    EPP-->>EnvoyGW: ProcessingResponse<br/>target endpoint + headers
+    EnvoyGW->>Decoder: Forward to selected pod<br/>HTTP/HTTPS TLS
+
+    Note over Client,Encoder: Flow 2: Disaggregated Prefill/Decode (Sidecar P/D)
+    EnvoyGW->>Sidecar: POST /v1/chat/completions<br/>HTTP/HTTPS TLS 1.2+
+    Note over Sidecar: Validate prefill target<br/>against SSRF allowlist
+    Sidecar->>Prefiller: POST /v1/completions<br/>HTTP/HTTPS, Optional TLS
+    Prefiller-->>Sidecar: Prefill result + KV cache params
+    Sidecar->>Decoder: POST /v1/completions<br/>with KV cache reference<br/>HTTP/HTTPS, Optional TLS
+    Decoder-->>Sidecar: Streaming SSE response
+    Sidecar-->>EnvoyGW: Streaming response<br/>HTTP/HTTPS TLS 1.2+
+
+    Note over Client,Encoder: Flow 3: Encoder/Prefill/Decode Multimodal (Sidecar E/P/D)
+    EnvoyGW->>Sidecar: POST /v1/chat/completions<br/>(multimodal content)<br/>HTTP/HTTPS TLS 1.2+
+    Note over Sidecar: Validate encoder + prefill targets<br/>against SSRF allowlist
+    Sidecar->>Encoder: POST encode request<br/>HTTP/HTTPS, Optional TLS
+    Encoder-->>Sidecar: Encoded embeddings + KV params
+    Sidecar->>Prefiller: POST /v1/completions<br/>with encoded context<br/>HTTP/HTTPS, Optional TLS
+    Prefiller-->>Sidecar: Prefill result + KV cache params
+    Sidecar->>Decoder: POST /v1/completions<br/>with KV cache reference<br/>HTTP/HTTPS, Optional TLS
+    Decoder-->>Sidecar: Streaming SSE response
+    Sidecar-->>EnvoyGW: Streaming response<br/>HTTP/HTTPS TLS 1.2+

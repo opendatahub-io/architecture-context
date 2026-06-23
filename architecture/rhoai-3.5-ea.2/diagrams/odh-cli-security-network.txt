@@ -1,0 +1,111 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  CLIENT-SIDE (Operator Workstation / CI Pipeline)                          │
+│                                                                             │
+│  [rhai-cli Binary / Container Image]                                        │
+│  - Image: quay.io/rhoai/odh-cli-rhel9                                      │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1                      │
+│  - Auth source: KUBECONFIG (Bearer Token / Client Cert / OIDC)              │
+│  - RBAC: SelfSubjectAccessReview pre-check before operations                │
+│  - No listening ports (pure client)                                         │
+│         │                                                                   │
+│         │ Port: 6443/TCP                                                    │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: Bearer Token / Client Certificate / OIDC (from kubeconfig)  │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES API SERVER (Target Cluster)                                     │
+│                                                                             │
+│  [Kubernetes / OpenShift API Server]                                        │
+│  - Port: 6443/TCP                                                           │
+│  - TLS: 1.2+                                                               │
+│  - AuthN: Bearer Token, Client Certificate, OIDC                           │
+│  - AuthZ: Kubernetes RBAC (user-level permissions)                          │
+│         │                                                                   │
+│         ├── Platform CRs (Read/Patch via 6443/TCP)                          │
+│         │   ├── DataScienceCluster (dscoperator.opendatahub.io/v2, v1)      │
+│         │   ├── DSCInitialization (dscoperator.opendatahub.io/v2, v1)       │
+│         │   └── Component CRs (components.platform.opendatahub.io/v1alpha1) │
+│         │                                                                   │
+│         ├── Workload CRs (Read/Patch/Create/Delete via 6443/TCP)            │
+│         │   ├── InferenceService (serving.kserve.io/v1beta1)                │
+│         │   ├── ServingRuntime (serving.kserve.io/v1alpha1)                 │
+│         │   ├── Notebook (kubeflow.org/v1)                                  │
+│         │   ├── RayCluster (ray.io/v1)                                      │
+│         │   ├── DataSciencePipelinesApplication (v1, v1alpha1)              │
+│         │   ├── ClusterQueue / LocalQueue (kueue.x-k8s.io/v1beta1)         │
+│         │   ├── TrustyAIService (opendatahub.io)                            │
+│         │   ├── GuardrailsOrchestrator                                      │
+│         │   ├── LlamaStackDistribution (opendatahub.io)                     │
+│         │   └── PyTorchJob/TFJob/MPIJob/XGBoostJob (kubeflow.org/v1)        │
+│         │       TrainJob (trainer.kubeflow.org/v1)                          │
+│         │                                                                   │
+│         ├── OLM Resources (Read/Create via 6443/TCP)                        │
+│         │   ├── Subscription (operators.coreos.com/v1alpha1)                │
+│         │   ├── ClusterServiceVersion                                       │
+│         │   └── OperatorGroup (operators.coreos.com/v1)                     │
+│         │                                                                   │
+│         ├── Core Resources (Read/Patch via 6443/TCP)                        │
+│         │   ├── ConfigMap (inferenceservice-config)                         │
+│         │   ├── Deployment (kserve-controller-manager)                      │
+│         │   ├── Secrets (read-only, for Notebook backups)                   │
+│         │   └── SelfSubjectAccessReview (authz pre-check)                   │
+│         │                                                                   │
+│         └── OpenShift Resources (Read via 6443/TCP)                         │
+│             ├── Route (route.openshift.io/v1)                               │
+│             └── ClusterVersion (config.openshift.io/v1)                     │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress from CLI)                                        │
+│                                                                             │
+│  [TrustyAI Service Route - via OpenShift Route]                             │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS 1.2+                                                     │
+│  - Auth: Bearer Token (cluster user auth via Route)                         │
+│  - Purpose: Metrics backup/restore during migration                         │
+│  - Methods: GET (backup), POST (restore)                                    │
+│                                                                             │
+│  [github.com - odh-gitops] (BUILD-TIME ONLY)                                │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS 1.2+                                                     │
+│  - Auth: None (public repository)                                           │
+│  - Purpose: Fetch dependency manifest (values.yaml) at build time           │
+│  - Not accessed at runtime (embedded via Go embed)                          │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- odh-cli does NOT install any ClusterRoles or RoleBindings
+- It uses the RBAC permissions of the authenticated user's kubeconfig
+- SelfSubjectAccessReview-based permission pre-check gracefully detects
+  and reports missing permissions before operations
+- Required permissions depend on the command being run:
+  - lint: read-only access to DSC, DSCI, ISVCs, Notebooks, DSPAs, etc.
+  - migrate: read + patch/create/delete on target workload CRs
+  - deps install: create Subscriptions, OperatorGroups
+  - status/components/events/logs/get: read-only access
+
+Authentication & Authorization:
+- Kubernetes API: Bearer Token / Client Certificate / OIDC (via kubeconfig)
+- TrustyAI REST API: Bearer Token (inherited from OpenShift Route OAuth)
+- No service accounts created or managed by odh-cli
+
+FIPS Compliance:
+- Build flags: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- Dynamic linking with OpenSSL backend (UBI9 via ose-cli-rhel9)
+- TLS delegated to k8s.io/client-go (Go stdlib crypto/tls with OpenSSL)
+- yq also built with FIPS-compliant flags
+- No direct crypto imports; all TLS via client-go and Go runtime
+
+Secrets Handling:
+- odh-cli does NOT create or manage Secrets
+- Reads Secrets referenced by Notebooks during backup operations (read-only)
+- Writes backup data to local filesystem only
+
+Build Hermeticity:
+- Konflux hermetic build (hermetic: true in Tekton pipeline)
+- Prefetch: RPM (rpms.lock.yaml), Go modules (go.sum), Go modules/yq,
+  pip packages (requirements.txt)
+- Multi-arch: x86_64, arm64, ppc64le

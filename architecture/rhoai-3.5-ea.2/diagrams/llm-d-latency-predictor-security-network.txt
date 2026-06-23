@@ -1,0 +1,137 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [llm-d Gateway Components]                                                  │
+│  - Purpose: Submit observed TTFT/TPOT latency traces                         │
+│         │                                                                    │
+│         │ Port: 8000/TCP                                                     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (plaintext)                                       │
+│         │ Auth: None                                                         │
+│         ▼                                                                    │
+│  [llm-d Gateway Router]                                                      │
+│  - Purpose: Query latency predictions for routing decisions                  │
+│         │                                                                    │
+│         │ Port: 80/TCP → 8001/TCP (Service → Pod)                            │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (plaintext)                                       │
+│         │ Auth: None                                                         │
+│         ▼                                                                    │
+│  [Prometheus]                                                                │
+│  - Purpose: Scrape model metrics                                             │
+│         │                                                                    │
+│         │ Port: 8000/TCP                                                     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None                                                   │
+│         │ Auth: None                                                         │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER SERVICES (No Authentication)                                        │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────┐             │
+│  │  training-service (ClusterIP)                                │             │
+│  │  ┌───────────────────────────────────────────────────────┐  │             │
+│  │  │  Training Server Pod                                   │  │             │
+│  │  │  - Image: odh-latency-predictor-training               │  │             │
+│  │  │  - Port: 8000/TCP (HTTP, plaintext)                    │  │             │
+│  │  │  - Replicas: 1                                         │  │             │
+│  │  │  - Volume: PVC (model storage)                         │  │             │
+│  │  │  - No ServiceAccount RBAC                              │  │             │
+│  │  │  - No Secrets                                          │  │             │
+│  │  │                                                        │  │             │
+│  │  │  Endpoints:                                            │  │             │
+│  │  │    POST /add_training_data_bulk  (no auth)             │  │             │
+│  │  │    POST /predict                (no auth)              │  │             │
+│  │  │    GET  /model/{name}/info      (no auth)              │  │             │
+│  │  │    GET  /model/{name}/download  (no auth)              │  │             │
+│  │  │    GET  /models/list            (no auth)              │  │             │
+│  │  │    GET  /metrics                (no auth)              │  │             │
+│  │  │    POST /flush                  (no auth)              │  │             │
+│  │  │    GET  /data/status            (no auth)              │  │             │
+│  │  │    GET  /healthz                (no auth)              │  │             │
+│  │  │    GET  /readyz                 (no auth)              │  │             │
+│  │  └───────────────────────────────────────────────────────┘  │             │
+│  └─────────────────────────────────────────────────────────────┘             │
+│         ▲                                                                    │
+│         │ Port: 8000/TCP                                                     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (plaintext)                                       │
+│         │ Auth: None                                                         │
+│         │ Purpose: Model download (joblib), timestamp check                  │
+│         │ Integrity: MD5 checksum (non-cryptographic, change detection only) │
+│         │                                                                    │
+│  ┌─────────────────────────────────────────────────────────────┐             │
+│  │  prediction-service (LoadBalancer: 80→8001)                  │             │
+│  │  ┌───────────────────────────────────────────────────────┐  │             │
+│  │  │  Prediction Server Pod (x10 replicas)                  │  │             │
+│  │  │  - Image: odh-latency-predictor-prediction             │  │             │
+│  │  │  - Port: 8001/TCP (HTTP, plaintext)                    │  │             │
+│  │  │  - Workers: 8 (uvicorn)                                │  │             │
+│  │  │  - Volume: emptyDir (local model cache)                │  │             │
+│  │  │  - No ServiceAccount RBAC                              │  │             │
+│  │  │  - No Secrets                                          │  │             │
+│  │  │                                                        │  │             │
+│  │  │  Endpoints:                                            │  │             │
+│  │  │    POST /predict               (no auth)               │  │             │
+│  │  │    POST /predict/bulk/strict   (no auth)               │  │             │
+│  │  │    POST /predict/bulk          (no auth)               │  │             │
+│  │  │    POST /reload                (no auth)               │  │             │
+│  │  │    GET  /status                (no auth)               │  │             │
+│  │  │    GET  /healthz               (no auth)               │  │             │
+│  │  │    GET  /readyz                (no auth)               │  │             │
+│  │  └───────────────────────────────────────────────────────┘  │             │
+│  └─────────────────────────────────────────────────────────────┘             │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────┐             │
+│  │  training-service-external (LoadBalancer: 8080→8000)         │             │
+│  │  - Exposes training server externally                        │             │
+│  │  - Port: 8080/TCP → 8000/TCP                                │             │
+│  │  - Protocol: HTTP (plaintext)                                │             │
+│  │  - Auth: None                                                │             │
+│  │  - WARNING: Exposes training data ingestion externally       │             │
+│  └─────────────────────────────────────────────────────────────┘             │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+SECURITY CONCERNS:
+══════════════════
+1. NO AUTHENTICATION on any endpoint (training or prediction)
+2. NO TLS — all communication is plaintext HTTP
+3. NO RBAC — component does not interact with Kubernetes API
+4. NO SECRETS — all configuration via plaintext ConfigMap env vars
+5. Training data ingestion (/add_training_data_bulk) is unauthenticated
+   → Adversarial training data injection possible with network access
+6. Model download path is plaintext HTTP with no integrity verification
+   → MD5 used only for change detection, not cryptographic integrity
+7. training-service-external LoadBalancer exposes training server externally
+   → Reference manifests only; RHOAI production uses platform-managed ingress
+
+CRYPTO USAGE:
+═════════════
+- hashlib.md5: Model file change detection (non-security, non-FIPS concern)
+- No TLS configuration in application code
+- OpenSSL available via UBI9 base image but unused by application
+
+RBAC Summary:
+═════════════
+- No ClusterRoles defined
+- No RoleBindings defined
+- No ServiceAccount RBAC configured
+- Component does not access Kubernetes API
+
+Secrets:
+════════
+- No secrets defined
+- All configuration via environment variables in ConfigMaps
+
+Network Policies:
+═════════════════
+- No NetworkPolicy resources defined in reference manifests
+- RHOAI production: Expected to use platform-provided NetworkPolicy + service mesh mTLS
+
+FIPS Compliance Notes:
+══════════════════════
+- Base image: registry.access.redhat.com/ubi9/python-312 (OpenSSL via UBI9)
+- Application does not use TLS (no FIPS-relevant crypto operations)
+- MD5 usage is non-cryptographic (model change detection only)
+- Not a Go binary (no CGO_ENABLED/goboring concerns)

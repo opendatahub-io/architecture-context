@@ -1,0 +1,93 @@
+sequenceDiagram
+    participant Agent as AI Agent<br/>(Claude/GPT/Llama)
+    participant Route as OpenShift Route<br/>443/TCP HTTPS TLS edge
+    participant MCP as RHOAI MCP Server<br/>8000/TCP HTTP
+    participant OIDC as OIDC Provider<br/>443/TCP HTTPS
+    participant K8sAuth as K8s Auth APIs<br/>443/TCP HTTPS
+    participant K8s as Kubernetes API<br/>443/TCP HTTPS
+    participant ModelReg as Model Registry<br/>8080/8443 HTTP(S)
+    participant Planner as Planner Service<br/>8000/TCP HTTP
+
+    Note over Agent,Planner: Flow 1: MCP Tool Call (Kubernetes Operation)
+
+    Agent->>Route: MCP SSE/HTTP request<br/>Bearer Token (JWT/OAuth)
+    Route->>MCP: Forward (TLS terminated)
+
+    alt OIDC JWT Mode
+        MCP->>OIDC: GET /.well-known/openid-configuration<br/>+ JWKS keys (HTTPS/443)
+        OIDC-->>MCP: JWKS signing keys
+        MCP->>MCP: Validate JWT signature & claims
+    else OIDC TokenReview Mode
+        MCP->>K8sAuth: POST TokenReview (HTTPS/443)<br/>Bearer SA Token
+        K8sAuth-->>MCP: TokenReview response (user identity)
+        MCP->>K8sAuth: GET User groups<br/>(user.openshift.io/v1)
+        K8sAuth-->>MCP: User groups
+    end
+
+    MCP->>K8sAuth: POST SubjectAccessReview<br/>Check user permissions for tool
+    K8sAuth-->>MCP: Allowed/Denied
+
+    alt Tool Allowed
+        MCP->>K8s: CRD Operation (HTTPS/443)<br/>Bearer Token + Impersonate-User headers
+        K8s-->>MCP: CRD Response
+        MCP-->>Route: MCP Tool Result (JSON)
+        Route-->>Agent: Response (HTTPS/443)
+    else Tool Denied
+        MCP-->>Route: Tool not available for user
+        Route-->>Agent: Filtered tool list
+    end
+
+    Note over Agent,Planner: Flow 2: Model Registry Query
+
+    Agent->>Route: MCP tool: list_registered_models
+    Route->>MCP: Forward request
+
+    alt Direct Service Access
+        MCP->>ModelReg: GET /api/model_registry/v1alpha3/...<br/>HTTP/8080 or HTTPS/8443
+        ModelReg-->>MCP: Model list (JSON)
+    else Model Catalog API
+        MCP->>ModelReg: GET /api/model_catalog/v1alpha1/...<br/>HTTP/8080 or HTTPS/8443
+        ModelReg-->>MCP: Catalog models (JSON)
+    end
+
+    MCP-->>Route: MCP Tool Result
+    Route-->>Agent: Model data
+
+    Note over Agent,Planner: Flow 3: Planner Recommendation
+
+    Agent->>Route: MCP tool: recommend_model_deployment
+    Route->>MCP: Forward request
+
+    MCP->>Planner: POST /api/v1/extract<br/>HTTP/8000 (in-cluster, no TLS)
+    Planner-->>MCP: Extracted intent
+
+    MCP->>Planner: POST /api/v1/recommend<br/>HTTP/8000 (in-cluster, no TLS)
+    Planner-->>MCP: Deployment recommendation
+
+    MCP-->>Route: MCP Tool Result (YAML config)
+    Route-->>Agent: Recommendation
+
+    Note over Agent,Planner: Flow 4: Dangerous Operation (Workflow Token)
+
+    Agent->>Route: MCP tool: delete resource
+    Route->>MCP: Forward request
+
+    MCP->>MCP: Check read_only_mode gate
+    MCP->>MCP: Check enable_dangerous_operations gate
+
+    alt Operation Allowed
+        MCP->>MCP: Generate HMAC-SHA256 workflow token
+        MCP-->>Route: Confirmation required (token)
+        Route-->>Agent: "Confirm deletion? Token: xxx"
+
+        Agent->>Route: MCP tool: confirm_delete (token)
+        Route->>MCP: Forward with token
+        MCP->>MCP: Verify HMAC-SHA256 token
+        MCP->>K8s: DELETE resource (HTTPS/443)
+        K8s-->>MCP: Deleted
+        MCP-->>Route: Deletion confirmed
+        Route-->>Agent: Resource deleted
+    else Read-Only Mode
+        MCP-->>Route: Operation blocked (read-only)
+        Route-->>Agent: Error: write operations disabled
+    end

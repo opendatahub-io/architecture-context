@@ -1,0 +1,98 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Client (OpenAI-compatible)]                                            │
+│         │                                                                │
+│         │ Port: 8090/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (plaintext)                                   │
+│         │ Auth: Authorization header (pass-through, not enforced)        │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  GATEWAY LAYER (vllm-orchestrator-gateway)                              │
+│                                                                          │
+│  [vllm-orchestrator-gateway]                                             │
+│  - Runtime: Rust (Axum 0.7.9 + Tokio 1.41.1)                           │
+│  - Listener: 0.0.0.0:8090/TCP (plaintext HTTP)                          │
+│  - Endpoints: POST /{route_name}/v1/chat/completions                    │
+│  - Auth enforcement: None (pass-through only)                            │
+│  - Relies on: external ingress / kube-rbac-proxy sidecar for auth       │
+│  - Config: /app/config/config.yaml (GATEWAY_CONFIG env)                 │
+│  - Stateless: no database, no persistence                                │
+│         │                                                                │
+│         │ Port: 8085/TCP (configurable)                                  │
+│         │ Protocol: HTTP or HTTPS                                        │
+│         │ Encryption: Optional mTLS                                      │
+│         │   - Client cert: /etc/tls/private/tls.crt + tls.key           │
+│         │   - CA cert: /etc/tls/ca/service-ca.crt                       │
+│         │   - TLS stack: openssl 0.10.73 + native-tls 0.2.12            │
+│         │   - Cert format: PEM → PKCS#12 in-memory conversion           │
+│         │   - Degrades to plaintext if certs absent                      │
+│         │ Auth: Authorization header forwarded from client               │
+│         │ Headers forwarded: Authorization, x-forwarded-*                │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  UPSTREAM SERVICES (Internal Platform)                                   │
+│                                                                          │
+│  [FMS Guardrails Orchestrator]                                           │
+│  - Endpoint: POST /api/v2/chat/completions-detection                    │
+│  - Port: 8085/TCP (configurable)                                        │
+│  - Protocol: HTTP or HTTPS                                               │
+│  - Purpose: Chat completion with detector-based content filtering        │
+│         │                                                                │
+│         ├──→ [Guardrails Detectors (e.g., regex-language)]              │
+│         │    - Interaction: Indirect (via orchestrator)                  │
+│         │    - Purpose: Content detection services                       │
+│         │                                                                │
+│         └──→ [vLLM / LLM Inference Service]                             │
+│              - Interaction: Indirect (via orchestrator)                  │
+│              - Purpose: Chat completion generation                       │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+TLS Configuration:
+- Gateway listener: Plaintext HTTP (8090/TCP) — no TLS termination
+- Upstream connection: Optional mTLS to orchestrator
+  - Probes for certs at /etc/tls/private/tls.crt and /etc/tls/private/tls.key
+  - If present: HTTPS with mTLS (client cert + CA verification)
+  - If absent: plaintext HTTP (graceful degradation)
+  - CA bundle: /etc/tls/ca/service-ca.crt (Kubernetes service CA)
+  - PKCS#12 conversion: PEM cert+key → PKCS#12 in-memory (native-tls requirement)
+- FIPS: Delegates to system OpenSSL (openssl-libs RPM); RHEL 9 FIPS crypto-policies
+  apply automatically
+- Risk: danger_accept_invalid_hostnames(true) when orchestrator host is "localhost"
+  (development-only; not reachable when orchestrator addressed by K8s Service DNS)
+
+RBAC Summary:
+- No RBAC manifests — this is a stateless HTTP service, not a Kubernetes operator
+- No ClusterRoles, Roles, or RoleBindings defined in the repository
+- Access control is expected to be enforced externally:
+  - kube-rbac-proxy sidecar
+  - Ingress controller auth
+  - Network policies
+
+Secrets:
+- TLS client cert (/etc/tls/private/tls.crt, tls.key)
+  - Type: kubernetes.io/tls
+  - Purpose: mTLS client identity for orchestrator communication
+  - Provisioned by: Kubernetes service-serving-cert-signer or cert-manager
+  - Rotation: Depends on provisioner
+- CA certificate (/etc/tls/ca/service-ca.crt)
+  - Type: Opaque (CA bundle)
+  - Purpose: Verify orchestrator's server certificate
+  - Provisioned by: Kubernetes service CA configmap injection
+  - Rotation: Auto-rotated by platform
+
+Authentication & Authorization:
+- Endpoint: /{route_name}/v1/chat/completions (POST)
+- Auth mechanism: Authorization header pass-through
+- Enforcement: None at gateway level
+- Policy: Gateway forwards Authorization header to orchestrator; does not validate
+- Recommendation: Deploy with kube-rbac-proxy sidecar or behind authenticated ingress
+
+Build Security:
+- Hermetic build: Yes (Tekton PipelineRun, hermetic: true)
+- Prefetch: cargo + rpm (Hermeto/cachi2)
+- Lock files: Cargo.lock (Rust deps), rpms.lock.yaml (OS packages)
+- Multi-arch: x86_64, aarch64, ppc64le, s390x
+- OpenSSL: Dynamic linking against system openssl-libs (FIPS-capable)

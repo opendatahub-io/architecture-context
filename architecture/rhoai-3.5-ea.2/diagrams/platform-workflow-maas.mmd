@@ -1,0 +1,58 @@
+%% RHOAI 3.5-ea.2 — Workflow 3: MaaS External Provider Routing
+%% Generated from PLATFORM.md by Claude Opus 4.6 on 2026-06-22
+
+sequenceDiagram
+    participant Admin as Platform Admin
+    participant MaaSCtrl as MaaS Controller<br/>Reconciler
+    participant K8s as Kubernetes API<br/>CRDs + Secrets
+    participant Gateway as Platform Gateway<br/>Envoy
+    participant ExtProc as ext_proc Pipeline<br/>ai-gateway-payload-processing
+    participant Authorino as Kuadrant Authorino<br/>Auth Enforcement
+    participant User as API Client
+    participant Provider as External LLM Provider<br/>OpenAI / Anthropic
+
+    Note over Admin,Provider: Workflow 3 — MaaS External Provider Routing
+
+    %% Step 1: Admin configures provider
+    Admin->>K8s: Create ExternalProvider CR<br/>(endpoint URL, credential Secret)
+    Admin->>K8s: Create ExternalModel CR<br/>(maps model name to provider)
+    Admin->>K8s: Create Secret with provider API key<br/>(SHA-256 hashed for storage)
+
+    %% Step 2: MaaS controller reconciles
+    MaaSCtrl->>K8s: Watch ExternalProvider + ExternalModel CRs
+    K8s-->>MaaSCtrl: New resources detected
+    MaaSCtrl->>K8s: Create ExternalName Service<br/>(points to provider endpoint)
+    MaaSCtrl->>K8s: Create Istio ServiceEntry<br/>(allows egress to provider)
+    MaaSCtrl->>K8s: Create HTTPRoute<br/>(model-level routing through Gateway)
+    MaaSCtrl->>K8s: Create AuthPolicy<br/>(API Key + TokenReview validation)
+
+    Note over Gateway,ExtProc: Gateway configured — model routable
+
+    %% Step 3: User sends inference request
+    User->>Gateway: POST /v1/chat/completions<br/>model: gpt-4-turbo<br/>API Key: sk-oai-...<br/>(HTTPS TLS 1.3)
+
+    %% Step 4: Auth and pre-processing
+    Gateway->>Authorino: Validate API Key<br/>(SHA-256 hash comparison,<br/>constant-time, fail-closed)
+    Authorino-->>Gateway: Auth OK
+
+    Gateway->>ExtProc: ext_proc pre-auth stage<br/>Extract model name from<br/>request body into HTTP header
+    ExtProc-->>Gateway: Model header added<br/>(for HTTPRoute matching)
+
+    Gateway->>Gateway: Route request via HTTPRoute<br/>(match on model header)
+
+    Gateway->>ExtProc: ext_proc post-auth stage
+    ExtProc->>ExtProc: Translate API format<br/>(if provider uses different schema)
+    ExtProc->>K8s: Read provider API key<br/>from Kubernetes Secret
+    K8s-->>ExtProc: Provider API key
+    ExtProc->>ExtProc: Inject provider API key<br/>into outbound request headers
+    ExtProc-->>Gateway: Transformed request ready
+
+    %% Step 5: Forward to external provider
+    Gateway->>Provider: Forward request<br/>(HTTPS TLS 1.2+, provider API key,<br/>via ServiceEntry + ExternalName)
+    Provider->>Provider: Run LLM inference
+    Provider-->>Gateway: Inference response
+
+    %% Step 6: Response processing
+    Gateway->>ExtProc: ext_proc response stage<br/>(format translation if needed)
+    ExtProc-->>Gateway: Translated response
+    Gateway-->>User: JSON response<br/>(OpenAI-compatible format,<br/>HTTPS TLS 1.3)

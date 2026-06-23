@@ -1,0 +1,174 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [User / Data Scientist]                                                     │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: Bearer Token / kubeconfig                                    │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE (Trusted)                                          │
+│                                                                              │
+│  [Kubernetes API Server]                                                     │
+│  - Port: 443/TCP (inbound and outbound)                                     │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: ServiceAccount tokens, TLS client certs                            │
+│         │                                                                    │
+│         │ Port: 9443/TCP                                                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (self-signed, cert-controller managed)             │
+│         │ Auth: API server TLS client certificate                            │
+│         │ Direction: API server → Webhook (admission callback)               │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE (opendatahub)                                            │
+│                                                                              │
+│  [kubeflow-training-operator]                                                │
+│  - Deployment: 1 replica                                                     │
+│  - ServiceAccount: training-operator                                         │
+│  - Image: quay.io/opendatahub/training-operator:v1.9.0-odh-3               │
+│  - FIPS: strictfipsruntime + CGO_ENABLED=1 (UBI 9 OpenSSL)                  │
+│  - GOMEMLIMIT: 460MiB                                                       │
+│                                                                              │
+│  Ports Exposed:                                                              │
+│  ┌────────────────────────────────────────────────────────────┐              │
+│  │ 8080/TCP  HTTP   Metrics (/metrics)         No auth       │              │
+│  │ 8081/TCP  HTTP   Probes (/healthz, /readyz) No auth       │              │
+│  │ 9443/TCP  HTTPS  Webhooks (5 endpoints)     API server    │              │
+│  │                  TLS: self-signed cert       TLS client    │              │
+│  │                  (cert-controller rotated)   cert          │              │
+│  └────────────────────────────────────────────────────────────┘              │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: ServiceAccount token (Bearer)                                │
+│         │ Direction: Operator → API server (CRUD operations)                 │
+│         ▼                                                                    │
+│  [Kubernetes API Server]                                                     │
+│  - Operations: Create/Read/Update/Delete Pods, Services,                    │
+│    ConfigMaps, ServiceAccounts, Roles, RoleBindings,                        │
+│    PodGroups, HPAs, NetworkPolicies, CRD status                             │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  JOB NAMESPACE ({user-namespace})                                            │
+│                                                                              │
+│  [Master/Worker Pods] (created by operator)                                  │
+│  - Framework-specific env vars for distributed communication                │
+│  - Managed by training-operator via owner references                        │
+│                                                                              │
+│  [Headless Services] (created by operator)                                   │
+│  - Type: ClusterIP: None                                                     │
+│  - Purpose: DNS-based pod discovery for inter-pod communication             │
+│         │                                                                    │
+│         │ Inter-Pod Communication:                                           │
+│         │ Port: Variable per framework                                       │
+│         │   - PyTorch: 23456/TCP                                             │
+│         │   - TensorFlow: 2222/TCP                                           │
+│         │   - XGBoost: 9994/TCP (Rabit tracker)                              │
+│         │   - MPI: kubectl exec via API server                               │
+│         │   - PaddlePaddle: Variable                                         │
+│         │   - JAX: Variable                                                  │
+│         │ Protocol: TCP                                                      │
+│         │ Encryption: None (plaintext)                                       │
+│         │ Auth: None                                                         │
+│         ▼                                                                    │
+│  [Worker ↔ Master direct communication within cluster]                      │
+│                                                                              │
+│  MPI-Specific Flow:                                                          │
+│  [Launcher Pod]                                                              │
+│  - SA: {job-name}-launcher (per-job, scoped to pods/exec)                   │
+│  - Init container: kubectl-delivery (copies kubectl binary)                 │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: Launcher ServiceAccount token                                │
+│         │ (pods/exec permission via per-job Role/RoleBinding)               │
+│         ▼                                                                    │
+│  [API Server → kubectl exec → MPI Worker Pods]                              │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  MONITORING (openshift-monitoring namespace)                                 │
+│                                                                              │
+│  [Prometheus]                                                                │
+│  - Scrapes via PodMonitor                                                    │
+│         │                                                                    │
+│         │ Port: 8080/TCP                                                     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None                                                   │
+│         │ Auth: None                                                         │
+│         │ Direction: Prometheus → Operator pod (metrics scrape)              │
+│         │ NetworkPolicy: Allows ingress from openshift-monitoring            │
+│         ▼                                                                    │
+│  [kubeflow-training-operator /metrics endpoint]                              │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  OPTIONAL: GANG SCHEDULING (cluster-wide)                                    │
+│                                                                              │
+│  [Volcano Scheduler] (if CRD present)                                        │
+│  - Operator creates PodGroup CRs (scheduling.volcano.sh/v1beta1)           │
+│  - minMember constraint prevents partial scheduling                         │
+│  - Pods delayed until PodGroup reaches "Inqueue"                            │
+│                                                                              │
+│  [Kubernetes Scheduler-Plugins] (alternative, if CRD present)               │
+│  - PodGroup CRs (scheduling.x-k8s.io/v1alpha1)                             │
+│                                                                              │
+│  [Kueue MultiKueue] (if managedBy annotation set)                           │
+│  - Federated job dispatch via spec.runPolicy.managedBy                      │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+━━━━━━━━━━━━━
+ClusterRole: training-operator
+  - Core API: pods (CRUD+exec), services (get/list/watch/create/delete),
+    serviceaccounts (get/list/watch/create), configmaps (list/watch/create/update),
+    events (full CRUD)
+  - kubeflow.org: pytorchjobs, tfjobs, xgboostjobs, mpijobs, paddlejobs, jaxjobs
+    + /status + /finalizers (full CRUD)
+  - rbac.authorization.k8s.io: roles, rolebindings (list/watch/create/update)
+  - autoscaling: horizontalpodautoscalers (full CRUD)
+  - scheduling.volcano.sh: podgroups (full CRUD)
+  - scheduling.x-k8s.io: podgroups (full CRUD)
+  - networking.k8s.io: networkpolicies (full CRUD)
+  - admissionregistration.k8s.io: validatingwebhookconfigurations (get/list/watch/update)
+
+Aggregated Roles (RHOAI):
+  - training-edit: CRUD on all 6 job types + status/get
+  - training-view: read-only on all 6 job types + status/get
+
+Per-MPI-Job Roles:
+  - {job-name}-launcher (Role): pods/exec create in job namespace
+
+ClusterRoleBinding: training-operator → SA: training-operator (opendatahub)
+RoleBinding: training-operator-webhook → SA: training-operator (opendatahub)
+
+Secrets:
+━━━━━━━━
+- kubeflow-training-operator-webhook-cert (kubernetes.io/tls)
+  - Purpose: TLS certificates for webhook server (9443/TCP)
+  - Provisioned by: open-policy-agent/cert-controller (in-process)
+  - Auto-rotate: Yes (cert-controller manages rotation)
+  - Contains: tls.crt, tls.key, ca.crt
+
+Webhook Configuration:
+━━━━━━━━━━━━━━━━━━━━━━
+- ValidatingWebhookConfiguration with 5 webhooks
+- failurePolicy: Fail (blocks resource creation if webhook unavailable)
+- Webhooks:
+  1. validator.pytorchjob.training-operator.kubeflow.org (CREATE, UPDATE)
+  2. validator.tfjob.training-operator.kubeflow.org (CREATE, UPDATE)
+  3. validator.xgboostjob.training-operator.kubeflow.org (CREATE, UPDATE)
+  4. validator.jaxjob.training-operator.kubeflow.org (CREATE, UPDATE)
+  5. validator.paddlejob.training-operator.kubeflow.org (CREATE, UPDATE)
+
+FIPS Compliance:
+━━━━━━━━━━━━━━━
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- Base image: UBI 9 ubi-minimal (OpenSSL)
+- TLS: controller-runtime default (Go crypto/tls via FIPS OpenSSL)
+- No non-FIPS crypto detected (no MD5, RC4, DES, custom ciphers)

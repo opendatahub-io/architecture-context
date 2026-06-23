@@ -1,0 +1,34 @@
+sequenceDiagram
+    participant Gateway as llm-d Gateway<br/>Components
+    participant Router as llm-d Gateway<br/>Router
+    participant TrainSvc as Training Server<br/>8000/TCP HTTP
+    participant FS_Train as Training Server<br/>Filesystem (PVC)
+    participant PredSvc as Prediction Server<br/>8001/TCP HTTP
+    participant FS_Pred as Prediction Server<br/>Local Cache (emptyDir)
+
+    Note over Gateway,FS_Pred: Flow 1: Model Training and Sync
+
+    Gateway->>TrainSvc: POST /add_training_data_bulk<br/>Observed TTFT/TPOT traces<br/>+ system state features
+    TrainSvc->>TrainSvc: Accumulate samples in buckets<br/>(queue, cache, prefix)
+    Note over TrainSvc: Background training loop<br/>(every RETRAINING_INTERVAL_SEC=1800s)
+    TrainSvc->>TrainSvc: Train XGBoost/LightGBM/BayesianRidge<br/>QueueGated ensemble (noqueue + queued)
+    TrainSvc->>FS_Train: Serialize models via joblib<br/>ttft.joblib, tpot.joblib
+
+    loop Every MODEL_SYNC_INTERVAL_SEC (10s)
+        PredSvc->>TrainSvc: GET /model/{name}/info<br/>Check last_modified timestamp
+        alt Model updated
+            PredSvc->>TrainSvc: GET /model/{name}/download<br/>Download joblib binary
+            TrainSvc-->>PredSvc: Model file (joblib)
+            PredSvc->>FS_Pred: Atomic write via os.replace()<br/>MD5 change detection
+            PredSvc->>PredSvc: Reload model into memory<br/>Lock-free pointer swap
+        end
+    end
+
+    Note over Gateway,FS_Pred: Flow 2: Latency Prediction (Hot Path)
+
+    Router->>PredSvc: POST /predict/bulk/strict<br/>Batch of feature vectors<br/>(kv_cache_util, queue_depth, prefix_score, ...)
+    PredSvc->>PredSvc: Build DataFrame (dict-of-numpy-arrays)<br/>Route to QueueGatedModel sub-model<br/>(noqueue vs queued based on queue depth)
+    PredSvc->>PredSvc: XGBoost quantile inference (p90)<br/>TTFT + TPOT predictions
+    PredSvc-->>Router: ORJSONResponse<br/>Predicted TTFT/TPOT per request
+
+    Note over Router: Use predictions for<br/>latency-aware routing decisions

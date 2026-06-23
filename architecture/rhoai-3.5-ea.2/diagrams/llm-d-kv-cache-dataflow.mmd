@@ -1,0 +1,90 @@
+sequenceDiagram
+    autonumber
+
+    box rgb(240,248,255) Flow 1: KV Cache Event Indexing
+    participant vLLM as vLLM Engine Pod
+    participant ZMQ_PUB as ZMQ PUB Socket<br/>5557/TCP
+    participant ZMQ_SUB as KV Events Pipeline<br/>(ZMQ SUB)
+    participant EventPool as Event Processing Pool<br/>(Go channels)
+    participant Index as KV Block Index
+    end
+
+    Note over vLLM,Index: Flow 1 — KV Cache Event Indexing
+
+    vLLM->>ZMQ_PUB: Publish BlockStored/BlockRemoved/AllBlocksCleared
+    ZMQ_PUB->>ZMQ_SUB: ZMQ PUB/SUB 5557/TCP<br/>No encryption, No auth
+    ZMQ_SUB->>EventPool: Dispatch via Go channels
+    EventPool->>Index: Update block→pod mapping<br/>(In-Memory LRU / Ristretto / Redis 6379/TCP)
+
+    box rgb(255,248,240) Flow 2: Request Scoring
+    participant GW as Gateway<br/>(llm-d-inference-scheduler)
+    participant Scorer as KV Cache Indexer<br/>(Go API)
+    participant TokenizerPool as Tokenizer Pool
+    participant UDS as UDS Tokenizer<br/>gRPC over UDS
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant Idx2 as KV Block Index
+    end
+
+    Note over GW,Idx2: Flow 2 — Request Scoring (prefix-cache-aware routing)
+
+    GW->>Scorer: ScoreRequest (in-process Go call)
+    Scorer->>TokenizerPool: Tokenize prompt
+    TokenizerPool->>UDS: gRPC Tokenize()<br/>UDS: /tmp/tokenizer/tokenizer-uds.socket<br/>No encryption
+    opt First call — model download
+        UDS->>HF: GET tokenizer files<br/>HTTPS 443/TCP, TLS 1.2+<br/>Auth: HF_TOKEN (optional)
+        HF-->>UDS: Tokenizer model files
+    end
+    UDS-->>TokenizerPool: Token IDs
+    TokenizerPool-->>Scorer: Token IDs
+    Scorer->>Idx2: Longest prefix match<br/>(Redis 6379/TCP if distributed)
+    Idx2-->>Scorer: Pod scores (block match counts)
+    Scorer-->>GW: Scored pod list
+
+    box rgb(240,255,240) Flow 3: KV Cache Block Offloading
+    participant vLLM2 as vLLM Engine
+    participant FSPlugin as fs_backend Plugin
+    participant CUDA as C++ storage_offload<br/>CUDA Extension
+    participant Storage as Shared PVC (POSIX)<br/>or S3/MinIO (OBJ)
+    participant ZMQ_OUT as ZMQ PUB<br/>5559/TCP
+    end
+
+    Note over vLLM2,ZMQ_OUT: Flow 3 — KV Cache Block Offloading (GPU ↔ Storage)
+
+    vLLM2->>FSPlugin: store_kv_cache(block_hashes, blocks)
+    FSPlugin->>CUDA: Transfer GPU → CPU pinned memory<br/>cudaMemcpy / cudaMemcpyBatchAsync
+    alt POSIX Backend
+        CUDA->>Storage: Write block files<br/>Filesystem I/O (no encryption)
+    else OBJ Backend (NIXL)
+        CUDA->>Storage: Stage to CPU buffer → S3 PUT<br/>HTTP/HTTPS 9000/TCP<br/>Auth: AWS IAM credentials
+    end
+    opt Event publishing enabled
+        FSPlugin->>ZMQ_OUT: BlockStored event<br/>ZMQ PUB 5559/TCP (no encryption)
+    end
+
+    Note over vLLM2,ZMQ_OUT: Load path (Storage → GPU)
+    vLLM2->>FSPlugin: load_kv_cache(block_hashes)
+    FSPlugin->>CUDA: Transfer Storage → GPU<br/>Read from PVC/S3 → cudaMemcpy
+    CUDA-->>FSPlugin: Blocks loaded to GPU
+    FSPlugin-->>vLLM2: Cache restored
+
+    box rgb(255,240,240) Flow 4: PVC Cache Eviction
+    participant Act as Activator Process<br/>statvfs monitoring
+    participant PVC as Shared PVC Mount
+    participant Crawl as N Crawler Processes<br/>Parallel scandir
+    participant Del as Deleter Process<br/>xargs rm -f
+    participant ZMQ_EVT as ZMQ PUB<br/>5559/TCP
+    end
+
+    Note over Act,ZMQ_EVT: Flow 4 — PVC Cache Eviction (N+2 multiprocessing)
+
+    loop Continuous monitoring
+        Act->>PVC: statvfs() — check disk usage<br/>Filesystem (O(1))
+    end
+    Act->>Crawl: Disk > 85% threshold<br/>Trigger crawl via multiprocessing Queue
+    Crawl->>PVC: scandir() with hex-modulo sharding<br/>Filesystem POSIX
+    Crawl-->>Del: Eligible files (age > 60min by atime)
+    Del->>PVC: Batch delete via xargs rm -f<br/>Filesystem
+    opt Event publishing enabled
+        Del->>ZMQ_EVT: BlockRemoved events<br/>ZMQ PUB 5559/TCP (no encryption)
+    end
+    Note over Act: Stop when disk < 70% target

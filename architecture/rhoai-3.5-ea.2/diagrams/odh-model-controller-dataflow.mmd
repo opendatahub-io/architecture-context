@@ -1,0 +1,56 @@
+sequenceDiagram
+    participant User as User/Dashboard
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Webhook as odh-model-controller<br/>Webhook 9443/TCP
+    participant Controller as odh-model-controller<br/>Reconciler
+    participant OSRoute as OpenShift Router<br/>443/TCP HTTPS
+    participant ISvcPod as Inference Service Pod<br/>8080/TCP
+    participant MSAPI as model-serving-api<br/>8443/TCP HTTPS (FIPS)
+    participant EnvoyGW as Envoy Gateway<br/>443/TCP HTTPS
+    participant Authorino as Authorino<br/>TLS
+    participant NGC as NVIDIA NGC API<br/>443/TCP HTTPS
+    participant NVCR as NVIDIA Registry<br/>nvcr.io 443/TCP
+
+    Note over User, ISvcPod: Flow 1: InferenceService Deployment (KServe Raw Mode)
+    User->>K8sAPI: POST InferenceService CR<br/>Bearer token, TLS 1.2+
+    K8sAPI->>Webhook: Admission Review<br/>mTLS, 9443/TCP
+    Webhook-->>K8sAPI: Admit (validate namespace, name length)
+    K8sAPI-->>User: InferenceService created
+    Controller->>K8sAPI: Watch event received
+    Controller->>K8sAPI: Create Route, NetworkPolicy,<br/>ServiceMonitor, RBAC, KEDA<br/>SA token, TLS 1.2+
+    Note right of Controller: 6 sub-reconcilers execute:<br/>Route, RBAC, MetricsService,<br/>ServiceMonitor, Dashboard, KEDA
+
+    Note over User, ISvcPod: External Inference Request
+    User->>OSRoute: POST /v1/models/model:predict<br/>HTTPS TLS (edge/reencrypt)
+    OSRoute->>ISvcPod: Forward request<br/>HTTP/HTTPS depends on mode
+
+    Note over User, Authorino: Flow 2: LLM Inference with Gateway API Auth
+    User->>MSAPI: GET /api/v1/gateways<br/>Bearer token, TLS 1.2+ (FIPS ciphers)
+    MSAPI->>K8sAPI: SelfSubjectAccessReview<br/>User Bearer token
+    K8sAPI-->>MSAPI: Authorized (create llminferenceservices)
+    MSAPI->>K8sAPI: List Gateways<br/>SA token, filtered by AllowedRoutes
+    MSAPI-->>User: Gateway list response
+
+    User->>K8sAPI: POST LLMInferenceService CR
+    Controller->>K8sAPI: Create AuthPolicy targeting HTTPRoute<br/>SA token, TLS 1.2+
+    Controller->>K8sAPI: Create EnvoyFilter (Authorino TLS bootstrap)<br/>SA token, TLS 1.2+
+
+    User->>EnvoyGW: POST /v1/completions<br/>Bearer token, HTTPS TLS 1.2+
+    EnvoyGW->>Authorino: Validate token<br/>TLS (via EnvoyFilter)
+    Authorino-->>EnvoyGW: Token valid
+    EnvoyGW->>ISvcPod: Forward to LLM pod<br/>HTTP 8080 (pod network)
+
+    Note over Controller, NVCR: Flow 3: NIM Account Configuration
+    User->>K8sAPI: POST Account CR (nim.opendatahub.io/v1)
+    K8sAPI->>Webhook: Validate singleton constraint
+    Webhook-->>K8sAPI: Admit (one per namespace)
+    Controller->>NGC: Validate API key (nvapi-*)<br/>HTTPS 443, NGC API key
+    NGC-->>Controller: Key valid + model catalog
+    Controller->>NVCR: Validate image manifests<br/>HTTPS 443, registry token
+    NVCR-->>Controller: Manifest metadata
+    Controller->>K8sAPI: Create ConfigMaps, Secrets, Templates<br/>SA token, TLS 1.2+
+
+    Note over Controller, K8sAPI: Flow 4: Ray Multi-Node TLS Certificate Lifecycle
+    Controller->>K8sAPI: Create/Update CA Secret (ray-ca-tls)<br/>4096-bit RSA, 5yr validity
+    Controller->>K8sAPI: Create per-pod TLS Secret (ray-tls)<br/>4096-bit RSA, 3yr validity, pod IP SAN
+    Note right of Controller: Pod webhook injects init container<br/>that waits up to 4min for certs

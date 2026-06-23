@@ -1,0 +1,175 @@
+================================================================================
+  SECURITY NETWORK DIAGRAM: Notebooks (Workbench Container Images)
+  Component: notebooks
+  Platform: RHOAI 3.5-ea.2
+================================================================================
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [Data Scientist / User Browser]                                             │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.3                                                │
+│         │ Auth: OpenShift OAuth token                                        │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Platform Gateway)                                                  │
+│                                                                              │
+│  [Platform Gateway (Envoy)]                                                  │
+│  - Port: 443/TCP (external) → 8443/TCP (internal)                           │
+│  - TLS Termination: TLS 1.3                                                 │
+│  - Ingress Type: HTTPRoute (RHOAI 3.x) or OpenShift Route (legacy)         │
+│  - Created by: odh-notebook-controller                                      │
+│         │                                                                    │
+│         │ Port: 8443/TCP                                                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.3                                                │
+│         │ Auth: Bearer Token (OpenShift user token)                          │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  AUTH SIDECAR (Injected by odh-notebook-controller)                          │
+│                                                                              │
+│  [kube-rbac-proxy sidecar]                                                   │
+│  - Namespace: {user-namespace}                                               │
+│  - Injected by: odh-notebook-controller                                      │
+│  - Auth: SubjectAccessReview against namespace RBAC                          │
+│  - Port: 8443/TCP (ingress) → 8888/TCP or 8787/TCP (workbench)             │
+│         │                                                                    │
+│         │ Port: 8888/TCP (JupyterLab) or 8787/TCP (code-server)             │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (localhost / same-pod)                             │
+│         │ Auth: None (delegated to kube-rbac-proxy)                          │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  WORKBENCH POD (User namespace)                                              │
+│                                                                              │
+│  Option A: [JupyterLab Workbench]                                            │
+│  - Namespace: {user-namespace}                                               │
+│  - UID: 1001 (unprivileged)                                                  │
+│  - Port: 8888/TCP (HTTP, plaintext)                                          │
+│  - Endpoints: / (Web UI), /api (REST API)                                    │
+│  - Variants: minimal, datascience, pytorch, tensorflow, trustyai             │
+│  - Accelerators: CPU, CUDA 12.9/13.0, ROCm 7.1                             │
+│                                                                              │
+│  Option B: [code-server Workbench]                                           │
+│  - Namespace: {user-namespace}                                               │
+│  - UID: 1001 (unprivileged)                                                  │
+│  - Port: 8787/TCP (code-server, --auth none)                                │
+│  - Port: 8080/TCP (nginx reverse proxy)                                      │
+│  - Port: 80/TCP (httpd CGI, kernel access tracking)                          │
+│  - Auth: --auth none (platform kube-rbac-proxy handles auth)                │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: AWS IAM / access key (user-configured)                       │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Runtime Egress)                                          │
+│                                                                              │
+│  [S3 / Object Storage]                                                       │
+│  - Purpose: User data read/write                                             │
+│  - Port: 443/TCP                                                             │
+│  - Auth: AWS IAM / access key (user-configured)                              │
+│  - Encryption: TLS 1.2+                                                      │
+│                                                                              │
+│  [Kubeflow Pipelines API] (runtime images only)                              │
+│  - Purpose: Elyra bootstrapper submits pipeline runs                         │
+│  - Port: 443/TCP                                                             │
+│  - Auth: Bearer Token                                                        │
+│  - Encryption: TLS 1.2+                                                      │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+  BUILD-TIME NETWORK (Konflux Pipeline)
+================================================================================
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  KONFLUX BUILD ENVIRONMENT                                                   │
+│                                                                              │
+│  [Konflux Pipeline]                                                          │
+│         │                                                                    │
+│         ├──→ [Git Repository]                                                │
+│         │    Port: 443/TCP, HTTPS, TLS 1.3, SSH key auth                    │
+│         │                                                                    │
+│         ├──→ [Cachi2 Prefetch] ──→ [AIPCC PyPI Index]                       │
+│         │    (pre-fetch only)       Port: 443/TCP, HTTPS, TLS 1.2+          │
+│         │                           packages.redhat.com/api/pypi/public-rhai │
+│         │                                                                    │
+│         ├──→ [buildah build]                                                 │
+│         │    Hermetic: uv pip install --no-index                             │
+│         │              --find-links /cachi2/output/deps/pip                  │
+│         │    NO network access during build                                  │
+│         │                                                                    │
+│         ├──→ [check-payload] (FIPS validation)                               │
+│         │    Local scan, no network                                          │
+│         │                                                                    │
+│         └──→ [Container Registry (Quay)]                                     │
+│              Port: 443/TCP, HTTPS, TLS 1.3, Registry token                  │
+│              quay.io/opendatahub/workbench-images                            │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+  RBAC SUMMARY
+================================================================================
+
+This component does NOT define RBAC resources.
+- All container images run as unprivileged user UID 1001
+- RBAC is managed by the odh-notebook-controller which creates workbench pods
+- kube-rbac-proxy sidecar enforces SubjectAccessReview against namespace RBAC
+
+================================================================================
+  AUTHENTICATION & AUTHORIZATION
+================================================================================
+
+Endpoint                  Auth Mechanism              Enforcement Point
+─────────────────────────────────────────────────────────────────────────
+JupyterLab (8888/TCP)     Bearer Token (OCP user)     kube-rbac-proxy sidecar
+code-server (8787/TCP)    Bearer Token (OCP user)     kube-rbac-proxy sidecar
+
+- Authentication delegated entirely to platform (kube-rbac-proxy)
+- Workbenches serve plaintext HTTP — no application-level TLS
+- TLS termination at Platform Gateway (Envoy) layer
+
+================================================================================
+  SECRETS
+================================================================================
+
+No secrets defined by this component.
+- S3 credentials: User-configured at runtime
+- Registry pull secrets: Managed by OpenShift platform
+- TLS certificates: Managed by platform Gateway / cert-manager
+
+================================================================================
+  FIPS COMPLIANCE
+================================================================================
+
+Build-Time:
+- Go binaries (mongocli): GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- compat-openssl11 installed in all Konflux Dockerfiles
+- OpenSSL from UBI9 base image for system crypto
+
+Application-Level:
+- No application-level TLS (plaintext HTTP in pod)
+- Python cryptography/pyOpenSSL use system OpenSSL
+- System trust store (RHEL CA bundle) for certificates
+- No non-FIPS crypto detected (no MD5/RC4)
+
+================================================================================
+  BUILD HERMETICITY
+================================================================================
+
+Layer              Lock File              Tool              Status
+───────────────────────────────────────────────────────────────────
+OS (RPM)           rpms.lock.yaml         rpm-lockfile      LOCKED
+Python             uv.lock + pylock.toml  uv                LOCKED
+Go                 go.sum                 go mod            LOCKED
+Hermetic install   Cachi2 --no-index      Cachi2/Hermeto    ENFORCED
+
+All builds are fully hermetic — no network access during container image builds.

@@ -1,0 +1,56 @@
+sequenceDiagram
+    autonumber
+
+    participant User as User / Dashboard
+    participant Route as OpenShift Route<br/>HTTPS Reencrypt
+    participant KRBP as kube-rbac-proxy<br/>8443/TCP TLS
+    participant API as API Server<br/>8888/TCP HTTP/HTTPS<br/>8887/TCP gRPC
+    participant WfCtrl as Workflow Controller<br/>(Argo)
+    participant PipelinePod as Pipeline Pod
+    participant PA as Persistence Agent
+    participant MLMD as Metadata gRPC<br/>8080/TCP gRPC
+    participant Envoy as Metadata Envoy<br/>9090/TCP gRPC-Web
+    participant MariaDB as MariaDB<br/>3306/TCP MySQL
+    participant S3 as S3 Storage<br/>9000/TCP or 443/TCP
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+
+    rect rgb(230, 240, 255)
+        Note over User,S3: Flow 1: Pipeline Execution
+        User->>Route: POST pipeline run request
+        Route->>KRBP: HTTPS (reencrypt TLS)
+        KRBP->>KRBP: SubjectAccessReview<br/>(dspa resource check)
+        KRBP->>API: Proxy to 8888/TCP<br/>(authed request)
+        API->>MariaDB: Store pipeline metadata<br/>3306/TCP MySQL<br/>TLS (conditional)<br/>Username/Password
+        API->>S3: Store pipeline artifacts<br/>HTTP/HTTPS<br/>TLS 1.2+ (external)<br/>Access Key/Secret Key
+        API->>K8sAPI: Create Workflow CR<br/>443/TCP HTTPS TLS<br/>ServiceAccount token
+        K8sAPI-->>WfCtrl: Workflow CR event
+        WfCtrl->>K8sAPI: Create Pipeline Pod<br/>443/TCP HTTPS TLS<br/>ServiceAccount token
+        K8sAPI-->>PipelinePod: Pod scheduled
+        PipelinePod->>API: Report status<br/>8888/TCP HTTP/HTTPS<br/>TLS (conditional)<br/>Projected SA token (pipelines.kubeflow.org)
+        PipelinePod->>MLMD: Record artifacts/executions<br/>8080/TCP gRPC<br/>TLS (conditional)
+        PA->>API: Sync workflow status<br/>8888/TCP HTTP/HTTPS<br/>TLS (conditional)<br/>Projected SA token
+    end
+
+    rect rgb(255, 245, 230)
+        Note over User,MariaDB: Flow 2: MLMD Access
+        User->>Route: Access ML Metadata
+        Route->>KRBP: HTTPS (reencrypt TLS)
+        KRBP->>KRBP: SubjectAccessReview<br/>(dspa resource check)
+        KRBP->>Envoy: Proxy to 9090/TCP
+        Envoy->>MLMD: gRPC-Web → gRPC<br/>8080/TCP<br/>TLS (conditional)
+        MLMD->>MariaDB: Query lineage data<br/>3306/TCP MySQL<br/>TLS (conditional)<br/>Username/Password
+        MariaDB-->>MLMD: Lineage results
+        MLMD-->>Envoy: gRPC response
+        Envoy-->>KRBP: gRPC-Web response
+        KRBP-->>Route: HTTPS response
+        Route-->>User: ML Metadata results
+    end
+
+    rect rgb(230, 255, 230)
+        Note over User,S3: Flow 3: Managed Pipeline Injection
+        Note right of API: Operator inspects OCI manifest<br/>validates against registry allowlist
+        PipelinePod->>S3: Init container pulls<br/>pipeline image from OCI registry<br/>443/TCP HTTPS TLS<br/>Registry credentials
+        S3-->>PipelinePod: Pipeline definition artifacts
+        Note right of PipelinePod: Extracts to shared<br/>emptyDir volume
+        PipelinePod->>API: API server reads<br/>pipeline definitions from<br/>shared emptyDir mount
+    end

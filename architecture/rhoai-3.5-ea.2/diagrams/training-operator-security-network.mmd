@@ -1,0 +1,97 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User["User / Data Scientist"]
+    end
+
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE (Trusted)"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount tokens"]
+    end
+
+    subgraph OperatorNS["OPERATOR NAMESPACE (opendatahub)"]
+        direction TB
+
+        subgraph OperatorPod["kubeflow-training-operator"]
+            Webhook["Webhook Server<br/>9443/TCP HTTPS<br/>TLS (self-signed, cert-controller)<br/>Auth: API server TLS client cert"]
+            MetricsEP["Metrics Endpoint<br/>8080/TCP HTTP<br/>No auth"]
+            Probes["Health Probes<br/>8081/TCP HTTP<br/>/healthz, /readyz"]
+            Controller["Controller Manager<br/>6 framework controllers<br/>FIPS: strictfipsruntime"]
+        end
+
+        WebhookSecret["Secret: kubeflow-training-operator-webhook-cert<br/>kubernetes.io/tls<br/>cert-controller auto-rotated"]
+    end
+
+    subgraph JobNS["JOB NAMESPACE ({user-namespace})"]
+        direction TB
+
+        subgraph TrainingPods["Training Pods (created by operator)"]
+            MasterPod["Master Pod<br/>Framework-specific ports"]
+            WorkerPods["Worker Pods<br/>Framework-specific ports"]
+        end
+
+        HeadlessSvc["Headless Service<br/>ClusterIP: None<br/>DNS-based pod discovery"]
+
+        subgraph MPISpecific["MPI Job Resources (per-job)"]
+            LauncherPod["Launcher Pod<br/>SA: {job-name}-launcher<br/>kubectl-delivery init container"]
+            MPIWorkers["MPI Worker Pods"]
+            LauncherSA["ServiceAccount + Role + RoleBinding<br/>pods/exec create (scoped)"]
+            MPIConfigMap["ConfigMap<br/>kubexec.sh, hostfile"]
+        end
+    end
+
+    subgraph Monitoring["MONITORING (openshift-monitoring)"]
+        Prometheus["Prometheus<br/>PodMonitor-based scraping"]
+    end
+
+    subgraph GangScheduling["OPTIONAL: GANG SCHEDULING"]
+        Volcano["Volcano Scheduler<br/>PodGroup CRs<br/>scheduling.volcano.sh/v1beta1"]
+        SchedPlugins["Scheduler-Plugins<br/>PodGroup CRs<br/>scheduling.x-k8s.io/v1alpha1"]
+    end
+
+    %% External → Control Plane
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| K8sAPI
+
+    %% Control Plane → Webhook
+    K8sAPI -->|"HTTPS/9443<br/>TLS (self-signed)<br/>API server TLS client cert<br/>Admission callback"| Webhook
+
+    %% Operator → API Server
+    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>ServiceAccount token<br/>CRUD: Pods, Services, CRDs"| K8sAPI
+
+    %% Operator creates job resources
+    Controller -.->|"creates"| MasterPod
+    Controller -.->|"creates"| WorkerPods
+    Controller -.->|"creates"| HeadlessSvc
+    Controller -.->|"creates (MPI only)"| LauncherPod
+
+    %% Inter-pod communication
+    WorkerPods -->|"TCP (variable port)<br/>PyTorch: 23456<br/>TF: 2222<br/>No encryption"| MasterPod
+
+    %% MPI launcher flow
+    LauncherPod -->|"HTTPS/443<br/>TLS 1.2+<br/>Launcher SA token<br/>kubectl exec (pods/exec)"| K8sAPI
+    K8sAPI -.->|"exec into"| MPIWorkers
+
+    %% Monitoring
+    Prometheus -->|"HTTP/8080<br/>No encryption<br/>No auth<br/>PodMonitor + NetworkPolicy"| MetricsEP
+
+    %% Gang scheduling
+    Controller -.->|"creates PodGroup CRs"| Volcano
+    Controller -.->|"creates PodGroup CRs"| SchedPlugins
+
+    %% Webhook cert
+    WebhookSecret -.->|"mounts TLS cert"| Webhook
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef controlplane fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef operatorns fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    classDef jobns fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef monitoring fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
+    classDef gangscheduling fill:#fff8e1,stroke:#f57f17,stroke-width:2px
+    classDef secret fill:#fce4ec,stroke:#c62828,stroke-width:1px
+
+    class User external
+    class K8sAPI controlplane
+    class Webhook,MetricsEP,Probes,Controller operatorns
+    class MasterPod,WorkerPods,HeadlessSvc,LauncherPod,MPIWorkers,LauncherSA,MPIConfigMap jobns
+    class Prometheus monitoring
+    class Volcano,SchedPlugins gangscheduling
+    class WebhookSecret secret

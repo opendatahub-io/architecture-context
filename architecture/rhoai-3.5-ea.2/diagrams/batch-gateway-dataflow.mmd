@@ -1,0 +1,92 @@
+sequenceDiagram
+    autonumber
+
+    participant Client as External Client
+    participant GW as API Gateway<br/>(Kuadrant/Authorino)
+    participant API as API Server<br/>8000/TCP
+    participant PG as PostgreSQL<br/>5432/TCP
+    participant Redis as Redis/Valkey<br/>6379/TCP
+    participant S3 as S3 Storage<br/>443/TCP
+    participant Proc as Processor<br/>9090/TCP
+    participant LLM as llm-d Endpoint<br/>HTTP/HTTPS
+    participant GC as Garbage Collector<br/>9091/TCP
+
+    Note over Client,S3: Flow 1: Batch Job Submission
+
+    Client->>GW: POST /v1/files<br/>Auth: API Key / SA Token
+    GW->>GW: Validate credentials<br/>(Kuadrant/Authorino)
+    GW->>API: Forward authenticated request<br/>X-MaaS-Username: {tenant}
+    API->>S3: Upload input file<br/>HTTPS/443, AWS IAM credentials
+    S3-->>API: Upload confirmation
+    API->>PG: Store file metadata<br/>pgx/5432, TLS 1.2+
+    PG-->>API: file_id
+    API-->>GW: 200 OK {file_id}
+    GW-->>Client: File uploaded
+
+    Client->>GW: POST /v1/batches<br/>{input_file_id, model, endpoint}
+    GW->>API: Forward authenticated request
+    API->>PG: Create batch record<br/>pgx/5432, TLS 1.2+
+    PG-->>API: batch_id
+    API->>Redis: Enqueue job (sorted set)<br/>RESP/6379, score=SLO deadline
+    Redis-->>API: Enqueued
+    API-->>GW: 200 OK {batch_id, status: validating}
+    GW-->>Client: Batch created
+
+    Note over Proc,LLM: Flow 2: Batch Job Processing
+
+    loop Poll every 5s
+        Proc->>Redis: ZPOPMIN (dequeue highest priority)<br/>RESP/6379
+        Redis-->>Proc: Job payload
+    end
+
+    Proc->>PG: Fetch job metadata<br/>pgx/5432, TLS 1.2+
+    PG-->>Proc: Batch record + file refs
+    Proc->>S3: Download input file<br/>HTTPS/443, AWS IAM
+    S3-->>Proc: JSONL content
+
+    Proc->>Proc: Preprocess → Execution Plans<br/>(per-model request grouping)
+
+    Proc->>PG: Update status: in_progress<br/>CAS update
+    PG-->>Proc: Confirmed
+
+    loop For each request (AIMD concurrency)
+        Proc->>LLM: POST inference request<br/>Bearer token, optional TLS/mTLS
+        alt Success (2xx)
+            LLM-->>Proc: Inference result
+            Proc->>Proc: AIMD: additive increase
+        else Rate limited (429) or Error (5xx)
+            LLM-->>Proc: Error response
+            Proc->>Proc: AIMD: multiplicative decrease<br/>(backoff_factor: 0.5)
+            Proc->>Proc: Exponential backoff retry
+        end
+    end
+
+    Proc->>S3: Upload output file<br/>HTTPS/443, AWS IAM
+    S3-->>Proc: Upload confirmation
+    Proc->>PG: Store output file metadata
+    PG-->>Proc: output_file_id
+    Proc->>PG: Update status: completed<br/>CAS update
+    PG-->>Proc: Confirmed
+
+    Note over GC,S3: Flow 3: Garbage Collection
+
+    loop Every 30m (collector)
+        GC->>PG: Query expired batches & files<br/>pgx/5432, TLS 1.2+
+        PG-->>GC: Expired items list
+        GC->>S3: Delete expired file blobs<br/>HTTPS/443, AWS IAM
+        S3-->>GC: Deleted
+        GC->>PG: Delete expired metadata<br/>(max_concurrency: 10)
+        PG-->>GC: Cleaned
+    end
+
+    loop Every 60m (reconciler)
+        GC->>PG: Query non-terminal jobs
+        PG-->>GC: Candidate orphans
+        GC->>Redis: Check queue & in-flight<br/>RESP/6379
+        Redis-->>GC: Status data
+        alt Job orphaned, SLO still valid
+            GC->>Redis: Re-enqueue job
+        else Job orphaned, SLO expired
+            GC->>PG: CAS update → expired/failed
+        end
+    end

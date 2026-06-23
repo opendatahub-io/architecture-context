@@ -1,0 +1,88 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User["User / Browser"]
+    end
+
+    subgraph Ingress["INGRESS (Gateway API)"]
+        Gateway["data-science-gateway<br/>Namespace: openshift-ingress<br/>443/TCP → backend<br/>TLS 1.2+ (SIMPLE)<br/>Path: /notebook/{ns}/{name}"]
+    end
+
+    subgraph AuthLayer["AUTHENTICATION (per-notebook sidecar)"]
+        KRBP["kube-rbac-proxy<br/>Image: odh-kube-auth-proxy (digest-pinned)<br/>8443/TCP HTTPS<br/>TLS (self-signed)<br/>Auth: TokenReview + SAR"]
+    end
+
+    subgraph UserNS["USER NAMESPACE ({user-namespace})"]
+        direction TB
+
+        subgraph NotebookPod["Notebook Pod (StatefulSet)"]
+            Jupyter["Jupyter Notebook<br/>8888/TCP HTTP<br/>No encryption (pod-internal)"]
+        end
+
+        HTTPRoute["HTTPRoute<br/>nb-{ns}-{name}<br/>→ Gateway parent ref"]
+        RefGrant["ReferenceGrant<br/>notebook-httproute-access<br/>(cross-namespace)"]
+        NetPol1["NetworkPolicy<br/>Allow controller → 8888"]
+        NetPol2["NetworkPolicy<br/>Allow external → 8443"]
+        KRBPSvc["Service: {name}-kube-rbac-proxy<br/>8443/TCP HTTPS"]
+        JupyterSvc["Service: {name}<br/>80/TCP → 8888"]
+        DSPASecret["Secret: ds-pipeline-config<br/>Elyra runtime + S3 creds"]
+        KRBPCert["Secret: {name}-kube-rbac-proxy-tls<br/>TLS cert (pre-provisioned)"]
+    end
+
+    subgraph CtrlNS["CONTROLLER PLANE (opendatahub namespace)"]
+        direction TB
+        KFCtrl["odh-kf-notebook-controller<br/>SA: notebook-controller-manager<br/>8080/TCP metrics, 8081/TCP health"]
+        ODHCtrl["odh-notebook-controller<br/>SA: odh-notebook-controller-manager<br/>8080/TCP metrics, 8081/TCP health"]
+        WebhookSvc["Webhook Service<br/>443/TCP → 8443/TCP<br/>TLS (OpenShift serving cert)<br/>failurePolicy: Fail"]
+        WebhookCert["Secret: webhook-cert<br/>OpenShift service-serving-cert<br/>(auto-rotate)"]
+    end
+
+    subgraph PlatformSvc["PLATFORM SERVICES (cluster-internal)"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS, SA token auth"]
+        OSImageStreams["OpenShift ImageStreams<br/>443/TCP HTTPS<br/>TLS, SA token auth"]
+        OSConfig["OpenShift config API<br/>443/TCP HTTPS<br/>Proxy + TLS profile"]
+        DSPA["DSPA<br/>(CRD Read)<br/>Pipeline API + S3 config"]
+    end
+
+    %% External → Ingress
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>No auth (gateway)"| Gateway
+
+    %% Ingress → Auth
+    Gateway -->|"HTTPS/8443<br/>TLS (self-signed)<br/>Bearer Token forwarded"| KRBP
+
+    %% Auth validation
+    KRBP -->|"HTTPS/443<br/>TLS<br/>SA token<br/>(TokenReview + SAR)"| K8sAPI
+
+    %% Auth → Jupyter
+    KRBP -->|"HTTP/8888<br/>No encryption<br/>pod-internal"| Jupyter
+
+    %% Controller → Notebook (culling)
+    KFCtrl -->|"HTTP/8888<br/>No encryption<br/>NetworkPolicy allows<br/>Polls /api/kernels"| Jupyter
+
+    %% Controllers → K8s API
+    KFCtrl -->|"HTTPS/443<br/>TLS<br/>SA token<br/>CRUD: StatefulSets, Services"| K8sAPI
+    ODHCtrl -->|"HTTPS/443<br/>TLS<br/>SA token<br/>CRUD: HTTPRoutes, NetPol, RBAC"| K8sAPI
+
+    %% Webhook → K8s API
+    WebhookSvc -->|"HTTPS/443<br/>TLS<br/>SA token<br/>ImageStream lookup"| OSImageStreams
+    K8sAPI -->|"HTTPS/443→8443<br/>TLS serving cert<br/>API server client cert<br/>Admission requests"| WebhookSvc
+
+    %% ODH Controller → Platform Services
+    ODHCtrl -->|"CRD Read"| DSPA
+    ODHCtrl -->|"HTTPS/443<br/>TLS, SA token"| OSConfig
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef auth fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef userns fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controller fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef secret fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
+
+    class User external
+    class Gateway ingress
+    class KRBP auth
+    class Jupyter,HTTPRoute,RefGrant,NetPol1,NetPol2,KRBPSvc,JupyterSvc userns
+    class KFCtrl,ODHCtrl,WebhookSvc controller
+    class K8sAPI,OSImageStreams,OSConfig,DSPA platform
+    class DSPASecret,KRBPCert,WebhookCert secret

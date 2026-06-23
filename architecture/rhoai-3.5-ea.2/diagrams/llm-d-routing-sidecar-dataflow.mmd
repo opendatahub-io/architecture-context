@@ -1,0 +1,36 @@
+sequenceDiagram
+    participant Client as Client / EPP
+    participant Sidecar as Routing Sidecar<br/>8000/TCP HTTPS
+    participant Prefiller as Remote Prefiller vLLM<br/>variable/TCP
+    participant Decoder as Local Decoder vLLM<br/>8001/TCP
+
+    Note over Client,Decoder: Flow 1: Disaggregated Prefill/Decode (NIXL v2 Protocol)
+
+    Client->>Sidecar: POST /v1/chat/completions<br/>Header: x-prefiller-host-port<br/>TLS 1.2+
+    Note over Sidecar: SSRF Allowlist validates<br/>prefiller IP against<br/>InferencePool pod IPs
+
+    Sidecar->>Prefiller: Modified request with<br/>kv_transfer_params: {do_remote_decode: true}<br/>max_completion_tokens: 1<br/>HTTP/HTTPS
+    Prefiller-->>Sidecar: Response with KV-transfer metadata<br/>(remote_block_ids, remote_engine_id)
+
+    Note over Sidecar: Extract KV-transfer params<br/>Reconstruct original request<br/>with transfer metadata + UUID
+
+    Sidecar->>Decoder: Original request +<br/>kv_transfer_params from prefiller<br/>HTTP/HTTPS
+    Decoder-->>Sidecar: Completion response<br/>(uses transferred KV-cache)
+    Sidecar-->>Client: Final completion response<br/>TLS 1.2+
+
+    Note over Client,Decoder: Flow 2: Direct Decode (No Prefiller Header)
+
+    Client->>Sidecar: POST /v1/chat/completions<br/>No x-prefiller-host-port header<br/>TLS 1.2+
+    Sidecar->>Decoder: Passthrough request<br/>HTTP/HTTPS
+    Decoder-->>Sidecar: Completion response
+    Sidecar-->>Client: Response<br/>TLS 1.2+
+
+    Note over Client,Decoder: Flow 3: SSRF Allowlist Update (Background)
+
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+
+    Sidecar->>K8sAPI: Watch InferencePool CR<br/>TLS, ServiceAccount Token
+    K8sAPI-->>Sidecar: InferencePool spec<br/>(label selectors)
+    Sidecar->>K8sAPI: Watch Pods matching selectors<br/>TLS, ServiceAccount Token
+    K8sAPI-->>Sidecar: Pod add/update/delete events<br/>(30s resync)
+    Note over Sidecar: Rebuild in-memory<br/>allowlist of valid pod IPs

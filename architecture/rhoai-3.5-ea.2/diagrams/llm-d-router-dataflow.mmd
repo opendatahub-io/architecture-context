@@ -1,0 +1,53 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Envoy as Envoy Proxy<br/>443/TCP HTTPS TLS 1.3
+    participant EPP as Endpoint Picker (EPP)<br/>9002/TCP gRPC TLS
+    participant Tokenizer as Tokenizer Service<br/>UDS or HTTP
+    participant ModelMetrics as Model Server Metrics<br/>8000/TCP HTTP
+    participant ModelServer as Selected Model Server<br/>8000/TCP HTTP
+
+    rect rgb(230, 240, 255)
+        Note over Client,ModelServer: Flow 1: Inference Request Routing (EPP)
+        Client->>Envoy: POST /v1/chat/completions<br/>Auth: Varies (passthrough)
+        Envoy->>EPP: ext-proc Process (streaming)<br/>gRPC/9002 TLS
+        EPP->>ModelMetrics: Poll metrics (async)<br/>HTTP/8000 InsecureSkipVerify
+        ModelMetrics-->>EPP: queue_depth, running_requests,<br/>kv_cache_util, lora_info
+        EPP->>Tokenizer: Tokenize prompt<br/>HTTP or UDS
+        Tokenizer-->>EPP: Token IDs
+        Note over EPP: Filter → Score → Pick<br/>(ByLabel, PrefixCache,<br/>LoadAware, KVCacheUtil)
+        EPP-->>Envoy: HeaderMutation<br/>(set target endpoint)
+        Envoy->>ModelServer: Forward inference request<br/>HTTP/8000
+        ModelServer-->>Envoy: Inference response<br/>(streaming or unary)
+        Envoy-->>Client: Response
+    end
+
+    participant Sidecar as PD Sidecar<br/>8000/TCP HTTP(S)
+    participant Prefill as Remote Prefill Server<br/>dynamic/TCP HTTP(S)
+    participant Decode as Local Decode vLLM<br/>8001/TCP HTTP(S)
+
+    rect rgb(230, 255, 230)
+        Note over Envoy,Decode: Flow 2: Disaggregated P/D Inference (Sidecar)
+        Envoy->>Sidecar: POST /v1/chat/completions<br/>HTTP(S)/8000 TLS 1.2+ (optional)
+        Note over Sidecar: Inject kv_transfer_params,<br/>set max_tokens=1,<br/>add cache_hit_threshold
+        Sidecar->>Prefill: Forward (transformed)<br/>HTTP(S) TLS 1.2+ (optional)
+        Note over Prefill: Prefill tokens &<br/>prepare KV cache
+        Prefill-->>Sidecar: Prefill result +<br/>kv_transfer_params
+        Sidecar->>Decode: Forward to decode<br/>HTTP(S)/8001 TLS 1.2+ (optional)
+        Note over Decode: Decode with<br/>transferred KV cache
+        Decode-->>Sidecar: Generated tokens<br/>(streaming)
+        Sidecar-->>Envoy: Response stream
+    end
+
+    participant Encoder as Remote Encoder<br/>dynamic/TCP HTTP(S)
+
+    rect rgb(255, 245, 230)
+        Note over Envoy,Decode: Flow 3: Disaggregated E/P/D Inference (Sidecar)
+        Envoy->>Sidecar: POST /v1/chat/completions<br/>(with multimodal content)
+        Sidecar->>Encoder: Encode multimodal content<br/>HTTP(S) TLS 1.2+ (optional)
+        Encoder-->>Sidecar: Encoded representations
+        Sidecar->>Prefill: Forward (encoded + text)<br/>HTTP(S) TLS 1.2+ (optional)
+        Prefill-->>Sidecar: Prefill result +<br/>kv_transfer_params
+        Sidecar->>Decode: Forward to decode<br/>HTTP(S)/8001 TLS 1.2+ (optional)
+        Decode-->>Sidecar: Generated tokens<br/>(streaming)
+        Sidecar-->>Envoy: Response stream
+    end

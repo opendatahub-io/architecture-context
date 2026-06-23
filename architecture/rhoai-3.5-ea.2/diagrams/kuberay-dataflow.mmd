@@ -1,0 +1,93 @@
+sequenceDiagram
+    autonumber
+
+    participant User as User / Data Scientist
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant MutWH as Mutating Webhook<br/>9443/TCP HTTPS
+    participant ValWH as Validating Webhook<br/>9443/TCP HTTPS
+    participant AuthCtrl as Authentication Controller
+    participant MTLSCtrl as mTLS Controller
+    participant NPCtrl as NetworkPolicy Controller
+    participant RCCtrl as RayCluster Controller
+    participant Gateway as data-science-gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant KRBP as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
+    participant Dashboard as Ray Dashboard<br/>8265/TCP HTTP
+    participant HeadPod as Ray Head Pod
+    participant Workers as Ray Worker Pods
+    participant CertMgr as cert-manager
+
+    rect rgb(240, 248, 255)
+        Note over User,Workers: Flow 1: RayCluster Provisioning (RHOAI Auth)
+
+        User->>K8sAPI: POST RayCluster CR<br/>Auth: Bearer Token
+        K8sAPI->>MutWH: Admission Review<br/>TLS (cert-manager)
+        MutWH-->>K8sAPI: Set odh.ray.io/secure-trusted-network=true<br/>Disable enableIngress
+        K8sAPI->>ValWH: Validation Review<br/>TLS (cert-manager)
+        ValWH-->>K8sAPI: Validated (name format + unique groups)
+
+        par Security Controllers (parallel)
+            K8sAPI->>AuthCtrl: RayCluster event
+            AuthCtrl->>K8sAPI: Create HTTPRoute + ReferenceGrant<br/>in platform namespace
+            AuthCtrl->>K8sAPI: Create ServiceAccount + ConfigMap
+            AuthCtrl->>K8sAPI: Inject kube-rbac-proxy sidecar
+
+            K8sAPI->>MTLSCtrl: RayCluster event
+            MTLSCtrl->>CertMgr: Create Issuer (SelfSigned→CA chain)
+            MTLSCtrl->>CertMgr: Create Certificate (head + worker)
+            CertMgr-->>MTLSCtrl: TLS secrets provisioned<br/>(90-day, renew at 75 days)
+
+            K8sAPI->>NPCtrl: RayCluster event
+            NPCtrl->>K8sAPI: Create NetworkPolicy (head)<br/>Allow: intra-cluster, ingress NS, monitoring NS
+            NPCtrl->>K8sAPI: Create NetworkPolicy (workers)<br/>Allow: intra-cluster only
+        end
+
+        K8sAPI->>RCCtrl: RayCluster event (reconcile)
+        RCCtrl->>K8sAPI: Create Head Pod + Services
+        RCCtrl->>K8sAPI: Create Worker Pods
+        RCCtrl-->>K8sAPI: Set status: AuthenticationReady
+    end
+
+    rect rgb(255, 248, 240)
+        Note over User,Dashboard: Flow 1 (cont): Authenticated Dashboard Access
+
+        User->>Gateway: GET /ray/{ns}/{cluster}/*<br/>HTTPS 443/TCP<br/>Auth: OIDC Bearer Token
+        Gateway->>KRBP: Forward request<br/>HTTPS 8443/TCP TLS
+        KRBP->>K8sAPI: TokenReview + SubjectAccessReview<br/>HTTPS 6443/TCP
+        K8sAPI-->>KRBP: Auth result
+        KRBP->>Dashboard: Forward (authenticated)<br/>HTTP 8265/TCP (localhost)
+        Dashboard-->>KRBP: Response
+        KRBP-->>Gateway: Response
+        Gateway-->>User: JSON/HTML Response
+    end
+
+    rect rgb(240, 255, 240)
+        Note over User,Dashboard: Flow 2: RayJob Submission (K8sJobMode)
+
+        User->>K8sAPI: POST RayJob CR<br/>Auth: Bearer Token
+        K8sAPI->>RCCtrl: RayJob controller creates RayCluster
+        RCCtrl-->>K8sAPI: RayCluster Ready
+        K8sAPI->>K8sAPI: Create batch/Job (submitter pod)
+        K8sAPI->>Dashboard: Submitter: POST job<br/>HTTP 8265/TCP (or mTLS)
+        Dashboard-->>K8sAPI: Job ID
+        loop Status polling (until complete)
+            K8sAPI->>Dashboard: GET /api/jobs/{id}<br/>HTTP 8265/TCP
+            Dashboard-->>K8sAPI: Job status
+        end
+    end
+
+    rect rgb(255, 240, 255)
+        Note over User,Workers: Flow 3: RayService Zero-Downtime Upgrade
+
+        User->>K8sAPI: PUT RayService CR (updated spec)<br/>Auth: Bearer Token
+        K8sAPI->>RCCtrl: Create pending RayCluster
+        RCCtrl-->>K8sAPI: Pending cluster Ready
+        K8sAPI->>Dashboard: PUT /api/serve/applications<br/>Deploy serve config<br/>HTTP 8265/TCP
+        Dashboard-->>K8sAPI: Deployment accepted
+        loop Health checks
+            K8sAPI->>HeadPod: GET proxy health<br/>HTTP 8000/TCP
+            HeadPod-->>K8sAPI: Health status
+        end
+        K8sAPI->>K8sAPI: Switch Service selectors<br/>(active → pending)
+        Note over K8sAPI: 60s grace period
+        K8sAPI->>K8sAPI: Delete old RayCluster
+    end

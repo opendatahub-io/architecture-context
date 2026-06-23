@@ -1,0 +1,51 @@
+sequenceDiagram
+    participant User as User<br/>(Dashboard / CLI)
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant MutWH as Mutating Webhook<br/>8443/TCP HTTPS
+    participant ImgStream as OpenShift ImageStreams<br/>443/TCP HTTPS
+    participant KFCtrl as KF Notebook Controller<br/>(watch)
+    participant ODHCtrl as ODH Notebook Controller<br/>(watch)
+    participant GW as data-science-gateway<br/>443/TCP HTTPS
+    participant KRBP as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant Jupyter as Jupyter Notebook<br/>8888/TCP HTTP
+    participant Culler as Culling Controller
+
+    Note over User,Jupyter: Flow 1: Notebook Creation and External Access
+
+    User->>K8sAPI: POST Notebook CR<br/>Bearer Token (OpenShift auth)
+    K8sAPI->>MutWH: Admission request<br/>TLS (serving cert), API server client cert
+    MutWH->>K8sAPI: ImageStream tag lookup<br/>TLS, ServiceAccount token
+    K8sAPI-->>MutWH: Resolved image reference
+    Note right of MutWH: Injects: kube-rbac-proxy sidecar,<br/>CA bundle, proxy env vars,<br/>DSPA secrets, Feast config,<br/>MLflow tracking URI
+    MutWH-->>K8sAPI: Mutated Notebook CR
+
+    K8sAPI->>KFCtrl: Notebook watch event
+    KFCtrl->>K8sAPI: Create StatefulSet + Service<br/>TLS, ServiceAccount token
+    K8sAPI-->>KFCtrl: Created
+
+    K8sAPI->>ODHCtrl: Notebook watch event
+    ODHCtrl->>K8sAPI: Create HTTPRoute + ReferenceGrant<br/>+ NetworkPolicies + kube-rbac-proxy resources<br/>TLS, ServiceAccount token
+    K8sAPI-->>ODHCtrl: Created
+
+    Note over User,Jupyter: User accesses notebook via browser
+
+    User->>GW: GET /notebook/{ns}/{name}<br/>HTTPS TLS 1.2+
+    GW->>KRBP: Forward request<br/>HTTPS 8443/TCP
+    KRBP->>K8sAPI: TokenReview + SubjectAccessReview<br/>HTTPS, ServiceAccount token
+    K8sAPI-->>KRBP: Auth result
+    KRBP->>Jupyter: Proxy request<br/>HTTP 8888/TCP (pod-internal)
+    Jupyter-->>KRBP: Response
+    KRBP-->>GW: Response
+    GW-->>User: Notebook UI
+
+    Note over Culler,Jupyter: Flow 2: Idle Notebook Culling
+
+    loop Every IDLENESS_CHECK_PERIOD (default: 1 min)
+        Culler->>Jupyter: GET /api/kernels + /api/terminals<br/>HTTP 8888/TCP, No auth (cluster-internal)
+        Jupyter-->>Culler: Kernel/terminal activity data
+    end
+
+    Note right of Culler: If idle > CULL_IDLE_TIME (default: 1440 min)
+
+    Culler->>K8sAPI: Patch Notebook annotation<br/>kubeflow-resource-stopped<br/>HTTPS, ServiceAccount token
+    KFCtrl->>K8sAPI: Scale StatefulSet replicas → 0<br/>HTTPS, ServiceAccount token

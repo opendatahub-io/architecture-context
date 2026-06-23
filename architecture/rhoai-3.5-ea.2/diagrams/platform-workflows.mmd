@@ -1,0 +1,73 @@
+%% RHOAI 3.5-ea.2 — Cross-Component Workflows
+%% Generated from PLATFORM.md by Claude Opus 4.6 on 2026-06-22
+%%
+%% Primary Workflow: LLM Model Serving via LLMInferenceService
+%% This is the most architecturally significant flow in RHOAI 3.5,
+%% showing the new Gateway API + llm-d scheduling path.
+%%
+%% Additional workflows (Pipeline Execution, MaaS Routing) are
+%% documented in separate files:
+%%   - platform-workflow-pipeline.mmd
+%%   - platform-workflow-maas.mmd
+
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as odh-dashboard<br/>Web Console
+    participant KServe as KServe Controller<br/>llmisvc controller
+    participant EPP as llm-d EPP<br/>Inference Scheduler
+    participant Router as llm-d Router<br/>ext_proc Proxy
+    participant vLLM as vLLM Pod<br/>Model Server
+    participant ModelCtrl as odh-model-controller<br/>Networking Bridge
+    participant Gateway as Platform Gateway<br/>Envoy + AuthPolicy
+    participant Authorino as Kuadrant Authorino<br/>Auth Enforcement
+    participant ModelReg as Model Registry<br/>Model Catalog
+    participant S3 as S3 Storage
+    participant Client as External Client
+
+    Note over User,Client: Workflow 1 — LLM Model Serving via LLMInferenceService
+
+    %% Step 1: User creates LLMInferenceService
+    User->>Dashboard: Login via OAuth2/OIDC<br/>kube-auth-proxy session
+    Dashboard-->>User: Show model catalog from Model Registry
+    User->>Dashboard: Deploy model as LLMInferenceService
+    Dashboard->>KServe: Create LLMInferenceService CR<br/>(model, runtime, scaling params)
+
+    %% Step 2: KServe reconciles
+    KServe->>KServe: Reconcile LLMInferenceService<br/>Create Deployment + Service
+    KServe->>EPP: Create InferencePool CR<br/>Configure EPP scheduling integration
+    KServe->>S3: Resolve model artifact location<br/>(HTTPS, AWS IAM)
+    KServe->>vLLM: Create model server pod<br/>Mount model from S3
+
+    Note over vLLM: Pod starts: pull image from quay.io<br/>Download model weights from S3<br/>Initialize vLLM engine
+
+    %% Step 3: EPP registers and monitors
+    EPP->>EPP: Register InferencePool<br/>Watch endpoint metrics
+    EPP->>vLLM: Collect metrics via polling<br/>(KV cache utilization, queue depth,<br/>prefix cache state)
+    EPP->>EPP: Score backends via plugin pipeline<br/>(20+ plugins: KV cache, prefix, affinity)
+
+    %% Step 4: odh-model-controller creates networking
+    ModelCtrl->>Gateway: Create Gateway API HTTPRoute<br/>for model endpoint
+    ModelCtrl->>Authorino: Create Kuadrant AuthPolicy<br/>(API Key + TokenReview)
+    ModelCtrl->>ModelReg: Sync InferenceService state<br/>Mark model as serving
+
+    Note over Gateway,Authorino: Ingress ready — model accessible externally
+
+    %% Step 5: External inference request
+    Client->>Gateway: POST /v1/models/my-llm:predict<br/>(HTTPS TLS 1.3, Bearer token)
+    Gateway->>Authorino: Validate auth<br/>(API Key via HTTP callback<br/>or OpenShift TokenReview)
+    Authorino-->>Gateway: Auth OK
+    Gateway->>Router: Forward to InferencePool<br/>(ext_proc protocol)
+    Router->>EPP: Request scheduling decision<br/>(model name, request metadata)
+    EPP->>EPP: Select optimal backend pod<br/>(KV cache-aware, prefix scoring)
+    EPP-->>Router: Target pod IP + port
+    Router->>vLLM: Forward inference request<br/>(reverse proxy to selected pod)
+    vLLM->>vLLM: Run LLM inference<br/>(streaming or batch)
+    vLLM-->>Router: Prediction result
+    Router-->>Gateway: Response
+    Gateway-->>Client: JSON response<br/>(HTTPS TLS 1.3)
+
+    %% Step 6: Monitoring
+    User->>Dashboard: View model metrics
+    Dashboard->>ModelReg: Get model metadata and status
+    Dashboard->>KServe: Query InferenceService status<br/>(via Kubernetes API)
+    Dashboard-->>User: Show model status,<br/>replicas, latency metrics

@@ -1,0 +1,41 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Platform Gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant KRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
+    participant VLLM as vLLM Server (vllm-gaudi)<br/>8000/TCP HTTP
+    participant HPU as Intel Gaudi HPU<br/>Synapse AI 1.23.0
+    participant Storage as Model Storage<br/>(PVC / S3)
+
+    Note over Client,Storage: Flow 1: Model Inference Request
+
+    Client->>Gateway: POST /v1/chat/completions<br/>Auth: Bearer Token<br/>HTTPS/443 TLS 1.2+
+    Gateway->>KRBAC: Forward request<br/>HTTPS/8443 TLS 1.2+
+    KRBAC->>KRBAC: SubjectAccessReview<br/>(validate Bearer Token)
+    KRBAC->>VLLM: Proxy request<br/>HTTP/8000 (localhost, plaintext)
+    VLLM->>VLLM: Tokenize input<br/>(HF Transformers)
+    VLLM->>HPU: Schedule inference<br/>(Synapse AI device API)
+    Note over HPU: Graph compilation<br/>or cache hit<br/>(bucketing system)
+    HPU-->>VLLM: Generated tokens
+    VLLM-->>KRBAC: JSON Response
+    KRBAC-->>Gateway: HTTPS Response
+    Gateway-->>Client: JSON Response<br/>HTTPS/443 TLS 1.2+
+
+    Note over Client,Storage: Flow 1a: Model Loading (first request / cold start)
+
+    VLLM->>Storage: Load model weights<br/>HTTP/HTTPS TLS 1.2+<br/>Auth: AWS IAM / ServiceAccount
+    Storage-->>VLLM: Model artifacts<br/>(weights, tokenizer, config)
+    VLLM->>HPU: Transfer weights to HPU memory
+    VLLM->>HPU: Warmup: compile graphs<br/>for bucket sizes
+
+    participant Ray as Ray Head (rank 0)
+    participant Worker as Ray Workers (rank 1-N)
+    participant HCCL as HCCL<br/>(libfabric/verbs)
+
+    Note over Ray,HCCL: Flow 2: Distributed Multi-Card Inference (Tensor Parallelism)
+
+    Ray->>Worker: Distribute inference task<br/>Ray internal / gRPC<br/>(intra-pod, no encryption)
+    Worker->>HPU: Execute partial forward pass<br/>(Synapse AI device API)
+    HPU->>HCCL: all-reduce / all-gather<br/>Ephemeral ports<br/>HCCL protocol (no encryption)
+    HCCL-->>HPU: Synchronized tensors
+    HPU-->>Worker: Partial results
+    Worker-->>Ray: Aggregated output

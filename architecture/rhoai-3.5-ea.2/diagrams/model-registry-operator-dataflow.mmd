@@ -1,0 +1,57 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Data Science Gateway<br/>(Envoy) 443/TCP HTTPS
+    participant KRP as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant K8sAuth as Kubernetes API<br/>(SubjectAccessReview)<br/>443/TCP HTTPS
+    participant Registry as model-registry REST<br/>8080/TCP HTTP (loopback)
+    participant PG as PostgreSQL<br/>5432/TCP
+
+    rect rgb(230, 245, 255)
+        Note over Client,PG: Flow 1: Model Registry REST API Request (Gateway API Path)
+        Client->>Gateway: POST /model-registry/{name}/...<br/>HTTPS TLS 1.2+
+        Gateway->>KRP: Forward request<br/>HTTPS (serving cert)<br/>X-Forwarded headers
+        KRP->>K8sAuth: SubjectAccessReview<br/>HTTPS TLS 1.2+<br/>ServiceAccount token
+        K8sAuth-->>KRP: Authorized (user has get on services/{name})
+        KRP->>Registry: Forward (localhost)<br/>HTTP (loopback, pre-authorized)
+        Registry->>PG: SQL query<br/>PostgreSQL protocol<br/>Optional TLS (client certs)<br/>Password auth
+        PG-->>Registry: Query result
+        Registry-->>KRP: JSON response
+        KRP-->>Gateway: HTTPS response
+        Gateway-->>Client: JSON response
+    end
+
+    participant Router as OpenShift Router<br/>443/TCP HTTPS
+
+    rect rgb(255, 243, 224)
+        Note over Client,PG: Flow 2: Model Registry REST API Request (OpenShift Route Path)
+        Client->>Router: POST /{name}-rest.{domain}/...<br/>HTTPS TLS 1.2+
+        Router->>KRP: Re-encrypt<br/>HTTPS TLS (re-encrypt)<br/>X-Forwarded headers
+        KRP->>K8sAuth: SubjectAccessReview<br/>HTTPS TLS 1.2+<br/>ServiceAccount token
+        K8sAuth-->>KRP: Authorized
+        KRP->>Registry: Forward (localhost)<br/>HTTP (loopback, pre-authorized)
+        Registry->>PG: SQL query<br/>Password auth
+        PG-->>Registry: Query result
+        Registry-->>KRP: JSON response
+        KRP-->>Router: HTTPS response
+        Router-->>Client: JSON response
+    end
+
+    participant MigMgr as StorageMigrationManager
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+
+    rect rgb(240, 230, 255)
+        Note over MigMgr,K8sAPI: Flow 3: CRD Storage Version Migration
+        MigMgr->>K8sAPI: Check CRD storedVersions<br/>HTTPS TLS 1.2+<br/>ServiceAccount token
+        K8sAPI-->>MigMgr: CRD status (has v1alpha1)
+        alt SVM Strategy
+            MigMgr->>K8sAPI: Create StorageVersionMigration CR
+            K8sAPI-->>MigMgr: Migration progress/completion
+        else Manual Strategy
+            MigMgr->>K8sAPI: List all ModelRegistry CRs
+            K8sAPI-->>MigMgr: CR list
+            loop For each CR
+                MigMgr->>K8sAPI: Re-read and re-write CR<br/>(triggers storage version update)
+            end
+        end
+        MigMgr->>K8sAPI: Patch CRD storedVersions<br/>(remove v1alpha1)
+    end

@@ -1,0 +1,74 @@
+sequenceDiagram
+    autonumber
+
+    box rgb(245, 245, 245) External Clients
+        participant Client as Client<br/>(Dashboard / CLI / SDK)
+        participant IDE as IDE<br/>(Cursor / VS Code / Claude Code)
+    end
+
+    box rgb(232, 218, 239) Auth Layer
+        participant KRBP as kube-rbac-proxy<br/>443/TCP HTTPS
+    end
+
+    box rgb(214, 234, 248) Eval Hub Core
+        participant API as eval-hub API<br/>8080/TCP HTTP
+        participant MCP as evalhub-mcp<br/>3001/TCP or stdio
+    end
+
+    box rgb(208, 236, 209) Data Stores
+        participant PG as PostgreSQL<br/>5432/TCP
+    end
+
+    box rgb(255, 249, 196) External Services
+        participant K8s as Kubernetes API<br/>443/TCP HTTPS
+        participant MLflow as MLflow<br/>HTTPS
+        participant S3 as S3 Storage<br/>443/TCP HTTPS
+    end
+
+    box rgb(255, 230, 204) Evaluation Job Pod
+        participant Init as eval-runtime-init
+        participant Runtime as Evaluation Runtime<br/>(LM Eval Harness / Lighteval)
+        participant Sidecar as eval-runtime-sidecar<br/>8080/TCP
+    end
+
+    Note over Client, S3: Flow 1: Evaluation Job Execution
+
+    Client->>KRBP: POST /api/v1/evaluations/jobs<br/>Auth: Bearer Token (HTTPS/443)
+    KRBP->>API: Forward request<br/>X-Tenant + X-User headers injected (HTTP/8080)
+    API->>PG: Store job record<br/>DB credentials (TCP/5432, TLS optional)
+    API->>K8s: Create Job + ConfigMap<br/>ServiceAccount token (HTTPS/443)
+
+    Note over K8s, Init: K8s starts Job pod with init container
+
+    K8s-->>Init: Pod scheduled
+    Init->>S3: Download test data<br/>AWS IAM credentials (HTTPS/443, TLS 1.2+)
+    S3-->>Init: Test data artifacts
+
+    Note over Init, Runtime: Init container completes, runtime starts
+
+    Runtime->>Sidecar: Evaluation API calls<br/>localhost:8080 (HTTP, pod-local)
+    Sidecar->>API: POST /api/v1/evaluations/jobs/{id}/events<br/>K8s SA bearer token (HTTPS, TLS 1.2+)
+    API->>PG: Update job status + benchmark results
+    API-->>Sidecar: 200 OK
+    Sidecar-->>Runtime: Proxied response
+
+    Runtime->>Sidecar: Log metrics to MLflow<br/>localhost:8080/api/2.0/mlflow/* (HTTP, pod-local)
+    Sidecar->>MLflow: Forward MLflow request<br/>MLflow bearer token (HTTPS, TLS 1.2+)
+    MLflow-->>Sidecar: 200 OK
+    Sidecar-->>Runtime: Proxied response
+
+    Note over IDE, API: Flow 2: MCP-Assisted Evaluation (IDE Integration)
+
+    IDE->>MCP: submit_evaluation tool call<br/>stdio or HTTP/3001 (TLS optional)
+    MCP->>API: POST /api/v1/evaluations/jobs<br/>Bearer token EVALHUB_TOKEN (HTTP/HTTPS)
+    API->>K8s: Create Job + ConfigMap<br/>ServiceAccount token (HTTPS/443)
+    K8s-->>API: Job created
+    API-->>MCP: Job ID + status
+    MCP-->>IDE: Job submitted confirmation
+
+    IDE->>MCP: get_job_status tool call
+    MCP->>API: GET /api/v1/evaluations/jobs/{id}<br/>Bearer token (HTTP/HTTPS)
+    API->>PG: Query job status
+    PG-->>API: Job record with benchmark status
+    API-->>MCP: Job details (state, progress %, per-benchmark)
+    MCP-->>IDE: Formatted job status

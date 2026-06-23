@@ -1,0 +1,115 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["User / Dashboard<br/>External Client"]
+    end
+
+    subgraph Ingress["INGRESS (OpenShift Routes - Conditional)"]
+        APIRoute["ds-pipeline Route<br/>443/TCP → 8443/TCP<br/>TLS Reencrypt<br/>Condition: EnableRoute"]
+        MLMDRoute["ds-pipeline-md Route<br/>443/TCP → 8443/TCP<br/>TLS Reencrypt<br/>Condition: DeployRoute"]
+        MinIORoute["minio Route<br/>443/TCP → 9000/TCP<br/>TLS Edge<br/>Condition: EnableExternalRoute"]
+    end
+
+    subgraph AuthProxy["AUTH PROXY (kube-rbac-proxy sidecars)"]
+        KRBP_API["kube-rbac-proxy<br/>(API Server sidecar)<br/>8443/TCP HTTPS<br/>SubjectAccessReview<br/>dspa.opendatahub.io/api"]
+        KRBP_MLMD["kube-rbac-proxy<br/>(MLMD Envoy sidecar)<br/>8443/TCP HTTPS<br/>SubjectAccessReview<br/>dspa.opendatahub.io"]
+    end
+
+    subgraph InternalServices["INTERNAL SERVICES (NetworkPolicy Enforced)"]
+        direction TB
+
+        subgraph NS_DSPA["Namespace: {dspa-namespace}"]
+            APIServer["API Server<br/>SA: ds-pipeline-{name}<br/>REST: 8888/TCP<br/>gRPC: 8887/TCP<br/>TLS conditional"]
+            WfCtrl["Workflow Controller<br/>SA: ds-pipeline-wf-ctrl-{name}<br/>Metrics: 9090/TCP"]
+            PA["Persistence Agent<br/>SA: ds-pipeline-pa-{name}<br/>Projected SA token"]
+            SW["Scheduled Workflow<br/>SA: ds-pipeline-sw-{name}"]
+            MetadataGRPC["metadata-grpc<br/>8080/TCP gRPC<br/>TLS conditional<br/>Cert: metadata-grpc-tls-certs"]
+            MetadataEnvoy["metadata-envoy<br/>9090/TCP gRPC-Web"]
+            PipelinePod["Pipeline Pods<br/>Projected SA token<br/>Audience: pipelines.kubeflow.org"]
+        end
+
+        subgraph NS_Storage["Storage (Optional Managed)"]
+            MariaDB["MariaDB<br/>3306/TCP MySQL<br/>TLS conditional<br/>Cert: mariadb-tls<br/>Auth: Secret credentials<br/>NP: operator+API+MLMD only"]
+            MinIO["MinIO<br/>9000/TCP HTTP<br/>Auth: Access Key/Secret Key"]
+        end
+    end
+
+    subgraph Operator["OPERATOR (Control Plane)"]
+        DSPO["DSPO Controller<br/>NS: redhat-ods-applications<br/>SA: controller-manager<br/>Metrics: 8080/TCP<br/>Health: 8081/TCP"]
+        Webhook["Webhook Server<br/>8443/TCP HTTPS<br/>Cert: webhook-tls<br/>Auth: Webhook CA"]
+    end
+
+    subgraph PlatformServices["PLATFORM SERVICES"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS TLS<br/>SA token auth"]
+        OSAPI["OpenShift API<br/>443/TCP HTTPS TLS<br/>SA token auth"]
+        ServiceCA["OpenShift Service CA<br/>Auto-provisions TLS certs"]
+        Prometheus["Prometheus<br/>Scrapes: 8080, 8888, 9090<br/>HTTP, no TLS"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
+        ExtDB["External MySQL/MariaDB<br/>3306/TCP<br/>TLS 1.2+ conditional<br/>Username/Password"]
+        ExtS3["External S3 Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Access Key/Secret Key"]
+        OCIReg["OCI Container Registry<br/>443/TCP HTTPS TLS<br/>Registry credentials<br/>Allowlist enforced"]
+    end
+
+    %% External → Ingress
+    Client -->|HTTPS/443<br/>TLS| APIRoute
+    Client -->|HTTPS/443<br/>TLS| MLMDRoute
+    Client -->|HTTPS/443<br/>TLS| MinIORoute
+
+    %% Ingress → Auth Proxy
+    APIRoute -->|HTTPS/8443<br/>Reencrypt| KRBP_API
+    MLMDRoute -->|HTTPS/8443<br/>Reencrypt| KRBP_MLMD
+    MinIORoute -->|HTTP/9000<br/>Edge TLS term| MinIO
+
+    %% Auth Proxy → Backend
+    KRBP_API -->|HTTP/8888<br/>localhost| APIServer
+    KRBP_MLMD -->|HTTP/9090<br/>localhost| MetadataEnvoy
+
+    %% Internal flows
+    MetadataEnvoy -->|gRPC/8080<br/>TLS conditional| MetadataGRPC
+    APIServer -->|MySQL/3306<br/>TLS conditional| MariaDB
+    APIServer -->|HTTP/9000| MinIO
+    MetadataGRPC -->|MySQL/3306<br/>TLS conditional| MariaDB
+    PA -->|HTTP/8888<br/>TLS cond.<br/>SA token| APIServer
+    PipelinePod -->|HTTP/8888<br/>TLS cond.<br/>SA token| APIServer
+    PipelinePod -->|gRPC/8080<br/>TLS cond.| MetadataGRPC
+    WfCtrl -->|HTTPS/443<br/>SA token| K8sAPI
+
+    %% Operator flows
+    DSPO -->|HTTPS/443<br/>SA token| K8sAPI
+    DSPO -->|HTTPS/443<br/>SA token| OSAPI
+    DSPO -->|HTTPS/443<br/>TLS| OCIReg
+
+    %% External egress
+    APIServer -->|MySQL/3306<br/>TLS 1.2+| ExtDB
+    APIServer -->|HTTPS/443<br/>TLS 1.2+| ExtS3
+    MetadataGRPC -->|MySQL/3306<br/>TLS 1.2+| ExtDB
+
+    %% Platform
+    ServiceCA -.->|provisions certs| KRBP_API
+    ServiceCA -.->|provisions certs| KRBP_MLMD
+    ServiceCA -.->|provisions certs| MariaDB
+    ServiceCA -.->|provisions certs| MetadataGRPC
+    ServiceCA -.->|provisions certs| Webhook
+    Prometheus -.->|scrapes| DSPO
+    Prometheus -.->|scrapes| APIServer
+    Prometheus -.->|scrapes| WfCtrl
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef authproxy fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef storage fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef extsvc fill:#f9f9f9,stroke:#666,stroke-width:2px,stroke-dasharray: 5 5
+
+    class Client external
+    class APIRoute,MLMDRoute,MinIORoute ingress
+    class KRBP_API,KRBP_MLMD authproxy
+    class APIServer,WfCtrl,PA,SW,MetadataGRPC,MetadataEnvoy,PipelinePod internal
+    class MariaDB,MinIO storage
+    class DSPO,Webhook operator
+    class K8sAPI,OSAPI,ServiceCA,Prometheus platform
+    class ExtDB,ExtS3,OCIReg extsvc

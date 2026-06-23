@@ -1,0 +1,84 @@
+sequenceDiagram
+    autonumber
+
+    participant User as Data Scientist
+    participant UI as React Frontend
+    participant BFF as UI BFF<br/>8080/TCP
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant MR as Model Registry<br/>REST Proxy<br/>8080/TCP
+    participant DB as MySQL/PostgreSQL<br/>3306/5432/TCP
+    participant Controller as MR Controller<br/>8081/TCP
+    participant CSI as Storage Initializer<br/>(Init Container)
+    participant KServe as KServe<br/>InferenceService
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant Catalog as Model Catalog<br/>8080/TCP
+    participant CatalogDB as PostgreSQL<br/>(Catalog)<br/>5432/TCP
+    participant HF as Hugging Face<br/>443/TCP HTTPS
+    participant AsyncJob as Async Upload Job
+    participant OCI as OCI Registry<br/>443/TCP HTTPS
+    participant Sigstore as Sigstore<br/>443/TCP HTTPS
+
+    Note over User, DB: Flow 1: Model Registration via REST API
+
+    User->>UI: Browse/register models
+    UI->>BFF: GET/POST /api/v1/model_registry/:id/*<br/>Bearer Token / kubeflow-userid
+    BFF->>K8sAPI: SubjectAccessReview<br/>ServiceAccount + User token
+    K8sAPI-->>BFF: Access granted
+    BFF->>MR: GET/POST /api/model_registry/v1alpha3/*<br/>Token forwarding, ISTIO_MUTUAL
+    MR->>DB: SQL query (GORM)<br/>Username/password, Optional TLS 1.2+
+    DB-->>MR: Query result
+    MR-->>BFF: JSON response
+    BFF-->>UI: JSON response
+    UI-->>User: Display results
+
+    Note over Controller, DB: Flow 2: KServe InferenceService Sync
+
+    KServe->>K8sAPI: Create/Update InferenceService CR
+    Controller->>K8sAPI: Watch InferenceService CRs<br/>ServiceAccount token, TLS 1.2+
+    K8sAPI-->>Controller: InferenceService event
+    Controller->>K8sAPI: List Services (label: component=model-registry)<br/>ServiceAccount token
+    K8sAPI-->>Controller: Service endpoints
+    Controller->>MR: Create/Update InferenceService resource<br/>Bearer token (K8s SA)
+    MR->>DB: Upsert record
+    DB-->>MR: Confirm
+    MR-->>Controller: Success
+
+    Note over CSI, S3: Flow 3: Model Serving via CSI Storage Initializer
+
+    KServe->>CSI: Init container starts<br/>model-registry:// URI
+    CSI->>MR: Resolve model URI<br/>GET /api/model_registry/v1alpha3/model_artifacts/*
+    MR->>DB: Lookup artifact metadata
+    DB-->>MR: Artifact location (S3/GCS/PVC)
+    MR-->>CSI: Artifact metadata + storage URI
+    CSI->>S3: Download model artifacts<br/>Per-provider credentials
+    S3-->>CSI: Model files
+    CSI-->>KServe: Model ready in local path
+
+    Note over AsyncJob, Sigstore: Flow 4: Async Model Upload Job
+
+    User->>BFF: POST /api/v1/model_registry/:id/model_transfer_jobs<br/>Upload intent + metadata
+    BFF->>K8sAPI: Create K8s Job<br/>SAR check
+    K8sAPI-->>BFF: Job created
+    AsyncJob->>S3: Download from source<br/>AWS credentials, TLS 1.2+
+    AsyncJob->>OCI: Push to destination registry<br/>Docker config credentials, TLS 1.2+
+    AsyncJob->>Sigstore: Sign model (Fulcio/Rekor)<br/>Identity token, TLS 1.2+
+    Sigstore-->>AsyncJob: Signature verified
+    AsyncJob->>MR: Register model/version/artifact<br/>In-cluster, TLS 1.2+
+    MR->>DB: Insert records
+    DB-->>MR: Confirm
+    MR-->>AsyncJob: Registration complete
+
+    Note over Catalog, HF: Flow 5: Model Catalog Discovery
+
+    User->>UI: Browse model catalog
+    UI->>BFF: GET /api/v1/model_catalog/models
+    BFF->>Catalog: GET /api/model_catalog/v1alpha1/models<br/>Token forwarding
+    Catalog->>CatalogDB: Query models (GORM)<br/>Username/password
+    CatalogDB-->>Catalog: Model list
+    Catalog-->>BFF: Catalog results
+    BFF-->>UI: JSON response
+
+    Note right of Catalog: Background: Catalog syncs from sources
+    Catalog->>HF: Fetch model metadata<br/>API key (optional), TLS 1.2+
+    HF-->>Catalog: Model metadata
+    Catalog->>CatalogDB: Upsert catalog entries

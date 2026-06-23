@@ -1,0 +1,56 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as maas-default-gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant PreProc as payload-pre-processing<br/>9004/TCP gRPC Istio mTLS
+    participant Authorino as Authorino<br/>443/TCP HTTPS TLS
+    participant MaaSAPI as maas-api<br/>8443/TCP HTTPS TLS 1.2+
+    participant PostProc as payload-processing<br/>9004/TCP gRPC Istio mTLS
+    participant Backend as KServe Model Backend<br/>or External Provider<br/>443/TCP HTTPS
+    participant PostgreSQL as PostgreSQL<br/>5432/TCP
+
+    Note over Client,PostgreSQL: Flow 1: Model Inference Request
+
+    Client->>Gateway: POST /v1/models/model:predict<br/>Auth: Bearer Token or API Key (sk-oai-*)
+    Gateway->>PreProc: ext_proc gRPC (Istio mTLS)<br/>Extract model → X-Gateway-Model-Name header
+    PreProc-->>Gateway: Modified headers
+    Gateway->>Authorino: AuthN evaluation (HTTPS/TLS)<br/>Dual-auth: API key (priority=0) / OpenShift token (priority=1)
+
+    alt API Key Authentication
+        Authorino->>MaaSAPI: POST /internal/v1/api-keys/validate<br/>NetworkPolicy auth, HTTPS/TLS 1.2+
+        MaaSAPI->>PostgreSQL: Lookup key hash (SHA-256)<br/>5432/TCP
+        PostgreSQL-->>MaaSAPI: Key record + metadata
+        MaaSAPI-->>Authorino: Validation result + user identity
+    else OpenShift Token Authentication
+        Authorino->>Authorino: Kubernetes TokenReview
+    end
+
+    Authorino->>MaaSAPI: POST /internal/v1/subscriptions/select<br/>NetworkPolicy auth, HTTPS/TLS 1.2+
+    MaaSAPI-->>Authorino: Selected subscription + rate limits
+    Authorino-->>Gateway: Auth success + X-MaaS-* headers<br/>(Username, Group, Subscription)
+
+    Gateway->>PostProc: ext_proc gRPC (Istio mTLS)<br/>API format translation + credential injection
+    PostProc-->>Gateway: Transformed request + provider credentials
+    Gateway->>Backend: Forward request (HTTPS/443)<br/>Injected credentials (API key from Secret)
+    Backend-->>Gateway: Inference response
+    Gateway-->>Client: JSON Response
+
+    Note over Client,PostgreSQL: Flow 2: API Key Creation
+
+    Client->>Gateway: POST /v1/api-keys<br/>Auth: Bearer Token (OpenShift)
+    Gateway->>Authorino: Token validation (HTTPS/TLS)
+    Authorino-->>Gateway: Auth success + X-MaaS-Username/Group
+    Gateway->>MaaSAPI: Forward (HTTPS/8443)<br/>X-MaaS-Username, X-MaaS-Group headers
+    MaaSAPI->>MaaSAPI: Generate sk-oai-* key<br/>SHA-256 hash with embedded salt
+    MaaSAPI->>PostgreSQL: INSERT api_keys<br/>5432/TCP, Connection URL auth
+    PostgreSQL-->>MaaSAPI: Stored
+    MaaSAPI-->>Gateway: API key (plaintext, shown once)
+    Gateway-->>Client: 201 Created + API key
+
+    Note over Client,PostgreSQL: Flow 3: API Key Cleanup (CronJob)
+
+    participant CronJob as CronJob<br/>(*/15 * * * *)
+
+    CronJob->>MaaSAPI: POST /internal/v1/api-keys/cleanup<br/>NetworkPolicy auth, HTTPS/8443
+    MaaSAPI->>PostgreSQL: DELETE expired ephemeral keys<br/>5432/TCP
+    PostgreSQL-->>MaaSAPI: Deleted count
+    MaaSAPI-->>CronJob: 200 OK

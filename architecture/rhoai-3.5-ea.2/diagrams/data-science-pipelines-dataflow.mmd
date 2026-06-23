@@ -1,0 +1,55 @@
+sequenceDiagram
+    autonumber
+
+    participant User as User / Frontend<br/>3000/TCP HTTP
+    participant API as ml-pipeline API Server<br/>8888/TCP REST · 8887/TCP gRPC
+    participant DB as MySQL/PostgreSQL<br/>3306/5432 TCP
+    participant K8s as Kubernetes API<br/>443/TCP HTTPS
+    participant Argo as Argo Workflows<br/>Controller
+    participant Driver as ml-pipeline-driver<br/>(Argo task pod)
+    participant MLMD as ML Metadata<br/>8080/TCP gRPC
+    participant Cache as Cache Service<br/>(via API Server gRPC)
+    participant Launcher as ml-pipeline-launcher<br/>(Argo task pod)
+    participant S3 as MinIO/S3<br/>9000/TCP HTTP
+    participant PA as Persistence Agent<br/>(background)
+
+    Note over User,PA: Flow 1: Pipeline Run Execution
+
+    User->>API: POST /apis/v2beta1/runs<br/>Auth: Bearer Token
+    API->>DB: Store run metadata<br/>Username/Password
+    API->>K8s: Submit Argo Workflow CR<br/>ServiceAccount
+    K8s-->>Argo: Workflow created
+
+    Note over Argo,Launcher: Per-step execution (v2 engine)
+
+    Argo->>Driver: Create driver task pod<br/>ServiceAccount
+    Driver->>MLMD: Resolve inputs from context<br/>gRPC (no auth)
+    Driver->>Cache: Check execution fingerprint<br/>gRPC · Bearer Token
+
+    alt Cache Hit
+        Driver->>MLMD: Fetch cached outputs<br/>gRPC
+        Driver->>MLMD: Publish CACHED execution<br/>gRPC
+        Note over Driver: Skip launcher — return cached result
+    else Cache Miss
+        Driver-->>Argo: Pod spec patch (launcher config)
+        Argo->>Launcher: Create launcher task pod<br/>ServiceAccount
+        Launcher->>S3: Download input artifacts<br/>Access Key + Secret Key
+        Note over Launcher: Execute user container code
+        Launcher->>S3: Upload output artifacts + logs<br/>Access Key + Secret Key
+        Launcher->>MLMD: Record execution results<br/>gRPC
+        Launcher->>Cache: Create cache entry<br/>gRPC · Bearer Token
+    end
+
+    Note over PA,API: Async state synchronization
+
+    PA->>K8s: Watch Workflow resources<br/>Informer · ServiceAccount
+    K8s-->>PA: Workflow status events
+    PA->>API: Report execution state<br/>gRPC 8887 · Bearer Token (projected SA)
+
+    Note over User,PA: Flow 2: Scheduled Pipeline Execution
+
+    User->>API: POST /apis/v2beta1/recurringruns<br/>Auth: Bearer Token
+    API->>K8s: Create ScheduledWorkflow CR<br/>ServiceAccount
+    Note over K8s: SWF Controller watches CRD
+    K8s->>API: Create run on schedule<br/>gRPC 8887 · Bearer Token (projected SA)
+    API->>K8s: Submit Argo Workflow<br/>ServiceAccount

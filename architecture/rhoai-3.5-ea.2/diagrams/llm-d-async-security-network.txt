@@ -1,0 +1,132 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [Producer Client / External Application]                                    │
+│         │                                                                    │
+│         │ Port: 6379/TCP                                                     │
+│         │ Protocol: Redis (via Producer SDK)                                 │
+│         │ Encryption: Optional TLS (rediss:// URL scheme)                    │
+│         │ Auth: Password embedded in URL                                     │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  MESSAGE QUEUE LAYER                                                         │
+│                                                                              │
+│  [Redis]                                                                     │
+│  - Port: 6379/TCP                                                            │
+│  - Protocol: Redis wire protocol                                             │
+│  - Encryption: Optional TLS (via rediss:// URL scheme)                       │
+│  - Auth: Password in connection URL                                          │
+│  - Operations: SUBSCRIBE, PUBLISH, ZADD, ZPOPMIN, ZRANGEBYSCORE,            │
+│                ZREM, LPUSH, BRPOP (sorted sets, lists, pub/sub)              │
+│  - Data: Request queue (sorted set, score=deadline), result queue (list),    │
+│          retry queue (sorted set, score=future timestamp),                   │
+│          dispatch budget keys, quota tracking keys                           │
+│         ▲                                                                    │
+│         │                                                                    │
+│  [GCP Pub/Sub] (alternative backend)                                         │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS / gRPC                                                    │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: OAuth2 Application Default Credentials (GCP IAM)                    │
+│  - Operations: Receive (subscription), Publish (topic)                       │
+│         ▲                                                                    │
+│         │                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CLUSTER                                                          │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────┐              │
+│  │  Pod: async-processor                                      │              │
+│  │  - Namespace: {configured}                                 │              │
+│  │  - ServiceAccount: async-processor                         │              │
+│  │  - Image: ghcr.io/llm-d/async-processor:0.6.0             │              │
+│  │  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1     │              │
+│  │  - Base: UBI 9 minimal (OpenSSL included)                  │              │
+│  │                                                             │              │
+│  │  Ports:                                                     │              │
+│  │  - 9090/TCP (metrics, HTTP, optional K8s RBAC auth)        │              │
+│  │                                                             │              │
+│  │  TLS Configuration:                                         │              │
+│  │  - MinVersion: TLS 1.2                                      │              │
+│  │  - Custom CA: --tls-ca-cert flag (optional)                │              │
+│  │  - Client certs: --tls-cert / --tls-key (optional mTLS)   │              │
+│  │  - InsecureSkipVerify: false (default, flag override)      │              │
+│  └────────────────────────────────────────────────────────────┘              │
+│         │                    │                    │                           │
+│         │                    │                    │                           │
+│    ┌────┘              ┌─────┘               ┌───┘                           │
+│    │                   │                     │                                │
+│    │ Port: 80/TCP      │ Port: 9090/TCP      │ Port: 443/TCP                 │
+│    │   or 443/TCP      │ Protocol: HTTP      │ Protocol: HTTPS               │
+│    │ Protocol:         │ Encryption:         │ Auth: SubjectAccessReview     │
+│    │   HTTP/HTTPS      │   Configurable      │ Purpose: Metrics auth         │
+│    │ Encryption:       │ Auth: None or       │   delegation                  │
+│    │   Configurable    │   OAuth2 (GMP)      │                               │
+│    │   TLS 1.2+        │ Purpose: PromQL     │                               │
+│    │   Optional mTLS   │   queries for       │                               │
+│    │ Auth: Header      │   flow control      │                               │
+│    │   x-gateway-      │   gates             │                               │
+│    │   inference-      │                     │                               │
+│    │   objective       │                     │                               │
+│    ▼                   ▼                     ▼                                │
+│                                                                              │
+│  [Inference Gateway (IGW)]   [Prometheus]    [Kubernetes API Server]         │
+│  - Port: 80/TCP or 443/TCP  - Port: 9090/TCP  - Port: 443/TCP               │
+│  - Protocol: HTTP/HTTPS     - Protocol: HTTP   - Protocol: HTTPS             │
+│  - Encryption: Configurable - Encryption:       - Encryption: TLS 1.2+       │
+│    TLS 1.2+ / optional mTLS   Configurable     - Auth: ServiceAccount token  │
+│  - Auth: Header-based       - Auth: None                                     │
+│  - Purpose: Forward                                                          │
+│    inference requests        [Google Managed Prometheus] (alternative)        │
+│                              - Port: 443/TCP                                 │
+│  [vLLM Model Servers]        - Protocol: HTTPS                               │
+│  - Indirect: PodMonitor      - Encryption: TLS 1.2+                          │
+│    scrapes vLLM metrics       - Auth: OAuth2                                 │
+│    and relabels for                                                          │
+│    prometheus-budget gates                                                   │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+  - No ClusterRoles or Roles defined in Helm chart
+  - ServiceAccount: async-processor (created, not bound to any roles)
+  - Metrics auth: Optional, delegates to K8s API SubjectAccessReview
+    (--metrics-endpoint-auth flag, default: true)
+  - No RBAC policies for Redis, GCP, or IGW access
+
+Secrets:
+  - redis-creds (Opaque)
+    - Content: Redis connection URL (redis:// or rediss://)
+    - Provisioned by: Manual or chart-generated (when ap.redis.url is set)
+    - Auto-rotate: No
+    - Risk: Password embedded in URL
+
+  - TLS secret (kubernetes.io/tls, configurable via ap.tls.secretName)
+    - Content: CA cert, client cert, client key for mTLS to IGW
+    - Provisioned by: Manual or cert-manager
+    - Auto-rotate: Depends on provisioner
+
+FIPS Compliance:
+  - Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+  - Linking: Dynamic (uses system OpenSSL from UBI 9 minimal)
+  - TLS: crypto/tls with MinVersion TLS 1.2
+  - Non-FIPS risks:
+    - math/rand used for jitter (non-security, annotated #nosec G404)
+    - InsecureSkipVerify flag exists but defaults to false
+
+Build Hermeticity:
+  - Go deps: Hermetic (go.sum present)
+  - OS packages (RPM): NOT hermetic (no rpms.lock.yaml)
+  - Artifacts: NOT hermetic (no artifacts.lock.yaml, no Hermeto prefetch)
+  - Gap: OS package and artifact layers lack hermeticity on this branch
+
+Network Summary:
+  - Ingress: NONE (pure consumer/producer, no inbound traffic)
+  - Egress:
+    1. Redis (6379/TCP) - Optional TLS, Password auth
+    2. Inference Gateway (80/443 TCP) - Configurable TLS 1.2+, optional mTLS
+    3. GCP Pub/Sub (443/TCP) - TLS 1.2+, OAuth2
+    4. Prometheus (9090/TCP) - Configurable, PromQL queries
+    5. Google Managed Prometheus (443/TCP) - TLS 1.2+, OAuth2
+    6. Kubernetes API Server (443/TCP) - TLS 1.2+, SubjectAccessReview
+  - No Kubernetes Service created (metrics port is pod-local only)
+  - No Istio/Service Mesh integration (standalone service)

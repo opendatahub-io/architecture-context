@@ -1,0 +1,128 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                             │
+│  [Client / EPP (llm-d-inference-scheduler)]                                 │
+│         │                                                                   │
+│         │ Port: 8000/TCP (sidecar) or 443/TCP (via OpenShift Route)         │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: None (relies on upstream/network-level auth)                │
+│         │ Header: x-prefiller-host-port (set by EPP)                        │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift Route - if deployed)                                    │
+│                                                                             │
+│  [OpenShift Route: ${PROJECT_NAME}-route]                                   │
+│  - Port: 443/TCP (external) → 8080/TCP (service)                           │
+│  - TLS Termination: Edge                                                    │
+│  - Encryption: TLS                                                          │
+│         │                                                                   │
+│         │ Port: 8080/TCP                                                    │
+│         │ Protocol: HTTP                                                    │
+│         │ Encryption: None (internal after edge termination)                │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  SERVICE LAYER                                                              │
+│                                                                             │
+│  [Service: ${PROJECT_NAME}-service]                                         │
+│  - Type: ClusterIP                                                          │
+│  - Port: 8080/TCP → 8080/TCP                                               │
+│  - Protocol: HTTP                                                           │
+│  - Encryption: None (Service layer)                                         │
+│         │                                                                   │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  SIDECAR POD (Decoder Pod Namespace)                                        │
+│                                                                             │
+│  [llm-d-routing-sidecar]                                                    │
+│  - Container: Go HTTP Reverse Proxy                                         │
+│  - Namespace: ${NAMESPACE} (default: hc4ai-operator)                        │
+│  - Port: 8000/TCP (proxy listener)                                          │
+│  - Protocol: HTTP or HTTPS (configurable --secure-proxy)                    │
+│  - Encryption: TLS 1.2+ (when secure-proxy enabled)                        │
+│  - Cipher Suites: ECDHE-RSA/ECDSA with AES-GCM-SHA256/384,               │
+│                   ChaCha20-Poly1305 (all FIPS-approved)                    │
+│  - Certificate: Self-signed RSA 4096 (10yr) or from --cert-path            │
+│  - SSRF Protection: AllowlistValidator (InferencePool-based)                │
+│         │                           │                                       │
+│         │ (prefill path)            │ (decode/passthrough path)             │
+│         ▼                           ▼                                       │
+│  ┌──────────────────┐    ┌──────────────────────┐                          │
+│  │ Remote Prefiller  │    │ Local Decoder vLLM    │                          │
+│  │ (NIXL v2 proto)   │    │ localhost:8001/TCP    │                          │
+│  └──────────────────┘    │ HTTP or HTTPS          │                          │
+│         │                 │ Optional TLS 1.2+      │                          │
+│         │                 │ Auth: None              │                          │
+│         │                 └──────────────────────┘                          │
+│         │                                                                   │
+│         │ Port: variable/TCP (from x-prefiller-host-port header)           │
+│         │ Protocol: HTTP or HTTPS                                           │
+│         │ Encryption: Optional TLS 1.2+                                     │
+│         │ Auth: SSRF allowlist validated (pod IP must match                 │
+│         │       InferencePool selector)                                     │
+│         │ InsecureSkipVerify: configurable (disabled by default)            │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  REMOTE PODS (Same or Different Namespace)                                  │
+│                                                                             │
+│  [Remote Prefiller vLLM Pods]                                               │
+│  - Must match InferencePool label selector                                  │
+│  - Port: variable (specified in x-prefiller-host-port header)              │
+│  - Protocol: HTTP or HTTPS                                                  │
+│  - NIXL v2: Receives kv_transfer_params {do_remote_decode: true}           │
+│  - Returns: KV-transfer metadata (remote_block_ids, remote_engine_id)      │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                   │
+│                                                                             │
+│  [Kubernetes API Server]                                                    │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS                                                          │
+│  - Auth: ServiceAccount Bearer Token                                        │
+│  - Purpose: Watch InferencePool CRs and Pod resources                       │
+│  - Resync: 30 seconds                                                       │
+│                                                                             │
+│  AllowlistValidator ──watches──▶ InferencePool CR                           │
+│     (inference.networking.x-k8s.io/v1alpha2)                                │
+│  AllowlistValidator ──watches──▶ Pods (matching pool label selectors)       │
+│     Rebuilds allowlist on every pod add/update/delete event                 │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+┌────────────────────────────────────────────────────────────────────────────┐
+│  Role: ${PROJECT_NAME}-exec-role                                           │
+│  - API Groups: ""                                                          │
+│  - Resources: pods/exec                                                    │
+│  - Verbs: create                                                           │
+│  - Binding: ${PROJECT_NAME}-exec-rolebinding                               │
+│  - Subjects: Group: system:authenticated                                   │
+├────────────────────────────────────────────────────────────────────────────┤
+│  Role: ssrf-allowlist-role                                                 │
+│  - API Groups: ""                                                          │
+│    Resources: pods                                                         │
+│    Verbs: get, watch, list                                                 │
+│  - API Groups: inference.networking.x-k8s.io                               │
+│    Resources: inferencepools                                               │
+│    Verbs: get, watch, list                                                 │
+│  - Binding: ssrf-allowlist-rolebinding                                     │
+│  - Subjects: ServiceAccount: placeholder (in ${NAMESPACE})                │
+└────────────────────────────────────────────────────────────────────────────┘
+
+Secrets:
+┌────────────────────────────────────────────────────────────────────────────┐
+│  TLS cert/key at --cert-path (kubernetes.io/tls)                           │
+│  - Purpose: TLS termination for secure proxy                               │
+│  - Provisioned By: Manual / cert-manager / self-signed (auto-generated)   │
+│  - Auto-Rotate: No (self-signed: 10-year validity, RSA 4096-bit)          │
+│  - Files: tls.crt, tls.key                                                │
+└────────────────────────────────────────────────────────────────────────────┘
+
+Security Notes:
+- InsecureSkipVerify available for prefiller and decoder TLS (disabled by default)
+- SSRF protection validates prefiller target IPs against InferencePool pod list
+- Allowlist normalizes host:port to extract host only (any port on allowed host OK)
+- Upstream Dockerfile uses CGO_ENABLED=0 (NOT FIPS compliant for check-payload)
+- RHOAI downstream must use CGO_ENABLED=1 + GOEXPERIMENT=strictfipsruntime
+- All cipher suites are FIPS-approved (ECDHE with AES-GCM, ChaCha20-Poly1305)

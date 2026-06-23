@@ -1,0 +1,60 @@
+sequenceDiagram
+    participant Client as External Client
+    participant EvalAPI as Llama Stack Server<br/>Eval API<br/>8321/TCP HTTP
+    participant DatasetIO as DatasetIO API<br/>(in-process)
+    participant Ragas as Ragas evaluate()<br/>(in-process)
+    participant Inference as Inference API<br/>(in-process)
+    participant Ollama as Ollama<br/>11434/TCP HTTP
+    participant KFP as Kubeflow Pipelines<br/>443/TCP HTTPS
+    participant KFPStep1 as KFP Step 1<br/>retrieve_data
+    participant KFPStep2 as KFP Step 2<br/>run_ragas_evaluation
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+
+    rect rgb(230, 245, 230)
+        Note over Client,Ollama: Flow 1: Inline Evaluation (synchronous, in-process)
+        Client->>EvalAPI: POST /v1alpha/eval/benchmarks/{id}/jobs<br/>HTTP 8321/TCP
+        EvalAPI->>DatasetIO: Get evaluation dataset<br/>(in-process call)
+        DatasetIO-->>EvalAPI: Dataset rows
+        EvalAPI->>Ragas: ragas.evaluate()<br/>(asyncio.to_thread)
+        Ragas->>Inference: LLM completion<br/>(LlamaStackInlineLLM via LangChain)
+        Inference->>Ollama: POST /v1/completions<br/>HTTP 11434/TCP
+        Ollama-->>Inference: LLM response
+        Inference-->>Ragas: Completion result
+        Ragas->>Inference: Embedding request<br/>(LlamaStackInlineEmbeddings)
+        Inference->>Ollama: POST /v1/embeddings<br/>HTTP 11434/TCP
+        Ollama-->>Inference: Embedding vectors
+        Inference-->>Ragas: Embeddings result
+        Ragas-->>EvalAPI: EvaluateResponse<br/>(metrics: answer_relevancy,<br/>context_precision, faithfulness,<br/>context_recall)
+        EvalAPI-->>Client: EvaluateResponse<br/>HTTP 200
+    end
+
+    rect rgb(230, 235, 250)
+        Note over Client,S3: Flow 2: Remote Evaluation (asynchronous, Kubeflow Pipelines)
+        Client->>EvalAPI: POST /v1alpha/eval/benchmarks/{id}/jobs<br/>HTTP 8321/TCP
+        EvalAPI->>K8sAPI: Read ConfigMap<br/>trustyai-service-operator-config<br/>HTTPS 443/TCP (SA token)
+        K8sAPI-->>EvalAPI: Base image reference
+        EvalAPI->>KFP: Healthz pre-flight check<br/>GET /apis/v1beta1/healthz<br/>HTTPS 443/TCP
+        KFP-->>EvalAPI: OK
+        EvalAPI->>KFP: Submit pipeline<br/>create_run_from_pipeline_func<br/>HTTPS 443/TCP (Bearer Token)
+        KFP-->>EvalAPI: Run ID
+        EvalAPI-->>Client: Job ID (async)<br/>HTTP 202
+
+        Note over KFP,S3: KFP Pipeline Execution
+        KFP->>KFPStep1: Execute retrieve_data
+        KFPStep1->>EvalAPI: GET datasets<br/>HTTP 8321/TCP (llama_stack_client)
+        EvalAPI-->>KFPStep1: Dataset rows
+        KFPStep1->>KFPStep2: Pass dataset artifact
+        KFPStep2->>EvalAPI: LLM + embeddings requests<br/>HTTP 8321/TCP (LlamaStackRemoteLLM)
+        EvalAPI-->>KFPStep2: Inference results
+        KFPStep2->>S3: Write results (JSONL)<br/>HTTPS 443/TCP (AWS IAM)
+        S3-->>KFPStep2: Write confirmed
+
+        Note over Client,S3: Result Retrieval (polling)
+        Client->>EvalAPI: GET /v1alpha/eval/benchmarks/{id}/jobs/{job_id}<br/>HTTP 8321/TCP
+        EvalAPI->>KFP: Poll run state<br/>HTTPS 443/TCP (Bearer Token)
+        KFP-->>EvalAPI: Run status (SUCCEEDED)
+        EvalAPI->>S3: Fetch results<br/>HTTPS 443/TCP (AWS IAM)
+        S3-->>EvalAPI: JSONL result data
+        EvalAPI-->>Client: EvaluateResponse<br/>HTTP 200
+    end

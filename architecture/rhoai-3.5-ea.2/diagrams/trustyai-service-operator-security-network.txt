@@ -1,0 +1,252 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [User / Data Scientist]                                                     │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS                                                    │
+│         │ Auth: Bearer Token (ServiceAccount / OAuth)                        │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift Routes — reencrypt TLS)                                  │
+│                                                                              │
+│  [TAS Route]           [EvalHub Route]       [EvalHub MCP Route]             │
+│  - Port: 443 → 8443   - Port: 443 → 8443   - Port: 443 → 8443              │
+│  - TLS: reencrypt      - TLS: reencrypt      - TLS: reencrypt               │
+│                                                                              │
+│  [GORCH Route]         [GORCH Gateway]       [GORCH Built-in]               │
+│  - Port: 443 → 8443   - Port: 443 → 8443   - Port: 443 → 8443              │
+│  - TLS: reencrypt      - TLS: reencrypt      - TLS: reencrypt               │
+│                                                                              │
+│  [GORCH Health Route]  [NemoGuardrails Route]                                │
+│  - Port: 443 → 8443   - Port: 443 → 8443                                   │
+│  - TLS: reencrypt      - TLS: reencrypt                                      │
+│         │                                                                    │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  AUTHENTICATION LAYER (kube-rbac-proxy sidecars)                             │
+│                                                                              │
+│  All managed services use kube-rbac-proxy as authentication sidecar:         │
+│                                                                              │
+│  [kube-rbac-proxy] ──────────────────────────────────────────                │
+│  - Listen Port: 8443/TCP                                                     │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS (service-serving cert)                                    │
+│  - Auth: Bearer Token → SubjectAccessReview against K8s API                  │
+│  - Image: odh-kube-rbac-proxy:odh-stable                                    │
+│         │                                                                    │
+│         │ Port: 8080/TCP (TAS), 8033/TCP (GORCH), varies (EvalHub, Nemo)     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (localhost / pod-internal)                         │
+│         │ Auth: N/A (trusted — same pod)                                     │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE (e.g., redhat-ods-applications)                          │
+│                                                                              │
+│  [trustyai-service-operator] ─────────────────────────────────               │
+│  - Type: Deployment (single replica)                                         │
+│  - ServiceAccount: trustyai-service-operator-controller-manager              │
+│  - Ports:                                                                    │
+│    - 8080/TCP — Metrics (HTTP, no auth)                                      │
+│    - 8081/TCP — Health probes (HTTP, no auth)                                │
+│    - 9443/TCP — Webhook (HTTPS, TLS)                                         │
+│  - Memory: GOMEMLIMIT=630MiB                                                │
+│  - Leader election: optional                                                 │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS                                                    │
+│         │ Auth: ServiceAccount Token                                         │
+│         ▼                                                                    │
+│  [Kubernetes API Server]                                                     │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  USER NAMESPACES (managed services)                                          │
+│                                                                              │
+│  ┌─ TrustyAI Service Pod ─────────────────────────────────┐                  │
+│  │  [kube-rbac-proxy]        [trustyai-service]           │                  │
+│  │  - 8443/TCP HTTPS TLS     - 8080/TCP HTTP              │                  │
+│  │  - Bearer → SAR           - 80/TCP HTTP (internal)     │                  │
+│  │  - SA: {instance}-proxy   - 443/TCP HTTPS (TLS svc)    │                  │
+│  └────────────────────────────────────────────────────────┘                  │
+│                                                                              │
+│  ┌─ EvalHub Service Pod ──────────────────────────────────┐                  │
+│  │  [kube-rbac-proxy]        [evalhub]                    │                  │
+│  │  - 8443/TCP HTTPS TLS     - 8080/TCP HTTP              │                  │
+│  │  - Bearer → SAR           - 8081/TCP HTTP (metrics)    │                  │
+│  │  - SA: {instance}                                      │                  │
+│  └────────────────────────────────────────────────────────┘                  │
+│                                                                              │
+│  ┌─ EvalHub MCP Server Pod (optional) ────────────────────┐                  │
+│  │  [kube-rbac-proxy]        [evalhub-mcp]                │                  │
+│  │  - 8443/TCP HTTPS TLS     - MCP server port            │                  │
+│  │  - Bearer → SAR           - SA: {instance}             │                  │
+│  └────────────────────────────────────────────────────────┘                  │
+│                                                                              │
+│  ┌─ Guardrails Orchestrator Pod ──────────────────────────┐                  │
+│  │  [kube-rbac-proxy]  [orchestrator]  [gateway-sidecar]  │                  │
+│  │  - 8443/TCP HTTPS   - 8033/TCP HTTP  - gateway port    │                  │
+│  │  - Bearer → SAR     [built-in-det]                     │                  │
+│  │  - SA: {instance}   - detector port                    │                  │
+│  └────────────────────────────────────────────────────────┘                  │
+│                                                                              │
+│  ┌─ NemoGuardrails Pod ───────────────────────────────────┐                  │
+│  │  [kube-rbac-proxy]        [nemo-guardrails-server]     │                  │
+│  │  - 8443/TCP HTTPS TLS     - server port HTTP           │                  │
+│  │  - Bearer → SAR           - CA bundle mounted          │                  │
+│  │  - SA: {instance}                                      │                  │
+│  └────────────────────────────────────────────────────────┘                  │
+│                                                                              │
+│  ┌─ LMEvalJob Pod (ephemeral) ────────────────────────────┐                  │
+│  │  [init: ta-lmes-driver]   [main: ta-lmes-job]          │                  │
+│  │  - Copies driver binary   - Runs evaluations           │                  │
+│  │  - to shared emptyDir     - 8082/TCP (driver comm)     │                  │
+│  │  - No network exposure    - Controller polls via exec  │                  │
+│  └────────────────────────────────────────────────────────┘                  │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Optional — when Istio sidecar detected)                       │
+│                                                                              │
+│  TAS Controller creates when Istio is present:                               │
+│  - DestinationRule (mTLS settings)                                           │
+│  - VirtualService (HTTP → HTTPS redirect)                                    │
+│                                                                              │
+│  NemoGuardrails Controller creates:                                          │
+│  - EnvoyFilter (traffic management)                                          │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INTERNAL PLATFORM SERVICES                                                  │
+│                                                                              │
+│  [KServe InferenceService]                                                   │
+│  - TAS patches as inference logger                                           │
+│  - GORCH watches for auto-configuration                                      │
+│  - Protocol: gRPC/HTTP, TLS optional                                         │
+│                                                                              │
+│  [ModelMesh Deployments]                                                     │
+│  - TAS injects MM_PAYLOAD_PROCESSORS env var                                 │
+│  - TAS mounts TLS cert volumes                                               │
+│                                                                              │
+│  [Kueue]                                                                     │
+│  - LMES: job scheduling                                                      │
+│  - EvalHub: watches Workloads for failure reporting                          │
+│                                                                              │
+│  [MCPGatewayExtension (Kuadrant)]                                            │
+│  - NemoGuardrails watches for MCP Gateway integration                        │
+│                                                                              │
+│  [Prometheus]                                                                │
+│  - TAS, EvalHub, GORCH create ServiceMonitor resources                       │
+│  - Metrics: 8080/TCP (operator), 8081/TCP (EvalHub)                          │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                                  │
+│                                                                              │
+│  [S3-Compatible Storage]                                                     │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS                                                           │
+│  - Auth: AWS IAM credentials (Secret)                                        │
+│  - Purpose: LMES offline mode — download evaluation assets                   │
+│                                                                              │
+│  [OCI Registry]                                                              │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS                                                           │
+│  - Auth: Username/Password or DockerConfig (Secret)                          │
+│  - Purpose: LMES — upload evaluation results                                 │
+│                                                                              │
+│  [PostgreSQL]                                                                │
+│  - Port: 5432/TCP                                                            │
+│  - Protocol: TCP                                                             │
+│  - Encryption: TLS optional                                                  │
+│  - Auth: DB credentials (Secret)                                             │
+│  - Purpose: EvalHub persistent storage backend                               │
+│                                                                              │
+│  [HuggingFace Hub]                                                           │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS                                                           │
+│  - Auth: HF Token (env var)                                                  │
+│  - Purpose: LMES — download models/datasets (online mode)                    │
+│                                                                              │
+│  [OTLP Endpoint]                                                             │
+│  - Port: varies                                                              │
+│  - Protocol: gRPC/HTTP                                                       │
+│  - Encryption: TLS optional                                                  │
+│  - Auth: None                                                                │
+│  - Purpose: GORCH, EvalHub — OpenTelemetry traces/metrics                    │
+│                                                                              │
+│  [Git Repository]                                                            │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS                                                           │
+│  - Auth: None                                                                │
+│  - Purpose: LMES — clone custom evaluation tasks                             │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+
+ClusterRoles:
+- tas-manager-role
+  - trustyai.opendatahub.io: trustyaiservices — get, list, watch, create, update, patch, delete
+  - apps: deployments — list, watch, get, create, update, patch, delete
+  - core: services, pods, configmaps, secrets, serviceaccounts — full CRUD
+  - serving.kserve.io: inferenceservices — list, watch, get, update, patch, delete
+  - route.openshift.io: routes — full CRUD
+  - networking.istio.io: destinationrules, virtualservices — full CRUD
+  - rbac.authorization.k8s.io: clusterrolebindings — get, list, watch, create, update, delete
+
+- lmes-manager-role
+  - trustyai.opendatahub.io: lmevaljobs — full CRUD
+  - core: pods, pods/exec — get, list, watch, create, delete
+  - core: configmaps — get, watch, list, create, update
+  - core: secrets — get, watch, list (read-only)
+
+- evalhub-manager-role
+  - trustyai.opendatahub.io: evalhubs, evalhubs/proxy — full CRUD
+  - kueue.x-k8s.io: workloads — get, list, watch, patch
+  - batch: jobs — get, list, watch, patch, delete
+  - infrastructure.opendatahub.io: hardwareprofiles — get, list
+  - rbac.authorization.k8s.io: roles, rolebindings — full CRUD
+
+- gorch-manager-role
+  - trustyai.opendatahub.io: guardrailsorchestrators — full CRUD
+  - serving.kserve.io: servingruntimes — get, list, watch (read-only)
+  - serving.kserve.io: inferenceservices — get, list (read-only)
+
+- nemo-guardrails-manager-role
+  - trustyai.opendatahub.io: nemoguardrails — full CRUD
+  - networking.istio.io: envoyfilters — full CRUD
+  - mcp.kuadrant.io: mcpgatewayextensions — get, list, watch (read-only)
+  - gateway.networking.k8s.io: gateways — get, list, watch (read-only)
+
+User-Facing Roles:
+- lmeval-user-role → all authenticated users (default binding)
+- guardrailsorchestrator-editor-role / viewer-role
+- nemoguardrail-editor-role / viewer-role
+
+Auth Delegator Bindings:
+- {tas-instance}-{ns}-proxy-rolebinding → system:auth-delegator
+- {evalhub-instance}-auth-reviewer → system:auth-delegator
+- {gorch-instance}-auth-delegator → system:auth-delegator
+
+Secrets:
+- {tas-instance}-db-credentials (Opaque) — DB creds for TAS DATABASE storage mode | User-provisioned | No rotation
+- {tas-instance}-db-ca (Opaque) — DB CA certificate for TLS | User-provisioned | No rotation
+- {evalhub-instance}-mcp-auth (Opaque) — MCP server auth token | User-provisioned | No rotation
+- {gorch-instance} TLS secrets (kubernetes.io/tls) — TLS certs for orchestrator/gateway/detector | Service CA | No rotation
+- S3 credentials (Opaque) — AWS/S3 access keys for LMES offline mode | User-provisioned | No rotation
+- OCI credentials (Opaque/dockerconfigjson) — Registry creds for LMES results upload | User-provisioned | No rotation
+
+FIPS Compliance:
+- Operator: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, dynamic linking (UBI9 OpenSSL)
+- Driver: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, -tags strictfipsruntime netgo
+- TLS: MinVersion TLS 1.2 (EvalHub evaluation_job_failure_reconciler)
+- CA bundles: odh-trusted-ca-bundle + openshift-service-ca.crt auto-injected
+- Risk: InsecureSkipVerify exists in EvalHub MCP config (defaults to false)
+
+Service Mesh Configuration (when Istio present):
+- TAS: DestinationRule + VirtualService (auto-created when sidecar detected)
+- NemoGuardrails: EnvoyFilter (traffic management)
+- Auth enforcement: kube-rbac-proxy (not Istio AuthorizationPolicy)

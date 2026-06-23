@@ -1,0 +1,54 @@
+sequenceDiagram
+    participant User as User / Dashboard
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
+    participant Webhook as Validation Webhook<br/>9443/TCP HTTPS TLS
+    participant Controller as trainer-controller-manager<br/>(controller-runtime)
+    participant JobSetCtrl as JobSet Controller
+    participant TrainingPod as Training Pod (rank 0)<br/>28080/TCP HTTP
+    participant TrainingPods as Training Pods (all ranks)<br/>29500/TCP TCP
+
+    Note over User, TrainingPods: Flow 1: TrainJob Reconciliation
+
+    User->>K8sAPI: POST TrainJob CR<br/>Auth: Bearer Token
+    K8sAPI->>Webhook: POST /validate-trainer-...-trainjob<br/>Auth: API server client cert
+    Webhook-->>K8sAPI: Allowed / Denied
+    K8sAPI-->>User: TrainJob created
+
+    Controller->>K8sAPI: Watch TrainJob resources<br/>Auth: ServiceAccount token
+    K8sAPI-->>Controller: TrainJob event (Added/Modified)
+
+    Controller->>Controller: Resolve TrainingRuntime/<br/>ClusterTrainingRuntime reference
+
+    Controller->>K8sAPI: Create JobSet<br/>Auth: ServiceAccount token
+    K8sAPI-->>Controller: JobSet created
+
+    Controller->>K8sAPI: Create NetworkPolicy (RHOAI)<br/>Auth: ServiceAccount token
+    K8sAPI-->>Controller: NetworkPolicy created
+
+    opt Gang Scheduling Enabled
+        Controller->>K8sAPI: Create PodGroup<br/>(coscheduling or Volcano)<br/>Auth: ServiceAccount token
+    end
+
+    opt MPI ML Policy
+        Controller->>K8sAPI: Create SSH Secret + Hostfile ConfigMap<br/>Auth: ServiceAccount token
+    end
+
+    Controller->>K8sAPI: Update TrainJob status<br/>Auth: ServiceAccount token
+
+    JobSetCtrl->>K8sAPI: Watch JobSet, create Jobs/Pods
+    K8sAPI-->>JobSetCtrl: JobSet reconciled
+
+    Note over User, TrainingPods: Flow 2: RHAI Progression Tracking (RHOAI)
+
+    loop Every 30s (configurable RequeueAfter)
+        Controller->>K8sAPI: List pods for TrainJob<br/>Auth: ServiceAccount token
+        K8sAPI-->>Controller: Pod list (find rank-0)
+        Controller->>TrainingPod: GET /metrics<br/>28080/TCP HTTP<br/>Auth: None (NetworkPolicy enforced)
+        TrainingPod-->>Controller: JSON training status<br/>(steps, epochs, loss)
+        Controller->>K8sAPI: Patch TrainJob annotations<br/>with progress data<br/>Auth: ServiceAccount token
+    end
+
+    Note over User, TrainingPods: Flow 3: PyTorch Distributed Training (inter-pod)
+
+    TrainingPods->>TrainingPods: Rendezvous: rank-0 master<br/>29500/TCP<br/>Auth: None (NetworkPolicy: same-job)
+    TrainingPods->>TrainingPods: NCCL/gloo collective ops<br/>Dynamic ports TCP/UDP<br/>Auth: None (NetworkPolicy: same-job)

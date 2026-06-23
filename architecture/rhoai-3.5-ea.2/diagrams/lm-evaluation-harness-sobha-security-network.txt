@@ -1,0 +1,116 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  KUBERNETES CLUSTER (Internal)                                              │
+│                                                                              │
+│  ┌───────────────────────────────────────────────────────────────────────┐   │
+│  │  Job Pod: LMEval Job (odh-ta-lmes-job)                               │   │
+│  │  - Namespace: {user-namespace}                                        │   │
+│  │  - ServiceAccount: managed by LMEval operator                         │   │
+│  │  - Image: odh-ta-lmes-job:{tag}                                       │   │
+│  │  - Base: registry.access.redhat.com/ubi9/python-311:latest            │   │
+│  │  - CPU only (device="cpu", model inference is remote)                 │   │
+│  │                                                                        │   │
+│  │  Volume Mounts:                                                        │   │
+│  │  - /meta/job.json (ConfigMap — job specification)                     │   │
+│  │  - /secrets/model (Model auth secret — API keys, HF token, CA cert)  │   │
+│  │  - /test_data (optional — offline tokenizer + datasets)               │   │
+│  │                                                                        │   │
+│  │  Environment Variables:                                                │   │
+│  │  - OPENAI_API_KEY (from model auth secret)                            │   │
+│  │  - HF_TOKEN (from model auth secret, optional)                        │   │
+│  │  - REGISTRY_URL (OCI registry endpoint)                               │   │
+│  │  - HF_HUB_OFFLINE=1 (auto-set when /test_data detected)              │   │
+│  └───────────────────────────────────────────────────────────────────────┘   │
+│         │              │              │              │              │         │
+│         │              │              │              │              │         │
+├─────────┼──────────────┼──────────────┼──────────────┼──────────────┼────────┤
+│  EGRESS │ (All Outbound — No Inbound Listeners)                              │
+│         │              │              │              │              │         │
+│         │ Port: 443/TCP│ Port: 443/TCP│ Port: 443/TCP│ Port: 443/TCP│        │
+│         │ Proto: HTTPS │ Proto: HTTPS │ Proto: HTTPS │ Proto: HTTPS │        │
+│         │ Enc: TLS 1.2+│ Enc: TLS 1.2+│ Enc: TLS 1.2+│ Enc: TLS 1.2+│       │
+│         │ Auth: Bearer │ Auth: Bearer │ Auth: Reg.   │ Auth: HF_TOKEN│       │
+│         │ Token        │ Token        │ Creds        │ (optional)   │        │
+│         ▼              ▼              ▼              ▼              │        │
+├─────────────────────────────────────────────────────────────────────┼────────┤
+│  EXTERNAL / PLATFORM SERVICES                                       │        │
+│                                                                      │        │
+│  [Model Serving Endpoint]           [EvalHub Service]                │        │
+│  - URL: job_spec.model.url          - URL: job_spec.callback_url     │        │
+│  - Port: 443/TCP (or custom)        - Port: 443/TCP                  │        │
+│  - Protocol: HTTPS                  - Protocol: HTTPS                │        │
+│  - Encryption: TLS 1.2+             - Encryption: TLS 1.2+          │        │
+│  - Auth: Bearer Token               - Auth: Bearer Token             │        │
+│    (OPENAI_API_KEY env var)          - Purpose: Status callbacks      │        │
+│  - CA Cert: configurable via          (INITIALIZING → COMPLETED),    │        │
+│    verify_certificate param           result reporting                │        │
+│  - Concurrency: num_concurrent                                       │        │
+│    (max 128 parallel requests)                                        │        │
+│  - Timeout: timeout_seconds                                           │        │
+│    (default 300s)                                                     │        │
+│                                                                       │        │
+│  [OCI Registry]                     [HuggingFace Hub]                │        │
+│  - URL: REGISTRY_URL env var        - URL: huggingface.co            ▼        │
+│  - Port: 443/TCP                    - Port: 443/TCP          ┌──────────────┐│
+│  - Protocol: HTTPS                  - Protocol: HTTPS        │[S3-compatible ││
+│  - Encryption: TLS 1.2+             - Encryption: TLS 1.2+  │ Storage]      ││
+│  - Auth: Registry credentials       - Auth: HF_TOKEN         │Port: 443/TCP ││
+│    (oci_auth_config_path)              (optional, gated repos)│Proto: HTTPS  ││
+│  - Purpose: Push evaluation          - Purpose: Download      │Enc: TLS 1.2+ ││
+│    results as OCI artifacts            datasets, tokenizers   │Auth: AWS IAM ││
+│  - Annotations: benchmark_id,       - Disabled in offline     │  (boto3)     ││
+│    model, job_id, timestamp            mode (HF_HUB_OFFLINE=1)│Purpose: Model││
+│                                                                │  artifacts   ││
+│  [MLflow Tracking Server]                                      └──────────────┘│
+│  - Port: 443/TCP                                                               │
+│  - Protocol: HTTPS                                                             │
+│  - Encryption: TLS 1.2+                                                        │
+│  - Auth: Bearer Token                                                          │
+│  - Purpose: Log evaluation                                                     │
+│    metrics and run metadata                                                    │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+NETWORK SUMMARY:
+- Inbound: NONE (batch job, no listeners, no Kubernetes Services, no Ingress)
+- Outbound: 6 egress destinations, all HTTPS/443 with TLS 1.2+
+- Service Mesh: Not applicable (no inbound traffic, no sidecar needed)
+
+SECRETS:
+- Model auth secret (model.auth.secret_ref) — Opaque
+  - Contains: API key, optional hf-token, optional CA certificate
+  - Provisioned by: User / LMEval operator
+  - Auto-rotate: No
+- OCI registry auth (oci_auth_config_path) — dockerconfigjson
+  - Contains: OCI registry push credentials
+  - Provisioned by: User / Platform operator
+  - Auto-rotate: No
+- Git auth secret (git_auth_secret) — kubernetes.io/basic-auth
+  - Contains: Git credentials for Konflux pipeline
+  - Provisioned by: Konflux / PipelinesAsCode
+  - Auto-rotate: No
+
+RBAC:
+- No RBAC definitions in this repository
+- RBAC is managed by the consuming TrustyAI LMEval Operator (lmes-controller)
+
+AUTHENTICATION MECHANISMS:
+- Model Serving: Bearer Token (OPENAI_API_KEY) — enforced in main.py:488-494
+- HuggingFace Hub: Bearer Token (HF_TOKEN) — optional, main.py:498-502
+- EvalHub Callback: Bearer Token — via eval-hub-sdk DefaultCallbacks
+- OCI Registry: Registry credentials — via skopeo / eval-hub-sdk
+- S3 Storage: AWS IAM credentials — via boto3
+
+SECURITY FEATURES:
+- Error message sanitization: regex-based redaction of credentials in exception text
+  (Authorization headers, key=value pairs, JSON credential fields, URL userinfo)
+  Prevents credential leakage through EvalHub status reporting channel
+- Path traversal protection: CWE-22 mitigation in _resolve_job_spec_path_for_read()
+  Validates resolved paths remain under /meta
+- TLS verification: Configurable via verify_certificate (True/False/CA cert path)
+  Defaults to system trust store validation
+
+FIPS COMPLIANCE:
+- Python application on UBI 9 — inherits FIPS-compliant OpenSSL from base image
+- CPython links against system OpenSSL for all TLS operations
+- No non-FIPS crypto detected (no MD5, RC4, custom RNG for crypto purposes)
+- FIPS-compliant when host is in FIPS mode (no explicit opt-in required)

@@ -1,0 +1,58 @@
+sequenceDiagram
+    participant K8s as Kubernetes<br/>(ConfigMap + Secret)
+    participant Adapter as LMEval Adapter<br/>(main.py)
+    participant LMEval as lm-evaluation-harness<br/>(lm_eval/)
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant Model as Model Inference Endpoint<br/>443/TCP HTTPS
+    participant EvalHub as EvalHub Service<br/>443/TCP HTTPS
+    participant OCI as OCI Registry<br/>443/TCP HTTPS
+    participant MLflow as MLflow Server<br/>443/TCP HTTPS
+
+    rect rgb(240, 248, 255)
+        Note over K8s,Adapter: Phase 1: Initialization
+        K8s->>Adapter: Mount /meta/job.json (ConfigMap)
+        K8s->>Adapter: Mount credentials (Secret)<br/>API key, HF token, CA cert
+        Adapter->>Adapter: Parse JobSpec<br/>Resolve credentials
+        Adapter->>Adapter: Detect offline mode<br/>(check /test_data layout)
+        Adapter->>EvalHub: POST callback_url<br/>Status: INITIALIZING<br/>Auth: Bearer Token
+    end
+
+    rect rgb(255, 248, 240)
+        Note over Adapter,HF: Phase 2: Data Loading
+        Adapter->>EvalHub: POST callback_url<br/>Status: LOADING_DATA<br/>Auth: Bearer Token
+        LMEval->>HF: GET datasets, tokenizers<br/>Auth: Bearer Token (HF_TOKEN)<br/>TLS 1.2+
+        HF-->>LMEval: Benchmark datasets<br/>(MMLU, ARC, HellaSwag, etc.)
+        Note over LMEval,HF: Skipped in offline mode<br/>(uses /test_data instead)
+    end
+
+    rect rgb(240, 255, 240)
+        Note over LMEval,Model: Phase 3: Evaluation Execution
+        Adapter->>EvalHub: POST callback_url<br/>Status: RUNNING_EVALUATION<br/>Auth: Bearer Token
+        loop For each benchmark task batch
+            LMEval->>Model: POST /v1/completions<br/>Prompt batch (up to 128 concurrent)<br/>Auth: Bearer Token (OPENAI_API_KEY)<br/>TLS 1.2+ (custom CA)
+            Model-->>LMEval: Completions / logprobs
+        end
+        LMEval->>LMEval: Compute metrics<br/>(F1, accuracy, BLEU, etc.)
+    end
+
+    rect rgb(248, 240, 255)
+        Note over Adapter,MLflow: Phase 4: Post-Processing & Persistence
+        Adapter->>EvalHub: POST callback_url<br/>Status: POST_PROCESSING<br/>Auth: Bearer Token
+        Adapter->>Adapter: Package results as<br/>OCI artifact (olot)
+        Adapter->>EvalHub: POST callback_url<br/>Status: PERSISTING_ARTIFACTS<br/>Auth: Bearer Token
+        Adapter->>OCI: Push OCI artifact (skopeo)<br/>Auth: Basic auth / Docker config<br/>TLS 1.2+
+        OCI-->>Adapter: Push confirmation
+        Adapter->>MLflow: Log metrics & metadata<br/>Auth: Bearer Token<br/>TLS 1.2+
+        MLflow-->>Adapter: Log confirmation
+    end
+
+    rect rgb(240, 255, 248)
+        Note over Adapter,EvalHub: Phase 5: Completion
+        Adapter->>EvalHub: POST callback_url<br/>Status: COMPLETED<br/>Results: JSON metrics<br/>Auth: Bearer Token
+    end
+
+    rect rgb(255, 240, 240)
+        Note over Adapter,EvalHub: Error Handling (any phase)
+        Adapter->>Adapter: Sanitize error message<br/>(strip Bearer tokens, API keys,<br/>URL userinfo, query params)
+        Adapter->>EvalHub: POST callback_url<br/>Status: ERROR<br/>Code: e.g. model_rate_limited<br/>Auth: Bearer Token
+    end

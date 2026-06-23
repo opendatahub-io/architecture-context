@@ -1,0 +1,135 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CI/DEVELOPER TOOLS (Not shipped in production image)                    │
+│                                                                          │
+│  [api-client]                                                            │
+│  - Language: Python 3.12                                                 │
+│  - No server port (CLI tool)                                             │
+│         │                                                                │
+│         │ Port: Configurable                                             │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (configurable, can be disabled)                │
+│         │ Auth: None (configurable TLS client cert)                      │
+│         │ Risk: TLS verification can be disabled                         │
+│         │       (API_TLS_VERIFY=false)                                   │
+│         │       Hostname check can be disabled                           │
+│         │       (API_TLS_HOSTNAME_CHECK=false)                           │
+│         ▼                                                                │
+│  [model-validation API]                                                  │
+│  - Endpoints consumed:                                                   │
+│    GET /api/v1/providers                                                 │
+│    GET /api/v1/models                                                    │
+│    GET /api/v1/evaluations                                               │
+│    GET /api/v1/performances                                              │
+│    GET /api/v1/validations                                               │
+│    GET /api/v1/variant-groups                                            │
+│                                                                          │
+│  [kafka-processor]                                                       │
+│  - Language: Python 3.12                                                 │
+│  - No server port (CLI tool)                                             │
+│         │                                                                │
+│         │ Port: 9092/TCP (internal), 19092/TCP (external)                │
+│         │ Protocol: Kafka                                                │
+│         │ Encryption: SSL/TLS (optional)                                 │
+│         │ Auth: SASL (optional)                                          │
+│         │ Consumer Group: model-benchmark-processor                      │
+│         ▼                                                                │
+│  [Kafka / Redpanda Broker]                                               │
+│  - Topics: model-benchmark (configurable)                                │
+│  - CDC events (modern + Debezium format)                                 │
+│                                                                          │
+│  Both tools write to:                                                    │
+│         │                                                                │
+│         │ Protocol: File I/O                                             │
+│         │ Encryption: N/A                                                │
+│         │ Auth: N/A (local filesystem)                                   │
+│         ▼                                                                │
+│  [Local Filesystem: data/]                                               │
+│  - JSON + NDJSON files                                                   │
+│  - Organized by provider/model ID                                        │
+│  - CONFIDENTIAL: Contains proprietary benchmark data                     │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  BUILD PHASE (Konflux)                                                   │
+│                                                                          │
+│  [Konflux Build]                                                         │
+│  - Dockerfile.konflux                                                    │
+│  - Base: UBI 9 minimal                                                   │
+│  - COPY data/ → /app/benchmarks                                         │
+│  - User: UID 1001 (non-root)                                            │
+│  - CMD: sleep infinity (overridden in k8s)                               │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Registry auth                                            │
+│         ▼                                                                │
+│  [Container Registry]                                                    │
+│  - Image: odh-model-performance-data                                     │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  RUNTIME (Production - Kubernetes Cluster)                               │
+│                                                                          │
+│  Namespace: odh-model-registries                                         │
+│                                                                          │
+│  [model-catalog Deployment]                                              │
+│  ┌──────────────────────────────────────────────────────────────┐        │
+│  │                                                              │        │
+│  │  Init Container: odh-model-performance-data                  │        │
+│  │  - Image: odh-model-performance-data:tag                     │        │
+│  │  - User: UID 1001 (non-root)                                 │        │
+│  │  - No network ports                                          │        │
+│  │  - No RBAC requirements                                      │        │
+│  │  - Action: Copy /app/benchmarks → shared volume              │        │
+│  │  - Exits after copy completes                                │        │
+│  │         │                                                    │        │
+│  │         │ Protocol: File I/O                                 │        │
+│  │         │ Encryption: N/A                                    │        │
+│  │         ▼                                                    │        │
+│  │  [Shared emptyDir Volume]                                    │        │
+│  │         │                                                    │        │
+│  │         │ Protocol: File I/O                                 │        │
+│  │         │ Encryption: N/A                                    │        │
+│  │         ▼                                                    │        │
+│  │  Main Container: model-catalog                               │        │
+│  │  - Reads benchmark data at startup                           │        │
+│  │  - Serves data to users via model-catalog API                │        │
+│  │                                                              │        │
+│  └──────────────────────────────────────────────────────────────┘        │
+│                                                                          │
+│  [model-registry-operator]                                               │
+│  - Manages model-catalog Deployment                                      │
+│  - References this init container image                                  │
+│                                                                          │
+│  [OpenShift Image Registry]                                              │
+│  - Port: 5000/TCP                                                        │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS                                                       │
+│  - Serves init container image to model-catalog pods                     │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No ClusterRoles required
+- No RoleBindings required
+- Init container runs as non-root (UID 1001)
+- No Kubernetes API access needed (data-only container)
+
+Secrets:
+- Kafka SASL credentials (Opaque) - SASL_USERNAME/SASL_PASSWORD
+  - Used by: kafka-processor (CI/developer tool only)
+  - Provisioned by: Manual (env vars)
+  - Auto-Rotate: No
+- SSL certificates (kubernetes.io/tls) - TLS client certs for Kafka and API
+  - Used by: kafka-processor and api-client (CI/developer tools only)
+  - Provisioned by: Manual (file paths)
+  - Auto-Rotate: No
+
+Note: No secrets are used by the shipped data container in production.
+
+Security Considerations:
+- Repository contains CONFIDENTIAL proprietary benchmark data
+- data/ directory is .gitignore'd
+- api-client allows disabling TLS verification (developer convenience only)
+- Shipped image contains only static data files, no executables
+- FIPS compliance inherited from UBI 9 minimal base image
+- No network services exposed in production

@@ -1,0 +1,217 @@
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                            │
+│                                                                                  │
+│  [External Client / Data Scientist]                                              │
+│         │                                                                        │
+│         │ Port: 443/TCP                                                          │
+│         │ Protocol: HTTPS                                                        │
+│         │ Encryption: TLS 1.2+ (Terminate at Gateway)                            │
+│         │ Auth: None (initial) → OAuth2/OIDC session after login                 │
+│         ▼                                                                        │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway API Layer)                                                     │
+│                                                                                  │
+│  [data-science-gateway — Gateway CR (Envoy data plane)]                          │
+│  - Hostname: rh-ai.{cluster-domain}                                              │
+│  - Port: 443/TCP (external) → component ports (internal)                         │
+│  - TLS Termination: TLS 1.2+ (configurable: Old/Intermediate/Modern/Custom)      │
+│  - TLS Profile: Floored to Intermediate minimum (FIPS compliance)                │
+│  - Cert Source: OpenshiftDefaultIngress / SelfSigned / Provided                  │
+│         │                                                                        │
+│  [data-science-gateway (legacy listener)]                                        │
+│  - Hostname: data-science-gateway.{cluster-domain}                               │
+│  - Port: 443/TCP — 301 redirect to rh-ai.{cluster-domain}                       │
+│         │                                                                        │
+│  [EnvoyFilter: data-science-authn-filter]                                        │
+│  - Type: HTTP_FILTER (ext_authz + Lua)                                           │
+│  - ext_authz: routes ALL traffic to kube-auth-proxy for auth check               │
+│  - Lua filter: strips OAuth cookies, injects Authorization: Bearer header         │
+│         │                                                                        │
+│         │ Port: 8443/TCP                                                         │
+│         │ Protocol: HTTPS                                                        │
+│         │ Encryption: TLS (service-CA signed cert)                               │
+│         │ Auth: Cookie-based session / Bearer token                              │
+│         ▼                                                                        │
+│  [kube-auth-proxy — OAuth2/OIDC Proxy]                                           │
+│  - Namespace: openshift-ingress                                                  │
+│  - ServiceAccount: kube-auth-proxy                                               │
+│  - Port: 8443/TCP (HTTPS, service-CA TLS)                                        │
+│  - Port: 9000/TCP (HTTP, metrics)                                                │
+│  - Image: quay.io/opendatahub/odh-kube-auth-proxy                               │
+│  - HPA: min 1 → max 3 (80% CPU target)                                          │
+│         │                                                                        │
+│         │ Port: 443/TCP                                                          │
+│         │ Protocol: HTTPS                                                        │
+│         │ Encryption: TLS 1.2+                                                   │
+│         │ Auth: Client credentials (CLIENT_ID / CLIENT_SECRET)                   │
+│         ▼                                                                        │
+│  [OpenShift OAuth / External OIDC Provider]                                      │
+│  - IntegratedOAuth: OAuthClient "data-science", oauth2-proxy --provider=openshift│
+│  - OIDC: External provider, oauth2-proxy --provider=oidc --oidc-issuer-url=...   │
+│                                                                                  │
+│  Two Ingress Modes:                                                              │
+│  - LoadBalancer (default): Gateway exposes external LB service                   │
+│  - OcpRoute: Gateway uses ClusterIP + OpenShift Route (re-encrypt TLS)           │
+│                                                                                  │
+│  [Dashboard Redirect Infrastructure]                                             │
+│  - Nginx Deployment + Route: 301 redirect from legacy dashboard URL              │
+│    {platform}-dashboard.{domain} → rh-ai.{domain}                               │
+│  - Legacy Gateway Route: data-science-gateway.{domain} → rh-ai.{domain}         │
+│                                                                                  │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR CONTROL PLANE                                                          │
+│                                                                                  │
+│  [manager — rhods-operator Pod]                                                  │
+│  - Namespace: redhat-ods-operator                                                │
+│  - ServiceAccount: opendatahub-operator-controller-manager                       │
+│  - Image: managed-open-data-hub/odh-rhel8-operator                               │
+│  - Port: 8443/TCP (webhook server)                                               │
+│  - Port: 8080/TCP (metrics)                                                      │
+│  - Port: 8081/TCP (health probes)                                                │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, UBI9 base                │
+│         │                                                                        │
+│         │ Port: 6443/TCP                                                         │
+│         │ Protocol: HTTPS                                                        │
+│         │ Encryption: TLS 1.2+                                                   │
+│         │ Auth: ServiceAccount token (RBAC)                                      │
+│         ▼                                                                        │
+│  [Kubernetes API Server]                                                         │
+│  - CRD watches (DSC, DSCI, Components, Services, Modules)                        │
+│  - Resource CRUD (Deployments, Services, ConfigMaps, Secrets, etc.)              │
+│  - Admission webhooks (14 total: 7 mutating, 6 validating, 1 conversion)         │
+│                                                                                  │
+│  [cloudmanager — Cloud Manager Pod]                                              │
+│  - Deployed on non-OpenShift clusters (AWS EKS, Azure AKS, CoreWeave)            │
+│  - ServiceAccount: cloudmanager-controller-manager                               │
+│  - Port: 8080/TCP (metrics), 8081/TCP (health probes)                            │
+│         │                                                                        │
+│         │ Port: 6443/TCP                                                         │
+│         │ Protocol: HTTPS                                                        │
+│         │ Encryption: TLS 1.2+                                                   │
+│         │ Auth: ServiceAccount token                                             │
+│         ▼                                                                        │
+│  [Kubernetes API — Infrastructure CRs]                                           │
+│  - Helm chart rendering → cert-manager, Sail/Istio, LWS, Gateway API CRDs       │
+│                                                                                  │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES (Internal)                                                    │
+│                                                                                  │
+│  [Prometheus MonitoringStack]                                                    │
+│  - data-science-prometheus-route: 443/TCP → 9091/TCP (HTTPS, kube-rbac-proxy)    │
+│  - ServiceMonitors, PodMonitors, PrometheusRules                                 │
+│                                                                                  │
+│  [OpenTelemetry Collector]                                                       │
+│  - data-science-collector: 4317/TCP (OTLP gRPC, HTTP, RBAC auth)                │
+│  - Instrumentation CRs for auto-instrumentation                                 │
+│                                                                                  │
+│  [Tempo (Distributed Tracing)]                                                   │
+│  - TempoMonolithic / TempoStack for trace storage                                │
+│                                                                                  │
+│  [Perses (Dashboards)]                                                           │
+│  - Dashboard and Datasource CRs for observability UI                             │
+│                                                                                  │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│  MANAGED COMPONENTS (16 Component Operators)                                     │
+│                                                                                  │
+│  Deployed to: redhat-ods-applications namespace                                  │
+│  Managed via: Kustomize/Helm manifest rendering per component                    │
+│                                                                                  │
+│  [Dashboard] [KServe] [Kueue] [DataSciencePipelines] [Workbenches]              │
+│  [ModelRegistry] [ModelController] [Ray] [TrustyAI] [TrainingOperator]           │
+│  [Trainer] [FeastOperator] [OGX] [MLflowOperator] [SparkOperator]               │
+│  [ModelsAsService]                                                               │
+│                                                                                  │
+│  All components:                                                                 │
+│  - Receive gateway domain, OIDC config, admin groups from parent controllers     │
+│  - Communicate with K8s API (6443/TCP, HTTPS, ServiceAccount token)              │
+│  - Traffic routed through data-science-gateway via HTTPRoute CRs                 │
+│                                                                                  │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL DEPENDENCIES (Cloud Manager targets)                                   │
+│                                                                                  │
+│  [cert-manager]                                                                  │
+│  - Purpose: TLS certificate management                                           │
+│  - Deployed via: Helm chart (cloud manager)                                      │
+│                                                                                  │
+│  [Sail/Istio Operator]                                                           │
+│  - Purpose: Service mesh, Envoy proxy data plane                                 │
+│  - Deployed via: Helm chart (cloud manager)                                      │
+│                                                                                  │
+│  [LeaderWorkerSet Operator]                                                      │
+│  - Purpose: Distributed workload management                                      │
+│  - Deployed via: Helm chart (cloud manager)                                      │
+│                                                                                  │
+│  [Gateway API CRDs]                                                              │
+│  - Purpose: Gateway, GatewayClass, HTTPRoute definitions                         │
+│  - Deployed via: Helm chart (cloud manager)                                      │
+│                                                                                  │
+│  [OpenShift OAuth Server]                                                        │
+│  - Port: 443/TCP, HTTPS, TLS 1.2+                                               │
+│  - Auth: ServiceAccount token                                                    │
+│  - Purpose: OAuthClient management for integrated auth                           │
+│                                                                                  │
+│  [OpenShift APIServer]                                                           │
+│  - Port: 6443/TCP, HTTPS, TLS 1.2+                                              │
+│  - Auth: ServiceAccount token                                                    │
+│  - Purpose: TLS security profile, cluster auth mode                              │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: opendatahub-operator-manager-role
+  - datasciencecluster.opendatahub.io: datascienceclusters (+status/finalizers) → get,list,watch,create,update,patch,delete
+  - dscinitialization.opendatahub.io: dscinitializations (+status/finalizers) → get,update,patch,delete
+  - services.platform.opendatahub.io: gatewayconfigs,auths,monitorings (+status/finalizers) → get,list,watch,create,update,patch,delete
+  - gateway.networking.k8s.io: gateways,gatewayclasses,httproutes → get,list,watch,create,update,patch,delete
+  - networking.istio.io: envoyfilters,destinationrules → get,list,watch,create,update,patch,delete
+  - route.openshift.io: routes,routes/custom-host → get,list,watch,create,update,patch,delete
+  - oauth.openshift.io: oauthclients → create,delete,list,watch,update,patch,get
+  - operators.coreos.com: clusterserviceversions,customresourcedefinitions,subscriptions → get,list,watch,delete,update,create,patch
+  - rbac.authorization.k8s.io: roles,rolebindings,clusterroles,clusterrolebindings → *
+  - monitoring.coreos.com: servicemonitors,podmonitors,prometheusrules,prometheuses → get,create,delete,update,watch,list,patch
+  - config.openshift.io: apiservers,authentications,infrastructures → get,list,watch
+  - cert-manager.io: issuers,certificates → create,patch,get,list,watch,update,delete
+  - core: namespaces,configmaps,secrets,services,serviceaccounts,pods,events,endpoints,pvs,pvcs → get,list,watch,create,update,patch,delete
+  - apps: deployments,replicasets,statefulsets → get,list,watch,create,update,patch,delete
+  - admissionregistration.k8s.io: validatingwebhookconfigurations,mutatingwebhookconfigurations → get,list,watch,create,update,delete,patch
+
+- ClusterRole: data-science-admingroupcluster-role
+  - datasciencecluster.opendatahub.io: datascienceclusters → get,list,watch,update,patch
+  - services.platform.opendatahub.io: auths,auths/status → get,list,watch,update,patch
+  - modelregistry.opendatahub.io: modelregistries → get,list,watch,create,update,patch,delete
+
+- ClusterRole: data-science-allowedgroupcluster-role
+  - services.platform.opendatahub.io: auths,auths/status → get,list,watch
+
+Role Bindings:
+- opendatahub-operator-manager-rolebinding → opendatahub-operator-controller-manager (cluster-scoped)
+- kube-auth-proxy-tokenreview → system:auth-delegator → kube-auth-proxy SA (cluster-scoped)
+- data-science-admingroup-rolebinding → {admin-groups} ({applications-namespace})
+- data-science-admingroupcluster-rolebinding → {admin-groups} (cluster-scoped)
+- data-science-allowedgroupcluster-rolebinding → {allowed-groups} (cluster-scoped)
+- kueue-admin-rolebinding → {admin-groups from Auth CR} (cluster-scoped)
+
+Secrets:
+- kube-auth-proxy-creds (Opaque) — CLIENT_ID, CLIENT_SECRET, COOKIE_SECRET for OAuth2 proxy
+  Provisioned by: Gateway controller | Auto-Rotate: No (regenerated on change)
+- kube-auth-proxy-tls (kubernetes.io/tls) — TLS cert/key for kube-auth-proxy HTTPS
+  Provisioned by: service-CA (annotation) | Auto-Rotate: Yes (service-CA)
+- Gateway TLS cert (kubernetes.io/tls) — TLS cert for Gateway HTTPS listener
+  Provisioned by: OpenshiftDefaultIngress / SelfSigned / Provided | Auto-Rotate: Depends on type
+
+Admission Webhooks (14 total):
+- 7 Mutating: connection-notebook, connection-llmisvc, connection-isvc, podmonitor-injector,
+  hardwareprofile-notebook-injector, datasciencecluster-v2-defaulter, datasciencecluster-v1-defaulter
+- 6 Validating: dashboard-hardwareprofile-validator, dashboard-acceleratorprofile-validator,
+  datasciencecluster-v2-validator, dscinitialization-v2-validator,
+  datasciencecluster-v1-validator, dscinitialization-v1-validator
+- 1 Conversion: dscinitializations v1↔v2
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, -tags rhoai (manager); -tags strictfipsruntime (cloudmanager)
+- Linking: Dynamic (CGO_ENABLED=1), OpenSSL via UBI9 ubi-minimal base
+- TLS Profile: Floored to Intermediate minimum; OpenSSL-to-IANA cipher conversion with logged drops
+- Known Risk: DestinationRule for kube-auth-proxy uses insecureSkipVerify:true (service-CA cert not in Istio trust store)
+
+NetworkPolicy:
+- kube-auth-proxy-networkpolicy: restricts ingress to kube-auth-proxy pod (port 8443/TCP from Gateway pods)

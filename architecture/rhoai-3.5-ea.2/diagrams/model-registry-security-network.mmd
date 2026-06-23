@@ -1,0 +1,90 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["Data Scientist / API Client"]
+    end
+
+    subgraph Ingress["INGRESS (DMZ) - Istio Service Mesh"]
+        Gateway["Istio Gateway<br/>(kubeflow-gateway)<br/>80/TCP<br/>ISTIO_MUTUAL<br/>AuthorizationPolicy:<br/>blocks header spoofing"]
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (ISTIO_MUTUAL)"]
+        direction TB
+
+        subgraph NS_MR["Namespace: model-registry"]
+            Proxy["Model Registry REST Proxy<br/>Port: 8080/TCP | HTTP<br/>FIPS: strictfipsruntime<br/>TLS: MinVersion 1.2<br/>Auth: delegated to mesh"]
+
+            BFF["UI BFF<br/>Port: 8080/TCP | HTTP(S)<br/>TLS: 1.3 (server), 1.2+ (client)<br/>Auth: SAR + Bearer/kubeflow-userid<br/>Middleware: identity→CORS→SAR"]
+
+            CatalogSvc["Model Catalog<br/>Port: 8080/TCP | HTTP<br/>Auth: None (upstream AuthzPolicy)<br/>Leader: PostgreSQL pglock"]
+
+            Controller["Controller<br/>Health: 8081/TCP | HTTP<br/>Metrics: 8443/TCP | HTTPS<br/>SA: controller-manager<br/>Metrics Auth: K8s RBAC filter"]
+
+            CSISvc["Storage Initializer (CSI)<br/>Init container in KServe pods<br/>Protocol: model-registry://<br/>⚠️ CGO_ENABLED=0 (no FIPS)"]
+
+            AsyncJobSvc["Async Upload Job<br/>K8s Job (batch/v1)<br/>Python 3.12 (UBI9)<br/>⚠️ No FIPS opt-in"]
+        end
+    end
+
+    subgraph DataStores["INTERNAL DATA STORES"]
+        MySQL[("MySQL 8.3+<br/>3306/TCP<br/>Optional TLS 1.2+<br/>Auth: username/password<br/>Secret: mysql-secret")]
+        PostgreSQL[("PostgreSQL 16+<br/>5432/TCP<br/>Optional TLS 1.2+<br/>Auth: username/password<br/>Secret: model-registry-db-secrets")]
+        CatalogPG[("PostgreSQL 17.6<br/>(Catalog)<br/>5432/TCP<br/>Auth: username/password<br/>Secret: model-catalog-postgres")]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: ServiceAccount token"]
+        KServeAPI["KServe API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: ServiceAccount token"]
+        HF["Hugging Face API<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: API key (optional)"]
+        S3["AWS S3<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: AWS credentials"]
+        OCI["OCI Registries<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Docker config"]
+        SigstoreSvc["Sigstore<br/>Fulcio/Rekor/TUF<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Identity token"]
+    end
+
+    %% External to Ingress
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Gateway
+
+    %% Ingress to Services
+    Gateway -->|"HTTP/8080<br/>ISTIO_MUTUAL<br/>/api/model_registry/"| Proxy
+    Gateway -->|"HTTP/8080<br/>ISTIO_MUTUAL<br/>/model-registry/"| BFF
+    Gateway -->|"HTTP/8080<br/>ISTIO_MUTUAL<br/>/api/model_catalog/"| CatalogSvc
+
+    %% BFF to internal
+    BFF -->|"HTTP/8080<br/>ISTIO_MUTUAL<br/>Token forwarding"| Proxy
+    BFF -->|"HTTP/8080<br/>ISTIO_MUTUAL<br/>Token forwarding"| CatalogSvc
+    BFF -->|"HTTPS/443<br/>TLS 1.2+<br/>SA + User token"| K8sAPI
+
+    %% Service to data stores
+    Proxy -->|"TCP/3306<br/>Optional TLS 1.2+<br/>username/password"| MySQL
+    Proxy -->|"TCP/5432<br/>Optional TLS 1.2+<br/>username/password"| PostgreSQL
+    CatalogSvc -->|"TCP/5432<br/>No TLS<br/>username/password"| CatalogPG
+
+    %% Controller flows
+    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| KServeAPI
+    Controller -->|"HTTP(S)/8080<br/>Optional TLS<br/>Bearer token"| Proxy
+
+    %% CSI flows
+    CSISvc -->|"HTTP(S)/8080<br/>Optional TLS<br/>None"| Proxy
+    CSISvc -->|"HTTPS/443<br/>TLS 1.2+<br/>Per-provider"| S3
+
+    %% Async job flows
+    AsyncJobSvc -->|"HTTP(S)/443<br/>TLS 1.2+<br/>In-cluster"| Proxy
+    AsyncJobSvc -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS creds"| S3
+    AsyncJobSvc -->|"HTTPS/443<br/>TLS 1.2+<br/>Docker config"| OCI
+    AsyncJobSvc -->|"HTTPS/443<br/>TLS 1.2+<br/>Identity token"| SigstoreSvc
+
+    %% Catalog external
+    CatalogSvc -->|"HTTPS/443<br/>TLS 1.2+<br/>API key"| HF
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef datastore fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef externalservice fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+
+    class Client external
+    class Gateway ingress
+    class Proxy,BFF,CatalogSvc,Controller,CSISvc,AsyncJobSvc servicemesh
+    class MySQL,PostgreSQL,CatalogPG datastore
+    class K8sAPI,KServeAPI,HF,S3,OCI,SigstoreSvc externalservice

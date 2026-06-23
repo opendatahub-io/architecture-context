@@ -1,0 +1,90 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["External Client"]
+    end
+
+    subgraph Ingress["INGRESS (Gateway API)"]
+        Gateway["data-science-gateway (Envoy)<br/>Namespace: openshift-ingress<br/>443/TCP HTTPS TLS 1.2+<br/>HTTPRoute: /mlflow → mlflow:8443<br/>HTTPRoute: /mlflow/v1 → rewrite /v1"]
+    end
+
+    subgraph AppNamespace["APPLICATION NAMESPACE (redhat-ods-applications)"]
+        direction TB
+
+        subgraph NetPol["NetworkPolicy: mlflow<br/>Ingress: 8443/TCP from any NS | Egress: DNS, HTTPS, DB, S3"]
+            MLflow["MLflow Server<br/>SA: mlflow-sa<br/>8443/TCP HTTPS<br/>TLS: service-ca managed<br/>Auth: K8s SSAR plugin<br/>FIPS: UVICORN_SSL_CIPHERS=PROFILE=SYSTEM"]
+        end
+
+        OperatorPod["mlflow-operator<br/>SA: controller-manager<br/>8081/TCP HTTP (health probes)<br/>8443/TCP HTTPS (metrics)<br/>Auth: Bearer Token authn/authz<br/>FIPS: strictfipsruntime, CGO_ENABLED=1"]
+
+        MigJob["Migration Job (ephemeral)<br/>Separate NetworkPolicy<br/>Egress: DNS + DB only<br/>Runs: mlflow db upgrade"]
+
+        GCJob["GC CronJob<br/>SA: mlflow-gc-sa<br/>Periodic garbage collection"]
+
+        SvcMLflow["Service: mlflow (ClusterIP)<br/>8443/TCP HTTPS<br/>TLS: service-ca cert<br/>Annotation: serving-cert-secret-name"]
+
+        SvcMetrics["Service: operator-metrics (ClusterIP)<br/>8443/TCP HTTPS<br/>TLS: service-ca managed"]
+    end
+
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP, 6443/TCP<br/>HTTPS TLS 1.2+<br/>Auth: ServiceAccount Token"]
+    end
+
+    subgraph PlatformServices["PLATFORM SERVICES"]
+        ServiceCA["OpenShift service-ca<br/>Auto TLS cert provisioning<br/>Secret: mlflow-tls<br/>Auto-Rotate: Yes"]
+        CABundle["odh-trusted-ca-bundle<br/>ConfigMap (volume mount)<br/>Watched for changes"]
+        Console["OpenShift Console<br/>ConsoleLink CR"]
+        Prometheus["Prometheus Operator<br/>ServiceMonitor CR"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        DNS["DNS (CoreDNS)<br/>53/UDP, 53/TCP<br/>5353/UDP, 5353/TCP"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS: configurable (PGSSLMODE)<br/>Auth: Connection string"]
+        MySQL["MySQL<br/>3306/TCP<br/>TLS: configurable (MLFLOW_MYSQL_CA)<br/>Auth: Connection string"]
+        S3["S3-compatible Storage<br/>443/TCP, 9000/TCP<br/>8333/TCP, 8334/TCP<br/>HTTPS TLS 1.2+<br/>Auth: AWS IAM credentials"]
+    end
+
+    %% External → Ingress
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (K8s)"| Gateway
+
+    %% Ingress → Application
+    Gateway -->|"HTTPS/8443<br/>TLS passthrough<br/>service-ca cert"| SvcMLflow
+    SvcMLflow --> MLflow
+
+    %% Operator flows
+    OperatorPod -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>CR watch, SSA, SSAR"| K8sAPI
+    SvcMetrics --> OperatorPod
+
+    %% MLflow → Control Plane
+    MLflow -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>SelfSubjectAccessReview"| K8sAPI
+
+    %% MLflow → External Services
+    MLflow -->|"PostgreSQL/5432<br/>TLS (PGSSLMODE)<br/>Credentials"| PostgreSQL
+    MLflow -->|"MySQL/3306<br/>TLS (MLFLOW_MYSQL_CA)<br/>Credentials"| MySQL
+    MLflow -->|"HTTPS/443,9000<br/>TLS 1.2+<br/>AWS IAM creds"| S3
+    MLflow --> DNS
+
+    %% Migration flows
+    MigJob -->|"SQL/5432 or 3306<br/>TLS<br/>Alembic migration"| PostgreSQL
+    MigJob --> DNS
+
+    %% Platform integrations
+    ServiceCA -.->|"cert → mlflow-tls Secret"| SvcMLflow
+    CABundle -.->|"volume mount"| MLflow
+    OperatorPod -.->|"creates ConsoleLink"| Console
+    Prometheus -.->|"scrapes via ServiceMonitor"| SvcMetrics
+    Prometheus -.->|"scrapes via ServiceMonitor"| SvcMLflow
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef app fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef platform fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    class Client external
+    class Gateway ingress
+    class MLflow,OperatorPod,MigJob,GCJob,SvcMLflow,SvcMetrics app
+    class K8sAPI controlplane
+    class ServiceCA,CABundle,Console,Prometheus platform
+    class DNS,PostgreSQL,MySQL,S3 externalservice

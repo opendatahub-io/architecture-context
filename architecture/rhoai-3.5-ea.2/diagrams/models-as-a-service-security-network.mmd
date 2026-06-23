@@ -1,0 +1,97 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["External Client<br/>Data Scientist"]
+    end
+
+    subgraph Ingress["INGRESS (Gateway API)"]
+        Gateway["maas-default-gateway<br/>443/TCP → HTTPRoute routing<br/>TLS SIMPLE mode<br/>Kuadrant AuthPolicy + TokenRateLimitPolicy"]
+    end
+
+    subgraph PreAuthZone["PRE-AUTH PROCESSING (openshift-ingress)"]
+        PreProc["payload-pre-processing<br/>SA: payload-processing<br/>9004/TCP gRPC<br/>Model header extraction"]
+    end
+
+    subgraph AuthZone["AUTHENTICATION (kuadrant-system)"]
+        Authorino["Authorino<br/>Dual-auth evaluation<br/>API key (priority=0)<br/>OpenShift token (priority=1)"]
+    end
+
+    subgraph PostAuthZone["POST-AUTH PROCESSING (openshift-ingress)"]
+        PostProc["payload-processing<br/>SA: payload-processing<br/>9004/TCP gRPC<br/>API translation + credential injection"]
+    end
+
+    subgraph RateLimitZone["RATE LIMITING"]
+        Limitador["Limitador<br/>80/TCP HTTP<br/>Token-based rate limiting<br/>per subscription"]
+    end
+
+    subgraph InternalServices["INTERNAL SERVICES"]
+        direction TB
+
+        subgraph NS_MaaSAPI["Namespace: maas-api (per-tenant)"]
+            MaaSAPI["maas-api<br/>SA: maas-api<br/>8443/TCP HTTPS<br/>9090/TCP metrics"]
+            InternalValidate["/internal/v1/api-keys/validate<br/>SHA-256 hash validation<br/>Constant-time comparison"]
+            InternalSelect["/internal/v1/subscriptions/select<br/>Subscription selection"]
+        end
+
+        subgraph NS_Controller["Namespace: opendatahub"]
+            Controller["maas-controller<br/>SA: maas-controller<br/>8080/TCP metrics<br/>8081/TCP health"]
+            Webhook["Webhook Service<br/>443→9443/TCP HTTPS<br/>OpenShift service CA<br/>Failure Policy: Fail"]
+        end
+    end
+
+    subgraph Backends["MODEL BACKENDS"]
+        KServe["KServe LLMInferenceService<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer token + X-MaaS-Subscription"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>Connection URL auth<br/>API key storage"]
+        ExternalLLM["External LLM Providers<br/>(OpenAI, Anthropic, etc.)<br/>443/TCP HTTPS TLS 1.2+<br/>API key (from credentialRef Secret)"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS TLS 1.2+<br/>ServiceAccount token"]
+    end
+
+    %% External → Ingress
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token / API Key"| Gateway
+
+    %% Pre-auth processing
+    Gateway -->|"gRPC/9004<br/>Istio mTLS<br/>DestinationRule"| PreProc
+    PreProc -.->|"X-Gateway-Model-Name<br/>header injected"| Gateway
+
+    %% Authentication
+    Gateway -->|"HTTPS/443<br/>TLS"| Authorino
+    Authorino -->|"HTTPS/8443<br/>TLS 1.2+<br/>NetworkPolicy auth"| InternalValidate
+    Authorino -->|"HTTPS/8443<br/>TLS 1.2+<br/>NetworkPolicy auth"| InternalSelect
+    Authorino -.->|"X-MaaS-Username<br/>X-MaaS-Group<br/>X-MaaS-Subscription"| Gateway
+
+    %% Post-auth processing
+    Gateway -->|"gRPC/9004<br/>Istio mTLS<br/>DestinationRule"| PostProc
+    PostProc -.->|"Transformed request<br/>+ injected credentials"| Gateway
+
+    %% Rate limiting
+    Gateway -->|"HTTP/80<br/>No encryption"| Limitador
+
+    %% Backend routing
+    Gateway -->|"HTTPS/443<br/>TLS 1.2+<br/>Injected credentials"| KServe
+    Gateway -->|"HTTPS/443<br/>TLS 1.2+<br/>Provider API key"| ExternalLLM
+
+    %% Internal dependencies
+    MaaSAPI -->|"PostgreSQL/5432<br/>Connection URL"| PostgreSQL
+    MaaSAPI -->|"HTTPS/443<br/>SA token"| K8sAPI
+    Controller -->|"HTTPS/443<br/>SA token"| K8sAPI
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef auth fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef processing fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef backend fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef ratelimit fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    class Client external
+    class Gateway ingress
+    class PreProc,PostProc processing
+    class Authorino auth
+    class MaaSAPI,InternalValidate,InternalSelect,Controller,Webhook internal
+    class KServe backend
+    class PostgreSQL,ExternalLLM,K8sAPI externalservice
+    class Limitador ratelimit

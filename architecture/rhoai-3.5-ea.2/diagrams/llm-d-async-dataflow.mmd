@@ -1,0 +1,63 @@
+sequenceDiagram
+    participant Client as Producer Client
+    participant Redis as Redis<br/>6379/TCP
+    participant AP as Async Processor<br/>(llm-d-async)
+    participant Gate as Flow Control Gate
+    participant Prom as Prometheus<br/>9090/TCP
+    participant IGW as Inference Gateway<br/>80/443 TCP
+    participant vLLM as vLLM Model Server
+
+    Note over Client,vLLM: Flow 1: Async Inference Request (Redis Sorted Set)
+
+    Client->>Redis: ZADD request-sortedset<br/>(score=deadline, JSON payload)<br/>Optional TLS, Password auth
+
+    loop Poll interval (configurable, default 1000ms)
+        AP->>Redis: ZPOPMIN request-sortedset<br/>(batch size, earliest deadline first)<br/>Optional TLS, Password auth
+    end
+
+    AP->>Gate: Budget() - check dispatch allowance
+
+    alt Prometheus-based gate
+        Gate->>Prom: PromQL query<br/>(pool saturation / queue size)<br/>HTTP 9090/TCP
+        Prom-->>Gate: Metric value
+        Gate-->>AP: Budget (0.0 - 1.0)
+    else Redis-based gate
+        Gate->>Redis: GET budget key<br/>6379/TCP
+        Redis-->>Gate: Budget value
+        Gate-->>AP: Budget (0.0 - 1.0)
+    end
+
+    Note over AP: batch = floor(configured_batch x budget)
+
+    AP->>IGW: HTTP POST /inference<br/>JSON payload + x-gateway-inference-objective header<br/>Configurable TLS 1.2+ / optional mTLS
+    IGW->>vLLM: Forward inference request
+    vLLM-->>IGW: Inference result
+    IGW-->>AP: HTTP 200 JSON response
+
+    AP->>Redis: LPUSH result-list<br/>(JSON result)<br/>Optional TLS, Password auth
+
+    Client->>Redis: BRPOP result-{requestID}<br/>(blocking wait for result)<br/>Optional TLS, Password auth
+    Redis-->>Client: JSON result
+
+    Note over Client,vLLM: Flow 2: Retry with Exponential Backoff
+
+    rect rgb(255, 230, 230)
+        AP->>AP: Worker receives retryable error<br/>(429 rate-limit or 5xx server error)
+        AP->>Redis: ZADD retry-sortedset<br/>(score = now + backoff)<br/>Backoff: 2s base, 60s cap, equal jitter
+
+        loop Adaptive poll (1s-30s backoff when idle)
+            AP->>Redis: ZRANGEBYSCORE retry-sortedset<br/>(score <= now) + ZREM (atomic Lua script)
+        end
+
+        AP->>AP: Re-dispatch to request channel
+        Note over AP: Retries until request deadline expires
+    end
+
+    Note over Client,vLLM: Flow 3: Graceful Shutdown (SIGTERM)
+
+    rect rgb(230, 255, 230)
+        Note over AP: SIGTERM received
+        AP->>Redis: Re-enqueue in-flight requests<br/>(ZADD back to request sorted set)
+        AP->>Redis: Flush buffered results<br/>(LPUSH remaining results)
+        Note over AP: Drain context ensures retry + result workers complete
+    end

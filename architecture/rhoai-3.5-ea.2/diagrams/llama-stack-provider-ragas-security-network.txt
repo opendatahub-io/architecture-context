@@ -1,0 +1,124 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]                                                           │
+│         │                                                                    │
+│         │ Port: 8321/TCP                                                     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None                                                   │
+│         │ Auth: None (relies on platform-level auth)                         │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (Pod Network)                                              │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │  Llama Stack Server Pod                                             │     │
+│  │  - Service: ClusterIP 8321/TCP                                      │     │
+│  │  - Namespace: {user-namespace}                                      │     │
+│  │  - ServiceAccount: {llama-stack-sa}                                 │     │
+│  │  - Image: digest-pinned UBI 9 Python 3.12                          │     │
+│  │                                                                     │     │
+│  │  ┌──────────────────────┐  ┌──────────────────────────────────┐    │     │
+│  │  │  Inline Provider     │  │  Remote Provider                 │    │     │
+│  │  │  - In-process eval   │  │  - KFP pipeline submission       │    │     │
+│  │  │  - No network egress │  │  - S3 result retrieval           │    │     │
+│  │  │  - Uses server's     │  │  - Async job tracking            │    │     │
+│  │  │    Inference API     │  │                                  │    │     │
+│  │  └──────────────────────┘  └──────────┬───────────────────────┘    │     │
+│  │                                        │                           │     │
+│  └────────────────────────────────────────┼───────────────────────────┘     │
+│                                            │                                 │
+│         ┌──────────────────────────────────┼──────────────────┐              │
+│         │                                  │                  │              │
+│         ▼                                  ▼                  ▼              │
+│  [Ollama]                          [KFP Pods]         [Kubernetes API]      │
+│  - Port: 11434/TCP                 - Namespace:       - Port: 443/TCP       │
+│  - Protocol: HTTP                    {kfp-namespace}  - Protocol: HTTPS     │
+│  - Encryption: None                - Run in isolated  - Encryption: TLS 1.2+│
+│  - Auth: None                        containers       - Auth: SA token /    │
+│  - Purpose: LLM completions                             kubeconfig          │
+│    and embeddings                                     - Purpose: ConfigMap  │
+│                                                         reads              │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │  KFP Pipeline Pods (Remote Execution)                               │     │
+│  │  - Step 1: retrieve_data                                            │     │
+│  │    - Connects to Llama Stack Server: 8321/TCP HTTP, No Auth         │     │
+│  │  - Step 2: run_ragas_evaluation                                     │     │
+│  │    - Connects to Llama Stack Server: 8321/TCP HTTP, No Auth         │     │
+│  │    - Writes results to S3: 443/TCP HTTPS, AWS IAM                   │     │
+│  │  - Secrets mounted: aws-credentials, kubeflow-pipelines-token       │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                           │
+│                                                                              │
+│  [Kubeflow Pipelines API]                                                    │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: Bearer Token (OpenShift OAuth token from kubeconfig or env var)     │
+│  - Pre-flight: GET /apis/v1beta1/healthz (default TLS, system trust store)   │
+│  - Purpose: Pipeline submission, run status polling, run cancellation         │
+│                                                                              │
+│  [S3-Compatible Storage]                                                     │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: AWS IAM credentials (ACCESS_KEY_ID, SECRET_ACCESS_KEY)              │
+│  - Purpose: Evaluation result storage (write JSONL) and retrieval            │
+│  - Access: From Remote Provider (read) and KFP Step 2 pod (write)            │
+│                                                                              │
+│  [Kubernetes API Server]                                                     │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: ServiceAccount token or kubeconfig credentials                      │
+│  - Purpose: Read trustyai-service-operator-config ConfigMap                  │
+│  - Namespaces queried: redhat-ods-applications, opendatahub                  │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+  No explicit ClusterRoles or RoleBindings defined by this component.
+  Kubernetes API access uses the pod's ServiceAccount or user kubeconfig credentials.
+  Required permissions:
+  - ConfigMap read in redhat-ods-applications or opendatahub namespace
+    (trustyai-service-operator-config)
+  - Inherited from pod ServiceAccount for KFP token retrieval
+
+Secrets:
+  - kubeflow-pipelines-token (Opaque)
+    Purpose: KFP API authentication token
+    Provisioned: Manual (oc login)
+    Auto-Rotate: No
+    NOTE: No token refresh mechanism; TODO in source for expired token handling
+
+  - aws-credentials (Opaque)
+    Keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION
+    Purpose: S3 result storage access
+    Provisioned: Manual
+    Auto-Rotate: No
+    Mounted as env vars in KFP pods via kfp-kubernetes secret_env_var
+
+  - llama-stack-inference-model-secret (Opaque)
+    Keys: URL, API_TOKEN, TLS_VERIFY, MODEL_NAME
+    Purpose: vLLM inference model configuration
+    Provisioned: Manual
+    Auto-Rotate: No
+
+Authentication Summary:
+  - Llama Stack Eval API: No built-in auth (relies on platform-level auth)
+  - Kubeflow Pipelines: Bearer Token (OpenShift OAuth)
+    Source: KUBEFLOW_PIPELINES_TOKEN env var OR kubeconfig api_key["authorization"]
+  - S3 Storage: AWS IAM credentials from Kubernetes Secret
+  - Kubernetes API: ServiceAccount token (in-cluster) or kubeconfig (external)
+
+Security Considerations:
+  - Llama Stack Server exposes HTTP (no TLS) on port 8321 - relies on service mesh
+    or network policy for encryption in transit
+  - KFP bearer token has no refresh mechanism (TODO in source code)
+  - KFP healthz pre-flight uses default requests TLS (system trust store, no custom CA)
+  - Python on UBI 9 inherits FIPS compliance from system OpenSSL
+  - No non-FIPS crypto patterns detected (no MD5, RC4, DES, custom crypto)
+  - Base image UBI 9 Python 3.12 (digest-pinned) but not AIPCC base image

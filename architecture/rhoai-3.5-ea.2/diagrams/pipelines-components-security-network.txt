@@ -1,0 +1,142 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  PIPELINES-COMPONENTS: Security Network Architecture                        │
+│  Component Type: Init Container / Component Library (no long-running svc)   │
+│  Distribution: RHOAI 3.5 EA2                                                │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  INIT CONTAINER (Runs once at pod startup, then exits)                      │
+│                                                                              │
+│  [pipelines-components Init Container]                                       │
+│  - Image: odh-pipelines-components                                           │
+│  - Base: registry.redhat.io/ubi9/python-312                                  │
+│  - Namespace: {dspa-namespace}                                               │
+│  - ServiceAccount: (inherited from KFP API server pod)                       │
+│  - Runs as: Init container in KFP API server Pod (managed by DSPO)           │
+│  - Network: NONE (filesystem-only operation)                                 │
+│         │                                                                    │
+│         │ Path: /config/managed-pipelines                                    │
+│         │ Protocol: Local filesystem (emptyDir volume)                        │
+│         │ Encryption: N/A                                                    │
+│         │ Auth: N/A                                                          │
+│         ▼                                                                    │
+│  [KFP API Server]                                                            │
+│  - Reads: managed-pipelines.json + compiled YAML                             │
+│  - Volume: Shared emptyDir mount                                             │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  PIPELINE RUNTIME PODS (Short-lived, created by KFP Orchestrator)           │
+│                                                                              │
+│  [Pipeline Step Pods]                                                        │
+│  - Images: odh-automl OR odh-autorag (depending on pipeline type)            │
+│  - Base: registry.redhat.io/rhai/base-image-cpu-rhel9 (AIPCC CPU)           │
+│  - Namespace: {user-namespace}                                               │
+│  - ServiceAccount: {pipeline-run-sa}                                         │
+│  - Lifecycle: Created per step, runs to completion, then destroyed            │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐    │
+│  │  EGRESS (Pipeline Runtime → External Services)                       │    │
+│  │                                                                      │    │
+│  │  [1] → S3-compatible Storage                                         │    │
+│  │      Port: 443/TCP                                                   │    │
+│  │      Protocol: HTTPS                                                 │    │
+│  │      Encryption: TLS 1.2+                                            │    │
+│  │      Auth: AWS Signature V4 (credentials from K8s Secret: s3-secret) │    │
+│  │      Purpose: Dataset download, model artifact upload                │    │
+│  │      Used by: AutoML, AutoRAG, Fine-Tuning pipelines                 │    │
+│  │                                                                      │    │
+│  │  [2] → HuggingFace Hub (huggingface.co)                              │    │
+│  │      Port: 443/TCP                                                   │    │
+│  │      Protocol: HTTPS                                                 │    │
+│  │      Encryption: TLS 1.2+                                            │    │
+│  │      Auth: Bearer Token (HF_TOKEN from K8s Secret: hf-token)         │    │
+│  │      Purpose: Model and dataset downloads                            │    │
+│  │      Used by: Fine-Tuning pipelines                                  │    │
+│  │                                                                      │    │
+│  │  [3] → OGX API                                                       │    │
+│  │      Port: 443/TCP                                                   │    │
+│  │      Protocol: HTTPS                                                 │    │
+│  │      Encryption: TLS 1.2+                                            │    │
+│  │      Auth: API key (OGX_CLIENT_API_KEY from K8s Secret: ogx_secret)  │    │
+│  │      Purpose: Embedding generation and indexing                      │    │
+│  │      Used by: AutoRAG pipelines                                      │    │
+│  │                                                                      │    │
+│  │  [4] → KServe InferenceService                                       │    │
+│  │      Port: 80/TCP (internal) or 443/TCP (external)                   │    │
+│  │      Protocol: HTTP/HTTPS                                            │    │
+│  │      Encryption: TLS (when external)                                 │    │
+│  │      Auth: Bearer Token (optional, enforced by KServe/Istio)         │    │
+│  │      Purpose: Model inference for evaluation and RAG                 │    │
+│  │      Used by: EvalHub, RAG pipelines                                 │    │
+│  │                                                                      │    │
+│  │  [5] → Eval Hub API                                                  │    │
+│  │      Port: 443/TCP                                                   │    │
+│  │      Protocol: HTTPS                                                 │    │
+│  │      Encryption: TLS 1.2+                                            │    │
+│  │      Auth: Bearer Token                                              │    │
+│  │      Purpose: Model evaluation benchmarks                            │    │
+│  │      Used by: EvalHub pipeline variants                              │    │
+│  │                                                                      │    │
+│  │  [6] → LiteLLM / SDG Hub                                             │    │
+│  │      Port: 443/TCP                                                   │    │
+│  │      Protocol: HTTPS/gRPC                                            │    │
+│  │      Encryption: TLS 1.2+                                            │    │
+│  │      Auth: API key (LLM_API_KEY from K8s Secret: llm-credentials)    │    │
+│  │      Purpose: Synthetic data generation                              │    │
+│  │      Used by: SDG pipeline                                           │    │
+│  └──────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐    │
+│  │  EGRESS (Pipeline Runtime → In-Cluster Services)                     │    │
+│  │                                                                      │    │
+│  │  [7] → Kubeflow Model Registry                                      │    │
+│  │      Port: 8080/TCP                                                  │    │
+│  │      Protocol: HTTP                                                  │    │
+│  │      Encryption: Plaintext (in-cluster)                              │    │
+│  │      Auth: None                                                      │    │
+│  │      Purpose: Trained model registration                             │    │
+│  │      Used by: Fine-Tuning pipelines                                  │    │
+│  │                                                                      │    │
+│  │  [8] → Milvus Vector DB                                              │    │
+│  │      Port: 19530/TCP                                                 │    │
+│  │      Protocol: gRPC                                                  │    │
+│  │      Encryption: Plaintext (in-cluster)                              │    │
+│  │      Auth: None                                                      │    │
+│  │      Purpose: Vector storage and retrieval                           │    │
+│  │      Used by: RAG pipelines                                          │    │
+│  └──────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No RBAC resources (ClusterRoles, RoleBindings) defined by this component.
+- Pipeline-level RBAC is delegated to the KFP pipeline ServiceAccount, which must
+  be pre-configured by the platform operator with appropriate permissions.
+- EvalHub pipeline variants require additional RBAC:
+  - InferenceService create/delete (serving.kserve.io)
+  - ServingRuntime create/delete (serving.kserve.io)
+
+Secrets:
+- s3-secret (Opaque) - AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, optional: AWS_S3_ENDPOINT, AWS_DEFAULT_REGION | User-provisioned | No auto-rotate
+- hf-token (Opaque) - HF_TOKEN (HuggingFace Hub access token) | User-provisioned | No auto-rotate
+- kubernetes-credentials (Opaque) - KUBERNETES_SERVER_URL, KUBERNETES_AUTH_TOKEN | Platform-provisioned | No auto-rotate
+- oci-pull-secret-model-download (Opaque) - OCI registry pull secret | User-provisioned | No auto-rotate
+- minio-secret (Opaque) - access_key, secret_key | User-provisioned | No auto-rotate
+- llm-credentials (Opaque) - api_key → LLM_API_KEY | User-provisioned | No auto-rotate
+- ogx_secret_name (Opaque) - OGX_CLIENT_BASE_URL, OGX_CLIENT_API_KEY | User-provisioned | No auto-rotate
+
+FIPS Compliance:
+- Python components — no Go binaries, no custom TLS configuration
+- Crypto: cryptography==46.0.7 (links to system OpenSSL, FIPS-capable on RHEL 9)
+- Certificate handling: System trust store from UBI9/AIPCC base image
+- No non-FIPS crypto patterns detected (no MD5, RC4, custom RNG)
+
+Network Security Notes:
+- Init container has NO network access — filesystem-only operation
+- Runtime pods are short-lived (created per pipeline step, destroyed after)
+- In-cluster services (Model Registry, Milvus) use plaintext — no encryption
+- External services all use TLS 1.2+
+- No ingress resources — component does not receive inbound traffic
+- No Kubernetes Services defined — network exposure determined at pipeline runtime

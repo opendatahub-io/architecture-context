@@ -1,0 +1,71 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Platform Gateway<br/>(Istio Envoy)<br/>443/TCP HTTPS TLS 1.2+
+    participant ExtProc as Payload Processing<br/>(ext_proc)<br/>9004/TCP gRPC
+    participant MPR as model-provider-resolver<br/>(in-process plugin)
+    participant APITrans as api-translation<br/>(in-process plugin)
+    participant APIKeyInj as apikey-injection<br/>(in-process plugin)
+    participant NeMoReq as nemo-request-guard<br/>(in-process plugin)
+    participant NeMo as NeMo Guardrails<br/>HTTP
+    participant Provider as External LLM Provider<br/>(via ServiceEntry)<br/>443/TCP HTTPS TLS SIMPLE
+
+    Note over Client,Provider: Flow 1: External Model Inference Request
+
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTPS/443, TLS 1.2+<br/>Auth: Bearer Token (platform)
+
+    Gateway->>ExtProc: Request Processing<br/>gRPC/9004, Istio mTLS
+
+    ExtProc->>MPR: Process Request<br/>(in-process)
+    Note right of MPR: Resolves model name →<br/>provider endpoint + credentials<br/>via CRD in-memory store
+
+    MPR-->>ExtProc: CycleState: provider, endpoint,<br/>auth type, credentials ref
+
+    opt NeMo Guardrails Enabled
+        ExtProc->>NeMoReq: Evaluate Input Rails<br/>(in-process)
+        NeMoReq->>NeMo: POST /v1/guardrail/checks<br/>HTTP, Configurable
+        NeMo-->>NeMoReq: {status: passed/blocked}
+        Note right of NeMoReq: If blocked → 403 Forbidden
+    end
+
+    ExtProc->>APITrans: Translate Request<br/>(in-process)
+    Note right of APITrans: Translates body:<br/>OpenAI → Anthropic/Azure/<br/>Bedrock/Vertex format
+
+    ExtProc->>APIKeyInj: Inject Auth<br/>(in-process)
+    Note right of APIKeyInj: Injects provider credentials:<br/>Bearer Token / SigV4 /<br/>API Key header
+
+    ExtProc-->>Gateway: Mutated Request Headers + Body
+
+    Gateway->>Provider: Forward Request<br/>HTTPS/443, TLS SIMPLE<br/>via ExternalName Service +<br/>ServiceEntry + DestinationRule<br/>Auth: Provider-specific
+
+    Provider-->>Gateway: Provider Response<br/>HTTPS/443
+
+    Gateway->>ExtProc: Response Processing<br/>gRPC/9004, Istio mTLS
+
+    opt NeMo Guardrails Enabled
+        ExtProc->>NeMoReq: Evaluate Output Rails<br/>(in-process)
+        NeMoReq->>NeMo: POST /v1/guardrail/checks<br/>HTTP
+        NeMo-->>NeMoReq: {status: passed/blocked}
+    end
+
+    ExtProc->>APITrans: Translate Response<br/>(in-process)
+    Note right of APITrans: Translates body back<br/>to OpenAI format
+
+    ExtProc-->>Gateway: Mutated Response
+
+    Gateway-->>Client: JSON Response<br/>HTTPS/443, TLS 1.2+
+
+    Note over Client,Provider: Flow 2: ExternalProvider Reconciliation
+
+    participant User as User/Admin
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+
+    User->>K8sAPI: Create ExternalProvider CR<br/>HTTPS/443, TLS 1.2+
+
+    K8sAPI-->>ExtProc: Watch Event<br/>HTTPS/443, ServiceAccount Token
+    Note right of ExtProc: external-provider-controller
+
+    ExtProc->>K8sAPI: Get Secret (credentials)<br/>HTTPS/443, SA Token
+    ExtProc->>K8sAPI: Create ExternalName Service<br/>HTTPS/443, SA Token
+    ExtProc->>K8sAPI: Create ServiceEntry<br/>HTTPS/443, SA Token
+    ExtProc->>K8sAPI: Create DestinationRule<br/>(TLS SIMPLE)<br/>HTTPS/443, SA Token
+    ExtProc->>K8sAPI: Update ExternalProvider Status<br/>HTTPS/443, SA Token

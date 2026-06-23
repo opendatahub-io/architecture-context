@@ -1,0 +1,180 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [ML Client / Python SDK]              [Browser / React UI]                  │
+│         │                                      │                             │
+│         │ Port: 443/TCP                        │ Port: 443/TCP               │
+│         │ Protocol: HTTPS                      │ Protocol: HTTPS             │
+│         │ Encryption: TLS 1.2+                 │ Encryption: TLS 1.2+        │
+│         │ Auth: Bearer Token (JWT)             │ Auth: Bearer Token (JWT)    │
+│         ▼                                      ▼                             │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                               │
+│                                                                              │
+│  [Platform Gateway - HTTPRoute (Gateway API)]                                │
+│  - Port: 443/TCP (external) → 8443/TCP (internal)                           │
+│  - TLS Mode: SIMPLE                                                          │
+│  - TLS Termination: TLS 1.2+                                                 │
+│  - Routing: HTTPRoute rules → MLflow Service                                 │
+│         │                                                                    │
+│         │ Port: 8443/TCP                                                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS                                                    │
+│         │ Auth: Bearer Token forwarded                                       │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  AUTHENTICATION LAYER                                                        │
+│                                                                              │
+│  [kube-rbac-proxy Sidecar]                                                   │
+│  - Listen Port: 8443/TCP (HTTPS)                                             │
+│  - Upstream Port: 5000/TCP (HTTP, localhost)                                 │
+│  - AuthN: Validates Bearer Token (JWT) via Kubernetes TokenReview            │
+│  - AuthZ: Kubernetes SubjectAccessReview (RBAC)                              │
+│  - TLS: Terminates TLS at sidecar                                            │
+│         │                                                                    │
+│         │ Port: 5000/TCP                                                     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (localhost loopback)                              │
+│         │ Auth: Authorized (post-RBAC check)                                │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION LAYER (Trusted - internal)                                      │
+│                                                                              │
+│  [MLflow Tracking Server]                                                    │
+│  - Namespace: {mlflow-namespace}                                             │
+│  - ServiceAccount: mlflow                                                    │
+│  - Image: RHOAI MLflow (UBI9-minimal based)                                 │
+│  - Listen Port: 5000/TCP (HTTP)                                              │
+│  - Security Context:                                                         │
+│    - runAsNonRoot: true                                                      │
+│    - runAsUser: 1000                                                         │
+│    - readOnlyRootFilesystem: true                                            │
+│    - allowPrivilegeEscalation: false                                         │
+│    - capabilities: drop ALL                                                  │
+│    - seccompProfile: RuntimeDefault                                          │
+│  - App-level Auth: Workspace-scoped RBAC (roles, permissions per resource)  │
+│  - Crypto: AES-256-GCM envelope encryption (PBKDF2-HMAC-SHA256 600K iter)  │
+│                                                                              │
+│  Internal APIs:                                                              │
+│  - /api/2.0/mlflow/*           RBAC (workspace-scoped)                      │
+│  - /api/3.0/mlflow/users/*     Admin RBAC                                   │
+│  - /api/3.0/mlflow/roles/*     Admin RBAC                                   │
+│  - /graphql                    RBAC                                          │
+│  - /gateway/*/invocations      RBAC                                          │
+│  - /v1/traces                  None (OTLP standard)                          │
+│  - /health, /version           None (public)                                 │
+│  - /metrics                    None (Prometheus scrape)                      │
+│                                                                              │
+│  [Huey Task Queue]                                                           │
+│  - Communication: Shared SQLite in /dev/shm                                  │
+│  - Protocol: File I/O                                                        │
+│  - Encryption: None (in-memory filesystem)                                   │
+│         │                                                                    │
+│         │                                                                    │
+├─────────┼────────────────────────────────────────────────────────────────────┤
+│  EGRESS │ (Outbound connections)                                             │
+│         │                                                                    │
+│         ├──────────────────────────────────┐                                 │
+│         │                                  │                                 │
+│         ▼                                  ▼                                 │
+│  [PostgreSQL]                       [Kubernetes API]                         │
+│  - Port: 5432/TCP                   - Port: 6443/TCP                         │
+│  - Protocol: PostgreSQL wire        - Protocol: HTTPS                        │
+│  - Encryption: None (in-cluster)    - Encryption: TLS 1.2+                   │
+│  - Auth: Password (from Secret)     - Auth: ServiceAccount token             │
+│  - Purpose: Backend store           - Purpose: Workspace store               │
+│    (experiments, runs, metrics,       (kubernetes:// URI scheme)              │
+│     models, auth, workspaces)                                                │
+│         │                                                                    │
+│         ├──────────────────────────────────┐                                 │
+│         │                                  │                                 │
+│         ▼                                  ▼                                 │
+│  [S3/MinIO]                         [LLM Providers]                          │
+│  - Port: 9000/TCP, 443/TCP         - Port: 443/TCP                           │
+│  - Protocol: HTTPS                  - Protocol: HTTPS                        │
+│  - Encryption: TLS 1.2+            - Encryption: TLS 1.2+                    │
+│  - Auth: AWS IAM / Access Key       - Auth: API Key (Bearer)                │
+│  - Purpose: Artifact storage        - Purpose: AI Gateway proxy              │
+│    (models, datasets, logs)           (OpenAI, Anthropic, Bedrock)           │
+│         │                                                                    │
+│         ▼                                                                    │
+│  [DNS]                                                                       │
+│  - Port: 53/UDP, 53/TCP, 5353/UDP, 5353/TCP                                │
+│  - Protocol: DNS                                                             │
+│  - Encryption: None                                                          │
+│  - Auth: None                                                                │
+│  - Purpose: Name resolution (CoreDNS/OVN-K)                                │
+│  - Note: Ports 5353 for OVN-Kubernetes post-DNAT                            │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  MODULE FEDERATION (Internal)                                                │
+│                                                                              │
+│  [EvalHub Dashboard]                                                         │
+│  - Protocol: HTTP (Webpack Module Federation)                                │
+│  - Purpose: Embeds MLflow UI components                                      │
+│    (compare runs view, trace detail view)                                    │
+│  - Direction: EvalHub pulls federated modules from MLflow React UI          │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  MONITORING (Internal)                                                       │
+│                                                                              │
+│  [Prometheus]                                                                │
+│  - Port: 5000/TCP                                                            │
+│  - Protocol: HTTP                                                            │
+│  - Encryption: Optional TLS                                                  │
+│  - Auth: None                                                                │
+│  - Purpose: Scrapes /metrics endpoint (ServiceMonitor)                      │
+│                                                                              │
+│  [OTEL Agent]                                                                │
+│  - Port: 5000/TCP                                                            │
+│  - Protocol: HTTP                                                            │
+│  - Encryption: None                                                          │
+│  - Auth: None                                                                │
+│  - Endpoint: POST /v1/traces (protobuf + JSON)                              │
+│  - Purpose: OTLP HTTP trace ingestion                                       │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- MLflow Helm chart does not create RBAC by default
+- Roles created only when namespace_rbac.extraRules or cluster_rbac.extraRules configured
+- In RHOAI, RBAC is managed by the platform operator (rhods-operator)
+- Application-level RBAC: workspace-scoped roles and permissions
+  - Per-resource permissions: experiments, runs, registered-models
+  - Admin-only endpoints: user management, role management, permission grant/revoke
+
+Authentication Layers:
+1. Platform Gateway (TLS termination, HTTPRoute routing)
+2. kube-rbac-proxy sidecar (JWT validation via Kubernetes TokenReview + SubjectAccessReview)
+3. MLflow app-level RBAC (workspace-scoped roles and permissions per resource)
+4. OTLP /v1/traces endpoint: No auth (OTLP standard - open for trace ingestion)
+
+Secrets:
+- mlflow-tls (kubernetes.io/tls) - TLS cert/key for HTTPS, cert-manager/manual, No auto-rotate
+- mlflow-db-secret (Opaque) - PostgreSQL connection URI, platform operator/manual, No auto-rotate
+- MLFLOW_CRYPTO_KEK_PASSPHRASE (env var) - KEK for AES-256-GCM envelope encryption, platform operator
+- MLFLOW_FLASK_SERVER_SECRET_KEY (env var) - Flask session cookie signing key, platform operator
+
+Encryption Summary:
+- External ingress: TLS 1.2+ (Platform Gateway)
+- Auth proxy: TLS (kube-rbac-proxy on 8443)
+- Internal app: HTTP (plaintext on 5000, localhost only)
+- Database: Plaintext PostgreSQL wire protocol (in-cluster)
+- Artifact storage: TLS 1.2+ (S3/MinIO HTTPS)
+- Kubernetes API: TLS 1.2+ (6443 HTTPS)
+- LLM Providers: TLS 1.2+ (443 HTTPS)
+- Secrets at rest: AES-256-GCM with PBKDF2-HMAC-SHA256 (600,000 iterations)
+
+FIPS Compliance:
+- Python cryptography library (v43+) uses OpenSSL backend on UBI9
+- FIPS compliance inherited from host OS FIPS mode
+- No non-FIPS crypto detected (no MD5/RC4/DES in production code)
+- AES-256-GCM with PBKDF2-HMAC-SHA256 used for envelope encryption
+
+Pod Security:
+- runAsNonRoot: true
+- runAsUser: 1000
+- readOnlyRootFilesystem: true
+- allowPrivilegeEscalation: false
+- capabilities: drop ALL
+- seccompProfile: RuntimeDefault

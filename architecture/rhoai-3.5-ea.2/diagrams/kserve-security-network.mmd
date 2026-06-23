@@ -1,0 +1,118 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["External Client"]
+    end
+
+    subgraph Ingress["INGRESS (Gateway / DMZ)"]
+        Gateway["Istio Gateway / OpenShift Router<br/>443/TCP → 80/TCP, 8080/TCP<br/>TLS 1.2+ (SIMPLE)<br/>Auth: Bearer Token (optional)"]
+        EPP["EPP Scheduler<br/>gRPC ExtProc<br/>mTLS (Istio)<br/>InferencePool routing"]
+    end
+
+    subgraph ClusterInternal["CLUSTER INTERNAL"]
+        direction TB
+
+        subgraph NS_KServe["Namespace: kserve"]
+            CtrlMgr["kserve-controller-manager<br/>SA: kserve-controller-manager<br/>8080/TCP metrics (kube-rbac-proxy)<br/>9443/TCP webhooks (TLS cert-manager)<br/>8081/TCP health"]
+            LLMCtrl["llmisvc-controller<br/>SA: kserve-controller-manager<br/>8443/TCP secure metrics (TLS)<br/>9443/TCP webhooks (TLS cert-manager)<br/>8081/TCP health"]
+            LMCtrl["localmodel-controller<br/>8080/TCP metrics<br/>9443/TCP webhooks (TLS)<br/>8081/TCP health"]
+            ModuleCtrl["kserve-module-controller<br/>8081/TCP health<br/>CGO_ENABLED=0 (no FIPS)"]
+            WebhookSvc["kserve-webhook-server-service<br/>ClusterIP 443→9443 HTTPS"]
+            MetricsSvc["metrics-service<br/>ClusterIP 8443→8443 HTTPS"]
+        end
+
+        subgraph NS_User["Namespace: {user-namespace}"]
+            subgraph ServingPod["Model Serving Pod"]
+                InitStorageInit["init: storage-initializer<br/>Python 3.11<br/>No listener"]
+                SidecarAgent["sidecar: kserve-agent<br/>9081/TCP HTTP<br/>9083/TCP log marshaller"]
+                MainModel["main: Model Server<br/>8080/TCP HTTP"]
+                OptAuthProxy["optional: oauth-proxy<br/>8443/TCP HTTPS<br/>OpenShift OAuth + SAR"]
+            end
+            PredSvc["{isvc}-predictor Service<br/>ClusterIP 80→8080 HTTP"]
+            AuthSvc["{isvc}-predictor (auth)<br/>ClusterIP 443→8443 HTTPS"]
+            HeadSvc["{isvc}-head Headless<br/>(multi-node)"]
+        end
+
+        subgraph NS_Nodes["Each Node"]
+            LMNodeAgent["localmodelnode-agent<br/>8080/TCP metrics<br/>8081/TCP health"]
+            NodePV["Node-Local PV<br/>(model cache)"]
+        end
+    end
+
+    subgraph ExternalDeps["EXTERNAL DEPENDENCIES (Cluster)"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>SA Token Auth"]
+        Knative["Knative Serving<br/>443/TCP HTTPS<br/>SA Token Auth"]
+        Istio["Istio Control Plane<br/>443/TCP HTTPS<br/>SA Token Auth"]
+        CertMgr["cert-manager<br/>Certificate CRDs"]
+        KEDA["KEDA<br/>443/TCP HTTPS<br/>ScaledObject CRDs"]
+        OTelOp["OTel Operator<br/>443/TCP HTTPS"]
+        GatewayAPI["Gateway API<br/>HTTPRoute/Gateway CRDs"]
+    end
+
+    subgraph ExternalStorage["EXTERNAL SERVICES (Egress)"]
+        S3["S3 Storage<br/>443/TCP HTTPS TLS 1.2+<br/>AWS IAM / Access Key"]
+        GCS["Google Cloud Storage<br/>443/TCP HTTPS TLS 1.2+<br/>GCP Service Account"]
+        Azure["Azure Blob Storage<br/>443/TCP HTTPS TLS 1.2+<br/>Azure Identity"]
+        HF["HuggingFace Hub<br/>443/TCP HTTPS TLS 1.2+<br/>HF Token (optional)"]
+        HDFS["HDFS Clusters<br/>Various<br/>Kerberos (krb5)"]
+        LogSink["Inference Logger<br/>HTTP/HTTPS<br/>Bearer Token (optional)"]
+        OTelCollector["OTel Collector<br/>4317/TCP gRPC"]
+    end
+
+    %% External to Ingress
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Gateway
+
+    %% Ingress to Services
+    Gateway -->|"HTTP/80<br/>cluster internal"| PredSvc
+    Gateway -->|"gRPC ExtProc<br/>mTLS"| EPP
+    EPP -->|"HTTP/8080<br/>optimal pod select"| MainModel
+    Gateway -->|"HTTPS/443<br/>OAuth"| AuthSvc
+
+    %% Service to Pod
+    PredSvc -->|"HTTP/9081"| SidecarAgent
+    SidecarAgent -->|"HTTP/8080<br/>reverse proxy"| MainModel
+
+    %% Controller to K8s API
+    CtrlMgr -->|"HTTPS/443<br/>SA Token"| K8sAPI
+    LLMCtrl -->|"HTTPS/443<br/>SA Token"| K8sAPI
+    LMCtrl -->|"HTTPS/443<br/>SA Token"| K8sAPI
+
+    %% Controller to External Deps
+    CtrlMgr -->|"HTTPS/443"| Knative
+    CtrlMgr -->|"HTTPS/443"| Istio
+    CtrlMgr -->|"HTTPS/443"| KEDA
+    CtrlMgr -->|"HTTPS/443"| OTelOp
+    LLMCtrl -->|"HTTPS/443"| GatewayAPI
+    LLMCtrl -->|"HTTPS/443"| Istio
+
+    %% Storage Egress
+    InitStorageInit -->|"HTTPS/443<br/>TLS 1.2+<br/>Cloud Creds"| S3
+    InitStorageInit -->|"HTTPS/443<br/>TLS 1.2+"| GCS
+    InitStorageInit -->|"HTTPS/443<br/>TLS 1.2+"| Azure
+    InitStorageInit -->|"HTTPS/443<br/>TLS 1.2+"| HF
+    InitStorageInit -->|"Various<br/>Kerberos"| HDFS
+
+    %% Agent Egress
+    SidecarAgent -->|"HTTP/S<br/>Bearer Token"| LogSink
+    MainModel -->|"gRPC/4317"| OTelCollector
+
+    %% LocalModel
+    LMCtrl -->|"HTTPS/443<br/>Create PV/PVC"| K8sAPI
+    LMNodeAgent -->|"HTTPS/443<br/>Create Jobs"| K8sAPI
+    LMNodeAgent -.->|"download"| NodePV
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef controller fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    classDef serving fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef extdep fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef extstorage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef webhook fill:#e74c3c,stroke:#333,stroke-width:2px,color:#fff
+
+    class Client external
+    class Gateway,EPP ingress
+    class CtrlMgr,LLMCtrl,LMCtrl,ModuleCtrl,LMNodeAgent controller
+    class InitStorageInit,SidecarAgent,MainModel,OptAuthProxy,PredSvc,AuthSvc,HeadSvc serving
+    class K8sAPI,Knative,Istio,CertMgr,KEDA,OTelOp,GatewayAPI extdep
+    class S3,GCS,Azure,HF,HDFS,LogSink,OTelCollector extstorage
+    class WebhookSvc,MetricsSvc webhook

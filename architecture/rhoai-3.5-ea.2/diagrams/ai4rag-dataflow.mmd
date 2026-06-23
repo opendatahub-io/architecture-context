@@ -1,0 +1,79 @@
+sequenceDiagram
+    participant Consumer as Consuming Service<br/>(KFP / CLI / Notebook)
+    participant Exp as AI4RAGExperiment
+    participant MPS as ModelsPreSelector
+    participant SS as SearchSpace
+    participant GAM as GAMOptimizer
+    participant Chunker as Chunker<br/>(LangChain / Docling)
+    participant Eval as UnitxtEvaluator
+    participant OGX as OGX Server<br/>HTTPS / TLS 1.2+<br/>API Key Auth
+    participant Chroma as ChromaDB<br/>(in-memory)
+
+    Note over Consumer,Chroma: Flow 1: RAG Optimization Experiment
+
+    Consumer->>Exp: start experiment<br/>(template, search_space, benchmark)
+    Exp->>SS: prepare_search_space_with_ogx()
+    SS->>OGX: GET models.list<br/>HTTPS / API Key
+    OGX-->>SS: available models
+    SS->>SS: apply 7 constraint rules<br/>(prune invalid combos)
+
+    Note over Exp,Chroma: Models Pre-Selection (MPS) Phase
+
+    alt >3 foundation models or >2 embedding models
+        Exp->>MPS: pre-select models<br/>(5 sample questions)
+        loop For each model pair
+            MPS->>OGX: POST embeddings.create<br/>HTTPS / API Key
+            OGX-->>MPS: embeddings
+            MPS->>Chroma: store chunks (in-memory)
+            MPS->>OGX: POST vector_io.query<br/>HTTPS / API Key
+            OGX-->>MPS: retrieval results
+            MPS->>OGX: POST chat.completions<br/>HTTPS / API Key
+            OGX-->>MPS: generated answer
+            MPS->>Eval: evaluate (unitxt)
+            Eval-->>MPS: score
+        end
+        MPS-->>Exp: top foundation + embedding models
+    end
+
+    Note over Exp,Chroma: HPO Optimization Phase
+
+    Exp->>GAM: initialize optimizer<br/>(search space, known observations)
+
+    loop For each iteration
+        GAM->>GAM: predict best params<br/>(GAM model after n_random=4)
+        GAM->>Exp: next parameter combination
+
+        Note over Exp,OGX: Single RAG Pattern Evaluation
+        Exp->>Chunker: chunk documents<br/>(in-process)
+        Chunker-->>Exp: chunks (with SHA-256 dedup)
+
+        alt Collection not reused
+            Exp->>OGX: POST vector_stores.create<br/>HTTPS / API Key
+            OGX-->>Exp: collection created
+            Exp->>OGX: POST embeddings.create + vector_io.insert<br/>HTTPS / API Key
+            OGX-->>Exp: chunks indexed
+        else Same indexing params (reuse collection)
+            Note over Exp,OGX: Skip re-indexing (collection reuse optimization)
+        end
+
+        Exp->>OGX: POST vector_io.query<br/>HTTPS / API Key
+        OGX-->>Exp: retrieved context chunks
+        Exp->>OGX: POST chat.completions<br/>HTTPS / API Key
+        OGX-->>Exp: generated answer
+        Exp->>Eval: evaluate<br/>(answer_correctness,<br/>faithfulness,<br/>context_correctness)
+        Eval-->>Exp: aggregated score
+        Exp->>GAM: report score
+        Exp->>Consumer: event: pattern evaluated<br/>(via EventHandler)
+    end
+
+    GAM-->>Exp: best parameters found
+    Exp-->>Consumer: ExperimentResults<br/>(best pattern, all evaluations)
+
+    Note over Consumer,Chroma: Flow 2: Post-Optimization Inference
+
+    Consumer->>Exp: SimpleRAG.generate(query)
+    Exp->>OGX: POST vector_io.query<br/>HTTPS / API Key
+    OGX-->>Exp: relevant chunks
+    Exp->>OGX: POST chat.completions<br/>HTTPS / API Key
+    OGX-->>Exp: generated answer
+    Exp-->>Consumer: answer + context

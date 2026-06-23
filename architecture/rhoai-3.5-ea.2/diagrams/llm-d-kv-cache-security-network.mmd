@@ -1,0 +1,74 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: HF_TOKEN (optional)"]
+        S3["S3 / MinIO<br/>Object Storage<br/>9000/TCP HTTP/HTTPS<br/>Optional TLS<br/>Auth: AWS IAM"]
+        OTLPExt["OTLP Collector<br/>4317/TCP gRPC<br/>⚠ No TLS (insecure)<br/>Auth: None"]
+    end
+
+    subgraph ClusterNetwork["CLUSTER NETWORK (No Service Mesh Enforced)"]
+        direction TB
+
+        subgraph KVCachePod["KV Cache Manager Pod"]
+            direction TB
+            Indexer["KV Cache Indexer (Go)<br/>8080/TCP HTTP | 50051/TCP gRPC<br/>⚠ No encryption<br/>⚠ No auth"]
+            Tokenizer["UDS Tokenizer (Python)<br/>8082/TCP HTTP (health)<br/>UDS: tokenizer-uds.socket<br/>gRPC over UDS<br/>Auth: socket perms 0o700"]
+            UDSVol["emptyDir Volume<br/>(UDS socket)"]
+            Indexer -->|"gRPC / UDS<br/>⚠ No encryption"| UDSVol
+            UDSVol -->|"socket 0o700"| Tokenizer
+        end
+
+        subgraph vLLMPods["vLLM Inference Pods"]
+            direction TB
+            vLLMEngine["vLLM Engine<br/>8000/TCP HTTP<br/>5557/TCP ZMQ PUB<br/>⚠ No encryption<br/>⚠ No auth"]
+            FSBackend["fs_backend Plugin<br/>C++/CUDA Extension<br/>5559/TCP ZMQ PUB (optional)<br/>⚠ No encryption"]
+        end
+
+        subgraph StorageLayer["Shared Storage"]
+            SharedPVC["Shared PVC<br/>ReadWriteMany<br/>POSIX Filesystem<br/>⚠ No encryption at transport"]
+        end
+
+        subgraph EvictorPod["PVC Evictor Pod"]
+            Evictor["PVC Evictor Daemon<br/>No network services<br/>Filesystem I/O only<br/>Optional: ZMQ PUB 5559/TCP"]
+        end
+
+        subgraph RedisCluster["Redis (Optional)"]
+            Redis["Redis / Valkey<br/>6379/TCP Redis protocol<br/>⚠ No encryption<br/>⚠ No auth<br/>Service: redis-lookup-server :8100"]
+        end
+
+        subgraph GatewayPod["Gateway Pod"]
+            Gateway["llm-d-inference-scheduler<br/>In-process Go import<br/>(no network boundary)"]
+        end
+
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS<br/>Auth: ServiceAccount token"]
+        Prometheus["Prometheus<br/>Scrapes 8080/TCP<br/>HTTP /metrics<br/>⚠ No auth"]
+    end
+
+    %% External egress flows
+    Tokenizer -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN (optional)"| HFHub
+    FSBackend -->|"HTTP(S)/9000<br/>Optional TLS<br/>AWS IAM"| S3
+    Indexer -->|"gRPC/4317<br/>⚠ Insecure (no TLS)"| OTLPExt
+
+    %% Internal flows
+    vLLMEngine -->|"ZMQ PUB/5557<br/>⚠ No encryption<br/>⚠ No auth"| Indexer
+    Gateway -->|"In-process<br/>Go function call"| Indexer
+    Indexer -->|"Redis/6379<br/>⚠ No encryption<br/>⚠ No auth"| Redis
+
+    FSBackend -->|"POSIX I/O<br/>cudaMemcpy/GDS"| SharedPVC
+    Evictor -->|"POSIX I/O<br/>statvfs + rm"| SharedPVC
+
+    Indexer -->|"HTTPS/443<br/>TLS<br/>SA token"| K8sAPI
+    Prometheus -->|"HTTP/8080<br/>⚠ No auth"| Indexer
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef warning fill:#fff3cd,stroke:#ffc107,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef danger fill:#f8d7da,stroke:#dc3545,stroke-width:2px
+
+    class HFHub,S3 external
+    class OTLPExt danger
+    class Indexer,vLLMEngine,FSBackend,Evictor warning
+    class Tokenizer internal
+    class SharedPVC,Redis storage
+    class Gateway,K8sAPI,Prometheus internal

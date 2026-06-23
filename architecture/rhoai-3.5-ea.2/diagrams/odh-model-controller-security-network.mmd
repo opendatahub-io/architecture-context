@@ -1,0 +1,107 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["External Client<br/>Data Scientist"]
+    end
+
+    subgraph IngressRoutes["INGRESS - OpenShift Routes (KServe Raw Mode)"]
+        OSRoute["OpenShift Route<br/>{isvc-name}<br/>443/TCP → 8080/TCP<br/>TLS edge/reencrypt"]
+    end
+
+    subgraph IngressGateway["INGRESS - Gateway API (LLM Inference)"]
+        EnvoyGW["Envoy Gateway<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AuthPolicy (Kuadrant)"]
+    end
+
+    subgraph ClusterInternal["CLUSTER INTERNAL (opendatahub namespace)"]
+        direction TB
+
+        subgraph ControllerPod["odh-model-controller Pod"]
+            Controller["Controller Manager<br/>SA: system:odh-model-controller"]
+            WebhookSvr["Webhook Server<br/>9443/TCP HTTPS<br/>OpenShift service-ca TLS"]
+            CtrlMetrics["Metrics<br/>8080/TCP HTTP"]
+            CtrlHealth["Health Probes<br/>8081/TCP HTTP"]
+        end
+
+        subgraph APIPod["model-serving-api Pod"]
+            APIServer["API Server<br/>SA: system:model-serving-api<br/>8443/TCP HTTPS<br/>FIPS TLS 1.2+<br/>P-256/P-384 curves"]
+            APIMetrics["Metrics<br/>8080/TCP HTTPS"]
+        end
+    end
+
+    subgraph AuthZone["AUTHENTICATION ZONE"]
+        AuthorinoSvc["Authorino<br/>NS: kuadrant-system<br/>TLS (EnvoyFilter bootstrap)"]
+    end
+
+    subgraph UserNS["USER NAMESPACE ({user-namespace})"]
+        ISvcPod["Inference Service Pod<br/>8080/TCP"]
+        LLMPod["LLM Inference Pod<br/>8080/TCP"]
+        RayHead["Ray Head Node<br/>mTLS (ray-tls)"]
+        RayWorker["Ray Worker Node<br/>mTLS (ray-tls)"]
+    end
+
+    subgraph PlatformServices["PLATFORM SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+"]
+        Prometheus["Prometheus<br/>OpenShift Monitoring"]
+        Dashboard["RHOAI Dashboard"]
+        CertManager["cert-manager /<br/>OpenShift service-ca"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
+        NGC["NVIDIA NGC API<br/>api.ngc.nvidia.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: NGC API key"]
+        NVCR["NVIDIA Registry<br/>nvcr.io<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Registry token"]
+        NVAuth["NVIDIA Auth<br/>authn.nvidia.com<br/>443/TCP HTTPS TLS 1.2+"]
+        ModelReg["Model Registry<br/>configurable port<br/>HTTP/HTTPS TLS 1.2+<br/>Auth: Bearer token"]
+    end
+
+    %% External to Ingress
+    Client -->|"HTTPS/443<br/>TLS edge/reencrypt<br/>Per-route auth"| OSRoute
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer token"| EnvoyGW
+
+    %% Ingress to pods
+    OSRoute -->|"HTTP/8080<br/>None or mTLS"| ISvcPod
+    EnvoyGW -->|"TLS<br/>mTLS via EnvoyFilter"| AuthorinoSvc
+    AuthorinoSvc -.->|"Token validated"| EnvoyGW
+    EnvoyGW -->|"HTTP/8080<br/>pod network<br/>AuthPolicy verified"| LLMPod
+
+    %% Controller to K8s API
+    Controller -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    APIServer -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token + User Bearer"| K8sAPI
+
+    %% K8s API to Webhook
+    K8sAPI -->|"HTTPS/443→9443<br/>mTLS<br/>Webhook TLS"| WebhookSvr
+
+    %% Dashboard to API
+    Dashboard -->|"HTTPS/443→8443<br/>TLS 1.2+ FIPS<br/>Bearer token"| APIServer
+
+    %% Prometheus scraping
+    Prometheus -->|"HTTP/8080<br/>No auth"| CtrlMetrics
+    Prometheus -->|"HTTPS/8080<br/>TLS 1.2+<br/>Bearer token"| APIMetrics
+
+    %% Controller to external
+    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>NGC API key"| NGC
+    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>Registry token"| NVCR
+    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>NGC API key"| NVAuth
+    Controller -.->|"HTTP(S)<br/>TLS configurable<br/>Bearer token"| ModelReg
+
+    %% Ray TLS
+    RayHead <-->|"gRPC<br/>mTLS (Ray TLS)<br/>4096-bit RSA certs"| RayWorker
+
+    %% Cert provisioning
+    CertManager -.->|"TLS cert provisioning"| WebhookSvr
+    CertManager -.->|"TLS cert provisioning"| APIServer
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef auth fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef userns fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef extsvc fill:#f8cecc,stroke:#b85450,stroke-width:2px
+
+    class Client external
+    class OSRoute,EnvoyGW ingress
+    class Controller,WebhookSvr,CtrlMetrics,CtrlHealth,APIServer,APIMetrics internal
+    class AuthorinoSvc auth
+    class ISvcPod,LLMPod,RayHead,RayWorker userns
+    class K8sAPI,Prometheus,Dashboard,CertManager platform
+    class NGC,NVCR,NVAuth,ModelReg extsvc

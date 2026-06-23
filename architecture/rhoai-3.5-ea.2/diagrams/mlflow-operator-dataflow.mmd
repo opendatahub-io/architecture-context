@@ -1,0 +1,46 @@
+sequenceDiagram
+    participant Admin as Platform Operator
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Operator as mlflow-operator<br/>controller-runtime
+    participant Helm as Helm Engine<br/>(in-process)
+    participant Client as External Client
+    participant Gateway as data-science-gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant MLflow as MLflow Server<br/>8443/TCP HTTPS TLS (service-ca)
+    participant DB as PostgreSQL/MySQL<br/>5432/TCP or 3306/TCP TLS
+    participant S3 as S3-compatible Storage<br/>443/TCP or 9000/TCP HTTPS
+    participant MigJob as Migration Job Pod
+
+    Note over Admin,S3: Flow 1: MLflow CR Reconciliation
+    Admin->>K8sAPI: Create/Update MLflow CR
+    K8sAPI->>Operator: Watch event (MLflow CR changed)
+    Operator->>Helm: Convert CR spec to Helm values
+    Helm-->>Operator: Rendered K8s manifests (unstructured)
+    Operator->>K8sAPI: Server-Side Apply (Deployment, Service,<br/>HTTPRoute, NetworkPolicy, ConsoleLink,<br/>ServiceMonitor, RBAC, PVC)
+    K8sAPI-->>Operator: Applied successfully
+    K8sAPI->>MLflow: Schedule MLflow pods (Deployment)
+
+    Note over Client,S3: Flow 2: External Client Access via Gateway API
+    Client->>Gateway: GET/POST /mlflow/...<br/>HTTPS TLS 1.2+<br/>Auth: Bearer Token (Kubernetes)
+    Gateway->>MLflow: Forward to mlflow:8443<br/>HTTPS TLS (service-ca)<br/>URL rewrite: /mlflow/v1 -> /v1
+    MLflow->>K8sAPI: SelfSubjectAccessReview<br/>HTTPS TLS 1.2+<br/>Auth: ServiceAccount Token
+    K8sAPI-->>MLflow: Authorization decision
+    MLflow->>DB: Query/Store metadata<br/>PostgreSQL/MySQL<br/>TLS (configurable via PGSSLMODE)
+    DB-->>MLflow: Query results
+    MLflow->>S3: Store/Retrieve artifacts<br/>HTTPS TLS 1.2+<br/>Auth: AWS IAM credentials
+    S3-->>MLflow: Artifact data
+    MLflow-->>Gateway: JSON/HTML Response
+    Gateway-->>Client: Response
+
+    Note over Operator,DB: Flow 3: Database Migration (on version change)
+    Operator->>K8sAPI: Scale Deployment to 0 replicas<br/>HTTPS TLS 1.2+
+    K8sAPI-->>Operator: Scaled down
+    Operator->>Operator: Wait for existing pods to terminate
+    Operator->>K8sAPI: Create migration Job<br/>(derived from Deployment pod spec)
+    K8sAPI->>MigJob: Schedule migration Job pod
+    MigJob->>DB: mlflow db upgrade (Alembic)<br/>PostgreSQL/MySQL TLS
+    DB-->>MigJob: Migration complete
+    MigJob-->>K8sAPI: Job succeeded (exit code 0)
+    K8sAPI-->>Operator: Job completion event
+    Operator->>K8sAPI: Restore Deployment replicas<br/>HTTPS TLS 1.2+
+    K8sAPI-->>Operator: Scaled up
+    K8sAPI->>MLflow: Schedule new MLflow pods

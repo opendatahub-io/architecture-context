@@ -1,0 +1,163 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]                                                           │
+│         │                                                                    │
+│         │ Port: 8000/TCP (via Gateway)                                       │
+│         │ Protocol: HTTP or HTTPS                                            │
+│         │ Encryption: Optional TLS (cert-manager or manual)                  │
+│         │ Auth: Bearer Token (optional, pass-through)                        │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway API)                                                       │
+│                                                                              │
+│  [HTTPRoute → Gateway]                                                       │
+│  - Type: Gateway API HTTPRoute                                               │
+│  - Port: 8000/TCP → backend Service                                          │
+│  - TLS: Depends on Gateway listener configuration                            │
+│  - Hosts: Configurable via parentRefs                                        │
+│         │                                                                    │
+│         │ Port: 8000/TCP                                                     │
+│         │ Protocol: HTTP or HTTPS                                            │
+│         │ Encryption: Optional TLS (cert-manager Certificate CR)             │
+│         │ Auth: None (app-level Bearer pass-through)                         │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE (redhat-ods-applications / opendatahub)                  │
+│                                                                              │
+│  [LLM-D Batch Gateway Operator]                                              │
+│  - ServiceAccount: llm-d-batch-gateway-operator                              │
+│  - Ports: 8081/TCP (health), 8443/TCP (metrics)                              │
+│  - Image: Pinned via params.env (platform-controlled)                        │
+│  - Leader Election: ConfigMap-based (operator namespace)                     │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, UBI9                │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: ServiceAccount token                                         │
+│         ▼                                                                    │
+│  [Kubernetes API Server]                                                     │
+│  - Operations: CRUD on managed resources via Server-Side Apply               │
+│  - Watch: LLMBatchGateway CRs, Secrets, ReferenceGrants                     │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  MANAGED WORKLOADS (CR namespace, per LLMBatchGateway)                       │
+│                                                                              │
+│  [API Server Deployment]                                                     │
+│  - Port: 8000/TCP (API), 8081/TCP (health/metrics)                           │
+│  - Protocol: HTTP or HTTPS                                                   │
+│  - Encryption: Optional TLS (cert-manager or manual secret)                  │
+│  - Auth: Bearer Token pass-through                                           │
+│  - Endpoints: /v1/batches, /v1/files                                         │
+│  - X-MaaS-Username header used as tenant identifier                          │
+│         │                                                                    │
+│  [Processor Deployment]                                                      │
+│  - Port: 9090/TCP (health/metrics)                                           │
+│  - Concurrency: AIMD adaptive control                                        │
+│  - No inbound API traffic (worker pattern)                                   │
+│         │                                                                    │
+│  [Garbage Collector Deployment]                                              │
+│  - Port: 9091/TCP (health/metrics)                                           │
+│  - Periodic cleanup (cron-like worker)                                       │
+│  - No inbound API traffic                                                    │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS TO EXTERNAL SERVICES                                                 │
+│                                                                              │
+│  [PostgreSQL] ◄── All managed components                                     │
+│  - Port: 5432/TCP                                                            │
+│  - Protocol: TCP                                                             │
+│  - Encryption: Optional TLS (configurable)                                   │
+│  - Auth: Connection URL from Secret (postgresql-url)                         │
+│  - Purpose: Job state storage (default backend)                              │
+│                                                                              │
+│  [Redis/Valkey] ◄── All managed components (alternative)                     │
+│  - Port: 6379/TCP                                                            │
+│  - Protocol: TCP                                                             │
+│  - Encryption: Optional TLS (configurable)                                   │
+│  - Auth: Connection URL from Secret (redis-url)                              │
+│  - Purpose: Alternative job state storage                                    │
+│                                                                              │
+│  [S3-Compatible Storage] ◄── API Server, Processor, GC                       │
+│  - Port: 443/TCP or custom                                                   │
+│  - Protocol: HTTPS/HTTP                                                      │
+│  - Encryption: TLS (configurable)                                            │
+│  - Auth: S3 access key from Secret (s3-secret-access-key)                    │
+│  - Purpose: Batch input/output file storage                                  │
+│                                                                              │
+│  [Inference Gateway] ◄── Processor only                                      │
+│  - Port: Configurable                                                        │
+│  - Protocol: HTTP/HTTPS                                                      │
+│  - Encryption: Optional TLS/mTLS (configurable per gateway)                  │
+│  - Auth: Optional Bearer token from Secret (inference-api-key)               │
+│  - Purpose: Forward individual inference requests                            │
+│  - Note: TLSInsecureSkipVerify blocked by CRD validation rule               │
+│                                                                              │
+│  [OTLP Collector] ◄── All managed components (optional)                      │
+│  - Port: 4317/TCP                                                            │
+│  - Protocol: gRPC                                                            │
+│  - Encryption: Configurable (insecure or TLS)                                │
+│  - Auth: None                                                                │
+│  - Purpose: OpenTelemetry trace export                                       │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+┌────────────────────────────────────────────────────────────────────────────┐
+│ ClusterRole: llm-d-batch-gateway-operator                                  │
+│ ├─ batch.llm-d.ai/llmbatchgateways: get,list,watch,update,patch          │
+│ ├─ batch.llm-d.ai/llmbatchgateways/status: get,update,patch              │
+│ ├─ batch.llm-d.ai/llmbatchgateways/finalizers: update                    │
+│ ├─ apps/deployments: get,list,watch,create,update,patch,delete           │
+│ ├─ core/configmaps,serviceaccounts,services: get,list,watch,create,      │
+│ │   update,patch,delete                                                   │
+│ ├─ core/secrets: get,list,watch,create,patch                             │
+│ ├─ core/events: create,patch                                             │
+│ ├─ gateway.networking.k8s.io/httproutes: get,list,watch,create,update,   │
+│ │   patch,delete                                                          │
+│ ├─ gateway.networking.k8s.io/referencegrants: get,list,watch             │
+│ ├─ cert-manager.io/certificates: get,list,watch,create,update,patch,     │
+│ │   delete                                                                │
+│ └─ monitoring.coreos.com/servicemonitors,podmonitors,prometheusrules:    │
+│     get,list,watch,create,update,patch,delete                             │
+├────────────────────────────────────────────────────────────────────────────┤
+│ Aggregate ClusterRole: llmbatchgateway-admin                               │
+│ └─ batch.llm-d.ai/llmbatchgateways: full CRUD                            │
+│    batch.llm-d.ai/llmbatchgateways/status: get                           │
+├────────────────────────────────────────────────────────────────────────────┤
+│ Aggregate ClusterRole: llmbatchgateway-view                                │
+│ └─ batch.llm-d.ai/llmbatchgateways: get,list,watch                      │
+│    batch.llm-d.ai/llmbatchgateways/status: get                           │
+└────────────────────────────────────────────────────────────────────────────┘
+
+Secrets:
+┌────────────────────────────────────────────────────────────────────────────┐
+│ {user-specified via secretRef} (Opaque)                                    │
+│ - Keys: postgresql-url/redis-url, s3-secret-access-key, inference-api-key│
+│ - Provisioned by: User (manual)                                           │
+│ - Auto-rotate: No                                                         │
+├────────────────────────────────────────────────────────────────────────────┤
+│ {gateway-name}-credentials (Opaque)                                        │
+│ - Purpose: Controller-managed copy of cross-namespace secret              │
+│ - Provisioned by: Operator (automatic, via ReferenceGrant)                │
+│ - Auto-rotate: No (synced on Secret change via watch)                     │
+│ - Note: secretRef is immutable after creation                             │
+├────────────────────────────────────────────────────────────────────────────┤
+│ {release}-batch-gateway-apiserver-tls (kubernetes.io/tls)                  │
+│ - Purpose: TLS cert/key for API server HTTPS termination                  │
+│ - Provisioned by: cert-manager (automatic) or user (manual)               │
+│ - Auto-rotate: Yes (cert-manager) / No (manual)                           │
+└────────────────────────────────────────────────────────────────────────────┘
+
+Cross-Namespace Secret Access:
+- Protected by Gateway API ReferenceGrant semantics
+- Controller verifies matching ReferenceGrant exists before reading source Secret
+- Secret data copied to CR namespace under managed name ({name}-credentials)
+- secretRef field is immutable after creation (prevents silent credential source change)
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- Base image: UBI 9 minimal (OpenSSL included)
+- TLS: No direct tls.Config in operator; managed API server TLS via cert-manager/manual
+- Risk: InferenceGatewaySpec.TLSInsecureSkipVerify field exists but blocked by CRD
+  validation rule (!self.tlsInsecureSkipVerify)

@@ -1,0 +1,142 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                             │
+│  [External Client]                                                          │
+│         │                                                                   │
+│         │ Port: 80/TCP                                                      │
+│         │ Protocol: HTTP                                                    │
+│         │ Encryption: None (configurable)                                   │
+│         │ Auth: None (configurable at platform level)                       │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway Layer)                                                    │
+│                                                                             │
+│  [llm-d-inference-gateway]                                                  │
+│  - Type: Gateway (gateway.networking.k8s.io/v1)                            │
+│  - Port: 80/TCP (external)                                                 │
+│  - Variants: Istio, kgateway, AgentGateway, GKE L7 RILB                   │
+│  - TLS: Configurable (not enforced by default)                             │
+│  - Auth: Configurable (not enforced by default)                            │
+│         │                                                                   │
+│         │ Port: 8081/TCP                                                    │
+│         │ Protocol: HTTP/HTTP2                                              │
+│         │ Encryption: None (configurable)                                   │
+│         │ Auth: None                                                        │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ROUTER (Intelligent Routing Layer)                                         │
+│                                                                             │
+│  [Envoy Proxy]                                                              │
+│  - Port: 8081/TCP (proxy), 19000/TCP (admin, localhost only)               │
+│  - Protocol: HTTP/HTTP2                                                     │
+│  - Deployed via: Helm chart (llm-d-router)                                 │
+│         │                                                                   │
+│         │ Port: 9002/TCP                                                    │
+│         │ Protocol: gRPC (ext_proc)                                         │
+│         │ Encryption: None (localhost communication)                        │
+│         │ Auth: None (co-located pods)                                      │
+│         ▼                                                                   │
+│  [Endpoint Picker (EPP)]                                                    │
+│  - Port: 9002/TCP (gRPC ext_proc server)                                   │
+│  - Purpose: Prefix-cache-aware, load-aware routing decisions               │
+│  - Queries: Kubernetes API (6443/TCP, HTTPS, SA Token)                     │
+│  - Probes: Model server pods (8000/TCP, HTTP)                              │
+│         │                                                                   │
+│         │ Port: 8000/TCP                                                    │
+│         │ Protocol: HTTP                                                    │
+│         │ Encryption: None                                                  │
+│         │ Auth: None                                                        │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  MODEL SERVERS (Data Plane)                                                 │
+│                                                                             │
+│  [Decode Pods - InferencePool]                                              │
+│  - Namespace: {user-namespace}                                              │
+│  - Port: 8000/TCP (vLLM OpenAI API)                                        │
+│  - Protocol: HTTP                                                           │
+│  - Encryption: None (platform adds kube-rbac-proxy/OAuth in RHOAI)         │
+│  - Auth: None at container level                                            │
+│  - Endpoints: /v1/completions, /v1/chat/completions, /v1/models, /health   │
+│  - ServiceAccount: automountServiceAccountToken: false                      │
+│                                                                             │
+│  [Prefill Pods - InferencePool]                                             │
+│  - Namespace: {user-namespace}                                              │
+│  - Port: 8000/TCP (vLLM OpenAI API)                                        │
+│  - Port: 5600/TCP (nixl KV transfer)                                       │
+│  - Protocol: HTTP (API), RDMA/TCP (nixl)                                   │
+│  - Encryption: None                                                         │
+│  - Auth: None                                                               │
+│  - Sidecar: llm-d-routing-sidecar (KV cache transfer coordinator)          │
+│         │                                                                   │
+│         │ Port: 5600/TCP                                                    │
+│         │ Protocol: RDMA/TCP (nixl)                                         │
+│         │ Encryption: None                                                  │
+│         │ Auth: None                                                        │
+│         │ Purpose: KV cache transfer for P/D disaggregation                │
+│         ▼                                                                   │
+│  [Decode Pods] (receives KV cache from Prefill)                             │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                          │
+│                                                                             │
+│  [Hugging Face Hub - huggingface.co]                                        │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS 1.2+                                                     │
+│  - Auth: Bearer Token (HF_TOKEN secret)                                     │
+│  - Purpose: Model weight downloads at startup                               │
+│                                                                             │
+│  [Model Storage - S3/GCS/PVC]                                               │
+│  - Port: Varies (443/TCP for S3/GCS, N/A for PVC)                          │
+│  - Protocol: HTTPS/NFS                                                      │
+│  - Encryption: TLS 1.2+ (S3/GCS) / None (PVC)                             │
+│  - Auth: IAM credentials / None                                             │
+│  - Purpose: Model weight storage                                            │
+│                                                                             │
+│  [OTEL Collector]                                                           │
+│  - Port: 4317/TCP                                                           │
+│  - Protocol: gRPC (OTLP)                                                   │
+│  - Encryption: None (configurable)                                          │
+│  - Auth: None                                                               │
+│  - Purpose: Distributed tracing export                                      │
+│                                                                             │
+│  [Kubernetes API Server]                                                    │
+│  - Port: 6443/TCP                                                           │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS 1.2+                                                     │
+│  - Auth: ServiceAccount Token                                               │
+│  - Purpose: Pod discovery, deployment management (EPP)                      │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No ClusterRoles defined in this repository
+- Namespace Role: interactive-pod-editor
+  - Binding: interactive-pod-editor-binding
+  - ServiceAccount: interactive-pod
+  - Purpose: Interactive benchmarking/debugging access
+- Model server pods: automountServiceAccountToken: false (no API access)
+
+Secrets:
+- hf-token (Opaque) - Hugging Face API token for model downloads, manual provisioning, no auto-rotate
+- epp-token-secret (Opaque) - EPP authentication token (kustomize patch), manual provisioning, no auto-rotate
+
+Authentication & Authorization:
+- Container images ship WITHOUT authentication — auth is added at platform level
+- RHOAI deployments inject kube-rbac-proxy sidecars or OAuth proxy via rhods-operator
+- Envoy ↔ EPP communication is unauthenticated (co-located, localhost)
+- EPP → Kubernetes API uses ServiceAccount token authentication
+- Model downloads use Bearer token (HF_TOKEN) to Hugging Face Hub
+
+FIPS Compliance:
+- CUDA images: UBI 9 base with FIPS-validated OpenSSL, Python ssl delegates to system OpenSSL
+- CPU images: Ubuntu 22.04 base — NO FIPS-validated crypto (gap for RHOAI)
+- ROCm/XPU images: Third-party bases — FIPS status depends on upstream
+- No Go binaries — Python-based (vLLM), crypto handled by system OpenSSL
+
+Network Encryption Gaps:
+- Model server API (8000/TCP): Plaintext HTTP — relies on platform-level TLS termination
+- nixl KV transfer (5600/TCP): No encryption on RDMA/TCP — pod-to-pod within cluster
+- Envoy → EPP (9002/TCP): No encryption — localhost/co-located
+- Gateway ingress (80/TCP): HTTP by default — TLS configurable per gateway variant
+- OTEL export (4317/TCP): No encryption by default — configurable

@@ -1,0 +1,142 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Client / KServe Gateway]                                               │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (TLS optional via --ssl-keyfile/--ssl-certfile)│
+│         │ Auth: API key (optional, via --api-key or VLLM_API_KEY)        │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICE (Workload - Non-root UID 2000, GID 0)                          │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────┐                     │
+│  │ [vllm-cpu Container]                            │                     │
+│  │ - Image: vllm-cpu (UBI 9 minimal base)          │                     │
+│  │ - User: 2000 (non-root)                         │                     │
+│  │ - No Kubernetes API access                      │                     │
+│  │ - No RBAC roles or bindings                     │                     │
+│  │ - No ServiceAccount privileges                  │                     │
+│  │                                                  │                     │
+│  │ ┌───────────────────────────────────────┐        │                     │
+│  │ │ HTTP API Server (FastAPI + Uvicorn)   │        │                     │
+│  │ │ - Port: 8000/TCP                      │        │                     │
+│  │ │ - Protocol: HTTP (TLS optional)       │        │                     │
+│  │ │ - Auth: API key middleware (optional)  │        │                     │
+│  │ │ - /v1/* endpoints: API key protected  │        │                     │
+│  │ │ - /health, /metrics: No auth          │        │                     │
+│  │ └───────────────────────────────────────┘        │                     │
+│  │                                                  │                     │
+│  │ ┌───────────────────────────────────────┐        │                     │
+│  │ │ gRPC Server (Optional)                │        │                     │
+│  │ │ - Port: 50051/TCP                     │        │                     │
+│  │ │ - Protocol: gRPC/HTTP2                │        │                     │
+│  │ │ - Encryption: NONE (add_insecure_port)│        │                     │
+│  │ │ - Auth: None                          │        │                     │
+│  │ │ - Health: grpc.health.v1.Health       │        │                     │
+│  │ └───────────────────────────────────────┘        │                     │
+│  │                                                  │                     │
+│  │ ┌───────────────────────────────────────┐        │                     │
+│  │ │ vLLM Inference Engine                 │        │                     │
+│  │ │ - PyTorch CPU backend                 │        │                     │
+│  │ │ - C++ attention/quant kernels         │        │                     │
+│  │ │ - IPEX (x86_64 only)                 │        │                     │
+│  │ │ - tcmalloc (LD_PRELOAD)              │        │                     │
+│  │ │ - libomp (OpenMP threading)           │        │                     │
+│  │ └───────────────────────────────────────┘        │                     │
+│  └─────────────────────────────────────────────────┘                     │
+│         │                                                                │
+│         │ Filesystem I/O                                                 │
+│         │ Protocol: Local filesystem                                     │
+│         │ Encryption: N/A                                                │
+│         │ Auth: N/A (POSIX permissions)                                  │
+│         ▼                                                                │
+│  [Model Storage - Mounted PVC / S3]                                      │
+│  - Purpose: Model weights and tokenizer configs                          │
+│  - Access: Read-only (runtime)                                           │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MONITORING                                                              │
+│                                                                          │
+│  [Prometheus Scraper]                                                    │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None                                               │
+│         │ Auth: None                                                     │
+│         │ Path: GET /metrics                                             │
+│         ▼                                                                │
+│  [vllm-cpu /metrics endpoint]                                            │
+│  - Inference latency, throughput, queue metrics                          │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (External Services)                                              │
+│                                                                          │
+│  [vllm-cpu] ──────────────────────────────────────────────┐              │
+│         │                                                  │             │
+│         │ Port: 443/TCP                                    │             │
+│         │ Protocol: HTTPS                                  │             │
+│         │ Encryption: TLS 1.2+                             │             │
+│         │ Auth: HF_TOKEN (Bearer)                          │             │
+│         │ Condition: HF_HUB_OFFLINE=0 (default in Konflux) │             │
+│         ▼                                                  │             │
+│  [HuggingFace Hub - huggingface.co]                        │             │
+│  - Purpose: Model weight & tokenizer downloads             │             │
+│                                                            │             │
+│                                                            │             │
+│  [stats.vllm.ai]                                           │             │
+│  - Port: 443/TCP                                           │             │
+│  - Protocol: HTTPS                                         │             │
+│  - Encryption: TLS 1.2+                                    │             │
+│  - Auth: None                                              │             │
+│  - Status: DISABLED (VLLM_NO_USAGE_STATS=1 in Konflux)    │             │
+│                                                            │             │
+│  [tiktoken registry]                                       │             │
+│  - Port: 443/TCP                                           │             │
+│  - Protocol: HTTPS                                         │             │
+│  - Encryption: TLS 1.2+                                    │             │
+│  - Auth: None                                              │             │
+│  - Note: Pre-cached in image for offline use               │             │
+│                                                            │             │
+└─────────────────────────────────────────────────────────────────────────┘
+
+PLATFORM INTEGRATION:
+- KServe / ModelMesh manages this container as a ServingRuntime
+- Ingress is NOT managed by vllm-cpu; platform's Gateway API / HTTPRoutes handle external access
+- TLS termination for external traffic is handled by the platform ingress layer (Gateway API / Envoy)
+- gRPC server uses add_insecure_port() — TLS termination must be handled by platform sidecar/gateway
+
+RBAC Summary:
+- No ClusterRoles defined
+- No RoleBindings defined
+- No ServiceAccount privileges required
+- Container runs as non-root user (UID 2000, GID 0)
+- No Kubernetes API access from the container
+
+Secrets:
+- No secrets defined by the component
+- HF_TOKEN: Injected by platform at runtime (for HuggingFace model downloads)
+- TLS certificates: Injected by platform at runtime (--ssl-keyfile, --ssl-certfile)
+- API key: Injected via --api-key CLI arg or VLLM_API_KEY env var
+
+Authentication & Authorization:
+- /v1/* endpoints: Optional API key via Bearer token (AuthenticationMiddleware)
+- /health, /metrics, /version, /load: Always accessible, no auth
+- gRPC (50051/TCP): No authentication
+
+FIPS Compliance:
+- Python application inherits FIPS from UBI 9 base image OpenSSL
+- hashlib.md5 uses usedforsecurity=False (FIPS-compliant)
+- gRPC uses system OpenSSL
+- No custom cipher suites configured
+
+Crypto Notes:
+- TLS optional on HTTP server (Uvicorn --ssl-keyfile/--ssl-certfile)
+- SSL cert hot-reload supported (--enable-ssl-refresh)
+- Outbound HTTPS uses system trust store
+- gRPC server: INSECURE port only (no TLS)
+
+Build-Time Dependencies (not runtime egress):
+- PyTorch CPU package index (download.pytorch.org/whl/cpu) — 443/TCP HTTPS
+- IBM DevPI (wheels.developerfirst.ibm.com) — 443/TCP HTTPS (ppc64le only)
