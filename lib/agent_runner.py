@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -248,8 +249,9 @@ async def run_agents_concurrently(
     def _strace_dir_for(job_name: str) -> Path | None:
         if strace_prefix is None:
             return None
-        safe_name = job_name.replace("/", "_")
-        return Path("logs/strace") / f"{strace_prefix}-{safe_name}"
+        safe_prefix = re.sub(r"[^a-zA-Z0-9._-]", "_", strace_prefix)
+        safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", job_name)
+        return Path("logs/strace") / f"{safe_prefix}-{safe_name}"
 
     # Single job: skip the progress panel — just run directly with heartbeat
     if total == 1:

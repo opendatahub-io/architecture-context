@@ -1,6 +1,7 @@
 """Phase 2b: Discover components via breadcrumb exploration."""
 
 import json
+import re
 from pathlib import Path
 
 from lib.agent_runner import run_agent
@@ -177,9 +178,10 @@ async def run_discover_components_phase(args) -> None:
 
     strace_dir = None
     if getattr(args, 'strace', False):
+        safe_platform = re.sub(r"[^a-zA-Z0-9._-]", "_", args.platform)
         strace_dir = (
             Path("logs/strace")
-            / f"{args.platform}-discover-components-discover-{args.platform}"
+            / f"{safe_platform}-discover-components-discover-{safe_platform}"
         )
 
     result = await run_agent(
