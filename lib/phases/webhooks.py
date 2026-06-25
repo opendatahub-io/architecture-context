@@ -238,9 +238,14 @@ async def run_webhook_inventory_phase(args) -> None:
     model = getattr(args, 'model', 'sonnet')
     max_concurrent = getattr(args, 'max_concurrent', 5)
     if component_repos:
+        wh_strace_prefix = (
+            f"{args.platform}-webhook-inventory"
+            if getattr(args, 'strace', False) else None
+        )
         await run_webhook_agent_analysis(
             webhooks, component_repos,
             model=model, max_concurrent=max_concurrent,
+            strace_prefix=wh_strace_prefix,
         )
         with_purpose = sum(1 for wh in webhooks if wh.purpose)
         print(f"Webhooks with purpose: {with_purpose}/{len(webhooks)}")

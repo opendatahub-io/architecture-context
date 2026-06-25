@@ -175,6 +175,13 @@ async def run_discover_components_phase(args) -> None:
     print(f"Model: {model}")
     print(f"Log directory: {log_dir}\n")
 
+    strace_dir = None
+    if getattr(args, 'strace', False):
+        strace_dir = (
+            Path("logs/strace")
+            / f"{args.platform}-discover-components-discover-{args.platform}"
+        )
+
     result = await run_agent(
         name=f"discover-{args.platform}",
         cwd=".",
@@ -182,6 +189,7 @@ async def run_discover_components_phase(args) -> None:
         log_dir=log_dir,
         model=model,
         enable_skills=True,
+        strace_dir=strace_dir,
     )
 
     print("\n" + "=" * 60)

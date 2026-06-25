@@ -45,6 +45,16 @@ def resolve_script_path(
     return f"{checkouts_dir}/{org_dir}/{operator_name}/get_all_manifests.sh"
 
 
+def _add_strace_flag(parser):
+    """Add --strace flag to a subparser."""
+    parser.add_argument(
+        "--strace",
+        action="store_true",
+        default=False,
+        help="Run agents under strace (output to logs/strace/)",
+    )
+
+
 def parse_args():
     """Parse command line arguments with subcommands for each phase."""
     parser = argparse.ArgumentParser(
@@ -212,6 +222,7 @@ def parse_args():
             " many repos and needs large context)"
         ),
     )
+    _add_strace_flag(discover_parser)
 
     # Phase 2c: Static analysis (arch-analyzer)
     static_analysis_parser = subparsers.add_parser(
@@ -326,6 +337,7 @@ def parse_args():
             " tiers only)"
         ),
     )
+    _add_strace_flag(generate_arch_parser)
 
     # Phase 4b: Webhook inventory
     webhook_parser = subparsers.add_parser(
@@ -367,6 +379,7 @@ def parse_args():
         default=5,
         help="Maximum concurrent analysis agents (default: 5)"
     )
+    _add_strace_flag(webhook_parser)
 
     # Phase 4: Collect architectures
     collect_parser = subparsers.add_parser(
@@ -441,6 +454,7 @@ def parse_args():
             " large context)"
         ),
     )
+    _add_strace_flag(platform_arch_parser)
 
     # Phase 6: Generate diagrams
     diagrams_parser = subparsers.add_parser(
@@ -496,6 +510,7 @@ def parse_args():
         default="opus",
         help="Claude model to use (default: opus)"
     )
+    _add_strace_flag(diagrams_parser)
 
     # All phases
     all_parser = subparsers.add_parser(
@@ -590,5 +605,6 @@ def parse_args():
         default=False,
         help="Export Mermaid diagrams to PNG (requires mmdc + Chrome; off by default)"
     )
+    _add_strace_flag(all_parser)
 
     return parser.parse_args()

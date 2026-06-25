@@ -1152,6 +1152,7 @@ async def run_webhook_agent_analysis(
     component_repos: dict[str, Path],
     model: str = "sonnet",
     max_concurrent: int = 5,
+    strace_prefix: str | None = None,
 ) -> None:
     """Spawn Claude agents to analyze Go webhook handler code.
 
@@ -1230,6 +1231,7 @@ async def run_webhook_agent_analysis(
     print(f"  Analyzing {len(jobs)} unique handler files with {model} agents")
     results = await run_agents_concurrently(
         jobs, log_dir, model, max_concurrent,
+        strace_prefix=strace_prefix,
     )
 
     analyzed = 0

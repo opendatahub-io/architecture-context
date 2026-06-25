@@ -220,6 +220,11 @@ async def run_generate_diagrams_phase(args) -> None:
     print(f"Model: {args.model}")
     print(f"{'=' * 60}\n")
 
+    strace_prefix = (
+        f"{args.platform}-generate-diagrams"
+        if getattr(args, 'strace', False) else None
+    )
+
     # Run platform diagrams first, then component diagrams
     all_results = []
     all_jobs = []
@@ -227,7 +232,8 @@ async def run_generate_diagrams_phase(args) -> None:
     if platform_jobs:
         print("--- Phase 6a: Platform diagrams ---\n")
         platform_results = await run_agents_concurrently(
-            platform_jobs, log_dir, args.model, args.max_concurrent, enable_skills=True,
+            platform_jobs, log_dir, args.model, args.max_concurrent,
+            enable_skills=True, strace_prefix=strace_prefix,
         )
         all_results.extend(platform_results)
         all_jobs.extend(platform_jobs)
@@ -237,6 +243,7 @@ async def run_generate_diagrams_phase(args) -> None:
         component_results = await run_agents_concurrently(
             component_jobs, log_dir, args.model,
             args.max_concurrent, enable_skills=True,
+            strace_prefix=strace_prefix,
         )
         all_results.extend(component_results)
         all_jobs.extend(component_jobs)
