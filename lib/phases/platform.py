@@ -198,8 +198,13 @@ async def run_generate_platform_architecture_phase(args) -> None:
     print(f"Model: {args.model}")
     print(f"{'=' * 60}\n")
 
+    strace_prefix = (
+        f"{args.platform}-generate-platform-architecture"
+        if getattr(args, 'strace', False) else None
+    )
     results = await run_agents_concurrently(
         jobs, log_dir, args.model, args.max_concurrent, enable_skills=True,
+        strace_prefix=strace_prefix,
     )
 
     # Summary

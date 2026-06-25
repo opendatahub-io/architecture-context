@@ -180,6 +180,8 @@ async def run_all_phases(args) -> None:
     )
     await run_manifest_phase(manifest_args)
 
+    strace = getattr(args, 'strace', False)
+
     # Phase 2b: Discover components
     discover_args = Namespace(
         platform=args.platform,
@@ -189,6 +191,7 @@ async def run_all_phases(args) -> None:
         exclude=None,
         model=getattr(args, 'model', 'opus'),
         force=force,
+        strace=strace,
     )
     await run_discover_components_phase(discover_args)
 
@@ -214,6 +217,7 @@ async def run_all_phases(args) -> None:
         force=force,
         model=getattr(args, 'model', 'opus'),
         tier=getattr(args, 'tier', 'all'),
+        strace=strace,
     )
     await run_generate_architecture_phase(generate_arch_args)
 
@@ -276,6 +280,7 @@ async def run_all_phases(args) -> None:
         force=force,
         model=getattr(args, 'model', 'sonnet'),
         max_concurrent=getattr(args, 'max_concurrent', 5),
+        strace=strace,
     )
     await run_webhook_inventory_phase(webhook_args)
 
@@ -288,7 +293,8 @@ async def run_all_phases(args) -> None:
         max_concurrent=max_concurrent,
         limit=None,
         force=force,
-        model=getattr(args, 'model', 'opus')
+        model=getattr(args, 'model', 'opus'),
+        strace=strace,
     )
     await run_generate_platform_architecture_phase(platform_arch_args)
 
@@ -306,6 +312,7 @@ async def run_all_phases(args) -> None:
             force_regenerate=force,
             export_png=getattr(args, 'export_png', False),
             model=getattr(args, 'model', 'opus'),
+            strace=strace,
         )
         await run_generate_diagrams_phase(diagrams_args)
 

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+
+from lib.strace_transport import StracedTransport, empty_async_iter
 
 if TYPE_CHECKING:
     from lib.progress import AgentProgress
@@ -69,6 +72,7 @@ async def run_agent(
     name: str, cwd: str, prompt: str, log_dir: Path,
     model: str = "opus", enable_skills: bool = False,
     progress: AgentProgress | None = None,
+    strace_dir: Path | None = None,
 ) -> dict:
     """
     Launch one independent Claude agent session.
@@ -104,11 +108,22 @@ async def run_agent(
 
     _log = progress.log if progress else print
 
+    transport = None
+    if strace_dir is not None:
+        strace_dir.mkdir(parents=True, exist_ok=True)
+        transport = StracedTransport(
+            prompt=empty_async_iter(),
+            options=options,
+            strace_output_path=strace_dir / "trace",
+        )
+
     _log(f"\n{'=' * 60}")
     _log(f"Starting agent: {name}")
     _log(f"Model: {model}")
     _log(f"Working directory: {cwd}")
     _log(f"Log file: {log_file}")
+    if strace_dir is not None:
+        _log(f"Strace output: {strace_dir}")
     _log(f"{'=' * 60}")
 
     # Write log header before try block so error handler always has context
@@ -147,7 +162,7 @@ async def run_agent(
 
     try:
         with open(log_file, 'a') as log:
-            async with ClaudeSDKClient(options=options) as client:
+            async with ClaudeSDKClient(options=options, transport=transport) as client:
                 await client.query(prompt)
 
                 async for msg in client.receive_response():
@@ -211,6 +226,7 @@ async def run_agents_concurrently(
     model: str,
     max_concurrent: int,
     enable_skills: bool = False,
+    strace_prefix: str | None = None,
 ) -> list:
     """
     Run multiple agent jobs with a concurrency limit.
@@ -230,6 +246,13 @@ async def run_agents_concurrently(
     """
     total = len(jobs)
 
+    def _strace_dir_for(job_name: str) -> Path | None:
+        if strace_prefix is None:
+            return None
+        safe_prefix = re.sub(r"[^a-zA-Z0-9._-]", "_", strace_prefix)
+        safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", job_name)
+        return Path("logs/strace") / f"{safe_prefix}-{safe_name}"
+
     # Single job: skip the progress panel — just run directly with heartbeat
     if total == 1:
         job = jobs[0]
@@ -237,6 +260,7 @@ async def run_agents_concurrently(
             result = await run_agent(
                 job["name"], job["cwd"], job["prompt"], log_dir, model,
                 enable_skills=enable_skills,
+                strace_dir=_strace_dir_for(job["name"]),
             )
         except BaseException as e:
             if isinstance(e, (KeyboardInterrupt, SystemExit)):
@@ -269,6 +293,7 @@ async def run_agents_concurrently(
                     job["name"], job["cwd"], job["prompt"], log_dir, model,
                     enable_skills=enable_skills,
                     progress=progress,
+                    strace_dir=_strace_dir_for(job["name"]),
                 )
         except BaseException as e:
             if isinstance(e, (KeyboardInterrupt, SystemExit)):
