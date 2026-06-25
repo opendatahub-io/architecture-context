@@ -14,6 +14,7 @@ Output: JSON with matched repos, unmatched packages, and metadata.
 import json
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 KNOWN_MAPPINGS = {
@@ -108,31 +109,26 @@ def parse_pyproject_toml(filepath):
     """Extract package names from a pyproject.toml dependencies list."""
     packages = set()
     try:
-        content = filepath.read_text()
-    except (OSError, UnicodeDecodeError):
+        data = tomllib.loads(filepath.read_text())
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         return packages
 
-    in_deps = False
-    for line in content.splitlines():
-        stripped = line.strip()
+    for dep in data.get("project", {}).get("dependencies", []):
+        name = extract_package_name(dep)
+        if name:
+            packages.add(name)
 
-        if stripped in (
-            "dependencies = [",
-            "override-dependencies = [",
-        ):
-            in_deps = True
-            continue
+    for dep in data.get("project", {}).get("override-dependencies", []):
+        name = extract_package_name(dep)
+        if name:
+            packages.add(name)
 
-        if in_deps:
-            if stripped == "]":
-                in_deps = False
-                continue
-
-            match = re.search(r'"([^"]+)"', stripped)
-            if match:
-                name = extract_package_name(match.group(1))
-                if name:
-                    packages.add(name)
+    for dep in (
+        data.get("tool", {}).get("uv", {}).get("override-dependencies", [])
+    ):
+        name = extract_package_name(dep)
+        if name:
+            packages.add(name)
 
     return packages
 
