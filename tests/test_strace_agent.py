@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Proof-of-concept: run a Claude agent under strace via transport subclass."""
 
+import asyncio
 import os
 import shutil
 import sys
@@ -69,17 +70,21 @@ async def test_strace_agent():
     result_text = None
     got_result = False
 
-    async with ClaudeSDKClient(
-        options=options, transport=transport,
-    ) as client:
-        await client.query("Reply with the single word: hello")
-        async for msg in client.receive_response():
-            if isinstance(msg, ResultMessage):
-                got_result = True
-            elif hasattr(msg, "content"):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        result_text = block.text
+    async def _run_agent():
+        nonlocal result_text, got_result
+        async with ClaudeSDKClient(
+            options=options, transport=transport,
+        ) as client:
+            await client.query("Reply with the single word: hello")
+            async for msg in client.receive_response():
+                if isinstance(msg, ResultMessage):
+                    got_result = True
+                elif hasattr(msg, "content"):
+                    for block in msg.content:
+                        if isinstance(block, TextBlock):
+                            result_text = block.text
+
+    await asyncio.wait_for(_run_agent(), timeout=120)
 
     assert got_result, "never received ResultMessage"
     assert result_text is not None, "no text in agent response"
