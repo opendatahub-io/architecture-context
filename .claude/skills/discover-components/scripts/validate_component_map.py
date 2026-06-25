@@ -19,7 +19,7 @@ VALID_DISCOVERY_METHODS = {"breadcrumb"}
 
 VALID_DISCOVERED_VIA = {
     "operator_operand", "operator_bundle",
-    "container_image", "dependency", "installer", "dsc_spec",
+    "container_image", "image_dependency", "dependency", "installer", "dsc_spec",
 }
 
 VALID_CONFIDENCE = {"high", "medium", "low", "disputed"}
