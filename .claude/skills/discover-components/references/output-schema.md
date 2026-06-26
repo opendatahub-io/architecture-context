@@ -29,7 +29,7 @@ Create the component map structure:
       "has_architecture": false,
       "type": "operator|controller|service|ui|installer|asset|shared_library|api_specification",
       "tier": "core_platform|optional_platform|payload_component|ecosystem",
-      "discovered_via": "operator_operand|operator_bundle|container_image|dependency|installer|dsc_spec",
+      "discovered_via": "operator_operand|operator_bundle|container_image|image_dependency|dependency|installer|dsc_spec",
       "referenced_by": ["installer"],
       "shipped": true,
       "architecturally_significant": true,

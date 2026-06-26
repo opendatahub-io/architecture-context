@@ -52,7 +52,7 @@ Exclude obvious non-components:
   - `must-gather`, `additional-images`
   - Build/release infrastructure repos (`RHOAI-Build-Config`, `konflux-central`)
 
-**Do NOT exclude** `odh-cli` — it is a shipped component starting with RHOAI 3.3+.
+**Do NOT exclude** `odh-cli` -- it is a shipped component starting with RHOAI 3.3+.
 
 Create an initial list of candidate repos.
 
@@ -81,12 +81,12 @@ Each directory name maps to a DSC field. Cross-reference with the RELATED_IMAGE 
 | Tier | Criteria | Examples |
 |------|----------|---------|
 | `core_platform` | The meta-operator itself AND components that are always deployed (not togglable via DSC) | `rhods-operator`, `opendatahub-operator`, `odh-dashboard`, `notebooks`, `odh-model-controller` |
-| `optional_platform` | Components with a DSC field — user can set `managementState: Managed/Removed` | `kserve`, `data-science-pipelines-operator`, `codeflare-operator`, `kuberay`, `kueue`, `trustyai-service-operator`, `model-registry-operator`, `modelmesh-serving`, `trainer`, `training-operator`, `spark-operator`, `feast`, `llama-stack-k8s-operator`, `mlflow-operator`, `models-as-a-service`, `workload-variant-autoscaler` |
-| `payload_component` | Shipped containers/libraries deployed BY core or optional components — not independently togglable | `vllm`, `data-science-pipelines`, `model-registry`, `codeflare-sdk`, `modelmesh`, `rest-proxy` |
+| `optional_platform` | Components with a DSC field -- user can set `managementState: Managed/Removed` | `kserve`, `data-science-pipelines-operator`, `codeflare-operator`, `kuberay`, `kueue`, `trustyai-service-operator`, `model-registry-operator`, `modelmesh-serving`, `trainer`, `training-operator`, `spark-operator`, `feast`, `llama-stack-k8s-operator`, `mlflow-operator`, `models-as-a-service`, `workload-variant-autoscaler` |
+| `payload_component` | Shipped containers/libraries deployed BY core or optional components -- not independently togglable | `vllm`, `data-science-pipelines`, `model-registry`, `codeflare-sdk`, `modelmesh`, `rest-proxy` |
 
-**Key distinction:** `optional_platform` components are the ones a cluster admin toggles on/off. `payload_component` repos provide the container images or libraries that optional_platform operators deploy — they don't have their own DSC toggle.
+**Key distinction:** `optional_platform` components are the ones a cluster admin toggles on/off. `payload_component` repos provide the container images or libraries that optional_platform operators deploy -- they don't have their own DSC toggle.
 
-**Dashboard, notebooks, and odh-model-controller** are `core_platform` even though they appear as DSC fields — they are always-on components required for the platform to function. The DSC fields for these exist for configuration, not for enable/disable.
+**Dashboard, notebooks, and odh-model-controller** are `core_platform` even though they appear as DSC fields -- they are always-on components required for the platform to function. The DSC fields for these exist for configuration, not for enable/disable.
 
 Set `discovery_method: "breadcrumb"` in metadata.
 
@@ -196,9 +196,9 @@ The script scans `internal/controller/components/*/*_support.go` for `imageParam
 
 For each matched repo in the output, if not already in the component list, add as `discovered_via: "operator_operand"`, `referenced_by: ["{operator-name}"]`. Use the tier already assigned in Step 2a if the repo was classified there; otherwise default to `tier: "payload_component"`.
 
-**Binding rule:** Any repo matched by `parse_related_images.py` MUST be included as a component. Do NOT override these matches by reclassifying the repo as excluded. The script identifies operands that the operator ships — if the operator references a container image built from a repo, that repo is a shipped component regardless of whether it looks like "infrastructure" or a "utility." The only exception is build infrastructure repos like `RHOAI-Build-Config` itself.
+**Binding rule:** Any repo matched by `parse_related_images.py` MUST be included as a component. Do NOT override these matches by reclassifying the repo as excluded. The script identifies operands that the operator ships -- if the operator references a container image built from a repo, that repo is a shipped component regardless of whether it looks like "infrastructure" or a "utility." The only exception is build infrastructure repos like `RHOAI-Build-Config` itself.
 
-**5.1b: Discover operands via OLM catalog relatedImages (RHOAI).** RHOAI has a build config repo (`RHOAI-Build-Config`) containing OLM catalog YAML with `relatedImages` sections — the authoritative list of every container image shipped in each version.
+**5.1b: Discover operands via OLM catalog relatedImages (RHOAI).** RHOAI has a build config repo (`RHOAI-Build-Config`) containing OLM catalog YAML with `relatedImages` sections -- the authoritative list of every container image shipped in each version.
 
 Run the helper script to parse the catalog and match images to repos:
 
@@ -214,16 +214,30 @@ python ${CLAUDE_SKILL_DIR}/scripts/parse_catalog_images.py --find-catalog --vers
 
 The script auto-finds the best `RHOAI-Build-Config/catalog/` directory, extracts unique images from `relatedImages` sections, and matches them to repos using multi-step normalization (strip `odh-` prefix, `-rhel[0-9]` suffix, hardware variant suffixes) plus known name mappings (e.g., `ml-pipelines-*` → `data-science-pipelines`, `dashboard` → `odh-dashboard`).
 
-The catalog directories are versioned by RHOAI release, not by checkout branch — `RHOAI-Build-Config` is typically checked out at `head` but contains catalogs for all historical versions. If no catalog directory exactly matches the target platform version, the script uses the **latest available version** as the best approximation.
+The catalog directories are versioned by RHOAI release, not by checkout branch -- `RHOAI-Build-Config` is typically checked out at `head` but contains catalogs for all historical versions. If no catalog directory exactly matches the target platform version, the script uses the **latest available version** as the best approximation.
 
 Output is JSON with:
 - `repos`: matched repos with image names and match method
 - `unmatched`: images with no repo match (third-party base images, internal tools)
 - `variant_groups`: images that are build variants of the same component
 
-For each matched repo, if not already in the component list, add as `discovered_via: "container_image"`, `referenced_by: ["rhods-operator"]`. Use the tier already assigned in Step 2a if the repo was classified there; otherwise default to `tier: "payload_component"`. Do NOT add `RHOAI-Build-Config` itself as a component — it is build infrastructure, not a shipped component. Unmatched images that are clearly third-party (`ubi-*`, `ose-*`, `postgresql-*`, `etcd`) should be ignored. Other unmatched images may represent components without source repos in the checkouts — note them but don't block on them.
+For each matched repo, if not already in the component list, add as `discovered_via: "container_image"`, `referenced_by: ["rhods-operator"]`. Use the tier already assigned in Step 2a if the repo was classified there; otherwise default to `tier: "payload_component"`. Do NOT add `RHOAI-Build-Config` itself as a component -- it is build infrastructure, not a shipped component. Unmatched images that are clearly third-party (`ubi-*`, `ose-*`, `postgresql-*`, `etcd`) should be ignored. Other unmatched images may represent components without source repos in the checkouts -- note them but don't block on them.
 
-**Binding rule:** Any repo matched by `parse_catalog_images.py` MUST be included as a component. Do NOT override these matches by reclassifying the repo as excluded. The OLM catalog's `relatedImages` is the authoritative list of container images shipped in the product — if a repo's image is in the catalog, the repo is a shipped component regardless of whether it looks like "infrastructure," a "utility," or "covered by" another component. The only exception is build infrastructure repos like `RHOAI-Build-Config` itself.
+**Binding rule:** Any repo matched by `parse_catalog_images.py` MUST be included as a component. Do NOT override these matches by reclassifying the repo as excluded. The OLM catalog's `relatedImages` is the authoritative list of container images shipped in the product -- if a repo's image is in the catalog, the repo is a shipped component regardless of whether it looks like "infrastructure," a "utility," or "covered by" another component. The only exception is build infrastructure repos like `RHOAI-Build-Config` itself.
+
+**5.1c: Discover components shipped as Python dependencies in container images.** Some components ship as pip packages baked into container images (e.g. notebook workbenches) rather than as standalone Kubernetes workloads. These have no DSC field, no RELATED_IMAGE mapping, and no OLM catalog entry -- but they are shipped components.
+
+For each `core_platform` or `optional_platform` component that builds container images with Python dependencies (primarily `notebooks`), run the helper script:
+
+```bash
+python ${CLAUDE_SKILL_DIR}/scripts/parse_image_dependencies.py {image_repo_checkout} {checkouts_dir1} {checkouts_dir2} ...
+```
+
+The script scans `pyproject.toml` and `requirements*.txt` files in the image repo, extracts Python package names, and matches them against repos in the checkouts directories. Output is JSON with `repos` (matched) and `unmatched` sections.
+
+For each matched repo in the output, if not already in the component list, add as `discovered_via: "image_dependency"`, `referenced_by: ["{image-repo-name}"]`. Use the tier already assigned in Step 2a if the repo was classified there; otherwise default to `tier: "payload_component"`.
+
+**Binding rule:** Any repo matched by `parse_image_dependencies.py` MUST be included as a component. A repo whose package is pip-installed into a shipped container image is a shipped component -- it runs inside the product regardless of whether it has its own Kubernetes workload.
 
 **5.2: Scan `go.mod` for shared libraries.** Scan `go.mod` (or equivalent) of each discovered `core_platform` and `optional_platform` component. Look for first-party dependencies (same GitHub org) that match repos in the checkouts directory. This is how shared libraries like `library-go`, `api`, `client-go` get discovered.
 
@@ -232,7 +246,7 @@ As you discover references:
 2. If yes, add to component list with `discovered_via` and `referenced_by`
 3. Track what type of reference (deployed_component vs. dependency vs. operand)
 4. Mark as `shipped: true` if deployed directly
-5. **Always populate the `dependency_graph`** — even in signal mode, record which components depend on which
+5. **Always populate the `dependency_graph`** -- even in signal mode, record which components depend on which
 
 Track the dependency graph:
 ```
@@ -265,7 +279,7 @@ Repos not discovered via DSC spec, RELATED_IMAGE mappings, OLM catalog, or depen
 
 ### Step 6a: Multi-Reviewer Consensus for Low-Confidence Repos
 
-See [consensus review procedure](references/consensus-review.md) for the full multi-reviewer consensus process — when to trigger it, the 3 reviewer prompts (structural, relational, functional), vote aggregation rules, and how to record consensus results in the component map.
+See [consensus review procedure](references/consensus-review.md) for the full multi-reviewer consensus process -- when to trigger it, the 3 reviewer prompts (structural, relational, functional), vote aggregation rules, and how to record consensus results in the component map.
 
 ### Step 7: Check for Existing Architectures
 
@@ -290,7 +304,7 @@ See [output schema](references/output-schema.md) for the full component-map.json
 
 Write to `architecture/{platform}/component-map.json`.
 
-**Always overwrite** the existing file if one is present — the user is re-running discovery to get updated results. Do NOT skip writing because the file already exists.
+**Always overwrite** the existing file if one is present -- the user is re-running discovery to get updated results. Do NOT skip writing because the file already exists.
 
 ### Step 9a: Validate Output
 
