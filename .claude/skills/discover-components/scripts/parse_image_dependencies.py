@@ -21,6 +21,8 @@ KNOWN_MAPPINGS = {
     "codeflare-sdk": "codeflare-sdk",
     "kfp": "data-science-pipelines",
     "kfp-server-api": "data-science-pipelines",
+    "kubeflow-kale": "kubeflow-kale",
+    "kubeflow-training": "training-operator",
     "mlflow": "mlflow",
     "ray": "kuberay",
 }
@@ -38,6 +40,7 @@ def find_repo(name, repo_sets):
         for repos in repo_sets:
             if mapped in repos:
                 return mapped, "known_mapping"
+        return None, None
 
     for repos in repo_sets:
         if name in repos:
