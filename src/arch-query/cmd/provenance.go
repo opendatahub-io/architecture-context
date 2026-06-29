@@ -15,6 +15,7 @@ import (
 var (
 	provenanceUpstreamOnly bool
 	provenanceAll          bool
+	provenanceFilter       string
 )
 
 var provenanceCmd = &cobra.Command{
@@ -79,12 +80,12 @@ func repoRole(r types.ProvenanceRepo) string {
 		return "midstream"
 	}
 	if r.Upstream != "" {
+		return "downstream"
+	}
+	if len(r.Downstream) > 0 || r.Org == "opendatahub-io" {
 		return "midstream"
 	}
-	if len(r.Downstream) > 0 {
-		return "origin"
-	}
-	return "standalone"
+	return "upstream"
 }
 
 func runSingleProvenance(query string, prov *types.Provenance, compToRepo map[string]string, componentRepos map[string]bool) error {
@@ -165,6 +166,20 @@ func runAllProvenance(prov *types.Provenance, repoToComps map[string][]string, c
 	}
 	sort.Strings(keys)
 
+	if provenanceFilter != "" {
+		needle := strings.ToLower(provenanceFilter)
+		filtered := keys[:0]
+		for _, k := range keys {
+			r := prov.Repos[k]
+			if strings.Contains(strings.ToLower(k), needle) ||
+				strings.Contains(strings.ToLower(r.Upstream), needle) ||
+				containsAnyLower(r.Downstream, needle) {
+				filtered = append(filtered, k)
+			}
+		}
+		keys = filtered
+	}
+
 	if provenanceUpstreamOnly {
 		filtered := keys[:0]
 		for _, k := range keys {
@@ -211,7 +226,11 @@ func runAllProvenance(prov *types.Provenance, repoToComps map[string][]string, c
 			}
 		}
 
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", upstream, syncUM, k, syncMD, downstream)
+		if r.Upstream != "" || len(r.Downstream) > 0 || r.Org == "opendatahub-io" {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", upstream, syncUM, k, syncMD, downstream)
+		} else {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", k, "-", "-", "-", "-")
+		}
 	}
 	tw.Flush()
 
@@ -226,7 +245,18 @@ func runAllProvenance(prov *types.Provenance, repoToComps map[string][]string, c
 	return nil
 }
 
+func containsAnyLower(items []string, needle string) bool {
+	for _, item := range items {
+		if strings.Contains(strings.ToLower(item), needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func init() {
+	provenanceCmd.Flags().StringVar(&provenanceFilter, "filter", "",
+		"Filter repos by substring match against repo key, upstream, or downstream")
 	provenanceCmd.Flags().BoolVar(&provenanceUpstreamOnly, "upstream-only", false,
 		"Only show repos that have an upstream")
 	provenanceCmd.Flags().BoolVar(&provenanceAll, "all", false,
