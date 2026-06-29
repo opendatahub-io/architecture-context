@@ -28,6 +28,23 @@ SYNC_WORKFLOW_PATTERNS = {"sync", "rebase", "upstream"}
 
 SKIP_ORGS = {"actions", "docker", "golang", "google", "kubernetes"}
 
+# Org hierarchy for downstream directionality.
+# Downstream links only flow from lower rank to higher rank.
+# Repos in unranked orgs can have downstream links to any ranked org.
+ORG_RANK = {
+    "opendatahub-io": 1,       # midstream
+    "red-hat-data-services": 2, # downstream
+}
+
+# Repos where midstream/downstream uses a different name than upstream.
+# Format: "upstream-org/upstream-repo" -> "downstream-org/downstream-repo"
+KNOWN_NAME_ALIASES = {
+    "llm-d/llm-d-workload-variant-autoscaler": [
+        "opendatahub-io/workload-variant-autoscaler",
+        "red-hat-data-services/workload-variant-autoscaler",
+    ],
+}
+
 # Well-known upstream mappings for repos where API/workflow detection fails.
 # Format: downstream_repo_name -> upstream_org/repo
 KNOWN_UPSTREAMS = {
@@ -86,6 +103,8 @@ def detect_sync_workflows(repo_path):
     sync_files = []
     for wf in sorted(workflows_dir.iterdir()):
         if not wf.is_file():
+            continue
+        if not wf.suffix.lower() in (".yml", ".yaml"):
             continue
         name_lower = wf.name.lower()
         if any(p in name_lower for p in SYNC_WORKFLOW_PATTERNS):
@@ -155,10 +174,19 @@ def collect_repos(checkouts_dirs):
 
 
 def find_downstream(org, repo_name, org_repos):
-    """Find same-named repos in other orgs (downstream links)."""
+    """Find same-named repos in other orgs that are downstream.
+
+    Uses ORG_RANK to enforce directionality: downstream links only flow
+    from lower-ranked (or unranked) orgs to higher-ranked orgs.
+    e.g., upstream(unranked) -> opendatahub-io(1) -> red-hat-data-services(2)
+    """
+    my_rank = ORG_RANK.get(org, 0)
     downstream = []
     for other_org, repos in org_repos.items():
         if other_org == org:
+            continue
+        other_rank = ORG_RANK.get(other_org, 0)
+        if other_rank <= my_rank:
             continue
         if repo_name in repos:
             downstream.append(f"{other_org}/{repo_name}")
@@ -242,11 +270,24 @@ def main():
             upstream_detection = "known_mapping"
             is_fork = True
 
+        if not upstream:
+            for alias_src, alias_dests in KNOWN_NAME_ALIASES.items():
+                if key in alias_dests:
+                    upstream = alias_src
+                    upstream_detection = "known_mapping"
+                    is_fork = True
+                    break
+
         downstream = find_downstream(org, repo_name, org_repos)
         if key in KNOWN_DOWNSTREAMS:
             for kd in KNOWN_DOWNSTREAMS[key]:
                 if kd not in downstream:
                     downstream.append(kd)
+            downstream.sort()
+        if key in KNOWN_NAME_ALIASES:
+            for alias in KNOWN_NAME_ALIASES[key]:
+                if alias not in downstream:
+                    downstream.append(alias)
             downstream.sort()
         if downstream:
             exclude_orgs = set()

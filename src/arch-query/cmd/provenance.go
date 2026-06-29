@@ -75,14 +75,28 @@ Examples:
 	},
 }
 
+var midstreamOrgs = map[string]bool{
+	"opendatahub-io": true,
+}
+
+var downstreamOrgs = map[string]bool{
+	"red-hat-data-services": true,
+}
+
 func repoRole(r types.ProvenanceRepo) string {
+	if downstreamOrgs[r.Org] {
+		return "downstream"
+	}
 	if r.Upstream != "" && len(r.Downstream) > 0 {
 		return "midstream"
 	}
 	if r.Upstream != "" {
+		if midstreamOrgs[r.Org] {
+			return "midstream"
+		}
 		return "downstream"
 	}
-	if len(r.Downstream) > 0 || r.Org == "opendatahub-io" {
+	if midstreamOrgs[r.Org] {
 		return "midstream"
 	}
 	return "upstream"
@@ -226,10 +240,11 @@ func runAllProvenance(prov *types.Provenance, repoToComps map[string][]string, c
 			}
 		}
 
-		if r.Upstream != "" || len(r.Downstream) > 0 || r.Org == "opendatahub-io" {
+		role := repoRole(r)
+		if role == "midstream" || role == "downstream" {
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", upstream, syncUM, k, syncMD, downstream)
 		} else {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", k, "-", "-", "-", "-")
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", k, "-", "-", syncMD, downstream)
 		}
 	}
 	tw.Flush()
