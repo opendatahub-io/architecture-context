@@ -12,7 +12,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var provenanceUpstreamOnly bool
+var (
+	provenanceUpstreamOnly bool
+	provenanceAll          bool
+)
 
 var provenanceCmd = &cobra.Command{
 	Use:   "provenance [component-or-repo]",
@@ -57,11 +60,17 @@ Examples:
 			repoToComps[repo] = append(repoToComps[repo], comp)
 		}
 
-		if len(args) == 1 {
-			return runSingleProvenance(args[0], data.Provenance, compToRepo)
+		// Build set of org/repo strings that are included components
+		componentRepos := make(map[string]bool, len(compToRepo))
+		for _, repo := range compToRepo {
+			componentRepos[repo] = true
 		}
 
-		return runAllProvenance(data.Provenance, repoToComps)
+		if len(args) == 1 {
+			return runSingleProvenance(args[0], data.Provenance, compToRepo, componentRepos)
+		}
+
+		return runAllProvenance(data.Provenance, repoToComps, componentRepos)
 	},
 }
 
@@ -78,7 +87,7 @@ func repoRole(r types.ProvenanceRepo) string {
 	return "standalone"
 }
 
-func runSingleProvenance(query string, prov *types.Provenance, compToRepo map[string]string) error {
+func runSingleProvenance(query string, prov *types.Provenance, compToRepo map[string]string, componentRepos map[string]bool) error {
 	var repoKey string
 
 	if strings.Contains(query, "/") {
@@ -102,6 +111,11 @@ func runSingleProvenance(query string, prov *types.Provenance, compToRepo map[st
 		os.Exit(1)
 	}
 
+	if !provenanceAll && !componentRepos[repoKey] {
+		fmt.Fprintf(os.Stderr, "Repo %q was excluded from components. Use --all to include excluded repos.\n", repoKey)
+		os.Exit(1)
+	}
+
 	if outputFormat == OutputJSON {
 		return output.JSON(os.Stdout, repo)
 	}
@@ -118,6 +132,9 @@ func runSingleProvenance(query string, prov *types.Provenance, compToRepo map[st
 			}
 			fmt.Printf("    |\n")
 			fmt.Printf("    | %s", syncLabel)
+			if repo.SyncBranch != "" {
+				fmt.Printf(" [%s]", repo.SyncBranch)
+			}
 			if len(repo.SyncWorkflows) > 0 {
 				fmt.Printf(" (%s)", strings.Join(repo.SyncWorkflows, ", "))
 			}
@@ -138,9 +155,12 @@ func runSingleProvenance(query string, prov *types.Provenance, compToRepo map[st
 	return nil
 }
 
-func runAllProvenance(prov *types.Provenance, repoToComps map[string][]string) error {
+func runAllProvenance(prov *types.Provenance, repoToComps map[string][]string, componentRepos map[string]bool) error {
 	keys := make([]string, 0, len(prov.Repos))
 	for k := range prov.Repos {
+		if !provenanceAll && !componentRepos[k] {
+			continue
+		}
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
@@ -164,41 +184,53 @@ func runAllProvenance(prov *types.Provenance, repoToComps map[string][]string) e
 	}
 
 	tw := output.NewTabWriter(os.Stdout)
-	fmt.Fprintf(tw, "REPO\tROLE\tUPSTREAM\tSYNC\tDOWNSTREAM\n")
+	fmt.Fprintf(tw, "UPSTREAM\tSYNC-U-M\tMIDSTREAM\tSYNC-M-D\tDOWNSTREAM\n")
 	for _, k := range keys {
 		r := prov.Repos[k]
-		role := repoRole(r)
+
 		upstream := "-"
 		if r.Upstream != "" {
 			upstream = r.Upstream
 		}
-		sync := "-"
-		if r.SyncMechanism != "" {
-			sync = r.SyncMechanism
+
+		syncUM := "-"
+		if r.Upstream != "" && r.SyncMechanism != "" {
+			syncUM = r.SyncMechanism
 		}
+
 		downstream := "-"
+		syncMD := "-"
 		if len(r.Downstream) > 0 {
 			downstream = strings.Join(r.Downstream, ", ")
+			// Check if the downstream repo has its own provenance with a sync mechanism
+			for _, ds := range r.Downstream {
+				if dsRepo, ok := prov.Repos[ds]; ok && dsRepo.SyncMechanism != "" {
+					syncMD = dsRepo.SyncMechanism
+					break
+				}
+			}
 		}
 
-		label := k
-		if comps, ok := repoToComps[k]; ok && len(comps) > 0 {
-			sort.Strings(comps)
-			label = k + " (" + comps[0] + ")"
-		}
-
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", label, role, upstream, sync, downstream)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", upstream, syncUM, k, syncMD, downstream)
 	}
 	tw.Flush()
 
-	fmt.Fprintf(os.Stderr, "\n%d repos (%d with upstream, %d with downstream)\n",
-		prov.Metadata.TotalRepos, prov.Metadata.ReposWithUpstream, prov.Metadata.ReposWithDownstream)
+	shown := len(keys)
+	total := len(prov.Repos)
+	if shown < total {
+		fmt.Fprintf(os.Stderr, "\n%d component repos shown (%d total, use --all to include excluded)\n", shown, total)
+	} else {
+		fmt.Fprintf(os.Stderr, "\n%d repos (%d with upstream, %d with downstream)\n",
+			prov.Metadata.TotalRepos, prov.Metadata.ReposWithUpstream, prov.Metadata.ReposWithDownstream)
+	}
 	return nil
 }
 
 func init() {
 	provenanceCmd.Flags().BoolVar(&provenanceUpstreamOnly, "upstream-only", false,
 		"Only show repos that have an upstream")
+	provenanceCmd.Flags().BoolVar(&provenanceAll, "all", false,
+		"Include repos excluded from the component map")
 	addOutputFlag(provenanceCmd, OutputText, OutputJSON)
 	rootCmd.AddCommand(provenanceCmd)
 }

@@ -262,6 +262,7 @@ type ProvenanceRepo struct {
 	Downstream          []string `json:"downstream"`
 	DownstreamDetection string   `json:"downstream_detection"`
 	SyncMechanism       string   `json:"sync_mechanism"`
+	SyncBranch          string   `json:"sync_branch,omitempty"`
 	SyncWorkflows       []string `json:"sync_workflows"`
 }
 

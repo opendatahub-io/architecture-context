@@ -29,7 +29,7 @@ Create the component map structure:
       "has_architecture": false,
       "type": "operator|controller|service|ui|installer|asset|shared_library|api_specification",
       "tier": "core_platform|optional_platform|payload_component|ecosystem",
-      "discovered_via": "operator_operand|operator_bundle|container_image|image_dependency|dependency|installer|dsc_spec",
+      "discovered_via": "operator_operand|operator_bundle|container_image|image_dependency|dependency|installer|dsc_spec|sync_config",
       "referenced_by": ["installer"],
       "shipped": true,
       "architecturally_significant": true,
@@ -80,10 +80,11 @@ Create the component map structure:
         "repo": "{repo-name}",
         "is_fork": false,
         "upstream": "{upstream-org}/{repo-name}|null",
-        "upstream_detection": "github_api|sync_workflow|null",
+        "upstream_detection": "github_api|sync_workflow|known_mapping|name_prefix|sync_config|null",
         "downstream": ["{downstream-org}/{repo-name}"],
-        "downstream_detection": "cross_org_match|null",
+        "downstream_detection": "cross_org_match|sync_config|null",
         "sync_mechanism": "sync_workflow|rebase_workflow|auto_merge|manual|null",
+        "sync_branch": "main|stable|rhoai|release-v0.17|null",
         "sync_workflows": ["sync-upstream.yml"]
       }
     }
@@ -97,10 +98,11 @@ The `provenance` top-level key is populated automatically by the harness post-pr
 
 - Keyed by `org/repo` (e.g., `opendatahub-io/kserve`)
 - `upstream`: the source repo this was forked from (null if not a fork)
-- `upstream_detection`: method used -- `github_api` (fork metadata) or `sync_workflow` (workflow file analysis)
+- `upstream_detection`: method used -- `github_api` (fork metadata), `sync_workflow` (workflow file analysis), `known_mapping` (hardcoded table), `name_prefix` (repo name matches org), or `sync_config` (central sync config)
 - `downstream`: repos in other orgs with the same name
-- `downstream_detection`: always `cross_org_match` when present
+- `downstream_detection`: `cross_org_match` (same-named repo in another org) or `sync_config` (central sync config)
 - `sync_mechanism`: how upstream changes flow -- `sync_workflow`, `rebase_workflow`, `auto_merge`, or `manual`
+- `sync_branch`: the upstream branch the sync operates on (e.g., `main`, `stable`, `release-v0.17`)
 - `sync_workflows`: list of workflow filenames that handle syncing (e.g., `sync-upstream.yml`)
 
 **Do NOT write the provenance section in Step 8.** The harness adds it after discovery completes.

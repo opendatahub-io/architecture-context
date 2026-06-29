@@ -647,6 +647,19 @@ async def fetch_repositories(
                         protocol=entry.get("protocol", "https"),
                     )
 
+            # Clone sync config repo if declared
+            sync_config = config.get("sync_config")
+            if sync_config:
+                sc_org = sync_config["org"]
+                sc_repo = sync_config["repo"]
+                sc_branch = sync_config.get("branch")
+                sc_protocol = sync_config.get("protocol", "ssh")
+                await _clone_repo(
+                    checkouts_path, sc_org, sc_repo,
+                    branch=sc_branch, suffix=suffix, pull=pull,
+                    protocol=sc_protocol,
+                )
+
             # Apply platform-wide post_checkout exclude_files rules
             post_checkout = config.get("post_checkout", [])
             if post_checkout:

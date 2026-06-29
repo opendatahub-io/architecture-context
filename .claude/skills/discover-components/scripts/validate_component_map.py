@@ -20,12 +20,13 @@ VALID_DISCOVERY_METHODS = {"breadcrumb"}
 VALID_DISCOVERED_VIA = {
     "operator_operand", "operator_bundle",
     "container_image", "image_dependency", "dependency", "installer", "dsc_spec",
+    "sync_config",
 }
 
 VALID_CONFIDENCE = {"high", "medium", "low", "disputed"}
 
-VALID_UPSTREAM_DETECTION = {"github_api", "sync_workflow"}
-VALID_DOWNSTREAM_DETECTION = {"cross_org_match"}
+VALID_UPSTREAM_DETECTION = {"github_api", "sync_workflow", "known_mapping", "name_prefix", "sync_config"}
+VALID_DOWNSTREAM_DETECTION = {"cross_org_match", "sync_config"}
 VALID_SYNC_MECHANISMS = {
     "sync_workflow", "rebase_workflow", "auto_merge", "manual",
 }

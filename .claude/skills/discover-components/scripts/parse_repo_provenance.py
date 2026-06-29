@@ -28,6 +28,36 @@ SYNC_WORKFLOW_PATTERNS = {"sync", "rebase", "upstream"}
 
 SKIP_ORGS = {"actions", "docker", "golang", "google", "kubernetes"}
 
+# Well-known upstream mappings for repos where API/workflow detection fails.
+# Format: downstream_repo_name -> upstream_org/repo
+KNOWN_UPSTREAMS = {
+    "argo-workflows": "argoproj/argo-workflows",
+    "caikit": "caikit/caikit",
+    "feast": "feast-dev/feast",
+    "gateway-api-inference-extension": "kubernetes-sigs/gateway-api-inference-extension",
+    "kserve": "kserve/kserve",
+    "kubeflow": "kubeflow/kubeflow",
+    "kuberay": "ray-project/kuberay",
+    "kueue": "kubernetes-sigs/kueue",
+    "MLServer": "SeldonIO/MLServer",
+    "ml-metadata": "google/ml-metadata",
+    "mlflow": "mlflow/mlflow",
+    "NeMo-Guardrails": "NVIDIA/NeMo-Guardrails",
+    "openvino_model_server": "openvinotoolkit/model_server",
+    "spark-operator": "kubeflow/spark-operator",
+    "training-operator": "kubeflow/training-operator",
+    "vllm": "vllm-project/vllm",
+    "vllm-gaudi": "vllm-project/vllm",
+}
+
+# Repos where the downstream has a different name than the upstream/midstream.
+# Format: "org/repo" -> ["downstream-org/downstream-repo", ...]
+KNOWN_DOWNSTREAMS = {
+    "opendatahub-io/opendatahub-operator": [
+        "red-hat-data-services/rhods-operator",
+    ],
+}
+
 
 def _github_get(org, repo, token):
     """Query GitHub API for repo metadata. Returns dict or None."""
@@ -91,7 +121,9 @@ def extract_upstream_from_workflows(repo_path, sync_files):
 
         for match in GITHUB_URL_RE.finditer(content):
             org, repo = match.group(1), match.group(2)
-            repo = repo.rstrip(".git").rstrip("/")
+            repo = repo.removesuffix(".git").rstrip("/")
+            if org.startswith("$") or repo.startswith("$"):
+                continue
             if org.lower() in SKIP_ORGS:
                 continue
             repo_parent = repo_path.parent.name.split(".")[0]
@@ -205,7 +237,37 @@ def main():
                 upstream_detection = "sync_workflow"
                 is_fork = True
 
+        if not upstream and repo_name in KNOWN_UPSTREAMS:
+            upstream = KNOWN_UPSTREAMS[repo_name]
+            upstream_detection = "known_mapping"
+            is_fork = True
+
         downstream = find_downstream(org, repo_name, org_repos)
+        if key in KNOWN_DOWNSTREAMS:
+            for kd in KNOWN_DOWNSTREAMS[key]:
+                if kd not in downstream:
+                    downstream.append(kd)
+            downstream.sort()
+        if downstream:
+            exclude_orgs = set()
+            # Exclude the upstream's org from downstream list
+            if upstream:
+                exclude_orgs.add(upstream.split("/")[0])
+            # If repo name starts with another org's name, that org
+            # is likely the origin (e.g., llm-d-router belongs to llm-d)
+            for d in downstream:
+                d_org = d.split("/")[0]
+                if repo_name.startswith(d_org + "-"):
+                    exclude_orgs.add(d_org)
+                    if not upstream:
+                        upstream = f"{d_org}/{repo_name}"
+                        upstream_detection = "name_prefix"
+                        is_fork = True
+            if exclude_orgs:
+                downstream = [
+                    d for d in downstream
+                    if d.split("/")[0] not in exclude_orgs
+                ]
         downstream_detection = "cross_org_match" if downstream else None
 
         if upstream and not sync_mechanism:
