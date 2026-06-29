@@ -2,6 +2,9 @@
 
 import json
 import re
+import subprocess
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from lib.agent_runner import run_agent
@@ -67,6 +70,66 @@ def _apply_map_overrides(map_file: Path, platform_config: dict) -> None:
         data["metadata"]["components_excluded"] = len(excluded)
         map_file.write_text(json.dumps(data, indent=2) + "\n")
         print(f"  Updated {map_file}")
+
+
+def _add_provenance(map_file: Path, checkouts_dirs: list[str]) -> None:
+    """Run parse_repo_provenance.py and merge results into component-map.json."""
+    script = (
+        Path(__file__).resolve().parents[1].parent
+        / ".claude" / "skills" / "discover-components"
+        / "scripts" / "parse_repo_provenance.py"
+    )
+    if not script.exists():
+        print(f"  Provenance script not found: {script}")
+        return
+
+    existing_dirs = [d for d in checkouts_dirs if Path(d).is_dir()]
+    if not existing_dirs:
+        print("  No checkout directories found, skipping provenance")
+        return
+
+    print("  Running repo provenance analysis...")
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script)] + existing_dirs,
+            capture_output=True, text=True, timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        print("  WARNING: Provenance script timed out, skipping")
+        return
+
+    if result.returncode != 0:
+        print(f"  WARNING: Provenance script failed (exit {result.returncode})")
+        if result.stderr:
+            for line in result.stderr.strip().splitlines()[-3:]:
+                print(f"    {line}")
+        return
+
+    try:
+        provenance = json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        print(f"  WARNING: Could not parse provenance output: {e}")
+        return
+
+    if "metadata" in provenance:
+        provenance["metadata"]["generated_at"] = (
+            datetime.now(timezone.utc).isoformat()
+        )
+
+    data = json.loads(map_file.read_text())
+    data["provenance"] = provenance
+    map_file.write_text(json.dumps(data, indent=2) + "\n")
+
+    repos_total = provenance.get("metadata", {}).get("total_repos", 0)
+    with_upstream = provenance.get("metadata", {}).get("repos_with_upstream", 0)
+    with_downstream = provenance.get("metadata", {}).get(
+        "repos_with_downstream", 0,
+    )
+    print(
+        f"  Provenance added: {repos_total} repos"
+        f" ({with_upstream} with upstream,"
+        f" {with_downstream} with downstream)"
+    )
 
 
 async def run_discover_components_phase(args) -> None:
@@ -206,6 +269,9 @@ async def run_discover_components_phase(args) -> None:
             # Apply include_components / exclude_components from platforms.yaml
             if platform_config:
                 _apply_map_overrides(map_file, platform_config)
+
+            # Add repo provenance (upstream/downstream/sync relationships)
+            _add_provenance(map_file, checkouts_dirs)
 
             metadata = get_component_map_metadata(args.platform, architecture_dir)
             if metadata:

@@ -64,9 +64,46 @@ Create the component map structure:
         }
       }
     }
+  },
+  "provenance": {
+    "metadata": {
+      "generated_at": "{ISO timestamp}",
+      "checkouts_dirs": ["{dir1}", "{dir2}"],
+      "github_api_available": true,
+      "total_repos": "{count}",
+      "repos_with_upstream": "{count}",
+      "repos_with_downstream": "{count}"
+    },
+    "repos": {
+      "{org}/{repo}": {
+        "org": "{org}",
+        "repo": "{repo-name}",
+        "is_fork": false,
+        "upstream": "{upstream-org}/{repo-name}|null",
+        "upstream_detection": "github_api|sync_workflow|null",
+        "downstream": ["{downstream-org}/{repo-name}"],
+        "downstream_detection": "cross_org_match|null",
+        "sync_mechanism": "sync_workflow|rebase_workflow|auto_merge|manual|null",
+        "sync_workflows": ["sync-upstream.yml"]
+      }
+    }
   }
 }
 ```
+
+## Provenance Section
+
+The `provenance` top-level key is populated automatically by the harness post-processing step (not by the agent). It maps upstream/downstream fork relationships for all repos in the checkouts directories.
+
+- Keyed by `org/repo` (e.g., `opendatahub-io/kserve`)
+- `upstream`: the source repo this was forked from (null if not a fork)
+- `upstream_detection`: method used -- `github_api` (fork metadata) or `sync_workflow` (workflow file analysis)
+- `downstream`: repos in other orgs with the same name
+- `downstream_detection`: always `cross_org_match` when present
+- `sync_mechanism`: how upstream changes flow -- `sync_workflow`, `rebase_workflow`, `auto_merge`, or `manual`
+- `sync_workflows`: list of workflow filenames that handle syncing (e.g., `sync-upstream.yml`)
+
+**Do NOT write the provenance section in Step 8.** The harness adds it after discovery completes.
 
 ## Report Summary Template (Step 10)
 

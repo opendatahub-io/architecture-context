@@ -24,6 +24,12 @@ VALID_DISCOVERED_VIA = {
 
 VALID_CONFIDENCE = {"high", "medium", "low", "disputed"}
 
+VALID_UPSTREAM_DETECTION = {"github_api", "sync_workflow"}
+VALID_DOWNSTREAM_DETECTION = {"cross_org_match"}
+VALID_SYNC_MECHANISMS = {
+    "sync_workflow", "rebase_workflow", "auto_merge", "manual",
+}
+
 REQUIRED_METADATA_FIELDS = {
     "platform": str,
     "discovery_method": str,
@@ -168,6 +174,77 @@ def validate(path: str) -> list[str]:
     if excluded is not None:
         if not isinstance(excluded, dict):
             errors.append("excluded: expected object")
+
+    # --- provenance (optional, added by harness post-processing) ---
+    provenance = data.get("provenance")
+    if provenance is not None:
+        if not isinstance(provenance, dict):
+            errors.append("provenance: expected object")
+        else:
+            prov_meta = provenance.get("metadata")
+            if not isinstance(prov_meta, dict):
+                errors.append("provenance.metadata: missing or not an object")
+            else:
+                for field in ("total_repos", "repos_with_upstream", "repos_with_downstream"):
+                    val = prov_meta.get(field)
+                    if val is not None and not isinstance(val, int):
+                        errors.append(
+                            f"provenance.metadata.{field}: expected int,"
+                            f" got {type(val).__name__}"
+                        )
+
+            prov_repos = provenance.get("repos")
+            if not isinstance(prov_repos, dict):
+                errors.append("provenance.repos: missing or not an object")
+            else:
+                for repo_key, repo_data in prov_repos.items():
+                    prefix = f"provenance.repos.{repo_key}"
+                    if not isinstance(repo_data, dict):
+                        errors.append(f"{prefix}: expected object")
+                        continue
+
+                    for field in ("org", "repo"):
+                        if not isinstance(repo_data.get(field), str):
+                            errors.append(f"{prefix}.{field}: expected string")
+
+                    if not isinstance(repo_data.get("is_fork"), bool):
+                        errors.append(f"{prefix}.is_fork: expected bool")
+
+                    ud = repo_data.get("upstream_detection")
+                    if ud is not None and ud not in VALID_UPSTREAM_DETECTION:
+                        errors.append(
+                            f"{prefix}.upstream_detection: '{ud}'"
+                            f" not in {VALID_UPSTREAM_DETECTION}"
+                        )
+
+                    dd = repo_data.get("downstream_detection")
+                    if dd is not None and dd not in VALID_DOWNSTREAM_DETECTION:
+                        errors.append(
+                            f"{prefix}.downstream_detection: '{dd}'"
+                            f" not in {VALID_DOWNSTREAM_DETECTION}"
+                        )
+
+                    sm = repo_data.get("sync_mechanism")
+                    if sm is not None and sm not in VALID_SYNC_MECHANISMS:
+                        errors.append(
+                            f"{prefix}.sync_mechanism: '{sm}'"
+                            f" not in {VALID_SYNC_MECHANISMS}"
+                        )
+
+                    if not isinstance(repo_data.get("downstream"), list):
+                        errors.append(f"{prefix}.downstream: expected list")
+
+                    if not isinstance(repo_data.get("sync_workflows"), list):
+                        errors.append(f"{prefix}.sync_workflows: expected list")
+
+                if isinstance(prov_meta, dict):
+                    total = prov_meta.get("total_repos")
+                    actual = len(prov_repos)
+                    if isinstance(total, int) and total != actual:
+                        errors.append(
+                            f"provenance.metadata.total_repos ({total})"
+                            f" != actual repo count ({actual})"
+                        )
 
     return errors
 
