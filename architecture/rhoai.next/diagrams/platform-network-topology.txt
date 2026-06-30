@@ -1,363 +1,367 @@
 ================================================================================
-PLATFORM NETWORK TOPOLOGY - RHOAI rhoai.next
+RHOAI rhoai.next - PLATFORM NETWORK TOPOLOGY
 ================================================================================
 
-+-----------------------------------------------------------------------------+
-|  EXTERNAL (Untrusted)                                                       |
-|                                                                             |
-|  Data Scientists / ML Engineers / External API Clients                      |
-|         |                                                                   |
-|  External LLM Providers (OpenAI, Anthropic, Azure, Bedrock, Vertex)         |
-|         ^                                                                   |
-+---------|-----------------------------------------------------------------  |
-          |                                                                   |
-+---------v-------------------------------------------------------------------+
-|  INGRESS - Gateway API (DMZ)                                                |
-|                                                                             |
-|  Envoy Proxy (Gateway CR)                                                   |
-|  Port: 443/TCP (ext) -> backend ports (int)                                 |
-|  Protocol: HTTPS, Encryption: TLS 1.2+                                     |
-|  Auth: Delegated to kube-auth-proxy via ext_authz                           |
-|         |                                                                   |
-|         +---> EnvoyFilter (ext_authz + Lua cookie/token handling)           |
-|         |         |                                                         |
-|         |         +---> kube-auth-proxy (OIDC / OpenShift OAuth)            |
-|         |         |     Returns Bearer token injected into Authorization    |
-|         |         |     header; strips OAuth cookies from upstream requests  |
-|         |                                                                   |
-|         +---> HTTPRoute: odh-dashboard                                      |
-|         |     443/TCP (ext) -> dashboard backend (int)                      |
-|         |     Auth: Gateway ext_authz (OIDC/OAuth)                          |
-|         |                                                                   |
-|         +---> HTTPRoute: Notebooks (per-workbench)                          |
-|         |     443/TCP (ext) -> notebook backend (int)                       |
-|         |     Auth: Gateway ext_authz (OIDC/OAuth)                          |
-|         |                                                                   |
-|         +---> HTTPRoute: Model Registry                                     |
-|         |     443/TCP (ext) -> model-registry REST/gRPC (int)              |
-|         |     Auth: Gateway ext_authz (OIDC/OAuth)                          |
-|         |                                                                   |
-|         +---> HTTPRoute: MLflow                                             |
-|         |     443/TCP (ext) -> mlflow-server (int)                         |
-|         |     Auth: Gateway ext_authz (OIDC/OAuth)                          |
-|         |                                                                   |
-|         +---> HTTPRoute: InferenceService / LLMInferenceService            |
-|         |     443/TCP (ext) -> vLLM inference endpoint (int)               |
-|         |     Auth: Kuadrant AuthPolicy (Authorino) or Gateway ext_authz    |
-|         |     ext_proc: llm-d EPP for endpoint selection                    |
-|         |                                                                   |
-|         +---> HTTPRoute: MaaS (External Model Proxy)                       |
-|               443/TCP (ext) -> maas-api -> AI Gateway -> ext provider      |
-|               Auth: API key (Authorino callback) + RateLimitPolicy          |
-|               ext_proc: payload-pre-processing + payload-processing         |
-|                                                                             |
-|  nginx Redirect Deployments                                                 |
-|  Legacy hostnames -> 301 redirect to Gateway-managed routes                 |
-|                                                                             |
-+-----------------------------------------------------------------------------+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                             │
+│  Data Scientists, Applications, CI/CD Pipelines                             │
+│         │                                                                   │
+├─────────┼───────────────────────────────────────────────────────────────────┤
+│  INGRESS│(Istio Gateway API - DMZ)                                         │
+│         │                                                                   │
+│  data-science-gateway (Envoy Proxy)                                         │
+│  ├─ GatewayClass: istio                                                     │
+│  ├─ Port: 443/TCP (external) → component ports (internal)                   │
+│  ├─ TLS: Termination at gateway, TLS 1.2+                                   │
+│  ├─ EnvoyFilter: ext_authz + Lua filter chains                             │
+│  └─ Auth: kube-auth-proxy (OAuth/OIDC auto-detected)                       │
+│         │                                                                   │
+│         ├─→ ODH Dashboard                                                   │
+│         │   HTTPRoute: dashboard.apps.cluster.example.com                    │
+│         │   Port: 443/TCP (ext) → 8080/TCP (int)                            │
+│         │   Protocol: HTTPS → HTTP                                          │
+│         │   Auth: OAuth (OpenShift) or OIDC (external IdP)                  │
+│         │                                                                   │
+│         ├─→ InferenceService Endpoints                                      │
+│         │   HTTPRoute: *.apps.cluster.example.com                           │
+│         │   Port: 443/TCP (ext) → 8080/TCP (int)                            │
+│         │   Protocol: HTTPS → HTTP                                          │
+│         │   Auth: Bearer Token (optional), Kuadrant AuthPolicy              │
+│         │                                                                   │
+│         ├─→ Model Registry                                                  │
+│         │   HTTPRoute + ReferenceGrant (cross-namespace)                     │
+│         │   Port: 443/TCP (ext) → 8080/TCP REST, 9090/TCP gRPC (int)       │
+│         │   Protocol: HTTPS → HTTP/gRPC                                     │
+│         │   Auth: kube-rbac-proxy (SubjectAccessReview)                     │
+│         │                                                                   │
+│         ├─→ KubeRay Dashboard                                               │
+│         │   HTTPRoute + ReferenceGrant (cross-namespace)                     │
+│         │   Protocol: HTTPS → HTTP                                          │
+│         │   Auth: OAuth proxy sidecar                                       │
+│         │                                                                   │
+│         ├─→ MaaS Endpoints                                                  │
+│         │   HTTPRoute: MaaS controller                                      │
+│         │   Protocol: HTTPS → HTTP                                          │
+│         │   Auth: Kuadrant/Authorino (API keys, JWT)                        │
+│         │                                                                   │
+│         ├─→ AI Gateway                                                      │
+│         │   HTTPRoute: AI Gateway payload processing                        │
+│         │   Protocol: HTTPS → HTTP                                          │
+│         │   Auth: API key injection from K8s Secrets                        │
+│         │                                                                   │
+│         └─→ llm-d Router (ext_proc)                                         │
+│             Envoy ext_proc protocol for routing decisions                    │
+│             60+ scheduling plugins for request placement                    │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE (redhat-ods-operator / openshift-operators)             │
+│                                                                             │
+│  ┌─ rhods-operator (Meta-Operator)                                          │
+│  │  ServiceAccount: rhods-operator                                          │
+│  │  Controller watches: 209                                                 │
+│  │  CRDs owned: 27 (DSC, DSCI, FeatureTracker, etc.)                      │
+│  │  ├─→ Kubernetes API (HTTPS/443, ServiceAccount token)                   │
+│  │  ├─→ All component namespaces (deploys/manages resources)               │
+│  │  └─→ OLM (installed via ClusterServiceVersion)                          │
+│  │                                                                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM NAMESPACE (redhat-ods-applications / opendatahub)                │
+│                                                                             │
+│  CONTROL PLANE OPERATORS:                                                   │
+│  ┌─ KServe Controller                                                       │
+│  │  ServiceAccount: kserve-controller-manager                               │
+│  │  Ports: 8443/TCP metrics (kube-rbac-proxy), 9443/TCP webhook (TLS)      │
+│  │  ├─→ Kubernetes API (HTTPS/443, SA token)                               │
+│  │  ├─→ Knative Serving (serverless mode)                                  │
+│  │  └─→ User namespaces (creates InferenceService pods)                    │
+│  │                                                                          │
+│  ├─ odh-model-controller                                                    │
+│  │  ServiceAccount: odh-model-controller                                    │
+│  │  Port: 8443/TCP metrics (kube-rbac-proxy)                               │
+│  │  ├─→ KServe Controller (watches InferenceService CRs)                   │
+│  │  ├─→ Model Registry (gRPC/9090)                                         │
+│  │  ├─→ Authorino (creates AuthPolicy CRDs)                               │
+│  │  ├─→ Istio Gateway (creates Routes/HTTPRoutes)                          │
+│  │  └─→ Kubernetes API (HTTPS/443, SA token)                               │
+│  │                                                                          │
+│  ├─ Kueue Controller                                                        │
+│  │  ServiceAccount: kueue-controller-manager                                │
+│  │  Ports: 8443/TCP metrics, 9443/TCP webhook (TLS)                        │
+│  │  ├─→ Kubernetes API (HTTPS/443, SA token)                               │
+│  │  └─→ User namespaces (manages Workload admission)                      │
+│  │                                                                          │
+│  ├─ CodeFlare Operator                                                      │
+│  │  ServiceAccount: codeflare-operator                                      │
+│  │  Port: 8443/TCP metrics (kube-rbac-proxy)                               │
+│  │  ├─→ Kubernetes API (HTTPS/443, SA token)                               │
+│  │  └─→ DSCInitialization (reads platform config)                          │
+│  │                                                                          │
+│  ├─ KubeRay Operator                                                        │
+│  │  ServiceAccount: kuberay-operator                                        │
+│  │  Port: 8443/TCP metrics (kube-rbac-proxy)                               │
+│  │  ├─→ Kubernetes API (HTTPS/443, SA token)                               │
+│  │  └─→ User namespaces (creates RayCluster pods)                          │
+│  │                                                                          │
+│  ├─ Training Operator                                                       │
+│  │  ServiceAccount: training-operator                                       │
+│  │  Ports: 8443/TCP metrics, 9443/TCP webhook (TLS)                        │
+│  │  ├─→ Kubernetes API (HTTPS/443, SA token)                               │
+│  │  └─→ User namespaces (creates PyTorchJob/TrainJob pods)                 │
+│  │                                                                          │
+│  ├─ DS Pipelines Operator                                                   │
+│  │  ServiceAccount: data-science-pipelines-operator                         │
+│  │  Port: 8443/TCP metrics                                                  │
+│  │  ├─→ Kubernetes API (HTTPS/443, SA token)                               │
+│  │  └─→ User namespaces (deploys DSPA instances)                           │
+│  │                                                                          │
+│  ├─ AI Gateway Operator                                                     │
+│  │  ServiceAccount: ai-gateway-operator                                     │
+│  │  └─→ Kubernetes API (HTTPS/443, SA token)                               │
+│  │                                                                          │
+│  ├─ MaaS Controller                                                         │
+│  │  ServiceAccount: maas-controller                                         │
+│  │  ├─→ Authorino (AuthPolicy for API auth)                               │
+│  │  └─→ Kubernetes API (HTTPS/443, SA token)                               │
+│  │                                                                          │
+│  ├─ Kagenti Operator (agents-operator)                                      │
+│  │  ServiceAccount: agents-operator                                         │
+│  │  ├─→ Kubernetes API (HTTPS/443, SA token)                               │
+│  │  └─→ User namespaces (injects AuthBridge sidecar)                       │
+│  │                                                                          │
+│  ├─ ModelMesh Serving Controller                                            │
+│  │  ServiceAccount: modelmesh-controller                                    │
+│  │  Port: 8443/TCP metrics                                                  │
+│  │  └─→ User namespaces (injects sidecars into pods)                       │
+│  │                                                                          │
+│  └─ Model Registry Operator, MLflow Operator, TrustyAI Operator,           │
+│     Workbenches Operator, MCP Lifecycle Operator, Feast, Spark Operator     │
+│                                                                             │
+│  PLATFORM SERVICES:                                                         │
+│  ┌─ ODH Dashboard                                                           │
+│  │  ServiceAccount: odh-dashboard                                           │
+│  │  Port: 8080/TCP HTTP                                                     │
+│  │  Auth: kube-rbac-proxy (SubjectAccessReview)                            │
+│  │  ├─→ Kubernetes API (HTTPS/443, SA token)                               │
+│  │  ├─→ Model Registry (REST/8080, gRPC/9090)                             │
+│  │  └─→ DSPA API (REST/8888)                                              │
+│  │                                                                          │
+│  ├─ Model Registry                                                          │
+│  │  ServiceAccount: model-registry                                          │
+│  │  Ports: 8080/TCP REST, 9090/TCP gRPC                                    │
+│  │  Auth: kube-rbac-proxy                                                   │
+│  │  └─→ PostgreSQL (5432/TCP, username/password)                           │
+│  │                                                                          │
+│  └─ Authorino                                                               │
+│     ServiceAccount: authorino                                               │
+│     Enforces: API keys, JWT tokens, identity headers                       │
+│     Used by: odh-model-controller, MaaS, batch-gateway, TrustyAI          │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  AUTH PROVIDER NAMESPACE (redhat-ods-applications-auth-provider)            │
+│                                                                             │
+│  ┌─ kube-auth-proxy                                                         │
+│  │  Provides: OAuth (OpenShift) and OIDC (external IdP) authentication     │
+│  │  Auto-detection: Cluster introspection for auth mode                    │
+│  │  ├─→ OpenShift OAuth server (OAuth mode)                                │
+│  │  └─→ External OIDC provider (OIDC mode)                                │
+│  │                                                                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  KNATIVE-SERVING NAMESPACE                                                  │
+│                                                                             │
+│  ┌─ Knative Serving                                                         │
+│  │  Purpose: Serverless autoscaling for KServe serverless mode             │
+│  │  ├─→ Istio local gateway (traffic routing)                              │
+│  │  └─→ Kubernetes API (HTTPS/443, SA token)                               │
+│  │                                                                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  USER NAMESPACES (per-project, isolated by RBAC + NetworkPolicy)           │
+│                                                                             │
+│  Inference Workloads:                                                       │
+│  ┌─ InferenceService Pods                                                   │
+│  │  Runtimes: vLLM CUDA, vllm-rocm, Caikit-TGIS, OVMS, MLServer          │
+│  │  Ports: 8080/TCP HTTP (KServe V2/OpenAI), 8033/TCP gRPC                │
+│  │  Init: storage-initializer (model download from S3/PVC/OCI)            │
+│  │  Auth: kube-rbac-proxy sidecar (optional)                               │
+│  │  ├─→ Object Storage (HTTPS/443, AWS IAM or static creds)               │
+│  │  └─→ Container Registry (HTTPS/443, pull secrets)                       │
+│  │                                                                          │
+│  ├─ llm-d Stack                                                             │
+│  │  Components: llm-d-router (EPP), vLLM, llm-d-kv-cache,                 │
+│  │              llm-d-routing-sidecar, llm-d-latency-predictor             │
+│  │  Protocol: Envoy ext_proc for routing decisions                          │
+│  │  KV-cache: Disaggregated prefill/decode via llm-d-kv-cache              │
+│  │  └─→ Object Storage (HTTPS/443, model artifacts)                        │
+│  │                                                                          │
+│  ├─ ModelMesh Pods                                                          │
+│  │  Sidecars: runtime-adapter, rest-proxy, puller, oauth-proxy (5+ total)  │
+│  │  Ports: 8033/TCP gRPC (internal), 8008/TCP REST (via rest-proxy)        │
+│  │  Coordination: etcd-backed distributed LRU cache                        │
+│  │  └─→ Object Storage (HTTPS/443, model artifacts)                        │
+│  │                                                                          │
+│  Training Workloads:                                                        │
+│  ├─ RayCluster Pods                                                         │
+│  │  Security: Per-cluster mTLS CA (cert-manager, RSA 2048)                 │
+│  │  Auth: OAuth proxy sidecar for dashboard                                │
+│  │  Communication: Ray internal protocol (mTLS encrypted)                  │
+│  │  └─→ Object Storage (HTTPS/443, data access)                           │
+│  │                                                                          │
+│  ├─ PyTorchJob / TrainJob Pods                                              │
+│  │  Communication: Headless Service DNS-based inter-pod                    │
+│  │  Protocols: PyTorch DDP, DeepSpeed, FSDP                               │
+│  │  └─→ Object Storage (HTTPS/443, data access)                           │
+│  │                                                                          │
+│  Pipeline Workloads:                                                        │
+│  ├─ DSPA Instance                                                           │
+│  │  Components: API Server, Argo Controller, Envoy gRPC proxy             │
+│  │  Ports: 8888/TCP API, 8887/TCP proxy                                    │
+│  │  Auth: kube-rbac-proxy                                                   │
+│  │  ├─→ MariaDB/MySQL (3306/TCP, pipeline metadata)                       │
+│  │  ├─→ Object Storage (HTTPS/443, pipeline artifacts)                     │
+│  │  └─→ ML Metadata service (gRPC via Envoy proxy)                        │
+│  │                                                                          │
+│  ├─ Argo Workflow Pods                                                      │
+│  │  Sidecar: argoexec (artifact management)                                │
+│  │  └─→ Object Storage (HTTPS/443, step artifacts)                        │
+│  │                                                                          │
+│  Development Workloads:                                                     │
+│  └─ Notebook/Workbench Pods                                                 │
+│     IDEs: Jupyter, VS Code, RStudio                                        │
+│     Auth: OAuth proxy sidecar                                              │
+│     ├─→ Object Storage (HTTPS/443, data access)                            │
+│     └─→ Container Registry (HTTPS/443, custom image pulls)                 │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (External Services)                                                 │
+│                                                                             │
+│  Object Storage (S3-compatible)                                             │
+│  - Purpose: Model artifacts, training data, pipeline artifacts              │
+│  - Auth: AWS IAM (IRSA or static credentials)                              │
+│  - Encryption: TLS 1.2+                                                     │
+│  - Components: KServe, ModelMesh, DSPO, Training, Notebooks                │
+│                                                                             │
+│  Container Registry (quay.io, registry.redhat.io)                           │
+│  - Purpose: Pull runtime/workbench container images                         │
+│  - Auth: Pull secrets (RELATED_IMAGE digest-pinned for disconnected)       │
+│  - Encryption: TLS 1.2+                                                     │
+│  - Components: KServe, Notebooks, ModelMesh                                 │
+│                                                                             │
+│  External LLM Providers (OpenAI, Anthropic, Azure, Bedrock)                │
+│  - Purpose: MaaS and AI Gateway external model access                      │
+│  - Auth: API keys (bearer or AWS SigV4 signing)                            │
+│  - Encryption: TLS 1.2+                                                     │
+│  - Components: AI Gateway Payload Processing, MaaS                         │
+│                                                                             │
+│  PostgreSQL                                                                 │
+│  - Purpose: Model Registry metadata backend                                │
+│  - Auth: Username/password                                                  │
+│  - Port: 5432/TCP                                                           │
+│  - Components: Model Registry                                              │
+│                                                                             │
+│  MariaDB / MySQL                                                            │
+│  - Purpose: Pipeline metadata and run history                              │
+│  - Auth: Username/password                                                  │
+│  - Port: 3306/TCP                                                           │
+│  - Components: Data Science Pipelines (DSPA)                               │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 
-+-----------------------------------------------------------------------------+
-|  OPERATOR NAMESPACE (redhat-ods-operator / opendatahub-operators)           |
-|                                                                             |
-|  rhods-operator manager                                                     |
-|    ServiceAccount: rhods-operator                                           |
-|    +---> Kubernetes API (HTTPS/6443, SA token)                             |
-|    |     Creates/reconciles: DSCInitialization, DataScienceCluster,         |
-|    |     16+ component CRs, Gateway infra, RBAC, NetworkPolicies           |
-|    +---> redhat-ods-applications namespace (deploys all controllers)        |
-|    +---> redhat-ods-monitoring namespace (deploys monitoring stack)         |
-|    +---> User namespaces (deploys baseline NetworkPolicies)                |
-|                                                                             |
-|  cloudmanager                                                               |
-|    +---> Kubernetes API (HTTPS/6443, SA token)                             |
-|    |     Helm-based deployment of external operators:                       |
-|    |     cert-manager, Istio (Sail Operator), LeaderWorkerSet              |
-|                                                                             |
-+-----------------------------------------------------------------------------+
+================================================================================
+NAMESPACE SUMMARY
+================================================================================
 
-+-----------------------------------------------------------------------------+
-|  PLATFORM NAMESPACE (redhat-ods-applications / opendatahub)                 |
-|                                                                             |
-|  --- Operators / Controllers ---                                            |
-|                                                                             |
-|  KServe Controllers                                                         |
-|    ServiceAccount: kserve-controller-manager                                |
-|    Metrics: kube-rbac-proxy sidecar (TokenReview + SAR)                     |
-|    +---> Kubernetes API (HTTPS/6443, SA token)                             |
-|    |     Reconciles: InferenceService, LLMInferenceService,                |
-|    |     InferencePool, LocalModelCache                                     |
-|    +---> User namespaces: creates Deployment/LWS, EPP, HTTPRoute           |
-|    +---> S3 Storage (HTTPS/443, model artifacts via storage-initializer)   |
-|                                                                             |
-|  odh-model-controller                                                       |
-|    ServiceAccount: odh-model-controller                                     |
-|    Metrics: kube-rbac-proxy sidecar                                         |
-|    +---> Kubernetes API (HTTPS/6443, SA token)                             |
-|    |     Creates: AuthPolicy, ServiceMonitor, KEDA ScaledObject,           |
-|    |     Gateway EnvoyFilter, HTTPRoute patches                             |
-|    +---> Gateway (EnvoyFilter management, TLS bootstrap)                   |
-|                                                                             |
-|  DSPO Controller                                                            |
-|    ServiceAccount: data-science-pipelines-operator                          |
-|    Metrics: kube-rbac-proxy sidecar                                         |
-|    +---> Kubernetes API (HTTPS/6443, SA token)                             |
-|    +---> User namespaces: creates DSPA infrastructure                      |
-|          (API Server, Argo Workflows, MLMD, Persistence Agent)             |
-|                                                                             |
-|  Model Registry Operator                                                    |
-|    ServiceAccount: model-registry-operator                                  |
-|    Metrics: kube-rbac-proxy sidecar                                         |
-|    +---> Kubernetes API (HTTPS/6443, SA token)                             |
-|    +---> User namespaces: creates Model Registry Deployments               |
-|                                                                             |
-|  TrustyAI Operator                                                          |
-|    ServiceAccount: trustyai-service-operator                                |
-|    +---> Kubernetes API, deploys TrustyAI services, NeMo Guardrails        |
-|                                                                             |
-|  Feast Operator                                                             |
-|    ServiceAccount: feast-operator                                           |
-|    +---> Kubernetes API, creates FeatureStore + HPA + PDB                  |
-|                                                                             |
-|  MLflow Operator                                                            |
-|    ServiceAccount: mlflow-operator                                          |
-|    +---> Kubernetes API, creates MLflow instances + HTTPRoutes              |
-|                                                                             |
-|  OGX K8s Operator                                                           |
-|    ServiceAccount: ogx-operator                                             |
-|    +---> Kubernetes API, creates OGXServer + HPA + PDB + NetworkPolicy     |
-|                                                                             |
-|  MaaS Controller                                                            |
-|    ServiceAccount: maas-controller                                          |
-|    +---> Kubernetes API, creates HTTPRoutes, RateLimitPolicies,            |
-|    |     Authorino AuthPolicies, maas-api Deployment                       |
-|    +---> AI Gateway (ExternalModel/ExternalProvider -> ServiceEntry)        |
-|                                                                             |
-|  KubeRay Operator                                                           |
-|    ServiceAccount: kuberay-operator                                         |
-|    Metrics: kube-rbac-proxy sidecar                                         |
-|    +---> Kubernetes API, creates RayCluster pods with mTLS                 |
-|                                                                             |
-|  Kueue Controller                                                           |
-|    ServiceAccount: kueue-controller-manager                                 |
-|    Metrics: kube-rbac-proxy sidecar                                         |
-|    +---> Kubernetes API, workload admission for training/eval/Ray          |
-|                                                                             |
-|  Additional: Spark Operator, Kubeflow Trainer, Kubeflow Training Operator, |
-|              WVA Controller, CodeFlare Operator                             |
-|                                                                             |
-|  --- Platform Services ---                                                  |
-|                                                                             |
-|  odh-dashboard (2-3 replicas, stateless)                                    |
-|    ServiceAccount: odh-dashboard                                            |
-|    Module Federation host + 10 BFF sidecar/standalone servers              |
-|    Metrics: kube-rbac-proxy sidecar                                         |
-|    +---> Kubernetes API (HTTPS/6443, SA token, for all resource mgmt)      |
-|    +---> Model Registry instances (REST/gRPC)                              |
-|    +---> DS Pipelines API Server (pipeline CRUD)                           |
-|    +---> KServe (InferenceService management)                              |
-|    +---> MLflow (experiment tracking)                                       |
-|    +---> EvalHub (evaluation job submission)                                |
-|                                                                             |
-|  Kubeflow Notebook Controller                                               |
-|    ServiceAccount: notebook-controller                                      |
-|    +---> Kubernetes API (creates StatefulSets, HTTPRoutes, NetworkPolicies) |
-|    +---> Injects kube-rbac-proxy sidecar into Notebook pods                |
-|    +---> Auto-injects DSPA/MLflow/Feast connections into Notebooks         |
-|                                                                             |
-|  EvalHub                                                                    |
-|    ServiceAccount: evalhub                                                  |
-|    Metrics: kube-rbac-proxy sidecar                                         |
-|    +---> Creates evaluation Jobs (lm-evaluation-harness containers)        |
-|    +---> MLflow (experiment tracking, result storage)                      |
-|    +---> S3/OCI (artifact persistence)                                     |
-|                                                                             |
-|  --- Inference Scheduling (ext_proc services) ---                           |
-|                                                                             |
-|  llm-d Inference Scheduler (EPP)                                            |
-|    ext_proc gRPC service for Envoy                                          |
-|    +---> vLLM pods (scrapes queue/KV-cache metrics)                        |
-|    +---> Envoy Gateway (endpoint selection via ext_proc)                   |
-|                                                                             |
-|  AI Gateway Payload Processing                                              |
-|    ext_proc gRPC service for Envoy                                          |
-|    +---> External LLM Providers (API translation, credential injection)    |
-|    |     via Istio ServiceEntry + DestinationRule (TLS origination)        |
-|                                                                             |
-|  maas-api                                                                   |
-|    API key validation service                                               |
-|    +---> Authorino (callback target for API key auth)                      |
-|                                                                             |
-+-----------------------------------------------------------------------------+
+Namespace                                    Purpose
+─────────────────────────────────────────────────────────────────────────────────
+redhat-ods-operator / openshift-operators    Operator namespace (rhods-operator)
+redhat-ods-applications / opendatahub        Platform control plane + services
+redhat-ods-applications-auth-provider        Authorino, kube-auth-proxy
+knative-serving                              Knative Serving (KServe serverless)
+istio-system                                 Istio control plane
+User namespaces (per-project)                Inference, training, pipeline, dev
 
-+-----------------------------------------------------------------------------+
-|  MONITORING NAMESPACE (redhat-ods-monitoring)                               |
-|                                                                             |
-|  Prometheus                                                                 |
-|    +---> All operators/controllers (scrapes via kube-rbac-proxy)            |
-|    +---> InferenceService pods (scrapes inference metrics)                  |
-|    +---> Dashboard, Notebook pods (scrapes application metrics)             |
-|                                                                             |
-|  Thanos Querier                                                             |
-|    +---> Prometheus (multi-tenant metric queries)                          |
-|                                                                             |
-|  OpenTelemetry Collector                                                    |
-|    +---> Platform components (OTLP gRPC traces)                            |
-|                                                                             |
-|  Perses (dashboards) + AlertManager (alert routing)                         |
-|                                                                             |
-+-----------------------------------------------------------------------------+
+================================================================================
+SERVICE MESH CONFIGURATION
+================================================================================
 
-+-----------------------------------------------------------------------------+
-|  USER DATA SCIENCE PROJECT NAMESPACES                                       |
-|  (One namespace per data science project, NetworkPolicy-protected)          |
-|                                                                             |
-|  Notebook StatefulSets                                                      |
-|    + kube-rbac-proxy sidecar (injected by ODH Notebook Controller)         |
-|    + HTTPRoute -> Gateway (for external access)                            |
-|    + NetworkPolicy: allows ingress from Gateway, monitoring namespaces     |
-|    +---> S3 Storage (HTTPS/443, training data download/upload)             |
-|    +---> Container Registry (pull workbench images)                        |
-|                                                                             |
-|  InferenceService Deployments (vLLM + llm-d routing sidecar)               |
-|    + HTTPRoute -> Gateway (for inference API access)                       |
-|    + AuthPolicy (Kuadrant/Authorino) for per-model auth                    |
-|    + ServiceMonitor for Prometheus scraping                                 |
-|    + KEDA ScaledObject / WVA VariantAutoscaling for autoscaling            |
-|    +---> S3 Storage (HTTPS/443, model artifact download)                   |
-|    +---> Container Registry (pull runtime images)                          |
-|                                                                             |
-|  DSPA Pipeline Infrastructure                                               |
-|    API Server + Argo Workflows Controller + MLMD + Cache Server            |
-|    + Persistence Agent (syncs workflow state)                               |
-|    +---> S3/Object Storage (HTTPS/443, pipeline artifacts)                 |
-|    +---> Model Registry (artifact registration)                            |
-|                                                                             |
-|  RayClusters (KubeRay)                                                      |
-|    + mTLS inter-pod communication (cert injection via init containers)      |
-|    + Kueue workload admission                                               |
-|                                                                             |
-|  FeatureStore Deployments (Feast)                                           |
-|    + HPA + PDB managed by Feast Operator                                   |
-|    + CronJob for materialization                                            |
-|                                                                             |
-|  MLflow Instances                                                           |
-|    + HTTPRoute -> Gateway (for UI/API access)                              |
-|    + Tracking server + model registry                                       |
-|                                                                             |
-|  OGX Servers (LlamaStack)                                                   |
-|    + HPA + PDB + NetworkPolicy managed by OGX Operator                     |
-|    +---> vLLM (inference backend)                                          |
-|                                                                             |
-|  Model Registry Instances                                                   |
-|    + REST + gRPC endpoints                                                  |
-|    + HTTPRoute -> Gateway                                                   |
-|    +---> S3 Storage (artifact references)                                  |
-|                                                                             |
-+-----------------------------------------------------------------------------+
+Ingress Gateway:
+  - Implementation: Istio Gateway API (data-science-gateway)
+  - GatewayClass: istio
+  - EnvoyFilter: ext_authz + Lua for auth and token forwarding
+  - Auth proxy: kube-auth-proxy (auto-detects OAuth vs OIDC)
 
-+-----------------------------------------------------------------------------+
-|  EGRESS (External Services)                                                 |
-|                                                                             |
-|  S3 / Object Storage (s3.amazonaws.com or compatible)                       |
-|  - Purpose: Model artifacts, pipeline artifacts, training data,            |
-|             evaluation datasets, feature store offline data                 |
-|  - Auth: AWS IAM (IRSA or static credentials via storage-config secret)    |
-|  - Encryption: TLS 1.2+                                                    |
-|  - Components: KServe (storage-initializer), DSPA, Model Registry,        |
-|                Notebooks, EvalHub, Feast                                    |
-|                                                                             |
-|  Container Registry (quay.io, registry.redhat.io)                          |
-|  - Purpose: Pull operator images, workbench images, runtime images,        |
-|             inference server images, sidecar images                         |
-|  - Auth: Pull secrets (imagePullSecrets)                                   |
-|  - Encryption: TLS 1.2+                                                    |
-|  - Components: All pods (120+ distinct images)                             |
-|                                                                             |
-|  External LLM Providers (MaaS egress)                                      |
-|  - Purpose: Proxy inference requests to external providers                  |
-|  - Providers: OpenAI, Anthropic, Azure OpenAI, AWS Bedrock, GCP Vertex    |
-|  - Auth: Provider-specific API keys (injected by AI Gateway ext_proc)      |
-|  - Encryption: TLS 1.2+ via Istio DestinationRule TLS origination         |
-|  - Components: AI Gateway Payload Processing, MaaS Controller              |
-|                                                                             |
-|  Kubernetes API Server                                                      |
-|  - Purpose: All operator/controller CRUD, webhook validation,              |
-|             RBAC checks, resource watches                                   |
-|  - Auth: ServiceAccount tokens (projected volume)                          |
-|  - Encryption: HTTPS/6443                                                  |
-|  - Components: All operators and controllers                               |
-|                                                                             |
-+-----------------------------------------------------------------------------+
+Service-to-Service TLS:
+  - Pattern: OpenShift service-ca annotations
+  - Components: DSPO, Model Registry, KServe webhook, TrustyAI, MLflow, Dashboard
+  - Certificate source: service.beta.openshift.io/serving-cert-secret-name
+
+Pod-to-Pod TLS:
+  - Pattern: cert-manager CA chains (per-component)
+  - Components: KubeRay (mTLS per-cluster CA), CodeFlare (RSA 2048-bit per-cluster CA)
+  - agents-operator: SharedTrust CA for AuthBridge
+
+mTLS Enforcement:
+  - Mode: MIXED (per-component opt-in, no platform-wide mesh-level enforcement)
+  - KubeRay: STRICT mTLS per RayCluster with dedicated CA
+  - CodeFlare: mTLS with init container cert injection
+  - agents-operator: SharedTrust CA mode available
+
+gRPC Communication:
+  - Load balancing: Client-side DNS polling
+  - Components: Caikit-TGIS (GRPCLoadBalancerProxy), ModelMesh, DSPO metadata Envoy
+  - Total: 106 gRPC service definitions across 15 components
+
+Protocol Translation:
+  - Envoy ext_proc: AI Gateway (OpenAI <-> provider formats), llm-d-router
+  - REST proxy sidecar: ModelMesh (REST <-> gRPC)
 
 ================================================================================
 AUTHENTICATION SUMMARY
 ================================================================================
 
-Pattern 1: Gateway API + kube-auth-proxy (User-facing services)
-  Flow: Client -> HTTPS/443 -> Envoy Gateway -> ext_authz -> kube-auth-proxy
-        -> OIDC/OpenShift OAuth -> Bearer token injected -> backend
-  Used by: Dashboard, Notebooks, Model Registry UI, MLflow UI, Serving endpoints
-
-Pattern 2: kube-rbac-proxy sidecar (Metrics + Internal APIs)
-  Flow: Prometheus -> HTTPS -> kube-rbac-proxy -> TokenReview + SAR -> upstream
-  Used by: KubeRay, Model Registry, Notebooks, EvalHub, Dashboard,
-           odh-model-controller, TrustyAI, Kueue, DSPO, Spark Operator
-  Always allows: system:serviceaccount:openshift-monitoring:prometheus-k8s GET
-
-Pattern 3: Kuadrant AuthPolicy + Authorino (Model Serving)
-  Flow: Client -> Gateway -> Authorino validates -> KServe backend
-  Used by: LLMInferenceService, MaaS model endpoints
-  Managed by: odh-model-controller, MaaS Controller
-
-Pattern 4: API Key Authentication (MaaS)
-  Flow: Client -> API key header -> Authorino -> maas-api callback -> validate
-  Used by: MaaS subscription-based model access
-
-Pattern 5: mTLS (Service-to-Service)
-  Flow: Service A -> Istio DestinationRule TLS origination -> Service B
-  Used by: KServe backends, CodeFlare/KubeRay inter-pod
-  Note: Not all inter-service communication enforces mTLS (MIXED posture)
-
-Pattern 6: OAuth Proxy Sidecar (Legacy)
-  Flow: Client -> oauth-proxy (port 8443) -> OpenShift OAuth -> backend
-  Used by: ModelMesh Serving (being replaced by Gateway API pattern)
+Mechanism                          Components Using             Enforcement
+─────────────────────────────────────────────────────────────────────────────────
+kube-rbac-proxy (SAR)              9+ components                Sidecar container
+Kuadrant/Authorino (AuthPolicy)    odh-model-ctrl, MaaS,        External service
+                                   batch-gw, TrustyAI
+OAuth2 proxy (OpenShift)           CodeFlare, Dashboard         Sidecar container
+AuthBridge (agents-operator)       AI agent workloads           4-mode proxy
+Bearer token passthrough           KServe, DSPO, Notebooks      Header forwarding
+API key injection                  AI Gateway                   Envoy ext_proc
 
 ================================================================================
-NAMESPACE NETWORK POLICIES
+NETWORKPOLICY SUMMARY
 ================================================================================
 
-Namespace: redhat-ods-applications
-  - Baseline policies deployed by rhods-operator
-  - Component-specific policies from: KServe, Notebooks, OGX, KubeRay,
-    Model Registry, Kueue, MaaS, DSPO
-  - Allows ingress from: Gateway namespace, monitoring namespace,
-    operator namespace
-
-Namespace: redhat-ods-monitoring
-  - Prometheus scrape access to all platform + user namespaces
-  - Thanos Querier access to Prometheus
-
-User Namespaces:
-  - Per-component NetworkPolicies (Notebooks, InferenceServices, DSPA, etc.)
-  - Allows ingress from: Gateway (for HTTPRoute traffic),
-    monitoring (for metric scraping), operator namespace (for reconciliation)
+- 29 NetworkPolicy resources across 15 components
+- Explicit ingress/egress rules restrict pod-to-pod communication
+- User namespaces isolated by RBAC and NetworkPolicy
 
 ================================================================================
-DISCONNECTED (AIR-GAPPED) DEPLOYMENT
+RBAC SUMMARY (Platform-Wide)
 ================================================================================
 
-Mechanism: RELATED_IMAGE_* environment variables
-  - All 120+ images referenced by SHA256 digest in operator CSV relatedImages
-  - rhods-operator reads image refs from env vars, not hardcoded registries
-  - oc-mirror tool mirrors all required images to private registry
-  - kserve-storage-initializer supports private S3 + private OCI registries
-  - odh-model-controller NIM integration has air-gapped mode (skip external API)
+- 842 Role/ClusterRole entries across all components
+- rhods-operator: 209 controller watches, broadest cluster-wide permissions
+- KServe: serving.kserve.io/*, core/services, apps/deployments
+- Kueue: kueue.x-k8s.io/*, batch/jobs (suspend/unsuspend)
+- Training Operator: kubeflow.org/pytorchjobs, kubeflow.org/trainjobs
+- CodeFlare: codeflare.codeflare.dev/*, ray.io/rayclusters
+- odh-model-controller: serving.kserve.io/*, monitoring.coreos.com/*
 
 ================================================================================
-MULTI-ARCHITECTURE SUPPORT
+RESOURCE STATISTICS
 ================================================================================
 
-  amd64 (x86_64):  FULL    - All components, including GPU workloads
-  arm64 (aarch64): PARTIAL - Go operators + CPU workloads only (no CUDA)
-  ppc64le:         PARTIAL - Select Go operators only (no GPU)
-  s390x:           PARTIAL - Select Go operators only (no GPU)
+Resource Type                Count
+─────────────────────────────────────
+Container Images             474
+CRDs                         192
+API Groups                   50+
+gRPC Services                106
+NetworkPolicies              29
+Controller Watches           630
+RBAC Entries                 842
+HTTP Endpoints               369
+HTTP/HTTPS Endpoints         141
+HTTPS Endpoints              95
+Total API Endpoints          617

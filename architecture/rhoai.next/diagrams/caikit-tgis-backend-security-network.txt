@@ -1,0 +1,154 @@
+================================================================================
+  SECURITY NETWORK DIAGRAM: caikit-tgis-backend
+================================================================================
+
+  NOTE: This is a Python library, NOT a standalone service or operator.
+  It runs in-process within a consuming Caikit runtime container.
+  No Kubernetes resources (Services, Ingress, RBAC) are created by this library.
+
+================================================================================
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  CONSUMING APPLICATION (Caikit Runtime Container)                           │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │  caikit-tgis-backend Library (in-process)                              │  │
+│  │                                                                        │  │
+│  │  [TGISBackend]                                                         │  │
+│  │  - Caikit BackendBase plugin (backend_type="TGIS")                     │  │
+│  │  - Registered via register_backend_type() at import                    │  │
+│  │  - Manages per-model TGISConnection instances                          │  │
+│  │         │                                                              │  │
+│  │         ├──── Remote Mode ────────────────────────┐                    │  │
+│  │         │                                          │                    │  │
+│  │  [TGISConnection]                                  │                    │  │
+│  │  - gRPC connection manager                         │                    │  │
+│  │  - TLS/mTLS certificate loading                    │                    │  │
+│  │  - Prompt artifact management                      │                    │  │
+│  │         │                                          │                    │  │
+│  │  [GRPCLoadBalancerProxy]                           │                    │  │
+│  │  - DNS-based endpoint discovery                    │                    │  │
+│  │  - Automatic gRPC channel reconnection             │                    │  │
+│  │  - Poll interval: 10s (configurable)               │                    │  │
+│  │         │                                          │                    │  │
+│  │         │                               ┌──── Local Mode ────────┐     │  │
+│  │         │                               │                        │     │  │
+│  │         │                        [ManagedTGISSubprocess]          │     │  │
+│  │         │                        - Subprocess fork/exec           │     │  │
+│  │         │                        - Health monitoring               │     │  │
+│  │         │                        - Auto-recovery on crash          │     │  │
+│  │         │                               │                        │     │  │
+│  └─────────┼───────────────────────────────┼────────────────────────┘     │  │
+│            │                               │                              │  │
+└────────────┼───────────────────────────────┼──────────────────────────────┘  │
+             │                               │
+═════════════╪═══════════════════════════════╪══════════════════════════════════
+  OUTBOUND   │ CONNECTIONS (Egress Only)     │
+═════════════╪═══════════════════════════════╪══════════════════════════════════
+             │                               │
+             │                               │
+┌────────────┼───────────────────────────────┼──────────────────────────────────┐
+│  REMOTE TGIS SERVER (Production Mode)      │                                  │
+│            │                               │                                  │
+│            ▼                               │                                  │
+│  [TGIS Server]                             │                                  │
+│  - Port: 50055/TCP (configurable)          │                                  │
+│  - Protocol: gRPC                          │                                  │
+│  - Encryption: TLS 1.2+ with CA cert       │                                  │
+│               OR mTLS (client cert+key)    │                                  │
+│               OR plaintext (configurable)  │                                  │
+│  - Auth: CA certificate validation         │                                  │
+│          + optional mTLS client cert       │                                  │
+│  - API: fmaas.GenerationService            │                                  │
+│    - Generate (unary)                      │                                  │
+│    - GenerateStream (server-streaming)     │                                  │
+│    - Tokenize (unary)                      │                                  │
+│    - ModelInfo (unary)                     │                                  │
+│  - Credentials: grpc.ssl_channel_credentials│                                 │
+│                                            │                                  │
+└────────────────────────────────────────────┘                                  │
+                                             │                                  │
+┌────────────────────────────────────────────┼──────────────────────────────────┐
+│  LOCAL TGIS SUBPROCESS (Dev/Test Mode)     │                                  │
+│                                            │                                  │
+│                                            ▼                                  │
+│  [Local TGIS Process]                                                         │
+│  - Port: 50055/TCP (gRPC)                                                     │
+│  - Protocol: gRPC                                                             │
+│  - Encryption: plaintext (localhost loopback)                                 │
+│  - Auth: None (localhost)                                                     │
+│                                                                               │
+│  - Port: 3000/TCP (HTTP health check)                                         │
+│  - Protocol: HTTP                                                             │
+│  - Encryption: plaintext (localhost loopback)                                 │
+│  - Auth: None (localhost)                                                     │
+│  - Purpose: Health check polling by ManagedTGISSubprocess                     │
+│                                                                               │
+└───────────────────────────────────────────────────────────────────────────────┘
+
+┌───────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL SERVICES                                                            │
+│                                                                               │
+│  [DNS Resolver]                                                               │
+│  - Port: 53/UDP                                                               │
+│  - Protocol: DNS                                                              │
+│  - Encryption: None                                                           │
+│  - Auth: None                                                                 │
+│  - Purpose: GRPCLoadBalancerProxy endpoint discovery                          │
+│  - Method: socket.getaddrinfo()                                               │
+│  - Polling interval: 10s (configurable)                                       │
+│                                                                               │
+└───────────────────────────────────────────────────────────────────────────────┘
+
+┌───────────────────────────────────────────────────────────────────────────────┐
+│  FILESYSTEM ACCESS                                                            │
+│                                                                               │
+│  [TLS Certificate Files]                                                      │
+│  - ca_cert_file: CA certificate for server validation                         │
+│  - client_cert_file: Client certificate for mTLS                              │
+│  - client_key_file: Client private key for mTLS                               │
+│  - Access: Read-only at initialization                                        │
+│  - Validation: File existence checked at init; CA required before client TLS  │
+│  - Source: tgis_connection.py:122-154, 307-323                                │
+│                                                                               │
+│  [Shared Prompt Directory]                                                    │
+│  - Purpose: Prompt vector artifacts for prefix tuning                         │
+│  - Access: Write (shutil.copyfile) during load_prompt_artifacts()             │
+│  - Access: Delete during unload_prompt_artifacts()                            │
+│                                                                               │
+└───────────────────────────────────────────────────────────────────────────────┘
+
+
+RBAC Summary:
+  None. This is a Python library, not deployed with its own ServiceAccount.
+  RBAC is inherited from the consuming application's ServiceAccount.
+
+Service Mesh Configuration:
+  N/A. This library does not configure Service Mesh resources.
+  mTLS may be enforced by the consuming application's namespace-level
+  PeerAuthentication policy, which would apply to the gRPC egress traffic.
+
+Secrets:
+  No secrets are defined by this library.
+  TLS certificate paths are provided via runtime configuration by the consuming
+  application:
+  - ca_cert_file    → CA certificate for TGIS server validation
+  - client_cert_file → Client certificate for mTLS authentication
+  - client_key_file  → Client private key for mTLS authentication
+
+TLS Configuration Summary:
+  - Crypto library: grpcio (delegates to gRPC C core → OpenSSL)
+  - FIPS compliance: Inherited from container's OpenSSL (FIPS-validated on UBI)
+  - Certificate validation: CA cert required before client cert can be set
+  - Client cert/key: Must be provided as a pair
+  - No hardcoded cipher suites (uses gRPC/OpenSSL defaults)
+
+Connection Security Modes:
+  ┌──────────────┬──────────────┬───────────────┬──────────────────────────┐
+  │ Mode         │ Encryption   │ Auth          │ Use Case                 │
+  ├──────────────┼──────────────┼───────────────┼──────────────────────────┤
+  │ TLS          │ TLS 1.2+     │ CA cert       │ Production (server auth) │
+  │ mTLS         │ TLS 1.2+     │ CA + client   │ Production (mutual auth) │
+  │ Plaintext    │ None         │ None          │ Local dev / service mesh │
+  │ Localhost    │ None         │ None          │ Local subprocess mode    │
+  └──────────────┴──────────────┴───────────────┴──────────────────────────┘

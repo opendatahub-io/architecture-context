@@ -1,109 +1,83 @@
 graph TB
-    subgraph ArgoWorkflows["Argo Workflows"]
+    subgraph ArgoWorkflows["Argo Workflows (RHOAI Distribution)"]
         direction TB
-
-        subgraph Controller["workflow-controller"]
-            WFReconciler["Workflow Reconciler<br/>32 workers"]
-            CronCtrl["Cron Controller<br/>8 workers"]
-            GCCtrl["GC Controller<br/>4 TTL workers"]
-            PodCleanup["Pod Cleanup<br/>4 workers"]
-            ArtifactGC["Artifact GC"]
-            SyncMgr["Synchronization Manager<br/>(semaphores/mutexes)"]
-            LeaderElection["Leader Election"]
-            Metrics9090["Metrics :9090"]
-            Health6060["Health :6060"]
+        subgraph ControlPlane["Control Plane (DSP Namespace)"]
+            Controller["workflow-controller<br/>Go Kubernetes Controller<br/>Metrics: 9090/TCP<br/>Health: 6060/TCP"]
         end
 
-        subgraph Server["argo-server"]
-            GRPCGW["gRPC-Gateway<br/>REST + gRPC :2746"]
-            Gatekeeper["Gatekeeper<br/>(AuthN/AuthZ)"]
-            SSOAuth["SSO/OIDC Auth"]
-            ArtifactSrv["Artifact Server"]
-            WebUI["Web UI"]
-        end
-
-        subgraph Executor["argoexec (sidecar)"]
-            InitContainer["Init Container<br/>(load artifacts)"]
-            WaitContainer["Wait Container<br/>(save artifacts, report results)"]
+        subgraph WorkflowPods["Workflow Step Pods (Dynamic)"]
+            Argoexec["argoexec<br/>Go Sidecar<br/>(FIPS + non-FIPS binaries)"]
+            UserContainer["User Container<br/>(ML Pipeline Step)"]
+            SharedVol["/var/run/argo/<br/>Shared Volume"]
+            Argoexec -->|"manages lifecycle"| UserContainer
+            Argoexec -->|"reads/writes artifacts"| SharedVol
+            UserContainer -->|"writes outputs"| SharedVol
         end
     end
 
-    %% CRDs
-    WorkflowCR["Workflow CR"]
-    WFTemplateCR["WorkflowTemplate CR"]
-    ClusterWFT["ClusterWorkflowTemplate CR"]
-    CronWFCR["CronWorkflow CR"]
-    TaskResultCR["WorkflowTaskResult CR"]
-    TaskSetCR["WorkflowTaskSet CR"]
+    subgraph NotShipped["Not Shipped in RHOAI"]
+        ArgoServer["argo (CLI/Server)<br/>API Server + Web UI<br/>2746/TCP gRPC/HTTPS"]
+    end
 
-    %% External Systems
-    User["User / DSP API"]
-    K8sAPI["Kubernetes API<br/>6443/TCP"]
-    PostgreSQL["PostgreSQL<br/>5432/TCP"]
-    S3["S3 / MinIO<br/>9000/TCP"]
-    Prometheus["Prometheus"]
-    DSPO["Data Science Pipelines<br/>Operator"]
+    subgraph CRDs["Argo CRDs (argoproj.io/v1alpha1)"]
+        WorkflowCR["Workflow CR"]
+        CronWorkflowCR["CronWorkflow CR"]
+        WorkflowTemplateCR["WorkflowTemplate CR"]
+        ClusterWFTemplate["ClusterWorkflowTemplate CR"]
+        WorkflowTaskSet["WorkflowTaskSet CR"]
+        WorkflowTaskResult["WorkflowTaskResult CR"]
+        WorkflowArtifactGC["WorkflowArtifactGCTask CR"]
+        WorkflowEventBinding["WorkflowEventBinding CR"]
+    end
 
-    %% User interactions
-    User -->|"creates"| WorkflowCR
-    User -->|"HTTPS :2746"| GRPCGW
+    subgraph Platform["RHOAI Platform"]
+        DSPOperator["Data Science Pipelines<br/>Operator"]
+        DSPAPIServer["DSP API Server"]
+    end
 
-    %% Controller watches
-    WorkflowCR -->|"watched by"| WFReconciler
-    CronWFCR -->|"watched by"| CronCtrl
-    WFTemplateCR -->|"referenced by"| WFReconciler
-    ClusterWFT -->|"referenced by"| WFReconciler
+    subgraph External["External Services"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS"]
+        ArtifactStore["Artifact Repository<br/>(S3/MinIO/GCS/Azure)<br/>443/TCP HTTPS"]
+        SQLDB["SQL Database<br/>(MySQL/PostgreSQL)<br/>3306/5432/TCP"]
+    end
 
-    %% Controller actions
-    WFReconciler -->|"creates pods"| K8sAPI
-    CronCtrl -->|"creates Workflows"| K8sAPI
-    GCCtrl -->|"deletes expired"| K8sAPI
-    WFReconciler -->|"archives"| PostgreSQL
-    LeaderElection -->|"lease"| K8sAPI
+    %% Platform interactions
+    DSPOperator -->|"deploys & configures"| Controller
+    DSPOperator -->|"configures image ref"| Argoexec
+    DSPAPIServer -->|"creates"| WorkflowCR
 
-    %% Executor flows
-    InitContainer -->|"load artifacts"| S3
-    WaitContainer -->|"save artifacts"| S3
-    WaitContainer -->|"creates"| TaskResultCR
-    TaskResultCR -->|"watched by"| WFReconciler
+    %% Controller watches CRDs
+    WorkflowCR -->|"watched by"| Controller
+    CronWorkflowCR -->|"watched by"| Controller
+    WorkflowTemplateCR -->|"watched by"| Controller
+    ClusterWFTemplate -->|"watched by"| Controller
+    WorkflowTaskSet -->|"watched by"| Controller
 
-    %% Server flows
-    GRPCGW -->|"delegates auth"| Gatekeeper
-    Gatekeeper -->|"OIDC"| SSOAuth
-    GRPCGW -->|"queries"| K8sAPI
-    GRPCGW -->|"queries archive"| PostgreSQL
-    ArtifactSrv -->|"fetches"| S3
+    %% Controller creates resources
+    Controller -->|"creates Pods"| WorkflowPods
+    Controller -->|"CRUD"| K8sAPI
+    Controller -->|"archival"| SQLDB
 
-    %% Monitoring
-    Prometheus -->|"scrapes"| Metrics9090
-    Prometheus -->|"scrapes"| GRPCGW
-
-    %% Deployment
-    DSPO -.->|"deploys"| Controller
-    DSPO -.->|"configures"| Executor
+    %% Executor interactions
+    Argoexec -->|"upload/download artifacts"| ArtifactStore
+    Argoexec -->|"creates"| WorkflowTaskResult
+    Argoexec -->|"reads Secrets/ConfigMaps"| K8sAPI
 
     %% Styling
-    style WFReconciler fill:#4a90e2,color:#fff
-    style CronCtrl fill:#4a90e2,color:#fff
-    style GCCtrl fill:#4a90e2,color:#fff
-    style PodCleanup fill:#4a90e2,color:#fff
-    style ArtifactGC fill:#4a90e2,color:#fff
-    style SyncMgr fill:#4a90e2,color:#fff
-    style LeaderElection fill:#4a90e2,color:#fff
-    style GRPCGW fill:#5b9bd5,color:#fff
-    style Gatekeeper fill:#5b9bd5,color:#fff
-    style SSOAuth fill:#5b9bd5,color:#fff
-    style ArtifactSrv fill:#5b9bd5,color:#fff
-    style WebUI fill:#5b9bd5,color:#fff
-    style InitContainer fill:#70ad47,color:#fff
-    style WaitContainer fill:#70ad47,color:#fff
-    style WorkflowCR fill:#f5a623
-    style WFTemplateCR fill:#f5a623
-    style ClusterWFT fill:#f5a623
-    style CronWFCR fill:#f5a623
-    style TaskResultCR fill:#f5a623
-    style TaskSetCR fill:#f5a623
-    style K8sAPI fill:#e8e8e8
-    style PostgreSQL fill:#e8e8e8
-    style S3 fill:#e8e8e8
-    style DSPO fill:#7ed321,color:#fff
+    style Controller fill:#4a90e2,stroke:#333,stroke-width:3px,color:#fff
+    style Argoexec fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    style UserContainer fill:#b8d4f0,stroke:#333
+    style ArgoServer fill:#cccccc,stroke:#999,stroke-dasharray: 5 5
+    style DSPOperator fill:#7ed321,stroke:#333,color:#fff
+    style DSPAPIServer fill:#7ed321,stroke:#333,color:#fff
+    style K8sAPI fill:#f5a623,stroke:#333
+    style ArtifactStore fill:#f5a623,stroke:#333
+    style SQLDB fill:#f5a623,stroke:#333
+    style WorkflowCR fill:#f5d623,stroke:#333
+    style CronWorkflowCR fill:#f5d623,stroke:#333
+    style WorkflowTemplateCR fill:#f5d623,stroke:#333
+    style ClusterWFTemplate fill:#f5d623,stroke:#333
+    style WorkflowTaskSet fill:#f5d623,stroke:#333
+    style WorkflowTaskResult fill:#f5d623,stroke:#333
+    style WorkflowArtifactGC fill:#f5d623,stroke:#333
+    style WorkflowEventBinding fill:#f5d623,stroke:#333

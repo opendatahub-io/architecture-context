@@ -1,88 +1,86 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client / User"]
+        Client["External Client"]
     end
 
     subgraph Ingress["INGRESS (DMZ)"]
+        Router["OpenShift Router<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ reencrypt<br/>Host: {name}-rest.{domain}"]
+        Gateway["Data Science Gateway<br/>443/TCP → 8443/TCP<br/>TLS 1.2+<br/>Path: /model-registry/{name}/"]
+    end
+
+    subgraph AppPod["APPLICATION POD"]
         direction TB
-        Route["OpenShift Route<br/>{name}-https<br/>443/TCP → 8443/TCP<br/>TLS Passthrough"]
-        Gateway["Data Science Gateway (Envoy)<br/>443/TCP → 8443/TCP<br/>TLS Gateway-terminated<br/>HTTPRoute: /model-registry/{name}/"]
-    end
-
-    subgraph AppLayer["APPLICATION LAYER (Cluster Internal)"]
-        direction TB
-
-        subgraph RegistryPod["Per-Instance Registry Pod"]
-            KRBAC["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>OpenShift serving cert<br/>TokenReview + SAR"]
-            MR["model-registry REST<br/>8080/TCP HTTP<br/>No auth (localhost)"]
-        end
-
-        subgraph CatalogPod["Model Catalog Pod (Singleton)"]
-            CatKRBAC["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>OpenShift serving cert"]
-            CatMR["model-catalog<br/>8080/TCP HTTP"]
+        subgraph RegistryPod["Pod: {registry-name}"]
+            KRBP["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS (serving cert)<br/>Auth: SubjectAccessReview<br/>Image: origin-kube-rbac-proxy"]
+            MR["model-registry REST<br/>8080/TCP HTTP<br/>Unauthenticated (direct)<br/>Image: model-registry"]
         end
     end
 
-    subgraph DataLayer["DATA LAYER"]
-        AutoPG["PostgreSQL 16<br/>Auto-provisioned<br/>5432/TCP<br/>Password auth<br/>NetworkPolicy restricted"]
-        ExternalDB["External PostgreSQL/MySQL<br/>5432/3306 TCP<br/>Configurable SSL<br/>Password + cert auth"]
+    subgraph OperatorPod["OPERATOR POD"]
+        Operator["model-registry-operator<br/>SA: controller-manager<br/>FIPS: strictfipsruntime"]
+        Metrics["Metrics: 8443/TCP HTTPS<br/>TLS (cluster profile)<br/>Auth: Bearer Token (SAR)"]
+        Webhooks["Webhooks: 9443/TCP HTTPS<br/>TLS<br/>Auth: K8s API Server"]
+        Health["Health: 8081/TCP HTTP<br/>No auth"]
     end
 
-    subgraph ControlPlane["OPERATOR CONTROL PLANE"]
-        Operator["model-registry-operator<br/>SA: controller-manager<br/>NS: redhat-ods-applications"]
-
-        subgraph WebhookEP["Webhook Endpoints"]
-            WHMutate["Mutating: /mutate-...<br/>9443/TCP HTTPS<br/>API server cert auth"]
-            WHValidate["Validating: /validate-...<br/>9443/TCP HTTPS<br/>API server cert auth"]
-        end
-
-        Metrics["Metrics: /metrics<br/>8443/TCP HTTPS<br/>Bearer Token RBAC"]
-        Health["Health: /healthz /readyz<br/>8081/TCP HTTP<br/>No auth"]
+    subgraph K8sControl["CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+"]
+        OSAPI["OpenShift API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+"]
     end
 
-    subgraph K8sAPI["KUBERNETES / OPENSHIFT API"]
-        APIServer["API Server<br/>6443/TCP HTTPS TLS<br/>SA token auth"]
+    subgraph DataTier["DATA TIER"]
+        PGAuto["PostgreSQL (auto)<br/>5432/TCP<br/>Configurable SSL<br/>Auth: Password (Secret)"]
+        PGUser["PostgreSQL/MySQL (user)<br/>5432/3306 TCP<br/>Configurable SSL/TLS<br/>Auth: Username/Password"]
+    end
+
+    subgraph PlatformSvcs["PLATFORM SERVICES"]
+        IngressCfg["config.openshift.io/Ingress<br/>Cluster domain discovery"]
+        APIServerCfg["config.openshift.io/APIServer<br/>TLS profile (triggers restart)"]
+        AuthCR["services.platform.opendatahub.io/Auth<br/>Admin groups for RBAC"]
+        PlatformMR["components.platform.opendatahub.io<br/>/ModelRegistry<br/>Owner references"]
     end
 
     %% External → Ingress
-    Client -->|"HTTPS/443<br/>TLS<br/>Bearer Token"| Route
-    Client -->|"HTTPS/443<br/>TLS<br/>Bearer Token"| Gateway
+    Client -->|"HTTPS/443<br/>TLS 1.2+"| Router
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Platform auth"| Gateway
 
-    %% Ingress → App Layer
-    Route -->|"HTTPS/8443<br/>TLS Passthrough<br/>Bearer Token"| KRBAC
-    Gateway -->|"HTTPS/8443<br/>URLRewrite<br/>Bearer Token"| KRBAC
+    %% Ingress → App Pod
+    Router -->|"HTTPS/8443<br/>TLS reencrypt<br/>serving cert"| KRBP
+    Gateway -->|"HTTPS/8443<br/>TLS<br/>URL rewrite"| KRBP
 
-    %% kube-rbac-proxy auth delegation
-    KRBAC -->|"HTTPS/6443<br/>TokenReview + SAR<br/>SA token"| APIServer
-    CatKRBAC -->|"HTTPS/6443<br/>TokenReview + SAR<br/>SA token"| APIServer
+    %% Within App Pod
+    KRBP -->|"HTTP/8080<br/>localhost<br/>SAR authorized"| MR
 
-    %% kube-rbac-proxy → backend
-    KRBAC -->|"HTTP/8080<br/>localhost<br/>No auth"| MR
-    CatKRBAC -->|"HTTP/8080<br/>localhost<br/>No auth"| CatMR
+    %% Auth check
+    KRBP -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token<br/>SubjectAccessReview"| K8sAPI
 
     %% App → Data
-    MR -->|"PostgreSQL/5432<br/>Configurable SSL<br/>Password"| AutoPG
-    MR -->|"PostgreSQL·MySQL<br/>5432·3306<br/>SSL configurable<br/>Password"| ExternalDB
-    CatMR -->|"PostgreSQL/5432<br/>Password"| AutoPG
+    MR -->|"PostgreSQL/5432<br/>Configurable SSL<br/>Password"| PGAuto
+    MR -->|"PostgreSQL/5432<br/>MySQL/3306<br/>Configurable SSL"| PGUser
 
-    %% Operator → K8s API
-    Operator -->|"HTTPS/6443<br/>TLS<br/>SA token<br/>CRUD + Watch"| APIServer
+    %% Operator → Control Plane
+    Operator -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token<br/>CRUD operations"| K8sAPI
+    Operator -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token<br/>Route, Group, Ingress"| OSAPI
 
-    %% K8s API → Webhooks
-    APIServer -->|"HTTPS/9443<br/>TLS<br/>API server cert"| WHMutate
-    APIServer -->|"HTTPS/9443<br/>TLS<br/>API server cert"| WHValidate
+    %% Operator → Platform
+    Operator -.->|"via K8s API"| IngressCfg
+    Operator -.->|"via K8s API"| APIServerCfg
+    Operator -.->|"via K8s API"| AuthCR
+    Operator -.->|"via K8s API"| PlatformMR
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef appLayer fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef dataLayer fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef controlPlane fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef k8sapi fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef app fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef control fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef data fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef platform fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
-    class Route,Gateway ingress
-    class KRBAC,MR,CatKRBAC,CatMR appLayer
-    class AutoPG,ExternalDB dataLayer
-    class Operator,WHMutate,WHValidate,Metrics,Health controlPlane
-    class APIServer k8sapi
+    class Router,Gateway ingress
+    class KRBP,MR app
+    class Operator,Metrics,Webhooks,Health operator
+    class K8sAPI,OSAPI control
+    class PGAuto,PGUser data
+    class IngressCfg,APIServerCfg,AuthCR,PlatformMR platform

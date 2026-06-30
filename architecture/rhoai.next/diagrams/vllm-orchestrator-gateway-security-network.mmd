@@ -1,58 +1,51 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client"]
+        Client["Client<br/>(OpenAI-compatible)"]
     end
 
-    subgraph Ingress["INGRESS / TLS TERMINATION (Expected)"]
-        direction TB
-        TLSTermination["Platform Ingress<br/>(Gateway API / kube-rbac-proxy)<br/>TLS Termination + AuthN<br/>(managed externally)"]
+    subgraph GatewayZone["GATEWAY SERVICE (Internal - ClusterIP)"]
+        Gateway["vllm-orchestrator-gateway<br/>Port: 8090/TCP<br/>Protocol: HTTP (plaintext)<br/>Runtime: Rust / axum<br/>No /healthz endpoint"]
     end
 
-    subgraph ApplicationLayer["APPLICATION LAYER (Internal)"]
+    subgraph BackendZone["BACKEND SERVICES (Internal - Cluster Network)"]
         direction TB
 
-        subgraph NS_Gateway["Namespace: (deployment-managed)"]
-            Gateway["vllm-orchestrator-gateway<br/>Port: 8090/TCP<br/>Protocol: HTTP (plaintext)<br/>Auth: None (pass-through)<br/>Image: Rust binary on UBI 9"]
+        Orchestrator["FMS Guardrails Orchestrator<br/>Port: 8085/TCP (configurable)<br/>POST /api/v2/chat/completions-detection<br/>HTTP or HTTPS"]
+
+        subgraph IndirectServices["Indirect Services (called by orchestrator)"]
+            Detectors["Detector Services<br/>(e.g., guardrails-regex-detector)<br/>Content safety / PII detection"]
+            ModelServer["vLLM Model Server<br/>(e.g., Qwen2.5)<br/>LLM inference"]
         end
 
-        subgraph TLS_Mounts["TLS Materials (Kubernetes Volume Mounts)"]
-            ClientCert["/etc/tls/private/tls.crt<br/>Type: kubernetes.io/tls<br/>Provisioned by: cert-manager"]
-            ClientKey["/etc/tls/private/tls.key<br/>Type: kubernetes.io/tls<br/>Provisioned by: cert-manager"]
-            CACert["/etc/tls/ca/service-ca.crt<br/>Type: Opaque<br/>Provisioned by: OpenShift Service CA"]
-        end
-
-        Gateway -.->|"reads if present"| ClientCert
-        Gateway -.->|"reads if present"| ClientKey
-        Gateway -.->|"reads if present"| CACert
+        Orchestrator -.->|"indirect"| Detectors
+        Orchestrator -.->|"indirect"| ModelServer
     end
 
-    subgraph Backend["BACKEND SERVICES (Internal)"]
-        direction TB
-        Orchestrator["FMS Guardrails Orchestrator<br/>Port: 8085/TCP (configurable)<br/>Protocol: HTTP or HTTPS<br/>Conditional mTLS"]
-
-        subgraph OrchestratorBackends["Orchestrator Backends (Indirect)"]
-            vLLM["vLLM Inference Server<br/>(via orchestrator)"]
-            Detectors["Content Detectors<br/>(e.g., regex detector)<br/>(via orchestrator)"]
-        end
-
-        Orchestrator -->|"inference requests"| vLLM
-        Orchestrator -->|"detection requests"| Detectors
+    subgraph ConfigSources["CONFIGURATION (Volume Mounts)"]
+        ConfigMap["ConfigMap<br/>config.yaml<br/>Routes & detector pipelines"]
+        TLSCert["Secret: tls.crt<br/>/etc/tls/private/tls.crt<br/>kubernetes.io/tls"]
+        TLSKey["Secret: tls.key<br/>/etc/tls/private/tls.key<br/>kubernetes.io/tls"]
+        CACert["Secret: service-ca.crt<br/>/etc/tls/ca/service-ca.crt<br/>Opaque"]
     end
 
     %% Flows
-    Client -->|"HTTPS (expected)<br/>TLS Termination<br/>Bearer Token"| TLSTermination
-    TLSTermination -->|"HTTP/8090<br/>Plaintext<br/>Authorization header"| Gateway
-    Gateway -->|"HTTP or HTTPS/8085<br/>Conditional mTLS<br/>Authorization header forwarded<br/>x-forwarded-* forwarded<br/>mTLS client cert (if present)"| Orchestrator
+    Client -->|"HTTP/8090<br/>Plaintext<br/>Authorization header<br/>(pass-through)"| Gateway
+    Gateway -->|"HTTP or HTTPS/8085<br/>Optional mTLS<br/>Forwarded Authorization<br/>+ X-Forwarded-* headers"| Orchestrator
+
+    ConfigMap -.->|"volume mount"| Gateway
+    TLSCert -.->|"volume mount"| Gateway
+    TLSKey -.->|"volume mount"| Gateway
+    CACert -.->|"volume mount"| Gateway
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef application fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef backend fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef secrets fill:#fff2cc,stroke:#d6b656,stroke-width:1px,stroke-dasharray:5 5
+    classDef gateway fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef backend fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef indirect fill:#f5f5f5,stroke:#999,stroke-width:1px,stroke-dasharray: 5 5
+    classDef config fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class Client external
-    class TLSTermination ingress
-    class Gateway application
-    class Orchestrator,vLLM,Detectors backend
-    class ClientCert,ClientKey,CACert secrets
+    class Gateway gateway
+    class Orchestrator backend
+    class Detectors,ModelServer indirect
+    class ConfigMap,TLSCert,TLSKey,CACert config

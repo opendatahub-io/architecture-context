@@ -1,68 +1,53 @@
 sequenceDiagram
     participant User as User / kubectl
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant Controller as odh-model-controller<br/>8081/TCP health
-    participant Webhook as Webhook Server<br/>9443/TCP TLS
-    participant Route as OpenShift Router
     participant Dashboard as RHOAI Dashboard
     participant API as model-serving-api<br/>8443/TCP HTTPS
+    participant K8s as Kubernetes API<br/>443/TCP HTTPS
+    participant Controller as odh-model-controller<br/>8080/8081/9443 TCP
+    participant Route as OpenShift Route<br/>443/TCP HTTPS
     participant NGC as NVIDIA NGC API<br/>443/TCP HTTPS
-    participant NVCR as NVIDIA NVCR<br/>443/TCP HTTPS
     participant Authorino as Authorino<br/>50051/TCP gRPC
+    participant Client as External Client
 
-    rect rgb(230, 245, 255)
-        Note over User,Route: Flow 1: InferenceService Deployment (Raw KServe)
-        User->>K8sAPI: POST InferenceService<br/>Auth: Bearer Token
-        K8sAPI->>Webhook: Admission Review<br/>TLS (cert-manager)
-        Webhook-->>K8sAPI: Admit (validate name length,<br/>block protected namespace)
-        K8sAPI-->>User: InferenceService created
-        K8sAPI->>Controller: Watch event (InferenceService)<br/>Auth: ServiceAccount
-        Controller->>K8sAPI: Create Route<br/>Auth: ServiceAccount
-        Controller->>K8sAPI: Create metrics Service<br/>Auth: ServiceAccount
-        Controller->>K8sAPI: Create ServiceMonitor<br/>Auth: ServiceAccount
-        Controller->>K8sAPI: Create NetworkPolicy<br/>Auth: ServiceAccount
-        Controller->>K8sAPI: Create ClusterRoleBinding<br/>Auth: ServiceAccount
-        Note over Route: External access via OpenShift Route<br/>443/TCP HTTPS TLS reencrypt/edge
-    end
+    Note over User,Client: Flow 1: InferenceService Deployment
 
-    rect rgb(255, 245, 230)
-        Note over User,Authorino: Flow 2: LLMInferenceService Auth Setup
-        User->>K8sAPI: POST LLMInferenceService<br/>Auth: Bearer Token
-        K8sAPI->>Controller: Watch event (LLMInferenceService)<br/>Auth: ServiceAccount
-        Controller->>K8sAPI: Create AuthPolicy (HTTPRoute-scoped)<br/>Auth: ServiceAccount
-        K8sAPI->>Controller: Watch event (Gateway)<br/>Auth: ServiceAccount
-        Controller->>K8sAPI: Create EnvoyFilter (TLS bootstrap)<br/>Auth: ServiceAccount
-        Controller->>K8sAPI: Create AuthPolicy (Gateway-scoped)<br/>Auth: ServiceAccount
-        Note over Authorino: Envoy proxy → Authorino<br/>50051/TCP gRPC mTLS<br/>Service account CA
-    end
+    User->>K8s: POST InferenceService CR<br/>Auth: Bearer Token
+    K8s->>Controller: Watch event (InferenceService)<br/>Auth: ServiceAccount Token
+    Controller->>K8s: Create Route<br/>Auth: ServiceAccount Token
+    Controller->>K8s: Create ServiceMonitor<br/>Auth: ServiceAccount Token
+    Controller->>K8s: Create ClusterRoleBinding<br/>Auth: ServiceAccount Token
+    Controller->>K8s: Create KEDA TriggerAuth<br/>Auth: ServiceAccount Token
+    Client->>Route: Inference Request<br/>TLS Edge/Reencrypt
 
-    rect rgb(245, 255, 230)
-        Note over User,NVCR: Flow 3: NIM Account Integration
-        User->>K8sAPI: POST NIM Account<br/>Auth: Bearer Token
-        K8sAPI->>Webhook: Admission Review (singleton check)
-        Webhook-->>K8sAPI: Admit
-        K8sAPI->>Controller: Watch event (Account)<br/>Auth: ServiceAccount
-        Controller->>NGC: Validate API key<br/>443/TCP HTTPS<br/>Auth: API key bearer
-        NGC-->>Controller: Key validated
-        Controller->>NGC: Fetch model catalog<br/>443/TCP HTTPS<br/>Auth: NGC token
-        NGC-->>Controller: Model catalog data
-        Controller->>NVCR: Get registry token<br/>443/TCP HTTPS<br/>Auth: API key
-        NVCR-->>Controller: Registry OAuth token
-        Controller->>K8sAPI: Create pull Secret<br/>Auth: ServiceAccount
-        Controller->>K8sAPI: Create ConfigMap<br/>Auth: ServiceAccount
-        Controller->>K8sAPI: Create ServingRuntime Template<br/>Auth: ServiceAccount
-    end
+    Note over User,Client: Flow 2: LLMInferenceService Gateway Auth
 
-    rect rgb(245, 230, 255)
-        Note over Dashboard,API: Flow 4: Gateway Discovery (model-serving-api)
-        Dashboard->>API: GET /api/v1/gateways?namespace=X<br/>8443/TCP HTTPS TLS 1.2+ (FIPS)<br/>Auth: User bearer token
-        API->>K8sAPI: SelfSubjectAccessReview<br/>443/TCP HTTPS<br/>Auth: User bearer token
-        K8sAPI-->>API: Access decision
-        alt Access granted
-            API->>K8sAPI: List Gateways<br/>443/TCP HTTPS<br/>Auth: ServiceAccount token
-            K8sAPI-->>API: Gateway list
-            API-->>Dashboard: JSON: gateway list<br/>8443/TCP HTTPS
-        else Access denied
-            API-->>Dashboard: JSON: empty results<br/>(no error - prevents info leakage)
-        end
-    end
+    Dashboard->>API: GET /api/v1/gateways<br/>TLS 1.2+ FIPS / Bearer Token
+    API->>K8s: SelfSubjectAccessReview<br/>User Token (forwarded)
+    K8s-->>API: Access Decision
+    API->>K8s: List Gateways<br/>ServiceAccount Token
+    K8s-->>API: Gateway List
+    API-->>Dashboard: Filtered Gateways (JSON)
+
+    Note over User,Client: Flow 3: NIM Account Reconciliation
+
+    User->>K8s: Create NIM Account CR<br/>Auth: Bearer Token
+    K8s->>Controller: Watch event (Account)<br/>Auth: ServiceAccount Token
+    Controller->>NGC: POST /token (authn.nvidia.com)<br/>TLS 1.2+ / API Key
+    NGC-->>Controller: OAuth Token
+    Controller->>NGC: GET /models (api.ngc.nvidia.com)<br/>TLS 1.2+ / Bearer Token
+    NGC-->>Controller: Model Catalog
+    Controller->>K8s: Create ConfigMap (model data)<br/>Auth: ServiceAccount Token
+    Controller->>K8s: Create Template (ServingRuntime)<br/>Auth: ServiceAccount Token
+    Controller->>K8s: Create Pull Secret (nvcr.io)<br/>Auth: ServiceAccount Token
+
+    Note over User,Client: Flow 4: Gateway EnvoyFilter + AuthPolicy
+
+    K8s->>Controller: Watch event (Gateway)<br/>Auth: ServiceAccount Token
+    Controller->>K8s: Check Kuadrant/Authorino TLS<br/>Auth: ServiceAccount Token
+    Controller->>K8s: Create EnvoyFilter<br/>Auth: ServiceAccount Token
+    Controller->>K8s: Create AuthPolicy<br/>Auth: ServiceAccount Token
+    Note right of Controller: Auth chain established
+    Client->>Route: Request via Gateway
+    Route->>Authorino: ExtAuthz (gRPC/mTLS)<br/>50051/TCP / Service Identity
+    Authorino-->>Route: Auth Decision
+    Route-->>Client: Response

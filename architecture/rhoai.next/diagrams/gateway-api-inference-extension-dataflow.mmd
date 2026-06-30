@@ -1,53 +1,44 @@
 sequenceDiagram
     participant Client as External Client
-    participant Gateway as Envoy-based Gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant EPP as Endpoint Picker Proxy<br/>9002/TCP gRPC TLS
-    participant BBR as Body-Based Router<br/>9004/TCP gRPC TLS
+    participant Gateway as Envoy Gateway<br/>80/TCP HTTP
+    participant BBR as Body Based Router<br/>9004/TCP gRPC
+    participant EPP as Endpoint Picker<br/>9002/TCP gRPC
+    participant ModelServer as Model Server Pod<br/>8000/TCP HTTP
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant ModelServer as Model Server Pod<br/>(vLLM/SGLang/TRT-LLM)
-    participant LatencyPred as Latency Prediction<br/>8001/TCP HTTP
+    participant TrainSrv as Latency Training<br/>8000/TCP HTTP
+    participant PredSrv as Latency Prediction<br/>8001/TCP HTTP
 
-    Note over Client,ModelServer: Flow 1: Inference Request Routing (EPP)
+    Note over Client,ModelServer: Flow 1: Inference Request Routing
 
-    Client->>Gateway: POST /v1/chat/completions<br/>HTTPS/443, TLS 1.2+<br/>Auth: Bearer Token (Gateway-enforced)
-    Gateway->>EPP: gRPC ExternalProcessor.Process<br/>9002/TCP, TLS (self-signed)<br/>Bidirectional stream
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTP (or TLS at gateway)
+    Gateway->>BBR: ext-proc: ProcessingRequest<br/>gRPC (optional TLS)
+    BBR->>BBR: Parse body → extract "model" field<br/>Set X-Gateway-Model-Name header
+    BBR-->>Gateway: ProcessingResponse<br/>(headers mutation)
+    Gateway->>EPP: ext-proc: ProcessingRequest<br/>gRPC (optional TLS)
+    EPP->>EPP: Flow Control check<br/>(priority queuing, admission)
+    EPP->>EPP: Schedule endpoint<br/>(filter → score → pick)
+    EPP-->>Gateway: ProcessingResponse<br/>(endpoint selection + headers)
+    Gateway->>ModelServer: Forward request to<br/>selected endpoint (HTTP/H2C)
+    ModelServer-->>Gateway: Inference response
+    Gateway-->>Client: JSON Response
 
-    Note over EPP: Parse request body (OpenAI/vLLM/passthrough)<br/>Evaluate InferenceModelRewrite rules<br/>Apply weighted traffic splitting
+    Note over EPP,ModelServer: Flow 2: Model Server Metrics Scraping
 
-    EPP->>K8sAPI: Watch InferencePool, Pods, CRDs<br/>HTTPS/443, TLS 1.2+<br/>Auth: ServiceAccount Token
-    K8sAPI-->>EPP: Pod endpoints + CRD state
-
-    EPP->>ModelServer: Scrape /metrics<br/>HTTP (configurable port)<br/>Auth: None
-    ModelServer-->>EPP: queue_depth, kv_cache_usage,<br/>running_requests, lora_info
-
-    opt Latency Prediction Enabled
-        EPP->>LatencyPred: POST /predict/bulk/strict<br/>HTTP/8001, plaintext<br/>TTFT/TPOT estimation
-        LatencyPred-->>EPP: Predicted latencies
+    loop Every scrape interval
+        EPP->>ModelServer: GET /metrics<br/>HTTP (InsecureSkipVerify default)
+        ModelServer-->>EPP: Prometheus metrics<br/>(KV-cache, queue depth,<br/>running requests, LoRA info)
+        EPP->>EPP: Update in-memory datastore
     end
 
-    Note over EPP: Scheduling Framework:<br/>Filter → Score → Pick optimal endpoint<br/>Flow Control: Priority queue + admission
+    Note over EPP,PredSrv: Flow 3: Latency Prediction Pipeline (optional)
 
-    EPP-->>Gateway: gRPC response<br/>Selected endpoint address<br/>Rewritten model name (if applicable)
-    Gateway->>ModelServer: Forward request<br/>HTTP/8000 or gRPC<br/>plaintext (internal)
-    ModelServer-->>Gateway: Inference response
-    Gateway-->>Client: JSON Response<br/>HTTPS/443
+    EPP->>TrainSrv: POST training samples<br/>(observed latencies)<br/>HTTP 8000/TCP
+    TrainSrv->>TrainSrv: Retrain XGBoost model<br/>(every 10s)
+    PredSrv->>TrainSrv: Sync trained model files<br/>HTTP 8000/TCP (or shared PV)
+    EPP->>PredSrv: POST prediction request<br/>(request features)<br/>HTTP 8001/TCP
+    PredSrv-->>EPP: Predicted TTFT/TPOT
 
-    Note over Client,ModelServer: Flow 2: Body-Based Routing (BBR)
+    Note over EPP,K8sAPI: Flow 4: CRD Watch & Reconciliation
 
-    Client->>Gateway: POST /v1/chat/completions<br/>HTTPS/443, TLS 1.2+<br/>Auth: Bearer Token
-    Gateway->>BBR: gRPC ExternalProcessor.Process<br/>9004/TCP, TLS (self-signed)<br/>Bidirectional stream
-
-    Note over BBR: Extract body fields (model name)<br/>Inject as HTTP headers<br/>LoRA adapter mapping lookup
-
-    BBR-->>Gateway: gRPC response<br/>Header mutations<br/>(X-Gateway-Model-Name, etc.)
-    Gateway->>ModelServer: Forward with injected headers<br/>Route based on header values
-    ModelServer-->>Gateway: Inference response
-    Gateway-->>Client: JSON Response<br/>HTTPS/443
-
-    Note over Client,ModelServer: Flow 3: Metrics Scraping (Background)
-
-    loop Every 50ms (configurable)
-        EPP->>ModelServer: GET /metrics<br/>HTTP/HTTPS (configurable)<br/>InsecureSkipVerify=true (default)
-        ModelServer-->>EPP: Prometheus metrics<br/>queue depth, KV cache, LoRA status
-        Note over EPP: Update in-memory datastore<br/>Feed scheduling decisions
-    end
+    K8sAPI-->>EPP: Watch events:<br/>InferencePool, InferenceObjective,<br/>InferenceModelRewrite, Pods
+    EPP->>EPP: Reconcile → update datastore<br/>(endpoint pool, priorities,<br/>rewrite rules)

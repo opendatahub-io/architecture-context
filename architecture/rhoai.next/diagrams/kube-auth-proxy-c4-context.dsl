@@ -1,73 +1,61 @@
 workspace {
     model {
-        // Users / Actors
-        datascientist = person "Data Scientist" "Accesses RHOAI components via browser"
-        mlflowclient = person "MLflow SDK Client" "Programmatic ML experiment tracking via Python SDK"
-        k8sclient = person "K8s Service Account" "Automated workloads authenticating via SA tokens"
+        datascientist = person "Data Scientist" "Uses ML tools and notebooks protected by kube-auth-proxy"
+        apiuser = person "API Client / Automation" "Calls RHOAI APIs with bearer tokens (JWT, sha256~, K8s SA)"
+        sre = person "SRE / Platform Admin" "Monitors and configures RHOAI platform"
 
-        // Main system
-        kubeauthproxy = softwareSystem "kube-auth-proxy" "FIPS-compliant authentication reverse proxy supporting OIDC and OpenShift OAuth for RHOAI component sidecars" {
-            middlewareChain = container "Middleware Chain" "Request processing pipeline: logging, health, metrics, HTTPS redirect" "Go (justinas/alice)"
-            sessionLoader = container "Session Loader" "Loads sessions from K8s SA tokens, JWT/OAuth bearers, basic auth, or stored cookies" "Go Middleware"
-            oidcProvider = container "OIDC Provider" "Standard OIDC authentication with discovery, JWKS verification, PKCE, and token refresh" "Go Module (pkg/providers/oidc/)"
-            openshiftProvider = container "OpenShift OAuth Provider" "OpenShift-native OAuth2 with auto-discovery and OAuthAccessToken cleanup" "Go Module (providers/openshift.go)"
-            k8sTokenReview = container "K8s TokenReview Validator" "Validates Kubernetes service account tokens via TokenReview API" "Go Module (pkg/authentication/k8s/)"
-            cookieStore = container "Cookie Session Store" "Client-side encrypted sessions using AES-GCM + HMAC with auto cookie splitting" "Go Module (pkg/sessions/cookie/)"
-            redisStore = container "Redis Session Store" "Server-side session persistence with distributed lock for token refresh" "Go Module (pkg/sessions/redis/)"
-            upstreamProxy = container "Upstream Proxy" "HTTP/HTTPS/Unix/WebSocket reverse proxy with identity header injection" "Go Module (pkg/upstream/)"
-            metricsServer = container "Metrics Server" "Prometheus metrics endpoint (requests_total, in_flight, response_duration)" "Go Module (pkg/middleware/)"
-            mlflowHandler = container "MLflow Auth Denied Handler" "Custom JSON error responses for MLflow Python SDK authentication failures" "Go Module (pkg/authdeny/)"
+        kubeauthproxy = softwareSystem "kube-auth-proxy" "FIPS-compliant authentication reverse proxy for RHOAI. Supports OIDC, OpenShift OAuth, K8s SA token validation, and ext_authz." {
+            middlewareChain = container "Middleware Chain" "Layered auth processing: Pre-Auth → Session Loaders → Header Injection" "Go Middleware"
+            reverseProxy = container "Reverse Proxy" "Forwards authenticated requests to upstream with injected identity headers" "Go HTTP Proxy"
+            oauthEndpoints = container "OAuth2 Endpoints" "Handles /oauth2/start, /callback, /sign_in, /sign_out, /userinfo, /auth" "Go HTTP Handlers"
+            metricsServer = container "Metrics Server" "Exposes Prometheus metrics on a separate port" "Go HTTP Server"
         }
 
-        // Internal RHOAI systems
-        rhodsOperator = softwareSystem "rhods-operator" "Deploys kube-auth-proxy as sidecar in RHOAI component pods" "Internal RHOAI"
-        upstreamApp = softwareSystem "Upstream Application" "Protected RHOAI component (e.g., Dashboard, MLflow, Notebook)" "Internal RHOAI"
-        envoy = softwareSystem "Envoy (Service Mesh)" "Istio/OSSM sidecar performing ext_authz checks against kube-auth-proxy" "Internal RHOAI"
-
-        // External systems
-        oidcIdP = softwareSystem "OIDC Identity Provider" "External OIDC-compliant identity provider (e.g., Keycloak, Azure AD, Okta)" "External"
-        openshiftOAuth = softwareSystem "OpenShift OAuth Server" "OpenShift cluster-internal OAuth2 server" "External"
-        k8sAPI = softwareSystem "Kubernetes API Server" "Kubernetes control plane API for TokenReview and user info" "External"
-        redis = softwareSystem "Redis" "Optional server-side session store (standalone, Sentinel, or Cluster)" "External"
+        oidcProvider = softwareSystem "OIDC Provider" "External identity provider (e.g., Keycloak) for OAuth2/OIDC authentication" "External"
+        openshiftOAuth = softwareSystem "OpenShift OAuth Server" "Built-in OpenShift OAuth for user authentication" "External"
+        k8sAPIServer = softwareSystem "Kubernetes API Server" "Cluster API server for TokenReview and resource access" "External"
+        openshiftAPI = softwareSystem "OpenShift API" "OpenShift-specific APIs for user info and OAuthAccessToken management" "External"
+        upstreamApp = softwareSystem "Upstream Application" "Protected backend service (e.g., JupyterHub, MLflow, Dashboard)" "Internal RHOAI"
+        redis = softwareSystem "Redis" "Optional external session store (standalone, Sentinel, or Cluster)" "External"
+        envoyGateway = softwareSystem "Envoy Gateway" "RHOAI 3.x Gateway API ingress with ext_authz integration" "Internal RHOAI"
         prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
+        rhodsOperator = softwareSystem "rhods-operator" "RHOAI operator that deploys and configures kube-auth-proxy as a sidecar" "Internal RHOAI"
 
-        // Relationships - Users to system
-        datascientist -> kubeauthproxy "Authenticates via browser (OIDC/OpenShift OAuth)" "HTTPS/4180"
-        mlflowclient -> kubeauthproxy "Authenticates via Python SDK (Bearer token)" "HTTP/4180"
-        k8sclient -> kubeauthproxy "Authenticates via SA bearer token" "HTTP/4180"
+        # User interactions
+        datascientist -> kubeauthproxy "Authenticates via browser OAuth2 flow" "HTTPS/443"
+        apiuser -> kubeauthproxy "Sends API requests with bearer tokens" "HTTPS/443"
+        sre -> prometheus "Monitors proxy metrics" "HTTPS"
 
-        // Relationships - Internal
-        rhodsOperator -> kubeauthproxy "Deploys as sidecar container with configuration"
-        envoy -> kubeauthproxy "ext_authz subrequest to /oauth2/auth" "HTTP/4180"
-        kubeauthproxy -> upstreamApp "Proxies authenticated requests with identity headers" "HTTP/configurable"
+        # Envoy integration
+        envoyGateway -> kubeauthproxy "Sends ext_authz subrequests to /oauth2/auth" "HTTP(S)/4180 or 443"
 
-        // Relationships - External
-        kubeauthproxy -> oidcIdP "OIDC discovery, authorization, token exchange, userinfo, logout" "HTTPS/443"
-        kubeauthproxy -> openshiftOAuth "OAuth discovery, authorization, token exchange" "HTTPS/443"
-        kubeauthproxy -> k8sAPI "TokenReview, user info, OAuthAccessToken cleanup" "HTTPS/443"
-        kubeauthproxy -> redis "Session persistence and distributed locking" "Redis/6379"
-        prometheus -> kubeauthproxy "Scrapes metrics" "HTTP/configurable"
+        # Upstream
+        kubeauthproxy -> upstreamApp "Forwards authenticated requests with X-Forwarded-* headers" "HTTP/HTTPS/Unix"
 
-        // Container relationships
-        middlewareChain -> sessionLoader "Passes request through pipeline"
-        sessionLoader -> oidcProvider "Delegates OIDC authentication"
-        sessionLoader -> openshiftProvider "Delegates OpenShift OAuth authentication"
-        sessionLoader -> k8sTokenReview "Validates K8s SA tokens"
-        oidcProvider -> cookieStore "Stores/retrieves sessions"
-        oidcProvider -> redisStore "Stores/retrieves sessions"
-        openshiftProvider -> cookieStore "Stores/retrieves sessions"
-        openshiftProvider -> redisStore "Stores/retrieves sessions"
-        sessionLoader -> upstreamProxy "Forwards authenticated requests"
-        upstreamProxy -> upstreamApp "Proxied request with X-Forwarded-* headers"
-        mlflowHandler -> mlflowclient "Returns JSON error with guidance" "HTTP/4180"
+        # Identity provider interactions
+        kubeauthproxy -> oidcProvider "OAuth2 authorization code flow, JWKS, userinfo, token exchange" "HTTPS/443"
+        kubeauthproxy -> openshiftOAuth "OAuth2 discovery, authorization code flow, token exchange" "HTTPS/443"
 
-        // External container relationships
-        oidcProvider -> oidcIdP "OIDC flows" "HTTPS/443 TLS 1.2+"
-        openshiftProvider -> openshiftOAuth "OAuth flows" "HTTPS/443 TLS 1.2+"
-        k8sTokenReview -> k8sAPI "POST /api/v1/tokenreviews" "HTTPS/443 TLS 1.2+"
-        openshiftProvider -> k8sAPI "User info + token cleanup" "HTTPS/443 TLS 1.2+"
-        redisStore -> redis "Session R/W + distributed lock" "Redis/6379"
-        metricsServer -> prometheus "Metrics exposition" "HTTP/configurable"
+        # Kubernetes interactions
+        kubeauthproxy -> k8sAPIServer "TokenReview API for K8s SA token validation" "HTTPS/443"
+        kubeauthproxy -> openshiftAPI "User info retrieval, OAuthAccessToken deletion on logout" "HTTPS/443"
+
+        # Session store
+        kubeauthproxy -> redis "Session persistence (optional)" "TCP/TLS 6379"
+
+        # Observability
+        prometheus -> kubeauthproxy "Scrapes /metrics endpoint" "HTTP(S)"
+
+        # Deployment
+        rhodsOperator -> kubeauthproxy "Deploys as sidecar, configures RBAC and secrets" "Kubernetes API"
+
+        # Internal container relationships
+        oauthEndpoints -> middlewareChain "Passes requests through auth chain"
+        middlewareChain -> reverseProxy "Forwards authenticated requests"
+        middlewareChain -> k8sAPIServer "TokenReview validation" "HTTPS/443"
+        middlewareChain -> oidcProvider "JWT/OIDC token verification" "HTTPS/443"
+        middlewareChain -> openshiftOAuth "sha256~ token verification" "HTTPS/443"
+        middlewareChain -> redis "Session load/store" "TCP/TLS 6379"
     }
 
     views {
@@ -82,6 +70,9 @@ workspace {
         }
 
         styles {
+            element "Software System" {
+                shape RoundedBox
+            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -92,10 +83,6 @@ workspace {
             }
             element "Person" {
                 shape Person
-                background #4a90e2
-                color #ffffff
-            }
-            element "Software System" {
                 background #4a90e2
                 color #ffffff
             }

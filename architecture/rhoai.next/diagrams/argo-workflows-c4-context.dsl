@@ -1,110 +1,105 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Creates and manages ML pipeline workflows"
-        dspClient = person "DSP API Client" "Data Science Pipelines API submitting workflows programmatically"
+        dspOperator = person "DSP Operator" "Data Science Pipelines Operator - deploys and configures Argo Workflows components"
+        datascientist = person "Data Scientist" "Creates ML pipelines via DSP API"
 
-        argoWorkflows = softwareSystem "Argo Workflows" "Container-native workflow engine for orchestrating parallel jobs on Kubernetes; execution backend for Data Science Pipelines in RHOAI" {
-            workflowController = container "workflow-controller" "Watches Workflow CRs, orchestrates pod creation, manages DAG/step execution, cron scheduling, artifact GC, and workflow archival. Uses client-go informers with configurable worker pools (32 workflow, 8 cron, 4 GC, 4 cleanup, 8 archive). Leader election for HA." "Go Controller (client-go)" {
-                wfReconciler = component "Workflow Reconciler" "Main reconciliation loop for Workflow CRs" "Go"
-                cronController = component "Cron Controller" "Schedules workflows from CronWorkflow CRs" "Go"
-                gcController = component "GC Controller" "TTL-based workflow garbage collection" "Go"
-                podCleanup = component "Pod Cleanup" "Cleans up completed/failed workflow pods" "Go"
-                artifactGC = component "Artifact GC" "Garbage collects artifacts from storage backends" "Go"
-                syncManager = component "Synchronization Manager" "Semaphore/mutex coordination across workflows" "Go"
+        argoWorkflows = softwareSystem "Argo Workflows" "Kubernetes-native workflow engine for orchestrating parallel ML pipeline jobs (RHOAI distribution)" {
+            workflowController = container "workflow-controller" "Watches Workflow CRDs, creates and manages step Pods, handles scheduling/retry/artifact GC/archival" "Go Kubernetes Controller" {
+                tags "RHOAI Shipped"
             }
-
-            argoServer = container "argo-server" "Exposes REST/gRPC APIs (port 2746) for workflow CRUD, artifact serving, SSO authentication, event dispatch, and serves the web UI. gRPC-gateway pattern." "Go API Server (gRPC + HTTP)" {
-                grpcGateway = component "gRPC-Gateway" "REST and gRPC API endpoints" "Go"
-                gatekeeper = component "Gatekeeper" "Authentication and authorization interceptor" "Go"
-                ssoAuth = component "SSO/OIDC Auth" "OIDC-based single sign-on" "Go"
-                artifactServer = component "Artifact Server" "Serves workflow artifacts for download" "Go"
-                webUI = component "Web UI" "Static files for Argo Workflows dashboard" "TypeScript/React"
+            argoexec = container "argoexec" "Executor sidecar injected into workflow pods; manages artifacts, captures outputs, reports results via WorkflowTaskResult CRD" "Go Sidecar (FIPS + non-FIPS binaries)" {
+                tags "RHOAI Shipped"
             }
-
-            argoExec = container "argoexec" "Runs inside every workflow pod as init (load artifacts) and wait (save artifacts, report results) containers. Ships FIPS and non-FIPS binaries." "Go Executor (sidecar)"
+            argoServer = container "argo (CLI/Server)" "API server with gRPC/REST endpoints and web UI — NOT shipped in RHOAI" "Go API Server" {
+                tags "Not Shipped"
+            }
         }
 
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform and API server" "External"
-        dspo = softwareSystem "Data Science Pipelines Operator" "Deploys and configures Argo Workflows as part of the DSP stack" "Internal RHOAI"
-        postgresql = softwareSystem "PostgreSQL" "Relational database for workflow archival and node status offloading" "External"
-        s3Storage = softwareSystem "S3 / MinIO" "Object storage for workflow artifacts (inputs/outputs)" "External"
-        oidcProvider = softwareSystem "OIDC Provider (Keycloak)" "SSO authentication provider" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
-        argoEvents = softwareSystem "Argo Events" "Event-driven workflow triggering via EventSources and Sensors" "External"
-        webhookSources = softwareSystem "GitHub / GitLab / Bitbucket" "Webhook sources for event-triggered workflow submissions" "External"
+        dspApiServer = softwareSystem "DSP API Server" "Data Science Pipelines API Server - creates Workflow CRs for pipeline runs" {
+            tags "Internal RHOAI"
+        }
 
-        # User relationships
-        user -> argoWorkflows "Creates Workflows, views results via CLI/UI"
-        user -> argoServer "Accesses Web UI and REST API" "HTTPS/2746"
-        dspClient -> kubernetes "Submits Workflow CRs" "HTTPS/6443"
+        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform - API Server for CRD management, Pod lifecycle" {
+            tags "Infrastructure"
+        }
 
-        # Internal relationships
-        workflowController -> kubernetes "Watch/create/update CRs, Pods, ConfigMaps, Secrets, leader election" "HTTPS/6443"
-        workflowController -> postgresql "Archive workflows, offload node status" "TCP/5432"
-        workflowController -> s3Storage "Artifact garbage collection" "HTTPS/9000"
+        artifactStore = softwareSystem "Artifact Repository" "S3-compatible (MinIO/AWS S3), GCS, or Azure Blob Storage for workflow artifacts" {
+            tags "External"
+        }
 
-        argoServer -> kubernetes "Query CRs, delegate auth via Bearer Token" "HTTPS/6443"
-        argoServer -> postgresql "Query archived workflows" "TCP/5432"
-        argoServer -> s3Storage "Serve artifact downloads" "HTTPS/9000"
-        argoServer -> oidcProvider "SSO authentication" "HTTPS/443"
+        sqlDatabase = softwareSystem "SQL Database" "MySQL 5.7+ or PostgreSQL 12+ for workflow archival and node status offloading (optional)" {
+            tags "External"
+        }
 
-        argoExec -> kubernetes "Create WorkflowTaskResult CRs, watch WorkflowTaskSet" "HTTPS/6443"
-        argoExec -> s3Storage "Load/save workflow artifacts" "HTTPS/9000"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" {
+            tags "Infrastructure"
+        }
 
-        # External relationships
-        dspo -> argoWorkflows "Deploys and configures controller + executor images"
-        prometheus -> workflowController "Scrapes metrics" "HTTP/9090"
-        prometheus -> argoServer "Scrapes metrics" "HTTPS/2746"
-        argoEvents -> kubernetes "Creates Workflows via EventSource/Sensor" "HTTPS/6443"
-        webhookSources -> argoServer "Webhook-triggered workflow submissions" "HTTPS/2746"
+        oidcProvider = softwareSystem "OIDC Provider" "SSO token validation for Argo Server (not applicable in RHOAI)" {
+            tags "External"
+        }
+
+        # Relationships
+        dspOperator -> argoWorkflows "Deploys workflow-controller, configures argoexec image reference"
+        datascientist -> dspApiServer "Submits ML pipelines via DSP UI/API"
+        dspApiServer -> kubernetes "Creates Workflow CRs" "HTTPS/443, SA Token"
+        kubernetes -> workflowController "Watch notifications (Workflow, CronWorkflow, WorkflowTemplate CRDs)" "HTTPS, Informer pattern"
+        workflowController -> kubernetes "CRUD Pods, PVCs, ConfigMaps, PDBs, Events, Leases" "HTTPS/443, SA Token"
+        workflowController -> artifactStore "Artifact garbage collection" "HTTPS/443, IAM/AccessKey"
+        workflowController -> sqlDatabase "Workflow archival, node status offloading" "TCP/3306 or 5432, Password"
+        argoexec -> kubernetes "Create WorkflowTaskResult CRs, read Secrets/ConfigMaps" "HTTPS/443, SA Token"
+        argoexec -> artifactStore "Upload/download workflow artifacts" "HTTPS/443, IAM/AccessKey"
+        prometheus -> workflowController "Scrape metrics" "HTTP/9090"
+        argoServer -> oidcProvider "SSO token validation (not in RHOAI)" "HTTPS/443, OAuth2"
     }
 
     views {
         systemContext argoWorkflows "SystemContext" {
             include *
             autoLayout
+            description "System context diagram for Argo Workflows in the RHOAI platform"
         }
 
         container argoWorkflows "Containers" {
             include *
             autoLayout
-        }
-
-        component workflowController "WorkflowControllerComponents" {
-            include *
-            autoLayout
-        }
-
-        component argoServer "ArgoServerComponents" {
-            include *
-            autoLayout
+            description "Container diagram showing Argo Workflows internal components"
         }
 
         styles {
-            element "External" {
-                background #999999
+            element "Software System" {
+                background #438DD5
                 color #ffffff
+            }
+            element "Person" {
+                background #08427B
+                color #ffffff
+                shape person
+            }
+            element "Container" {
+                background #438DD5
+                color #ffffff
+            }
+            element "RHOAI Shipped" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Not Shipped" {
+                background #cccccc
+                color #333333
+                border dashed
             }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Person" {
-                shape Person
-                background #4a90e2
-                color #ffffff
+            element "External" {
+                background #f5a623
+                color #333333
             }
-            element "Software System" {
-                background #1168bd
+            element "Infrastructure" {
+                background #999999
                 color #ffffff
-            }
-            element "Container" {
-                background #438dd5
-                color #ffffff
-            }
-            element "Component" {
-                background #85bbf0
-                color #000000
             }
         }
     }

@@ -1,67 +1,76 @@
 workspace {
     model {
-        user = person "SRE / Support Engineer" "Collects diagnostic data from RHOAI/RHAII clusters for troubleshooting"
+        sre = person "SRE / Support Engineer" "Runs must-gather to collect diagnostic data for support cases"
 
-        mustGather = softwareSystem "Must-Gather" "Collects comprehensive diagnostic data from RHOAI/RHAII deployments for troubleshooting and support" {
-            gatherScript = container "gather.sh" "Main orchestrator — detects K8s distribution, dispatches collection scripts" "Bash Script"
-            commonLib = container "common.sh" "Shared utility functions: run_mustgather, get_all_namespace, collect_helm_releases" "Bash Library"
-            xksUtil = container "xks_util.sh" "Cross-platform abstraction: detect_k8s_distro, kubectl_inspect, auto_discover_resources" "Bash Library"
-            ocpCollectors = container "OpenShift Collectors" "13 component-specific collection scripts running in parallel" "Bash Scripts"
-            xksCollectors = container "xKS Collectors" "gather_llmd.sh + dependency scripts (cert-manager, sail, lws)" "Bash Scripts"
-            helmCli = container "Helm CLI" "Collects Helm release values and manifests" "helm v4.1.4"
+        mustGather = softwareSystem "must-gather" "Diagnostic container image that collects cluster state, logs, and CR data for all RHOAI components" {
+            gatherScript = container "gather.sh" "Main entry point; detects K8s distribution, dispatches component gatherers" "Bash Script"
+            commonLib = container "common.sh" "Shared functions for namespace discovery, resource inspection, version detection" "Bash Library"
+            xksUtil = container "xks_util.sh" "K8s distribution detection and kubectl-based inspect for non-OpenShift" "Bash Library"
+            componentGatherers = container "Component Gatherers" "13 parallel scripts collecting component-specific CRs, pods, logs" "Bash Scripts"
+            llmdGatherers = container "LLM-D Gatherers" "LLM-D orchestrator with nested parallelism for dependency collection" "Bash Scripts"
+            depCollectors = container "Dependency Collectors" "cert-manager, LWS, Sail/Istio resource collection" "Bash Scripts"
         }
 
-        k8sApi = softwareSystem "Kubernetes API Server" "Cluster API endpoint for all resource operations" "External"
-        ocpFramework = softwareSystem "OpenShift Must-Gather Framework" "Manages pod lifecycle, data retrieval, and tarball creation for oc adm must-gather" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane providing resource read access" "External"
+        ocCLI = softwareSystem "oc / kubectl CLI" "Command-line tools for cluster interaction and must-gather invocation" "External"
 
-        # RHOAI Platform Components (read targets)
-        rhodsOperator = softwareSystem "RHODS Operator" "Platform operator managing DSCInitialization, DataScienceCluster CRs" "RHOAI Component"
-        kserve = softwareSystem "KServe / LLM-D" "Model serving: InferenceService, ServingRuntime, LLMInferenceService CRs" "RHOAI Component"
-        dsp = softwareSystem "Data Science Pipelines" "Pipeline orchestration: DSPA, Argo Workflow CRs" "RHOAI Component"
-        dashboard = softwareSystem "Dashboard" "Web UI: OdhDashboardConfig, AcceleratorProfile, HardwareProfile CRs" "RHOAI Component"
-        kuberay = softwareSystem "KubeRay" "Distributed compute: RayCluster, RayJob, RayService CRs" "RHOAI Component"
-        kueue = softwareSystem "Kueue" "Job scheduling: ClusterQueue, LocalQueue, Workload CRs" "RHOAI Component"
-        trainingOp = softwareSystem "Training Operator" "ML training: PyTorchJob, TrainJob, TrainingRuntime CRs" "RHOAI Component"
-        modelRegistry = softwareSystem "Model Registry" "Model metadata: ModelRegistry CRs" "RHOAI Component"
-        trustyai = softwareSystem "TrustyAI" "AI trust: TrustyAIService, LMEvalJob, GuardrailsOrchestrator CRs" "RHOAI Component"
+        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator managing DSC and DSCI resources" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Model serving platform with InferenceService CRDs" "Internal RHOAI"
+        dsp = softwareSystem "Data Science Pipelines" "Pipeline orchestration with DSPA and Argo Workflow CRDs" "Internal RHOAI"
+        dashboard = softwareSystem "ODH Dashboard" "Web UI configuration with AcceleratorProfile and HardwareProfile CRDs" "Internal RHOAI"
+        kuberay = softwareSystem "KubeRay" "Distributed compute with RayCluster, RayJob, RayService CRDs" "Internal RHOAI"
+        kueue = softwareSystem "Kueue" "Job queuing with ClusterQueue, LocalQueue, Workload CRDs" "Internal RHOAI"
+        kfto = softwareSystem "Kubeflow Training Operator" "Training jobs with PyTorchJob, TrainJob CRDs" "Internal RHOAI"
+        modelRegistry = softwareSystem "Model Registry" "Model metadata storage with ModelRegistry CRDs" "Internal RHOAI"
+        trustyai = softwareSystem "TrustyAI" "AI safety with TrustyAIService, LMEvalJob, GuardrailsOrchestrator CRDs" "Internal RHOAI"
+        feast = softwareSystem "Feast Operator" "Feature store with FeatureStore CRDs" "Internal RHOAI"
+        llamaStack = softwareSystem "Llama-stack Operator" "LlamaStackDistribution CRDs" "Internal RHOAI"
+        mlflow = softwareSystem "MLflow Operator" "MLflow experiment tracking CRDs" "Internal RHOAI"
+        sparkOperator = softwareSystem "Spark Operator" "SparkApplication, ScheduledSparkApplication CRDs" "Internal RHOAI"
+        maas = softwareSystem "Models as a Service" "MaaS ModelRef, AuthPolicy, Subscription CRDs" "Internal RHOAI"
 
-        # Infrastructure Components (read targets)
-        istio = softwareSystem "Istio / Sail Operator" "Service mesh: Istio, VirtualService, AuthorizationPolicy CRs" "Infrastructure"
-        gatewayApi = softwareSystem "Gateway API" "Ingress: Gateway, HTTPRoute, GRPCRoute, GatewayClass CRs" "Infrastructure"
-        certManager = softwareSystem "cert-manager" "Certificate management: Issuer, ClusterIssuer, Certificate CRs" "Infrastructure"
-        prometheus = softwareSystem "Prometheus Operator" "Monitoring: ServiceMonitor, PodMonitor, PrometheusRule CRs" "Infrastructure"
-        lws = softwareSystem "LeaderWorkerSet" "Workload management: LeaderWorkerSet CRs" "Infrastructure"
+        istio = softwareSystem "Istio / Sail Operator" "Service mesh with EnvoyFilter, VirtualService, AuthorizationPolicy" "External"
+        certManager = softwareSystem "cert-manager" "TLS certificate management with Certificate, Issuer CRDs" "External"
+        lws = softwareSystem "LeaderWorkerSet" "Distributed inference workload management" "External"
+        gatewayAPI = softwareSystem "Gateway API" "Ingress routing with Gateway, HTTPRoute, GRPCRoute CRDs" "External"
+        prometheusOp = softwareSystem "Prometheus Operator" "Monitoring with ServiceMonitor, PodMonitor, PrometheusRule CRDs" "External"
+        keda = softwareSystem "KEDA" "Event-driven autoscaling with ScaledObject, TriggerAuthentication CRDs" "External"
+        helm = softwareSystem "Helm" "Package manager for RHAII chart release inspection" "External"
 
-        # User interactions
-        user -> mustGather "Invokes via oc adm must-gather (OpenShift) or kubectl apply job.yaml (xKS)"
-        mustGather -> user "Returns tarball of collected diagnostic data"
+        # Relationships
+        sre -> ocCLI "Invokes must-gather via"
+        ocCLI -> mustGather "Launches must-gather pod"
+        mustGather -> k8sAPI "Reads all cluster resources via HTTPS/443" "HTTPS/TLS 1.2+"
 
-        # Must-gather internal relationships
-        gatherScript -> commonLib "Sources shared functions"
-        gatherScript -> xksUtil "Sources platform detection"
-        gatherScript -> ocpCollectors "Dispatches on OpenShift (parallel)"
-        gatherScript -> xksCollectors "Dispatches on xKS"
-        gatherScript -> helmCli "Collects Helm releases"
+        # Internal structure
+        gatherScript -> commonLib "Loads shared functions"
+        gatherScript -> xksUtil "Detects K8s distribution"
+        gatherScript -> componentGatherers "Dispatches 13 parallel gatherers"
+        componentGatherers -> llmdGatherers "LLM-D collection path"
+        llmdGatherers -> depCollectors "Parallel dependency collection"
 
-        # External interactions
-        mustGather -> k8sApi "All resource collection: GET, LIST (read-only)" "HTTPS/443, TLS 1.2+, ServiceAccount Token"
-        ocpFramework -> mustGather "Manages pod lifecycle and data retrieval"
-
-        # Read targets (all via k8sApi)
-        mustGather -> rhodsOperator "Reads DSCInitialization, DataScienceCluster, Auth, Monitoring CRs" "HTTPS/443"
-        mustGather -> kserve "Reads InferenceService, ServingRuntime, LLMInferenceService, InferencePool CRs" "HTTPS/443"
-        mustGather -> dsp "Reads DSPA, Argo Workflow CRs" "HTTPS/443"
-        mustGather -> dashboard "Reads OdhDashboardConfig, AcceleratorProfile CRs" "HTTPS/443"
-        mustGather -> kuberay "Reads RayCluster, RayJob, RayService CRs" "HTTPS/443"
-        mustGather -> kueue "Reads ClusterQueue, LocalQueue, Workload CRs" "HTTPS/443"
-        mustGather -> trainingOp "Reads PyTorchJob, TrainJob, TrainingRuntime CRs" "HTTPS/443"
-        mustGather -> modelRegistry "Reads ModelRegistry CRs" "HTTPS/443"
-        mustGather -> trustyai "Reads TrustyAIService, LMEvalJob CRs" "HTTPS/443"
-        mustGather -> istio "Reads Istio, VirtualService, AuthorizationPolicy CRs" "HTTPS/443"
-        mustGather -> gatewayApi "Reads Gateway, HTTPRoute, GRPCRoute CRs" "HTTPS/443"
-        mustGather -> certManager "Reads Issuer, ClusterIssuer, Certificate CRs" "HTTPS/443"
-        mustGather -> prometheus "Reads ServiceMonitor, PodMonitor, PrometheusRule CRs" "HTTPS/443"
-        mustGather -> lws "Reads LeaderWorkerSet CRs" "HTTPS/443"
+        # What it collects from
+        mustGather -> rhodsOperator "Reads DSC, DSCI CRs" "oc adm inspect"
+        mustGather -> kserve "Reads InferenceService, ServingRuntime CRs" "oc adm inspect"
+        mustGather -> dsp "Reads DSPA, Workflow CRs" "oc adm inspect"
+        mustGather -> dashboard "Reads DashboardConfig, AcceleratorProfile CRs" "oc adm inspect"
+        mustGather -> kuberay "Reads RayCluster, RayJob CRs" "oc adm inspect"
+        mustGather -> kueue "Reads ClusterQueue, Workload CRs" "oc adm inspect"
+        mustGather -> kfto "Reads PyTorchJob, TrainJob CRs" "oc adm inspect"
+        mustGather -> modelRegistry "Reads ModelRegistry CRs" "oc adm inspect"
+        mustGather -> trustyai "Reads TrustyAIService, LMEvalJob CRs" "oc adm inspect"
+        mustGather -> feast "Reads FeatureStore CRs" "oc adm inspect"
+        mustGather -> llamaStack "Reads LlamaStackDistribution CRs" "oc adm inspect"
+        mustGather -> mlflow "Reads MLflow CRs" "oc adm inspect"
+        mustGather -> sparkOperator "Reads SparkApplication CRs" "oc adm inspect"
+        mustGather -> maas "Reads MaaSModelRef, Subscription CRs" "oc adm inspect"
+        mustGather -> istio "Reads Istio networking and security CRs" "oc adm inspect"
+        mustGather -> certManager "Reads Certificate, Issuer CRs" "oc adm inspect"
+        mustGather -> lws "Reads LeaderWorkerSet CRs" "oc adm inspect"
+        mustGather -> gatewayAPI "Reads Gateway, HTTPRoute CRs" "oc adm inspect"
+        mustGather -> prometheusOp "Reads ServiceMonitor, PrometheusRule CRs" "oc adm inspect"
+        mustGather -> keda "Reads ScaledObject CRs (optional WVA)" "oc adm inspect"
+        mustGather -> helm "Reads Helm release values and manifests" "helm get"
     }
 
     views {
@@ -76,29 +85,21 @@ workspace {
         }
 
         styles {
-            element "Person" {
-                shape Person
-                background #4a90e2
-                color #ffffff
-            }
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "RHOAI Component" {
+            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Infrastructure" {
-                background #f5a623
+            element "Person" {
+                background #4a90e2
                 color #ffffff
+                shape person
             }
-            element "Container" {
-                background #6c8ebf
+            element "Software System" {
+                background #438dd5
                 color #ffffff
             }
         }

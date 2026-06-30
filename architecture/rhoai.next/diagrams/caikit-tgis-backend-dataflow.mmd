@@ -1,0 +1,67 @@
+sequenceDiagram
+    participant Runtime as Caikit Runtime<br/>(consuming app)
+    participant Backend as TGISBackend<br/>backend_type="TGIS"
+    participant Conn as TGISConnection<br/>gRPC connection manager
+    participant LB as GRPCLoadBalancerProxy<br/>DNS-based LB
+    participant DNS as DNS Resolver<br/>53/UDP
+    participant TGIS as Remote TGIS Server<br/>50055/TCP gRPC
+
+    Note over Runtime, TGIS: Flow 1: Remote TGIS Inference (Production)
+
+    Runtime->>Backend: get_client(model_id)
+    Backend->>Conn: get_client()
+    Conn->>LB: Create/reuse gRPC channel
+
+    rect rgb(240, 248, 255)
+        Note over LB, DNS: DNS Polling (every 10s default)
+        LB->>DNS: socket.getaddrinfo()<br/>53/UDP
+        DNS-->>LB: IP addresses for TGIS endpoints
+        Note over LB: If IPs changed → reconnect channel
+    end
+
+    LB->>TGIS: GenerationService.Generate()<br/>gRPC / TLS 1.2+ / mTLS<br/>50055/TCP
+    TGIS-->>LB: GenerationResponse
+    LB-->>Conn: Response
+    Conn-->>Backend: gRPC client stub
+    Backend-->>Runtime: Inference result
+
+    Note over Runtime, TGIS: Flow 1b: Streaming Generation
+
+    Runtime->>Backend: get_client(model_id)
+    Backend->>Conn: get_client()
+    Conn->>LB: Reuse channel
+    LB->>TGIS: GenerationService.GenerateStream()<br/>gRPC server-streaming<br/>TLS/mTLS
+    loop Stream chunks
+        TGIS-->>LB: GenerationResponse (chunk)
+        LB-->>Runtime: Streamed chunk
+    end
+
+    Note over Runtime, TGIS: Flow 2: Local TGIS Subprocess (Dev/Test)
+
+    participant Subprocess as ManagedTGISSubprocess
+    participant LocalTGIS as Local TGIS<br/>localhost
+
+    Runtime->>Backend: get_client(model_id)
+    Backend->>Subprocess: launch()
+    Subprocess->>LocalTGIS: Fork TGIS process
+
+    rect rgb(255, 248, 240)
+        Note over Subprocess, LocalTGIS: Health Check Loop
+        loop Until healthy (max retries)
+            Subprocess->>LocalTGIS: HTTP GET health<br/>3000/TCP plaintext
+            LocalTGIS-->>Subprocess: Health status
+        end
+    end
+
+    Subprocess->>LocalTGIS: GenerationService.Generate()<br/>gRPC / plaintext<br/>50055/TCP localhost
+    LocalTGIS-->>Subprocess: GenerationResponse
+    Subprocess-->>Runtime: Inference result
+
+    Note over Runtime, TGIS: Flow 3: Prompt Artifact Loading
+
+    participant FS as Shared Prompt Dir<br/>(filesystem)
+
+    Runtime->>Conn: load_prompt_artifacts(model_id, artifacts)
+    Conn->>FS: shutil.copyfile()<br/>Copy prompt vectors
+    FS-->>Conn: Files written
+    Conn-->>Runtime: Artifacts loaded

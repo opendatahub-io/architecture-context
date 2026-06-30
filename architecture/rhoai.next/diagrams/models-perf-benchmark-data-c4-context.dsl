@@ -1,50 +1,53 @@
 workspace {
     model {
-        ciEngineer = person "CI/Build Engineer" "Runs data ingestion and triggers container builds"
-        dataSciUser = person "Data Scientist / Platform User" "Consumes model benchmark data via RHOAI Dashboard"
+        dataEngineer = person "Data Engineer" "Runs data ingestion tools to populate benchmark data"
+        developer = person "Developer" "Commits updated data/ directory to repository"
+        endUser = person "End User" "Views model performance data in RHOAI Dashboard"
 
-        modelPerfBenchmarkData = softwareSystem "models-perf-benchmark-data" "Data-only container packaging model performance benchmark data for the RHOAI model catalog" {
-            initContainer = container "odh-model-performance-data" "Data-only init container (UBI9-minimal) holding JSON/NDJSON benchmark files at /app/benchmarks" "Container Image"
-            kafkaProcessor = container "kafka-processor" "Consumes CDC messages from Kafka topics and writes structured benchmark data files" "Python 3.12 CLI"
-            apiClient = container "api-client" "Fetches benchmark data from model-validation-hub REST API and writes structured data files" "Python 3.12 CLI"
-            enrichScript = container "enrich_models.py" "Merges cold-start, VRAM, and image-size data into model metadata" "Python Script"
-            dataDirectory = container "data/ directory" "Structured benchmark data: provider/model hierarchy with JSON/NDJSON files" "Filesystem"
+        modelsPerfBenchmarkData = softwareSystem "models-perf-benchmark-data" "Data-only init container providing static benchmark data for model catalog" {
+            dataContainer = container "Data Container Image" "UBI9-minimal init container with JSON/NDJSON benchmark files at /app/benchmarks" "Container (Init Container)"
+            kafkaProcessor = container "kafka-processor" "Consumes model benchmark data from Kafka topics and writes JSON/NDJSON files" "Python 3.12 CLI" "Dev Tool"
+            apiClient = container "api-client" "Fetches model benchmark data from REST API and writes JSON/NDJSON files" "Python 3.12 CLI" "Dev Tool"
+            coldStartVramData = container "cold-start-vram-data" "Enriches model metadata with cold-start time, VRAM, and modelcar size data" "Python Script" "Dev Tool"
+            dataDirectory = container "data/ directory" "Git-tracked JSON/NDJSON files organized by provider/model" "Filesystem"
         }
 
-        kafkaBrokers = softwareSystem "Kafka Brokers" "CDC message broker for model benchmark data (dev.aihub-public-* topics)" "External"
-        modelValidationHub = softwareSystem "model-validation-hub" "REST API providing model benchmark data" "External"
-        modelCatalog = softwareSystem "model-catalog" "Serves model benchmark data to the RHOAI Dashboard" "Internal RHOAI"
-        modelRegistryOperator = softwareSystem "model-registry-operator" "Manages model-catalog deployment and init container references" "Internal RHOAI"
-        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "User-facing dashboard for browsing AI model catalog" "Internal RHOAI"
+        modelCatalog = softwareSystem "model-catalog" "Service that displays model performance data in the RHOAI dashboard" "Internal RHOAI"
+        modelRegistryOperator = softwareSystem "model-registry-operator" "Manages model-catalog Deployment spec including init container reference" "Internal RHOAI"
+        kafkaBroker = softwareSystem "Kafka Broker" "Message broker hosting dev.aihub-public-* topics with model benchmark data" "External"
+        modelValidationHub = softwareSystem "model-validation-hub" "REST API providing model benchmark, evaluation, and validation data" "External"
+        konflux = softwareSystem "Konflux" "Build system that creates container images from Dockerfile.konflux" "External"
+        containerRegistry = softwareSystem "Container Registry" "Stores and serves container images (quay.io / registry.redhat.io)" "External"
 
-        # Ingestion flows
-        kafkaBrokers -> kafkaProcessor "CDC messages" "Kafka/9092 SASL_SSL"
-        modelValidationHub -> apiClient "Benchmark data" "HTTPS/443 TLS"
-        kafkaProcessor -> dataDirectory "Writes benchmark files" "File I/O"
-        apiClient -> dataDirectory "Writes benchmark files" "File I/O"
-        enrichScript -> dataDirectory "Merges enrichment data" "File I/O"
+        # Dev tool flows
+        dataEngineer -> kafkaProcessor "Runs data ingestion"
+        dataEngineer -> apiClient "Runs data ingestion (alternative)"
+        kafkaProcessor -> kafkaBroker "Consumes CDC messages" "Kafka/9096 SASL_SSL SCRAM-SHA-512"
+        apiClient -> modelValidationHub "Fetches benchmark data" "HTTPS/443 TLS"
+        kafkaProcessor -> dataDirectory "Writes JSON/NDJSON files"
+        apiClient -> dataDirectory "Writes JSON/NDJSON files"
+        coldStartVramData -> dataDirectory "Enriches metadata.json files"
 
-        # Build and deploy flow
-        dataDirectory -> initContainer "COPY into container image" "Dockerfile.konflux"
-        initContainer -> modelCatalog "Provides benchmark data volume" "Init container → shared volume"
-        modelRegistryOperator -> modelCatalog "Manages deployment" "Kubernetes API"
+        # Build flow
+        developer -> dataDirectory "Commits updated data/ to git"
+        dataDirectory -> konflux "Build triggered"
+        konflux -> dataContainer "Builds image (COPY data/ to /app/benchmarks)"
+        konflux -> containerRegistry "Pushes container image" "HTTPS/443"
 
-        # User-facing
-        modelCatalog -> rhoaiDashboard "Serves benchmark data"
-        dataSciUser -> rhoaiDashboard "Browses model catalog"
-
-        # CI flow
-        ciEngineer -> kafkaProcessor "Triggers ingestion" "CLI"
-        ciEngineer -> apiClient "Triggers ingestion" "CLI"
+        # Runtime flow
+        containerRegistry -> dataContainer "Image pull" "HTTPS/443"
+        dataContainer -> modelCatalog "Provides benchmark data via shared emptyDir volume" "Filesystem"
+        modelRegistryOperator -> modelCatalog "Manages Deployment spec" "Kubernetes API"
+        endUser -> modelCatalog "Views model performance data"
     }
 
     views {
-        systemContext modelPerfBenchmarkData "SystemContext" {
+        systemContext modelsPerfBenchmarkData "SystemContext" {
             include *
             autoLayout
         }
 
-        container modelPerfBenchmarkData "Containers" {
+        container modelsPerfBenchmarkData "Containers" {
             include *
             autoLayout
         }
@@ -55,20 +58,24 @@ workspace {
                 color #ffffff
             }
             element "Internal RHOAI" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Dev Tool" {
                 background #7ed321
                 color #ffffff
             }
             element "Person" {
-                shape person
-                background #4a90e2
-                color #ffffff
-            }
-            element "Container" {
-                background #438dd5
+                shape Person
+                background #08427b
                 color #ffffff
             }
             element "Software System" {
                 background #1168bd
+                color #ffffff
+            }
+            element "Container" {
+                background #438dd5
                 color #ffffff
             }
         }

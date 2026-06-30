@@ -1,81 +1,91 @@
 sequenceDiagram
-    autonumber
+    participant Client as External Client
+    participant Server as Llama Stack Server<br/>8321/TCP HTTP/HTTPS
+    participant AuthMW as Authentication<br/>Middleware
+    participant JWKS as OIDC Provider<br/>443/TCP HTTPS
+    participant ABAC as Access Control<br/>(ABAC Engine)
+    participant Router as Inference Router
+    participant AgentRT as Agent Runtime
+    participant SafetyProv as Safety Provider
+    participant ToolRT as Tool Runtime (RAG)
+    participant VectorProv as Vector I/O Provider
+    participant InlineProv as Inline Provider<br/>(in-process)
+    participant RemoteProv as Remote Provider<br/>(e.g., vLLM 8000/TCP)
+    participant OTel as OpenTelemetry<br/>Collector
 
-    participant Client as API Client
-    participant TLS as TLS/mTLS Layer<br/>8321/TCP
-    participant AuthMW as AuthenticationMiddleware<br/>(ASGI)
-    participant JWKS as OAuth2 JWKS/Introspection<br/>Endpoint (HTTPS)
-    participant ABAC as Cedar-like ABAC<br/>Policy Engine
-    participant Router as InferenceRouter<br/>(auto-route by model)
-    participant vLLM as vLLM Inference Server<br/>(HTTP/HTTPS)
-    participant Safety as Safety Shield Provider
-    participant Tools as Tool Runtime<br/>(Brave/Tavily/MCP)
-    participant VecIO as Vector IO Provider<br/>(ChromaDB/pgvector/etc.)
-    participant Embed as Embedding Provider
+    Note over Client,OTel: Flow 1: Chat Completion Request
 
-    rect rgb(240, 248, 255)
-        Note over Client,vLLM: Flow 1: Chat Completion Request
-        Client->>TLS: POST /v1/inference/chat-completion<br/>Bearer Token
-        TLS->>AuthMW: Decrypt & forward
-        AuthMW->>JWKS: Validate JWT token<br/>HTTPS/TLS 1.2+<br/>Client credentials
-        JWKS-->>AuthMW: Token claims<br/>(roles, teams, projects)
-        AuthMW->>ABAC: Check access policy<br/>(permit/forbid rules)
-        ABAC-->>AuthMW: Authorized
-        AuthMW->>Router: Authenticated request<br/>with user attributes
-        Router->>Router: Lookup routing table<br/>(model → provider)
-        Router->>vLLM: Forward inference request<br/>HTTP/HTTPS<br/>Bearer Token / None
-        vLLM-->>Router: Completion response
-        Router-->>Client: JSON Response<br/>(or SSE stream if streaming)
+    Client->>Server: POST /v1/inference/chat-completion<br/>Auth: Bearer JWT
+    Server->>Server: TracingMiddleware<br/>Extract W3C traceparent
+    Server->>OTel: Log telemetry event (async)
+    Server->>AuthMW: Validate Bearer token
+    AuthMW->>JWKS: GET /.well-known/jwks.json<br/>TLS 1.2+
+    JWKS-->>AuthMW: Public keys (cached)
+    AuthMW->>AuthMW: Validate JWT signature & claims
+    AuthMW->>ABAC: Check permit/forbid rules<br/>Principal, Action: create, Resource: inference
+    ABAC-->>AuthMW: Authorized
+    AuthMW-->>Server: User context set
+    Server->>Router: Route to Inference provider
+
+    alt Inline Provider (e.g., meta-reference)
+        Router->>InlineProv: Direct in-process call
+        InlineProv-->>Router: Completion result
+    else Remote Provider (e.g., vLLM)
+        Router->>RemoteProv: POST /v1/chat/completions<br/>HTTP/HTTPS, API key
+        RemoteProv-->>Router: Completion result
     end
 
-    rect rgb(255, 248, 240)
-        Note over Client,Tools: Flow 2: Agent Turn with Tool Calling
-        Client->>TLS: POST /v1/agents/{id}/session/{sid}/turn<br/>Bearer Token
-        TLS->>AuthMW: Decrypt & forward
-        AuthMW->>ABAC: Validate & authorize
-        ABAC-->>AuthMW: Authorized
+    Router-->>Server: Response
+    Server-->>Client: JSON Response<br/>(or SSE stream for streaming)
 
-        Note over Router,Tools: Agent orchestration loop
-        AuthMW->>Router: Agent turn request
-        Router->>vLLM: Initial LLM call<br/>(determines tool use)
-        vLLM-->>Router: Response with tool_calls
+    Note over Client,OTel: Flow 2: Agent Turn with RAG
 
-        Router->>Safety: Run safety shield<br/>on input/output
-        Safety-->>Router: Safety check passed
+    Client->>Server: POST /v1/agents/{id}/session/{sid}/turn<br/>Auth: Bearer JWT
+    Server->>AuthMW: Validate token + ABAC check
+    AuthMW-->>Server: Authorized
+    Server->>AgentRT: Create agent turn
 
-        Router->>Tools: Invoke tool<br/>(Brave Search / Tavily / MCP)<br/>HTTPS :443, API Key
-        Tools-->>Router: Tool result
+    AgentRT->>SafetyProv: Input shield check<br/>(Llama Guard / Prompt Guard)
+    SafetyProv-->>AgentRT: Safe / Violation
 
-        Router->>vLLM: 2nd LLM call<br/>(with tool results)
-        vLLM-->>Router: Final response
+    AgentRT->>Router: Chat completion (initial)<br/>Model determines tool use
+    Router->>RemoteProv: POST /v1/chat/completions
+    RemoteProv-->>Router: Tool call: knowledge_search
+    Router-->>AgentRT: Tool call requested
 
-        Router-->>Client: Agent turn response<br/>(SSE stream with steps)
-    end
+    AgentRT->>ToolRT: Execute RAG query
+    ToolRT->>VectorProv: Query similar chunks
+    VectorProv->>Router: Generate embeddings
+    Router->>RemoteProv: POST /v1/embeddings
+    RemoteProv-->>Router: Embedding vectors
+    Router-->>VectorProv: Vectors
+    VectorProv-->>ToolRT: Matching chunks
+    ToolRT-->>AgentRT: RAG context
 
-    rect rgb(240, 255, 240)
-        Note over Client,VecIO: Flow 3: RAG (Retrieval-Augmented Generation)
-        Client->>TLS: POST /v1/tool-runtime/rag-tool/insert<br/>Bearer Token
-        TLS->>AuthMW: Authenticate & authorize
-        AuthMW->>Router: Insert request
+    AgentRT->>Router: Chat completion (with RAG context)
+    Router->>RemoteProv: POST /v1/chat/completions
+    RemoteProv-->>Router: Final response
+    Router-->>AgentRT: Response
 
-        Router->>Embed: Generate embeddings<br/>HTTP/HTTPS
-        Embed-->>Router: Embedding vectors
+    AgentRT->>SafetyProv: Output shield check
+    SafetyProv-->>AgentRT: Safe
 
-        Router->>VecIO: Store vectors<br/>(ChromaDB/pgvector/Qdrant)<br/>HTTP/PostgreSQL
-        VecIO-->>Router: Stored
+    AgentRT-->>Server: Agent turn result
+    Server-->>Client: SSE stream response
 
-        Router-->>Client: Insert confirmed
+    Note over Client,OTel: Flow 3: Evaluation Job
 
-        Note over Client,VecIO: Query phase
-        Client->>TLS: POST /v1/tool-runtime/rag-tool/query<br/>Bearer Token
-        TLS->>AuthMW: Authenticate & authorize
-        AuthMW->>Router: Query request
+    Client->>Server: POST /v1/eval/benchmarks/{id}/jobs<br/>Auth: Bearer JWT
+    Server->>AuthMW: Validate token + ABAC check
+    AuthMW-->>Server: Authorized
 
-        Router->>Embed: Embed query text
-        Embed-->>Router: Query embedding
+    Server->>Server: Eval Provider: Load dataset
+    Server->>Router: Generate responses per row
+    Router->>RemoteProv: Batch inference calls
+    RemoteProv-->>Router: Model outputs
+    Router-->>Server: Responses collected
+    Server->>Server: Scoring Provider: Score outputs
+    Server-->>Client: Job ID
 
-        Router->>VecIO: Similarity search
-        VecIO-->>Router: Matching documents
-
-        Router-->>Client: RAG query results
-    end
+    Client->>Server: GET /v1/eval/benchmarks/{id}/jobs/{jid}/result
+    Server-->>Client: Evaluation results

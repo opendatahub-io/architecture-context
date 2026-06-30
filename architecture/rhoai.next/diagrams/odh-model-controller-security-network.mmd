@@ -1,80 +1,77 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User / kubectl"]
-        InferenceClient["External Inference Client"]
+        Client["External Client"]
+        NGC["NVIDIA NGC API<br/>api.ngc.nvidia.com<br/>authn.nvidia.com<br/>443/TCP HTTPS<br/>TLS 1.2+"]
     end
 
-    subgraph Ingress["INGRESS (DMZ)"]
-        direction TB
-        OSRoute["OpenShift Route<br/>{isvc}<br/>443/TCP HTTPS<br/>TLS reencrypt/edge"]
-        GatewayEF["Gateway EnvoyFilter (Istio)<br/>50051/TCP gRPC/HTTP2<br/>mTLS MUTUAL"]
-        GatewayAP["Gateway AuthPolicy (Kuadrant)<br/>Anonymous or UserDefined"]
-        HTTPRouteAP["{httpRoute} AuthPolicy (Kuadrant)<br/>Per-LLMInferenceService auth"]
-        Authorino["Authorino<br/>Auth enforcement"]
-        GatewayEF -->|mTLS<br/>Service account CA| Authorino
+    subgraph Ingress["INGRESS (OpenShift Routes)"]
+        Route["OpenShift Route (dynamic)<br/>443/TCP → backend<br/>TLS Edge/Reencrypt<br/>Auth: Optional AuthPolicy"]
+    end
+
+    subgraph AuthZone["AUTHORIZATION ZONE"]
+        Authorino["Authorino<br/>50051/TCP gRPC/HTTP2<br/>mTLS<br/>TokenReview + SAR"]
     end
 
     subgraph ClusterInternal["CLUSTER INTERNAL (Kubernetes Network)"]
         direction TB
 
-        subgraph NS_Controller["Namespace: opendatahub"]
-            Controller["odh-model-controller<br/>SA: odh-model-controller<br/>Image: quay.io/.../odh-model-controller:odh-stable"]
-            WebhookSvc["Webhook Service<br/>443/TCP → 9443/TCP<br/>HTTPS (cert-manager TLS)<br/>Auth: K8s API server mTLS"]
-            MetricsSvc["Metrics Service<br/>8080/TCP<br/>HTTP (no TLS)<br/>Auth: Optional"]
-            HealthProbe["Health Probes<br/>8081/TCP<br/>HTTP (no TLS)"]
+        subgraph ControllerNS["Namespace: opendatahub"]
+            OMC["odh-model-controller<br/>SA: odh-model-controller<br/>8080/TCP HTTP (metrics)<br/>8081/TCP HTTP (health)<br/>9443/TCP HTTPS (webhooks)"]
 
-            APIServer["model-serving-api<br/>SA: model-serving-api<br/>Image: quay.io/.../odh-model-serving-api:odh-stable"]
-            APISvc["API Service<br/>443/TCP → 8443/TCP<br/>HTTPS TLS 1.2+ FIPS<br/>ECDHE+AES-GCM, P-256/P-384<br/>Auth: Bearer Token"]
-            APIMetricsSvc["API Metrics Service<br/>8080/TCP<br/>HTTPS TLS 1.2+ FIPS"]
+            MSA["model-serving-api<br/>SA: model-serving-api<br/>8443/TCP HTTPS (API)<br/>8080/TCP HTTPS (metrics)<br/>TLS 1.2+ FIPS ciphers"]
         end
 
-        subgraph NS_User["Namespace: {user-namespace}"]
-            ISVCMetrics["{isvc}-metrics<br/>ClusterIP dynamic/TCP<br/>HTTP (no TLS)<br/>Prometheus scrape"]
+        subgraph Services["ClusterIP Services"]
+            SvcAPI["model-serving-api<br/>443→8443, 8080→8080"]
+            SvcWebhook["webhook-service<br/>443→9443"]
+            SvcMetrics["metrics-service<br/>8080→8080"]
         end
 
-        Dashboard["RHOAI Dashboard"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token / User Token"]
+
+        Dashboard["RHOAI Dashboard<br/>Bearer Token"]
+
+        subgraph OptionalSvc["Optional Services"]
+            OTLP["OTLP Collector<br/>gRPC / TLS"]
+            ModelReg["Model Registry<br/>HTTPS / TLS 1.2+<br/>Bearer Token"]
+        end
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        K8sAPI["Kubernetes API Server<br/>kubernetes.default.svc<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: ServiceAccount / Bearer Token"]
-        NGC["NVIDIA NGC API<br/>api.ngc.nvidia.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: API key bearer"]
-        NVCR["NVIDIA NVCR<br/>nvcr.io<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: OAuth token"]
-        OTLP["OTLP Collector<br/>configurable/TCP gRPC<br/>TLS optional<br/>Auth: None"]
-    end
+    %% External flows
+    Client -->|"HTTPS/443<br/>TLS Edge/Reencrypt<br/>Optional AuthPolicy"| Route
+    Route -->|"gRPC/50051<br/>mTLS<br/>Service Identity"| Authorino
 
-    %% External → Ingress flows
-    User -->|HTTPS/443<br/>TLS 1.2+<br/>Bearer Token| K8sAPI
-    InferenceClient -->|HTTPS/443<br/>TLS reencrypt/edge<br/>Optional auth| OSRoute
+    %% Controller egress
+    OMC -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key / Bearer Token"| NGC
+    OMC -->|"HTTPS/443<br/>TLS 1.2+<br/>ServiceAccount Token"| K8sAPI
+    OMC -->|"gRPC mTLS<br/>configures auth chain"| Authorino
 
-    %% Ingress auth flow
-    GatewayAP -.->|auth check| Authorino
-    HTTPRouteAP -.->|auth check| Authorino
+    %% API server flows
+    Dashboard -->|"HTTPS/443<br/>TLS 1.2+ FIPS<br/>Bearer Token"| SvcAPI
+    SvcAPI --> MSA
+    MSA -->|"HTTPS/443<br/>TLS 1.2+<br/>User Token (forwarded)"| K8sAPI
 
-    %% Dashboard → API
-    Dashboard -->|HTTPS/443→8443<br/>TLS 1.2+ FIPS<br/>User bearer token| APISvc
+    %% Webhook flow
+    K8sAPI -->|"HTTPS/443<br/>TLS serving-cert"| SvcWebhook
+    SvcWebhook --> OMC
 
-    %% Controller → Kubernetes API
-    Controller -->|HTTPS/443<br/>TLS 1.2+<br/>ServiceAccount token| K8sAPI
-    APIServer -->|HTTPS/443<br/>TLS 1.2+<br/>SA + User bearer| K8sAPI
-
-    %% Controller → NVIDIA
-    Controller -->|HTTPS/443<br/>TLS 1.2+<br/>API key bearer| NGC
-    Controller -->|HTTPS/443<br/>TLS 1.2+<br/>OAuth token| NVCR
-
-    %% API Server → OTLP
-    APIServer -.->|gRPC<br/>TLS optional<br/>Optional| OTLP
-
-    %% Kubernetes API → Webhook
-    K8sAPI -->|HTTPS/443→9443<br/>TLS (cert-manager)<br/>K8s API mTLS| WebhookSvc
+    %% Optional flows
+    MSA -.->|"gRPC/TLS"| OTLP
+    OMC -.->|"HTTPS/TLS 1.2+<br/>Bearer Token"| ModelReg
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef authzone fill:#f8cecc,stroke:#b85450,stroke-width:2px
     classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef controller fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef service fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef apiserver fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef optional fill:#e1d5e7,stroke:#9673a6,stroke-width:1px,stroke-dasharray:5
 
-    class User,InferenceClient external
-    class OSRoute,GatewayEF,GatewayAP,HTTPRouteAP,Authorino ingress
-    class Controller,WebhookSvc,MetricsSvc,HealthProbe,APIServer,APISvc,APIMetricsSvc,ISVCMetrics,Dashboard internal
-    class K8sAPI,NGC,NVCR,OTLP externalservice
+    class Client,NGC external
+    class Route ingress
+    class Authorino authzone
+    class OMC,MSA,Dashboard internal
+    class SvcAPI,SvcWebhook,SvcMetrics service
+    class K8sAPI apiserver
+    class OTLP,ModelReg optional

@@ -1,51 +1,55 @@
 sequenceDiagram
-    autonumber
-
     participant User as User / Data Scientist
     participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant Webhook as Spark Webhook<br/>9443/TCP HTTPS TLS 1.2+
-    participant Controller as Spark Controller<br/>controller-runtime
-    participant Driver as Spark Driver Pod<br/>7078,7079,4040/TCP
-    participant Executor as Spark Executor Pods<br/>7078,7079/TCP
-    participant Ingress as Ingress Controller<br/>80/443/TCP
+    participant Webhook as spark-operator-webhook<br/>9443/TCP HTTPS TLS 1.2+
+    participant Controller as spark-operator-controller
+    participant SparkSubmit as spark-submit<br/>(local exec)
+    participant Driver as Spark Driver Pod<br/>7078/TCP, 7079/TCP
+    participant Executors as Spark Executor Pods<br/>7078/TCP, 7079/TCP
+    participant SparkUI as Spark UI Service<br/>4040/TCP HTTP
     participant SparkConnect as SparkConnect Server<br/>15002/TCP gRPC
+    participant Workbench as ODH/RHOAI Workbench
 
-    Note over User,Executor: Flow 1: SparkApplication Submission
+    Note over User, Executors: Flow 1: SparkApplication Submission and Execution
 
-    User->>K8sAPI: POST SparkApplication CR<br/>Auth: Bearer token / kubeconfig
-    K8sAPI->>Webhook: POST /validate-sparkoperator-k8s-io-v1beta2-sparkapplication<br/>443→9443/TCP, TLS 1.2+, K8s mTLS
-    Webhook-->>K8sAPI: Admission Response (allow/deny)
-    K8sAPI->>Webhook: POST /mutate-sparkoperator-k8s-io-v1beta2-sparkapplication<br/>443→9443/TCP, TLS 1.2+, K8s mTLS
-    Webhook-->>K8sAPI: Mutated SparkApplication (defaults applied)
+    User->>K8sAPI: kubectl apply SparkApplication CR<br/>HTTPS/443, User credentials
+    K8sAPI->>Webhook: Admission Review (mutate + validate)<br/>HTTPS/9443, TLS 1.2+ (self-signed)<br/>API Server cert
+    Webhook->>K8sAPI: Lookup SparkApplication spec<br/>HTTPS/443, ServiceAccount token
+    Webhook-->>K8sAPI: Admission Response (defaults set, validated)
     K8sAPI-->>User: SparkApplication created
 
-    Controller->>K8sAPI: Watch SparkApplication resources<br/>443/TCP, TLS 1.2+, SA token
-    K8sAPI-->>Controller: SparkApplication event (Added/Modified)
-    Controller->>K8sAPI: Create Driver Pod<br/>443/TCP, TLS 1.2+, SA token
+    Controller->>K8sAPI: Watch detects new SparkApplication<br/>HTTPS/443, ServiceAccount token
+    Controller->>SparkSubmit: Execute spark-submit<br/>Local process (no network)
+    SparkSubmit->>K8sAPI: Create Driver Pod<br/>HTTPS/443
 
-    K8sAPI->>Webhook: POST /mutate--v1-pod<br/>443→9443/TCP, TLS 1.2+, K8s mTLS
-    Note right of Webhook: Applies 19 mutation functions:<br/>volumes, env vars, labels,<br/>security contexts, GPU resources,<br/>init/sidecar containers, scheduling
-    Webhook-->>K8sAPI: Mutated Driver Pod spec
+    K8sAPI->>Webhook: Pod Admission Review (mutate)<br/>HTTPS/9443
+    Note over Webhook: 22 sequential mutation steps:<br/>volumes, env vars, sidecars,<br/>GPU, monitoring, scheduler, etc.
+    Webhook-->>K8sAPI: Mutated Pod spec
 
-    K8sAPI-->>Controller: Driver Pod created
+    Driver->>K8sAPI: Create Executor Pods<br/>HTTPS/443
+    K8sAPI->>Webhook: Pod Admission Review (mutate)<br/>HTTPS/9443
+    Webhook-->>K8sAPI: Mutated Pod spec
 
-    Driver->>K8sAPI: Create Executor Pods<br/>443/TCP, HTTPS, spark-operator-spark SA token
-    K8sAPI->>Webhook: POST /mutate--v1-pod (per executor)<br/>443→9443/TCP, TLS 1.2+, K8s mTLS
-    Webhook-->>K8sAPI: Mutated Executor Pod spec
-    K8sAPI-->>Driver: Executor Pods created
+    Driver->>Executors: RPC communication<br/>TCP/7078 (driver-rpc)<br/>TCP/7079 (block manager)<br/>No encryption
 
-    Driver->>Executor: Spark RPC communication<br/>7078,7079/TCP, TCP, No encryption
+    Controller->>K8sAPI: Create Spark UI Service<br/>HTTPS/443
+    User->>SparkUI: View Spark UI<br/>HTTP/4040, No auth
 
-    Controller->>K8sAPI: Create {app}-ui Service<br/>4040/TCP
-    Controller->>K8sAPI: Create {app}-ui Ingress<br/>80/TCP
+    Executors-->>Driver: Task results
+    Driver-->>Controller: Application completes
+    Controller->>K8sAPI: Update SparkApplication status<br/>HTTPS/443
 
-    Note over User,Executor: Flow 2: SparkConnect Session
+    Note over User, Workbench: Flow 2: SparkConnect Session
 
-    User->>SparkConnect: gRPC connection<br/>15002/TCP, No encryption<br/>NetworkPolicy-restricted
-    SparkConnect->>K8sAPI: Create/manage Executor Pods<br/>443/TCP, HTTPS, SA token
-    SparkConnect->>Executor: Spark RPC<br/>7078,7079/TCP, TCP, No encryption
+    User->>K8sAPI: kubectl apply SparkConnect CR<br/>HTTPS/443, User credentials
+    Controller->>K8sAPI: Watch detects SparkConnect CR<br/>HTTPS/443, ServiceAccount token
+    Controller->>K8sAPI: Create SparkConnect Server + Service<br/>HTTPS/443
 
-    Note over User,Ingress: Flow 3: Spark Web UI Access
+    Workbench->>SparkConnect: Interactive Spark session<br/>gRPC/15002, No encryption, No auth
+    SparkConnect->>Executors: Executor management<br/>TCP/7078, 7079
 
-    User->>Ingress: HTTP/HTTPS request<br/>80/443/TCP, Optional TLS
-    Ingress->>Driver: Forward to Spark UI<br/>4040/TCP, HTTP, No auth
+    Note over Webhook, K8sAPI: Flow 3: Webhook Certificate Rotation
+
+    Webhook->>K8sAPI: Write self-signed cert to Secret<br/>HTTPS/443, ServiceAccount token
+    Webhook->>K8sAPI: Update MutatingWebhookConfiguration<br/>caBundle injection, HTTPS/443
+    Webhook->>K8sAPI: Update ValidatingWebhookConfiguration<br/>caBundle injection, HTTPS/443

@@ -1,52 +1,61 @@
 sequenceDiagram
     participant Client as External Client
-    participant Gateway as RHOAI Gateway<br/>(Envoy)<br/>443/TCP HTTPS TLS 1.2+
-    participant KRBAC as kube-rbac-proxy<br/>Sidecar<br/>8443/TCP HTTPS
-    participant HTTP as OVMS HTTP Server<br/>(Drogon)<br/>8080/TCP HTTP
-    participant gRPC as OVMS gRPC Server<br/>8443/TCP gRPC/HTTP2
-    participant MP as MediaPipe<br/>Graph Executor
-    participant LLM as LLM Servable<br/>(ContinuousBatchingPipeline)
-    participant MM as Model Manager
-    participant OV as OpenVINO Runtime
-    participant S3 as Cloud Storage<br/>(S3/GCS/Azure)<br/>443/TCP HTTPS
+    participant KRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
+    participant REST as OVMS REST Server<br/>configurable/TCP HTTP
+    participant GRPC as OVMS gRPC Server<br/>configurable/TCP HTTP/2
+    participant Handler as HTTP REST API Handler
+    participant MM as ModelManager
+    participant MP as MediaPipe Graph Engine
+    participant LLMCalc as LLM Calculator
+    participant OVRuntime as OpenVINO Runtime
+    participant OVGenAI as OpenVINO GenAI<br/>ContinuousBatchingPipeline
+    participant FSFactory as FileSystem Factory
+    participant S3 as Amazon S3<br/>443/TCP HTTPS
+    participant GCS as Google Cloud Storage<br/>443/TCP HTTPS
+    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
 
-    Note over Client,S3: Flow 1: REST Model Inference (via RHOAI Gateway)
-    Client->>Gateway: POST /v1/models/{name}:predict<br/>Auth: Bearer Token (OAuth/OIDC)
-    Gateway->>KRBAC: Forward request<br/>8443/TCP HTTPS TLS
-    KRBAC->>HTTP: Forward (pod-local)<br/>8080/TCP HTTP<br/>Auth: ServiceAccount token verified
-    HTTP->>MM: TFS predict handler
-    MM->>OV: Inference request (in-process)
-    OV-->>MM: Prediction result
-    MM-->>HTTP: Inference response
-    HTTP-->>KRBAC: JSON response
-    KRBAC-->>Gateway: Forward response
-    Gateway-->>Client: JSON prediction result
+    Note over Client,HFHub: Flow 1: REST Model Inference (KServe v2)
+    Client->>KRBAC: POST /v2/models/{model}/infer<br/>HTTPS/443
+    KRBAC->>REST: Forward (HTTP plaintext)<br/>AuthN/AuthZ verified
+    REST->>Handler: Route request
+    Handler->>MM: GetModel + Infer
+    MM->>OVRuntime: Execute inference<br/>(C++ API, in-process)
+    OVRuntime-->>MM: Inference result
+    MM-->>Handler: Response tensor
+    Handler-->>REST: JSON response
+    REST-->>KRBAC: HTTP response
+    KRBAC-->>Client: HTTPS response
 
-    Note over Client,S3: Flow 2: LLM Chat Completion (Streaming SSE)
-    Client->>HTTP: POST /v3/{graph}/chat/completions<br/>Auth: API Key (optional Bearer)
-    HTTP->>MP: Route to HttpLLMCalculator
-    MP->>LLM: Chat completion request
-    Note over LLM: Jinja2 template processing<br/>(pybind11 Python)
-    LLM->>OV: ContinuousBatchingPipeline<br/>Token generation
-    loop Streaming tokens
-        OV-->>LLM: Generated token
-        LLM-->>MP: Token chunk
-        MP-->>HTTP: SSE event
-        HTTP-->>Client: data: {"choices":[...]}\n\n<br/>text/event-stream
+    Note over Client,HFHub: Flow 2: LLM Chat Completions (Streaming SSE)
+    Client->>KRBAC: POST /v3/chat/completions<br/>HTTPS/443, Bearer Token
+    KRBAC->>REST: Forward (HTTP plaintext)
+    REST->>Handler: Route to generative handler
+    Handler->>Handler: Validate Bearer Token<br/>(--api_key_file)
+    Handler->>MP: Execute LLM graph
+    MP->>LLMCalc: Process chat request
+    LLMCalc->>OVGenAI: ContinuousBatchingPipeline<br/>(speculative decoding, prefix caching)
+    loop Token-by-token generation
+        OVGenAI-->>LLMCalc: Next token
+        LLMCalc-->>REST: SSE chunk<br/>(text/event-stream)
+        REST-->>KRBAC: SSE chunk
+        KRBAC-->>Client: SSE chunk (HTTPS)
     end
-    HTTP-->>Client: data: [DONE]\n\n
+    LLMCalc-->>REST: [DONE] event
+    REST-->>Client: Stream complete
 
-    Note over Client,S3: Flow 3: gRPC Model Inference (Direct)
-    Client->>gRPC: ModelInfer RPC<br/>8443/TCP gRPC/HTTP2<br/>InsecureCredentials (no TLS)
-    gRPC->>MM: KServe v2 inference
-    MM->>OV: Model inference (in-process)
-    OV-->>MM: Result tensors
-    MM-->>gRPC: InferResponse
-    gRPC-->>Client: gRPC response
+    Note over Client,HFHub: Flow 3: Model Loading from Cloud Storage
+    MM->>FSFactory: Resolve storage backend<br/>(s3:// / gs:// / az://)
+    alt S3 Storage
+        FSFactory->>S3: HTTPS GET<br/>TLS 1.2+, AWS IAM credentials
+        S3-->>FSFactory: Model artifacts
+    else GCS Storage
+        FSFactory->>GCS: HTTPS GET<br/>TLS 1.2+, OAuth 2.0
+        GCS-->>FSFactory: Model artifacts
+    end
+    FSFactory-->>MM: Model files (local temp)
+    MM->>OVRuntime: loadModel (in-process)
 
-    Note over Client,S3: Flow 4: Model Loading from Cloud Storage
-    MM->>S3: List/Download model files<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS IAM / GCS SA / Azure
-    S3-->>MM: Model artifacts
-    Note over MM: Cache to local directory<br/>MD5 validation
-    MM->>OV: ov::Core::compile_model()
-    Note over OV: Model compiled and ready
+    Note over Client,HFHub: Flow 4: HuggingFace Model Pull
+    MM->>HFHub: git clone via libgit2<br/>HTTPS/443, Bearer Token (HF_TOKEN)
+    HFHub-->>MM: Repository + LFS files
+    MM->>OVRuntime: loadModel (in-process)

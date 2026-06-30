@@ -3,61 +3,62 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph PlatformIngress["PLATFORM INGRESS (KServe/RHOAI-managed)"]
-        Gateway["KServe Router / Istio Gateway<br/>TLS termination<br/>kube-rbac-proxy sidecar<br/>RequestAuthentication"]
+    subgraph Ingress["INGRESS (Platform-Managed)"]
+        Gateway["Platform Gateway / HTTPRoute<br/>443/TCP<br/>TLS 1.3<br/>Bearer Token Auth"]
+        KRBAC["kube-rbac-proxy Sidecar<br/>8443/TCP &rarr; 8000/TCP<br/>TLS termination<br/>RBAC enforcement"]
     end
 
-    subgraph InferencePod["INFERENCE POD (vllm-gaudi)"]
+    subgraph Application["APPLICATION (Pod-Internal)"]
         direction TB
-        APIServer["vLLM OpenAI API Server<br/>8000/TCP HTTP (no TLS)<br/>UID 2000 (non-root)<br/>FIPS: DISABLED"]
-        Plugin["vllm-gaudi Plugin<br/>HPUModelRunner<br/>Attention Backends<br/>Custom Ops"]
-        SynapseAI["Habana Synapse AI 1.23.0<br/>Device Driver"]
+
+        subgraph PodBoundary["Pod: vllm-gaudi"]
+            VLLM["vLLM OpenAI API Server<br/>8000/TCP HTTP<br/>No TLS (localhost)<br/>No Auth (delegated)"]
+            Runner["HPUModelRunner<br/>In-process Python<br/>Bucketing + Graph Compilation"]
+        end
+
+        HPU["Intel Gaudi 2/3 HPU<br/>PCIe/RDMA<br/>Synapse AI 1.23.0<br/>BFloat16 compute"]
     end
 
-    subgraph ClusterInternal["CLUSTER-INTERNAL (No Encryption)"]
+    subgraph Distributed["DISTRIBUTED (Unencrypted)"]
         direction TB
-        PeerWorkers["Peer Gaudi Workers<br/>HCCL/RDMA<br/>all-reduce, all-gather"]
-        RayCluster["Ray Cluster<br/>6379/TCP<br/>Ray protocol"]
-        NixlTransfer["NIXL KV Transfer<br/>RDMA/TCP<br/>Prefill → Decode"]
+        Ray["Ray Cluster<br/>6379/TCP, 10001/TCP<br/>No encryption<br/>Ray internal auth"]
+        HCCL["HCCL Collectives<br/>Dynamic ports<br/>No encryption<br/>all-reduce/all-gather"]
+        NIXLNode["NIXL KV Transfer<br/>UCX/TCP Dynamic ports<br/>No encryption<br/>Disaggregated prefill/decode"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        direction TB
-        S3["S3 Model Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
-        HuggingFace["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>HF Token (optional)"]
-        HabanaArtifactory["Habana Artifactory<br/>443/TCP HTTPS<br/>BUILD TIME ONLY"]
+    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
+        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (HF_TOKEN)"]
+        HabanaArtifactory["vault.habana.ai<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Public (build-time only)"]
     end
 
-    %% External → Ingress
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Platform Auth"| Gateway
+    %% Ingress flows
+    Client -->|"HTTPS/443<br/>TLS 1.3<br/>Bearer Token"| Gateway
+    Gateway -->|"HTTPS/8443<br/>TLS<br/>RBAC validation"| KRBAC
+    KRBAC -->|"HTTP/8000<br/>localhost<br/>No encryption"| VLLM
 
-    %% Ingress → Pod
-    Gateway -->|"HTTP/8000<br/>No encryption*<br/>No auth (vLLM)<br/>*service mesh may add mTLS"| APIServer
+    %% Internal flows
+    VLLM -->|"In-process<br/>Python"| Runner
+    Runner -->|"PCIe/RDMA<br/>HPU driver"| HPU
 
-    %% Internal pod flows
-    APIServer -->|"In-process<br/>Python call"| Plugin
-    Plugin -->|"Device driver<br/>Synapse API"| SynapseAI
+    %% Distributed flows
+    Runner -->|"TCP/6379,10001<br/>Ray protocol<br/>No encryption"| Ray
+    Runner -->|"HCCL/TCP<br/>Dynamic ports<br/>No encryption"| HCCL
+    Runner -.->|"UCX/TCP<br/>Dynamic ports<br/>No encryption"| NIXLNode
 
-    %% Distributed communication
-    Plugin -->|"HCCL/RDMA<br/>No encryption<br/>No auth"| PeerWorkers
-    Plugin -->|"Ray/6379<br/>No encryption<br/>No auth"| RayCluster
-    Plugin -.->|"NIXL/RDMA<br/>No encryption<br/>No auth"| NixlTransfer
-
-    %% Egress
-    APIServer -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM / SA"| S3
-    APIServer -->|"HTTPS/443<br/>TLS 1.2+<br/>HF Token"| HuggingFace
+    %% Egress flows
+    VLLM -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HFHub
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef pod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef hardware fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef distributed fill:#ffcccc,stroke:#cc0000,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
-    class Gateway ingress
-    class APIServer warning
-    class Plugin,SynapseAI pod
-    class PeerWorkers,RayCluster,NixlTransfer cluster
-    class S3,HuggingFace,HabanaArtifactory externalservice
+    class Gateway,KRBAC ingress
+    class VLLM,Runner application
+    class HPU hardware
+    class Ray,HCCL,NIXLNode distributed
+    class HFHub,HabanaArtifactory externalservice

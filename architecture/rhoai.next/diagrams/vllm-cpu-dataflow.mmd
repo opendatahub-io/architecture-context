@@ -1,42 +1,45 @@
 sequenceDiagram
-    participant Client as External Client<br/>(KServe Proxy / User)
-    participant KServeGW as KServe Gateway<br/>(Ingress managed)
-    participant API as vLLM OpenAI API Server<br/>8000/TCP HTTP(S)
-    participant Engine as vLLM Engine (V1)<br/>Continuous Batching
+    participant Client as External Client
+    participant KRBACProxy as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant APIServer as vLLM API Server<br/>(FastAPI/uvicorn)<br/>8000/TCP HTTP/HTTPS
+    participant ZMQ as ZeroMQ IPC
+    participant Engine as vLLM AsyncEngine<br/>(Scheduler)
+    participant Executor as CPU Model Executor<br/>(PyTorch)
     participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
     participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant PVC as Local PVC<br/>Filesystem
-    participant Prom as Prometheus
 
-    Note over Client,PVC: Flow 1: Model Inference Request
+    Note over Client, S3: Flow 1: OpenAI-Compatible Inference Request
 
-    Client->>KServeGW: POST /v1/chat/completions<br/>Auth: Bearer API Key
-    KServeGW->>API: Forward request<br/>HTTP 8000/TCP<br/>TLS optional
+    Client->>KRBACProxy: POST /v1/chat/completions<br/>HTTPS/8443<br/>Auth: RBAC (platform)
+    KRBACProxy->>APIServer: Forward<br/>HTTP/8000<br/>API Key (optional)
+    APIServer->>ZMQ: Dispatch request<br/>ZeroMQ IPC (in-process)
+    ZMQ->>Engine: Schedule batch
+    Engine->>Executor: Execute forward pass<br/>Direct call (in-process)
+    Executor->>Executor: PyTorch CPU inference<br/>PagedAttention + C++ kernels
+    Executor-->>Engine: Token output
+    Engine-->>ZMQ: Generation result
+    ZMQ-->>APIServer: Response / SSE stream
+    APIServer-->>KRBACProxy: JSON / SSE stream
+    KRBACProxy-->>Client: HTTP/HTTPS Response
 
-    Note over Engine,PVC: Model Loading (first request or startup)
-    alt Model from HuggingFace
-        Engine->>HFHub: Download model weights<br/>HTTPS/443<br/>Auth: HF_TOKEN
-        HFHub-->>Engine: Model artifacts
-    else Model from S3
-        Engine->>S3: Load model weights<br/>HTTPS/443<br/>Auth: AWS IAM (S3_ACCESS_KEY_ID)
-        S3-->>Engine: Model artifacts
-    else Model from PVC
-        Engine->>PVC: Read model weights<br/>Filesystem
-        PVC-->>Engine: Model artifacts
-    end
+    Note over Client, S3: Flow 2: Model Loading (startup)
 
-    API->>Engine: Inference request<br/>(continuous batching)
-    Note over Engine: CPU Attention Kernels<br/>KV Cache Management<br/>Quantization (INT4/INT8/FP8)
-    Engine-->>API: Generated tokens<br/>(streaming or batch)
-    API-->>KServeGW: JSON Response<br/>or SSE stream
-    KServeGW-->>Client: Response
+    Engine->>HFHub: GET model config + weights<br/>HTTPS/443<br/>Auth: Bearer HF_TOKEN
+    HFHub-->>Engine: Model artifacts
+    Engine->>S3: GET model weights (alternative)<br/>HTTPS/443<br/>Auth: AWS credentials
+    S3-->>Engine: Model artifacts
+    Engine->>Executor: Load model into memory<br/>Direct call
 
-    Note over Prom,API: Flow 2: Prometheus Metrics Scraping
+    Note over Client, S3: Flow 3: gRPC Inference Request
 
-    Prom->>API: GET /metrics<br/>HTTP 8000/TCP<br/>No Auth
-    API-->>Prom: Prometheus metrics<br/>(token throughput, batch sizes,<br/>cache utilization)
+    participant GRPCClient as gRPC Client
+    participant GRPCServer as vLLM gRPC Server<br/>50051/TCP Plaintext
 
-    Note over Client,API: Flow 3: Health Probes
-
-    Client->>API: GET /health<br/>HTTP 8000/TCP<br/>No Auth
-    API-->>Client: 200 OK (healthy)
+    GRPCClient->>GRPCServer: Inference Request<br/>gRPC/50051<br/>Plaintext (no TLS)
+    GRPCServer->>ZMQ: Dispatch request<br/>ZeroMQ IPC
+    ZMQ->>Engine: Schedule batch
+    Engine->>Executor: Execute forward pass
+    Executor-->>Engine: Token output
+    Engine-->>ZMQ: Generation result
+    ZMQ-->>GRPCServer: Response
+    GRPCServer-->>GRPCClient: gRPC streaming response<br/>Plaintext

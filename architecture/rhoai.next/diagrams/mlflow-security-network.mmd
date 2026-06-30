@@ -1,113 +1,79 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["ML Client / Web Browser"]
+        SDK[MLflow SDK Client<br/>Data Scientist]
+        Browser[Browser User]
     end
 
-    subgraph Ingress["INGRESS (Optional - Helm Configurable)"]
-        K8sIngress["Kubernetes Ingress<br/>80/TCP or 443/TCP<br/>TLS: SIMPLE (configurable)<br/>Host: mlflow.local (default)"]
+    subgraph Ingress["INGRESS (Platform Gateway)"]
+        Gateway["ODH Data Science Gateway<br/>HTTPRoute: /mlflow<br/>443/TCP → 5000/TCP<br/>TLS 1.2+ (SIMPLE)<br/>Forwards Bearer Token"]
+        HelmIngress["Helm Ingress (optional)<br/>443/TCP → 5000/TCP<br/>TLS configurable"]
     end
 
-    subgraph Application["APPLICATION (ClusterIP Service)"]
+    subgraph Application["APPLICATION (MLflow Server)"]
         direction TB
 
-        subgraph SecurityLayer["Security Layer"]
-            SecurityMW["Security Middleware<br/>Host Validation (DNS rebinding)<br/>CORS Validation (CSRF)"]
-            AuthPlugin["Auth Module<br/>kubernetes-auth<br/>RBAC roles/permissions"]
+        subgraph SecurityStack["Security Middleware"]
+            HostVal["Host Header Validation<br/>(DNS rebinding protection)"]
+            CORS["CORS Blocking<br/>(state-changing requests)"]
+            K8sAuth["kubernetes-auth Plugin<br/>SelfSubjectAccessReview"]
+            BasicAuth["HTTP Basic Auth (fallback)<br/>READ/USE/EDIT/MANAGE"]
+            SecHeaders["Security Headers<br/>X-Frame-Options: DENY"]
         end
 
-        subgraph MLflowPod["MLflow Pod (UID 1000, read-only rootfs)"]
-            direction TB
-            TrackingServer["Tracking Server<br/>5000/TCP<br/>Flask + FastAPI/Uvicorn"]
-            ModelRegistry["Model Registry<br/>Versioning & Staging"]
-            AIGateway["AI Gateway<br/>LLM Proxy + Rate Limiting"]
-            Encryption["Envelope Encryption<br/>AES-256-GCM<br/>PBKDF2 KEK (600K iter)"]
-            OTLPEndpoint["OTLP Endpoint<br/>/v1/traces"]
-            JobExecutor["Job Executor<br/>Huey Task Queue"]
+        subgraph ServerPods["MLflow Server Pod"]
+            Flask["Flask App<br/>Legacy Handlers"]
+            FastAPI["FastAPI/ASGI<br/>Jobs, Traces, Gateway"]
         end
 
-        subgraph HealthEndpoints["Unauthenticated Endpoints"]
-            Health["/health - Liveness"]
-            Version["/version - Version Info"]
-            MetricsEP["/metrics - Prometheus"]
+        subgraph PodSecurity["Pod Security Context"]
+            PSC["readOnlyRootFilesystem: true<br/>runAsNonRoot: true<br/>drop: ALL capabilities<br/>seccompProfile: RuntimeDefault"]
         end
     end
 
-    subgraph BackendServices["BACKEND SERVICES (In-Cluster)"]
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>No Encryption (in-cluster)<br/>Auth: Password (Secret)"]
-        MySQL["MySQL (Alternative)<br/>3306/TCP<br/>No Encryption (in-cluster)<br/>Auth: Password (Secret)"]
-    end
-
-    subgraph ClusterServices["CLUSTER SERVICES"]
-        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: SA Token"]
-        DNS["CoreDNS<br/>53/UDP, 53/TCP<br/>5353/UDP, 5353/TCP"]
-        Prometheus["Prometheus<br/>Scrapes /metrics"]
+    subgraph InternalServices["INTERNAL SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP<br/>TLS 1.2+<br/>ServiceAccount Token"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>No encryption (in-cluster)<br/>DB credentials (Secret)"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        S3["S3-Compatible Storage<br/>(AWS S3 / MinIO / Ceph)<br/>443/TCP, 9000/TCP<br/>TLS 1.2+<br/>Auth: AWS IAM / Access Keys"]
-
-        subgraph LLMProviders["LLM Providers (AI Gateway)"]
-            OpenAI["OpenAI<br/>443/TCP HTTPS<br/>API Key (encrypted)"]
-            Anthropic["Anthropic<br/>443/TCP HTTPS<br/>API Key (encrypted)"]
-            Bedrock["Amazon Bedrock<br/>443/TCP HTTPS<br/>AWS IAM"]
-            Gemini["Google Gemini<br/>443/TCP HTTPS<br/>API Key / OAuth"]
-            Mistral["Mistral<br/>443/TCP HTTPS<br/>API Key (encrypted)"]
-        end
+        S3["S3/MinIO Storage<br/>443/TCP or 9000/TCP<br/>TLS 1.2+ (external)<br/>AWS IAM / Access Keys"]
+        LLM["External LLM Providers<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Keys"]
+        HF["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+"]
     end
 
-    %% External to Ingress
-    Client -->|"HTTP/HTTPS<br/>443/TCP or 5000/TCP<br/>TLS configurable<br/>Auth: kubernetes-auth"| K8sIngress
+    subgraph Monitoring["MONITORING"]
+        Prometheus["Prometheus<br/>Scrapes /metrics<br/>5000/TCP HTTP"]
+    end
 
-    %% Ingress to Application
-    K8sIngress -->|"HTTP/5000/TCP<br/>In-cluster"| SecurityMW
+    %% Ingress flows
+    SDK -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (K8s SA)<br/>X-MLFLOW-WORKSPACE"| Gateway
+    Browser -->|"HTTPS/443<br/>TLS 1.2+<br/>OpenShift OAuth"| Gateway
+    Gateway -->|"HTTP/5000<br/>Optional TLS<br/>Forwarded Bearer Token"| ServerPods
+    HelmIngress -->|"HTTP/5000<br/>Optional TLS"| ServerPods
 
-    %% Direct access (no ingress)
-    Client -.->|"Direct ClusterIP<br/>5000/TCP"| SecurityMW
+    %% Egress flows
+    ServerPods -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token<br/>RBAC + NS listing"| K8sAPI
+    ServerPods -->|"PostgreSQL/5432<br/>No encryption<br/>DB credentials"| PostgreSQL
+    ServerPods -->|"HTTPS/443 or HTTP/9000<br/>TLS 1.2+<br/>AWS IAM"| S3
+    ServerPods -->|"HTTPS/443<br/>TLS 1.2+<br/>API Keys"| LLM
+    ServerPods -->|"HTTPS/443<br/>TLS 1.2+"| HF
 
-    %% Security chain
-    SecurityMW --> AuthPlugin
-    AuthPlugin --> TrackingServer
-
-    %% Internal component flows
-    TrackingServer --> ModelRegistry
-    TrackingServer --> AIGateway
-    AIGateway --> Encryption
-
-    %% Backend connections
-    TrackingServer -->|"SQL/5432/TCP<br/>No Encryption<br/>Password Auth"| PostgreSQL
-    TrackingServer -.->|"SQL/3306/TCP<br/>No Encryption<br/>Password Auth"| MySQL
-
-    %% Cluster service connections
-    TrackingServer -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    TrackingServer -->|"DNS/53"| DNS
-
-    %% External service connections
-    TrackingServer -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    AIGateway -->|"HTTPS/443<br/>TLS 1.2+<br/>Decrypted API Key"| OpenAI
-    AIGateway -->|"HTTPS/443<br/>TLS 1.2+<br/>Decrypted API Key"| Anthropic
-    AIGateway -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| Bedrock
-    AIGateway -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key/OAuth"| Gemini
-    AIGateway -->|"HTTPS/443<br/>TLS 1.2+<br/>Decrypted API Key"| Mistral
-
-    %% Prometheus scrape
-    Prometheus -.->|"HTTP scrape<br/>5000/TCP"| MetricsEP
+    %% Monitoring
+    Prometheus -->|"HTTP/5000<br/>GET /metrics<br/>No auth"| ServerPods
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef backend fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef clusterservice fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef application fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef security fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef llmprovider fill:#fff2cc,stroke:#d6b656
+    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef security fill:#f8cecc,stroke:#b85450,stroke-width:1px
 
-    class Client external
-    class K8sIngress ingress
-    class SecurityMW,AuthPlugin security
-    class TrackingServer,ModelRegistry,AIGateway,Encryption,OTLPEndpoint,JobExecutor application
-    class Health,Version,MetricsEP application
-    class PostgreSQL,MySQL backend
-    class K8sAPI,DNS,Prometheus clusterservice
-    class S3 externalservice
-    class OpenAI,Anthropic,Bedrock,Gemini,Mistral llmprovider
+    class SDK,Browser external
+    class Gateway,HelmIngress ingress
+    class Flask,FastAPI application
+    class K8sAPI,PostgreSQL internal
+    class S3,LLM,HF externalservice
+    class Prometheus monitoring
+    class HostVal,CORS,K8sAuth,BasicAuth,SecHeaders security

@@ -1,47 +1,38 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Deploys and queries LLM inference services on RHOAI"
-        application = person "Client Application" "Sends inference requests to deployed models"
+        user = person "Data Scientist / Application" "Sends LLM inference requests via OpenAI API or TGIS gRPC"
 
-        vllm = softwareSystem "vLLM (CUDA + TGIS Adapter)" "GPU-accelerated LLM inference server with OpenAI-compatible HTTP API and TGIS gRPC interface" {
-            tgisAdapter = container "TGIS Adapter" "Wraps vLLM engine, provides gRPC interface alongside HTTP API" "Python (vllm_tgis_adapter)"
-            vllmEngine = container "vLLM Inference Engine" "High-performance LLM inference with PagedAttention, continuous batching, speculative decoding" "Python/C++ (inherited from RHAIIS base)"
-            openaiAPI = container "OpenAI-Compatible HTTP API" "REST endpoints: /v1/completions, /v1/chat/completions, /v1/models" "HTTP 8000/TCP"
-            tgisGRPC = container "TGIS gRPC Service" "Text Generation Inference Server protocol for KServe" "gRPC 8033/TCP"
+        vllm = softwareSystem "vLLM CUDA (RHOAI)" "GPU-accelerated LLM inference serving with dual-protocol support (OpenAI HTTP + TGIS gRPC)" {
+            krbpSidecar = container "kube-rbac-proxy" "Authentication and authorization enforcement sidecar" "Go Service" "Auth Proxy"
+            vllmContainer = container "vLLM Container" "vllm_tgis_adapter entrypoint - serves OpenAI API (8000) and TGIS gRPC (8033)" "Python (from RHAIIS base image)"
+            nvidiaGpu = container "NVIDIA GPU" "CUDA 12.x+ - executes model inference" "Hardware" "GPU"
         }
 
-        kserve = softwareSystem "KServe" "Serverless ML model serving on Kubernetes" "Internal RHOAI"
-        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Authentication and TLS termination sidecar" "Internal RHOAI"
-        gatewayAPI = softwareSystem "Gateway API / Istio" "Platform ingress and traffic management" "Internal RHOAI"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Deploys and manages InferenceService pods with model serving containers" "Internal RHOAI"
+        kserveServingRuntime = softwareSystem "KServe ServingRuntime" "Defines container args, resource limits, and model format support" "Internal RHOAI"
+        gatewayApi = softwareSystem "Gateway API (HTTPRoute)" "External ingress with TLS termination managed by platform operator" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and alerting" "Internal RHOAI"
 
-        hfHub = softwareSystem "Hugging Face Hub" "Model weights and tokenizer repository" "External"
-        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for model artifacts" "External"
-        nvidiaGPU = softwareSystem "NVIDIA GPU" "CUDA-compatible GPU for inference acceleration" "External Hardware"
-        pvcStorage = softwareSystem "PVC Volume" "Persistent volume for model weights" "Kubernetes"
+        huggingface = softwareSystem "HuggingFace Hub" "Public model repository for downloading pre-trained model weights" "External"
+        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for model weights (S3, MinIO)" "External"
+        pvcStorage = softwareSystem "PVC Volume" "Persistent volume for pre-loaded model weights" "External"
+        rhaiisBaseImage = softwareSystem "RHAIIS vllm-cuda-rhel9" "Base container image providing vLLM runtime, CUDA drivers, Python deps, TGIS adapter" "External - Red Hat"
 
-        # User interactions
-        user -> kserve "Creates InferenceService CR via kubectl/dashboard"
-        application -> gatewayAPI "Sends inference requests" "HTTPS/443"
+        # Relationships
+        user -> gatewayApi "Sends inference requests" "HTTPS/443 (TLS 1.2+, JWT)"
+        gatewayApi -> krbpSidecar "Routes to inference pod" "HTTPS/8443 (TLS 1.2+)"
+        krbpSidecar -> vllmContainer "Forwards pre-authenticated requests" "HTTP/8000, gRPC/8033 (plaintext localhost)"
+        vllmContainer -> nvidiaGpu "Executes model inference" "CUDA API"
 
-        # Platform flows
-        gatewayAPI -> kubeRbacProxy "Routes traffic" "HTTPS/8443"
-        kubeRbacProxy -> vllm "Forwards after auth" "HTTP/8000, gRPC/8033"
-        kserve -> vllm "Deploys as ServingRuntime container"
+        kserve -> vllm "Deploys InferenceService pod"
+        kserveServingRuntime -> vllm "Configures container runtime"
 
-        # vLLM internal
-        tgisAdapter -> vllmEngine "Wraps engine"
-        vllmEngine -> openaiAPI "Serves HTTP"
-        tgisAdapter -> tgisGRPC "Serves gRPC"
+        vllmContainer -> huggingface "Downloads model weights (optional)" "HTTPS/443 (Bearer HF_TOKEN)"
+        vllmContainer -> s3Storage "Downloads model weights" "HTTPS/443 (AWS IAM / HMAC)"
+        vllmContainer -> pvcStorage "Mounts model weights" "Filesystem"
+        rhaiisBaseImage -> vllmContainer "Provides base runtime" "Container Image Layer"
 
-        # External dependencies
-        vllm -> hfHub "Downloads model weights" "HTTPS/443 Bearer Token"
-        vllm -> s3Storage "Downloads model artifacts" "HTTPS/443 IAM"
-        vllm -> nvidiaGPU "GPU inference compute" "CUDA API"
-        vllm -> pvcStorage "Reads model weights" "Filesystem"
-
-        # Monitoring
-        prometheus -> vllm "Scrapes /metrics" "HTTP/8000"
+        prometheus -> vllmContainer "Scrapes metrics" "HTTP/8000 (/metrics)"
     }
 
     views {
@@ -56,33 +47,37 @@ workspace {
         }
 
         styles {
+            element "Software System" {
+                background #438DD5
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "External Hardware" {
-                background #e74c3c
+            element "External - Red Hat" {
+                background #cc0000
                 color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Kubernetes" {
-                background #326ce5
-                color #ffffff
-            }
             element "Person" {
-                shape Person
-                background #4a90e2
+                background #08427B
                 color #ffffff
-            }
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
+                shape person
             }
             element "Container" {
-                background #5bb5f0
+                background #438DD5
+                color #ffffff
+            }
+            element "Auth Proxy" {
+                background #e8a838
+                color #ffffff
+            }
+            element "GPU" {
+                background #76b900
                 color #ffffff
             }
         }

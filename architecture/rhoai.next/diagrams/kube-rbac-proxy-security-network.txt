@@ -1,177 +1,114 @@
-┌─────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                   │
+┌──────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL / IN-CLUSTER CLIENTS (Variable Trust)                         │
 │                                                                          │
-│  [External Client]  (browser, SDK, curl, etc.)                          │
+│  [Client - Browser / API / SDK]                                          │
 │         │                                                                │
 │         │ Port: 8443/TCP                                                 │
 │         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS 1.2+ (configurable via --tls-min-version)      │
-│         │ Auth: Bearer Token (TokenReview) or OIDC JWT or X.509 cert     │
-│         │ Cipher Suites: Configurable via --tls-cipher-suites            │
+│         │ Encryption: TLS 1.2+ (configurable cipher suites)              │
+│         │ Auth: Bearer Token (K8s SA) / x509 Client Cert / OIDC JWT      │
 │         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  SIDECAR PROXY (Authentication & Authorization Boundary)                │
+├──────────────────────────────────────────────────────────────────────────┤
+│  SIDECAR PROXY (kube-rbac-proxy)                                        │
 │                                                                          │
 │  [kube-rbac-proxy]                                                       │
-│  - Deployed as: Sidecar container in component pods                      │
-│  - Port: 8443/TCP (HTTPS listener)                                       │
-│  - TLS: Server cert from --tls-cert-file / --tls-private-key-file        │
-│  - TLS Min Version: TLS 1.2 (default, configurable)                     │
-│  - Client Auth: tls.RequestClientCert (optional X.509)                   │
-│  - Cert Reload: Hot-reload at --tls-reload-interval                      │
-│  - FIPS: strictfipsruntime (OpenSSL via CGO)                             │
+│  - Deployment: Sidecar container in component pod                        │
+│  - Listens: 0.0.0.0:8443/TCP (HTTPS, TLS 1.2+)                         │
+│  - TLS: Server cert (hot-reloaded every 1m via CertReloader)            │
+│  - Optional client cert verification via --client-ca-file               │
+│  - Runs as: non-root UID 65534                                           │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1                   │
+│  - HTTP/2 support (can be disabled for CVE-2023-44487 mitigation)        │
 │                                                                          │
-│  Authentication Chain:                                                   │
-│    1. Delegating Authenticator → TokenReview API (K8s API Server)        │
-│    2. OIDC Authenticator → JWT validation (when --oidc-issuer set)       │
-│    3. X.509 Client Cert → CA validation (when --client-ca-file set)      │
+│  Authentication Chain (mutually exclusive top-level):                     │
+│    1. Delegated TokenReview → Kubernetes API (default)                    │
+│    2. OIDC JWT validation → configured issuer (if --oidc-issuer set)     │
+│    3. x509 client cert → CN as identity (if --client-ca-file set)        │
 │                                                                          │
-│  Authorization Chain (union, first-match):                               │
-│    1. Hardcoded Metrics Authorizer                                       │
-│       → ALLOW: system:serviceaccount:openshift-monitoring:prometheus-k8s │
-│         on GET /metrics (non-resource URL)                               │
-│    2. Static Authorizer (pre-configured rules)                           │
-│    3. SAR Authorizer → SubjectAccessReview API (K8s API Server)          │
-│       → Format1: top-level resourceAttributes + rewrites                 │
-│       → Format2: path-scoped endpoint rules                              │
-│                                                                          │
-│  Security Features:                                                      │
-│    - Log Sanitizer: masks bearer tokens in TokenReview log entries       │
-│    - --ignore-paths: bypasses authn/authz entirely (use with caution)    │
-│    - --allow-paths: restricts proxied paths (404 for non-matching)       │
+│  Authorization Chain (priority order):                                    │
+│    1. Hardcoded: prometheus-k8s SA → /metrics (always allow)             │
+│    2. Static: config-file rules (no API call)                            │
+│    3. SAR: SubjectAccessReview → Kubernetes API                          │
 │         │                                                                │
-│         │ Port: 8081/TCP (configurable via --upstream)                    │
-│         │ Protocol: HTTP (or HTTPS with --upstream-ca-file)              │
-│         │ Encryption: Plaintext (localhost loopback)                      │
-│         │   or TLS with --upstream-ca-file + --upstream-client-cert-file  │
-│         │ Auth: None (or mTLS with --upstream-client-cert-file)          │
-│         │ Headers: X-Remote-User, X-Remote-Groups (injected)             │
+│         │ Port: configurable/TCP (upstream-port)                         │
+│         │ Protocol: HTTP (localhost) or HTTPS (with --upstream-ca-file)   │
+│         │ Encryption: None (localhost) or TLS 1.2+ (mTLS capable)        │
+│         │ Auth: None (or optional injected auth headers)                  │
 │         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  UPSTREAM APPLICATION (Same Pod - localhost)                             │
+├──────────────────────────────────────────────────────────────────────────┤
+│  UPSTREAM APPLICATION (Same Pod - Trusted localhost)                     │
 │                                                                          │
 │  [Component Application Container]                                       │
-│  - Examples: Notebook Server, Model Server, Dashboard Backend            │
-│  - Port: 8081/TCP (configurable)                                         │
-│  - Protocol: HTTP (typically)                                            │
-│  - Trust: Implicitly trusted (same pod network namespace)                │
-│  - Receives: Authenticated user identity via X-Remote-User headers       │
+│  - Namespace: {component-namespace}                                      │
+│  - Examples: Notebook servers, Model servers, Dashboard backend          │
+│  - Port: configurable (localhost only)                                   │
+│  - Not directly exposed to network                                       │
 │                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-
-
-EGRESS CONNECTIONS FROM kube-rbac-proxy:
-
-┌─────────────────────────────────────────────────────────────────────────┐
-│  KUBERNETES CONTROL PLANE                                                │
+├──────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE (Trusted)                                     │
 │                                                                          │
-│  [Kubernetes API Server]                                                 │
+│  [Kubernetes API Server - api.cluster.local]                             │
 │  - Port: 443/TCP                                                         │
 │  - Protocol: HTTPS                                                       │
 │  - Encryption: TLS 1.2+                                                  │
-│  - Auth: Service Account Token (in-cluster) or kubeconfig                │
-│  - APIs Called:                                                          │
-│    - POST /apis/authentication.k8s.io/v1/tokenreviews                   │
-│    - POST /apis/authorization.k8s.io/v1/subjectaccessreviews            │
+│  - Auth: ServiceAccount Token (in-cluster)                               │
+│  - APIs Used:                                                            │
+│    - POST /apis/authentication.k8s.io/v1/tokenreviews (authn)            │
+│    - POST /apis/authorization.k8s.io/v1/subjectaccessreviews (authz)     │
 │                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL IDENTITY PROVIDER (Optional)                                   │
+├──────────────────────────────────────────────────────────────────────────┤
+│  MONITORING (Trusted - OpenShift)                                       │
 │                                                                          │
-│  [OIDC Issuer]                                                           │
-│  - Port: 443/TCP                                                         │
-│  - Protocol: HTTPS                                                       │
-│  - Encryption: TLS 1.2+                                                  │
-│  - Auth: None                                                            │
-│  - Purpose: Fetch OIDC discovery document (.well-known/openid-config)    │
-│             and JWKS (JSON Web Key Set) for JWT validation               │
-│  - Only active when: --oidc-issuer is configured                         │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-
-
-INBOUND CONNECTIONS TO kube-rbac-proxy:
-
-┌─────────────────────────────────────────────────────────────────────────┐
-│  MONITORING                                                              │
-│                                                                          │
-│  [prometheus-k8s]                                                        │
-│  - Namespace: openshift-monitoring                                       │
-│  - ServiceAccount: prometheus-k8s                                        │
-│  - Port: 8443/TCP                                                        │
+│  [prometheus-k8s - openshift-monitoring namespace]                       │
+│  - Port: 8443/TCP → kube-rbac-proxy                                     │
 │  - Protocol: HTTPS                                                       │
 │  - Encryption: TLS 1.2+                                                  │
 │  - Auth: Bearer Token (SA token)                                         │
-│  - Authorization: Hardcoded ALLOW (no SAR round-trip)                    │
-│  - Path: GET /metrics                                                    │
+│  - Hardcoded: system:serviceaccount:openshift-monitoring:prometheus-k8s  │
+│    always allowed to GET /metrics (bypasses SAR)                         │
 │                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-
-
-HEALTH CHECK ENDPOINT (Separate Port):
-
-┌─────────────────────────────────────────────────────────────────────────┐
-│  [/healthz Endpoint]                                                     │
-│  - Port: configurable via --proxy-endpoints-port                         │
-│  - Protocol: HTTPS (shares main server TLS config)                       │
-│  - Auth: None                                                            │
-│  - Response: "ok"                                                        │
-│  - Purpose: Liveness/readiness probes                                    │
+├──────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Optional)                                           │
 │                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-
+│  [OIDC Provider - e.g., Keycloak, Dex]                                   │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: None (public OIDC discovery + JWKS endpoints)                   │
+│  - Purpose: JWT signing key retrieval (when --oidc-issuer configured)    │
+│  - Used only during OIDC authentication mode                             │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
+- ClusterRole: kube-rbac-proxy
+  - API Groups: authentication.k8s.io
+    - Resources: tokenreviews
+    - Verbs: create
+  - API Groups: authorization.k8s.io
+    - Resources: subjectaccessreviews
+    - Verbs: create
 
-  ClusterRole: kube-rbac-proxy
-  ┌────────────────────────────────────────────────────────────────────┐
-  │ API Group                    │ Resources              │ Verbs     │
-  ├──────────────────────────────┼────────────────────────┼───────────┤
-  │ authentication.k8s.io        │ tokenreviews           │ create    │
-  │ authorization.k8s.io         │ subjectaccessreviews   │ create    │
-  └────────────────────────────────────────────────────────────────────┘
-
-  ClusterRoleBinding: kube-rbac-proxy
+- ClusterRoleBinding: kube-rbac-proxy
   - Scope: cluster-scoped
   - Role: ClusterRole/kube-rbac-proxy
-  - ServiceAccount: kube-rbac-proxy (per-namespace, set by deploying operator)
-
+  - ServiceAccount: kube-rbac-proxy (per-component namespace)
 
 Secrets:
-
-  ┌──────────────────────────────────────────────────────────────────────────────┐
-  │ Secret                        │ Type              │ Provisioned By    │ Rotate │
-  ├───────────────────────────────┼───────────────────┼───────────────────┼────────┤
-  │ TLS cert/key                  │ kubernetes.io/tls │ cert-manager /    │ Yes    │
-  │ (--tls-cert-file,             │                   │ operator          │ (hot-  │
-  │  --tls-private-key-file)      │                   │                   │ reload)│
-  ├───────────────────────────────┼───────────────────┼───────────────────┼────────┤
-  │ Upstream client cert          │ kubernetes.io/tls │ Operator          │ No     │
-  │ (--upstream-client-cert-file) │                   │                   │(restart│
-  │                               │                   │                   │needed) │
-  ├───────────────────────────────┼───────────────────┼───────────────────┼────────┤
-  │ OIDC CA file                  │ Opaque (CA)       │ Manual / operator │ No     │
-  │ (--oidc-ca-file)              │                   │                   │        │
-  ├───────────────────────────────┼───────────────────┼───────────────────┼────────┤
-  │ Client CA file                │ Opaque (CA)       │ Manual / operator │ Yes    │
-  │ (--client-ca-file)            │                   │                   │(dynamic│
-  │                               │                   │                   │reload) │
-  └──────────────────────────────────────────────────────────────────────────────┘
-
+- TLS cert/key pair (kubernetes.io/tls) - Server TLS cert, cert-manager/operator, hot-reload every 1m
+- Upstream client cert/key (kubernetes.io/tls) - mTLS to upstream, manual/operator, loaded at startup
+- OIDC CA certificate (Opaque) - Verify OIDC issuer TLS, manual, no auto-rotate
+- Client CA certificate (Opaque) - Verify x509 client certs, manual/operator, dynamic reload
 
 FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- Base image: registry.redhat.io/ubi9/ubi-minimal (OpenSSL FIPS backend)
+- TLS: Minimum TLS 1.2, configurable cipher suites
+- No non-FIPS crypto detected (no MD5, RC4, DES)
+- CI: check-payload scan via GitHub Actions
 
-  - Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, dynamic linking
-  - Crypto: stdlib crypto/tls + crypto/x509 via OpenSSL (strictfipsruntime)
-  - TLS: MinVersion TLS 1.2+ enforced on all connections (server + upstream)
-  - No non-FIPS algorithms detected (no MD5, RC4, DES, InsecureSkipVerify)
-  - Base image: ubi9/ubi-minimal (OpenSSL inherited from UBI)
-
-
-Deployment Context:
-
-  - Injected by: rhods-operator (gateway controller) as sidecar container
-  - Replaces: oauth-proxy sidecar from RHOAI 2.x
-  - Traffic routing: HTTPRoute resources route to Service fronting 8443/TCP
-  - No standalone Ingress/Route (relies on parent component's exposure)
+Security Features:
+- Token sanitization: Bearer tokens masked in log output (SanitizingFilter)
+- Non-root: Runs as UID 65534
+- HTTP/2 disable mode: Mitigates CVE-2023-44487 (Rapid Reset)
+- ALPN enforcement: h2 + http/1.1 (or http/1.1 only in disable mode)

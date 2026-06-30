@@ -1,85 +1,67 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User Browser / Dashboard"]
+        User["User / Dashboard"]
     end
 
-    subgraph Ingress["INGRESS (Gateway API)"]
-        Gateway["data-science-gateway<br/>Namespace: openshift-ingress<br/>443/TCP → 8443/TCP (auth) or 8888/TCP (no-auth)<br/>TLS 1.2+ SIMPLE"]
-        HTTPRoute["HTTPRoute<br/>nb-{namespace}-{notebook}<br/>+ ReferenceGrant (cross-namespace)"]
+    subgraph Ingress["INGRESS (DMZ)"]
+        Gateway["data-science-gateway<br/>Namespace: openshift-ingress<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ (SIMPLE)<br/>HTTPRoute: /notebook/{ns}/{name}"]
     end
 
-    subgraph ControllerNS["CONTROLLER NAMESPACE"]
+    subgraph PodAuth["POD-LEVEL AUTH (Per-Notebook)"]
         direction TB
 
-        subgraph UpstreamCtrl["odh-kf-notebook-controller"]
-            KFCtrl["Notebook Reconciler + Culling<br/>Metrics: 8080/TCP<br/>Health: 8081/TCP"]
-        end
-
-        subgraph ODHCtrl["odh-notebook-controller"]
-            ODHCtrlPod["ODH Reconciler<br/>Metrics: 8080/TCP<br/>Health: 8081/TCP"]
-        end
-
-        subgraph WebhookSvc["Webhook Service"]
-            Webhook["odh-notebook-controller-webhook-service<br/>443/TCP → 8443/TCP<br/>TLS (service-ca)<br/>Auth: API Server mTLS"]
+        subgraph NotebookPod["Notebook Pod - Namespace: {user-namespace}"]
+            RBACProxy["kube-rbac-proxy Sidecar<br/>8443/TCP<br/>TLS (service-ca cert)<br/>SubjectAccessReview"]
+            Jupyter["Jupyter Server<br/>8888/TCP<br/>No direct external access"]
         end
     end
 
-    subgraph UserNS["USER NAMESPACE (per notebook)"]
+    subgraph ControllerPlane["CONTROLLER PLANE (Platform Namespace)"]
         direction TB
-
-        subgraph AuthMode["Auth Mode (inject-auth annotation)"]
-            KRBACProxy["kube-rbac-proxy sidecar<br/>8443/TCP HTTPS<br/>TLS (service-ca cert)<br/>TokenReview + SAR"]
-            NB_Auth["Jupyter Notebook<br/>8888/TCP HTTP<br/>(localhost only)"]
-            KRBACProxy -->|"8888/TCP HTTP<br/>localhost<br/>X-Auth-Request-User"| NB_Auth
-        end
-
-        subgraph NoAuthMode["No-Auth Mode"]
-            NB_NoAuth["Jupyter Notebook<br/>8888/TCP HTTP<br/>NetworkPolicy restricted"]
-        end
-
-        NetPol["NetworkPolicy<br/>(controller NS only)"]
-        RefGrant["ReferenceGrant<br/>(permits Gateway backend ref)"]
+        KFCtrl["kf-notebook-controller<br/>SA: notebook-controller-service-account<br/>8080/TCP metrics (no TLS)<br/>8081/TCP health"]
+        ODHCtrl["odh-notebook-controller<br/>SA: odh-notebook-controller-manager<br/>8080/TCP metrics (TLS 1.2+)<br/>8081/TCP health<br/>8443/TCP webhook (TLS)"]
     end
 
-    subgraph ClusterSvc["CLUSTER SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA tokens / Bearer tokens"]
-        ImgRegistry["OpenShift Image Registry<br/>5000/TCP HTTPS<br/>TLS<br/>SA token"]
-        ServiceCA["OpenShift Service CA<br/>Auto-generates TLS certs<br/>for annotated Services"]
+    subgraph K8sControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP<br/>TLS 1.2+<br/>SA tokens + mTLS"]
     end
 
-    %% External flows
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Gateway
-    Gateway --- HTTPRoute
-    HTTPRoute -->|"HTTPS/8443<br/>TLS (service-ca)<br/>Bearer Token"| KRBACProxy
-    HTTPRoute -.->|"HTTP/8888<br/>No auth (no-auth mode)"| NB_NoAuth
+    subgraph InternalSvcs["INTERNAL SERVICES"]
+        OpenShiftAPI["OpenShift API<br/>config.openshift.io<br/>6443/TCP HTTPS<br/>Proxy config, TLS profile"]
+        ServiceCA["OpenShift Service CA<br/>Annotation-triggered<br/>Auto-generates TLS certs"]
+    end
 
-    %% kube-rbac-proxy auth
-    KRBACProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>TokenReview"| K8sAPI
-    KRBACProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>SubjectAccessReview"| K8sAPI
+    %% External access flow
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>No auth (gateway)"| Gateway
+    Gateway -->|"HTTPS/8443<br/>TLS (service-ca)<br/>Proxied auth"| RBACProxy
+    RBACProxy -->|"SubjectAccessReview<br/>6443/TCP HTTPS"| K8sAPI
+    RBACProxy -->|"HTTP/8888<br/>No TLS (localhost)<br/>Pre-authenticated"| Jupyter
 
-    %% Controller flows
-    KFCtrl -->|"HTTP/80<br/>No auth<br/>/api/kernels, /api/terminals"| NB_Auth
-    KFCtrl -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    ODHCtrlPod -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    ODHCtrlPod -->|"HTTPS/5000<br/>TLS<br/>SA token"| ImgRegistry
+    %% Controller to API
+    KFCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token (Bearer)"| K8sAPI
+    ODHCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token (Bearer)"| K8sAPI
 
-    %% Webhook
-    K8sAPI -->|"HTTPS/443→8443<br/>TLS (service-ca)<br/>mTLS admission"| Webhook
+    %% Webhook flow
+    K8sAPI -->|"HTTPS/8443<br/>TLS (service-ca)<br/>mTLS (API server cert)"| ODHCtrl
 
-    %% Cert provisioning
-    ServiceCA -.->|"auto-provision"| KRBACProxy
-    ServiceCA -.->|"auto-provision"| Webhook
+    %% Idle culling
+    KFCtrl -.->|"HTTP/8888<br/>No TLS (in-cluster)<br/>No auth"| Jupyter
+
+    %% OpenShift integration
+    ODHCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| OpenShiftAPI
+    ServiceCA -.->|"Annotation-triggered<br/>cert generation"| RBACProxy
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef controller fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef userns fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef cluster fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef security fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef podauth fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef controller fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef k8s fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef internal fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class User external
-    class Gateway,HTTPRoute ingress
-    class KFCtrl,ODHCtrlPod,Webhook controller
-    class KRBACProxy,NB_Auth,NB_NoAuth,NetPol,RefGrant userns
-    class K8sAPI,ImgRegistry,ServiceCA cluster
+    class Gateway ingress
+    class RBACProxy,Jupyter podauth
+    class KFCtrl,ODHCtrl controller
+    class K8sAPI k8s
+    class OpenShiftAPI,ServiceCA internal

@@ -1,62 +1,75 @@
 sequenceDiagram
     participant Client as External Client
-    participant Gateway as AI Gateway<br/>Istio/Envoy<br/>443/TCP HTTPS
-    participant ExtProc as ext_proc Service<br/>9004/TCP gRPC
-    participant HeadersGuard as maas-headers-guard
+    participant Gateway as AI Gateway (Envoy)<br/>443/TCP HTTPS TLS 1.2+
+    participant ExtProc as ext_proc Filter<br/>9004/TCP gRPC plaintext
+    participant MaasGuard as maas-headers-guard
     participant Resolver as model-provider-resolver
     participant Translation as api-translation
-    participant KeyInjection as apikey-injection
-    participant Provider as External LLM Provider<br/>443/TCP HTTPS
+    participant KeyInject as apikey-injection
+    participant NemoReq as nemo-request-guard<br/>(optional)
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS mTLS
+    participant NeMo as NeMo Guardrails<br/>HTTP (configurable)
+    participant ExtSvc as ExternalName Service<br/>+ DestinationRule TLS
+    participant Provider as External LLM Provider<br/>443/TCP HTTPS TLS 1.2+
 
     Note over Client,Provider: Flow 1: External Model Inference Request
 
-    Client->>Gateway: POST /{ns}/{model}/v1/chat/completions<br/>Auth: Gateway-level auth<br/>TLS 1.2+
-    Gateway->>ExtProc: ext_proc request headers+body<br/>gRPC/HTTP2, mTLS (Istio)
+    Client->>Gateway: POST /{ns}/{model}/v1/chat/completions<br/>Auth: Bearer Token (user)
+    Gateway->>ExtProc: ext_proc request headers + body<br/>gRPC/9004 (plaintext, mesh-internal)
 
     rect rgb(230, 240, 255)
-        Note over ExtProc,KeyInjection: Request Plugin Pipeline (in-process)
-        ExtProc->>HeadersGuard: Process request
-        HeadersGuard-->>ExtProc: Strip x-maas-* headers
-        ExtProc->>Resolver: Resolve model
-        Resolver-->>ExtProc: Provider info from CRD cache<br/>(endpoint, auth, API format)
-        ExtProc->>Translation: Translate request
-        Translation-->>ExtProc: Convert to provider format<br/>(OpenAI→Anthropic/Azure/Bedrock/Vertex)
-        ExtProc->>KeyInjection: Inject credentials
-        KeyInjection-->>ExtProc: Add auth headers from Secret cache<br/>(Bearer/x-api-key/api-key/SigV4)
+        Note over ExtProc,NemoReq: Plugin Pipeline (in-process)
+        ExtProc->>MaasGuard: Process request
+        MaasGuard->>MaasGuard: Strip x-maas-* headers<br/>Write originals to CycleState
+        MaasGuard->>Resolver: Next plugin
+        Resolver->>K8sAPI: Read ExternalModel/ExternalProvider<br/>(from in-memory cache)
+        K8sAPI-->>Resolver: Model → Provider mapping
+        Resolver->>Resolver: Write provider info to CycleState<br/>(endpoint, auth type, API format)
+        Resolver->>Translation: Next plugin
+        Translation->>Translation: Translate request body<br/>(e.g., OpenAI → Anthropic Messages API)
+        Translation->>KeyInject: Next plugin
+        KeyInject->>KeyInject: Read Secret from in-memory store<br/>Inject API key / SigV4 headers
+        KeyInject->>NemoReq: Next plugin (if configured)
+        NemoReq->>NeMo: POST /v1/guardrail/checks<br/>Input rails evaluation
+        NeMo-->>NemoReq: Allowed / Blocked
+        alt Blocked by NeMo
+            NemoReq-->>ExtProc: 403 Forbidden
+            ExtProc-->>Gateway: Reject request
+            Gateway-->>Client: 403 Forbidden
+        end
     end
 
     ExtProc-->>Gateway: Mutated headers + body
-    Gateway->>Provider: Forward request<br/>HTTPS/443, TLS 1.2+<br/>(via ExternalName Svc → ServiceEntry → DestinationRule)
-    Provider-->>Gateway: Provider response
-    Gateway->>ExtProc: ext_proc response headers+body<br/>gRPC/HTTP2, mTLS (Istio)
+
+    Gateway->>ExtSvc: Forward via HTTPRoute<br/>TLS origination (DestinationRule SIMPLE)
+    ExtSvc->>Provider: HTTPS/443<br/>Auth: Provider API key / SigV4
+
+    Provider-->>ExtSvc: Inference response
+    ExtSvc-->>Gateway: Response
+
+    Gateway->>ExtProc: ext_proc response body<br/>gRPC/9004
 
     rect rgb(255, 240, 230)
-        Note over ExtProc,Translation: Response Plugin Pipeline (in-process)
-        ExtProc->>Translation: Translate response
-        Translation-->>ExtProc: Convert to OpenAI format<br/>(strip provider-specific fields)
+        Note over ExtProc,NemoReq: Response Plugin Pipeline
+        ExtProc->>Translation: Process response
+        Translation->>Translation: Translate response body<br/>(e.g., Anthropic → OpenAI format)
+        Translation->>NemoReq: Next plugin
+        Note over NemoReq: nemo-response-guard evaluates output rails
     end
 
-    ExtProc-->>Gateway: Mutated response
-    Gateway-->>Client: JSON Response<br/>HTTPS/443, TLS 1.2+
+    ExtProc-->>Gateway: Mutated response body
+    Gateway-->>Client: JSON Response<br/>HTTPS/443 TLS 1.2+
 
     Note over Client,Provider: Flow 2: ExternalProvider Reconciliation
 
     participant User as Platform Admin
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant EPCtrl as ExternalProvider<br/>Controller
+    User->>K8sAPI: kubectl apply ExternalProvider CR<br/>HTTPS/443 TLS 1.2+
 
-    User->>K8sAPI: Create ExternalProvider CR<br/>HTTPS/443, User RBAC
-    K8sAPI->>EPCtrl: Watch event<br/>HTTPS/443, SA token
-    EPCtrl->>K8sAPI: Validate referenced Secret<br/>HTTPS/443, SA token
-    EPCtrl->>K8sAPI: Create ExternalName Service<br/>(points to provider FQDN)
-    EPCtrl->>K8sAPI: Create Istio ServiceEntry<br/>(MESH_EXTERNAL, DNS)
-    EPCtrl->>K8sAPI: Create DestinationRule<br/>(tls.mode: SIMPLE)
-
-    Note over Client,Provider: Flow 3: ExternalModel Reconciliation
-
-    participant EMCtrl as ExternalModel<br/>Controller
-
-    User->>K8sAPI: Create ExternalModel CR<br/>HTTPS/443, User RBAC
-    K8sAPI->>EMCtrl: Watch event<br/>HTTPS/443, SA token
-    EMCtrl->>K8sAPI: Get ExternalProvider CR<br/>HTTPS/443, SA token
-    EMCtrl->>K8sAPI: Create/Update HTTPRoute<br/>(path-prefix + header match,<br/>timeout: 300s)
+    rect rgb(230, 255, 230)
+        Note over ExtProc,K8sAPI: ExternalProvider Controller
+        K8sAPI-->>ExtProc: Watch event: ExternalProvider created
+        ExtProc->>K8sAPI: Create ExternalName Service<br/>(maps provider name → FQDN)
+        ExtProc->>K8sAPI: Create ServiceEntry<br/>(MESH_EXTERNAL, DNS resolution)
+        ExtProc->>K8sAPI: Create DestinationRule<br/>(TLS origination mode: SIMPLE)
+        ExtProc->>K8sAPI: Update ExternalProvider status → Ready
+    end

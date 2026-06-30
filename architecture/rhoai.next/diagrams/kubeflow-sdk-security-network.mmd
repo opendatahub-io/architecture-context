@@ -1,84 +1,79 @@
 graph TB
-    subgraph ClientSide["CLIENT-SIDE (User Workstation / Notebook)"]
-        SDK["Kubeflow SDK<br/>Python Client Library<br/>pip install kubeflow"]
+    subgraph Client["CLIENT ENVIRONMENT (Workstation / Notebook Pod)"]
+        SDK["Kubeflow SDK<br/>(Python Client Library)<br/>pip install kubeflow-sdk"]
     end
 
-    subgraph ControlPlane["KUBERNETES CONTROL PLANE (Trusted)"]
-        direction TB
-        K8sAPI["Kubernetes API Server<br/>443/TCP → 6443<br/>TLS 1.2+<br/>Bearer Token / RBAC"]
-
-        subgraph NS_Kubeflow["Namespace: kubeflow-system"]
-            TrainerCtrl["Kubeflow Trainer Controller<br/>Watches TrainJob CRs"]
-            ConfigMap["kubeflow-trainer-public<br/>ConfigMap"]
-        end
-
-        subgraph NS_Katib["Namespace: katib"]
-            KatibCtrl["Katib Controller<br/>Watches Experiment CRs"]
-        end
-
-        subgraph NS_Spark["Namespace: spark-operator"]
-            SparkOp["Spark Operator<br/>Watches SparkApplication CRs"]
-        end
-    end
-
-    subgraph WorkloadPlane["WORKLOAD PLANE (Training Pods)"]
+    subgraph K8sCluster["KUBERNETES CLUSTER (RBAC Enforced)"]
         direction TB
 
-        subgraph NS_User["Namespace: {user-namespace}"]
-            TrainingPod["Training Pod (GPU Worker)<br/>RHAI code injected via heredoc<br/>No SDK deps in image"]
-            MetricsServer["In-Pod Metrics Server<br/>28080/TCP HTTP<br/>⚠ NO AUTH<br/>⚠ bind 0.0.0.0"]
+        subgraph ControlPlane["Control Plane"]
+            K8sAPI["Kubernetes API Server<br/>443/TCP → 6443<br/>HTTPS, TLS 1.2+<br/>Bearer Token / kubeconfig"]
         end
 
-        subgraph NS_RHOAI["RHOAI Controller"]
-            RHOAICtrl["RHOAI Trainer Controller<br/>Polls progression via annotations<br/>trainer.opendatahub.io/*"]
+        subgraph Operators["Operator Namespace: kubeflow-system"]
+            TrainerOp["Kubeflow Trainer Operator<br/>Reconciles: TrainJob → JobSet → Pods"]
+            KatibCtrl["Katib Controller<br/>Reconciles: Experiment → Trial"]
+            SparkOp["Spark Operator<br/>Reconciles: SparkConnect → Pods"]
+        end
+
+        subgraph WorkloadNS["Workload Namespace: {user-namespace}"]
+            TrainingPod["Training Pod<br/>+ RHAI Metrics Server<br/>HTTP, configurable port<br/>No encryption, No auth"]
+            SparkDriver["Spark Driver Pod<br/>15002/TCP gRPC<br/>No encryption, No auth"]
+        end
+
+        subgraph Platform["Platform Services"]
+            ModelReg["Model Registry<br/>443 or 8080/TCP<br/>HTTP/HTTPS, TLS configurable<br/>Bearer Token (optional)<br/>Custom CA (optional)"]
         end
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM credentials<br/>⚠ SSL verify can be disabled"]
+    subgraph External["EXTERNAL SERVICES (Egress)"]
+        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM credentials"]
         HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
-        ModelReg["Model Registry Server<br/>443/TCP or 8080/TCP<br/>HTTP/HTTPS<br/>Bearer Token (optional)<br/>Custom CA supported"]
-        PyPI["PyPI / Custom Index<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>No auth"]
+        PyPI["PyPI<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>No auth"]
+        Maven["Maven Central<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>No auth"]
     end
 
-    subgraph LocalOnly["LOCAL ONLY (Dev)"]
-        Docker["Docker/Podman<br/>Unix socket<br/>HTTP over Unix<br/>No encryption"]
+    subgraph LocalDev["LOCAL DEVELOPMENT (Optional)"]
+        DockerPodman["Docker / Podman<br/>Unix Socket<br/>No encryption"]
     end
 
-    %% Client to Control Plane
-    SDK -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token<br/>CRD CRUD: TrainJob,<br/>Experiment, SparkApp"| K8sAPI
+    %% SDK to Kubernetes API
+    SDK -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token<br/>CRD CRUD: TrainJob, Experiment,<br/>SparkConnect, Pods, Logs"| K8sAPI
 
-    %% Control Plane internal
-    K8sAPI -->|"Watch stream<br/>TLS 1.2+"| TrainerCtrl
-    K8sAPI -->|"Watch stream<br/>TLS 1.2+"| KatibCtrl
-    K8sAPI -->|"Watch stream<br/>TLS 1.2+"| SparkOp
-    TrainerCtrl -->|"Creates pods"| TrainingPod
+    %% SDK direct connections
+    SDK -->|"REST API<br/>HTTPS or HTTP<br/>Bearer Token (optional)"| ModelReg
+    SDK -->|"gRPC/15002<br/>No encryption<br/>No auth"| SparkDriver
+    SDK -->|"Unix Socket<br/>No encryption"| DockerPodman
 
-    %% Metrics polling
-    TrainingPod --- MetricsServer
-    RHOAICtrl -->|"HTTP/28080<br/>No encryption<br/>No auth<br/>Poll metrics"| MetricsServer
+    %% Internal reconciliation
+    K8sAPI -.->|reconcile| TrainerOp
+    K8sAPI -.->|reconcile| KatibCtrl
+    K8sAPI -.->|reconcile| SparkOp
 
-    %% Training Pod egress
-    TrainingPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM creds"| S3
+    %% Operator to workloads
+    TrainerOp -->|"HTTP GET /metrics<br/>No encryption<br/>No auth"| TrainingPod
+    SparkOp -.->|creates| SparkDriver
+
+    %% Egress from training pods
+    TrainingPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM creds from Secret"| S3
     TrainingPod -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
-    TrainingPod -->|"HTTPS/443<br/>TLS 1.2+<br/>No auth"| PyPI
-
-    %% SDK direct
-    SDK -->|"HTTP/HTTPS<br/>Bearer Token<br/>Custom CA"| ModelReg
-    SDK -->|"Unix socket<br/>Local only"| Docker
+    TrainingPod -->|"HTTPS/443<br/>pip install"| PyPI
+    SparkDriver -->|"HTTPS/443<br/>JAR download"| Maven
 
     %% Styling
-    classDef client fill:#e8f0fe,stroke:#4a90e2,stroke-width:2px
-    classDef controlplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef workload fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef warning fill:#fce4ec,stroke:#c0392b,stroke-width:2px
-    classDef local fill:#f3e5f5,stroke:#7b1fa2,stroke-width:1px
+    classDef client fill:#e8f4fd,stroke:#4a90e2,stroke-width:2px
+    classDef controlplane fill:#f9f9f9,stroke:#333,stroke-width:2px
+    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:1px
+    classDef workload fill:#fff2cc,stroke:#d6b656,stroke-width:1px
+    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:1px
+    classDef external fill:#ffe6cc,stroke:#d79b00,stroke-width:1px
+    classDef localdev fill:#f0f0f0,stroke:#999,stroke-width:1px
+    classDef warning fill:#ffcccc,stroke:#cc0000,stroke-width:2px
 
     class SDK client
-    class K8sAPI,TrainerCtrl,KatibCtrl,SparkOp,ConfigMap controlplane
-    class TrainingPod workload
-    class MetricsServer warning
-    class RHOAICtrl workload
-    class S3,HFHub,ModelReg,PyPI external
-    class Docker local
+    class K8sAPI controlplane
+    class TrainerOp,KatibCtrl,SparkOp operator
+    class TrainingPod,SparkDriver workload
+    class ModelReg platform
+    class S3,HFHub,PyPI,Maven external
+    class DockerPodman localdev

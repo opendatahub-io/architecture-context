@@ -1,100 +1,74 @@
 graph TB
-    subgraph External["EXTERNAL (Untrusted)"]
-        User["User Workstation / CI<br/>kubectl rhaii-validate"]
+    subgraph External["EXTERNAL (User Workstation / CI)"]
+        CLI["kubectl rhaii-validate<br/>Go CLI binary"]
     end
 
-    subgraph ControlPlane["KUBERNETES CONTROL PLANE (Trusted)"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token Auth"]
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        APIServer["kube-apiserver<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>RBAC AuthZ"]
+        CRDAPI["apiextensions.k8s.io<br/>CRD API"]
     end
 
-    subgraph Namespace["NAMESPACE: rhaii-validation (Ephemeral Jobs)"]
+    subgraph ValidationNS["VALIDATION NAMESPACE (rhaii-validation)<br/>SA: rhaii-validator"]
         direction TB
 
-        subgraph GPUChecks["Per-Node GPU Check Jobs (privileged)"]
-            GPUPod["rhaii-validator Pod<br/>privileged=true, hostPID=true<br/>SA: rhaii-validator<br/>Image: odh-rhaii-cluster-validator"]
+        subgraph NodeChecks["Per-Node GPU Check Jobs (privileged)"]
+            GPUJob["GPU Check Pod<br/>Image: odh-rhaii-cluster-validator<br/>hostPID: true, privileged: true<br/>Host mounts: /sys, /dev, /run/udev"]
         end
 
-        subgraph NetworkTests["Multi-Node Network Test Jobs"]
-            IperfServer["iperf3 Server<br/>5201/TCP<br/>Plaintext"]
-            IperfClient["iperf3 Client"]
-            TCPServer["TCP Latency Server<br/>12865/TCP<br/>Plaintext"]
-            TCPClient["TCP Latency Client"]
+        subgraph NetworkTests["Network Test Jobs (tools image)"]
+            direction TB
+            TCPLat["TCP Latency Server<br/>12865/TCP raw<br/>No encryption"]
+            IperfSrv["iperf3 Server<br/>5201/TCP<br/>No encryption"]
+            IperfCli["iperf3 Client"]
+            RDMASrv["ib_write_bw Server<br/>18515/TCP RDMA<br/>No encryption<br/>GPUDirect CUDA"]
+            RDMACli["ib_write_bw Client"]
+            PingSrv["ibv_rc_pingpong Server<br/>dynamic/TCP RDMA RC<br/>No encryption"]
+            PingCli["ibv_rc_pingpong Client"]
         end
 
-        subgraph RDMATests["RDMA Connectivity & Bandwidth Jobs"]
-            PingServer["ibv_rc_pingpong Server<br/>18515+N/TCP<br/>RDMA"]
-            PingClient["ibv_rc_pingpong Client"]
-            BWServer["ib_write_bw Server<br/>18515/TCP<br/>RDMA/GPUDirect CUDA"]
-            BWClient["ib_write_bw Client"]
+        subgraph Storage["Result Storage (ConfigMaps)"]
+            ReportCM["rhaii-validate-report"]
+            ConfigCM["rhaii-validate-config"]
+            PingCM["rhaii-validate-pingmesh-failures"]
         end
-
-        ConfigMap["ConfigMap<br/>JSON Report Storage"]
     end
 
-    subgraph HostAccess["HOST (privileged access)"]
-        HostFS["Host sysfs / procfs<br/>nvidia-smi / rocm-smi<br/>PCIe topology<br/>RDMA devices"]
+    subgraph CheckedNS["CHECKED NAMESPACES (read-only probes)"]
+        CertMgr["cert-manager<br/>cert-manager-operator"]
+        Istio["istio-system"]
+        LWS["openshift-lws-operator"]
     end
 
-    subgraph ExternalDeps["EXTERNAL DEPENDENCIES (Checked via API)"]
-        GatewayAPI["Gateway API CRDs"]
-        InferencePool["InferencePool CRD"]
-        LWS["LeaderWorkerSet<br/>CRD + Operator"]
-        CertManager["cert-manager<br/>CRD + Operator"]
-        Istio["Istio<br/>Operator Health"]
-        NVIDIAOp["NVIDIA GPU Operator<br/>Node Labels"]
-        AMDOp["AMD GPU Operator<br/>Node Labels"]
-    end
+    %% Flows
+    CLI -->|"HTTPS/443<br/>TLS 1.2+<br/>kubeconfig credentials"| APIServer
+    APIServer -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Bearer Token"| CRDAPI
+    APIServer -->|"Job creation<br/>SA Bearer Token<br/>RBAC: rhaii-validator"| GPUJob
+    APIServer -->|"Job creation<br/>SA Bearer Token"| IperfSrv
+    APIServer -->|"Job creation<br/>SA Bearer Token"| RDMASrv
 
-    %% External → Control Plane
-    User -->|"HTTPS/6443<br/>TLS 1.2+<br/>kubeconfig Bearer Token"| K8sAPI
+    GPUJob -->|"exec nvidia-smi<br/>hostPID + privileged"| GPUJob
+    GPUJob -->|"sysfs read<br/>host volume mount"| GPUJob
 
-    %% Control Plane → Jobs
-    K8sAPI -->|"Creates & manages<br/>Job pods"| GPUPod
-    K8sAPI -->|"Creates & manages<br/>Job pods"| IperfServer
-    K8sAPI -->|"Creates & manages<br/>Job pods"| IperfClient
-    K8sAPI -->|"Creates & manages<br/>Job pods"| PingServer
-    K8sAPI -->|"Creates & manages<br/>Job pods"| BWServer
+    IperfCli -->|"TCP/5201<br/>No encryption<br/>No auth"| IperfSrv
+    RDMACli -->|"RDMA/18515<br/>No encryption<br/>GPUDirect"| RDMASrv
+    PingCli -->|"RDMA RC/dynamic<br/>No encryption<br/>N-choose-2 pairs"| PingSrv
 
-    %% GPU checks → Host
-    GPUPod -->|"chroot /host<br/>Filesystem<br/>privileged + hostPID"| HostFS
-
-    %% Network test flows (plaintext, measurement-only)
-    IperfClient -->|"TCP/5201<br/>Plaintext<br/>No auth"| IperfServer
-    TCPClient -->|"TCP/12865<br/>Plaintext<br/>No auth"| TCPServer
-
-    %% RDMA flows
-    PingClient -->|"RDMA/18515+N<br/>No encryption<br/>No auth"| PingServer
-    BWClient -->|"RDMA/18515<br/>GPUDirect CUDA<br/>No encryption"| BWServer
-
-    %% Results storage
-    GPUPod -->|"pod logs"| K8sAPI
-    IperfClient -->|"pod logs"| K8sAPI
-    K8sAPI -->|"store results"| ConfigMap
-
-    %% Dependency checks (all via K8s API)
-    K8sAPI -.->|"CRD existence check"| GatewayAPI
-    K8sAPI -.->|"CRD existence check"| InferencePool
-    K8sAPI -.->|"CRD + health check"| LWS
-    K8sAPI -.->|"CRD + health check"| CertManager
-    K8sAPI -.->|"pod health check"| Istio
-    K8sAPI -.->|"node label check"| NVIDIAOp
-    K8sAPI -.->|"node label check"| AMDOp
+    APIServer -.->|"LIST pods<br/>SA Bearer Token"| CertMgr
+    APIServer -.->|"LIST pods<br/>SA Bearer Token"| Istio
+    APIServer -.->|"LIST pods<br/>SA Bearer Token"| LWS
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef validation fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef privileged fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef network fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef rdma fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef host fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef deps fill:#e8e8e8,stroke:#999,stroke-width:1px
-    classDef storage fill:#f5a623,stroke:#d79b00,stroke-width:2px
+    classDef network fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef storage fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef checked fill:#f5f5f5,stroke:#666,stroke-width:1px,stroke-dasharray: 5 5
 
-    class User external
-    class K8sAPI controlplane
-    class GPUPod privileged
-    class IperfServer,IperfClient,TCPServer,TCPClient network
-    class PingServer,PingClient,BWServer,BWClient rdma
-    class HostFS host
-    class GatewayAPI,InferencePool,LWS,CertManager,Istio,NVIDIAOp,AMDOp deps
-    class ConfigMap storage
+    class CLI external
+    class APIServer,CRDAPI controlplane
+    class GPUJob privileged
+    class TCPLat,IperfSrv,IperfCli,RDMASrv,RDMACli,PingSrv,PingCli network
+    class ReportCM,ConfigCM,PingCM storage
+    class CertMgr,Istio,LWS checked

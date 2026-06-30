@@ -1,49 +1,69 @@
 sequenceDiagram
-    participant User as External User
-    participant Gateway as Gateway (Envoy)<br/>443/TCP HTTPS<br/>TLS 1.2+ Terminate
-    participant EnvoyFilter as EnvoyFilter<br/>ext_authz + Lua
-    participant AuthProxy as kube-auth-proxy<br/>8443/TCP HTTPS<br/>TLS (service-ca)
-    participant OAuth as OpenShift OAuth /<br/>OIDC Provider<br/>443/TCP HTTPS
-    participant Component as Component Backend<br/>(HTTPRoute target)
+    autonumber
 
-    Note over User,Component: Flow 1: User Request → Component via Gateway API
+    %% Flow 1: Client Request Through Gateway Ingress Stack
+    rect rgb(240, 248, 255)
+        Note over Client,Backend: Flow 1: Client Request Through Gateway Ingress Stack
 
-    User->>Gateway: HTTPS/443 Request<br/>TLS 1.2+ (terminate)
-    Gateway->>EnvoyFilter: ext_authz check<br/>8443/TCP HTTPS
-    EnvoyFilter->>AuthProxy: Forward for auth<br/>8443/TCP TLS (service-ca)
-    AuthProxy->>OAuth: OAuth2/OIDC validation<br/>443/TCP HTTPS TLS 1.2+
-    OAuth-->>AuthProxy: Auth response + tokens
-    AuthProxy-->>EnvoyFilter: Auth OK + user info
-    Note over EnvoyFilter: Lua script strips OAuth cookies,<br/>injects Bearer token in<br/>Authorization header
-    EnvoyFilter->>Component: Forward request<br/>Bearer Token injected
-    Component-->>Gateway: Response
-    Gateway-->>User: HTTPS Response
+        participant Client as Client Browser
+        participant Route as OpenShift Route<br/>443/TCP HTTPS<br/>TLS 1.2+
+        participant Envoy as Gateway Service<br/>(Envoy Proxy)<br/>443/TCP HTTPS
+        participant AuthProxy as kube-auth-proxy<br/>8443/TCP HTTPS<br/>TLS (service CA)
+        participant OAuth as OpenShift OAuth /<br/>OIDC Provider<br/>443/TCP HTTPS
+        participant Backend as Backend Application<br/>(HTTPRoute target)<br/>8080/TCP HTTP
 
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant DSCCtrl as DSC Controller
-    participant Webhook as Webhook Server<br/>9443/TCP HTTPS
-    participant CompCtrl as Component Controller
-    participant Manifests as Manifest Engine<br/>(Kustomize/Helm)
+        Client->>Route: HTTPS/443<br/>TLS 1.2+
+        Route->>Envoy: HTTPS/443<br/>re-encrypt TLS
+        Envoy->>AuthProxy: ext_authz check<br/>HTTPS/8443 (service CA)<br/>Cookie or Bearer token
+        AuthProxy->>OAuth: Validate credentials<br/>HTTPS/443 TLS 1.2+<br/>OAuthClient / OIDC creds
+        OAuth-->>AuthProxy: Auth response
+        AuthProxy-->>Envoy: Auth decision
+        Envoy->>Backend: Lua filter forwards<br/>HTTP/8080 (cluster-internal)<br/>Bearer token (forwarded)
+        Backend-->>Envoy: Response
+        Envoy-->>Route: Response
+        Route-->>Client: HTTPS Response
+    end
 
-    Note over User,Manifests: Flow 2: DSC Reconciliation → Component Deployment
+    %% Flow 2: Component Deployment Lifecycle
+    rect rgb(240, 255, 240)
+        Note over User,K8sAPI: Flow 2: Component Deployment Lifecycle
 
-    User->>K8sAPI: Create/Update DSC CR<br/>6443/TCP HTTPS TLS 1.2+<br/>RBAC auth
-    K8sAPI->>Webhook: Validation + Defaulting<br/>9443/TCP HTTPS TLS (cert-manager)
-    Webhook-->>K8sAPI: Admitted (validated)
-    K8sAPI-->>DSCCtrl: Watch event (DSC changed)
-    DSCCtrl->>K8sAPI: Create Component CRs<br/>(Dashboard, KServe, etc.)<br/>6443/TCP ServiceAccount
-    K8sAPI-->>CompCtrl: Watch event (Component CR)
-    CompCtrl->>Manifests: Render manifests<br/>(local, in-process)
-    CompCtrl->>K8sAPI: Deploy resources<br/>(Deployments, Services, etc.)<br/>6443/TCP ServiceAccount
+        participant User as User / OLM
+        participant DSCCR as DataScienceCluster CR
+        participant DSCCtrl as DSC Controller
+        participant Registry as Component Registry<br/>(in-process)
+        participant CompHandler as Component Handler
+        participant CompCR as Component CR<br/>(e.g., Dashboard)
+        participant CompCtrl as Component Controller
+        participant Kustomize as Kustomize Renderer<br/>(in-process)
+        participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
 
-    participant OTel as OpenTelemetry<br/>Collector
-    participant Prometheus as Prometheus<br/>(MonitoringStack)
-    participant Thanos as Thanos Querier<br/>10902/TCP
-    participant Perses as Perses<br/>Dashboard
+        User->>DSCCR: Create/Update DSC<br/>K8s API HTTPS
+        DSCCR->>DSCCtrl: Watch event
+        DSCCtrl->>Registry: Iterate components
+        Registry->>CompHandler: Init component
+        CompHandler->>CompCR: Create Component CR<br/>K8s API HTTPS
+        CompCR->>CompCtrl: Watch event
+        CompCtrl->>Kustomize: Render manifests
+        Kustomize-->>CompCtrl: Rendered resources
+        CompCtrl->>K8sAPI: Server-Side Apply<br/>HTTPS/6443 TLS 1.2+<br/>ServiceAccount token
+        K8sAPI-->>CompCtrl: Applied
+        CompCtrl-->>DSCCtrl: Status update
+    end
 
-    Note over OTel,Perses: Flow 3: Monitoring Stack Data Collection
+    %% Flow 3: Monitoring Data Collection
+    rect rgb(255, 248, 240)
+        Note over AppPod,Thanos: Flow 3: Monitoring Data Collection
 
-    OTel->>Component: Scrape metrics<br/>varies HTTP/HTTPS<br/>ServiceAccount
-    OTel->>Prometheus: Push via OTLP<br/>HTTP TLS (webTLSConfig)<br/>Bearer Token
-    Prometheus->>Thanos: Federation<br/>10902/TCP HTTP<br/>In-cluster
-    Perses->>Thanos: Query metrics<br/>9091/9092 HTTPS<br/>TLS (CA ConfigMap)<br/>Bearer Token
+        participant AppPod as Application Pods
+        participant OTelCol as OpenTelemetry Collector<br/>4317/TCP gRPC
+        participant Tempo as Tempo<br/>4317/TCP gRPC
+        participant Prometheus as Prometheus<br/>(MonitoringStack)<br/>8443/TCP HTTPS
+        participant SvcMonitor as Component<br/>ServiceMonitors
+        participant Thanos as Thanos Querier<br/>10902/TCP HTTP
+
+        AppPod->>OTelCol: Traces<br/>gRPC/4317<br/>Conditional TLS<br/>Bearer token
+        OTelCol->>Tempo: Store traces<br/>gRPC/4317<br/>Conditional TLS<br/>Multitenancy token
+        Prometheus->>SvcMonitor: Scrape metrics<br/>HTTPS/8443 TLS<br/>ServiceAccount
+        Thanos->>Prometheus: Query metrics<br/>HTTP/10902
+    end

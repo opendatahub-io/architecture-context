@@ -1,42 +1,43 @@
 sequenceDiagram
-    participant Orchestrator as FMS Guardrails<br/>Orchestrator
+    participant Client as External Client
     participant Istio as Istio Sidecar<br/>mTLS
-    participant BuiltIn as Built-In Detector<br/>8080/TCP HTTP
+    participant Orchestrator as FMS Guardrails<br/>Orchestrator
+    participant BuiltIn as Built-in Detector<br/>8080/TCP HTTP
     participant HF as HuggingFace Detector<br/>8000/TCP HTTP
     participant Judge as LLM Judge Detector<br/>8000/TCP HTTP
-    participant S3 as S3 / MinIO<br/>9000/TCP HTTP
+    participant StorageInit as KServe Storage<br/>Initializer
+    participant S3 as S3/MinIO<br/>9000/443 TCP
     participant vLLM as vLLM Server<br/>8080/TCP HTTP
 
-    Note over S3,HF: Flow 2: Model Initialization (startup)
-    rect rgb(240, 248, 255)
-        S3->>HF: KServe Storage Initializer downloads<br/>model weights (AWS credentials)
-        HF->>HF: Load model via AutoConfig<br/>(SeqClass / TokClass / CausalLM)
-    end
+    Note over StorageInit,S3: Pre-startup: Model Loading (HF Detector)
+    StorageInit->>S3: Download model weights<br/>HTTP/HTTPS, AWS IAM credentials
+    S3-->>StorageInit: Model artifacts
+    StorageInit->>HF: Write to /mnt/models
 
-    Note over Orchestrator,BuiltIn: Flow 1: Built-In Text Detection
-    rect rgb(232, 245, 233)
-        Orchestrator->>Istio: POST /api/v1/text/contents
-        Istio->>BuiltIn: Forward (mTLS)<br/>Bearer Token (KServe auth)
-        BuiltIn->>BuiltIn: Inline processing<br/>(regex PII, file type, custom)
-        BuiltIn-->>Istio: ContentAnalysisResponse
-        Istio-->>Orchestrator: Detection results
-    end
+    Note over Client,BuiltIn: Flow 1: Built-in Text Detection (Regex/PII)
+    Client->>Istio: Text generation request
+    Istio->>Orchestrator: Forward (mTLS)
+    Orchestrator->>BuiltIn: POST /api/v1/text/contents<br/>HTTP/8080, No Auth
+    Note right of BuiltIn: Regex matching:<br/>email, SSN, CC,<br/>phone, IP patterns
+    BuiltIn-->>Orchestrator: ContentAnalysisResponse<br/>[{detection, score, span}]
+    Orchestrator-->>Istio: Filtered/annotated response
+    Istio-->>Client: Response
 
-    Note over Orchestrator,HF: Flow 2: HuggingFace Model-Based Detection
-    rect rgb(255, 243, 224)
-        Orchestrator->>Istio: POST /api/v1/text/contents
-        Istio->>HF: Forward (mTLS)<br/>Bearer Token (KServe auth)
-        HF->>HF: GPU/CPU inference<br/>via PyTorch
-        HF-->>Istio: ContentAnalysisResponse
-        Istio-->>Orchestrator: Detection results
-    end
+    Note over Client,HF: Flow 2: HuggingFace Model Inference
+    Client->>Istio: Text generation request
+    Istio->>Orchestrator: Forward (mTLS)
+    Orchestrator->>HF: POST /api/v1/text/contents<br/>HTTP/8000, KServe auth
+    Note right of HF: PyTorch inference:<br/>AutoModel* classification<br/>or GraniteForCausalLM
+    HF-->>Orchestrator: ContentAnalysisResponse<br/>[{detection, score, evidence}]
+    Orchestrator-->>Istio: Filtered/annotated response
+    Istio-->>Client: Response
 
-    Note over Orchestrator,vLLM: Flow 3: LLM Judge Detection
-    rect rgb(243, 229, 245)
-        Orchestrator->>Istio: POST /api/v1/text/contents
-        Istio->>Judge: Forward (mTLS)<br/>Bearer Token (KServe auth)
-        Judge->>vLLM: POST /v1/chat/completions<br/>HTTP (cluster-internal, no auth)
-        vLLM-->>Judge: LLM evaluation response
-        Judge-->>Istio: ContentAnalysisResponse
-        Istio-->>Orchestrator: Detection results
-    end
+    Note over Client,vLLM: Flow 3: LLM Judge Evaluation
+    Client->>Istio: Text generation request
+    Istio->>Orchestrator: Forward (mTLS)
+    Orchestrator->>Judge: POST /api/v1/text/contents<br/>HTTP/8000, KServe auth
+    Judge->>vLLM: OpenAI-compatible API call<br/>HTTP/8080, No Auth
+    vLLM-->>Judge: LLM evaluation result
+    Judge-->>Orchestrator: ContentAnalysisResponse<br/>[{detection, score, evidence}]
+    Orchestrator-->>Istio: Filtered/annotated response
+    Istio-->>Client: Response

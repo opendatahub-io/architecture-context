@@ -1,0 +1,58 @@
+sequenceDiagram
+    participant KFTO as Kubeflow Training Operator<br/>(PyTorchJob)
+    participant EntryPt as accelerate_launch.py<br/>Container Entrypoint
+    participant SFT as tuning.sft_trainer<br/>SFT Training Engine
+    participant Data as tuning.data<br/>Data Pipeline
+    participant HFHub as Hugging Face Hub<br/>443/TCP HTTPS
+    participant PVC as PVC<br/>Persistent Volume
+    participant GPU as GPU(s)<br/>CUDA/NCCL
+    participant Tracker as Experiment Tracker<br/>(Aim/MLflow/ClearML)
+
+    Note over KFTO,Tracker: Flow 1: SFT Training Job Execution
+
+    KFTO->>EntryPt: Create Pod<br/>Config via env var (base64 JSON)<br/>or mounted config file
+    EntryPt->>EntryPt: Parse config<br/>Determine num_processes<br/>Configure FSDP defaults
+    EntryPt->>SFT: accelerate launch<br/>sft_trainer.train()
+
+    SFT->>SFT: Parse JSON config<br/>→ dataclass hierarchy
+
+    SFT->>HFHub: Download pre-trained model<br/>HTTPS/443, TLS 1.2+<br/>Auth: HF Token (optional)
+    HFHub-->>SFT: Model weights (safetensors)
+
+    SFT->>Data: Initialize data preprocessing
+    Data->>Data: Auto-detect format<br/>(pretokenized/single-seq/<br/>chat/vision-multimodal)
+    Data->>HFHub: Load dataset (if remote)<br/>HTTPS/443
+    HFHub-->>Data: Dataset
+    Data->>PVC: Load dataset (if local)
+    PVC-->>Data: Dataset files
+    Data->>Data: Apply DataHandler chain<br/>(map, filter, tokenize, collate)
+    Data-->>SFT: Preprocessed dataset
+
+    SFT->>SFT: Configure PEFT<br/>(LoRA/aLoRA/Prompt Tuning/<br/>GPTQ-LoRA/Full FT)
+    SFT->>SFT: Optional: Load acceleration<br/>framework plugins
+
+    SFT->>Tracker: Initialize tracker<br/>(file/aim/mlflow/clearml)
+
+    Note over KFTO,Tracker: Flow 2: Multi-GPU FSDP Training
+
+    SFT->>GPU: Begin training loop<br/>CUDA/NCCL
+    loop Training Epochs
+        GPU->>GPU: Forward pass
+        GPU->>GPU: Backward pass
+        GPU->>GPU: FSDP AllReduce/AllGather<br/>Port 29500/TCP (NCCL)
+        GPU-->>SFT: Step metrics (loss, lr)
+        SFT->>Tracker: Log metrics<br/>HTTP/HTTPS (configurable)
+        SFT->>SFT: TrainerController<br/>evaluate rules<br/>(early stopping, etc.)
+    end
+
+    SFT->>PVC: Save model artifacts<br/>(checkpoints, final model)
+    SFT->>PVC: Save PEFT adapters<br/>(if LoRA/aLoRA)
+
+    alt Training Success
+        SFT-->>EntryPt: Exit 0
+        EntryPt-->>KFTO: Pod Succeeded
+    else Training Failure
+        SFT->>SFT: Write error to<br/>/dev/termination-log
+        SFT-->>EntryPt: Exit 1
+        EntryPt-->>KFTO: Pod Failed
+    end

@@ -1,55 +1,47 @@
 sequenceDiagram
-    autonumber
-
-    participant User as Data Scientist
+    participant User as User / Controller
     participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant MutWebhook as Kueue Mutating Webhook<br/>9443/TCP HTTPS TLS
-    participant ValWebhook as Kueue Validating Webhook<br/>9443/TCP HTTPS TLS
-    participant Controller as Kueue Controller<br/>(controller-runtime)
-    participant Scheduler as Kueue Scheduler<br/>(in-process)
-    participant RemoteK8s as Remote K8s Cluster<br/>443/TCP HTTPS TLS 1.2+
+    participant Webhook as Kueue Webhook Server<br/>9443/TCP HTTPS TLS
+    participant Controller as Kueue Controller<br/>(Scheduler + Preemption)
+    participant Prometheus as Prometheus<br/>(OpenShift Monitoring)
+    participant RemoteAPI as Remote Worker Cluster API<br/>443/TCP HTTPS TLS 1.2+
 
-    Note over User,RemoteK8s: Flow 1: Workload Admission
+    Note over User,Controller: Flow 1: Workload Admission
 
-    User->>K8sAPI: kubectl create job/pytorchjob<br/>Auth: User credentials
-    K8sAPI->>MutWebhook: POST /mutate-*<br/>Auth: API server client cert
-    MutWebhook-->>K8sAPI: Defaults applied<br/>(queue label, suspend=true)
-    K8sAPI->>ValWebhook: POST /validate-*<br/>Auth: API server client cert
-    ValWebhook-->>K8sAPI: Validation passed
+    User->>K8sAPI: Create Job/PyTorchJob/RayJob<br/>Auth: User credentials
+    K8sAPI->>Webhook: Mutating webhook call<br/>9443/TCP HTTPS mTLS
+    Webhook->>Webhook: Inject queue label<br/>Suspend workload<br/>Set managedBy field
+    Webhook-->>K8sAPI: Mutated resource
+    K8sAPI->>Webhook: Validating webhook call<br/>9443/TCP HTTPS mTLS
+    Webhook->>Webhook: Validate queue name<br/>Check TAS annotations<br/>Enforce constraints
+    Webhook-->>K8sAPI: Admission response
+    K8sAPI-->>User: Resource created (suspended)
 
-    Note over Controller: Watch event: new Job created
+    Note over Controller,K8sAPI: Controller reconciliation loop
 
-    Controller->>K8sAPI: Watch Job/Workload resources<br/>Auth: ServiceAccount token
-    K8sAPI-->>Controller: Job event received
-
-    Controller->>K8sAPI: Create Workload CR<br/>Auth: ServiceAccount token
-    K8sAPI-->>Controller: Workload created
-
-    Note over Scheduler: Scheduling cycle begins
-
-    Scheduler->>Scheduler: Evaluate pending Workloads<br/>against ClusterQueue quotas,<br/>priority, fair sharing
-
-    Scheduler->>K8sAPI: Update Workload admission<br/>(assign ResourceFlavors, quotas)<br/>Auth: ServiceAccount token
-    K8sAPI-->>Scheduler: Workload admitted
-
-    Controller->>K8sAPI: Unsuspend Job<br/>(patch suspend=false,<br/>inject node affinity)<br/>Auth: ServiceAccount token
-    K8sAPI-->>Controller: Job unsuspended
-
-    Note over K8sAPI: Job pods now schedulable<br/>by kube-scheduler
-
-    Note over User,RemoteK8s: Flow 2: MultiKueue Cross-Cluster Dispatch
-
-    Controller->>K8sAPI: Read MultiKueueConfig<br/>Auth: ServiceAccount token
-    K8sAPI-->>Controller: Config with worker cluster list
-
-    Controller->>K8sAPI: Read kubeconfig Secret<br/>Auth: ServiceAccount token
-    K8sAPI-->>Controller: Kubeconfig credentials
-
-    Controller->>RemoteK8s: Create Workload + Job<br/>Auth: Kubeconfig credentials
-    RemoteK8s-->>Controller: Resources created
-
-    loop Status Synchronization
-        Controller->>RemoteK8s: Watch Workload status<br/>Auth: Kubeconfig credentials
-        RemoteK8s-->>Controller: Status updates
-        Controller->>K8sAPI: Sync status to local Workload<br/>Auth: ServiceAccount token
+    Controller->>K8sAPI: Watch Workload CRs<br/>Auth: ServiceAccount token
+    K8sAPI-->>Controller: New Workload event
+    Controller->>Controller: Schedule: find ClusterQueue<br/>Check quota (nominal + borrowing)<br/>Assign ResourceFlavor
+    alt Quota available
+        Controller->>K8sAPI: Update Workload admission<br/>Unsuspend Job<br/>Auth: ServiceAccount token
+        K8sAPI-->>Controller: Workload admitted
+    else Quota exhausted - preemption needed
+        Controller->>Controller: Evaluate preemption candidates<br/>(LowerPriority / LowerOrNewerEqual / Any)
+        Controller->>K8sAPI: Evict lower-priority workloads<br/>Auth: ServiceAccount token
+        Controller->>K8sAPI: Admit current workload<br/>Auth: ServiceAccount token
+    else Quota exhausted - no preemption possible
+        Controller->>Controller: Queue workload (pending)<br/>StrictFIFO or BestEffortFIFO
     end
+
+    Note over Controller,RemoteAPI: Flow 2: MultiKueue Distribution (when enabled)
+
+    Controller->>K8sAPI: Read Workload with MultiKueue AdmissionCheck<br/>Auth: ServiceAccount token
+    Controller->>K8sAPI: Read MultiKueueCluster Secret (kubeconfig)<br/>Auth: ServiceAccount token
+    Controller->>RemoteAPI: Create shadow Workload on worker cluster<br/>Auth: KubeConfig credentials (from Secret)
+    RemoteAPI-->>Controller: Workload status updates
+    Controller->>K8sAPI: Update local Workload status<br/>Auth: ServiceAccount token
+
+    Note over Prometheus,Controller: Flow 3: Metrics Collection
+
+    Prometheus->>Controller: GET /metrics<br/>8443/TCP HTTPS TLS<br/>Auth: Bearer Token (ServiceAccount)
+    Controller-->>Prometheus: Admission, quota, scheduling,<br/>queue metrics (Prometheus format)

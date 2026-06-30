@@ -1,153 +1,155 @@
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                       │
-│                                                                             │
-│  [External Client]                                                          │
-│         │                                                                   │
-│         │ Port: Configurable/TCP                                            │
-│         │ Protocol: HTTP/HTTPS                                              │
-│         │ Encryption: TLS 1.2+ (when configured)                            │
-│         │ Auth: Tenant ID header (X-MaaS-Username)                          │
-│         │ Note: Assumes upstream auth proxy has authenticated user           │
-│         ▼                                                                   │
+│                                                                              │
+│  [External Client]                                                           │
+│         │                                                                    │
+│         │ Port: 8000/TCP (via Gateway)                                       │
+│         │ Protocol: HTTP/HTTPS                                               │
+│         │ Encryption: Optional TLS 1.2+                                      │
+│         │ Auth: API key, ServiceAccount token, or OpenShift user token       │
+│         ▼                                                                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (Gateway API)                                                      │
-│                                                                             │
-│  [HTTPRoute - Gateway API]                                                  │
-│  - Routes: /v1/batches/*, /v1/files/*                                      │
-│  - Encryption: Depends on Gateway configuration                             │
-│  - TLS Mode: Depends on Gateway configuration                               │
-│         │                                                                   │
-│         │ Port: Configurable/TCP                                            │
-│         │ Protocol: HTTP or HTTPS                                           │
-│         │ Encryption: TLS 1.2+ (when ssl_cert_file configured)              │
-│         │ Auth: Tenant ID header passed through                             │
-│         ▼                                                                   │
+│  GATEWAY LAYER (AuthN/AuthZ Enforcement)                                    │
+│                                                                              │
+│  [Kuadrant / Authorino]                                                      │
+│  - Enforcement: Gateway-level admission policy                               │
+│  - AuthN: API key, SA token, or OpenShift user token validation             │
+│  - AuthZ: Batch API admission policy                                         │
+│  - Passes: X-MaaS-Username header (tenant ID) to apiserver                  │
+│         │                                                                    │
+│  [Gateway API Gateway + HTTPRoute]                                           │
+│  - Routes: /v1/batches/*, /v1/files/*                                       │
+│  - Parent: llm-d-inference-gateway                                           │
+│         │                                                                    │
+│         │ Port: 8000/TCP                                                     │
+│         │ Protocol: HTTP/HTTPS                                               │
+│         │ Encryption: Inherited from Gateway (Optional TLS 1.2+)            │
+│         │ Auth: Pre-validated by Kuadrant/Authorino                         │
+│         ▼                                                                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  APPLICATION TIER                                                           │
-│                                                                             │
-│  [apiserver]                                                                │
-│  - Namespace: {release-namespace}                                           │
-│  - ServiceAccount: batch-gateway-apiserver                                  │
-│  - Image: batch-gateway-apiserver                                           │
-│  - Ports:                                                                   │
-│    - API: Configurable/TCP (HTTP or HTTPS with TLS 1.2+)                   │
-│    - Observability: 8081/TCP (HTTP, no auth)                                │
-│  - Multi-tenant isolation: DB queries filtered by tenant ID                 │
-│  - Cross-tenant access returns 404 (not 403)                               │
-│  - Security headers: X-Content-Type-Options, X-Frame-Options,              │
-│    Content-Security-Policy, Strict-Transport-Security                       │
-│         │                                                                   │
-│         │                                                                   │
-│  [batch-processor]                                                          │
-│  - Namespace: {release-namespace}                                           │
-│  - ServiceAccount: batch-gateway-processor                                  │
-│  - Image: batch-gateway-processor                                           │
-│  - Ports:                                                                   │
-│    - Observability: 9090/TCP (HTTP, no auth)                                │
-│  - AIMD concurrency control (adaptive rate limiting)                        │
-│         │                                                                   │
-│         │                                                                   │
-│  [batch-gc]                                                                 │
-│  - Namespace: {release-namespace}                                           │
-│  - ServiceAccount: batch-gateway-gc                                         │
-│  - Image: batch-gateway-gc                                                  │
-│  - Ports:                                                                   │
-│    - Metrics: 9091/TCP (HTTP, no auth)                                      │
-│  - Singleton deployment                                                     │
-│                                                                             │
+│  APPLICATION LAYER (Kubernetes ClusterIP)                                    │
+│                                                                              │
+│  [batch-gateway-apiserver]                                                   │
+│  - Service: {release}-batch-gateway-apiserver (ClusterIP)                   │
+│  - Port: 8000/TCP (API), 8081/TCP (observability)                           │
+│  - Image: quay.io/opendatahub/odh-llm-d-batch-gateway-apiserver            │
+│  - ServiceAccount: {release}-batch-gateway-apiserver                        │
+│  - TLS: Optional (ssl_cert_file / ssl_private_key_file config)              │
+│  - TLS MinVersion: TLS 1.2                                                  │
+│  - mTLS: Supported (RequireAndVerifyClientCert, configurable)               │
+│  - Multi-tenancy: X-MaaS-Username header → tenant scoping                  │
+│  - Cross-tenant: Returns 404 (not 403) to prevent info leakage             │
+│  - Max upload: 200MB, max lines: 50,000                                     │
+│         │                                                                    │
+│  [batch-gateway-processor]                                                   │
+│  - No Service (headless worker)                                              │
+│  - Port: 9090/TCP (metrics/health only)                                     │
+│  - Image: quay.io/opendatahub/odh-llm-d-batch-gateway-processor            │
+│  - ServiceAccount: {release}-batch-gateway-processor                        │
+│  - Concurrency: Global(100) + Per-endpoint(10) + AIMD adaptive             │
+│  - AIMD: min=5, backoff=0.5, additive_increase=1                           │
+│  - Graceful shutdown: 30s timeout                                            │
+│  - Crash recovery: Scans workdir on restart                                 │
+│         │                                                                    │
+│  [batch-gateway-gc]                                                          │
+│  - No Service (singleton worker)                                             │
+│  - Port: 9091/TCP (metrics/health only)                                     │
+│  - Image: quay.io/opendatahub/odh-llm-d-batch-gateway-gc                   │
+│  - ServiceAccount: {release}-batch-gateway-gc                               │
+│  - GC interval: 1h, Reconciler interval: 60m                               │
+│         │                                                                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  DATA TIER (Shared State)                                                   │
-│                                                                             │
-│  apiserver ──┐                                                              │
-│  processor ──┼──► [PostgreSQL]                                              │
-│  gc ─────────┘    - Port: 5432/TCP                                          │
-│                   - Protocol: TCP                                           │
-│                   - Encryption: Optional TLS                                │
-│                   - Auth: Connection string (username/password in DSN)       │
-│                   - Purpose: Batch and file metadata (ACID)                 │
-│                                                                             │
-│  apiserver ──┐                                                              │
-│  processor ──┼──► [Redis / Valkey]                                          │
-│  gc ─────────┘    - Port: 6379/TCP                                          │
-│                   - Protocol: TCP (Redis protocol)                          │
-│                   - Encryption: Optional TLS/mTLS (client certs)            │
-│                   - Auth: URL-based credentials                             │
-│                   - Purpose: Priority queue, events, status cache,          │
-│                     in-flight tracking                                       │
-│                                                                             │
+│  DATA LAYER (Egress)                                                         │
+│                                                                              │
+│  [PostgreSQL]                                                                │
+│  - Port: 5432/TCP                                                            │
+│  - Protocol: pgx wire protocol                                              │
+│  - Encryption: Optional TLS (configurable via connection URL)               │
+│  - Auth: Connection URL credentials (from batch-gateway-secrets)            │
+│  - Purpose: Batch job and file metadata persistence (JSONB, CAS updates)    │
+│  - Access: All three components (apiserver, processor, gc)                  │
+│                                                                              │
+│  [Redis / Valkey]                                                            │
+│  - Port: 6379/TCP                                                            │
+│  - Protocol: RESP                                                            │
+│  - Encryption: Optional TLS (configurable via connection URL)               │
+│  - Auth: Connection URL credentials (from batch-gateway-secrets)            │
+│  - Purpose: Priority queue (ZSET), event channels (List/BLMPOP),            │
+│             status store (String), in-flight tracking (Hash)                │
+│  - Access: All three components                                              │
+│                                                                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES                                                          │
-│                                                                             │
-│  apiserver ──┐                                                              │
-│  processor ──┼──► [S3-Compatible Storage]                                   │
-│  gc ─────────┘    - Port: 443/TCP                                           │
-│                   - Protocol: HTTPS                                         │
-│                   - Encryption: TLS                                         │
-│                   - Auth: AWS static credentials (AccessKeyID +             │
-│                     SecretAccessKey) or IAM                                  │
-│                   - Purpose: File content storage (input/output/error)      │
-│                   - Tenant isolation: SHA256(tenant_id) folder prefix       │
-│                                                                             │
-│  processor ──────► [llm-d Inference Gateway]                                │
-│                   - Port: Configurable/TCP                                  │
-│                   - Protocol: HTTP/HTTPS                                    │
-│                   - Encryption: TLS 1.2+ (configurable per gateway)         │
-│                   - Auth: Bearer token (API key) or mTLS client certs       │
-│                   - Purpose: Dispatch inference requests                    │
-│                                                                             │
-│  processor ──────► [llm-d-async (optional)]                                 │
-│                   - Port: 6379/TCP                                          │
-│                   - Protocol: Redis (sorted-set queue)                      │
-│                   - Encryption: Optional TLS                                │
-│                   - Auth: URL-based credentials                             │
-│                   - Purpose: Async inference dispatch                       │
-│                                                                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  OBSERVABILITY                                                              │
-│                                                                             │
-│  [Prometheus] ─── scrape ──► apiserver :8081/TCP (ServiceMonitor)           │
-│               ─── scrape ──► processor :9090/TCP (PodMonitor)               │
-│               ─── scrape ──► gc :9091/TCP (PodMonitor)                      │
-│               Protocol: HTTP, No auth, No encryption                        │
-│                                                                             │
-│  apiserver ──┐                                                              │
-│  processor ──┴──► [OpenTelemetry Collector]                                 │
-│                   - Port: Configurable/TCP                                  │
-│                   - Protocol: gRPC (OTLP)                                   │
-│                   - Encryption: Configurable                                │
-│                   - Auth: None                                              │
-│                   - Purpose: Distributed tracing                            │
+│  EXTERNAL SERVICES (Egress)                                                  │
+│                                                                              │
+│  [S3-compatible Storage]                                                     │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS                                                           │
+│  - Auth: AWS IAM credentials (access key + secret from batch-gateway-secrets)│
+│  - Purpose: Batch input/output/error file storage                           │
+│  - File paths: SHA256-hashed tenant IDs as folder names                     │
+│  - Access: All three components                                              │
+│                                                                              │
+│  [llm-d Router / Inference Gateway]                                          │
+│  - Port: Configurable                                                        │
+│  - Protocol: HTTP/HTTPS                                                      │
+│  - Encryption: Optional TLS 1.2+ / mTLS                                    │
+│  - Auth: API key (Bearer) or mTLS client certs                              │
+│  - Purpose: Send individual inference requests for batch processing         │
+│  - Headers: Authorization (pass-through), x-gateway-inference-objective     │
+│  - Access: Processor only                                                    │
+│                                                                              │
+│  [OTLP Collector (Jaeger/Tempo/OTEL)]                                       │
+│  - Port: 4317/TCP                                                            │
+│  - Protocol: gRPC                                                            │
+│  - Encryption: Optional TLS                                                  │
+│  - Auth: None                                                                │
+│  - Purpose: OpenTelemetry trace export                                       │
+│  - Access: All three components (optional)                                  │
+│                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-  No ClusterRoles or ClusterRoleBindings defined.
-  Uses dedicated ServiceAccounts per component:
-  - batch-gateway-apiserver (apiserver pods)
-  - batch-gateway-processor (processor pods)
-  - batch-gateway-gc (GC pods)
+- No Kubernetes RBAC roles defined
+- The component operates as a user-space service with database-level access control
+- Multi-tenancy enforced at application layer via tenant ID scoping (X-MaaS-Username header)
+- Cross-tenant isolation: 404 response (not 403) prevents information leakage
+
+Authentication & Authorization:
+- /v1/batches/* : API key, SA token, or OpenShift user token
+  - Enforcement: Kuadrant/Authorino (gateway layer)
+  - Policy: Batch API admission policy
+- /v1/files/* : API key, SA token, or OpenShift user token
+  - Enforcement: Kuadrant/Authorino (gateway layer)
+  - Policy: Batch API admission policy
+- Inference endpoints : API key (Bearer) or mTLS client certs
+  - Enforcement: Inference gateway
+  - Policy: Per-model inference authorization
+- /health, /ready, /metrics : Unauthenticated
+  - Enforcement: None
 
 Secrets:
-  - global.secretName (Opaque):
-    Keys: redis-url, postgresql-url, inference-api-key, s3-secret-access-key
-    Provisioned: Manual / External secret operator
-    Auto-Rotate: No
-  - apiserver-tls (kubernetes.io/tls):
-    Keys: tls.crt, tls.key
-    Provisioned: cert-manager (optional) or manual
-    Auto-Rotate: Yes (cert-manager)
+- batch-gateway-secrets (Opaque):
+  - redis-url: Redis/Valkey connection URL
+  - postgresql-url: PostgreSQL connection URL
+  - inference-api-key: API key for inference gateway
+  - s3-secret-access-key: AWS IAM secret key
+  - Provisioned by: Manual (kubectl create secret)
+  - Auto-rotate: No
 
-Multi-Tenant Security:
-  - Tenant isolation via X-MaaS-Username header
-  - All DB queries filtered by tenant_id
-  - S3 files organized by t-{SHA256(tenant_id)} folder prefix
-  - Cross-tenant access returns HTTP 404 (not 403) to hide resource existence
-  - Assumes upstream auth proxy injects tenant header (Envoy ext_authz pattern)
-  - LastHeaderValue utility handles auth-injected header after client-supplied value
+- {release}-batch-gateway-apiserver-tls (kubernetes.io/tls):
+  - TLS certificate for apiserver HTTPS
+  - Provisioned by: cert-manager (optional) or manual
+  - Auto-rotate: Yes (if cert-manager)
 
 FIPS Compliance:
-  - Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
-  - Runtime: stdlib crypto/tls backed by OpenSSL (UBI 9 base image)
-  - TLS: MinVersion=tls.VersionTLS12 enforced
-  - Crypto: crypto/sha256 for tenant folder hashing
-  - Risk: InsecureSkipVerify configurable (testing only, logged as WARNING)
-  - No use of MD5, RC4, DES, or other non-FIPS algorithms
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- Linking: Dynamic (UBI 9 OpenSSL)
+- TLS: MinVersion TLS 1.2, custom CA bundles, mTLS support
+- Crypto: stdlib crypto/tls (FIPS via OpenSSL through strictfipsruntime)
+- Risk: InsecureSkipVerify available for testing (config-controlled, not default)
+
+Service Mesh Configuration:
+- No service mesh sidecar injection documented
+- TLS managed at application level (not mesh-level mTLS)
+- Gateway API integration for ingress routing

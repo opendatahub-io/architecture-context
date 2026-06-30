@@ -1,0 +1,206 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [User Browser]                                                              │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: OAuth (platform SSO)                                         │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Platform-managed)                                                  │
+│                                                                              │
+│  [Platform Ingress / OpenShift Route]                                        │
+│  - Port: 443/TCP (external) → 8888/TCP (internal)                           │
+│  - TLS Termination: TLS 1.2+ at route                                       │
+│  - AuthN: OAuth proxy / kube-rbac-proxy (Notebooks controller)              │
+│  - AuthZ: User must be notebook owner                                        │
+│         │                                                                    │
+│         │ Port: 8888/TCP                                                     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (TLS terminated at ingress)                       │
+│         │ Auth: Platform token                                               │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  WORKLOAD PODS (Cluster-internal)                                            │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │  Universal Training Image (Workbench Mode)                          │     │
+│  │  - Namespace: {user-namespace}                                      │     │
+│  │  - UID: 1001 (non-root), GID: 0                                    │     │
+│  │  - Image: universal:th06-{variant}-py312-torch210                   │     │
+│  │  - Port: 8888/TCP (JupyterLab)                                     │     │
+│  │  - Protocol: HTTP                                                   │     │
+│  │  - No direct ingress (managed by Notebooks controller)              │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │  MPI Training Job (OpenMPI Images)                                  │     │
+│  │  - Namespace: {user-namespace}                                      │     │
+│  │  - UID: 1001 (non-root), GID: 0                                    │     │
+│  │  - Created by: Kubeflow Trainer v2 controller                       │     │
+│  │                                                                     │     │
+│  │  [Training Pod - Rank 0 (Launcher)]                                 │     │
+│  │  - Port: 2222/TCP (SSH server)                                      │     │
+│  │  - SSH Config: StrictModes=no, StrictHostKeyChecking=no             │     │
+│  │  - Auth: SSH key pair (generated per-job by controller)             │     │
+│  │         │                                                           │     │
+│  │         │ Port: 2222/TCP                                            │     │
+│  │         │ Protocol: SSH                                             │     │
+│  │         │ Encryption: SSH host key (verification DISABLED)          │     │
+│  │         │ Auth: SSH key pair (per-job secret)                       │     │
+│  │         ▼                                                           │     │
+│  │  [Worker Pods - Rank 1..N]                                          │     │
+│  │  - Port: 2222/TCP (SSH server)                                      │     │
+│  │  - SSH Config: StrictModes=no, StrictHostKeyChecking=no             │     │
+│  │  - Auth: SSH key pair (same per-job secret)                         │     │
+│  │                                                                     │     │
+│  │  [All Training Pods ↔ Peers]                                        │     │
+│  │  - Protocol: InfiniBand RDMA (NCCL/RCCL AllReduce)                  │     │
+│  │  - Encryption: NONE                                                 │     │
+│  │  - Auth: NONE                                                       │     │
+│  │  - Note: GPU-to-GPU direct memory access for gradient sync          │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │  Ray Cluster (Ray Runtime Images)                                   │     │
+│  │  - Namespace: {user-namespace}                                      │     │
+│  │  - Created by: KubeRay Operator                                     │     │
+│  │                                                                     │     │
+│  │  [Ray Head Pod]                                                     │     │
+│  │  - Port: 6379/TCP (GCS) — TCP, no encryption, no auth              │     │
+│  │  - Port: 8265/TCP (Dashboard) — HTTP, no encryption, no auth       │     │
+│  │  - Port: 10001/TCP (Client) — Ray protocol, no encryption, no auth │     │
+│  │         │                                                           │     │
+│  │         │ Port: 6379/TCP                                            │     │
+│  │         │ Protocol: TCP (Ray GCS)                                   │     │
+│  │         │ Encryption: None                                          │     │
+│  │         │ Auth: None                                                │     │
+│  │         ▼                                                           │     │
+│  │  [Ray Worker Pods]                                                  │     │
+│  │  - No exposed ports (workers connect to head)                       │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE (Operators)                                                   │
+│                                                                              │
+│  [Kubeflow Trainer v2 Controller]                                            │
+│  - Creates training pods + SSH key secrets                                   │
+│  - Port: 443/TCP → Kubernetes API (HTTPS, SA token)                         │
+│                                                                              │
+│  [Training Operator (KFTO v1)]                                               │
+│  - Creates PyTorchJob pods with training image references                    │
+│  - Port: 443/TCP → Kubernetes API (HTTPS, SA token)                         │
+│                                                                              │
+│  [KubeRay Operator]                                                          │
+│  - Creates RayCluster head/worker pods with Ray image references             │
+│  - Port: 443/TCP → Kubernetes API (HTTPS, SA token)                         │
+│                                                                              │
+│  [Kueue]                                                                     │
+│  - Manages job queuing via LocalQueue/ClusterQueue CRDs                      │
+│                                                                              │
+│  [Notebooks Controller]                                                      │
+│  - Deploys universal images as Jupyter workbenches                           │
+│  - Manages ingress routes + OAuth proxy                                      │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                                  │
+│                                                                              │
+│  [HuggingFace Hub - huggingface.co]                                          │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: Bearer Token (optional)                                             │
+│  - Purpose: Model and dataset download at runtime                            │
+│                                                                              │
+│  [S3-compatible Storage]                                                      │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: AWS IAM credentials                                                 │
+│  - Purpose: Model checkpoints, dataset access                                │
+│                                                                              │
+│  [MLflow Tracking Server]                                                     │
+│  - Port: 5000/TCP                                                            │
+│  - Protocol: HTTP/HTTPS (configurable)                                       │
+│  - Encryption: Configurable                                                  │
+│  - Auth: Bearer Token                                                        │
+│  - Purpose: Experiment tracking, model registry                              │
+│                                                                              │
+│  [RHEL AI PyPI - console.redhat.com]                                          │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: None                                                                │
+│  - Purpose: Python package download (build-time only)                        │
+│                                                                              │
+│  [NVIDIA CUDA repos - developer.download.nvidia.com]                          │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: None                                                                │
+│  - Purpose: CUDA package download (build-time only)                          │
+│                                                                              │
+│  [AMD ROCm repos - repo.radeon.com]                                           │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: None                                                                │
+│  - Purpose: ROCm SDK download (build-time only)                              │
+│                                                                              │
+│  [Mellanox OFED repos - linux.mellanox.com]                                   │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: None                                                                │
+│  - Purpose: InfiniBand/RDMA packages (build-time only)                       │
+│                                                                              │
+│  [MPI Peer Nodes]                                                             │
+│  - Port: 2222/TCP                                                            │
+│  - Protocol: SSH                                                             │
+│  - Encryption: Host key (verification disabled)                              │
+│  - Auth: SSH key pair                                                        │
+│  - Purpose: Multi-node training inter-pod communication                      │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No RBAC resources (ClusterRoles, RoleBindings) are defined by this component.
+- Container images run as non-root: UID 1001, GID 0 (OpenShift pattern).
+- RBAC for operators that consume these images is defined in their respective components
+  (Training Operator, KubeRay, Notebooks Controller, Kueue).
+
+Secrets:
+- SSH key pair (Opaque) — MPI inter-node auth, provisioned per-job by Trainer v2 controller, no rotation
+- HuggingFace token (Opaque) — Model download auth, provisioned by user, no auto-rotation
+- AWS credentials (Opaque) — S3 storage access, provisioned by user, no auto-rotation
+
+Security Observations:
+1. SSH in OpenMPI images uses StrictModes=no and StrictHostKeyChecking=no
+   - Trade-off: Required for OpenShift random UID compatibility
+   - Risk: No SSH host key verification between MPI peers
+   - Mitigation: SSH key pairs are generated per-job and scoped to pod network
+
+2. Ray cluster communication (GCS:6379, Client:10001, Dashboard:8265) has NO encryption and NO auth
+   - Risk: Unencrypted inter-pod communication
+   - Mitigation: Cluster-internal only, relies on network policies for isolation
+
+3. NCCL/RCCL AllReduce over InfiniBand RDMA has NO encryption
+   - Risk: GPU gradient data transmitted in plaintext
+   - Mitigation: Direct GPU memory access, cluster-internal, high-performance requirement
+
+4. Jupyter workbench (8888/TCP) uses HTTP internally
+   - Mitigation: TLS terminated at platform ingress, OAuth enforced by Notebooks controller
+
+FIPS Compliance:
+- No Go binaries in production images (Python-only)
+- OpenSSL inherited from UBI9/AIPCC base images
+- cryptography==46.0.5 (OpenSSL-backed, FIPS-compatible)
+- System trust store from UBI9 base
+- Risk: SSH with disabled StrictModes reduces transport security (see above)
+
+Build-Time Egress (not runtime):
+- NVIDIA, AMD, Mellanox repos only accessed during container image build
+- RHEL AI PyPI only accessed during build (universal/OpenMPI images)
+- These are NOT runtime egress destinations

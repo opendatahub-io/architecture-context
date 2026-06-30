@@ -1,46 +1,56 @@
 sequenceDiagram
     participant User as User / kubectl
-    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
-    participant Webhook as OGX Webhook<br/>9443/TCP HTTPS<br/>service-serving-cert
-    participant Operator as OGX Operator Manager<br/>8080/8081/TCP
-    participant OCI as OCI Image Registry<br/>443/TCP HTTPS
-    participant OGXServer as OGX Server Instance<br/>8321/TCP HTTP
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
+    participant Webhook as Validating Webhook<br/>443/TCP HTTPS TLS
+    participant Operator as OGX Operator<br/>(OGXServerReconciler)
+    participant Kustomize as Manifest Pipeline<br/>(kustomize + plugins)
+    participant OGXServer as OGX Server Pod<br/>8321/TCP HTTP
+    participant OCI as OCI Registry<br/>443/TCP HTTPS TLS 1.2+
 
-    Note over User,OGXServer: Flow 1: OGXServer CR Creation & Validation
+    Note over User, OCI: Flow 1: OGXServer Reconciliation
 
-    User->>K8sAPI: kubectl apply OGXServer CR<br/>Auth: User credentials
-    K8sAPI->>Webhook: POST /validate-ogx-io-v1beta1-ogxserver<br/>HTTPS/9443, TLS (service-serving-cert)<br/>Auth: API server CA
-    Webhook-->>K8sAPI: Admission Response<br/>(validates distribution, provider IDs,<br/>model refs, adoption annotations)
-    K8sAPI-->>User: CR accepted / rejected
+    User->>K8sAPI: kubectl apply OGXServer CR
+    K8sAPI->>Webhook: POST /validate-ogx-io-v1beta1-ogxserver<br/>mTLS (API server cert)
+    Webhook-->>K8sAPI: Admission Response (allow/deny)
+    K8sAPI-->>User: CR created/rejected
 
-    Note over User,OGXServer: Flow 2: OGXServer Reconciliation
+    K8sAPI->>Operator: Watch event (OGXServer created/updated)<br/>HTTPS/443, ServiceAccount token
 
-    K8sAPI->>Operator: Watch event: OGXServer created/updated<br/>HTTPS/6443, TLS 1.2+<br/>Auth: ServiceAccount token
-    Operator->>OCI: Fetch OCI labels for base config<br/>HTTPS/443, TLS 1.2+<br/>Auth: Registry credentials
-    OCI-->>Operator: OCI manifest labels<br/>(base config resolution)
+    Operator->>OCI: GET image labels (distribution config)<br/>HTTPS/443, TLS 1.2+, registry credentials
+    OCI-->>Operator: Base config.yaml from OCI labels
 
-    Note over Operator: Generate config.yaml from<br/>base config + declared providers<br/>(inference, vector I/O, tools, files)
+    Operator->>Kustomize: Render manifests (base YAML + plugins)
+    Kustomize-->>Operator: Rendered resources (Deployment, Service, PVC, etc.)
 
-    Note over Operator: Render kustomize manifests:<br/>Deployment, Service, PVC, NetworkPolicy,<br/>PDB, HPA, Ingress, ServiceAccount,<br/>ConfigMap (content-hash, immutable)
+    Operator->>K8sAPI: Server-Side Apply (SSA) managed resources<br/>HTTPS/443, ServiceAccount token
+    K8sAPI-->>Operator: Applied resources
 
-    Operator->>K8sAPI: Create/Patch resources (SSA)<br/>HTTPS/6443, TLS 1.2+<br/>Auth: ServiceAccount token
-    K8sAPI-->>Operator: Resource status
-
-    Note over Operator: Poll OGX Server health
-
-    Operator->>OGXServer: GET /v1/health<br/>HTTP/8321 (configurable)<br/>Auth: None (in-cluster)
+    Operator->>OGXServer: GET /v1/health (health check)<br/>HTTP/8321, no auth
     OGXServer-->>Operator: Health status
-    Operator->>OGXServer: GET /v1/providers<br/>HTTP/8321
+    Operator->>OGXServer: GET /v1/providers<br/>HTTP/8321, no auth
     OGXServer-->>Operator: Provider info
-    Operator->>K8sAPI: Patch OGXServer/status<br/>HTTPS/6443
+    Operator->>OGXServer: GET /v1/version<br/>HTTP/8321, no auth
+    OGXServer-->>Operator: Version info
 
-    Note over User,OGXServer: Flow 3: Legacy Resource Adoption<br/>(LlamaStackDistribution → OGXServer)
+    Operator->>K8sAPI: PATCH OGXServer/status<br/>HTTPS/443, ServiceAccount token
+    K8sAPI-->>Operator: Status updated
 
-    Operator->>K8sAPI: Read LlamaStackDistribution resources<br/>HTTPS/6443
-    K8sAPI-->>Operator: Legacy Deployment, PVC, Service, Ingress
+    Note over User, OCI: Flow 2: Legacy Resource Adoption (LlamaStack → OGX)
 
-    Note over Operator: Scale legacy Deployment to 0<br/>Wait for pod termination<br/>(prevents RWO PVC multi-attach)
+    User->>K8sAPI: Annotate OGXServer with adoption annotation
+    K8sAPI->>Operator: Watch event (annotation detected)
 
-    Operator->>K8sAPI: Scale legacy Deployment → 0 replicas<br/>HTTPS/6443
-    Operator->>K8sAPI: Transfer PVC ownership (no ownerRef)<br/>Transfer Service/Ingress selectors<br/>HTTPS/6443
-    K8sAPI-->>Operator: Adoption complete
+    Operator->>K8sAPI: Scale down legacy LlamaStackDistribution Deployment to 0<br/>HTTPS/443
+    K8sAPI-->>Operator: Deployment scaled
+
+    Operator->>K8sAPI: List pods, wait for termination<br/>HTTPS/443
+    K8sAPI-->>Operator: Pods terminated (RWO PVC released)
+
+    Operator->>K8sAPI: Detach PVC ownerRef from legacy CR<br/>Label PVC for discovery<br/>HTTPS/443
+    K8sAPI-->>Operator: PVC updated
+
+    Operator->>K8sAPI: Transfer Service/Ingress ownership<br/>Replace controller ownerRef<br/>HTTPS/443
+    K8sAPI-->>Operator: Ownership transferred
+
+    Operator->>K8sAPI: Update OGXServer status (adoption complete)<br/>HTTPS/443
+    K8sAPI-->>Operator: Status updated

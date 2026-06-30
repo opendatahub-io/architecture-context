@@ -1,51 +1,54 @@
 sequenceDiagram
-    participant User as Data Scientist
-    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
+    participant User as User / kubectl
+    participant KubeAPI as Kubernetes API Server<br/>443/TCP HTTPS
     participant Webhook as Validating Webhook<br/>9443/TCP HTTPS
-    participant Operator as OGX K8s Operator<br/>(controller-runtime)
-    participant Kustomize as Kustomize Engine
+    participant Operator as OGX Operator<br/>(Reconciler)
+    participant Kustomize as Kustomize Engine<br/>(embedded)
     participant OGXPod as OGX Server Pod<br/>8321/TCP HTTP
-    participant Provider as Remote Inference Provider<br/>(vLLM/OpenAI/Azure/etc.)<br/>443/TCP HTTPS
+    participant Provider as Remote Provider<br/>(vLLM/OpenAI/Azure/etc.)<br/>443/TCP HTTPS
     participant VectorDB as Vector DB<br/>(PGVector/Milvus/Qdrant)
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
 
-    Note over User,S3: Flow 1: OGXServer Reconciliation
+    Note over User,VectorDB: Flow 1: OGXServer Reconciliation
 
-    User->>K8sAPI: kubectl apply OGXServer CR<br/>Auth: kubeconfig
-    K8sAPI->>Webhook: Validate OGXServer<br/>POST /validate-ogx-io-v1beta1-ogxserver<br/>mTLS (API server cert)
-    Webhook-->>K8sAPI: Admission Response (allow/deny)
-    K8sAPI-->>User: CR created/rejected
+    User->>KubeAPI: kubectl apply OGXServer CR<br/>HTTPS/443, ServiceAccount token
+    KubeAPI->>Webhook: POST /validate-ogx-io-v1beta1-ogxserver<br/>HTTPS/9443, TLS serving cert
+    Webhook-->>KubeAPI: Allowed (validated distribution,<br/>provider IDs, references)
+    KubeAPI->>Operator: Watch event: OGXServer created/updated<br/>HTTPS/443, ServiceAccount token
 
-    K8sAPI->>Operator: Watch event: OGXServer created<br/>HTTPS TLS 1.2+ / SA token
-    Operator->>Kustomize: Render manifests from base templates<br/>Apply plugin pipeline (namespace, prefix, fields)
+    Operator->>Operator: Generate config.yaml from CR spec<br/>(provider configuration)
+    Operator->>Kustomize: Render manifests from base templates<br/>(namespace, name-prefix, field mutation,<br/>network policy transform, autoscaling)
     Kustomize-->>Operator: Rendered K8s resources
 
-    Operator->>K8sAPI: Create Deployment, Service, NetworkPolicy,<br/>PVC, HPA, PDB, ConfigMap, Ingress<br/>HTTPS 443/TCP / SA token
-    K8sAPI-->>Operator: Resources created
+    Operator->>KubeAPI: Create/Update ConfigMap (config.yaml)<br/>HTTPS/443
+    Operator->>KubeAPI: Create/Update Deployment<br/>(with config hash annotation)<br/>HTTPS/443
+    Operator->>KubeAPI: Create/Update Service (ClusterIP)<br/>HTTPS/443
+    Operator->>KubeAPI: Create/Update NetworkPolicy<br/>(auto-injects kube-dns egress)<br/>HTTPS/443
+    Operator->>KubeAPI: Create/Update PVC, HPA, PDB,<br/>ServiceAccount, RoleBinding<br/>HTTPS/443
 
-    Operator->>OGXPod: Health check: GET /v1/providers<br/>HTTP 8321/TCP
-    OGXPod-->>Operator: Provider info
-    Operator->>OGXPod: Version check: GET /v1/version<br/>HTTP 8321/TCP
-    OGXPod-->>Operator: Version info
+    Note over Operator,OGXPod: Status Health Check
+    Operator->>OGXPod: GET /v1/providers<br/>HTTP/8321
+    OGXPod-->>Operator: Provider info response
+    Operator->>OGXPod: GET /v1/version<br/>HTTP/8321
+    OGXPod-->>Operator: Version info response
+    Operator->>KubeAPI: Update OGXServer status<br/>HTTPS/443
 
-    Operator->>K8sAPI: Update OGXServer status<br/>HTTPS 443/TCP / SA token
+    Note over User,VectorDB: Flow 2: OGX Server Inference Request
 
-    Note over User,S3: Flow 2: OGX Server Inference Request
-
-    User->>OGXPod: POST inference request<br/>HTTP/HTTPS {port}/TCP<br/>Auth: Application-level
-    OGXPod->>Provider: Forward to remote provider<br/>HTTPS 443/TCP TLS 1.2+<br/>Auth: API key / IAM credentials
-    Provider-->>OGXPod: Inference response
-    OGXPod->>VectorDB: Vector I/O query<br/>TCP / Configurable TLS<br/>Auth: Password/Token
+    User->>OGXPod: POST /v1/inference<br/>HTTP(S)/8321<br/>Application-level auth
+    OGXPod->>Provider: Forward to remote provider<br/>HTTPS/443<br/>API key / IAM credentials
+    Provider-->>OGXPod: Inference result
+    OGXPod->>VectorDB: Vector I/O query<br/>TCP (configurable port)<br/>Password / Token auth
     VectorDB-->>OGXPod: Vector results
-    OGXPod->>S3: File storage access<br/>HTTPS 443/TCP TLS 1.2+<br/>Auth: AWS credentials
-    S3-->>OGXPod: File data
     OGXPod-->>User: Inference response
 
-    Note over User,S3: Flow 3: Legacy Adoption Migration
+    Note over User,VectorDB: Flow 3: Legacy Adoption Migration
 
-    User->>K8sAPI: Create OGXServer CR with adoption annotations<br/>(ogx.io/adopt-storage, ogx.io/adopt-networking)
-    K8sAPI->>Operator: Watch event: OGXServer with adoption
-    Operator->>K8sAPI: Scale legacy LlamaStackDistribution Deployment to 0<br/>HTTPS 443/TCP / SA token
-    Operator->>K8sAPI: Relabel PVCs, update Service selectors,<br/>transfer Ingress ownership<br/>HTTPS 443/TCP / SA token
-    K8sAPI-->>Operator: Resources adopted
-    Operator->>K8sAPI: Update OGXServer status with adoption timestamps
+    User->>KubeAPI: Create OGXServer CR with adoption annotations<br/>(ogx.io/adopt-storage, ogx.io/adopt-networking)
+    KubeAPI->>Operator: Watch event: OGXServer with adoption annotations
+    Operator->>KubeAPI: Scale legacy LlamaStackDistribution<br/>Deployment to 0 replicas
+    Operator->>KubeAPI: Wait for legacy pods to terminate
+    Operator->>KubeAPI: Adopt PVCs: remove old ownerRef,<br/>relabel for new OGXServer
+    Operator->>KubeAPI: Adopt Services: update selectors<br/>to route to new pods
+    Operator->>KubeAPI: Adopt Ingresses: transfer ownership
+    Operator->>KubeAPI: Record audit timestamp annotations
+    Operator->>KubeAPI: Create new Deployment with<br/>adopted PVC mounts

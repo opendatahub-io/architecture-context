@@ -1,54 +1,58 @@
 sequenceDiagram
-    participant User as User / Data Scientist
+    participant User as User / Platform Operator
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
-    participant MutWebhook as Mutating Webhook<br/>9443/TCP HTTPS TLS
-    participant ValWebhook as Validating Webhook<br/>9443/TCP HTTPS TLS
-    participant Operator as KubeRay Operator
+    participant Operator as KubeRay Operator<br/>(controller-runtime)
     participant HeadPod as Ray Head Pod<br/>8265/TCP HTTP
-    participant WorkerPods as Ray Worker Pods
-    participant Gateway as Platform Gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant KubeRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
-    participant CertMgr as cert-manager<br/>443/TCP HTTPS
-    participant Redis as Redis<br/>6379/TCP
+    participant WorkerPod as Ray Worker Pod
+    participant KRBProxy as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
+    participant Gateway as data-science-gateway<br/>443/TCP HTTPS TLS
+    participant ExtUser as External User<br/>(Browser)
+    participant Redis as External Redis<br/>6379/TCP
 
-    Note over User,Redis: Flow 1: RayCluster Provisioning
-
-    User->>K8sAPI: POST RayCluster CR<br/>Auth: Bearer Token
-    K8sAPI->>MutWebhook: Mutate RayCluster<br/>TLS, API server cert
-    MutWebhook-->>K8sAPI: Set secure-trusted-network=true<br/>Disable enableIngress
-    K8sAPI->>ValWebhook: Validate RayCluster<br/>TLS, API server cert
-    ValWebhook-->>K8sAPI: Validation result<br/>(DNS name, unique workers)
-    K8sAPI-->>User: RayCluster created
-
-    Operator->>K8sAPI: Watch RayCluster events<br/>ServiceAccount token
-    Operator->>K8sAPI: Create Head Pod<br/>ServiceAccount token
-    Operator->>K8sAPI: Create Worker Pods<br/>ServiceAccount token
-    Operator->>K8sAPI: Create Head Service<br/>ServiceAccount token
-
-    Note over User,Redis: Flow 2: RayJob Submission (HTTP Mode)
-
-    User->>K8sAPI: POST RayJob CR<br/>Auth: Bearer Token
-    Operator->>HeadPod: Submit job via Dashboard<br/>8265/TCP HTTP (cluster-internal)
-    loop Poll status
-        Operator->>HeadPod: GET job status<br/>8265/TCP HTTP
+    rect rgb(230, 245, 255)
+        Note over User,HeadPod: Flow 1: RayCluster Lifecycle
+        User->>K8sAPI: Create RayCluster CR<br/>Auth: ServiceAccount token
+        K8sAPI-->>Operator: Watch event (new RayCluster)
+        Operator->>K8sAPI: Create head pod, worker pods,<br/>services, RBAC<br/>Auth: ServiceAccount token
+        K8sAPI-->>HeadPod: Pod scheduled & started
+        K8sAPI-->>WorkerPod: Pod scheduled & started
+        WorkerPod->>HeadPod: Connect to GCS Server<br/>6379/TCP, mTLS (if enabled)
+        Operator->>HeadPod: Poll dashboard status<br/>8265/TCP HTTP
     end
-    Operator->>K8sAPI: Update RayJob status
 
-    Note over User,Redis: Flow 3: Authenticated Dashboard Access (RHOAI)
+    rect rgb(255, 243, 224)
+        Note over User,HeadPod: Flow 2: RayJob Submission (K8sJobMode)
+        User->>K8sAPI: Create RayJob CR<br/>Auth: ServiceAccount token
+        K8sAPI-->>Operator: Watch event (new RayJob)
+        Operator->>K8sAPI: Create RayCluster (if needed)<br/>Auth: ServiceAccount token
+        Operator->>K8sAPI: Create K8s Job (submitter)<br/>Auth: ServiceAccount token
+        Note over Operator,HeadPod: Submitter Job Pod
+        Operator->>HeadPod: ray job submit<br/>8265/TCP HTTP
+        loop Poll job status
+            Operator->>HeadPod: GET /api/jobs/{id}<br/>8265/TCP HTTP
+            HeadPod-->>Operator: Job status response
+        end
+    end
 
-    User->>Gateway: HTTPS request<br/>443/TCP TLS 1.2+, OIDC token
-    Gateway->>KubeRBAC: HTTPRoute forwarding<br/>8443/TCP HTTPS TLS
-    KubeRBAC->>K8sAPI: TokenReview<br/>443/TCP HTTPS, SA token
-    K8sAPI-->>KubeRBAC: Token valid
-    KubeRBAC->>HeadPod: Proxy to Dashboard<br/>8265/TCP HTTP (localhost)
-    HeadPod-->>KubeRBAC: Dashboard response
-    KubeRBAC-->>Gateway: Response
-    Gateway-->>User: Dashboard content
+    rect rgb(232, 245, 233)
+        Note over ExtUser,HeadPod: Flow 3: Authenticated Dashboard Access (OIDC via Gateway API)
+        ExtUser->>Gateway: HTTPS request to dashboard<br/>443/TCP TLS
+        Gateway->>KRBProxy: Forward to head pod sidecar<br/>8443/TCP HTTPS TLS
+        KRBProxy->>K8sAPI: SubjectAccessReview<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: ServiceAccount token
+        K8sAPI-->>KRBProxy: Allowed / Denied
+        alt Authorized
+            KRBProxy->>HeadPod: Proxy to dashboard<br/>8265/TCP HTTP (localhost)
+            HeadPod-->>KRBProxy: Dashboard response
+            KRBProxy-->>Gateway: Response
+            Gateway-->>ExtUser: Dashboard page
+        else Denied
+            KRBProxy-->>Gateway: 403 Forbidden
+            Gateway-->>ExtUser: Access Denied
+        end
+    end
 
-    Note over User,Redis: Flow 4: mTLS Certificate Provisioning
-
-    Operator->>K8sAPI: Create Issuer CR<br/>ServiceAccount token
-    Operator->>K8sAPI: Create Certificate CR<br/>ServiceAccount token
-    CertMgr->>K8sAPI: Issue TLS Secret<br/>(CA -> head/worker certs)
-    Note over HeadPod: Init container waits for<br/>TLS Secret with pod IP SAN
-    HeadPod->>WorkerPods: Ray protocol<br/>10001/TCP mTLS (CA-signed certs)
+    rect rgb(252, 228, 236)
+        Note over HeadPod,Redis: Optional: GCS Fault Tolerance
+        HeadPod->>Redis: GCS data persistence<br/>6379/TCP, password auth (optional)
+        Redis-->>HeadPod: Acknowledgment
+    end

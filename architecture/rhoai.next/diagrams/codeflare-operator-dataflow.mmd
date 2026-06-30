@@ -1,45 +1,41 @@
 sequenceDiagram
-    autonumber
-
     participant User as User Browser
     participant Router as OpenShift Router<br/>443/TCP HTTPS
-    participant OAuthProxy as oauth-proxy sidecar<br/>8443/TCP HTTPS
+    participant OAuthProxy as oauth-proxy Sidecar<br/>8443/TCP HTTPS
+    participant OAuthServer as OpenShift OAuth<br/>443/TCP HTTPS
     participant Dashboard as Ray Dashboard<br/>8265/TCP HTTP
-    participant RayClient as Ray Client
-    participant HeadPod as Ray Head Pod<br/>10001/TCP gRPC
-    participant WorkerPod as Ray Worker Pod<br/>10001/TCP gRPC
     participant Operator as CodeFlare Operator
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant CertCtrl as cert-controller
+    participant InitContainer as mTLS Init Container
+    participant RayHead as Ray Head Pod<br/>10001/TCP mTLS
+    participant RayWorker as Ray Worker Pod<br/>mTLS
+    participant RayClient as Ray Client
 
-    rect rgb(230, 245, 255)
-        Note over User,Dashboard: Flow 1: RayCluster OAuth Dashboard Access (OpenShift)
-        User->>Router: HTTPS/443<br/>TLS 1.2+<br/>No Auth (redirected to OAuth)
-        Router->>OAuthProxy: HTTPS/8443<br/>TLS (reencrypt)<br/>OpenShift OAuth token
-        OAuthProxy->>Dashboard: HTTP/8265<br/>localhost (no encryption)<br/>Proxied (no auth)
-        Dashboard-->>OAuthProxy: Dashboard Response
-        OAuthProxy-->>Router: HTTPS Response
-        Router-->>User: HTTPS Response
-    end
+    Note over User,Dashboard: Flow 1: Ray Dashboard OAuth Access (OpenShift)
+    User->>Router: GET ray-dashboard-{name}<br/>HTTPS/443, TLS 1.2+
+    Router->>OAuthProxy: Forward (TLS Reencrypt)<br/>HTTPS/8443
+    OAuthProxy->>OAuthServer: OAuth redirect flow<br/>HTTPS/443, TLS 1.2+
+    OAuthServer-->>OAuthProxy: Auth token
+    OAuthProxy->>Dashboard: Forward request<br/>HTTP/8265 (localhost)
+    Dashboard-->>OAuthProxy: Dashboard response
+    OAuthProxy-->>Router: HTTPS response
+    Router-->>User: Dashboard HTML
 
-    rect rgb(255, 243, 224)
-        Note over RayClient,HeadPod: Flow 2: RayClient mTLS Connection (OpenShift)
-        RayClient->>Router: HTTPS/443<br/>TLS passthrough<br/>mTLS (per-cluster CA)
-        Router->>HeadPod: gRPC/10001<br/>mTLS<br/>Client cert (signed by cluster CA)
-        HeadPod-->>Router: gRPC Response (mTLS)
-        Router-->>RayClient: Response (TLS passthrough)
-    end
+    Note over Operator,RayWorker: Flow 2: mTLS Certificate Provisioning
+    Operator->>K8sAPI: Watch RayCluster CRs<br/>HTTPS/443, SA Token
+    K8sAPI-->>Operator: RayCluster event
+    Operator->>K8sAPI: Create ca-secret-{cluster}<br/>RSA 2048-bit CA cert
+    Note over InitContainer: Pod starts with init containers
+    InitContainer->>InitContainer: Read CA from Secret volume
+    InitContainer->>InitContainer: Generate node cert<br/>(openssl, signed by cluster CA)
+    InitContainer->>InitContainer: Write cert to EmptyDir
 
-    rect rgb(232, 245, 233)
-        Note over HeadPod,WorkerPod: Flow 3: Ray Head-Worker mTLS Communication
-        HeadPod->>WorkerPod: gRPC/10001<br/>mTLS<br/>Certs signed by per-cluster CA
-        WorkerPod->>HeadPod: gRPC/10001<br/>mTLS<br/>Certs signed by per-cluster CA
-    end
+    Note over RayHead,RayWorker: Flow 2 (cont): Ray Inter-node mTLS
+    RayHead->>RayWorker: Ray GCS/Object Store<br/>10001/TCP, mTLS (cluster CA)
+    RayWorker->>RayHead: Ray protocol<br/>mTLS (cluster CA)
 
-    rect rgb(243, 229, 245)
-        Note over Operator,CertCtrl: Operator Control Plane
-        Operator->>K8sAPI: HTTPS/443<br/>TLS 1.2+<br/>ServiceAccount Token<br/>Watch RayCluster CRs
-        K8sAPI-->>Operator: RayCluster events
-        Operator->>K8sAPI: Create OAuth Service,<br/>Route, SA, Secrets,<br/>NetworkPolicies
-        CertCtrl->>K8sAPI: Rotate webhook TLS certs<br/>Patch webhook configs
-    end
+    Note over RayClient,RayHead: Flow 3: Ray Client Connection (OpenShift)
+    RayClient->>Router: Connect to rayclient-{name}<br/>HTTPS/443, TLS passthrough
+    Router->>RayHead: Forward (TLS Passthrough)<br/>10001/TCP, mTLS
+    RayHead-->>Router: Ray response<br/>mTLS (cluster CA)
+    Router-->>RayClient: Response

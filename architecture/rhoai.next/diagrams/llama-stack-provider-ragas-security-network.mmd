@@ -3,63 +3,79 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph LlamaStackZone["LLAMA STACK SERVER (ClusterIP - Internal)"]
-        direction TB
-        LSServer["Llama Stack Server<br/>8321/TCP HTTP<br/>Plaintext<br/>No Auth (delegated)"]
+    subgraph Ingress["INGRESS (Platform-Managed TLS)"]
+        Gateway["RHOAI Platform Gateway<br/>443/TCP → 8321/TCP<br/>TLS termination<br/>Platform RBAC"]
+    end
 
-        subgraph InlineZone["Inline Mode (in-process)"]
-            InlineProvider["Inline Provider"]
-            InferenceAPI["Inference API<br/>(LLM + Embeddings)"]
-            DatasetIOAPI["DatasetIO API"]
+    subgraph Application["APPLICATION (Llama Stack Server Pod)"]
+        direction TB
+
+        subgraph LlamaStack["Llama Stack Server :8321/TCP HTTP"]
+            EvalAPI["Eval API<br/>/alpha/eval/*"]
+            BenchmarkAPI["Benchmarks API<br/>/benchmarks/register"]
         end
 
-        subgraph RemoteZone["Remote Mode"]
-            RemoteProvider["Remote Provider"]
+        subgraph InlineProvider["Inline Provider (in-process)"]
+            InlineEval["RagasEvaluatorInline<br/>In-process LLM/embed calls"]
+        end
+
+        subgraph RemoteProvider["Remote Provider (KFP)"]
+            RemoteEval["RagasEvaluatorRemote<br/>Pipeline submission + S3 results"]
         end
     end
 
-    subgraph KFPZone["KUBEFLOW PIPELINES (Internal)"]
-        KFPAPI["KFP API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token"]
-        KFPPod["KFP Pipeline Pod<br/>Image: ConfigMap-resolved<br/>Secrets mounted as env vars"]
+    subgraph InferenceBackends["INFERENCE BACKENDS"]
+        Ollama["Ollama<br/>11434/TCP HTTP<br/>No encryption<br/>No auth"]
+        vLLM["vLLM<br/>8443/TCP HTTPS<br/>TLS configurable<br/>Bearer Token"]
+    end
+
+    subgraph PlatformServices["PLATFORM SERVICES (Remote Mode)"]
+        KFP["Kubeflow Pipelines API<br/>443/TCP HTTPS<br/>TLS<br/>Bearer Token"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS<br/>SA Token / kubeconfig"]
+    end
+
+    subgraph KFPExecution["KFP PIPELINE PODS (Remote Mode)"]
+        RetrieveData["KFP: retrieve_data<br/>→ 8321/TCP HTTP"]
+        RunRagas["KFP: run_ragas_evaluation<br/>→ 8321/TCP HTTP<br/>→ 443/TCP HTTPS (S3)"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        S3["S3-Compatible Storage<br/>(MinIO / AWS S3)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Token"]
+        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM credentials"]
     end
 
-    %% Client to Llama Stack
-    Client -->|"HTTP/8321<br/>Plaintext<br/>No Auth"| LSServer
+    %% Flows
+    Client -->|"HTTPS/443<br/>TLS<br/>Platform RBAC"| Gateway
+    Gateway -->|"HTTP/8321<br/>Plaintext<br/>No app-level auth"| EvalAPI
 
-    %% Inline flows (in-process)
-    LSServer --> InlineProvider
-    InlineProvider --> InferenceAPI
-    InlineProvider --> DatasetIOAPI
+    EvalAPI --> InlineEval
+    EvalAPI --> RemoteEval
 
-    %% Remote flows
-    LSServer --> RemoteProvider
-    RemoteProvider -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token<br/>(OpenShift OAuth)"| KFPAPI
-    KFPAPI -->|"Launches"| KFPPod
+    InlineEval -->|"HTTP/11434<br/>No encryption"| Ollama
+    InlineEval -->|"HTTPS/8443<br/>TLS<br/>Bearer Token"| vLLM
 
-    %% KFP Pod egress
-    KFPPod -->|"HTTP/8321<br/>Configurable<br/>No Auth"| LSServer
-    KFPPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM (Secret)"| S3
+    RemoteEval -->|"HTTPS/443<br/>TLS<br/>Bearer Token"| KFP
+    RemoteEval -->|"HTTPS/443<br/>TLS<br/>SA Token"| K8sAPI
+    RemoteEval -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
 
-    %% Remote Provider egress
-    RemoteProvider -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    RemoteProvider -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    KFP -.->|"schedules"| RetrieveData
+    KFP -.->|"schedules"| RunRagas
+    RetrieveData -->|"HTTP/8321"| EvalAPI
+    RunRagas -->|"HTTP/8321"| EvalAPI
+    RunRagas -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef llamastack fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef inline fill:#e1f5fe,stroke:#0288d1,stroke-width:1px
-    classDef remote fill:#fff3e0,stroke:#ef6c00,stroke-width:1px
-    classDef kfp fill:#fce4ec,stroke:#c62828,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef application fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef inference fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef kfppod fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
-    class LSServer llamastack
-    class InlineProvider,InferenceAPI,DatasetIOAPI inline
-    class RemoteProvider remote
-    class KFPAPI,KFPPod kfp
-    class S3,K8sAPI externalservice
+    class Gateway ingress
+    class EvalAPI,BenchmarkAPI,InlineEval,RemoteEval application
+    class Ollama,vLLM inference
+    class KFP,K8sAPI platform
+    class RetrieveData,RunRagas kfppod
+    class S3 externalservice

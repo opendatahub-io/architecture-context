@@ -2,25 +2,42 @@ sequenceDiagram
     participant Client as External Client
     participant Gateway as vllm-orchestrator-gateway<br/>8090/TCP HTTP
     participant Orchestrator as FMS Guardrails Orchestrator<br/>8085/TCP HTTP/HTTPS
+    participant Detectors as Detector Services<br/>(indirect)
+    participant vLLM as vLLM Model Server<br/>(indirect)
 
-    Note over Client,Orchestrator: Flow 1: Non-Streaming Chat Completion with Detection
+    Note over Client,vLLM: Flow 1: Non-Streaming Chat Completion with Detection
 
-    Client->>Gateway: POST /{route}/v1/chat/completions<br/>Content-Type: application/json<br/>Authorization: Bearer {token}<br/>{"model":"...","messages":[...],"stream":false}
-    Note over Gateway: Injects route-specific detector<br/>config (input/output detector maps)<br/>into request payload
-    Gateway->>Orchestrator: POST /api/v2/chat/completions-detection<br/>Authorization: Bearer {token} (forwarded)<br/>x-forwarded-* headers (forwarded)<br/>Conditional mTLS (client cert if present)
-    Orchestrator-->>Gateway: HTTP 200 JSON Response<br/>{"choices":[...],"detections":{...}}
-    Note over Gateway: If detections found AND<br/>fallback_message configured:<br/>replace response content<br/>with fallback message
-    Gateway-->>Client: HTTP 200 JSON Response<br/>{"choices":[{"message":{"content":"..."}}]}
-
-    Note over Client,Orchestrator: Flow 2: Streaming Chat Completion with Detection (SSE)
-
-    Client->>Gateway: POST /{route}/v1/chat/completions<br/>Content-Type: application/json<br/>Authorization: Bearer {token}<br/>{"model":"...","messages":[...],"stream":true}
-    Note over Gateway: Injects route-specific detector<br/>config into request payload
-    Gateway->>Orchestrator: POST /api/v2/chat/completions-detection<br/>Authorization: Bearer {token} (forwarded)<br/>Conditional mTLS
-    loop SSE Stream Chunks
-        Orchestrator-->>Gateway: data: {"choices":[{"delta":{"content":"..."}}],"detections":{...}}
-        Note over Gateway: Parse each SSE chunk;<br/>if detections found AND<br/>fallback_message configured:<br/>replace delta content,<br/>set finish_reason="stop"
-        Gateway-->>Client: data: {"choices":[{"delta":{"content":"..."}}]}
+    Client->>Gateway: POST /{route-name}/v1/chat/completions<br/>Content-Type: application/json<br/>Authorization: Bearer <token>
+    Note over Gateway: Loads route config<br/>Injects detector specs<br/>into request payload
+    Gateway->>Orchestrator: POST /api/v2/chat/completions-detection<br/>Authorization: forwarded<br/>X-Forwarded-*: forwarded<br/>Optional mTLS client cert
+    Note over Orchestrator: Runs input detectors
+    Orchestrator->>Detectors: Evaluate input content
+    Detectors-->>Orchestrator: Detection results
+    Note over Orchestrator: Forwards to LLM
+    Orchestrator->>vLLM: Generate completion
+    vLLM-->>Orchestrator: Model response
+    Note over Orchestrator: Runs output detectors
+    Orchestrator->>Detectors: Evaluate output content
+    Detectors-->>Orchestrator: Detection results
+    Orchestrator-->>Gateway: JSON response with<br/>detections field
+    alt No detections found
+        Gateway-->>Client: 200 OK<br/>Original model response<br/>(OpenAI-compatible JSON)
+    else Detections found
+        Note over Gateway: Replaces content with<br/>route's fallback_message
+        Gateway-->>Client: 200 OK<br/>Fallback message in<br/>choices[0].message.content
     end
-    Orchestrator-->>Gateway: data: [DONE]
-    Gateway-->>Client: data: [DONE]
+
+    Note over Client,vLLM: Flow 2: Streaming Chat Completion (SSE)
+
+    Client->>Gateway: POST /{route-name}/v1/chat/completions<br/>stream: true<br/>Authorization: Bearer <token>
+    Gateway->>Orchestrator: POST /api/v2/chat/completions-detection<br/>stream: true<br/>Optional mTLS
+    Orchestrator-->>Gateway: SSE stream (text/event-stream)
+    loop Each SSE chunk
+        alt No detection in chunk
+            Gateway-->>Client: SSE chunk (pass-through)
+        else Detection found in chunk
+            Note over Gateway: Replaces with fallback_message<br/>(first detection only)
+            Gateway-->>Client: SSE chunk with fallback content
+        end
+    end
+    Gateway-->>Client: SSE: [DONE]

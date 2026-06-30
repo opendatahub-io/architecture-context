@@ -1,128 +1,114 @@
 workspace {
     model {
-        # Personas
-        datascientist = person "Data Scientist" "Builds and deploys AI applications using LLMs"
-        developer = person "Application Developer" "Integrates LLM capabilities into applications via REST APIs"
-        securityEngineer = person "Security Engineer" "Manages authentication policies, ABAC rules, and access control"
+        # People
+        datascientist = person "Data Scientist" "Creates and deploys AI applications using LLMs"
+        appdev = person "Application Developer" "Builds AI-powered applications via APIs"
+        securityengineer = person "Security Engineer" "Manages auth policies and security reviews"
 
-        # Core System
-        llamaStack = softwareSystem "Llama Stack" "Modular AI application server providing standardized REST APIs for LLM inference, agents, RAG, safety, evaluation, and post-training" {
-            server = container "Llama Stack Server" "Main API server exposing REST endpoints on port 8321/TCP" "Python (FastAPI/uvicorn)"
-            middlewareChain = container "ASGI Middleware Chain" "Authentication (JWT/JWKS, introspection), quota/rate-limiting, tracing" "Python ASGI"
-            providerResolver = container "Provider Resolver" "Dynamic import and dependency injection for inline/remote providers" "Python"
-            abacEngine = container "ABAC Engine" "Attribute-based access control with Cedar-like policy rules" "Python"
-            inlineProviders = container "Inline Providers" "In-process providers: vLLM local, FAISS, sentence-transformers, SQLite-vec" "Python"
-            remoteProviders = container "Remote Providers" "HTTP adapter providers for external services" "Python (httpx/openai SDK)"
-            distributionTemplates = container "Distribution Templates" "Pre-configured provider combinations (remote-vllm, starter, ollama)" "YAML Configuration"
-            llamaCLI = container "llama CLI" "Command-line tool for building, running, and managing distributions" "Python CLI"
+        # Main System
+        llamastack = softwareSystem "Llama Stack" "Modular AI application server providing standardized REST APIs for LLM inference, agents, RAG, safety, evaluation, and post-training" {
+            server = container "Llama Stack Server" "Main API server exposing REST endpoints via dynamic route generation from Protocol classes" "Python FastAPI/uvicorn" "8321/TCP"
+            middlewareChain = container "ASGI Middleware Chain" "ClientVersion → Authentication → Quota → Tracing pipeline" "Python ASGI"
+            providerResolver = container "Provider Resolver" "Dynamically imports and wires provider plugins based on StackRunConfig" "Python"
+            inlineProviders = container "Inline Providers" "In-process providers (FAISS, sentence-transformers, SQLite)" "Python"
+            remoteProviders = container "Remote Providers" "HTTP adapter providers for external services (vLLM, OpenAI, pgvector)" "Python httpx/aiohttp"
+            accessControl = container "Access Control (ABAC)" "Cedar-like policy engine with attribute-based rules" "Python"
+            distributionTemplates = container "Distribution Templates" "Pre-configured provider combinations (remote-vllm, starter, ollama)" "YAML"
+            cli = container "llama CLI" "Command-line tool for building, running, managing distributions" "Python"
         }
 
-        # Inference Backends
-        vllm = softwareSystem "vLLM Model Serving" "Primary LLM inference backend for RHOAI (OpenAI-compatible API)" "External - Internal Platform"
-        ollama = softwareSystem "Ollama" "Alternative local LLM inference backend" "External - Internal Platform"
-        openai = softwareSystem "OpenAI API" "Remote LLM inference provider" "External - Cloud"
-        anthropic = softwareSystem "Anthropic API" "Remote LLM inference provider" "External - Cloud"
-        bedrock = softwareSystem "AWS Bedrock" "Remote LLM inference provider (SigV4)" "External - Cloud"
-        gemini = softwareSystem "Google Gemini" "Remote LLM inference provider" "External - Cloud"
-        nvidia = softwareSystem "NVIDIA NIM" "Remote LLM inference provider" "External - Cloud"
+        # Internal Platform Dependencies
+        vllm = softwareSystem "vLLM Model Serving" "Primary LLM inference backend for RHOAI deployments" "Internal RHOAI"
+        otel = softwareSystem "OpenTelemetry Collector" "Distributed tracing and metrics collection" "Internal RHOAI"
 
-        # Data Stores
-        postgresql = softwareSystem "PostgreSQL + pgvector" "Vector storage for RAG, KV store, SQL store for inference state" "External - Internal Platform"
-        redis = softwareSystem "Redis" "KV store for metadata, quota tracking, session state" "External - Internal Platform"
-        mongodb = softwareSystem "MongoDB" "Alternative KV store backend" "External - Internal Platform"
-        chromadb = softwareSystem "ChromaDB" "Vector database for RAG retrieval" "External - Internal Platform"
-        qdrant = softwareSystem "Qdrant" "Vector database (HTTP/gRPC)" "External - Internal Platform"
-        milvus = softwareSystem "Milvus" "Vector database (gRPC)" "External - Internal Platform"
-        weaviate = softwareSystem "Weaviate" "Vector database (GraphQL)" "External - Internal Platform"
+        # External Dependencies - Inference
+        openaiApi = softwareSystem "OpenAI API" "Remote LLM inference provider" "External"
+        anthropicApi = softwareSystem "Anthropic API" "Remote LLM inference provider" "External"
+        bedrockApi = softwareSystem "AWS Bedrock" "Remote LLM inference via AWS" "External"
+        geminiApi = softwareSystem "Google Gemini" "Remote LLM inference provider" "External"
+        ollama = softwareSystem "Ollama" "Alternative local LLM inference backend" "External"
 
-        # Auth & Identity
-        oauth2 = softwareSystem "OAuth2/OIDC Provider" "JWT validation via JWKS and token introspection (RFC 7662)" "External"
+        # External Dependencies - Storage
+        postgresql = softwareSystem "PostgreSQL + pgvector" "Vector storage for RAG, KV store, SQL store" "External"
+        redis = softwareSystem "Redis" "KV store for metadata, quota tracking, session state" "External"
+        chromadb = softwareSystem "Chroma" "Vector database for RAG" "External"
+        qdrant = softwareSystem "Qdrant" "Vector database for RAG" "External"
 
-        # Tools & Services
-        tavilySearch = softwareSystem "Tavily Search" "Web search tool for agents" "External - Cloud"
-        braveSearch = softwareSystem "Brave Search" "Web search tool for agents" "External - Cloud"
-        huggingface = softwareSystem "HuggingFace Hub" "Model weight downloads" "External - Cloud"
+        # External Dependencies - Auth
+        oauth2 = softwareSystem "OAuth2/OIDC Provider" "JWT token validation via JWKS or introspection" "External"
+
+        # External Dependencies - Other
+        huggingface = softwareSystem "HuggingFace Hub" "Model weight downloads and model registry" "External"
+        searchApis = softwareSystem "Search APIs (Tavily/Brave)" "Web search tools for agent capabilities" "External"
         mcpServers = softwareSystem "MCP Servers" "External tool integration via Model Context Protocol" "External"
 
-        # Observability
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing and metrics export (OTLP)" "External - Internal Platform"
-
         # Relationships - Users
-        datascientist -> llamaStack "Creates inference requests, configures agents, runs evaluations" "REST API / 8321/TCP"
-        developer -> llamaStack "Integrates via OpenAI-compatible API" "REST API / 8321/TCP"
-        securityEngineer -> llamaStack "Manages ABAC policies and authentication config" "YAML Configuration"
+        datascientist -> llamastack "Creates inference requests, RAG queries, evaluations" "REST API / Bearer Token"
+        appdev -> llamastack "Builds applications via OpenAI-compatible APIs" "REST API / Bearer Token"
+        securityengineer -> llamastack "Configures ABAC policies and auth providers" "YAML config"
 
-        # Relationships - Internal
+        # Relationships - Internal containers
         server -> middlewareChain "Processes requests through"
-        middlewareChain -> abacEngine "Evaluates access policies"
-        server -> providerResolver "Routes API calls to providers"
-        providerResolver -> inlineProviders "Dispatches to in-process"
-        providerResolver -> remoteProviders "Dispatches to remote"
-        distributionTemplates -> providerResolver "Configures provider mapping"
-        llamaCLI -> server "Manages and controls"
+        middlewareChain -> accessControl "Enforces ABAC policies"
+        server -> providerResolver "Resolves provider implementations"
+        providerResolver -> inlineProviders "Routes to in-process providers"
+        providerResolver -> remoteProviders "Routes to external providers"
+        distributionTemplates -> providerResolver "Configures provider mappings" "YAML"
+        cli -> server "Manages and controls" "CLI"
 
-        # Relationships - Inference Backends
-        llamaStack -> vllm "LLM inference (completions, chat, embeddings)" "HTTP/HTTPS 8000/TCP"
-        llamaStack -> ollama "LLM inference (alternative)" "HTTP 11434/TCP"
-        llamaStack -> openai "Remote inference" "HTTPS/443"
-        llamaStack -> anthropic "Remote inference" "HTTPS/443"
-        llamaStack -> bedrock "Remote inference" "HTTPS/443 SigV4"
-        llamaStack -> gemini "Remote inference" "HTTPS/443"
-        llamaStack -> nvidia "Remote inference" "HTTPS/443"
+        # Relationships - Internal platform
+        remoteProviders -> vllm "LLM inference (completions, chat, embeddings)" "HTTP/HTTPS 8000/TCP, OpenAI-compatible"
+        server -> otel "Exports traces and metrics" "HTTP OTLP"
 
-        # Relationships - Data Stores
-        llamaStack -> postgresql "Vector storage, KV store, SQL store" "PostgreSQL/5432"
-        llamaStack -> redis "KV store, quota tracking" "Redis/6379"
-        llamaStack -> mongodb "Alternative KV store" "MongoDB/27017"
-        llamaStack -> chromadb "Vector database" "HTTP/8000"
-        llamaStack -> qdrant "Vector database" "HTTP-gRPC/6333"
-        llamaStack -> milvus "Vector database" "gRPC/19530"
-        llamaStack -> weaviate "Vector database" "HTTP/8080"
+        # Relationships - External inference
+        remoteProviders -> openaiApi "Remote inference" "HTTPS/443 TLS 1.2+, API Key"
+        remoteProviders -> anthropicApi "Remote inference" "HTTPS/443 TLS 1.2+, API Key"
+        remoteProviders -> bedrockApi "Remote inference" "HTTPS/443 TLS 1.2+ SigV4, AWS IAM"
+        remoteProviders -> geminiApi "Remote inference" "HTTPS/443 TLS 1.2+, API Key"
+        remoteProviders -> ollama "Local inference" "HTTP/11434"
+
+        # Relationships - Storage
+        remoteProviders -> postgresql "Vector storage, metadata, state" "PostgreSQL/5432, Password"
+        remoteProviders -> redis "KV store, quota tracking" "Redis/6379, Optional password"
+        remoteProviders -> chromadb "Vector storage" "HTTP/8000"
+        remoteProviders -> qdrant "Vector storage" "HTTP-gRPC/6333"
 
         # Relationships - Auth
-        llamaStack -> oauth2 "JWT validation, token introspection" "HTTPS/443"
+        middlewareChain -> oauth2 "JWT validation (JWKS/introspection)" "HTTPS/443 TLS 1.2+"
 
-        # Relationships - Tools
-        llamaStack -> tavilySearch "Web search for agents" "HTTPS/443"
-        llamaStack -> braveSearch "Web search for agents" "HTTPS/443"
-        llamaStack -> huggingface "Model downloads" "HTTPS/443"
-        llamaStack -> mcpServers "Tool integration" "HTTP/HTTPS"
-
-        # Relationships - Observability
-        llamaStack -> otelCollector "Traces and metrics export" "HTTP OTLP"
+        # Relationships - Other
+        server -> huggingface "Model downloads" "HTTPS/443 TLS 1.2+, Bearer Token"
+        remoteProviders -> searchApis "Web search for agents" "HTTPS/443 TLS 1.2+, API Key"
+        remoteProviders -> mcpServers "External tool integration" "HTTP/HTTPS"
     }
 
     views {
-        systemContext llamaStack "SystemContext" {
+        systemContext llamastack "SystemContext" {
             include *
             autoLayout
         }
 
-        container llamaStack "Containers" {
+        container llamastack "Containers" {
             include *
             autoLayout
         }
 
         styles {
-            element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
-            element "External - Cloud" {
-                background #999999
-                color #ffffff
-            }
-            element "External - Internal Platform" {
-                background #7ed321
-                color #ffffff
-            }
-            element "External" {
-                background #d4a017
-                color #ffffff
-            }
             element "Person" {
                 shape person
                 background #08427b
+                color #ffffff
+            }
+            element "Software System" {
+                background #1168bd
+                color #ffffff
+            }
+            element "External" {
+                background #999999
+                color #ffffff
+            }
+            element "Internal RHOAI" {
+                background #7ed321
                 color #ffffff
             }
             element "Container" {

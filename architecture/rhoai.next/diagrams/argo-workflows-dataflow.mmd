@@ -1,55 +1,52 @@
 sequenceDiagram
-    participant User as User / DSP API
-    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
-    participant WFC as workflow-controller<br/>Informer Watch
-    participant Pod as Workflow Pod
-    participant Init as argoexec (init)<br/>Load Artifacts
-    participant Main as Main Container<br/>(User Code)
-    participant Wait as argoexec (wait)<br/>Save Artifacts
-    participant S3 as S3 / MinIO<br/>9000/TCP HTTPS
-    participant DB as PostgreSQL<br/>5432/TCP
+    participant DSP as DSP API Server
+    participant K8s as Kubernetes API<br/>443/TCP HTTPS
+    participant WFC as workflow-controller<br/>9090/TCP Metrics<br/>6060/TCP Health
+    participant Pod as Workflow Step Pod
+    participant Exec as argoexec Sidecar
+    participant User as User Container
+    participant S3 as Artifact Repository<br/>(S3/MinIO/GCS)<br/>443/TCP HTTPS
 
-    Note over User,DB: Flow 1: Workflow Execution
+    Note over DSP,S3: Flow 1: Workflow Execution
 
-    User->>K8s: POST Workflow CR<br/>Auth: Bearer Token<br/>TLS 1.2+
-    K8s-->>WFC: Watch event (Workflow created)<br/>TLS 1.2+ / ServiceAccount
-    WFC->>K8s: Create Pod spec<br/>TLS 1.2+ / ServiceAccount
+    DSP->>K8s: 1. Create Workflow CR<br/>HTTPS/443 | SA Token
+    K8s-->>WFC: 2. Watch notification (Workflow created)<br/>HTTPS | SA Token
+    WFC->>K8s: 3. Create step Pod<br/>HTTPS/443 | SA Token
 
-    Note over Pod,Wait: Pod starts with init + wait containers
+    Note over Pod,S3: Pod starts with argoexec + user container
 
-    Init->>S3: Download input artifacts<br/>HTTPS TLS 1.2+<br/>Auth: Access Key/Secret
-    S3-->>Init: Artifact data
-    Init-->>Main: Artifacts available on volume
+    activate Pod
+    activate Exec
 
-    Main->>Main: Execute user workload
+    Exec->>S3: 4. Download input artifacts<br/>HTTPS/443 | IAM/AccessKey
+    S3-->>Exec: Artifact data
 
-    Wait->>Wait: Detect main container completion
-    Wait->>S3: Upload output artifacts<br/>HTTPS TLS 1.2+<br/>Auth: Access Key/Secret
-    S3-->>Wait: Upload confirmed
-    Wait->>K8s: Create WorkflowTaskResult CR<br/>TLS 1.2+ / ServiceAccount
+    activate User
+    Note over User: 5. Execute ML pipeline step
+    User->>User: Write outputs to<br/>/var/run/argo/outputs/
+    deactivate User
 
-    K8s-->>WFC: Watch event (TaskResult)<br/>TLS 1.2+ / ServiceAccount
-    WFC->>K8s: Update Workflow status<br/>TLS 1.2+ / ServiceAccount
-    WFC->>DB: Archive workflow<br/>SSL optional<br/>Auth: Username/Password
+    Exec->>Exec: Compress output artifacts (tar.gz)
+    Exec->>S3: 5. Upload output artifacts<br/>HTTPS/443 | IAM/AccessKey
+    Exec->>K8s: 6. Create WorkflowTaskResult CR<br/>HTTPS/443 | SA Token
 
-    Note over User,DB: Flow 2: Argo Server API Request
+    deactivate Exec
+    deactivate Pod
 
-    participant Client as Client / Dashboard
-    participant Argo as argo-server<br/>2746/TCP HTTPS
+    K8s-->>WFC: 7. Watch notification (TaskResult)<br/>HTTPS | SA Token
+    WFC->>K8s: Update Workflow status<br/>HTTPS/443 | SA Token
 
-    Client->>Argo: GET/POST /api/*<br/>HTTPS TLS 1.2+<br/>Auth: Bearer Token / SSO
-    Argo->>K8s: Kubernetes API call<br/>HTTPS TLS 1.2+<br/>Auth: Delegated Bearer Token
-    K8s-->>Argo: API response
-    Argo->>DB: Query archived workflows<br/>SSL optional<br/>Auth: Username/Password
-    DB-->>Argo: Workflow data
-    Argo->>S3: Fetch artifact for download<br/>HTTPS TLS 1.2+<br/>Auth: Access Key/Secret
-    S3-->>Argo: Artifact data
-    Argo-->>Client: JSON/gRPC Response
+    Note over DSP,S3: Flow 2: Artifact Management Detail
 
-    Note over User,DB: Flow 3: CronWorkflow Scheduling
+    rect rgb(240, 248, 255)
+        Note over Exec,S3: Init Container Phase
+        Exec->>S3: Download input artifacts<br/>HTTPS/443 | IAM/AccessKey
+        S3-->>Exec: Artifact files
 
-    Note right of WFC: Cron controller (internal)<br/>syncs every 10s
+        Note over User: Main Container Phase
+        User->>User: Process data<br/>Write to /var/run/argo/outputs/
 
-    WFC->>K8s: Create Workflow from CronWorkflow<br/>TLS 1.2+ / ServiceAccount
-    WFC->>K8s: Update CronWorkflow status<br/>TLS 1.2+ / ServiceAccount
-    WFC->>K8s: Delete old Workflows (history limit)<br/>TLS 1.2+ / ServiceAccount
+        Note over Exec,S3: Wait/Sidecar Phase
+        Exec->>Exec: Read /var/run/argo/outputs/<br/>Compress to tar.gz
+        Exec->>S3: Upload output artifacts<br/>HTTPS/443 | IAM/AccessKey
+    end

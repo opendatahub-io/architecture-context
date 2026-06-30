@@ -1,0 +1,58 @@
+sequenceDiagram
+    participant Producer as External Producer
+    participant Redis as Redis<br/>6379/TCP
+    participant AP as Async Processor<br/>(N=8 workers)
+    participant Prom as Prometheus<br/>9090/TCP
+    participant IGW as Inference Gateway<br/>80/443 TCP
+    participant Consumer as External Consumer
+
+    Note over Producer,Consumer: Flow 1: Async Inference Request (Redis Sorted Set)
+
+    Producer->>Redis: ZADD request queue<br/>(score=deadline, Redis protocol)<br/>Optional TLS, URL credentials
+    AP->>Redis: ZPOPMIN request queue<br/>(poll for next job)<br/>Optional TLS, URL credentials
+
+    Note over AP: RandomRobinPolicy merges<br/>multiple queue channels
+
+    AP->>Prom: GET PromQL query<br/>HTTP/9090 (no TLS)<br/>Check dispatch gate budget
+    Note over AP: Gate evaluates:<br/>D = max_SYS - running - queue_size<br/>if D > baseline → dispatch
+
+    AP->>IGW: POST /v1/completions<br/>HTTP(S) 80/443<br/>TLS 1.2+ / optional mTLS<br/>Header: x-gateway-inference-objective
+
+    alt Success (2xx)
+        IGW-->>AP: 200 OK (inference result)
+        AP->>Redis: LPUSH result queue<br/>Optional TLS, URL credentials
+        Consumer->>Redis: BRPOP result queue<br/>Optional TLS, URL credentials
+        Redis-->>Consumer: Inference result
+
+    else Rate Limited (429) or Server Error (5xx)
+        IGW-->>AP: 429/5xx response
+        Note over AP: Exponential backoff:<br/>jitter in [temp/2, temp)<br/>capped at 60s<br/>Respects Retry-After header
+
+        AP->>Redis: ZADD request queue<br/>(re-enqueue with backoff score)<br/>Optional TLS, URL credentials
+        Note over AP: Next poll cycle picks up<br/>retried request via ZPOPMIN
+
+    else Deadline Exceeded
+        Note over AP: Request deadline passed<br/>Drop request, log error
+        AP->>Redis: LPUSH result queue<br/>(error result with deadline_exceeded)
+    end
+
+    Note over Producer,Consumer: Flow 2: Async Inference Request (GCP Pub/Sub)
+
+    participant GCP as GCP Pub/Sub<br/>443/TCP
+
+    Producer->>GCP: Publish to request topic<br/>HTTPS/443, TLS 1.2+<br/>GCP IAM auth
+    GCP->>AP: Receive subscription message<br/>HTTPS/443, TLS 1.2+<br/>OAuth2 credentials
+
+    AP->>Prom: GET PromQL query<br/>Check dispatch gate
+    AP->>IGW: POST inference request<br/>HTTP(S) 80/443
+
+    alt Success
+        IGW-->>AP: 200 OK
+        AP->>GCP: Publish to result topic<br/>HTTPS/443, TLS 1.2+<br/>OAuth2 credentials
+    else Failure
+        Note over AP: Nack message for redelivery
+    end
+
+    Note over AP: Graceful Shutdown
+
+    Note over AP: Context cancelled →<br/>1. Re-enqueue in-flight requests<br/>2. Flush pending retries<br/>3. Drain result channel<br/>4. Release quota (sync.Map)<br/>5. Wait drainWg (130s grace)

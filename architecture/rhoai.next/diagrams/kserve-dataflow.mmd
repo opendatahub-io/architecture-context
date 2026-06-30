@@ -1,82 +1,58 @@
 sequenceDiagram
     autonumber
 
-    %% Flow 1: InferenceService Model Serving (Raw Deployment)
+    participant User as User / kubectl
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant Webhook as KServe Webhook<br/>9443/TCP HTTPS TLS
+    participant KServeCtrl as kserve-controller-manager
+    participant LLMCtrl as llmisvc-controller-manager
+    participant StorageInit as storage-initializer<br/>Python Init Container
+    participant CloudStore as Cloud Storage<br/>443/TCP HTTPS TLS 1.2+
+    participant Gateway as Gateway / Istio<br/>443/TCP HTTPS
+    participant EPP as Inference Scheduler<br/>8080/TCP HTTP
+    participant Predictor as Predictor Pod<br/>8080/TCP HTTP
+    participant Client as External Client
+    participant IGRouter as InferenceGraph Router<br/>8080/TCP HTTP
+
     rect rgb(230, 245, 255)
-        Note over Client,CloudStorage: Flow 1 — InferenceService Model Serving (Raw Deployment)
-
-        participant Client as External Client
-        participant GW as HTTPRoute / VirtualService<br/>Gateway / Ingress
-        participant AuthProxy as kube-rbac-proxy<br/>8443/TCP HTTPS<br/>OpenShift Serving Cert
-        participant Predictor as Inference Container<br/>8080/TCP HTTP
-        participant CloudStorage as Cloud Storage<br/>(S3/GCS/Azure/HF)<br/>443/TCP HTTPS
-
-        Client->>GW: HTTPS/443 (TLS 1.2+)<br/>Bearer Token (optional)
-        GW->>AuthProxy: HTTPS/8443<br/>TLS (OpenShift serving cert)
-        Note right of AuthProxy: SubjectAccessReview<br/>validates caller identity
-        AuthProxy->>Predictor: HTTP/8080 (localhost)<br/>No auth (trusted)
-        Predictor-->>AuthProxy: Prediction Response
-        AuthProxy-->>GW: HTTPS Response
-        GW-->>Client: HTTPS Response
-
-        Note over Predictor,CloudStorage: Init Container Phase (before serving)
-        participant StorageInit as storage-initializer<br/>(Init Container)
-        StorageInit->>CloudStorage: HTTPS/443 (TLS 1.2+)<br/>Provider Credentials (IAM/SA/Token)
-        CloudStorage-->>StorageInit: Model Artifacts
+        Note over User,CloudStore: Flow 1: InferenceService Model Deployment
+        User->>K8sAPI: POST InferenceService CR<br/>Auth: Bearer Token (kubeconfig)
+        K8sAPI->>Webhook: Mutate & Validate<br/>TLS (OpenShift serving cert)
+        Webhook-->>K8sAPI: Admitted (defaults applied)
+        K8sAPI-->>KServeCtrl: Watch event: InferenceService created
+        KServeCtrl->>K8sAPI: Create Deployment + init container spec<br/>Auth: ServiceAccount Token
+        Note over StorageInit,CloudStore: Init container phase
+        StorageInit->>CloudStore: Download model artifacts<br/>Auth: AWS IAM / GCS SA / Azure / HF Token
+        CloudStore-->>StorageInit: Model artifacts to emptyDir volume
+        KServeCtrl->>K8sAPI: Create Service<br/>Auth: ServiceAccount Token
+        KServeCtrl->>K8sAPI: Create HTTPRoute / VirtualService / Ingress<br/>Auth: ServiceAccount Token
+        KServeCtrl-->>K8sAPI: InferenceService status: Ready
     end
 
-    %% Flow 2: LLMInferenceService Request Routing
-    rect rgb(255, 245, 230)
-        Note over Client2,vLLM: Flow 2 — LLMInferenceService Request Routing
-
-        participant Client2 as External Client
-        participant GW2 as Gateway<br/>(HTTPRoute)
-        participant EPP as EPP Scheduler<br/>9002/TCP gRPC
-        participant vLLM as vLLM Workload Pod<br/>8000/TCP
-
-        Client2->>GW2: HTTPS/443 (TLS 1.2+)<br/>Bearer Token (optional)
-        GW2->>EPP: gRPC/9002<br/>Configurable encryption
-        Note right of EPP: Endpoint Picker Protocol<br/>selects optimal backend
-        EPP->>vLLM: HTTP/8000<br/>Configurable encryption
-        vLLM-->>EPP: Inference Response
-        EPP-->>GW2: gRPC Response
-        GW2-->>Client2: HTTPS Response
+    rect rgb(255, 243, 224)
+        Note over User,Predictor: Flow 2: LLMInferenceService Disaggregated Serving
+        User->>K8sAPI: POST LLMInferenceService CR<br/>Auth: Bearer Token
+        K8sAPI->>Webhook: Mutate & Validate (v1alpha2)<br/>TLS
+        Webhook-->>K8sAPI: Admitted
+        K8sAPI-->>LLMCtrl: Watch event: LLMInferenceService created
+        LLMCtrl->>K8sAPI: Create Deployment / LeaderWorkerSet<br/>+ scheduler + routing sidecar
+        LLMCtrl->>K8sAPI: Create HTTPRoute + InferencePool
+        LLMCtrl->>K8sAPI: Create ScaledObject (KEDA)<br/>+ OTelCollector
+        Note over Client,Predictor: Inference request path
+        Client->>Gateway: POST /v1/models/model:predict<br/>HTTPS TLS
+        Gateway->>EPP: Forward request<br/>HTTP in-cluster
+        EPP->>Predictor: Route to vLLM decode pod<br/>HTTP in-cluster
+        Predictor-->>EPP: Prediction result
+        EPP-->>Gateway: Response
+        Gateway-->>Client: JSON Response
     end
 
-    %% Flow 3: InferenceGraph Routing
-    rect rgb(230, 255, 230)
-        Note over Client3,ISVCBackend: Flow 3 — InferenceGraph Routing
-
-        participant Client3 as External Client
-        participant Route as OpenShift Route /<br/>Knative Service
-        participant IGRouter as kserve-router<br/>8080/TCP HTTP
-        participant ISVCBackend as InferenceService<br/>Backends
-
-        Client3->>Route: HTTPS/443 (TLS Reencrypt)<br/>Bearer Token (optional)
-        Route->>IGRouter: HTTP/8080<br/>TokenReview + SAR (if enabled)
-        Note right of IGRouter: Graph traversal:<br/>sequence, splitter,<br/>ensemble, switch
-        IGRouter->>ISVCBackend: HTTP/8080<br/>Istio mTLS (in mesh)
-        ISVCBackend-->>IGRouter: Response
-        IGRouter-->>Route: Aggregated Response
-        Route-->>Client3: HTTPS Response
-    end
-
-    %% Flow 4: Local Model Caching
-    rect rgb(245, 230, 255)
-        Note over LMCtrl,NodeStorage: Flow 4 — Local Model Caching
-
-        participant LMCtrl as LocalModel Controller
-        participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-        participant LMNodeAgent as LocalModelNode Agent<br/>(DaemonSet)
-        participant DownloadJob as Download Job<br/>(batch/v1)
-        participant CloudStore as Cloud Storage<br/>443/TCP HTTPS
-        participant NodeStorage as Node-Local Storage<br/>Filesystem
-
-        LMCtrl->>K8sAPI: HTTPS/443 (TLS 1.2+)<br/>ServiceAccount Token
-        Note right of LMCtrl: Creates PV/PVC<br/>for model storage
-        LMNodeAgent->>K8sAPI: Creates download Job
-        DownloadJob->>CloudStore: HTTPS/443 (TLS 1.2+)<br/>Provider Credentials
-        CloudStore-->>DownloadJob: Model Artifacts
-        DownloadJob->>NodeStorage: Write to local disk<br/>SELinux/MCS (ODH)
-        Note right of NodeStorage: Models cached<br/>on node for<br/>fast serving
+    rect rgb(232, 245, 233)
+        Note over Client,IGRouter: Flow 3: InferenceGraph Request Routing
+        Client->>IGRouter: Request to graph endpoint<br/>HTTP 8080/TCP
+        IGRouter->>Predictor: Step 1: InferenceService A<br/>HTTP 80/TCP in-cluster
+        Predictor-->>IGRouter: Result A
+        IGRouter->>Predictor: Step 2: InferenceService B (transform)<br/>HTTP 80/TCP in-cluster
+        Predictor-->>IGRouter: Result B
+        IGRouter-->>Client: Combined/routed response
     end

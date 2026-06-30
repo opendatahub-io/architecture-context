@@ -1,58 +1,53 @@
 sequenceDiagram
     participant EvalHub as eval-hub Service
-    participant Adapter as Garak Adapter Pod
-    participant Sidecar as eval-hub Sidecar<br/>(localhost HTTP)
-    participant KFP as KFP API Server<br/>443/TCP HTTPS
+    participant Adapter as GarakAdapter<br/>(Batch Job Pod)
+    participant Garak as Garak CLI<br/>(Subprocess)
+    participant Target as Target LLM<br/>443/TCP HTTPS
+    participant Judge as Judge LLM<br/>443/TCP HTTPS
+    participant Attacker as Attacker LLM<br/>443/TCP HTTPS
+    participant Evaluator as Evaluator LLM<br/>443/TCP HTTPS
+    participant SDGLLM as SDG LLM<br/>443/TCP HTTPS
     participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant SDGModel as SDG Model<br/>443/TCP HTTPS
-    participant Target as Target Model<br/>443/TCP HTTPS
-    participant Judge as Judge Model<br/>443/TCP HTTPS
-    participant Attacker as Attacker Model<br/>443/TCP HTTPS
-    participant OCI as OCI Registry<br/>443/TCP HTTPS
+    participant KFP as KFP API<br/>443/TCP HTTPS
     participant MLflow as MLflow<br/>443/TCP HTTPS
+    participant OCI as OCI Registry<br/>443/TCP HTTPS
 
-    Note over EvalHub,Adapter: Flow 1: Simple Mode Scan
-    EvalHub->>Adapter: Create K8s Job<br/>(JobSpec via ConfigMap mount)
-    Adapter->>Sidecar: Status: INITIALIZING<br/>(HTTP plaintext)
-    Adapter->>Adapter: Resolve config, build command
-    Adapter->>Sidecar: Status: RUNNING_EVALUATION
-    Adapter->>Target: Garak probes (subprocess)<br/>POST /v1/chat/completions<br/>Auth: Bearer Token, TLS 1.2+
-    Target-->>Adapter: Model responses
-    Adapter->>Adapter: Parse results (JSONL/AVID)<br/>Compute ASR/TBSA metrics
-    Adapter->>Sidecar: Status: POST_PROCESSING
-    Adapter->>OCI: Upload scan artifacts<br/>Auth: Registry creds, TLS 1.2+
-    Adapter->>MLflow: Log metrics & artifacts<br/>Auth: Bearer Token, TLS 1.2+
-    Adapter->>Sidecar: Final results + Status: COMPLETE
+    Note over EvalHub,OCI: Flow 1: Simple Mode Scan
+    EvalHub->>Adapter: JobSpec (ConfigMap mount)<br/>ServiceAccount
+    Adapter->>Adapter: Resolve config (profile + overrides)
+    Adapter->>Garak: Build & execute CLI command<br/>os.setsid process group
+    Garak->>Target: POST /v1/chat/completions<br/>TLS 1.2+ | Bearer Token
+    Target-->>Garak: Response
+    Garak-->>Adapter: JSONL/AVID results (filesystem)
+    Adapter->>Adapter: Parse results, compute TBSA scoring
+    Adapter->>OCI: Push scan artifacts<br/>TLS 1.2+ | Registry creds
+    Adapter->>MLflow: Log experiment & artifacts<br/>TLS 1.2+ | Bearer Token
+    Adapter->>EvalHub: Report JobResults (callback)
 
-    Note over EvalHub,Adapter: Flow 2: KFP Mode Scan
-    EvalHub->>Adapter: Create K8s Job<br/>(JobSpec via ConfigMap mount)
-    Adapter->>Sidecar: Status: INITIALIZING
-    Adapter->>KFP: Submit 6-step pipeline<br/>Auth: SA Token, TLS 1.2+
-    KFP-->>Adapter: Pipeline run ID
-
-    Note over KFP,S3: KFP Pipeline Steps
-    KFP->>S3: Step 1: validate<br/>Auth: AWS IAM
-    KFP->>S3: Step 2: resolve_taxonomy<br/>Auth: AWS IAM
-    KFP->>SDGModel: Step 3: sdg_generate<br/>Auth: Bearer Token
-    SDGModel-->>KFP: Generated adversarial prompts
-    KFP->>S3: Step 4: prepare_prompts<br/>Upload normalized prompts<br/>Auth: AWS IAM
-    KFP->>Target: Step 5: garak_scan<br/>Auth: Bearer Token
+    Note over EvalHub,OCI: Flow 2: KFP Mode Scan
+    EvalHub->>Adapter: JobSpec (ConfigMap mount)
+    Adapter->>S3: Upload config.json (redacted)<br/>TLS 1.2+ | AWS IAM
+    Adapter->>KFP: Submit 6-step pipeline<br/>TLS 1.2+ | SA Token
+    KFP->>KFP: validate step
+    KFP->>S3: resolve_taxonomy artifacts<br/>TLS 1.2+ | AWS IAM
+    KFP->>SDGLLM: sdg_generate prompts<br/>TLS 1.2+ | Bearer Token
+    SDGLLM-->>KFP: Generated adversarial prompts
+    KFP->>KFP: prepare_prompts step
+    KFP->>Target: garak_scan step<br/>TLS 1.2+ | Bearer Token
     Target-->>KFP: Scan results
-    KFP->>S3: Step 6: write_kfp_outputs<br/>Upload results<br/>Auth: AWS IAM
+    KFP->>S3: Upload scan results<br/>TLS 1.2+ | AWS IAM
+    KFP-->>Adapter: Pipeline complete (poll)
+    Adapter->>S3: Download results<br/>TLS 1.2+ | AWS IAM
+    Adapter->>OCI: Push artifacts<br/>TLS 1.2+ | Registry creds
 
-    Adapter->>KFP: Poll run status<br/>Auth: SA Token
-    KFP-->>Adapter: Run complete
-    Adapter->>S3: Download results<br/>Auth: AWS IAM
-    Adapter->>Sidecar: Final results + Status: COMPLETE
-
-    Note over Adapter,Attacker: Flow 3: Intents-Based Risk Assessment
-    Adapter->>SDGModel: Generate adversarial prompts<br/>from harm taxonomy<br/>Auth: Bearer Token
-    SDGModel-->>Adapter: SDG output
-    Adapter->>Target: Garak CAS scan<br/>(multi-probe pipeline)<br/>Auth: Bearer Token
-    Adapter->>Judge: MulticlassJudge<br/>score responses<br/>Auth: Bearer Token
-    Adapter->>Attacker: TAP attack model<br/>jailbreak generation<br/>Auth: Bearer Token
-    Adapter->>Attacker: TAP evaluator<br/>jailbreak scoring<br/>Auth: Bearer Token
-    Target-->>Adapter: Responses
-    Judge-->>Adapter: Scores
-    Attacker-->>Adapter: Attack results
-    Adapter->>Adapter: Aggregate by (intent, stub)<br/>Compute ASR per intent
+    Note over EvalHub,OCI: Flow 3: Intents Pipeline (Simple Mode)
+    Adapter->>SDGLLM: Generate adversarial prompts from taxonomy<br/>TLS 1.2+ | Bearer Token (SDG_API_KEY)
+    SDGLLM-->>Adapter: SDG output
+    Adapter->>Adapter: Build intent stubs & typology files
+    Adapter->>Garak: Execute with multi-probe config
+    Garak->>Target: Scan prompts<br/>TLS 1.2+ | Bearer Token
+    Garak->>Judge: Response evaluation<br/>TLS 1.2+ | Bearer Token (JUDGE_API_KEY)
+    Garak->>Attacker: Tree-of-attacks generation<br/>TLS 1.2+ | Bearer Token (ATTACKER_API_KEY)
+    Garak->>Evaluator: Attack scoring<br/>TLS 1.2+ | Bearer Token (EVALUATOR_API_KEY)
+    Garak-->>Adapter: Multi-probe results
+    Adapter->>Adapter: Generate ART HTML report (Jinja2 + Vega)

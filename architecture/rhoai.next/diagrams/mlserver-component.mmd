@@ -1,93 +1,91 @@
 graph TB
-    subgraph MLServer["MLServer Inference Server"]
+    subgraph MLServerPod["MLServer Pod (KServe InferenceService)"]
         direction TB
 
-        subgraph Servers["Protocol Adapters"]
-            REST["REST Server<br/>FastAPI/Uvicorn<br/>Port 8080/TCP"]
-            GRPC["gRPC Server<br/>grpc.aio<br/>Port 8081/TCP"]
-            Kafka["Kafka Server<br/>aiokafka<br/>Port 9092/TCP"]
-            Metrics["Metrics Server<br/>FastAPI/Uvicorn<br/>Port 8082/TCP"]
+        subgraph Sidecar["Auth Sidecar"]
+            KubeRBACProxy["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS termination + AuthZ"]
         end
 
-        subgraph Core["Core Engine"]
-            DataPlane["DataPlane Handler<br/>Unified request router"]
-            Registry["MultiModelRegistry<br/>Model lifecycle manager"]
-            Repo["Model Repository<br/>Filesystem scanner"]
-            Cache["Response Cache<br/>OrderedDict FIFO"]
-            Batcher["Adaptive Batcher<br/>Time + size batching"]
-            Workers["Parallel Workers<br/>Multiprocess pool"]
-            Codecs["Codec System<br/>Type converter"]
+        subgraph MLServerCore["MLServer Core"]
+            direction TB
+            RESTServer["REST Server<br/>(FastAPI/Uvicorn)<br/>8080/TCP HTTP"]
+            GRPCServer["gRPC Server<br/>(grpc.aio)<br/>8081/TCP gRPC"]
+            MetricsServer["Metrics Server<br/>(Prometheus)<br/>8082/TCP HTTP"]
+
+            DataPlane["DataPlaneHandlers<br/>(shared business logic)"]
+            ModelRegistry["MultiModelRegistry<br/>(model lifecycle)"]
+
+            RESTServer --> DataPlane
+            GRPCServer --> DataPlane
+            DataPlane --> ModelRegistry
         end
 
-        subgraph Runtimes["Runtime Plugins (MLModel)"]
-            SKLearn["sklearn Runtime<br/>.joblib, .pickle, .pkl"]
-            XGBoost["xgboost Runtime<br/>.bst, .json, .ubj"]
-            LightGBM["lightgbm Runtime<br/>.bst"]
-            ONNX["onnx Runtime<br/>.onnx via onnxruntime"]
+        subgraph Runtimes["Pluggable Runtime Backends (RHOAI)"]
+            direction LR
+            SKLearn["mlserver-sklearn<br/>(scikit-learn)"]
+            XGBoost["mlserver-xgboost<br/>(XGBoost)"]
+            LightGBM["mlserver-lightgbm<br/>(LightGBM)"]
+            ONNX["mlserver-onnx<br/>(ONNX Runtime)"]
         end
 
-        subgraph Security["Security"]
-            TrustedRT["Trusted Runtimes<br/>Allowlist at<br/>/etc/mlserver/trusted-runtimes.json"]
+        subgraph Middleware["Cross-Cutting Concerns"]
+            direction LR
+            Batching["Adaptive<br/>Batching"]
+            Cache["Response<br/>Cache"]
+            Codecs["Codec System<br/>(numpy/pandas/string)"]
+            Tracing["OpenTelemetry<br/>Tracing"]
         end
+
+        subgraph ParallelInference["Parallel Inference (optional)"]
+            Dispatcher["Dispatcher<br/>(round-robin)"]
+            Worker1["Worker Process 1"]
+            Worker2["Worker Process N"]
+            Dispatcher --> Worker1
+            Dispatcher --> Worker2
+        end
+
+        KubeRBACProxy -->|"HTTP 8080"| RESTServer
+        KubeRBACProxy -->|"gRPC 8081"| GRPCServer
+
+        ModelRegistry --> SKLearn
+        ModelRegistry --> XGBoost
+        ModelRegistry --> LightGBM
+        ModelRegistry --> ONNX
+
+        DataPlane --> Batching
+        DataPlane --> Cache
+        DataPlane --> Codecs
+
+        ModelRegistry -.->|"multiprocessing.Queue"| Dispatcher
     end
 
-    %% Protocol adapters → DataPlane
-    REST -->|"v2 inference API"| DataPlane
-    GRPC -->|"v2 inference API"| DataPlane
-    Kafka -->|"async inference"| DataPlane
+    Client["External Client"] -->|"HTTPS 8443<br/>Bearer Token"| KubeRBACProxy
 
-    %% Core flow
-    DataPlane -->|"route to model"| Registry
-    DataPlane -->|"check cache"| Cache
-    Registry -->|"discover models"| Repo
-    Registry -->|"validate runtime"| TrustedRT
-    DataPlane -->|"batch requests"| Batcher
-    Batcher -->|"dispatch"| Workers
+    TrustedRuntimes["/etc/mlserver/trusted-runtimes.json<br/>(Runtime Allowlist)"] -.->|"validates"| ModelRegistry
+    ModelStorage["/mnt/models<br/>(PVC / Storage Initializer)"] -.->|"model artifacts"| ModelRegistry
 
-    %% Workers → Runtimes
-    Workers -->|"predict()"| SKLearn
-    Workers -->|"predict()"| XGBoost
-    Workers -->|"predict()"| LightGBM
-    Workers -->|"predict()"| ONNX
+    Prometheus["Prometheus"] -->|"HTTP 8082"| MetricsServer
+    OTelCollector["OpenTelemetry Collector"] <-.->|"gRPC 4317"| Tracing
 
-    %% Codecs
-    Codecs -.->|"decode inputs"| DataPlane
-    Codecs -.->|"encode outputs"| DataPlane
-
-    %% External
-    Client["External Client"] -->|"HTTP :8080"| REST
-    Client -->|"gRPC :8081"| GRPC
-    KafkaBroker["Kafka Broker"] <-->|"9092/TCP"| Kafka
-    Prom["Prometheus"] -->|"scrape :8082"| Metrics
-    ModelFiles["/mnt/models<br/>Model Artifacts"] -->|"file read"| Repo
-
-    %% Platform
-    KServe["KServe Controller"] -->|"manages pod lifecycle"| MLServer
-    StorageInit["Storage Initializer<br/>Init Container"] -->|"populates /mnt/models"| ModelFiles
-    AuthProxy["kube-rbac-proxy<br/>Sidecar"] -->|"auth → forward"| REST
-    AuthProxy -->|"auth → forward"| GRPC
-
-    %% Styling
-    style REST fill:#4a90e2,stroke:#333,color:#fff
-    style GRPC fill:#4a90e2,stroke:#333,color:#fff
-    style Kafka fill:#4a90e2,stroke:#333,color:#fff
-    style Metrics fill:#4a90e2,stroke:#333,color:#fff
-    style DataPlane fill:#2c5f8a,stroke:#333,color:#fff
-    style Registry fill:#2c5f8a,stroke:#333,color:#fff
-    style Repo fill:#2c5f8a,stroke:#333,color:#fff
-    style Cache fill:#2c5f8a,stroke:#333,color:#fff
-    style Batcher fill:#2c5f8a,stroke:#333,color:#fff
-    style Workers fill:#2c5f8a,stroke:#333,color:#fff
-    style Codecs fill:#2c5f8a,stroke:#333,color:#fff
-    style SKLearn fill:#7ed321,stroke:#333,color:#fff
-    style XGBoost fill:#7ed321,stroke:#333,color:#fff
-    style LightGBM fill:#7ed321,stroke:#333,color:#fff
-    style ONNX fill:#7ed321,stroke:#333,color:#fff
-    style TrustedRT fill:#e74c3c,stroke:#333,color:#fff
-    style KServe fill:#f5a623,stroke:#333
-    style StorageInit fill:#f5a623,stroke:#333
-    style AuthProxy fill:#f5a623,stroke:#333
-    style Client fill:#e8e8e8,stroke:#333
-    style KafkaBroker fill:#e8e8e8,stroke:#333
-    style Prom fill:#e8e8e8,stroke:#333
-    style ModelFiles fill:#e8e8e8,stroke:#333
+    style KubeRBACProxy fill:#e8a838,stroke:#333,stroke-width:2px
+    style RESTServer fill:#4a90e2,stroke:#333,stroke-width:2px
+    style GRPCServer fill:#4a90e2,stroke:#333,stroke-width:2px
+    style MetricsServer fill:#4a90e2,stroke:#333,stroke-width:2px
+    style DataPlane fill:#5b6abf,stroke:#333,stroke-width:2px
+    style ModelRegistry fill:#5b6abf,stroke:#333,stroke-width:2px
+    style SKLearn fill:#7ed321,stroke:#333
+    style XGBoost fill:#7ed321,stroke:#333
+    style LightGBM fill:#7ed321,stroke:#333
+    style ONNX fill:#7ed321,stroke:#333
+    style Batching fill:#b8d4e3,stroke:#333
+    style Cache fill:#b8d4e3,stroke:#333
+    style Codecs fill:#b8d4e3,stroke:#333
+    style Tracing fill:#b8d4e3,stroke:#333
+    style Dispatcher fill:#d4a5d0,stroke:#333
+    style Worker1 fill:#d4a5d0,stroke:#333
+    style Worker2 fill:#d4a5d0,stroke:#333
+    style Client fill:#f9f9f9,stroke:#999,stroke-width:2px
+    style Prometheus fill:#e8e8e8,stroke:#333
+    style OTelCollector fill:#e8e8e8,stroke:#333
+    style TrustedRuntimes fill:#f5a623,stroke:#333
+    style ModelStorage fill:#f5a623,stroke:#333

@@ -1,93 +1,77 @@
 graph TB
-    subgraph EvalHubService["EvalHub Service (eval-hub)"]
+    subgraph EvalHubSystem["EvalHub System"]
         direction TB
-        API["eval-hub API Server<br/>Go · 8080/TCP HTTP<br/>8081/TCP Metrics"]
-        Handlers["REST Handlers<br/>/api/v1/evaluations/*"]
-        Storage["Storage Layer<br/>SQLite (dev) / PostgreSQL (prod)"]
-        ConfigWatcher["Config Watcher<br/>fsnotify · live reload"]
-        K8sRuntime["K8s Runtime<br/>Job/ConfigMap/Secret CRUD"]
-        LocalRuntime["Local Runtime<br/>CLI / dev mode"]
-        MLflowClient["MLflow Client<br/>Experiment & run tracking"]
 
-        API --> Handlers
-        Handlers --> Storage
-        Handlers --> K8sRuntime
-        Handlers --> LocalRuntime
-        Handlers --> MLflowClient
-        ConfigWatcher -->|live reload| Handlers
+        subgraph APIPod["eval-hub Pod"]
+            RBAC1["kube-rbac-proxy<br/>8443/TCP → 8080/TCP<br/>TLS 1.2+ / Bearer Token"]
+            API["eval-hub API<br/>Go REST Service<br/>8080/TCP (API)<br/>8081/TCP (metrics)"]
+            RBAC1 -->|"X-Tenant + X-User<br/>headers injected"| API
+        end
+
+        subgraph MCPPod["evalhub-mcp Pod"]
+            RBAC2["kube-rbac-proxy<br/>8443/TCP → 3001/TCP<br/>TLS 1.2+ / Bearer Token"]
+            MCP["evalhub-mcp<br/>MCP Server<br/>3001/TCP"]
+            RBAC2 -->|"X-Tenant + X-User<br/>headers injected"| MCP
+        end
+
+        subgraph EvalJobPod["Evaluation Job Pod"]
+            Init["eval-runtime-init<br/>Init Container"]
+            Adapter["Benchmark Adapter<br/>(lm-eval-harness, RAGAS,<br/>Garak, GuideLLM, LightEval)"]
+            Sidecar["eval-runtime-sidecar<br/>Credential Proxy<br/>8080/TCP"]
+            Init -->|"downloads test data<br/>before start"| Adapter
+            Adapter -->|"HTTP/8080<br/>ref tokens"| Sidecar
+        end
     end
 
-    subgraph AuthProxy["Auth Proxy"]
-        KubeRBACProxy["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS 1.2+"]
-    end
+    %% External Users
+    User["User / Client"] -->|"HTTPS/8443<br/>Bearer Token"| RBAC1
+    AIAssistant["AI Assistant<br/>(Cursor, VS Code,<br/>Claude Code)"] -->|"HTTPS/8443<br/>Bearer Token"| RBAC2
 
-    subgraph JobPod["Evaluation Job Pod"]
-        direction TB
-        InitContainer["eval-runtime-init<br/>Go Init Container<br/>S3 test data download"]
-        Sidecar["eval-runtime-sidecar<br/>Go Native Sidecar (KEP-753)<br/>8080/TCP"]
-        Adapter["Adapter Container<br/>lm-eval-harness / RAGAS /<br/>Garak / GuideLLM / etc."]
+    %% MCP to API
+    MCP -->|"HTTP/8080 or HTTPS/8443<br/>Bearer token"| API
 
-        InitContainer -.->|completes before| Sidecar
-        Sidecar -->|ready before| Adapter
-        Adapter -->|all traffic via| Sidecar
-    end
+    %% API creates Jobs
+    API -->|"creates batch/v1 Jobs"| EvalJobPod
 
-    subgraph MCPServer["MCP Server (evalhub-mcp)"]
-        MCP["evalhub-mcp<br/>Go · 3001/TCP HTTP<br/>or stdio transport"]
-    end
-
-    %% External actors
-    Client["Client<br/>(Dashboard / CLI / User)"]
-    AIAgent["AI Agent<br/>(Claude / Cursor / Copilot)"]
-
-    %% CRDs
+    %% CRD
     EvalHubCR["EvalHub CR<br/>trustyai.opendatahub.io/v1alpha1"]
-    HardwareProfileCR["HardwareProfile CR<br/>infrastructure.opendatahub.io/v1"]
+    TrustyAIOp["TrustyAI Service<br/>Operator"] -->|"watches"| EvalHubCR
+    TrustyAIOp -->|"creates/manages"| APIPod
+    TrustyAIOp -->|"creates/manages"| MCPPod
 
-    %% External services
-    K8sAPI["Kubernetes API<br/>443/TCP HTTPS"]
-    MLflow["MLflow Tracking Server"]
-    S3["S3-compatible Storage"]
-    OCIRegistry["OCI Registry"]
-    ModelEndpoint["Model Inference<br/>Endpoint"]
+    %% Sidecar connections
+    Sidecar -->|"HTTPS<br/>SA token"| API
+    Sidecar -->|"HTTPS<br/>credential injection"| ModelEndpoint["Model Endpoint"]
+    Sidecar -->|"HTTPS<br/>Bearer token"| MLflow["MLflow"]
+    Sidecar -->|"HTTPS/443<br/>OAuth2"| OCIRegistry["OCI Registry"]
 
-    %% Operator
-    TrustyAIOp["TrustyAI Service Operator"]
+    %% Init container
+    Init -->|"HTTPS/443<br/>AWS IAM"| S3["S3 Storage"]
 
-    %% Flows
-    TrustyAIOp -->|manages via CR| EvalHubCR
-    EvalHubCR -->|deploys| EvalHubService
-    TrustyAIOp -->|injects| KubeRBACProxy
+    %% API dependencies
+    API -->|"TCP/5432"| PostgreSQL["PostgreSQL"]
+    API -->|"HTTPS/443<br/>SA token"| K8sAPI["Kubernetes API"]
+    API -->|"gRPC/4317"| OTEL["OpenTelemetry<br/>Collector"]
+    API -->|"HTTPS<br/>Bearer token"| MLflow
 
-    Client -->|HTTPS/8443| KubeRBACProxy
-    KubeRBACProxy -->|HTTP/8080<br/>X-Tenant + X-User| API
-
-    K8sRuntime -->|creates| JobPod
-    K8sRuntime -->|CRUD| K8sAPI
-    K8sRuntime -->|reads| HardwareProfileCR
-    MLflowClient -->|REST| MLflow
-
-    Sidecar -->|status events| KubeRBACProxy
-    Sidecar -->|tracking| MLflow
-    Sidecar -->|artifacts| OCIRegistry
-    Sidecar -->|inference| ModelEndpoint
-    InitContainer -->|download| S3
-
-    AIAgent -->|MCP protocol| MCP
-    MCP -->|HTTP client| API
+    %% Prometheus
+    Prometheus["Prometheus"] -->|"scrape<br/>HTTP/8081"| API
 
     %% Styling
     style API fill:#4a90e2,stroke:#333,color:#fff
-    style Sidecar fill:#4a90e2,stroke:#333,color:#fff
-    style InitContainer fill:#4a90e2,stroke:#333,color:#fff
     style MCP fill:#4a90e2,stroke:#333,color:#fff
-    style KubeRBACProxy fill:#e8744f,stroke:#333,color:#fff
-    style EvalHubCR fill:#f5a623,stroke:#333,color:#fff
-    style HardwareProfileCR fill:#f5a623,stroke:#333,color:#fff
+    style Sidecar fill:#4a90e2,stroke:#333,color:#fff
+    style Init fill:#4a90e2,stroke:#333,color:#fff
+    style RBAC1 fill:#f5a623,stroke:#333,color:#fff
+    style RBAC2 fill:#f5a623,stroke:#333,color:#fff
+    style EvalHubCR fill:#f5a623,stroke:#333
     style TrustyAIOp fill:#7ed321,stroke:#333,color:#fff
-    style K8sAPI fill:#999,stroke:#333,color:#fff
-    style MLflow fill:#999,stroke:#333,color:#fff
-    style S3 fill:#999,stroke:#333,color:#fff
-    style OCIRegistry fill:#999,stroke:#333,color:#fff
-    style ModelEndpoint fill:#999,stroke:#333,color:#fff
     style Adapter fill:#9b59b6,stroke:#333,color:#fff
+    style PostgreSQL fill:#e8e8e8,stroke:#333
+    style K8sAPI fill:#e8e8e8,stroke:#333
+    style MLflow fill:#e8e8e8,stroke:#333
+    style S3 fill:#e8e8e8,stroke:#333
+    style OCIRegistry fill:#e8e8e8,stroke:#333
+    style ModelEndpoint fill:#e8e8e8,stroke:#333
+    style OTEL fill:#e8e8e8,stroke:#333
+    style Prometheus fill:#e8e8e8,stroke:#333

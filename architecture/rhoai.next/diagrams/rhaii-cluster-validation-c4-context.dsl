@@ -1,48 +1,45 @@
 workspace {
     model {
-        user = person "Data Scientist / SRE" "Validates GPU cluster readiness before deploying AI/ML workloads"
+        platformEngineer = person "Platform Engineer" "Validates GPU cluster readiness before AI workload deployment"
+        ciSystem = person "CI/CD System" "Runs automated cluster validation as a pre-deployment gate"
 
-        rhaiiValidation = softwareSystem "RHAII Cluster Validation" "Preflight validation tool for GPU clusters - verifies GPU hardware, RDMA networking, and cross-node bandwidth readiness" {
-            cli = container "CLI Entry Point" "kubectl plugin providing rhaii-validate command with subcommands (all, gpu, rdma, deps, net)" "Go CLI (kubectl plugin)"
-            controller = container "Controller" "Orchestrates per-node Jobs, multi-node network tests, and RDMA checks; collects and aggregates results" "Go"
-            agent = container "Per-Node Agent" "Executes hardware checks via chroot /host: GPU driver validation, ECC errors, PCIe topology, RDMA device enumeration" "Go (same binary, 'run' subcommand)"
-            tcpLatServer = container "TCP Latency Server" "Echo server for round-trip latency measurement between nodes" "Go (embedded in validator binary)" "12865/TCP"
-            toolsImage = container "Validator Tools Image" "Pre-compiled network/RDMA testing tools with CUDA GPUDirect support" "C + iperf3 + perftest (CUDA)" "5201/TCP, 18515/TCP"
+        rhaiiValidation = softwareSystem "RHAII Cluster Validation" "Preflight validation probe for xKS clusters that verifies GPU availability, RDMA connectivity, network bandwidth, required CRDs, and inference readiness" {
+            cli = container "rhaii-validator CLI" "kubectl plugin and standalone CLI for orchestrating cluster validation" "Go (cobra)"
+            controller = container "Controller" "Orchestrates validation lifecycle: namespace/RBAC setup, platform detection, GPU node discovery, Job deployment, result collection" "Go Package"
+            jobrunner = container "Job Runner" "Manages multi-node test execution: server/client Job lifecycle, ring/star/pairwise topology scheduling" "Go Package"
+            checks = container "Check Modules" "Individual validation checks: CRD, operator health, GPU driver/ECC, RDMA devices/topology, TCP bandwidth" "Go Package"
+            config = container "Config" "Platform detection (AKS/EKS/CoreWeave/OCP) and embedded YAML configuration with per-platform thresholds" "Go Package"
+            validatorImage = container "Validator Agent Image" "Same Go binary deployed as per-node agent inside privileged Job pods via hidden 'run' subcommand" "Container Image (Go)"
+            toolsImage = container "Tools Image" "Provides RDMA bandwidth testing (ib_write_bw, ibv_rc_pingpong), TCP bandwidth (iperf3), CUDA runtime for GPUDirect" "Container Image (perftest + iperf3 + CUDA)"
         }
 
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform providing Job scheduling, node discovery, and ConfigMap storage" "External"
-        nvidiaGPUOperator = softwareSystem "NVIDIA GPU Operator" "Provides nvidia.com/gpu device plugin and node labels for GPU node discovery" "External"
-        amdGPUOperator = softwareSystem "AMD GPU Operator" "Provides amd.com/gpu device plugin and node labels for GPU node discovery" "External"
-        nvidiaContainerToolkit = softwareSystem "NVIDIA Container Toolkit" "Container runtime hook that injects nvidia-smi and GPU libraries into containers" "External"
-        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API CRDs (gateways, httproutes)" "External"
-        inferencePool = softwareSystem "InferencePool" "Gateway API Inference Extension CRD" "External"
-        leaderWorkerSet = softwareSystem "LeaderWorkerSet" "Operator for managing distributed workloads (CRD + operator)" "External"
-        certManager = softwareSystem "cert-manager" "Certificate management operator (CRD + operator)" "External"
-        istio = softwareSystem "Istio" "Service mesh - checked for operator health" "External"
-        hostOS = softwareSystem "Host Operating System" "Host filesystem accessed via chroot /host for GPU drivers, PCIe topology, RDMA devices" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server for node discovery, Job management, ConfigMap storage, RBAC, CRD queries" "External"
+        nvidiaGPUOperator = softwareSystem "NVIDIA GPU Operator" "Provides GPU device plugin and driver management, exposes nvidia.com/gpu.present node labels" "External"
+        amdGPUOperator = softwareSystem "AMD GPU Operator" "Provides AMD GPU device plugin, exposes amd.com/gpu.present node labels" "External"
+        certManager = softwareSystem "cert-manager" "Certificate management operator (validated for presence)" "Internal RHOAI"
+        istio = softwareSystem "Istio Service Mesh" "Service mesh (validated for presence in istio-system namespace)" "Internal RHOAI"
+        leaderWorkerSet = softwareSystem "LeaderWorkerSet Operator" "LWS operator for multi-node workloads (validated for presence)" "Internal RHOAI"
+        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API CRDs (validated for presence)" "Internal RHOAI"
+        inferencePool = softwareSystem "InferencePool" "Inference pool CRDs (validated for presence)" "Internal RHOAI"
 
-        # User interactions
-        user -> rhaiiValidation "Runs kubectl rhaii-validate to check cluster readiness"
+        platformEngineer -> rhaiiValidation "Runs cluster validation via kubectl plugin"
+        ciSystem -> rhaiiValidation "Runs automated validation as pre-deployment gate"
 
-        # Internal flows
-        cli -> controller "Parses flags, invokes validation pipeline"
-        controller -> agent "Deploys as per-node privileged Job pods via 'run' subcommand"
-        controller -> toolsImage "Deploys as multi-node Job pods for network/RDMA tests"
-        controller -> tcpLatServer "Deploys as Job pod for TCP latency measurement"
+        cli -> controller "Delegates validation orchestration"
+        controller -> jobrunner "Delegates multi-node test scheduling"
+        controller -> checks "Executes individual validation checks"
+        controller -> config "Reads platform-specific configuration"
+        jobrunner -> validatorImage "Deploys per-node check Jobs"
+        jobrunner -> toolsImage "Deploys network/RDMA test Jobs"
 
-        # External dependencies
-        rhaiiValidation -> kubernetes "Job/Pod/ConfigMap CRUD, node discovery, CRD listing" "HTTPS/6443"
-        agent -> hostOS "GPU driver queries, PCIe topology, RDMA device enumeration" "chroot /host (privileged)"
-        rhaiiValidation -> nvidiaGPUOperator "Discovers GPU nodes via nvidia.com/gpu.present labels" "Node labels"
-        rhaiiValidation -> amdGPUOperator "Discovers GPU nodes via amd.com/gpu.present labels" "Node labels"
-        rhaiiValidation -> nvidiaContainerToolkit "Injects GPU libraries into Job containers" "Container runtime hook"
-
-        # Dependency checks (Tier 1)
-        rhaiiValidation -> gatewayAPI "Validates CRDs are installed" "HTTPS/6443"
-        rhaiiValidation -> inferencePool "Validates CRD is installed" "HTTPS/6443"
-        rhaiiValidation -> leaderWorkerSet "Validates CRD installed and operator healthy" "HTTPS/6443"
-        rhaiiValidation -> certManager "Validates CRD installed and operator healthy" "HTTPS/6443"
-        rhaiiValidation -> istio "Validates operator pods are running" "HTTPS/6443"
+        rhaiiValidation -> kubernetesAPI "Node listing, Job CRUD, ConfigMap CRUD, CRD queries" "HTTPS/443 TLS 1.2+"
+        rhaiiValidation -> nvidiaGPUOperator "Discovers GPU nodes via node labels" "Kubernetes API"
+        rhaiiValidation -> amdGPUOperator "Discovers AMD GPU nodes via node labels" "Kubernetes API"
+        rhaiiValidation -> certManager "Validates operator health (pod listing)" "Kubernetes API"
+        rhaiiValidation -> istio "Validates service mesh health (pod listing)" "Kubernetes API"
+        rhaiiValidation -> leaderWorkerSet "Validates LWS operator health (pod listing)" "Kubernetes API"
+        rhaiiValidation -> gatewayAPI "Checks CRD presence" "Kubernetes API"
+        rhaiiValidation -> inferencePool "Checks CRD presence" "Kubernetes API"
     }
 
     views {
@@ -57,18 +54,22 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
+            element "Internal RHOAI" {
+                background #7ed321
+                color #ffffff
+            }
             element "Person" {
+                shape person
                 background #08427b
                 color #ffffff
-                shape person
+            }
+            element "Software System" {
+                background #1168bd
+                color #ffffff
             }
             element "Container" {
                 background #438dd5

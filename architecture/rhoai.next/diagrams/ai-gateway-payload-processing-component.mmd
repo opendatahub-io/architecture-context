@@ -3,119 +3,114 @@ graph TB
         Client[Client Application]
     end
 
-    subgraph AIGateway["AI Gateway (Istio Gateway)"]
-        Envoy["Envoy Proxy<br/>EnvoyFilter ext_proc"]
+    subgraph AIGateway["AI Gateway (Istio Envoy)"]
+        EnvoyFilter["EnvoyFilter<br/>ext_proc attachment"]
     end
 
     subgraph PayloadProcessing["AI Gateway Payload Processing"]
         direction TB
 
-        subgraph ExtProc["ext_proc gRPC Service (9004/TCP)"]
+        subgraph PluginPipeline["Plugin Pipeline (ext_proc 9004/TCP)"]
             direction TB
-            HeadersGuard["maas-headers-guard<br/>Strip x-maas-* headers"]
-            ModelResolver["model-provider-resolver<br/>Resolve model → provider"]
-            APITranslation["api-translation<br/>OpenAI ↔ Provider format"]
-            APIKeyInjection["apikey-injection<br/>Inject credentials"]
-            NemoReqGuard["nemo-request-guard<br/>(optional)"]
-            NemoRespGuard["nemo-response-guard<br/>(optional)"]
+            MaasGuard["maas-headers-guard<br/>Strips x-maas-* headers"]
+            ModelResolver["model-provider-resolver<br/>Resolves model → provider"]
+            ApiTranslation["api-translation<br/>OpenAI ↔ Provider format"]
+            ApikeyInjection["apikey-injection<br/>Injects API keys / SigV4"]
+            NemoRequest["nemo-request-guard<br/>Input content safety"]
+            NemoResponse["nemo-response-guard<br/>Output content safety"]
 
-            HeadersGuard --> ModelResolver
-            ModelResolver --> APITranslation
-            APITranslation --> APIKeyInjection
-            NemoReqGuard -.->|optional| HeadersGuard
-            NemoRespGuard -.->|optional| APITranslation
+            MaasGuard --> ModelResolver
+            ModelResolver --> ApiTranslation
+            ApiTranslation --> ApikeyInjection
+            ApikeyInjection --> NemoRequest
         end
 
-        subgraph Controllers["Kubernetes Controllers"]
-            EPController["ExternalProvider<br/>Controller"]
-            EMController["ExternalModel<br/>Controller"]
-            LegacyController["Legacy Migration<br/>Controller"]
+        subgraph Controllers["Embedded Controllers"]
+            direction TB
+            EMController["ExternalModel Controller<br/>Creates HTTPRoutes"]
+            EPController["ExternalProvider Controller<br/>Creates Service, ServiceEntry,<br/>DestinationRule"]
+            LegacyController["Legacy Migration Controller<br/>maas → inference API"]
         end
 
-        HealthCheck["Health Check<br/>9005/TCP /healthz"]
+        subgraph InMemoryStore["In-Memory Stores"]
+            ModelStore["Model-Provider Store<br/>(CycleState)"]
+            SecretStore["Secret Store<br/>(API keys)"]
+        end
     end
 
-    subgraph CRDs["Custom Resources"]
-        ExternalModelCR["ExternalModel CR<br/>inference.opendatahub.io/v1alpha1"]
-        ExternalProviderCR["ExternalProvider CR<br/>inference.opendatahub.io/v1alpha1"]
-        LegacyModelCR["ExternalModel CR<br/>maas.opendatahub.io/v1alpha1<br/>(legacy)"]
+    subgraph CRDs["Custom Resource Definitions"]
+        ExternalModel["ExternalModel CR<br/>inference.opendatahub.io/v1alpha1"]
+        ExternalProvider["ExternalProvider CR<br/>inference.opendatahub.io/v1alpha1"]
+        LegacyModel["ExternalModel CR (legacy)<br/>maas.opendatahub.io"]
     end
 
-    subgraph K8sResources["Created Resources"]
+    subgraph IstioResources["Istio Networking Resources"]
         HTTPRoute["HTTPRoute<br/>(Gateway API)"]
-        SvcEntry["ServiceEntry<br/>(Istio MESH_EXTERNAL)"]
-        DestRule["DestinationRule<br/>(TLS SIMPLE)"]
         ExtNameSvc["ExternalName Service"]
+        ServiceEntry["ServiceEntry<br/>(MESH_EXTERNAL)"]
+        DestRule["DestinationRule<br/>(TLS SIMPLE)"]
     end
 
     subgraph Providers["External LLM Providers"]
-        OpenAI["OpenAI<br/>api.openai.com"]
-        Anthropic["Anthropic<br/>api.anthropic.com"]
-        Azure["Azure OpenAI<br/>{resource}.openai.azure.com"]
-        Bedrock["AWS Bedrock<br/>bedrock-runtime.{region}.amazonaws.com"]
-        VertexAI["Google Vertex AI<br/>aiplatform.googleapis.com"]
+        OpenAI["OpenAI API"]
+        Anthropic["Anthropic API"]
+        Azure["Azure OpenAI"]
+        Bedrock["AWS Bedrock"]
+        Vertex["Vertex AI"]
     end
 
-    K8sAPI["Kubernetes API Server"]
+    subgraph K8s["Kubernetes"]
+        Secrets["Secrets<br/>(labeled: bbr-managed=true)"]
+        K8sAPI["Kubernetes API"]
+    end
+
     NeMo["NeMo Guardrails<br/>(optional)"]
-    Secrets["Kubernetes Secrets<br/>(provider credentials)"]
 
     %% Client flow
-    Client -->|HTTPS/443| Envoy
-    Envoy -->|gRPC/9004<br/>mTLS| ExtProc
+    Client -->|"HTTPS/443"| EnvoyFilter
+    EnvoyFilter -->|"gRPC/9004<br/>ext_proc"| MaasGuard
 
-    %% Controller watches
-    ExternalProviderCR -->|watched by| EPController
-    ExternalModelCR -->|watched by| EMController
-    LegacyModelCR -->|watched by| LegacyController
+    %% Controller flows
+    ExternalModel -->|watched by| EMController
+    ExternalProvider -->|watched by| EPController
+    LegacyModel -->|watched by| LegacyController
 
-    %% Controller creates
-    EPController -->|creates| ExtNameSvc
-    EPController -->|creates| SvcEntry
-    EPController -->|creates| DestRule
     EMController -->|creates| HTTPRoute
-    LegacyController -->|migrates to| ExternalModelCR
-    LegacyController -->|migrates to| ExternalProviderCR
+    EPController -->|creates| ExtNameSvc
+    EPController -->|creates| ServiceEntry
+    EPController -->|creates| DestRule
+    LegacyController -->|creates| ExternalModel
+    LegacyController -->|creates| ExternalProvider
 
     %% Plugin dependencies
-    ModelResolver -->|reads from| ExternalModelCR
-    ModelResolver -->|reads from| ExternalProviderCR
-    APIKeyInjection -->|reads from| Secrets
-    NemoReqGuard -.->|HTTP POST| NeMo
-    NemoRespGuard -.->|HTTP POST| NeMo
+    ModelResolver -->|reads| ModelStore
+    ApikeyInjection -->|reads| SecretStore
+    Secrets -->|watched by| SecretStore
+    ExternalModel -->|reconciled to| ModelStore
+    ExternalProvider -->|reconciled to| ModelStore
+    NemoRequest -->|"HTTP POST"| NeMo
+    NemoResponse -->|"HTTP POST"| NeMo
 
-    %% Egress via mesh
-    Envoy -->|HTTPS/443<br/>TLS via DestRule| OpenAI
-    Envoy -->|HTTPS/443<br/>TLS via DestRule| Anthropic
-    Envoy -->|HTTPS/443<br/>TLS via DestRule| Azure
-    Envoy -->|HTTPS/443<br/>TLS via DestRule| Bedrock
-    Envoy -->|HTTPS/443<br/>TLS via DestRule| VertexAI
+    %% Egress
+    EnvoyFilter -->|"via HTTPRoute +<br/>DestinationRule TLS"| ExtNameSvc
+    ExtNameSvc -->|DNS| OpenAI
+    ExtNameSvc -->|DNS| Anthropic
+    ExtNameSvc -->|DNS| Azure
+    ExtNameSvc -->|DNS| Bedrock
+    ExtNameSvc -->|DNS| Vertex
 
-    %% K8s API
-    Controllers -->|HTTPS/443| K8sAPI
+    Controllers -->|"HTTPS/443 mTLS"| K8sAPI
 
     %% Styling
-    style ExtProc fill:#4a90e2,stroke:#2c5d8f,color:#fff
-    style HeadersGuard fill:#5ba3f5,stroke:#2c5d8f,color:#fff
-    style ModelResolver fill:#5ba3f5,stroke:#2c5d8f,color:#fff
-    style APITranslation fill:#5ba3f5,stroke:#2c5d8f,color:#fff
-    style APIKeyInjection fill:#5ba3f5,stroke:#2c5d8f,color:#fff
-    style NemoReqGuard fill:#7bb8f7,stroke:#2c5d8f,color:#fff
-    style NemoRespGuard fill:#7bb8f7,stroke:#2c5d8f,color:#fff
-    style EPController fill:#4a90e2,stroke:#2c5d8f,color:#fff
-    style EMController fill:#4a90e2,stroke:#2c5d8f,color:#fff
-    style LegacyController fill:#4a90e2,stroke:#2c5d8f,color:#fff
-    style ExternalModelCR fill:#f5a623,stroke:#c7841a
-    style ExternalProviderCR fill:#f5a623,stroke:#c7841a
-    style LegacyModelCR fill:#f5a623,stroke:#c7841a
-    style HTTPRoute fill:#7ed321,stroke:#5a9a17
-    style SvcEntry fill:#7ed321,stroke:#5a9a17
-    style DestRule fill:#7ed321,stroke:#5a9a17
-    style ExtNameSvc fill:#7ed321,stroke:#5a9a17
-    style OpenAI fill:#e8e8e8,stroke:#999
-    style Anthropic fill:#e8e8e8,stroke:#999
-    style Azure fill:#e8e8e8,stroke:#999
-    style Bedrock fill:#e8e8e8,stroke:#999
-    style VertexAI fill:#e8e8e8,stroke:#999
-    style Envoy fill:#9b59b6,stroke:#6c3483,color:#fff
-    style Client fill:#f9f9f9,stroke:#999
+    classDef plugin fill:#4a90e2,stroke:#333,color:#fff
+    classDef controller fill:#7ed321,stroke:#333,color:#fff
+    classDef crd fill:#f5a623,stroke:#333,color:#fff
+    classDef external fill:#999,stroke:#333,color:#fff
+    classDef provider fill:#e8544e,stroke:#333,color:#fff
+    classDef store fill:#9b59b6,stroke:#333,color:#fff
+
+    class MaasGuard,ModelResolver,ApiTranslation,ApikeyInjection,NemoRequest,NemoResponse plugin
+    class EMController,EPController,LegacyController controller
+    class ExternalModel,ExternalProvider,LegacyModel,HTTPRoute,ExtNameSvc,ServiceEntry,DestRule crd
+    class OpenAI,Anthropic,Azure,Bedrock,Vertex provider
+    class ModelStore,SecretStore store

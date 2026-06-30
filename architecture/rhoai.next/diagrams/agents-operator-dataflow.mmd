@@ -1,0 +1,63 @@
+sequenceDiagram
+    autonumber
+
+    participant User as User / kubectl
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant ARCtrl as AgentRuntime<br/>Controller
+    participant MutWH as Mutating Webhook<br/>9443/TCP HTTPS
+    participant CRCtrl as ClientRegistration<br/>Controller
+    participant Keycloak as Keycloak<br/>8080/TCP HTTP
+    participant Pod as Agent Pod
+    participant ABProxy as authbridge-proxy<br/>(sidecar)
+    participant SPIRE as SPIRE Workload API<br/>Unix Socket
+    participant ACCtrl as AgentCard<br/>Controller
+    participant AgentSvc as Agent Service<br/>8000/TCP HTTP
+    participant Caller as External Caller
+
+    rect rgb(230, 245, 255)
+        Note over User,Pod: Flow 1: AgentRuntime Enrollment
+        User->>K8sAPI: CREATE AgentRuntime CR<br/>Auth: kubectl credentials
+        K8sAPI->>ARCtrl: Watch event
+        ARCtrl->>K8sAPI: Patch Deployment labels + config-hash<br/>Auth: ServiceAccount token
+        ARCtrl->>K8sAPI: Ensure authbridge-config ConfigMap<br/>Auth: ServiceAccount token
+        Note over K8sAPI,MutWH: Rolling update triggers Pod CREATE
+        K8sAPI->>MutWH: AdmissionReview (Pod CREATE)<br/>TLS (cert-manager)
+        MutWH->>K8sAPI: Read namespace ConfigMap + feature gates<br/>Auth: ServiceAccount token
+        MutWH-->>K8sAPI: Mutated Pod spec<br/>(sidecars + volumes injected)
+    end
+
+    rect rgb(255, 245, 230)
+        Note over CRCtrl,Keycloak: Flow 1b: Client Registration (async)
+        CRCtrl->>K8sAPI: Watch AgentRuntime CRs
+        CRCtrl->>Keycloak: Register OAuth2 client<br/>Auth: Basic Auth (admin credentials)
+        Keycloak-->>CRCtrl: Client ID + Secret
+        CRCtrl->>K8sAPI: CREATE keycloak-client-credentials Secret<br/>Auth: ServiceAccount token
+    end
+
+    rect rgb(230, 255, 230)
+        Note over ACCtrl,AgentSvc: Flow 2: Agent Card Discovery & Verification
+        ACCtrl->>AgentSvc: GET /.well-known/agent.json<br/>HTTP (unauthenticated)
+        AgentSvc-->>ACCtrl: Agent Card JSON
+        Note over ACCtrl: OR mTLS-authenticated fetch
+        ACCtrl->>SPIRE: Fetch SVID + trust bundle<br/>Auth: SPIFFE identity
+        ACCtrl->>AgentSvc: GET /.well-known/agent.json<br/>mTLS (SPIFFE cert)
+        AgentSvc-->>ACCtrl: Signed Agent Card (JWS)
+        Note over ACCtrl: Verify JWS signature (x5c chain)<br/>Validate SPIFFE identity binding<br/>Optional: Sigstore attestation
+        ACCtrl->>K8sAPI: Update AgentCard status<br/>(Verified condition)
+    end
+
+    rect rgb(255, 230, 255)
+        Note over Caller,ABProxy: Flow 3: AuthBridge Proxy Request (proxy-sidecar mode)
+        Caller->>ABProxy: Request on :8000<br/>Auth: JWT Bearer token
+        Note over ABProxy: Validate JWT (issuer, audience)<br/>via Keycloak OIDC
+        ABProxy->>Pod: Forward to app container<br/>:newAgentPort (localhost)
+        Pod-->>ABProxy: Response
+        ABProxy-->>Caller: Response
+
+        Note over Pod,ABProxy: Egress via forward proxy
+        Pod->>ABProxy: Outbound request via HTTP_PROXY<br/>:8081 (localhost)
+        Note over ABProxy: Token exchange<br/>(client credentials → target audience)
+        ABProxy->>AgentSvc: Forward with exchanged token<br/>Optional: mTLS (SPIFFE)
+        AgentSvc-->>ABProxy: Response
+        ABProxy-->>Pod: Response
+    end

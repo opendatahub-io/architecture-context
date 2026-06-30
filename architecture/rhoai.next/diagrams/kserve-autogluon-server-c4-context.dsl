@@ -1,46 +1,41 @@
 workspace {
     model {
-        user = person "Data Scientist" "Deploys and queries AutoGluon models via InferenceService"
+        dataScientist = person "Data Scientist" "Creates and deploys AutoGluon tabular and time series models for inference"
+        mlEngineer = person "ML Engineer" "Configures InferenceService CRs and ClusterServingRuntimes"
 
-        autogluonServer = softwareSystem "KServe AutoGluon Server" "Serves AutoGluon TabularPredictor and TimeSeriesPredictor models via REST v1/v2 and gRPC inference protocols" {
-            serverProcess = container "AutoGluon Server" "Python ML inference server with auto-detection of model type (Tabular vs TimeSeries)" "Python 3.11 / uvicorn / grpcio"
-            tabularModel = container "Tabular Model Handler" "Handles TabularPredictor inference via v1 JSON, v2 tensor, and gRPC protocols; supports predict_proba" "Python / autogluon.tabular 1.5.0+rhaiv.3"
-            timeseriesModel = container "TimeSeries Model Handler" "Handles TimeSeriesPredictor forecasting via v1 JSON protocol with column metadata mapping" "Python / autogluon.timeseries 1.5.0+rhaiv.3"
-            kserveSDK = container "KServe Python SDK" "Model server framework providing inference protocol handling, health probes, and Prometheus metrics" "Python / kserve 0.19.0"
-            kserveStorage = container "KServe Storage" "Downloads model artifacts from cloud storage backends at startup" "Python / kserve-storage 0.19.0"
+        autogluonServer = softwareSystem "AutoGluon Model Server" "KServe model server serving AutoGluon TabularPredictor and TimeSeriesPredictor models via REST v1/v2 and gRPC protocols" {
+            mainModule = container "__main__.py" "Entry point: parses args, initializes runtime paths, creates model server" "Python"
+            predictorFactory = container "predictor_factory.py" "Auto-detects model type (Tabular vs TimeSeries) and loads appropriate predictor" "Python"
+            tabularModel = container "tabular_model.py" "Serves AutoGluon TabularPredictor with v1 JSON and v2 tensor protocol support" "Python"
+            timeseriesModel = container "timeseries_model.py" "Serves AutoGluon TimeSeriesPredictor with v1 JSON protocol" "Python"
+            versionCompat = container "version_compat.py" "Patch-level version tolerance for AutoGluon model loading (handles +rhaiv.N suffixes)" "Python"
+            kserveSDK = container "kserve SDK" "Model server framework: HTTP/gRPC serving, protocol handling, metrics" "Python Library (vendored 0.19.0)"
+            kserveStorage = container "kserve-storage" "Model artifact download from S3, GCS, Azure Blob, HuggingFace Hub" "Python Library (vendored 0.19.0)"
         }
 
-        kserveController = softwareSystem "KServe Controller" "Manages InferenceService pod lifecycle and ingress configuration" "Internal RHOAI"
-        clusterServingRuntime = softwareSystem "ClusterServingRuntime" "Defines runtime container image, resources, and model format configuration" "Internal RHOAI"
-        platformIngress = softwareSystem "Platform Ingress" "Routes external traffic and handles TLS termination and authentication" "Gateway API / Istio"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal Platform"
+        kubeRBACProxy = softwareSystem "kube-rbac-proxy" "Sidecar providing TLS termination and Bearer Token authentication" "Sidecar"
+        kserveController = softwareSystem "KServe Controller" "Manages InferenceService lifecycle, creates/updates predictor pods" "Internal RHOAI"
+        clusterServingRuntime = softwareSystem "ClusterServingRuntime" "Defines container image, ports, and protocol for autogluon model format" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal RHOAI"
+        s3Storage = softwareSystem "S3-Compatible Storage" "Model artifact storage (AWS S3)" "External"
+        gcsStorage = softwareSystem "Google Cloud Storage" "Model artifact storage (GCS)" "External"
+        azureStorage = softwareSystem "Azure Blob Storage" "Model artifact storage (Azure)" "External"
+        hfHub = softwareSystem "HuggingFace Hub" "Model artifact repository" "External"
 
-        s3 = softwareSystem "S3-compatible Storage" "Model artifact storage" "External"
-        gcs = softwareSystem "Google Cloud Storage" "Model artifact storage" "External"
-        azureBlob = softwareSystem "Azure Blob Storage" "Model artifact storage" "External"
-        huggingfaceHub = softwareSystem "HuggingFace Hub" "Model repository and artifact storage" "External"
+        # Relationships
+        dataScientist -> autogluonServer "Sends inference requests (POST /v1/models/{name}:predict)" "HTTPS/8443 via kube-rbac-proxy"
+        mlEngineer -> kserveController "Creates InferenceService CR with modelFormat: autogluon" "kubectl/API"
 
-        # User interactions
-        user -> autogluonServer "Sends inference requests via HTTPS/443"
-        user -> kserveController "Creates InferenceService CR via kubectl"
+        kserveController -> autogluonServer "Manages pod lifecycle via InferenceService CR"
+        clusterServingRuntime -> autogluonServer "Defines runtime spec (image, ports, args)"
+        kubeRBACProxy -> autogluonServer "Proxies authenticated requests" "HTTP/8080 plaintext localhost"
 
-        # Platform interactions
-        kserveController -> autogluonServer "Manages pod lifecycle" "K8s API / mTLS"
-        clusterServingRuntime -> kserveController "Defines runtime config" "CRD"
-        platformIngress -> autogluonServer "Routes inference traffic" "HTTP/8080, gRPC/8081"
-        prometheus -> autogluonServer "Scrapes metrics" "HTTP/8080"
+        autogluonServer -> s3Storage "Downloads model artifacts at startup" "HTTPS/443 AWS IAM"
+        autogluonServer -> gcsStorage "Downloads model artifacts at startup" "HTTPS/443 GCP SA"
+        autogluonServer -> azureStorage "Downloads model artifacts at startup" "HTTPS/443 Azure Identity"
+        autogluonServer -> hfHub "Downloads model artifacts at startup" "HTTPS/443 HF Token"
 
-        # External service interactions
-        autogluonServer -> s3 "Downloads model artifacts" "HTTPS/443, TLS 1.2+, AWS IAM"
-        autogluonServer -> gcs "Downloads model artifacts" "HTTPS/443, TLS 1.2+, GCP SA"
-        autogluonServer -> azureBlob "Downloads model artifacts" "HTTPS/443, TLS 1.2+, Azure creds"
-        autogluonServer -> huggingfaceHub "Downloads model artifacts" "HTTPS/443, TLS 1.2+, Bearer Token"
-
-        # Internal container relationships
-        serverProcess -> kserveSDK "Uses for serving framework"
-        serverProcess -> tabularModel "Delegates tabular inference"
-        serverProcess -> timeseriesModel "Delegates timeseries inference"
-        serverProcess -> kserveStorage "Downloads models at startup"
+        prometheus -> autogluonServer "Scrapes metrics" "HTTP/8080 /metrics"
     }
 
     views {
@@ -63,18 +58,18 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal Platform" {
+            element "Sidecar" {
+                background #e8a838
+                color #ffffff
+            }
+            element "Software System" {
                 background #4a90e2
                 color #ffffff
             }
             element "Person" {
-                shape Person
                 background #08427b
                 color #ffffff
-            }
-            element "Software System" {
-                background #1168bd
-                color #ffffff
+                shape person
             }
             element "Container" {
                 background #438dd5

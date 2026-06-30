@@ -1,234 +1,267 @@
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                        │
-│                                                                              │
-│  [User / Dashboard / Workbench]                                              │
-│         │                                                                    │
-│         │ Port: 443/TCP                                                      │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS                                                    │
-│         │ Auth: OpenShift Bearer Token                                       │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (OpenShift Router)                                                  │
-│                                                                              │
-│  [ds-pipeline-{name} Route]                                                  │
-│  - Port: 443/TCP (external) → 8443/TCP (internal)                           │
-│  - TLS Mode: Reencrypt                                                       │
-│  - Certificate: OpenShift Router default                                     │
-│         │                                                                    │
-│  [ds-pipeline-md-{name} Route]                                               │
-│  - Port: 443/TCP (external) → 8443/TCP (internal)                           │
-│  - TLS Mode: Reencrypt                                                       │
-│  - Purpose: MLMD Envoy proxy external access                                │
-│         │                                                                    │
-│  [minio-{name} Route] (optional, enableExternalRoute)                        │
-│  - Port: 443/TCP (external) → 9000/TCP (internal)                           │
-│  - TLS Mode: Edge                                                            │
-│  - Purpose: MinIO S3 external access                                         │
-│         │                                                                    │
-│         │ Port: 8443/TCP                                                     │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS (service-ca certificate)                           │
-│         │ Auth: Forwarded Bearer Token                                       │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  AUTH PROXY LAYER (kube-rbac-proxy sidecars)                                 │
-│                                                                              │
-│  [kube-rbac-proxy - API Server sidecar]                                      │
-│  - Port: 8443/TCP (listen) → 8888/TCP (upstream)                            │
-│  - TLS: service-ca certificate (ds-pipelines-proxy-tls-{name})              │
-│  - AuthN: TokenReview (validates bearer token)                               │
-│  - AuthZ: SubjectAccessReview                                                │
-│    - apiGroup: datasciencepipelinesapplications.opendatahub.io               │
-│    - resource: datasciencepipelinesapplications                              │
-│    - subresource: api                                                        │
-│         │                                                                    │
-│  [kube-rbac-proxy - MLMD Envoy sidecar]                                      │
-│  - Port: 8443/TCP (listen) → 9090/TCP (upstream)                            │
-│  - TLS: service-ca certificate (ds-pipelines-envoy-proxy-tls-{name})        │
-│  - AuthN: TokenReview                                                        │
-│  - AuthZ: SubjectAccessReview on DSPA metadata subresource                  │
-│         │                                                                    │
-│         │ Port: 8888/TCP (API), 9090/TCP (Envoy admin)                      │
-│         │ Protocol: HTTP/HTTPS                                               │
-│         │ Encryption: Optional TLS (PodToPodTLS)                             │
-│         │ Auth: Proxied (trusted after kube-rbac-proxy)                      │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  APPLICATION LAYER (Managed Components)                                      │
-│  Namespace: {dspa-namespace}                                                 │
-│                                                                              │
-│  [DS Pipelines API Server]                                                   │
-│  - ServiceAccount: ds-pipeline-{name}                                        │
-│  - Ports: 8888/TCP (REST), 8887/TCP (gRPC), 8443/TCP (kube-rbac-proxy)     │
-│  - Encryption: Optional TLS (PodToPodTLS via service-ca)                    │
-│         │                                                                    │
-│         ├─── Port: 3306/TCP ──────────────────────────┐                     │
-│         │    Protocol: MySQL                           │                     │
-│         │    Encryption: Optional TLS (PodToPodTLS)    │                     │
-│         │    Auth: Password (mariadb-secret-{name})    │                     │
-│         │                                              ▼                     │
-│         │                                   [MariaDB]                        │
-│         │                                   - Port: 3306/TCP                 │
-│         │                                   - NetworkPolicy: Allow from      │
-│         │                                     operator ns, API server,       │
-│         │                                     MLMD gRPC pods                 │
-│         │                                   - TLS: ds-pipelines-mariadb-     │
-│         │                                     tls-{name} (service-ca)        │
-│         │                                                                    │
-│         ├─── Port: 9000/TCP ──────────────────────────┐                     │
-│         │    Protocol: HTTP/HTTPS                      │                     │
-│         │    Encryption: Optional TLS                  │                     │
-│         │    Auth: S3 credentials (minio-secret-{name})│                     │
-│         │                                              ▼                     │
-│         │                                   [MinIO]                          │
-│         │                                   - Port: 9000/TCP, 80/TCP        │
-│         │                                   - Auth: S3 access key/secret    │
-│         │                                                                    │
-│  [Argo Workflows Controller]                                                 │
-│  - ServiceAccount: ds-pipeline-workflow-controller-{name}                    │
-│  - Creates/watches Workflow CRs                                              │
-│         │                                                                    │
-│         │ Creates pipeline step pods                                         │
-│         ▼                                                                    │
-│  [Pipeline Step Pods]                                                        │
-│  - ServiceAccount: pipeline-runner-{name}                                    │
-│         │                                                                    │
-│         ├─── Port: 8080/TCP ──────────────────────────┐                     │
-│         │    Protocol: gRPC                            │                     │
-│         │    Encryption: Optional mTLS (PodToPodTLS)   │                     │
-│         │    Auth: NetworkPolicy (label matching)      │                     │
-│         │    Labels required:                          │                     │
-│         │      pipelines.kubeflow.org/v2_component=true│                     │
-│         │      OR component=data-science-pipelines     │                     │
-│         │                                              ▼                     │
-│         │                                   [MLMD gRPC Server]               │
-│         │                                   - Port: 8080/TCP gRPC           │
-│         │                                   - TLS: ds-pipeline-metadata-     │
-│         │                                     grpc-tls-certs-{name}         │
-│         │                                   - NetworkPolicy enforced        │
-│         │                                                                    │
-│         └─── Port: 9000/TCP ───────────────────────── MinIO/S3              │
-│              Protocol: HTTP/HTTPS                                            │
-│              Auth: S3 credentials                                            │
-│                                                                              │
-│  [Persistence Agent]                                                         │
-│  - ServiceAccount: ds-pipeline-persistenceagent-{name}                       │
-│  - Connects to API server 8888/TCP for state sync                           │
-│                                                                              │
-│  [Scheduled Workflow Controller]                                             │
-│  - ServiceAccount: ds-pipeline-scheduledworkflow-{name}                      │
-│  - Manages cron-triggered ScheduledWorkflow CRs                             │
-│                                                                              │
-│  [MLMD Envoy Proxy]                                                          │
-│  - Port: 9090/TCP (Envoy admin), 8443/TCP (kube-rbac-proxy)                │
-│  - TLS: service-ca certificates                                             │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  OPERATOR NAMESPACE (redhat-ods-applications)                                │
-│                                                                              │
-│  [DSPO Controller Manager]                                                   │
-│  - ServiceAccount: controller-manager                                        │
-│  - Ports: 8080/TCP (metrics), 8081/TCP (probes)                             │
-│  - Watches: DSPA CRs across all namespaces                                  │
-│         │                                                                    │
-│         │ Port: 6443/TCP                                                    │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS                                                    │
-│         │ Auth: ServiceAccount bearer token                                 │
-│         ▼                                                                    │
-│  [Kubernetes API Server]                                                     │
-│                                                                              │
-│  [ds-pipelines-webhook]                                                      │
-│  - Port: 8443/TCP                                                            │
-│  - TLS: service-ca certificate                                               │
-│  - Purpose: Validates/mutates PipelineVersion CRs                           │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES                                                           │
-│                                                                              │
-│  [External MariaDB/MySQL] (alternative to internal MariaDB)                  │
-│  - Port: 3306/TCP                                                            │
-│  - Auth: Password (user-provided Secret)                                     │
-│  - Encryption: Optional TLS 1.2+                                            │
-│                                                                              │
-│  [External S3 Storage] (alternative to internal MinIO)                       │
-│  - Port: 443/TCP or custom                                                   │
-│  - Auth: S3 access key/secret (user-provided Secret)                        │
-│  - Encryption: TLS 1.2+ (MinVersion enforced)                               │
-│                                                                              │
-│  [OCI Registry]                                                              │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Auth: Registry credentials                                                │
-│  - Purpose: Managed pipeline bundle fetching                                 │
-│                                                                              │
-│  [MLflow Operator] (optional integration)                                    │
-│  - Interaction: CRD Read (mlflow.opendatahub.io/v1/MLflow)                  │
-│  - Auth: ServiceAccount RBAC                                                 │
-│  - Purpose: Auto-detect MLflow tracking endpoint                            │
-└──────────────────────────────────────────────────────────────────────────────┘
+================================================================================
+  SECURITY NETWORK DIAGRAM: Data Science Pipelines Operator (DSPO)
+  Distribution: RHOAI
+  Generated: 2026-06-30
+================================================================================
 
-RBAC Summary:
-- ClusterRole: manager-role
-  - API Groups: datasciencepipelinesapplications.opendatahub.io, apps, core, rbac, route.openshift.io,
-                networking.k8s.io, argoproj.io, kubeflow.org, pipelines.kubeflow.org,
-                monitoring.coreos.com, admissionregistration.k8s.io, serving.kserve.io,
-                ray.io, machinelearning.seldon.io, workload.codeflare.dev, mlflow.opendatahub.io,
-                authentication.k8s.io, authorization.k8s.io
-  - Resources: datasciencepipelinesapplications, deployments, secrets, configmaps, services,
-               serviceaccounts, roles, rolebindings, clusterroles, clusterrolebindings,
-               routes, networkpolicies, workflows, pipelines, pipelineversions,
-               servicemonitors, webhookconfigurations, inferenceservices, rayclusters,
-               seldondeployments, appwrappers, mlflows, tokenreviews, subjectaccessreviews
-  - Verbs: get, list, watch, create, update, patch, delete (varies by resource)
-  - NOTE: Wildcard permissions on kubeflow.org/* and argoproj.io/workflows
++--------------------------------------------------------------------------+
+|  EXTERNAL (Untrusted)                                                    |
+|                                                                          |
+|  [User / Dashboard / Workbench]                                          |
+|         |                                                                |
+|         | Port: 443/TCP                                                  |
+|         | Protocol: HTTPS                                                |
+|         | Encryption: TLS 1.2+                                            |
+|         | Auth: Bearer Token (OpenShift OAuth)                             |
+|         v                                                                |
++--------------------------------------------------------------------------+
+|  INGRESS (OpenShift Routes - Reencrypt/Edge TLS)                         |
+|                                                                          |
+|  [ds-pipeline-{name} Route]                                              |
+|  - Port: 443/TCP (external) -> 8443/TCP (kube-rbac-proxy)               |
+|  - TLS Termination: Reencrypt (TLS 1.2+)                                |
+|  - Purpose: API server access                                           |
+|         |                                                                |
+|  [ds-pipeline-md-{name} Route]                                           |
+|  - Port: 443/TCP (external) -> 8443/TCP (kube-rbac-proxy)               |
+|  - TLS Termination: Reencrypt (TLS 1.2+)                                |
+|  - Purpose: MLMD Envoy access                                           |
+|         |                                                                |
+|  [minio-{name} Route] (optional)                                         |
+|  - Port: 443/TCP (external) -> 9000/TCP (MinIO)                         |
+|  - TLS Termination: Edge (TLS 1.2+)                                     |
+|  - Purpose: S3 artifact access                                          |
+|         |                                                                |
++--------------------------------------------------------------------------+
+|  AUTHENTICATION LAYER (kube-rbac-proxy sidecars)                         |
+|                                                                          |
+|  [kube-rbac-proxy - API Server]                                          |
+|  - Port: 8443/TCP (HTTPS) -> 8888/TCP (API Server)                      |
+|  - Encryption: TLS 1.2+ (service-ca cert)                               |
+|  - AuthN: SubjectAccessReview                                            |
+|  - AuthZ: User must have get/create/update/patch/delete on               |
+|           datasciencepipelinesapplications/api in DSPA namespace          |
+|         |                                                                |
+|  [kube-rbac-proxy - MLMD Envoy]                                         |
+|  - Port: 8443/TCP (HTTPS) -> 9090/TCP (Envoy)                           |
+|  - Encryption: TLS 1.2+ (service-ca cert)                               |
+|  - AuthN: SubjectAccessReview                                            |
+|  - AuthZ: User must have access to                                       |
+|           datasciencepipelinesapplications/api in DSPA namespace          |
+|         |                                                                |
++--------------------------------------------------------------------------+
+|  OPERATOR NAMESPACE (redhat-ods-applications)                            |
+|                                                                          |
+|  [DSPO Controller Manager]                                               |
+|  - ServiceAccount: controller-manager                                    |
+|  - Ports:                                                                |
+|    - 8080/TCP (metrics, HTTP, no auth)                                   |
+|    - 8081/TCP (health probes, HTTP, no auth)                             |
+|  - ClusterRole: manager-role, manager-argo-role                          |
+|  - Watches: DSPA CRs, MLflow CRs, ConfigMaps                            |
+|         |                                                                |
+|  [PipelineVersion Webhook]                                               |
+|  - Port: 8443/TCP                                                        |
+|  - Encryption: TLS (service-ca)                                          |
+|  - Auth: Kubernetes API server (admission review)                        |
+|         |                                                                |
++--------------------------------------------------------------------------+
+|  DSPA NAMESPACE (user namespace, per-DSPA instance)                      |
+|  NetworkPolicy enforced: pod-to-pod isolation                            |
+|                                                                          |
+|  [DS Pipeline API Server]                                                |
+|  - ServiceAccount: ds-pipeline-{name}                                    |
+|  - Ports:                                                                |
+|    - 8888/TCP (REST, HTTP/HTTPS, optional PodToPodTLS)                   |
+|    - 8887/TCP (gRPC, optional PodToPodTLS)                               |
+|    - 8443/TCP (HTTPS, kube-rbac-proxy sidecar, TLS 1.2+)                |
+|  - NetworkPolicy: allows DSP components, monitoring, workbenches         |
+|         |                                                                |
+|         | Port: 3306/TCP                                                 |
+|         | Protocol: MySQL                                                |
+|         | Encryption: TLS (optional PodToPodTLS via service-ca)            |
+|         | Auth: Username/Password                                          |
+|         v                                                                |
+|  [MariaDB]                                                               |
+|  - ServiceAccount: (default)                                             |
+|  - Port: 3306/TCP (MySQL)                                                |
+|  - Encryption: TLS (optional PodToPodTLS via service-ca cert)            |
+|  - Auth: Username/Password (auto-generated 12-char password)             |
+|  - NetworkPolicy: allows only DSPO operator, API server, MLMD GRPC       |
+|                                                                          |
+|  [MinIO] (optional, internal object store)                               |
+|  - Port: 9000/TCP (HTTP), 80/TCP (HTTP)                                  |
+|  - Encryption: None (internal only)                                      |
+|  - Auth: Access Key (16-char) / Secret Key (24-char)                     |
+|                                                                          |
+|  [Argo Workflow Controller]                                              |
+|  - ServiceAccount: ds-pipeline-workflow-controller-{name}                |
+|  - Metrics Port: 9090/TCP (HTTP, no auth)                                |
+|  - Creates: Workflow pods in DSPA namespace                              |
+|         |                                                                |
+|         | Port: N/A (Kubernetes API)                                     |
+|         | Protocol: Kubernetes API                                       |
+|         | Encryption: TLS                                                |
+|         | Auth: ServiceAccount token                                      |
+|         v                                                                |
+|  [Pipeline Step Pods]                                                    |
+|  - ServiceAccount: pipeline-runner-{name}                                |
+|  - Ephemeral pods executing pipeline DAG steps                           |
+|         |                                                                |
+|         |-- Port: 8080/TCP --> [MLMD GRPC Server]                        |
+|         |   Protocol: gRPC                                               |
+|         |   Encryption: TLS (optional PodToPodTLS via service-ca)         |
+|         |   Auth: None                                                   |
+|         |                                                                |
+|         |-- Port: 9000/TCP or 443/TCP --> [S3 Storage]                   |
+|             Protocol: HTTP/HTTPS                                         |
+|             Encryption: TLS 1.2+ (configurable)                          |
+|             Auth: Access Key/Secret Key or IAM                           |
+|                                                                          |
+|  [Persistence Agent]                                                     |
+|  - ServiceAccount: ds-pipeline-persistenceagent-{name}                   |
+|  - Watches: Argo Workflows                                               |
+|  - Syncs to: API Server 8888/8887 TCP                                    |
+|  - Auth: Projected ServiceAccount token                                  |
+|                                                                          |
+|  [Scheduled Workflow Controller]                                         |
+|  - ServiceAccount: ds-pipeline-scheduledworkflow-{name}                  |
+|  - Manages: Cron-based recurring runs                                    |
+|                                                                          |
+|  [MLMD GRPC Server]                                                      |
+|  - Port: 8080/TCP (gRPC)                                                 |
+|  - Encryption: TLS (optional PodToPodTLS via service-ca)                 |
+|  - Auth: None                                                            |
+|  - NetworkPolicy: allows only DSP components and v2 pipeline components  |
+|         |                                                                |
+|         | Port: 3306/TCP                                                 |
+|         | Protocol: MySQL                                                |
+|         | Encryption: TLS (optional PodToPodTLS)                          |
+|         | Auth: Username/Password                                          |
+|         v                                                                |
+|  [MariaDB] (same instance as above)                                      |
+|                                                                          |
+|  [MLMD Envoy Proxy]                                                      |
+|  - Port: 9090/TCP (HTTP/2 gRPC-Web)                                     |
+|  - Encryption: None (localhost proxy to kube-rbac-proxy)                 |
+|  - Upstream: MLMD GRPC 8080/TCP                                          |
+|  - Sidecar: kube-rbac-proxy 8443/TCP (HTTPS)                            |
+|                                                                          |
++--------------------------------------------------------------------------+
+|  EXTERNAL SERVICES (Egress)                                              |
+|                                                                          |
+|  [S3-Compatible Storage - external]                                      |
+|  - Port: 443/TCP                                                         |
+|  - Protocol: HTTPS                                                       |
+|  - Encryption: TLS 1.2+                                                  |
+|  - Auth: Access Key/Secret Key or IAM                                    |
+|  - Purpose: Pipeline artifact storage (alternative to internal MinIO)    |
+|                                                                          |
+|  [External MariaDB/MySQL]                                                |
+|  - Port: 3306/TCP                                                        |
+|  - Protocol: MySQL                                                       |
+|  - Encryption: TLS (optional, skip-verify supported)                     |
+|  - Auth: Username/Password                                               |
+|  - Purpose: Pipeline metadata (alternative to internal MariaDB)          |
+|                                                                          |
+|  [OCI Container Registries]                                              |
+|  - Port: 443/TCP                                                         |
+|  - Protocol: HTTPS                                                       |
+|  - Encryption: TLS 1.2+                                                  |
+|  - Auth: Registry credentials                                           |
+|  - Purpose: Fetch managed pipeline definitions from container images     |
+|                                                                          |
+|  [MLflow Service - cluster-internal]                                     |
+|  - Port: dynamic                                                         |
+|  - Protocol: HTTP/HTTPS                                                  |
+|  - Encryption: TLS (if available)                                        |
+|  - Auth: None                                                            |
+|  - Purpose: Experiment tracking plugin endpoint                          |
+|                                                                          |
++--------------------------------------------------------------------------+
 
-- ClusterRole: manager-argo-role
-  - Resources: workflows, workflowtasksets, pods, pods/exec, leases
-  - Verbs: get, list, watch, create, update, patch, delete
+================================================================================
+  RBAC SUMMARY
+================================================================================
 
-- ClusterRole: aggregate-dspa-admin-edit (aggregated to admin/edit)
-  - Resources: datasciencepipelinesapplications, pipelines, pipelineversions
-  - Verbs: get, list, watch, create, update, patch, delete
+Operator Service Account: controller-manager
+  ClusterRole: manager-role
+    - datasciencepipelinesapplications.opendatahub.io: DSPA, /status, /finalizers [CRUD]
+    - pipelines.kubeflow.org: pipelines, pipelineversions, /status, /finalizers [CRUD]
+    - core: deployments, services, serviceaccounts, secrets, configmaps, pods, PVCs, PVs [CRUD]
+    - networking.k8s.io: networkpolicies, ingresses [CRUD]
+    - rbac.authorization.k8s.io: roles, rolebindings, clusterroles, clusterrolebindings [CRUD]
+    - route.openshift.io: routes [CRUD]
+    - admissionregistration.k8s.io: mutating/validatingwebhookconfigurations [CRUD]
+    - argoproj.io: workflows [*]
+    - kubeflow.org: * [*]
+    - batch: jobs [*]
+    - monitoring.coreos.com: servicemonitors [CRUD]
+    - authorization.k8s.io: subjectaccessreviews [create]
+    - authentication.k8s.io: tokenreviews [create]
+    - workload.codeflare.dev: appwrappers [CRUD]
+    - mlflow.opendatahub.io: mlflows [get, list, watch]
+  ClusterRole: manager-argo-role
+    - argoproj.io: workflows, workflowtemplates, cronworkflows, workflowtasksets [CRUD]
+    - core: pods, configmaps, PVCs [CRUD]
+    - policy: poddisruptionbudgets [create, get, delete]
 
-- ClusterRole: aggregate-dspa-admin-view (aggregated to view)
-  - Resources: datasciencepipelinesapplications, pipelines, pipelineversions
-  - Verbs: get, list, watch
+Pipeline Runner Service Account: pipeline-runner-{name}
+  Role: pipeline-runner-{name} (namespace-scoped)
+    - serving.kserve.io: inferenceservices [CRUD] (KServe integration)
+    - workload.codeflare.dev: appwrappers [CRUD] (CodeFlare integration)
+    - ray.io: rayclusters, rayjobs, rayservices [CRUD] (Ray integration)
+    - machinelearning.seldon.io: seldondeployments [create] (Seldon integration)
 
-NetworkPolicy Configuration:
-- MariaDB NetworkPolicy:
-  - Allow from: operator namespace pods, API server pods, MLMD gRPC pods
-  - Deny all other ingress on 3306/TCP
+Aggregate Roles (for project admins/editors):
+  aggregate-dspa-admin-edit: Full CRUD on DSPA and Pipeline CRs
+  aggregate-dspa-admin-view: Read-only on DSPA and Pipeline CRs
 
-- MLMD gRPC NetworkPolicy:
-  - Allow from: pods with label pipelines.kubeflow.org/v2_component=true
-  - Allow from: pods with label component=data-science-pipelines
-  - Deny all other ingress on 8080/TCP
+================================================================================
+  SECRETS
+================================================================================
 
-- Common Policy (per DSPA):
-  - Allow Dashboard access (redhat-ods-monitoring namespace) on 8888,8887/TCP
-  - Allow Workbench access (opendatahub.io/workbenches=true label) on 8888,8887/TCP
-  - MLMD Envoy Dashboard access policy
+| Secret                                        | Type              | Provisioned By     | Auto-Rotate |
+|-----------------------------------------------|-------------------|--------------------|-------------|
+| ds-pipeline-db-{name}                         | Opaque            | DSPO (generated)   | No          |
+| ds-pipeline-s3-{name}                         | Opaque            | DSPO (generated)   | No          |
+| ds-pipelines-proxy-tls-{name}                 | kubernetes.io/tls | OpenShift svc-ca   | Yes         |
+| ds-pipelines-envoy-proxy-tls-{name}           | kubernetes.io/tls | OpenShift svc-ca   | Yes         |
+| ds-pipelines-mariadb-tls-{name}               | kubernetes.io/tls | OpenShift svc-ca   | Yes         |
+| ds-pipeline-metadata-grpc-tls-certs-{name}    | kubernetes.io/tls | OpenShift svc-ca   | Yes         |
+| ds-pipeline-metadata-grpc-tls-config-secret   | Opaque            | DSPO               | No          |
+| ds-pipeline-webhook-tls                       | kubernetes.io/tls | OpenShift svc-ca   | Yes         |
 
-Secrets:
-- mariadb-secret-{name} (Opaque) - MariaDB root password, Operator, No auto-rotate
-- minio-secret-{name} (Opaque) - MinIO access/secret key, Operator, No auto-rotate
-- ds-pipelines-proxy-tls-{name} (kubernetes.io/tls) - API kube-rbac-proxy TLS, service-ca, Auto-rotate
-- ds-pipelines-envoy-proxy-tls-{name} (kubernetes.io/tls) - MLMD Envoy kube-rbac-proxy TLS, service-ca, Auto-rotate
-- ds-pipeline-metadata-grpc-tls-certs-{name} (kubernetes.io/tls) - MLMD gRPC TLS, service-ca, Auto-rotate
-- ds-pipelines-mariadb-tls-{name} (kubernetes.io/tls) - MariaDB TLS, service-ca, Auto-rotate
-- {name}-tls (kubernetes.io/tls) - Webhook TLS, service-ca, Auto-rotate
+================================================================================
+  NETWORKPOLICY SUMMARY
+================================================================================
 
-FIPS Compliance:
-- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, GODEBUG fips140=on
-- Runtime: stdlib crypto/tls via OpenSSL (UBI9 base)
-- Risk: InsecureSkipVerify=true in database health check (controllers/database.go:170)
-- S3 health check properly sets MinVersion=tls.VersionTLS12
+API Server NetworkPolicy (ds-pipeline-{name}):
+  Allowed ingress sources:
+    - DSP component pods (same DSPA instance)
+    - OpenShift monitoring namespace
+    - v2 pipeline component pods
+    - Workbench pods (label: opendatahub.io/workbenches=true)
+  Ports: 8888/TCP, 8887/TCP, 8443/TCP
 
-CA Bundle Aggregation:
-- dsp-trusted-ca-{name} ConfigMap aggregates:
-  1. odh-trusted-ca-bundle (global ODH trusted CAs)
-  2. User-provided CABundle from DSPA spec
-  3. OpenShift service-ca certificates
-- Injected into API server, executor pods, and pipeline step containers
+MariaDB NetworkPolicy (mariadb-{name}):
+  Allowed ingress sources:
+    - DSPO operator pods
+    - DS Pipeline API Server pods
+    - MLMD GRPC Server pods
+  Ports: 3306/TCP
+
+MLMD GRPC NetworkPolicy (metadata-grpc-{name}):
+  Allowed ingress sources:
+    - DSP component pods
+    - v2 pipeline component pods
+  Ports: 8080/TCP
+
+================================================================================
+  FIPS COMPLIANCE
+================================================================================
+
+Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, godebug fips140=on
+Base Image: UBI9 ubi-minimal (OpenSSL included)
+TLS: crypto/tls with TLS 1.2+ minimum, Go native FIPS module
+Risk: InsecureSkipVerify=true available for DB "skip-verify" mode (user-configurable)

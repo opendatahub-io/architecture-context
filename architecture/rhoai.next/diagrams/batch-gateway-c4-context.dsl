@@ -1,67 +1,55 @@
 workspace {
     model {
-        user = person "Data Scientist / API Client" "Submits batch inference jobs via OpenAI-compatible Batch API"
-        platform_admin = person "Platform Admin" "Deploys and configures batch-gateway via Helm chart"
+        dataScientist = person "Data Scientist / ML Engineer" "Submits batch inference jobs via OpenAI-compatible API"
+        platformAdmin = person "Platform Admin" "Deploys and configures Batch Gateway via Helm chart"
 
-        batchGateway = softwareSystem "Batch Gateway" "OpenAI-compatible batch API gateway for llm-d that accepts, processes, and manages batch inference jobs" {
-            apiserver = container "apiserver" "REST API server implementing OpenAI Batch API for batch and file CRUD operations. Multi-tenant isolation via tenant ID header." "Go HTTP Service" {
-                batchHandler = component "Batch Handler" "Handles /v1/batches/* endpoints for batch CRUD and cancellation" "Go HTTP Handler"
-                fileHandler = component "File Handler" "Handles /v1/files/* endpoints for file upload, download, listing, and deletion" "Go HTTP Handler"
-                requestMiddleware = component "Request Middleware" "Extracts tenant ID from X-MaaS-Username header, enforces tenant isolation" "Go Middleware"
-                securityMiddleware = component "Security Headers Middleware" "Adds X-Content-Type-Options, X-Frame-Options, CSP, HSTS headers" "Go Middleware"
-            }
-
-            processor = container "batch-processor" "Dequeues batch jobs from Redis priority queue and dispatches individual inference requests with AIMD adaptive concurrency control" "Go Worker Service" {
-                workerPool = component "Worker Pool" "Concurrent goroutines polling Redis queue for batch jobs" "Go Goroutines"
-                aimdController = component "AIMD Controller" "Adaptive semaphore: multiplicative decrease on 429/5xx, additive increase on success" "Go Concurrency"
-                inferenceDispatcher = component "Inference Dispatcher" "Sends individual inference requests via sync HTTP or async llm-d-async queue" "Go HTTP Client"
-            }
-
-            gc = container "batch-gc" "Garbage collects expired batches and files, reconciles orphaned jobs stuck in non-terminal states" "Go Background Service" {
-                collector = component "Garbage Collector" "Periodically scans and deletes expired batch jobs and files" "Go Worker"
-                reconciler = component "Orphan Reconciler" "Detects jobs stuck due to processor crashes, re-enqueues or fails them" "Go Worker"
-            }
+        batchGateway = softwareSystem "Batch Gateway" "High-performance batch inference job processing with OpenAI-compatible API (/v1/batches, /v1/files)" {
+            apiserver = container "Apiserver" "REST API server for batch job submission, management, tracking, and file operations" "Go HTTP Service" "Port: 8000/TCP"
+            processor = container "Processor" "Background worker: dequeues jobs, builds per-model execution plans, dispatches inference with AIMD concurrency" "Go Background Worker" "Port: 9090/TCP (metrics)"
+            gc = container "Garbage Collector" "Singleton: garbage-collects expired jobs/files, reconciles orphaned jobs" "Go Background Worker" "Port: 9091/TCP (metrics)"
         }
 
-        postgresql = softwareSystem "PostgreSQL" "Batch and file metadata persistence with ACID guarantees" "External"
-        redis = softwareSystem "Redis / Valkey" "Priority queue, event channels, status cache, in-flight tracking" "External"
-        s3 = softwareSystem "S3-Compatible Storage" "File content storage for input JSONL, output results, and error logs" "External"
-        inferenceGateway = softwareSystem "llm-d Inference Gateway" "Model serving endpoints for dispatching individual inference requests" "Internal Platform"
-        llmdAsync = softwareSystem "llm-d-async" "Optional asynchronous inference dispatch and result collection via Redis queues" "Internal Platform"
-        gatewayAPI = softwareSystem "Gateway API (Kubernetes)" "External traffic routing via HTTPRoute for /v1/batches and /v1/files paths" "External"
-        certManager = softwareSystem "cert-manager" "Automatic TLS certificate provisioning for apiserver HTTPS" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection via ServiceMonitor and PodMonitor resources" "External"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing via OTLP gRPC export" "External"
+        postgresql = softwareSystem "PostgreSQL" "Batch job and file metadata persistence (JSONB, CAS updates)" "External"
+        redis = softwareSystem "Redis / Valkey" "Priority queue (ZSET), event channels (List), status store (String), in-flight tracking (Hash)" "External"
+        s3 = softwareSystem "S3-compatible Storage" "Batch input/output/error file storage" "External"
+        inferenceGateway = softwareSystem "llm-d Router / Inference Gateway" "Serves individual inference requests (chat/completions, embeddings)" "Internal Platform"
+        kuadrant = softwareSystem "Kuadrant / Authorino" "Gateway-level authentication and authorization enforcement" "Internal Platform"
+        gatewayAPI = softwareSystem "Gateway API (Kubernetes)" "Ingress routing via HTTPRoute for /v1/batches and /v1/files" "Internal Platform"
+        gieObjective = softwareSystem "GIE InferenceObjective" "Per-model InferencePool routing in multi-pool deployments" "Internal Platform"
+        llmdAsync = softwareSystem "llm-d-async" "Optional async dispatch mode for inference requests via Redis queue" "Internal Platform"
+        otlpCollector = softwareSystem "OTLP Collector" "OpenTelemetry trace export (Jaeger, Tempo, OTEL Collector)" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics scraping via ServiceMonitor/PodMonitor" "Internal Platform"
+        certManager = softwareSystem "cert-manager" "Optional TLS certificate provisioning for apiserver" "Internal Platform"
 
-        # Relationships - User
-        user -> batchGateway "Submits batch jobs, uploads files, checks status" "HTTPS, Tenant ID Header"
-        platform_admin -> batchGateway "Deploys and configures" "Helm Chart"
+        # User interactions
+        dataScientist -> batchGateway "Submits batch jobs, uploads files, checks status" "HTTPS/8000 via Gateway"
+        platformAdmin -> batchGateway "Deploys and configures" "Helm chart"
 
-        # Relationships - System Context
-        batchGateway -> postgresql "Stores/queries batch and file metadata" "TCP/5432, DSN credentials"
-        batchGateway -> redis "Queue operations, events, status cache" "TCP/6379, URL credentials"
-        batchGateway -> s3 "Uploads/downloads file content" "HTTPS/443, AWS credentials"
-        batchGateway -> inferenceGateway "Dispatches inference requests" "HTTP(S), Bearer token or mTLS"
-        batchGateway -> llmdAsync "Async inference dispatch (optional)" "Redis/6379"
-        batchGateway -> otelCollector "Exports distributed traces" "gRPC OTLP"
-        gatewayAPI -> batchGateway "Routes external traffic" "HTTPRoute CR"
+        # System context relationships
+        batchGateway -> postgresql "Stores/retrieves batch and file metadata" "pgx/5432"
+        batchGateway -> redis "Priority queue, events, status tracking, in-flight monitoring" "RESP/6379"
+        batchGateway -> s3 "Stores/retrieves batch input/output/error files" "HTTPS/443"
+        batchGateway -> inferenceGateway "Sends individual inference requests for batch processing" "HTTP(S)/configurable"
+        kuadrant -> batchGateway "Enforces AuthN/AuthZ before requests reach apiserver" "Gateway policy"
+        gatewayAPI -> batchGateway "Routes external traffic to apiserver" "HTTPRoute"
+        batchGateway -> otlpCollector "Exports OpenTelemetry traces" "gRPC/4317"
+        prometheus -> batchGateway "Scrapes metrics from all three components" "HTTP/8081,9090,9091"
         certManager -> batchGateway "Provisions TLS certificates" "Certificate CR"
-        prometheus -> batchGateway "Scrapes metrics" "HTTP/8081, 9090, 9091"
 
-        # Relationships - Container Level
-        user -> apiserver "Creates batches, uploads files" "HTTP(S), Tenant ID Header"
-        apiserver -> postgresql "Batch/file metadata CRUD" "TCP/5432"
-        apiserver -> redis "Enqueue jobs, send events" "TCP/6379"
-        apiserver -> s3 "Upload/download files" "HTTPS/443"
+        # Container-level relationships
+        dataScientist -> apiserver "POST /v1/batches, /v1/files" "HTTPS/8000"
+        apiserver -> postgresql "INSERT/SELECT/UPDATE batch and file records" "pgx/5432"
+        apiserver -> redis "ZADD priority queue, RPUSH cancel events" "RESP/6379"
+        apiserver -> s3 "PutObject (upload), GetObject (download)" "HTTPS/443"
 
-        processor -> redis "Dequeue jobs, update status" "TCP/6379"
-        processor -> postgresql "Read/update batch metadata" "TCP/5432"
-        processor -> s3 "Download input, upload output/error" "HTTPS/443"
-        processor -> inferenceGateway "Dispatch inference requests" "HTTP(S), Bearer token"
+        processor -> redis "BZMPOP (dequeue jobs), BLMPOP (cancel events)" "RESP/6379"
+        processor -> postgresql "SELECT job details, UPDATE status" "pgx/5432"
+        processor -> s3 "GetObject (input), PutObject (output/error)" "HTTPS/443"
+        processor -> inferenceGateway "POST /v1/chat/completions, /v1/embeddings" "HTTP(S)"
 
-        gc -> postgresql "Query/delete expired items" "TCP/5432"
-        gc -> redis "Clean expired entries, reconcile orphans" "TCP/6379"
-        gc -> s3 "Delete expired file content" "HTTPS/443"
+        gc -> postgresql "SELECT expired, DELETE records" "pgx/5432"
+        gc -> redis "HGETALL inflight hash for orphan detection" "RESP/6379"
+        gc -> s3 "DeleteObject (expired files)" "HTTPS/443"
     }
 
     views {
@@ -71,21 +59,6 @@ workspace {
         }
 
         container batchGateway "Containers" {
-            include *
-            autoLayout
-        }
-
-        component apiserver "APIServerComponents" {
-            include *
-            autoLayout
-        }
-
-        component processor "ProcessorComponents" {
-            include *
-            autoLayout
-        }
-
-        component gc "GCComponents" {
             include *
             autoLayout
         }
@@ -111,10 +84,6 @@ workspace {
             element "Container" {
                 background #438dd5
                 color #ffffff
-            }
-            element "Component" {
-                background #85bbf0
-                color #000000
             }
         }
     }

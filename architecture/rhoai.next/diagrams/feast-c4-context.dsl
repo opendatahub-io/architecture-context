@@ -1,57 +1,66 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates feature definitions, manages feature stores, and browses feature metadata via UI"
-        mlApp = person "ML Application" "Retrieves features for online inference and training"
+        dataScientist = person "Data Scientist" "Creates feature definitions, retrieves features for training and inference"
+        platformAdmin = person "Platform Admin" "Deploys and manages FeatureStore CRs via RHOAI/ODH"
 
-        feast = softwareSystem "Feast" "Open-source feature store for ML - manages storage, retrieval, and serving of features for model training and online inference" {
-            feastOperator = container "feast-operator" "Manages FeatureStore CRD lifecycle, deploys and configures all Feast services on Kubernetes" "Go Operator (controller-runtime)" {
-                featureStoreReconciler = component "FeatureStore Reconciler" "Watches FeatureStore CRs and reconciles Deployments, Services, RBAC, CronJobs, PVCs, Routes, HPAs" "controller-runtime"
-                notebookController = component "Notebook ConfigMap Controller" "Watches kubeflow.org/Notebook CRs and auto-creates feast config ConfigMaps" "controller-runtime"
-                autoAccessRBAC = component "Auto-Access RBAC" "Periodically fetches permission policies from registry and creates corresponding Kubernetes RBAC" "Go goroutine"
-            }
-            featureServer = container "feature-server" "Runs Feast SDK services: online serving, offline store access, registry management, and UI" "Python (FastAPI/gRPC/uvicorn)" {
-                onlineStore = component "Online Store" "Low-latency feature retrieval via gRPC (ports 6566/6567)" "gRPC Server"
-                offlineStore = component "Offline Store" "Historical feature retrieval via gRPC (ports 8815/8816)" "gRPC Server"
-                registry = component "Registry" "Feature metadata CRUD via gRPC (6570/6571) and REST (6572/6573)" "FastAPI + gRPC"
-                ui = component "Web UI" "Feature store browsing, data quality monitoring, lineage visualization (ports 8888/8443)" "React/TypeScript"
-            }
+        feast = softwareSystem "Feast Feature Store" "Open-source feature store for ML — manages storage, retrieval, and serving of features for training and online inference" {
+            feastOperator = container "Feast Operator" "Manages FeatureStore CRD lifecycle, deploys feature store services, handles RBAC, TLS, scaling, monitoring" "Go (controller-runtime)"
+            featureServerPython = container "Feature Server (Python)" "Online feature serving (REST), registry (gRPC+REST), offline store, UI host" "Python (FastAPI/Gunicorn)"
+            featureServerGo = container "Feature Server (Go)" "High-performance online feature serving via HTTP/gRPC" "Go"
+            feastUI = container "Feast UI" "Web UI for browsing feature views, entities, data sources, feature services" "React (TypeScript)"
+            materializationCronJob = container "Materialization CronJob" "Scheduled materialization of features from offline to online store" "ose-cli + feast SDK"
         }
 
-        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management and RBAC" "External"
-        openshiftAPI = softwareSystem "OpenShift API" "Route management, serving cert annotation, cluster detection" "External"
-        openshiftServiceCA = softwareSystem "OpenShift Service CA" "Auto-provisions TLS certificates via serving-cert annotations" "External"
-        prometheusOperator = softwareSystem "Prometheus Operator" "Manages ServiceMonitor CRDs for metrics scraping" "External"
-        odhNotebooks = softwareSystem "OpenDataHub Notebooks" "Jupyter notebooks with Feast integration label" "Internal ODH"
-        odhOperator = softwareSystem "ODH/RHOAI Operator" "Deploys feast-operator via platform component manifests" "Internal ODH"
-        oidcProvider = softwareSystem "OIDC Provider" "Token validation via .well-known/openid-configuration" "External"
+        rhoaiOperator = softwareSystem "RHOAI / ODH Operator" "Platform operator that deploys feast-operator via Kustomize manifests" "Internal Platform"
+        kubeflowNotebooks = softwareSystem "Kubeflow Notebooks" "Interactive notebook environments for data science" "Internal Platform"
+        prometheusOperator = softwareSystem "Prometheus Operator" "Monitoring stack, scrapes metrics via ServiceMonitors" "Internal Platform"
+        openshiftRouteAPI = softwareSystem "OpenShift Route API" "Exposes services externally via Routes" "Internal Platform"
+        openshiftServiceCA = softwareSystem "OpenShift Service CA" "Auto-provisions TLS certificates for services" "Internal Platform"
 
-        redis = softwareSystem "Redis" "Online store backend (port 6379)" "External"
-        postgresql = softwareSystem "PostgreSQL" "Offline/online store and registry backend (port 5432)" "External"
-        snowflake = softwareSystem "Snowflake" "Offline/online store and registry backend" "External"
-        s3 = softwareSystem "S3/GCS Object Storage" "Remote registry file storage and model artifacts" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server" "External"
+        postgresql = softwareSystem "PostgreSQL" "Relational database for registry/store persistence" "External"
+        redis = softwareSystem "Redis" "In-memory data store for online feature serving" "External"
+        snowflake = softwareSystem "Snowflake" "Cloud data warehouse for offline/online store" "External"
+        dynamodb = softwareSystem "AWS DynamoDB" "NoSQL database for online store" "External"
+        bigquery = softwareSystem "GCP BigQuery" "Cloud data warehouse for offline store" "External"
+        oidcProvider = softwareSystem "OIDC Provider" "Identity provider for token validation" "External"
+        s3Storage = softwareSystem "Object Storage (S3)" "Feature repository / artifact storage" "External"
 
-        # User interactions
-        dataScientist -> feast "Creates FeatureStore CRs via kubectl, browses UI"
-        mlApp -> feast "GetOnlineFeatures, get historical features via gRPC"
+        # User relationships
+        dataScientist -> feast "Retrieves features, pushes data, browses UI" "HTTP/HTTPS, gRPC"
+        platformAdmin -> feast "Creates FeatureStore CRs" "kubectl"
 
-        # Operator dependencies
-        feastOperator -> k8sAPI "CRUD on Deployments, Services, ConfigMaps, RBAC, CronJobs, PVCs" "HTTPS/443"
-        feastOperator -> openshiftAPI "Route management, serving cert annotation" "HTTPS/443"
-        feastOperator -> featureServer "Fetches permission policies for auto-access RBAC" "HTTP(S)/80|443 HMAC-SHA256 JWT"
+        # Platform relationships
+        rhoaiOperator -> feastOperator "Deploys via Kustomize manifests" "Kustomize"
+        feastOperator -> kubernetesAPI "CRUD on managed resources" "HTTPS/443, SA token"
+        feastOperator -> featureServerPython "Deploys and manages" "Kubernetes Deployment"
+        feastOperator -> featureServerGo "Deploys and manages (optional)" "Kubernetes Deployment"
+        feastOperator -> materializationCronJob "Creates and manages" "Kubernetes CronJob"
+        feastOperator -> openshiftRouteAPI "Creates Routes for UI exposure" "HTTPS/443"
+        feastOperator -> prometheusOperator "Creates ServiceMonitors" "HTTPS/443"
+        feastOperator -> openshiftServiceCA "TLS cert provisioning via annotations" "Annotation-based"
+        feastOperator -> featureServerPython "Fetches permissions (intra-comm)" "HTTP(S), HMAC-SHA256 JWT"
 
-        # Feature server dependencies
-        featureServer -> redis "Read/write online features" "Redis/6379 TLS optional"
-        featureServer -> postgresql "Read/write features and metadata" "PostgreSQL/5432 TLS optional"
-        featureServer -> snowflake "Read/write features and metadata" "HTTPS/443"
-        featureServer -> s3 "Registry file storage" "HTTPS/443 IAM auth"
-        featureServer -> k8sAPI "TokenReview, SubjectAccessReview for auth" "HTTPS/443"
-        featureServer -> oidcProvider "Token validation" "HTTPS/443"
+        kubeflowNotebooks -> featureServerPython "Retrieves features via Feast SDK" "HTTP(S)/6566"
+        feastOperator -> kubeflowNotebooks "Watches Notebook CRs, creates ConfigMaps" "Kubernetes API"
 
-        # Platform integrations
-        odhOperator -> feast "Deploys feast-operator via Kustomize manifests"
-        feastOperator -> odhNotebooks "Watches Notebook CRs, creates ConfigMaps" "HTTPS/443"
-        feastOperator -> prometheusOperator "Creates ServiceMonitor for metrics" "HTTPS/443"
-        feastOperator -> openshiftServiceCA "TLS cert provisioning via annotations"
+        feastUI -> featureServerPython "Queries feature metadata" "REST/6572"
+
+        # Data store relationships
+        featureServerPython -> postgresql "Registry/store persistence" "TCP/5432, Password"
+        featureServerPython -> redis "Online store backend" "TCP/6379, Password"
+        featureServerPython -> snowflake "Offline/online store" "HTTPS/443, Account creds"
+        featureServerPython -> dynamodb "Online store" "HTTPS/443, AWS IAM"
+        featureServerPython -> bigquery "Offline store" "HTTPS/443, GCP creds"
+        featureServerPython -> oidcProvider "Token validation" "HTTPS/443, Client creds"
+
+        featureServerGo -> redis "Online store backend" "TCP/6379"
+
+        materializationCronJob -> featureServerPython "feast apply + materialize" "In-process"
+
+        # External client
+        dataScientist -> featureServerPython "POST /get-online-features" "HTTP(S)/6566, Bearer JWT"
+        dataScientist -> feastUI "Browse features" "HTTPS/443 (via Route)"
     }
 
     views {
@@ -65,41 +74,27 @@ workspace {
             autoLayout
         }
 
-        component feastOperator "OperatorComponents" {
-            include *
-            autoLayout
-        }
-
-        component featureServer "FeatureServerComponents" {
-            include *
-            autoLayout
-        }
-
         styles {
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal ODH" {
+            element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
             element "Person" {
-                shape Person
-                background #4a90e2
+                shape person
+                background #08427b
                 color #ffffff
             }
             element "Software System" {
-                background #438dd5
+                background #1168bd
                 color #ffffff
             }
             element "Container" {
-                background #4a90e2
+                background #438dd5
                 color #ffffff
-            }
-            element "Component" {
-                background #85bbf0
-                color #000000
             }
         }
     }

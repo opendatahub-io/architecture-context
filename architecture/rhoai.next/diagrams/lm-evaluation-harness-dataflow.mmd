@@ -1,59 +1,47 @@
 sequenceDiagram
-    participant Operator as TrustyAI LMEval Operator
-    participant Job as LMEval Job Container<br/>(lmes-job)
+    participant Operator as TrustyAI Operator
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Adapter as LMEval Adapter<br/>(Job Pod)
     participant EvalHub as EvalHub Service<br/>443/TCP HTTPS
     participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant Model as Model Inference Endpoint<br/>443/TCP HTTPS
+    participant Model as Model Endpoint<br/>443/TCP HTTPS
     participant OCI as OCI Registry<br/>443/TCP HTTPS
-    participant MLflow as MLflow Tracking<br/>443/TCP HTTPS
+    participant MLflow as MLflow Server<br/>443/TCP HTTPS
 
-    Note over Operator,Job: Flow 1: Online Benchmark Evaluation
-
-    Operator->>Job: Create Kubernetes Job<br/>Mount /meta/job.json + secrets
-    activate Job
-
-    Job->>EvalHub: POST callback_url<br/>Status: INITIALIZING<br/>Auth: Bearer Token
-    Job->>HF: GET datasets & tokenizers<br/>Auth: HF_TOKEN (optional)
-    HF-->>Job: Dataset files + tokenizer
-
-    Job->>EvalHub: POST callback_url<br/>Status: LOADING_DATA
-    Job->>EvalHub: POST callback_url<br/>Status: RUNNING_EVALUATION
-
-    loop For each evaluation batch
-        Job->>Model: POST /v1/completions<br/>Auth: Bearer Token (OPENAI_API_KEY)<br/>Batched prompts (num_concurrent)
-        Model-->>Job: Completions response
+    rect rgb(240, 248, 255)
+        Note over Operator,K8sAPI: Job Creation
+        Operator->>K8sAPI: Create Job + ConfigMap<br/>Auth: ServiceAccount<br/>TLS 1.2+
+        K8sAPI-->>Adapter: Pod starts<br/>ConfigMap mounted at /meta/job.json
     end
 
-    Job->>EvalHub: POST callback_url<br/>Status: POST_PROCESSING
-
-    Job->>EvalHub: POST callback_url<br/>Status: PERSISTING_ARTIFACTS
-    Job->>OCI: skopeo push<br/>Auth: Docker config.json<br/>Evaluation results as OCI artifact
-    OCI-->>Job: Push confirmed
-
-    opt MLflow enabled
-        Job->>MLflow: POST metrics & results<br/>Auth: via EvalHub SDK
+    rect rgb(255, 248, 240)
+        Note over Adapter,EvalHub: Initialization
+        Adapter->>Adapter: Read /meta/job.json<br/>Path validation (CWE-22)
+        Adapter->>EvalHub: POST callback_url<br/>Status: INITIALIZING<br/>Auth: Bearer Token
     end
 
-    Job->>EvalHub: POST callback_url<br/>Status: COMPLETED<br/>Final scored results
-    deactivate Job
-
-    Note over Operator,Job: Flow 2: Air-Gapped / Offline Evaluation
-
-    Operator->>Job: Create Job with /test_data volume<br/>(pre-populated by init container)
-    activate Job
-
-    Note over Job: Auto-detect /test_data<br/>Set HF_HUB_OFFLINE=1<br/>HF_DATASETS_OFFLINE=1
-
-    Job->>EvalHub: POST callback_url<br/>Status: INITIALIZING
-
-    Note over Job: Load datasets from /test_data<br/>(no HuggingFace Hub calls)
-
-    Job->>EvalHub: POST callback_url<br/>Status: RUNNING_EVALUATION
-
-    loop For each evaluation batch
-        Job->>Model: POST /v1/completions<br/>Auth: Bearer Token<br/>Custom CA cert supported
-        Model-->>Job: Completions response
+    rect rgb(240, 255, 240)
+        Note over Adapter,HF: Data Loading
+        Adapter->>HF: GET tokenizer + datasets<br/>Auth: HF_TOKEN (Bearer)<br/>TLS 1.2+
+        HF-->>Adapter: Tokenizer + benchmark data
+        Adapter->>EvalHub: POST callback_url<br/>Status: LOADING_DATA
     end
 
-    Job->>EvalHub: POST callback_url<br/>Status: COMPLETED<br/>Final scored results
-    deactivate Job
+    rect rgb(255, 255, 240)
+        Note over Adapter,Model: Evaluation Execution
+        loop For each benchmark task
+            Adapter->>Model: POST /v1/completions<br/>Auth: OPENAI_API_KEY (Bearer)<br/>TLS (custom CA supported)
+            Model-->>Adapter: Completions + logprobs
+            Adapter->>EvalHub: POST callback_url<br/>Status: RUNNING_EVALUATION<br/>+ progress %
+        end
+    end
+
+    rect rgb(248, 240, 255)
+        Note over Adapter,MLflow: Result Persistence
+        Adapter->>Adapter: Write results JSON<br/>to /output
+        Adapter->>EvalHub: POST callback_url<br/>Status: POST_PROCESSING
+        Adapter->>OCI: Push OCI artifact via skopeo<br/>Auth: Docker config<br/>TLS 1.2+
+        Adapter->>EvalHub: POST callback_url<br/>Status: PERSISTING_ARTIFACTS
+        Adapter->>MLflow: POST experiment run<br/>Auth: EvalHub SDK<br/>TLS
+        Adapter->>EvalHub: POST callback_url<br/>Status: COMPLETED<br/>+ overall score + results
+    end

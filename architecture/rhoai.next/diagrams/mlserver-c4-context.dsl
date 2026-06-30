@@ -1,58 +1,56 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Deploys ML models and sends inference requests via REST/gRPC"
+        dataScientist = person "Data Scientist" "Deploys and queries ML models via InferenceService"
+        sre = person "SRE / Platform Admin" "Monitors model serving health and performance"
 
-        mlserver = softwareSystem "MLServer" "Python-based multi-model inference server implementing KServe v2 dataplane protocol" {
-            restServer = container "REST Server" "KServe v2 REST dataplane with OpenAPI docs and Swagger UI" "FastAPI/Uvicorn, Port 8080"
-            grpcServer = container "gRPC Server" "KServe v2 gRPC dataplane with bidirectional streaming" "grpc.aio, Port 8081"
-            kafkaServer = container "Kafka Server" "Asynchronous inference via Kafka message topics" "aiokafka"
-            metricsServer = container "Metrics Server" "Prometheus metrics endpoint" "FastAPI/Uvicorn, Port 8082"
-            dataPlane = container "DataPlane Handler" "Unified inference/metadata/health handler shared across all protocols" "Python"
-            modelRegistry = container "MultiModelRegistry" "Manages multiple models with versioning and ready state tracking" "Python"
-            modelRepository = container "Model Repository" "Discovers and loads model configurations from filesystem" "Python"
-            adaptiveBatcher = container "Adaptive Batcher" "Time-based and size-based request batching for throughput optimization" "Python"
-            parallelWorkers = container "Parallel Workers" "Multiprocess pool distributing inference across worker processes" "Python multiprocessing"
-            codecSystem = container "Codec System" "Bidirectional conversion between wire formats and Python types" "Python"
-            sklearnRuntime = container "sklearn Runtime" "Serves scikit-learn models (.joblib, .pickle)" "Python MLModel Plugin"
-            xgboostRuntime = container "xgboost Runtime" "Serves XGBoost models (.bst, .json)" "Python MLModel Plugin"
-            lightgbmRuntime = container "lightgbm Runtime" "Serves LightGBM models (.bst)" "Python MLModel Plugin"
-            onnxRuntime = container "onnx Runtime" "Serves ONNX models (.onnx) via onnxruntime" "Python MLModel Plugin"
+        mlserver = softwareSystem "MLServer" "Multi-model inference server implementing KServe V2 Inference Protocol over REST and gRPC" {
+            restServer = container "REST Server" "KServe V2 dataplane over HTTP with FastAPI/Uvicorn" "Python (FastAPI)" "Web Server"
+            grpcServer = container "gRPC Server" "KServe V2 dataplane over gRPC with grpc.aio" "Python (grpcio)" "gRPC Server"
+            metricsServer = container "Metrics Server" "Prometheus metrics endpoint" "Python (prometheus-client)" "Metrics"
+            dataplaneHandlers = container "DataPlane Handlers" "Shared business logic for inference, metadata, health, repository operations" "Python"
+            modelRegistry = container "MultiModelRegistry" "Model lifecycle management — load, unload, readiness tracking" "Python"
+            adaptiveBatcher = container "Adaptive Batcher" "Groups inference requests into batches based on size/time thresholds" "Python"
+            responseCache = container "Response Cache" "In-memory LRU cache for inference responses" "Python"
+            codecSystem = container "Codec System" "Type-safe conversion between V2 wire format and Python types (numpy, pandas, string)" "Python"
+            parallelPool = container "Parallel Inference Pool" "Multiprocessing worker pool for horizontal model scaling within a pod" "Python (multiprocessing)"
+            sklearnRuntime = container "sklearn Runtime" "Scikit-learn model serving (predict, predict_proba, transform)" "Python (scikit-learn)" "Runtime Plugin"
+            xgboostRuntime = container "XGBoost Runtime" "XGBoost model serving with auto regressor/classifier detection" "Python (xgboost)" "Runtime Plugin"
+            lightgbmRuntime = container "LightGBM Runtime" "LightGBM Booster model serving" "Python (lightgbm)" "Runtime Plugin"
+            onnxRuntime = container "ONNX Runtime" "ONNX model serving with configurable execution providers" "Python (onnxruntime)" "Runtime Plugin"
+
+            restServer -> dataplaneHandlers "Routes requests to"
+            grpcServer -> dataplaneHandlers "Routes requests to"
+            dataplaneHandlers -> modelRegistry "Dispatches inference to"
+            dataplaneHandlers -> adaptiveBatcher "Batches requests via"
+            dataplaneHandlers -> responseCache "Checks/stores cache via"
+            dataplaneHandlers -> codecSystem "Encodes/decodes via"
+            modelRegistry -> sklearnRuntime "Loads and invokes"
+            modelRegistry -> xgboostRuntime "Loads and invokes"
+            modelRegistry -> lightgbmRuntime "Loads and invokes"
+            modelRegistry -> onnxRuntime "Loads and invokes"
+            modelRegistry -> parallelPool "Distributes to workers via"
         }
 
-        kserve = softwareSystem "KServe" "Manages InferenceService pod lifecycle, networking, and autoscaling" "Internal Platform"
-        storageInit = softwareSystem "Storage Initializer" "Init container that populates /mnt/models with model artifacts" "Internal Platform"
-        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Sidecar that authenticates requests before forwarding to MLServer" "Internal Platform"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal Platform"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing collection" "Internal Platform"
-        kafkaBroker = softwareSystem "Kafka Broker" "Message broker for asynchronous inference" "External"
-        istio = softwareSystem "Istio / Service Mesh" "Transparent mTLS and traffic management" "External"
-        modelStorage = softwareSystem "Model Artifact Storage" "Filesystem storage for ML model files (/mnt/models)" "External"
+        kserve = softwareSystem "KServe" "Deploys MLServer as inference container, manages routing, scaling, storage initialization" "External"
+        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Sidecar for TLS termination and Bearer Token authentication/authorization" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing collection" "External"
+        kafka = softwareSystem "Apache Kafka" "Streaming inference input/output (optional)" "External"
+        modelStorage = softwareSystem "Model Storage" "Model artifacts via PVC or KServe storage initializer (/mnt/models)" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API" "Service account namespace for CloudEvents" "External"
 
-        # External relationships
-        dataScientist -> mlserver "Sends inference requests" "REST/gRPC via KServe Route"
-        kserve -> mlserver "Creates and manages pod lifecycle" "Kubernetes API"
-        storageInit -> modelStorage "Downloads model artifacts" "Object Storage / PVC"
-        modelStorage -> mlserver "Provides model files at /mnt/models" "Filesystem"
-        mlserver -> kafkaBroker "Consumes/produces inference messages" "Kafka/9092, Optional SSL"
-        mlserver -> otelCollector "Exports distributed traces" "gRPC OTLP"
-        prometheus -> mlserver "Scrapes metrics" "HTTP/8082"
-        kubeRbacProxy -> mlserver "Forwards authenticated requests" "HTTP/8080, gRPC/8081"
-        dataScientist -> kubeRbacProxy "Sends authenticated requests" "HTTPS/443 via Route"
-        istio -> mlserver "Provides mTLS and traffic management" "Sidecar proxy"
+        # User interactions
+        dataScientist -> kubeRbacProxy "Sends inference requests via" "HTTPS/8443"
+        sre -> prometheus "Monitors MLServer via"
 
-        # Internal container relationships
-        restServer -> dataPlane "Routes REST requests" "Function call"
-        grpcServer -> dataPlane "Routes gRPC requests" "Function call"
-        kafkaServer -> dataPlane "Routes Kafka messages" "Function call"
-        dataPlane -> modelRegistry "Resolves model by name/version" "Function call"
-        dataPlane -> adaptiveBatcher "Batches requests" "Function call"
-        modelRegistry -> modelRepository "Discovers models" "Filesystem scan"
-        adaptiveBatcher -> parallelWorkers "Dispatches batched inference" "Queue messaging"
-        parallelWorkers -> sklearnRuntime "Executes predict()" "Function call"
-        parallelWorkers -> xgboostRuntime "Executes predict()" "Function call"
-        parallelWorkers -> lightgbmRuntime "Executes predict()" "Function call"
-        parallelWorkers -> onnxRuntime "Executes predict()" "Function call"
-        codecSystem -> dataPlane "Encodes/decodes inference data" "Function call"
+        # Platform interactions
+        kubeRbacProxy -> mlserver "Forwards authenticated traffic to" "HTTP/8080, gRPC/8081"
+        kserve -> mlserver "Deploys and manages lifecycle of"
+        mlserver -> prometheus "Exposes metrics to" "HTTP/8082"
+        mlserver -> otelCollector "Exports trace spans to" "gRPC/4317"
+        mlserver -> kafka "Consumes/produces inference messages" "Kafka/9092"
+        mlserver -> modelStorage "Loads model artifacts from" "Filesystem /mnt/models"
+        mlserver -> kubernetesAPI "Reads namespace from" "ServiceAccount mount"
     }
 
     views {
@@ -67,25 +65,33 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal Platform" {
+            element "Runtime Plugin" {
                 background #7ed321
+                color #ffffff
+            }
+            element "Web Server" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "gRPC Server" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Metrics" {
+                background #f5a623
                 color #ffffff
             }
             element "Person" {
                 shape person
-                background #08427B
+                background #08427b
                 color #ffffff
             }
-            element "Container" {
-                background #438DD5
+            element "Software System" {
+                background #1168bd
                 color #ffffff
             }
         }

@@ -1,39 +1,69 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Runs LLM evaluations using Ragas metrics via Llama Stack eval API"
+        user = person "Data Scientist" "Runs LLM evaluation benchmarks via the Llama Stack eval API"
 
-        llamaStackProviderRagas = softwareSystem "llama-stack-provider-ragas" "Ragas evaluation provider for Llama Stack, supporting inline and remote (Kubeflow) execution modes" {
-            inlineProvider = container "Inline Provider" "Runs Ragas evaluation in-process within Llama Stack server" "Python Llama Stack Provider"
-            remoteProvider = container "Remote Provider" "Submits Ragas evaluation as Kubeflow Pipeline runs" "Python Llama Stack Provider"
-            inlineWrappers = container "Inline LLM/Embedding Wrappers" "Adapts Llama Stack inference API to Ragas/LangChain interfaces" "Python Adapter Classes"
-            remoteWrappers = container "Remote LLM/Embedding Wrappers" "Adapts llama-stack-client SDK to Ragas/LangChain interfaces" "Python Adapter Classes"
-            kfpComponents = container "KFP Pipeline Components" "Two-step Kubeflow pipeline: data retrieval and Ragas evaluation" "Python KFP Components"
-            compatLayer = container "Compatibility Layer" "Handles llama_stack vs llama_stack_api package migration" "Python Module"
+        llamaStackProviderRagas = softwareSystem "llama-stack-provider-ragas" "Out-of-tree Llama Stack eval provider implementing Ragas evaluation metrics in inline and remote (KFP) execution modes" {
+            inlineProvider = container "RagasEvaluatorInline" "Runs Ragas evaluation in-process within the Llama Stack server" "Python"
+            remoteProvider = container "RagasEvaluatorRemote" "Submits evaluation pipelines to Kubeflow Pipelines for distributed execution" "Python"
+            config = container "RagasProviderConfig" "Configuration model with pydantic validation for inline/remote modes" "Python"
+            wrapperInline = container "LlamaStackInlineLLM / Embeddings" "Adapts Llama Stack inference API to Ragas LangChain interfaces (in-process)" "Python"
+            wrapperRemote = container "LlamaStackRemoteLLM / Embeddings" "Adapts Llama Stack inference API to Ragas LangChain interfaces (HTTP client)" "Python"
         }
 
-        llamaStackServer = softwareSystem "Llama Stack Server" "Hosts providers and exposes eval/inference/datasetIO APIs" "Internal"
-        kubeflowPipelines = softwareSystem "Kubeflow Pipelines (Data Science Pipelines)" "Kubernetes-native ML pipeline orchestration" "Internal Platform"
-        ollama = softwareSystem "Inference Provider (Ollama/vLLM)" "LLM inference and embedding generation" "Internal"
-        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Provides ConfigMap for base image resolution" "Internal Platform"
-        s3Storage = softwareSystem "S3-Compatible Storage" "MinIO or AWS S3 for evaluation result persistence" "External"
-        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server for ConfigMap/Secret access" "External"
+        llamaStackServer = softwareSystem "Llama Stack Server" "Host runtime providing eval, inference, dataset, benchmark, and files APIs" {
+            tags "Internal RHOAI"
+        }
 
-        datascientist -> llamaStackServer "Submits eval requests via HTTP" "HTTP/8321"
-        llamaStackServer -> llamaStackProviderRagas "Routes eval API calls to provider"
+        llamaStackOperator = softwareSystem "Llama Stack Operator" "Deploys Llama Stack distributions on OpenShift via LlamaStackDistribution CRD" {
+            tags "Internal RHOAI"
+        }
 
-        inlineProvider -> inlineWrappers "Uses for LLM/embedding calls"
-        inlineWrappers -> llamaStackServer "In-process inference API calls" "Python API"
+        kfp = softwareSystem "Kubeflow Pipelines (Data Science Pipelines)" "Pipeline orchestration platform for remote evaluation execution" {
+            tags "Internal RHOAI"
+        }
 
-        remoteProvider -> kubeflowPipelines "Submits pipeline runs" "HTTPS/443 Bearer Token"
-        remoteProvider -> s3Storage "Fetches evaluation results" "HTTPS/443 AWS IAM"
-        remoteProvider -> kubernetesAPI "Reads ConfigMaps for image resolution" "HTTPS/6443"
+        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Provides ConfigMap with base image reference for KFP pipeline components" {
+            tags "Internal RHOAI"
+        }
 
-        kfpComponents -> llamaStackServer "Retrieves datasets and runs inference" "HTTP/8321"
-        kfpComponents -> s3Storage "Persists evaluation results (JSONL)" "HTTPS/443 AWS IAM"
-        kfpComponents -> remoteWrappers "Uses for LLM/embedding calls in KFP pods"
+        ollama = softwareSystem "Ollama" "LLM inference backend for development/demo" {
+            tags "External"
+        }
 
-        llamaStackServer -> ollama "Delegates inference requests" "HTTP"
-        trustyaiOperator -> llamaStackProviderRagas "Provides ragas-provider-image via ConfigMap" "Kubernetes API"
+        vllm = softwareSystem "vLLM" "Production LLM inference backend on OpenShift AI" {
+            tags "External"
+        }
+
+        s3 = softwareSystem "S3-compatible Object Storage" "Stores evaluation result JSONL files" {
+            tags "External"
+        }
+
+        k8sApi = softwareSystem "Kubernetes API Server" "Cluster API for ConfigMap reads and kubeconfig loading" {
+            tags "External"
+        }
+
+        ragas = softwareSystem "Ragas Framework" "Core evaluation library providing faithfulness, answer_relevancy, context_precision, context_recall metrics" {
+            tags "External Library"
+        }
+
+        user -> llamaStackServer "Submits evaluation jobs via" "HTTP/8321"
+        llamaStackServer -> llamaStackProviderRagas "Loads as eval plugin"
+
+        inlineProvider -> wrapperInline "Uses for LLM/embedding calls"
+        remoteProvider -> wrapperRemote "Uses for LLM/embedding calls"
+        inlineProvider -> ragas "Calls evaluate() with metrics"
+        remoteProvider -> ragas "Calls evaluate() in KFP pod"
+
+        llamaStackProviderRagas -> llamaStackServer "Uses inference, dataset, benchmark, files APIs" "In-process / HTTP/8321"
+        llamaStackProviderRagas -> kfp "Submits and monitors pipeline runs" "HTTPS/443 + Bearer Token"
+        llamaStackProviderRagas -> s3 "Stores/retrieves evaluation results" "HTTPS/443 + AWS IAM"
+        llamaStackProviderRagas -> k8sApi "Reads ConfigMap, loads kubeconfig" "HTTPS/443 + SA Token"
+        llamaStackProviderRagas -> trustyaiOperator "Reads trustyai-service-operator-config ConfigMap for base image"
+
+        llamaStackServer -> ollama "LLM inference (dev/demo)" "HTTP/11434"
+        llamaStackServer -> vllm "LLM inference (production)" "HTTPS/8443 + Bearer Token"
+
+        llamaStackOperator -> llamaStackServer "Deploys via LlamaStackDistribution CRD"
     }
 
     views {
@@ -52,17 +82,25 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal" {
+            element "External Library" {
+                background #b8860b
+                color #ffffff
+            }
+            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal Platform" {
+            element "Person" {
+                background #4a90e2
+                color #ffffff
+                shape Person
+            }
+            element "Software System" {
                 background #4a90e2
                 color #ffffff
             }
-            element "Person" {
-                shape Person
-                background #08427b
+            element "Container" {
+                background #438dd5
                 color #ffffff
             }
         }

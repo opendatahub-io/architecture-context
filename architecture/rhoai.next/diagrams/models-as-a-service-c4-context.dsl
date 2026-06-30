@@ -1,65 +1,78 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates models, manages subscriptions, and consumes inference APIs"
-        platformAdmin = person "Platform Admin" "Configures tenants, policies, and platform governance"
+        dataScientist = person "Data Scientist" "Creates model references, manages subscriptions, deploys inference endpoints"
+        platformAdmin = person "Platform Admin" "Configures tenants, auth policies, and subscription rate limits"
+        apiConsumer = person "API Consumer" "Invokes model inference via OpenAI-compatible API with Bearer token or API key"
 
-        maas = softwareSystem "Models as a Service (MaaS)" "Multi-tenant platform for exposing LLM models as governed, subscription-based services with API key management, token rate limiting, and policy-driven authorization" {
-            maasController = container "maas-controller" "Reconciles MaaS CRDs into Gateway API HTTPRoutes, Kuadrant policies, Istio resources, and deploys maas-api per tenant" "Go Operator (controller-runtime)"
-            maasApi = container "maas-api" "REST API for API key management, model listing (OpenAI-compatible), subscription selection, and Authorino callback handling" "Go REST Service (Gin)"
-            payloadProcessing = container "payload-processing" "Post-auth Envoy ext_proc for request/response transformation: API translation, provider credential injection, model resolution" "Go gRPC Service (ext_proc)"
-            payloadPreProcessing = container "payload-pre-processing" "Pre-auth Envoy ext_proc for model name extraction from request body to X-Gateway-Model-Name header" "Go gRPC Service (ext_proc)"
-            webhookServer = container "Webhook Server" "Validates AITenant, MaaSSubscription, MaaSAuthPolicy CRs on creation" "Kubernetes Validating Webhook"
+        maas = softwareSystem "Models as a Service (MaaS)" "Kubernetes-native platform for managing inference model endpoints with policy-based access control, API key management, and token-based rate limiting" {
+            maasController = container "maas-controller" "Manages MaaS CRDs, reconciles Kuadrant policies, deploys maas-api platform workloads via Tenant reconciler" "Go Operator (controller-runtime)" {
+                modelRefReconciler = component "MaaSModelRefReconciler" "Discovers model backends, creates HTTPRoutes for Gateway API routing"
+                authPolicyReconciler = component "MaaSAuthPolicyReconciler" "Translates user/group access rules into Kuadrant AuthPolicy CRs with CEL expressions"
+                subscriptionReconciler = component "MaaSSubscriptionReconciler" "Translates token rate limits into Kuadrant TokenRateLimitPolicy CRs"
+                tenantReconciler = component "TenantReconciler" "Kustomize-based platform deploy pipeline for maas-api infrastructure"
+                aiTenantReconciler = component "AITenantReconciler" "Bootstraps tenant slices: namespace, Tenant CR, RBAC"
+                externalModelReconciler = component "ExternalModelReconciler" "Creates ServiceEntry, DestinationRule, HTTPRoute for external providers"
+                webhookServer = component "Webhook Server" "Validates AITenant, MaaSSubscription, MaaSAuthPolicy resources"
+            }
+            maasAPI = container "maas-api" "OpenAI-compatible model discovery, API key lifecycle management, subscription selection, Authorino callbacks" "Go HTTP Service (Gin)" {
+                modelDiscovery = component "Model Discovery" "GET /v1/models - OpenAI-compatible model listing with access validation"
+                apiKeyManager = component "API Key Manager" "CRUD + validation for API keys with SHA-256 hashing"
+                subscriptionSelector = component "Subscription Selector" "Authorino callback for subscription-based routing"
+                internalCallbacks = component "Internal Callbacks" "NetworkPolicy-protected endpoints for Authorino evaluation"
+            }
+            payloadProcessing = container "payload-processing" "Envoy ext_proc gRPC service for request/response processing pipeline" "Go gRPC Service"
         }
 
-        kuadrant = softwareSystem "Kuadrant / RHCL" "API management: Authorino for authentication/authorization, Limitador for token rate limiting" "External"
-        gatewayAPI = softwareSystem "Gateway API" "HTTPRoute-based traffic routing via openshift-default GatewayClass" "External"
-        istio = softwareSystem "Istio Service Mesh" "mTLS, DestinationRules for TLS origination, EnvoyFilters for ext_proc, ServiceEntries for external providers" "External"
-        postgresql = softwareSystem "PostgreSQL" "API key hash storage (zero-knowledge SHA-256), tenant-scoped CRUD" "External"
-        kserve = softwareSystem "KServe" "LLMInferenceService model serving, provides model endpoints and HTTPRoutes" "Internal ODH"
-        openshift = softwareSystem "OpenShift" "Platform runtime: service certificates, OAuth, cluster OIDC issuer" "External"
-        odhOperator = softwareSystem "ODH / RHOAI Operator" "Component lifecycle management, ModelsAsService feature gate in DataScienceCluster CR" "Internal ODH"
-
-        externalLLM = softwareSystem "External LLM Providers" "OpenAI, Anthropic, and other hosted LLM APIs" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection via PodMonitor and ServiceMonitor" "External"
+        kuadrant = softwareSystem "Kuadrant / RHCL" "Policy engine: AuthPolicy, TokenRateLimitPolicy, TelemetryPolicy" "External"
+        authorino = softwareSystem "Authorino" "Authentication and authorization service with HTTP callback support" "External"
+        postgresql = softwareSystem "PostgreSQL" "Relational database for API key storage and lifecycle management" "External"
+        gatewayAPI = softwareSystem "OpenShift Gateway API" "Gateway controller for HTTPRoute traffic routing (openshift-ingress)" "External"
+        istio = softwareSystem "Istio / OpenShift Service Mesh" "EnvoyFilter, DestinationRule, ServiceEntry, Telemetry" "External"
+        kserve = softwareSystem "KServe" "LLMInferenceService backend for internally-hosted model endpoints" "External"
+        odhOperator = softwareSystem "opendatahub-operator / rhods-operator" "Platform operator that enables/disables MaaS via DataScienceCluster" "Internal ODH"
+        externalLLM = softwareSystem "External LLM Providers" "OpenAI, Anthropic, and other external inference providers" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection from maas-api (9090/TCP) and maas-controller (8080/TCP)" "External"
+        coo = softwareSystem "Cluster Observability Operator" "Optional Perses dashboards and datasources for observability" "External"
 
         # User interactions
-        dataScientist -> maas "Creates MaaSModelRef, MaaSSubscription, manages API keys" "kubectl / API"
-        platformAdmin -> maas "Creates AITenants, MaaSAuthPolicies, configures governance" "kubectl / API"
-        dataScientist -> maas "Sends inference requests" "HTTPS/443 Bearer token"
+        apiConsumer -> maas "Invokes model inference" "HTTPS/443 (Bearer token / API key)"
+        dataScientist -> maas "Creates MaaSModelRef, ExternalModel CRs" "kubectl / API"
+        platformAdmin -> maas "Configures Tenant, AITenant, MaaSAuthPolicy, MaaSSubscription" "kubectl / API"
 
-        # MaaS internal
-        maasController -> maasApi "Deploys per tenant via kustomize + SSA" "Kubernetes API"
-        maasApi -> webhookServer "Co-deployed (shared controller process)" ""
+        # MaaS → External systems
+        maas -> kuadrant "Creates AuthPolicy, TokenRateLimitPolicy, TelemetryPolicy CRs" "CRD Create/Update"
+        maas -> authorino "HTTP callbacks for API key validation and subscription selection" "HTTPS/8443"
+        maas -> postgresql "Stores and queries API keys" "PostgreSQL/5432 TLS"
+        maas -> gatewayAPI "Creates HTTPRoutes, references Gateway" "CRD Create/Update"
+        maas -> istio "Creates EnvoyFilter, DestinationRule, ServiceEntry, Telemetry" "CRD Create/Update"
+        maas -> kserve "Reads LLMInferenceService to discover model endpoints" "CRD Watch"
+        maas -> externalLLM "Proxies inference requests to external providers" "HTTPS/443"
 
-        # MaaS → External
-        maas -> kuadrant "Creates AuthPolicies, TokenRateLimitPolicies, TelemetryPolicies; Authorino callbacks for key validation and subscription selection" "CRD CRUD / HTTPS/8443"
-        maas -> gatewayAPI "Creates per-model HTTPRoutes, validates Gateway references" "CRD CRUD"
-        maas -> istio "Creates ServiceEntries, DestinationRules, EnvoyFilters for ext_proc pipeline" "CRD CRUD"
-        maas -> postgresql "API key hash storage: create, validate, revoke, cleanup" "TCP/5432 TLS"
-        maas -> kserve "Discovers LLMInferenceService endpoints and HTTPRoutes" "CRD Watch"
-        maas -> openshift "Auto-detects cluster OIDC issuer, uses service certificates" "API Read"
-        maas -> externalLLM "Forwards inference requests via gateway with injected credentials" "HTTPS/443 TLS 1.2+"
-        maas -> prometheus "Exposes metrics (maas-api 9090/TCP, controller 8080/TCP)" "HTTP scrape"
-
-        odhOperator -> maas "Enables via DataScienceCluster ModelsAsService feature gate" "CRD"
-
-        # Gateway flow (runtime)
-        gatewayAPI -> payloadPreProcessing "Pre-auth: model name extraction" "gRPC/9004 TLS"
-        gatewayAPI -> kuadrant "Auth evaluation (OIDC/API key)" "Internal"
-        gatewayAPI -> payloadProcessing "Post-auth: API translation, credential injection" "gRPC/9004 TLS"
+        # External → MaaS
+        odhOperator -> maas "Enables/disables MaaS component" "DataScienceCluster CRD"
+        authorino -> maas "AuthPolicy evaluation callbacks" "HTTPS/8443"
+        prometheus -> maas "Scrapes metrics" "HTTP/9090, HTTP/8080"
     }
 
     views {
         systemContext maas "SystemContext" {
             include *
             autoLayout
-            description "Models as a Service in its ecosystem — multi-tenant LLM governance platform"
         }
 
         container maas "Containers" {
             include *
             autoLayout
-            description "Internal structure of the MaaS platform showing controller, API, and payload processing components"
+        }
+
+        component maasController "ControllerComponents" {
+            include *
+            autoLayout
+        }
+
+        component maasAPI "APIComponents" {
+            include *
+            autoLayout
         }
 
         styles {
@@ -77,12 +90,16 @@ workspace {
                 color #ffffff
             }
             element "Software System" {
-                background #4a90e2
+                background #1168bd
                 color #ffffff
             }
             element "Container" {
                 background #438dd5
                 color #ffffff
+            }
+            element "Component" {
+                background #85bbf0
+                color #000000
             }
         }
     }

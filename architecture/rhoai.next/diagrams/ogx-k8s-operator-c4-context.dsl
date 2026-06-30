@@ -1,44 +1,35 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and deploys OGX inference server instances via OGXServer CRs"
-        platformAdmin = person "Platform Admin" "Manages ODH/RHOAI platform, enables OGX component"
+        user = person "Platform Engineer / Data Scientist" "Creates OGXServer CRs to deploy GenAI inference endpoints"
 
-        ogxOperator = softwareSystem "OGX K8s Operator" "Kubernetes operator that deploys and manages OGX inference server instances via the OGXServer custom resource" {
-            manager = container "OGX Operator Manager" "Reconciles OGXServer CRs into Deployments, Services, PVCs, NetworkPolicies, Ingresses, HPAs, PDBs; manages config generation, legacy adoption, and status reporting" "Go Operator (controller-runtime)" "Primary"
-            webhook = container "Validating Webhook" "Validates OGXServer create/update: distribution name, provider IDs, model refs, adoption annotations" "Go (controller-runtime webhook)" "Webhook"
-            configGen = container "Config Generator" "Generates config.yaml from declared providers; resolves base config from OCI labels or ConfigMap; content-hash naming, immutable ConfigMaps" "Go (kustomize pipeline)"
-            legacyAdoption = container "Legacy Adoption System" "Migrates LlamaStackDistribution resources to OGXServer; handles RWO PVC constraints, Service/Ingress transfer" "Go"
+        ogxOperator = softwareSystem "OGX Kubernetes Operator" "Manages lifecycle of OGX server instances on Kubernetes/OpenShift" {
+            reconciler = container "OGXServer Reconciler" "Single-controller reconciler managing all resources per OGXServer CR" "Go (controller-runtime)"
+            webhook = container "Validating Webhook" "Validates OGXServer CRs on create/update (distribution names, provider IDs, adoption annotations)" "Go Admission Webhook"
+            manifestPipeline = container "Manifest Pipeline" "Renders kustomize-based manifests with Go plugin chain (NamePrefix, Namespace, FieldMutator, NetworkPolicy)" "Go (kustomize/api)"
+            configGenerator = container "Config Generator" "Resolves base config from OCI labels or ConfigMap, merges with CR spec to produce declarative config" "Go"
+            legacyAdoption = container "Legacy Adoption Handler" "Migrates PVCs, Services, Ingresses from LlamaStackDistribution CRs to OGXServer CRs" "Go"
         }
 
-        ogxModule = softwareSystem "OGX Module Operator" "ODH/RHOAI platform module that bridges the platform orchestrator with the OGX operator; currently scaffolded" "Scaffold" {
-            moduleController = container "Module Controller" "Watches OGX CR from platform operator, deploys OGX operator kustomize manifests" "Go Operator (controller-runtime)" "Scaffold"
-        }
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for all resource CRUD operations" "External"
+        certManager = softwareSystem "cert-manager / service-serving-cert-signer" "Provisions TLS certificates for webhook serving" "External"
+        ociRegistries = softwareSystem "OCI Container Registries" "quay.io, docker.io - host OGX distribution images" "External"
+        odhPlatform = softwareSystem "ODH/RHOAI Platform" "Provides trusted CA bundles, monitoring CRDs, and SCC configuration" "Internal RHOAI"
+        ogxInstances = softwareSystem "OGX Server Instances" "Deployed GenAI inference servers managed by the operator" "Managed Workload"
+        monitoring = softwareSystem "Prometheus / Monitoring Stack" "Collects metrics via ServiceMonitor and evaluates PrometheusRules" "Internal RHOAI"
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API server for CR watches, resource CRUD, leader election, webhook calls" "External"
-        ociRegistry = softwareSystem "OCI Image Registry" "Container image registries hosting OGX distribution images; OCI labels used for base config resolution" "External"
-        certProvider = softwareSystem "Certificate Provider" "cert-manager or OpenShift service-serving-cert-signer for webhook TLS certificates" "External"
-        prometheusOp = softwareSystem "Prometheus Operator" "Optional: operator creates ServiceMonitor/PrometheusRule if CRDs detected" "Internal ODH"
-        platformOperator = softwareSystem "ODH/RHOAI Platform Operator" "Creates OGX CR to enable the component; ogx-module watches this CR" "Internal ODH"
-        ogxServer = softwareSystem "OGX Server Instances" "Managed OGX inference server workloads running in user namespaces" "Managed Workload"
+        user -> ogxOperator "Creates/updates OGXServer CRs via kubectl"
+        ogxOperator -> k8sAPI "Watches CRs, applies resources via SSA, updates status" "HTTPS/443"
+        ogxOperator -> ociRegistries "Fetches OCI image labels for base config resolution" "HTTPS/443"
+        ogxOperator -> ogxInstances "Health checks and status polling" "HTTP/8321"
+        ogxOperator -> odhPlatform "Reads trusted CA bundle, checks monitoring CRDs" "ConfigMap/CRD read"
+        certManager -> ogxOperator "Provisions webhook TLS certificates" "Certificate/Secret"
+        monitoring -> ogxOperator "Scrapes metrics via ServiceMonitor" "HTTP/8080"
+        k8sAPI -> ogxOperator "Sends admission review requests to webhook" "HTTPS/443"
 
-        # Relationships
-        dataScientist -> ogxOperator "Creates OGXServer CR via kubectl" "HTTPS/6443"
-        platformAdmin -> platformOperator "Enables OGX component"
-        platformOperator -> ogxModule "Creates OGX CR" "CRD (components.platform.opendatahub.io/OGX)"
-        ogxModule -> ogxOperator "Deploys operator kustomize manifests"
-
-        ogxOperator -> k8sAPI "CR watches, resource CRUD, leader election" "HTTPS/6443 TLS 1.2+ SA token"
-        ogxOperator -> ociRegistry "Fetches OCI labels for base config resolution" "HTTPS/443 TLS 1.2+"
-        ogxOperator -> certProvider "Webhook TLS certificate provisioning"
-        ogxOperator -> prometheusOp "Creates ServiceMonitor/PrometheusRule if CRDs exist" "CRD"
-        ogxOperator -> ogxServer "Creates Deployments, polls health" "HTTP/8321"
-
-        k8sAPI -> ogxOperator "Admission webhook calls" "HTTPS/9443 TLS"
-
-        # Internal container relationships
-        manager -> webhook "Registers webhook handler"
-        manager -> configGen "Generates config.yaml for each OGXServer"
-        manager -> legacyAdoption "Handles LlamaStackDistribution migration"
+        reconciler -> manifestPipeline "Renders per-instance manifests"
+        reconciler -> configGenerator "Generates declarative config ConfigMaps"
+        reconciler -> legacyAdoption "Delegates legacy resource migration"
+        reconciler -> webhook "Validates via admission webhook"
     }
 
     views {
@@ -57,7 +48,7 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal ODH" {
+            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
@@ -65,22 +56,10 @@ workspace {
                 background #4a90e2
                 color #ffffff
             }
-            element "Scaffold" {
-                background #f5a623
-                color #ffffff
-            }
-            element "Primary" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Webhook" {
-                background #e74c3c
-                color #ffffff
-            }
             element "Person" {
+                shape Person
                 background #08427b
                 color #ffffff
-                shape Person
             }
         }
     }

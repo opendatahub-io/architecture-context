@@ -1,63 +1,44 @@
 sequenceDiagram
     participant Client as External Client
-    participant MMAPI as ModelMesh gRPC API<br/>8033/TCP TLS+mTLS
-    participant Router as Routing / LRU Cache
+    participant MM_A as ModelMesh Pod A<br/>8033/TCP gRPC<br/>TLS + mTLS (opt)
+    participant MM_B as ModelMesh Pod B<br/>8080/TCP Litelinks<br/>TLS + mTLS (opt)
     participant Runtime as Model Runtime<br/>8085/TCP or UDS<br/>plaintext
-    participant Litelinks as Litelinks RPC<br/>8080/TCP Thrift
-    participant RemoteMM as Remote ModelMesh Pod
-    participant RemoteRT as Remote Model Runtime
-    participant etcd as etcd Cluster<br/>2379/TCP TLS
-    participant Storage as Model Storage<br/>(S3/PVC)
+    participant etcd as etcd Cluster<br/>2379/TCP gRPC<br/>TLS (configurable)
+    participant Storage as Model Storage<br/>(S3/PVC)<br/>443/TCP HTTPS
 
-    rect rgb(230, 245, 255)
-        Note over Client,Runtime: Flow 1: Model Inference Request (Local Cache Hit)
-        Client->>MMAPI: gRPC inference RPC<br/>TLS + mTLS (optional)
-        MMAPI->>Router: Route request by model ID
-        Router->>Router: Check local LRU cache
-        Router->>Runtime: Forward inference<br/>gRPC 8085/TCP plaintext
-        Runtime-->>Router: Prediction result
-        Router-->>MMAPI: Response
-        MMAPI-->>Client: gRPC response
+    Note over Client, Storage: Flow 1: Inference Request (gRPC Proxy)
+    Client->>MM_A: gRPC inference request<br/>mm-model-id or mm-vmodel-id header<br/>TLS + mTLS (optional)
+    MM_A->>MM_A: Lookup model location<br/>(in-memory cache + etcd registry)
+    alt Model on this pod
+        MM_A->>Runtime: gRPC inference (zero-copy ByteBuf)<br/>ProtoSplicer injects model-id<br/>plaintext (localhost)
+        Runtime-->>MM_A: Inference response
+    else Model on another pod
+        MM_A->>MM_B: Litelinks forward request<br/>Thrift over TCP 8080<br/>TLS + mTLS (optional)
+        MM_B->>Runtime: gRPC inference (zero-copy ByteBuf)<br/>plaintext (localhost)
+        Runtime-->>MM_B: Inference response
+        MM_B-->>MM_A: Litelinks response<br/>Thrift 8080/TCP
     end
+    MM_A-->>Client: gRPC inference response<br/>TLS + mTLS (optional)
 
-    rect rgb(255, 240, 230)
-        Note over Client,RemoteRT: Flow 1b: Model Inference Request (Cache Miss - Remote Forward)
-        Client->>MMAPI: gRPC inference RPC<br/>TLS + mTLS (optional)
-        MMAPI->>Router: Route request by model ID
-        Router->>Router: Model not loaded locally
-        Router->>Litelinks: Forward to instance with model<br/>Thrift 8080/TCP TLS (optional)
-        Litelinks->>RemoteMM: Inter-pod invocation
-        RemoteMM->>RemoteRT: Forward inference<br/>gRPC 8085/TCP plaintext
-        RemoteRT-->>RemoteMM: Prediction result
-        RemoteMM-->>Litelinks: Response
-        Litelinks-->>Router: Response
-        Router-->>MMAPI: Response
-        MMAPI-->>Client: gRPC response
-    end
+    Note over Client, Storage: Flow 2: Model Load on Cache Miss
+    Client->>MM_A: gRPC inference for unloaded model
+    MM_A->>etcd: Lookup model record<br/>gRPC 2379/TCP
+    etcd-->>MM_A: Model metadata (path, type, size)
+    MM_A->>Runtime: loadModel RPC<br/>gRPC 8085/TCP or UDS
+    Runtime->>Storage: Download model artifacts<br/>HTTPS 443/TCP<br/>IAM / access keys
+    Storage-->>Runtime: Model artifacts
+    Runtime-->>MM_A: Load complete (model size)
+    MM_A->>etcd: Update model record (LOADED)<br/>gRPC 2379/TCP
+    MM_A->>Runtime: Inference request<br/>gRPC plaintext
+    Runtime-->>MM_A: Inference response
+    MM_A-->>Client: gRPC response
 
-    rect rgb(230, 255, 230)
-        Note over Client,Storage: Flow 2: Model Registration and Loading
-        Client->>MMAPI: registerModel RPC<br/>TLS + mTLS (optional)
-        MMAPI->>Router: Register model
-        Router->>etcd: Store model record<br/>gRPC 2379/TCP TLS
-        etcd-->>Router: Confirmed
-        Router->>Router: Select instance for loading<br/>(capacity-based placement)
-        Router->>Runtime: loadModel RPC<br/>gRPC 8085/TCP plaintext
-        Runtime->>Storage: Download model artifacts<br/>HTTPS/varies
-        Storage-->>Runtime: Model data
-        Runtime-->>Router: Model loaded (size reported)
-        Router->>etcd: Update model state → LOADED
-        Router-->>MMAPI: Registration response
-        MMAPI-->>Client: Model registered + loaded
-    end
-
-    rect rgb(255, 230, 230)
-        Note over MMAPI,etcd: Flow 3: Graceful Shutdown
-        Note right of MMAPI: Kubernetes sends SIGTERM
-        MMAPI->>Router: Begin graceful shutdown
-        Router->>etcd: Deregister instance<br/>gRPC 2379/TCP TLS
-        Router->>Litelinks: Trigger model loading on other instances<br/>Thrift 8080/TCP
-        Litelinks->>RemoteMM: Propagate models
-        RemoteMM->>RemoteRT: loadModel for migrated models
-        Note right of MMAPI: PreStop server (8090) blocks<br/>runtime container until<br/>ModelMesh exits
-    end
+    Note over Client, Storage: Flow 3: VModel Transition (Blue-Green)
+    Client->>MM_A: setVModel RPC<br/>gRPC 8033/TCP TLS
+    MM_A->>etcd: Update vmodel record<br/>(set target model)
+    MM_A->>Runtime: loadModel (new target)<br/>gRPC 8085/TCP or UDS
+    Runtime->>Storage: Download new model<br/>HTTPS 443/TCP
+    Storage-->>Runtime: Model artifacts
+    Runtime-->>MM_A: Load complete
+    MM_A->>etcd: Promote target to active<br/>(atomic switch)
+    MM_A-->>Client: setVModel response<br/>(zero-downtime transition)

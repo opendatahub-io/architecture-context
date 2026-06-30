@@ -1,70 +1,63 @@
 workspace {
     model {
-        admin = person "RHOAI Platform Administrator" "Runs CLI to inspect, validate, and migrate RHOAI deployments"
-        ciPipeline = person "CI/CD Pipeline" "Automated lint checks and migration execution"
+        operator = person "Platform Operator" "RHOAI administrator performing upgrades, migrations, and diagnostics"
 
-        odhCli = softwareSystem "odh-cli" "CLI tool for inspecting, validating, and migrating RHOAI deployments on OpenShift clusters" {
-            cliApp = container "rhai-cli" "Main CLI binary (kubectl-odh plugin)" "Go CLI"
-            lintEngine = container "Lint Engine" "Upgrade readiness validation (38 checks, 5 groups)" "Go Framework"
-            migrateEngine = container "Migrate Engine" "Migration action execution (19 actions, prepare/run phases)" "Go Framework"
-            backupPipeline = container "Backup Pipeline" "Workload backup with dependency resolution" "Go Library"
-            k8sClient = container "K8s Client Layer" "Unified client with Reader/Writer separation" "Go Library"
-            outputSystem = container "Output System" "Multi-format rendering (table, JSON, YAML)" "Go Library"
+        odhCli = softwareSystem "odh-cli" "CLI tool for RHOAI upgrade readiness, migration automation, workload backup, and operational diagnostics" {
+            cobraCli = container "Cobra CLI Framework" "Root command and subcommand routing" "Go (cobra)"
+            lintEngine = container "Lint Framework" "Upgrade readiness assessment with 38 checks, severity classification, structured output" "Go (pkg/lint/)"
+            migrateEngine = container "Migration Framework" "19 migration actions with prepare/run lifecycle, step recording, RBAC pre-validation" "Go (pkg/migrate/)"
+            backupPipeline = container "Backup Pipeline" "Three-stage pipeline: discovery, dependency resolution, JQ-based writer" "Go (pkg/backup/)"
+            operationalCmds = container "Operational Commands" "components, deps, status, logs, events, get subcommands" "Go"
         }
 
-        k8sApiServer = softwareSystem "Kubernetes API Server" "Cluster API for all resource operations" "External"
-        openshiftApi = softwareSystem "OpenShift API Server" "ClusterVersion detection, Routes, ImageStreams" "External"
-        olm = softwareSystem "OLM" "Operator discovery, subscription management" "External"
+        openshift = softwareSystem "OpenShift / Kubernetes" "Target platform cluster with RHOAI installed" {
+            k8sApi = container "Kubernetes API Server" "Central API for all cluster operations" "6443/TCP HTTPS"
+        }
 
-        odhOperator = softwareSystem "opendatahub-operator" "RHOAI platform operator managing DataScienceCluster" "Internal RHOAI"
-        kserve = softwareSystem "KServe" "Serverless ML inference platform" "Internal RHOAI"
-        dsp = softwareSystem "Data Science Pipelines" "ML pipeline orchestration" "Internal RHOAI"
-        ray = softwareSystem "Ray" "Distributed computing framework" "Internal RHOAI"
-        kueue = softwareSystem "Kueue" "Job queueing and scheduling" "Internal RHOAI"
-        trustyai = softwareSystem "TrustyAI" "AI model trust and fairness monitoring" "Internal RHOAI"
-        kubeflowNotebooks = softwareSystem "Kubeflow Notebooks" "Jupyter notebook workloads" "Internal RHOAI"
-        dashboard = softwareSystem "ODH Dashboard" "Web UI for RHOAI platform" "Internal RHOAI"
-        llamastack = softwareSystem "LlamaStack" "LLM deployment framework" "Internal RHOAI"
-        trainingOperator = softwareSystem "Training Operator" "Distributed training jobs" "Internal RHOAI"
+        odhOperator = softwareSystem "opendatahub-operator" "Manages RHOAI platform lifecycle via DataScienceCluster and DSCInitialization CRDs" "Internal RHOAI"
+        olm = softwareSystem "OLM" "Operator Lifecycle Manager for subscription and CSV management" "OpenShift"
 
-        github = softwareSystem "GitHub" "odh-gitops manifest source (build-time)" "External"
-        filesystem = softwareSystem "Local Filesystem" "Backup YAML file storage" "External"
+        kserve = softwareSystem "KServe" "Model serving platform with InferenceService and ServingRuntime CRDs" "Internal RHOAI"
+        notebooks = softwareSystem "Kubeflow Notebooks" "Jupyter notebook workbench management" "Internal RHOAI"
+        dsp = softwareSystem "Data Science Pipelines" "ML pipeline orchestration with DSPA CRDs" "Internal RHOAI"
+        kueue = softwareSystem "Kueue" "Job scheduling and quota management" "Internal RHOAI"
+        ray = softwareSystem "Ray" "Distributed computing framework for ML workloads" "Internal RHOAI"
+        trustyai = softwareSystem "TrustyAI" "AI fairness, drift monitoring, and guardrails" "Internal RHOAI"
+        trainingOp = softwareSystem "Training Operator" "Distributed training job management (PyTorch, TF, MPI, XGBoost)" "Internal RHOAI"
+        llamastack = softwareSystem "LlamaStack" "LLM distribution management" "Internal RHOAI"
+        dashboard = softwareSystem "Dashboard" "RHOAI web UI with accelerator and hardware profiles" "Internal RHOAI"
 
-        # User interactions
-        admin -> odhCli "Runs lint, migrate, status, backup commands via CLI"
-        ciPipeline -> odhCli "Automated upgrade readiness checks (JSON output)"
+        github = softwareSystem "GitHub" "Hosts odh-gitops dependency manifests" "External"
+        localFs = softwareSystem "Local Filesystem" "Stores backup files (YAML/JSON) and kubeconfig" "External"
 
-        # Internal container interactions
-        cliApp -> lintEngine "Invokes lint checks"
-        cliApp -> migrateEngine "Invokes migration actions"
-        cliApp -> backupPipeline "Invokes workload backup"
-        lintEngine -> k8sClient "Uses (Reader interface only)"
-        migrateEngine -> k8sClient "Uses (Reader + Writer interfaces)"
-        backupPipeline -> k8sClient "Uses (Reader interface only)"
-        lintEngine -> outputSystem "Renders results"
-        migrateEngine -> outputSystem "Renders results"
-        backupPipeline -> outputSystem "Renders results"
+        # Relationships - User
+        operator -> odhCli "Runs lint, migrate, backup, status commands via" "CLI (kubectl plugin)"
 
-        # External system interactions
-        odhCli -> k8sApiServer "All cluster operations" "HTTPS/6443 TLS 1.2+"
-        odhCli -> openshiftApi "ClusterVersion, Routes" "HTTPS/6443 TLS 1.2+"
-        odhCli -> olm "CSV, Subscription discovery" "HTTPS/6443 TLS 1.2+"
+        # Relationships - CLI to cluster
+        odhCli -> openshift "Reads/writes Kubernetes resources via" "HTTPS/6443, Bearer Token"
 
-        # Platform component interactions (via K8s API)
-        odhCli -> odhOperator "Read/Write DSC, DSCI" "HTTPS/6443 via API Server"
-        odhCli -> kserve "Read/Write InferenceService, ServingRuntime" "HTTPS/6443 via API Server"
-        odhCli -> dsp "Read/Write DSPA" "HTTPS/6443 via API Server"
-        odhCli -> ray "Read/Write RayCluster, RayJob" "HTTPS/6443 via API Server"
-        odhCli -> kueue "Read ClusterQueue, LocalQueue" "HTTPS/6443 via API Server"
-        odhCli -> trustyai "Read/Write CRDs + HTTP metrics" "HTTPS/6443 + 443"
-        odhCli -> kubeflowNotebooks "Read Notebooks" "HTTPS/6443 via API Server"
-        odhCli -> dashboard "Read AcceleratorProfile, HardwareProfile" "HTTPS/6443 via API Server"
-        odhCli -> llamastack "Read LlamaStackDistribution" "HTTPS/6443 via API Server"
-        odhCli -> trainingOperator "Read training jobs" "HTTPS/6443 via API Server"
+        # Relationships - CLI to platform components (via K8s API)
+        odhCli -> odhOperator "Reads DSC/DSCI CRDs, component state" "Kubernetes API"
+        odhCli -> olm "Reads/writes Subscriptions, CSVs, InstallPlans" "Kubernetes API"
+        odhCli -> kserve "Lint checks, migration (serverless->raw, modelmesh->raw)" "Kubernetes API"
+        odhCli -> notebooks "Lint checks, container name migration, backup" "Kubernetes API"
+        odhCli -> dsp "Lint checks, v1alpha1->v1 migration, RBAC patching" "Kubernetes API"
+        odhCli -> kueue "Lint checks, RHBOK migration" "Kubernetes API"
+        odhCli -> ray "Lint checks, backup, migration" "Kubernetes API"
+        odhCli -> trustyai "Data/metrics backup, guardrails patching, OTEL migration" "HTTPS/443 + Kubernetes API"
+        odhCli -> trainingOp "Training workload verification, deprecation notices" "Kubernetes API"
+        odhCli -> llamastack "Backup before 3.5 rename to OGX" "Kubernetes API"
+        odhCli -> dashboard "Accelerator/hardware profile migration checks" "Kubernetes API"
 
-        # External services
-        odhCli -> github "Fetch dependency manifest (build-time)" "HTTPS/443"
-        odhCli -> filesystem "Write backup YAML files" "File I/O"
+        # Relationships - External
+        odhCli -> github "Fetches dependency manifest (odh-gitops)" "HTTPS/443"
+        odhCli -> localFs "Writes backup files (YAML/JSON, mode 0600)" "File I/O"
+
+        # Internal container relationships
+        cobraCli -> lintEngine "Routes lint subcommand"
+        cobraCli -> migrateEngine "Routes migrate subcommand"
+        cobraCli -> backupPipeline "Routes backup subcommand"
+        cobraCli -> operationalCmds "Routes ops subcommands"
     }
 
     views {
@@ -87,18 +80,22 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Person" {
-                shape Person
-                background #4a90e2
+            element "OpenShift" {
+                background #ee0000
                 color #ffffff
             }
             element "Software System" {
-                background #438dd5
+                background #4a90e2
                 color #ffffff
             }
+            element "Person" {
+                background #08427b
+                color #ffffff
+                shape Person
+            }
             element "Container" {
-                background #85bbf0
-                color #000000
+                background #438dd5
+                color #ffffff
             }
         }
     }

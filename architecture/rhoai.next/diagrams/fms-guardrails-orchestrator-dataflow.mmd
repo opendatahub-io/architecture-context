@@ -1,70 +1,48 @@
 sequenceDiagram
     participant Client as External Client
-    participant Orch as Orchestrator<br/>8033/TCP HTTP/HTTPS<br/>Optional TLS/mTLS
-    participant Health as Health Server<br/>8034/TCP Plaintext
-    participant Detector as Detector Service(s)<br/>8080/TCP HTTP/HTTPS
-    participant Chunker as Chunker Service<br/>8085/TCP gRPC
-    participant TGIS as TGIS / caikit-nlp<br/>8033 or 8085/TCP gRPC
-    participant OpenAI as OpenAI-compatible<br/>8080/TCP HTTP/HTTPS
+    participant Orch as Orchestrator<br/>8033/TCP HTTP/HTTPS<br/>TLS 1.2+ (optional)
+    participant Chunker as Chunker Service<br/>8085/TCP gRPC<br/>TLS (optional)
+    participant Detector as Detector Service(s)<br/>8080/TCP HTTP/HTTPS<br/>TLS (optional)
+    participant GenSvc as Generation Backend<br/>(TGIS/NLP/OpenAI)<br/>8033 or 8080/TCP
 
-    Note over Client,OpenAI: Flow 1: Classification with Text Generation (v1 Unary)
+    Note over Client,GenSvc: Flow 1: Unary Text Generation with Detection
 
-    Client->>Orch: POST /api/v1/task/classification-with-text-generation<br/>Headers: passthrough + X-Forwarded-Access-Token
-    activate Orch
+    Client->>Orch: POST /api/v1/task/classification-with-text-generation<br/>Auth: Passthrough headers
+    Orch->>Chunker: gRPC ChunkersTokenizationTaskPredict<br/>Auth: mm-model-id header
+    Chunker-->>Orch: Tokenized chunks
+    Orch->>Detector: POST /api/v1/text/contents (concurrent)<br/>Auth: detector-id, x-model-name headers
+    Note right of Detector: Input detection<br/>(HAP, PII, etc.)
+    Detector-->>Orch: Detection results
+    Orch->>GenSvc: gRPC Generate / POST /v1/completions<br/>Auth: Bearer token (optional)
+    GenSvc-->>Orch: Generated text
+    Orch->>Detector: POST /api/v1/text/contents (concurrent)<br/>Auth: detector-id, x-model-name headers
+    Note right of Detector: Output detection
+    Detector-->>Orch: Detection results
+    Orch-->>Client: JSON Response<br/>(generation + detections)
 
-    rect rgb(255, 240, 220)
-        Note right of Orch: Input Detection Phase
-        Orch->>Chunker: ChunkerTokenizationTaskPredict<br/>gRPC/HTTP2, Optional TLS/mTLS
-        Chunker-->>Orch: Chunked text
-        Orch->>Detector: POST /api/v1/text/contents<br/>detector-id header, Optional TLS/mTLS
-        Detector-->>Orch: Detection results (input)
+    Note over Client,GenSvc: Flow 2: Streaming Chat Completions with Detection
+
+    Client->>Orch: POST /api/v2/chat/completions-detection<br/>Auth: Passthrough headers
+    Orch->>Chunker: gRPC BidiStreaming<br/>Auth: mm-model-id header
+    Orch->>Detector: POST /api/v1/text/contents<br/>Input detection (concurrent)
+    Detector-->>Orch: Input detection results
+    Orch->>GenSvc: POST /v1/chat/completions (SSE stream)<br/>Auth: Bearer token
+    loop Streaming chunks
+        GenSvc-->>Orch: SSE chunk
+        Orch->>Orch: DetectionBatcher collects chunks
+        Orch->>Detector: POST /api/v1/text/contents<br/>Batched output detection
+        Detector-->>Orch: Chunk detection results
+        Orch-->>Client: SSE chunk (with detections)
     end
+    Orch->>Detector: POST /api/v1/text/contents<br/>Whole-document detection
+    Detector-->>Orch: Final detection results
+    Orch-->>Client: SSE final chunk + [DONE]
 
-    rect rgb(220, 240, 255)
-        Note right of Orch: Generation Phase
-        Orch->>TGIS: Generate RPC<br/>gRPC/HTTP2, Optional TLS/mTLS<br/>Header passthrough
-        TGIS-->>Orch: Generated text
-    end
+    Note over Client,GenSvc: Flow 3: Content Detection Only (No Generation)
 
-    rect rgb(255, 240, 220)
-        Note right of Orch: Output Detection Phase
-        Orch->>Detector: POST /api/v1/text/contents<br/>detector-id header, Optional TLS/mTLS
-        Detector-->>Orch: Detection results (output)
-    end
-
-    Orch-->>Client: JSON Response<br/>(generated text + detection results)
-    deactivate Orch
-
-    Note over Client,OpenAI: Flow 2: OpenAI Chat Completions with Detection (v2)
-
-    Client->>Orch: POST /api/v2/chat/completions-detection<br/>Headers: passthrough
-    activate Orch
-
-    rect rgb(255, 240, 220)
-        Note right of Orch: Input Detection
-        Orch->>Detector: POST /api/v1/text/chat<br/>detector-id header, Optional TLS/mTLS
-        Detector-->>Orch: Input detection results
-    end
-
-    rect rgb(220, 240, 255)
-        Note right of Orch: Generation Phase
-        Orch->>OpenAI: POST /v1/chat/completions<br/>Bearer token (api_token), Optional TLS
-        OpenAI-->>Orch: Chat completion response (or SSE stream)
-    end
-
-    rect rgb(255, 240, 220)
-        Note right of Orch: Output Detection
-        Orch->>Detector: POST /api/v1/text/contents<br/>detector-id header, Optional TLS/mTLS
-        Detector-->>Orch: Output detection results
-    end
-
-    Orch-->>Client: JSON or SSE Response<br/>(completion + detection results)
-    deactivate Orch
-
-    Note over Client,Health: Health Check Flow
-
-    Client->>Health: GET /health (plaintext HTTP)
-    Health-->>Client: 200 OK + package version info
-
-    Client->>Health: GET /info (plaintext HTTP)
-    Health-->>Client: 200 OK + downstream service health status
+    Client->>Orch: POST /api/v2/text/detection/content<br/>Auth: Passthrough headers
+    Orch->>Chunker: gRPC ChunkersTokenizationTaskPredict<br/>Auth: mm-model-id header
+    Chunker-->>Orch: Tokenized chunks
+    Orch->>Detector: POST /api/v1/text/contents (concurrent)<br/>Auth: detector-id, x-model-name headers
+    Detector-->>Orch: Detection results
+    Orch-->>Client: JSON Response (detections only)

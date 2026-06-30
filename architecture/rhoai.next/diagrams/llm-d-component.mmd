@@ -2,85 +2,93 @@ graph TB
     subgraph "llm-d Inference Stack"
         direction TB
 
-        subgraph ProxyLayer["Layer 1: Proxy Layer"]
-            Gateway["Gateway<br/>(Envoy / Istio / AgentGateway)<br/>Port: 80/443 TCP"]
-            HTTPRoute["HTTPRoute<br/>(gateway.networking.k8s.io/v1)"]
-            Gateway -->|routes via| HTTPRoute
+        subgraph BuildSystem["Container Image Build System"]
+            DockerCuda["Dockerfile.cuda<br/>NVIDIA CUDA vLLM<br/>UCX, UCCL, NVSHMEM, NIXL,<br/>DeepEP, FlashInfer, LMCache"]
+            DockerCPU["Dockerfile.cpu<br/>CPU-only vLLM<br/>NIXL, UCX"]
+            DockerROCm["Dockerfile.rocm<br/>AMD ROCm vLLM<br/>RIXL, UCX, UCCL"]
+            DockerXPU["Dockerfile.xpu<br/>Intel XPU vLLM"]
+            DockerRDMA["Dockerfile.rdma-tools<br/>RDMA Diagnostics"]
         end
 
-        subgraph EPPLayer["Layer 2: Endpoint Picker (EPP)"]
-            EPP["llm-d-inference-scheduler<br/>(EPP)<br/>Port: 9002/TCP gRPC"]
-            LatencyPredictor["Latency Predictor<br/>(XGBoost sidecar)"]
-            KVIndexer["KV-Cache Indexer<br/>(ZMQ events)"]
-            EPP --- LatencyPredictor
-            EPP --- KVIndexer
+        subgraph RuntimeComponents["Runtime Components"]
+            ModelServer["vLLM Model Server<br/>Port 8000/TCP<br/>OpenAI-compatible API"]
+            EPP["llm-d-router EPP<br/>Endpoint Picker<br/>ext-proc (gRPC)"]
+            Proxy["Envoy Proxy<br/>Sidecar or Gateway"]
         end
 
-        subgraph PoolLayer["Layer 3: InferencePool"]
-            InferencePool["InferencePool CR<br/>(inference.networking.k8s.io/v1)"]
-            InferenceObjective["InferenceObjective CR<br/>(v1alpha2)"]
-            InferencePool --- InferenceObjective
+        subgraph KVCacheInfra["KV-Cache Infrastructure"]
+            MooncakeMaster["Mooncake Master Store<br/>50051/TCP gRPC<br/>8080/TCP metadata<br/>9003/TCP metrics"]
+            MooncakeClient["Mooncake Client<br/>DaemonSet<br/>50052/TCP gRPC + RDMA"]
+            NIXL["NIXL KV Transfer<br/>5600/TCP gRPC<br/>P/D Disaggregation"]
         end
 
-        subgraph ModelServers["Layer 4: Model Servers"]
-            direction LR
-            subgraph DecodeGroup["Decode Pods"]
-                DecodePod["Decode Pod<br/>vLLM :8000/TCP<br/>Routing Sidecar :8200/TCP"]
-            end
-            subgraph PrefillGroup["Prefill Pods (P/D mode)"]
-                PrefillPod["Prefill Pod<br/>vLLM :8000/TCP<br/>NIXL :5600/TCP RDMA"]
-            end
-            DecodePod <-->|"RDMA KV Transfer<br/>5600/TCP (NIXL)"| PrefillPod
+        subgraph DeploymentGuides["Kustomize Deployment Guides"]
+            OptBaseline["Optimized Baseline"]
+            PDDisagg["P/D Disaggregation"]
+            PrefixCache["Prefix Cache Routing"]
+            TieredCache["Tiered Prefix Cache"]
+            WideEP["Wide Expert Parallelism"]
         end
     end
 
-    subgraph ContainerImages["Container Images"]
-        direction LR
-        CUDAImg["llm-d-cuda<br/>NVIDIA GPU<br/>CUDA 13.0"]
-        CPUImg["llm-d-cpu<br/>CPU x86/ARM"]
-        ROCmImg["llm-d-rocm<br/>AMD ROCm"]
-        HPUImg["llm-d-hpu<br/>Intel Gaudi"]
-        RDMATools["llm-d-rdma-tools<br/>Diagnostics"]
+    subgraph External["External Dependencies"]
+        Gateway["Kubernetes Gateway<br/>(Istio / agentgateway / Envoy AI)"]
+        GatewayAPI["Gateway API CRDs<br/>InferencePool, HTTPRoute"]
+        HFHub["HuggingFace Hub<br/>443/TCP HTTPS"]
+        Prometheus["Prometheus<br/>Metrics Scraping"]
+        OTEL["OpenTelemetry Collector<br/>4317/TCP gRPC"]
     end
 
-    Client["External Client"] -->|"HTTP/HTTPS<br/>80/443 TCP"| Gateway
-    Gateway -->|"ext-proc gRPC<br/>9002/TCP"| EPP
-    HTTPRoute -->|"backend ref"| InferencePool
-    InferencePool -->|"pod selector"| DecodePod
-    InferencePool -->|"pod selector"| PrefillPod
-    EPP -->|"selects endpoint"| DecodePod
-    KVIndexer -.->|"ZMQ events"| DecodePod
-    KVIndexer -.->|"ZMQ events"| PrefillPod
+    %% Build outputs
+    DockerCuda -->|produces| ModelServer
+    DockerCPU -->|produces| ModelServer
+    DockerROCm -->|produces| ModelServer
+    DockerXPU -->|produces| ModelServer
 
-    ContainerImages -.->|"deployed as"| ModelServers
+    %% Runtime flows
+    Gateway -->|routes to| Proxy
+    Proxy -->|ext-proc| EPP
+    EPP -->|selects pod| ModelServer
+    EPP -->|scrapes metrics| ModelServer
 
-    %% External services
-    HFHub["HuggingFace Hub<br/>443/TCP HTTPS"]
-    OTelCollector["OpenTelemetry Collector<br/>4317/TCP gRPC"]
-    Prometheus["Prometheus<br/>(PodMonitor scrape)"]
+    %% KV-cache flows
+    ModelServer -->|offload KV| MooncakeClient
+    MooncakeClient -->|metadata| MooncakeMaster
+    MooncakeClient -->|RDMA transfer| MooncakeClient
+    ModelServer -->|KV transfer| NIXL
 
-    DecodePod -->|"model download<br/>HF_TOKEN"| HFHub
-    PrefillPod -->|"model download<br/>HF_TOKEN"| HFHub
-    DecodePod -.->|"OTLP traces<br/>4317/TCP"| OTelCollector
-    Prometheus -.->|"scrape /metrics<br/>8000/TCP"| DecodePod
-    Prometheus -.->|"scrape /metrics<br/>8000/TCP"| PrefillPod
+    %% External
+    ModelServer -->|downloads models| HFHub
+    Prometheus -->|scrapes| ModelServer
+    Prometheus -->|scrapes| MooncakeMaster
+    ModelServer -->|traces| OTEL
+    GatewayAPI -->|configures| Gateway
+
+    %% Deployment guides reference
+    OptBaseline -.->|deploys| ModelServer
+    PDDisagg -.->|deploys| ModelServer
+    PDDisagg -.->|uses| NIXL
+    TieredCache -.->|uses| MooncakeMaster
 
     %% Styling
-    style Gateway fill:#4a90e2,stroke:#333,color:#fff
+    style DockerCuda fill:#76b900,stroke:#333,color:#000
+    style DockerCPU fill:#0071c5,stroke:#333,color:#fff
+    style DockerROCm fill:#ed1c24,stroke:#333,color:#fff
+    style DockerXPU fill:#0071c5,stroke:#333,color:#fff
+    style DockerRDMA fill:#999,stroke:#333,color:#000
+    style ModelServer fill:#4a90e2,stroke:#333,color:#fff
     style EPP fill:#4a90e2,stroke:#333,color:#fff
-    style InferencePool fill:#f5a623,stroke:#333,color:#fff
-    style InferenceObjective fill:#f5a623,stroke:#333,color:#fff
-    style DecodePod fill:#7ed321,stroke:#333,color:#fff
-    style PrefillPod fill:#7ed321,stroke:#333,color:#fff
-    style LatencyPredictor fill:#9b59b6,stroke:#333,color:#fff
-    style KVIndexer fill:#9b59b6,stroke:#333,color:#fff
-    style CUDAImg fill:#76b900,stroke:#333,color:#fff
-    style CPUImg fill:#3498db,stroke:#333,color:#fff
-    style ROCmImg fill:#ed1c24,stroke:#333,color:#fff
-    style HPUImg fill:#0071c5,stroke:#333,color:#fff
-    style RDMATools fill:#95a5a6,stroke:#333,color:#fff
-    style Client fill:#e8e8e8,stroke:#333
-    style HFHub fill:#ffd700,stroke:#333
-    style OTelCollector fill:#e8e8e8,stroke:#333
-    style Prometheus fill:#e6522c,stroke:#333,color:#fff
-    style HTTPRoute fill:#f5a623,stroke:#333,color:#fff
+    style Proxy fill:#4a90e2,stroke:#333,color:#fff
+    style MooncakeMaster fill:#9b59b6,stroke:#333,color:#fff
+    style MooncakeClient fill:#9b59b6,stroke:#333,color:#fff
+    style NIXL fill:#9b59b6,stroke:#333,color:#fff
+    style Gateway fill:#e8e8e8,stroke:#333,color:#000
+    style GatewayAPI fill:#e8e8e8,stroke:#333,color:#000
+    style HFHub fill:#f5a623,stroke:#333,color:#000
+    style Prometheus fill:#e8e8e8,stroke:#333,color:#000
+    style OTEL fill:#e8e8e8,stroke:#333,color:#000
+    style OptBaseline fill:#d5e8d4,stroke:#82b366,color:#000
+    style PDDisagg fill:#d5e8d4,stroke:#82b366,color:#000
+    style PrefixCache fill:#d5e8d4,stroke:#82b366,color:#000
+    style TieredCache fill:#d5e8d4,stroke:#82b366,color:#000
+    style WideEP fill:#d5e8d4,stroke:#82b366,color:#000

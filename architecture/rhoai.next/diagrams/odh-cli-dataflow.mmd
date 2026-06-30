@@ -1,53 +1,67 @@
 sequenceDiagram
-    participant User as CLI User / Automation
-    participant CLI as odh-cli<br/>(rhai-cli)
-    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
-    participant TrustyAI as TrustyAI Service Route<br/>443/TCP HTTPS TLS 1.2+
+    participant User as CLI User
+    participant CLI as kubectl-odh<br/>(local process)
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
     participant FS as Local Filesystem
+    participant TrustyAI as TrustyAI Route<br/>443/TCP HTTPS
+    participant GH as GitHub<br/>443/TCP HTTPS
 
-    Note over User, FS: Flow 1: Upgrade Readiness Lint Check
-
-    User->>CLI: rhai-cli lint --target-version 3.5
-    CLI->>K8sAPI: GET ClusterVersion, DSC, DSCI, CSVs<br/>Auth: Bearer Token / kubeconfig
-    K8sAPI-->>CLI: Current cluster state
-    CLI->>CLI: Select applicable checks<br/>(version-aware targeting)
-    loop 38 registered checks (5 groups)
-        CLI->>K8sAPI: GET CRDs, Resources per check<br/>Auth: Bearer Token
-        K8sAPI-->>CLI: Resource data
-        CLI->>CLI: Evaluate check (Reader only)
-    end
-    CLI->>CLI: Render results via Output System<br/>(cli.opendatahub.io/v1 envelope)
-    CLI-->>User: Table / JSON / YAML output
-
-    Note over User, FS: Flow 2: Migration Action Execution
-
-    User->>CLI: rhai-cli migrate run --target-version 3.5 --yes
-    CLI->>K8sAPI: GET current version, DSC, component state<br/>Auth: Bearer Token / kubeconfig
-    K8sAPI-->>CLI: Platform state
-    CLI->>CLI: Select applicable actions<br/>(19 registered, version-filtered)
-    loop Applicable migration actions
-        CLI->>K8sAPI: PATCH / CREATE / DELETE resources<br/>Auth: Bearer Token
-        K8sAPI-->>CLI: Mutation result
+    rect rgb(232, 245, 233)
+        Note over User,K8s: Flow 1: Upgrade Readiness Assessment (lint)
+        User->>CLI: kubectl odh lint --target 3.5<br/>(stdin / flags)
+        CLI->>K8s: GET DataScienceCluster (v2, fallback v1)<br/>Auth: Bearer Token
+        K8s-->>CLI: DSC spec + status
+        CLI->>K8s: GET DSCInitialization<br/>Auth: Bearer Token
+        K8s-->>CLI: DSCI (namespaces, version)
+        CLI->>K8s: GET CRDs, Subscriptions, CSVs<br/>PackageManifests, Workloads
+        K8s-->>CLI: Platform + workload state
+        Note over CLI: Execute 38 checks<br/>dependency → service → platform →<br/>component → workload ordering
+        Note over CLI: Classify: Prohibited > Blocking ><br/>Advisory > None
+        CLI-->>User: Structured report (stdout)<br/>Exit: 0=pass, 1=advisory, 2=blocked
     end
 
-    opt TrustyAI Metrics Migration
-        CLI->>TrustyAI: GET /metrics (backup)<br/>Auth: Bearer Token<br/>TLS: InsecureSkipVerify
-        TrustyAI-->>CLI: Metrics data
-        CLI->>TrustyAI: POST /metrics (restore)<br/>Auth: Bearer Token
-        TrustyAI-->>CLI: Restore confirmation
+    rect rgb(252, 228, 236)
+        Note over User,FS: Flow 2: Migration Execution (migrate run)
+        User->>CLI: kubectl odh migrate run kserve.serverless-to-raw<br/>(stdin / flags / --dry-run)
+        CLI->>K8s: SelfSubjectAccessReview<br/>Pre-validate RBAC permissions
+        K8s-->>CLI: Allowed / Denied
+        alt RBAC Denied
+            CLI-->>User: Error: insufficient permissions<br/>(lists missing permissions)
+        end
+        CLI->>K8s: GET current state<br/>(InferenceServices, ServingRuntimes, etc.)
+        K8s-->>CLI: Current resource state
+        CLI->>FS: Write backup files<br/>(pre-migration state)
+        Note over CLI: Execute action<br/>Prepare → Run lifecycle<br/>Hierarchical step recording
+        CLI->>K8s: PATCH/CREATE resources<br/>(deployment mode, annotations, etc.)
+        K8s-->>CLI: Updated resources
+        CLI->>K8s: GET post-migration verification
+        K8s-->>CLI: Verified state
+        CLI-->>User: Migration report<br/>(steps completed, color-coded)
     end
 
-    CLI->>CLI: Record results
-    CLI-->>User: Migration report (Table / JSON / YAML)
+    rect rgb(255, 249, 196)
+        Note over User,TrustyAI: Flow 3: TrustyAI Metrics Backup
+        User->>CLI: kubectl odh migrate run trustyai.metrics<br/>--namespace my-ns
+        CLI->>K8s: GET TrustyAIService<br/>Auth: Bearer Token
+        K8s-->>CLI: TrustyAI instance
+        CLI->>K8s: GET Route (TrustyAI)<br/>Discover service endpoint
+        K8s-->>CLI: Route host URL
+        CLI->>TrustyAI: GET /metrics/spd/requests<br/>GET /metrics/dir/requests<br/>GET /metrics/drift/meanshift/requests<br/>Auth: Bearer Token, TLS: InsecureSkipVerify
+        TrustyAI-->>CLI: Scheduled metrics JSON
+        CLI->>FS: Write metrics backup<br/>(JSON, file mode 0600)
+        CLI-->>User: Backup complete<br/>(metrics count, file path)
+    end
 
-    Note over User, FS: Flow 3: Workload Backup
-
-    User->>CLI: rhai-cli backup --namespace my-ns
-    CLI->>K8sAPI: GET primary resources<br/>(Notebooks, InferenceServices,<br/>RayClusters, etc.)<br/>Auth: Bearer Token / kubeconfig
-    K8sAPI-->>CLI: Workload resources
-    CLI->>CLI: Resolve dependencies<br/>(ConfigMaps, Secrets, PVCs)
-    CLI->>K8sAPI: GET dependent resources<br/>Auth: Bearer Token
-    K8sAPI-->>CLI: Dependent resources
-    CLI->>CLI: Strip server-managed fields
-    CLI->>FS: Write YAML files<br/>(parallel resource writer)
-    CLI-->>User: Backup summary
+    rect rgb(232, 232, 232)
+        Note over User,GH: Flow 4: Dependency Installation (deps)
+        User->>CLI: kubectl odh deps --refresh
+        CLI->>GH: GET values.yaml<br/>from odh-gitops repo (commit 1a55af0)
+        GH-->>CLI: Dependency manifest YAML
+        Note over CLI: Parse dependencies<br/>Validate catalog sources<br/>(redhat-operators, community-operators,<br/>certified-operators, redhat-marketplace)
+        CLI->>K8s: GET existing Subscriptions<br/>Check installed state
+        K8s-->>CLI: Current operator state
+        CLI->>K8s: CREATE Subscription<br/>Approve InstallPlan
+        K8s-->>CLI: Operator installed
+        Note over CLI: Poll CSV until succeeded<br/>(with timeout)
+        CLI-->>User: Dependencies installed
+    end

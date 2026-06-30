@@ -1,67 +1,76 @@
 sequenceDiagram
     participant Client as External Client
     participant Server as Llama Stack Server<br/>8321/TCP HTTP/HTTPS
-    participant AuthMW as AuthenticationMiddleware
-    participant QuotaMW as QuotaMiddleware
-    participant OAuth as OAuth2/JWKS Endpoint<br/>443/TCP HTTPS TLS 1.2+
-    participant KVStore as SQLite KV Store<br/>(local file)
-    participant Router as Inference Router<br/>(Provider Plugin)
+    participant AuthMW as Authentication<br/>Middleware
+    participant QuotaMW as Quota<br/>Middleware
+    participant OAuth as OAuth2/JWKS<br/>443/TCP HTTPS
+    participant Router as Inference Router
+    participant Provider as Provider Resolver
     participant vLLM as vLLM Server<br/>8000/TCP HTTP/HTTPS
-    participant VectorDB as PostgreSQL + pgvector<br/>5432/TCP
-    participant Tools as Tool Runtime<br/>(Tavily/Brave/MCP)
+    participant VectorDB as PostgreSQL+pgvector<br/>5432/TCP
+    participant Tools as External Tools<br/>443/TCP HTTPS
 
-    Note over Client,Tools: Flow 1: Chat Completion Request
+    rect rgb(240, 248, 255)
+        Note over Client,vLLM: Flow 1: Chat Completion Request
+        Client->>Server: POST /v1/inference/chat-completion<br/>Auth: Bearer Token (JWT)
+        Server->>AuthMW: Validate token
+        AuthMW->>OAuth: GET /.well-known/jwks.json<br/>TLS 1.2+ (cached)
+        OAuth-->>AuthMW: Public keys (JWKS)
+        AuthMW-->>Server: User attributes (claims)
+        Server->>QuotaMW: Check rate limit
+        QuotaMW-->>Server: OK (1000 req/day auth)
+        Server->>Router: Route to inference provider
+        Router->>Provider: Resolve provider (remote-vllm)
+        Provider->>vLLM: POST /v1/chat/completions<br/>Optional TLS, Bearer Token
+        vLLM-->>Provider: SSE: data: {"choices":[...]}
+        Provider-->>Router: Stream chunks
+        Router-->>Server: AsyncGenerator
+        Server-->>Client: SSE: text/event-stream<br/>x-trace-id header
+    end
 
-    Client->>Server: POST /v1/inference/chat-completion<br/>Auth: Bearer Token (JWT)
-    Server->>AuthMW: Validate token
-    AuthMW->>OAuth: GET /.well-known/jwks.json<br/>TLS 1.2+ (public keys)
-    OAuth-->>AuthMW: JWKS response
-    AuthMW-->>Server: User attributes extracted
+    rect rgb(255, 248, 240)
+        Note over Client,VectorDB: Flow 2: RAG Query (Vector IO + Inference)
+        Client->>Server: POST /v1/tool-runtime/rag-tool/query<br/>Auth: Bearer Token
+        Server->>AuthMW: Validate token
+        AuthMW-->>Server: OK
+        Server->>QuotaMW: Check rate limit
+        QuotaMW-->>Server: OK
 
-    Server->>QuotaMW: Check rate limit
-    QuotaMW->>KVStore: Query quota (SQLite)
-    KVStore-->>QuotaMW: Quota OK (1000 req/day auth)
-    QuotaMW-->>Server: Request allowed
+        Note over Server,vLLM: Step 1: Generate embeddings
+        Server->>vLLM: POST /v1/embeddings<br/>(via inference provider)
+        vLLM-->>Server: Embedding vector
 
-    Server->>Router: Route to inference provider
-    Router->>vLLM: POST /v1/chat/completions<br/>Optional TLS, Bearer Token
-    vLLM-->>Router: SSE stream: data chunks
-    Router-->>Server: Stream response
-    Server-->>Client: SSE stream: text/event-stream<br/>Header: x-trace-id
+        Note over Server,VectorDB: Step 2: Query vector store
+        Server->>VectorDB: SELECT with pgvector similarity<br/>5432/TCP, Password auth
+        VectorDB-->>Server: Relevant chunks
 
-    Note over Client,Tools: Flow 2: RAG Query (Vector IO + Inference)
+        Note over Server,vLLM: Step 3: Generate response with context
+        Server->>vLLM: POST /v1/chat/completions<br/>(with retrieved context)
+        vLLM-->>Server: Completion response
 
-    Client->>Server: POST /v1/tool-runtime/rag-tool/query<br/>Auth: Bearer Token
-    Server->>AuthMW: Validate token
-    AuthMW-->>Server: Authorized
+        Server-->>Client: JSON response with citations
+    end
 
-    Server->>Router: Generate embedding
-    Router->>vLLM: POST /v1/embeddings<br/>Optional TLS
-    vLLM-->>Router: Embedding vector
+    rect rgb(240, 255, 240)
+        Note over Client,Tools: Flow 3: Agent Turn with Tool Execution
+        Client->>Server: POST /v1/agents/{id}/session/{sid}/turn<br/>Auth: Bearer Token, SSE stream
+        Server->>AuthMW: Validate token
+        AuthMW-->>Server: OK
 
-    Router->>VectorDB: SELECT with vector similarity<br/>pgvector cosine distance<br/>Optional TLS, Password auth
-    VectorDB-->>Router: Matching chunks (top-k)
+        Note over Server,vLLM: Step 1: Initial LLM call
+        Server->>vLLM: POST /v1/chat/completions<br/>(with tool definitions)
+        vLLM-->>Server: tool_call: {"name":"web_search","args":{...}}
 
-    Router->>vLLM: POST /v1/chat/completions<br/>Context: retrieved chunks
-    vLLM-->>Router: Generated response
-    Router-->>Server: RAG result
-    Server-->>Client: JSON response
+        Note over Server,Server: Step 2: Safety check (inline)
+        Server->>Server: Run safety shield<br/>(in-process)
 
-    Note over Client,Tools: Flow 3: Agent Turn with Tool Execution
+        Note over Server,Tools: Step 3: Execute tool
+        Server->>Tools: GET https://api.tavily.com/search<br/>TLS 1.2+, API key
+        Tools-->>Server: Search results
 
-    Client->>Server: POST /v1/agents/{id}/session/{sid}/turn<br/>Auth: Bearer Token, SSE
-    Server->>AuthMW: Validate token
-    AuthMW-->>Server: Authorized
+        Note over Server,vLLM: Step 4: Final LLM response
+        Server->>vLLM: POST /v1/chat/completions<br/>(with tool results)
+        vLLM-->>Server: Final response
 
-    Server->>Router: Agent runtime: create turn
-    Router->>vLLM: POST /v1/chat/completions<br/>(determine tool calls)
-    vLLM-->>Router: Tool call decision<br/>(e.g., web_search)
-
-    Router->>Tools: POST search API<br/>HTTPS/443 TLS 1.2+<br/>API key auth
-    Tools-->>Router: Search results
-
-    Router->>vLLM: POST /v1/chat/completions<br/>(generate final response with tool results)
-    vLLM-->>Router: Final response stream
-
-    Router-->>Server: SSE agent turn events
-    Server-->>Client: SSE stream: agent steps + response
+        Server-->>Client: SSE: agent turn events<br/>(tool_call, tool_result, completion)
+    end

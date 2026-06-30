@@ -1,61 +1,49 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Plans and deploys LLM models with SLO targets"
-        mlEngineer = person "ML Engineer" "Manages GPU capacity and model performance"
+        user = person "Data Scientist / ML Engineer" "Plans and deploys LLM models on Kubernetes"
 
-        llmDPlanner = softwareSystem "llm-d Planner" "SLO-driven capacity planning and deployment automation for LLM deployments on Kubernetes" {
-            backendAPI = container "Backend API" "FastAPI REST API coordinating intent extraction, recommendation, configuration generation, and cluster management" "Python / FastAPI / Uvicorn" "Service"
-            streamlitUI = container "Streamlit UI" "Conversational web interface with multi-tab workflow for requirements gathering, recommendations, deployment, and monitoring" "Python / Streamlit" "Frontend"
-            intentEngine = container "Intent Extraction Engine" "LLM-powered natural language analysis converting user descriptions into structured DeploymentIntent schemas" "Python Module"
-            recEngine = container "Recommendation Engine" "Multi-criteria scoring (accuracy 40%, price 40%, latency 10%, complexity 10%) with SLO-driven capacity planning" "Python Module"
-            configGen = container "Configuration Generator" "YAML generation for KServe InferenceService, HPA, ServiceMonitor using Jinja2 templates" "Python / Jinja2"
-            capPlanner = container "Capacity Planner" "GPU memory estimation (model weights, KV cache for MHA/GQA/MQA/MLA, activation, overhead)" "Python Module"
-            gpuRecommender = container "GPU Recommender" "Roofline-based performance estimation (TTFT, ITL, throughput) across GPU types" "Python / BentoML llm-optimizer"
-            knowledgeBase = container "Knowledge Base" "Hybrid data layer with PostgreSQL for benchmarks and JSON files for SLO templates" "Python / psycopg2"
-            clusterMgr = container "Cluster Manager" "Kubernetes deployment lifecycle management via kubectl subprocess calls" "Python / kubectl"
-            vllmSimulator = container "vLLM Simulator" "GPU-free mock vLLM service with OpenAI-compatible API and benchmark-driven latency simulation" "Python / FastAPI" "Development"
-            dbInitJob = container "db-init Job" "Database schema initialization and benchmark data loading" "Python / Kubernetes Job"
-            cli = container "CLI" "Command-line interface for capacity planning and GPU estimation" "Python / argparse"
+        llmDPlanner = softwareSystem "llm-d Planner" "AI-powered capacity planning and deployment automation for LLM deployments on Kubernetes" {
+            backend = container "FastAPI Backend" "REST API orchestrating planning workflow: intent extraction, recommendation, capacity planning, GPU estimation, deployment" "Python 3.14 / FastAPI / Uvicorn" "Service"
+            ui = container "Streamlit UI" "Conversational web interface for requirement gathering, recommendation visualization, deployment management" "Python 3.14 / Streamlit" "WebApp"
+            postgres = container "PostgreSQL" "Stores performance benchmarks (TTFT, ITL, E2E, throughput) for model+GPU+traffic profile combinations" "PostgreSQL" "Database"
+            ollama = container "Ollama" "Local LLM service for intent extraction from natural language (default provider)" "Ollama" "Service"
+            dbInit = container "db-init Job" "Initializes database schema and loads benchmark data on first deployment" "Python / Shell" "Job"
         }
 
-        postgresql = softwareSystem "PostgreSQL" "Benchmark data storage (16)" "Infrastructure"
-        ollama = softwareSystem "Ollama" "Local LLM inference service (qwen2.5:7b or granite3.3:2b)" "Infrastructure"
-        huggingfaceHub = softwareSystem "HuggingFace Hub" "Model metadata, safetensors parameter counts, gated model access" "External"
-        modelCatalog = softwareSystem "RHOAI Model Catalog" "Benchmark data synchronization, model artifact listing, performance metrics" "Internal RHOAI"
-        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster management — deploy, status, delete InferenceServices" "Infrastructure"
-        kserve = softwareSystem "KServe" "Standardized serverless ML inference platform (target deployment)" "Internal RHOAI"
-        prometheus = softwareSystem "Prometheus / Grafana" "Observability integration via generated ServiceMonitor manifests" "Internal RHOAI"
-        openshiftRouter = softwareSystem "OpenShift Router" "TLS edge termination for external access (Routes)" "Infrastructure"
-        openshiftServiceCA = softwareSystem "OpenShift Service CA" "Service-serving CA bundle injection for internal HTTPS" "Infrastructure"
+        # Internal RHOAI Dependencies
+        modelCatalog = softwareSystem "Model Catalog API" "RHOAI model and benchmark data registry (rhoai-model-registries namespace)" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Kubernetes-native serverless inference platform; Planner creates InferenceService CRs" "Internal RHOAI"
+        openshiftRouter = softwareSystem "OpenShift Router" "Ingress controller providing TLS edge termination via Routes" "Internal Platform"
+        serviceCaOperator = softwareSystem "OpenShift service-ca Operator" "Injects service-serving CA bundle ConfigMaps for internal TLS" "Internal Platform"
+
+        # External Dependencies
+        huggingFace = softwareSystem "HuggingFace Hub" "Model architecture metadata, parameter counts, safetensors indexes" "External"
+        vertexAI = softwareSystem "Vertex AI / Anthropic" "Cloud LLM provider for intent extraction (alternative to Ollama)" "External"
+        openAI = softwareSystem "OpenAI-compatible API" "LLM provider for intent extraction (alternative to Ollama)" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster GPU detection, InferenceService lifecycle management" "External"
 
         # User interactions
-        dataScientist -> llmDPlanner "Plans LLM deployments via browser UI"
-        mlEngineer -> llmDPlanner "Estimates GPU capacity and manages deployments"
+        user -> llmDPlanner "Describes LLM deployment requirements in natural language"
+        user -> ui "Interacts via browser (HTTPS/443 via OpenShift Route)"
 
         # Internal container relationships
-        streamlitUI -> backendAPI "All data operations, recommendations, deployments" "HTTP/8000"
-        cli -> backendAPI "Capacity planning and GPU estimation" "HTTP/8000"
-        backendAPI -> intentEngine "Delegates intent extraction"
-        backendAPI -> recEngine "Delegates recommendation scoring"
-        backendAPI -> configGen "Delegates YAML generation"
-        backendAPI -> capPlanner "Delegates GPU memory estimation"
-        backendAPI -> gpuRecommender "Delegates roofline estimation"
-        backendAPI -> knowledgeBase "Reads benchmarks, SLO templates, model catalog"
-        backendAPI -> clusterMgr "Delegates cluster operations"
-        dbInitJob -> knowledgeBase "Loads schema and benchmark data"
+        ui -> backend "All API calls" "HTTP/8000"
+        backend -> postgres "Benchmark queries and inserts" "PostgreSQL/5432 Password"
+        backend -> ollama "LLM intent extraction" "HTTP/11434"
+        dbInit -> postgres "Schema init and data load" "PostgreSQL/5432"
 
-        # External dependencies
-        intentEngine -> ollama "LLM inference for intent extraction" "HTTP/11434"
-        knowledgeBase -> postgresql "Benchmark data read/write" "PostgreSQL/5432"
-        capPlanner -> huggingfaceHub "Model metadata, safetensors info" "HTTPS/443"
-        knowledgeBase -> modelCatalog "Benchmark data synchronization" "HTTPS/8443"
-        clusterMgr -> kubernetesAPI "Deploy/delete/list InferenceService CRs" "HTTPS/6443"
-        configGen -> kserve "Generates InferenceService CRDs" "YAML output"
-        backendAPI -> prometheus "Generates ServiceMonitor manifests" "YAML output"
-        openshiftRouter -> streamlitUI "Routes external traffic" "HTTP/8501"
-        openshiftRouter -> backendAPI "Routes external traffic" "HTTP/8000"
-        openshiftServiceCA -> backendAPI "Injects CA bundle for Model Catalog TLS" "ConfigMap mount"
-        dbInitJob -> postgresql "Schema init + benchmark loading" "PostgreSQL/5432"
+        # External relationships
+        backend -> huggingFace "Model metadata retrieval" "HTTPS/443 Bearer Token (optional)"
+        backend -> vertexAI "LLM intent extraction (vertex provider)" "HTTPS/443 GCP ADC"
+        backend -> openAI "LLM intent extraction (openai provider)" "HTTPS/443 API Key"
+        backend -> k8sAPI "GPU detection, InferenceService CRUD" "HTTPS/6443 SA Token"
+        backend -> modelCatalog "Model and benchmark sync" "HTTPS/8443 SA Bearer Token"
+        backend -> kserve "Creates InferenceService CRs" "HTTPS/6443 SA Token"
+
+        # Platform relationships
+        openshiftRouter -> ui "Routes external traffic" "HTTP/8501"
+        openshiftRouter -> backend "Routes external traffic" "HTTP/8000"
+        serviceCaOperator -> llmDPlanner "Injects CA bundle ConfigMap" "Annotation-based"
     }
 
     views {
@@ -70,14 +58,6 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
-            element "Infrastructure" {
-                background #999999
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -86,23 +66,25 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Person" {
-                shape Person
-                background #08427b
+            element "Internal Platform" {
+                background #4a90e2
                 color #ffffff
             }
             element "Service" {
                 shape RoundedBox
             }
-            element "Frontend" {
+            element "WebApp" {
                 shape WebBrowser
             }
-            element "Development" {
-                background #e1d5e7
-                color #333333
+            element "Database" {
+                shape Cylinder
             }
-            element "Container" {
-                background #438dd5
+            element "Job" {
+                shape Hexagon
+            }
+            element "Person" {
+                shape Person
+                background #08427b
                 color #ffffff
             }
         }

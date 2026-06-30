@@ -1,42 +1,29 @@
 sequenceDiagram
-    autonumber
-
-    participant vLLM as vLLM Model Server<br/>metrics port/TCP
+    participant vLLM as vLLM Model Server<br/>8080/TCP HTTP
+    participant EPP as EPP / Inference Scheduler
     participant Prom as Prometheus / Thanos Querier<br/>9090-9091/TCP HTTPS
-    participant WVA as WVA controller-manager<br/>8443/TCP HTTPS
-    participant EPP as EPP (Endpoint Picker Proxy)<br/>metrics port/TCP HTTPS
-    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS
+    participant WVA as WVA Controller<br/>8443/TCP HTTPS
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
     participant HPA as HPA / KEDA
-    participant Admin as Platform Admin
-    participant Client as External Client
+    participant Deploy as Deployment / LWS
 
-    rect rgb(230, 245, 255)
-        Note over vLLM,HPA: Flow 1: Saturation-Based Autoscaling
-        vLLM->>Prom: Expose vllm_kv_cache_usage_fraction,<br/>vllm_scheduler_queue_length,<br/>vllm_avg_output_tokens<br/>(HTTP, in-cluster)
-        WVA->>Prom: PromQL queries for vLLM metrics<br/>(HTTPS, TLS 1.2+, Bearer Token SA)
-        Prom-->>WVA: Metric values (KV cache, queue depth,<br/>output tokens, request rates)
-        Note over WVA: Saturation Engine runs analysis:<br/>V1 (% KV cache) or V2 (absolute tokens)<br/>or Queueing Model (M/M/c theory)<br/>→ Pipeline: Optimizer → Limiter → Enforcer<br/>→ Emits wva_desired_replicas metric
-        WVA->>Prom: Prometheus scrapes /metrics<br/>(HTTPS/8443, TLS, Bearer Token)
-        HPA->>Prom: Read wva_desired_replicas external metric<br/>(HTTPS, TLS 1.2+, Bearer Token)
-        Prom-->>HPA: Desired replica count
-        HPA->>K8sAPI: Update scale subresource<br/>(HTTPS/6443, TLS 1.2+, SA token)
-    end
+    Note over vLLM,Deploy: Flow 1: Saturation-Based Autoscaling
 
-    rect rgb(255, 243, 224)
-        Note over Client,K8sAPI: Flow 2: Scale-from-Zero
-        Client->>EPP: Request to scaled-down model<br/>(HTTP/gRPC)
-        Note over EPP: Queue builds up while<br/>replicas == 0
-        WVA->>EPP: Scrape inference_extension_flow_control_queue_size<br/>(HTTPS, TLS, Bearer Token epp-metrics-reader)
-        EPP-->>WVA: Queue size > 0 detected
-        Note over WVA: Scale-from-zero engine:<br/>Check DecisionCache for cooldown<br/>→ Scale target replicas directly
-        WVA->>K8sAPI: Update Deployment scale subresource<br/>(HTTPS/6443, TLS 1.2+, SA token)
-        WVA->>K8sAPI: Update VA status with scale event<br/>(HTTPS/6443, TLS 1.2+, SA token)
-    end
+    vLLM->>Prom: Expose vLLM metrics<br/>(KV cache, queue depth, latency)<br/>8080/TCP HTTP
+    WVA->>Prom: PromQL query<br/>(vllm:kv_cache_usage_perc,<br/>vllm:num_requests_waiting)<br/>HTTPS TLS 1.2+ / Bearer Token
+    Note over WVA: Saturation Engine V1/V2<br/>analyzes metrics, runs<br/>throughput + queueing analyzers
+    WVA->>WVA: Emit wva_desired_replicas<br/>on /metrics endpoint
+    Prom->>WVA: Scrape /metrics<br/>8443/TCP HTTPS TLS<br/>Bearer Token (TokenReview)
+    HPA->>K8sAPI: Read external metric<br/>wva_desired_replicas<br/>(via prometheus-adapter or KEDA)<br/>443/TCP HTTPS TLS 1.2+
+    HPA->>Deploy: Scale Deployment<br/>(scale subresource)<br/>443/TCP HTTPS TLS 1.2+
 
-    rect rgb(232, 245, 233)
-        Note over Admin,WVA: Flow 3: Dynamic Configuration Update
-        Admin->>K8sAPI: Update ConfigMap<br/>(e.g. wva-saturation-scaling-config)<br/>(HTTPS/6443, TLS 1.2+, user creds)
-        K8sAPI-->>WVA: ConfigMap watch event
-        Note over WVA: ConfigMap Reconciler:<br/>3-tier resolution:<br/>namespace-local > global > defaults<br/>→ Update in-memory Config
-        Note over WVA: Next saturation cycle<br/>uses updated config<br/>(no restart needed)
+    Note over vLLM,Deploy: Flow 2: Scale-from-Zero
+
+    rect rgb(240, 248, 255)
+        Note over EPP: Client request arrives<br/>at InferencePool with<br/>0 ready endpoints
+        EPP->>Prom: Expose queue metric<br/>(inference_extension_flow_<br/>control_queue_size)
+        WVA->>Prom: Query EPP queue depth<br/>HTTPS TLS 1.2+ / Bearer Token
+        Note over WVA: Scale-from-Zero Engine<br/>detects pending requests<br/>for idle variant
+        WVA->>K8sAPI: PATCH scale subresource<br/>(replicas: 0 → 1)<br/>443/TCP HTTPS TLS 1.2+<br/>Bearer Token (SA token)
+        K8sAPI->>Deploy: Scale Deployment/LWS<br/>to 1 replica
     end

@@ -1,38 +1,39 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Runs ML pipelines that produce metadata"
-        platformadmin = person "Platform Admin" "Manages RHOAI platform and MLMD deployment"
+        datascientist = person "Data Scientist" "Creates and runs ML pipelines, queries experiment metadata and artifact lineage"
+        platformeng = person "Platform Engineer" "Deploys and configures the Data Science Pipelines stack including MLMD"
 
-        mlmd = softwareSystem "ML Metadata (MLMD)" "gRPC server that records and retrieves metadata associated with ML workflows — artifacts, executions, contexts, and lineage relationships" {
-            server = container "metadata_store_server" "Main gRPC server binary exposing MetadataStoreService API" "C++ gRPC Service" {
-                serviceImpl = component "MetadataStoreServiceImpl" "Handles all gRPC RPCs, creates new DB connection per call" "C++ Class"
-                metadataStore = component "metadata_store (core)" "Core metadata store logic — CRUD, transactions, optimistic concurrency control" "C++ Library"
-                queryEngine = component "query_engine" "SQL query construction and ZetaSQL filter parsing for flexible metadata queries" "C++ Library"
-            }
-            pythonLib = container "ml_metadata Python Library" "Client library for interacting with MLMD via Python" "Python/PyPI"
+        mlmd = softwareSystem "ML Metadata (MLMD)" "gRPC server and client library for recording and retrieving metadata associated with ML workflows -- artifacts, executions, contexts, events, and lineage" {
+            grpcServer = container "metadata_store_server" "Standalone gRPC server binary exposing MetadataStoreService API (~45 RPCs) for CRUD operations on ML metadata entities" "C++ gRPC Service, Port 8080/TCP"
+            protoAPI = container "MetadataStoreService" "Protobuf/gRPC API definition for metadata operations including type management, entity CRUD, event recording, and lineage graph traversal" "Protobuf/gRPC"
+            pythonClient = container "ml_metadata Python Client" "Python client with pybind11 C++ bindings for direct DB access or gRPC client connection to the metadata store server" "Python, pybind11"
+
+            grpcServer -> protoAPI "Implements"
+            pythonClient -> grpcServer "Connects via gRPC/HTTP2" "gRPC/8080"
         }
 
-        dsp = softwareSystem "Data Science Pipelines (DSP)" "Primary consumer — orchestrates ML pipeline runs and records metadata" "Internal RHOAI"
-        tfx = softwareSystem "TFX / Kubeflow Pipelines" "Legacy pipeline system integration" "External"
+        kfp = softwareSystem "Kubeflow Pipelines (KFP)" "Pipeline orchestration engine that records pipeline run metadata through MLMD" "Internal RHOAI"
+        dsp = softwareSystem "Data Science Pipelines" "RHOAI pipeline platform that deploys and manages MLMD as its metadata backend" "Internal RHOAI"
+        dspOperator = softwareSystem "Data Science Pipelines Operator" "Kubernetes operator that deploys, configures, and manages the DSP stack including MLMD" "Internal RHOAI"
+        tfx = softwareSystem "TFX (TensorFlow Extended)" "ML pipeline framework that records component metadata through MLMD" "External"
 
-        mysql = softwareSystem "MySQL / MariaDB" "Relational database for persistent metadata storage (production)" "External"
+        mysql = softwareSystem "MySQL / MariaDB" "Relational database for persistent metadata storage" "External"
         postgresql = softwareSystem "PostgreSQL" "Alternative relational database for persistent metadata storage" "External"
 
-        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Upstream proxy for access control in RHOAI deployments" "Internal RHOAI"
+        # User interactions
+        datascientist -> kfp "Creates and runs ML pipelines"
+        datascientist -> mlmd "Queries experiment metadata and artifact lineage via KFP SDK" "gRPC/8080"
+        platformeng -> dspOperator "Configures DSP stack deployment"
 
-        # Relationships
-        datascientist -> dsp "Submits ML pipeline runs"
-        dsp -> mlmd "Records pipeline metadata (artifacts, executions, events, contexts)" "gRPC/HTTP2 port 8080"
-        tfx -> mlmd "Records lineage metadata (legacy)" "gRPC/HTTP2 port 8080"
+        # Platform interactions
+        kfp -> mlmd "Records pipeline artifacts, executions, contexts, events, and lineage" "gRPC/8080"
+        dsp -> mlmd "Connects for pipeline run tracking" "gRPC/8080"
+        dspOperator -> mlmd "Deploys and configures MLMD server, provides database credentials"
+        tfx -> mlmd "Records component metadata through MLMD" "gRPC/8080"
 
-        mlmd -> mysql "Persists all metadata entities" "MySQL wire protocol port 3306, Optional SSL"
-        mlmd -> postgresql "Persists all metadata entities (alternative)" "PostgreSQL wire protocol, Optional SSL"
-
-        kubeRbacProxy -> mlmd "Proxies authenticated requests" "gRPC/HTTP2"
-
-        # Internal relationships
-        serviceImpl -> metadataStore "Delegates operations"
-        metadataStore -> queryEngine "Parses filter expressions"
+        # Storage
+        mlmd -> mysql "Persistent metadata storage" "MySQL/3306, Optional SSL"
+        mlmd -> postgresql "Alternative persistent metadata storage" "PostgreSQL/5432, Optional SSL"
     }
 
     views {
@@ -46,36 +47,27 @@ workspace {
             autoLayout
         }
 
-        component server "Components" {
-            include *
-            autoLayout
-        }
-
         styles {
-            element "External" {
-                background #999999
+            element "Person" {
+                shape person
+                background #08427b
+                color #ffffff
+            }
+            element "Software System" {
+                background #1168bd
                 color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Person" {
-                shape Person
-                background #4a90e2
-                color #ffffff
-            }
-            element "Software System" {
-                background #4a90e2
+            element "External" {
+                background #999999
                 color #ffffff
             }
             element "Container" {
                 background #438dd5
                 color #ffffff
-            }
-            element "Component" {
-                background #85bbf0
-                color #000000
             }
         }
     }

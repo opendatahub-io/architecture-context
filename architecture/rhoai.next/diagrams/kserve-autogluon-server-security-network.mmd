@@ -3,62 +3,57 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (DMZ)"]
-        Gateway["Platform Ingress<br/>(Gateway API / Istio)<br/>443/TCP → 8080/TCP HTTP, 8081/TCP gRPC<br/>TLS 1.3 Termination<br/>AuthN: Platform-managed"]
-    end
-
-    subgraph ClusterInternal["CLUSTER INTERNAL (Namespace-scoped)"]
+    subgraph PodBoundary["INFERENCESERVICE POD"]
         direction TB
 
-        subgraph NS_User["Namespace: {user-namespace}"]
-            AutoGluon["AutoGluon Server Pod<br/>UID: 1001 (non-root)<br/>Image: odh-kserve-autogluon-server<br/>Base: rhai/base-image-cpu-rhel9"]
+        subgraph SidecarZone["Auth Sidecar (TLS Termination)"]
+            KRBP["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS 1.3<br/>Bearer Token Auth"]
+        end
 
-            SvcHTTP["{isvc-name}-predictor<br/>ClusterIP 8080/TCP HTTP"]
-            SvcGRPC["{isvc-name}-predictor<br/>ClusterIP 8081/TCP gRPC"]
-
-            SvcHTTP --> AutoGluon
-            SvcGRPC --> AutoGluon
+        subgraph AppZone["Application Container (UID 1001, non-root)"]
+            AGServer["autogluonserver<br/>8080/TCP HTTP (plaintext)<br/>8081/TCP gRPC (plaintext)<br/>No K8s API access<br/>No RBAC roles"]
         end
     end
 
-    subgraph ControlPlane["CONTROL PLANE"]
-        KServeCtrl["KServe Controller<br/>K8s API / mTLS<br/>ServiceAccount auth"]
-        Prometheus["Prometheus<br/>HTTP/8080 scrape<br/>No auth"]
+    subgraph ClusterInternal["INTERNAL CLUSTER (Control Plane)"]
+        KServeCtrl["KServe Controller<br/>Manages InferenceService CR"]
+        CSR["ClusterServingRuntime<br/>modelFormat: autogluon"]
+        Prometheus["Prometheus<br/>Metrics Scrape"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM / STS"]
-        GCS["Google Cloud Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>GCP Service Account"]
-        Azure["Azure Blob Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Azure Credentials"]
-        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
+    subgraph CloudStorage["EXTERNAL SERVICES (Egress - Startup Only)"]
+        S3["S3 Storage<br/>*.amazonaws.com<br/>443/TCP HTTPS TLS 1.2+<br/>AWS IAM"]
+        GCS["Google Cloud Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS TLS 1.2+<br/>GCP SA"]
+        Azure["Azure Blob Storage<br/>*.blob.core.windows.net<br/>443/TCP HTTPS TLS 1.2+<br/>Azure Identity/SAS"]
+        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS 1.2+<br/>HF Token (optional)"]
     end
 
-    %% External → Ingress
-    Client -->|"HTTPS/443<br/>TLS 1.3<br/>Platform Auth (Bearer/OAuth)"| Gateway
+    %% External to Pod
+    Client -->|"HTTPS/8443<br/>TLS 1.3<br/>Bearer Token"| KRBP
 
-    %% Ingress → Server
-    Gateway -->|"HTTP/8080<br/>No TLS (cluster-internal)<br/>No auth (delegated)"| SvcHTTP
-    Gateway -->|"gRPC/8081<br/>No TLS (cluster-internal)<br/>No auth (delegated)"| SvcGRPC
+    %% Sidecar to App (same pod, localhost)
+    KRBP -->|"HTTP/8080<br/>plaintext (localhost)<br/>pre-authenticated"| AGServer
 
-    %% Control Plane → Server
-    KServeCtrl -->|"K8s API<br/>mTLS<br/>ServiceAccount"| AutoGluon
-    Prometheus -->|"HTTP/8080<br/>No encryption<br/>Metrics scrape"| AutoGluon
+    %% Control Plane
+    KServeCtrl -.->|"manages lifecycle<br/>InferenceService CR"| PodBoundary
+    CSR -.->|"defines image + ports"| PodBoundary
+    Prometheus -->|"HTTP/8080<br/>/metrics scrape<br/>internal network"| AGServer
 
-    %% Server → External Services (Egress)
-    AutoGluon -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM / STS"| S3
-    AutoGluon -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP SA"| GCS
-    AutoGluon -->|"HTTPS/443<br/>TLS 1.2+<br/>Azure creds"| Azure
-    AutoGluon -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
+    %% Egress (startup only)
+    AGServer -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    AGServer -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP SA"| GCS
+    AGServer -->|"HTTPS/443<br/>TLS 1.2+<br/>Azure Identity"| Azure
+    AGServer -->|"HTTPS/443<br/>TLS 1.2+<br/>HF Token"| HFHub
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef clusterinternal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef sidecar fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef app fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class Client external
-    class Gateway ingress
-    class AutoGluon,SvcHTTP,SvcGRPC clusterinternal
-    class KServeCtrl,Prometheus controlplane
+    class KRBP sidecar
+    class AGServer app
+    class KServeCtrl,CSR,Prometheus controlplane
     class S3,GCS,Azure,HFHub externalservice

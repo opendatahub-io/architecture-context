@@ -3,76 +3,78 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (AI Gateway / DMZ)"]
-        Gateway["AI Gateway<br/>Istio Gateway + EnvoyFilter<br/>443/TCP → ext_proc<br/>TLS 1.2+<br/>HTTPRoute path-prefix matching"]
+    subgraph Ingress["INGRESS (AI Gateway)"]
+        Gateway["AI Gateway (Istio Envoy)<br/>443/TCP → 9004/TCP<br/>TLS 1.2+ termination<br/>HTTPRoute per ExternalModel"]
     end
 
-    subgraph ServiceMesh["SERVICE MESH (Istio mTLS STRICT)"]
+    subgraph ServiceMesh["SERVICE MESH (Internal)"]
         direction TB
 
-        subgraph NS_Gateway["Namespace: gateway namespace"]
-            ExtProc["ai-gateway-payload-processing<br/>SA: payload-processing-{release}<br/>Image: odh-ai-gateway-payload-processing-rhel9<br/>FIPS: strictfipsruntime + UBI9"]
+        subgraph NS_Release["Namespace: {release-namespace}"]
+            direction TB
+            PP["AI Gateway Payload Processing<br/>SA: {name}-{release}<br/>Ports: 9004/TCP (gRPC), 9005/TCP (health)<br/>FIPS: strictfipsruntime"]
 
-            subgraph Plugins["Plugin Pipeline (9004/TCP gRPC)"]
+            subgraph Pipeline["Plugin Pipeline"]
                 direction LR
                 P1["maas-headers-guard"]
                 P2["model-provider-resolver"]
                 P3["api-translation"]
                 P4["apikey-injection"]
-                P1 --> P2 --> P3 --> P4
+                P5["nemo-guards"]
+                P1 --> P2 --> P3 --> P4 --> P5
             end
 
             subgraph Ctrl["Controllers"]
                 direction LR
-                C1["ExternalProvider<br/>Controller"]
-                C2["ExternalModel<br/>Controller"]
-                C3["Legacy Migration<br/>Controller"]
+                C1["ExternalModel"]
+                C2["ExternalProvider"]
+                C3["Legacy Migration"]
             end
         end
 
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>SA Bearer Token"]
+        NeMo["NeMo Guardrails<br/>POST /v1/guardrail/checks<br/>HTTP (no mTLS)<br/>Auth: None"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>mTLS (in-cluster)<br/>SA token auth"]
     end
 
-    subgraph Egress["EGRESS (Mesh-External — DestinationRule TLS SIMPLE)"]
-        OpenAI["OpenAI<br/>api.openai.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Bearer Token"]
-        Anthropic["Anthropic<br/>api.anthropic.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: x-api-key"]
-        Azure["Azure OpenAI<br/>{resource}.openai.azure.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: api-key header"]
-        Bedrock["AWS Bedrock<br/>bedrock-runtime.{region}.amazonaws.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: AWS SigV4"]
-        VertexAI["Google Vertex AI<br/>aiplatform.googleapis.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Bearer Token"]
+    subgraph IstioEgress["EGRESS (Istio TLS Origination)"]
+        direction TB
+        ExtNameSvc["ExternalName Service<br/>+ ServiceEntry (MESH_EXTERNAL)<br/>+ DestinationRule (TLS SIMPLE)"]
     end
 
-    subgraph Optional["OPTIONAL SERVICES"]
-        NeMo["NeMo Guardrails<br/>configurable port<br/>HTTP plaintext<br/>Auth: None<br/>Fail mode: CLOSED"]
+    subgraph ExternalProviders["EXTERNAL LLM PROVIDERS"]
+        OpenAI["api.openai.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer Token"]
+        Anthropic["api.anthropic.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: x-api-key header"]
+        Azure["{resource}.openai.azure.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: api-key header"]
+        Bedrock["bedrock-runtime.{region}<br/>.amazonaws.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS SigV4"]
+        Vertex["{endpoint}.aiplatform<br/>.googleapis.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer (OAuth2)"]
     end
 
-    %% External → Ingress
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Gateway-level auth"| Gateway
+    %% Flows
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (user)"| Gateway
+    Gateway -->|"gRPC/9004<br/>plaintext (mesh-internal)<br/>No auth"| PP
+    PP -->|"HTTP<br/>configurable encryption<br/>No auth"| NeMo
+    PP -->|"HTTPS/443<br/>mTLS (in-cluster)<br/>SA token"| K8sAPI
 
-    %% Ingress → Service Mesh
-    Gateway -->|"gRPC/9004<br/>mTLS STRICT<br/>EnvoyFilter ext_proc"| ExtProc
-
-    %% Service Mesh → K8s API
-    ExtProc -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Bearer Token"| K8sAPI
-
-    %% Gateway → Providers (via Istio egress)
-    Gateway -->|"HTTPS/443<br/>TLS SIMPLE origination<br/>Bearer Token"| OpenAI
-    Gateway -->|"HTTPS/443<br/>TLS SIMPLE origination<br/>x-api-key"| Anthropic
-    Gateway -->|"HTTPS/443<br/>TLS SIMPLE origination<br/>api-key header"| Azure
-    Gateway -->|"HTTPS/443<br/>TLS SIMPLE origination<br/>AWS SigV4"| Bedrock
-    Gateway -->|"HTTPS/443<br/>TLS SIMPLE origination<br/>Bearer Token"| VertexAI
-
-    %% Optional NeMo
-    ExtProc -.->|"HTTP<br/>plaintext<br/>/v1/guardrail/checks"| NeMo
+    PP -->|"Mutated request<br/>via Envoy"| ExtNameSvc
+    ExtNameSvc -->|"HTTPS/443<br/>TLS 1.2+ (SIMPLE)<br/>Bearer Token"| OpenAI
+    ExtNameSvc -->|"HTTPS/443<br/>TLS 1.2+ (SIMPLE)<br/>x-api-key"| Anthropic
+    ExtNameSvc -->|"HTTPS/443<br/>TLS 1.2+ (SIMPLE)<br/>api-key"| Azure
+    ExtNameSvc -->|"HTTPS/443<br/>TLS 1.2+ (SIMPLE)<br/>SigV4"| Bedrock
+    ExtNameSvc -->|"HTTPS/443<br/>TLS 1.2+ (SIMPLE)<br/>Bearer/OAuth2"| Vertex
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef optional fill:#e1d5e7,stroke:#9673a6,stroke-width:2px,stroke-dasharray: 5 5
+    classDef egress fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef provider fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef plugin fill:#4a90e2,stroke:#333,color:#fff
+    classDef controller fill:#7ed321,stroke:#333,color:#fff
 
     class Client external
     class Gateway ingress
-    class ExtProc,P1,P2,P3,P4,C1,C2,C3,K8sAPI servicemesh
-    class OpenAI,Anthropic,Azure,Bedrock,VertexAI egress
-    class NeMo optional
+    class PP,NeMo,K8sAPI servicemesh
+    class ExtNameSvc egress
+    class OpenAI,Anthropic,Azure,Bedrock,Vertex provider
+    class P1,P2,P3,P4,P5 plugin
+    class C1,C2,C3 controller

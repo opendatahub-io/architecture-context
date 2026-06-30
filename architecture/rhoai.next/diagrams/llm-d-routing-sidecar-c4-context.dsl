@@ -1,113 +1,89 @@
 workspace {
     model {
-        client = person "LLM Client" "Application sending inference requests via OpenAI-compatible API"
-        platformAdmin = person "Platform Admin" "Manages InferencePool resources and SSRF protection configuration"
+        client = person "Client Application" "Sends LLM inference requests (chat/completions) via EPP/Gateway"
 
-        routingSidecar = softwareSystem "llm-d-routing-sidecar" "Go HTTP reverse proxy sidecar enabling disaggregated prefill/decode inference with SSRF protection" {
-            proxy = container "HTTP Reverse Proxy" "Intercepts inference requests, orchestrates P/D flow" "Go net/http + httputil.ReverseProxy" {
-                chatHandler = component "Chat Completions Handler" "Handles /v1/chat/completions with P/D interception" "Go HTTP Handler"
-                completionsHandler = component "Completions Handler" "Handles /v1/completions with P/D interception" "Go HTTP Handler"
-                passthroughHandler = component "Passthrough Handler" "Forwards all other requests to decoder" "Go HTTP Handler"
-                healthHandler = component "Health Check" "Returns HTTP 200 at /health" "Go HTTP Handler"
-            }
-            connectors = container "Connector Protocols" "Protocol adapters for KV cache transfer metadata" "Go" {
-                nixlv2 = component "NIXLv2 Connector" "Current/recommended protocol for kv_transfer_params" "Go"
-                nixlv1 = component "NIXLv1 Connector" "Deprecated protocol with individual KV fields" "Go"
-                lmcache = component "LMCache Connector" "Deprecated protocol, max_tokens=1 prefill warming" "Go"
-            }
-            allowlistValidator = container "AllowlistValidator" "SSRF protection via InferencePool-based pod IP allowlisting" "Go Kubernetes Dynamic Informers"
-            lruCache = container "LRU Cache" "Caches prefiller reverse proxy handler instances (capacity 16)" "hashicorp/golang-lru/v2"
-            tlsManager = container "TLS Manager" "Manages server and client TLS configurations with FIPS-compatible ciphers" "Go crypto/tls"
+        routingSidecar = softwareSystem "llm-d-routing-sidecar" "Reverse proxy sidecar that orchestrates disaggregated prefill/decode (P/D) protocol for LLM inference" {
+            proxyServer = container "Proxy Server" "HTTP/HTTPS reverse proxy listening on :8000, routes requests based on x-prefiller-host-port header" "Go Service"
+            nixlv2Connector = container "NIXL v2 Connector" "Implements current P/D protocol with kv_transfer_params for KV-cache transfer" "Go Module"
+            nixlv1Connector = container "NIXL v1 Connector" "Deprecated P/D protocol with top-level transfer fields" "Go Module (deprecated)"
+            lmcacheConnector = container "LMCache Connector" "Deprecated P/D protocol using max_tokens=1 prefill trigger" "Go Module (deprecated)"
+            allowlistValidator = container "AllowlistValidator" "Watches InferencePool CRs and Pod IPs to build dynamic SSRF allowlist via K8s informers" "Go Subsystem"
+            tlsManager = container "TLS Manager" "Manages TLS certificates for proxy, supports self-signed (4096-bit RSA) and external certs" "Go Subsystem"
         }
 
-        vllmDecoder = softwareSystem "vLLM Decoder" "Local vLLM instance for token generation (decode stage), runs in same pod" {
-            tags "Internal"
-        }
-
-        vllmPrefiller = softwareSystem "vLLM Prefiller Pods" "Remote GPU workers executing the prefill stage of LLM inference" {
-            tags "Internal"
-        }
-
-        k8sAPI = softwareSystem "Kubernetes API Server" "Provides access to InferencePool CRs and Pod resources" {
-            tags "External"
-        }
-
-        gatewayEPP = softwareSystem "Gateway API Inference Extension (EPP)" "Endpoint Picker that routes requests and sets x-prefiller-host-port header" {
-            tags "Internal"
-        }
-
-        inferencePoolCRD = softwareSystem "InferencePool CRD" "Custom Resource defined by Gateway API Inference Extension (inference.networking.x-k8s.io/v1alpha2)" {
-            tags "External"
-        }
+        vllmDecoder = softwareSystem "vLLM Decoder" "Co-located vLLM instance that handles decode (generation) phase of LLM inference" "Internal - Co-located"
+        vllmPrefiller = softwareSystem "vLLM Prefiller" "Remote vLLM instances that handle prefill (prompt processing) phase" "Internal - Remote"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Provides watch APIs for InferencePool CRs and Pod resources" "Platform"
+        inferencePool = softwareSystem "InferencePool CR" "Gateway API Inference Extension CRD (inference.networking.x-k8s.io/v1alpha2) defining pool of inference workers" "Platform CRD"
+        epp = softwareSystem "llm-d EPP" "Endpoint Picker that routes requests and sets x-prefiller-host-port header" "Internal llm-d"
+        gatewayAPI = softwareSystem "Gateway API Inference Extension" "Kubernetes Gateway API extension for inference workload routing" "External Platform"
+        openshiftRoute = softwareSystem "OpenShift Route" "Edge TLS termination for external access" "Platform"
 
         # Relationships
-        client -> routingSidecar "Sends OpenAI-compatible inference requests" "HTTPS/8000 TLS 1.2+"
-        gatewayEPP -> routingSidecar "Routes requests with x-prefiller-host-port header" "HTTP/HTTPS"
-        routingSidecar -> vllmDecoder "Forwards modified requests with KV transfer params or passthrough" "HTTP or HTTPS/8001"
-        routingSidecar -> vllmPrefiller "Sends prefill-stage requests" "HTTP or HTTPS/varies"
-        vllmPrefiller -> routingSidecar "Returns kv_transfer_params metadata" "HTTP or HTTPS"
-        routingSidecar -> k8sAPI "Watches InferencePool CRs and Pods for SSRF allowlist" "HTTPS/443 ServiceAccount Token"
-        k8sAPI -> inferencePoolCRD "Serves InferencePool resources" "HTTPS"
-        platformAdmin -> k8sAPI "Creates/manages InferencePool resources" "kubectl"
+        client -> openshiftRoute "Sends inference requests" "HTTPS/443"
+        openshiftRoute -> routingSidecar "Forwards after TLS termination" "HTTP/8080"
+        epp -> routingSidecar "Sets x-prefiller-host-port header on routed requests"
 
-        # Internal relationships
-        proxy -> connectors "Selects protocol based on -connector flag"
-        proxy -> allowlistValidator "Validates prefiller target host"
-        proxy -> lruCache "Caches/retrieves prefiller proxy handlers"
-        proxy -> tlsManager "Configures TLS for server and clients"
-        allowlistValidator -> k8sAPI "Watches InferencePool + Pods (30s resync)" "HTTPS/443"
+        proxyServer -> nixlv2Connector "Delegates P/D orchestration (default)"
+        proxyServer -> nixlv1Connector "Delegates P/D orchestration (deprecated)"
+        proxyServer -> lmcacheConnector "Delegates P/D orchestration (deprecated)"
+        proxyServer -> allowlistValidator "Validates prefiller host (if SSRF enabled)"
+        tlsManager -> proxyServer "Provides TLS configuration"
+
+        routingSidecar -> vllmDecoder "Forwards decode requests and pass-through traffic" "HTTP(S)/8001"
+        routingSidecar -> vllmPrefiller "Forwards prefill requests to remote workers" "HTTP(S)/{dynamic port}"
+        allowlistValidator -> k8sAPI "Watches InferencePool CRs and Pods" "HTTPS/443 SA Token"
+        inferencePool -> allowlistValidator "Provides label selectors for pod filtering"
+        gatewayAPI -> inferencePool "Defines InferencePool CRD"
     }
 
     views {
         systemContext routingSidecar "SystemContext" {
             include *
             autoLayout
-            description "System context showing llm-d-routing-sidecar in the disaggregated P/D inference ecosystem"
         }
 
         container routingSidecar "Containers" {
             include *
             autoLayout
-            description "Container view showing internal structure of the routing sidecar"
-        }
-
-        component proxy "ProxyComponents" {
-            include *
-            autoLayout
-            description "Component view of the HTTP proxy handlers"
-        }
-
-        component connectors "ConnectorComponents" {
-            include *
-            autoLayout
-            description "Component view of the connector protocol adapters"
         }
 
         styles {
             element "Software System" {
-                background #438dd5
+                background #438DD5
                 color #ffffff
             }
-            element "External" {
-                background #999999
-                color #ffffff
+            element "Internal - Co-located" {
+                background #85BBF0
+                color #000000
             }
-            element "Internal" {
+            element "Internal - Remote" {
+                background #85BBF0
+                color #000000
+            }
+            element "Internal llm-d" {
                 background #7ed321
                 color #ffffff
             }
-            element "Container" {
-                background #438dd5
+            element "Platform" {
+                background #999999
                 color #ffffff
             }
-            element "Component" {
-                background #85bbf0
-                color #000000
+            element "Platform CRD" {
+                background #f5a623
+                color #ffffff
+            }
+            element "External Platform" {
+                background #999999
+                color #ffffff
+            }
+            element "Container" {
+                background #438DD5
+                color #ffffff
             }
             element "Person" {
-                background #08427b
+                background #08427B
                 color #ffffff
-                shape person
             }
         }
     }
