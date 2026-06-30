@@ -319,9 +319,15 @@ def _add_provenance(
                     "repo": sc_repo,
                     "is_fork": bool(sc_info.get("upstream")),
                     "upstream": sc_info.get("upstream"),
-                    "upstream_detection": "sync_config" if sc_info.get("upstream") else None,
+                    "upstream_detection": (
+                        "sync_config" if sc_info.get("upstream")
+                        else None
+                    ),
                     "downstream": sc_info.get("downstream", []),
-                    "downstream_detection": "sync_config" if sc_info.get("downstream") else None,
+                    "downstream_detection": (
+                        "sync_config" if sc_info.get("downstream")
+                        else None
+                    ),
                     "sync_mechanism": sc_info["sync_mechanism"],
                     "sync_branch": sc_info.get("sync_branch"),
                     "sync_workflows": [],
@@ -443,7 +449,10 @@ async def run_discover_components_phase(args) -> None:
                     f" {meta.get('auto_merge_count', 0)} auto-merge)"
                 )
             else:
-                print(f"Sync config: {sync_config_path} (parse failed, continuing without)")
+                print(
+                    f"Sync config: {sync_config_path}"
+                    " (parse failed, continuing without)"
+                )
 
     print(f"Platform: {args.platform}")
     if getattr(args, 'entry_repo', None):
@@ -473,7 +482,10 @@ async def run_discover_components_phase(args) -> None:
                 if exclude_patterns
                 else synced_csv
             )
-            print(f"Excluding {len(synced_names)} sync-config repos from agent classification")
+            print(
+                f"Excluding {len(synced_names)}"
+                " sync-config repos from agent classification"
+            )
 
     exclude_part = (
         f" --exclude={exclude_patterns}"
@@ -530,7 +542,10 @@ async def run_discover_components_phase(args) -> None:
 
             # Add sync-config repos as components
             if sync_config_data:
-                sc_suffix = platform_config.get("suffix", "head") if platform_config else "head"
+                sc_suffix = (
+                    platform_config.get("suffix", "head")
+                    if platform_config else "head"
+                )
                 _apply_sync_config_components(
                     map_file, sync_config_data, checkouts_dirs, sc_suffix,
                 )
