@@ -258,6 +258,28 @@ Track the dependency graph:
 }
 ```
 
+**5.3: Map upstream/downstream repo provenance (optional context).**
+The provenance script maps fork relationships between repos across orgs (upstream community repos, midstream Red Hat repos, downstream forks). This data is added automatically by the harness post-processing step, but the agent can optionally invoke the script during discovery for classification context (e.g., recognizing that a repo is a fork of an upstream project helps classify it as a midstream component).
+
+To invoke manually for context during discovery:
+
+```bash
+python ${CLAUDE_SKILL_DIR}/scripts/parse_repo_provenance.py {checkouts_dir1} {checkouts_dir2} ...
+```
+
+The script:
+- Queries the GitHub API (when GITHUB_TOKEN is set) for fork metadata
+- Scans `.github/workflows/` for sync/rebase workflow files
+- Detects cross-org downstream links when the same repo name exists in multiple orgs
+
+Output is JSON with per-repo provenance info:
+- `upstream`: the source repo this was forked from (e.g., `kubeflow/kubeflow`)
+- `downstream`: repos in other orgs with the same name (e.g., `red-hat-data-services/kserve`)
+- `sync_mechanism`: how upstream changes flow (`sync_workflow`, `rebase_workflow`, `auto_merge`, `manual`)
+- `upstream_detection`: method used (`github_api`, `sync_workflow`)
+
+**Note:** The `provenance` section is merged into `component-map.json` automatically by the harness after discovery completes. The agent does NOT need to write it into the output.
+
 ### Steps 5a-5c: Classification
 
 See [classification heuristics](references/classification-heuristics.md) for:

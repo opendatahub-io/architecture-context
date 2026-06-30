@@ -250,4 +250,32 @@ type VersionData struct {
 	Platform   *PlatformDoc             `json:"platform,omitempty"`
 	Overlays   []*OverlayDoc            `json:"overlays,omitempty"`
 	BuildInfo  *BuildInfo               `json:"build_info,omitempty"`
+	Provenance *Provenance              `json:"provenance,omitempty"`
+}
+
+type ProvenanceRepo struct {
+	Org                 string   `json:"org"`
+	Repo                string   `json:"repo"`
+	IsFork              bool     `json:"is_fork"`
+	Upstream            *string  `json:"upstream"`
+	UpstreamDetection   *string  `json:"upstream_detection"`
+	Downstream          []string `json:"downstream"`
+	DownstreamDetection *string  `json:"downstream_detection"`
+	SyncMechanism       *string  `json:"sync_mechanism"`
+	SyncBranch          string   `json:"sync_branch,omitempty"`
+	SyncWorkflows       []string `json:"sync_workflows"`
+}
+
+type ProvenanceMetadata struct {
+	GeneratedAt         string   `json:"generated_at"`
+	CheckoutsDirs       []string `json:"checkouts_dirs"`
+	GitHubAPIAvailable  bool     `json:"github_api_available"`
+	TotalRepos          int      `json:"total_repos"`
+	ReposWithUpstream   int      `json:"repos_with_upstream"`
+	ReposWithDownstream int      `json:"repos_with_downstream"`
+}
+
+type Provenance struct {
+	Metadata ProvenanceMetadata        `json:"metadata"`
+	Repos    map[string]ProvenanceRepo `json:"repos"`
 }

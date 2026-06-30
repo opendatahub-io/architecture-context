@@ -2,6 +2,7 @@ package loader
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"strings"
 
@@ -73,6 +74,7 @@ func LoadVersion(fsys fs.FS, overlayFS fs.FS, version string) (*types.VersionDat
 	}
 
 	buildInfo := loadBuildInfo(fsys, resolved)
+	provenance, _ := loadProvenance(fsys, resolved)
 
 	data := &types.VersionData{
 		Version: types.VersionInfo{
@@ -84,6 +86,7 @@ func LoadVersion(fsys fs.FS, overlayFS fs.FS, version string) (*types.VersionDat
 		Platform:   platform,
 		Overlays:   overlays,
 		BuildInfo:  buildInfo,
+		Provenance: provenance,
 	}
 
 	return data, nil
@@ -100,6 +103,51 @@ func loadBuildInfo(fsys fs.FS, versionDir string) *types.BuildInfo {
 		return nil
 	}
 	return &bi
+}
+
+func loadProvenance(fsys fs.FS, versionDir string) (*types.Provenance, error) {
+	path := versionDir + "/component-map.json"
+	raw, err := fs.ReadFile(fsys, path)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+	var wrapper struct {
+		Provenance *types.Provenance `json:"provenance"`
+	}
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	return wrapper.Provenance, nil
+}
+
+// LoadComponentRepoMapping reads component-map.json and builds a map from
+// component key to "org/repo" string for cross-referencing with provenance data.
+func LoadComponentRepoMapping(fsys fs.FS, version string) map[string]string {
+	resolved, err := ResolveVersion(fsys, version)
+	if err != nil {
+		return nil
+	}
+	path := resolved + "/component-map.json"
+	raw, err := fs.ReadFile(fsys, path)
+	if err != nil {
+		return nil
+	}
+	var wrapper struct {
+		Components map[string]struct {
+			RepoOrg  string `json:"repo_org"`
+			RepoName string `json:"repo_name"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return nil
+	}
+	result := make(map[string]string, len(wrapper.Components))
+	for key, comp := range wrapper.Components {
+		if comp.RepoOrg != "" && comp.RepoName != "" {
+			result[key] = comp.RepoOrg + "/" + comp.RepoName
+		}
+	}
+	return result
 }
 
 // mergeJSON supplements a markdown-parsed doc with arch-analyzer JSON data.

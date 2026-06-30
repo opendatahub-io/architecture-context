@@ -20,9 +20,16 @@ VALID_DISCOVERY_METHODS = {"breadcrumb"}
 VALID_DISCOVERED_VIA = {
     "operator_operand", "operator_bundle",
     "container_image", "image_dependency", "dependency", "installer", "dsc_spec",
+    "sync_config",
 }
 
 VALID_CONFIDENCE = {"high", "medium", "low", "disputed"}
+
+VALID_UPSTREAM_DETECTION = {"github_api", "sync_workflow", "known_mapping", "name_prefix", "sync_config"}
+VALID_DOWNSTREAM_DETECTION = {"cross_org_match", "sync_config"}
+VALID_SYNC_MECHANISMS = {
+    "sync_workflow", "rebase_workflow", "auto_merge", "manual",
+}
 
 REQUIRED_METADATA_FIELDS = {
     "platform": str,
@@ -168,6 +175,131 @@ def validate(path: str) -> list[str]:
     if excluded is not None:
         if not isinstance(excluded, dict):
             errors.append("excluded: expected object")
+
+    # --- provenance (optional, added by harness post-processing) ---
+    provenance = data.get("provenance")
+    if provenance is not None:
+        if not isinstance(provenance, dict):
+            errors.append("provenance: expected object")
+        else:
+            prov_meta = provenance.get("metadata")
+            if not isinstance(prov_meta, dict):
+                errors.append("provenance.metadata: missing or not an object")
+            else:
+                for field in ("total_repos", "repos_with_upstream", "repos_with_downstream"):
+                    val = prov_meta.get(field)
+                    if val is not None and (not isinstance(val, int) or isinstance(val, bool)):
+                        errors.append(
+                            f"provenance.metadata.{field}: expected int,"
+                            f" got {type(val).__name__}"
+                        )
+                ga = prov_meta.get("generated_at")
+                if ga is not None and not isinstance(ga, str):
+                    errors.append(
+                        "provenance.metadata.generated_at:"
+                        " expected string"
+                    )
+                cd = prov_meta.get("checkouts_dirs")
+                if cd is not None:
+                    if not isinstance(cd, list):
+                        errors.append(
+                            "provenance.metadata.checkouts_dirs:"
+                            " expected list"
+                        )
+                    elif not all(isinstance(d, str) for d in cd):
+                        errors.append(
+                            "provenance.metadata.checkouts_dirs:"
+                            " all items must be strings"
+                        )
+                api = prov_meta.get("github_api_available")
+                if api is not None and not isinstance(api, bool):
+                    errors.append(
+                        "provenance.metadata.github_api_available:"
+                        " expected bool"
+                    )
+
+            prov_repos = provenance.get("repos")
+            if not isinstance(prov_repos, dict):
+                errors.append("provenance.repos: missing or not an object")
+            else:
+                for repo_key, repo_data in prov_repos.items():
+                    prefix = f"provenance.repos.{repo_key}"
+                    if not isinstance(repo_data, dict):
+                        errors.append(f"{prefix}: expected object")
+                        continue
+
+                    for field in ("org", "repo"):
+                        if not isinstance(repo_data.get(field), str):
+                            errors.append(f"{prefix}.{field}: expected string")
+
+                    if not isinstance(repo_data.get("is_fork"), bool):
+                        errors.append(f"{prefix}.is_fork: expected bool")
+
+                    us = repo_data.get("upstream")
+                    if us is not None and not isinstance(us, str):
+                        errors.append(
+                            f"{prefix}.upstream: expected"
+                            " string or null"
+                        )
+
+                    ud = repo_data.get("upstream_detection")
+                    if ud is not None and ud not in VALID_UPSTREAM_DETECTION:
+                        errors.append(
+                            f"{prefix}.upstream_detection: '{ud}'"
+                            f" not in {VALID_UPSTREAM_DETECTION}"
+                        )
+
+                    dd = repo_data.get("downstream_detection")
+                    if dd is not None and dd not in VALID_DOWNSTREAM_DETECTION:
+                        errors.append(
+                            f"{prefix}.downstream_detection: '{dd}'"
+                            f" not in {VALID_DOWNSTREAM_DETECTION}"
+                        )
+
+                    sm = repo_data.get("sync_mechanism")
+                    if sm is not None and sm not in VALID_SYNC_MECHANISMS:
+                        errors.append(
+                            f"{prefix}.sync_mechanism: '{sm}'"
+                            f" not in {VALID_SYNC_MECHANISMS}"
+                        )
+
+                    sb = repo_data.get("sync_branch")
+                    if sb is not None and not isinstance(sb, str):
+                        errors.append(
+                            f"{prefix}.sync_branch: expected string"
+                        )
+
+                    ds = repo_data.get("downstream")
+                    if not isinstance(ds, list):
+                        errors.append(
+                            f"{prefix}.downstream: expected list"
+                        )
+                    elif not all(isinstance(d, str) for d in ds):
+                        errors.append(
+                            f"{prefix}.downstream: all items"
+                            " must be strings"
+                        )
+
+                    sw = repo_data.get("sync_workflows")
+                    if not isinstance(sw, list):
+                        errors.append(
+                            f"{prefix}.sync_workflows:"
+                            " expected list"
+                        )
+                    elif not all(isinstance(w, str) for w in sw):
+                        errors.append(
+                            f"{prefix}.sync_workflows: all"
+                            " items must be strings"
+                        )
+
+                if isinstance(prov_meta, dict):
+                    total = prov_meta.get("total_repos")
+                    actual = len(prov_repos)
+                    if isinstance(total, int) and not isinstance(total, bool) and total != actual:
+                        errors.append(
+                            f"provenance.metadata.total_repos ({total})"
+                            f" != actual repo count ({actual})"
+                        )
 
     return errors
 

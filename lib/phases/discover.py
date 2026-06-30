@@ -2,6 +2,9 @@
 
 import json
 import re
+import subprocess
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from lib.agent_runner import run_agent
@@ -69,6 +72,302 @@ def _apply_map_overrides(map_file: Path, platform_config: dict) -> None:
         print(f"  Updated {map_file}")
 
 
+def _parse_sync_config(sync_config_path: Path) -> dict | None:
+    """Run parse_sync_config.py and return parsed JSON, or None on error."""
+    script = (
+        Path(__file__).resolve().parents[1].parent
+        / ".claude" / "skills" / "discover-components"
+        / "scripts" / "parse_sync_config.py"
+    )
+    if not script.exists():
+        print(f"  Sync config parser not found: {script}")
+        return None
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script), str(sync_config_path)],
+            capture_output=True, text=True, timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        print("  WARNING: Sync config parser timed out")
+        return None
+
+    if result.returncode != 0:
+        print(f"  WARNING: Sync config parser failed (exit {result.returncode})")
+        if result.stderr:
+            for line in result.stderr.strip().splitlines()[-3:]:
+                print(f"    {line}")
+        return None
+
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        print(f"  WARNING: Could not parse sync config output: {e}")
+        return None
+
+
+def _get_synced_repo_names(
+    sync_config_data: dict, checkouts_dirs: list[str],
+) -> set[str]:
+    """Return org-scoped glob patterns for repos in the sync config.
+
+    Returns patterns like ``*/repo-name`` so exclusions don't
+    accidentally match unrelated repos in other orgs.
+    """
+    repo_index = sync_config_data.get("repo_index", {})
+    synced_patterns = set()
+
+    for cdir in checkouts_dirs:
+        cdir_path = Path(cdir)
+        if not cdir_path.is_dir():
+            continue
+        org = cdir_path.name.split(".")[0]
+        for d in cdir_path.iterdir():
+            if d.is_dir() and not d.name.startswith("."):
+                key = f"{org}/{d.name}"
+                if key in repo_index:
+                    synced_patterns.add(f"*/{d.name}")
+
+    return synced_patterns
+
+
+def _infer_type(repo_name: str) -> str:
+    """Infer component type from repo name patterns."""
+    lower = repo_name.lower()
+    if lower.endswith("-operator"):
+        return "operator"
+    if lower.endswith("-controller"):
+        return "controller"
+    if "dashboard" in lower:
+        return "ui"
+    if lower.endswith("-sdk"):
+        return "shared_library"
+    return "service"
+
+
+def _apply_sync_config_components(
+    map_file: Path,
+    sync_config_data: dict,
+    checkouts_dirs: list[str],
+    suffix: str,
+) -> None:
+    """Add sync-config repos as components in the component map."""
+    repo_index = sync_config_data.get("repo_index", {})
+    if not repo_index:
+        return
+
+    data = json.loads(map_file.read_text())
+    components = data.get("components", {})
+    excluded = data.get("excluded", {})
+    changed = False
+    added = 0
+    promoted = 0
+
+    for cdir in checkouts_dirs:
+        cdir_path = Path(cdir)
+        if not cdir_path.is_dir():
+            continue
+        org = cdir_path.name.split(".")[0]
+        for d in sorted(cdir_path.iterdir()):
+            if not d.is_dir() or d.name.startswith("."):
+                continue
+            key = f"{org}/{d.name}"
+            if key not in repo_index:
+                continue
+
+            repo_name = d.name
+            if repo_name in components:
+                continue
+
+            checkout_path = str(d.resolve())
+            has_arch = (d / "GENERATED_ARCHITECTURE.md").exists()
+
+            entry = {
+                "key": repo_name,
+                "repo_org": org,
+                "repo_name": repo_name,
+                "repo_url": f"https://github.com/{org}/{repo_name}",
+                "checkout_path": checkout_path,
+                "has_architecture": has_arch,
+                "type": _infer_type(repo_name),
+                "tier": "payload_component",
+                "shipped": True,
+                "architecturally_significant": True,
+                "discovered_via": "sync_config",
+                "confidence": "high",
+            }
+
+            if repo_name in excluded:
+                del excluded[repo_name]
+                promoted += 1
+                print(f"  Sync config: promoted {repo_name} from excluded")
+            else:
+                added += 1
+
+            components[repo_name] = entry
+            changed = True
+
+    if changed:
+        data["components"] = components
+        data["excluded"] = excluded
+        data["metadata"]["components_discovered"] = len(components)
+        data["metadata"]["components_excluded"] = len(excluded)
+        map_file.write_text(json.dumps(data, indent=2) + "\n")
+        total = added + promoted
+        print(
+            f"  Sync config: {total} repos added"
+            f" ({added} new, {promoted} promoted from excluded)"
+        )
+
+
+def _add_provenance(
+    map_file: Path,
+    checkouts_dirs: list[str],
+    sync_config_data: dict | None = None,
+) -> None:
+    """Run parse_repo_provenance.py and merge results into component-map.json."""
+    script = (
+        Path(__file__).resolve().parents[1].parent
+        / ".claude" / "skills" / "discover-components"
+        / "scripts" / "parse_repo_provenance.py"
+    )
+    if not script.exists():
+        print(f"  Provenance script not found: {script}")
+        return
+
+    existing_dirs = [d for d in checkouts_dirs if Path(d).is_dir()]
+    if not existing_dirs:
+        print("  No checkout directories found, skipping provenance")
+        return
+
+    # Include cross-org checkout directories for provenance hierarchy.
+    # Provenance needs repos from all tiers (upstream/midstream/downstream)
+    # to build complete chains. Add the .head checkout for each provenance
+    # org if a more complete version isn't already included.
+    provenance_orgs = [
+        "opendatahub-io", "red-hat-data-services",
+        "llm-d", "llm-d-incubation",
+    ]
+    existing_resolved = set(existing_dirs)
+    checkouts_root = Path("checkouts")
+    if checkouts_root.is_dir():
+        for org in provenance_orgs:
+            head_dir = checkouts_root / f"{org}.head"
+            if head_dir.is_dir():
+                resolved = str(head_dir.resolve())
+                if resolved not in existing_resolved:
+                    existing_dirs.append(resolved)
+                    existing_resolved.add(resolved)
+                    print(f"  Cross-org provenance: added {head_dir.name}")
+
+    print("  Running repo provenance analysis...")
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script)] + existing_dirs,
+            capture_output=True, text=True, timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        print("  WARNING: Provenance script timed out, skipping")
+        return
+
+    if result.returncode != 0:
+        print(f"  WARNING: Provenance script failed (exit {result.returncode})")
+        if result.stderr:
+            for line in result.stderr.strip().splitlines()[-3:]:
+                print(f"    {line}")
+        return
+
+    try:
+        provenance = json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        print(f"  WARNING: Could not parse provenance output: {e}")
+        return
+
+    if "metadata" in provenance:
+        provenance["metadata"]["generated_at"] = (
+            datetime.now(timezone.utc).isoformat()
+        )
+
+    # Overlay sync config data onto provenance
+    if sync_config_data:
+        repo_index = sync_config_data.get("repo_index", {})
+        prov_repos = provenance.get("repos", {})
+        enriched = 0
+        for repo_key, sc_info in repo_index.items():
+            if repo_key in prov_repos:
+                pr = prov_repos[repo_key]
+                pr["sync_mechanism"] = sc_info["sync_mechanism"]
+                if sc_info.get("sync_branch"):
+                    pr["sync_branch"] = sc_info["sync_branch"]
+                if sc_info.get("upstream"):
+                    # Sync config is authoritative for the direct upstream.
+                    # Always override for downstream orgs — KNOWN_UPSTREAMS
+                    # gives the ultimate upstream, but RHDS repos actually
+                    # sync from ODH, not from the external project.
+                    if not pr.get("upstream") or pr["org"] == "red-hat-data-services":
+                        pr["upstream"] = sc_info["upstream"]
+                        pr["upstream_detection"] = "sync_config"
+                        pr["is_fork"] = True
+                if sc_info.get("downstream"):
+                    existing_ds = set(pr.get("downstream", []))
+                    for ds in sc_info["downstream"]:
+                        if ds not in existing_ds:
+                            pr.setdefault("downstream", []).append(ds)
+                    if pr.get("downstream"):
+                        pr["downstream_detection"] = "sync_config"
+                enriched += 1
+            else:
+                sc_org, _, sc_repo = repo_key.partition("/")
+                prov_repos[repo_key] = {
+                    "org": sc_org,
+                    "repo": sc_repo,
+                    "is_fork": bool(sc_info.get("upstream")),
+                    "upstream": sc_info.get("upstream"),
+                    "upstream_detection": (
+                        "sync_config" if sc_info.get("upstream")
+                        else None
+                    ),
+                    "downstream": sc_info.get("downstream", []),
+                    "downstream_detection": (
+                        "sync_config" if sc_info.get("downstream")
+                        else None
+                    ),
+                    "sync_mechanism": sc_info["sync_mechanism"],
+                    "sync_branch": sc_info.get("sync_branch"),
+                    "sync_workflows": [],
+                }
+                enriched += 1
+        provenance["repos"] = prov_repos
+        if enriched:
+            print(f"  Sync config enriched {enriched} provenance entries")
+
+    # Recompute metadata counts after enrichment
+    prov_repos = provenance.get("repos", {})
+    if "metadata" in provenance:
+        provenance["metadata"]["total_repos"] = len(prov_repos)
+        provenance["metadata"]["repos_with_upstream"] = sum(
+            1 for r in prov_repos.values() if r.get("upstream")
+        )
+        provenance["metadata"]["repos_with_downstream"] = sum(
+            1 for r in prov_repos.values() if r.get("downstream")
+        )
+
+    data = json.loads(map_file.read_text())
+    data["provenance"] = provenance
+    map_file.write_text(json.dumps(data, indent=2) + "\n")
+
+    repos_total = provenance.get("metadata", {}).get("total_repos", 0)
+    with_upstream = provenance.get("metadata", {}).get("repos_with_upstream", 0)
+    with_downstream = provenance.get("metadata", {}).get(
+        "repos_with_downstream", 0,
+    )
+    print(
+        f"  Provenance added: {repos_total} repos"
+        f" ({with_upstream} with upstream,"
+        f" {with_downstream} with downstream)"
+    )
+
+
 async def run_discover_components_phase(args) -> None:
     """Run Phase 2b: Discover components via breadcrumb exploration."""
     print("\n" + "=" * 60)
@@ -132,6 +431,44 @@ async def run_discover_components_phase(args) -> None:
             )
             return
 
+    # Validate and parse sync config if declared
+    sync_config_path = None
+    sync_config_data = None
+    if platform_config:
+        sync_config = platform_config.get("sync_config")
+        if sync_config:
+            sc_suffix = platform_config.get("suffix", "head")
+            sc_org = sync_config["org"]
+            sc_repo = sync_config["repo"]
+            sc_map = sync_config["upstream_map"]
+            sync_config_path = (
+                Path("checkouts")
+                / f"{sc_org}.{sc_suffix}"
+                / sc_repo
+                / sc_map
+            )
+            if not sync_config_path.exists():
+                print(
+                    f"Error: sync config not found: {sync_config_path}\n"
+                    f"Run 'python -m lib.main fetch --platform={args.platform}'"
+                    " to clone the sync config repo first."
+                )
+                return
+
+            sync_config_data = _parse_sync_config(sync_config_path)
+            if sync_config_data:
+                meta = sync_config_data.get("metadata", {})
+                print(
+                    f"Sync config: {sync_config_path}"
+                    f" ({meta.get('total_sync_rules', 0)} rules,"
+                    f" {meta.get('auto_merge_count', 0)} auto-merge)"
+                )
+            else:
+                print(
+                    f"Sync config: {sync_config_path}"
+                    " (parse failed, continuing without)"
+                )
+
     print(f"Platform: {args.platform}")
     if getattr(args, 'entry_repo', None):
         print(f"Entry point: {args.entry_repo}")
@@ -148,6 +485,21 @@ async def run_discover_components_phase(args) -> None:
                 f"{exclude_patterns},{combined}"
                 if exclude_patterns
                 else combined
+            )
+
+    # Exclude sync-config repos from agent — they'll be added in post-processing
+    if sync_config_data:
+        synced_names = _get_synced_repo_names(sync_config_data, checkouts_dirs)
+        if synced_names:
+            synced_csv = ",".join(sorted(synced_names))
+            exclude_patterns = (
+                f"{exclude_patterns},{synced_csv}"
+                if exclude_patterns
+                else synced_csv
+            )
+            print(
+                f"Excluding {len(synced_names)}"
+                " sync-config repos from agent classification"
             )
 
     exclude_part = (
@@ -203,9 +555,22 @@ async def run_discover_components_phase(args) -> None:
         if map_file.exists():
             print(f"Component map written: {map_file}")
 
+            # Add sync-config repos as components
+            if sync_config_data:
+                sc_suffix = (
+                    platform_config.get("suffix", "head")
+                    if platform_config else "head"
+                )
+                _apply_sync_config_components(
+                    map_file, sync_config_data, checkouts_dirs, sc_suffix,
+                )
+
             # Apply include_components / exclude_components from platforms.yaml
             if platform_config:
                 _apply_map_overrides(map_file, platform_config)
+
+            # Add repo provenance (upstream/downstream/sync relationships)
+            _add_provenance(map_file, checkouts_dirs, sync_config_data)
 
             metadata = get_component_map_metadata(args.platform, architecture_dir)
             if metadata:

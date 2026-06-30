@@ -20,6 +20,7 @@ KNOWN_KEYS = {
     "include_components",
     "component_overrides",
     "post_checkout",
+    "sync_config",
 }
 
 
@@ -205,6 +206,52 @@ def _check_post_checkout(value, errors):
             )
 
 
+def _check_sync_config(value, errors):
+    if not isinstance(value, dict):
+        errors.append(
+            f"'sync_config' must be a dict,"
+            f" got {type(value).__name__}"
+        )
+        return
+    allowed = {"org", "repo", "branch", "protocol", "upstream_map"}
+    unknown = set(value.keys()) - allowed
+    if unknown:
+        errors.append(
+            f"'sync_config': unrecognized keys:"
+            f" {', '.join(sorted(unknown))}"
+        )
+    for req in ("org", "repo", "upstream_map"):
+        if req not in value:
+            errors.append(f"'sync_config': missing required '{req}'")
+        elif not isinstance(value[req], str):
+            errors.append(f"'sync_config.{req}' must be a string")
+        elif not value[req].strip():
+            errors.append(
+                f"'sync_config.{req}' must not be empty"
+            )
+    for opt in ("branch",):
+        if opt in value and not isinstance(value[opt], str):
+            errors.append(f"'sync_config.{opt}' must be a string")
+    if "protocol" in value:
+        proto = value["protocol"]
+        if proto not in ("https", "ssh"):
+            errors.append(
+                f"'sync_config.protocol' must be"
+                f" 'https' or 'ssh', got '{proto}'"
+            )
+    um = value.get("upstream_map", "")
+    if isinstance(um, str):
+        if ".." in um:
+            errors.append(
+                "'sync_config.upstream_map' contains '..'"
+                " (path traversal)"
+            )
+        elif um.startswith("/"):
+            errors.append(
+                "'sync_config.upstream_map' is an absolute path"
+            )
+
+
 def validate_platform(name: str, config: dict) -> list[str]:
     errors: list[str] = []
 
@@ -252,6 +299,9 @@ def validate_platform(name: str, config: dict) -> list[str]:
 
     if "post_checkout" in config:
         _check_post_checkout(config["post_checkout"], errors)
+
+    if "sync_config" in config:
+        _check_sync_config(config["sync_config"], errors)
 
     return errors
 
