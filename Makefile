@@ -1,4 +1,4 @@
-.PHONY: build build-embedded test clean lint lint-python lint-go lint-overlays lint-platforms
+.PHONY: build build-embedded test clean lint lint-python lint-go lint-overlays lint-platforms lint-architecture-docs
 
 build:
 	$(MAKE) -C src/arch-query build
@@ -12,7 +12,7 @@ test:
 clean:
 	$(MAKE) -C src/arch-query clean
 
-lint: lint-python lint-go lint-overlays lint-platforms
+lint: lint-python lint-go lint-overlays lint-platforms lint-architecture-docs
 
 lint-python:
 	uv run ruff check .
@@ -25,3 +25,6 @@ lint-overlays:
 
 lint-platforms:
 	uv run python scripts/lint_platforms.py
+
+lint-architecture-docs:
+	uv run python scripts/lint_architecture_docs.py
