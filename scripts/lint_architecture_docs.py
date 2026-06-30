@@ -48,12 +48,12 @@ def main() -> int:
     seen: set[Path] = set()
     files: list[Path] = []
     for path in sorted(arch_dir.glob("*/*.md")):
+        if path.name in SKIP_NAMES:
+            continue
         real = path.resolve()
         if real in seen:
             continue
         seen.add(real)
-        if path.name in SKIP_NAMES:
-            continue
         files.append(path)
 
     if not files:
