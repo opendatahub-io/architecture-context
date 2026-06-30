@@ -188,7 +188,7 @@ def validate(path: str) -> list[str]:
             else:
                 for field in ("total_repos", "repos_with_upstream", "repos_with_downstream"):
                     val = prov_meta.get(field)
-                    if val is not None and not isinstance(val, int):
+                    if val is not None and (not isinstance(val, int) or isinstance(val, bool)):
                         errors.append(
                             f"provenance.metadata.{field}: expected int,"
                             f" got {type(val).__name__}"
@@ -263,6 +263,12 @@ def validate(path: str) -> list[str]:
                             f" not in {VALID_SYNC_MECHANISMS}"
                         )
 
+                    sb = repo_data.get("sync_branch")
+                    if sb is not None and not isinstance(sb, str):
+                        errors.append(
+                            f"{prefix}.sync_branch: expected string"
+                        )
+
                     ds = repo_data.get("downstream")
                     if not isinstance(ds, list):
                         errors.append(
@@ -289,7 +295,7 @@ def validate(path: str) -> list[str]:
                 if isinstance(prov_meta, dict):
                     total = prov_meta.get("total_repos")
                     actual = len(prov_repos)
-                    if isinstance(total, int) and total != actual:
+                    if isinstance(total, int) and not isinstance(total, bool) and total != actual:
                         errors.append(
                             f"provenance.metadata.total_repos ({total})"
                             f" != actual repo count ({actual})"
