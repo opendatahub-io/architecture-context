@@ -189,6 +189,16 @@ func runAllProvenance(prov *types.Provenance, repoToComps map[string][]string, c
 				strings.Contains(strings.ToLower(r.Upstream), needle) ||
 				containsAnyLower(r.Downstream, needle) {
 				filtered = append(filtered, k)
+				continue
+			}
+			// Walk upstream chain so downstream repos match on
+			// their ultimate upstream (e.g. llm-d via ODH midstream)
+			if r.Upstream != "" {
+				if upRepo, ok := prov.Repos[r.Upstream]; ok {
+					if strings.Contains(strings.ToLower(upRepo.Upstream), needle) {
+						filtered = append(filtered, k)
+					}
+				}
 			}
 		}
 		keys = filtered
@@ -241,7 +251,36 @@ func runAllProvenance(prov *types.Provenance, repoToComps map[string][]string, c
 		}
 
 		role := repoRole(r)
-		if role == "midstream" || role == "downstream" {
+		if role == "downstream" {
+			// Downstream repo: place in DOWNSTREAM column.
+			// Split upstream into ultimate upstream and midstream.
+			ulUpstream := "-"
+			mid := "-"
+			syncUMDs := "-"
+			syncMDDs := "-"
+			if r.Upstream != "" {
+				upOrg := strings.SplitN(r.Upstream, "/", 2)[0]
+				if midstreamOrgs[upOrg] {
+					mid = r.Upstream
+					if r.SyncMechanism != "" {
+						syncMDDs = r.SyncMechanism
+					}
+					// Look up the midstream repo's upstream
+					if mRepo, ok := prov.Repos[r.Upstream]; ok && mRepo.Upstream != "" {
+						ulUpstream = mRepo.Upstream
+						if mRepo.SyncMechanism != "" {
+							syncUMDs = mRepo.SyncMechanism
+						}
+					}
+				} else {
+					ulUpstream = r.Upstream
+					if r.SyncMechanism != "" {
+						syncUMDs = r.SyncMechanism
+					}
+				}
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", ulUpstream, syncUMDs, mid, syncMDDs, k)
+		} else if role == "midstream" {
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", upstream, syncUM, k, syncMD, downstream)
 		} else {
 			// Upstream repo: split downstream list into midstream and downstream

@@ -236,10 +236,25 @@ def _add_provenance(
         print("  No checkout directories found, skipping provenance")
         return
 
-    # Include downstream org for cross-org provenance if available
-    rh_ds = Path("checkouts/red-hat-data-services.next").resolve()
-    if rh_ds.is_dir() and str(rh_ds) not in existing_dirs:
-        existing_dirs.append(str(rh_ds))
+    # Include cross-org checkout directories for provenance hierarchy.
+    # Provenance needs repos from all tiers (upstream/midstream/downstream)
+    # to build complete chains. Add the .head checkout for each provenance
+    # org if a more complete version isn't already included.
+    provenance_orgs = [
+        "opendatahub-io", "red-hat-data-services",
+        "llm-d", "llm-d-incubation",
+    ]
+    existing_resolved = set(existing_dirs)
+    checkouts_root = Path("checkouts")
+    if checkouts_root.is_dir():
+        for org in provenance_orgs:
+            head_dir = checkouts_root / f"{org}.head"
+            if head_dir.is_dir():
+                resolved = str(head_dir.resolve())
+                if resolved not in existing_resolved:
+                    existing_dirs.append(resolved)
+                    existing_resolved.add(resolved)
+                    print(f"  Cross-org provenance: added {head_dir.name}")
 
     print("  Running repo provenance analysis...")
     try:
@@ -280,10 +295,15 @@ def _add_provenance(
                 pr["sync_mechanism"] = sc_info["sync_mechanism"]
                 if sc_info.get("sync_branch"):
                     pr["sync_branch"] = sc_info["sync_branch"]
-                if sc_info.get("upstream") and not pr.get("upstream"):
-                    pr["upstream"] = sc_info["upstream"]
-                    pr["upstream_detection"] = "sync_config"
-                    pr["is_fork"] = True
+                if sc_info.get("upstream"):
+                    # Sync config is authoritative for the direct upstream.
+                    # Always override for downstream orgs — KNOWN_UPSTREAMS
+                    # gives the ultimate upstream, but RHDS repos actually
+                    # sync from ODH, not from the external project.
+                    if not pr.get("upstream") or pr["org"] == "red-hat-data-services":
+                        pr["upstream"] = sc_info["upstream"]
+                        pr["upstream_detection"] = "sync_config"
+                        pr["is_fork"] = True
                 if sc_info.get("downstream"):
                     existing_ds = set(pr.get("downstream", []))
                     for ds in sc_info["downstream"]:
