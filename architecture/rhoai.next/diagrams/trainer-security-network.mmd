@@ -1,94 +1,86 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["Data Scientist<br/>(kubectl / RHOAI Dashboard)"]
+        User["User / Dashboard Client"]
     end
 
-    subgraph K8sControl["KUBERNETES CONTROL PLANE (Trusted)"]
-        APIServer["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token Auth"]
+    subgraph K8sControlPlane["KUBERNETES CONTROL PLANE (TLS 1.2+)"]
+        APIServer["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token / mTLS"]
     end
 
-    subgraph OperatorNS["NAMESPACE: opendatahub (Operator)"]
-        Controller["trainer-controller-manager<br/>SA: kubeflow-trainer-controller-manager<br/>Image: quay.io/opendatahub/trainer:odh-3.5-ea1"]
-
-        subgraph ControllerPorts["Controller Ports"]
-            WebhookPort["Webhook: 9443/TCP<br/>HTTPS (self-managed TLS)<br/>Auth: K8s API mTLS"]
-            MetricsPort["Metrics: 8443/TCP<br/>HTTPS (TLS)<br/>Auth: None (PodMonitor)"]
-            HealthPort["Health: 8081/TCP<br/>HTTP (plaintext)<br/>Auth: None"]
-        end
-    end
-
-    subgraph UserNS["NAMESPACE: {user-namespace} (Training Workloads)"]
+    subgraph ControllerNamespace["CONTROLLER NAMESPACE (Internal)"]
         direction TB
 
-        subgraph TrainingPods["Training Pods (JobSet managed)"]
-            Rank0["Rank-0 Pod (Master)<br/>29500/TCP PyTorch c10d<br/>28080/TCP RHAI Metrics"]
-            WorkerPods["Worker Pods (1..N)<br/>29500/TCP PyTorch c10d<br/>Dynamic ports NCCL/Gloo"]
-        end
+        Controller["trainer-controller-manager<br/>SA: kubeflow-trainer-controller-manager<br/>Image: quay.io/opendatahub/trainer:odh-3.5-ea1"]
 
-        subgraph NetworkPolicies["NetworkPolicy Enforcement (RHAI)"]
-            NP["Per-TrainJob NetworkPolicy<br/>Ingress: controller labels + same-job pods<br/>Egress: restricted"]
-        end
+        WebhookServer["Webhook Server<br/>9443/TCP HTTPS<br/>TLS (self-signed cert)<br/>Auth: API server client cert"]
 
-        subgraph Secrets["Secrets"]
-            WebhookCert["kubeflow-trainer-webhook-cert<br/>kubernetes.io/tls<br/>Provisioned: cert-controller<br/>Auto-Rotate: Yes"]
-            MPISecret["{trainjob}-mpi-ssh-auth<br/>Opaque (ECDSA P521)<br/>Provisioned: Controller<br/>Auto-Rotate: No (lifecycle-bound)"]
-        end
+        MetricsEndpoint["Metrics Endpoint<br/>8443/TCP HTTPS<br/>TLS (secure serving)<br/>Auth: None (insecureSkipVerify)"]
 
-        subgraph InitContainers["Init Containers"]
-            DatasetInit["dataset-initializer"]
-            ModelInit["model-initializer"]
-        end
+        HealthProbes["Health Probes<br/>8081/TCP HTTP<br/>/healthz, /readyz<br/>Auth: None"]
 
-        subgraph DataCachePods["Data Cache (Optional, LWS managed)"]
-            DCHead["Data Cache Head<br/>gRPC Arrow Flight<br/>No TLS, No Auth"]
-            DCWorkers["Data Cache Workers<br/>gRPC Arrow Flight<br/>No TLS, No Auth"]
-        end
+        WebhookCert["kubeflow-trainer-webhook-cert<br/>Opaque (TLS)<br/>cert-controller managed<br/>Auto-rotate: Yes"]
     end
 
-    subgraph Monitoring["OPENSHIFT MONITORING"]
-        Prometheus["Prometheus<br/>(PodMonitor scrape)"]
+    subgraph UserNamespace["USER NAMESPACE (Training Workloads)"]
+        direction TB
+
+        TrainingPod["Training Pod<br/>Metrics: 2113/TCP HTTP<br/>No Encryption<br/>Auth: NetworkPolicy"]
+
+        MPILauncher["MPI Launcher Pod<br/>SSH Client"]
+
+        MPINodes["MPI Node Pods<br/>2222/TCP SSH<br/>ECDSA encryption<br/>Auth: SSH public key"]
+
+        SSHSecret["SSH Secret<br/>{trainjob}-mpi-ssh-auth<br/>ECDSA keypair<br/>Generated per TrainJob"]
+
+        NetPolicy["NetworkPolicy<br/>Restricts 2113/TCP ingress<br/>to controller pods only"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        IcebergStore["Iceberg Metadata Store<br/>HTTP/S3<br/>Varies Auth"]
+    subgraph ExternalControllers["PLATFORM CONTROLLERS"]
+        JobSetCtrl["JobSet Controller<br/>jobset.x-k8s.io"]
+        KueueCtrl["Kueue / scheduler-plugins<br/>scheduling.x-k8s.io<br/>(optional)"]
+        VolcanoCtrl["Volcano<br/>scheduling.volcano.sh<br/>(optional)"]
     end
 
-    %% Control plane flows
-    User -->|"kubectl apply TrainJob<br/>HTTPS/443 TLS 1.2+<br/>Bearer Token"| APIServer
-    APIServer -->|"Webhook validation<br/>HTTPS/9443<br/>mTLS (API server cert)"| WebhookPort
-    APIServer -->|"Watch events<br/>HTTPS/443 TLS 1.2+<br/>SA Bearer Token"| Controller
-    Controller -->|"CRUD operations<br/>HTTPS/443 TLS 1.2+<br/>SA Bearer Token"| APIServer
+    subgraph Monitoring["MONITORING"]
+        Prometheus["PodMonitor<br/>Scrapes 8443/TCP<br/>insecureSkipVerify: true"]
+    end
 
-    %% RHAI metrics flow
-    Controller -->|"Poll metrics<br/>HTTP/28080<br/>No TLS, No Auth<br/>NetworkPolicy restricted"| Rank0
+    %% External → API
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (OIDC)"| APIServer
 
-    %% Training pod inter-communication
-    WorkerPods -->|"c10d rendezvous<br/>TCP/29500<br/>No TLS, No Auth<br/>NetworkPolicy: same-job"| Rank0
-    Rank0 <-->|"NCCL/Gloo collectives<br/>Dynamic ports TCP/UDP<br/>No TLS<br/>NetworkPolicy: same-job"| WorkerPods
+    %% API ↔ Webhook
+    APIServer -->|"HTTPS/9443<br/>TLS (self-signed)<br/>API server client cert"| WebhookServer
+
+    %% Controller ↔ API
+    Controller <-->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| APIServer
+
+    %% Controller → Training Pod metrics
+    Controller -->|"HTTP/2113<br/>No encryption<br/>NetworkPolicy restricted"| TrainingPod
+
+    %% MPI SSH
+    MPILauncher -->|"SSH/2222<br/>ECDSA encryption<br/>Public key auth"| MPINodes
 
     %% Monitoring
-    Prometheus -->|"Scrape metrics<br/>HTTPS/8443 TLS<br/>insecureSkipVerify"| MetricsPort
+    Prometheus -->|"HTTPS/8443<br/>TLS<br/>insecureSkipVerify"| MetricsEndpoint
 
-    %% Data cache flows
-    Rank0 -.->|"Arrow Flight gRPC<br/>No TLS, No Auth"| DCHead
-    DCHead -.->|"Arrow Flight do_put<br/>No TLS, No Auth"| DCWorkers
-    Rank0 -.->|"Arrow Flight do_get<br/>No TLS, No Auth"| DCWorkers
-    DCHead -.->|"Read metadata<br/>HTTP/S3<br/>Varies"| IcebergStore
+    %% Platform controllers via API
+    JobSetCtrl <-->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| APIServer
+    KueueCtrl <-->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| APIServer
+    VolcanoCtrl <-->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| APIServer
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controller fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef workload fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef security fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef platform fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef security fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef monitoring fill:#dae8fc,stroke:#6c8ebf,stroke-width:1px
 
     class User external
     class APIServer controlplane
-    class Controller,WebhookPort,MetricsPort,HealthPort operator
-    class Rank0,WorkerPods,DatasetInit,ModelInit workload
-    class DCHead,DCWorkers workload
+    class Controller,WebhookServer,MetricsEndpoint,HealthProbes controller
+    class TrainingPod,MPILauncher,MPINodes workload
+    class JobSetCtrl,KueueCtrl,VolcanoCtrl platform
+    class WebhookCert,SSHSecret,NetPolicy security
     class Prometheus monitoring
-    class IcebergStore externalservice
-    class NP,WebhookCert,MPISecret security

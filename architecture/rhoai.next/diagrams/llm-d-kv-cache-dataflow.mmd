@@ -1,48 +1,58 @@
 sequenceDiagram
     autonumber
 
-    participant vLLM as vLLM/SGLang Engine<br/>5557/TCP ZMQ PUB
-    participant ZMQ as zmqSubscriber<br/>ZMQ SUB
-    participant Pool as kvevents.Pool<br/>Sharded Workers
-    participant Adapter as EngineAdapter<br/>(vLLM/SGLang)
-    participant Index as kvblock.Index<br/>(LRU/Ristretto/Redis)
-    participant EPP as llm-d EPP<br/>(Host Process)
-    participant Indexer as kvcache.Indexer
-    participant TP as TokenProcessor<br/>FNV-64a/CBOR
-    participant UDS as uds_tokenizer<br/>UDS gRPC
-    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant VLLMPod as vLLM/SGLang Pod
+    participant ZMQ as ZMQ Subscriber<br/>5557/TCP ZMQ PUB/SUB
+    participant Pool as Sharded Worker Pool<br/>(FNV-1a routing)
+    participant Adapter as Engine Adapter<br/>(vLLM/SGLang)
+    participant Index as KV Block Index<br/>(In-Memory / Redis)
+    participant EPP as llm-d-router (EPP)
+    participant Tokenizer as UDS Tokenizer<br/>gRPC over UDS
+    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
+    participant FSBackend as llmd-fs-backend<br/>(vLLM Plugin)
+    participant Storage as Shared Storage<br/>NFS/PVC
+    participant Evictor as PVC Evictor
 
     rect rgb(230, 245, 255)
-        Note over vLLM,Index: Flow 1: KV-Event Ingestion (Write Path)
-        vLLM->>ZMQ: BlockStored / BlockRemoved / AllBlocksCleared<br/>ZMQ PUB/SUB 5557/TCP (msgpack)
-        ZMQ->>Pool: Raw event dispatch<br/>FNV-1a shard by pod ID
-        Pool->>Adapter: Parse engine-specific event
-        Adapter->>Index: Add / Evict / Clear blocks<br/>engineKey to requestKey mapping
+        Note over VLLMPod,Index: Flow 1: KV-Cache Event Ingestion (Write Path)
+        VLLMPod->>ZMQ: BlockStored/BlockRemoved event<br/>ZMQ PUB (plaintext, no auth)
+        ZMQ->>Pool: Route by FNV-1a(pod_id)<br/>Go channels (in-process)
+        Pool->>Adapter: Parse event payload<br/>msgpack (array or map encoded)
+        Adapter-->>Pool: Normalized KVEvent
+        Pool->>Index: Store/Remove block mapping<br/>Go interface / Redis protocol
     end
 
     rect rgb(255, 245, 230)
-        Note over EPP,TP: Flow 2: Pod Scoring (Read Path)
-        EPP->>Indexer: ScoreTokens(tokens, podSet)<br/>In-process Go API
-        Indexer->>TP: Compute block keys<br/>FNV-64a over CBOR tokens
-        TP-->>Indexer: Block key sequence
-        Indexer->>Index: Lookup(blockKeys, podSet)
-        Index-->>Indexer: Per-pod hit counts
-        Indexer-->>EPP: Scored pod rankings<br/>(sub-millisecond latency)
+        Note over EPP,Index: Flow 2: Pod Scoring (Read Path)
+        EPP->>Tokenizer: Tokenize prompt<br/>gRPC over UDS (no encryption)
+        Tokenizer-->>EPP: Token IDs
+        EPP->>EPP: Indexer.ScoreTokens()<br/>In-process Go call
+        EPP->>Index: Lookup block residency<br/>Go interface / Redis
+        Index-->>EPP: Block locations per pod
+        EPP->>EPP: Scorer.Score()<br/>Rank pods by cache hit ratio
+        Note right of EPP: Route request to<br/>best-scoring pod
     end
 
     rect rgb(230, 255, 230)
-        Note over EPP,HF: Flow 3: Tokenization (Sidecar)
-        EPP->>UDS: RenderChatCompletion(request)<br/>gRPC over UDS (no encryption)
-        Note over UDS: First request for model
-        UDS->>HF: Download tokenizer files<br/>HTTPS 443/TCP, TLS 1.2+, Bearer Token
-        HF-->>UDS: Tokenizer model artifacts
-        UDS-->>EPP: Token IDs + multimodal features<br/>gRPC response over UDS
+        Note over Tokenizer,HFHub: Flow 3: Tokenization (UDS Sidecar)
+        EPP->>Tokenizer: RenderChatCompletion RPC<br/>UDS /tmp/tokenizer/tokenizer-uds.socket
+        Note right of Tokenizer: First load only:
+        Tokenizer->>HFHub: Download tokenizer files<br/>HTTPS TLS 1.2+ / Bearer Token
+        HFHub-->>Tokenizer: Model tokenizer artifacts
+        Tokenizer-->>EPP: Token IDs + metadata<br/>gRPC over UDS
     end
 
     rect rgb(255, 230, 255)
-        Note over vLLM,HF: Flow 4: KV-Cache Offloading
-        Note over vLLM: llmd_fs_backend plugin<br/>(in-process)
-        vLLM->>vLLM: GPU to CPU staging<br/>CUDA memcpy (async batch)
-        vLLM->>vLLM: CPU to Shared Storage<br/>POSIX I/O or S3 HTTPS/443
-        vLLM-->>ZMQ: ZMQ PUB event (optional)<br/>Block offloaded notification
+        Note over VLLMPod,Storage: Flow 4: KV-Cache Offloading (GPU ↔ Storage)
+        VLLMPod->>FSBackend: Offload KV blocks<br/>Python function call (in-process)
+        FSBackend->>Storage: Write blocks via cudaMemcpyBatchAsync<br/>POSIX filesystem (file permissions)
+        FSBackend->>ZMQ: Publish storage event (optional)<br/>ZMQ PUSH (plaintext)
+    end
+
+    rect rgb(255, 240, 240)
+        Note over Storage,Evictor: Flow 5: PVC Eviction (Disk Management)
+        Evictor->>Storage: Crawl and check disk usage<br/>POSIX filesystem
+        Note right of Evictor: Trigger at 85% usage<br/>Stop at 70% usage
+        Evictor->>Storage: Delete stale cache files<br/>Batch deletion (100 files/batch)
+        Evictor->>ZMQ: Publish removal events (optional)<br/>ZMQ PUSH (plaintext)
     end

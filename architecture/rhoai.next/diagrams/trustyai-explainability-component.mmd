@@ -2,111 +2,95 @@ graph TB
     subgraph TrustyAI["TrustyAI Explainability Service"]
         direction TB
 
-        subgraph ServiceLayer["Quarkus REST Service (explainability-service)"]
-            ConsumerEndpoint["Consumer Endpoint<br/>/consumer/kserve/v2"]
-            CloudEventConsumer["CloudEvent Consumer<br/>Knative Triggers"]
-            MetricsEndpoints["Metrics Endpoints<br/>/metrics/group/fairness/*<br/>/metrics/drift/*<br/>/metrics/identity/*"]
-            ExplainerEndpoints["Explainer Endpoints<br/>/explainers/local/*<br/>/explainers/global/*<br/>(disabled in RHOAI)"]
-            DataEndpoints["Data Endpoints<br/>/data/upload<br/>/info/*"]
-            HealthEndpoints["Health & Metrics<br/>/q/health/*<br/>/q/metrics"]
+        subgraph ServiceLayer["explainability-service (Quarkus)"]
+            direction LR
+            ConsumerEndpoint["ConsumerEndpoint<br/>/consumer/kserve/v2"]
+            DataUpload["DataEndpoint<br/>/data/upload, /data/download"]
+            FairnessEndpoints["FairnessEndpoints<br/>/metrics/group/fairness/spd,dir"]
+            DriftEndpoints["DriftEndpoints<br/>/metrics/drift/kstest,fouriermmd,meanshift"]
+            ExplainerEndpoints["ExplainerEndpoints<br/>/explainers/local/lime,shap,cf<br/>(disabled in RHOAI)"]
+            InfoEndpoint["InfoEndpoint<br/>/info, /info/tags, /info/names"]
+            HealthEndpoints["Health & Metrics<br/>/q/health/*, /q/metrics"]
+            PrometheusScheduler["PrometheusScheduler<br/>(@Scheduled, default 5s)"]
+            CloudEventConsumer["CloudEventConsumer<br/>(Knative Trigger)"]
         end
 
-        subgraph ReconcilerLayer["Payload Reconciliation"]
-            KServeReconciler["KServe Inference<br/>Payload Reconciler"]
-            ModelMeshReconciler["ModelMesh Inference<br/>Payload Reconciler"]
+        subgraph StorageLayer["Storage Backends"]
+            direction LR
+            PVCStorage["PVC Filesystem<br/>/inputs/data.csv"]
+            HibernateStorage["Hibernate ORM<br/>MariaDB/MySQL"]
+            MinIOStorage["MinIO<br/>S3-compatible"]
+            MemoryStorage["In-Memory<br/>(test only)"]
         end
 
-        subgraph SchedulerLayer["Metrics Scheduling"]
-            PrometheusScheduler["Prometheus Scheduler<br/>(cron: every 5s)"]
-            PrometheusPublisher["Prometheus Publisher<br/>(Micrometer gauges)"]
+        subgraph CoreLib["explainability-core (Library)"]
+            direction LR
+            FairnessMetrics["Fairness Metrics<br/>SPD, DIR"]
+            DriftMetrics["Drift Detection<br/>KS, Fourier MMD, Meanshift"]
+            LocalExplainers["Local Explainers<br/>LIME, SHAP, Counterfactual"]
+            GlobalExplainers["Global Explainers<br/>PDP, Aggregated LIME"]
         end
 
-        subgraph CoreLayer["explainability-core"]
-            FairnessCalc["Fairness Calculators<br/>SPD, DIR"]
-            DriftCalc["Drift Detectors<br/>Meanshift, Fourier MMD"]
-            ExplainerAlgos["Explainability Algorithms<br/>LIME, SHAP, Counterfactual,<br/>Time Series Saliency, PDP"]
+        subgraph Connectors["explainability-connectors (Library)"]
+            KServeV2Client["KServe v2 gRPC Client<br/>Protobuf"]
+            KServeV1Client["KServe v1 REST Client"]
         end
 
-        subgraph ConnectorsLayer["explainability-connectors"]
-            KServeV1HTTP["KServe v1 HTTP<br/>Prediction Provider"]
-            KServeV2HTTP["KServe v2 HTTP<br/>Prediction Provider"]
-            KServeV2GRPC["KServe v2 gRPC<br/>Prediction Provider"]
-        end
-
-        subgraph StorageLayer["Pluggable Storage"]
-            PVCStorage["PVC Storage<br/>(CSV files at /inputs)"]
-            MinioStorage["MinIO Storage<br/>(S3-compatible)"]
-            HibernateStorage["Hibernate Storage<br/>(MariaDB/MySQL)"]
-            MemoryStorage["Memory Storage<br/>(test only)"]
-        end
-
-        subgraph InitContainer["Init Container"]
-            ConfigOverrider["config-map-overrider<br/>(ose-cli shell script)"]
+        subgraph ArrowLib["explainability-arrow (Library)"]
+            ArrowSerde["Apache Arrow<br/>Serialization"]
         end
     end
 
-    %% External actors
-    KServeIS["KServe InferenceService<br/>(CloudEvents)"]
-    ModelMesh["ModelMesh Serving<br/>(REST payloads)"]
-    KServeServers["KServe Inference Servers"]
-    Prometheus["Prometheus /<br/>OpenShift Monitoring"]
-    User["User / Dashboard"]
-    K8sAPI["Kubernetes API Server"]
-    MinIOServer["MinIO Server"]
-    Database["MariaDB / MySQL"]
+    %% External inputs
+    KServeInference["KServe InferenceService"] -->|CloudEvent<br/>inference req/resp| CloudEventConsumer
+    ModelMesh["ModelMesh Serving"] -->|HTTP POST<br/>8080/TCP| ConsumerEndpoint
+    User["User / ODH Dashboard"] -->|HTTP POST<br/>8080/TCP| FairnessEndpoints
+    User -->|HTTP POST<br/>8080/TCP| DriftEndpoints
+    User -->|HTTP POST<br/>8080/TCP| ExplainerEndpoints
+    User -->|HTTP POST<br/>8080/TCP| DataUpload
 
-    %% Ingestion flows
-    KServeIS -->|CloudEvents<br/>8080/TCP| CloudEventConsumer
-    ModelMesh -->|POST /consumer/kserve/v2<br/>8080/TCP| ConsumerEndpoint
-    CloudEventConsumer --> KServeReconciler
-    ConsumerEndpoint --> ModelMeshReconciler
-    KServeReconciler --> StorageLayer
-    ModelMeshReconciler --> StorageLayer
+    %% Internal flows
+    CloudEventConsumer --> StorageLayer
+    ConsumerEndpoint --> StorageLayer
+    DataUpload --> StorageLayer
+    FairnessEndpoints --> FairnessMetrics
+    DriftEndpoints --> DriftMetrics
+    ExplainerEndpoints --> LocalExplainers
+    ExplainerEndpoints --> GlobalExplainers
+    FairnessMetrics --> StorageLayer
+    DriftMetrics --> StorageLayer
+    LocalExplainers --> KServeV2Client
+    GlobalExplainers --> KServeV2Client
+    PrometheusScheduler --> FairnessMetrics
+    PrometheusScheduler --> DriftMetrics
+    ArrowSerde -.->|batch data| StorageLayer
 
-    %% Metrics flow
-    PrometheusScheduler -->|reads data| StorageLayer
-    PrometheusScheduler --> FairnessCalc
-    PrometheusScheduler --> DriftCalc
-    PrometheusScheduler --> PrometheusPublisher
-    Prometheus -->|scrapes /q/metrics<br/>8080/TCP| HealthEndpoints
+    %% External outputs
+    KServeV2Client -->|gRPC<br/>KServe v2| KServeModel["KServe Model Server"]
+    PrometheusScheduler -->|trustyai_* gauges| PrometheusMetrics["/q/metrics"]
+    Prometheus["Prometheus / OpenShift Monitoring"] -->|HTTP GET<br/>8080/TCP| PrometheusMetrics
 
-    %% Explainability flow
-    User -->|POST /explainers/*<br/>8080/TCP| ExplainerEndpoints
-    ExplainerEndpoints --> ExplainerAlgos
-    ExplainerEndpoints --> ConnectorsLayer
-    KServeV1HTTP -->|HTTP| KServeServers
-    KServeV2HTTP -->|HTTP| KServeServers
-    KServeV2GRPC -->|gRPC| KServeServers
+    %% Storage backends external deps
+    HibernateStorage -->|JDBC<br/>3306/TCP| MariaDB["MariaDB / MySQL"]
+    MinIOStorage -->|S3 API<br/>9000/TCP| MinIOServer["MinIO Server"]
+    PVCStorage -->|Filesystem I/O| PVC["PersistentVolumeClaim"]
 
-    %% Metrics API
-    User -->|POST /metrics/*<br/>8080/TCP| MetricsEndpoints
-    MetricsEndpoints --> FairnessCalc
-    MetricsEndpoints --> DriftCalc
-
-    %% Storage backends
-    PVCStorage -.->|volume mount| PVC["PVC Volume<br/>/inputs"]
-    MinioStorage -->|S3 API| MinIOServer
-    HibernateStorage -->|JDBC 3306/TCP| Database
-
-    %% Init container
-    ConfigOverrider -->|oc apply<br/>443/TCP HTTPS| K8sAPI
+    %% Operator
+    Operator["TrustyAI Service Operator"] -.->|deploys & manages<br/>TLS, storage config| TrustyAI
 
     %% Styling
-    style TrustyAI fill:#e8f4fd,stroke:#4a90e2,stroke-width:2px
-    style ServiceLayer fill:#dceefb,stroke:#4a90e2
-    style ReconcilerLayer fill:#dceefb,stroke:#4a90e2
-    style SchedulerLayer fill:#dceefb,stroke:#4a90e2
-    style CoreLayer fill:#d5e8d4,stroke:#82b366
-    style ConnectorsLayer fill:#d5e8d4,stroke:#82b366
-    style StorageLayer fill:#fff2cc,stroke:#d6b656
-    style InitContainer fill:#f8cecc,stroke:#b85450
-
-    style KServeIS fill:#e8e8e8,stroke:#999
-    style ModelMesh fill:#e8e8e8,stroke:#999
-    style KServeServers fill:#e8e8e8,stroke:#999
-    style Prometheus fill:#e8e8e8,stroke:#999
-    style User fill:#e8e8e8,stroke:#999
-    style K8sAPI fill:#e8e8e8,stroke:#999
-    style MinIOServer fill:#e8e8e8,stroke:#999
-    style Database fill:#e8e8e8,stroke:#999
-    style PVC fill:#e8e8e8,stroke:#999
+    style TrustyAI fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style ServiceLayer fill:#bbdefb,stroke:#1565c0
+    style StorageLayer fill:#c8e6c9,stroke:#2e7d32
+    style CoreLib fill:#fff3e0,stroke:#e65100
+    style Connectors fill:#f3e5f5,stroke:#6a1b9a
+    style ArrowLib fill:#fce4ec,stroke:#b71c1c
+    style KServeInference fill:#e8e8e8,stroke:#333
+    style ModelMesh fill:#e8e8e8,stroke:#333
+    style User fill:#f5f5f5,stroke:#333
+    style KServeModel fill:#e8e8e8,stroke:#333
+    style Prometheus fill:#e8e8e8,stroke:#333
+    style MariaDB fill:#fff9c4,stroke:#f57f17
+    style MinIOServer fill:#fff9c4,stroke:#f57f17
+    style PVC fill:#fff9c4,stroke:#f57f17
+    style Operator fill:#e8eaf6,stroke:#283593

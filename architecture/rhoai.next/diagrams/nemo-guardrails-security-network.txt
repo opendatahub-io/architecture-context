@@ -1,119 +1,147 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                   │
 │                                                                          │
-│  [Client (User / Platform Service)]                                      │
-│         │                                                                │
-│         │ Port: 443/TCP (via platform ingress)                           │
-│         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS (platform-managed)                             │
-│         │ Auth: Bearer Token (application-level)                         │
-│         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (Platform-Managed)                                              │
-│                                                                          │
-│  [Platform Ingress / Route]                                              │
-│  - TLS Termination: Platform-managed (not in-repo)                      │
-│  - No ingress defined in component repo                                  │
-│  - Managed by RHOAI platform operator                                    │
-│         │                                                                │
-│         │ Port: 8000/TCP                                                 │
-│         │ Protocol: HTTP (post-TLS-termination)                          │
-│         │ Encryption: None (internal cluster network)                    │
-│         │ Auth: Bearer Token via X-Authorization header                  │
-│         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  APPLICATION (NeMo Guardrails Service)                                   │
-│                                                                          │
-│  [NeMo Guardrails Server]                                                │
-│  - Namespace: {deployment-namespace}                                     │
-│  - Service: nemo-guardrails (ClusterIP)                                  │
-│  - Port: 8000/TCP                                                        │
-│  - Image: UBI9 Python 3.12 based                                         │
-│  - Stateless: No K8s API access, no RBAC required                        │
-│  - Models: Pre-downloaded at build time (/app/.cache/)                   │
-│                                                                          │
-│  Endpoints:                                                              │
-│    POST /v1/chat/completions  - Chat with guardrails                     │
-│    POST /v1/guardrail/checks  - Stateless message validation             │
-│    GET  /v1/rails/configs     - List guardrail configurations            │
-│    GET  /v1/models            - Proxy upstream model list                │
-│    GET  /v1/challenges        - List red teaming challenges              │
-│    GET  /                     - Health check                             │
-│                                                                          │
-│  Auth Header Handling:                                                   │
-│    - Inbound "Authorization" header: NOT forwarded (K8s/proxy auth)      │
-│    - Inbound "X-Authorization" header: Forwarded as "Authorization"      │
-│      to LLM provider (only for auth-registered LLM instances)            │
-│    - Auth tokens redacted from callback logs via regex                   │
+│  [Client Application]                                                    │
 │         │                                                                │
 │         │ Port: 443/TCP                                                  │
 │         │ Protocol: HTTPS                                                │
 │         │ Encryption: TLS 1.2+                                           │
-│         │ Auth: Bearer Token (from X-Authorization, selectively          │
-│         │       forwarded per LLM instance registration)                 │
+│         │ Auth: Platform-managed (kube-rbac-proxy or Gateway API)        │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES                                                       │
+│  PLATFORM INGRESS (TLS Termination)                                     │
 │                                                                          │
-│  [LLM Provider API (configurable via MAIN_MODEL_BASE_URL)]              │
-│  - Providers: OpenAI, NVIDIA NIM, Azure OpenAI, Anthropic, Cohere,      │
-│    vLLM (self-hosted)                                                    │
+│  [Platform Gateway / HTTPRoute (RHOAI 3.x) or Route (RHOAI 2.x)]       │
+│  - TLS Termination: Yes                                                  │
+│  - AuthN: Platform-level (kube-rbac-proxy sidecar or Gateway API)       │
+│  - CORS: Disabled by default (opt-in via env vars)                      │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (plaintext — internal cluster network)        │
+│         │ Auth: None (relies on platform ingress auth)                   │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (Internal — Cluster Network)                               │
+│                                                                          │
+│  [NeMo Guardrails Server]                                                │
+│  - Service: nemo-guardrails-server (ClusterIP)                          │
+│  - Namespace: {deployment-namespace}                                     │
+│  - Port: 8000/TCP (HTTP, plaintext)                                      │
+│  - Runtime: Python 3.12 (UBI9) + FastAPI + uvicorn                      │
+│  - No built-in authentication                                            │
+│  - No built-in TLS                                                       │
+│  - Thread ID minimum 16 chars enforced                                  │
+│  - Path traversal protection in config loading                          │
+│  - Auth token redaction in logs                                          │
+│                                                                          │
+│  Endpoints:                                                              │
+│  - POST /v1/chat/completions (guardrailed chat)                         │
+│  - POST /v1/guardrail/checks (standalone rail eval, fork-specific)      │
+│  - GET  /v1/rails/configs (list guardrail configs)                      │
+│  - GET  /v1/models (list LLM models, auth forwarded)                    │
+│  - GET  /v1/challenges (red-teaming challenges)                         │
+│  - GET  / (health/UI)                                                    │
+│         │                                                                │
+│         ├───────────────────────────────────────────────────────┐        │
+│         │                                                       │        │
+│         │ Port: 443/TCP                                         │        │
+│         │ Protocol: HTTPS                                       │        │
+│         │ Encryption: TLS 1.2+                                  │        │
+│         │ Auth: Bearer Token (forwarded from client request)    │        │
+│         ▼                                                       │        │
+│                                                                  │        │
+│  [LLM Inference Service]                                         │        │
+│  - Destination: vLLM / NVIDIA NIM / OpenAI-compatible           │        │
+│  - Port: 443/TCP (or custom)                                     │        │
+│  - Protocol: HTTPS                                               │        │
+│  - Auth: Bearer Token (API key forwarded from request headers)  │        │
+│  - Purpose: Chat completion and safety classification           │        │
+│                                                                  │        │
+│         ┌────────────────────────────────────────────────────────┘        │
+│         │                                                                │
+│         │ Port: 4317/TCP (gRPC) or 4318/TCP (HTTP)                      │
+│         │ Protocol: OTLP                                                 │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+│                                                                          │
+│  [OpenTelemetry Collector] (optional)                                    │
+│  - Port: 4317/TCP (gRPC) or 4318/TCP (HTTP)                            │
+│  - Purpose: Distributed tracing export                                   │
+│  - Enabled via: OTEL_EXPORTER_OTLP_ENDPOINT env var                    │
+│                                                                          │
+│         ┌────────────────────────────────────────────────────────┐       │
+│         │                                                        │       │
+│         │ Port: 6379/TCP                                         │       │
+│         │ Protocol: Redis                                        │       │
+│         │ Encryption: Optional TLS                               │       │
+│         │ Auth: Password auth (REDIS_PASSWORD, optional)         │       │
+│         ▼                                                        │       │
+│                                                                  │       │
+│  [Redis] (optional)                                              │       │
+│  - Port: 6379/TCP                                                │       │
+│  - Purpose: Thread/conversation state persistence                │       │
+│  - Auth: Password (optional)                                     │       │
+│                                                                  │       │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                             │
+│                                                                          │
+│  [External Guardrail APIs — All Optional]                                │
+│  All connections: Port 443/TCP, HTTPS, TLS 1.2+                        │
+│                                                                          │
+│  Provider                  │ Auth Mechanism                              │
+│  ─────────────────────────┼─────────────────────────────────────────── │
+│  ActiveFence               │ API Key Header (ACTIVEFENCE_API_KEY)       │
+│  Cisco AI Defense          │ API Key Header (AI_DEFENSE_API_KEY)        │
+│  CrowdStrike AIDR          │ Bearer Token (CS_AIDR_TOKEN)              │
+│  Pangea AI Guard           │ Bearer Token (PANGEA_API_TOKEN)            │
+│  Patronus                  │ API Key Header (PATRONUS_API_KEY)          │
+│  PolicyAI                  │ API Key Header (POLICYAI_API_KEY)          │
+│  Prompt Security           │ App ID (PS_APP_ID)                         │
+│  Trend Micro Vision One    │ Bearer Token                               │
+│  Private AI                │ API Key (PAI_API_KEY)                      │
+│  Google Cloud NLP          │ Application Default Credentials            │
+│  AutoAlign                 │ API Key (AUTOALIGN_API_KEY)                │
+│  Cleanlab TLM              │ API Key (CLEANLAB_API_KEY)                 │
+│  Fiddler                   │ API Key (FIDDLER_API_KEY)                  │
+│  GLiNER Service            │ None (custom port, HTTP/HTTPS)             │
+│  Clavata Policy Server     │ None (custom port, HTTP/HTTPS)             │
+│  Guardrails AI             │ API Key (configurable)                     │
+│                                                                          │
+│  [HuggingFace Hub] (build-time only)                                    │
 │  - Port: 443/TCP                                                         │
-│  - Protocol: HTTPS                                                       │
-│  - Encryption: TLS 1.2+                                                  │
-│  - Auth: Bearer Token (forwarded from X-Authorization)                   │
-│  - Purpose: LLM inference for guardrail evaluation and response gen      │
+│  - Protocol: HTTPS, TLS 1.2+                                            │
+│  - Auth: None (public models)                                            │
+│  - Purpose: Model downloads baked into container image                  │
 │                                                                          │
-│  [OpenTelemetry Collector (OTEL_EXPORTER_OTLP_ENDPOINT)]                │
-│  - Port: Configurable                                                    │
-│  - Protocol: gRPC or HTTP                                                │
-│  - Encryption: TLS (configurable)                                        │
-│  - Auth: None                                                            │
-│  - Purpose: Distributed trace and span export (optional)                 │
-│  - Enabled when: OTEL_EXPORTER_OTLP_ENDPOINT env var is set             │
-│                                                                          │
-│  [Hugging Face Hub (huggingface.co)] — BUILD-TIME ONLY                   │
-│  - Port: 443/TCP                                                         │
-│  - Protocol: HTTPS                                                       │
-│  - Encryption: TLS 1.2+                                                  │
-│  - Auth: HF Token (optional)                                             │
-│  - Purpose: Model downloads baked into container image                   │
-│  - NOT accessed at runtime (air-gap capable)                             │
 └─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- No Kubernetes RBAC — stateless service with no K8s API access
-- No ClusterRoles, no RoleBindings
-- No ServiceAccount privileges beyond default
+- No RBAC resources defined — standalone service, not an operator
+- RBAC is managed by the deploying entity (rhods-operator or user)
+- Platform-level auth via kube-rbac-proxy sidecar or Gateway API
 
 Secrets:
-- LLM API Key (env var: varies by provider) — Opaque — Manual / platform operator — No auto-rotate
-- OTEL credentials (optional) — Opaque — Manual — No auto-rotate
+- LLM API Key (env: varies per provider) - Opaque - Auth to upstream LLM - Manual - No auto-rotate
+- Guardrail API Keys (env: varies per guardrail) - Opaque - Auth to external guardrail services - Manual - No auto-rotate
+- Redis credentials (env: REDIS_PASSWORD) - Opaque - Auth to Redis - Manual - No auto-rotate
 
 Authentication & Authorization:
-- /v1/chat/completions: Bearer Token forwarded via X-Authorization to LLM provider
-  Enforcement: Application-level (NeMo Guardrails server)
-  Policy: K8s/proxy Authorization header NOT forwarded; only X-Authorization
-- /v1/guardrail/checks: Same as chat/completions
-- /v1/models: Bearer Token from Authorization header forwarded to upstream
-  Enforcement: Application-level (passthrough)
+- All /v1/* endpoints: No built-in auth — relies on platform-level auth
+- Upstream LLM calls: Bearer Token / API Key forwarded from client request headers
+- External guardrail APIs: API Key from environment variables per provider
+- CORS: Disabled by default (explicit opt-in via env vars)
 
 FIPS Compliance:
-- TLS: No TLS termination — relies on platform ingress. Outbound HTTPS uses system OpenSSL
-- Crypto: cryptography==44.0.3 (via presidio-anonymizer, OpenSSL backend on RHEL)
-- Risk: hashlib.md5 used for cache keys (non-cryptographic)
-  - utils.py: FIPS-aware fallback to SHA-256 ✓
-  - embeddings/cache.py: Missing FIPS fallback ✗ (would fail in strict FIPS)
-- Certificate handling: System trust store (UBI9 base image)
+- Base image: UBI9 Python 3.12 (FIPS-validated OpenSSL)
+- cryptography==44.0.3 (transitive) uses system OpenSSL backend
+- No custom cipher suites or non-FIPS crypto detected
+- FIPS compliance inherited from UBI9 when host is in FIPS mode
 
-Build Hermeticity:
-- poetry.lock: Present (development)
-- requirements.txt: Pinned with hashes (uv pip compile)
-- artifacts.lock.yaml: Present (spaCy en_core_web_lg-3.8.0)
-- Hermeto/cachi2 prefetch: Yes (Dockerfile.konflux:216)
-- RPM locks: Absent on main branch
-
-Guardrail Profile:
-- Profile: "opensource" (downstream build)
-- 15 closed-source modules stripped at build time via filter_guardrails.py
-- ~14 open-source guardrail types ship in production image
+Security Controls:
+- Thread ID minimum length: 16 characters
+- Path traversal protection in configuration loading (regex + resolved-path check)
+- Auth token redaction in log output
+- DO_NOT_TRACK=1 (telemetry opt-out by default)
+- Guardrail profile filtering removes closed-source guardrails from build

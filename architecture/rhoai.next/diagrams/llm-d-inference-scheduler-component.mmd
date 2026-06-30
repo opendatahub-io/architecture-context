@@ -1,97 +1,111 @@
 graph TB
-    subgraph EPP["Endpoint Picker (EPP) - ext-proc Service"]
+    subgraph External["External Clients"]
+        Client[Client Application]
+    end
+
+    subgraph Gateway["Inference Gateway"]
+        Envoy["Envoy Proxy<br/>ext_proc filter"]
+    end
+
+    subgraph EPP_Component["Endpoint Picker (EPP)<br/>Go gRPC Service"]
         direction TB
-        ExtProc["gRPC ext-proc Server<br/>9002/TCP"]
-        HealthGRPC["gRPC Health Server<br/>9003/TCP"]
-        MetricsServer["Metrics Server<br/>9090/TCP"]
+        ExtProc["ext_proc Server<br/>9002/TCP gRPC"]
+        HealthSvc["Health Service<br/>9003/TCP gRPC"]
+        MetricsSvc["Metrics Endpoint<br/>9090/TCP HTTP"]
 
-        subgraph Reconcilers["Controller-Runtime Reconcilers"]
-            PoolReconciler["InferencePool<br/>Reconciler"]
-            PodReconciler["Pod<br/>Reconciler"]
-            ObjectiveReconciler["InferenceObjective<br/>Reconciler"]
-            RewriteReconciler["InferenceModelRewrite<br/>Reconciler"]
+        subgraph Controllers["K8s Controllers"]
+            PoolCtrl["InferencePool<br/>Controller"]
+            ObjectiveCtrl["InferenceObjective<br/>Controller"]
+            RewriteCtrl["InferenceModelRewrite<br/>Controller"]
+            PodCtrl["Pod Controller"]
         end
 
-        subgraph SchedulingPipeline["Scheduling Pipeline"]
-            Filters["Filters<br/>(CEL, affinity,<br/>capacity)"]
-            Scorers["Scorers<br/>(KV-cache, latency,<br/>prefix, LoRA)"]
-            Picker["Picker<br/>(endpoint selection)"]
-            Filters --> Scorers --> Picker
+        subgraph PluginFramework["Plugin Framework"]
+            Filters["Filters"]
+            Scorers["Scorers<br/>(prefix-cache, LoRA,<br/>session affinity)"]
+            Pickers["Pickers<br/>(max-score)"]
+            ProfileHandlers["Profile Handlers<br/>(disagg, data-parallel)"]
+            FlowControl["Flow Control<br/>(priority, admission)"]
         end
 
-        subgraph DataLayer["Data Layer Runtime"]
-            MetricsScraper["Metrics Scraper<br/>(HTTP polling)"]
-            ZMQSubscriber["ZMQ Subscriber<br/>5557/TCP"]
-            DataProducers["Data Producers<br/>(DAG pipeline)"]
-            MetricsScraper --> DataProducers
-            ZMQSubscriber --> DataProducers
+        subgraph DataLayer["Data Layer"]
+            Collectors["Metric Collectors<br/>(per-endpoint polling)"]
+            KVEvents["KV-Cache Event<br/>Receiver (ZMQ)"]
+            DataProducers["Data Producers<br/>(tokenizer, load est.)"]
         end
 
-        subgraph FlowControl["Flow Control Layer (experimental)"]
-            PriorityBands["Priority Bands"]
-            FairnessPolicy["Fairness Policy"]
-            SaturationDetect["Saturation<br/>Detection"]
-            PriorityBands --> FairnessPolicy
-            SaturationDetect --> PriorityBands
-        end
-
-        ExtProc --> SchedulingPipeline
-        DataProducers --> SchedulingPipeline
-        Reconcilers --> DataLayer
-        ObjectiveReconciler --> FlowControl
+        ExtProc --> PluginFramework
+        PluginFramework --> DataLayer
+        Controllers --> DataLayer
     end
 
-    subgraph Sidecar["PD-Sidecar (per model server pod)"]
-        ReverseProxy["HTTP Reverse Proxy<br/>8000/TCP"]
-        KVConnector["KV Connector<br/>(NIXLv2/Mooncake/<br/>SGLang/shared-storage)"]
-        ECConnector["EC Connector<br/>(encoder cache)"]
-        SSRFValidator["SSRF Allowlist<br/>Validator"]
-        ReverseProxy --> KVConnector
-        ReverseProxy --> ECConnector
-        ReverseProxy --> SSRFValidator
+    subgraph Sidecar_Component["PD-Sidecar<br/>Go HTTP Reverse Proxy"]
+        SidecarProxy["Sidecar Proxy<br/>8000/TCP HTTP/HTTPS"]
+
+        subgraph Connectors["KV-Transfer Connectors"]
+            NIXL["NIXL v2"]
+            SharedStorage["Shared Storage"]
+            SGLang["SGLang"]
+            Mooncake["Mooncake"]
+        end
+
+        SidecarProxy --> Connectors
     end
 
-    %% External Inputs
-    Client["External Client"] -->|"HTTP/HTTPS"| Gateway["Envoy/Istio<br/>Gateway"]
-    Gateway -->|"gRPC ext-proc<br/>9002/TCP TLS"| ExtProc
+    subgraph K8s["Kubernetes"]
+        K8sAPI["K8s API Server<br/>443/TCP HTTPS"]
+        InferencePoolCR["InferencePool CR"]
+        InferenceObjCR["InferenceObjective CR"]
+        InferenceRewriteCR["InferenceModelRewrite CR"]
+        ModelPods["Model Server Pods<br/>(vLLM / SGLang)"]
+    end
 
-    %% CRDs
-    InferencePoolCR["InferencePool CR<br/>(GIE)"] -->|"watched by"| PoolReconciler
-    InferenceObjCR["InferenceObjective CR<br/>(llm-d.ai)"] -->|"watched by"| ObjectiveReconciler
-    InferenceRewriteCR["InferenceModelRewrite CR<br/>(llm-d.ai)"] -->|"watched by"| RewriteReconciler
-    PodResources["Model Server Pods"] -->|"watched by"| PodReconciler
+    subgraph Observability["Observability"]
+        Prometheus["Prometheus"]
+        OTLPCollector["OTLP Collector<br/>4317/TCP gRPC"]
+    end
 
-    %% EPP to Model Servers
-    MetricsScraper -->|"HTTP scrape<br/>/metrics"| ModelServers["vLLM/SGLang<br/>Model Servers"]
-    ZMQSubscriber -->|"ZMQ SUB<br/>KV-cache events"| ModelServers
+    %% External flows
+    Client -->|"HTTPS/443"| Envoy
+    Envoy -->|"gRPC ext_proc<br/>9002/TCP TLS"| ExtProc
+    ExtProc -->|"routing decision<br/>(target endpoint)"| Envoy
+    Envoy -->|"HTTP/HTTPS"| ModelPods
+    Envoy -->|"HTTP/HTTPS<br/>8000/TCP"| SidecarProxy
 
-    %% Gateway to Sidecar flow
-    Gateway -->|"HTTP/HTTPS<br/>8000/TCP"| ReverseProxy
-    ReverseProxy -->|"prefill dispatch"| RemotePrefiller["Remote Prefiller<br/>Pod"]
-    ReverseProxy -->|"encode dispatch"| RemoteEncoder["Remote Encoder<br/>Pod"]
-    ReverseProxy -->|"decode forward<br/>8001/TCP"| LocalDecoder["Local Decoder<br/>(vLLM)"]
+    %% Controller watches
+    PoolCtrl -->|watches| InferencePoolCR
+    ObjectiveCtrl -->|watches| InferenceObjCR
+    RewriteCtrl -->|watches| InferenceRewriteCR
+    PodCtrl -->|watches| ModelPods
+    Controllers -->|"HTTPS/443"| K8sAPI
+
+    %% Data layer
+    Collectors -->|"HTTP poll<br/>metrics"| ModelPods
+    KVEvents -->|"ZMQ SUB<br/>5557/TCP"| ModelPods
+
+    %% Sidecar flows
+    SidecarProxy -->|"prefill request"| ModelPods
+    SidecarProxy -->|"decode request<br/>8001/TCP"| ModelPods
 
     %% Observability
-    ExtProc -.->|"gRPC OTLP<br/>4317/TCP"| OTELCollector["OTEL Collector"]
-    ReverseProxy -.->|"gRPC OTLP<br/>4317/TCP"| OTELCollector
-    MetricsServer -.->|"HTTP /metrics<br/>9090/TCP"| Prometheus["Prometheus"]
+    MetricsSvc -->|scraped by| Prometheus
+    ExtProc -->|"OTLP traces<br/>4317/TCP"| OTLPCollector
+    SidecarProxy -->|"OTLP traces<br/>4317/TCP"| OTLPCollector
 
     %% Styling
-    style EPP fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    style Sidecar fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style ExtProc fill:#4a90e2,color:#fff
-    style HealthGRPC fill:#4a90e2,color:#fff
-    style MetricsServer fill:#4a90e2,color:#fff
-    style ReverseProxy fill:#66bb6a,color:#fff
-    style Gateway fill:#ff9800,color:#fff
-    style Client fill:#f9f9f9,stroke:#999
-    style InferencePoolCR fill:#f5a623
-    style InferenceObjCR fill:#f5a623
-    style InferenceRewriteCR fill:#f5a623
-    style PodResources fill:#f5a623
-    style ModelServers fill:#999,color:#fff
-    style RemotePrefiller fill:#999,color:#fff
-    style RemoteEncoder fill:#999,color:#fff
-    style LocalDecoder fill:#999,color:#fff
-    style OTELCollector fill:#e8e8e8
-    style Prometheus fill:#e8e8e8
+    classDef epp fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    classDef sidecar fill:#9b59b6,stroke:#333,stroke-width:2px,color:#fff
+    classDef controller fill:#3498db,stroke:#333,stroke-width:1px,color:#fff
+    classDef plugin fill:#2ecc71,stroke:#333,stroke-width:1px,color:#fff
+    classDef external fill:#e8e8e8,stroke:#999,stroke-width:1px
+    classDef crd fill:#f5a623,stroke:#333,stroke-width:1px
+    classDef observability fill:#1abc9c,stroke:#333,stroke-width:1px,color:#fff
+
+    class ExtProc,HealthSvc,MetricsSvc epp
+    class SidecarProxy sidecar
+    class PoolCtrl,ObjectiveCtrl,RewriteCtrl,PodCtrl controller
+    class Filters,Scorers,Pickers,ProfileHandlers,FlowControl,Collectors,KVEvents,DataProducers plugin
+    class Envoy,Client,K8sAPI,ModelPods external
+    class InferencePoolCR,InferenceObjCR,InferenceRewriteCR crd
+    class Prometheus,OTLPCollector observability
+    class NIXL,SharedStorage,SGLang,Mooncake plugin

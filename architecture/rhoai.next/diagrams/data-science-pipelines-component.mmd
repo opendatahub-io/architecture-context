@@ -1,88 +1,107 @@
 graph TB
-    subgraph DSP["Data Science Pipelines"]
+    subgraph DSP["Data Science Pipelines (DSP)"]
         direction TB
 
-        subgraph APILayer["API Layer"]
-            APIServer["API Server<br/>(ml-pipeline)<br/>Go Service<br/>8888/TCP HTTP | 8887/TCP gRPC | 8443/TCP Webhook"]
-            CacheServer["Cache Server<br/>Go Webhook<br/>443/TCP HTTPS"]
+        subgraph ControlPlane["Control Plane Services"]
+            APIServer["API Server<br/>(Go)<br/>8888/TCP REST<br/>8887/TCP gRPC<br/>8443/TCP Webhooks"]
+            PersistenceAgent["Persistence Agent<br/>(Go)<br/>Workflow status sync"]
+            SWController["Scheduled Workflow<br/>Controller (Go)<br/>Cron/periodic runs"]
+            ViewerController["Viewer CRD<br/>Controller (Go)<br/>TensorBoard instances"]
         end
 
-        subgraph ExecutionEngine["Execution Engine (Argo Step Containers)"]
-            Driver["Driver<br/>Go CLI<br/>Orchestrates pipeline steps"]
-            Launcher["Launcher v2<br/>Go CLI<br/>Executes user containers"]
+        subgraph CacheLayer["Cache Layer"]
+            CacheServer["Cache Server<br/>(Go Webhook)<br/>8443/TCP HTTPS<br/>Mutating Admission"]
+            CacheDeployer["Cache Deployer<br/>(Go)<br/>Cert + Webhook mgmt"]
         end
 
-        subgraph Controllers["Controllers & Agents"]
-            PersistenceAgent["Persistence Agent<br/>Go Agent (informer-based)<br/>Syncs workflow state"]
-            SWFController["Scheduled Workflow<br/>Controller<br/>Go Controller<br/>9090/TCP metrics"]
-            ViewerController["Viewer Controller<br/>Go Controller<br/>(controller-runtime)"]
+        subgraph ExecutionEngine["V2 Execution Engine (Argo sidecar)"]
+            Driver["V2 Driver<br/>(Go CLI)<br/>Input resolution<br/>Cache key computation<br/>Pod spec patches"]
+            Launcher["V2 Launcher<br/>(Go CLI)<br/>Artifact I/O<br/>Result publishing"]
         end
+
+        subgraph UILayer["Frontend"]
+            Frontend["Frontend UI<br/>(Node.js BFF + React)<br/>3000/TCP HTTP"]
+        end
+
+        MetadataWriter["Metadata Writer<br/>(Go/Python)<br/>Annotation propagation"]
     end
 
     %% CRDs
-    SWF_CR["ScheduledWorkflow CR<br/>kubeflow.org/v1beta1"]
-    Viewer_CR["Viewer CR<br/>kubeflow.org/v1beta1"]
-    Pipeline_CR["Pipeline CR<br/>pipelines.kubeflow.org/v2beta1"]
-    PipelineVersion_CR["PipelineVersion CR<br/>pipelines.kubeflow.org/v2beta1"]
+    PipelineCR["Pipeline CR<br/>pipelines.kubeflow.org/v2beta1"]
+    PipelineVersionCR["PipelineVersion CR<br/>pipelines.kubeflow.org/v2beta1"]
+    SWCR["ScheduledWorkflow CR<br/>kubeflow.org/v1beta1"]
+    ViewerCR["Viewer CR<br/>kubeflow.org/v1beta1"]
 
-    %% External Users
-    User["User / Client"]
-    DSPO["Data Science Pipelines<br/>Operator (DSPO)"]
-    DSPA_CR["DataSciencePipelinesApplication CR"]
+    %% External Dependencies
+    ArgoWF["Argo Workflows<br/>v3.7.14"]
+    SQLDB["MySQL / PostgreSQL"]
+    ObjectStore["SeaweedFS / MinIO<br/>(S3-compatible)"]
+    MLMD["ML Metadata<br/>(gRPC)"]
+    K8sAPI["Kubernetes API<br/>Server"]
+
+    %% Users
+    User["Data Scientist / SDK"]
+    DSPA["DSPA Operator<br/>(Platform deployer)"]
 
     %% User interactions
-    User -->|"REST/gRPC"| APIServer
-    DSPO -->|"manages lifecycle"| DSPA_CR
-    DSPA_CR -->|"deploys"| DSP
+    User -->|REST API / gRPC| APIServer
+    User -->|Web UI| Frontend
+    DSPA -->|creates DSP instance| DSP
 
-    %% CRD interactions
-    APIServer -->|"validates/mutates"| PipelineVersion_CR
-    APIServer -->|"manages"| Pipeline_CR
-    SWFController -->|"reconciles"| SWF_CR
-    SWFController -->|"creates Workflows"| ArgoWF
-    ViewerController -->|"reconciles"| Viewer_CR
+    %% Internal flows
+    Frontend -->|proxy API requests| APIServer
+    APIServer -->|validates| CacheServer
+    APIServer -->|submits workflows| ArgoWF
+    APIServer -->|CRUD| SQLDB
+    APIServer -->|artifacts| ObjectStore
+    APIServer -->|metadata| MLMD
+    APIServer -->|webhook validation| PipelineVersionCR
 
-    %% Internal data flows
-    APIServer -->|"creates"| ArgoWF["Argo Workflow"]
-    ArgoWF -->|"runs"| Driver
-    ArgoWF -->|"runs"| Launcher
-    Driver -->|"gRPC 8887"| APIServer
-    PersistenceAgent -->|"watches"| ArgoWF
-    PersistenceAgent -->|"gRPC 8887"| APIServer
-    SWFController -->|"gRPC 8887"| APIServer
-    CacheServer -->|"intercepts pods"| ArgoWF
+    PersistenceAgent -->|watches| ArgoWF
+    PersistenceAgent -->|reports status| APIServer
 
-    %% External dependencies
-    APIServer -->|"SQL 3306/5432"| DB["MySQL / PostgreSQL"]
-    APIServer -->|"S3 API"| ObjStore["MinIO / S3 / GCS"]
-    Driver -->|"gRPC 8080"| MLMD["ML Metadata<br/>(MLMD)"]
-    Launcher -->|"S3 API"| ObjStore
-    Launcher -->|"gRPC 8080"| MLMD
-    Driver -->|"S3 API"| ObjStore
-    APIServer -->|"gRPC 8080"| MLMD
+    SWController -->|watches| SWCR
+    SWController -->|creates runs| APIServer
+    SWController -->|creates workflows| ArgoWF
 
-    %% Kubernetes API
-    APIServer -->|"HTTPS 443"| K8sAPI["Kubernetes API"]
-    PersistenceAgent -->|"HTTPS 443"| K8sAPI
-    SWFController -->|"HTTPS 443"| K8sAPI
-    Driver -->|"HTTPS 443"| K8sAPI
+    ViewerController -->|watches| ViewerCR
+
+    Driver -->|metadata records| MLMD
+    Driver -->|cache lookup| APIServer
+    Launcher -->|artifact I/O| ObjectStore
+    Launcher -->|publish results| MLMD
+
+    MetadataWriter -->|watches pods| K8sAPI
+
+    CacheDeployer -->|manages certs| CacheServer
+
+    %% CRD relationships
+    APIServer -->|CRUD| PipelineCR
+    APIServer -->|CRUD| PipelineVersionCR
+    APIServer -->|creates| SWCR
 
     %% Styling
-    style APIServer fill:#4a90e2,stroke:#333,color:#fff
-    style CacheServer fill:#4a90e2,stroke:#333,color:#fff
-    style Driver fill:#5bb5e0,stroke:#333,color:#fff
-    style Launcher fill:#5bb5e0,stroke:#333,color:#fff
-    style PersistenceAgent fill:#6bc4a0,stroke:#333,color:#fff
-    style SWFController fill:#6bc4a0,stroke:#333,color:#fff
-    style ViewerController fill:#6bc4a0,stroke:#333,color:#fff
-    style SWF_CR fill:#f5a623,stroke:#333,color:#333
-    style Viewer_CR fill:#f5a623,stroke:#333,color:#333
-    style Pipeline_CR fill:#f5a623,stroke:#333,color:#333
-    style PipelineVersion_CR fill:#f5a623,stroke:#333,color:#333
-    style DB fill:#e8e8e8,stroke:#333
-    style ObjStore fill:#e8e8e8,stroke:#333
+    style APIServer fill:#4a90e2,color:#fff
+    style PersistenceAgent fill:#4a90e2,color:#fff
+    style SWController fill:#4a90e2,color:#fff
+    style ViewerController fill:#4a90e2,color:#fff
+    style CacheServer fill:#4a90e2,color:#fff
+    style CacheDeployer fill:#4a90e2,color:#fff
+    style Driver fill:#50b4e2,color:#fff
+    style Launcher fill:#50b4e2,color:#fff
+    style Frontend fill:#4a90e2,color:#fff
+    style MetadataWriter fill:#4a90e2,color:#fff
+
+    style PipelineCR fill:#f5a623,color:#fff
+    style PipelineVersionCR fill:#f5a623,color:#fff
+    style SWCR fill:#f5a623,color:#fff
+    style ViewerCR fill:#f5a623,color:#fff
+
+    style ArgoWF fill:#e8e8e8,stroke:#333
+    style SQLDB fill:#e8e8e8,stroke:#333
+    style ObjectStore fill:#e8e8e8,stroke:#333
     style MLMD fill:#e8e8e8,stroke:#333
     style K8sAPI fill:#e8e8e8,stroke:#333
-    style ArgoWF fill:#f5a623,stroke:#333,color:#333
-    style DSPO fill:#7ed321,stroke:#333,color:#fff
-    style DSPA_CR fill:#f5a623,stroke:#333,color:#333
+
+    style User fill:#7ed321,color:#fff
+    style DSPA fill:#7ed321,color:#fff

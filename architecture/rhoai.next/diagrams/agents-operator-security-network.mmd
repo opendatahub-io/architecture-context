@@ -1,0 +1,86 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User["User / kubectl"]
+        ExtCaller["External Caller<br/>(Agent-to-Agent)"]
+    end
+
+    subgraph K8sAPI["KUBERNETES API SERVER"]
+        APIServer["kube-apiserver<br/>6443/TCP HTTPS<br/>SA tokens, client certs"]
+    end
+
+    subgraph OperatorNS["OPERATOR NAMESPACE (kagenti-system)"]
+        direction TB
+
+        Operator["kagenti-operator<br/>SA: kagenti-operator-controller-manager<br/>Image: rhoai/odh-agents-operator-rhel9<br/>FIPS: strictfipsruntime"]
+        WebhookPort["Webhook<br/>9443/TCP HTTPS<br/>TLS (cert-manager)<br/>K8s API server auth"]
+        MetricsPort["Metrics<br/>8443/TCP HTTPS<br/>TLS (cert-manager)<br/>authn/authz filter"]
+        HealthPort["Health<br/>8081/TCP HTTP<br/>No auth"]
+        BundleSvc["bundle-service<br/>8080/TCP HTTP<br/>Identity verification"]
+
+        Operator --- WebhookPort
+        Operator --- MetricsPort
+        Operator --- HealthPort
+    end
+
+    subgraph AgentNS["AGENT NAMESPACE (per-workload, dynamic)"]
+        direction TB
+
+        subgraph AgentPod["Agent Pod (SCC: kagenti-authbridge)"]
+            direction TB
+            InitProxy["proxy-init<br/>(init container)<br/>iptables REDIRECT<br/>NET_ADMIN, NET_RAW"]
+            ABProxy["authbridge-proxy<br/>8000/TCP reverse proxy<br/>8081/TCP forward proxy<br/>8082/TCP transparent proxy<br/>JWT validation + mTLS"]
+            EnvoyP["envoy-proxy<br/>15123/TCP outbound<br/>15124/TCP inbound<br/>ext_proc + TLS inspector"]
+            AppContainer["Agent Application<br/>HTTP_PROXY=127.0.0.1:8081<br/>Port: relocated"]
+        end
+    end
+
+    subgraph ClusterSvcs["CLUSTER SERVICES (Internal)"]
+        Keycloak["Keycloak<br/>8080/TCP HTTP<br/>Basic Auth<br/>OAuth2 / JWT / Token Exchange"]
+        CertMgr["cert-manager<br/>via K8s API<br/>TLS provisioning"]
+        SPIRE["SPIRE<br/>Unix socket gRPC<br/>SPIFFE identity<br/>CSI: csi.spiffe.io"]
+        MLflow["MLflow<br/>80/443/TCP HTTP(S)<br/>Bearer token"]
+        Istio["Istio (ambient)<br/>Namespace labels<br/>CA cert sync"]
+    end
+
+    subgraph ExternalSvcs["EXTERNAL SERVICES"]
+        Sigstore["Sigstore<br/>(Rekor/Fulcio)<br/>In-process verification"]
+    end
+
+    %% External flows
+    User -->|"HTTPS/6443<br/>TLS<br/>kubeconfig auth"| APIServer
+    ExtCaller -->|"HTTP(S)/8000<br/>Optional TLS bridge<br/>JWT Bearer token"| ABProxy
+
+    %% API Server to Operator
+    APIServer -->|"HTTPS/9443<br/>TLS (cert-manager)<br/>API server client cert"| WebhookPort
+
+    %% Operator egress
+    Operator -->|"HTTPS/6443<br/>TLS<br/>SA token"| APIServer
+    Operator -->|"HTTP/8080<br/>Basic Auth<br/>Client registration"| Keycloak
+    Operator -->|"HTTP(S)/80,443<br/>TLS<br/>Bearer token"| MLflow
+    Operator -->|"gRPC/Unix socket<br/>SPIFFE identity"| SPIRE
+    Operator -->|"K8s API<br/>CRD mgmt"| CertMgr
+    Operator -->|"K8s API<br/>Namespace labels"| Istio
+
+    %% Sidecar flows
+    ABProxy -->|"HTTP/localhost<br/>No auth"| AppContainer
+    AppContainer -->|"HTTP_PROXY/8081<br/>localhost"| ABProxy
+    ABProxy -->|"mTLS (SPIFFE)<br/>Token exchange"| ExtCaller
+
+    %% Bundle service
+    BundleSvc -->|"HTTPS/6443<br/>SA token<br/>Watch AuthzPolicy CRs"| APIServer
+    ABProxy -.->|"HTTP/8080<br/>Identity verification<br/>OPA bundles"| BundleSvc
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef apiserver fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef agentpod fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef clustersvc fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef externalsvc fill:#f8cecc,stroke:#b85450,stroke-width:2px
+
+    class User,ExtCaller external
+    class APIServer apiserver
+    class Operator,WebhookPort,MetricsPort,HealthPort,BundleSvc operator
+    class InitProxy,ABProxy,EnvoyP,AppContainer agentpod
+    class Keycloak,CertMgr,SPIRE,MLflow,Istio clustersvc
+    class Sigstore externalsvc

@@ -1,66 +1,63 @@
 sequenceDiagram
-    participant Client as External Client
-    participant Istio as Istio Gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant Proxy as Model Registry Proxy<br/>8080/TCP HTTP (Istio mTLS)
-    participant DB as MySQL/PostgreSQL<br/>3306/5432 TCP
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant Controller as ISVC Controller<br/>8081/TCP metrics
-    participant CSI as CSI Storage Initializer
-    participant Catalog as Catalog Server<br/>8080/TCP HTTP
-    participant CatalogDB as Catalog PostgreSQL<br/>5432/TCP
-    participant HF as HuggingFace API<br/>443/TCP HTTPS
-    participant Job as Async Upload Job
-    participant S3 as AWS S3<br/>443/TCP HTTPS
-    participant OCI as OCI Registry<br/>443/TCP HTTPS
-    participant Sigstore as Sigstore<br/>443/TCP HTTPS
+    autonumber
 
-    Note over Client,DB: Flow 1: Model Registration via REST API
+    %% Flow 1: Model Registration via REST API
+    rect rgb(230, 245, 255)
+        Note over Client,DB: Flow 1 - Model Registration via REST API
+        participant Client as Client<br/>(Dashboard/SDK)
+        participant IstioGW as Istio Ingress<br/>Gateway<br/>443/TCP TLS 1.3
+        participant MRProxy as model-registry<br/>proxy<br/>8080/TCP HTTP
+        participant DB as PostgreSQL/MySQL<br/>5432/3306 TCP
 
-    Client->>Istio: POST /api/model_registry/v1alpha3/registered_models<br/>Auth: OAuth/OIDC
-    Istio->>Proxy: Forward (Istio mTLS)<br/>AuthorizationPolicy enforced
-    Proxy->>DB: INSERT via GORM<br/>Auth: Username/password<br/>Optional TLS
-    DB-->>Proxy: Result
-    Proxy-->>Istio: 201 Created (JSON)
-    Istio-->>Client: Response
+        Client->>IstioGW: HTTPS/443<br/>OAuth2/kubeflow-userid
+        IstioGW->>MRProxy: HTTP/8080<br/>Istio mTLS<br/>AuthorizationPolicy
+        MRProxy->>DB: SQL (GORM)<br/>Configurable TLS<br/>Username/password
+        DB-->>MRProxy: Query results
+        MRProxy-->>IstioGW: JSON response
+        IstioGW-->>Client: HTTPS response
+    end
 
-    Note over K8sAPI,Controller: Flow 2: InferenceService Sync (Controller)
+    %% Flow 2: InferenceService Synchronization
+    rect rgb(255, 245, 230)
+        Note over K8sAPI,MRProxy: Flow 2 - InferenceService Synchronization
+        participant K8sAPI as Kubernetes API<br/>443/TCP TLS
+        participant MRCtrl as model-registry<br/>controller<br/>8081/TCP
 
-    K8sAPI->>Controller: Watch InferenceService CRs<br/>TLS + ServiceAccount token
-    Controller->>Proxy: PUT /api/model_registry/v1alpha3/inference_services<br/>HTTP :8080 Bearer token (optional)
-    Proxy->>DB: Upsert metadata
-    DB-->>Proxy: Result
-    Proxy-->>Controller: 200 OK
-    Controller->>K8sAPI: Update ISVC labels/finalizers<br/>HTTPS/443 ServiceAccount token
+        K8sAPI->>MRCtrl: Watch stream (TLS)<br/>InferenceService events<br/>ServiceAccount token
+        MRCtrl->>MRProxy: HTTP/8080<br/>Istio mTLS<br/>Bearer Token
+        MRProxy-->>MRCtrl: Model metadata
+        MRCtrl->>K8sAPI: HTTPS/443<br/>Patch InferenceService<br/>ServiceAccount token
+    end
 
-    Note over CSI,Proxy: Flow 3: CSI Model Download
+    %% Flow 3: Model Download via CSI Storage Initializer
+    rect rgb(230, 255, 230)
+        Note over KServe,Storage: Flow 3 - Model Download via CSI
+        participant KServe as KServe Agent
+        participant CSI as CSI storage<br/>initializer
+        participant Storage as Storage Backend<br/>(S3/GCS)<br/>443/TCP HTTPS
 
-    Note right of CSI: KServe init container triggers<br/>model-registry:// URI
-    CSI->>Proxy: GET /api/model_registry/v1alpha3/model_artifacts/{id}<br/>HTTP :8080 No auth
-    Proxy->>DB: Query artifact URI
-    DB-->>Proxy: Artifact location
-    Proxy-->>CSI: Model artifact URI (S3/GCS/etc.)
-    CSI->>S3: Download model artifacts<br/>HTTPS/443 Provider-specific auth
-    S3-->>CSI: Model files
+        KServe->>CSI: Init container invocation<br/>model-registry:// URI
+        CSI->>MRProxy: HTTP/8080<br/>Resolve model artifact URI
+        MRProxy-->>CSI: Artifact storage URI
+        CSI->>Storage: HTTPS/443<br/>TLS 1.2+<br/>Provider-specific auth
+        Storage-->>CSI: Model artifacts
+        CSI-->>KServe: Model files on volume
+    end
 
-    Note over Job,Sigstore: Flow 4: Async Model Upload Job
+    %% Flow 4: Async Model Upload Job
+    rect rgb(255, 230, 255)
+        Note over AsyncJob,Sigstore: Flow 4 - Async Model Upload Job
+        participant AsyncJob as async-upload<br/>job (Python)
+        participant SrcStore as Source Storage<br/>(S3/OCI/HF)<br/>443/TCP
+        participant DstStore as Dest Storage<br/>(S3/OCI)<br/>443/TCP
+        participant Sigstore as Sigstore<br/>(Fulcio/Rekor)<br/>443/TCP
 
-    Job->>S3: Download model files<br/>HTTPS/443 AWS IAM
-    S3-->>Job: Model artifacts
-    Job->>Sigstore: Sign model (Fulcio cert + Rekor log)<br/>HTTPS/443 Identity token
-    Sigstore-->>Job: Signature + certificate
-    Job->>OCI: Push model as OCI image (skopeo)<br/>HTTPS/443 Docker auth
-    OCI-->>Job: Push confirmation
-    Job->>Proxy: Register model/version/artifact<br/>HTTP(S) :8080/443 Bearer token
-    Proxy->>DB: Insert metadata
-    DB-->>Proxy: Result
-    Proxy-->>Job: Registration complete
-
-    Note over Catalog,HF: Flow 5: Catalog Model Sync
-
-    Catalog->>CatalogDB: Acquire leader lock (pglock)<br/>PostgreSQL/5432 Username/password
-    CatalogDB-->>Catalog: Lock acquired
-    Catalog->>HF: GET /api/models (fetch metadata)<br/>HTTPS/443 Bearer token (HF_API_KEY)
-    HF-->>Catalog: Model metadata
-    Catalog->>CatalogDB: Upsert catalog entries<br/>PostgreSQL/5432 Username/password
-    CatalogDB-->>Catalog: Stored
-    Note right of Catalog: Also reads YAML ConfigMap<br/>sources via filesystem mount
+        AsyncJob->>SrcStore: HTTPS/443<br/>TLS 1.2+<br/>AWS IAM / Docker auth / API key
+        SrcStore-->>AsyncJob: Model files
+        AsyncJob->>DstStore: HTTPS/443<br/>TLS 1.2+<br/>AWS IAM / Docker auth
+        DstStore-->>AsyncJob: Upload confirmation
+        AsyncJob->>Sigstore: HTTPS/443<br/>TLS 1.2+<br/>OIDC identity token
+        Sigstore-->>AsyncJob: Signature/transparency log entry
+        AsyncJob->>MRProxy: HTTPS/443<br/>TLS<br/>Bearer Token
+        MRProxy-->>AsyncJob: Registration confirmation
+    end

@@ -1,77 +1,88 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User / Data Scientist"]
+        ExtUser["External User<br/>(Browser)"]
     end
 
-    subgraph Ingress["INGRESS (Platform Gateway)"]
-        Gateway["Platform Gateway<br/>(data-science-gateway)<br/>443/TCP → HTTPRoute<br/>TLS 1.2+ SIMPLE<br/>OIDC Validation"]
+    subgraph Ingress["INGRESS (Gateway API)"]
+        Gateway["data-science-gateway<br/>443/TCP → internal<br/>TLS termination<br/>openshift-ingress namespace"]
     end
 
-    subgraph AuthSidecar["AUTHENTICATION SIDECAR"]
-        KubeRBAC["kube-rbac-proxy<br/>8443/TCP HTTPS TLS<br/>TokenReview + SubjectAccessReview<br/>Image: ose-kube-rbac-proxy-rhel9"]
-    end
-
-    subgraph OperatorNS["OPERATOR NAMESPACE (opendatahub)"]
+    subgraph PlatformNS["PLATFORM NAMESPACE (Operator)"]
         direction TB
-        Operator["KubeRay Operator<br/>SA: kuberay-operator<br/>Metrics: 8080/TCP HTTP<br/>Health: 8081/TCP HTTP"]
-        WebhookSvc["Webhook Service<br/>443/TCP → 9443/TCP<br/>TLS (serving cert)<br/>Mutate + Validate"]
+        Operator["KubeRay Operator<br/>SA: kuberay-operator<br/>Metrics: 8080/TCP HTTP<br/>Health: 8082/TCP HTTP"]
+        WebhookSvc["Webhook Service<br/>443/TCP → 9443/TCP<br/>HTTPS (OpenShift serving cert)"]
     end
 
-    subgraph RayClusterNS["RAY CLUSTER (user-namespace)"]
+    subgraph UserNS["USER NAMESPACE (Ray Cluster)"]
         direction TB
 
-        HeadPod["Ray Head Pod<br/>8265/TCP Dashboard<br/>10001/TCP Client<br/>6379/TCP GCS<br/>+ kube-rbac-proxy sidecar"]
-        HeadSvc["Head Service (ClusterIP)<br/>8265, 10001, 6379"]
-        WorkerPods["Ray Worker Pods<br/>mTLS certs via init container"]
-        ServeSvc["Serve Service (ClusterIP)<br/>8000/TCP"]
-        NetPol["NetworkPolicy<br/>(pod isolation)"]
+        subgraph HeadPodGroup["Head Pod"]
+            HeadRay["Ray Head<br/>GCS: 6379/TCP<br/>Dashboard: 8265/TCP<br/>Client: 10001/TCP<br/>Metrics: 8080/TCP<br/>Serve: 8000/TCP"]
+            KRBProxy["kube-rbac-proxy<br/>8443/TCP HTTPS TLS<br/>OIDC Bearer token<br/>SubjectAccessReview"]
+        end
+
+        WorkerPods2["Ray Worker Pods<br/>All ports via headless SVC<br/>mTLS (if enabled)"]
+        HeadSvc["Head Service (ClusterIP)<br/>10001, 6379, 8265,<br/>8080, 8000/TCP"]
+        AuthHeadSvc["Auth Head Service<br/>8443/TCP HTTPS"]
+        ServeSvc2["Serve Service (ClusterIP)<br/>8000/TCP HTTP"]
+        NetPolicies["NetworkPolicies<br/>(head + worker)"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
-        CertManager["cert-manager<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Issuer/Certificate CRs"]
-        Redis["Redis (optional)<br/>6379/TCP<br/>Configurable encryption<br/>Username/password"]
-        OAuthAPI["OpenShift OAuth API<br/>443/TCP HTTPS<br/>TLS 1.2+"]
-        Prometheus["Prometheus<br/>8080/TCP HTTP<br/>PodMonitor scrape"]
+    subgraph K8sControl["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+<br/>ServiceAccount token"]
     end
 
-    %% External to Ingress
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>OIDC Token"| Gateway
+    subgraph CertServices["CERTIFICATE SERVICES"]
+        CertMgr["cert-manager<br/>Issuers + Certificates<br/>mTLS cert chain"]
+        ServiceCA["OpenShift service-ca<br/>Webhook TLS certs"]
+    end
 
-    %% Ingress to Auth Sidecar
-    Gateway -->|"HTTPS/8443<br/>TLS<br/>Bearer Token"| KubeRBAC
+    subgraph ExternalServices["EXTERNAL SERVICES (Optional)"]
+        Redis["External Redis<br/>6379/TCP<br/>Password auth (optional)<br/>GCS fault tolerance"]
+    end
 
-    %% Auth Sidecar to Ray
-    KubeRBAC -->|"HTTP/8265<br/>None (localhost)<br/>No Auth"| HeadPod
-    KubeRBAC -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>TokenReview"| K8sAPI
+    %% External access flow
+    ExtUser -->|"HTTPS/443<br/>TLS<br/>No auth (initial)"| Gateway
+    Gateway -->|"HTTPS/8443<br/>TLS<br/>OIDC Bearer token"| KRBProxy
+    KRBProxy -->|"HTTP/8265<br/>localhost<br/>No auth"| HeadRay
 
-    %% Operator to K8s API
-    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>CRD CRUD, Pod mgmt"| K8sAPI
-    K8sAPI -->|"HTTPS/9443<br/>TLS<br/>API server cert<br/>Admission"| WebhookSvc
+    %% Operator flows
+    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    Operator -->|"HTTP/8265<br/>No encryption<br/>No auth"| HeadRay
+    Operator -->|"HTTP/8000<br/>No encryption<br/>No auth"| HeadRay
 
-    %% Operator to Ray
-    Operator -->|"HTTP/8265<br/>None<br/>Job submission"| HeadPod
+    %% Webhook flow
+    K8sAPI -->|"HTTPS/9443<br/>TLS (serving cert)<br/>Webhook call"| WebhookSvc
 
-    %% Ray internal
-    HeadPod -->|"Ray/10001<br/>mTLS (CA-signed)<br/>Client cert"| WorkerPods
+    %% Auth flow
+    KRBProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>SubjectAccessReview"| K8sAPI
 
-    %% Operator to external
-    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| CertManager
-    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| OAuthAPI
-    HeadPod -.->|"TCP/6379<br/>Configurable<br/>Password"| Redis
-    Prometheus -.->|"HTTP/8080<br/>None<br/>PodMonitor"| HeadPod
+    %% Cluster internal
+    WorkerPods2 -->|"TCP/6379<br/>mTLS (if enabled)<br/>GCS connection"| HeadRay
+
+    %% Cert management
+    Operator -->|"creates Issuers<br/>& Certificates"| CertMgr
+    ServiceCA -->|"injects TLS cert"| WebhookSvc
+
+    %% External services
+    HeadRay -->|"TCP/6379<br/>Password (optional)<br/>GCS persistence"| Redis
+
+    %% Gateway API resources
+    Operator -.->|"creates HTTPRoute<br/>+ ReferenceGrant"| Gateway
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef auth fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef operatorns fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef raycluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef userns fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controlplane fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef certservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
     classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
-    class User external
+    class ExtUser external
     class Gateway ingress
-    class KubeRBAC auth
-    class Operator,WebhookSvc operatorns
-    class HeadPod,WorkerPods,HeadSvc,ServeSvc,NetPol raycluster
-    class K8sAPI,CertManager,Redis,OAuthAPI,Prometheus externalservice
+    class Operator,WebhookSvc platform
+    class HeadRay,KRBProxy,WorkerPods2,HeadSvc,AuthHeadSvc,ServeSvc2,NetPolicies userns
+    class K8sAPI controlplane
+    class CertMgr,ServiceCA certservice
+    class Redis externalservice

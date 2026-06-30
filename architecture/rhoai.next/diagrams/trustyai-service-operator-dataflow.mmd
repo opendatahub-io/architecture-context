@@ -1,84 +1,75 @@
 sequenceDiagram
-    autonumber
-
-    %% Flow 1: TrustyAI Prediction Monitoring
-    rect rgb(230, 245, 255)
-    Note over Client,DB: Flow 1 - TrustyAI Prediction Monitoring
-    participant Client as External Client
-    participant KServeISVC as KServe InferenceService<br/>443/TCP HTTPS
-    participant InfLogger as KServe InferenceLogger
-    participant TASProxy as TrustyAI kube-rbac-proxy<br/>8443/TCP HTTPS TLS(service-ca)
-    participant TASService as TrustyAI Service<br/>8080/TCP HTTP
-    participant DB as PostgreSQL / PVC<br/>TLS (optional)
-    participant Prom as Prometheus<br/>8080/TCP HTTP
-
-    Client->>KServeISVC: POST /v1/models/model:predict<br/>Auth: Bearer Token
-    KServeISVC->>InfLogger: Forward prediction payload
-    InfLogger->>TASProxy: POST prediction data<br/>8443/TCP HTTPS TLS(service-ca)
-    TASProxy->>TASService: Forward (localhost)
-    TASService->>DB: Store prediction + metadata<br/>DB credentials from Secret
-    Prom->>TASProxy: GET /metrics<br/>8080/TCP HTTP via ServiceMonitor
-    end
-
-    %% Flow 2: LMEval Job Execution
-    rect rgb(255, 245, 230)
-    Note over User,ModelEndpoint: Flow 2 - LMEval Job Execution
-    participant User as User
+    participant User as User / Data Scientist
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant LMESCtrl as LMES Controller
-    participant KueueWL as Kueue Workload
-    participant LMEvalPod as LMEval Pod<br/>(Driver + lm-eval)
-    participant Driver as LMES Driver<br/>18080/TCP HTTP (pod-internal)
-    participant ModelEndpoint as Model Endpoint<br/>(VLLM/OpenAI)<br/>HTTPS
+    participant Operator as TrustyAI Operator<br/>8080/8081/9443
+    participant KServeIS as KServe InferenceService
+    participant TASService as TrustyAI Service<br/>8443/TCP HTTPS
+    participant RBAC as kube-rbac-proxy<br/>TLS 1.2+
+    participant TASApp as TrustyAI App<br/>8080/TCP HTTP
+    participant DB as PostgreSQL / PVC
+    participant LMESPod as LMES Evaluation Pod
+    participant Driver as lmes-driver<br/>18080/TCP HTTP
+    participant S3 as S3 / OCI Registry<br/>443/TCP HTTPS
+    participant EVRoute as EvalHub Route<br/>443/TCP HTTPS
+    participant EVRBAC as kube-rbac-proxy<br/>SAR + X-Tenant
+    participant EVApi as EvalHub API<br/>8444/TCP HTTP
+    participant GORCHRoute as GORCH Route<br/>443/TCP HTTPS
+    participant GORCH as Orchestrator
+    participant Generator as Generator IS
+    participant Detector as Detector IS(s)
 
-    User->>K8sAPI: Create LMEvalJob CR<br/>Auth: Bearer Token
-    K8sAPI->>LMESCtrl: Watch event: LMEvalJob created
-    LMESCtrl->>KueueWL: Create Workload CR<br/>GPU quota scheduling
-    KueueWL-->>LMESCtrl: Workload admitted
-    LMESCtrl->>LMEvalPod: Create Pod<br/>(driver init + lm-eval container)
-    LMESCtrl->>Driver: GET /status<br/>18080/TCP HTTP (pod-internal)
-    Driver-->>LMESCtrl: Progress + status
-    LMEvalPod->>ModelEndpoint: Evaluate model<br/>HTTPS, Auth: API key
-    ModelEndpoint-->>LMEvalPod: Evaluation results
+    rect rgb(230, 240, 255)
+        Note over KServeIS,DB: Flow 1: TrustyAI Payload Interception (KServe)
+        KServeIS->>TASService: POST /consumer/kserve/v2<br/>8443/TCP HTTPS TLS 1.2+
+        TASService->>RBAC: Forward request<br/>8443/TCP HTTPS
+        RBAC->>TASApp: Authorized request<br/>8080/TCP HTTP (localhost)
+        TASApp->>DB: Store payload data<br/>Conditional TLS
+        DB-->>TASApp: Stored
+        TASApp-->>RBAC: Response
+        RBAC-->>TASService: Response
+        TASService-->>KServeIS: 200 OK
     end
 
-    %% Flow 3: EvalHub Evaluation Pipeline
-    rect rgb(230, 255, 230)
-    Note over MCPClient,TenantNS: Flow 3 - EvalHub Evaluation Pipeline
-    participant MCPClient as User / MCP Client
-    participant EHRoute as EvalHub Route<br/>443/TCP HTTPS reencrypt
-    participant EHProxy as EvalHub kube-rbac-proxy<br/>8443/TCP HTTPS TLS(service-ca)
-    participant EHApi as EvalHub API<br/>8444/TCP HTTP (localhost)
-    participant TenantNS as Batch Job<br/>(tenant namespace)
-    participant FailReconciler as Job Failure Reconciler
-
-    MCPClient->>EHRoute: POST /api/v1/evaluations<br/>Auth: Bearer Token
-    EHRoute->>EHProxy: Forward (reencrypt)<br/>8443/TCP HTTPS
-    EHProxy->>EHApi: Forward (localhost)<br/>X-Forwarded-User header
-    Note over EHProxy: SAR check: evalhubs/proxy
-    EHApi->>TenantNS: Create Batch Job<br/>ServiceAccount
-    TenantNS-->>FailReconciler: Watch: Job failed
-    FailReconciler->>EHProxy: POST failure event<br/>8443/TCP HTTPS<br/>Auth: Operator SA Bearer Token
+    rect rgb(240, 255, 230)
+        Note over User,S3: Flow 2: LMEvalJob Execution
+        User->>K8sAPI: Create LMEvalJob CR<br/>HTTPS TLS, RBAC
+        K8sAPI->>Operator: Reconcile event
+        Operator->>K8sAPI: Create Evaluation Pod<br/>ServiceAccount token
+        K8sAPI->>LMESPod: Pod scheduled
+        Note over LMESPod,Driver: Init container copies driver binary<br/>to shared emptyDir volume
+        LMESPod->>Driver: Start driver process
+        Driver->>Driver: Execute python -m lm_eval<br/>subprocess
+        Operator->>Driver: GET /GetStatus<br/>18080/TCP HTTP (pod-local)
+        Driver-->>Operator: Progress update
+        Driver->>S3: Upload results<br/>443/TCP HTTPS TLS<br/>AWS-style credentials
+        S3-->>Driver: Upload confirmed
+        Operator->>Driver: POST /Shutdown<br/>18080/TCP HTTP
     end
 
-    %% Flow 4: Guardrails Orchestrator Auto-Configuration
-    rect rgb(255, 230, 255)
-    Note over GUser,DetectorISVC: Flow 4 - Guardrails Orchestrator Auto-Configuration
-    participant GUser as User
-    participant GK8s as Kubernetes API<br/>443/TCP HTTPS
-    participant GORCHCtrl as GORCH Controller
-    participant ISVCs as KServe InferenceServices<br/>443/TCP HTTPS
-    participant GORCHDeploy as Guardrails Orchestrator<br/>8432/TCP HTTPS
-    participant GORCHRoute as Orchestrator Route<br/>443/TCP HTTPS reencrypt
-    participant DetectorISVC as Detector InferenceServices<br/>gRPC/HTTP
+    rect rgb(255, 245, 230)
+        Note over User,EVApi: Flow 3: EvalHub Multi-Tenant Evaluation
+        User->>EVRoute: POST evaluation request<br/>443/TCP HTTPS TLS (reencrypt)
+        EVRoute->>EVRBAC: Forward<br/>kube-rbac-proxy SAR
+        Note over EVRBAC: SAR check with<br/>X-Tenant namespace scoping
+        EVRBAC->>EVApi: Authorized<br/>8444/TCP HTTP (localhost)
+        EVApi->>K8sAPI: Create Job<br/>443/TCP HTTPS TLS<br/>ServiceAccount token
+        K8sAPI-->>EVApi: Job created
+        Note over LMESPod: Evaluation Job Pod runs
+        LMESPod->>EVApi: POST status events<br/>8443/TCP HTTPS<br/>TLS (service CA)<br/>Bearer token
+        EVApi-->>User: Evaluation results
+    end
 
-    GUser->>GK8s: Create GuardrailsOrchestrator CR<br/>Auth: Bearer Token
-    GK8s->>GORCHCtrl: Watch event: GORCH created
-    GORCHCtrl->>ISVCs: Watch & discover detectors<br/>by label matching
-    ISVCs-->>GORCHCtrl: Detector endpoints + TLS certs
-    GORCHCtrl->>GORCHCtrl: Generate config ConfigMap<br/>(content hash for change detection)
-    GORCHCtrl->>GORCHDeploy: Create/Update Deployment<br/>+ kube-rbac-proxy sidecar
-    MCPClient->>GORCHRoute: POST /api/v1/chat<br/>Auth: Bearer Token (optional)
-    GORCHRoute->>GORCHDeploy: Forward (reencrypt)
-    GORCHDeploy->>DetectorISVC: Forward to detectors<br/>gRPC/HTTP, TLS (configurable)
+    rect rgb(255, 230, 240)
+        Note over User,Detector: Flow 4: GuardrailsOrchestrator Auto-Config
+        Operator->>K8sAPI: Watch InferenceServices<br/>443/TCP HTTPS TLS
+        K8sAPI-->>Operator: InferenceService list<br/>(generators + detectors)
+        Operator->>Operator: Generate ConfigMap<br/>(auto-config)
+        User->>GORCHRoute: Request with content<br/>443/TCP HTTPS TLS (edge/reencrypt)
+        GORCHRoute->>GORCH: Forward<br/>Conditional kube-rbac-proxy
+        GORCH->>Generator: Send to generator IS<br/>HTTPS/HTTP Conditional TLS
+        Generator-->>GORCH: Generated response
+        GORCH->>Detector: Send to detector IS(s)<br/>HTTPS/HTTP Conditional TLS
+        Detector-->>GORCH: Detection results
+        GORCH-->>GORCHRoute: Guardrailed response
+        GORCHRoute-->>User: Safe response
     end

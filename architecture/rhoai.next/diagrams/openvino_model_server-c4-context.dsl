@@ -1,62 +1,68 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Deploys and queries ML models for inference"
-        application = person "Client Application" "Sends inference requests to model endpoints"
+        dataScientist = person "Data Scientist" "Deploys AI models and sends inference requests via REST/gRPC"
+        sre = person "SRE / Platform Admin" "Monitors inference performance and manages deployments"
 
-        ovms = softwareSystem "OpenVINO Model Server (OVMS)" "High-performance AI model inference server built on OpenVINO, exposing TFS, KServe v2, and OpenAI-compatible APIs over gRPC and REST" {
-            httpServer = container "HTTP Server (Drogon)" "REST API handler for TFS, KServe v2, OpenAI, and metrics endpoints" "C++ / Drogon" "Port 8080/TCP"
-            grpcServer = container "gRPC Server" "TFS and KServe v2 gRPC inference services" "C++ / gRPC" "Port 8443/TCP"
-            modelManager = container "Model Manager" "Model lifecycle management, versioning, hot-reload, cloud storage backends" "C++"
-            mediapipeExecutor = container "MediaPipe Graph Executor" "Node-based pipeline framework for LLM, embeddings, rerank, image gen, audio" "C++ / MediaPipe"
-            llmServable = container "LLM Servable" "OpenAI-compatible chat/completion serving with continuous batching" "C++ / OpenVINO GenAI"
-            embeddingsServable = container "Embeddings Servable" "Text embedding generation with OpenAI API compatibility" "C++ / OpenVINO GenAI"
-            rerankServable = container "Rerank Servable" "Document reranking with Cohere API compatibility" "C++ / OpenVINO GenAI"
-            imageGenServable = container "Image Gen Servable" "Text-to-image, image-to-image, inpainting" "C++ / OpenVINO GenAI"
-            speechToText = container "Speech-to-Text" "Whisper-based speech recognition" "C++ / OpenVINO GenAI"
-            textToSpeech = container "Text-to-Speech" "Speech synthesis with speaker embeddings" "C++ / OpenVINO GenAI"
-            pythonBackend = container "Python Backend" "pybind11-based Python execution for Jinja2 templates and custom nodes" "C++ / pybind11"
-            metricsModule = container "Metrics Module" "Prometheus-compatible metrics collection and exposure" "C++"
-            hfPullModule = container "HF Pull Module" "Hugging Face model downloading via git clone, Optimum CLI, or GGUF" "C++ / libgit2"
+        ovms = softwareSystem "OpenVINO Model Server (OVMS)" "High-performance AI model inference server supporting KServe v2, TFS, OpenAI-compatible, and Cohere-compatible APIs" {
+            restServer = container "REST Server" "HTTP/REST API server exposing KServe v2, TFS, OpenAI, Cohere endpoints" "C++ / Drogon Framework"
+            grpcServer = container "gRPC Server" "gRPC API server for TFS and KServe v2 inference protocols" "C++ / gRPC"
+            modelManager = container "Model Manager" "Manages model lifecycle: loading, versioning, hot-reload" "C++ Singleton"
+            mediaPipeEngine = container "MediaPipe Graph Engine" "Graph-based processing for LLM, embeddings, rerank, audio, image gen" "C++ / MediaPipe"
+            dagScheduler = container "DAG Pipeline Scheduler" "Multi-model chaining with custom compute nodes" "C++ Framework"
+            openvinoRuntime = container "OpenVINO Runtime" "AI model compilation and inference on CPU/GPU/NPU" "C++ Library (2026.1)"
+            openvinoGenAI = container "OpenVINO GenAI" "LLM pipelines with continuous batching, speculative decoding" "C++ Library (2026.1)"
+            openvinoTokenizers = container "OpenVINO Tokenizers" "Tokenization for LLM and embedding models" "C++ Library (2026.1)"
+            storageLayer = container "Storage Layer" "FileSystem abstraction for S3, GCS, Azure, local storage" "C++ (multiple backends)"
+            hfPullModule = container "HuggingFace Pull Module" "Downloads models from HuggingFace Hub via git-lfs" "C++ / libgit2"
+            pythonInterpreter = container "Python Interpreter" "Embedded Python for custom compute nodes in MediaPipe graphs" "Python / pybind11"
+            capiLib = container "libovms_shared.so" "C API shared library for embedding OVMS in external applications" "C++ Shared Library"
         }
 
-        openvinoRuntime = softwareSystem "OpenVINO Runtime" "Intel's inference engine for model compilation and execution" "External"
-        openvinoGenAI = softwareSystem "OpenVINO GenAI" "LLM pipeline with continuous batching, tokenization, image gen, audio" "External"
-        kserve = softwareSystem "KServe" "Serverless ML inference platform - deploys OVMS as ServingRuntime" "Internal RHOAI"
-        rhoaiGateway = softwareSystem "RHOAI Gateway (Envoy)" "Platform ingress for TLS termination and traffic routing" "Internal RHOAI"
-        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Authentication/authorization sidecar for RHOAI deployments" "Internal RHOAI"
-        prometheus = softwareSystem "Prometheus" "Metrics scraping and monitoring" "Internal RHOAI"
-        s3Storage = softwareSystem "S3-compatible Storage" "Model artifact storage (AWS S3, MinIO, Ceph)" "External"
-        gcsStorage = softwareSystem "Google Cloud Storage" "Model artifact storage on GCP" "External"
-        azureStorage = softwareSystem "Azure Blob/File Storage" "Model artifact storage on Azure" "External"
-        hfHub = softwareSystem "Hugging Face Hub" "Model repository for downloading and converting models" "External"
+        kserve = softwareSystem "KServe" "Manages ServingRuntime CR that deploys OVMS containers" "Internal RHOAI"
+        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Sidecar providing TLS termination and Kubernetes RBAC enforcement" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus" "Metrics collection from /metrics endpoint" "Internal Platform"
+        kubernetes = softwareSystem "Kubernetes" "Container orchestration, liveness/readiness probes" "Internal Platform"
 
-        # System-level relationships
-        application -> ovms "Sends inference requests" "HTTPS/443 via Gateway, gRPC/8443"
-        dataScientist -> kserve "Creates InferenceService CR" "kubectl"
-        kserve -> ovms "Deploys as ServingRuntime container"
-        rhoaiGateway -> ovms "Routes external traffic" "HTTPS/443 → HTTP/8080"
-        kubeRbacProxy -> ovms "Enforces auth" "HTTPS/8443 → HTTP/8080"
-        ovms -> openvinoRuntime "Compiles and runs models" "In-process C++ API"
-        ovms -> openvinoGenAI "LLM/embedding/image/audio pipelines" "In-process C++ API"
-        ovms -> s3Storage "Downloads model artifacts" "HTTPS/443, AWS IAM"
-        ovms -> gcsStorage "Downloads model artifacts" "HTTPS/443, GCS SA"
-        ovms -> azureStorage "Downloads model artifacts" "HTTPS/443, Connection String"
-        ovms -> hfHub "Pulls models" "HTTPS/443, HF_TOKEN"
-        prometheus -> ovms "Scrapes metrics" "HTTP/8080 /metrics"
+        s3 = softwareSystem "Amazon S3" "Model artifact storage" "External Cloud"
+        gcs = softwareSystem "Google Cloud Storage" "Model artifact storage" "External Cloud"
+        azure = softwareSystem "Azure Blob Storage" "Model artifact storage" "External Cloud"
+        huggingface = softwareSystem "HuggingFace Hub" "Model repository hosting and GGUF model downloads" "External Cloud"
+        pvcStorage = softwareSystem "PVC / NFS Storage" "Local or network-attached model storage" "Internal Platform"
 
-        # Container-level relationships
-        httpServer -> modelManager "TFS/KServe inference requests"
-        httpServer -> mediapipeExecutor "OpenAI API requests"
-        grpcServer -> modelManager "gRPC inference requests"
-        mediapipeExecutor -> llmServable "Chat/completion requests"
-        mediapipeExecutor -> embeddingsServable "Embedding requests"
-        mediapipeExecutor -> rerankServable "Reranking requests"
-        mediapipeExecutor -> imageGenServable "Image generation requests"
-        mediapipeExecutor -> speechToText "Audio transcription requests"
-        mediapipeExecutor -> textToSpeech "Speech synthesis requests"
-        llmServable -> pythonBackend "Jinja2 chat template processing"
-        modelManager -> hfPullModule "Model downloading"
-        httpServer -> metricsModule "Metrics exposure"
+        # User interactions
+        dataScientist -> ovms "Sends inference requests" "HTTPS/8443 (via kube-rbac-proxy)"
+        sre -> prometheus "Monitors OVMS metrics" "HTTPS"
+
+        # Platform integrations
+        kserve -> ovms "Deploys and manages OVMS container" "Container lifecycle"
+        kubeRbacProxy -> ovms "Proxies requests with TLS + AuthN/AuthZ" "HTTP (plaintext, pod-internal)"
+        kubernetes -> ovms "Health checks" "HTTP GET /v2/health/*"
+        prometheus -> ovms "Scrapes metrics" "HTTP GET /metrics"
+
+        # Egress
+        ovms -> s3 "Downloads model artifacts" "HTTPS/443, AWS IAM"
+        ovms -> gcs "Downloads model artifacts" "HTTPS/443, OAuth 2.0"
+        ovms -> azure "Downloads model artifacts" "HTTPS/443, SAS/MI"
+        ovms -> huggingface "Clones model repositories" "HTTPS/443, Bearer Token"
+        ovms -> pvcStorage "Reads model files" "Filesystem mount"
+
+        # Internal container relationships
+        restServer -> modelManager "Routes inference requests"
+        grpcServer -> modelManager "Routes inference requests"
+        modelManager -> openvinoRuntime "Executes model inference"
+        modelManager -> storageLayer "Loads models from storage"
+        modelManager -> hfPullModule "Downloads from HuggingFace"
+        modelManager -> dagScheduler "Executes multi-model DAGs"
+        modelManager -> mediaPipeEngine "Executes MediaPipe graphs"
+        mediaPipeEngine -> openvinoGenAI "LLM continuous batching"
+        mediaPipeEngine -> openvinoRuntime "Model inference"
+        mediaPipeEngine -> openvinoTokenizers "Tokenization"
+        mediaPipeEngine -> pythonInterpreter "Custom Python nodes"
+        openvinoGenAI -> openvinoRuntime "Underlying inference"
+        storageLayer -> s3 "S3 model download" "HTTPS/443"
+        storageLayer -> gcs "GCS model download" "HTTPS/443"
+        storageLayer -> azure "Azure model download" "HTTPS/443"
+        hfPullModule -> huggingface "Git clone + LFS" "HTTPS/443"
     }
 
     views {
@@ -71,7 +77,7 @@ workspace {
         }
 
         styles {
-            element "External" {
+            element "External Cloud" {
                 background #999999
                 color #ffffff
             }
@@ -79,13 +85,17 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
+            element "Internal Platform" {
+                background #f5a623
+                color #ffffff
+            }
             element "Person" {
                 shape Person
-                background #08427b
+                background #4a90e2
                 color #ffffff
             }
             element "Software System" {
-                background #1168bd
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {

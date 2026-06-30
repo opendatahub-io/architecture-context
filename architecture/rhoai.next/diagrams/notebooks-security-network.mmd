@@ -3,76 +3,76 @@ graph TB
         User["User Browser"]
     end
 
-    subgraph Ingress["INGRESS (Platform Gateway)"]
-        Gateway["RHOAI Gateway (Envoy)<br/>HTTPRoute 443/TCP → 8443/TCP<br/>TLS 1.3 (SIMPLE)<br/>OpenID Connect"]
+    subgraph Ingress["INGRESS (OpenShift Gateway)"]
+        Gateway["HTTPRoute → OpenShift Gateway<br/>443/TCP<br/>TLS 1.3<br/>OAuth session"]
     end
 
-    subgraph AuthSidecar["AUTH SIDECAR (Pod Boundary)"]
-        KRBAC["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS 1.2+<br/>OAuth2/OIDC enforcement<br/>RBAC: access to Notebook CR"]
-    end
-
-    subgraph Application["APPLICATION (Workbench Containers)"]
+    subgraph WorkbenchPod["WORKBENCH POD (user namespace)"]
         direction TB
 
-        subgraph NS_User["Namespace: {user-namespace}"]
-            JupyterLab["JupyterLab Workbench<br/>8888/TCP HTTP (plaintext)<br/>SA: {notebook-name}<br/>Endpoints: /lab, /api/*"]
-            CodeServer["code-server Workbench<br/>8787/TCP HTTP (nginx proxy)<br/>SA: {notebook-name}<br/>Endpoint: /"]
+        subgraph JupyterPod["Jupyter Workbench"]
+            KRBP_J["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>OAuth + RBAC"]
+            JLab["JupyterLab Server<br/>8888/TCP HTTP<br/>No auth (trusted after proxy)"]
+            KRBP_J -->|"HTTP/8888<br/>plaintext loopback"| JLab
         end
+
+        subgraph CodeServerPod["Code-Server Workbench (alternative)"]
+            KRBP_CS["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>OAuth + RBAC"]
+            CodeServer["code-server v4.106.3<br/>8787/TCP HTTP<br/>--auth none"]
+            NginxProxy["nginx<br/>80/TCP HTTP<br/>idle culling logs"]
+            HTTPDCGI["httpd CGI<br/>8080/TCP HTTP<br/>/api/kernels/ emulation"]
+            KRBP_CS -->|"HTTP/8787<br/>plaintext loopback"| CodeServer
+            HTTPDCGI -->|"polls /codeserver/healthz<br/>8787/TCP"| CodeServer
+        end
+
+        Culler["Notebook Controller<br/>Culler"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        K8sAPI["Kubernetes API<br/>kubernetes.default.svc<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount token"]
-        S3["S3-Compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS credentials"]
-        GitRepo["Git Repositories<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Personal access token"]
+    subgraph EgressTargets["EGRESS TARGETS"]
+        K8sAPI["OpenShift API Server<br/>443/TCP HTTPS TLS<br/>ServiceAccount token"]
+        DSPA["DSPA API<br/>443/TCP HTTPS TLS<br/>SA token"]
+        Registry["Container Registries<br/>443/TCP HTTPS TLS<br/>Registry credentials"]
+        PyPI["External PyPI<br/>443/TCP HTTPS TLS<br/>No auth"]
     end
 
-    subgraph BuildPipeline["BUILD PIPELINE (Konflux CI/CD)"]
-        direction TB
-        Tekton["Tekton PipelineRun"]
-        Cachi2["Cachi2 Prefetch"]
-        BuildahBuild["Buildah Build<br/>(HERMETIC — no network)"]
+    subgraph BuildInfra["BUILD INFRASTRUCTURE (Konflux)"]
+        Konflux["Konflux / Tekton<br/>(hermetic build)"]
+        Hermeto["Hermeto/Cachi2<br/>(dependency prefetch)"]
+        QuayIO["Quay.io Registry<br/>quay.io/modh/<br/>443/TCP HTTPS TLS"]
     end
 
-    subgraph BuildExternal["BUILD EXTERNAL SERVICES"]
-        GitSrc["Git Repository<br/>443/TCP HTTPS"]
-        AIPCCPyPI["AIPCC PyPI Index<br/>packages.redhat.com<br/>443/TCP HTTPS<br/>Public (no auth)"]
-        RPMRepo["RPM Repositories<br/>443/TCP HTTPS<br/>Subscription certs"]
-        ContainerReg["Container Registry<br/>quay.io / registry.redhat.io<br/>443/TCP HTTPS<br/>Robot account"]
-    end
+    %% External to Ingress
+    User -->|"HTTPS/443<br/>TLS 1.3<br/>OAuth"| Gateway
 
-    %% Runtime flows
-    User -->|"HTTPS/443<br/>TLS 1.3<br/>OIDC"| Gateway
-    Gateway -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer token"| KRBAC
-    KRBAC -->|"HTTP/8888<br/>Plaintext (pod-internal)<br/>No auth"| JupyterLab
-    KRBAC -->|"HTTP/8787<br/>Plaintext (pod-internal)<br/>No auth"| CodeServer
-    JupyterLab -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    JupyterLab -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS creds"| S3
-    JupyterLab -->|"HTTPS/443<br/>TLS 1.2+<br/>PAT"| GitRepo
-    CodeServer -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    CodeServer -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS creds"| S3
-    CodeServer -->|"HTTPS/443<br/>TLS 1.2+<br/>PAT"| GitRepo
+    %% Ingress to Pods
+    Gateway -->|"HTTPS/8443<br/>TLS<br/>OAuth token"| KRBP_J
+    Gateway -->|"HTTPS/8443<br/>TLS<br/>OAuth token"| KRBP_CS
 
-    %% Build flows
-    Tekton -->|"HTTPS/443<br/>Git creds"| GitSrc
-    Tekton --> Cachi2
-    Cachi2 -->|"HTTPS/443<br/>Public"| AIPCCPyPI
-    Cachi2 -->|"HTTPS/443<br/>Sub certs"| RPMRepo
-    Cachi2 -->|"/cachi2/output/deps/"| BuildahBuild
-    BuildahBuild -->|"HTTPS/443<br/>Robot account"| ContainerReg
+    %% Culler polling
+    Culler -->|"HTTP GET /api/kernels/<br/>8888/TCP<br/>No auth (internal)"| JLab
+    Culler -->|"HTTP GET /api/kernels/<br/>80/TCP<br/>No auth (internal)"| NginxProxy
+
+    %% Egress from workbench
+    JLab -->|"HTTPS/443<br/>SA token"| K8sAPI
+    JLab -->|"HTTPS/443<br/>SA token"| DSPA
+    JLab -->|"HTTPS/443<br/>Registry creds"| Registry
+    JLab -->|"HTTPS/443<br/>No auth"| PyPI
+
+    %% Build infra
+    Hermeto -->|"prefetch deps<br/>(rpm, pip, go, npm)"| Konflux
+    Konflux -->|"push image<br/>HTTPS/443 TLS<br/>Registry push creds"| QuayIO
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef authsidecar fill:#ffcccc,stroke:#cc0000,stroke-width:2px
-    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef buildpipeline fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef buildexternal fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef pod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef proxy fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef build fill:#e8e8e8,stroke:#666,stroke-width:2px
 
     class User external
     class Gateway ingress
-    class KRBAC authsidecar
-    class JupyterLab,CodeServer application
-    class K8sAPI,S3,GitRepo externalservice
-    class Tekton,Cachi2,BuildahBuild buildpipeline
-    class GitSrc,AIPCCPyPI,RPMRepo,ContainerReg buildexternal
+    class KRBP_J,KRBP_CS proxy
+    class JLab,CodeServer,NginxProxy,HTTPDCGI,Culler pod
+    class K8sAPI,DSPA,Registry,PyPI egress
+    class Konflux,Hermeto,QuayIO build

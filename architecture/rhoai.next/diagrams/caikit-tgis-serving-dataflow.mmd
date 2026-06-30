@@ -1,53 +1,48 @@
 sequenceDiagram
     participant Client as External Client
-    participant IstioGW as Istio Ingress Gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant QP as Knative Activator /<br/>Queue Proxy<br/>8012/TCP mTLS
-    participant Caikit as Caikit Runtime<br/>(transformer container)
-    participant TGIS as TGIS Container<br/>8033/TCP gRPC
-    participant Models as /mnt/models/<br/>(shared volume)
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant Prometheus as Prometheus UWM<br/>8086/TCP HTTP
+    participant Gateway as Istio Ingress Gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant Sidecar as Istio Sidecar<br/>mTLS STRICT
+    participant CaikitHTTP as Caikit Runtime (HTTP)<br/>8080/TCP
+    participant CaikitGRPC as Caikit Runtime (gRPC)<br/>8085/TCP
+    participant TGIS as TGIS Inference Engine<br/>8033/TCP gRPC
+    participant Prometheus as Prometheus UWM<br/>8086/TCP
 
-    Note over Client,Models: Flow 1: HTTP Inference Request
-    Client->>IstioGW: POST /api/v1/task/text-generation<br/>HTTPS/443 | TLS 1.2+ | Bearer Token
-    IstioGW->>QP: Forward request<br/>HTTP/8012 | mTLS STRICT | Istio PeerAuth
-    QP->>Caikit: Forward to transformer<br/>HTTP/8080 | plaintext (in-pod)
-    Caikit->>TGIS: Inference delegation<br/>gRPC/8033 | plaintext (localhost)
-    TGIS->>Models: Read model weights<br/>File I/O
-    Models-->>TGIS: Model tensors
-    TGIS-->>Caikit: Generated text response
-    Caikit-->>QP: JSON response
-    QP-->>IstioGW: Response (mTLS)
-    IstioGW-->>Client: JSON response (TLS)
+    Note over Client,TGIS: Flow 1: HTTP Text Generation Inference
 
-    Note over Client,Models: Flow 2: gRPC Inference Request
-    Client->>IstioGW: gRPC NlpService.TextGeneration<br/>HTTPS(h2)/443 | TLS 1.2+ | Bearer Token
-    IstioGW->>QP: Forward request<br/>gRPC/8012 | mTLS STRICT | Istio PeerAuth
-    QP->>Caikit: Forward to transformer<br/>gRPC(h2c)/8085 | plaintext (in-pod)
-    Caikit->>TGIS: Inference delegation<br/>gRPC/8033 | plaintext (localhost)
-    TGIS->>Models: Read model weights<br/>File I/O
-    Models-->>TGIS: Model tensors
-    TGIS-->>Caikit: Generated text (stream)
-    Caikit-->>QP: gRPC response (stream)
-    QP-->>IstioGW: Response (mTLS)
-    IstioGW-->>Client: gRPC response (TLS)
+    Client->>Gateway: POST /api/v1/task/text-generation<br/>Auth: Bearer Token<br/>HTTPS/443
+    Gateway->>Sidecar: Forward request<br/>mTLS envelope<br/>HTTP/8080
+    Sidecar->>CaikitHTTP: HTTP request<br/>Loopback/8080<br/>No encryption (sidecar-to-app)
+    CaikitHTTP->>TGIS: gRPC inference request<br/>Loopback/8033<br/>No encryption (localhost)
+    TGIS-->>CaikitHTTP: Inference result
+    CaikitHTTP-->>Sidecar: HTTP response
+    Sidecar-->>Gateway: mTLS response
+    Gateway-->>Client: JSON response<br/>HTTPS/443
 
-    Note over Client,Models: Flow 3: Streaming Text Generation
-    Client->>IstioGW: POST /api/v1/task/server-streaming-text-generation<br/>HTTPS/443 | TLS 1.2+
-    IstioGW->>QP: Forward (mTLS)
-    QP->>Caikit: HTTP/8080 (in-pod)
-    Caikit->>TGIS: gRPC stream/8033 (localhost)
-    loop Token-by-token streaming
-        TGIS-->>Caikit: Generated token
-        Caikit-->>QP: SSE token
-        QP-->>IstioGW: SSE token (mTLS)
-        IstioGW-->>Client: SSE token (TLS)
+    Note over Client,TGIS: Flow 2: HTTP Streaming Text Generation
+
+    Client->>Gateway: POST /api/v1/task/server-streaming-text-generation<br/>Auth: Bearer Token<br/>HTTPS/443
+    Gateway->>Sidecar: Forward request<br/>mTLS/8080
+    Sidecar->>CaikitHTTP: HTTP request<br/>Loopback/8080
+    CaikitHTTP->>TGIS: gRPC streaming request<br/>Loopback/8033
+    loop Streaming tokens
+        TGIS-->>CaikitHTTP: Token chunk
+        CaikitHTTP-->>Sidecar: SSE event
+        Sidecar-->>Gateway: mTLS stream
+        Gateway-->>Client: SSE token
     end
 
-    Note over Prometheus,Caikit: Flow 4: Metrics Collection
-    Prometheus->>Caikit: GET /metrics<br/>HTTP/8086 | PERMISSIVE mTLS | No auth
-    Caikit-->>Prometheus: Prometheus metrics
+    Note over Client,TGIS: Flow 3: gRPC Inference
 
-    Note over S3,Models: Flow 5: Model Loading (Init)
-    Note right of S3: KServe storage initializer<br/>runs as init container
-    S3-->>Models: Download model artifacts<br/>HTTPS/443 | TLS 1.2+ | AWS IAM / S3 keys
+    Client->>Gateway: gRPC caikit.runtime.Nlp<br/>Auth: Bearer Token<br/>HTTPS/443 (h2c passthrough)
+    Gateway->>Sidecar: Forward request<br/>mTLS/gRPC/8085
+    Sidecar->>CaikitGRPC: gRPC request<br/>Loopback/8085
+    CaikitGRPC->>TGIS: gRPC inference request<br/>Loopback/8033
+    TGIS-->>CaikitGRPC: Inference result
+    CaikitGRPC-->>Sidecar: gRPC response
+    Sidecar-->>Gateway: mTLS response
+    Gateway-->>Client: gRPC response<br/>HTTPS/443
+
+    Note over Prometheus,CaikitHTTP: Flow 4: Metrics Scraping
+
+    Prometheus->>CaikitHTTP: GET /metrics<br/>HTTP/8086<br/>PERMISSIVE mTLS<br/>(plaintext allowed)
+    CaikitHTTP-->>Prometheus: Prometheus metrics

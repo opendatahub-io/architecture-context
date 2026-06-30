@@ -1,40 +1,57 @@
 sequenceDiagram
-    autonumber
-
-    participant User as User / Client
-    participant API as API Server<br/>(ml-pipeline)<br/>8888/TCP HTTP<br/>8887/TCP gRPC
-    participant DB as MySQL / PostgreSQL<br/>3306/5432 TCP
-    participant ObjStore as MinIO / S3 / GCS<br/>9000/443 TCP
-    participant K8s as Kubernetes API<br/>443/TCP HTTPS
-    participant Argo as Argo Workflow
-    participant Driver as Driver Container
-    participant MLMD as ML Metadata<br/>8080/TCP gRPC
-    participant Launcher as Launcher Container
+    participant User as User / SDK
+    participant API as API Server<br/>8888/TCP HTTP<br/>8887/TCP gRPC
+    participant DB as MySQL / PostgreSQL<br/>3306/TCP SQL
+    participant K8s as K8s API Server<br/>443/TCP HTTPS
+    participant Argo as Argo Workflows
+    participant Driver as V2 Driver<br/>(sidecar step)
+    participant MLMD as metadata-grpc-service<br/>8080/TCP gRPC
+    participant Launcher as V2 Launcher<br/>(in user container)
+    participant S3 as SeaweedFS / MinIO<br/>9000/TCP S3 API
     participant PA as Persistence Agent
-    participant SWF as Scheduled Workflow<br/>Controller
+    participant SWC as Scheduled Workflow<br/>Controller
 
-    rect rgb(240, 248, 255)
-        Note over User,ObjStore: Flow 1: Pipeline Run Execution
-        User->>API: POST /apis/v2beta1/runs<br/>HTTP 8888/TCP<br/>Auth: SubjectAccessReview
-        API->>DB: Store run metadata<br/>SQL 3306/5432 TCP<br/>Auth: Username/Password
-        API->>ObjStore: Store pipeline spec<br/>S3 API 9000/TCP<br/>Auth: AccessKey/SecretKey
-        API->>K8s: Create Argo Workflow<br/>HTTPS 443/TCP TLS 1.2+<br/>Auth: ServiceAccount
-        K8s-->>Argo: Workflow created
-        Argo->>Driver: Execute driver container<br/>(in-pod)
-        Driver->>MLMD: Create MLMD execution<br/>gRPC 8080/TCP<br/>Auth: None
-        Driver->>API: Cache key lookup<br/>gRPC 8887/TCP<br/>Auth: ServiceAccount token
-        Argo->>Launcher: Execute launcher container<br/>(in-pod)
-        Launcher->>ObjStore: Download inputs / Upload outputs<br/>S3 API 9000/TCP<br/>Auth: AccessKey/SecretKey
-        Launcher->>MLMD: Publish execution metadata<br/>gRPC 8080/TCP<br/>Auth: None
-        PA->>K8s: Watch Workflow status<br/>HTTPS 443/TCP TLS 1.2+<br/>Auth: ServiceAccount
-        PA->>API: ReportWorkflow<br/>gRPC 8887/TCP<br/>Auth: Projected SA token
+    Note over User,SWC: Flow 1: Pipeline Run Execution (V2)
+
+    User->>API: POST /apis/v2beta1/runs<br/>Bearer Token
+    API->>DB: Store run record<br/>Username/Password
+    API->>K8s: Create Argo Workflow CR<br/>ServiceAccount Token
+    K8s->>Argo: Schedule Workflow
+
+    Argo->>Driver: Execute driver step<br/>(process exec)
+    Driver->>MLMD: Create execution record<br/>gRPC (optional TLS)
+    Driver->>API: Cache key lookup<br/>gRPC/8887 (optional TLS)
+    alt Cache miss
+        Argo->>Launcher: Execute user container<br/>(process exec)
+        Launcher->>S3: Download input artifacts<br/>Access Key auth
+        Note over Launcher: Execute pipeline component
+        Launcher->>S3: Upload output artifacts<br/>Access Key auth
+        Launcher->>MLMD: Publish results<br/>gRPC (optional TLS)
+    else Cache hit
+        Note over Driver: Skip execution,<br/>inject cached outputs
     end
 
-    rect rgb(255, 248, 240)
-        Note over User,SWF: Flow 2: Scheduled Pipeline Execution
-        User->>API: POST /apis/v2beta1/recurringruns<br/>HTTP 8888/TCP<br/>Auth: SubjectAccessReview
-        API->>K8s: Create ScheduledWorkflow CR<br/>HTTPS 443/TCP TLS 1.2+<br/>Auth: ServiceAccount
-        SWF->>K8s: Watch ScheduledWorkflow<br/>HTTPS 443/TCP TLS 1.2+<br/>Auth: ServiceAccount
-        SWF->>K8s: Create Argo Workflow (v1)<br/>HTTPS 443/TCP TLS 1.2+<br/>Auth: ServiceAccount
-        SWF->>API: CreateRun (v2 pipelines)<br/>gRPC 8887/TCP<br/>Auth: Projected SA token
+    PA->>K8s: Watch Workflow status<br/>ServiceAccount Token
+    K8s-->>PA: Workflow status update
+    PA->>API: Report metrics & status<br/>gRPC/8887 ServiceAccount Token
+
+    Note over User,SWC: Flow 2: Recurring Run Scheduling
+
+    User->>API: POST /apis/v2beta1/recurringRuns<br/>Bearer Token
+    API->>DB: Store recurring run<br/>Username/Password
+    API->>K8s: Create ScheduledWorkflow CR<br/>ServiceAccount Token
+    SWC->>K8s: Watch ScheduledWorkflow CRs<br/>ServiceAccount Token
+    Note over SWC: Cron/periodic trigger fires
+    SWC->>API: CreateRun gRPC<br/>ServiceAccount Token
+    API->>K8s: Submit Argo Workflow<br/>ServiceAccount Token
+
+    Note over User,SWC: Flow 3: Cache Hit (V1 Pod Mutation)
+
+    K8s->>API: Admission webhook call<br/>HTTPS/8443 mTLS
+    Note over API: Cache Server (/mutate)
+    API->>DB: Lookup cache key<br/>Username/Password
+    alt Cache hit
+        API-->>K8s: Patch pod spec<br/>inject cached outputs
+    else Cache miss
+        API-->>K8s: Allow pod creation<br/>no mutation
     end

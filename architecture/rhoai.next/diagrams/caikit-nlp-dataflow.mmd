@@ -1,52 +1,46 @@
 sequenceDiagram
     participant Client as External Client
-    participant Runtime as Caikit Runtime<br/>gRPC :8085 / HTTP :8080
-    participant TextGen as TextGeneration<br/>(Local Module)
-    participant TextGenTGIS as TextGenerationTGIS<br/>(Remote Module)
-    participant TGIS as TGIS Server<br/>gRPC :8033
-    participant Embed as EmbeddingModule<br/>(Local Module)
-    participant PEFT as PeftPromptTuning<br/>(Training Module)
-    participant HFModel as HuggingFace Model<br/>(In-Process)
-    participant STModel as sentence-transformers<br/>(In-Process)
-    participant HFHub as HuggingFace Hub<br/>HTTPS :443
+    participant RuntimeHTTP as Caikit Runtime<br/>8080/TCP HTTP
+    participant RuntimeGRPC as Caikit Runtime<br/>8085/TCP gRPC
+    participant EmbMod as EmbeddingModule<br/>(in-process)
+    participant STModel as SentenceTransformer<br/>(PyTorch)
+    participant TGISMod as TextGenerationTGIS<br/>(in-process)
+    participant TGIS as TGIS Server<br/>8033/TCP gRPC
+    participant PeftMod as PeftPromptTuning<br/>(in-process)
+    participant HFModel as HuggingFace Model<br/>(local PyTorch)
+    participant TorchDist as Torch Distributed<br/>29550/TCP
 
-    Note over Client,HFHub: Flow 1: Local Text Generation Inference
+    Note over Client,TorchDist: Flow 1: Text Embedding Inference
 
-    Client->>Runtime: POST /v1/task/text-generation<br/>or gRPC TextGenerationTaskRequest<br/>Configurable TLS
-    Runtime->>TextGen: Python call (in-process)
-    TextGen->>HFModel: AutoModelForCausalLM.generate()<br/>PyTorch (GPU/CPU)
-    HFModel-->>TextGen: Generated text
-    TextGen-->>Runtime: GeneratedTextResult
-    Runtime-->>Client: JSON/Protobuf Response
+    Client->>RuntimeHTTP: POST /api/v1/task/embedding<br/>or /embeddings, /rerank, /sentence-similarity
+    RuntimeHTTP->>EmbMod: dispatch to EmbeddingModule.run()
+    EmbMod->>STModel: SentenceTransformerWithTruncate.encode()<br/>thread-safe tokenization
+    STModel-->>EmbMod: embedding vectors (float32/float16)
+    EmbMod-->>RuntimeHTTP: EmbeddingResult / RerankResult
+    RuntimeHTTP-->>Client: JSON response
 
-    Note over Client,HFHub: Flow 2: Remote TGIS Text Generation Inference
+    Note over Client,TorchDist: Flow 2: Remote Text Generation (TGIS)
 
-    Client->>Runtime: POST /v1/task/text-generation<br/>or gRPC TextGenerationTaskRequest<br/>Configurable TLS
-    Runtime->>TextGenTGIS: Python call (in-process)<br/>(backend_type=TGIS selected)
-    TextGenTGIS->>TGIS: gRPC GenerationRequest<br/>Optional TLS/mTLS<br/>Client certs (optional)
-    TGIS-->>TextGenTGIS: GenerationResponse
-    TextGenTGIS-->>Runtime: GeneratedTextResult
-    Runtime-->>Client: JSON/Protobuf Response
+    Client->>RuntimeGRPC: gRPC caikit.runtime.Nlp/TextGeneration<br/>or ServerStreamingTextGeneration
+    RuntimeGRPC->>TGISMod: dispatch to TextGenerationTGIS.run()
+    TGISMod->>TGIS: gRPC GenerationRequest<br/>TLS optional (ca_cert, client_cert configurable)
+    TGIS-->>TGISMod: GenerationResponse
+    TGISMod-->>RuntimeGRPC: GeneratedTextResult
+    RuntimeGRPC-->>Client: gRPC response
 
-    Note over Client,HFHub: Flow 3: Embedding / Reranking Inference
+    Note over Client,TorchDist: Flow 3: PEFT Prompt Tuning Training
 
-    Client->>Runtime: POST /v1/task/embedding<br/>or gRPC EmbeddingTaskRequest<br/>Configurable TLS
-    Runtime->>Embed: Python call (in-process)
-    Embed->>STModel: SentenceTransformer.encode()<br/>PyTorch (GPU/CPU)<br/>with truncation handling
-    STModel-->>Embed: Embedding vectors
-    Embed-->>Runtime: EmbeddingResult
-    Runtime-->>Client: JSON/Protobuf Response
-
-    Note over Client,HFHub: Flow 4: PEFT Prompt Tuning (Training)
-
-    Client->>Runtime: Training request<br/>gRPC/HTTP<br/>Configurable TLS
-    Runtime->>PEFT: PeftPromptTuning.train()<br/>Python call (in-process)
-    PEFT->>HFModel: Load base model<br/>AutoModelForCausalLM
-    opt allow_downloads=true
-        HFModel->>HFHub: Download model<br/>HTTPS/443, TLS 1.2+<br/>API token (optional)
-        HFHub-->>HFModel: Model artifacts
+    Client->>RuntimeGRPC: gRPC caikit.runtime.NlpTraining/PeftPromptTuningTrain
+    RuntimeGRPC->>PeftMod: dispatch to PeftPromptTuning.train()
+    PeftMod->>HFModel: Load pretrained model<br/>(CausalLM or Seq2SeqLM)
+    HFModel-->>PeftMod: Model loaded
+    PeftMod->>PeftMod: Initialize PEFT PromptTuningConfig<br/>+ HuggingFace Accelerate
+    loop Training Epochs
+        PeftMod->>HFModel: Forward pass + backprop<br/>fp16/bf16 mixed precision
+        opt Multi-GPU
+            PeftMod->>TorchDist: torch.distributed.elastic_launch<br/>29550/TCP rendezvous
+        end
     end
-    PEFT->>HFModel: Fine-tune with PEFT<br/>torch.distributed (multi-GPU)<br/>NCCL/Gloo backend
-    HFModel-->>PEFT: Trained prompt vectors<br/>(encoder.pt, decoder.pt)
-    PEFT-->>Runtime: Training complete
-    Runtime-->>Client: Training result
+    PeftMod->>PeftMod: Save prompt vectors +<br/>training metadata (JSONL)
+    PeftMod-->>RuntimeGRPC: TrainingJob status
+    RuntimeGRPC-->>Client: Training complete

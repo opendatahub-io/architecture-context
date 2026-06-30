@@ -1,60 +1,47 @@
 sequenceDiagram
-    participant User as User / Client
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS
-    participant Webhook as Operator Webhook<br/>9443/TCP HTTPS TLS
-    participant Operator as Operator Controller<br/>controller-runtime
-    participant Route as OpenShift Route<br/>443/TCP HTTPS
-    participant Gateway as Data Science Gateway<br/>443/TCP HTTPS TLS
-    participant KRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
+    participant User as User / Platform Operator
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant Reconciler as ModelRegistryReconciler<br/>(in-process watch)
+    participant Client as External Client
+    participant Router as OpenShift Router<br/>443/TCP HTTPS
+    participant Gateway as Data Science Gateway<br/>443/TCP HTTPS
+    participant KRBP as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
     participant MR as model-registry REST<br/>8080/TCP HTTP
-    participant DB as PostgreSQL/MySQL<br/>5432/3306 TCP
+    participant PG as PostgreSQL<br/>5432/TCP
 
-    Note over User,DB: Flow 1: Model Registry Instance Deployment
+    rect rgb(230, 245, 255)
+        Note over User,PG: Flow 1: Model Registry Instance Provisioning
+        User->>K8sAPI: Create ModelRegistry CR<br/>Auth: ServiceAccount Token
+        K8sAPI->>Reconciler: Watch event (CR created)
+        Reconciler->>K8sAPI: Create Deployment<br/>(model-registry + kube-rbac-proxy)
+        Reconciler->>K8sAPI: Create Service, Route,<br/>HTTPRoute, RBAC, NetworkPolicy
+        Reconciler->>K8sAPI: Update CR status<br/>(Available/Progressing conditions)
+    end
 
-    User->>K8sAPI: kubectl apply ModelRegistry CR<br/>HTTPS/6443, Bearer Token
-    K8sAPI->>Webhook: POST /mutate-...<br/>HTTPS/9443, API server cert
-    Webhook-->>K8sAPI: Defaulted CR<br/>(Istio→OAuth→KubeRBACProxy migration)
-    K8sAPI->>Webhook: POST /validate-...<br/>HTTPS/9443, API server cert
-    Webhook-->>K8sAPI: Admission allowed
-    K8sAPI-->>User: CR created
+    rect rgb(255, 243, 224)
+        Note over Client,PG: Flow 2: REST API Access (kube-rbac-proxy + Route)
+        Client->>Router: GET /v1/model_registry/<br/>TLS 1.2+
+        Router->>KRBP: Forward request<br/>TLS reencrypt to 8443/TCP
+        KRBP->>K8sAPI: SubjectAccessReview<br/>(can user GET services?)
+        K8sAPI-->>KRBP: Allowed
+        KRBP->>MR: Forward to localhost:8080<br/>HTTP (pod-internal)
+        MR->>PG: Query metadata<br/>5432/TCP Configurable SSL
+        PG-->>MR: Query results
+        MR-->>KRBP: JSON response
+        KRBP-->>Router: HTTPS response
+        Router-->>Client: JSON response
+    end
 
-    Note over Operator,DB: Reconciliation Loop
-    K8sAPI->>Operator: Watch event: ModelRegistry
-    Operator->>K8sAPI: Create Deployment<br/>(model-registry + kube-rbac-proxy)
-    Operator->>K8sAPI: Create Service (8443/TCP)
-    Operator->>K8sAPI: Create ServiceAccount
-    Operator->>K8sAPI: Create Route ({name}-https)
-    Operator->>K8sAPI: Create HTTPRoute<br/>(in HTTPROUTE_NAMESPACE)
-    Operator->>K8sAPI: Create ReferenceGrant<br/>(cross-namespace)
-    Operator->>K8sAPI: Create NetworkPolicy
-    Operator->>K8sAPI: Create Group ({name}-users)
-    Operator->>K8sAPI: Create Role + RoleBinding
-    Operator->>K8sAPI: Create ClusterRoleBinding<br/>(auth-delegator)
-
-    Note over User,DB: Flow 2: Client → Model Registry via Route
-
-    User->>Route: GET /api/model_registry/...<br/>HTTPS/443, Bearer Token
-    Route->>KRBAC: TLS Passthrough<br/>HTTPS/8443
-    KRBAC->>K8sAPI: TokenReview<br/>HTTPS/6443, SA token
-    K8sAPI-->>KRBAC: Token valid
-    KRBAC->>K8sAPI: SubjectAccessReview<br/>HTTPS/6443, SA token
-    K8sAPI-->>KRBAC: Access granted
-    KRBAC->>MR: Forward request<br/>HTTP/8080 (localhost)
-    MR->>DB: Query metadata<br/>5432/TCP, Password auth
-    DB-->>MR: Result set
-    MR-->>KRBAC: JSON response
-    KRBAC-->>Route: HTTPS response
-    Route-->>User: JSON response
-
-    Note over User,DB: Flow 3: Client → Model Registry via Gateway API
-
-    User->>Gateway: GET /model-registry/{name}/...<br/>HTTPS/443, Bearer Token
-    Gateway->>KRBAC: HTTPRoute match<br/>URLRewrite strips prefix<br/>HTTPS/8443
-    KRBAC->>K8sAPI: TokenReview + SAR
-    K8sAPI-->>KRBAC: Authorized
-    KRBAC->>MR: HTTP/8080 (localhost)
-    MR->>DB: Query<br/>SSL configurable
-    DB-->>MR: Result
-    MR-->>KRBAC: Response
-    KRBAC-->>Gateway: HTTPS response
-    Gateway-->>User: JSON response
+    rect rgb(232, 245, 233)
+        Note over Client,PG: Flow 3: REST API Access (Gateway API)
+        Client->>Gateway: GET /model-registry/{name}/<br/>TLS 1.2+ Platform auth
+        Gateway->>KRBP: HTTPRoute forward<br/>8443/TCP HTTPS (URL rewrite)
+        KRBP->>K8sAPI: SubjectAccessReview<br/>(can user GET services?)
+        K8sAPI-->>KRBP: Allowed
+        KRBP->>MR: Forward to localhost:8080<br/>HTTP (pod-internal)
+        MR->>PG: Query metadata<br/>5432/TCP Configurable SSL
+        PG-->>MR: Query results
+        MR-->>KRBP: JSON response
+        KRBP-->>Gateway: HTTPS response
+        Gateway-->>Client: JSON response
+    end

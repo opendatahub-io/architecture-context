@@ -1,62 +1,70 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client / Data Scientist"]
+        Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (Platform-Managed)"]
-        KServeGW["KServe Ingress<br/>Gateway API / HTTPRoute<br/>TLS termination<br/>Platform-managed"]
+    subgraph AuthProxy["AUTH PROXY (kube-rbac-proxy - RHOAI 3.x)"]
+        KubeRBAC["kube-rbac-proxy Sidecar<br/>8443/TCP → 8000, 8033/TCP<br/>TLS Termination<br/>Bearer Token + K8s RBAC"]
     end
 
-    subgraph AuthBoundary["AUTH BOUNDARY (Sidecar)"]
-        KubeRBAC["kube-rbac-proxy<br/>Listen: 8443/TCP HTTPS<br/>TLS 1.2+<br/>SubjectAccessReview"]
+    subgraph AltMesh["ALTERNATIVE: SERVICE MESH (Istio)"]
+        IstioSidecar["Istio Envoy Sidecar<br/>mTLS STRICT<br/>SPIFFE Identity<br/>AuthorizationPolicy"]
     end
 
-    subgraph Pod["APPLICATION POD (Non-Root UID 2000)"]
+    subgraph Container["APPLICATION CONTAINER (UID 2000)"]
         direction TB
 
-        subgraph Container["vllm-spyre Container"]
-            HTTPAPI["OpenAI-Compatible HTTP API<br/>8000/TCP HTTP<br/>/v1/completions<br/>/v1/chat/completions<br/>/v1/models<br/>/health"]
-            gRPCAPI["TGIS gRPC API<br/>8033/TCP gRPC<br/>Backward-compatible<br/>IBM TGIS protocol"]
-            vLLMEngine["vLLM Engine<br/>+ IBM Spyre Runtime<br/>python -m vllm_tgis_adapter"]
+        subgraph Ports["Exposed Ports"]
+            HTTPPort["OpenAI HTTP API<br/>8000/TCP<br/>POST /v1/completions<br/>POST /v1/chat/completions<br/>GET /health"]
+            GRPCPort["TGIS gRPC API<br/>8033/TCP<br/>GenerationService"]
         end
+
+        subgraph Runtime["Runtime"]
+            Adapter["vllm_tgis_adapter<br/>(Entrypoint)"]
+            Engine["vLLM Engine"]
+        end
+
+        HTTPPort --> Adapter
+        GRPCPort --> Adapter
+        Adapter --> Engine
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        S3["S3 / Object Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM / SA credentials"]
-        PVC["PVC Volume Mount<br/>Filesystem<br/>No network"]
-        HF["Hugging Face Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (HF_TOKEN)<br/>(optional)"]
+    subgraph Hardware["HARDWARE ACCELERATOR"]
+        Spyre["IBM Spyre<br/>v1.2.1<br/>s390x / ppc64le / x86_64<br/>IBM-signed RPMs"]
     end
 
-    %% External to Ingress
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| KServeGW
+    subgraph BaseImage["BASE IMAGE (Build-time)"]
+        RHAIIS["RHAIIS vllm-spyre-rhel9:3.2.2<br/>UBI/RHEL 9<br/>All runtime dependencies"]
+    end
 
-    %% Ingress to Auth
-    KServeGW -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer Token"| KubeRBAC
+    %% External flows
+    Client -->|"HTTPS/8443<br/>TLS<br/>Bearer Token"| KubeRBAC
+    Client -.->|"HTTP or gRPC<br/>mTLS STRICT<br/>Service Identity"| IstioSidecar
 
-    %% Auth to Application (HTTP path)
-    KubeRBAC -->|"HTTP/8000<br/>plaintext (localhost)<br/>proxy-authenticated"| HTTPAPI
+    %% Proxy to container
+    KubeRBAC -->|"HTTP/8000<br/>No encryption (pod-local)<br/>Pre-validated"| HTTPPort
+    KubeRBAC -->|"gRPC/8033<br/>No encryption (pod-local)<br/>Pre-validated"| GRPCPort
 
-    %% Auth to Application (gRPC path)
-    KubeRBAC -->|"gRPC/8033<br/>plaintext (localhost)<br/>proxy-authenticated"| gRPCAPI
+    IstioSidecar -.->|"HTTP/8000<br/>mTLS<br/>Service Identity"| HTTPPort
+    IstioSidecar -.->|"gRPC/8033<br/>mTLS<br/>Service Identity"| GRPCPort
 
-    %% Internal container wiring
-    HTTPAPI --- vLLMEngine
-    gRPCAPI --- vLLMEngine
+    %% Hardware
+    Engine -->|"Hardware interface<br/>Direct"| Spyre
 
-    %% Egress to external services
-    vLLMEngine -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    vLLMEngine -->|"Filesystem<br/>Volume mount"| PVC
-    vLLMEngine -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HF
+    %% Base image
+    RHAIIS -.->|"FROM (build-time)<br/>Provides all deps"| Container
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef auth fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef authproxy fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef mesh fill:#e6d5f5,stroke:#9673a6,stroke-width:2px
+    classDef container fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef hardware fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef baseimage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class Client external
-    class KServeGW ingress
-    class KubeRBAC auth
-    class HTTPAPI,gRPCAPI,vLLMEngine application
-    class S3,PVC,HF externalservice
+    class KubeRBAC authproxy
+    class IstioSidecar mesh
+    class HTTPPort,GRPCPort,Adapter,Engine container
+    class Spyre hardware
+    class RHAIIS baseimage

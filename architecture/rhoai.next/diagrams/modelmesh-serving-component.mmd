@@ -1,78 +1,89 @@
 graph TB
-    subgraph ModelMeshServing["ModelMesh Serving Operator"]
-        direction TB
-        Controller["modelmesh-controller<br/>(Go Operator)"]
-        Webhook["ServingRuntime Webhook<br/>9443/TCP HTTPS"]
+    subgraph "ModelMesh Serving Controller"
+        Controller["modelmesh-controller<br/>(Go Operator / controller-runtime)"]
 
-        subgraph Reconcilers["Reconcilers"]
-            ServiceReconciler["ServiceReconciler<br/>Manages K8s Service &<br/>ServiceMonitor per namespace"]
-            RuntimeReconciler["ServingRuntimeReconciler<br/>Constructs multi-container<br/>runtime Deployments"]
-            PredictorReconciler["PredictorReconciler<br/>Bridges CRDs ↔ ModelMesh<br/>gRPC API"]
+        subgraph "Controllers"
+            SRCtrl["ServingRuntime Controller<br/>Manages runtime Deployments"]
+            PredCtrl["Predictor Controller<br/>Manages model lifecycle via gRPC"]
+            SvcCtrl["Service Controller<br/>Manages K8s Services & ServiceMonitors"]
         end
 
-        Controller --> ServiceReconciler
-        Controller --> RuntimeReconciler
-        Controller --> PredictorReconciler
+        Controller --> SRCtrl
+        Controller --> PredCtrl
+        Controller --> SvcCtrl
+
+        Webhook["Webhook Server<br/>:9443/TCP HTTPS"]
     end
 
-    subgraph RuntimePod["Runtime Pod (per ServingRuntime)"]
+    subgraph "Runtime Pod (per ServingRuntime)"
         direction TB
-        MM["mm (ModelMesh)<br/>Java · gRPC 8033<br/>Inference & Routing"]
-        RestProxy["rest-proxy<br/>Go · HTTP 8008<br/>REST-to-gRPC adapter"]
-        Puller["puller<br/>Go · gRPC 8086<br/>Model artifact fetcher"]
-        OAuthProxy["oauth-proxy<br/>HTTPS 8443<br/>OpenShift OAuth"]
-        RuntimeContainer["ML Runtime Container<br/>(OVMS/Triton/MLServer/TorchServe)"]
+        MM["ModelMesh (mm)<br/>gRPC inference routing<br/>:8033/TCP"]
+        RESTProxy["REST Proxy<br/>HTTP-to-gRPC translation<br/>:8008/TCP"]
+        Puller["Puller / Storage Helper<br/>Model artifact download<br/>:8086/TCP gRPC"]
+        OAuthProxy["oauth-proxy<br/>OpenShift OAuth<br/>:8443/TCP HTTPS"]
+        RuntimeContainer["Runtime Container<br/>(model server)"]
+
+        OAuthProxy -->|":8008 HTTP"| RESTProxy
+        RESTProxy -->|":8033 gRPC"| MM
+        MM -->|"UDS/localhost"| RuntimeContainer
+        Puller -.->|"model artifacts"| RuntimeContainer
     end
 
     %% CRDs
-    User["User / Pipeline"] -->|creates| ServingRuntimeCR["ServingRuntime CR<br/>(serving.kserve.io/v1alpha1)"]
-    User -->|creates| PredictorCR["Predictor CR<br/>(serving.kserve.io/v1alpha1)"]
-    User -->|creates| InferenceServiceCR["InferenceService CR<br/>(serving.kserve.io/v1beta1)"]
-    User -->|creates| ClusterServingRuntimeCR["ClusterServingRuntime CR<br/>(serving.kserve.io/v1alpha1)"]
+    User["User / Pipeline"] -->|creates| PredictorCR["Predictor CR<br/>serving.kserve.io/v1alpha1"]
+    User -->|creates| ISVC["InferenceService CR<br/>serving.kserve.io/v1beta1"]
+    Admin["Admin"] -->|creates| SRCR["ServingRuntime CR<br/>serving.kserve.io/v1alpha1"]
+    Admin -->|creates| CSRCR["ClusterServingRuntime CR<br/>serving.kserve.io/v1alpha1"]
 
-    %% CRD → Reconciler flows
-    ServingRuntimeCR -->|watched by| RuntimeReconciler
-    ClusterServingRuntimeCR -->|watched by| RuntimeReconciler
-    PredictorCR -->|watched by| PredictorReconciler
-    InferenceServiceCR -->|watched by| PredictorReconciler
+    PredictorCR -->|"watched by"| PredCtrl
+    ISVC -->|"converted to Predictor"| PredCtrl
+    SRCR -->|"watched by"| SRCtrl
+    CSRCR -->|"watched by"| SRCtrl
 
-    %% Reconciler outputs
-    RuntimeReconciler -->|creates| RuntimePod
-    PredictorReconciler -->|gRPC SetVModel| MM
-    ServiceReconciler -->|creates| Service["K8s Service<br/>(headless ClusterIP)"]
+    %% Controller outputs
+    SRCtrl -->|"creates/manages"| RuntimePodDeploy["Runtime Deployment"]
+    SRCtrl -->|"creates/manages"| HPA["HorizontalPodAutoscaler"]
+    SvcCtrl -->|"creates"| SvcResource["Kubernetes Service<br/>(headless)"]
+    SvcCtrl -->|"creates"| ServiceMonitor["ServiceMonitor<br/>(Prometheus)"]
+    PredCtrl -->|"gRPC: registerModel,<br/>setVModel, ensureLoaded"| MM
 
-    %% Webhook validation
-    ServingRuntimeCR -.->|validated by| Webhook
-    ClusterServingRuntimeCR -.->|validated by| Webhook
-
-    %% Internal pod communication
-    RestProxy -->|gRPC| MM
-    OAuthProxy -->|HTTP proxy| RestProxy
-    MM -->|gRPC 8086| Puller
-    MM -->|Unix socket| RuntimeContainer
+    RuntimePodDeploy -.-> MM
+    RuntimePodDeploy -.-> RESTProxy
+    RuntimePodDeploy -.-> Puller
+    RuntimePodDeploy -.-> OAuthProxy
+    RuntimePodDeploy -.-> RuntimeContainer
 
     %% External dependencies
-    MM -->|gRPC 2379| etcd["etcd Cluster<br/>Model Registry &<br/>Placement State"]
-    Puller -->|HTTPS 443| Storage["Storage Backends<br/>(S3/GCS/Azure/PVC/HTTP)"]
-    Controller -->|HTTPS 443| K8sAPI["Kubernetes API"]
-    Controller -->|watches| ConfigMap["model-serving-config<br/>(ConfigMap)"]
+    PredCtrl -->|"gRPC :2379"| etcd["etcd<br/>Model registry & coordination"]
+    SRCtrl -->|"gRPC :2379"| etcd
+    Puller -->|"HTTPS :443"| S3["Object Storage<br/>(S3 / MinIO)"]
+    Controller -->|"HTTPS :443"| K8sAPI["Kubernetes API Server"]
+    Webhook -->|"validates"| SRCR
+    Webhook -->|"validates"| CSRCR
+
+    %% Config
+    ConfigMap["ConfigMap<br/>model-serving-config"] -.->|"watched"| Controller
+    StorageSecret["Secret<br/>storage-config"] -.->|"watched"| Puller
+    EtcdSecret["Secret<br/>model-serving-etcd"] -.->|"credentials"| etcd
 
     %% Styling
     style Controller fill:#4a90e2,stroke:#333,color:#fff
-    style ServiceReconciler fill:#5ba3f5,stroke:#333,color:#fff
-    style RuntimeReconciler fill:#5ba3f5,stroke:#333,color:#fff
-    style PredictorReconciler fill:#5ba3f5,stroke:#333,color:#fff
+    style SRCtrl fill:#5ba3f5,stroke:#333,color:#fff
+    style PredCtrl fill:#5ba3f5,stroke:#333,color:#fff
+    style SvcCtrl fill:#5ba3f5,stroke:#333,color:#fff
     style Webhook fill:#4a90e2,stroke:#333,color:#fff
-    style MM fill:#e87d3e,stroke:#333,color:#fff
-    style RestProxy fill:#e87d3e,stroke:#333,color:#fff
-    style Puller fill:#e87d3e,stroke:#333,color:#fff
-    style OAuthProxy fill:#e87d3e,stroke:#333,color:#fff
-    style RuntimeContainer fill:#9b59b6,stroke:#333,color:#fff
-    style ServingRuntimeCR fill:#f5a623,stroke:#333,color:#fff
+    style MM fill:#7ed321,stroke:#333,color:#fff
+    style RESTProxy fill:#7ed321,stroke:#333,color:#fff
+    style Puller fill:#7ed321,stroke:#333,color:#fff
+    style OAuthProxy fill:#7ed321,stroke:#333,color:#fff
+    style RuntimeContainer fill:#7ed321,stroke:#333,color:#fff
     style PredictorCR fill:#f5a623,stroke:#333,color:#fff
-    style InferenceServiceCR fill:#f5a623,stroke:#333,color:#fff
-    style ClusterServingRuntimeCR fill:#f5a623,stroke:#333,color:#fff
+    style ISVC fill:#f5a623,stroke:#333,color:#fff
+    style SRCR fill:#f5a623,stroke:#333,color:#fff
+    style CSRCR fill:#f5a623,stroke:#333,color:#fff
     style etcd fill:#999,stroke:#333,color:#fff
-    style Storage fill:#999,stroke:#333,color:#fff
+    style S3 fill:#999,stroke:#333,color:#fff
     style K8sAPI fill:#999,stroke:#333,color:#fff
-    style ConfigMap fill:#7ed321,stroke:#333,color:#fff
+    style ConfigMap fill:#e8e8e8,stroke:#333
+    style StorageSecret fill:#e8e8e8,stroke:#333
+    style EtcdSecret fill:#e8e8e8,stroke:#333

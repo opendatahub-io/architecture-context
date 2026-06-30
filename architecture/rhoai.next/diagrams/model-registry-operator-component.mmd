@@ -1,91 +1,85 @@
 graph TB
     subgraph Operator["Model Registry Operator"]
         direction TB
+        MRReconciler["ModelRegistryReconciler<br/>(Controller)"]
+        MCReconciler["ModelCatalogReconciler<br/>(Controller)"]
+        Webhook["Admission Webhook<br/>(Mutating + Validating)"]
+        SVM["StorageMigrationManager<br/>(v1alpha1 → v1beta1)"]
+        TemplateApplier["TemplateApplier<br/>(Go templates → YAML)"]
+        ResourceManager["ResourceManager<br/>(k8s-objectmatcher diffs)"]
 
-        subgraph Controllers["Controllers"]
-            MRReconciler["ModelRegistryReconciler<br/>Reconciles per-instance<br/>ModelRegistry CRs"]
-            MCReconciler["ModelCatalogReconciler<br/>Manages singleton<br/>model-catalog deployment"]
-            TLSWatcher["TLS Security Profile Watcher<br/>Watches APIServer TLS changes<br/>triggers pod restart"]
-            SVM["StorageMigrationManager<br/>v1alpha1 → v1beta1<br/>CRD migration"]
-        end
-
-        subgraph Webhooks["Admission Webhooks (9443/TCP)"]
-            MutatingWH["Mutating Webhook<br/>Defaults fields, migrates<br/>Istio→OAuth→KubeRBACProxy"]
-            ValidatingWH["Validating Webhook<br/>DB config, namespace,<br/>unique name enforcement"]
-            ConversionWH["Conversion Webhook<br/>v1alpha1 ↔ v1beta1"]
-        end
+        MRReconciler -->|renders resources| TemplateApplier
+        MCReconciler -->|renders resources| TemplateApplier
+        TemplateApplier -->|calculates diffs| ResourceManager
+        SVM -->|migrates CRDs| MRReconciler
     end
 
     %% CRDs
-    ModelRegistryCR["ModelRegistry CR<br/>(modelregistry.opendatahub.io)<br/>v1beta1 / v1alpha1"]
-    AuthCR["Auth CR<br/>(services.platform.opendatahub.io)<br/>Admin groups config"]
-    ComponentCR["ModelRegistries CR<br/>(components.platform.opendatahub.io)<br/>Owner reference"]
+    ModelRegistryCR["ModelRegistry CR<br/>(v1beta1)"]
+    ModelRegistryCRLegacy["ModelRegistry CR<br/>(v1alpha1 - deprecated)"]
 
-    %% Per-Instance Resources
-    subgraph PerInstance["Per-Instance Resources (per ModelRegistry)"]
-        MRDeployment["Deployment<br/>model-registry + kube-rbac-proxy"]
-        MRService["Service<br/>8443/TCP (HTTPS)"]
-        MRSA["ServiceAccount"]
-        MRRoute["OpenShift Route<br/>{name}-https"]
-        MRHTTPRoute["HTTPRoute<br/>model-registry-{name}"]
-        MRNetPol["NetworkPolicy"]
-        MRGroup["OpenShift Group<br/>{name}-users"]
-        MRRBAC["Role + RoleBinding<br/>+ ClusterRoleBinding"]
+    %% Managed Resources per Registry
+    subgraph ManagedStack["Managed Resources (per ModelRegistry CR)"]
+        direction TB
+        Deployment["Deployment<br/>(model-registry + kube-rbac-proxy)"]
+        Service["Service<br/>(ClusterIP 8443/TCP)"]
+        Route["OpenShift Route<br/>(HTTPS reencrypt)"]
+        HTTPRoute["HTTPRoute<br/>(Gateway API)"]
+        RBAC["Role + RoleBinding<br/>+ ClusterRoleBinding"]
+        NetPolicy["NetworkPolicy"]
+        Group["OpenShift Group<br/>(per-registry users)"]
+        PostgresStack["PostgreSQL Stack<br/>(Deployment + PVC + Secret)"]
     end
 
-    %% Catalog Resources
-    subgraph CatalogResources["Model Catalog Resources (singleton)"]
-        CatalogDeploy["Deployment<br/>model-catalog + kube-rbac-proxy<br/>+ init containers"]
-        CatalogService["Service<br/>8443/TCP (HTTPS)"]
-        CatalogRoute["OpenShift Route<br/>model-catalog-https"]
-        CatalogHTTPRoute["HTTPRoute<br/>model-catalog"]
-        CatalogPostgres["PostgreSQL 16<br/>Auto-provisioned"]
+    %% Managed Resources for Catalog
+    subgraph CatalogStack["Managed Resources (Model Catalog - singleton)"]
+        direction TB
+        CatalogDeployment["Catalog Deployment<br/>(model-registry + kube-rbac-proxy)"]
+        CatalogService["Catalog Service<br/>(ClusterIP 8443/TCP)"]
+        CatalogRoute["Catalog Route<br/>(HTTPS reencrypt)"]
+        CatalogHTTPRoute["Catalog HTTPRoute<br/>(Gateway API)"]
+        CatalogPostgres["Catalog PostgreSQL<br/>(auto-provisioned)"]
+        CatalogConfigMaps["Catalog Source ConfigMaps<br/>(labeled discovery)"]
     end
 
-    %% Database
-    PostgreSQL["PostgreSQL / MySQL<br/>External or auto-provisioned"]
-
-    %% Flows
+    %% User interaction
+    User["User / Platform Operator"] -->|creates| ModelRegistryCR
+    ModelRegistryCRLegacy -->|auto-converted| ModelRegistryCR
     ModelRegistryCR -->|watched by| MRReconciler
-    AuthCR -->|read by| MCReconciler
-    ComponentCR -->|read by| MCReconciler
+    Webhook -->|defaults & validates| ModelRegistryCR
 
-    MRReconciler -->|creates/manages| MRDeployment
-    MRReconciler -->|creates| MRService
-    MRReconciler -->|creates| MRSA
-    MRReconciler -->|creates| MRRoute
-    MRReconciler -->|creates| MRHTTPRoute
-    MRReconciler -->|creates| MRNetPol
-    MRReconciler -->|creates| MRGroup
-    MRReconciler -->|creates| MRRBAC
+    %% Registry reconciler outputs
+    MRReconciler -->|creates/manages| Deployment
+    MRReconciler -->|creates/manages| Service
+    MRReconciler -->|creates/manages| Route
+    MRReconciler -->|creates/manages| HTTPRoute
+    MRReconciler -->|creates/manages| RBAC
+    MRReconciler -->|creates/manages| NetPolicy
+    MRReconciler -->|creates/manages| Group
+    MRReconciler -->|creates/manages| PostgresStack
 
-    MCReconciler -->|creates/manages| CatalogDeploy
-    MCReconciler -->|creates| CatalogService
-    MCReconciler -->|creates| CatalogRoute
-    MCReconciler -->|creates| CatalogHTTPRoute
-    MCReconciler -->|creates| CatalogPostgres
+    %% Catalog reconciler outputs
+    MCReconciler -->|creates/manages| CatalogDeployment
+    MCReconciler -->|creates/manages| CatalogService
+    MCReconciler -->|creates/manages| CatalogRoute
+    MCReconciler -->|creates/manages| CatalogHTTPRoute
+    MCReconciler -->|creates/manages| CatalogPostgres
+    MCReconciler -->|watches| CatalogConfigMaps
 
-    MRDeployment -->|connects| PostgreSQL
-    CatalogDeploy -->|connects| CatalogPostgres
-
-    ModelRegistryCR -->|validated by| ValidatingWH
-    ModelRegistryCR -->|defaulted by| MutatingWH
-    ModelRegistryCR -->|converted by| ConversionWH
-
-    TLSWatcher -->|restarts| MRDeployment
-    SVM -->|migrates CRDs| ModelRegistryCR
+    %% Platform dependencies
+    MCReconciler -->|reads admin groups| AuthCR["Auth CR<br/>(services.platform.opendatahub.io)"]
+    MCReconciler -->|reads owner ref| PlatformMR["Platform ModelRegistry CR<br/>(components.platform.opendatahub.io)"]
+    MRReconciler -->|reads domain| IngressConfig["config.openshift.io/Ingress"]
 
     %% Styling
-    style Operator fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
-    style MRReconciler fill:#5ba3f5,stroke:#333
-    style MCReconciler fill:#5ba3f5,stroke:#333
-    style TLSWatcher fill:#5ba3f5,stroke:#333
-    style SVM fill:#5ba3f5,stroke:#333
-    style MutatingWH fill:#9b59b6,stroke:#333,color:#fff
-    style ValidatingWH fill:#9b59b6,stroke:#333,color:#fff
-    style ConversionWH fill:#9b59b6,stroke:#333,color:#fff
-    style ModelRegistryCR fill:#f5a623,stroke:#333
-    style AuthCR fill:#f5a623,stroke:#333
-    style ComponentCR fill:#f5a623,stroke:#333
-    style PostgreSQL fill:#e8e8e8,stroke:#333
-    style CatalogPostgres fill:#e8e8e8,stroke:#333
+    style MRReconciler fill:#4a90e2,color:#fff
+    style MCReconciler fill:#4a90e2,color:#fff
+    style Webhook fill:#4a90e2,color:#fff
+    style SVM fill:#4a90e2,color:#fff
+    style TemplateApplier fill:#6baed6,color:#fff
+    style ResourceManager fill:#6baed6,color:#fff
+    style ModelRegistryCR fill:#f5a623,color:#fff
+    style ModelRegistryCRLegacy fill:#d4a017,color:#fff
+    style AuthCR fill:#7ed321,color:#fff
+    style PlatformMR fill:#7ed321,color:#fff
+    style IngressConfig fill:#7ed321,color:#fff

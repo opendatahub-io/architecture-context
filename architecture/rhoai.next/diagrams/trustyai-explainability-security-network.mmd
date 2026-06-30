@@ -1,67 +1,74 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User / Dashboard"]
+        User["User / ODH Dashboard"]
     end
 
-    subgraph Ingress["INGRESS"]
-        Route["OpenShift Route<br/>80/TCP → 8080/TCP<br/>TLS: None (base)"]
+    subgraph Ingress["INGRESS (OpenShift Router)"]
+        Route["OpenShift Route: trustyai<br/>80/TCP → 8080/TCP<br/>TLS: None (base manifests)<br/>Auth: None (base); oauth-proxy (operator)"]
     end
 
-    subgraph InCluster["IN-CLUSTER"]
+    subgraph ClusterInternal["CLUSTER INTERNAL (Service Network)"]
         direction TB
 
-        subgraph NS_Monitored["Namespace: {monitored-namespace}"]
-            direction TB
-            TrustyAI["TrustyAI Explainability Service<br/>SA: trustyai-serviceaccount<br/>Image: registry.redhat.io/rhods/<br/>odh-trustyai-service-rhel8<br/>Ports: 8080/TCP (HTTP), 4443/TCP (HTTPS)"]
-            InitContainer["Init Container: config-map-overrider<br/>(ose-cli)"]
-            KubeRBACProxy["kube-rbac-proxy sidecar<br/>(operator-injected)<br/>RBAC enforcement"]
+        subgraph TrustyAINS["Namespace: {model-namespace}"]
+            TrustyAI["TrustyAI Service<br/>SA: trustyai-serviceaccount<br/>Image: registry.redhat.io/rhods/odh-trustyai-service-rhel8<br/>Ports: 8080/TCP (HTTP), 4443/TCP (HTTPS when TLS configured)"]
         end
 
-        subgraph NS_ModelServing["Model Serving Namespace"]
-            KServeIS["KServe InferenceService<br/>(CloudEvents source)"]
-            ModelMesh["ModelMesh Serving<br/>(REST payload source)"]
-            InferenceServers["KServe Inference Servers<br/>(v1/v2 HTTP, v2 gRPC)"]
+        subgraph KServeNS["KServe / Knative"]
+            KServeInference["KServe InferenceService<br/>CloudEvent Source"]
+            KnativeEventing["Knative Eventing<br/>Trigger Router"]
         end
 
-        subgraph NS_Monitoring["Namespace: openshift-monitoring"]
-            Prometheus["Prometheus<br/>ServiceMonitor scrape"]
+        subgraph ModelMeshNS["ModelMesh"]
+            ModelMesh["ModelMesh Serving<br/>Payload Processor"]
         end
 
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS"]
+        subgraph MonitoringNS["Namespace: openshift-monitoring"]
+            Prometheus["Prometheus Server<br/>ServiceMonitor scrape"]
+        end
+
+        subgraph ModelServing["Model Namespace"]
+            KServeModel["KServe Model Server<br/>gRPC v2 endpoint"]
+        end
     end
 
-    subgraph OptionalExternal["OPTIONAL EXTERNAL SERVICES"]
-        MinIO["MinIO / S3 Storage<br/>configurable/TCP<br/>HTTP/HTTPS<br/>Access Key / Secret Key"]
-        Database["MariaDB / MySQL<br/>3306/TCP<br/>MySQL protocol<br/>Username / Password"]
+    subgraph ExternalServices["EXTERNAL SERVICES (Storage Backends)"]
+        MariaDB["MariaDB / MySQL<br/>3306/TCP<br/>JDBC<br/>plaintext<br/>Username/Password"]
+        MinIO["MinIO Server<br/>9000/TCP<br/>HTTP (S3 API)<br/>plaintext<br/>Access Key/Secret Key"]
+        PVC["PersistentVolumeClaim<br/>Filesystem I/O<br/>/inputs/data.csv"]
     end
 
     %% Inbound flows
     User -->|"HTTP/80<br/>No TLS (base)<br/>No Auth (base)"| Route
-    Route -->|"HTTP/8080<br/>No encryption<br/>kube-rbac-proxy (operator)"| KubeRBACProxy
-    KubeRBACProxy -->|"HTTP/8080<br/>RBAC enforced"| TrustyAI
+    Route -->|"HTTP/8080<br/>No TLS<br/>internal"| TrustyAI
 
-    KServeIS -->|"HTTP/8080<br/>CloudEvents<br/>No encryption<br/>No Auth"| TrustyAI
-    ModelMesh -->|"HTTP/8080<br/>POST /consumer/kserve/v2<br/>No encryption<br/>No Auth"| TrustyAI
+    KServeInference -->|"CloudEvent<br/>inference req/resp<br/>GZIP-compressed"| KnativeEventing
+    KnativeEventing -->|"HTTP/8080<br/>CloudEvent<br/>No TLS, No Auth"| TrustyAI
 
-    Prometheus -->|"HTTP/8080<br/>GET /q/metrics<br/>Bearer SA token<br/>every 4s"| TrustyAI
+    ModelMesh -->|"HTTP POST/8080<br/>JSON payload<br/>No TLS, No Auth"| TrustyAI
+
+    Prometheus -->|"HTTP GET/8080<br/>/q/metrics<br/>Bearer Token (SA token)"| TrustyAI
 
     %% Outbound flows
-    TrustyAI -->|"HTTP + gRPC<br/>configurable port<br/>plaintext<br/>No Auth"| InferenceServers
-    InitContainer -->|"HTTPS/443<br/>TLS<br/>SA token<br/>oc apply ConfigMap"| K8sAPI
-    TrustyAI -->|"S3 API<br/>configurable port<br/>TLS optional<br/>Access Key/Secret"| MinIO
-    TrustyAI -->|"MySQL/3306<br/>No encryption<br/>Username/Password"| Database
+    TrustyAI -->|"gRPC/model-port<br/>KServe v2<br/>plaintext, No Auth"| KServeModel
+
+    TrustyAI -->|"JDBC/3306<br/>MySQL wire protocol<br/>plaintext<br/>Username/Password"| MariaDB
+
+    TrustyAI -->|"HTTP/9000<br/>S3 API<br/>plaintext<br/>Access Key/Secret Key"| MinIO
+
+    TrustyAI -->|"Filesystem I/O<br/>Local mount"| PVC
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef incluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef monitoring fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef rbacproxy fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef trustyai fill:#bbdefb,stroke:#1565c0,stroke-width:3px
 
     class User external
     class Route ingress
-    class TrustyAI,InitContainer,KServeIS,ModelMesh,InferenceServers,K8sAPI incluster
+    class TrustyAI trustyai
+    class KServeInference,KnativeEventing,ModelMesh,KServeModel internal
     class Prometheus monitoring
-    class MinIO,Database externalservice
-    class KubeRBACProxy rbacproxy
+    class MariaDB,MinIO,PVC externalservice

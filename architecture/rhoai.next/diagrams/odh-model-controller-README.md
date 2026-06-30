@@ -1,7 +1,7 @@
 # Architecture Diagrams for odh-model-controller
 
 Generated from: `../odh-model-controller.md`
-Date: 2026-05-15
+Date: 2026-06-30
 
 **Note**: Diagram filenames use base component name without version (directory is already versioned).
 
@@ -10,18 +10,18 @@ Date: 2026-05-15
 Mermaid diagrams are available as `.mmd` source files. Use GitHub/GitLab's built-in Mermaid rendering, or https://mermaid.live to view and edit.
 
 ### For Developers
-- [Component Structure](./odh-model-controller-component.mmd) - Internal components (controllers, sub-reconcilers, webhooks, API server)
-- [Data Flows](./odh-model-controller-dataflow.mmd) - Sequence diagrams of all 5 reconciliation and API flows
-- [Dependencies](./odh-model-controller-dependencies.mmd) - Component dependency graph (required, conditional, internal, external)
+- [Component Structure](./odh-model-controller-component.mmd) - Internal components, reconcilers, sub-reconcilers (delta processor pattern), API server, and webhooks
+- [Data Flows](./odh-model-controller-dataflow.mmd) - Sequence diagrams of all 4 data flows (InferenceService deployment, LLM Gateway auth, NIM Account, Gateway EnvoyFilter+AuthPolicy)
+- [Dependencies](./odh-model-controller-dependencies.mmd) - Component dependency graph showing required, optional, and internal platform dependencies
 
 ### For Architects
-- [C4 Context](./odh-model-controller-c4-context.dsl) - System context in C4 format (Structurizr)
-- [Component Overview](./odh-model-controller-component.mmd) - High-level component view
+- [C4 Context](./odh-model-controller-c4-context.dsl) - System context in C4 format (Structurizr) with container-level detail
+- [Component Overview](./odh-model-controller-component.mmd) - High-level component view with reconciler architecture
 
 ### For Security Teams
-- [Security Network Diagram (Mermaid)](./odh-model-controller-security-network.mmd) - Visual network topology (editable)
-- [Security Network Diagram (ASCII)](./odh-model-controller-security-network.txt) - Precise text format for SAR submissions
-- [RBAC Visualization](./odh-model-controller-rbac.mmd) - RBAC permissions and bindings
+- [Security Network Diagram (Mermaid)](./odh-model-controller-security-network.mmd) - Visual network topology with trust zones (editable)
+- [Security Network Diagram (ASCII)](./odh-model-controller-security-network.txt) - Precise text format for SAR submissions with RBAC summary, secrets, and FIPS compliance
+- [RBAC Visualization](./odh-model-controller-rbac.mmd) - RBAC permissions and bindings for all 3 service accounts
 
 ## How to Use
 

@@ -1,73 +1,77 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User (Browser / CLI)"]
+        User["User Browser"]
     end
 
-    subgraph Ingress["INGRESS (OpenShift Router - TLS Edge)"]
-        UIRoute["planner Route<br/>443/TCP → 8501/TCP<br/>TLS Edge Termination<br/>Auth: None"]
-        BackendRoute["planner-backend Route<br/>443/TCP → 8000/TCP<br/>TLS Edge Termination<br/>Auth: None"]
+    subgraph Ingress["INGRESS (OpenShift Router - Edge TLS)"]
+        RoutePlanner["Route: planner<br/>443/TCP → 8501/TCP<br/>TLS Edge Termination<br/>Auth: None"]
+        RouteBackend["Route: planner-backend<br/>443/TCP → 8000/TCP<br/>TLS Edge Termination<br/>Auth: None"]
     end
 
-    subgraph AppTier["APPLICATION TIER (Namespace: planner)<br/>⚠ No Service Mesh / No mTLS"]
+    subgraph PlannerNS["NAMESPACE: planner (Plaintext Internal)"]
         direction TB
 
-        UI["Streamlit UI<br/>Service: ui (ClusterIP)<br/>8501/TCP HTTP<br/>Auth: None"]
+        subgraph UILayer["UI Layer"]
+            UI["Streamlit UI<br/>Service: ui (ClusterIP)<br/>8501/TCP HTTP<br/>SA: default"]
+        end
 
-        Backend["Backend API (FastAPI)<br/>Service: backend (ClusterIP)<br/>8000/TCP HTTP<br/>SA: planner-backend<br/>⚠ No Auth (29 endpoints)"]
+        subgraph AppLayer["Application Layer"]
+            Backend["FastAPI Backend<br/>Service: backend (ClusterIP)<br/>8000/TCP HTTP<br/>SA: planner-backend"]
+        end
 
-        PG["PostgreSQL<br/>Service: postgres (ClusterIP)<br/>5432/TCP PostgreSQL<br/>Auth: Password<br/>5Gi PVC"]
+        subgraph DataLayer["Data Layer"]
+            Postgres["PostgreSQL<br/>Service: postgres (ClusterIP)<br/>5432/TCP<br/>Auth: Password"]
+        end
 
-        OllamaSvc["Ollama LLM<br/>Service: ollama (ClusterIP)<br/>11434/TCP HTTP<br/>Auth: None<br/>1x GPU, 20Gi PVC"]
+        subgraph LLMLayer["LLM Layer (Conditional)"]
+            Ollama["Ollama<br/>Service: ollama (ClusterIP)<br/>11434/TCP HTTP<br/>Auth: None<br/>When: LLM_PROVIDER=ollama"]
+        end
+    end
 
-        Sim["vLLM Simulator<br/>8080/TCP HTTP<br/>Auth: None<br/>(dev/test only)"]
-
-        DBInit["db-init Job<br/>(one-shot)"]
+    subgraph CrossNS["CROSS-NAMESPACE (Internal)"]
+        ModelCatalog["Model Catalog API<br/>NS: rhoai-model-registries<br/>8443/TCP HTTPS<br/>TLS: service-ca<br/>Auth: SA Bearer Token"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: SA Token"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        HF["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Bearer HF_TOKEN (optional)"]
-
-        MCat["RHOAI Model Catalog<br/>model-catalog.rhoai-model-registries.svc<br/>8443/TCP HTTPS<br/>TLS 1.2+ (service CA)<br/>Auth: Bearer token<br/>NetworkPolicy: allowed"]
-
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: ServiceAccount token"]
-
-        KServe["KServe InferenceServices<br/>8080/TCP HTTP<br/>Auth: None<br/>(via port-forward)"]
+        HuggingFace["HuggingFace Hub API<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Bearer Token (optional)"]
+        VertexAI["Vertex AI API<br/>aiplatform.googleapis.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: GCP ADC/SA"]
+        OpenAI["OpenAI-compatible API<br/>api.openai.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Bearer Token"]
     end
 
     %% External to Ingress
-    User -->|"HTTPS/443<br/>TLS Edge<br/>No Auth"| UIRoute
-    User -->|"HTTPS/443<br/>TLS Edge<br/>No Auth"| BackendRoute
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>No Auth"| RoutePlanner
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>No Auth"| RouteBackend
 
-    %% Ingress to App
-    UIRoute -->|"HTTP/8501<br/>No Encryption<br/>No Auth"| UI
-    BackendRoute -->|"HTTP/8000<br/>No Encryption<br/>No Auth"| Backend
+    %% Ingress to Services
+    RoutePlanner -->|"HTTP/8501<br/>Plaintext<br/>(TLS terminated)"| UI
+    RouteBackend -->|"HTTP/8000<br/>Plaintext<br/>(TLS terminated)"| Backend
 
-    %% Internal flows
-    UI -->|"HTTP/8000<br/>No Encryption<br/>No Auth"| Backend
-    Backend -->|"HTTP/11434<br/>No Encryption<br/>No Auth"| OllamaSvc
-    Backend -->|"PostgreSQL/5432<br/>No Encryption<br/>Password Auth"| PG
-    DBInit -->|"PostgreSQL/5432<br/>No Encryption<br/>Password Auth"| PG
+    %% Internal flows (plaintext)
+    UI -->|"HTTP/8000<br/>Plaintext<br/>No Auth"| Backend
+    Backend -->|"PostgreSQL/5432<br/>Plaintext<br/>Password Auth"| Postgres
+    Backend -->|"HTTP/11434<br/>Plaintext<br/>No Auth"| Ollama
 
-    %% External flows
-    Backend -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer HF_TOKEN"| HF
-    Backend -->|"HTTPS/8443<br/>TLS 1.2+ (service CA)<br/>Bearer token<br/>NetworkPolicy"| MCat
-    Backend -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    Backend -.->|"HTTP/8080<br/>No Encryption<br/>No Auth"| KServe
+    %% Cross-namespace
+    Backend -->|"HTTPS/8443<br/>TLS (service-ca)<br/>SA Bearer Token<br/>NetworkPolicy"| ModelCatalog
+    Backend -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+
+    %% External egress
+    Backend -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (opt)"| HuggingFace
+    Backend -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP ADC/SA"| VertexAI
+    Backend -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| OpenAI
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef app fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef appWarn fill:#f8cecc,stroke:#b85450,stroke-width:2px,stroke-dasharray:5
-    classDef infra fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef externalservice fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef dev fill:#e8e8e8,stroke:#666,stroke-width:1px,stroke-dasharray:3
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef crossns fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef data fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
     class User external
-    class UIRoute,BackendRoute ingress
-    class UI app
-    class Backend appWarn
-    class PG,OllamaSvc infra
-    class Sim dev
-    class DBInit dev
-    class HF,MCat,K8sAPI,KServe externalservice
+    class RoutePlanner,RouteBackend ingress
+    class UI,Backend,Ollama internal
+    class Postgres data
+    class ModelCatalog,K8sAPI crossns
+    class HuggingFace,VertexAI,OpenAI externalservice

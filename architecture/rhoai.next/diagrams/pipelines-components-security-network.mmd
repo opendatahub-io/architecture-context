@@ -1,92 +1,81 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        S3["S3-Compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS Signature V4"]
-        HF["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
+        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
+        S3["S3 Storage (MinIO/AWS)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS Signature V4"]
         OGX["OGX API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key"]
-        EvalHubExt["Eval Hub API<br/>443/TCP HTTPS<br/>TLS 1.2+ (verify configurable)<br/>Bearer Token + X-Tenant"]
-        LLMAPI["LLM API (OpenAI-compat)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key"]
-        WandB["W&B (optional)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key"]
-        PyPI["PyPI / RHOAI Index<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>No auth (build-time only)"]
+        RHAIPyPI["RHEL AI PyPI<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>No Auth"]
+        LiteLLM["LLM Endpoint (LiteLLM)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key"]
     end
 
-    subgraph InitPhase["INIT PHASE (Pod Startup)"]
-        InitContainer["odh-pipelines-components<br/>Init Container<br/>UBI9/Python 3.12<br/>No network exposure"]
-        SharedVol["Shared Volume<br/>/config/managed-pipelines"]
-    end
-
-    subgraph KubeCluster["KUBERNETES CLUSTER (mTLS)"]
+    subgraph Cluster["OPENSHIFT CLUSTER"]
         direction TB
 
-        subgraph PipelineNS["Namespace: {pipeline-namespace}"]
-            direction TB
-
-            subgraph DataProc["Data Processing Steps"]
-                DatasetDL["dataset_download<br/>download_model"]
-                DocsDisc["documents_discovery<br/>text_extraction"]
-                ParseChunk["parse_and_chunk"]
-                IngestMilvus["ingest_to_milvus"]
-                SDGComp["sdg"]
-            end
-
-            subgraph TrainingSteps["Training Steps"]
-                Finetune["LoRA / OSFT / SFT<br/>Fine-Tuning"]
-                AutoGluon["AutoGluon<br/>Tabular / Timeseries"]
-                RAGOpt["RAG Templates<br/>Optimization"]
-            end
-
-            subgraph EvalSteps["Evaluation Steps"]
-                LMEval["lm-eval Evaluator"]
-                EvalHubComp["Eval Hub Evaluator<br/>(creates ephemeral KServe)"]
-            end
-
-            subgraph DeploySteps["Deployment Steps"]
-                ModelDeploy["model_deployment<br/>deploy_embedding_model"]
-                ModelReg["kubeflow_model_registry"]
-            end
+        subgraph InitPhase["INIT CONTAINER (No Network)"]
+            InitContainer["odh-pipelines-components<br/>Image: UBI9 Python 3.12<br/>No ports exposed"]
+            SharedVol["Shared Volume<br/>/config/managed-pipelines/<br/>emptyDir mount"]
         end
 
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>mTLS<br/>ServiceAccount Token"]
-        KFPServer["KFP API Server<br/>(reads shared volume)"]
+        subgraph TaskPods["KFP TASK PODS (Ephemeral)"]
+            AutoMLPod["AutoML Task Pod<br/>Image: odh-automl<br/>Base: AIPCC CPU<br/>SA: KFP execution SA"]
+            AutoRAGPod["AutoRAG Task Pod<br/>Image: odh-autorag<br/>Base: AIPCC CPU<br/>SA: KFP execution SA"]
+            TrainingPod["Training Task Pod<br/>SA: KFP execution SA"]
+            DeployPod["Deployment Task Pod<br/>SA: KFP execution SA"]
+            EvalPod["Evaluation Task Pod<br/>SA: KFP execution SA"]
+        end
+
+        subgraph InternalSvc["CLUSTER-INTERNAL SERVICES"]
+            KFPAPI["KFP API Server<br/>(managed by DSPO)"]
+            K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token"]
+            Milvus["Milvus<br/>19530/TCP gRPC<br/>Plaintext<br/>Token (optional)"]
+            ModelReg["Model Registry<br/>80/TCP HTTP<br/>Plaintext<br/>No Auth"]
+            EvalHub["Eval Hub<br/>443/TCP HTTPS<br/>TLS (verify=False default)<br/>Bearer Token"]
+            KServe["KServe<br/>(via K8s API CRDs)"]
+            RayOp["Ray Operator<br/>(via K8s API CRDs)"]
+        end
     end
 
-    subgraph InCluster["IN-CLUSTER SERVICES (No TLS)"]
-        ModelRegistryAPI["Model Registry<br/>8080/TCP HTTP<br/>plaintext<br/>No auth"]
-        Milvus["Milvus Vector DB<br/>19530/TCP gRPC<br/>PLAINTEXT<br/>Token (optional)"]
-    end
+    %% Init container flow (filesystem only)
+    InitContainer -->|"Filesystem<br/>No encryption"| SharedVol
+    SharedVol -->|"Filesystem<br/>emptyDir"| KFPAPI
 
-    %% Init container flow
-    InitContainer -->|"Filesystem copy<br/>/app → /config"| SharedVol
-    SharedVol -->|"Filesystem read"| KFPServer
+    %% AutoML egress
+    AutoMLPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM<br/>⚠ verify=False fallback"| S3
 
-    %% Data Processing egress
-    DatasetDL -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    DatasetDL -->|"HTTPS/443<br/>TLS 1.2+<br/>HF Token"| HF
-    DocsDisc -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    IngestMilvus -->|"gRPC/19530<br/>PLAINTEXT<br/>Token"| Milvus
-    SDGComp -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| LLMAPI
+    %% AutoRAG egress
+    AutoRAGPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM<br/>⚠ verify=False fallback"| S3
+    AutoRAGPod -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key<br/>⚠ verify=False fallback"| OGX
+    AutoRAGPod -->|"gRPC/19530<br/>Plaintext<br/>Token (optional)"| Milvus
 
     %% Training egress
-    Finetune -->|"HTTPS/6443<br/>mTLS<br/>SA Token"| K8sAPI
-    ParseChunk -->|"HTTPS/6443<br/>mTLS<br/>SA Token"| K8sAPI
-    RAGOpt -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| OGX
-    AutoGluon -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-
-    %% Evaluation egress
-    EvalHubComp -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| EvalHubExt
-    EvalHubComp -->|"HTTPS/6443<br/>mTLS<br/>SA Token"| K8sAPI
+    TrainingPod -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HFHub
+    TrainingPod -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    TrainingPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
 
     %% Deployment egress
-    ModelDeploy -->|"HTTPS/6443<br/>mTLS<br/>SA Token"| K8sAPI
-    ModelReg -->|"HTTP/8080<br/>plaintext<br/>No auth"| ModelRegistryAPI
+    DeployPod -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    DeployPod -->|"HTTP/80<br/>Plaintext<br/>⚠ No Auth"| ModelReg
+
+    %% Evaluation egress
+    EvalPod -->|"HTTPS/443<br/>TLS (verify=False)<br/>Bearer Token"| EvalHub
+    EvalPod -->|"HTTP/80<br/>Plaintext<br/>⚠ No Auth"| ModelReg
+
+    %% K8s API to operators
+    K8sAPI -.->|"CRD CRUD"| KServe
+    K8sAPI -.->|"CRD CRUD"| RayOp
+
+    %% SDG egress
+    TrainingPod -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| LiteLLM
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef initphase fill:#e6f3ff,stroke:#4a90e2,stroke-width:2px
-    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef incluster fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef warning fill:#ffe6e6,stroke:#cc0000,stroke-width:2px
+    classDef initphase fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef taskpod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef internalsvc fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
-    class S3,HF,OGX,EvalHubExt,LLMAPI,WandB,PyPI external
+    class HFHub,S3,OGX,RHAIPyPI,LiteLLM external
     class InitContainer,SharedVol initphase
-    class DatasetDL,DocsDisc,ParseChunk,IngestMilvus,SDGComp,Finetune,AutoGluon,RAGOpt,LMEval,EvalHubComp,ModelDeploy,ModelReg,K8sAPI,KFPServer cluster
-    class ModelRegistryAPI,Milvus incluster
+    class AutoMLPod,AutoRAGPod,TrainingPod,DeployPod,EvalPod taskpod
+    class KFPAPI,K8sAPI,KServe,RayOp internalsvc
+    class Milvus,ModelReg warning
+    class EvalHub internalsvc

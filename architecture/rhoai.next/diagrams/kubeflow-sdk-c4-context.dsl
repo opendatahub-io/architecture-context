@@ -1,59 +1,53 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and manages ML training workloads, HPO experiments, and model registrations using Python APIs"
+        dataScientist = person "Data Scientist" "Creates and deploys ML models using Python code"
+        mlEngineer = person "ML Engineer" "Manages training infrastructure and model lifecycle"
 
-        kubeflowSDK = softwareSystem "Kubeflow SDK" "Unified Python client library for managing ML training workloads across Kubeflow projects with RHAI extensions" {
-            trainerClient = container "TrainerClient" "Core training client — creates/manages TrainJob CRs, supports Custom, Builtin, and RHAI trainers" "Python Module"
-            rhaiTrainers = container "RHAI Trainers" "TransformersTrainer (HF/TRL with JIT checkpointing, progression tracking) and TrainingHubTrainer (SFT/OSFT/LoRA)" "Python Extension Module"
-            optimizerClient = container "OptimizerClient" "Hyperparameter optimization client — creates Katib Experiment CRs" "Python Module"
-            sparkClient = container "SparkClient" "Spark client — manages SparkApplication CRs for distributed data processing" "Python Module"
-            hubClient = container "ModelRegistryClient" "Model Registry client — registers, queries, and manages models via REST API" "Python Module"
-            kubernetesBackend = container "KubernetesBackend" "Production backend — communicates with Kubernetes API to create/manage CRDs" "Python Backend"
-            containerBackend = container "ContainerBackend" "Local development backend — runs training in Docker/Podman containers" "Python Backend"
-            localProcessBackend = container "LocalProcessBackend" "Quick prototyping backend — runs training as Python subprocesses" "Python Backend"
-            commonUtils = container "Common Utils" "Shared types (KubernetesBackendConfig), namespace detection, K8s config loading" "Python Utility Module"
+        kubeflowSDK = softwareSystem "Kubeflow SDK" "Unified Python SDK providing consistent APIs to manage ML workloads across Kubeflow ecosystem components" {
+            trainerClient = container "TrainerClient" "Train and fine-tune AI models via TrainJob/TrainingRuntime CRDs" "Python Client"
+            optimizerClient = container "OptimizerClient" "Hyperparameter optimization via Katib Experiment CRDs" "Python Client"
+            sparkClient = container "SparkClient" "Manage Apache Spark Connect sessions" "Python Client"
+            hubClient = container "ModelRegistryClient" "Register, version, and query ML model artifacts" "Python Client"
+            rhaiTrainers = container "RHAI Trainers" "TransformersTrainer and TrainingHubTrainer with progression tracking, JIT checkpointing" "Python Extension (RHOAI-only)"
+            commonUtils = container "Common Utilities" "Shared types, constants, namespace resolution" "Python Module"
+
+            trainerClient -> commonUtils "Uses shared types"
+            optimizerClient -> commonUtils "Uses shared types"
+            sparkClient -> commonUtils "Uses shared types"
+            rhaiTrainers -> trainerClient "Extends"
         }
 
-        kubeflowTrainer = softwareSystem "Kubeflow Trainer Operator" "Watches TrainJob CRs and manages distributed training pod lifecycle" "Internal ODH"
-        katib = softwareSystem "Kubeflow Katib" "Hyperparameter optimization — watches Experiment CRs and runs HPO trials" "Internal ODH"
-        sparkOperator = softwareSystem "Kubeflow Spark Operator" "Manages SparkApplication CRs for Spark Connect sessions" "Internal ODH"
-        modelRegistry = softwareSystem "Model Registry Server" "Stores model metadata, versions, and artifact references" "Internal ODH"
-        rhoaiController = softwareSystem "RHOAI Trainer Controller" "Polls RHAI training pods for progression data via annotations and HTTP metrics" "Internal RHOAI"
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API server for CRD management, pod lifecycle, secrets, and events" "Infrastructure"
-        s3Storage = softwareSystem "S3-compatible Storage" "Object storage for checkpoint upload/download (AWS S3, MinIO, Ceph)" "External"
-        hfHub = softwareSystem "HuggingFace Hub" "Model and dataset repository for ML artifacts" "External"
-        dockerPodman = softwareSystem "Docker/Podman" "Local container runtime for development/testing" "External"
+        kubeflowTrainerOp = softwareSystem "Kubeflow Trainer Operator" "Manages training job lifecycle on Kubernetes via TrainJob CRDs" "Internal Platform"
+        katibController = softwareSystem "Katib Controller" "Manages hyperparameter optimization trials" "Internal Platform"
+        sparkOperator = softwareSystem "Spark Operator" "Provisions and manages Spark Connect sessions" "Internal Platform"
+        modelRegistry = softwareSystem "Model Registry Server" "Model artifact registration, versioning, and querying" "Internal Platform"
+        jobSetController = softwareSystem "JobSet Controller" "Underlying workload orchestration for TrainJobs" "Internal Platform"
 
-        # User relationships
-        dataScientist -> kubeflowSDK "Creates training jobs, HPO experiments, registers models" "Python API (pip install kubeflow)"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API for CRD CRUD operations" "External Infrastructure"
+        s3Storage = softwareSystem "S3-compatible Storage" "Model checkpoint and dataset storage" "External Service"
+        huggingfaceHub = softwareSystem "HuggingFace Hub" "Pre-trained model and dataset repository" "External Service"
+        dockerPodman = softwareSystem "Docker/Podman Runtime" "Container runtime for local development" "External Tool"
+        pypi = softwareSystem "PyPI" "Python package index for training container dependencies" "External Service"
+        mavenCentral = softwareSystem "Maven Central" "Java artifact repository for Spark Connect JARs" "External Service"
 
-        # SDK to backends
-        trainerClient -> kubernetesBackend "Delegates job creation"
-        trainerClient -> containerBackend "Delegates local training"
-        trainerClient -> localProcessBackend "Delegates subprocess training"
-        trainerClient -> rhaiTrainers "Uses RHAI trainers (TransformersTrainer, TrainingHubTrainer)"
-        trainerClient -> commonUtils "Uses shared types and utilities"
-        optimizerClient -> commonUtils "Uses shared types and utilities"
-        sparkClient -> commonUtils "Uses shared types and utilities"
+        dataScientist -> kubeflowSDK "Submits training jobs, queries models, runs Spark sessions" "Python API"
+        mlEngineer -> kubeflowSDK "Configures training runtimes, manages model lifecycle" "Python API"
 
-        # SDK to Kubernetes API
-        kubernetesBackend -> k8sAPI "CRUD on TrainJob/TrainingRuntime CRs, pod logs, events, configmaps, secrets" "HTTPS/443, Bearer Token, TLS 1.2+"
-        optimizerClient -> k8sAPI "CRUD on Experiment CRs" "HTTPS/443, Bearer Token, TLS 1.2+"
-        sparkClient -> k8sAPI "CRUD on SparkApplication CRs" "HTTPS/443, Bearer Token, TLS 1.2+"
+        trainerClient -> k8sAPI "Creates TrainJob, reads TrainingRuntime CRDs" "HTTPS/443, Bearer Token"
+        optimizerClient -> k8sAPI "Creates Experiment, reads Trial CRDs" "HTTPS/443, Bearer Token"
+        sparkClient -> k8sAPI "Creates SparkConnect CRDs" "HTTPS/443, Bearer Token"
+        hubClient -> modelRegistry "Registers and queries models" "REST API, HTTPS/443 or HTTP/8080"
 
-        # Kubernetes API to controllers
-        k8sAPI -> kubeflowTrainer "Watch stream for TrainJob CRs"
-        k8sAPI -> katib "Watch stream for Experiment CRs"
-        k8sAPI -> sparkOperator "Watch stream for SparkApplication CRs"
+        rhaiTrainers -> s3Storage "Uploads JIT checkpoints" "HTTPS/443, AWS IAM"
+        rhaiTrainers -> huggingfaceHub "Downloads gated models/datasets" "HTTPS/443, Bearer Token"
 
-        # SDK to external services
-        hubClient -> modelRegistry "Model registration and querying" "HTTP/HTTPS, Bearer Token (optional)"
-        rhaiTrainers -> s3Storage "Checkpoint upload/download (via fsspec/s3fs)" "HTTPS/443, AWS IAM"
-        rhaiTrainers -> hfHub "Model/dataset download (via hf:// URI)" "HTTPS/443, Bearer Token (optional)"
-        containerBackend -> dockerPodman "Local container execution" "Unix socket"
+        sparkClient -> sparkOperator "Connects to Spark driver pods" "gRPC/15002"
+        trainerClient -> dockerPodman "Local development training" "Unix Socket"
 
-        # RHOAI controller interaction
-        rhoaiController -> rhaiTrainers "Polls in-pod metrics server for progression data" "HTTP/28080, No auth"
+        kubeflowTrainerOp -> jobSetController "Creates JobSets for training workloads" "CRD"
+        k8sAPI -> kubeflowTrainerOp "Reconciles TrainJob CRDs" "Internal"
+        k8sAPI -> katibController "Reconciles Experiment CRDs" "Internal"
+        k8sAPI -> sparkOperator "Reconciles SparkConnect CRDs" "Internal"
     }
 
     views {
@@ -68,33 +62,33 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
             element "Person" {
-                background #08427B
-                color #ffffff
                 shape Person
-            }
-            element "Container" {
-                background #438DD5
+                background #4a90e2
                 color #ffffff
             }
-            element "External" {
-                background #999999
+            element "Software System" {
+                background #4a90e2
                 color #ffffff
             }
-            element "Internal ODH" {
+            element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal RHOAI" {
-                background #e74c3c
+            element "External Service" {
+                background #999999
                 color #ffffff
             }
-            element "Infrastructure" {
-                background #f39c12
+            element "External Infrastructure" {
+                background #666666
+                color #ffffff
+            }
+            element "External Tool" {
+                background #bbbbbb
+                color #333333
+            }
+            element "Container" {
+                background #438dd5
                 color #ffffff
             }
         }

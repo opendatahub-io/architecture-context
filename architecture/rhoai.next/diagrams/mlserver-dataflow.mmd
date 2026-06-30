@@ -1,70 +1,74 @@
 sequenceDiagram
-    autonumber
-
     participant Client as External Client
-    participant AuthProxy as kube-rbac-proxy<br/>Sidecar (RHOAI 3.x)
-    participant REST as REST Server<br/>8080/TCP HTTP
-    participant GRPC as gRPC Server<br/>8081/TCP gRPC
-    participant DP as DataPlane Handler
+    participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
+    participant REST as MLServer REST<br/>8080/TCP HTTP (FastAPI)
+    participant GRPC as MLServer gRPC<br/>8081/TCP gRPC
+    participant DP as DataPlaneHandlers
+    participant Batch as Adaptive Batcher
     participant Cache as Response Cache
-    participant Batcher as Adaptive Batcher
     participant Registry as MultiModelRegistry
-    participant Model as MLModel Runtime<br/>(sklearn/xgboost/lgbm/onnx)
-    participant Storage as /mnt/models<br/>Model Artifacts
-    participant Prom as Prometheus<br/>8082/TCP
-    participant OTel as OpenTelemetry<br/>Collector
+    participant Runtime as Model Runtime<br/>(sklearn/xgboost/lightgbm/onnx)
+    participant Storage as /mnt/models<br/>(PVC/Storage Initializer)
+    participant Metrics as Metrics Server<br/>8082/TCP HTTP
+    participant Prom as Prometheus
+    participant Kafka as Apache Kafka<br/>9092/TCP
+    participant OTel as OTel Collector<br/>4317/TCP gRPC
 
-    rect rgb(240, 248, 255)
-        Note over Client,Model: Flow 1: REST Inference Request
-        Client->>AuthProxy: POST /v2/models/{name}/infer<br/>Bearer Token
-        AuthProxy->>REST: Forward (authenticated)
-        REST->>DP: InferenceRequest
-        DP->>Cache: Check cache
-        Cache-->>DP: Cache miss
-        DP->>Batcher: Queue request
-        Batcher->>Registry: Batched InferenceRequest
-        Registry->>Model: predict(request)
-        Model-->>Registry: InferenceResponse
-        Registry-->>Batcher: Response
-        Batcher-->>DP: Split responses
-        DP->>Cache: Store response
-        DP-->>REST: InferenceResponse
-        REST-->>AuthProxy: JSON Response
-        AuthProxy-->>Client: 200 OK + JSON
-    end
+    Note over Client,OTel: Flow 1: REST Inference Request
 
-    rect rgb(255, 248, 240)
-        Note over Client,Model: Flow 2: gRPC Inference Request
-        Client->>AuthProxy: ModelInfer RPC<br/>gRPC
-        AuthProxy->>GRPC: Forward
-        GRPC->>GRPC: Protobuf → InferenceRequest
-        GRPC->>DP: infer()
-        DP->>Registry: route to model
-        Registry->>Model: predict(request)
-        Model-->>Registry: InferenceResponse
-        Registry-->>DP: Response
-        DP-->>GRPC: InferenceResponse
-        GRPC->>GRPC: InferenceResponse → Protobuf
-        GRPC-->>AuthProxy: ModelInferResponse
-        AuthProxy-->>Client: gRPC Response
+    Client->>Proxy: POST /v2/models/{name}/infer<br/>Auth: Bearer Token
+    Proxy->>Proxy: Validate token (AuthZ)
+    Proxy->>REST: Forward request<br/>HTTP 8080 (pod-internal, plaintext)
+    REST->>DP: Route to DataPlaneHandlers.infer()
+    DP->>Cache: Check cache (request hash)
+    alt Cache Hit
+        Cache-->>DP: Cached response
+    else Cache Miss
+        DP->>Batch: Submit to adaptive batcher
+        Batch->>Registry: Dispatch batched request
+        Registry->>Runtime: predict(payload)
+        Runtime-->>Registry: InferenceResponse
+        Registry-->>Batch: Batched result
+        Batch-->>DP: Unbatched response
+        DP->>Cache: Store in cache
     end
+    DP-->>REST: InferenceResponse
+    REST-->>Proxy: JSON Response
+    Proxy-->>Client: HTTPS Response
 
-    rect rgb(240, 255, 240)
-        Note over Storage,Model: Flow 3: Model Loading at Startup
-        Note over Storage: Storage Initializer<br/>populates /mnt/models
-        Model->>Model: Validate trusted-runtimes.json
-        Model->>Storage: Scan model-settings.json files
-        Storage-->>Model: Model configurations
-        Model->>Model: Dynamic import of runtime class
-        Model->>Storage: Load model artifacts<br/>(.joblib, .onnx, .bst, etc.)
-        Storage-->>Model: Model data
-        Model->>Registry: Register model (ready)
-    end
+    Note over Client,OTel: Flow 2: gRPC Inference Request
 
-    rect rgb(248, 240, 255)
-        Note over Prom,OTel: Flow 4: Observability
-        Prom->>REST: GET /metrics (port 8082)
-        REST-->>Prom: Prometheus metrics
-        REST->>OTel: Traces (OTLP/gRPC)
-        GRPC->>OTel: Traces (OTLP/gRPC)
-    end
+    Client->>Proxy: ModelInfer RPC<br/>Auth: Bearer Token
+    Proxy->>GRPC: Forward<br/>gRPC 8081 (pod-internal, plaintext)
+    GRPC->>DP: Route to DataPlaneHandlers.infer()
+    DP->>Registry: Dispatch request
+    Registry->>Runtime: predict(payload)
+    Runtime-->>Registry: InferenceResponse
+    Registry-->>DP: Response
+    DP-->>GRPC: ModelInferResponse (protobuf)
+    GRPC-->>Proxy: gRPC Response
+    Proxy-->>Client: HTTPS Response
+
+    Note over Client,OTel: Flow 3: Kafka Streaming Inference (Optional)
+
+    Kafka->>REST: Consume from input topic<br/>KafkaConsumer 9092/TCP
+    REST->>DP: Route inference request
+    DP->>Registry: Dispatch request
+    Registry->>Runtime: predict(payload)
+    Runtime-->>Registry: InferenceResponse
+    Registry-->>DP: Response
+    DP->>Kafka: Publish to output topic<br/>KafkaProducer 9092/TCP
+
+    Note over Client,OTel: Flow 4: Model Loading
+
+    Storage->>Registry: Read model-settings.json<br/>Load model artifacts from /mnt/models
+    Registry->>Registry: Validate trusted runtime<br/>(/etc/mlserver/trusted-runtimes.json)
+    Registry->>Runtime: runtime.load()
+    Runtime-->>Registry: Model ready
+
+    Note over Client,OTel: Flow 5: Metrics & Tracing
+
+    Prom->>Metrics: GET /metrics<br/>HTTP 8082
+    Metrics-->>Prom: Prometheus metrics<br/>(request counts, latencies)
+    REST->>OTel: Export trace spans<br/>gRPC 4317 (insecure)
+    GRPC->>OTel: Export trace spans<br/>gRPC 4317 (insecure)

@@ -1,36 +1,42 @@
 sequenceDiagram
     participant Client as External Client
-    participant KServe as KServe Router<br/>(Platform TLS/Auth)
-    participant API as vLLM OpenAI API Server<br/>8000/TCP HTTP
-    participant Runner as HPUModelRunner<br/>(vllm-gaudi plugin)
-    participant HPU as Intel Gaudi HPU<br/>(Synapse AI)
-    participant Peers as Peer Gaudi Workers<br/>(HCCL/RDMA)
-    participant Storage as Model Storage<br/>S3/PVC/HuggingFace<br/>443/TCP HTTPS
+    participant Gateway as Platform Gateway<br/>443/TCP HTTPS TLS 1.3
+    participant KRBAC as kube-rbac-proxy<br/>8443/TCP TLS
+    participant VLLM as vLLM API Server<br/>8000/TCP HTTP
+    participant Runner as HPUModelRunner<br/>In-process
+    participant HPU as Intel Gaudi HPU<br/>PCIe/RDMA
 
-    Note over Client,Storage: Flow 1: Model Loading (startup)
-    API->>Storage: Download model weights<br/>HTTPS/443, TLS 1.2+<br/>Auth: HF Token / AWS IAM
-    Storage-->>API: Model artifacts
-    API->>Runner: Load model to HPU
-    Runner->>HPU: Transfer weights to HPU memory<br/>Habana Synapse API
+    Note over Client,HPU: Flow 1: Model Inference Request
 
-    Note over Client,Storage: Flow 2: Model Inference Request
-    Client->>KServe: POST /v1/chat/completions<br/>HTTPS (platform TLS)
-    KServe->>API: Forward request<br/>HTTP/8000 (internal)
-    API->>Runner: Inference request (in-process)
-    Runner->>HPU: Execute model graph<br/>Habana Synapse API
-    HPU-->>Runner: Inference output
+    Client->>Gateway: POST /v1/chat/completions<br/>Auth: Bearer Token
+    Gateway->>KRBAC: Forward (TLS/8443)<br/>RBAC validation
+    KRBAC->>VLLM: Forward (HTTP/8000)<br/>localhost, no auth
+    VLLM->>Runner: Process request<br/>In-process Python
+    Runner->>HPU: Execute model forward pass<br/>PCIe/RDMA, HPU graph
+    HPU-->>Runner: Inference result (tokens)
+    Runner-->>VLLM: Generated tokens
+    VLLM-->>KRBAC: JSON Response
+    KRBAC-->>Gateway: Response (TLS)
+    Gateway-->>Client: JSON Response (HTTPS)
 
-    Note over Client,Storage: Flow 3: Distributed Inference (Tensor Parallel)
-    Runner->>Peers: HCCL all-reduce / all-gather<br/>RDMA transport<br/>No encryption (cluster-internal)
-    Peers-->>Runner: Synchronized tensors
+    Note over Client,HPU: Flow 2: Multi-HPU Tensor Parallel Inference
 
-    Runner-->>API: Prediction result (in-process)
-    API-->>KServe: JSON response<br/>HTTP/8000
-    KServe-->>Client: JSON response<br/>HTTPS (platform TLS)
+    participant RayHead as Ray Head<br/>6379/TCP, 10001/TCP
+    participant Worker0 as HPUWorker Rank 0<br/>HCCL
+    participant WorkerN as HPUWorker Rank N<br/>HCCL
 
-    Note over Client,Storage: Flow 4: KV Cache Transfer (NIXL Disaggregated)
-    participant Prefill as Prefill Instance<br/>(NixlConnectorWorker)
-    participant Decode as Decode Instance<br/>(NixlConnectorWorker)
-    Prefill->>Prefill: HPU memory → CPU buffer<br/>(device-to-host copy)
-    Prefill->>Decode: KV cache blocks<br/>NIXL protocol (RDMA/TCP)<br/>No encryption
-    Decode->>Decode: CPU buffer → HPU KV cache<br/>(host-to-device copy)
+    RayHead->>Worker0: Distribute work<br/>Ray internal protocol
+    RayHead->>WorkerN: Distribute work<br/>Ray internal protocol
+    Worker0->>WorkerN: all-reduce / all-gather<br/>HCCL, Dynamic port, No encryption
+    WorkerN-->>Worker0: Collective result
+    Worker0-->>RayHead: Inference complete
+
+    Note over Client,HPU: Flow 3: Disaggregated Prefill/Decode (NIXL KV Transfer)
+
+    participant PrefillW as Prefill Worker<br/>HPU
+    participant HostBuf as Host Memory Buffer
+    participant DecodeW as Decode Worker<br/>NIXL UCX/TCP
+
+    PrefillW->>HostBuf: DMA transfer (HPU→CPU)<br/>KV cache data
+    HostBuf->>DecodeW: UCX/TCP transfer<br/>Dynamic port, No encryption
+    DecodeW->>DecodeW: DMA load (CPU→HPU)<br/>KV cache into decode HPU

@@ -1,78 +1,71 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Deploys and queries LLM models via OpenAI-compatible API"
-        sre = person "SRE / Platform Admin" "Manages infrastructure, monitors performance, validates RDMA fabric"
+        user = person "Data Scientist / ML Engineer" "Deploys models and sends inference requests"
+        platform_admin = person "Platform Admin" "Deploys and configures the llm-d inference stack"
 
-        llmd = softwareSystem "llm-d" "Kubernetes-native distributed LLM inference serving stack with intelligent routing, P/D disaggregation, and multi-accelerator support" {
-            modelServerCuda = container "llm-d-cuda" "NVIDIA GPU model server — vLLM with CUDA, NIXL, UCX, NVSHMEM, GDRCopy, DeepEP, DeepGEMM, FlashInfer" "Container Image (Dockerfile.cuda)"
-            modelServerCpu = container "llm-d-cpu" "CPU-only model server — vLLM with NIXL and UCX" "Container Image (Dockerfile.cpu)"
-            modelServerRocm = container "llm-d-rocm" "AMD ROCm model server — vLLM with RIXL and UCX" "Container Image (Dockerfile.rocm)"
-            modelServerHpu = container "llm-d-hpu" "Intel Gaudi model server — vLLM-Gaudi" "Container Image (Dockerfile.hpu)"
-            rdmaTools = container "llm-d-rdma-tools" "RDMA diagnostic toolkit — iperf3, perftest, NCCL tests, GDRCopy" "Container Image (Dockerfile.rdma-tools)"
-            deploymentGuides = container "Deployment Guides" "Kustomize well-lit-path blueprints for optimized baseline, P/D disaggregation, wide-EP, autoscaling, flow control" "Kustomize Overlays"
-            deploymentRecipes = container "Deployment Recipes" "Reusable Kustomize bases and components for model servers, gateways, scheduling, monitoring" "Kustomize Bases"
+        llmd = softwareSystem "llm-d" "Kubernetes-native distributed inference serving stack (CNCF Sandbox)" {
+            modelServer = container "vLLM Model Server" "OpenAI-compatible inference API on port 8000/TCP. Built from Dockerfiles for CUDA, CPU, ROCm, XPU." "Python/vLLM"
+            epp = container "llm-d-router EPP" "Endpoint Picker - KV-cache-aware, load-balanced request routing via ext-proc gRPC" "Go"
+            proxy = container "Envoy Proxy" "Sidecar or gateway proxy for inference traffic routing" "Envoy"
+            mooncakeMaster = container "Mooncake Master Store" "Singleton metadata store for KV-cache segment coordination. Ports 50051 (gRPC), 8080 (HTTP), 9003 (metrics)" "C++"
+            mooncakeClient = container "Mooncake Client" "DaemonSet agent for node-level RDMA KV-cache offload. Port 50052 (gRPC)" "C++"
+            nixl = container "NIXL KV Transfer" "Direct KV-cache transfer between prefill and decode pods on port 5600/TCP" "C++/gRPC"
+            kustomizeGuides = container "Kustomize Deployment Guides" "Production-ready deployment recipes: optimized-baseline, P/D disaggregation, prefix-cache, wide-EP, autoscaling" "Kustomize/YAML"
+            dockerfiles = container "Container Image Builds" "Multi-stage Dockerfiles for CUDA, CPU, ROCm, XPU accelerator variants" "Dockerfile"
         }
 
-        # Internal Platform Dependencies (sibling repos)
-        epp = softwareSystem "llm-d-inference-scheduler (EPP)" "Endpoint Picker — intelligent routing with prefix-cache affinity, load-awareness, predicted latency" "Internal llm-d"
-        gaie = softwareSystem "Gateway API Inference Extension" "InferencePool CRD — bridges gateway to model server pods via endpoint discovery" "Internal llm-d"
-        wva = softwareSystem "Workload Variant Autoscaler" "Cost-aware scaling across heterogeneous hardware variants" "Internal llm-d"
-        latencyPredictor = softwareSystem "Latency Predictor" "XGBoost-based TTFT/TPOT prediction for scheduling" "Internal llm-d"
-        kvIndexer = softwareSystem "KV-Cache Indexer" "Per-pod KV cache state tracking via ZMQ events" "Internal llm-d"
+        gatewayAPI = softwareSystem "Kubernetes Gateway API" "Ingress via Gateway and HTTPRoute CRDs" "External"
+        gaie = softwareSystem "Gateway API Inference Extension" "InferencePool CRD for endpoint discovery" "External"
+        istio = softwareSystem "Istio" "Service mesh, Gateway implementation with ext-proc support" "External"
+        agentgateway = softwareSystem "agentgateway" "Lightweight Gateway implementation" "External"
+        envoyAIGW = softwareSystem "Envoy AI Gateway" "AI-optimized Gateway implementation" "External"
+        gkeGateway = softwareSystem "GKE Gateway" "Google Cloud managed Gateway" "External"
 
-        # Kubernetes Infrastructure
-        gatewayAPI = softwareSystem "Kubernetes Gateway API" "Gateway and HTTPRoute CRDs for ingress traffic routing" "Infrastructure"
-        envoyProxy = softwareSystem "Envoy / Istio / AgentGateway" "L7 proxy implementing ext-proc for EPP routing decisions" "Infrastructure"
-        lws = softwareSystem "LeaderWorkerSet (LWS)" "Multi-node inference coordination for wide expert parallelism" "Infrastructure"
+        vllmUpstream = softwareSystem "vLLM (upstream)" "Core inference engine compiled into container images" "External"
+        llmdRouter = softwareSystem "llm-d-router" "Helm charts for EPP + Envoy proxy deployment" "Internal llm-d"
+        llmdBenchmark = softwareSystem "llm-d-benchmark" "Performance benchmarking harness" "Internal llm-d"
 
-        # Monitoring
-        prometheus = softwareSystem "Prometheus" "Metrics collection via PodMonitor scrape" "Monitoring"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing telemetry" "Monitoring"
-        grafana = softwareSystem "Grafana" "Pre-built dashboards for vLLM, P/D, flow control metrics" "Monitoring"
+        prometheus = softwareSystem "Prometheus" "Metrics collection from model servers and Mooncake" "External"
+        grafana = softwareSystem "Grafana" "Pre-built dashboards for vLLM, SGLang, P/D coordinator" "External"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing export on port 4317/TCP gRPC" "External"
+        jaeger = softwareSystem "Jaeger" "Trace visualization for request flow debugging" "External"
 
-        # External Services
-        hfHub = softwareSystem "HuggingFace Hub" "Model weight and tokenizer downloads" "External"
-        s3Storage = softwareSystem "S3 / Object Storage" "Model artifact storage for tiered KV cache offloading" "External"
+        hfHub = softwareSystem "HuggingFace Hub" "Model weight downloads via HTTPS/443 with Bearer token auth" "External"
+        wva = softwareSystem "Workload Variant Autoscaler" "SLO-aware autoscaling via HPA external metrics" "External"
+        lws = softwareSystem "LeaderWorkerSet" "Multi-node model server coordination CRD for wide expert parallelism" "External"
 
-        # In-process Libraries
-        nixl = softwareSystem "NIXL" "GPU-Direct RDMA KV cache transfer library" "Library"
-        lmcache = softwareSystem "LMCache" "Tiered KV cache offloading (GPU HBM to CPU to storage)" "Library"
-        vllm = softwareSystem "vLLM" "Core LLM inference engine (Neural Magic fork)" "Library"
+        # Relationships
+        user -> llmd "Sends inference requests (POST /v1/chat/completions)" "HTTP/HTTPS"
+        platform_admin -> llmd "Deploys and configures via Kustomize guides and Helm charts" "kubectl/helm"
 
-        # Relationships - User interactions
-        user -> envoyProxy "Sends inference requests via" "HTTP/HTTPS :80/443"
-        sre -> rdmaTools "Validates RDMA fabric with"
-        sre -> grafana "Monitors inference performance via"
+        llmd -> gatewayAPI "Uses Gateway and HTTPRoute CRDs for ingress" "Kubernetes API"
+        llmd -> gaie "Uses InferencePool CRD for endpoint discovery" "Kubernetes API"
+        llmd -> istio "Uses as Gateway implementation with mTLS optional" "HTTP/gRPC"
+        llmd -> agentgateway "Uses as lightweight Gateway implementation" "HTTP"
+        llmd -> envoyAIGW "Uses as AI-optimized Gateway implementation" "HTTP"
+        llmd -> gkeGateway "Uses as cloud-managed Gateway" "HTTPS"
 
-        # Relationships - Request flow
-        envoyProxy -> epp "Consults for routing decisions" "gRPC ext-proc :9002"
-        epp -> llmd "Selects optimal model server pod" "HTTP :8000"
-        envoyProxy -> llmd "Routes inference request to selected pod" "HTTP :8000"
+        llmd -> vllmUpstream "Builds inference engine from source into container images" "Source"
+        llmd -> llmdRouter "Deploys EPP + Envoy proxy via Helm charts" "Helm OCI"
+        llmd -> llmdBenchmark "Performance testing of inference deployments" "CLI"
 
-        # Relationships - llm-d internal
-        llmd -> vllm "Embeds as inference engine" "In-process"
-        llmd -> nixl "Uses for P/D KV cache transfer" "RDMA :5600"
-        llmd -> lmcache "Uses for tiered KV cache offloading" "In-process"
+        llmd -> prometheus "Exposes metrics on 8000/TCP and 9003/TCP" "HTTP"
+        llmd -> otelCollector "Exports traces on 4317/TCP" "gRPC"
+        prometheus -> grafana "Feeds dashboards" "PromQL"
+        otelCollector -> jaeger "Exports traces" "OTLP"
 
-        # Relationships - Infrastructure
-        llmd -> gatewayAPI "Consumes Gateway and HTTPRoute CRDs" "Kubernetes API"
-        llmd -> gaie "Consumes InferencePool CRD" "Kubernetes API"
-        envoyProxy -> gatewayAPI "Implements GatewayClass" "Kubernetes API"
+        llmd -> hfHub "Downloads model weights at pod startup" "HTTPS/443 Bearer"
+        llmd -> wva "Provides external metrics for SLO-aware autoscaling" "Prometheus"
+        llmd -> lws "Uses for multi-node expert parallelism coordination" "Kubernetes API"
 
-        # Relationships - Platform
-        epp -> latencyPredictor "Uses for predicted latency routing" "In-process sidecar"
-        epp -> kvIndexer "Uses for KV cache state tracking" "ZMQ events"
-        wva -> llmd "Autoscales model server replicas" "HPA/KEDA"
-        lws -> llmd "Coordinates multi-node inference" "Kubernetes CRD"
-
-        # Relationships - External
-        llmd -> hfHub "Downloads model weights" "HTTPS :443, Bearer HF_TOKEN"
-        llmd -> s3Storage "Offloads KV cache to storage" "HTTPS :443"
-
-        # Relationships - Monitoring
-        prometheus -> llmd "Scrapes /metrics" "HTTP :8000, 30s"
-        llmd -> otelCollector "Exports traces" "gRPC OTLP :4317"
-        grafana -> prometheus "Queries metrics" "HTTP :9090"
+        # Container-level relationships
+        proxy -> epp "ext-proc gRPC for route selection" "gRPC"
+        epp -> modelServer "Scrapes metrics and routes requests" "HTTP/8000"
+        modelServer -> nixl "KV-cache transfer in P/D disaggregation" "gRPC/5600"
+        modelServer -> mooncakeClient "KV-cache offload" "gRPC/50052"
+        mooncakeClient -> mooncakeMaster "Segment metadata coordination" "gRPC/50051"
+        modelServer -> hfHub "Model weight downloads" "HTTPS/443"
+        dockerfiles -> modelServer "Builds container images" "Docker"
     }
 
     views {
@@ -92,33 +85,21 @@ workspace {
                 color #ffffff
             }
             element "Internal llm-d" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Infrastructure" {
-                background #f5a623
-                color #ffffff
-            }
-            element "Monitoring" {
-                background #9b59b6
-                color #ffffff
-            }
-            element "Library" {
                 background #7ed321
-                color #ffffff
-            }
-            element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
-            element "Container" {
-                background #85bbf0
                 color #000000
             }
             element "Person" {
-                background #08427b
+                shape person
+                background #4a90e2
                 color #ffffff
-                shape Person
+            }
+            element "Software System" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Container" {
+                background #438dd5
+                color #ffffff
             }
         }
     }

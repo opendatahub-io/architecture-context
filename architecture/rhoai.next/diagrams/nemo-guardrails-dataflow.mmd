@@ -1,57 +1,53 @@
 sequenceDiagram
-    participant Client as Client<br/>(User / Platform)
+    participant Client as Client
     participant Platform as Platform Ingress<br/>(TLS Termination)
     participant Server as NeMo Guardrails Server<br/>8000/TCP HTTP
-    participant InputRails as Input Rails Engine<br/>(In-Process)
-    participant OutputRails as Output Rails Engine<br/>(In-Process)
-    participant LangChain as LangChain<br/>(In-Process)
-    participant LLM as LLM Provider<br/>443/TCP HTTPS TLS 1.2+
-    participant OTEL as OTEL Collector<br/>(Optional)
+    participant InputRails as Input Rails Pipeline
+    participant ExtAPI as External Guardrail APIs<br/>443/TCP HTTPS
+    participant LLM as LLM Inference Service<br/>443/TCP HTTPS
+    participant OutputRails as Output Rails Pipeline
 
-    rect rgb(230, 245, 255)
-        Note over Client,LLM: Flow 1: Chat Completion with Guardrails (POST /v1/chat/completions)
-        Client->>Platform: POST /v1/chat/completions<br/>Auth: Bearer Token
-        Platform->>Server: Forward (TLS terminated)<br/>X-Authorization: Bearer Token
-        Server->>InputRails: Evaluate input messages<br/>against configured rails
-        InputRails->>LangChain: LLM call for rail evaluation<br/>(e.g., content safety check)
-        LangChain->>LLM: POST /v1/chat/completions<br/>Auth: Bearer Token (from X-Authorization)<br/>HTTPS/443
-        LLM-->>LangChain: Rail evaluation result
-        LangChain-->>InputRails: Pass/Fail decision
-        alt Input Rails BLOCKED
-            InputRails-->>Server: Blocked (policy violation)
-            Server-->>Platform: 200 OK with block message
-            Platform-->>Client: Guardrail block response
-        else Input Rails PASSED
-            InputRails-->>Server: Passed
-            Server->>LangChain: Generate LLM response<br/>via configured model
-            LangChain->>LLM: POST /v1/chat/completions<br/>Auth: Bearer Token<br/>HTTPS/443
-            LLM-->>LangChain: LLM response
-            LangChain-->>Server: Generated response
-            Server->>OutputRails: Evaluate output<br/>against output rails
-            OutputRails->>LangChain: LLM call for output check<br/>(e.g., hallucination detection)
-            LangChain->>LLM: POST /v1/chat/completions<br/>HTTPS/443
-            LLM-->>LangChain: Output rail result
-            LangChain-->>OutputRails: Pass/Fail
-            OutputRails-->>Server: Final response (passed or modified)
-            Server-->>Platform: 200 OK JSON response
-            Platform-->>Client: Chat completion response
+    rect rgb(240, 248, 255)
+        Note over Client,OutputRails: Flow 1: Chat Completion with Guardrails (/v1/chat/completions)
+        Client->>Platform: POST /v1/chat/completions<br/>HTTPS (TLS 1.2+)
+        Platform->>Server: HTTP :8000<br/>(plaintext, platform-level auth)
+        Server->>InputRails: Process user message<br/>(local pipeline)
+        InputRails->>ExtAPI: Safety checks (optional)<br/>HTTPS :443, API Key Auth
+        ExtAPI-->>InputRails: Safety verdict
+        alt Input rails PASS
+            Server->>LLM: POST /v1/chat/completions<br/>HTTPS :443, Bearer Token (forwarded)
+            LLM-->>Server: LLM response
+            Server->>OutputRails: Process LLM response<br/>(local pipeline)
+            OutputRails->>ExtAPI: Output safety checks (optional)<br/>HTTPS :443, API Key Auth
+            ExtAPI-->>OutputRails: Safety verdict
+            alt Output rails PASS
+                Server-->>Platform: JSON response (guarded)
+                Platform-->>Client: HTTPS response
+            else Output rails FAIL
+                Server-->>Platform: Blocked/modified response
+                Platform-->>Client: Safety intervention message
+            end
+        else Input rails FAIL
+            Server-->>Platform: Blocked response (no LLM call)
+            Platform-->>Client: Safety intervention message
         end
     end
 
-    rect rgb(255, 245, 230)
-        Note over Client,LLM: Flow 2: Guardrail Checks - Stateless Validation (POST /v1/guardrail/checks)
-        Client->>Platform: POST /v1/guardrail/checks<br/>Auth: Bearer Token
-        Platform->>Server: Forward<br/>X-Authorization: Bearer Token
-        Server->>InputRails: Evaluate each message<br/>against specified rails
-        InputRails->>LangChain: Rail-specific LLM call<br/>(if evaluation requires LLM)
-        LangChain->>LLM: HTTPS/443<br/>Bearer Token
-        LLM-->>LangChain: Evaluation result
-        LangChain-->>InputRails: Per-rail status
-        InputRails-->>Server: Per-message rail results
-        Server-->>Platform: 200 OK NDJSON<br/>(per-message rail status)
-        Platform-->>Client: Guardrail check results
-    end
-
-    opt OpenTelemetry Enabled
-        Server->>OTEL: Export traces/spans<br/>gRPC/HTTP (TLS configurable)
+    rect rgb(255, 248, 240)
+        Note over Client,OutputRails: Flow 2: Guardrail-Only Check (/v1/guardrail/checks) [Fork-Specific]
+        Client->>Platform: POST /v1/guardrail/checks<br/>HTTPS (TLS 1.2+)
+        Platform->>Server: HTTP :8000<br/>(plaintext)
+        alt role = user/system
+            Server->>InputRails: Route to Input Rails
+            InputRails->>ExtAPI: Safety checks (if configured)<br/>HTTPS :443, API Key Auth
+            ExtAPI-->>InputRails: Safety verdict
+            InputRails-->>Server: Rail status per message
+        else role = assistant
+            Server->>OutputRails: Route to Output Rails
+            OutputRails->>ExtAPI: Safety checks (if configured)<br/>HTTPS :443, API Key Auth
+            ExtAPI-->>OutputRails: Safety verdict
+            OutputRails-->>Server: Rail status per message
+        end
+        Server-->>Platform: Rail evaluation results (no LLM call)
+        Platform-->>Client: HTTPS response with rail status
     end

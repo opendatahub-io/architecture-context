@@ -1,64 +1,56 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist / ML Engineer" "Deploys models and sends inference requests"
-        platformAdmin = person "Platform Admin" "Manages model serving infrastructure"
+        dataScientist = person "Data Scientist / ML Engineer" "Deploys and invokes ML models via gRPC"
+        platform = person "Platform Admin" "Manages ServingRuntime deployments and etcd cluster"
 
-        modelMesh = softwareSystem "ModelMesh" "Distributed LRU cache and routing layer for colocated model serving. Manages model lifecycle, placement, and inference routing across a cluster of pods." {
-            modelMeshApi = container "ModelMeshApi" "gRPC server handling external model management and inference routing. Supports registerModel, unregisterModel, getModelStatus, ensureLoaded, setVModel, deleteVModel, plus arbitrary inference RPCs." "Java 21 / gRPC / Netty" "Sidecar"
-            routingLogic = container "Routing / LRU Cache" "Distributed LRU cache manager. Determines model placement, handles cache eviction, and routes inference requests to the correct instance." "Java 21"
-            vmodelManager = container "VModel Manager" "Virtual model alias system enabling blue-green model deployments. Atomically transitions aliases between concrete model IDs." "Java 21"
-            litelinksRPC = container "Litelinks RPC" "Inter-pod communication layer using Thrift-over-TCP for model invocation forwarding and cache miss routing." "Litelinks 1.7.2 / Thrift"
-            metricsServer = container "Metrics Server" "Prometheus metrics endpoint exposing request latency, cache metrics, model counts, and instance utilization over HTTPS." "Java 21 / Netty / BouncyCastle"
+        modelmesh = softwareSystem "ModelMesh" "Distributed LRU cache framework for ML model serving — manages routing, lifecycle, and placement of models across a cluster of serving pods" {
+            modelMeshApi = container "ModelMeshApi" "External gRPC server exposing model management RPCs (register/unregister/status) and inference request proxying with zero-copy ByteBuf passthrough" "Java 21, gRPC, Netty" "Service"
+            modelMeshCore = container "ModelMesh Core" "Distributed LRU cache engine — manages model placement decisions, leader election, cache eviction, and inter-pod coordination via Litelinks" "Java 21, Litelinks, Thrift" "Core"
+            sidecarModelMesh = container "SidecarModelMesh" "gRPC client communicating with colocated model runtime container via ModelRuntime API for load/unload/serve operations" "Java 21, gRPC" "Client"
+            vModelManager = container "VModelManager" "Virtual model alias manager enabling blue-green model transitions without client changes" "Java 21" "Manager"
+            metricsReporter = container "Metrics Reporter" "Collects and exports operational metrics (inference latency, cache hits/misses, model load times)" "Prometheus / StatsD" "Metrics"
+            preStopServer = container "RuntimeContainersPreStopServer" "HTTP pre-stop hook server blocking colocated containers from exiting during graceful shutdown" "Java 21, Netty HTTP" "Hook"
         }
 
-        modelMeshServing = softwareSystem "modelmesh-serving Controller" "Kubernetes controller that manages ServingRuntimes and InferenceServices. Creates Deployments with ModelMesh sidecar containers." "Internal RHOAI"
-        modelRuntime = softwareSystem "Model Runtime" "Colocated model server (Triton Inference Server, Seldon MLServer, or custom) implementing the ModelRuntime gRPC interface." "Internal"
-        etcd = softwareSystem "etcd" "Distributed key-value store for model registry, instance tracking, leader election, and dynamic configuration." "External"
-        modelStorage = softwareSystem "Model Storage (S3/PVC)" "Persistent storage for ML model artifacts." "External"
-        prometheus = softwareSystem "Prometheus" "Monitoring system that scrapes metrics from ModelMesh instances." "External"
-        kubernetesAPI = softwareSystem "Kubernetes API" "Container orchestration platform providing pod lifecycle, service discovery, and secrets management." "External"
+        modelRuntime = softwareSystem "Model Runtime" "Colocated container implementing model loading/unloading and inference execution (Triton, MLServer, or custom)" "External"
+        etcd = softwareSystem "etcd" "Distributed key-value store for model registry, instance records, leader election, and dynamic configuration" "External"
+        modelmeshServing = softwareSystem "modelmesh-serving Controller" "Kubernetes operator that creates model-mesh Deployment pods with ModelMesh sidecar and model runtime containers" "Internal RHOAI"
+        modelStorage = softwareSystem "Model Storage (S3/PVC)" "Persistent storage for ML model artifacts" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and alerting system" "External"
+        otherModelMeshPods = softwareSystem "Other ModelMesh Pods" "Peer model-mesh instances in the same deployment for distributed model serving" "Internal"
 
-        # Relationships - People
-        dataScientist -> modelMesh "Sends inference requests and registers models" "gRPC/8033 TLS"
-        platformAdmin -> modelMeshServing "Configures ServingRuntimes and InferenceServices" "kubectl / API"
+        # User interactions
+        dataScientist -> modelmesh "Sends inference requests and model management RPCs" "gRPC/8033 TLS+mTLS(opt)"
+        platform -> modelmeshServing "Configures ServingRuntime deployments"
 
-        # Relationships - System level
-        modelMeshServing -> modelMesh "Deploys as sidecar, configures via env vars and mounted secrets" "Kubernetes API"
-        modelMesh -> etcd "Stores model registry, instance state, leader election, dynamic config, vmodel state" "gRPC/2379 TLS"
-        modelMesh -> modelRuntime "Sends loadModel, unloadModel, inference requests" "gRPC/8085 plaintext (localhost)"
-        modelRuntime -> modelStorage "Downloads model artifacts" "HTTPS/443 (S3) or volume mount (PVC)"
-        prometheus -> modelMesh "Scrapes metrics" "HTTPS/2112 TLS (self-signed)"
-        modelMeshServing -> kubernetesAPI "Creates Deployments, Services, Secrets" "HTTPS/6443"
+        # Internal container interactions
+        modelMeshApi -> modelMeshCore "Routes requests to core engine"
+        modelMeshCore -> sidecarModelMesh "Delegates model operations"
+        modelMeshCore -> vModelManager "Manages virtual model aliases"
+        modelMeshCore -> metricsReporter "Reports operational metrics"
 
-        # Container-level relationships
-        dataScientist -> modelMeshApi "registerModel, inference RPCs" "gRPC/8033 TLS + mTLS"
-        modelMeshApi -> routingLogic "Routes by model ID"
-        routingLogic -> vmodelManager "Resolves virtual model aliases"
-        routingLogic -> litelinksRPC "Forwards cache miss requests" "Thrift/8080 TLS"
-        routingLogic -> etcd "Model registry operations" "gRPC/2379 TLS"
-        vmodelManager -> etcd "Persists vmodel state" "gRPC/2379 TLS"
-        routingLogic -> modelRuntime "Model load/unload/inference" "gRPC/8085 plaintext"
-        prometheus -> metricsServer "Scrapes /metrics" "HTTPS/2112"
+        # External interactions
+        sidecarModelMesh -> modelRuntime "Load/unload/serve models" "gRPC/8085 or UDS, plaintext"
+        modelMeshCore -> etcd "Model registry, leader election, instance records" "gRPC/2379 TLS(configurable)"
+        vModelManager -> etcd "vModel state management" "gRPC/2379 TLS(configurable)"
+        modelMeshCore -> otherModelMeshPods "Forward inference requests to pods with loaded models" "Thrift/8080 TLS+mTLS(opt)"
+        modelRuntime -> modelStorage "Download model artifacts" "HTTPS/443 IAM"
+        prometheus -> metricsReporter "Scrapes operational metrics" "HTTPS/2112 self-signed TLS"
+        modelmeshServing -> modelmesh "Creates pods with ModelMesh sidecar" "Kubernetes API"
     }
 
     views {
-        systemContext modelMesh "SystemContext" {
+        systemContext modelmesh "SystemContext" {
             include *
             autoLayout
-            description "ModelMesh system context showing external interactions"
         }
 
-        container modelMesh "Containers" {
+        container modelmesh "Containers" {
             include *
             autoLayout
-            description "ModelMesh internal container view"
         }
 
         styles {
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -68,21 +60,37 @@ workspace {
                 color #ffffff
             }
             element "Internal" {
-                background #7ed321
+                background #9b59b6
                 color #ffffff
             }
-            element "Person" {
-                shape Person
-                background #08427b
-                color #ffffff
-            }
-            element "Sidecar" {
+            element "Service" {
                 background #4a90e2
                 color #ffffff
             }
-            element "Container" {
-                background #438dd5
+            element "Core" {
+                background #2c6fbb
                 color #ffffff
+            }
+            element "Client" {
+                background #5ba8f7
+                color #ffffff
+            }
+            element "Manager" {
+                background #3d7cc9
+                color #ffffff
+            }
+            element "Metrics" {
+                background #f5a623
+                color #ffffff
+            }
+            element "Hook" {
+                background #e67e22
+                color #ffffff
+            }
+            element "Person" {
+                background #08427b
+                color #ffffff
+                shape person
             }
         }
     }

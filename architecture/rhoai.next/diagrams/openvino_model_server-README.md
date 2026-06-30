@@ -1,7 +1,7 @@
 # Architecture Diagrams for OpenVINO Model Server (OVMS)
 
-Generated from: `architecture/rhoai.next/openvino_model_server.md`
-Date: 2026-06-22
+Generated from: `../openvino_model_server.md`
+Date: 2026-06-30
 
 **Note**: Diagram filenames use base component name without version (directory is already versioned).
 
@@ -10,9 +10,9 @@ Date: 2026-06-22
 Mermaid diagrams are available as `.mmd` source files. Use GitHub/GitLab's built-in Mermaid rendering, or https://mermaid.live to view and edit.
 
 ### For Developers
-- [Component Structure](./openvino_model_server-component.mmd) - Internal components (HTTP/gRPC servers, MediaPipe, servables, Model Manager)
-- [Data Flows](./openvino_model_server-dataflow.mmd) - Sequence diagrams of REST inference, LLM streaming, gRPC, and model loading
-- [Dependencies](./openvino_model_server-dependencies.mmd) - Component dependency graph (OpenVINO, MediaPipe, cloud storage, platform)
+- [Component Structure](./openvino_model_server-component.mmd) - Internal components (core server, inference pipelines, MediaPipe calculators, storage layer)
+- [Data Flows](./openvino_model_server-dataflow.mmd) - Sequence diagrams: REST inference, LLM streaming, cloud model loading, HuggingFace pull
+- [Dependencies](./openvino_model_server-dependencies.mmd) - Component dependency graph (OpenVINO, bundled libs, cloud services, platform)
 
 ### For Architects
 - [C4 Context](./openvino_model_server-c4-context.dsl) - System context in C4 format (Structurizr)
@@ -21,7 +21,14 @@ Mermaid diagrams are available as `.mmd` source files. Use GitHub/GitLab's built
 ### For Security Teams
 - [Security Network Diagram (Mermaid)](./openvino_model_server-security-network.mmd) - Visual network topology with trust zones (editable)
 - [Security Network Diagram (ASCII)](./openvino_model_server-security-network.txt) - Precise text format for SAR submissions
-- [RBAC Visualization](./openvino_model_server-rbac.mmd) - RBAC, auth enforcement, and secrets overview
+- [RBAC Visualization](./openvino_model_server-rbac.mmd) - Auth mechanisms: kube-rbac-proxy sidecar, Bearer token, endpoint protection
+
+## Key Security Notes
+
+- **No built-in TLS**: OVMS uses plaintext HTTP/gRPC — TLS is provided by kube-rbac-proxy sidecar
+- **gRPC**: Uses `InsecureServerCredentials()` by design
+- **Auth**: Optional Bearer token only on `/v3/*` generative endpoints; `/v1/*`, `/v2/*` rely on sidecar auth
+- **No Kubernetes RBAC**: OVMS is a standalone server binary, RBAC managed by KServe ServingRuntime
 
 ## How to Use
 

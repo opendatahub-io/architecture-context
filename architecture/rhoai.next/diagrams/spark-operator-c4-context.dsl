@@ -1,58 +1,49 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and manages Spark applications on Kubernetes/OpenShift"
+        user = person "Data Scientist" "Creates and manages Spark applications, scheduled jobs, and SparkConnect sessions"
+        sre = person "SRE / Platform Admin" "Monitors operator health and Spark workload metrics"
 
-        sparkOperator = softwareSystem "Spark Operator" "Kubernetes operator that automates submission, scheduling, monitoring, and lifecycle management of Apache Spark applications" {
-            controller = container "spark-operator-controller" "Watches SparkApplication, ScheduledSparkApplication, and SparkConnect CRDs; creates and manages driver pods, Services, Ingresses, and ConfigMaps" "Go Operator (controller-runtime v0.20.4)"
-            webhook = container "spark-operator-webhook" "Mutates Spark pods (injects volumes, env vars, labels, security contexts), validates SparkApplication specs, enforces ResourceQuota" "Go Admission Webhook (9443/TCP HTTPS)"
-            mwhController = container "MutatingWebhookConfig Controller" "Syncs self-signed CA certificate bundle to MutatingWebhookConfiguration for certificate rotation" "Go Controller"
-            vwhController = container "ValidatingWebhookConfig Controller" "Syncs self-signed CA certificate bundle to ValidatingWebhookConfiguration for certificate rotation" "Go Controller"
-            certManager = container "Certificate Manager" "Self-signed RSA-2048 CA with 10-year validity, 180-day expiry check, auto-regeneration" "Go (pkg/certificate)"
+        sparkOperator = softwareSystem "Spark Operator" "Kubernetes operator that automates lifecycle management of Apache Spark applications, scheduled jobs, and Spark Connect servers" {
+            controller = container "spark-operator-controller" "Watches SparkApplication, ScheduledSparkApplication, and SparkConnect CRs; manages Spark driver/executor pods via spark-submit; creates Services and Ingresses for Spark UI; handles retries, TTL, and cleanup" "Go Operator (controller-runtime)"
+            webhook = container "spark-operator-webhook" "Admission webhooks that mutate Spark pods (inject config, volumes, env vars, sidecars, GPU, monitoring), validate SparkApplications, and manage self-signed TLS certificates" "Go Webhook Server (controller-runtime)"
+            certProvider = container "Certificate Provider" "Self-signed CA generation, Secret synchronization, and cert rotation for webhook TLS" "Go Library (pkg/certificate)"
         }
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Kubernetes cluster API for resource management" "External"
-        openShiftAPI = softwareSystem "OpenShift APIServer" "OpenShift cluster configuration including TLS security profiles" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal Platform"
-        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator that deploys spark-operator via kustomize overlays" "Internal Platform"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for resource CRUD, admission webhooks, and authentication" "External"
+        openShiftAPI = softwareSystem "OpenShift APIServer" "Provides cluster-wide TLS security profile configuration" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring via PodMonitor" "Internal Platform"
+        volcano = softwareSystem "Volcano Scheduler" "Optional batch scheduler for gang scheduling via PodGroup CRs" "External Optional"
+        yuniKorn = softwareSystem "YuniKorn Scheduler" "Optional scheduler with task-group annotation injection" "External Optional"
+        schedulerPlugins = softwareSystem "Kubernetes Scheduler Plugins" "Optional gang scheduling via scheduling.k8s.io PodGroup CRs" "External Optional"
+        kueue = softwareSystem "Kueue" "Workload queueing integration via label conventions" "External Optional"
+        certManager = softwareSystem "cert-manager" "Optional external TLS certificate management" "External Optional"
+        rhodsOperator = softwareSystem "RHOAI / ODH Operator" "Platform operator that deploys spark-operator via kustomize overlays" "Internal Platform"
+        workbench = softwareSystem "ODH/RHOAI Workbench" "Interactive notebook environment for data scientists" "Internal Platform"
 
-        volcano = softwareSystem "Volcano" "Batch scheduler for gang scheduling via PodGroup CRDs" "External Optional"
-        schedulerPlugins = softwareSystem "Kube-scheduler Plugins" "Scheduler plugins for PodGroup-based co-scheduling" "External Optional"
-        yunikorn = softwareSystem "YuniKorn" "Scheduler using pod annotations for gang scheduling" "External Optional"
-        kueue = softwareSystem "Kueue" "Workload queuing via pod labels" "External Optional"
-        certManagerExt = softwareSystem "cert-manager" "Optional external certificate management" "External Optional"
+        # User interactions
+        user -> sparkOperator "Creates SparkApplication, ScheduledSparkApplication, SparkConnect CRs via kubectl" "HTTPS/443"
+        user -> sparkOperator "Views Spark UI" "HTTP/4040"
+        sre -> prometheus "Reviews Spark application and executor metrics"
 
-        sparkDriver = softwareSystem "Spark Driver Pod" "Executes Spark application driver logic, creates executor pods" "Managed Workload"
-        sparkExecutor = softwareSystem "Spark Executor Pods" "Execute Spark tasks assigned by the driver" "Managed Workload"
-        sparkConnect = softwareSystem "SparkConnect Server" "Persistent Spark Connect gRPC server for interactive sessions" "Managed Workload"
+        # Workbench interactions
+        workbench -> sparkOperator "Connects to SparkConnect server for interactive Spark sessions" "gRPC/15002"
 
-        # Relationships
-        user -> sparkOperator "Creates SparkApplication/ScheduledSparkApplication/SparkConnect CRs" "kubectl / HTTPS 443"
-        user -> sparkConnect "Connects for interactive sessions" "gRPC 15002"
-        user -> sparkDriver "Views Spark Web UI" "HTTP 4040 (via Ingress)"
+        # Internal container interactions
+        controller -> webhook "Pod admission review during driver/executor creation" "HTTPS/9443"
+        webhook -> certProvider "Manages TLS certificate lifecycle"
 
-        sparkOperator -> k8sAPI "CRUD on Pods, Services, Ingresses, ConfigMaps, CRDs, Events, Leases" "HTTPS/443 TLS 1.2+"
-        sparkOperator -> openShiftAPI "Reads cluster TLS security profile for webhook cipher configuration" "HTTPS/443 TLS 1.2+"
-        sparkOperator -> sparkDriver "Creates and manages driver pods" "K8s API"
-        sparkOperator -> sparkExecutor "Mutates executor pods at admission" "Webhook"
+        # External dependencies
+        sparkOperator -> k8sAPI "Watches CRDs, creates/updates pods, services, configmaps, ingresses, webhook configurations" "HTTPS/443"
+        sparkOperator -> openShiftAPI "Reads cluster TLS security profile (config.openshift.io/v1 APIServer)" "HTTPS/443"
+        sparkOperator -> volcano "Creates PodGroup CRs for gang scheduling" "HTTPS/443"
+        sparkOperator -> yuniKorn "Injects task-group annotations on driver/executor pods"
+        sparkOperator -> schedulerPlugins "Creates PodGroup CRs for gang scheduling" "HTTPS/443"
+        sparkOperator -> kueue "Applies kueue.x-k8s.io/ labels for workload queueing"
+        sparkOperator -> certManager "Optional: delegates webhook TLS certificate management" "HTTPS/443"
 
-        controller -> webhook "Pods intercepted at admission" "AdmissionReview"
-        mwhController -> certManager "Gets CA cert bundle" "Internal"
-        vwhController -> certManager "Gets CA cert bundle" "Internal"
-
-        sparkDriver -> k8sAPI "Creates executor pods" "HTTPS/443 SA token"
-        sparkDriver -> sparkExecutor "Spark RPC communication" "TCP 7078,7079"
-        sparkConnect -> sparkExecutor "Spark RPC communication" "TCP 7078,7079"
-
-        k8sAPI -> webhook "Admission reviews (mutate/validate)" "HTTPS 443→9443 mTLS"
-
-        prometheus -> sparkOperator "Scrapes metrics" "HTTP/8080"
-        rhodsOperator -> sparkOperator "Deploys via kustomize overlays" "Manifest management"
-
-        sparkOperator -> volcano "Creates PodGroup CRDs for gang scheduling" "K8s API"
-        sparkOperator -> schedulerPlugins "Creates PodGroup CRDs for co-scheduling" "K8s API"
-        sparkOperator -> yunikorn "Annotates pods with task-groups" "Pod annotations"
-        sparkOperator -> kueue "Labels pods with queue-name" "Pod labels"
-        sparkOperator -> certManagerExt "Optional TLS certificate management" "K8s CRD API"
+        # Platform dependencies
+        rhodsOperator -> sparkOperator "Deploys via kustomize overlays, injects image references"
+        prometheus -> sparkOperator "Scrapes spark_application_* and spark_executor_* metrics" "HTTP/8080"
     }
 
     views {
@@ -67,33 +58,30 @@ workspace {
         }
 
         styles {
+            element "Software System" {
+                background #438DD5
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
             }
             element "External Optional" {
-                background #cccccc
-                color #333333
+                background #bbbbbb
+                color #ffffff
+                shape RoundedBox
             }
             element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
-            element "Managed Workload" {
-                background #4a90e2
-                color #ffffff
-            }
             element "Person" {
-                background #08427b
+                background #08427B
                 color #ffffff
                 shape Person
             }
-            element "Software System" {
-                background #1168bd
-                color #ffffff
-            }
             element "Container" {
-                background #438dd5
+                background #438DD5
                 color #ffffff
             }
         }

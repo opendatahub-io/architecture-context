@@ -1,59 +1,50 @@
 sequenceDiagram
-    participant User as User / Platform
+    participant Client as External Client
+    participant Gateway as data-science-gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant MLflow as MLflow Server<br/>8443/TCP HTTPS TLS (service-ca)
     participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant Operator as MLflow Operator<br/>controller-runtime
-    participant HelmEngine as Helm Renderer<br/>(in-process library)
-    participant Gateway as data-science-gateway<br/>443/TCP HTTPS
-    participant MLflow as MLflow Server<br/>8443/TCP HTTPS
-    participant PG as PostgreSQL<br/>5432/TCP
+    participant DB as PostgreSQL/MySQL<br/>5432/TCP or 3306/TCP
     participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant MigJob as Migration Job<br/>(Alembic Python)
 
-    Note over User,S3: Flow 1: MLflow CR Reconciliation
-    User->>K8sAPI: Create/Update MLflow CR<br/>Bearer Token, TLS 1.2+
-    K8sAPI-->>Operator: Watch event (informer)<br/>ServiceAccount token
-    Operator->>K8sAPI: Discovery API check<br/>(HTTPRoute, ConsoleLink, ServiceMonitor CRDs)
-    K8sAPI-->>Operator: Available CRDs
-    Operator->>HelmEngine: Render chart with CRD spec → Helm values
-    HelmEngine-->>Operator: Rendered K8s objects
-    Operator->>K8sAPI: Server-Side Apply (SSA)<br/>fieldOwner: mlflow-operator
-    K8sAPI-->>Operator: Applied resources
-
-    Note over User,S3: Flow 2: Client Request to MLflow
-    User->>Gateway: POST /mlflow/api/...<br/>HTTPS, Bearer Token
-    Gateway->>MLflow: Forward via HTTPRoute<br/>8443/TCP, TLS (service-ca)
-    MLflow->>K8sAPI: SelfSubjectAccessReview<br/>User's Bearer Token, TLS 1.2+
-    K8sAPI-->>MLflow: Allow/Deny
-    alt Authorized
-        MLflow->>PG: Query/Store metadata<br/>5432/TCP, TLS optional
-        PG-->>MLflow: Result
-        MLflow->>S3: Store/Retrieve artifacts<br/>443/TCP, AWS credentials
+    rect rgb(230, 245, 255)
+        Note over Client,S3: Flow 1: MLflow API Request via Gateway
+        Client->>Gateway: POST /mlflow/api/2.0/...<br/>HTTPS/443, TLS 1.2+<br/>Auth: Bearer Token
+        Gateway->>MLflow: Forward request<br/>HTTPS/8443, TLS (service-ca)<br/>Auth: Forwarded Bearer Token
+        MLflow->>K8sAPI: SelfSubjectAccessReview<br/>HTTPS/6443, TLS<br/>Auth: ServiceAccount Token
+        K8sAPI-->>MLflow: AuthZ decision (allow/deny)
+        MLflow->>DB: Query/Store metadata<br/>TCP/5432, TLS verify-full<br/>Auth: Connection string
+        DB-->>MLflow: Query results
+        MLflow->>S3: Store/Retrieve artifacts<br/>HTTPS/443, TLS<br/>Auth: AWS credentials (env)
         S3-->>MLflow: Artifact data
         MLflow-->>Gateway: JSON Response
-        Gateway-->>User: 200 OK
-    else Denied
-        MLflow-->>Gateway: 403 Forbidden
-        Gateway-->>User: 403 Forbidden
+        Gateway-->>Client: JSON Response
     end
 
-    Note over User,S3: Flow 3: Database Migration (on version upgrade)
-    Operator->>K8sAPI: Scale MLflow Deployment to 0<br/>ServiceAccount token
-    K8sAPI-->>Operator: Scaled down
-    Operator->>Operator: Wait for all pods terminated
-    Operator->>K8sAPI: Create Migration Job<br/>(same image, volumes, env)
-    K8sAPI-->>Operator: Job created
-    MigJob->>PG: Run Alembic migration<br/>5432/TCP, TLS optional
-    PG-->>MigJob: Migration result
-    alt Success
-        MigJob-->>K8sAPI: Job completed (exit 0)
-        K8sAPI-->>Operator: Job success event
-        Operator->>K8sAPI: Restore Deployment replicas<br/>Update status.version
-    else Terminal Failure
-        MigJob-->>K8sAPI: Job failed (exit 2/3)
-        K8sAPI-->>Operator: Job failure event
-        Operator->>Operator: Set error condition<br/>(no retry)
-    else Retryable Failure
-        MigJob-->>K8sAPI: Job failed (exit 1)
-        K8sAPI-->>Operator: Job failure event
-        Operator->>Operator: Retry after 2min delay
+    rect rgb(255, 245, 230)
+        Note over Client,S3: Flow 2: Database Migration (Version Upgrade)
+        participant Operator as MLflow Operator
+        participant MigJob as Migration Job Pod
+
+        Operator->>K8sAPI: Watch MLflow CR change<br/>HTTPS/6443, TLS
+        Operator->>K8sAPI: Scale Deployment to 0<br/>HTTPS/6443, TLS
+        Note over Operator: Wait for pods to drain
+        Operator->>K8sAPI: Create Migration Job<br/>(reuses Deployment pod spec)
+        K8sAPI-->>MigJob: Job pod scheduled
+        MigJob->>DB: mlflow db upgrade<br/>TCP/5432, TLS<br/>Auth: Connection string
+        DB-->>MigJob: Migration complete
+        MigJob-->>Operator: Job succeeded (exit 0)
+        Operator->>K8sAPI: Restore Deployment replicas<br/>HTTPS/6443, TLS
+    end
+
+    rect rgb(245, 255, 230)
+        Note over Client,S3: Flow 3: Garbage Collection
+        participant GCJob as GC CronJob Pod
+
+        Note over GCJob: Scheduled CronJob fires
+        GCJob->>DB: Delete soft-deleted metadata<br/>TCP/5432, TLS<br/>Auth: Connection string
+        DB-->>GCJob: Rows deleted
+        GCJob->>MLflow: Delete artifacts (proxied)<br/>HTTPS/8443, TLS (service-ca)<br/>Auth: Kubernetes auth (SA token)
+        MLflow->>S3: Delete artifact files<br/>HTTPS/443, TLS
+        S3-->>MLflow: Deleted
+        MLflow-->>GCJob: Artifact deletion confirmed
     end

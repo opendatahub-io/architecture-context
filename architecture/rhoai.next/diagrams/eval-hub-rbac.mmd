@@ -1,91 +1,104 @@
 graph TD
-    subgraph Operator["TrustyAI Service Operator (creates RBAC)"]
-        TrustyAI["TrustyAI Operator<br/>Manages EvalHub CR"]
+    subgraph Operator["TrustyAI Service Operator (provisions RBAC)"]
+        OpNote["Roles and bindings are created<br/>by the operator, not by EvalHub"]
     end
 
     subgraph ServiceAccounts["Service Accounts"]
-        SA_Job["{instance}-{namespace}-job<br/>Evaluation Job SA"]
+        SA_EvalHub["eval-hub ServiceAccount<br/>(operator-provisioned)"]
+        SA_Sidecar["eval-job ServiceAccount<br/>(per-job, operator-provisioned)"]
     end
 
-    subgraph RoleBindings["Role Bindings (Tenant Namespace)"]
-        RB_Job["RoleBinding<br/>(created by operator)"]
+    subgraph ClusterRoleBindings["Role Bindings (operator-managed)"]
+        CRB1["eval-hub-role-binding"]
+        CRB2["eval-job-role-binding"]
     end
 
-    subgraph Roles["Cluster/Role Permissions"]
-        CR_Batch["Role: Job Creator<br/>(created by operator)"]
+    subgraph Roles["Roles / ClusterRoles"]
+        CR_Main["eval-hub-role<br/>(operator-provisioned)"]
+        CR_Job["eval-job-role<br/>(operator-provisioned)"]
     end
 
     subgraph APIResources["API Resources"]
-        Jobs["batch<br/>jobs"]
-        ConfigMaps["core (&#34;&#34;)<br/>configmaps"]
-        Secrets["core (&#34;&#34;)<br/>secrets"]
-        HWProfiles["infrastructure.opendatahub.io<br/>hardwareprofiles"]
+        subgraph BatchAPI["batch API Group"]
+            Jobs["batch/jobs"]
+        end
+
+        subgraph CoreAPI["core API Group"]
+            ConfigMaps["core/configmaps"]
+            Secrets["core/secrets"]
+        end
+
+        subgraph InfraAPI["infrastructure.opendatahub.io"]
+            HWProfiles["hardwareprofiles"]
+        end
     end
 
-    subgraph Verbs_Jobs["Verbs"]
-        V_Jobs["create, get, list, delete"]
-    end
-    subgraph Verbs_CM["Verbs"]
-        V_CM["create, get, list,<br/>update, delete"]
-    end
-    subgraph Verbs_Secrets["Verbs"]
-        V_Secrets["get, create, update,<br/>delete, list"]
-    end
-    subgraph Verbs_HW["Verbs"]
-        V_HW["get, delete"]
+    subgraph AuthEnforcement["Authentication Enforcement"]
+        RBAC_Proxy["kube-rbac-proxy<br/>(sidecar container)"]
+        SAR["SubjectAccessReview<br/>(K8s API)"]
     end
 
-    %% Operator creates RBAC
-    TrustyAI -->|creates| SA_Job
-    TrustyAI -->|creates| RB_Job
-    TrustyAI -->|creates| CR_Batch
+    subgraph InboundAuth["Inbound Authentication"]
+        BearerToken["Bearer Token<br/>(Kubernetes SA token)"]
+        Headers["Injected Headers:<br/>X-Tenant, X-User"]
+    end
+
+    %% Operator provisions everything
+    Operator -->|provisions| SA_EvalHub
+    Operator -->|provisions| SA_Sidecar
+    Operator -->|provisions| CR_Main
+    Operator -->|provisions| CR_Job
+    Operator -->|provisions| CRB1
+    Operator -->|provisions| CRB2
 
     %% Bindings
-    SA_Job -->|bound via| RB_Job
-    RB_Job -->|grants| CR_Batch
+    SA_EvalHub -->|bound via| CRB1
+    SA_Sidecar -->|bound via| CRB2
+    CRB1 -->|grants| CR_Main
+    CRB2 -->|grants| CR_Job
 
     %% Permissions
-    CR_Batch --> Jobs
-    CR_Batch --> ConfigMaps
-    CR_Batch --> Secrets
-    CR_Batch --> HWProfiles
+    CR_Main -->|"create, delete,<br/>list, get, watch"| Jobs
+    CR_Main -->|"create, delete,<br/>list, get, watch"| ConfigMaps
+    CR_Main -->|"create, delete,<br/>list, get, watch"| Secrets
+    CR_Main -->|"get, list"| HWProfiles
 
-    Jobs --> V_Jobs
-    ConfigMaps --> V_CM
-    Secrets --> V_Secrets
-    HWProfiles --> V_HW
+    CR_Job -->|"get, list"| ConfigMaps
+    CR_Job -->|"get, list"| Secrets
 
-    %% Auth Mechanisms
-    subgraph AuthMechanisms["Authentication Mechanisms"]
-        direction LR
-        KRBACAuth["kube-rbac-proxy<br/>8443/TCP<br/>Bearer Token → X-Tenant + X-User"]
-        SAToken["ServiceAccount Token<br/>Projected volume<br/>Auto-rotated"]
-        CredInjection["Credential Injection<br/>ref-token → real API key<br/>Adapter never sees real creds"]
+    %% Auth flow
+    BearerToken -->|validated by| RBAC_Proxy
+    RBAC_Proxy -->|performs| SAR
+    SAR -->|on success| Headers
+    Headers -->|forwarded to| EvalHubAPI["eval-hub API<br/>(8080/TCP)"]
+
+    %% Secret Types
+    subgraph SecretTypes["Secrets Managed"]
+        ModelAuth["model-auth (per Job)<br/>Opaque - real model credentials<br/>User-provisioned"]
+        RefTokens["internal-model-ref (per Job)<br/>Opaque - ephemeral ref tokens<br/>Auto-created, auto-deleted"]
+        TestData["test-data (per Job)<br/>Opaque - S3 credentials<br/>User-provisioned"]
+        OCICreds["oci-credentials (per Job)<br/>dockerconfigjson<br/>User-provisioned"]
+        MLflowToken["mlflow-token<br/>Opaque - MLflow auth<br/>Platform, SA rotation"]
+        ServiceCA["service-ca.crt<br/>ConfigMap - TLS cert<br/>service-ca-operator"]
     end
 
-    subgraph SecretTypes["Managed Secrets"]
-        direction LR
-        ServiceCA["{instance}-service-ca<br/>ConfigMap (CA cert)<br/>Auto-rotated by service-ca op"]
-        ModelAuth["Model auth secret<br/>Opaque (api-key, hf-token)<br/>User-provided"]
-        OCICreds["OCI credentials<br/>dockerconfigjson<br/>User-provided"]
-        S3Creds["S3 test-data secret<br/>Opaque (AWS creds)<br/>User-provided"]
-        RefToken["{job}-{guid}-model-ref<br/>Opaque (ephemeral)<br/>Auto-created per job"]
-    end
+    CR_Main -->|manages| RefTokens
 
     %% Styling
-    style TrustyAI fill:#7ed321,stroke:#333,color:#fff
-    style SA_Job fill:#4a90e2,stroke:#333,color:#fff
-    style RB_Job fill:#f5a623,stroke:#333,color:#fff
-    style CR_Batch fill:#f5a623,stroke:#333,color:#fff
-    style Jobs fill:#dae8fc,stroke:#6c8ebf
-    style ConfigMaps fill:#dae8fc,stroke:#6c8ebf
-    style Secrets fill:#dae8fc,stroke:#6c8ebf
-    style HWProfiles fill:#dae8fc,stroke:#6c8ebf
-    style KRBACAuth fill:#ffe6cc,stroke:#d79b00
-    style SAToken fill:#ffe6cc,stroke:#d79b00
-    style CredInjection fill:#ffe6cc,stroke:#d79b00
-    style ServiceCA fill:#e1d5e7,stroke:#9673a6
-    style ModelAuth fill:#e1d5e7,stroke:#9673a6
-    style OCICreds fill:#e1d5e7,stroke:#9673a6
-    style S3Creds fill:#e1d5e7,stroke:#9673a6
-    style RefToken fill:#e1d5e7,stroke:#9673a6
+    style SA_EvalHub fill:#4a90e2,stroke:#333,color:#fff
+    style SA_Sidecar fill:#4a90e2,stroke:#333,color:#fff
+    style CR_Main fill:#f5a623,stroke:#333
+    style CR_Job fill:#f5a623,stroke:#333
+    style Jobs fill:#7ed321,stroke:#333
+    style ConfigMaps fill:#7ed321,stroke:#333
+    style Secrets fill:#7ed321,stroke:#333
+    style HWProfiles fill:#7ed321,stroke:#333
+    style RBAC_Proxy fill:#e74c3c,stroke:#333,color:#fff
+    style SAR fill:#e74c3c,stroke:#333,color:#fff
+    style OpNote fill:#fff,stroke:#999,stroke-dasharray: 5 5
+    style ModelAuth fill:#fff2cc,stroke:#d6b656
+    style RefTokens fill:#fff2cc,stroke:#d6b656
+    style TestData fill:#fff2cc,stroke:#d6b656
+    style OCICreds fill:#fff2cc,stroke:#d6b656
+    style MLflowToken fill:#fff2cc,stroke:#d6b656
+    style ServiceCA fill:#fff2cc,stroke:#d6b656

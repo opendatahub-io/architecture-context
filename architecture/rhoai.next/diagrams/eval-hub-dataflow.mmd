@@ -1,68 +1,66 @@
 sequenceDiagram
-    autonumber
-
-    participant Client as Client<br/>(Dashboard / CLI)
-    participant KRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS
-    participant EvalHub as eval-hub API<br/>8080/TCP HTTP
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant Init as eval-runtime-init<br/>(Init Container)
+    participant User as User / MCP Client
+    participant RBAC as kube-rbac-proxy<br/>8443/TCP TLS 1.2+
+    participant API as eval-hub API<br/>8080/TCP HTTP
+    participant K8s as Kubernetes API<br/>443/TCP HTTPS
+    participant MLflow as MLflow Tracking<br/>HTTPS
+    participant Init as eval-runtime-init<br/>(init container)
     participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant Sidecar as eval-runtime-sidecar<br/>8080/TCP
-    participant Adapter as Adapter Container<br/>(lm-eval-harness / etc.)
-    participant Model as Model Inference<br/>Endpoint
-    participant MLflow as MLflow Tracking<br/>Server
+    participant Adapter as Benchmark Adapter<br/>(lm-eval, RAGAS, etc.)
+    participant Sidecar as eval-runtime-sidecar<br/>8080/TCP HTTP
+    participant Model as Model Endpoint<br/>HTTPS
     participant OCI as OCI Registry<br/>443/TCP HTTPS
 
-    rect rgb(240, 248, 255)
-        Note over Client,K8sAPI: Flow 1: Evaluation Job Submission (Cluster Mode)
-        Client->>KRBAC: POST /api/v1/evaluations/jobs<br/>Auth: Bearer Token (user)
-        KRBAC->>EvalHub: Forward request<br/>X-Tenant + X-User headers (plaintext, pod-local)
-        EvalHub->>K8sAPI: Create ConfigMap (sidecar config)<br/>Auth: SA Token
-        EvalHub->>K8sAPI: Create/read Secrets (model auth, S3)<br/>Auth: SA Token
-        EvalHub->>K8sAPI: Create Job (3-container pod)<br/>Auth: SA Token
-        EvalHub-->>KRBAC: 201 Created (job ID, status)
-        KRBAC-->>Client: JSON Response
-    end
+    Note over User,OCI: Flow 1: Evaluation Job Submission
+    User->>RBAC: POST /api/v1/evaluations/jobs<br/>Auth: Bearer Token (SA token)
+    RBAC->>RBAC: SubjectAccessReview
+    RBAC->>API: Forward request<br/>X-Tenant + X-User headers
+    API->>API: Validate job config<br/>Build Job spec
+    API->>K8s: Create batch/v1 Job<br/>+ ConfigMap (sidecar config)<br/>+ Secret (ref tokens)<br/>Auth: SA token
+    K8s-->>API: Job created
+    API->>MLflow: Create experiment (optional)<br/>Auth: Bearer token (file)
+    MLflow-->>API: Experiment ID
+    API-->>RBAC: 202 Accepted<br/>{job_id, status: pending}
+    RBAC-->>User: HTTPS response
 
-    rect rgb(255, 248, 240)
-        Note over Init,S3: Flow 2a: Init Container — Test Data Download
-        Init->>S3: Download test data<br/>Auth: AWS IAM credentials (Secret mount)
-        S3-->>Init: Test data files
-        Note over Init: Completes → Sidecar starts (KEP-753)
-    end
+    Note over User,OCI: Flow 2: Evaluation Job Execution (Pod Lifecycle)
+    K8s->>Init: Start init container
+    Init->>S3: Download test data<br/>Auth: AWS IAM credentials
+    S3-->>Init: Test data files
+    Init-->>K8s: Init complete
 
-    rect rgb(240, 255, 240)
-        Note over Sidecar,OCI: Flow 2b: Evaluation Job Execution
-        Note over Sidecar: Startup probe: GET /health<br/>Sidecar ready before adapter starts
+    K8s->>Adapter: Start adapter container
+    K8s->>Sidecar: Start sidecar (native, RestartPolicy=Always)
 
-        Adapter->>Sidecar: Model inference request<br/>Auth: ref-token (synthetic)
-        Sidecar->>Sidecar: Credential injection<br/>ref-token → real API key
-        Sidecar->>Model: Forward request<br/>Auth: Real API key (injected)
+    loop For each benchmark
+        Adapter->>Sidecar: Model inference request<br/>Auth: ref token (api-key:ref)
+        Sidecar->>Sidecar: Detect ref token<br/>Inject real credentials
+        Sidecar->>Model: Forward with real credentials<br/>Auth: Bearer token (from Secret)
         Model-->>Sidecar: Inference response
         Sidecar-->>Adapter: Response
 
         Adapter->>Sidecar: POST /api/v1/evaluations/jobs/{id}/events<br/>Status update
-        Sidecar->>KRBAC: Forward to eval-hub<br/>Auth: SA Token
-        KRBAC->>EvalHub: Job status event<br/>X-Tenant + X-User
+        Sidecar->>RBAC: Forward status event<br/>Auth: SA token (cached 5m)
+        RBAC->>API: Status event
+        API-->>RBAC: OK
+        RBAC-->>Sidecar: OK
 
-        Adapter->>Sidecar: MLflow tracking call<br/>POST /api/2.0/mlflow/*
-        Sidecar->>MLflow: Forward<br/>Auth: SA Projected Token
-        MLflow-->>Sidecar: Tracking response
-        Sidecar-->>Adapter: Response
-
-        Adapter->>Sidecar: OCI artifact push<br/>PUT /v2/{repo}/blobs/*
-        Sidecar->>OCI: Forward<br/>Auth: Docker v2 Bearer
-        OCI-->>Sidecar: Push response
-        Sidecar-->>Adapter: Response
+        Adapter->>Sidecar: MLflow tracking calls
+        Sidecar->>MLflow: Forward /api/2.0/mlflow/*<br/>Auth: Bearer token (cached 5m)
+        MLflow-->>Sidecar: OK
     end
 
-    rect rgb(248, 240, 255)
-        Note over Client,EvalHub: Flow 3: MCP Agent Integration
-        participant Agent as AI Agent<br/>(Claude / Cursor)
-        participant MCPSrv as evalhub-mcp<br/>3001/TCP or stdio
+    Adapter->>Sidecar: Push artifacts (optional)
+    Sidecar->>OCI: OCI Distribution v2<br/>Auth: Docker config (OAuth2)
+    OCI-->>Sidecar: Push complete
 
-        Agent->>MCPSrv: MCP JSON-RPC<br/>(submit_evaluation / get_job_status)
-        MCPSrv->>EvalHub: HTTP REST call<br/>Auth: Bearer Token (optional)
-        EvalHub-->>MCPSrv: JSON response
-        MCPSrv-->>Agent: MCP result
-    end
+    Note over User,OCI: Flow 3: MCP Client Interaction
+    participant MCPProxy as kube-rbac-proxy (MCP)<br/>8443/TCP TLS 1.2+
+    participant MCP as evalhub-mcp<br/>3001/TCP HTTP
+
+    User->>MCPProxy: MCP JSON-RPC / Streamable HTTP<br/>Auth: Bearer Token (SA token)
+    MCPProxy->>MCP: Forward<br/>X-Tenant + X-User headers
+    MCP->>API: GET/POST /api/v1/evaluations/*<br/>Auth: Bearer token
+    API-->>MCP: JSON response
+    MCP-->>MCPProxy: MCP response
+    MCPProxy-->>User: HTTPS response

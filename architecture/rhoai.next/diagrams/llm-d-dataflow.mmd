@@ -1,38 +1,61 @@
 sequenceDiagram
     participant Client as External Client
-    participant GW as Gateway<br/>(Envoy/Istio/AgentGW)<br/>80/443 TCP
-    participant EPP as EPP<br/>(llm-d-inference-scheduler)<br/>9002/TCP gRPC
-    participant Decode as Decode Pod<br/>vLLM :8000/TCP<br/>Sidecar :8200/TCP
-    participant Prefill as Prefill Pod<br/>vLLM :8000/TCP<br/>NIXL :5600/TCP
+    participant GW as Kubernetes Gateway<br/>80/443 TCP<br/>HTTP/HTTPS
+    participant Proxy as Envoy Proxy<br/>(sidecar or gateway)
+    participant EPP as llm-d-router EPP<br/>ext-proc gRPC
+    participant Prefill as Prefill Model Server<br/>8000/TCP HTTP
+    participant Decode as Decode Model Server<br/>8000/TCP HTTP
+    participant NIXL as NIXL KV Transfer<br/>5600/TCP gRPC
+    participant MC as Mooncake Client<br/>50052/TCP gRPC<br/>DaemonSet
+    participant MS as Mooncake Master Store<br/>50051/TCP gRPC
     participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant OTel as OTel Collector<br/>4317/TCP gRPC
-    participant Prom as Prometheus<br/>(PodMonitor)
 
-    Note over Client,Decode: Flow 1: Online Inference Request (Standard)
-    Client->>GW: POST /v1/chat/completions<br/>HTTP/HTTPS, Auth: Configurable
-    GW->>EPP: ext-proc gRPC<br/>9002/TCP, No encryption
-    EPP->>Decode: Scrape metrics<br/>GET /metrics :8000/TCP HTTP
-    EPP-->>GW: Selected endpoint (Decode pod)
-    GW->>Decode: Forward request<br/>HTTP :8000/TCP, No encryption
-    Decode-->>Client: HTTP SSE streaming response<br/>Configurable TLS
+    rect rgb(240, 248, 255)
+        Note over Client,Decode: Flow 1: Standard Inference (Gateway Mode)
+        Client->>GW: POST /v1/chat/completions<br/>HTTP/HTTPS
+        GW->>EPP: ext-proc (gRPC)<br/>Route selection
+        EPP->>Decode: Scrape /metrics<br/>HTTP 8000/TCP
+        Note over EPP: Select optimal pod<br/>(KV-cache aware, load-balanced)
+        EPP-->>GW: Selected backend pod
+        GW->>Decode: Forward request<br/>HTTP 8000/TCP
+        Decode-->>GW: Streaming response
+        GW-->>Client: JSON/SSE response
+    end
 
-    Note over Client,Prefill: Flow 2: Disaggregated Prefill/Decode (P/D)
-    Client->>GW: POST /v1/chat/completions<br/>HTTP/HTTPS
-    GW->>EPP: ext-proc gRPC<br/>9002/TCP
-    EPP-->>GW: Selected Decode pod
-    GW->>Decode: Forward to Decode<br/>HTTP :8200/TCP (routing sidecar)
-    Decode->>Prefill: Route to Prefill<br/>HTTP :8000/TCP
-    Note over Prefill: Prefill computes KV cache
-    Prefill->>Decode: RDMA KV cache transfer<br/>NIXL :5600/TCP<br/>GPU-Direct (IB/RoCE/EFA)
-    Note over Decode: Decode generates tokens
-    Decode-->>Client: HTTP SSE streaming response
+    rect rgb(255, 248, 240)
+        Note over Client,NIXL: Flow 2: P/D Disaggregated Inference
+        Client->>GW: POST /v1/chat/completions
+        GW->>EPP: ext-proc route selection
+        EPP->>Prefill: Forward to prefill pool<br/>HTTP 8000/TCP
+        Prefill->>NIXL: KV-cache transfer<br/>gRPC 5600/TCP
+        NIXL->>Decode: Direct KV transfer<br/>gRPC/RDMA 5600/TCP
+        EPP->>Decode: Forward to decode pool<br/>HTTP 8000/TCP
+        Decode-->>GW: Streaming response
+        GW-->>Client: JSON/SSE response
+    end
 
-    Note over HF,Decode: Flow 3: Model Loading
-    Decode->>HF: Download model weights<br/>HTTPS :443/TCP, TLS 1.2+<br/>Auth: Bearer HF_TOKEN
-    Prefill->>HF: Download model weights<br/>HTTPS :443/TCP, TLS 1.2+<br/>Auth: Bearer HF_TOKEN
+    rect rgb(248, 240, 255)
+        Note over Decode,MS: Flow 3: Mooncake KV-Cache Offloading
+        Decode->>MC: Offload KV segments<br/>gRPC 50052/TCP
+        MC->>MS: Register segments<br/>gRPC 50051/TCP
+        MC->>MC: RDMA transfer to<br/>other nodes
+        Note over MC: Local filesystem<br/>cache layer
+    end
 
-    Note over Prom,Decode: Flow 4: Monitoring & Observability
-    Prom->>Decode: Scrape /metrics<br/>HTTP :8000/TCP, 30s interval
-    Prom->>Prefill: Scrape /metrics<br/>HTTP :8000/TCP, 30s interval
-    Decode->>OTel: Export traces (OTLP)<br/>gRPC :4317/TCP, No encryption
-    Prefill->>OTel: Export traces (OTLP)<br/>gRPC :4317/TCP, No encryption
+    rect rgb(240, 255, 240)
+        Note over Decode,HF: Flow 4: Model Loading (Pod Startup)
+        Decode->>HF: Download model weights<br/>HTTPS 443/TCP<br/>Auth: HF_TOKEN Bearer
+        HF-->>Decode: Model artifacts
+        Note over Decode: Models stored at<br/>/var/lib/llm-d/models
+    end
+
+    rect rgb(255, 255, 240)
+        Note over Client,Decode: Flow 5: Standalone Mode (No Gateway)
+        Client->>Proxy: POST /v1/chat/completions<br/>HTTP 8000/TCP
+        Proxy->>EPP: ext-proc (gRPC)<br/>localhost
+        EPP->>Decode: Scrape metrics<br/>HTTP 8000/TCP
+        EPP-->>Proxy: Selected backend
+        Proxy->>Decode: Forward request<br/>HTTP 8000/TCP
+        Decode-->>Proxy: Streaming response
+        Proxy-->>Client: Response
+    end

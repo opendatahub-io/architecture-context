@@ -1,69 +1,69 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and manages OGX AI inference servers via OGXServer custom resources"
-        admin = person "Platform Admin" "Deploys and configures the OGX K8s Operator on the cluster"
+        user = person "Data Scientist / ML Engineer" "Creates and deploys OGX AI inference servers via OGXServer CRDs"
+        client = person "Inference Client" "Sends inference requests to deployed OGX servers"
 
-        ogxOperator = softwareSystem "OGX K8s Operator" "Kubernetes operator that manages the lifecycle of OGX AI inference servers including deployment, networking, autoscaling, and provider configuration" {
-            controller = container "OGXServer Reconciler" "Watches OGXServer CRs, reconciles desired state by creating/managing K8s resources" "Go (controller-runtime)"
-            webhook = container "Validating Webhook" "Validates OGXServer CRs on create/update: distribution name, provider ID uniqueness, provider references" "Go Admission Webhook"
-            kustomizeEngine = container "Kustomize Engine" "Renders deployment manifests from base templates using embedded kustomize with Go plugin pipeline" "Go Library"
-            legacyAdoption = container "Legacy Adoption System" "Migrates resources from v1alpha1 LlamaStackDistribution CRD to v1beta1 OGXServer CRD" "Go"
-            kubeRBACProxy = container "kube-rbac-proxy" "Proxies /metrics endpoint with RBAC enforcement via TokenReview and SubjectAccessReview" "Sidecar Container"
+        ogxOperator = softwareSystem "OGX K8s Operator" "Kubernetes operator managing lifecycle of OGX AI inference servers including deployment, networking, autoscaling, and provider configuration" {
+            controller = container "OGXServer Reconciler" "Watches OGXServer CRs, reconciles desired state by managing Deployments, Services, NetworkPolicies, PVCs, HPAs, PDBs, Ingresses, ConfigMaps" "Go (controller-runtime)"
+            webhook = container "Validating Webhook" "Validates OGXServer CRs: distribution name, provider ID uniqueness, provider references, adoption annotations" "Go (9443/TCP HTTPS)"
+            kustomizeEngine = container "Kustomize Engine" "Renders deployment manifests from base templates using embedded kustomize with Go plugin pipeline (namespace, name-prefix, field mutation, network policy transform)" "Go Library"
+            legacyAdoption = container "Legacy Adoption System" "Migrates LlamaStackDistribution (v1alpha1) resources to OGXServer (v1beta1) with zero-downtime PVC, Service, and Ingress adoption" "Go"
         }
 
-        ogxServer = softwareSystem "OGX Server" "AI inference server instances deployed and managed by the operator" "Managed"
+        ogxServer = softwareSystem "OGX Server Instance" "Deployed AI inference server pods managed by the operator, configured with provider settings via config.yaml" {
+            serverPod = container "OGX Server Pod" "Serves AI inference requests, connects to configured providers" "Container (configurable distribution image)"
+            service = container "Instance Service" "ClusterIP service exposing OGX server on configurable port (default 8321)" "Kubernetes Service"
+            ingress = container "Instance Ingress" "Optional external access via Kubernetes Ingress" "Kubernetes Ingress"
+        }
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Kubernetes control plane API for resource management" "External"
-        certManager = softwareSystem "cert-manager / OpenShift service-ca" "TLS certificate provisioning for webhook server" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
-        odhCABundle = softwareSystem "ODH Trusted CA Bundle" "Platform CA bundle ConfigMap for outbound TLS trust" "Internal RHOAI"
-        openshiftSCC = softwareSystem "OpenShift SCC" "Security Context Constraints for pod security" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API Server" "Provides API for cluster resource management" "External"
+        certManager = softwareSystem "cert-manager / OpenShift service-ca" "Provisions and auto-rotates TLS certificates for webhook server" "External"
+        prometheus = softwareSystem "Prometheus" "Monitors operator metrics via ServiceMonitor and kube-rbac-proxy" "External"
 
-        openAI = softwareSystem "OpenAI API" "Remote inference provider" "External"
-        azureOpenAI = softwareSystem "Azure OpenAI" "Remote inference provider" "External"
-        awsBedrock = softwareSystem "AWS Bedrock" "Remote inference provider" "External"
-        vertexAI = softwareSystem "Google VertexAI" "Remote inference provider" "External"
+        openai = softwareSystem "OpenAI API" "Remote inference provider" "External"
+        azure = softwareSystem "Azure OpenAI" "Remote inference provider" "External"
+        bedrock = softwareSystem "AWS Bedrock" "Remote inference provider" "External"
+        vertexai = softwareSystem "Google VertexAI" "Remote inference provider" "External"
         watsonx = softwareSystem "IBM Watsonx" "Remote inference provider" "External"
-        vLLM = softwareSystem "vLLM" "Remote inference endpoint" "External"
+        vllm = softwareSystem "vLLM" "Remote/local inference provider" "External"
 
-        pgvector = softwareSystem "PGVector" "Vector database for Vector I/O" "External"
-        milvus = softwareSystem "Milvus" "Vector database for Vector I/O" "External"
-        qdrant = softwareSystem "Qdrant" "Vector database for Vector I/O" "External"
+        pgvector = softwareSystem "PGVector / Milvus / Qdrant" "Vector I/O providers for similarity search and retrieval" "External"
+        s3 = softwareSystem "S3-Compatible Storage" "Files provider for model artifacts and data" "External"
 
-        s3 = softwareSystem "S3-compatible Storage" "Model artifacts and file storage" "External"
-        containerRegistry = softwareSystem "Container Registry" "OGX distribution images (docker.io, quay.io)" "External"
+        odhCaBundle = softwareSystem "ODH Trusted CA Bundle" "Platform-level CA certificate bundle for outbound TLS trust" "Internal Platform"
+        openshiftSCC = softwareSystem "OpenShift SCC" "Security Context Constraints (anyuid) for managed server init containers" "Internal Platform"
 
-        # System-level relationships
+        # User interactions
         user -> ogxOperator "Creates OGXServer CRs via kubectl" "HTTPS/443"
-        admin -> ogxOperator "Deploys and configures operator" "kubectl/OLM"
-        user -> ogxServer "Sends inference requests" "HTTP(S)/{port}"
+        client -> ogxServer "Sends inference requests" "HTTP(S)/8321"
 
-        ogxOperator -> k8sAPI "CRUD for Deployments, Services, NetworkPolicies, PVCs, HPAs, PDBs, Ingresses, ConfigMaps" "HTTPS/443 SA token"
+        # Operator internal
+        controller -> webhook "Validates CRs"
+        controller -> kustomizeEngine "Renders manifests"
+        controller -> legacyAdoption "Migrates legacy resources"
+
+        # Operator → K8s
+        ogxOperator -> kubernetesAPI "CRUD for Deployments, Services, NetworkPolicies, PVCs, HPAs, PDBs, Ingresses, ConfigMaps" "HTTPS/443"
+        kubernetesAPI -> ogxOperator "Watch events for OGXServer CRs and ConfigMaps" "HTTPS/443"
+
+        # Operator → OGX Server
         ogxOperator -> ogxServer "Health checks: /v1/providers, /v1/version" "HTTP/8321"
-        ogxOperator -> odhCABundle "Reads CA bundle for outbound TLS trust" "ConfigMap"
 
-        certManager -> ogxOperator "Provisions webhook TLS certificates" "Certificate CR / annotation"
-        prometheus -> ogxOperator "Scrapes /metrics endpoint" "HTTPS/8443"
+        # OGX Server → External providers
+        ogxServer -> openai "Inference requests" "HTTPS/443 (API key)"
+        ogxServer -> azure "Inference requests" "HTTPS/443 (API key)"
+        ogxServer -> bedrock "Inference requests" "HTTPS/443 (AWS IAM)"
+        ogxServer -> vertexai "Inference requests" "HTTPS/443 (SA JSON)"
+        ogxServer -> watsonx "Inference requests" "HTTPS/443 (API key)"
+        ogxServer -> vllm "Inference requests" "HTTP(S) (configurable)"
+        ogxServer -> pgvector "Vector I/O queries" "TCP (password/token)"
+        ogxServer -> s3 "File storage access" "HTTPS/443 (AWS creds)"
 
-        ogxServer -> openAI "Remote inference" "HTTPS/443 API key"
-        ogxServer -> azureOpenAI "Remote inference" "HTTPS/443 API key"
-        ogxServer -> awsBedrock "Remote inference" "HTTPS/443 IAM creds"
-        ogxServer -> vertexAI "Remote inference" "HTTPS/443 SA JSON"
-        ogxServer -> watsonx "Remote inference" "HTTPS/443 API key"
-        ogxServer -> vLLM "Remote inference" "HTTP(S) configurable"
-        ogxServer -> pgvector "Vector I/O" "TCP password"
-        ogxServer -> milvus "Vector I/O" "TCP token"
-        ogxServer -> qdrant "Vector I/O" "TCP token"
-        ogxServer -> s3 "File storage" "HTTPS/443 AWS creds"
-
-        ogxOperator -> containerRegistry "Pulls distribution images" "HTTPS/443"
-
-        # Container-level relationships
-        controller -> webhook "Validates CRs via" "Internal"
-        controller -> kustomizeEngine "Renders manifests via" "Internal"
-        controller -> legacyAdoption "Triggers migration via" "Internal"
-        controller -> k8sAPI "Creates/updates K8s resources" "HTTPS/443"
-        controller -> ogxServer "Checks health and version" "HTTP/8321"
+        # Supporting services
+        certManager -> ogxOperator "Provisions webhook TLS certificates"
+        prometheus -> ogxOperator "Scrapes /metrics" "HTTPS/8443"
+        ogxOperator -> odhCaBundle "Reads CA bundle ConfigMap for outbound TLS trust"
+        ogxOperator -> openshiftSCC "Creates per-instance RoleBinding for anyuid SCC"
     }
 
     views {
@@ -72,35 +72,36 @@ workspace {
             autoLayout
         }
 
-        container ogxOperator "Containers" {
+        container ogxOperator "OperatorContainers" {
+            include *
+            autoLayout
+        }
+
+        container ogxServer "ServerContainers" {
             include *
             autoLayout
         }
 
         styles {
+            element "Software System" {
+                background #438dd5
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
-            element "Managed" {
-                background #50c878
-                color #ffffff
-            }
             element "Person" {
-                shape Person
-                background #4a90e2
+                shape person
+                background #08427b
                 color #ffffff
-            }
-            element "Software System" {
-                shape RoundedBox
             }
             element "Container" {
-                shape RoundedBox
-                background #4a90e2
+                background #438dd5
                 color #ffffff
             }
         }

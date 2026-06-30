@@ -1,56 +1,72 @@
 sequenceDiagram
-    %% RHOAI MCP Server - Data Flow Diagram
-    %% Generated from: architecture/rhoai.next/rhoai-mcp.md
-
-    participant Agent as AI Agent<br/>(Claude Desktop / LLM)
+    participant Agent as AI Agent<br/>(Claude Desktop/Code)
     participant Route as OpenShift Route<br/>443/TCP HTTPS TLS Edge
     participant MCP as RHOAI MCP Server<br/>8000/TCP HTTP
-    participant K8s as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
-    participant NeuralNav as Neural Navigator<br/>8000/TCP HTTP In-Cluster
-    participant PortFwd as Port Forward<br/>(oc port-forward)
-    participant ModelReg as Model Registry<br/>8080/TCP HTTP In-Cluster
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant Auth as Auth System<br/>(OIDC/TokenReview)
+    participant RBAC as RBAC Filter<br/>(SubjectAccessReview)
+    participant Plugin as Domain Plugin<br/>(pluggy)
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant ModelReg as Model Registry<br/>8080/8443 TCP
+    participant Planner as Planner Backend<br/>8000/TCP HTTP
+    participant GitHub as GitHub<br/>443/TCP HTTPS
 
-    Note over Agent,S3: Flow 1: Standard K8s Resource Operations (e.g. deploy model, create workbench)
+    Note over Agent,K8s: Flow 1: MCP Tool Invocation (Kubernetes Operation)
+    Agent->>Route: SSE/HTTP POST<br/>Bearer Token (optional)
+    Route->>MCP: HTTP 8000/TCP<br/>TLS terminated at edge
+    MCP->>Auth: Validate token
+    alt OIDC Mode
+        Auth->>Auth: JWT validation via JWKS
+        Auth->>K8s: SubjectAccessReview
+        K8s-->>Auth: allowed/denied
+    else Token Mode
+        Auth->>K8s: TokenReview API
+        K8s-->>Auth: user identity
+    end
+    Auth-->>MCP: UserContext set via contextvars
+    MCP->>RBAC: Filter tools by user permissions
+    RBAC->>K8s: SubjectAccessReview per tool
+    K8s-->>RBAC: permission results
+    RBAC-->>MCP: visible tools list
+    MCP->>Plugin: Execute tool handler
+    Plugin->>K8s: CRUD via dynamic client<br/>Impersonate-User headers (OIDC mode)
+    K8s-->>Plugin: API response
+    Plugin-->>MCP: Structured result
+    MCP-->>Route: MCP JSON response
+    Route-->>Agent: HTTPS response
 
-    Agent->>Route: POST /mcp (MCP tool call)<br/>HTTPS/443, TLS 1.3
-    Route->>MCP: Forward (TLS edge termination)<br/>HTTP/8000
-    MCP->>MCP: Plugin Manager routes<br/>to domain plugin
-    MCP->>K8s: Create/Get/List/Update/Delete resource<br/>HTTPS/6443, Bearer Token (SA/kubeconfig)
-    K8s-->>MCP: Resource response<br/>HTTPS/6443
-    MCP->>MCP: ResponseBuilder formats<br/>(verbosity: minimal/standard/full)
-    MCP-->>Route: MCP tool result<br/>HTTP/8000
-    Route-->>Agent: JSON response<br/>HTTPS/443
+    Note over Agent,ModelReg: Flow 2: Model Registry Query
+    Agent->>Route: MCP tool call:<br/>list_registered_models
+    Route->>MCP: HTTP 8000/TCP
+    MCP->>Plugin: Model Registry plugin
+    Plugin->>ModelReg: GET /api/model_registry/v1alpha3/registered_models<br/>httpx async client
+    ModelReg-->>Plugin: JSON model list
+    Plugin-->>MCP: Structured result
+    MCP-->>Route: MCP response
+    Route-->>Agent: Models & versions
 
-    Note over Agent,S3: Flow 2: Model Recommendation via Neural Navigator
+    Note over Agent,GitHub: Flow 3: Quickstart Deployment
+    Agent->>Route: MCP tool call:<br/>deploy_quickstart
+    Route->>MCP: HTTP 8000/TCP
+    MCP->>Plugin: Quickstart plugin
+    Plugin->>GitHub: git clone<br/>rh-ai-quickstart repo
+    GitHub-->>Plugin: Repository contents
+    Plugin->>Plugin: helm install / oc apply
+    Plugin->>K8s: Create resources<br/>(Deployment, Service, etc.)
+    K8s-->>Plugin: Resources created
+    Plugin-->>MCP: Deployment status
+    MCP-->>Route: MCP response
+    Route-->>Agent: Quickstart deployed
 
-    Agent->>MCP: recommend_model tool call<br/>(stdio or HTTP)
-    MCP->>NeuralNav: POST /api/v1/extract<br/>HTTP/8000, No Auth
-    NeuralNav-->>MCP: Extracted intent
-    MCP->>NeuralNav: POST /api/v1/ranked-recommend-from-spec<br/>HTTP/8000, No Auth
-    NeuralNav-->>MCP: Ranked model recommendations
-    MCP-->>Agent: Recommendation results
-
-    Agent->>MCP: get_deployment_config tool call
-    MCP->>NeuralNav: POST /api/v1/deploy<br/>HTTP/8000, No Auth
-    NeuralNav-->>MCP: K8s YAML (InferenceService, HPA, ServiceMonitor)
-    MCP-->>Agent: Ready-to-apply deployment configs
-
-    Note over Agent,S3: Flow 3: Model Registry Query with Port-Forward
-
-    Agent->>MCP: list_registered_models tool call<br/>(stdio or HTTP)
-    MCP->>MCP: Discover ModelRegistry CRs<br/>& Route endpoints
-    MCP->>PortFwd: Start oc port-forward<br/>to Model Registry pod
-    PortFwd->>ModelReg: TCP tunnel established<br/>local:dynamic → 8080/TCP
-    MCP->>ModelReg: GET /api/model_registry/v1alpha3/registered_models<br/>HTTP/8080, None/OAuth/Bearer
-    ModelReg-->>MCP: Model metadata response
-    MCP-->>Agent: Formatted model list
-
-    Note over Agent,S3: Flow 4: Data Connection Validation
-
-    Agent->>MCP: create_s3_data_connection tool call
-    MCP->>K8s: Create Secret (S3 credentials)<br/>HTTPS/6443, Bearer Token
-    K8s-->>MCP: Secret created
-    MCP->>S3: Validate S3 endpoint connectivity<br/>HTTPS/443, AWS IAM credentials
-    S3-->>MCP: Connection validated
-    MCP-->>Agent: Data connection created & validated
+    Note over Agent,MCP: Workflow Token Flow
+    Agent->>MCP: prepare_training(params)
+    MCP->>Plugin: Validate prerequisites
+    Plugin->>K8s: Check namespace, storage, runtime
+    K8s-->>Plugin: All prerequisites met
+    Plugin-->>MCP: Result + HMAC workflow_token
+    MCP-->>Agent: {result, workflow_token: "hmac..."}
+    Agent->>MCP: create_training_job(workflow_token)
+    MCP->>Plugin: Verify HMAC token (stateless)
+    Plugin->>K8s: Create TrainJob CR
+    K8s-->>Plugin: TrainJob created
+    Plugin-->>MCP: Job status
+    MCP-->>Agent: Training job submitted

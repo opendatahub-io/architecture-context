@@ -1,65 +1,66 @@
 workspace {
     model {
-        client = person "ML Client" "Sends inference requests via REST API"
+        dataScientist = person "Data Scientist / ML Engineer" "Sends inference requests to deployed models via REST API"
+        application = person "Application / Service" "Automated client sending inference requests"
 
-        restProxy = softwareSystem "rest-proxy" "Reverse-proxy that translates KServe V2 REST inference requests into gRPC calls for ModelMesh backends" {
-            httpListener = container "HTTP/HTTPS Listener" "Receives KServe V2 REST requests on port 8008/TCP" "Go net/http"
-            jsonMarshaler = container "CustomJSONPb Marshaler" "Transforms JSON tensor data to/from protobuf with support for BOOL, INT8-64, UINT8-64, FP32, FP64, BYTES types" "Go gRPC-Gateway"
-            grpcClient = container "gRPC Client" "Forwards protobuf inference requests to ModelMesh via gRPC on port 8033/TCP" "Go google.golang.org/grpc"
+        modelMeshPod = softwareSystem "ModelMesh Serving Pod" "Serves ML models with REST and gRPC interfaces" {
+            restProxy = container "rest-proxy" "Translates KServe V2 REST HTTP requests into gRPC calls" "Go Service (gRPC-Gateway)" "Sidecar"
+            modelMeshGRPC = container "ModelMesh gRPC Server" "Serves model inference via gRPC V2 Predict Protocol" "Java/Go Service"
         }
 
-        modelMesh = softwareSystem "ModelMesh Serving" "Multi-model serving platform with gRPC inference interface" "Internal Platform"
-
-        grpcGateway = softwareSystem "gRPC-Gateway v2" "Framework for gRPC-to-REST reverse proxy generation" "External Library"
-        protobuf = softwareSystem "Protocol Buffers" "Serialization framework for gRPC messages" "External Library"
+        modelMeshController = softwareSystem "modelmesh-serving Controller" "Manages ModelMesh deployments and injects rest-proxy sidecar" "Internal RHOAI"
+        platformIngress = softwareSystem "Platform Ingress" "Handles authentication via kube-rbac-proxy or oauth-proxy" "Internal RHOAI"
+        certManager = softwareSystem "cert-manager" "Provisions and rotates TLS certificates" "External"
+        kubeAPI = softwareSystem "Kubernetes API" "Cluster API server" "External"
 
         # Relationships
-        client -> restProxy "Sends inference and metadata requests" "HTTP/HTTPS 8008/TCP"
-        restProxy -> modelMesh "Forwards inference/metadata as gRPC calls" "gRPC 8033/TCP (localhost)"
+        dataScientist -> platformIngress "Sends inference requests" "HTTPS/443, Bearer Token"
+        application -> platformIngress "Sends inference requests" "HTTPS/443, Bearer Token"
 
-        # Internal container relationships
-        httpListener -> jsonMarshaler "Passes request body"
-        jsonMarshaler -> grpcClient "Sends protobuf message"
-        grpcClient -> modelMesh "gRPC ModelInfer / ModelMetadata RPC"
+        platformIngress -> restProxy "Forwards authenticated requests" "HTTP or HTTPS/8008, Configurable TLS"
+        restProxy -> modelMeshGRPC "Translates REST to gRPC" "gRPC/8033, Configurable TLS, localhost"
 
-        # Library dependencies
-        restProxy -> grpcGateway "Uses for HTTP-to-gRPC translation" "Go import"
-        restProxy -> protobuf "Uses for message serialization" "Go import"
+        modelMeshController -> modelMeshPod "Injects rest-proxy sidecar via model-serving-config ConfigMap" "Kubernetes API"
+        certManager -> modelMeshPod "Provisions TLS certificates" "kubernetes.io/tls Secret"
     }
 
     views {
-        systemContext restProxy "SystemContext" {
+        systemContext modelMeshPod "SystemContext" {
             include *
             autoLayout
-            description "rest-proxy in the context of ModelMesh Serving"
+            description "System context showing rest-proxy within the ModelMesh Serving ecosystem"
         }
 
-        container restProxy "Containers" {
+        container modelMeshPod "Containers" {
             include *
             autoLayout
-            description "Internal structure of the rest-proxy sidecar"
+            description "Container view showing rest-proxy sidecar alongside ModelMesh gRPC server"
         }
 
         styles {
-            element "Software System" {
+            element "Person" {
+                shape Person
                 background #4a90e2
                 color #ffffff
             }
-            element "Internal Platform" {
-                background #7ed321
-                color #ffffff
-            }
-            element "External Library" {
+            element "Software System" {
                 background #999999
                 color #ffffff
             }
-            element "Person" {
-                background #f5a623
+            element "Internal RHOAI" {
+                background #7ed321
                 color #ffffff
-                shape person
+            }
+            element "External" {
+                background #999999
+                color #ffffff
             }
             element "Container" {
-                background #5ba3f5
+                background #438dd5
+                color #ffffff
+            }
+            element "Sidecar" {
+                background #4a90e2
                 color #ffffff
             }
         }

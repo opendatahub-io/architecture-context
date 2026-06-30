@@ -1,52 +1,45 @@
 workspace {
     model {
-        datascientist = person "Data Scientist / ML Engineer" "Deploys and queries LLM inference models"
+        datascientist = person "Data Scientist / ML Engineer" "Deploys LLM models for inference with KV-cache-aware routing"
 
-        kvCacheSystem = softwareSystem "llm-d-kv-cache" "KV-Cache indexing library and supporting services for KV-cache-aware routing in distributed LLM inference" {
-            indexer = container "kvcache.Indexer" "Orchestrates block-key computation, index lookup, and scoring for KV-cache-aware routing" "Go Library"
-            eventPool = container "kvevents.Pool" "Sharded worker pool consuming ZMQ events from inference engines, updating block index" "Go Library"
-            blockIndex = container "kvblock.Index" "Pluggable block index backends (InMemory LRU, CostAwareMemory Ristretto, Redis/Valkey)" "Go Library"
-            tokenProcessor = container "kvblock.TokenProcessor" "Converts token sequences to deterministic block keys via chained FNV-64a over CBOR" "Go Library"
-            udsTokenizer = container "uds_tokenizer" "Sidecar tokenization service over UDS — Tokenize, RenderChatCompletion, InitializeTokenizer RPCs" "Python gRPC Service"
-            fsBackend = container "llmd_fs_backend" "vLLM plugin — moves KV-cache blocks between GPU memory and shared storage (POSIX/S3)" "Python vLLM Plugin"
-            pvcEvictor = container "pvc_evictor" "Multi-process PVC eviction service managing disk space for KV-cache storage" "Python Utility"
+        kvCacheSystem = softwareSystem "llm-d-kv-cache" "Pluggable KV-cache indexing and event-processing library with companion tokenizer sidecar and storage management utilities" {
+            indexerLib = container "KV-Cache Indexer Library" "Tracks KV-cache block locality across vLLM/SGLang pods; provides ScoreTokens() API for cache-aware routing" "Go Library"
+            udsTokenizer = container "UDS Tokenizer" "gRPC sidecar providing tokenization and chat template rendering via Unix Domain Socket" "Python gRPC Service"
+            fsBackend = container "llmd-fs-backend" "vLLM plugin offloading KV-cache blocks between GPU memory and shared storage" "Python/C++/CUDA vLLM Plugin"
+            pvcEvictor = container "PVC Evictor" "Multi-process utility monitoring and evicting stale KV-cache files from PVCs" "Python Kubernetes Utility"
         }
 
-        epp = softwareSystem "llm-d EPP" "Envoy Processing Policy — embeds kvcache.Indexer for KV-cache-aware routing decisions" "Internal llm-d"
-        vllm = softwareSystem "vLLM / SGLang" "LLM inference engine pods that serve model predictions and emit KV-Events" "Internal llm-d"
-        kubernetes = softwareSystem "Kubernetes API" "Cluster API server for pod discovery" "External"
-        redis = softwareSystem "Redis / Valkey" "Optional external KV-block index persistence backend" "External"
-        otlp = softwareSystem "OTLP Collector" "OpenTelemetry trace export destination" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
-        hfhub = softwareSystem "HuggingFace Hub" "Model tokenizer file downloads" "External"
-        s3 = softwareSystem "S3 / Object Store" "Model artifact and KV-cache block storage" "External"
-        sharedPVC = softwareSystem "Shared PVC" "POSIX filesystem for KV-cache block offloading" "External"
+        llmdRouter = softwareSystem "llm-d-router (EPP)" "Inference routing gateway that embeds the KV-cache indexer for cache-aware request routing" "Internal llm-d"
+        vllm = softwareSystem "vLLM" "High-throughput LLM inference engine emitting KV-cache events via ZMQ" "Internal llm-d"
+        sglang = softwareSystem "SGLang" "Alternative LLM inference engine with KV-cache event support" "Internal llm-d"
+        k8sApi = softwareSystem "Kubernetes API Server" "Cluster orchestration; used for pod discovery" "Infrastructure"
+        redis = softwareSystem "Redis / Valkey" "Optional external block index backend for persistent/shared state" "External (optional)"
+        hfHub = softwareSystem "HuggingFace Hub" "Model tokenizer artifact storage" "External"
+        sharedStorage = softwareSystem "Shared Storage (NFS/PVC)" "Persistent storage for offloaded KV-cache blocks" "Infrastructure"
+        otlp = softwareSystem "OpenTelemetry Collector" "Distributed trace collection endpoint" "Infrastructure (optional)"
+        prometheus = softwareSystem "Prometheus" "Metrics scraping and alerting" "Infrastructure (optional)"
 
-        # System-level relationships
-        epp -> kvCacheSystem "Embeds kvcache.Indexer for KV-cache-aware routing" "Go API (in-process)"
-        vllm -> kvCacheSystem "Emits KV-Events (BlockStored, BlockRemoved, AllBlocksCleared)" "ZMQ PUB/SUB 5557/TCP"
-        kvCacheSystem -> kubernetes "Pod discovery — list/watch pods by label" "HTTPS/443"
-        kvCacheSystem -> redis "External block index persistence" "Redis/6379"
-        kvCacheSystem -> otlp "Distributed trace export" "gRPC/4317"
-        prometheus -> kvCacheSystem "Scrapes metrics endpoint" "HTTP"
-        kvCacheSystem -> hfhub "Downloads tokenizer model files" "HTTPS/443"
-        kvCacheSystem -> s3 "KV-cache block storage (NIXL OBJ backend)" "HTTPS/443"
-        kvCacheSystem -> sharedPVC "KV-cache block offloading (POSIX backend)" "POSIX I/O"
+        # Relationships
+        llmdRouter -> indexerLib "Embeds library; calls ScoreTokens()" "Go function call (in-process)"
+        llmdRouter -> udsTokenizer "Tokenizes prompts before scoring" "gRPC over UDS"
 
-        # Container-level relationships
-        epp -> indexer "ScoreTokens / ScorePrompt API" "Go function call"
-        epp -> udsTokenizer "RenderChatCompletion, Tokenize" "gRPC over UDS"
-        indexer -> tokenProcessor "Compute block keys from tokens" "Go function call"
-        indexer -> blockIndex "Lookup cached blocks per pod" "Go function call"
-        eventPool -> blockIndex "Add / Evict / Clear blocks" "Go function call"
-        vllm -> eventPool "KV-Events stream" "ZMQ PUB/SUB 5557/TCP msgpack"
-        eventPool -> kubernetes "Pod watch for ZMQ endpoint management" "HTTPS/443 ServiceAccount Token"
-        blockIndex -> redis "External index backend" "Redis protocol 6379/TCP"
-        udsTokenizer -> hfhub "Download tokenizer on first request" "HTTPS/443 Bearer Token"
-        fsBackend -> sharedPVC "Write/read KV-cache blocks" "POSIX file I/O"
-        fsBackend -> s3 "Write/read KV-cache blocks (NIXL)" "HTTPS/443 Access Key"
-        pvcEvictor -> sharedPVC "Evict cold KV-cache files" "POSIX file I/O (delete)"
-        indexer -> otlp "Export traces" "gRPC/4317 insecure"
+        vllm -> indexerLib "Emits KV-cache events (BlockStored/BlockRemoved)" "ZMQ PUB/SUB 5557/TCP"
+        sglang -> indexerLib "Emits KV-cache events (alternative engine)" "ZMQ PUB/SUB 5557/TCP"
+
+        vllm -> fsBackend "Loads as vLLM general plugin for KV offloading" "Python entry point (in-process)"
+        fsBackend -> sharedStorage "Offloads/loads KV-cache blocks" "POSIX filesystem"
+        fsBackend -> indexerLib "Publishes storage events" "ZMQ PUSH"
+
+        pvcEvictor -> sharedStorage "Monitors and evicts stale cache files" "POSIX filesystem"
+
+        indexerLib -> k8sApi "Watches pods for auto-discovery mode" "HTTPS/443 TLS 1.2+"
+        indexerLib -> redis "Optional external block index" "Redis protocol/6379"
+        indexerLib -> otlp "Exports distributed traces" "gRPC/4317 OTLP"
+        indexerLib -> prometheus "Exposes kvcache_index_* metrics" "HTTP scrape"
+
+        udsTokenizer -> hfHub "Downloads model tokenizer files" "HTTPS/443 TLS 1.2+"
+
+        datascientist -> llmdRouter "Sends inference requests" "HTTP/HTTPS"
     }
 
     views {
@@ -61,42 +54,38 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
+            element "External (optional)" {
+                background #bbbbbb
+                color #ffffff
+            }
             element "Internal llm-d" {
-                background #7ed321
-                color #ffffff
-            }
-            element "Person" {
-                shape person
-                background #08427B
-                color #ffffff
-            }
-            element "Container" {
-                background #438DD5
-                color #ffffff
-            }
-            element "Go Library" {
                 background #4a90e2
                 color #ffffff
             }
-            element "Python gRPC Service" {
-                background #9b59b6
+            element "Infrastructure" {
+                background #f5a623
                 color #ffffff
             }
-            element "Python vLLM Plugin" {
-                background #e67e22
+            element "Infrastructure (optional)" {
+                background #f5c573
                 color #ffffff
             }
-            element "Python Utility" {
-                background #27ae60
+            element "Software System" {
+                background #1168bd
                 color #ffffff
+            }
+            element "Container" {
+                background #438dd5
+                color #ffffff
+            }
+            element "Person" {
+                background #08427b
+                color #ffffff
+                shape person
             }
         }
     }

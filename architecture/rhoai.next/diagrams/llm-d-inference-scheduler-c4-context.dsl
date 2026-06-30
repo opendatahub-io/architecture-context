@@ -1,67 +1,66 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist / ML Engineer" "Deploys and serves LLM models via InferencePool/InferenceService"
-        sre = person "SRE / Platform Admin" "Monitors scheduling performance, configures InferenceObjective priorities"
+        dataScientist = person "Data Scientist / ML Engineer" "Deploys models and sends inference requests"
+        platformAdmin = person "Platform Admin" "Configures InferencePool, objectives, and model rewrites"
 
-        llmdScheduler = softwareSystem "llm-d Inference Scheduler" "Intelligent inference request scheduler that routes LLM inference traffic to optimal model server endpoints" {
-            epp = container "Endpoint Picker (EPP)" "Envoy ext-proc gRPC service that schedules inference requests using pluggable filter/scorer/picker pipeline" "Go gRPC Service" {
-                extProcServer = component "ext-proc gRPC Server" "Receives request headers/body from gateway, returns routing decision" "gRPC/9002"
-                schedulingPipeline = component "Scheduling Pipeline" "Filter → Score → Pick with pluggable plugins (KV-cache, latency, prefix, LoRA, session)" "Go Plugin Framework"
-                dataLayer = component "Data Layer Runtime" "DAG-based data collection from model server metrics, ZMQ events, K8s watches" "Plugin Pipeline"
-                flowControl = component "Flow Control Layer" "Priority-based admission control with fairness policies and saturation detection" "Experimental"
-                poolReconciler = component "InferencePool Reconciler" "Watches InferencePool CRs for pool config" "controller-runtime"
-                podReconciler = component "Pod Reconciler" "Tracks model server pod readiness" "controller-runtime"
-                objectiveReconciler = component "InferenceObjective Reconciler" "Manages priority bands" "controller-runtime"
-                rewriteReconciler = component "InferenceModelRewrite Reconciler" "Model name rewriting rules" "controller-runtime"
+        llmdRouter = softwareSystem "llm-d Router (Inference Scheduler)" "Intelligent LLM-aware request routing engine with prefill/decode disaggregation support" {
+            epp = container "Endpoint Picker (EPP)" "Core routing engine implementing Envoy ext_proc protocol for intelligent request placement" "Go gRPC Service" {
+                extProcServer = component "ext_proc Server" "Handles bidirectional gRPC streaming with Envoy" "gRPC/9002"
+                pluginFramework = component "Plugin Framework" "Extensible scheduling with filters, scorers, pickers, profile handlers" "Go"
+                dataLayer = component "Data Layer" "Manages endpoint metrics collection via polling, K8s notifications, ZMQ" "Go"
+                poolController = component "InferencePool Controller" "Watches InferencePool CRDs" "controller-runtime"
+                objectiveController = component "InferenceObjective Controller" "Watches InferenceObjective CRDs for priority config" "controller-runtime"
+                rewriteController = component "InferenceModelRewrite Controller" "Watches model rewrite rules" "controller-runtime"
+                podController = component "Pod Controller" "Tracks pod readiness and endpoint state" "controller-runtime"
+                healthServer = component "Health Server" "gRPC health checks for liveness/readiness" "gRPC/9003"
+                metricsEndpoint = component "Metrics Endpoint" "Prometheus metrics (40+ metrics)" "HTTP/9090"
             }
 
-            pdSidecar = container "PD-Sidecar" "Per-pod reverse proxy that orchestrates disaggregated prefill/decode inference with KV-cache transfer" "Go HTTP Reverse Proxy" {
-                reverseProxy = component "HTTP Reverse Proxy" "Intercepts inference requests and orchestrates P/D pipeline" "8000/TCP"
-                kvConnector = component "KV Connector" "Pluggable KV-cache transfer (NIXLv2/Mooncake/SGLang/shared-storage)" "Go Plugin"
-                ecConnector = component "EC Connector" "Encoder cache connector for multimodal EPD pipeline" "Go Plugin"
-                ssrfValidator = component "SSRF Validator" "Validates prefill/encoder targets against InferencePool pod allowlist" "Security"
+            pdSidecar = container "PD-Sidecar (Disaggregation Sidecar)" "Coordinates prefill/decode and E/P/D disaggregation alongside decode workers" "Go HTTP Reverse Proxy" {
+                proxyServer = component "Reverse Proxy Server" "HTTP/HTTPS proxy on port 8000" "HTTP/8000"
+                nixlConnector = component "NIXL v2 Connector" "KV transfer via NIXL (RDMA-capable)" "Go"
+                sharedStorageConnector = component "Shared Storage Connector" "KV transfer via shared filesystem" "Go"
+                sglangConnector = component "SGLang Connector" "KV transfer via SGLang protocol" "Go"
+                mooncakeConnector = component "Mooncake Connector" "KV transfer via Mooncake protocol" "Go"
+                ssrfValidator = component "SSRF Allowlist Validator" "Validates routing targets against InferencePool membership" "Go"
             }
         }
 
-        envoyGateway = softwareSystem "Envoy/Istio Inference Gateway" "Gateway API-compatible proxy that handles external traffic and delegates routing to EPP" "External"
-        vllmServers = softwareSystem "vLLM/SGLang Model Servers" "LLM inference engines serving model predictions" "Internal Platform"
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API for CRD watches and pod tracking" "External"
-        gatewayAPIGIE = softwareSystem "Gateway API Inference Extension" "Upstream project defining InferencePool and InferenceModel CRDs" "External"
-        otelCollector = softwareSystem "OTEL Collector" "OpenTelemetry trace collection" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics monitoring and alerting" "External"
-        mooncake = softwareSystem "Mooncake Bootstrap" "Data-parallel rank mapping for Mooncake KV connector" "External"
+        envoyProxy = softwareSystem "Envoy Proxy" "L7 proxy that delegates routing decisions to EPP via ext_proc" "External"
+        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform providing API server, CRDs, RBAC" "External"
+        vllm = softwareSystem "vLLM Model Servers" "LLM inference engine providing model serving, metrics, and KV-cache management" "External"
+        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for ingress (HTTPRoute, Gateway)" "External"
+        gie = softwareSystem "Gateway API Inference Extension (GIE)" "Defines InferencePool CRD and Endpoint Picker Protocol" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing via OTLP" "External"
+        certManager = softwareSystem "cert-manager" "TLS certificate management" "External"
+        istio = softwareSystem "Istio" "Service mesh for traffic management and mTLS" "External"
 
-        # Person interactions
-        dataScientist -> llmdScheduler "Creates InferencePool, InferenceModelRewrite CRs via kubectl"
-        sre -> llmdScheduler "Configures InferenceObjective priorities and monitors metrics"
+        # Relationships
+        dataScientist -> llmdRouter "Sends inference requests via Gateway" "HTTPS/443"
+        platformAdmin -> llmdRouter "Configures scheduling via CRDs" "kubectl"
 
-        # System-level interactions
-        envoyGateway -> llmdScheduler "Sends ext-proc requests for routing decisions" "gRPC/9002 TLS"
-        llmdScheduler -> vllmServers "Scrapes /metrics, dispatches prefill/decode/encode requests" "HTTP/HTTPS"
-        llmdScheduler -> k8sAPI "Watches CRDs, Pods for scheduling state" "HTTPS/443 SA Token"
-        llmdScheduler -> otelCollector "Exports distributed traces" "gRPC/4317 OTLP"
-        llmdScheduler -> mooncake "Queries dp_rank mapping" "HTTP/8998"
-        prometheus -> llmdScheduler "Scrapes /metrics endpoint" "HTTP/9090"
-        envoyGateway -> vllmServers "Forwards routed requests to selected model server" "HTTP/HTTPS"
+        llmdRouter -> envoyProxy "Receives requests via ext_proc, returns routing decisions" "gRPC/9002 TLS"
+        envoyProxy -> llmdRouter "Forwards requests via ext_proc filter" "gRPC/9002 TLS"
+        envoyProxy -> vllm "Routes requests to selected model server" "HTTP/HTTPS"
 
-        # Container-level interactions
-        envoyGateway -> epp "ext-proc ProcessingRequest with headers/body" "gRPC/9002 TLS"
-        epp -> k8sAPI "Watch InferencePool, Pod, InferenceObjective, InferenceModelRewrite" "HTTPS/443"
-        epp -> vllmServers "Scrape /metrics for KV-cache, queue depth, running requests" "HTTP"
-        epp -> otelCollector "Export scheduling traces" "gRPC/4317"
-        envoyGateway -> pdSidecar "Forward inference requests (P/D mode)" "HTTP(S)/8000"
-        pdSidecar -> vllmServers "Dispatch prefill, decode, encode phases" "HTTP(S)"
-        pdSidecar -> k8sAPI "Watch InferencePool pods for SSRF allowlist" "HTTPS/443"
-        pdSidecar -> mooncake "Query dp_rank→engine_id mapping" "HTTP/8998"
+        llmdRouter -> kubernetes "Watches CRDs, Pods; leader election" "HTTPS/443"
+        llmdRouter -> vllm "Polls metrics, routes P/D requests" "HTTP/HTTPS"
+        llmdRouter -> otelCollector "Exports distributed traces" "gRPC/4317"
+        prometheus -> llmdRouter "Scrapes metrics" "HTTP/9090"
+
+        llmdRouter -> gie "Uses InferencePool CRD definition" "CRD API"
+        llmdRouter -> gatewayAPI "Referenced by HTTPRoute for ingress" "CRD API"
+        llmdRouter -> istio "Optionally deployed with Istio gateway" "Service Mesh"
     }
 
     views {
-        systemContext llmdScheduler "SystemContext" {
+        systemContext llmdRouter "SystemContext" {
             include *
             autoLayout
         }
 
-        container llmdScheduler "Containers" {
+        container llmdRouter "Containers" {
             include *
             autoLayout
         }
@@ -81,17 +80,13 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal Platform" {
-                background #7ed321
-                color #ffffff
-            }
             element "Person" {
-                shape person
-                background #4a90e2
+                background #08427b
                 color #ffffff
+                shape person
             }
             element "Software System" {
-                background #4a90e2
+                background #1168bd
                 color #ffffff
             }
             element "Container" {

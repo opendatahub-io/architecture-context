@@ -1,60 +1,67 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Deploys and queries LLM models for inference"
-        sre = person "SRE / Platform Admin" "Monitors and manages serving infrastructure"
+        dataScientist = person "Data Scientist" "Creates and deploys LLM-based applications, sends inference requests"
+        mlEngineer = person "ML Engineer" "Deploys and configures model-serving runtimes on RHOAI"
 
-        vllmCpu = softwareSystem "vLLM CPU" "CPU-optimized LLM inference engine providing OpenAI-compatible API server" {
-            openaiServer = container "OpenAI API Server" "HTTP REST API for text generation, embeddings, speech-to-text, and model management" "Python FastAPI/Uvicorn" "Port 8000/TCP"
-            grpcServer = container "gRPC Server" "Optional gRPC interface for LLM inference" "Python gRPC AsyncIO" "Port 50051/TCP"
-            engine = container "vLLM Engine (V1)" "Core inference engine with continuous batching, KV cache management, and model execution" "Python"
-            cpuKernels = container "CPU Attention Kernels" "CPU-optimized attention, MoE, quantization, and positional encoding kernels" "C/C++ Extension"
-
-            openaiServer -> engine "Sends inference requests"
-            grpcServer -> engine "Sends inference requests"
-            engine -> cpuKernels "Executes CPU-optimized operations"
+        vllmCpu = softwareSystem "vLLM CPU" "CPU-optimized LLM inference serving runtime providing OpenAI-compatible APIs" {
+            openaiServer = container "vLLM OpenAI API Server" "OpenAI-compatible HTTP API with chat completion, embeddings, scoring, and multimodal endpoints" "Python (FastAPI/uvicorn)" "Port 8000/TCP"
+            grpcServer = container "vLLM gRPC Server" "gRPC inference interface with health checking and reflection" "Python (grpcio)" "Port 50051/TCP"
+            engineV1 = container "vLLM Engine v1" "Core async inference engine with scheduler, KV cache management, continuous batching, and PagedAttention" "Python"
+            cppExtensions = container "C++ Extensions" "CPU-optimized attention kernels and custom ops compiled via CMake" "C++ (CMake)"
+            zmqIpc = container "ZeroMQ IPC" "Inter-process communication between API frontend and engine backend" "pyzmq"
         }
 
-        kserve = softwareSystem "KServe" "Kubernetes-native model serving platform" "Internal RHOAI"
-        huggingfaceHub = softwareSystem "HuggingFace Hub" "Model registry and weight storage" "External"
-        s3Storage = softwareSystem "S3-compatible Storage" "Object storage for model artifacts" "External"
-        modelScope = softwareSystem "ModelScope" "Alternative model registry (China)" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal Platform"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing" "Internal Platform"
-        modelHostingStandards = softwareSystem "model-hosting-container-standards" "Red Hat model hosting container compliance library" "Internal RHOAI"
+        kserve = softwareSystem "KServe / ModelMesh" "Kubernetes-native model serving platform that manages vLLM pod lifecycle, autoscaling, and ingress" "Internal RHOAI"
+        rhoaiGateway = softwareSystem "RHOAI Platform Gateway" "Platform ingress gateway with kube-rbac-proxy for authentication" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and alerting platform" "Internal RHOAI"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing collection and export" "Internal RHOAI"
 
-        # User interactions
-        user -> vllmCpu "Sends inference requests via HTTP/gRPC"
-        sre -> prometheus "Monitors metrics"
+        hfHub = softwareSystem "HuggingFace Hub" "Model weight and tokenizer repository" "External"
+        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for model artifacts" "External"
+        pytorchHub = softwareSystem "PyTorch Model Hub" "Pre-trained model repository" "External"
+        mcpServers = softwareSystem "MCP Tool Servers" "External tool servers for Model Context Protocol" "External"
 
-        # Platform interactions
-        kserve -> vllmCpu "Deploys as InferenceService container" "HTTP/8000"
-        prometheus -> vllmCpu "Scrapes metrics" "HTTP/8000 GET /metrics"
-        vllmCpu -> otelCollector "Exports traces" "OTLP gRPC/HTTP"
+        # User relationships
+        dataScientist -> rhoaiGateway "Sends inference requests via" "HTTPS/443"
+        mlEngineer -> kserve "Deploys InferenceService via" "kubectl"
 
-        # External service interactions
-        vllmCpu -> huggingfaceHub "Downloads model weights and metadata" "HTTPS/443, HF Token"
-        vllmCpu -> s3Storage "Loads model artifacts" "HTTPS/443, AWS IAM"
-        vllmCpu -> modelScope "Downloads models (alternative)" "HTTPS/443, Token"
+        # Platform → vLLM
+        rhoaiGateway -> vllmCpu "Routes inference traffic to" "HTTPS/8443 → HTTP/8000"
+        kserve -> vllmCpu "Manages pod lifecycle, autoscaling"
+        prometheus -> vllmCpu "Scrapes /metrics" "HTTP/8000"
 
-        # Library dependency
-        vllmCpu -> modelHostingStandards "Compliance with Red Hat container standards" "Python library"
+        # vLLM internal
+        openaiServer -> zmqIpc "Dispatches requests via" "ZeroMQ IPC"
+        grpcServer -> zmqIpc "Dispatches requests via" "ZeroMQ IPC"
+        zmqIpc -> engineV1 "Delivers to scheduler"
+        engineV1 -> cppExtensions "Invokes CPU-optimized kernels"
+
+        # vLLM → External
+        vllmCpu -> hfHub "Downloads model weights and tokenizers" "HTTPS/443, Bearer HF_TOKEN"
+        vllmCpu -> s3Storage "Loads model artifacts" "HTTPS/443, AWS credentials"
+        vllmCpu -> pytorchHub "Downloads pre-trained models" "HTTPS/443"
+        vllmCpu -> otelCollector "Exports distributed traces" "OTLP gRPC/4317"
+        vllmCpu -> mcpServers "Invokes external tools" "HTTP SSE"
     }
 
     views {
         systemContext vllmCpu "SystemContext" {
             include *
             autoLayout
+            description "vLLM CPU system context showing integration with RHOAI platform and external services"
         }
 
         container vllmCpu "Containers" {
             include *
             autoLayout
+            description "vLLM CPU internal container structure showing API servers, engine, and IPC"
         }
 
         styles {
             element "Software System" {
                 background #438dd5
                 color #ffffff
+                shape RoundedBox
             }
             element "External" {
                 background #999999
@@ -62,20 +69,16 @@ workspace {
             }
             element "Internal RHOAI" {
                 background #7ed321
-                color #ffffff
-            }
-            element "Internal Platform" {
-                background #e1d5e7
-                color #333333
-            }
-            element "Person" {
-                shape person
-                background #08427b
-                color #ffffff
+                color #000000
             }
             element "Container" {
                 background #438dd5
                 color #ffffff
+            }
+            element "Person" {
+                background #08427b
+                color #ffffff
+                shape Person
             }
         }
     }

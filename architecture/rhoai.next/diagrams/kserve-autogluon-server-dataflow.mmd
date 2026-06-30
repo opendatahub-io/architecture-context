@@ -1,69 +1,62 @@
 sequenceDiagram
     participant Client as External Client
-    participant Ingress as Platform Ingress<br/>(Gateway API / Istio)<br/>443/TCP HTTPS TLS 1.3
-    participant Server as AutoGluon Server Pod<br/>8080/TCP HTTP, 8081/TCP gRPC
-    participant Storage as Cloud Storage<br/>(S3/GCS/Azure/HF)<br/>443/TCP HTTPS TLS 1.2+
-    participant KServeCtrl as KServe Controller
-    participant FS as Local Filesystem
+    participant KRBP as kube-rbac-proxy Sidecar<br/>8443/TCP HTTPS TLS 1.3
+    participant AGServer as autogluonserver<br/>8080/TCP HTTP (plaintext)
+    participant Factory as predictor_factory.py<br/>Auto-Detection
+    participant Tabular as AutoGluonTabularModel<br/>v1 + v2 Protocol
+    participant TimeSeries as AutoGluonTimeSeriesModel<br/>v1 Protocol
+    participant Storage as kserve-storage<br/>S3/GCS/Azure/HF
+    participant CloudStore as Cloud Storage<br/>443/TCP HTTPS TLS 1.2+
 
-    Note over KServeCtrl,Server: Flow 1: Pod Lifecycle & Model Loading
+    Note over AGServer,CloudStore: Flow 1: Model Load at Startup
 
-    KServeCtrl->>Server: Create Pod (InferenceService CR)<br/>K8s API / mTLS / ServiceAccount
-
-    Note over Server: runtime_paths.py: Set writable CWD<br/>(non-root container UID 1001)
-
-    Server->>Storage: Storage.download() -- model artifacts<br/>HTTPS/443, TLS 1.2+<br/>Auth: AWS IAM / GCP SA / Azure / Bearer
-    Storage-->>Server: Model artifacts (tar.gz / directory)
-    Server->>FS: Write model to local path
-
-    Note over Server: Auto-Detection Sequence
-
-    rect rgb(232, 245, 233)
-        Note over Server: predictor_detect.py
-        Server->>Server: version_compat.py: Check model version<br/>(allow patch mismatch, reject major/minor)
-        Server->>Server: Try TimeSeriesPredictor.load()
-        alt TimeSeries model detected
-            Server->>Server: Return AutoGluonDetectedModel(TS)
-        else TimeSeries load fails
-            Server->>Server: Try TabularPredictor.load()
-            Server->>Server: Return AutoGluonDetectedModel(Tabular)
-        end
+    AGServer->>AGServer: runtime_paths.py<br/>Relocate CWD to writable dir
+    AGServer->>Factory: Create AutoGluonDetectedModel
+    Factory->>Factory: version_compat.py<br/>Patch-level tolerance check
+    Factory->>Storage: Download model from storageUri
+    Storage->>CloudStore: HTTPS/443<br/>IAM/SA/Token Auth
+    CloudStore-->>Storage: Model Artifacts
+    Storage-->>Factory: Model files on local filesystem
+    alt TimeSeriesPredictor detected
+        Factory->>TimeSeries: Load as TimeSeriesPredictor
+        TimeSeries-->>Factory: Model ready
+    else TabularPredictor detected
+        Factory->>Tabular: Load as TabularPredictor
+        Tabular-->>Factory: Model ready
     end
+    Factory-->>AGServer: Model registered with ModelServer
 
-    Note over Server: Model loaded, server ready
+    Note over Client,Tabular: Flow 2: Tabular Inference (v1 REST)
 
-    Note over Client,Server: Flow 2: v1 REST Inference (Tabular + TimeSeries)
+    Client->>KRBP: POST /v1/models/{name}:predict<br/>HTTPS/8443, Bearer Token
+    KRBP->>KRBP: Authenticate & Authorize
+    KRBP->>AGServer: POST /v1/models/{name}:predict<br/>HTTP/8080 (localhost, plaintext)
+    AGServer->>Tabular: predict(instances)
+    Tabular->>Tabular: TabularPredictor.predict()<br/>or predict_proba() if PREDICT_PROBA=true
+    Tabular-->>AGServer: Predictions JSON
+    AGServer-->>KRBP: 200 OK + JSON Response
+    KRBP-->>Client: HTTPS Response<br/>TLS 1.3
 
-    Client->>Ingress: POST /v1/models/{name}:predict<br/>HTTPS/443, TLS 1.3<br/>Auth: Platform auth (Bearer)
-    Ingress->>Server: Forward request<br/>HTTP/8080 (cluster internal, no TLS)
-    alt Tabular Model
-        Server->>Server: TabularPredictor.predict(DataFrame)<br/>or predict_proba (if PREDICT_PROBA=true)
-    else TimeSeries Model
-        Server->>Server: TimeSeriesPredictor.predict()<br/>Map columns via predictor_metadata.json
-    end
-    Server-->>Ingress: JSON prediction response
-    Ingress-->>Client: HTTPS response
+    Note over Client,Tabular: Flow 2b: Tabular Inference (v2 REST)
 
-    Note over Client,Server: Flow 3: v2 REST Inference (Tabular Only)
+    Client->>KRBP: POST /v2/models/{name}/infer<br/>HTTPS/8443, Bearer Token
+    KRBP->>AGServer: POST /v2/models/{name}/infer<br/>HTTP/8080 (localhost)
+    AGServer->>Tabular: predict(InferRequest)
+    Tabular->>Tabular: Parse tensors per feature<br/>(INT64, FP64, BOOL, BYTES)
+    Tabular-->>AGServer: InferResponse (tensors)
+    AGServer-->>KRBP: 200 OK + InferResponse
+    KRBP-->>Client: HTTPS Response
 
-    Client->>Ingress: POST /v2/models/{name}/infer<br/>HTTPS/443, TLS 1.3
-    Ingress->>Server: Forward request<br/>HTTP/8080
-    Server->>Server: Decode v2 tensor inputs → DataFrame<br/>Map v2 datatypes ↔ AutoGluon features
-    Server->>Server: TabularPredictor.predict(DataFrame)
-    Server-->>Ingress: v2 InferResponse (tensor outputs)
-    Ingress-->>Client: HTTPS response
+    Note over Client,TimeSeries: Flow 3: Time Series Forecast (v1 REST)
 
-    Note over Client,Server: Flow 4: gRPC Inference (v2 Protocol)
+    Client->>KRBP: POST /v1/models/{name}:predict<br/>HTTPS/8443, Bearer Token
+    KRBP->>AGServer: POST /v1/models/{name}:predict<br/>HTTP/8080 (localhost)
+    AGServer->>TimeSeries: predict(instances, known_covariates)
+    TimeSeries->>TimeSeries: TimeSeriesPredictor.predict()
+    TimeSeries-->>AGServer: Forecast JSON
+    AGServer-->>KRBP: 200 OK + JSON Response
+    KRBP-->>Client: HTTPS Response
 
-    Client->>Ingress: gRPC ModelInfer<br/>HTTPS/443, TLS 1.3
-    Ingress->>Server: Forward request<br/>gRPC/8081
-    Server->>Server: Process inference via GRPCInferenceService
-    Server-->>Ingress: gRPC InferResponse
-    Ingress-->>Client: gRPC response
+    Note over AGServer,AGServer: Health & Metrics
 
-    Note over Client,Server: Health & Metadata
-
-    Client->>Ingress: GET /v2/health/ready
-    Ingress->>Server: HTTP/8080
-    Server-->>Ingress: 200 OK (model loaded)
-    Ingress-->>Client: Health status
+    Note right of AGServer: GET /v2/health/ready → Readiness probe<br/>GET /v2/health/live → Liveness probe<br/>GET /metrics → Prometheus metrics

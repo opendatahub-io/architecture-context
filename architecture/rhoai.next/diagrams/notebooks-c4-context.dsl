@@ -1,60 +1,51 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and runs interactive notebooks, trains ML models, builds pipelines"
-        mlEngineer = person "ML Engineer" "Deploys models, runs pipelines, manages workbenches"
-        platformAdmin = person "Platform Admin" "Manages RHOAI platform, configures workbench images"
+        dataScientist = person "Data Scientist" "Creates notebooks, runs experiments, builds ML pipelines"
+        mlEngineer = person "ML Engineer" "Deploys models, manages pipeline runtimes"
 
-        notebooks = softwareSystem "Notebooks (Workbench & Runtime Images)" "Container image factory producing 18+ JupyterLab, VS Code, and pipeline runtime images for RHOAI" {
-            baseImages = container "Base Images" "CentOS Stream 9 base images with Python 3.12, AIPCC packages, accelerator drivers (CPU/CUDA/ROCm)" "Dockerfile"
-            jupyterWorkbenches = container "Jupyter Workbenches" "JupyterLab-based interactive workbench images: minimal, datascience, pytorch, tensorflow, trustyai, llmcompressor" "Python/JupyterLab"
-            codeServerWorkbench = container "code-server Workbench" "VS Code (code-server v4.106.3) workbench with nginx proxy" "TypeScript/Node.js"
-            pipelineRuntimes = container "Pipeline Runtimes" "Headless runtime images with Elyra bootstrapper for Data Science Pipeline steps" "Python"
-            kustomizeManifests = container "Kustomize Manifests" "OpenShift ImageStream definitions with SHA256-pinned image refs and kustomize replacements" "YAML/Kustomize"
-            mongocliBuild = container "mongocli Build Stage" "FIPS-compliant MongoDB CLI binary built from Go source" "Go"
+        notebooks = softwareSystem "Notebooks (Workbench & Runtime Images)" "Builds container images for interactive data science workbenches (JupyterLab, Code-Server) and pipeline runtime images" {
+            jupyterMinimal = container "Jupyter Minimal" "Lightweight JupyterLab with base Python packages" "Container Image (CPU/CUDA/ROCm)"
+            jupyterDataScience = container "Jupyter DataScience" "JupyterLab with NumPy, Pandas, SciPy, scikit-learn, Elyra, Kale" "Container Image (CPU)"
+            jupyterPyTorch = container "Jupyter PyTorch" "JupyterLab with PyTorch 2.11 + CUDA 13.0" "Container Image (CUDA)"
+            jupyterPyTorchLLM = container "Jupyter PyTorch+LLMCompressor" "JupyterLab with PyTorch + LLM Compressor for model quantization" "Container Image (CUDA)"
+            jupyterTensorFlow = container "Jupyter TensorFlow" "JupyterLab with TensorFlow + CUDA 12.9" "Container Image (CUDA)"
+            jupyterTrustyAI = container "Jupyter TrustyAI" "JupyterLab with TrustyAI explainability (Java 17)" "Container Image (CPU)"
+            codeServer = container "Code-Server" "VS Code in the browser (v4.106.3) with nginx idle culling proxy" "Container Image (CPU)"
+            runtimeImages = container "Pipeline Runtime Images" "Elyra pipeline execution environments (Minimal, DataScience, PyTorch, TF, ROCm)" "Container Images"
+            kubeRbacProxy = container "kube-rbac-proxy" "OAuth/RBAC sidecar injected by notebook controller" "Sidecar Container"
         }
 
-        odhNotebookController = softwareSystem "ODH Notebook Controller" "Launches workbench pods using ImageStream tags, injects kube-rbac-proxy sidecar" "Internal RHOAI"
-        rhodsOperator = softwareSystem "rhods-operator" "Applies ImageStream manifests to cluster, manages RHOAI lifecycle" "Internal RHOAI"
-        dsp = softwareSystem "Data Science Pipelines" "Orchestrates ML pipeline execution using runtime images" "Internal RHOAI"
-        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "User-facing UI for selecting and launching workbenches" "Internal RHOAI"
-        kubeRBACProxy = softwareSystem "kube-rbac-proxy" "OAuth2/OIDC authentication sidecar injected into workbench pods" "Internal RHOAI"
+        rhodsOperator = softwareSystem "rhods-operator" "Deploys ImageStreams to cluster via kustomize manifests" "Internal RHOAI"
+        odhDashboard = softwareSystem "ODH Dashboard" "Discovers workbench images via ImageStream annotations, presents UI" "Internal RHOAI"
+        notebookController = softwareSystem "odh-notebook-controller" "Manages pod lifecycle: sidecar injection, CA bundle, Elyra config, DSPA secrets" "Internal RHOAI"
+        dspa = softwareSystem "Data Science Pipelines Application" "Pipeline orchestration — provides endpoint config consumed by Elyra" "Internal RHOAI"
+        notebookCuller = softwareSystem "Notebook Controller Culler" "Monitors workbench idle state via /api/kernels/ polling" "Internal RHOAI"
 
-        konflux = softwareSystem "Konflux / Tekton" "CI/CD platform with hermetic build pipelines and Cachi2 prefetch" "External"
-        aipccIndex = softwareSystem "AIPCC PyPI Index" "Red Hat AI Python Package Index at packages.redhat.com" "External"
-        containerRegistry = softwareSystem "Container Registry" "quay.io (ODH) / registry.redhat.io (RHOAI) for image storage" "External"
-        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management" "External"
-        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for data access from notebooks" "External"
-        gitRepos = softwareSystem "Git Repositories" "Source code repositories accessed from notebooks" "External"
+        aipccBaseImages = softwareSystem "AIPCC Ecosystems Base Images" "RHEL 9.6 + Python 3.12 + accelerator runtimes (CPU/CUDA/ROCm)" "External"
+        konflux = softwareSystem "Konflux / Tekton" "Hermetic CI/CD build pipeline with Cachi2 dependency prefetch" "External"
+        quayRegistry = softwareSystem "Quay.io Registry" "Container image registry (quay.io/modh/)" "External"
+        openshiftAPI = softwareSystem "OpenShift API Server" "Kubernetes API for pipeline submission and cluster operations" "External"
+        s3Storage = softwareSystem "Container Image Registries" "Image pulls for pipeline runtime images" "External"
+        pypiServers = softwareSystem "External Python Package Servers" "User-initiated pip install from running workbenches" "External"
 
-        # User interactions
-        dataScientist -> rhoaiDashboard "Selects workbench image via UI"
-        dataScientist -> jupyterWorkbenches "Runs notebooks, trains models" "HTTPS/443 via Gateway"
-        dataScientist -> codeServerWorkbench "Develops code in VS Code" "HTTPS/443 via Gateway"
-        mlEngineer -> dsp "Submits pipeline runs using runtime images"
-        platformAdmin -> rhodsOperator "Configures RHOAI platform"
+        # Relationships - Build time
+        aipccBaseImages -> notebooks "Provides base images (RHEL 9.6, Python 3.12, accelerator libs)" "Container FROM"
+        konflux -> notebooks "Builds images hermetically" "Tekton Pipeline"
+        notebooks -> quayRegistry "Pushes built images" "HTTPS/443"
 
-        # Build-time relationships
-        konflux -> notebooks "Builds container images via 85 Tekton pipelines" "HTTPS/443"
-        baseImages -> jupyterWorkbenches "FROM (layered inheritance)"
-        baseImages -> codeServerWorkbench "FROM (layered inheritance)"
-        baseImages -> pipelineRuntimes "FROM (layered inheritance)"
-        mongocliBuild -> jupyterWorkbenches "Embeds mongocli binary (datascience/pytorch)"
-        notebooks -> aipccIndex "Fetches Python wheels during prefetch" "HTTPS/443"
-        notebooks -> containerRegistry "Pushes built images" "HTTPS/443"
+        # Relationships - Deployment time
+        rhodsOperator -> notebooks "Deploys ImageStreams from manifests/rhoai/ kustomize" "Kubernetes API"
+        odhDashboard -> notebooks "Discovers workbench images via ImageStream annotations" "Kubernetes API"
+        notebookController -> notebooks "Injects kube-rbac-proxy sidecar, CA bundle, Elyra config, DSPA secret" "Mutating Webhook"
+        notebookCuller -> notebooks "Polls /api/kernels/ for idle timeout" "HTTP/8888"
 
-        # Runtime relationships
-        rhodsOperator -> kustomizeManifests "Reads and applies ImageStream manifests"
-        rhodsOperator -> kubernetesAPI "Creates ImageStream resources" "HTTPS/443"
-        odhNotebookController -> jupyterWorkbenches "Launches workbench pods from ImageStream tags"
-        odhNotebookController -> codeServerWorkbench "Launches workbench pods from ImageStream tags"
-        odhNotebookController -> kubeRBACProxy "Injects as auth sidecar" "8443/TCP"
-        dsp -> pipelineRuntimes "Runs pipeline steps using runtime images"
-        rhoaiDashboard -> kubernetesAPI "Queries ImageStream API for available images" "HTTPS/443"
-        jupyterWorkbenches -> kubernetesAPI "Pipeline submission, K8s ops" "HTTPS/443"
-        jupyterWorkbenches -> s3Storage "Data access (user-configured)" "HTTPS/443"
-        jupyterWorkbenches -> gitRepos "Source code access" "HTTPS/443"
-        codeServerWorkbench -> kubernetesAPI "K8s operations" "HTTPS/443"
-        codeServerWorkbench -> s3Storage "Data access" "HTTPS/443"
+        # Relationships - Runtime
+        dataScientist -> notebooks "Uses JupyterLab or Code-Server via browser" "HTTPS/443 OAuth"
+        mlEngineer -> notebooks "Configures pipeline runtimes" "HTTPS/443 OAuth"
+        notebooks -> openshiftAPI "Elyra pipeline submission, kubectl/oc" "HTTPS/443 SA token"
+        notebooks -> dspa "Submits pipelines via KFP SDK" "HTTPS/443 SA token"
+        notebooks -> s3Storage "Pulls runtime images for pipelines" "HTTPS/443 TLS"
+        notebooks -> pypiServers "User-initiated pip install" "HTTPS/443"
     }
 
     views {
@@ -70,7 +61,7 @@ workspace {
 
         styles {
             element "Person" {
-                shape person
+                shape Person
                 background #08427b
                 color #ffffff
             }
@@ -88,6 +79,18 @@ workspace {
             }
             element "Container" {
                 background #438dd5
+                color #ffffff
+            }
+            element "Container Image (CPU)" {
+                background #438dd5
+                color #ffffff
+            }
+            element "Container Image (CUDA)" {
+                background #e85d04
+                color #ffffff
+            }
+            element "Sidecar Container" {
+                background #d62828
                 color #ffffff
             }
         }

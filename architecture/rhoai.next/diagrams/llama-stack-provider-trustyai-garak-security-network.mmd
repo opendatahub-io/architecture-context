@@ -1,95 +1,88 @@
 graph TB
-    subgraph Orchestration["ORCHESTRATION (Internal Platform)"]
-        EvalHub["eval-hub Service<br/>Creates K8s Job"]
-    end
-
-    subgraph JobPod["JOB POD"]
+    subgraph Cluster["KUBERNETES CLUSTER (Trusted)"]
         direction TB
 
-        subgraph AdapterContainer["Garak Adapter Container"]
-            Adapter["Garak Adapter<br/>SA: Job service account<br/>Mounts: /mnt/model-auth (optional)<br/>Env: Data Connection creds"]
+        subgraph JobPod["Batch Job Pod"]
+            direction TB
+            Adapter["GarakAdapter<br/>SA: eval-hub job SA<br/>Image: garak-provider (AIPCC CPU)"]
+            GarakCLI["Garak CLI Subprocess<br/>os.setsid process group"]
+            Adapter -->|spawns| GarakCLI
         end
 
-        subgraph SidecarContainer["eval-hub Sidecar"]
-            Sidecar["Sidecar<br/>Status callbacks<br/>Result reporting"]
+        subgraph Mounts["Volume Mounts"]
+            ModelAuth["/mnt/model-auth<br/>Secret: model-auth"]
+            SAToken["/var/run/secrets/.../token<br/>ServiceAccount token"]
+            ConfigMount["ConfigMap mount<br/>JobSpec"]
         end
 
-        Adapter -->|"localhost HTTP<br/>plaintext<br/>No Auth"| Sidecar
+        subgraph InternalSvc["Internal Cluster Services"]
+            EvalHubSidecar["eval-hub Sidecar<br/>(in-process callback)"]
+            K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>SA Token"]
+            OperatorConfig["trustyai-service-operator-config<br/>ConfigMap<br/>NS: redhat-ods-applications"]
+        end
+
+        subgraph KFPCluster["KFP (KFP Mode Only)"]
+            KFPAPI["KFP API Server<br/>443/TCP HTTPS<br/>SA Token"]
+            KFPPods["KFP Pipeline Pods<br/>(6-step pipeline)"]
+        end
+
+        ConfigMount -.->|mounts| Adapter
+        ModelAuth -.->|mounts| Adapter
+        Adapter -->|callback| EvalHubSidecar
+        Adapter -->|read secrets/configmaps| K8sAPI
+        K8sAPI -->|reads| OperatorConfig
+        Adapter -->|submit pipeline| KFPAPI
+        KFPAPI -->|orchestrates| KFPPods
     end
 
-    subgraph ModelEndpoints["MODEL ENDPOINTS (OpenAI-compatible /v1)"]
+    subgraph External["EXTERNAL SERVICES (Untrusted)"]
         direction TB
-        TargetModel["Target Model<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token / None"]
-        JudgeModel["Judge Model<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token"]
-        AttackerModel["Attacker Model<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token"]
-        EvaluatorModel["Evaluator Model<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token"]
-        SDGModel["SDG Model<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token"]
-        TranslationModel["Translation Model<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer / None"]
+
+        subgraph LLMEndpoints["LLM Endpoints (OpenAI-compatible)"]
+            TargetLLM["Target LLM<br/>443/TCP HTTPS TLS 1.2+<br/>Bearer Token (api-key)"]
+            JudgeLLM["Judge LLM<br/>443/TCP HTTPS TLS 1.2+<br/>Bearer Token (JUDGE_API_KEY)"]
+            AttackerLLM["Attacker LLM<br/>443/TCP HTTPS TLS 1.2+<br/>Bearer Token (ATTACKER_API_KEY)"]
+            EvaluatorLLM["Evaluator LLM<br/>443/TCP HTTPS TLS 1.2+<br/>Bearer Token (EVALUATOR_API_KEY)"]
+            SDGLLM["SDG LLM<br/>443/TCP HTTPS TLS 1.2+<br/>Bearer Token (SDG_API_KEY)"]
+        end
+
+        subgraph Storage["Storage Services"]
+            S3["S3-compatible Storage<br/>443/TCP HTTPS TLS 1.2+<br/>AWS IAM (Data Connection)"]
+            OCIReg["OCI Registry<br/>443/TCP HTTPS TLS 1.2+<br/>Registry credentials"]
+        end
+
+        subgraph Tracking["Tracking Services"]
+            MLflow["MLflow Tracking<br/>443/TCP HTTPS TLS 1.2+<br/>Bearer Token"]
+        end
+
+        subgraph ModelHub["Model Hub"]
+            HFHub["HuggingFace Hub<br/>443/TCP HTTPS TLS 1.2+<br/>None or HF Token"]
+        end
     end
 
-    subgraph PlatformServices["PLATFORM SERVICES"]
-        direction TB
-        KFP["KFP API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token"]
-        MLflow["MLflow Tracking<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token"]
-    end
-
-    subgraph ExternalStorage["EXTERNAL STORAGE / REGISTRY"]
-        direction TB
-        S3["S3-Compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
-        OCI["OCI Registry<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Registry creds"]
-        HF["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>None / HF Token"]
-    end
-
-    subgraph KFPPods["KFP PIPELINE PODS (KFP mode only)"]
-        direction TB
-        Validate["validate"]
-        ResolveTax["resolve_taxonomy"]
-        SDGGen["sdg_generate"]
-        PrepPrompts["prepare_prompts"]
-        GarakScan["garak_scan"]
-        WriteOutputs["write_kfp_outputs"]
-    end
-
-    %% Orchestration flow
-    EvalHub -->|"K8s Job creation<br/>RBAC"| Adapter
-
-    %% Adapter egress to models
-    Adapter -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| TargetModel
-    Adapter -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| JudgeModel
-    Adapter -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| AttackerModel
-    Adapter -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| SDGModel
-
-    %% Adapter egress to platform
-    Adapter -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| KFP
-    Adapter -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| MLflow
-
-    %% Adapter egress to storage
-    Adapter -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    Adapter -->|"HTTPS/443<br/>TLS 1.2+<br/>Registry creds"| OCI
-
-    %% KFP pods
-    KFP -.->|"spawns"| KFPPods
-    GarakScan -->|"HTTPS/443<br/>Bearer Token"| TargetModel
-    SDGGen -->|"HTTPS/443<br/>Bearer Token"| SDGModel
-    Validate -->|"HTTPS/443<br/>AWS IAM"| S3
-    PrepPrompts -->|"HTTPS/443<br/>AWS IAM"| S3
-    GarakScan -->|"HTTPS/443<br/>AWS IAM"| S3
-    WriteOutputs -->|"HTTPS/443<br/>AWS IAM"| S3
-
-    %% HF downloads
-    Adapter -.->|"HTTPS/443<br/>TLS 1.2+<br/>None / HF Token"| HF
+    %% Egress flows from Job Pod
+    GarakCLI -->|"POST /v1/chat/completions<br/>HTTPS/443 TLS 1.2+<br/>Bearer Token"| TargetLLM
+    GarakCLI -->|"POST /v1/chat/completions<br/>HTTPS/443 TLS 1.2+<br/>JUDGE_API_KEY"| JudgeLLM
+    GarakCLI -->|"POST /v1/chat/completions<br/>HTTPS/443 TLS 1.2+<br/>ATTACKER_API_KEY"| AttackerLLM
+    GarakCLI -->|"POST /v1/chat/completions<br/>HTTPS/443 TLS 1.2+<br/>EVALUATOR_API_KEY"| EvaluatorLLM
+    Adapter -->|"POST /v1/chat/completions<br/>HTTPS/443 TLS 1.2+<br/>SDG_API_KEY"| SDGLLM
+    Adapter -->|"S3 API<br/>HTTPS/443 TLS 1.2+<br/>AWS IAM"| S3
+    KFPPods -->|"S3 API<br/>HTTPS/443 TLS 1.2+<br/>AWS IAM"| S3
+    Adapter -->|"OCI push<br/>HTTPS/443 TLS 1.2+<br/>Registry creds"| OCIReg
+    Adapter -->|"MLflow API<br/>HTTPS/443 TLS 1.2+<br/>Bearer Token"| MLflow
+    GarakCLI -->|"Model download<br/>HTTPS/443 TLS 1.2+"| HFHub
 
     %% Styling
-    classDef orchestration fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef jobpod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef models fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef jobpod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef internal fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef llm fill:#f8cecc,stroke:#b85450,stroke-width:2px
     classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef kfppods fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef tracking fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef modelhub fill:#f5f5f5,stroke:#666666,stroke-width:2px
 
-    class EvalHub orchestration
-    class Adapter,Sidecar jobpod
-    class TargetModel,JudgeModel,AttackerModel,EvaluatorModel,SDGModel,TranslationModel models
-    class KFP,MLflow platform
-    class S3,OCI,HF storage
-    class Validate,ResolveTax,SDGGen,PrepPrompts,GarakScan,WriteOutputs kfppods
+    class Adapter,GarakCLI jobpod
+    class EvalHubSidecar,K8sAPI,OperatorConfig,KFPAPI,KFPPods internal
+    class TargetLLM,JudgeLLM,AttackerLLM,EvaluatorLLM,SDGLLM llm
+    class S3,OCIReg storage
+    class MLflow tracking
+    class HFHub modelhub

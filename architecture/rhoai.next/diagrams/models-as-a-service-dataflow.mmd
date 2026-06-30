@@ -1,70 +1,60 @@
 sequenceDiagram
-    autonumber
-
-    %% Flow 1: API Key Authentication (Inference Request)
-    rect rgb(240, 248, 255)
-    Note over Client,ModelBackend: Flow 1: API Key Authentication (Inference Request)
-
     participant Client as External Client
-    participant Gateway as Gateway<br/>maas-default-gateway<br/>443/TCP HTTPS
-    participant PreProc as payload-pre-processing<br/>9004/TCP gRPC TLS
-    participant Authorino as Authorino<br/>(Kuadrant)
-    participant MaaSAPI as maas-api<br/>8443/TCP HTTPS
-    participant PostgreSQL as PostgreSQL<br/>5432/TCP
-    participant PostProc as payload-processing<br/>9004/TCP gRPC TLS
-    participant ModelBackend as Model Backend<br/>(KServe / External)<br/>443/TCP HTTPS
-
-    Client->>Gateway: POST /v1/models/{model}:predict<br/>Auth: Bearer sk-oai-*<br/>TLS 1.2+
-    Gateway->>PreProc: ext_proc (pre-auth)<br/>gRPC/HTTP2, TLS SIMPLE<br/>Extract model name → X-Gateway-Model-Name
-    PreProc-->>Gateway: Header: X-Gateway-Model-Name
-    Gateway->>Authorino: Auth evaluation<br/>mTLS, internal
-    Authorino->>MaaSAPI: POST /internal/v1/api-keys/validate<br/>HTTPS TLS 1.2+<br/>NetworkPolicy-protected
-    MaaSAPI->>PostgreSQL: SELECT hash, verify SHA-256<br/>TLS, DB credentials
-    PostgreSQL-->>MaaSAPI: Key valid + metadata
-    MaaSAPI-->>Authorino: 200 OK (user identity)
-    Authorino->>MaaSAPI: POST /internal/v1/subscriptions/select<br/>HTTPS TLS 1.2+<br/>NetworkPolicy-protected
-    MaaSAPI-->>Authorino: Selected subscription + rate limit key
-    Authorino-->>Gateway: Auth success + metadata headers
-    Gateway->>PostProc: ext_proc (post-auth)<br/>gRPC/HTTP2, TLS SIMPLE<br/>API translation + credential injection
-    PostProc-->>Gateway: Transformed request + provider credentials
-    Gateway->>ModelBackend: Forward inference request<br/>HTTPS TLS/mTLS<br/>Injected provider credential
-    ModelBackend-->>Gateway: Inference response
-    Gateway-->>Client: JSON Response<br/>TLS 1.2+
-
-    end
-
-    %% Flow 2: Tenant Reconciliation
-    rect rgb(245, 255, 245)
-    Note over Controller,K8sAPI: Flow 2: Tenant Reconciliation
-
-    participant Controller as maas-controller<br/>(Operator)
+    participant Gateway as maas-default-gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant PreAuth as payload-processing<br/>(Pre-Auth)<br/>9004/TCP gRPC TLS
+    participant Authorino as Authorino<br/>443/TCP HTTPS TLS
+    participant MaaSAPI as maas-api<br/>8443/TCP HTTPS TLS 1.2+
+    participant PostAuth as payload-processing<br/>(Post-Auth)<br/>9004/TCP gRPC TLS
+    participant Backend as Model Backend<br/>(KServe/External)<br/>443/TCP HTTPS
+    participant PostgreSQL as PostgreSQL<br/>5432/TCP TLS
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
 
-    Controller->>K8sAPI: Watch Tenant CR<br/>HTTPS TLS 1.2+<br/>ServiceAccount token
-    K8sAPI-->>Controller: Tenant CR event
-    Controller->>K8sAPI: Validate Gateway exists<br/>HTTPS TLS 1.2+
-    K8sAPI-->>Controller: Gateway found
-    Controller->>Controller: Render kustomize manifests<br/>(embedded in image)
-    Controller->>K8sAPI: Server-side Apply:<br/>maas-api Deployment, Service,<br/>HTTPRoute, NetworkPolicies,<br/>PodMonitor, AuthPolicy,<br/>TokenRateLimitPolicy<br/>HTTPS TLS 1.2+
-    K8sAPI-->>Controller: Resources applied
-
+    rect rgb(240, 248, 255)
+        Note over Client,Backend: Flow 1: Model Inference (OpenShift Token)
+        Client->>Gateway: POST /v1/models/model:predict<br/>Auth: Bearer Token (OpenShift)
+        Gateway->>PreAuth: ext_proc: Extract model name<br/>→ X-Gateway-Model-Name header
+        PreAuth-->>Gateway: Model name extracted
+        Gateway->>Authorino: AuthPolicy evaluation<br/>Bearer token + model name
+        Authorino->>MaaSAPI: POST /internal/v1/subscriptions/select<br/>(NetworkPolicy-protected)
+        MaaSAPI-->>Authorino: Subscription selected<br/>X-Maas-Subscription header
+        Authorino-->>Gateway: Auth OK + identity headers<br/>X-MaaS-Username/Group/Tenant
+        Gateway->>PostAuth: ext_proc: Provider resolution<br/>API translation + key injection
+        PostAuth-->>Gateway: Request transformed
+        Gateway->>Backend: Inference request<br/>Subscription-injected credentials
+        Backend-->>Gateway: Prediction result
+        Gateway-->>Client: JSON Response
     end
 
-    %% Flow 3: External Model Routing
-    rect rgb(255, 245, 238)
-    Note over Controller,ExternalLLM: Flow 3: External Model Routing
+    rect rgb(255, 248, 240)
+        Note over Client,Backend: Flow 2: Model Inference (API Key)
+        Client->>Gateway: POST /v1/models/model:predict<br/>Auth: X-Api-Key header
+        Gateway->>PreAuth: ext_proc: Extract model name
+        PreAuth-->>Gateway: Model name extracted
+        Gateway->>Authorino: AuthPolicy evaluation<br/>X-Api-Key header
+        Authorino->>MaaSAPI: POST /internal/v1/api-keys/validate<br/>SHA-256 hash lookup
+        MaaSAPI->>PostgreSQL: Query API key by hash<br/>(key_id + null byte + secret)
+        PostgreSQL-->>MaaSAPI: Key record + subscription
+        MaaSAPI-->>Authorino: Key valid + identity
+        Authorino->>MaaSAPI: POST /internal/v1/subscriptions/select
+        MaaSAPI-->>Authorino: Subscription selected
+        Authorino-->>Gateway: Auth OK + headers
+        Gateway->>PostAuth: ext_proc: Provider resolution<br/>API translation + key injection
+        PostAuth-->>Gateway: Request transformed
+        Gateway->>Backend: Inference request
+        Backend-->>Gateway: Prediction result
+        Gateway-->>Client: JSON Response
+    end
 
-    participant ExternalLLM as External LLM Provider<br/>(OpenAI, Anthropic)<br/>443/TCP HTTPS
-
-    Controller->>K8sAPI: Watch ExternalModel CR<br/>HTTPS TLS 1.2+
-    K8sAPI-->>Controller: ExternalModel event
-    Controller->>K8sAPI: Create ExternalName Service<br/>HTTPS TLS 1.2+
-    Controller->>K8sAPI: Create Istio ServiceEntry<br/>(register provider in mesh)
-    Controller->>K8sAPI: Create Istio DestinationRule<br/>(TLS origination)
-    Controller->>K8sAPI: Create HTTPRoute<br/>(per-model routing)
-    K8sAPI-->>Controller: Resources created
-
-    Note over Gateway,ExternalLLM: Runtime: inference traffic flows through gateway
-    Gateway->>ExternalLLM: Forward via ServiceEntry<br/>HTTPS TLS 1.2+<br/>API key injected by payload-processing
-
+    rect rgb(240, 255, 240)
+        Note over Client,PostgreSQL: Flow 3: API Key Management
+        Client->>Gateway: POST /v1/api-keys<br/>Auth: Bearer Token / OIDC JWT
+        Gateway->>Authorino: AuthPolicy evaluation
+        Authorino-->>Gateway: Auth OK + X-MaaS-* headers
+        Gateway->>MaaSAPI: POST /v1/api-keys<br/>User identity via headers
+        MaaSAPI->>K8sAPI: SubjectAccessReview<br/>(admin check, cached)
+        K8sAPI-->>MaaSAPI: SAR result
+        MaaSAPI->>PostgreSQL: INSERT API key<br/>(SHA-256 hash, tenant-scoped)
+        PostgreSQL-->>MaaSAPI: Key created
+        MaaSAPI-->>Gateway: API key response<br/>(key shown once)
+        Gateway-->>Client: JSON Response
     end

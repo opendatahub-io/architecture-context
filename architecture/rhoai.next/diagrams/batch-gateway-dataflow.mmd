@@ -1,81 +1,72 @@
 sequenceDiagram
     participant Client as External Client
-    participant GW as Gateway API<br/>(HTTPRoute)
-    participant API as apiserver<br/>8080/TCP HTTP(S)
+    participant GW as Kuadrant/Authorino<br/>Gateway Auth
+    participant API as Apiserver<br/>8000/TCP
     participant PG as PostgreSQL<br/>5432/TCP
-    participant Redis as Redis / Valkey<br/>6379/TCP
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant Proc as batch-processor<br/>Workers
-    participant Inf as llm-d Inference<br/>Gateway
-    participant GC as batch-gc
+    participant Redis as Redis/Valkey<br/>6379/TCP
+    participant S3 as S3 Storage<br/>443/TCP
+    participant Proc as Processor<br/>9090/TCP
+    participant Inf as llm-d Router<br/>Inference Gateway
+    participant GC as GC<br/>9091/TCP
 
-    Note over Client,S3: Flow 1: Batch Job Submission
+    Note over Client,GC: Flow 1: Batch Job Submission
 
-    Client->>GW: POST /v1/files (multipart)<br/>Tenant ID: X-MaaS-Username
-    GW->>API: Route request
-    API->>S3: Upload file content<br/>TLS, AWS credentials
-    S3-->>API: Upload confirmed
-    API->>PG: Store file metadata<br/>TCP, DSN credentials
-    PG-->>API: File record created
-    API-->>Client: 200 File object (file_id)
+    Client->>GW: POST /v1/files (multipart/form-data)<br/>Auth: API key / SA token
+    GW->>API: Validated request<br/>X-MaaS-Username: tenant-id
+    API->>S3: PutObject (input file)<br/>HTTPS / AWS IAM
+    API->>PG: INSERT file record<br/>pgx / Connection URL
+    API-->>Client: 200 OK {file_id}
 
-    Client->>GW: POST /v1/batches<br/>Tenant ID: X-MaaS-Username
-    GW->>API: Route request
-    API->>PG: Create batch record<br/>TCP, DSN credentials
-    PG-->>API: Batch created
-    API->>Redis: PQEnqueue (priority queue)<br/>TCP, URL credentials
-    Redis-->>API: Job enqueued
-    API-->>Client: 200 Batch object (batch_id, status=validating)
+    Client->>GW: POST /v1/batches<br/>Auth: API key / SA token
+    GW->>API: Validated request
+    API->>PG: INSERT batch record<br/>pgx / Connection URL
+    API->>Redis: ZADD priority queue<br/>RESP / Connection URL
+    API-->>Client: 200 OK {batch_id, status: validating}
 
-    Note over Proc,S3: Flow 2: Batch Job Processing
+    Note over Client,GC: Flow 2: Batch Job Processing
 
-    loop Poll for jobs
-        Proc->>Redis: PQDequeue (blocking)<br/>TCP, URL credentials
-        Redis-->>Proc: Job payload
+    loop Poll queue (every 5s)
+        Proc->>Redis: BZMPOP (blocking dequeue)<br/>RESP / Connection URL
+    end
+    Proc->>PG: SELECT batch details<br/>pgx
+    Proc->>S3: GetObject (input file)<br/>HTTPS / AWS IAM
+    Note over Proc: Build per-model execution plan<br/>AIMD concurrency control
+
+    loop For each request in batch (up to 50,000)
+        Proc->>Inf: POST /v1/chat/completions<br/>HTTP/HTTPS / API key or mTLS
+        Inf-->>Proc: 200 OK (inference result)
+        Note over Proc: AIMD: additive increase on success
+        alt 429 Too Many Requests or 5xx
+            Inf-->>Proc: 429/5xx error
+            Note over Proc: AIMD: multiplicative decrease<br/>(backoff_factor: 0.5)
+        end
     end
 
-    Proc->>PG: Load batch metadata<br/>TCP, DSN credentials
-    PG-->>Proc: Batch record
-    Proc->>S3: Download input JSONL<br/>TLS, AWS credentials
-    S3-->>Proc: Input file stream
+    Proc->>S3: PutObject (output file)<br/>HTTPS / AWS IAM
+    Proc->>PG: UPDATE batch status=completed<br/>pgx / CAS update
+    Proc->>Redis: SET status, cleanup inflight<br/>RESP
 
-    loop For each request in JSONL
-        Proc->>Inf: POST /v1/chat/completions<br/>HTTP(S), Bearer token or mTLS
-        Note over Proc,Inf: AIMD concurrency control<br/>Backoff on 429/5xx
-        Inf-->>Proc: Inference response
-        Proc->>Redis: Update progress counters<br/>TCP, URL credentials
-    end
+    Note over Client,GC: Flow 3: Job Cancellation
 
-    Proc->>S3: Upload output JSONL<br/>TLS, AWS credentials
-    S3-->>Proc: Output file stored
-    Proc->>S3: Upload error JSONL (if errors)<br/>TLS, AWS credentials
-    Proc->>PG: Update batch status=completed<br/>TCP, DSN credentials
+    Client->>GW: POST /v1/batches/{id}/cancel<br/>Auth: API key / SA token
+    GW->>API: Validated request
+    API->>PG: UPDATE batch status=cancelling<br/>pgx / CAS update
+    API->>Redis: RPUSH cancel event<br/>RESP
+    API-->>Client: 200 OK {status: cancelling}
+    Redis-->>Proc: BLMPOP cancel event
+    Note over Proc: Stop dispatching,<br/>write partial results
+    Proc->>S3: PutObject (partial output)<br/>HTTPS
+    Proc->>PG: UPDATE status=cancelled<br/>pgx
 
-    Note over Client,Redis: Flow 3: Batch Job Cancellation
-
-    Client->>GW: POST /v1/batches/{id}/cancel<br/>Tenant ID: X-MaaS-Username
-    GW->>API: Route request
-    API->>Redis: PQDelete (remove from queue)<br/>TCP, URL credentials
-    API->>Redis: ECProducerSendEvents (cancel event)<br/>TCP, URL credentials
-    API->>PG: Update status=cancelling<br/>TCP, DSN credentials
-    API-->>Client: 200 Batch (status=cancelling)
-
-    Proc->>Redis: Consume cancel event
-    Proc->>S3: Upload partial results<br/>TLS, AWS credentials
-    Proc->>PG: Update status=cancelled<br/>TCP, DSN credentials
-
-    Note over GC,S3: Background: Garbage Collection
+    Note over Client,GC: Flow 4: Garbage Collection
 
     loop Every 1h (configurable)
-        GC->>PG: Query expired batches/files
-        PG-->>GC: Expired items
-        GC->>S3: Delete expired file content
-        GC->>PG: Delete expired metadata
-        GC->>Redis: Clean expired status/queue entries
+        GC->>PG: SELECT expired batches/files<br/>pgx
+        GC->>S3: DeleteObject (expired files)<br/>HTTPS / AWS IAM
+        GC->>PG: DELETE expired records<br/>pgx
     end
 
-    loop Every 60m (reconciler)
-        GC->>Redis: Check in-flight tracking
-        GC->>PG: Find orphaned jobs
-        GC->>Redis: Re-enqueue or fail orphans
-    end
+    Note over GC,Redis: Orphan Reconciliation (every 60m)
+    GC->>Redis: HGETALL inflight hash<br/>RESP
+    GC->>PG: Cross-reference with DB
+    Note over GC: Re-enqueue or finalize<br/>orphaned jobs

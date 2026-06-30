@@ -1,53 +1,43 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates TrainJob resources to run distributed ML training"
-        platformAdmin = person "Platform Admin" "Defines ClusterTrainingRuntime resources with approved training configurations"
+        user = person "Data Scientist" "Creates and manages distributed ML training jobs"
+        platformAdmin = person "Platform Admin" "Deploys and configures the training operator via RHOAI"
 
-        trainer = softwareSystem "Kubeflow Trainer" "Kubernetes operator that orchestrates distributed ML training workloads via TrainJob, TrainingRuntime, and ClusterTrainingRuntime CRDs" {
-            controllerManager = container "trainer-controller-manager" "Reconciles TrainJob/TrainingRuntime/ClusterTrainingRuntime CRDs; manages JobSet lifecycle, webhook validation, plugin framework" "Go Operator (controller-runtime)" "Operator"
-            webhookServer = container "Webhook Server" "Validates TrainJob, TrainingRuntime, ClusterTrainingRuntime on CREATE/UPDATE" "Go (embedded in controller)" "Webhook"
-            pluginFramework = container "Plugin Framework" "Executes ML-specific policies: PyTorch (torchrun/torchtune), MPI, CoScheduling, Volcano, JobSet builder" "Go (in-process)" "Framework"
-            rhaiProgression = container "RHAI Progression Tracker" "Polls training pod metrics (port 28080) and updates TrainJob annotations with real-time progress" "Go (RHOAI only)" "RHOAI Feature"
-            rhaiNetPolicy = container "RHAI NetworkPolicy Enforcer" "Creates per-TrainJob NetworkPolicies restricting metrics access to controller pod" "Go (RHOAI only)" "RHOAI Feature"
-            dataCache = container "Data Cache" "Distributed dataset caching with head-worker topology using Apache Arrow Flight and Iceberg metadata" "Rust" "Optional"
-            datasetInitializer = container "Dataset Initializer" "Init container that prepares training datasets before training pod startup" "Go" "Init Container"
-            modelInitializer = container "Model Initializer" "Init container that downloads pre-trained model weights before training" "Go" "Init Container"
+        trainer = softwareSystem "Kubeflow Trainer V2" "Orchestrates distributed ML training jobs via TrainJob CRDs and pluggable runtime templates" {
+            controllerManager = container "trainer-controller-manager" "Reconciles TrainJob, TrainingRuntime, ClusterTrainingRuntime CRDs; creates JobSets, PodGroups, Secrets, ConfigMaps, NetworkPolicies" "Go Operator (controller-runtime)"
+            webhookServer = container "Webhook Server" "Validates TrainJob, TrainingRuntime, ClusterTrainingRuntime on CREATE/UPDATE" "Admission Webhook (9443/TCP HTTPS)"
+            pluginFramework = container "Runtime Plugin Framework" "Extensible plugin system for ML policy enforcement (Torch, MPI, PlainML) and gang-scheduling (CoScheduling, Volcano)" "Go Library"
+            progressionTracker = container "Progression Tracker (RHAI)" "Polls training pod metrics for real-time training progress reporting" "Go (HTTP client)"
         }
 
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform and API server" "External"
-        jobset = softwareSystem "JobSet Controller" "Orchestrates multi-pod job topologies (sigs.k8s.io/jobset v0.10.1)" "External"
-        schedulerPlugins = softwareSystem "Scheduler Plugins" "CoScheduling gang scheduling for training pods (sigs.k8s.io/scheduler-plugins v0.34.1)" "External"
-        volcano = softwareSystem "Volcano Scheduler" "Alternative gang scheduling with queue and priority support (volcano.sh v1.13.1)" "External"
-        certController = softwareSystem "cert-controller" "Webhook certificate management and auto-rotation (open-policy-agent v0.14.0)" "External"
-        leaderWorkerSet = softwareSystem "LeaderWorkerSet" "Manages head-worker pod topology for data cache" "External"
-        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics scraping via PodMonitor" "External"
-        icebergStore = softwareSystem "Iceberg Metadata Store" "Table metadata for data cache file discovery" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for resource management" "External"
+        jobsetController = softwareSystem "JobSet Controller" "Reconciles JobSet CRs into Jobs and Pods" "External (jobset.x-k8s.io)"
+        kueue = softwareSystem "Kueue / scheduler-plugins" "Gang-scheduling via PodGroup for multi-node training" "External (optional)"
+        volcano = softwareSystem "Volcano" "Alternative gang-scheduler for PodGroups" "External (optional)"
+        certController = softwareSystem "cert-controller" "Internal webhook certificate management" "External"
+        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator, deploys trainer via kustomize" "Internal RHOAI"
+        trainingImages = softwareSystem "Training Hub Images" "Pre-built CUDA/ROCm/CPU training images" "Internal RHOAI (registry.redhat.io)"
 
-        rhodsOperator = softwareSystem "rhods-operator / opendatahub-operator" "Platform operator that deploys Trainer via kustomize overlay" "Internal ODH"
-        kueue = softwareSystem "Kueue" "Workload management for TrainJobs via managedBy field" "Internal ODH"
+        # Relationships
+        user -> trainer "Creates TrainJob via kubectl/Dashboard"
+        platformAdmin -> rhodsOperator "Configures RHOAI platform"
+        rhodsOperator -> trainer "Deploys via kustomize manifests"
 
-        # Relationships - Users
-        dataScientist -> trainer "Creates TrainJob via kubectl/API"
-        platformAdmin -> trainer "Defines ClusterTrainingRuntime/TrainingRuntime"
+        controllerManager -> webhookServer "Delegates validation"
+        controllerManager -> pluginFramework "Enforces ML policies"
+        controllerManager -> progressionTracker "Polls training metrics"
 
-        # Relationships - Internal
-        controllerManager -> webhookServer "Embeds webhook server"
-        controllerManager -> pluginFramework "Executes plugin chain during reconciliation"
-        controllerManager -> rhaiProgression "Runs progression tracking (RHOAI)"
-        controllerManager -> rhaiNetPolicy "Enforces network isolation (RHOAI)"
+        trainer -> kubernetesAPI "Watches CRDs, creates resources" "HTTPS/443 TLS 1.2+ SA token"
+        trainer -> jobsetController "Creates JobSet CRs" "Kubernetes API"
+        trainer -> kueue "Creates PodGroup CRs (CoScheduling)" "Kubernetes API"
+        trainer -> volcano "Creates PodGroup CRs (Volcano)" "Kubernetes API"
 
-        # Relationships - External
-        controllerManager -> kubernetes "CRUD operations via K8s API" "HTTPS/443 TLS 1.2+ Bearer Token"
-        controllerManager -> jobset "Creates JobSet resources for training orchestration" "K8s API HTTPS"
-        controllerManager -> schedulerPlugins "Creates PodGroup for CoScheduling" "K8s API HTTPS"
-        controllerManager -> volcano "Creates PodGroup for Volcano scheduling" "K8s API HTTPS"
-        certController -> controllerManager "Manages webhook TLS certificates" "K8s Secret"
-        prometheus -> controllerManager "Scrapes metrics" "HTTPS/8443 TLS"
-        rhodsOperator -> trainer "Deploys via kustomize overlay" "manifests/rhoai/"
-        dataCache -> icebergStore "Reads table metadata" "HTTP/S3"
-        dataCache -> leaderWorkerSet "Managed by LWS for head-worker topology" "K8s API"
+        kubernetesAPI -> webhookServer "Sends admission requests" "HTTPS/9443 TLS"
+        certController -> trainer "Manages webhook TLS certificates"
 
-        kubernetes -> webhookServer "Sends admission reviews" "HTTPS/9443 mTLS"
+        progressionTracker -> kubernetesAPI "Lists training pods, updates TrainJob status" "HTTPS/443"
+
+        jobsetController -> kubernetesAPI "Creates Jobs/Pods from JobSets" "HTTPS/443"
     }
 
     views {
@@ -62,45 +52,33 @@ workspace {
         }
 
         styles {
+            element "Software System" {
+                background #438DD5
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal ODH" {
+            element "External (optional)" {
+                background #bbbbbb
+                color #ffffff
+            }
+            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Operator" {
-                background #4a90e2
+            element "Internal RHOAI (registry.redhat.io)" {
+                background #7ed321
                 color #ffffff
-            }
-            element "Webhook" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Framework" {
-                background #6c5ce7
-                color #ffffff
-            }
-            element "RHOAI Feature" {
-                background #e17055
-                color #ffffff
-            }
-            element "Optional" {
-                background #00b894
-                color #ffffff
-            }
-            element "Init Container" {
-                background #fdcb6e
-                color #333333
             }
             element "Person" {
-                shape person
-                background #08427b
+                background #08427B
                 color #ffffff
+                shape Person
             }
-            element "Software System" {
-                background #1168bd
+            element "Container" {
+                background #438DD5
                 color #ffffff
             }
         }

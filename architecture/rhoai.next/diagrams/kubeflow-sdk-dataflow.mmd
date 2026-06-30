@@ -1,55 +1,52 @@
 sequenceDiagram
-    participant User as Data Scientist<br/>(Python Code)
-    participant SDK as Kubeflow SDK<br/>(TrainerClient)
+    participant User as User Python Code
+    participant SDK as TrainerClient SDK
     participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant Controller as Trainer Controller<br/>(Watch Stream)
-    participant Pod as Training Pod<br/>(GPU Worker)
-    participant Metrics as In-Pod Metrics Server<br/>28080/TCP HTTP
-    participant RHOAICtrl as RHOAI Controller
-    participant S3 as S3-compatible Storage<br/>443/TCP HTTPS TLS 1.2+
-    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
+    participant TrainerOp as Trainer Operator
+    participant JobSet as JobSet Controller
+    participant Pod as Training Pod
+    participant MetricsSrv as HTTP Metrics Server<br/>(injected by RHAI)
+    participant S3 as S3 Object Storage<br/>443/TCP HTTPS TLS 1.2+
+    participant SparkOp as Spark Operator
+    participant SparkPod as Spark Driver Pod<br/>15002/TCP gRPC
+    participant ModelReg as Model Registry<br/>443/8080 TCP HTTP/HTTPS
 
-    rect rgb(230, 240, 255)
-        Note over User,Controller: Flow 1: Create Training Job (Kubernetes Backend)
-        User->>SDK: trainer.train(<br/>trainer=CustomTrainer/TransformersTrainer,<br/>backend=KubernetesBackendConfig)
-        SDK->>K8sAPI: POST TrainJob CR<br/>Auth: Bearer Token<br/>TLS 1.2+
-        K8sAPI-->>SDK: TrainJob created
-        K8sAPI->>Controller: Watch event: TrainJob added
-        Controller->>Pod: Create training pods<br/>(with injected code for RHAI trainers)
-    end
+    Note over User,S3: Flow 1: Training Job Submission (Kubernetes Backend)
+    User->>SDK: trainer.train(train_func, config)
+    SDK->>K8sAPI: POST TrainJob CR<br/>Auth: Bearer Token
+    K8sAPI->>TrainerOp: Reconcile TrainJob
+    TrainerOp->>JobSet: Create JobSet
+    JobSet->>Pod: Schedule training pods
+    SDK->>K8sAPI: GET pods/log (stream)<br/>Auth: Bearer Token
+    K8sAPI-->>SDK: Training logs
 
-    rect rgb(255, 235, 235)
-        Note over Pod,S3: Flow 3: S3 Checkpoint Storage (TransformersTrainer)
-        Pod->>S3: Download existing checkpoints<br/>(on_init_end, resume training)<br/>Auth: AWS IAM credentials<br/>from Data Connection secret
-        S3-->>Pod: Checkpoint artifacts
-        Note over Pod: Training executes...<br/>JIT checkpointing on SIGTERM<br/>LIFO upload queue
-        Pod->>S3: Upload checkpoint<br/>(async background, per-rank markers)<br/>Auth: AWS IAM credentials
-        S3-->>Pod: Upload confirmed
-    end
+    Note over User,S3: Flow 2: RHAI Training with Progression Tracking
+    User->>SDK: trainer.train(TransformersTrainer, config)
+    SDK->>K8sAPI: POST TrainJob CR<br/>(with instrumented code + annotations)
+    K8sAPI->>TrainerOp: Reconcile TrainJob
+    TrainerOp->>Pod: Create training pod<br/>(with metrics server injected)
+    Pod->>MetricsSrv: Start HTTP server
+    TrainerOp->>MetricsSrv: GET /metrics (poll)<br/>HTTP, no encryption
+    MetricsSrv-->>TrainerOp: JSON metrics<br/>(progress, ETA, step, loss)
+    Pod->>Pod: Write /dev/termination-log<br/>(final metrics)
 
-    rect rgb(235, 255, 235)
-        Note over Pod,RHOAICtrl: Flow 2: RHAI Progression Tracking
-        Note over Pod,Metrics: RHAI trainer injects HTTP metrics<br/>server into training pod at startup
-        Pod->>Metrics: Start metrics server<br/>bind 0.0.0.0:28080
-        RHOAICtrl->>Metrics: GET / (poll metrics)<br/>HTTP 28080/TCP<br/>No auth, No encryption
-        Metrics-->>RHOAICtrl: JSON: {step, epoch, loss, ETA}
-        Pod->>Pod: Write /dev/termination-log<br/>(final metrics on exit)
-    end
+    Note over User,S3: Flow 3: JIT Checkpoint to S3
+    Pod->>Pod: Receive SIGTERM<br/>(preemption/scale-down)
+    Pod->>Pod: CheckpointManager saves to<br/>/mnt/kubeflow-checkpoints
+    Pod->>S3: Upload checkpoint<br/>fsspec/s3fs<br/>Auth: AWS credentials from Secret
+    S3-->>Pod: Upload complete
+    Note over Pod: Removes checkpoint-is-incomplete.txt<br/>marker on success
 
-    rect rgb(255, 245, 230)
-        Note over User,HFHub: Flow 4: Model/Dataset Download
-        Pod->>HFHub: Download model/dataset<br/>storage_uri: hf://<br/>Auth: Bearer Token (optional)<br/>TLS 1.2+
-        HFHub-->>Pod: Model artifacts
-    end
+    Note over User,SparkPod: Flow 4: Spark Connect Session
+    User->>SDK: spark.create_session(config)
+    SDK->>K8sAPI: POST SparkConnect CR<br/>Auth: Bearer Token
+    K8sAPI->>SparkOp: Reconcile SparkConnect
+    SparkOp->>SparkPod: Create driver + executor pods
+    SDK->>SparkPod: gRPC Connect<br/>15002/TCP, no encryption
+    User->>SDK: spark.execute(query)
+    SDK->>SparkPod: Spark SQL via gRPC<br/>15002/TCP
 
-    rect rgb(240, 235, 255)
-        Note over User,K8sAPI: Flow 5: Job Status Monitoring
-        User->>SDK: trainer.get(name)
-        SDK->>K8sAPI: GET TrainJob<br/>Auth: Bearer Token
-        K8sAPI-->>SDK: TrainJob status
-        SDK-->>User: TrainJob object
-        User->>SDK: trainer.get_logs(name)
-        SDK->>K8sAPI: GET pods/log<br/>Auth: Bearer Token
-        K8sAPI-->>SDK: Pod log stream
-        SDK-->>User: Training logs
-    end
+    Note over User,ModelReg: Flow 5: Model Registration
+    User->>SDK: hub.register_model(model)
+    SDK->>ModelReg: POST /api/model_registry<br/>Auth: Bearer Token (optional)<br/>Custom CA (optional)
+    ModelReg-->>SDK: Model version registered

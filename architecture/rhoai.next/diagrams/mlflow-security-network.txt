@@ -1,194 +1,191 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                   │
 │                                                                          │
-│  [ML Client / Web Browser]                                               │
+│  [Data Scientist - SDK Client]                                           │
+│  [Browser User]                                                          │
 │         │                                                                │
-│         │ Port: 443/TCP (when TLS enabled) or 5000/TCP                   │
-│         │ Protocol: HTTP/HTTPS                                           │
-│         │ Encryption: Configurable TLS (cert via Helm Secret)            │
-│         │ Auth: kubernetes-auth (RBAC plugin)                            │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token (K8s SA) or OpenShift OAuth                 │
+│         │ Header: X-MLFLOW-WORKSPACE (SDK)                               │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (Optional - Helm configurable)                                 │
+│  INGRESS (Platform Gateway)                                              │
 │                                                                          │
-│  [Kubernetes Ingress]                                                    │
-│  - Host: configurable (default: mlflow.local)                           │
-│  - Port: 80/TCP (HTTP) or 443/TCP (HTTPS)                              │
-│  - TLS Mode: SIMPLE (configurable)                                      │
-│  - Auth: Passthrough to MLflow                                           │
+│  [ODH Data Science Gateway - HTTPRoute]                                  │
+│  - Type: Gateway API HTTPRoute                                           │
+│  - Port: 443/TCP (external) → 5000/TCP (internal)                      │
+│  - TLS Termination: TLS 1.2+ (SIMPLE)                                   │
+│  - Path: /mlflow                                                         │
+│  - AuthN: Forwarded Bearer Token / OAuth headers                        │
+│         │                                                                │
+│  [Helm Ingress (optional)]                                               │
+│  - Type: networking.k8s.io/v1 Ingress                                   │
+│  - Host: Configurable (default: mlflow.local)                            │
+│  - Port: 443/TCP (external) → 5000/TCP (internal)                      │
+│  - TLS: Configurable (SIMPLE)                                           │
 │         │                                                                │
 │         │ Port: 5000/TCP                                                 │
 │         │ Protocol: HTTP or HTTPS                                        │
-│         │ Encryption: None (in-cluster) or TLS                           │
+│         │ Encryption: Optional TLS (configurable)                        │
+│         │ Auth: Forwarded Bearer Token                                   │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  APPLICATION (ClusterIP Service)                                         │
+│  APPLICATION (MLflow Server)                                             │
 │                                                                          │
-│  [MLflow Server - ClusterIP Service]                                     │
+│  [MLflow Server - Flask + FastAPI/ASGI]                                  │
 │  - Namespace: {release-namespace}                                        │
-│  - Port: 5000/TCP                                                        │
 │  - ServiceAccount: mlflow                                                │
+│  - Service: mlflow (ClusterIP, 5000/TCP)                                │
+│  - Image: UBI9 ubi-minimal:9.7 based                                    │
 │  - Security Context:                                                     │
-│    - runAsNonRoot: true (UID 1000)                                       │
 │    - readOnlyRootFilesystem: true                                        │
-│    - allowPrivilegeEscalation: false                                     │
-│    - capabilities: drop ALL                                              │
+│    - runAsNonRoot: true                                                   │
+│    - drop: ALL capabilities                                              │
 │    - seccompProfile: RuntimeDefault                                      │
-│  - Image: rhoai/odh-mlflow-rhel9                                        │
 │                                                                          │
-│  ┌──────────────────────────────────────────────────────────────────┐    │
-│  │ Internal Components                                              │    │
-│  │                                                                  │    │
-│  │ [Security Middleware]                                             │    │
-│  │  - Host header validation (DNS rebinding protection)             │    │
-│  │  - CORS origin validation (CSRF prevention)                      │    │
-│  │  - /health, /version exempt from auth                            │    │
-│  │                                                                  │    │
-│  │ [Auth Module - kubernetes-auth]                                   │    │
-│  │  - RBAC with roles/permissions                                    │    │
-│  │  - Workspace-scoped access control                               │    │
-│  │                                                                  │    │
-│  │ [AI Gateway - Envelope Encryption]                               │    │
-│  │  - AES-256-GCM with PBKDF2-HMAC-SHA256 (600K iterations)        │    │
-│  │  - KEK/DEK hierarchy for provider API key encryption             │    │
-│  │  - AAD (Additional Authenticated Data) for anti-substitution     │    │
-│  │  - Nonce: 12-byte random per encryption                          │    │
-│  └──────────────────────────────────────────────────────────────────┘    │
+│  Security Middleware Stack:                                               │
+│  ┌──────────────────────────────────────────────┐                        │
+│  │ 1. Host Header Validation (DNS rebinding)    │                        │
+│  │ 2. CORS Blocking (state-changing requests)   │                        │
+│  │ 3. kubernetes-auth plugin                    │                        │
+│  │    → SelfSubjectAccessReview against          │                        │
+│  │      mlflow.kubeflow.org pseudo-resource      │                        │
+│  │ 4. HTTP Basic Auth (fallback)                │                        │
+│  │ 5. Security Headers (X-Frame-Options, etc.)  │                        │
+│  └──────────────────────────────────────────────┘                        │
 │                                                                          │
-│         │                   │                   │                         │
-│         │ SQL               │ HTTPS             │ HTTPS                   │
-│         ▼                   ▼                   ▼                         │
+│  Exempt Endpoints (no auth):                                             │
+│  - /health (GET) - Liveness/readiness probes                             │
+│  - /version (GET) - Server version                                       │
+│  - /metrics (GET) - Prometheus scrape                                    │
+│         │                                                                │
+│         ├─── Port: 6443/TCP ───────────────────────────────────────┐     │
+│         │    Protocol: HTTPS                                       │     │
+│         │    Encryption: TLS 1.2+                                  │     │
+│         │    Auth: ServiceAccount Token                             │     │
+│         │    Purpose: RBAC checks, namespace listing,              │     │
+│         │             MLflowConfig CR reads, Job management        │     │
+│         │                                                          ▼     │
+│         │                                              ┌───────────────┐ │
+│         │                                              │ Kubernetes    │ │
+│         │                                              │ API Server    │ │
+│         │                                              │ 6443/TCP      │ │
+│         │                                              └───────────────┘ │
+│         │                                                                │
+│         ├─── Port: 5432/TCP ───────────────────────────────────────┐     │
+│         │    Protocol: PostgreSQL wire protocol                     │     │
+│         │    Encryption: None (in-cluster)                          │     │
+│         │    Auth: Database credentials (Secret)                    │     │
+│         │    Purpose: Metadata store                               │     │
+│         │                                                          ▼     │
+│         │                                              ┌───────────────┐ │
+│         │                                              │ PostgreSQL    │ │
+│         │                                              │ 5432/TCP      │ │
+│         │                                              └───────────────┘ │
+│         │                                                                │
+│         ├─── Port: 443/TCP or 9000/TCP ────────────────────────────┐     │
+│         │    Protocol: HTTPS/HTTP                                  │     │
+│         │    Encryption: TLS 1.2+ (external)                       │     │
+│         │    Auth: AWS IAM credentials or access keys              │     │
+│         │    Purpose: Artifact storage                             │     │
+│         │                                                          ▼     │
+│         │                                              ┌───────────────┐ │
+│         │                                              │ S3/MinIO      │ │
+│         │                                              │ 443/9000 TCP  │ │
+│         │                                              └───────────────┘ │
+│         │                                                                │
+│         ├─── Port: 53/UDP, 5353/UDP ───────────────────────────────┐     │
+│         │    Protocol: DNS                                         │     │
+│         │    Encryption: None                                      │     │
+│         │    Auth: None                                             │     │
+│         │    Purpose: Service name resolution                      │     │
+│         │                                                          ▼     │
+│         │                                              ┌───────────────┐ │
+│         │                                              │ CoreDNS       │ │
+│         │                                              │ 53/5353 UDP   │ │
+│         │                                              └───────────────┘ │
+│         │                                                                │
+│         └─── Port: 443/TCP ────────────────────────────────────────┐     │
+│              Protocol: HTTPS                                       │     │
+│              Encryption: TLS 1.2+                                  │     │
+│              Auth: Varies (API keys)                               │     │
+│              Purpose: AI gateway LLM providers, HuggingFace Hub   │     │
+│                                                                    ▼     │
+│                                                        ┌───────────────┐ │
+│                                                        │ External LLM  │ │
+│                                                        │ Providers     │ │
+│                                                        │ 443/TCP       │ │
+│                                                        └───────────────┘ │
+│                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  BACKEND SERVICES (In-Cluster)                                          │
+│  MONITORING                                                              │
 │                                                                          │
-│  [PostgreSQL Database]                                                   │
-│  - Port: 5432/TCP                                                        │
-│  - Protocol: TCP (SQL)                                                   │
-│  - Encryption: None (in-cluster communication)                           │
-│  - Auth: Password (from Kubernetes Secret)                               │
-│  - Purpose: Experiments, runs, metrics, models, traces metadata          │
-│                                                                          │
-│  [MySQL Database - Alternative]                                          │
-│  - Port: 3306/TCP                                                        │
-│  - Protocol: TCP (SQL)                                                   │
-│  - Encryption: None (in-cluster communication)                           │
-│  - Auth: Password (from Kubernetes Secret)                               │
-│  - Purpose: Alternative backend metadata store                           │
-│                                                                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│  CLUSTER SERVICES                                                        │
-│                                                                          │
-│  [Kubernetes API Server]                                                 │
-│  - Port: 6443/TCP                                                        │
-│  - Protocol: HTTPS                                                       │
-│  - Encryption: TLS 1.2+                                                  │
-│  - Auth: ServiceAccount token (automount disabled by default)            │
-│  - Purpose: Workspace namespace resolution, pod metadata                 │
-│                                                                          │
-│  [DNS - CoreDNS]                                                         │
-│  - Port: 53/UDP, 53/TCP, 5353/UDP, 5353/TCP                            │
-│  - Protocol: DNS                                                         │
-│  - Encryption: None                                                      │
-│  - Auth: None                                                            │
-│  - Purpose: Name resolution (includes OVN-Kubernetes)                    │
-│                                                                          │
-│  [Prometheus]                                                            │
-│  - Port: 5000/TCP (scrape from MLflow /metrics)                         │
-│  - Protocol: HTTP/HTTPS                                                  │
-│  - Encryption: Configurable                                              │
-│  - Auth: None (metrics endpoint exempt)                                  │
-│  - Purpose: Metrics collection                                           │
-│                                                                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES                                                       │
-│                                                                          │
-│  [S3-Compatible Storage - s3.amazonaws.com / MinIO / Ceph]              │
-│  - Port: 443/TCP (AWS S3), 9000/TCP (MinIO), 8333-8334/TCP             │
-│  - Protocol: HTTPS                                                       │
-│  - Encryption: TLS 1.2+                                                  │
-│  - Auth: AWS IAM / Access Keys                                           │
-│  - Purpose: Model artifact and run artifact storage                      │
-│                                                                          │
-│  [OpenAI API - api.openai.com]                                           │
-│  - Port: 443/TCP                                                         │
-│  - Protocol: HTTPS                                                       │
-│  - Encryption: TLS 1.2+                                                  │
-│  - Auth: API Key (envelope-encrypted, AES-256-GCM)                      │
-│  - Purpose: AI Gateway - LLM chat/completion/embedding                   │
-│                                                                          │
-│  [Anthropic API - api.anthropic.com]                                     │
-│  - Port: 443/TCP                                                         │
-│  - Protocol: HTTPS                                                       │
-│  - Encryption: TLS 1.2+                                                  │
-│  - Auth: API Key (envelope-encrypted, AES-256-GCM)                      │
-│  - Purpose: AI Gateway - LLM chat/completion                             │
-│                                                                          │
-│  [Amazon Bedrock - bedrock-runtime.*.amazonaws.com]                      │
-│  - Port: 443/TCP                                                         │
-│  - Protocol: HTTPS                                                       │
-│  - Encryption: TLS 1.2+                                                  │
-│  - Auth: AWS IAM credentials                                             │
-│  - Purpose: AI Gateway - AWS-hosted LLM models                          │
-│                                                                          │
-│  [Google Gemini/Vertex AI - generativelanguage.googleapis.com]           │
-│  - Port: 443/TCP                                                         │
-│  - Protocol: HTTPS                                                       │
-│  - Encryption: TLS 1.2+                                                  │
-│  - Auth: API Key / OAuth                                                 │
-│  - Purpose: AI Gateway - Google LLM models                               │
-│                                                                          │
-│  [Mistral API - api.mistral.ai]                                          │
-│  - Port: 443/TCP                                                         │
-│  - Protocol: HTTPS                                                       │
-│  - Encryption: TLS 1.2+                                                  │
-│  - Auth: API Key (envelope-encrypted, AES-256-GCM)                      │
-│  - Purpose: AI Gateway - Mistral LLM models                             │
+│  [Prometheus / ServiceMonitor]                                           │
+│  - Port: 5000/TCP                                                        │
+│  - Protocol: HTTP or HTTPS                                               │
+│  - Encryption: Optional TLS                                              │
+│  - Path: /metrics                                                        │
+│  - Direction: Prometheus scrapes MLflow                                   │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 
-NetworkPolicy (Helm-managed, when enabled):
-  Egress Rules:
-  - Allow DNS: 53/UDP, 53/TCP, 5353/UDP, 5353/TCP (CoreDNS + OVN-K)
-  - Allow HTTPS: 443/TCP (S3, LLM providers, external services)
-  - Allow PostgreSQL: 5432/TCP
-  - Allow MySQL: 3306/TCP
-  - Allow S3 (MinIO): 9000/TCP, 8333/TCP, 8334/TCP
-  - Allow Kubernetes API: 6443/TCP
-
 RBAC Summary:
-  - ServiceAccount: mlflow (namespace-scoped)
-  - ServiceAccount token automount: disabled by default
-  - Role/ClusterRole: configurable via Helm values
-    - namespace_rbac.extraRules: namespace-scoped RBAC
-    - cluster_rbac.extraRules: cluster-scoped RBAC
-  - No default RBAC rules created
+- ClusterRole: mlflow (Helm, configurable)
+  - API Group: "" (core)
+    - Resources: namespaces
+    - Verbs: get, list, watch
+  - API Group: mlflow.kubeflow.org
+    - Resources: mlflowconfigs
+    - Verbs: get, list, watch
+  - API Group: authorization.k8s.io
+    - Resources: selfsubjectaccessreviews
+    - Verbs: create
+  - API Group: batch
+    - Resources: jobs
+    - Verbs: create, get, list, watch, delete
+
+- ClusterRoleBinding: mlflow (Helm)
+  - ServiceAccount: mlflow (release namespace)
+  - ClusterRole: mlflow
+
+- RoleBinding (optional): mlflow (Helm)
+  - Namespace: Release namespace
+  - ServiceAccount: mlflow
+  - Role: mlflow (namespace-scoped extra rules)
+
+Authentication & Authorization:
+- /api/*, /ajax-api/*:
+  - Primary: Bearer Token (K8s ServiceAccount) via kubernetes-auth plugin
+  - Mechanism: SelfSubjectAccessReview against mlflow.kubeflow.org pseudo-resource
+  - Fallback: HTTP Basic Auth (basic_auth.ini) with READ/USE/EDIT/MANAGE roles
+- /health, /version: No auth (exempt)
+- CORS: State-changing cross-origin requests blocked unless origin is trusted
+- Host validation: DNS rebinding protection; only localhost and private IPs by default
+
+Security Headers:
+- X-Frame-Options: DENY
+- X-Content-Type-Options: nosniff
 
 Secrets:
-  - mlflow-tls (kubernetes.io/tls)
-    - TLS certificate and key for HTTPS
-    - Provisioned: Manual / cert-manager
-    - Auto-Rotate: No
-  - Backend store secret (Opaque)
-    - Database connection URI (PostgreSQL/MySQL)
-    - Provisioned: Manual
-    - Auto-Rotate: No
-  - MLFLOW_CRYPTO_KEK_PASSPHRASE (env var)
-    - Passphrase for KEK derivation (AES-256-GCM)
-    - WARNING: Default dev passphrase is a production risk if not overridden
-    - Manual rotation via CLI (`mlflow gateway rotate-kek`)
+- mlflow-tls (kubernetes.io/tls) - TLS cert for HTTPS termination, cert-manager or manual, no auto-rotate
+- Database credentials (Opaque) - PostgreSQL/MySQL connection URI, manual or external secret operator, no auto-rotate
+- MLFLOW_CRYPTO_KEK_PASSPHRASE (env var) - AES-GCM KEK for gateway secret envelope encryption, admin-provisioned, no auto-rotate
 
-FIPS Compliance:
-  - pyca/cryptography (>=43.0.0) delegates to system OpenSSL (FIPS-validated on RHEL/UBI9)
-  - PBKDF2-HMAC-SHA256 with 600,000 iterations (NIST SP 800-132 compliant)
-  - AES-256-GCM encryption (NIST-approved algorithm)
-  - hashlib.md5 used in 4 places with usedforsecurity=False (non-cryptographic, FIPS-compliant)
-  - No Go binaries (Python service, N/A for GOEXPERIMENT=strictfipsruntime)
+Cryptography:
+- AES-GCM envelope encryption (cryptography library v46.0.7, OpenSSL backend)
+- PBKDF2HMAC for KEK derivation from passphrase
+- hashlib.sha256 for job param hashing (non-security)
+- hashlib.sha1(usedforsecurity=False) for conda env hashing (FIPS-safe)
+- HMAC-SHA256 for auth credential caching
+- OpenSSL inherited from UBI9 base image (FIPS-compliant when host in FIPS mode)
 
-Container Security:
-  - Base image: registry.access.redhat.com/ubi9/ubi-minimal:9.7
-  - Non-root user: UID 1000
-  - Read-only root filesystem
-  - No privilege escalation
-  - All capabilities dropped
-  - Seccomp profile: RuntimeDefault
-  - Multi-arch: amd64, arm64, ppc64le, s390x
+NetworkPolicy (Helm):
+- Egress allowed to:
+  - DNS: 53/UDP, 5353/UDP (CoreDNS + OpenShift)
+  - HTTPS: 443/TCP
+  - Kubernetes API: 6443/TCP
+  - PostgreSQL: 5432/TCP
+  - MySQL: 3306/TCP
+  - S3-compatible: 9000/TCP, 8333/TCP, 8334/TCP

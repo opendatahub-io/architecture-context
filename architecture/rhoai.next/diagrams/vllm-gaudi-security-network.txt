@@ -3,123 +3,144 @@
 │                                                                          │
 │  [External Client]                                                       │
 │         │                                                                │
-│         │ Port: 443/TCP (platform-managed)                               │
+│         │ Port: 443/TCP                                                  │
 │         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS 1.2+ (platform-managed)                        │
-│         │ Auth: Platform-level (kube-rbac-proxy in RHOAI 3.x)           │
+│         │ Encryption: TLS 1.3                                            │
+│         │ Auth: Bearer Token                                             │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  PLATFORM INGRESS (KServe / RHOAI-managed)                              │
+│  INGRESS (Platform-Managed)                                              │
 │                                                                          │
-│  [KServe Router / Istio Gateway]                                         │
-│  - TLS termination: Platform-managed                                     │
-│  - AuthN/AuthZ: RequestAuthentication / kube-rbac-proxy sidecar         │
-│  - Note: Ingress is NOT defined in this repository                      │
+│  [Platform Gateway / HTTPRoute]                                          │
+│  - Managed by: Gateway API (RHOAI 3.x)                                  │
+│  - TLS Termination: TLS 1.3                                             │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS                                                │
+│         │ Auth: RBAC (kube-rbac-proxy validates)                        │
+│         ▼                                                                │
+│  [kube-rbac-proxy sidecar]                                               │
+│  - Namespace: {user-namespace}                                           │
+│  - Purpose: Auth enforcement and TLS termination                        │
+│  - Port: 8443/TCP (external) → 8000/TCP (localhost)                    │
 │         │                                                                │
 │         │ Port: 8000/TCP                                                 │
 │         │ Protocol: HTTP                                                 │
-│         │ Encryption: None (pod-internal or service mesh mTLS)           │
-│         │ Auth: None (vLLM server has no built-in auth)                  │
+│         │ Encryption: None (localhost/loopback)                          │
+│         │ Auth: None (trusted after RBAC validation)                    │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  INFERENCE POD (vllm-gaudi container)                                   │
+│  APPLICATION (Pod-Internal)                                              │
 │                                                                          │
 │  [vLLM OpenAI API Server]                                                │
-│  - Image: odh-vllm-gaudi-rhel9                                          │
-│  - Port: 8000/TCP (HTTP, no TLS)                                        │
-│  - User: UID 2000 (non-root, OpenShift compatible)                      │
-│  - Base: RHEL 9.6 UBI                                                    │
-│  - FIPS: DISABLED (openssl-fips-provider-so removed)                    │
+│  - Namespace: {user-namespace}                                           │
+│  - Port: 8000/TCP                                                        │
+│  - Protocol: HTTP (no TLS — delegated to sidecar)                       │
+│  - Entrypoint: vllm.entrypoints.openai.api_server                       │
+│  - Endpoints:                                                            │
+│      POST /v1/completions                                                │
+│      POST /v1/chat/completions                                           │
+│      GET  /v1/models                                                     │
+│      POST /v1/embeddings                                                 │
+│      POST /tokenize                                                      │
+│      POST /detokenize                                                    │
+│      GET  /health (unauthenticated)                                     │
+│         │                                                                │
+│         │ In-process (Python)                                            │
+│         ▼                                                                │
+│  [HPUModelRunner / HPUWorker]                                            │
+│  - Attention backends: HPUAttentionV1, HPUUnifiedAttention,             │
+│    HPUMLAAttention, HPUUnifiedMLA                                       │
+│  - Quantization: FP8 (INC), AWQ, GPTQ, ModelOpt, compressed-tensors   │
+│         │                                                                │
+│         │ PCIe / RDMA                                                    │
+│         │ Protocol: HPU driver                                           │
+│         │ Encryption: N/A (hardware bus)                                 │
+│         ▼                                                                │
+│  [Intel Gaudi 2/3 HPU]                                                   │
+│  - Synapse AI 1.23.0                                                     │
+│  - Compute dtype: BFloat16 (primary)                                    │
+│  - FP8: float8_e4m3fnuz (Gaudi 2), float8_e4m3fn (Gaudi 3)            │
 │                                                                          │
-│  Endpoints:                                                              │
-│  - POST /v1/completions          (text completion)                       │
-│  - POST /v1/chat/completions     (chat completion)                       │
-│  - GET  /v1/models               (list models)                           │
-│  - GET  /health                  (health check)                          │
-│  - POST /v1/embeddings           (embedding generation)                  │
-│                                                                          │
-│  [HPUModelRunner / vllm-gaudi plugin]                                    │
-│  - In-process Python calls to Habana Synapse AI                         │
-│  - No network endpoints (hardware-level plugin)                          │
-│         │                        │                                       │
-│         │ (Egress)               │ (Distributed)                         │
-│         ▼                        ▼                                       │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  CLUSTER-INTERNAL COMMUNICATION                                         │
+│  DISTRIBUTED COMMUNICATION (Multi-HPU, Unencrypted)                      │
 │                                                                          │
-│  [Peer Gaudi Workers (Tensor/Pipeline Parallel)]                         │
-│  - Protocol: HCCL (Habana Collective Communication Library)             │
-│  - Transport: RDMA (preferred) or TCP fallback                          │
+│  [Ray Cluster]                                                           │
+│  - Ray Head: 6379/TCP (Redis), 10001/TCP (GCS)                         │
+│  - Protocol: Ray internal                                                │
 │  - Encryption: None                                                      │
-│  - Auth: None (cluster-internal)                                         │
-│  - Operations: all-reduce, all-gather, dispatch, combine (MoE)          │
-│                                                                          │
-│  [Ray Cluster (Multi-Worker Orchestration)]                              │
-│  - Port: 6379/TCP (default)                                              │
-│  - Protocol: Ray protocol                                                │
-│  - Encryption: None                                                      │
-│  - Auth: None                                                            │
-│                                                                          │
-│  [NIXL KV Cache Transfer (Disaggregated Serving)]                        │
-│  - Protocol: NIXL (RDMA/TCP)                                            │
-│  - Encryption: None                                                      │
-│  - Auth: None                                                            │
-│  - Direction: Prefill instance → Decode instance                         │
+│  - Auth: Ray cluster internal                                            │
+│         │                                                                │
+│         │ Dynamic ports                                                  │
+│         │ Protocol: HCCL/TCP                                             │
+│         │ Encryption: None                                               │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+│  [HCCL Collective Communication]                                         │
+│  - Operations: all-reduce, all-gather, reduce-scatter                   │
+│  - Purpose: Tensor parallel / data parallel / expert parallel           │
+│         │                                                                │
+│         │ Dynamic ports                                                  │
+│         │ Protocol: UCX/TCP                                              │
+│         │ Encryption: None                                               │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+│  [NIXL KV Cache Transfer] (Optional)                                     │
+│  - Purpose: Disaggregated prefill/decode                                │
+│  - Transport: UCX with gaudi_gdr                                        │
+│  - Data: KV cache via DMA (HPU→CPU→Network→CPU→HPU)                    │
 │                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  EXTERNAL SERVICES (Egress)                                              │
 │                                                                          │
-│  [Model Storage - S3 / PVC]                                              │
-│  - Port: 443/TCP (S3) or filesystem (PVC)                               │
-│  - Protocol: HTTPS or local filesystem                                   │
-│  - Encryption: TLS 1.2+                                                  │
-│  - Auth: AWS IAM / service account                                       │
-│  - Purpose: Load model weights at startup                                │
-│                                                                          │
-│  [HuggingFace Hub - huggingface.co]                                      │
+│  [HuggingFace Hub / Model Registry]                                      │
+│  - Destination: huggingface.co                                           │
 │  - Port: 443/TCP                                                         │
 │  - Protocol: HTTPS                                                       │
 │  - Encryption: TLS 1.2+                                                  │
-│  - Auth: HF Token (optional)                                            │
-│  - Purpose: Download model weights and tokenizer configs                │
+│  - Auth: Bearer Token (HF_TOKEN env var)                                │
+│  - Purpose: Download model weights at startup                           │
 │                                                                          │
-│  [Habana Artifactory - BUILD TIME ONLY]                                  │
+│  [Habana Artifactory] (build-time only)                                  │
+│  - Destination: vault.habana.ai                                          │
 │  - Port: 443/TCP                                                         │
 │  - Protocol: HTTPS                                                       │
 │  - Encryption: TLS 1.2+                                                  │
-│  - Auth: None                                                            │
-│  - Purpose: Download Synapse RPMs and PyTorch packages                  │
+│  - Auth: None (public)                                                   │
+│  - Purpose: Habana packages during image build                          │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- No RBAC defined — this is a container image, not an operator.
-- RBAC is managed by the deploying platform (KServe, RHOAI operator).
+- No cluster roles or role bindings defined by this component
+- RBAC is managed entirely by the deploying platform (rhods-operator)
+- kube-rbac-proxy sidecar enforces authorization at the pod level
 
 Secrets:
-- No secrets defined in this repository.
-- Model access credentials (HuggingFace tokens, S3 credentials) are injected
-  by the platform at deployment time via environment variables or mounted secrets.
-
-Authentication & Authorization:
-- Endpoint: /v1/*
-  - Methods: GET, POST
-  - Auth Mechanism: None (by default)
-  - Enforcement: Platform-level (kube-rbac-proxy sidecar in RHOAI 3.x)
-  - The vLLM server itself has NO built-in authentication.
+- HF_TOKEN (Opaque, env var) - HuggingFace Hub auth for model downloads
+  - Provisioned by: User / platform
+  - Auto-rotate: No
+- QUANT_CONFIG (Opaque, env var) - Path to quantization config file
+  - Provisioned by: User / platform
+  - Auto-rotate: No
 
 FIPS Compliance:
-- CRITICAL: OpenSSL FIPS provider explicitly REMOVED from container image
-  (`rpm -e --nodeps openssl-fips-provider-so` in Dockerfile.konflux.gaudi:63)
-- Container CANNOT operate in FIPS mode on FIPS-enforcing OpenShift clusters
-- Root cause: Habana Synapse drivers incompatible with FIPS OpenSSL provider
+- OpenSSL FIPS provider EXPLICITLY REMOVED (rpm -e --nodeps openssl-fips-provider-so)
+- Container will NOT operate in FIPS mode even on FIPS-enabled clusters
+- TLS handled by platform sidecar, not by vLLM process
+- hashlib used only for build-time wheel checksums (install_nixl.py)
 
-Build Hermeticity:
-- Non-hermetic build: No lock files (rpms.lock.yaml, uv.lock, poetry.lock)
-- vLLM and vllm-gaudi cloned from GitHub during Docker build
-- Packages fetched from public PyPI and Habana private artifactory
-- AIPCC Gaudi base image currently DISABLED (AIPCC-3471)
+Build Security:
+- Tekton PipelineRun: hermetic=false (non-hermetic builds)
+- Dependencies: requirements.txt with >= ranges (not pinned)
+- Source: Clones vLLM and vllm-gaudi from public GitHub at build time
+- Version control: Build ARGs (VLLM_GAUDI_COMMIT, VLLM_PROJECT_COMMIT)
+- Lock files: Absent on main branch (likely added on release branches)
 
-Container Security:
-- Runs as non-root user (UID 2000) for OpenShift compatibility
-- Base image: RHEL 9.6 UBI (registry.access.redhat.com/ubi9/ubi:9.6)
+Network Security Concerns:
+1. HCCL and NIXL traffic between workers is UNENCRYPTED
+2. Ray cluster communication is UNENCRYPTED
+3. vLLM API server serves HTTP without TLS (relies on sidecar)
+4. FIPS provider removed — incompatible with FIPS-certified deployments
+5. Non-hermetic builds with unpinned dependencies — supply chain risk

@@ -1,45 +1,40 @@
 sequenceDiagram
-    participant MLApp as ML Application
-    participant Route as OpenShift Route<br/>443/TCP HTTPS<br/>TLS reencrypt
-    participant OnlineSvc as feast-online Service<br/>6566/TCP (plain) or 6567/TCP (TLS)
-    participant OnlineStore as Online Store Container<br/>Python/Feast SDK
-    participant Backend as Backend Store<br/>(Redis/PostgreSQL/etc.)
-    participant OfflineSvc as feast-offline Service<br/>8815/TCP (plain) or 8816/TCP (TLS)
-    participant OfflineStore as Offline Store Container<br/>Python/Feast SDK
-    participant CronJob as Materialization CronJob<br/>ose-cli image
-    participant FeastPod as Feast Deployment Pod
-    participant Operator as feast-operator<br/>Go/controller-runtime
-    participant RegistrySvc as feast-registry-rest Service<br/>6572/TCP (plain) or 6573/TCP (TLS)
-    participant Registry as Registry Container<br/>Python/FastAPI
+    participant Client as Client Application
+    participant Route as OpenShift Route<br/>443/TCP HTTPS
+    participant OnlineSvc as Online Feature Server<br/>6566/TCP HTTP/HTTPS
+    participant RegistrySvc as Registry Server<br/>6570/TCP gRPC<br/>6572/TCP REST
+    participant OfflineSvc as Offline Store Server<br/>8815/TCP
+    participant Redis as Redis<br/>6379/TCP
+    participant PG as PostgreSQL<br/>5432/TCP
+    participant Operator as Feast Operator<br/>8081/TCP health
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant Notebook as ODH Notebook Pod
+    participant CronJob as Materialization CronJob
+    participant Notebook as Kubeflow Notebook
 
-    Note over MLApp,Backend: Flow 1: Online Feature Retrieval
-    MLApp->>Route: gRPC request (HTTPS/443)
-    Route->>OnlineSvc: reencrypt TLS
-    OnlineSvc->>OnlineStore: GetOnlineFeatures<br/>Bearer JWT auth
-    OnlineStore->>Backend: Read features<br/>Credentials from Secret
-    Backend-->>OnlineStore: Feature values
-    OnlineStore-->>OnlineSvc: gRPC response
-    OnlineSvc-->>Route: Response
-    Route-->>MLApp: Feature values
+    Note over Client,PG: Flow 1: Online Feature Retrieval
+    Client->>Route: POST /get-online-features<br/>HTTPS/443, TLS 1.2+
+    Route->>OnlineSvc: Forward request<br/>HTTP(S)/6566, Bearer JWT (optional)
+    OnlineSvc->>Redis: Fetch features<br/>TCP/6379, Password auth
+    Redis-->>OnlineSvc: Feature values
+    OnlineSvc-->>Route: JSON response
+    Route-->>Client: Feature response
 
-    Note over CronJob,Backend: Flow 2: Feature Materialization (CronJob)
-    CronJob->>FeastPod: kubectl exec<br/>ServiceAccount token
-    FeastPod->>Backend: Read from offline store<br/>Credentials from Secret
-    Backend-->>FeastPod: Historical features
-    FeastPod->>Backend: Write to online store<br/>Credentials from Secret
-    Backend-->>FeastPod: Ack
+    Note over CronJob,PG: Flow 2: Feature Materialization (CronJob)
+    CronJob->>OfflineSvc: feast materialize-incremental<br/>In-process
+    OfflineSvc->>PG: Read from offline store<br/>TCP/5432, Password auth
+    PG-->>OfflineSvc: Historical feature data
+    OfflineSvc->>Redis: Write to online store<br/>TCP/6379, Password auth
+    Redis-->>OfflineSvc: ACK
 
-    Note over Operator,K8sAPI: Flow 3: Notebook Integration
-    Operator->>K8sAPI: Watch Notebook CRs<br/>(kubeflow.org/Notebook)<br/>ServiceAccount token
-    K8sAPI-->>Operator: Notebook events
-    Operator->>K8sAPI: Create ConfigMap<br/>(feature_store.yaml)<br/>in Notebook namespace
-    Notebook->>OnlineSvc: Feast SDK calls<br/>gRPC/HTTP, Bearer JWT
+    Note over Operator,K8sAPI: Flow 3: Operator Reconciliation
+    K8sAPI->>Operator: FeatureStore CR event<br/>HTTPS/443, SA token
+    Operator->>K8sAPI: Create/Update Deployments,<br/>Services, ConfigMaps<br/>HTTPS/443, SA token
+    Operator->>RegistrySvc: GET /api/v1/permissions<br/>HTTP(S), Bearer JWT (intra-comm HMAC-SHA256)
+    RegistrySvc-->>Operator: Permissions list
+    Operator->>K8sAPI: Create dynamic RBAC<br/>ClusterRoles, RoleBindings
 
-    Note over Operator,Registry: Flow 4: Operator Auto-Access RBAC
-    Operator->>RegistrySvc: GET /api/v1/permissions<br/>HMAC-SHA256 JWT (intra-comm)
-    RegistrySvc->>Registry: Forward request
-    Registry-->>RegistrySvc: Permission policies
-    RegistrySvc-->>Operator: JSON response
-    Operator->>K8sAPI: Create/Update RBAC<br/>(ClusterRoles, Bindings)<br/>ServiceAccount token
+    Note over Notebook,OnlineSvc: Flow 4: Notebook Integration
+    K8sAPI->>Operator: Notebook CR event<br/>(kubeflow.org/v1)
+    Operator->>K8sAPI: Create ConfigMap<br/>with Feast client config
+    Notebook->>OnlineSvc: POST /get-online-features<br/>HTTP(S)/6566, Bearer JWT (optional)
+    OnlineSvc-->>Notebook: Feature response

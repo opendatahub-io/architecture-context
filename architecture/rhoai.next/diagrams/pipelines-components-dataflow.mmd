@@ -1,63 +1,45 @@
 sequenceDiagram
-    autonumber
+    participant Build as Image Build<br/>(Konflux)
+    participant Init as Init Container<br/>(odh-pipelines-components)
+    participant Vol as Shared Volume<br/>/config/managed-pipelines/
+    participant KFP as KFP API Server<br/>(managed by DSPO)
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant Train as Training Task Pod<br/>(Kubeflow Trainer)
+    participant PVC as PVC<br/>(Shared Workspace)
+    participant Eval as Evaluation Task<br/>(lm-eval / Eval Hub)
+    participant MR as Model Registry<br/>80/TCP HTTP
+    participant OGX as OGX API<br/>443/TCP HTTPS
+    participant Milvus as Milvus<br/>19530/TCP gRPC
+    participant Docling as Text Extraction<br/>(Docling in AutoRAG)
 
-    %% Flow 1: Managed Pipeline Initialization
-    rect rgb(230, 245, 255)
-        Note over InitContainer,KFPServer: Flow 1: Managed Pipeline Initialization
-        participant InitContainer as odh-pipelines-components<br/>(Init Container)
-        participant SharedVol as Shared Volume<br/>/config/managed-pipelines
-        participant KFPServer as KFP API Server
-
-        InitContainer->>SharedVol: Copy compiled pipeline YAMLs<br/>from /app (Filesystem)
-        KFPServer->>SharedVol: Read managed pipeline definitions<br/>(Filesystem mount)
+    rect rgb(220, 240, 220)
+        Note over Build,KFP: Flow 1: Managed Pipeline Initialization
+        Build->>Init: Compile @dsl.pipeline → YAML<br/>(at build time)
+        Init->>Init: Check RELATED_IMAGE_* env vars<br/>(recompile if present)
+        Init->>Vol: Copy managed-pipelines.json +<br/>compiled YAML specs
+        Vol->>KFP: Read pipeline manifests<br/>(emptyDir mount)
+        KFP->>KFP: Register managed pipelines
     end
 
-    %% Flow 2: LoRA Fine-Tuning Pipeline
-    rect rgb(255, 245, 230)
-        Note over DatasetDL,ModelRegAPI: Flow 2: LoRA Fine-Tuning Pipeline
-        participant DatasetDL as dataset_download<br/>Component
-        participant S3 as S3 / HuggingFace<br/>443/TCP HTTPS
-        participant PVC as PVC Workspace<br/>(Shared Storage)
-        participant TrainModel as train_model (LoRA)<br/>Component
-        participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-        participant Evaluator as universal_llm_evaluator<br/>Component
-        participant ArtifactStore as KFP Artifact Store
-        participant ModelRegComp as kubeflow_model_registry<br/>Component
-        participant ModelRegAPI as Model Registry API<br/>8080/TCP HTTP
-
-        DatasetDL->>S3: Download dataset<br/>HTTPS/443 TLS 1.2+<br/>AWS IAM / HF Token
-        S3-->>DatasetDL: Dataset artifacts
-        DatasetDL->>PVC: Write dataset to workspace<br/>(Filesystem)
-        TrainModel->>K8sAPI: Create TrainingJob CRD<br/>HTTPS/6443 mTLS<br/>ServiceAccount token
-        K8sAPI-->>TrainModel: Training status
-        Note over TrainModel,PVC: Training pod writes model output to PVC
-        Evaluator->>PVC: Read trained model<br/>(Filesystem)
-        Evaluator->>ArtifactStore: Write evaluation metrics<br/>(Filesystem)
-        ModelRegComp->>ModelRegAPI: Register model with provenance<br/>HTTP/8080 plaintext<br/>No auth (in-cluster)
+    rect rgb(220, 220, 245)
+        Note over HF,MR: Flow 2: Fine-Tuning Pipeline (SFT/LoRA/OSFT)
+        HF-->>PVC: Step 1: Download dataset<br/>HTTPS/443, TLS 1.2+, HF_TOKEN
+        S3-->>PVC: Step 1 (alt): Download from S3<br/>HTTPS/443, TLS 1.2+, AWS IAM
+        PVC->>Train: Step 2: Read dataset from PVC
+        Train->>Train: Step 3: Train model<br/>(via K8s API → ClusterTrainingRuntime)
+        Train->>PVC: Step 4: Write model checkpoint
+        PVC->>Eval: Step 5: Read model for evaluation
+        Eval->>Eval: Run lm-eval benchmarks<br/>or submit to Eval Hub (HTTPS/443)
+        Eval->>MR: Step 6: Register trained model<br/>HTTP/80, Plaintext, No Auth
     end
 
-    %% Flow 3: AutoRAG Optimization Pipeline
-    rect rgb(245, 255, 230)
-        Note over DocsDisc,ArtifactStore2: Flow 3: AutoRAG Optimization Pipeline
-        participant DocsDisc as documents_discovery<br/>Component
-        participant S3Rag as S3 Bucket<br/>443/TCP HTTPS
-        participant TextExtr as text_extraction<br/>Component
-        participant Docling as Docling<br/>(In-process)
-        participant SearchPrep as search_space_preparation<br/>Component
-        participant OGXAPI as OGX API<br/>443/TCP HTTPS
-        participant RAGOpt as rag_templates_optimization<br/>Component
-        participant LeaderEval as leaderboard_evaluation<br/>Component
-        participant ArtifactStore2 as KFP Artifact Store
-
-        DocsDisc->>S3Rag: Discover documents<br/>HTTPS/443 TLS 1.2+<br/>AWS IAM
-        S3Rag-->>DocsDisc: Document listing
-        TextExtr->>S3Rag: Download documents<br/>HTTPS/443 TLS 1.2+<br/>AWS IAM
-        S3Rag-->>TextExtr: Document files
-        TextExtr->>Docling: Extract text<br/>(In-process, local)
-        Docling-->>TextExtr: Extracted text
-        SearchPrep->>OGXAPI: Prepare search space<br/>HTTPS/443 TLS 1.2+<br/>API key
-        OGXAPI-->>SearchPrep: Search configuration
-        RAGOpt->>OGXAPI: Vector store + embeddings<br/>HTTPS/443 TLS 1.2+<br/>API key
-        OGXAPI-->>RAGOpt: Optimization results
-        LeaderEval->>ArtifactStore2: Write evaluation results<br/>(Filesystem)
+    rect rgb(245, 230, 220)
+        Note over S3,Milvus: Flow 3: RAG Optimization Pipeline
+        S3->>Docling: Step 1: Discover documents<br/>HTTPS/443, TLS 1.2+, AWS IAM
+        S3->>Docling: Step 2: Download & extract text<br/>HTTPS/443, TLS 1.2+, AWS IAM
+        Docling->>OGX: Step 3: Generate embeddings<br/>HTTPS/443, TLS 1.2+, API key
+        OGX->>Milvus: Step 4: Store in vector DB<br/>HTTPS/443 via OGX, API key
+        OGX->>OGX: Step 5: AI4RAG optimizer<br/>hyperparameter search
+        OGX-->>OGX: Step 6: Output leaderboard<br/>HTML artifact
     end

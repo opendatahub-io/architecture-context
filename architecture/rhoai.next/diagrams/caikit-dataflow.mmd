@@ -1,68 +1,57 @@
 sequenceDiagram
     participant Client as External Client
-    participant HTTP as HTTP Server (FastAPI)<br/>8080/TCP
-    participant GRPC as gRPC Server<br/>8085/TCP
-    participant PW as PydanticWrapper
-    participant GPS as GlobalPredictServicer
-    participant MM as ModelManager
-    participant Module as Module.run()
-    participant MMesh as Model Mesh Controller
-    participant MRS as ModelRuntimeServicer
-    participant CML as CoreModelLoader
-    participant HP as caikit_health_probe
-    participant K8s as Kubernetes kubelet
+    participant HTTPSrv as HTTP Server (FastAPI)<br/>8080/TCP Optional TLS
+    participant GRPCSrv as gRPC Server<br/>8085/TCP Optional TLS
+    participant PredictSvc as GlobalPredictServicer
+    participant TrainSvc as GlobalTrainServicer
+    participant ModelMgr as ModelManager
+    participant Module as ModuleBase.run()
+    participant MMesh as ModelMesh Controller
+    participant MRSvc as ModelRuntimeServicer
+    participant FS as Filesystem<br/>(Model Storage)
+    participant OTel as OpenTelemetry Collector<br/>4317/4318/TCP
 
-    rect rgb(230, 245, 255)
-        Note over Client,Module: Flow 1: HTTP Model Inference
-        Client->>HTTP: POST /api/v1/tasks/{task}/predict<br/>HTTP/HTTPS (Configurable TLS/mTLS)
-        HTTP->>PW: Route to handler<br/>Request validation (Pydantic)
-        PW->>GPS: Validated request<br/>(DataBase objects)
-        GPS->>MM: Fetch loaded model<br/>(model_id lookup)
-        MM-->>GPS: LoadedModel reference
-        GPS->>Module: Module.run(request)<br/>(in-process inference)
-        Module-->>GPS: Prediction result
-        GPS-->>PW: Response (DataBase)
-        PW-->>HTTP: JSON or SSE stream
-        HTTP-->>Client: 200 OK<br/>JSON response or SSE stream
-    end
+    Note over Client,OTel: Flow 1: Model Inference (gRPC)
+    Client->>GRPCSrv: gRPC Predict RPC<br/>8085/TCP, Optional TLS/mTLS
+    GRPCSrv->>PredictSvc: Route to servicer
+    PredictSvc->>ModelMgr: retrieve_model(model_id)
+    ModelMgr->>Module: module.run(input)
+    Module-->>ModelMgr: Prediction result
+    ModelMgr-->>PredictSvc: DataBase response
+    PredictSvc-->>GRPCSrv: Protobuf response
+    GRPCSrv-->>Client: gRPC Response
+    GRPCSrv->>OTel: Export trace span<br/>OTLP gRPC/HTTP
 
-    rect rgb(255, 243, 224)
-        Note over Client,Module: Flow 2: gRPC Model Inference
-        Client->>GRPC: InferenceService.Predict()<br/>gRPC (Configurable TLS/mTLS)
-        GRPC->>GPS: CaikitRuntimeServerWrapper<br/>intercepts & routes
-        GPS->>MM: Fetch loaded model<br/>(model_id lookup)
-        MM-->>GPS: LoadedModel reference
-        GPS->>Module: Module.run(request)<br/>(in-process inference)
-        Module-->>GPS: Prediction result
-        GPS-->>GRPC: Proto message or server stream
-        GRPC-->>Client: gRPC response
-    end
+    Note over Client,OTel: Flow 2: Model Inference (HTTP REST)
+    Client->>HTTPSrv: POST /api/v1/{task}/predict<br/>8080/TCP, Optional TLS/mTLS
+    HTTPSrv->>PredictSvc: Translate HTTP → servicer call
+    PredictSvc->>ModelMgr: retrieve_model(model_id)
+    ModelMgr->>Module: module.run(input)
+    Module-->>ModelMgr: Prediction result
+    ModelMgr-->>PredictSvc: DataBase response
+    PredictSvc-->>HTTPSrv: JSON / SSE stream
+    HTTPSrv-->>Client: HTTP 200 JSON (or SSE stream)
 
-    rect rgb(232, 245, 233)
-        Note over MMesh,CML: Flow 3: Model Mesh Integration
-        MMesh->>MRS: loadModel(model_id, path)<br/>Unix socket /tmp/mmesh/grpc.sock<br/>gRPC (no encryption)
-        MRS->>MM: ModelManager.load_model()
-        MM->>CML: CoreModelLoader.load()
-        CML->>CML: caikit.core.load(model_path)
-        CML-->>MM: Loaded model instance
-        MM-->>MRS: Load success + model size
-        MRS-->>MMesh: LoadModelResponse
+    Note over Client,OTel: Flow 3: ModelMesh Model Loading
+    MMesh->>MRSvc: loadModel(model_id, path)<br/>Unix socket /tmp/mmesh/grpc.sock
+    MRSvc->>ModelMgr: load_model(model_id, path)
+    ModelMgr->>FS: Read model artifacts<br/>File I/O
+    FS-->>ModelMgr: Model files
+    ModelMgr-->>MRSvc: LoadModelResponse (size)
+    MRSvc-->>MMesh: Model loaded (size bytes)
 
-        MMesh->>MRS: modelSize(model_id)<br/>Unix socket
-        MRS-->>MMesh: ModelSizeResponse
+    Note over Client,OTel: Flow 4: Training Job
+    Client->>GRPCSrv: Training RPC<br/>8085/TCP, Optional TLS/mTLS
+    GRPCSrv->>TrainSvc: Route to servicer
+    TrainSvc->>ModelMgr: train(module_class, train_params)
+    ModelMgr->>Module: LocalModelTrainer<br/>DestroyableThread/Process
+    Note right of Module: Async training<br/>in background thread
+    Module->>FS: Save trained model<br/>File I/O
+    TrainSvc-->>GRPCSrv: TrainingJob ID
+    GRPCSrv-->>Client: Training started
 
-        MMesh->>MRS: unloadModel(model_id)<br/>Unix socket
-        MRS->>MM: ModelManager.unload_model()
-        MM-->>MRS: Unload success
-        MRS-->>MMesh: UnloadModelResponse
-    end
-
-    rect rgb(252, 228, 236)
-        Note over K8s,GRPC: Flow 4: Health Probe
-        K8s->>HP: Exec liveness probe<br/>(process check via psutil)
-        HP->>HTTP: GET /health<br/>HTTP/HTTPS (matches server config)
-        HTTP-->>HP: 200 OK
-        HP->>GRPC: grpc.health.v1.Health.Check()<br/>gRPC (matches server config)
-        GRPC-->>HP: SERVING
-        HP-->>K8s: Exit code 0 (healthy)
-    end
+    Note over Client,OTel: Flow 5: Health Check
+    Client->>HTTPSrv: GET /health<br/>8080/TCP
+    HTTPSrv-->>Client: 200 OK
+    Client->>GRPCSrv: grpc.health.v1.Health.Check<br/>8085/TCP
+    GRPCSrv-->>Client: SERVING

@@ -1,88 +1,76 @@
 sequenceDiagram
     participant User as User / SRE
     participant OC as oc CLI
-    participant Gather as gather.sh<br/>Entry Point
-    participant XksUtil as xks_util.sh<br/>Distro Detection
-    participant Common as common.sh<br/>Shared Functions
-    participant Components as Component Gather Scripts<br/>(13 scripts, parallel)
-    participant LLMD as gather_llmd.sh<br/>xKS Path
-    participant Deps as Dependency Scripts<br/>(cert-manager, sail, lws)
-    participant Helm as helm CLI
-    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant FS as Local Filesystem<br/>/must-gather/
+    participant API as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
+    participant Pod as must-gather Pod<br/>(gather.sh)
+    participant Scripts as Component Gather Scripts<br/>(13 parallel processes)
+    participant FS as Local Filesystem<br/>$DST_DIR
+    participant Copy as Copy Container<br/>(tar stream)
+
+    Note over User,Copy: Flow 1: OpenShift Must-Gather (oc adm must-gather)
+
+    User->>OC: oc adm must-gather --image=must-gather:tag
+    OC->>API: Create must-gather Pod<br/>Auth: User kubeconfig
+    API->>Pod: Schedule Pod<br/>SA: cluster-admin (temp binding)
+
+    Pod->>Pod: detect_k8s_distro()<br/>→ OpenShift detected
 
     rect rgb(230, 245, 255)
-        Note over User,FS: Flow 1: OpenShift Must-Gather Collection
-        User->>OC: oc adm must-gather --image=must-gather:tag
-        OC->>Gather: Executes in must-gather pod
-        Gather->>Common: source common.sh
-        Gather->>XksUtil: source xks_util.sh
-        XksUtil->>K8sAPI: GET /apis/config.openshift.io<br/>Auth: ServiceAccount token
-        K8sAPI-->>XksUtil: OpenShift detected
+        Note over Pod,API: Platform-Level Collection
+        Pod->>API: oc adm inspect ns/redhat-ods-operator<br/>Auth: SA token (cluster-admin)
+        API-->>Pod: Operator pods, logs, deployments
+        Pod->>API: oc get DSCInitialization, DataScienceCluster<br/>Auth: SA token
+        API-->>Pod: Platform CRs (YAML)
+        Pod->>FS: Write YAML + logs
+    end
 
-        Gather->>K8sAPI: oc adm inspect namespace/redhat-ods-operator<br/>Auth: ServiceAccount token
-        K8sAPI-->>Gather: Operator namespace resources
-
-        Gather->>K8sAPI: Collect DSCInitialization, DataScienceCluster,<br/>Auth, Monitoring, GatewayConfig CRs
-        K8sAPI-->>Gather: Platform-level CRs
-
-        par 13 Component Scripts (parallel)
-            Gather->>Components: Dispatch all component gather scripts
-            Components->>Common: get_all_namespace(resources)
-            Common->>K8sAPI: GET CRDs across all namespaces<br/>Auth: ServiceAccount token
-            K8sAPI-->>Common: Namespace list
-            Components->>K8sAPI: oc adm inspect for each namespace<br/>Auth: ServiceAccount token
-            K8sAPI-->>Components: Component CRs + pods + logs + events
+    rect rgb(230, 255, 230)
+        Note over Pod,FS: Parallel Component Collection (13 scripts)
+        Pod->>Scripts: fork 13 background processes
+        par gather_serving.sh
+            Scripts->>API: oc adm inspect InferenceService,<br/>ServingRuntime, AuthConfig...<br/>Auth: SA token
+            API-->>Scripts: KServe resources
+        and gather_data_science_pipelines.sh
+            Scripts->>API: oc adm inspect DSPA, Workflow...<br/>Auth: SA token
+            API-->>Scripts: Pipeline resources
+        and gather_notebooks.sh
+            Scripts->>API: oc adm inspect Notebook,<br/>ImageStream...<br/>Auth: SA token
+            API-->>Scripts: Workbench resources
+        and gather_kuberay.sh + 9 others
+            Scripts->>API: oc adm inspect component CRs<br/>Auth: SA token
+            API-->>Scripts: Component resources
         end
-
-        Gather->>Helm: helm get values / helm get manifest
-        Helm->>K8sAPI: GET Helm secrets<br/>Auth: ServiceAccount token
-        K8sAPI-->>Helm: Helm release data
-        Helm-->>Gather: Release values and manifests
-
-        Gather->>FS: Write all collected data to /must-gather/
-        OC-->>User: Tarball of /must-gather/ directory
+        Scripts->>FS: Write YAML + logs per component
     end
 
     rect rgb(255, 245, 230)
-        Note over User,FS: Flow 2: xKS Kubernetes Job Collection (AKS/EKS/CKS)
-        User->>K8sAPI: kubectl apply -f job.yaml<br/>Auth: kubeconfig
-        K8sAPI->>Gather: Job pod starts, executes gather.sh
-
-        Gather->>XksUtil: source xks_util.sh
-        XksUtil->>K8sAPI: Probe node labels, provider IDs<br/>Auth: must-gather-sa token
-        K8sAPI-->>XksUtil: AKS/EKS/CKS detected
-
-        Gather->>LLMD: Dispatch llm-d collection path
-        LLMD->>K8sAPI: kubectl get cluster-info, nodes, api-resources<br/>Auth: must-gather-sa token
-        K8sAPI-->>LLMD: Cluster metadata
-
-        par Dependency Collection (parallel)
-            LLMD->>Deps: cert-manager.sh
-            Deps->>K8sAPI: GET Issuer, ClusterIssuer, Certificate CRs
-            K8sAPI-->>Deps: cert-manager resources
-
-            LLMD->>Deps: sail.sh
-            Deps->>K8sAPI: GET Istio, VirtualService, DestinationRule,<br/>AuthorizationPolicy, PeerAuthentication CRs
-            K8sAPI-->>Deps: Istio/Sail resources
-
-            LLMD->>Deps: lws.sh
-            Deps->>K8sAPI: GET LeaderWorkerSet CRs
-            K8sAPI-->>Deps: LWS resources
-        end
-
-        LLMD->>K8sAPI: auto_discover_resources: kubectl api-resources,<br/>GET all namespaced resource types
-        K8sAPI-->>LLMD: All discovered resources
-
-        LLMD->>K8sAPI: kubectl logs (current + previous) for all pods<br/>Auth: must-gather-sa token
-        K8sAPI-->>LLMD: Pod logs
-
-        LLMD->>Helm: helm get values / helm get manifest
-        Helm->>K8sAPI: GET Helm secrets
-        K8sAPI-->>Helm: Release data
-        Helm-->>LLMD: Helm values
-
-        LLMD->>FS: Write to /tmp/must-gather/
-        User->>K8sAPI: kubectl cp must-gather-pod:/tmp/must-gather ./
-        K8sAPI-->>User: Collected diagnostic data
+        Note over Pod,FS: Cluster-Scoped Collection
+        Pod->>API: oc get nodes, api-resources<br/>Auth: SA token
+        API-->>Pod: Cluster state
+        Pod->>FS: Write cluster info
     end
+
+    Pod->>Copy: tar stream of $DST_DIR
+    Copy-->>OC: Transfer collected data
+    OC-->>User: must-gather archive (.tar.gz)
+
+    Note over User,Copy: Flow 2: xKS Must-Gather (Kubernetes Job)
+
+    User->>API: kubectl apply -f must-gather-job.yaml<br/>Auth: User kubeconfig
+    API->>Pod: Schedule Job Pod<br/>SA: must-gather-sa (read-only)
+
+    Pod->>Pod: detect_k8s_distro()<br/>→ AKS/EKS/CKS detected
+
+    rect rgb(255, 230, 230)
+        Note over Pod,API: kubectl_inspect Collection (xKS mode)
+        Pod->>API: kubectl api-resources --namespaced<br/>Auth: SA token (read-only)
+        API-->>Pod: Available API resources
+        Pod->>API: kubectl get <resources> -o yaml<br/>Auth: SA token
+        API-->>Pod: Resource YAML
+        Pod->>API: kubectl logs <pods> --all-containers<br/>Auth: SA token
+        API-->>Pod: Pod logs (current + previous)
+        Pod->>FS: Write YAML + logs
+    end
+
+    User->>API: kubectl cp must-gather-pod:/tmp/must-gather ./output<br/>Auth: User kubeconfig (TLS 1.2+)
+    API-->>User: Collected diagnostic data
