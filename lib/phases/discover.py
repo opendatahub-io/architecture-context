@@ -109,9 +109,13 @@ def _parse_sync_config(sync_config_path: Path) -> dict | None:
 def _get_synced_repo_names(
     sync_config_data: dict, checkouts_dirs: list[str],
 ) -> set[str]:
-    """Return repo names that appear in the sync config and in our checkouts."""
+    """Return org-scoped glob patterns for repos in the sync config.
+
+    Returns patterns like ``*/repo-name`` so exclusions don't
+    accidentally match unrelated repos in other orgs.
+    """
     repo_index = sync_config_data.get("repo_index", {})
-    synced_names = set()
+    synced_patterns = set()
 
     for cdir in checkouts_dirs:
         cdir_path = Path(cdir)
@@ -122,9 +126,9 @@ def _get_synced_repo_names(
             if d.is_dir() and not d.name.startswith("."):
                 key = f"{org}/{d.name}"
                 if key in repo_index:
-                    synced_names.add(d.name)
+                    synced_patterns.add(f"*/{d.name}")
 
-    return synced_names
+    return synced_patterns
 
 
 def _infer_type(repo_name: str) -> str:
@@ -336,6 +340,17 @@ def _add_provenance(
         provenance["repos"] = prov_repos
         if enriched:
             print(f"  Sync config enriched {enriched} provenance entries")
+
+    # Recompute metadata counts after enrichment
+    prov_repos = provenance.get("repos", {})
+    if "metadata" in provenance:
+        provenance["metadata"]["total_repos"] = len(prov_repos)
+        provenance["metadata"]["repos_with_upstream"] = sum(
+            1 for r in prov_repos.values() if r.get("upstream")
+        )
+        provenance["metadata"]["repos_with_downstream"] = sum(
+            1 for r in prov_repos.values() if r.get("downstream")
+        )
 
     data = json.loads(map_file.read_text())
     data["provenance"] = provenance

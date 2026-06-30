@@ -87,10 +87,10 @@ func repoRole(r types.ProvenanceRepo) string {
 	if downstreamOrgs[r.Org] {
 		return "downstream"
 	}
-	if r.Upstream != "" && len(r.Downstream) > 0 {
+	if strVal(r.Upstream) != "" && len(r.Downstream) > 0 {
 		return "midstream"
 	}
-	if r.Upstream != "" {
+	if strVal(r.Upstream) != "" {
 		if midstreamOrgs[r.Org] {
 			return "midstream"
 		}
@@ -107,6 +107,14 @@ func runSingleProvenance(query string, prov *types.Provenance, compToRepo map[st
 
 	if strings.Contains(query, "/") {
 		repoKey = query
+		if _, ok := prov.Repos[repoKey]; !ok {
+			for key := range prov.Repos {
+				if strings.EqualFold(key, query) {
+					repoKey = key
+					break
+				}
+			}
+		}
 	} else {
 		if mapped, ok := compToRepo[query]; ok {
 			repoKey = mapped
@@ -137,11 +145,13 @@ func runSingleProvenance(query string, prov *types.Provenance, compToRepo map[st
 
 	role := repoRole(repo)
 
-	if repo.Upstream != "" || len(repo.Downstream) > 0 {
+	upVal := strVal(repo.Upstream)
+	syncVal := strVal(repo.SyncMechanism)
+	if upVal != "" || len(repo.Downstream) > 0 {
 		fmt.Println()
-		if repo.Upstream != "" {
-			fmt.Printf("  %s  (upstream)\n", repo.Upstream)
-			syncLabel := repo.SyncMechanism
+		if upVal != "" {
+			fmt.Printf("  %s  (upstream)\n", upVal)
+			syncLabel := syncVal
 			if syncLabel == "" {
 				syncLabel = "unknown"
 			}
@@ -186,16 +196,16 @@ func runAllProvenance(prov *types.Provenance, repoToComps map[string][]string, c
 		for _, k := range keys {
 			r := prov.Repos[k]
 			if strings.Contains(strings.ToLower(k), needle) ||
-				strings.Contains(strings.ToLower(r.Upstream), needle) ||
+				strings.Contains(strings.ToLower(strVal(r.Upstream)), needle) ||
 				containsAnyLower(r.Downstream, needle) {
 				filtered = append(filtered, k)
 				continue
 			}
 			// Walk upstream chain so downstream repos match on
 			// their ultimate upstream (e.g. llm-d via ODH midstream)
-			if r.Upstream != "" {
-				if upRepo, ok := prov.Repos[r.Upstream]; ok {
-					if strings.Contains(strings.ToLower(upRepo.Upstream), needle) {
+			if strVal(r.Upstream) != "" {
+				if upRepo, ok := prov.Repos[strVal(r.Upstream)]; ok {
+					if strings.Contains(strings.ToLower(strVal(upRepo.Upstream)), needle) {
 						filtered = append(filtered, k)
 					}
 				}
@@ -207,7 +217,7 @@ func runAllProvenance(prov *types.Provenance, repoToComps map[string][]string, c
 	if provenanceUpstreamOnly {
 		filtered := keys[:0]
 		for _, k := range keys {
-			if prov.Repos[k].Upstream != "" {
+			if strVal(prov.Repos[k].Upstream) != "" {
 				filtered = append(filtered, k)
 			}
 		}
@@ -227,24 +237,26 @@ func runAllProvenance(prov *types.Provenance, repoToComps map[string][]string, c
 	for _, k := range keys {
 		r := prov.Repos[k]
 
+		upStr := strVal(r.Upstream)
+		syncStr := strVal(r.SyncMechanism)
+
 		upstream := "-"
-		if r.Upstream != "" {
-			upstream = r.Upstream
+		if upStr != "" {
+			upstream = upStr
 		}
 
 		syncUM := "-"
-		if r.Upstream != "" && r.SyncMechanism != "" {
-			syncUM = r.SyncMechanism
+		if upStr != "" && syncStr != "" {
+			syncUM = syncStr
 		}
 
 		downstream := "-"
 		syncMD := "-"
 		if len(r.Downstream) > 0 {
 			downstream = strings.Join(r.Downstream, ", ")
-			// Check if the downstream repo has its own provenance with a sync mechanism
 			for _, ds := range r.Downstream {
-				if dsRepo, ok := prov.Repos[ds]; ok && dsRepo.SyncMechanism != "" {
-					syncMD = dsRepo.SyncMechanism
+				if dsRepo, ok := prov.Repos[ds]; ok && strVal(dsRepo.SyncMechanism) != "" {
+					syncMD = strVal(dsRepo.SyncMechanism)
 					break
 				}
 			}
@@ -252,30 +264,27 @@ func runAllProvenance(prov *types.Provenance, repoToComps map[string][]string, c
 
 		role := repoRole(r)
 		if role == "downstream" {
-			// Downstream repo: place in DOWNSTREAM column.
-			// Split upstream into ultimate upstream and midstream.
 			ulUpstream := "-"
 			mid := "-"
 			syncUMDs := "-"
 			syncMDDs := "-"
-			if r.Upstream != "" {
-				upOrg := strings.SplitN(r.Upstream, "/", 2)[0]
+			if upStr != "" {
+				upOrg := strings.SplitN(upStr, "/", 2)[0]
 				if midstreamOrgs[upOrg] {
-					mid = r.Upstream
-					if r.SyncMechanism != "" {
-						syncMDDs = r.SyncMechanism
+					mid = upStr
+					if syncStr != "" {
+						syncMDDs = syncStr
 					}
-					// Look up the midstream repo's upstream
-					if mRepo, ok := prov.Repos[r.Upstream]; ok && mRepo.Upstream != "" {
-						ulUpstream = mRepo.Upstream
-						if mRepo.SyncMechanism != "" {
-							syncUMDs = mRepo.SyncMechanism
+					if mRepo, ok := prov.Repos[upStr]; ok && strVal(mRepo.Upstream) != "" {
+						ulUpstream = strVal(mRepo.Upstream)
+						if strVal(mRepo.SyncMechanism) != "" {
+							syncUMDs = strVal(mRepo.SyncMechanism)
 						}
 					}
 				} else {
-					ulUpstream = r.Upstream
-					if r.SyncMechanism != "" {
-						syncUMDs = r.SyncMechanism
+					ulUpstream = upStr
+					if syncStr != "" {
+						syncUMDs = syncStr
 					}
 				}
 			}
@@ -302,16 +311,16 @@ func runAllProvenance(prov *types.Provenance, repoToComps map[string][]string, c
 				if len(midList) > 0 {
 					mid = strings.Join(midList, ", ")
 					for _, m := range midList {
-						if mRepo, ok := prov.Repos[m]; ok && mRepo.SyncMechanism != "" {
-							syncUMUp = mRepo.SyncMechanism
+						if mRepo, ok := prov.Repos[m]; ok && strVal(mRepo.SyncMechanism) != "" {
+							syncUMUp = strVal(mRepo.SyncMechanism)
 							break
 						}
 					}
 					for _, m := range midList {
 						if mRepo, ok := prov.Repos[m]; ok {
 							for _, mds := range mRepo.Downstream {
-								if mdsRepo, ok := prov.Repos[mds]; ok && mdsRepo.SyncMechanism != "" {
-									syncMDUp = mdsRepo.SyncMechanism
+								if mdsRepo, ok := prov.Repos[mds]; ok && strVal(mdsRepo.SyncMechanism) != "" {
+									syncMDUp = strVal(mdsRepo.SyncMechanism)
 									break
 								}
 							}
@@ -325,8 +334,8 @@ func runAllProvenance(prov *types.Provenance, repoToComps map[string][]string, c
 					ds = strings.Join(dsList, ", ")
 					if syncMDUp == "-" {
 						for _, d := range dsList {
-							if dRepo, ok := prov.Repos[d]; ok && dRepo.SyncMechanism != "" {
-								syncMDUp = dRepo.SyncMechanism
+							if dRepo, ok := prov.Repos[d]; ok && strVal(dRepo.SyncMechanism) != "" {
+								syncMDUp = strVal(dRepo.SyncMechanism)
 								break
 							}
 						}
@@ -347,6 +356,13 @@ func runAllProvenance(prov *types.Provenance, repoToComps map[string][]string, c
 			prov.Metadata.TotalRepos, prov.Metadata.ReposWithUpstream, prov.Metadata.ReposWithDownstream)
 	}
 	return nil
+}
+
+func strVal(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 func containsAnyLower(items []string, needle string) bool {

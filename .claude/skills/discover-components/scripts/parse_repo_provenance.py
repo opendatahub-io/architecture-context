@@ -24,7 +24,9 @@ GITHUB_URL_RE = re.compile(
     r"https://github\.com/([^/\s\"']+)/([^/\s\"'#\]\)>]+)"
 )
 
-SYNC_WORKFLOW_PATTERNS = {"sync", "rebase", "upstream"}
+SYNC_WORKFLOW_PATTERNS = {
+    "sync", "rebase", "upstream", "auto-merge", "auto_merge",
+}
 
 SKIP_ORGS = {"actions", "docker", "golang", "google", "kubernetes"}
 
@@ -53,6 +55,7 @@ KNOWN_NAME_ALIASES = {
 # Repos superseded by a rename. When both old and new appear in a
 # downstream list, the old entry is dropped.
 SUPERSEDED_REPOS = {
+    "opendatahub-io/llm-d-inference-scheduler": "opendatahub-io/llm-d-router",
     "red-hat-data-services/llm-d-inference-scheduler": "red-hat-data-services/llm-d-router",
     "llm-d/llm-d-inference-scheduler": "llm-d/llm-d-router",
 }
@@ -119,7 +122,7 @@ def detect_sync_workflows(repo_path):
     for wf in sorted(workflows_dir.iterdir()):
         if not wf.is_file():
             continue
-        if not wf.suffix.lower() in (".yml", ".yaml"):
+        if wf.suffix.lower() not in (".yml", ".yaml"):
             continue
         name_lower = wf.name.lower()
         if any(p in name_lower for p in SYNC_WORKFLOW_PATTERNS):
@@ -281,9 +284,11 @@ def main():
                 is_fork = True
 
         if not upstream and repo_name in KNOWN_UPSTREAMS:
-            upstream = KNOWN_UPSTREAMS[repo_name]
-            upstream_detection = "known_mapping"
-            is_fork = True
+            candidate = KNOWN_UPSTREAMS[repo_name]
+            if candidate != key:
+                upstream = candidate
+                upstream_detection = "known_mapping"
+                is_fork = True
 
         # Detect upstream by name prefix: if repo name starts with
         # another org's name and that org has the repo, it's likely
@@ -311,16 +316,21 @@ def main():
                     break
 
         downstream = find_downstream(org, repo_name, org_repos)
+        ds_sources = set()
+        if downstream:
+            ds_sources.add("cross_org_match")
         if key in KNOWN_DOWNSTREAMS:
             for kd in KNOWN_DOWNSTREAMS[key]:
                 if kd not in downstream:
                     downstream.append(kd)
             downstream.sort()
+            ds_sources.add("known_mapping")
         if key in KNOWN_NAME_ALIASES:
             for alias in KNOWN_NAME_ALIASES[key]:
                 if alias not in downstream:
                     downstream.append(alias)
             downstream.sort()
+            ds_sources.add("known_alias")
         if downstream and upstream:
             upstream_org = upstream.split("/")[0]
             downstream = [
@@ -332,7 +342,12 @@ def main():
             d for d in downstream
             if d not in SUPERSEDED_REPOS or SUPERSEDED_REPOS[d] not in ds_set
         ]
-        downstream_detection = "cross_org_match" if downstream else None
+        if not downstream:
+            downstream_detection = None
+        elif len(ds_sources) == 1:
+            downstream_detection = next(iter(ds_sources))
+        else:
+            downstream_detection = "+".join(sorted(ds_sources))
 
         if upstream and not sync_mechanism:
             sync_mechanism = "manual"

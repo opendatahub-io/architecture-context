@@ -193,6 +193,30 @@ def validate(path: str) -> list[str]:
                             f"provenance.metadata.{field}: expected int,"
                             f" got {type(val).__name__}"
                         )
+                ga = prov_meta.get("generated_at")
+                if ga is not None and not isinstance(ga, str):
+                    errors.append(
+                        "provenance.metadata.generated_at:"
+                        " expected string"
+                    )
+                cd = prov_meta.get("checkouts_dirs")
+                if cd is not None:
+                    if not isinstance(cd, list):
+                        errors.append(
+                            "provenance.metadata.checkouts_dirs:"
+                            " expected list"
+                        )
+                    elif not all(isinstance(d, str) for d in cd):
+                        errors.append(
+                            "provenance.metadata.checkouts_dirs:"
+                            " all items must be strings"
+                        )
+                api = prov_meta.get("github_api_available")
+                if api is not None and not isinstance(api, bool):
+                    errors.append(
+                        "provenance.metadata.github_api_available:"
+                        " expected bool"
+                    )
 
             prov_repos = provenance.get("repos")
             if not isinstance(prov_repos, dict):
@@ -210,6 +234,13 @@ def validate(path: str) -> list[str]:
 
                     if not isinstance(repo_data.get("is_fork"), bool):
                         errors.append(f"{prefix}.is_fork: expected bool")
+
+                    us = repo_data.get("upstream")
+                    if us is not None and not isinstance(us, str):
+                        errors.append(
+                            f"{prefix}.upstream: expected"
+                            " string or null"
+                        )
 
                     ud = repo_data.get("upstream_detection")
                     if ud is not None and ud not in VALID_UPSTREAM_DETECTION:
@@ -232,11 +263,28 @@ def validate(path: str) -> list[str]:
                             f" not in {VALID_SYNC_MECHANISMS}"
                         )
 
-                    if not isinstance(repo_data.get("downstream"), list):
-                        errors.append(f"{prefix}.downstream: expected list")
+                    ds = repo_data.get("downstream")
+                    if not isinstance(ds, list):
+                        errors.append(
+                            f"{prefix}.downstream: expected list"
+                        )
+                    elif not all(isinstance(d, str) for d in ds):
+                        errors.append(
+                            f"{prefix}.downstream: all items"
+                            " must be strings"
+                        )
 
-                    if not isinstance(repo_data.get("sync_workflows"), list):
-                        errors.append(f"{prefix}.sync_workflows: expected list")
+                    sw = repo_data.get("sync_workflows")
+                    if not isinstance(sw, list):
+                        errors.append(
+                            f"{prefix}.sync_workflows:"
+                            " expected list"
+                        )
+                    elif not all(isinstance(w, str) for w in sw):
+                        errors.append(
+                            f"{prefix}.sync_workflows: all"
+                            " items must be strings"
+                        )
 
                 if isinstance(prov_meta, dict):
                     total = prov_meta.get("total_repos")

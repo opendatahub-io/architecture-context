@@ -70,9 +70,9 @@ Create the component map structure:
       "generated_at": "{ISO timestamp}",
       "checkouts_dirs": ["{dir1}", "{dir2}"],
       "github_api_available": true,
-      "total_repos": "{count}",
-      "repos_with_upstream": "{count}",
-      "repos_with_downstream": "{count}"
+      "total_repos": 0,
+      "repos_with_upstream": 0,
+      "repos_with_downstream": 0
     },
     "repos": {
       "{org}/{repo}": {

@@ -225,6 +225,10 @@ def _check_sync_config(value, errors):
             errors.append(f"'sync_config': missing required '{req}'")
         elif not isinstance(value[req], str):
             errors.append(f"'sync_config.{req}' must be a string")
+        elif not value[req].strip():
+            errors.append(
+                f"'sync_config.{req}' must not be empty"
+            )
     for opt in ("branch",):
         if opt in value and not isinstance(value[opt], str):
             errors.append(f"'sync_config.{opt}' must be a string")

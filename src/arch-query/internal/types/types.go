@@ -257,11 +257,11 @@ type ProvenanceRepo struct {
 	Org                 string   `json:"org"`
 	Repo                string   `json:"repo"`
 	IsFork              bool     `json:"is_fork"`
-	Upstream            string   `json:"upstream"`
-	UpstreamDetection   string   `json:"upstream_detection"`
+	Upstream            *string  `json:"upstream"`
+	UpstreamDetection   *string  `json:"upstream_detection"`
 	Downstream          []string `json:"downstream"`
-	DownstreamDetection string   `json:"downstream_detection"`
-	SyncMechanism       string   `json:"sync_mechanism"`
+	DownstreamDetection *string  `json:"downstream_detection"`
+	SyncMechanism       *string  `json:"sync_mechanism"`
 	SyncBranch          string   `json:"sync_branch,omitempty"`
 	SyncWorkflows       []string `json:"sync_workflows"`
 }

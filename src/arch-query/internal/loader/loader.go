@@ -2,6 +2,7 @@ package loader
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"strings"
 
@@ -73,7 +74,7 @@ func LoadVersion(fsys fs.FS, overlayFS fs.FS, version string) (*types.VersionDat
 	}
 
 	buildInfo := loadBuildInfo(fsys, resolved)
-	provenance := loadProvenance(fsys, resolved)
+	provenance, _ := loadProvenance(fsys, resolved)
 
 	data := &types.VersionData{
 		Version: types.VersionInfo{
@@ -104,19 +105,19 @@ func loadBuildInfo(fsys fs.FS, versionDir string) *types.BuildInfo {
 	return &bi
 }
 
-func loadProvenance(fsys fs.FS, versionDir string) *types.Provenance {
+func loadProvenance(fsys fs.FS, versionDir string) (*types.Provenance, error) {
 	path := versionDir + "/component-map.json"
 	raw, err := fs.ReadFile(fsys, path)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 	var wrapper struct {
 		Provenance *types.Provenance `json:"provenance"`
 	}
 	if err := json.Unmarshal(raw, &wrapper); err != nil {
-		return nil
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
-	return wrapper.Provenance
+	return wrapper.Provenance, nil
 }
 
 // LoadComponentRepoMapping reads component-map.json and builds a map from
