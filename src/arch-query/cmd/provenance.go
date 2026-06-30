@@ -244,7 +244,57 @@ func runAllProvenance(prov *types.Provenance, repoToComps map[string][]string, c
 		if role == "midstream" || role == "downstream" {
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", upstream, syncUM, k, syncMD, downstream)
 		} else {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", k, "-", "-", syncMD, downstream)
+			// Upstream repo: split downstream list into midstream and downstream
+			// based on org hierarchy
+			mid := "-"
+			ds := "-"
+			syncUMUp := "-"
+			syncMDUp := "-"
+			if len(r.Downstream) > 0 {
+				var midList, dsList []string
+				for _, d := range r.Downstream {
+					dOrg := strings.SplitN(d, "/", 2)[0]
+					if midstreamOrgs[dOrg] {
+						midList = append(midList, d)
+					} else {
+						dsList = append(dsList, d)
+					}
+				}
+				if len(midList) > 0 {
+					mid = strings.Join(midList, ", ")
+					for _, m := range midList {
+						if mRepo, ok := prov.Repos[m]; ok && mRepo.SyncMechanism != "" {
+							syncUMUp = mRepo.SyncMechanism
+							break
+						}
+					}
+					for _, m := range midList {
+						if mRepo, ok := prov.Repos[m]; ok {
+							for _, mds := range mRepo.Downstream {
+								if mdsRepo, ok := prov.Repos[mds]; ok && mdsRepo.SyncMechanism != "" {
+									syncMDUp = mdsRepo.SyncMechanism
+									break
+								}
+							}
+							if syncMDUp != "-" {
+								break
+							}
+						}
+					}
+				}
+				if len(dsList) > 0 {
+					ds = strings.Join(dsList, ", ")
+					if syncMDUp == "-" {
+						for _, d := range dsList {
+							if dRepo, ok := prov.Repos[d]; ok && dRepo.SyncMechanism != "" {
+								syncMDUp = dRepo.SyncMechanism
+								break
+							}
+						}
+					}
+				}
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", k, syncUMUp, mid, syncMDUp, ds)
 		}
 	}
 	tw.Flush()

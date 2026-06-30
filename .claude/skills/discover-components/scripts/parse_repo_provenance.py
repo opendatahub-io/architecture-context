@@ -43,12 +43,27 @@ KNOWN_NAME_ALIASES = {
         "opendatahub-io/workload-variant-autoscaler",
         "red-hat-data-services/workload-variant-autoscaler",
     ],
+    # Rename in progress: llm-d-inference-scheduler → llm-d-router
+    "llm-d/llm-d-inference-scheduler": [
+        "opendatahub-io/llm-d-router",
+        "red-hat-data-services/llm-d-router",
+    ],
+}
+
+# Repos superseded by a rename. When both old and new appear in a
+# downstream list, the old entry is dropped.
+SUPERSEDED_REPOS = {
+    "red-hat-data-services/llm-d-inference-scheduler": "red-hat-data-services/llm-d-router",
+    "llm-d/llm-d-inference-scheduler": "llm-d/llm-d-router",
 }
 
 # Well-known upstream mappings for repos where API/workflow detection fails.
 # Format: downstream_repo_name -> upstream_org/repo
 KNOWN_UPSTREAMS = {
+    "agents-operator": "kagenti/kagenti-operator",
     "argo-workflows": "argoproj/argo-workflows",
+    "batch-gateway": "llm-d-incubation/batch-gateway",
+    "llm-d-async": "llm-d-incubation/llm-d-async",
     "caikit": "caikit/caikit",
     "feast": "feast-dev/feast",
     "gateway-api-inference-extension": "kubernetes-sigs/gateway-api-inference-extension",
@@ -270,6 +285,23 @@ def main():
             upstream_detection = "known_mapping"
             is_fork = True
 
+        # Detect upstream by name prefix: if repo name starts with
+        # another org's name and that org has the repo, it's likely
+        # the upstream origin (e.g., llm-d-router belongs to llm-d)
+        if not upstream:
+            for other_org, other_repos in org_repos.items():
+                if other_org == org:
+                    continue
+                if repo_name.startswith(other_org + "-") and repo_name in other_repos:
+                    upstream = f"{other_org}/{repo_name}"
+                    upstream_detection = "name_prefix"
+                    is_fork = True
+                    break
+
+        # Reverse alias lookup: if this repo appears as a downstream
+        # in KNOWN_NAME_ALIASES, set the alias source as upstream.
+        # Runs after name_prefix so the current name takes priority
+        # over old/renamed names.
         if not upstream:
             for alias_src, alias_dests in KNOWN_NAME_ALIASES.items():
                 if key in alias_dests:
@@ -289,26 +321,17 @@ def main():
                 if alias not in downstream:
                     downstream.append(alias)
             downstream.sort()
-        if downstream:
-            exclude_orgs = set()
-            # Exclude the upstream's org from downstream list
-            if upstream:
-                exclude_orgs.add(upstream.split("/")[0])
-            # If repo name starts with another org's name, that org
-            # is likely the origin (e.g., llm-d-router belongs to llm-d)
-            for d in downstream:
-                d_org = d.split("/")[0]
-                if repo_name.startswith(d_org + "-"):
-                    exclude_orgs.add(d_org)
-                    if not upstream:
-                        upstream = f"{d_org}/{repo_name}"
-                        upstream_detection = "name_prefix"
-                        is_fork = True
-            if exclude_orgs:
-                downstream = [
-                    d for d in downstream
-                    if d.split("/")[0] not in exclude_orgs
-                ]
+        if downstream and upstream:
+            upstream_org = upstream.split("/")[0]
+            downstream = [
+                d for d in downstream
+                if d.split("/")[0] != upstream_org
+            ]
+        ds_set = set(downstream)
+        downstream = [
+            d for d in downstream
+            if d not in SUPERSEDED_REPOS or SUPERSEDED_REPOS[d] not in ds_set
+        ]
         downstream_detection = "cross_org_match" if downstream else None
 
         if upstream and not sync_mechanism:
