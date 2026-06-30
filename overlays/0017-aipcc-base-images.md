@@ -36,7 +36,7 @@ All images share:
 - **Base OS:** RHEL 9.6 (`registry.redhat.io/rhel9-6-els/rhel:9.6`)
 - **Python:** 3.12
 - **RHEL AI repo version:** 3.5
-- **Package index version:** 3.5-EA2
+- **Package index version:** 3.5
 - **Repositories:** BaseOS, AppStream, CodeReady Builder, RHELAI (EUS
   repos on even y-stream releases like 9.6)
 - **Container layout:** `/opt/app-root/` with `pip.conf` and `uv.toml`
@@ -52,11 +52,11 @@ All images share:
 |---|---|---|---|---|---|---|---|---|
 | CPU | -- | Active | 3.12 | 9.6 | Yes | Yes | Yes | Yes |
 | NVIDIA CUDA | 12.9.1 | Active | 3.12 | 9.6 | Yes | -- | -- | Yes |
-| NVIDIA CUDA | 13.0.1 | Active | 3.12 | 9.6 | Yes | -- | -- | Yes |
+| NVIDIA CUDA | 13.0.2 | Active | 3.12 | 9.6 | Yes | -- | -- | Yes |
 | NVIDIA CUDA | 13.2.1 | Active | 3.12 | 9.6 | Yes | -- | -- | Yes |
-| AMD ROCm | 7.1.1 | Active | 3.12 | 9.6 | -- | -- | -- | Yes |
+| AMD ROCm | 7.14 | Active | 3.12 | 9.6 | -- | -- | -- | Yes |
 | Intel Gaudi | 1.24.0 | Disabled | 3.12 | 9.6 | -- | -- | -- | Yes |
-| IBM Spyre | 1.2.1 | Active | 3.12 | 9.6 | -- | Yes | Yes | Yes |
+| IBM Spyre | 1.2.3 | Active | 3.12 | 9.6 | -- | Yes | Yes | Yes |
 | AWS Neuron | 2.x | In development | 3.12 | 9.6 | -- | -- | -- | Yes |
 | Google TPU | -- | In development | 3.12 | 9.6 | -- | -- | -- | Yes |
 | AMD ROCm | 6.4 | Retired | -- | -- | -- | -- | -- | -- |
@@ -99,21 +99,21 @@ build args.
   - cuSPARSELt 0.x
   - NVSHMEM 3.4.5
 
-#### CUDA 13.0.1
+#### CUDA 13.0.2
 
 - **Status:** Active
 - **Config:** `build-args/cuda13.0-el9.6-app.conf`
 - **Architectures:** aarch64, x86\_64
 - **Container:** `quay.io/aipcc/base-images/cuda-13.0-el9.6`
-- **Driver requirement:** `>=580.65.06`
+- **Driver requirement:** `>=580.95.05`
 - **Key dependencies:**
-  - NCCL 2.28.9
+  - NCCL 2.28.3
   - cuDNN 9.19.0.56
   - UCX 1.19.1
   - cuBLASMp 0.x
   - cuDSS 0.x
   - cuSPARSELt 0.x
-  - NVSHMEM 3.5.19
+  - NVSHMEM 3.4.5
 
 #### CUDA 13.2.1
 
@@ -134,10 +134,10 @@ build args.
 ### AMD ROCm
 
 - **Status:** Active
-- **Config:** `build-args/rocm7.1-el9.6-app.conf`
-- **ROCm version:** 7.1.1
+- **Config:** `build-args/rocm7.14-el9.6-app.conf`
+- **ROCm version:** 7.14
 - **Architectures:** x86\_64
-- **Container:** `quay.io/aipcc/base-images/rocm-7.1-el9.6`
+- **Container:** `quay.io/aipcc/base-images/rocm-7.14-el9.6`
 - **Key dependencies:** MIOpen, RCCL, hipBLAS, and other ROCm
   libraries are installed via vendor RPM repositories. AMD uses
   separate `amd-gpu` and `rocm` repo IDs per version.
@@ -153,12 +153,14 @@ build args.
 
 Gaudi builds are disabled because earlier versions did not support
 Python 3.12 and RHEL 9.6. Gaudi support is planned to resume in 2026.
+The Tekton push pipeline exists but triggers only on `refs/tags/gaudi-v`
+tags, not in regular CI.
 
 ### IBM Spyre
 
 - **Status:** Active
 - **Config:** `build-args/spyre-app.conf`
-- **Spyre version:** 1.2.1 (all architectures)
+- **Spyre version:** 1.2.3 (all architectures)
 - **Architectures:** ppc64le, s390x, x86\_64
 - **Container:** `quay.io/aipcc/base-images/spyre`
 - **Notes:** Spyre uses per-architecture version variables
@@ -196,7 +198,7 @@ Python 3.12 and RHEL 9.6. Gaudi support is planned to resume in 2026.
 
 ROCm 6.4 was retired in RHAI 3.5-EA1
 ([AIPCC-15426](https://issues.redhat.com/browse/AIPCC-15426)). The
-base image and Tekton pipelines were removed. ROCm 7.1.1 is the
+base image and Tekton pipelines were removed. ROCm 7.14 is the
 current supported version.
 
 ## Impact on Strategies
@@ -210,7 +212,7 @@ current supported version.
   until support resumes (planned 2026) and must not reference Gaudi as an
   available accelerator.
 - AMD ROCm 6.4 is retired; any references in strategies or RFEs must be updated
-  to ROCm 7.1.1, the current supported version.
+  to ROCm 7.14, the current supported version.
 - Three CUDA versions (12.9, 13.0, 13.2) are maintained simultaneously --
   strategies and RFEs proposing CUDA-dependent features should specify the
   minimum driver version requirement, since each version has a different minimum
