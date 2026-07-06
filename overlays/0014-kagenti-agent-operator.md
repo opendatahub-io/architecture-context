@@ -1,7 +1,7 @@
 ---
 id: "0014"
 title: Kagenti agent operator manages agent workloads on RHOAI via AgentRuntime CRD
-status: active
+status: superseded
 created: 2026-06-15
 affects:
   - platform
@@ -14,10 +14,12 @@ provenance:
   - https://github.com/kagenti/kagenti-extensions
   - https://github.com/opendatahub-io/kagenti-operator
 author: Roland Huss
-superseded_by: null
+superseded_by: "0015"
 ---
 
 ## Fact
+
+> **DEPRECATED**: Kagenti has been consolidated into OpenShell. All agent platform capabilities (sandbox isolation, workload identity, policy enforcement) are now delivered through OpenShell. See overlay 0015 for the current architecture. The Kagenti operator, AgentRuntime CRD, and AuthBridge sidecar are no longer the target for new strategies.
 
 **Kagenti** is the agent platform for RHOAI. The two repositories relevant for midstream/downstream strategies are: **kagenti-operator** (Go, controller-runtime) and **kagenti-extensions** (AuthBridge sidecar proxy). The upstream **kagenti** repo (FastAPI backend, React UI, Helm charts) is used for upstream development and demos but is not directly part of the midstream/downstream product. The operator manages agent workloads through the **AgentRuntime** custom resource (`agent.kagenti.dev/v1alpha1`). AgentRuntime is the single CRD for agent lifecycle management. There is no separate "agent lifecycle controller", "AIAgent" CRD, or "AgentCard" CRD.
 
