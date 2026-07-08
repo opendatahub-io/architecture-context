@@ -11,12 +11,15 @@ build:
 build-embedded:
 	rm -rf _embedded/architecture
 	mkdir -p _embedded/architecture
-	@# Copy only .md files from real version directories (skip symlinks, diagrams, JSON)
+	@# Copy .md and .json files from real version directories (skip symlinks and diagrams)
 	@for d in $(ARCH_DIR)/*/; do \
 		name=$$(basename "$$d"); \
 		if [ ! -L "$(ARCH_DIR)/$$name" ]; then \
 			mkdir -p "_embedded/architecture/$$name"; \
-			find "$$d" -maxdepth 1 -name '*.md' -exec cp {} "_embedded/architecture/$$name/" \; ; \
+			find "$$d" -maxdepth 1 \( -name '*.md' -o -name '*.json' \) -exec cp {} "_embedded/architecture/$$name/" \; ; \
+			if [ -d "$$d/contracts" ]; then \
+				cp -r "$$d/contracts" "_embedded/architecture/$$name/contracts"; \
+			fi; \
 		fi; \
 	done
 	@python3 -c "import os,json; d='$(ARCH_DIR)'; \
@@ -62,6 +65,16 @@ smoke-embedded: build-embedded
 	cd /tmp && $(CURDIR)/$(BUILD_DIR)/$(BINARY) search vllm
 	@echo "---"
 	cd /tmp && $(CURDIR)/$(BUILD_DIR)/$(BINARY) --version current-ga list --names-only | wc -l
+	@echo "---"
+	cd /tmp && $(CURDIR)/$(BUILD_DIR)/$(BINARY) webhooks | head -5
+	@echo "---"
+	cd /tmp && $(CURDIR)/$(BUILD_DIR)/$(BINARY) watches | head -5
+	@echo "---"
+	cd /tmp && $(CURDIR)/$(BUILD_DIR)/$(BINARY) provenance --upstream-only | head -5
+	@echo "---"
+	cd /tmp && $(CURDIR)/$(BUILD_DIR)/$(BINARY) schemas | head -5
+	@echo "---"
+	cd /tmp && $(CURDIR)/$(BUILD_DIR)/$(BINARY) images | head -5
 
 lint:
 	go run github.com/golangci/golangci-lint/cmd/golangci-lint@latest run ./...
