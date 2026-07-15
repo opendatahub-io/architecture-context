@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Locate or clone the base images component from the fondue monorepo.
-# Prints the path to the images/base directory on stdout.
+# Locate or clone the rhai-pipeline component from the fondue monorepo.
+# Prints the path to the rhai-pipeline directory on stdout.
 set -euo pipefail
 
 FONDUE_LOCAL="../fondue"
-SUBDIR="images/base"
+SUBDIR="rhai-pipeline"
 REMOTE_URL="https://gitlab.com/redhat/rhel-ai/wheels/fondue.git"
 REMOTE_URL_SSH="git@gitlab.com:redhat/rhel-ai/wheels/fondue.git"
 CLONE_DIR="./tmp/fondue"
