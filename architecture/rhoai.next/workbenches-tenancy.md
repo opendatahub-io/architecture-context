@@ -6,9 +6,9 @@
 
 ## Tenant Definition
 
-In Workbenches, a **tenant** is a Kubernetes namespace containing one or more `Notebook` CRs (`kubeflow.org/v1`). The namespace is the sole tenant boundary -- there is no application-level tenant concept beyond the namespace. All users with RBAC access to the namespace can see all notebooks in it.
+In Workbenches, a **tenant** is a Kubernetes namespace containing one or more `Notebook` CRs (`kubeflow.org/v1`). The namespace is the sole tenant boundary -- there is no application-level tenant concept beyond the namespace. Users with the required Notebook RBAC permissions (`get`, `list`, `watch` on `notebooks.kubeflow.org`) in a namespace can see notebooks in it.
 
-Workbench images (JupyterLab, Code-Server) have **zero application-level authentication or authorization** (`--ServerApp.token=''`, `--auth none`). All auth/authz is delegated to the kube-rbac-proxy sidecar injected by the odh-notebook-controller.
+Workbench images (JupyterLab, Code-Server) have **zero application-level authentication or authorization** (`--ServerApp.token=''`, `--auth none`). For external access (via Gateway/HTTPRoute), auth/authz is delegated to the kube-rbac-proxy sidecar injected by the odh-notebook-controller. Port 8888 (Jupyter API) is unauthenticated but restricted by NetworkPolicy to the `redhat-ods-applications` namespace only (see Network Isolation). A compromised pod in that namespace could access kernel activity (`/api/kernels`) and file listings (`/api/contents`) without authentication.
 
 ## Isolation Mechanisms
 
@@ -27,9 +27,11 @@ Each Notebook CR creates namespace-scoped resources:
 
 All namespace-scoped resources carry owner references and are garbage-collected on CR deletion.
 
-Cross-namespace resources (managed via labels + finalizers):
-- **HTTPRoute** in the central controller namespace (references user-namespace Service via ReferenceGrant)
+Cluster-scoped resources (managed via labels + finalizers):
 - **ClusterRoleBinding** `{name}-rbac-{namespace}-auth-delegator` (binds notebook SA to `system:auth-delegator`)
+
+Resources in other namespaces (managed via labels + finalizers):
+- **HTTPRoute** in the central controller namespace (references user-namespace Service via ReferenceGrant)
 - **ReferenceGrant** shared per user namespace in the gateway namespace
 
 ### Authentication & Authorization
@@ -55,7 +57,7 @@ Aggregate ClusterRoles (`kubeflow-notebooks-edit`, `notebooks-edit`) auto-merge 
 
 Test results: a pod in `tenant-b` cannot reach `tenant-a`'s port 8888 (connection timeout). A pod in `redhat-ods-applications` gets HTTP 200 on port 8888 with access to `/api/kernels` (kernel activity) and `/api/contents` (file listing).
 
-**No egress NetworkPolicies** are created. Workbench pods can make outbound connections to any destination.
+**No Workbench-created egress NetworkPolicies.** Cluster-wide policies, SDN rules, or firewalls may apply independently.
 
 ### Data Isolation
 
@@ -67,9 +69,9 @@ Test results: a pod in `tenant-b` cannot reach `tenant-a`'s port 8888 (connectio
 
 | Gap | Impact | Severity |
 |-----|--------|----------|
-| No egress NetworkPolicy | Workbench pods can reach any in-cluster service or internet endpoint. No data exfiltration prevention. | P0 |
+| No Workbench-created egress NetworkPolicy | Workbench components do not create egress restrictions. Without cluster-wide policies, workbench pods can reach any in-cluster service or internet endpoint. | P0 |
 | No ResourceQuota / LimitRange | Workbench components do not create quotas. A user can launch unlimited notebooks. Platform admins must set quotas externally. | P1 |
-| Controller ClusterRole breadth | `odh-notebook-controller-manager-role` has CRUD on ClusterRoleBindings, HTTPRoutes, NetworkPolicies, Secrets across all namespaces. | P1 |
+| Controller ClusterRole breadth | `odh-notebook-controller-manager-role` has broad cross-namespace permissions: `create/delete/get/list/patch/update/watch` on ClusterRoleBindings and HTTPRoutes; `create/get/list/patch/update/watch` (no delete) on Secrets and NetworkPolicies. | P1 |
 | NetworkPolicy rules undocumented | The per-notebook NetworkPolicy rules are not documented in architecture-context. They are correct (cluster-verified) but require source code reading or cluster testing to understand. | P1 |
 | kf-notebook-controller metrics: no TLS | Metrics on port 8080 have no TLS (the odh-notebook-controller uses TLS 1.2+). | P2 |
 | Workbenches-operator has no NetworkPolicy | Explicitly noted as a TODO with CWE-284 reference in the kustomization.yaml. | P2 |

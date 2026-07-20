@@ -369,16 +369,16 @@ Workbenches use a **pure namespace-based** tenancy model with ~90% Kubernetes en
 |--------|----------------|
 | **Tenant boundary** | Kubernetes namespace |
 | **CRD scope** | Namespace-scoped `Notebook` CR (`kubeflow.org/v1`) |
-| **Application-level auth** | None -- workbench images have `--ServerApp.token=''` / `--auth none` |
+| **Application-level auth** | None -- workbench images have `--ServerApp.token=''` / `--auth none`. Port 8888 is unauthenticated but NetworkPolicy-restricted to `redhat-ods-applications`. |
 | **Authentication** | kube-rbac-proxy sidecar performs TokenReview + SubjectAccessReview (user must have `get notebooks.kubeflow.org` in namespace) |
-| **Network isolation** | Two NetworkPolicies per notebook: port 8888 restricted to `redhat-ods-applications` only; port 8443 open (SAR-protected). No egress restrictions. |
+| **Network isolation** | Two NetworkPolicies per notebook: port 8888 restricted to `redhat-ods-applications` only; port 8443 open (SAR-protected). No Workbench-created egress restrictions. |
 | **Data isolation** | Per-pod PVC (namespace-scoped). No shared filesystem. |
 | **Resource isolation** | No ResourceQuota or LimitRange created. Pod limits set via HardwareProfiles. |
 
 **Key risks:**
-- No egress NetworkPolicy -- workbench pods can reach any cluster service or internet endpoint.
+- No Workbench-created egress NetworkPolicy -- without cluster-wide policies, workbench pods can reach any cluster service or internet endpoint.
 - No ResourceQuota enforcement -- platform admins must set quotas externally.
-- Controller ClusterRole has broad cross-namespace permissions (CRUD on ClusterRoleBindings, HTTPRoutes, NetworkPolicies, Secrets).
+- Controller ClusterRole has broad cross-namespace permissions: `create/delete/get/list/patch/update/watch` on ClusterRoleBindings and HTTPRoutes; `create/get/list/patch/update/watch` (no delete) on Secrets and NetworkPolicies.
 
 ## Architectural Analysis
 
