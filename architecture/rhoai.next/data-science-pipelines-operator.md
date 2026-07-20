@@ -337,6 +337,25 @@ This component defines 2 webhook(s) (1 mutating, 1 validating).
 | OCI Container Registries | Image manifest fetch | 443/TCP | HTTPS | TLS 1.2+ | Fetches managed pipeline definitions from container images (allowlist-validated) |
 | Dashboard / Workbenches | NetworkPolicy | 8443/TCP | HTTPS | TLS 1.2+ | Workbench pods (opendatahub.io/workbenches=true) allowed through API server NetworkPolicy |
 
+## Multi-Tenancy Model
+
+Data Science Pipelines uses a **full stack-per-DSPA** tenancy model. For the full tenancy audit, see [data-science-pipelines-tenancy.md](data-science-pipelines-tenancy.md) ([RHOAIENG-76629](https://redhat.atlassian.net/browse/RHOAIENG-76629)).
+
+| Aspect | Implementation |
+|--------|----------------|
+| **Tenant boundary** | Namespace + DSPA name. Each DSPA deploys a fully independent pipeline stack. |
+| **CRD scope** | Namespace-scoped `DataSciencePipelinesApplication` CR |
+| **Database isolation** | Per-DSPA MariaDB instance (or external DB) with separate credentials |
+| **Artifact isolation** | Per-DSPA MinIO instance (or external S3) with separate credentials. `BasePath` for subpath isolation when sharing external S3. |
+| **Authentication** | kube-rbac-proxy sidecar performs SubjectAccessReview on `datasciencepipelinesapplications/api` per DSPA name and namespace |
+| **Network isolation** | Per-DSPA NetworkPolicies with label selectors scoped to specific DSPA instance. MariaDB only reachable by its own DSPA's components. No egress restrictions. |
+| **Resource isolation** | No ResourceQuota or LimitRange created. Argo `parallelism` limits concurrent steps. |
+
+**Key risks:**
+- The `pipeline-runner-{name}` Role grants `get`/`list` on all secrets and `*` on pods/exec within the namespace. Cluster-verified: a pipeline step can read DB and S3 credentials.
+- No egress NetworkPolicy — pipeline steps can make arbitrary outbound connections.
+- DB and S3 credentials are not auto-rotated.
+
 ## Architectural Analysis
 
 The Data Science Pipelines Operator follows a **template-driven reconciliation pattern** that distinguishes it from operators that use programmatic resource construction. All child resources (Deployments, Services, ConfigMaps, Roles, etc.) are defined as Go text/template YAML files in `config/internal/`, rendered with DSPA parameters, and applied via the manifestival library. This approach provides readability and auditability but means that understanding what the operator deploys requires reading both controller Go code (which decides *when* to apply templates) and the template files (which define *what* is applied). The controller code in `controllers/apiserver.go`, `controllers/database.go`, etc. each contain a list of template directories to apply, with conditional logic for optional features (PodToPodTLS, Routes, sample pipelines, managed pipelines).
