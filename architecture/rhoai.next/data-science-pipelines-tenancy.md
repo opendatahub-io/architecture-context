@@ -73,7 +73,7 @@ NetworkPolicies use per-DSPA label selectors — MariaDB for DSPA-A is only reac
 
 Port 8443 (kube-rbac-proxy) is not restricted by NetworkPolicy — it handles authentication.
 
-**No egress NetworkPolicies** are created. Pipeline step pods can make outbound connections to any destination.
+**No DSP-created egress NetworkPolicies.** Cluster-wide policies, SDN rules, or firewalls may restrict egress independently.
 
 Pod-to-pod TLS is enabled by default (`PodToPodTLS: true`) via OpenShift service-ca certificates.
 
@@ -81,7 +81,7 @@ Pod-to-pod TLS is enabled by default (`PodToPodTLS: true`) via OpenShift service
 
 | Gap | Impact | Severity |
 |-----|--------|----------|
-| No egress NetworkPolicy | Pipeline step pods run arbitrary user code with unrestricted egress. No data exfiltration prevention. | P0 |
+| No DSP-created egress NetworkPolicy | DSP components create no egress restrictions. Pipeline step pods run arbitrary user code. Without cluster-wide egress policies, pods can reach any destination. | P0 |
 | `pipeline-runner` Role over-permissioned (cluster-verified) | The `pipeline-runner-{name}` Role grants `get`/`list` on all secrets in the namespace, `*` on pods/exec, `*` on deployments, `*` on all `kubeflow.org` resources. Cluster-verified on RHOAI 3.5 EA2: a pod running as `pipeline-runner` read the MariaDB password, S3 credentials, and listed all 8 secrets. The Role is namespace-scoped (no cross-tenant boundary violation). | P1 |
 | No ResourceQuota / LimitRange | DSPO does not create quotas. Unbounded pipeline runs can consume all cluster resources. | P1 |
 | DB and S3 credentials not auto-rotated | `ds-pipeline-db-{name}` and `ds-pipeline-s3-{name}` secrets are generated at DSPA creation and never rotated. | P1 |

@@ -348,12 +348,12 @@ Data Science Pipelines uses a **full stack-per-DSPA** tenancy model. For the ful
 | **Database isolation** | Per-DSPA MariaDB instance (or external DB) with separate credentials |
 | **Artifact isolation** | Per-DSPA MinIO instance (or external S3) with separate credentials. `BasePath` for subpath isolation when sharing external S3. |
 | **Authentication** | kube-rbac-proxy sidecar performs SubjectAccessReview on `datasciencepipelinesapplications/api` per DSPA name and namespace |
-| **Network isolation** | Per-DSPA NetworkPolicies with label selectors scoped to specific DSPA instance. MariaDB only reachable by its own DSPA's components. No egress restrictions. |
+| **Network isolation** | Per-DSPA NetworkPolicies with label selectors scoped to specific DSPA instance. MariaDB only reachable by its own DSPA's components. No DSP-created egress restrictions. |
 | **Resource isolation** | No ResourceQuota or LimitRange created. Argo `parallelism` limits concurrent steps. |
 
 **Key risks:**
 - The `pipeline-runner-{name}` Role grants `get`/`list` on all secrets and `*` on pods/exec within the namespace. Cluster-verified: a pipeline step can read DB and S3 credentials.
-- No egress NetworkPolicy — pipeline steps can make arbitrary outbound connections.
+- No DSP-created egress NetworkPolicy — without cluster-wide policies, pipeline steps can make outbound connections to any destination.
 - DB and S3 credentials are not auto-rotated.
 
 ## Architectural Analysis
