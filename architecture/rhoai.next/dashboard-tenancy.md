@@ -75,9 +75,10 @@ These permissions are used only for SA-privileged operations, not for user reque
 | Gap | Impact | Severity |
 |-----|--------|----------|
 | Dashboard SA ClusterRole breadth | `rhods-dashboard` ClusterRole grants `create/delete` on secrets, configmaps, PVCs, notebooks, rolebindings, clusterrolebindings, and roles cluster-wide. SA-privileged operations are gated by SSAR checks. A bug in SSAR gating logic would expose these privileges across all namespaces. | P0 |
-| No per-tenant dashboard configuration | `OdhDashboardConfig` is a platform-wide singleton. All tenants share the same feature flags, admin groups, and visibility settings. | P1 |
 | BFF sidecars share pod network namespace | All BFF sidecars and the Node.js backend share a pod network namespace. A compromised BFF can reach all other sidecars on localhost. Mitigated by token isolation (separate projected tokens). | P1 |
 | Dashboard logs may contain cross-tenant information | Pod logs from the shared pod may include request information from all users. No per-tenant log filtering. | P2 |
+
+**Note on `OdhDashboardConfig`:** The `OdhDashboardConfig` CR is a platform-wide singleton managed by the RHOAI admin. This is by design — the platform admin configures feature flags, admin groups, and visibility settings for the entire platform. Tenant isolation is achieved through namespace-scoped RBAC (users see different resources based on their permissions), not through per-tenant dashboard configuration.
 
 ## Cross-Component Interactions
 

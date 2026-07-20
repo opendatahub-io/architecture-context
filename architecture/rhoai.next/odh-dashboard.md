@@ -727,7 +727,8 @@ The dashboard uses a **token forwarding** model for multi-tenancy. For the full 
 
 **Key risks:**
 - The `rhods-dashboard` ClusterRole grants `create/delete/get/list/patch/update/watch` on secrets, configmaps, PVCs, and notebooks cluster-wide; `create/delete/get/list/patch` on rolebindings, clusterrolebindings, and roles. SA-privileged operations are SSAR-gated — a bug in the gating logic would expose these privileges.
-- No per-tenant dashboard configuration (`OdhDashboardConfig` is a singleton).
+
+**Note:** `OdhDashboardConfig` is a platform-wide singleton managed by the RHOAI admin. Tenant isolation is through namespace-scoped RBAC, not per-tenant dashboard configuration.
 
 ## Architectural Analysis
 
