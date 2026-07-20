@@ -258,6 +258,25 @@ _This is the `main` branch. RPM lock file, Python uv.lock, and Hermeto (cachi2) 
 | External LLM providers | HTTPS REST API | 443/TCP | HTTPS | TLS 1.2+ | AI gateway proxy calls to OpenAI, Anthropic, etc. |
 | Prometheus / ServiceMonitor | HTTP scrape | 5000/TCP | HTTP or HTTPS | Optional TLS | Metrics collection via /metrics endpoint |
 
+## Multi-Tenancy Model
+
+MLflow uses a **single shared server** with application-level workspace isolation. For the full tenancy audit, see [mlflow-tenancy.md](mlflow-tenancy.md) ([RHOAIENG-76371](https://redhat.atlassian.net/browse/RHOAIENG-76371)).
+
+| Aspect | Implementation |
+|--------|----------------|
+| **Tenant boundary** | Kubernetes namespace = MLflow workspace (1:1 mapping via `kubernetes://` workspace provider) |
+| **CRD scope** | Cluster-scoped singleton `MLflow` CR (name must be `mlflow`) |
+| **Database isolation** | Shared PostgreSQL. Single `backendStoreUri` — no per-tenant database mechanism. Application-level SQL filtering (`WHERE workspace = ?`) + K8s SelfSubjectAccessReview. |
+| **Artifact isolation** | BYO per tenant supported: `MLflowConfig` CR + `mlflow-artifact-connection` Secret per namespace. Default: shared S3 bucket with path-based isolation (`/workspaces/<name>/`). |
+| **Authentication** | K8s ServiceAccount bearer token validated via SelfSubjectAccessReview against `mlflow.kubeflow.org` pseudo-resources per namespace |
+| **Network isolation** | NetworkPolicy with defined egress rules (DNS, HTTPS, DB, S3). Ingress from any namespace (shared service — auth enforced per request). |
+| **Compute isolation** | None — single shared server process for all tenants. |
+
+**Key risks:**
+- All tenants share one PostgreSQL database. No database-level Row-Level Security. BYO database per tenant is not supported.
+- Server SA can read `mlflow-artifact-connection` secrets (by resourceName) across all namespaces. Pod compromise exposes all tenants' artifact credentials.
+- Default artifact storage uses shared credentials. BYO per-tenant artifact storage is supported but opt-in.
+
 ## Architectural Analysis
 
 MLflow in the RHOAI distribution represents a significant downstream extension of the upstream MLflow open-source project. The fork maintains compatibility with the upstream codebase while adding Kubernetes-native multi-tenancy through two plugin mechanisms: the workspace provider and the auth plugin. This plugin-based architecture is a notable design decision — rather than forking the server core, the extensions use MLflow's existing entry point system (`mlflow.workspace_provider` and `mlflow.app`), which reduces the maintenance burden during upstream rebases.
