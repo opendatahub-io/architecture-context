@@ -361,6 +361,25 @@ The following webhooks are defined by the platform operator and apply to this co
 | Dashboard | Annotation protocol | N/A | N/A | N/A | Dashboard reads `notebooks.opendatahub.io/update-pending` annotation to prompt restart |
 | Platform Operator | Manifest consumption | N/A | N/A | N/A | rhods-operator/opendatahub-operator deploys this component via kustomize |
 
+## Multi-Tenancy Model
+
+Workbenches use a **pure namespace-based** tenancy model with ~90% Kubernetes enforcement. For the full tenancy audit, see [workbenches-tenancy.md](workbenches-tenancy.md) ([RHOAIENG-76627](https://redhat.atlassian.net/browse/RHOAIENG-76627)).
+
+| Aspect | Implementation |
+|--------|----------------|
+| **Tenant boundary** | Kubernetes namespace |
+| **CRD scope** | Namespace-scoped `Notebook` CR (`kubeflow.org/v1`) |
+| **Application-level auth** | None -- workbench images have `--ServerApp.token=''` / `--auth none` |
+| **Authentication** | kube-rbac-proxy sidecar performs TokenReview + SubjectAccessReview (user must have `get notebooks.kubeflow.org` in namespace) |
+| **Network isolation** | Two NetworkPolicies per notebook: port 8888 restricted to `redhat-ods-applications` only; port 8443 open (SAR-protected). No egress restrictions. |
+| **Data isolation** | Per-pod PVC (namespace-scoped). No shared filesystem. |
+| **Resource isolation** | No ResourceQuota or LimitRange created. Pod limits set via HardwareProfiles. |
+
+**Key risks:**
+- No egress NetworkPolicy -- workbench pods can reach any cluster service or internet endpoint.
+- No ResourceQuota enforcement -- platform admins must set quotas externally.
+- Controller ClusterRole has broad cross-namespace permissions (CRUD on ClusterRoleBindings, HTTPRoutes, NetworkPolicies, Secrets).
+
 ## Architectural Analysis
 
 The kubeflow notebook controller architecture follows a dual-controller pattern that separates upstream Kubeflow concerns from downstream OpenShift-specific extensions. The kf-notebook-controller is a relatively straightforward Kubernetes operator that maps each Notebook CR to a StatefulSet (always 1 replica, controlled via stop annotation), a ClusterIP Service, and optionally an Istio VirtualService. The odh-notebook-controller layers on top with webhook-based mutation and a parallel reconciliation loop that manages the ingress, authentication, and integration infrastructure. This separation allows RHOAI to track upstream Kubeflow changes while maintaining its own feature set.
