@@ -711,6 +711,24 @@ This component defines 3 webhook(s) (0 mutating, 2 validating, 1 conversion).
 | cert-manager | Certificate CR | N/A | N/A | N/A | Webhook and metrics TLS (operator) |
 | MaaS BFF (inter-BFF) | REST | 8243/TCP | HTTPS | TLS 1.2+ | Token management from gen-ai |
 
+## Multi-Tenancy Model
+
+The dashboard uses a **token forwarding** model for multi-tenancy. For the full tenancy audit, see [dashboard-tenancy.md](dashboard-tenancy.md) ([RHOAIENG-76368](https://redhat.atlassian.net/browse/RHOAIENG-76368)).
+
+| Aspect | Implementation |
+|--------|----------------|
+| **Tenant boundary** | Per-user: user's own K8s RBAC determines resource visibility |
+| **Deployment model** | Single shared pod in the platform namespace serving all users |
+| **Core mechanism** | User's bearer token forwarded via `x-forwarded-access-token` to K8s API. API server evaluates user's own RBAC. Not K8s impersonation. |
+| **Authentication** | kube-rbac-proxy SAR: user can `list` projects. Token forwarded to backend and BFF sidecars. |
+| **SA-privileged operations** | Notebook CR creation, per-user RoleBinding creation, namespace labeling — gated by SSAR checks against user's token |
+| **Configuration** | `OdhDashboardConfig` — platform-wide singleton. No per-tenant configuration. |
+| **Token isolation** | Separate projected tokens: `dashboard-sa-token` for core containers, `modules-sa-token` for BFF sidecars |
+
+**Key risks:**
+- The `rhods-dashboard` ClusterRole grants `create/delete/get/list/patch/update/watch` on secrets, configmaps, PVCs, and notebooks cluster-wide; `create/delete/get/list/patch` on rolebindings, clusterrolebindings, and roles. SA-privileged operations are SSAR-gated — a bug in the gating logic would expose these privileges.
+- No per-tenant dashboard configuration (`OdhDashboardConfig` is a singleton).
+
 ## Architectural Analysis
 
 The odh-dashboard represents one of the more architecturally sophisticated components in the RHOAI platform, implementing a full micro-frontend architecture using Webpack Module Federation. The host application (`frontend/` + `backend/`) provides the shell (navigation, routing, header) while feature-specific packages are loaded as federated remotes at runtime. This design enables independent deployment and development of feature areas like generative AI, model-as-a-service, and model registry without requiring a full dashboard rebuild.
