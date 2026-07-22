@@ -12,6 +12,10 @@ None yet.
 
 None yet.
 
+## Plans
+
+- [Architecture Diagram Implementation](docs/plans/000-architecture-diagram-implementation.md)
+
 ## Decisions
 
 - [ADR-0001: Architecture Diagram Proposal](docs/decisions/ADR-0001-architecture-diagram-proposal.md)
