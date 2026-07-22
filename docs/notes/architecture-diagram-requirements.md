@@ -55,7 +55,7 @@ RFE Approval → Implementation → Product Docs → GA → (maybe) Architecture
 
 ### Proposed Improvements (DRAFT <REDACTED> Framework)
 
-**Status**: 📝 DRAFT for <REDACTED>
+**Status**: 📝 DRAFT for RHOAI 3.4 EA1 MVP (target approval: <REDACTED>)
 
 **Proposed gates for architecture diagrams**:
 - **Before Dev Preview**: If `requires_architecture_review` label → Architecture review MUST be completed
@@ -527,7 +527,7 @@ RHOAIENG has **30+ "CLONE - Feature documented in architecture diagrams"** tasks
   - Created ADR with architecture: https://github.com/opendatahub-io/architecture-decision-records/pull/105
   - Community docs: https://opendatahub-io.github.io/maas-billing/architecture/
 - **<REDACTED>**: MLFlow architecture diagram (Closed, Feb 2026)
-  - Updated Miro board with <REDACTED> architecture
+  - Updated Miro board with 3.4 EA1 architecture
   - Location: <REDACTED>
 - **<REDACTED>**: Model Mesh architectural requirements
 
