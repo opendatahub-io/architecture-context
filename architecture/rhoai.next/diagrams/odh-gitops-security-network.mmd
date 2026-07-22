@@ -1,80 +1,72 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client"]
-        Admin["Administrator<br/>(kubectl / helm / ArgoCD)"]
+        Client["Helm Client / kubectl / ArgoCD"]
     end
 
-    subgraph Ingress["INGRESS (Gateway API)"]
-        InfGW["inference-gateway<br/>443/TCP HTTPS, 80/TCP HTTP<br/>TLS: cert-manager (rhai-ca-issuer)<br/>TLS Mode: SIMPLE<br/>Cert: inference-gateway-cert<br/>GatewayClass: openshift-ai-inference"]
-        MaasGW["maas-default-gateway<br/>HTTPS TLS"]
+    subgraph K8sControl["KUBERNETES API SERVER"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>RBAC AuthZ"]
     end
 
-    subgraph ClusterServices["CLUSTER SERVICES (Internal)"]
+    subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-operator)"]
         direction TB
 
-        subgraph NS_Operator["Namespace: redhat-ods-operator"]
-            RHAIOp["RHAI Operator<br/>SA: rhai-operator-controller-manager<br/>9443/TCP webhook (TLS)<br/>8080/TCP metrics (HTTP)<br/>8081/TCP health (HTTP)"]
-            WebhookSvc["rhai-operator-webhook-service<br/>ClusterIP 9443/TCP → webhook-server<br/>HTTPS TLS (cert-manager)<br/>Secret: webhook-cert"]
-            MetricsSvc["metrics-service<br/>ClusterIP 8080/TCP<br/>HTTP (no encryption)"]
-        end
+        Operator["RHAI Operator Deployment<br/>SA: rhai-operator-controller-manager<br/>Image: quay.io/opendatahub/opendatahub-operator"]
 
-        subgraph NS_CloudMgr["Namespace: rhai-cloudmanager-system (xKS)"]
-            AzureMgr["Azure Cloud Manager<br/>SA: azure-cloud-manager-operator<br/>8080/TCP HTTP"]
-            CoreWeaveMgr["CoreWeave Cloud Manager<br/>SA: coreweave-cloud-manager-operator<br/>8080/TCP HTTP"]
-            AWSMgr["AWS Cloud Manager<br/>SA: aws-cloud-manager-operator<br/>8080/TCP HTTP"]
-        end
+        WebhookSvc["rhai-operator-webhook-service<br/>ClusterIP 443→9443/TCP<br/>HTTPS, TLS webhook certs"]
 
-        subgraph NS_CertMgr["Namespace: cert-manager"]
-            CertMgrOp["cert-manager Operator<br/>8443/TCP HTTPS TLS"]
-        end
+        MetricsSvc["metrics-service<br/>ClusterIP 8080/TCP<br/>HTTP, No encryption"]
 
-        subgraph NS_ServiceMesh["Namespace: istio-system"]
-            SailOp["Sail Operator (Istio)<br/>8443/TCP HTTPS TLS"]
-        end
+        HealthEndpoints["Health Probes<br/>/healthz, /readyz<br/>8081/TCP HTTP"]
     end
 
-    subgraph OLMLayer["OPERATOR LIFECYCLE (OLM - OpenShift Only)"]
-        OLM["OLM<br/>(Operator Lifecycle Manager)"]
-        Catalog["CatalogSource<br/>50051/TCP gRPC TLS<br/>openshift-marketplace"]
+    subgraph HookJobs["POST-INSTALL HOOKS (xKS)"]
+        direction TB
+        Hook1["post-install-crs Job<br/>SA: rhai-post-install-hook<br/>Weight 1: KE + Platform + Component CRs"]
+        Hook2["post-create-gateway Job<br/>SA: rhai-post-install-hook<br/>Weight 2: Inference Gateway + TLS"]
+        Hook3["post-create-maas-gateway Job<br/>SA: rhai-post-install-hook<br/>Weight 3: MaaS Gateway + TLS"]
     end
 
-    subgraph ExternalServices["EGRESS (External Services)"]
-        RegistryRH["registry.redhat.io<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Pull Secret"]
-        Quay["quay.io<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Pull Secret"]
-        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+<br/>Auth: ServiceAccount Token"]
-        CloudAPIs["Cloud Provider APIs<br/>(Azure/CoreWeave/AWS)<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Cloud Credentials"]
+    subgraph GatewayInfra["GATEWAY INFRASTRUCTURE (xKS)"]
+        direction TB
+        InferenceGW["inference-gateway<br/>Gateway API v1<br/>80/TCP HTTP, 443/TCP HTTPS<br/>TLS Terminate<br/>cert: inference-gateway-cert-secret"]
+        MaaSGW["maas-default-gateway<br/>Gateway API v1<br/>80/TCP HTTP, 443/TCP HTTPS<br/>TLS Terminate<br/>cert: maas-gateway-cert-secret"]
     end
 
-    %% External → Ingress flows
-    Client -->|"HTTPS/443<br/>TLS (rhai-ca-issuer)<br/>Bearer Token"| InfGW
-    Admin -->|"HTTPS/6443<br/>TLS 1.2+<br/>kubeconfig"| K8sAPI
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        CertMgrCA["cert-manager CA Secret<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA token auth"]
+        OLMCatalog["OLM CatalogSource<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>(OpenShift only)"]
+        BuildConfig["RHOAI-Build-Config<br/>443/TCP HTTPS<br/>GitHub Actions token"]
+    end
 
-    %% Ingress → Services
-    InfGW -->|"HTTP/gRPC<br/>mTLS (Istio)<br/>Authorino / kube-rbac-proxy"| RHAIOp
+    %% Flows
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>kubeconfig creds"| K8sAPI
 
-    %% OLM flows
-    OLM -->|"gRPC/50051<br/>TLS<br/>cluster-internal"| Catalog
-    OLM -->|"HTTPS/443<br/>TLS 1.2+<br/>Pull Secret"| RegistryRH
-    OLM -->|"HTTPS/443<br/>TLS 1.2+<br/>Pull Secret"| Quay
+    K8sAPI -->|"Admission webhook<br/>HTTPS/443→9443<br/>TLS client cert"| WebhookSvc
 
-    %% Operator → external
-    RHAIOp -->|"HTTPS/443<br/>TLS 1.2+<br/>Pull Secret"| RegistryRH
-    RHAIOp -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>Watch/Manage CRs"| K8sAPI
 
-    %% Cloud managers → cloud
-    AzureMgr -->|"HTTPS/443<br/>TLS 1.2+<br/>Azure Credentials"| CloudAPIs
-    CoreWeaveMgr -->|"HTTPS/443<br/>TLS 1.2+<br/>CoreWeave Credentials"| CloudAPIs
-    AWSMgr -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS Credentials"| CloudAPIs
+    Hook1 -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    Hook2 -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    Hook2 -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| CertMgrCA
+    Hook3 -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    Hook3 -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| CertMgrCA
+
+    Hook2 -.->|creates| InferenceGW
+    Hook3 -.->|creates| MaaSGW
+
+    Operator -->|"Resolves bundles<br/>HTTPS/443"| OLMCatalog
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef olm fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef k8sapi fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef hooks fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef gateway fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef extsvc fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
-    class Client,Admin external
-    class InfGW,MaasGW ingress
-    class RHAIOp,WebhookSvc,MetricsSvc,AzureMgr,CoreWeaveMgr,AWSMgr,CertMgrOp,SailOp cluster
-    class OLM,Catalog olm
-    class RegistryRH,Quay,K8sAPI,CloudAPIs externalservice
+    class Client external
+    class K8sAPI k8sapi
+    class Operator,WebhookSvc,MetricsSvc,HealthEndpoints operator
+    class Hook1,Hook2,Hook3 hooks
+    class InferenceGW,MaaSGW gateway
+    class CertMgrCA,OLMCatalog,BuildConfig extsvc

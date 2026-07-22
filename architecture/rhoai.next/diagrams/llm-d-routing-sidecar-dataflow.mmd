@@ -1,36 +1,30 @@
 sequenceDiagram
-    participant Client as Client<br/>(via EPP/Gateway)
-    participant Sidecar as llm-d-routing-sidecar<br/>:8000/TCP HTTPS
+    participant Client as Client / Gateway EPP
+    participant Sidecar as Routing Sidecar<br/>8000/TCP HTTPS TLS 1.2+
     participant Allowlist as AllowlistValidator<br/>(in-process)
-    participant Prefiller as Remote vLLM Prefiller<br/>{host}:{port}
-    participant Decoder as Local vLLM Decoder<br/>localhost:8001/TCP
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Prefiller as Remote Prefiller Pod<br/>dynamic/TCP HTTP(S)
+    participant Decoder as Local vLLM Decoder<br/>8001/TCP HTTP(S)
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS
+
+    Note over K8sAPI,Allowlist: Flow 3: SSRF Allowlist Maintenance (background)
+    K8sAPI-->>Allowlist: Watch InferencePool CRs<br/>ServiceAccount Bearer Token
+    K8sAPI-->>Allowlist: Watch Pods (matching selector)<br/>Resync every 30s
+    Allowlist->>Allowlist: Rebuild allowlist<br/>(pod IPs + names)
 
     Note over Client,Decoder: Flow 1: Disaggregated Prefill/Decode (NIXL v2)
+    Client->>Sidecar: POST /v1/chat/completions<br/>Header: x-prefiller-host-port
+    Sidecar->>Allowlist: Validate prefiller target IP
+    Allowlist-->>Sidecar: Allowed (or 403 Forbidden)
 
-    Client->>Sidecar: POST /v1/chat/completions<br/>x-prefiller-host-port: {host}:{port}<br/>TLS 1.2+
-    Sidecar->>Allowlist: Validate prefiller host<br/>(if SSRF protection enabled)
-    Allowlist-->>Sidecar: Allowed / 403 Forbidden
+    Note right of Sidecar: Modify request:<br/>do_remote_decode=true<br/>stream=false<br/>max_tokens=1<br/>Add x-request-id UUID
+    Sidecar->>Prefiller: POST /v1/chat/completions<br/>Modified request body
+    Prefiller-->>Sidecar: Response with kv_transfer_params<br/>(KV cache metadata)
 
-    Sidecar->>Prefiller: Forward request + kv_transfer_params<br/>HTTP/HTTPS (optional TLS)
-    Prefiller-->>Sidecar: Prefill response (buffered)<br/>KV-cache transfer metadata
+    Note right of Sidecar: Inject kv_transfer_params<br/>Restore original stream/max_tokens<br/>Forward x-request-id
+    Sidecar->>Decoder: POST /v1/chat/completions<br/>Request with KV cache metadata
+    Decoder-->>Client: Streamed response<br/>(via sidecar passthrough)
 
-    Sidecar->>Decoder: Forward original request +<br/>kv_transfer_params from prefill<br/>HTTP/HTTPS (optional TLS)
-    Decoder-->>Sidecar: Decode response (streamed)
-
-    Sidecar-->>Client: Final response<br/>TLS 1.2+
-
-    Note over Client,Decoder: Flow 2: Pass-through (No Prefill Header)
-
-    Client->>Sidecar: POST /v1/chat/completions<br/>(no x-prefiller-host-port)<br/>TLS 1.2+
-    Sidecar->>Decoder: Transparent proxy<br/>HTTP/HTTPS (optional TLS)
-    Decoder-->>Sidecar: Response
-    Sidecar-->>Client: Proxied response<br/>TLS 1.2+
-
-    Note over Sidecar,K8sAPI: Flow 3: SSRF Allowlist Update (Background)
-
-    Sidecar->>K8sAPI: Watch InferencePool CR<br/>HTTPS/TLS, SA token
-    K8sAPI-->>Sidecar: InferencePool events<br/>(label selectors)
-    Sidecar->>K8sAPI: Watch Pods matching selectors<br/>HTTPS/TLS, SA token
-    K8sAPI-->>Sidecar: Pod events<br/>(IPs, names)
-    Note over Allowlist: Rebuild allowlist<br/>atomically on<br/>pod add/update/delete<br/>(30s resync)
+    Note over Client,Decoder: Flow 2: Direct Decode (no prefiller header)
+    Client->>Sidecar: POST /v1/chat/completions<br/>(no x-prefiller-host-port)
+    Sidecar->>Decoder: Forward request as-is<br/>(passthrough proxy)
+    Decoder-->>Client: Response<br/>(via sidecar passthrough)

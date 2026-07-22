@@ -1,58 +1,71 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["Client Application"]
+        Client["API Consumer / Client"]
     end
 
-    subgraph PlatformIngress["PLATFORM INGRESS (TLS Termination)"]
-        Gateway["Platform Gateway<br/>HTTPRoute (RHOAI 3.x) / Route (RHOAI 2.x)<br/>TLS Termination<br/>kube-rbac-proxy / Gateway API Auth"]
+    subgraph Ingress["INGRESS (External Enforcement)"]
+        Gateway["kube-rbac-proxy / Istio / NetworkPolicy<br/>TLS 1.2+ Termination<br/>AuthN/AuthZ enforced externally<br/><i>NOT part of NeMo Guardrails</i>"]
     end
 
-    subgraph Application["APPLICATION (Internal Cluster Network)"]
+    subgraph Application["APPLICATION (NeMo Guardrails Server)"]
         direction TB
 
-        subgraph NS_Deploy["Namespace: {deployment-namespace}"]
-            Server["NeMo Guardrails Server<br/>Service: nemo-guardrails-server (ClusterIP)<br/>Port: 8000/TCP HTTP (plaintext)<br/>Runtime: Python 3.12 (UBI9)<br/>No built-in auth / No built-in TLS"]
+        Server["NeMo Guardrails Server<br/>FastAPI/Uvicorn<br/>Port: 8000/TCP HTTP (plaintext)<br/>Service: ClusterIP (internal)<br/>Image: odh-nemo-guardrails-rhel9<br/>Base: AIPCC CPU 3.5.0 (RHEL 9.6)"]
+
+        HeaderFwd["Header Forwarding<br/>X-Authorization → Authorization<br/>Strips: x-forwarded-*, x-real-*"]
+
+        subgraph InProcess["In-Process Components"]
+            Embedding["all-MiniLM-L6-v2<br/>(ONNX / FastEmbed)"]
+            Colang["Colang Runtime<br/>v1.0 / v2.x"]
+            Rails["Rail Actions<br/>(input, output, dialog, tool)"]
         end
     end
 
-    subgraph InternalServices["INTERNAL SERVICES (Optional)"]
-        LLM["LLM Inference Service<br/>(vLLM / NIM / OpenAI-compatible)<br/>443/TCP HTTPS<br/>Bearer Token (forwarded)"]
-        OTel["OpenTelemetry Collector<br/>4317/TCP gRPC or 4318/TCP HTTP<br/>TLS 1.2+"]
-        Redis["Redis<br/>6379/TCP<br/>Optional TLS<br/>Password Auth"]
+    subgraph LLMProviders["EGRESS — LLM PROVIDERS (External)"]
+        OpenAI["OpenAI API<br/>api.openai.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer Token"]
+        NIM["NVIDIA NIM<br/>integrate.api.nvidia.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer (nvapi-*)"]
+        AzureOAI["Azure OpenAI<br/>*.openai.azure.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: API Key"]
+        AnthropicAPI["Anthropic API<br/>api.anthropic.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: x-api-key"]
+        CohereAPI["Cohere API<br/>api.cohere.com<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer Token"]
+        GoogleAPI["Google Gemini API<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: API Key"]
+        TritonTRT["Triton (TRT-LLM)<br/>Configurable/TCP gRPC<br/>Auth: None (network-trusted)"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (Egress — All Optional)"]
-        direction TB
-        ActiveFence["ActiveFence<br/>443/TCP HTTPS<br/>API Key"]
-        CiscoAI["Cisco AI Defense<br/>443/TCP HTTPS<br/>API Key"]
-        CrowdStrike["CrowdStrike AIDR<br/>443/TCP HTTPS<br/>Bearer Token"]
-        Pangea["Pangea AI Guard<br/>443/TCP HTTPS<br/>Bearer Token"]
-        Patronus["Patronus<br/>443/TCP HTTPS<br/>API Key"]
-        MoreProviders["+ 11 more providers<br/>443/TCP HTTPS<br/>API Key / Bearer Token"]
+    subgraph OptionalServices["EGRESS — OPTIONAL SERVICES"]
+        Redis["Redis<br/>6379/TCP Redis protocol<br/>Plaintext<br/>Auth: Optional user/pass"]
+        OTEL["OpenTelemetry Collector<br/>4317/TCP gRPC OTLP<br/>Auth: None"]
+        ExtGuardrails["External Guardrail Svcs<br/>(F5, AlignScore)<br/>HTTPS TLS 1.2+"]
     end
 
     %% Flows
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Platform Auth"| Gateway
-    Gateway -->|"HTTP/8000<br/>Plaintext<br/>No Auth (platform-handled)"| Server
-    Server -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (forwarded)"| LLM
-    Server -.->|"OTLP/4317 or 4318<br/>TLS 1.2+"| OTel
-    Server -.->|"Redis/6379<br/>Optional TLS<br/>Password"| Redis
-    Server -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| ActiveFence
-    Server -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| CiscoAI
-    Server -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| CrowdStrike
-    Server -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Pangea
-    Server -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| Patronus
-    Server -->|"HTTPS/443<br/>TLS 1.2+<br/>Various Auth"| MoreProviders
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>X-Authorization header"| Gateway
+    Gateway -->|"HTTP/8000<br/>Plaintext<br/>⚠️ No auth at server"| Server
+
+    Server --> HeaderFwd
+    Server --> InProcess
+
+    HeaderFwd -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| OpenAI
+    HeaderFwd -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer (nvapi-*)"| NIM
+    HeaderFwd -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| AzureOAI
+    HeaderFwd -->|"HTTPS/443<br/>TLS 1.2+<br/>x-api-key"| AnthropicAPI
+    HeaderFwd -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| CohereAPI
+    HeaderFwd -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| GoogleAPI
+    Server -->|"gRPC<br/>Configurable port<br/>Network-trusted"| TritonTRT
+
+    Server -.->|"Redis/6379<br/>Plaintext<br/>Optional auth"| Redis
+    Server -.->|"gRPC/4317<br/>OTLP"| OTEL
+    Server -.->|"HTTPS<br/>Configurable"| ExtGuardrails
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef internal fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef llmprovider fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef optional fill:#fff2cc,stroke:#d6b656,stroke-width:1px,stroke-dasharray:5 5
+    classDef warning fill:#ffcccc,stroke:#cc0000,stroke-width:2px
 
     class Client external
     class Gateway ingress
-    class Server application
-    class LLM,OTel,Redis internal
-    class ActiveFence,CiscoAI,CrowdStrike,Pangea,Patronus,MoreProviders externalservice
+    class Server,HeaderFwd,Embedding,Colang,Rails application
+    class OpenAI,NIM,AzureOAI,AnthropicAPI,CohereAPI,GoogleAPI,TritonTRT llmprovider
+    class Redis,OTEL,ExtGuardrails optional

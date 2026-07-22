@@ -1,41 +1,51 @@
 workspace {
     model {
-        client = person "Client" "Application user or API consumer authenticating via Bearer token, x509 cert, or OIDC JWT"
+        # People
+        platformAdmin = person "Platform Admin" "Configures RHOAI platform components and RBAC policies"
+        prometheusOperator = person "Prometheus Operator" "Manages monitoring stack in openshift-monitoring namespace"
 
-        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "HTTP reverse proxy enforcing Kubernetes RBAC authorization via SubjectAccessReview before forwarding to upstream" {
-            listener = container "Secure Listener" "TLS-terminated HTTPS listener on port 8443 with hot-reloadable certificates" "Go net/http"
-            authnFilter = container "Authentication Filter" "Validates caller identity via delegated TokenReview, OIDC JWT, or x509 client certificate" "Go Package"
-            authzChain = container "Authorization Chain" "Chains hardcoded (metrics), static (config), and SAR (K8s API) authorizers in priority order" "Go Package"
-            proxyHandler = container "Proxy Handler" "Builds authorizer attributes and forwards authorized requests to upstream" "Go httputil.ReverseProxy"
-            tlsReloader = container "TLS Reloader" "Hot-reloads server TLS certificates at configurable intervals (default 1m)" "Go Package"
-            sanitizer = container "Sanitizing Filter" "Masks bearer tokens in klog output to prevent credential leakage" "Go Package"
+        # The kube-rbac-proxy system
+        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "HTTP reverse proxy sidecar that enforces Kubernetes RBAC authorization via TokenReview and SubjectAccessReview before forwarding requests to upstream services" {
+            tlsListener = container "TLS Listener" "Accepts HTTPS connections on port 8443 with TLS 1.2+ and HTTP/2 ALPN" "Go net/http + crypto/tls"
+            certReloader = container "CertReloader" "Hot-reloads TLS certificates from disk without restart" "Go pkg/tls"
+            pathFilter = container "Path Filter" "Matches requests against --ignore-paths patterns to bypass auth" "Go pkg/filters"
+            authnFilter = container "AuthN Filter" "Authenticates requests via delegating TokenReview, OIDC JWT, or X.509 client certificates" "Go pkg/authn + k8s.io/apiserver"
+            authzChain = container "AuthZ Chain" "Authorizes requests via hardcoded metrics authorizer, static allow-list, then SAR authorizer" "Go pkg/authz + pkg/hardcodedauthorizer"
+            reverseProxy = container "Reverse Proxy" "Forwards authorized requests to upstream application on localhost" "Go net/http/httputil"
         }
 
-        k8sApiServer = softwareSystem "Kubernetes API Server" "Cluster control plane providing TokenReview and SubjectAccessReview APIs" "External"
-        upstreamApp = softwareSystem "Upstream Application" "Component application container (notebooks, model servers, dashboard) running on localhost" "Internal RHOAI"
-        prometheus = softwareSystem "OpenShift Monitoring" "Prometheus metrics collection (prometheus-k8s service account)" "Internal OpenShift"
-        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator that injects kube-rbac-proxy sidecar containers" "Internal RHOAI"
-        certManager = softwareSystem "cert-manager / Platform Secrets" "Provisions and rotates TLS certificates" "Internal"
-        oidcProvider = softwareSystem "OIDC Provider" "External OpenID Connect identity provider for JWT validation" "External"
+        # External systems
+        k8sApiServer = softwareSystem "Kubernetes API Server" "Validates tokens (TokenReview) and checks RBAC permissions (SubjectAccessReview)" "External"
+        upstreamApp = softwareSystem "Upstream Application" "Application container (metrics, API endpoints) running in the same pod on localhost port 8080/8081" "Internal Pod"
+        oidcProvider = softwareSystem "OIDC Identity Provider" "External identity provider for JWT-based authentication (optional)" "External"
+        certManager = softwareSystem "cert-manager / Platform Operator" "Provisions and rotates TLS certificates for the proxy" "Internal Platform"
+        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator that injects kube-rbac-proxy as a sidecar into component pods" "Internal Platform"
+        gatewayAPI = softwareSystem "Gateway API (HTTPRoute)" "Routes external traffic through the platform Gateway to kube-rbac-proxy" "Internal Platform"
+        prometheus = softwareSystem "Prometheus (openshift-monitoring)" "Scrapes /metrics endpoint with hardcoded authorization bypass for prometheus-k8s SA" "Internal Platform"
 
-        # Relationships
-        client -> kubeRbacProxy "Sends HTTPS requests" "HTTPS/8443, TLS 1.2+, Bearer/x509/OIDC"
-        kubeRbacProxy -> k8sApiServer "Validates tokens and checks authorization" "HTTPS/443, TokenReview + SubjectAccessReview"
-        kubeRbacProxy -> upstreamApp "Forwards authorized requests" "HTTP/localhost"
-        kubeRbacProxy -> oidcProvider "Retrieves OIDC discovery and JWKS" "HTTPS/443"
-        prometheus -> kubeRbacProxy "Scrapes /metrics (hardcoded allow)" "HTTPS/8443, SA Token"
-        rhodsOperator -> kubeRbacProxy "Deploys as sidecar container" "Pod spec injection"
-        certManager -> kubeRbacProxy "Provides TLS certificates" "kubernetes.io/tls Secret"
+        # Relationships - External to kube-rbac-proxy
+        platformAdmin -> kubeRbacProxy "Configures authorization policies (Format1/Format2)" "YAML config"
+        rhodsOperator -> kubeRbacProxy "Injects as sidecar container" "Deployment spec"
+        gatewayAPI -> kubeRbacProxy "Routes traffic to" "HTTPS/8443"
+        prometheus -> kubeRbacProxy "Scrapes /metrics" "HTTPS/8443, hardcoded allow"
+        certManager -> kubeRbacProxy "Provisions TLS certificates" "kubernetes.io/tls Secret"
 
-        # Container relationships
-        listener -> authnFilter "Passes request"
+        # Relationships - kube-rbac-proxy to external
+        kubeRbacProxy -> k8sApiServer "Authenticates tokens and checks RBAC permissions" "HTTPS/443, TokenReview + SubjectAccessReview"
+        kubeRbacProxy -> upstreamApp "Forwards authorized requests" "HTTP/8080, localhost"
+        kubeRbacProxy -> oidcProvider "Retrieves OIDC discovery and JWKS keys" "HTTPS/443"
+
+        # Internal relationships
+        tlsListener -> pathFilter "Passes requests"
+        pathFilter -> authnFilter "Unmatched paths"
+        pathFilter -> reverseProxy "Matched paths (bypass auth)"
         authnFilter -> authzChain "Authenticated identity"
-        authzChain -> proxyHandler "Authorization decision"
-        proxyHandler -> upstreamApp "Proxied request" "HTTP/localhost"
+        authzChain -> reverseProxy "Authorized requests"
+        certReloader -> tlsListener "Reloads certificates"
         authnFilter -> k8sApiServer "TokenReview" "HTTPS/443"
+        authnFilter -> oidcProvider "OIDC verification" "HTTPS/443"
         authzChain -> k8sApiServer "SubjectAccessReview" "HTTPS/443"
-        tlsReloader -> listener "Reloads certificates"
-        sanitizer -> listener "Filters log output"
+        reverseProxy -> upstreamApp "Proxied request" "HTTP/8080 localhost"
     }
 
     views {
@@ -50,29 +60,25 @@ workspace {
         }
 
         styles {
+            element "Software System" {
+                background #438dd5
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal OpenShift" {
-                background #e1d5e7
-                color #333333
-            }
-            element "Internal" {
-                background #4a90e2
+            element "Internal Pod" {
+                background #4caf50
                 color #ffffff
             }
             element "Person" {
-                shape Person
+                shape person
                 background #08427b
-                color #ffffff
-            }
-            element "Software System" {
-                background #1168bd
                 color #ffffff
             }
             element "Container" {

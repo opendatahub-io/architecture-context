@@ -1,59 +1,60 @@
 graph TB
-    subgraph External["EXTERNAL (Untrusted)"]
-        Gateway["llm-d Gateway<br/>(API Consumer)"]
-        MetricsPipeline["llm-d Metrics Pipeline<br/>(Data Producer)"]
+    subgraph External["EXTERNAL (Untrusted -- No Auth)"]
+        RoutingLayer["llm-d Routing Layer<br/>(Consumer)"]
+        PrometheusExt["Prometheus<br/>(Monitoring)"]
     end
 
-    subgraph ClusterNetwork["CLUSTER NETWORK (No Service Mesh / No mTLS)"]
+    subgraph K8sServices["KUBERNETES SERVICES (No Network Policies / No Service Mesh)"]
         direction TB
 
-        subgraph PredService["Service: prediction-service (LoadBalancer)"]
-            PredLB["LoadBalancer<br/>80/TCP → 8001/TCP<br/>HTTP | No TLS | No Auth"]
+        subgraph PredSvc["prediction-service (LoadBalancer)"]
+            PredLB["Port: 80/TCP -> 8001/TCP<br/>Protocol: HTTP<br/>Encryption: None<br/>Auth: None<br/>Exposure: External"]
         end
 
-        subgraph PredPods["Prediction Server (10 replicas)"]
-            PredServer["Prediction Server Pods<br/>SA: default<br/>Image: odh-latency-predictor-prediction<br/>Port: 8001/TCP (FastAPI, 8 workers)<br/>Volume: emptyDir /local_models/"]
+        subgraph TrainSvc["training-service (ClusterIP)"]
+            TrainCIP["Port: 8000/TCP -> 8000/TCP<br/>Protocol: HTTP<br/>Encryption: None<br/>Auth: None<br/>Exposure: Internal"]
         end
 
-        subgraph TrainService["Service: training-service (ClusterIP + optional LoadBalancer)"]
-            TrainClusterIP["ClusterIP<br/>8000/TCP → 8000/TCP<br/>HTTP | No TLS | No Auth"]
-            TrainLB["LoadBalancer (optional)<br/>8080/TCP → 8000/TCP<br/>HTTP | No TLS | No Auth"]
+        subgraph TrainSvcExt["training-service-external (LoadBalancer) -- OPTIONAL"]
+            TrainLB["Port: 8080/TCP -> 8000/TCP<br/>Protocol: HTTP<br/>Encryption: None<br/>Auth: None<br/>Exposure: External<br/>WARNING: Data poisoning risk"]
         end
 
-        subgraph TrainPods["Training Server (1 replica - singleton)"]
-            TrainServer["Training Server Pod<br/>SA: default<br/>Image: odh-latency-predictor-training<br/>Port: 8000/TCP (FastAPI)<br/>Volume: PVC /models/"]
-        end
+        subgraph NS_Default["Namespace: default"]
+            PredPod["prediction-server<br/>Image: odh-latency-predictor-prediction<br/>Base: AIPCC cpu:3.5.0 (UBI9)<br/>SA: default<br/>Port: 8001/TCP<br/>Workers: 8 (uvicorn)<br/>Replicas: 10"]
 
-        K8sProbes["Kubernetes<br/>Liveness & Readiness Probes"]
-        Prometheus["Prometheus<br/>Metrics Scraper"]
+            TrainPod["training-server<br/>Image: odh-latency-predictor-training<br/>Base: AIPCC cpu:3.5.0 (UBI9)<br/>SA: default<br/>Port: 8000/TCP<br/>Replicas: 1"]
+
+            PVC["PVC /models/<br/>ttft.joblib, tpot.joblib"]
+        end
     end
 
-    %% External flows
-    Gateway -->|"HTTP/80 → 8001<br/>No TLS | No Auth<br/>POST /predict/bulk/strict"| PredLB
-    MetricsPipeline -->|"HTTP/8080 → 8000<br/>No TLS | No Auth<br/>POST /add_training_data_bulk"| TrainLB
+    %% External to Services
+    RoutingLayer -->|"HTTP/80<br/>No Encryption<br/>No Auth<br/>POST /predict/bulk/strict"| PredLB
+    RoutingLayer -->|"HTTP/8000<br/>No Encryption<br/>No Auth<br/>POST /add_training_data_bulk"| TrainCIP
+    PrometheusExt -->|"HTTP/8000<br/>No Encryption<br/>No Auth<br/>GET /metrics"| TrainCIP
 
-    %% Service to pod flows
-    PredLB --> PredServer
-    TrainClusterIP --> TrainServer
-    TrainLB --> TrainServer
+    %% Services to Pods
+    PredLB --> PredPod
+    TrainCIP --> TrainPod
+    TrainLB --> TrainPod
 
-    %% Internal flows
-    PredServer -->|"HTTP/8000<br/>No TLS | No Auth<br/>GET /model/{name}/download<br/>Model sync every 10s"| TrainClusterIP
+    %% Inter-pod communication
+    PredPod -->|"HTTP/8000<br/>No Encryption<br/>No Auth<br/>GET /model/{name}/download<br/>(model sync every 10s)"| TrainPod
 
-    %% Infrastructure flows
-    K8sProbes -->|"HTTP/8001<br/>GET /healthz, /readyz"| PredServer
-    K8sProbes -->|"HTTP/8000<br/>GET /healthz, /readyz"| TrainServer
-    Prometheus -->|"HTTP/8000<br/>GET /metrics"| TrainServer
+    %% Storage
+    TrainPod -->|"Filesystem<br/>/models/<br/>joblib write"| PVC
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef loadbalancer fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef clusterip fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef pod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef infra fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef lbservice fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef cipservice fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef warnservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef pod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
-    class Gateway,MetricsPipeline external
-    class PredLB,TrainLB loadbalancer
-    class TrainClusterIP clusterip
-    class PredServer,TrainServer pod
-    class K8sProbes,Prometheus infra
+    class RoutingLayer,PrometheusExt external
+    class PredLB lbservice
+    class TrainCIP cipservice
+    class TrainLB warnservice
+    class PredPod,TrainPod pod
+    class PVC storage

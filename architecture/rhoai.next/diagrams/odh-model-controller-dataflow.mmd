@@ -1,53 +1,51 @@
 sequenceDiagram
     participant User as User / kubectl
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Webhook as odh-model-controller<br/>Webhook Server<br/>9443/TCP TLS
+    participant Controller as odh-model-controller<br/>Reconciler
+    participant ServerAPI as model-serving-api<br/>8443/TCP HTTPS FIPS
     participant Dashboard as RHOAI Dashboard
-    participant API as model-serving-api<br/>8443/TCP HTTPS
-    participant K8s as Kubernetes API<br/>443/TCP HTTPS
-    participant Controller as odh-model-controller<br/>8080/8081/9443 TCP
-    participant Route as OpenShift Route<br/>443/TCP HTTPS
     participant NGC as NVIDIA NGC API<br/>443/TCP HTTPS
-    participant Authorino as Authorino<br/>50051/TCP gRPC
-    participant Client as External Client
+    participant Prometheus as Prometheus<br/>Thanos Querier<br/>9091/TCP
+    participant ModelReg as Model Registry<br/>HTTPS
+    participant Route as OpenShift Route<br/>443/TCP
+    participant Gateway as Gateway API<br/>Envoy + Authorino
 
-    Note over User,Client: Flow 1: InferenceService Deployment
+    Note over User, Gateway: Flow 1: InferenceService Deployment with Route and Monitoring
 
-    User->>K8s: POST InferenceService CR<br/>Auth: Bearer Token
-    K8s->>Controller: Watch event (InferenceService)<br/>Auth: ServiceAccount Token
-    Controller->>K8s: Create Route<br/>Auth: ServiceAccount Token
-    Controller->>K8s: Create ServiceMonitor<br/>Auth: ServiceAccount Token
-    Controller->>K8s: Create ClusterRoleBinding<br/>Auth: ServiceAccount Token
-    Controller->>K8s: Create KEDA TriggerAuth<br/>Auth: ServiceAccount Token
-    Client->>Route: Inference Request<br/>TLS Edge/Reencrypt
+    User->>K8sAPI: POST InferenceService<br/>Bearer Token
+    K8sAPI->>Webhook: Mutating Admission<br/>TLS (API server client cert)
+    Webhook->>K8sAPI: Lookup Secret, HardwareProfile<br/>ServiceAccount Token
+    Webhook-->>K8sAPI: Inject credentials + scheduling
+    K8sAPI-->>User: ISVC created
 
-    Note over User,Client: Flow 2: LLMInferenceService Gateway Auth
+    Controller->>K8sAPI: Watch event received
+    Controller->>K8sAPI: Create Route, ServiceMonitor,<br/>Metrics Service, ConfigMap<br/>ServiceAccount Token
+    Controller->>ModelReg: Sync ISVC metadata<br/>TLS 1.2+ / Bearer Token
+    Prometheus->>Controller: Scrape /metrics<br/>8080/TCP HTTP
 
-    Dashboard->>API: GET /api/v1/gateways<br/>TLS 1.2+ FIPS / Bearer Token
-    API->>K8s: SelfSubjectAccessReview<br/>User Token (forwarded)
-    K8s-->>API: Access Decision
-    API->>K8s: List Gateways<br/>ServiceAccount Token
-    K8s-->>API: Gateway List
-    API-->>Dashboard: Filtered Gateways (JSON)
+    Note over User, Gateway: Flow 2: LLMInferenceService with Gateway API Auth
 
-    Note over User,Client: Flow 3: NIM Account Reconciliation
+    User->>K8sAPI: POST LLMInferenceService<br/>Bearer Token
+    K8sAPI->>Webhook: Mutating Admission (ConnectionsAPI,<br/>HardwareProfile)<br/>TLS
+    Webhook-->>K8sAPI: Inject credentials + scheduling
+    Controller->>K8sAPI: Create AuthPolicy for HTTPRoute<br/>ServiceAccount Token
+    Controller->>K8sAPI: Create EnvoyFilter, PodMonitor<br/>per Gateway
+    User->>Gateway: Inference request<br/>HTTPS / Kuadrant AuthPolicy
 
-    User->>K8s: Create NIM Account CR<br/>Auth: Bearer Token
-    K8s->>Controller: Watch event (Account)<br/>Auth: ServiceAccount Token
-    Controller->>NGC: POST /token (authn.nvidia.com)<br/>TLS 1.2+ / API Key
-    NGC-->>Controller: OAuth Token
-    Controller->>NGC: GET /models (api.ngc.nvidia.com)<br/>TLS 1.2+ / Bearer Token
-    NGC-->>Controller: Model Catalog
-    Controller->>K8s: Create ConfigMap (model data)<br/>Auth: ServiceAccount Token
-    Controller->>K8s: Create Template (ServingRuntime)<br/>Auth: ServiceAccount Token
-    Controller->>K8s: Create Pull Secret (nvcr.io)<br/>Auth: ServiceAccount Token
+    Note over User, Gateway: Flow 3: NIM Account Integration
 
-    Note over User,Client: Flow 4: Gateway EnvoyFilter + AuthPolicy
+    User->>K8sAPI: Create NIM Account +<br/>API Key Secret<br/>Bearer Token
+    K8sAPI->>Webhook: Validate (singleton check)
+    Controller->>NGC: Validate API key,<br/>Fetch runtime catalog<br/>TLS 1.2+ / NGC API Key
+    NGC-->>Controller: Model catalog +<br/>Registry credentials
+    Controller->>K8sAPI: Create ConfigMap, Pull Secret,<br/>OpenShift Template
 
-    K8s->>Controller: Watch event (Gateway)<br/>Auth: ServiceAccount Token
-    Controller->>K8s: Check Kuadrant/Authorino TLS<br/>Auth: ServiceAccount Token
-    Controller->>K8s: Create EnvoyFilter<br/>Auth: ServiceAccount Token
-    Controller->>K8s: Create AuthPolicy<br/>Auth: ServiceAccount Token
-    Note right of Controller: Auth chain established
-    Client->>Route: Request via Gateway
-    Route->>Authorino: ExtAuthz (gRPC/mTLS)<br/>50051/TCP / Service Identity
-    Authorino-->>Route: Auth Decision
-    Route-->>Client: Response
+    Note over User, Gateway: Flow 4: Gateway Discovery API
+
+    Dashboard->>ServerAPI: GET /api/v1/gateways<br/>TLS 1.2+ FIPS / Bearer Token
+    ServerAPI->>K8sAPI: SelfSubjectAccessReview<br/>(user token passthrough)
+    K8sAPI-->>ServerAPI: RBAC decision
+    ServerAPI->>K8sAPI: List Gateways, Get Namespaces<br/>(user token passthrough)
+    K8sAPI-->>ServerAPI: Gateway list
+    ServerAPI-->>Dashboard: Filtered gateway list<br/>(empty if unauthorized)

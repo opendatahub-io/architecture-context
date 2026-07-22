@@ -1,38 +1,45 @@
 sequenceDiagram
     participant Orchestrator as Platform Orchestrator<br/>(rhods-operator)
     participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant Controller as Workbenches Controller<br/>(controller-runtime)
-    participant WBNamespace as Workbench Namespace<br/>(opendatahub / rhods-notebooks)
+    participant Controller as Workbenches Controller
+    participant FS as Filesystem<br/>/opt/manifests
+    participant HWWebhook as Hardware Profile<br/>Webhook<br/>9443/TCP HTTPS
+    participant ConnWebhook as Connection<br/>Webhook<br/>9443/TCP HTTPS
 
     Note over Orchestrator,Controller: Flow 1: Workbenches Reconciliation
 
-    Orchestrator->>K8sAPI: Create/Update Workbenches CR<br/>Auth: ServiceAccount Bearer token<br/>Spec: gatewayDomain, platform, mlflowEnabled
-    K8sAPI-->>Controller: Watch event: Workbenches CR changed
+    Orchestrator->>K8sAPI: Create/Update Workbenches CR<br/>+ odh-workbenches-config ConfigMap
+    K8sAPI->>Controller: Watch event (Workbenches CR)<br/>HTTPS/443, SA token
+    Controller->>FS: Read kustomize manifests<br/>(kf-notebook-controller,<br/>odh-notebook-controller,<br/>notebooks)
+    FS-->>Controller: Raw manifests
+    Controller->>Controller: Copy to tempdir, inject params<br/>(gateway-url, mlflow-enabled,<br/>section-title, namespace)
+    Controller->>Controller: kustomize build
+    Controller->>K8sAPI: SSA Patch (ForceOwnership)<br/>HTTPS/443, SA token
+    K8sAPI-->>Controller: Applied resources
+    Controller->>K8sAPI: Read ConfigMap<br/>(distribution identity + version)<br/>HTTPS/443, SA token
+    K8sAPI-->>Controller: ConfigMap data
+    Controller->>K8sAPI: List Deployments<br/>(check readiness)<br/>HTTPS/443, SA token
+    K8sAPI-->>Controller: Deployment status
+    Controller->>K8sAPI: Update Workbenches status<br/>(phase, conditions, distribution)<br/>HTTPS/443, SA token
 
-    rect rgb(230, 245, 255)
-        Note over Controller,K8sAPI: Reconciliation Loop
+    Note over K8sAPI,HWWebhook: Flow 2: Hardware Profile Webhook
 
-        Controller->>K8sAPI: GET Workbenches CR "default"<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: ServiceAccount Bearer token
-        K8sAPI-->>Controller: Workbenches spec + status
-
-        alt Management State = Managed
-            Controller->>K8sAPI: Create Namespace (if not exists)<br/>Apply ownership label<br/>443/TCP HTTPS TLS 1.2+
-            K8sAPI-->>Controller: Namespace created/exists
-
-            Controller->>K8sAPI: List Deployments in workbench namespace<br/>label: app.opendatahub.io/workbenches=true<br/>443/TCP HTTPS TLS 1.2+
-            K8sAPI-->>Controller: Deployment list + status
-
-            Note over Controller: Compute kustomize params:<br/>section-title, mlflow-enabled, gateway-url
-
-            Note over Controller: Evaluate conditions:<br/>Ready, ProvisioningSucceeded,<br/>Degraded, DeploymentsAvailable
-
-            Controller->>K8sAPI: PATCH Workbenches CR status<br/>conditions, phase, observedGeneration<br/>443/TCP HTTPS TLS 1.2+
-            K8sAPI-->>Controller: Status updated
-
-        else Management State = Removed
-            Note over Controller: Component teardown<br/>(future implementation)
-            Controller->>K8sAPI: PATCH Workbenches CR status<br/>phase: Removed
-        end
+    rect rgb(240, 248, 255)
+        K8sAPI->>HWWebhook: POST /workbenches-hardware-profile<br/>Notebook create/update<br/>HTTPS/9443, API server client cert
+        HWWebhook->>K8sAPI: GET HardwareProfile CR<br/>HTTPS/443, SA token
+        K8sAPI-->>HWWebhook: HardwareProfile spec<br/>(resources, nodeSelector, tolerations)
+        HWWebhook->>HWWebhook: Inject/merge/replace<br/>resource requirements,<br/>nodeSelector, tolerations
+        HWWebhook-->>K8sAPI: Admission Response<br/>(mutated Notebook)
     end
 
-    Note over Controller: Requeue with exponential backoff<br/>(5s base, 5m max)
+    Note over K8sAPI,ConnWebhook: Flow 3: Connection Secret Webhook
+
+    rect rgb(255, 248, 240)
+        K8sAPI->>ConnWebhook: POST /workbenches-connection-notebook<br/>Notebook create/update<br/>HTTPS/9443, API server client cert
+        ConnWebhook->>K8sAPI: GET Secret (validate existence)<br/>HTTPS/443, SA token
+        K8sAPI-->>ConnWebhook: Secret exists
+        ConnWebhook->>K8sAPI: Create SubjectAccessReview<br/>(check user can GET secret)<br/>HTTPS/443, SA token
+        K8sAPI-->>ConnWebhook: Allowed / Denied
+        ConnWebhook->>ConnWebhook: Inject envFrom secretRef<br/>entries into first container
+        ConnWebhook-->>K8sAPI: Admission Response<br/>(mutated Notebook)
+    end

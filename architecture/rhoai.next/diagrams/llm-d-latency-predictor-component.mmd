@@ -2,53 +2,59 @@ graph TB
     subgraph LLP["llm-d-latency-predictor"]
         direction TB
 
-        subgraph TrainingServer["Training Server (8000/TCP)"]
-            TrainAPI["FastAPI REST API<br/>Python/uvicorn"]
-            DataBuckets["Stratified Data Buckets<br/>3D: queue × KV cache × prefix cache"]
-            Trainer["Background Retrainer<br/>Interval: 1800s"]
-            ModelStore["Model Store<br/>/tmp/models/*.joblib"]
-
-            TrainAPI -->|ingests samples| DataBuckets
-            DataBuckets -->|stratified data| Trainer
-            Trainer -->|serializes via joblib| ModelStore
+        subgraph TrainingServer["training-server (FastAPI/Uvicorn)"]
+            TrainAPI["Training API<br/>Port: 8000/TCP"]
+            ModelTrainer["Model Trainer<br/>(XGBoost / LightGBM / Bayesian Ridge)"]
+            DataBuckets["Stratified Data Buckets<br/>(queue depth, KV cache %, prefix cache)"]
+            MetricsEndpoint["Prometheus Metrics<br/>/metrics"]
+            TrainAPI -->|ingest samples| DataBuckets
+            DataBuckets -->|periodic retrain| ModelTrainer
+            ModelTrainer -->|save joblib| PVC
         end
 
-        subgraph PredictionServer["Prediction Server (8001/TCP)"]
-            PredAPI["FastAPI REST API<br/>Python/uvicorn (8 workers)"]
-            ModelSyncer["ModelSyncer Thread<br/>Interval: 10s"]
-            InMemoryModels["In-Memory Models<br/>XGBoost / LightGBM / BayesianRidge"]
-            LocalModels["Local Model Cache<br/>/local_models/*.joblib"]
-
-            ModelSyncer -->|downloads via HTTP| LocalModels
-            LocalModels -->|joblib.load + MD5 check| InMemoryModels
-            PredAPI -->|inference| InMemoryModels
+        subgraph PredictionServer["prediction-server (FastAPI/Uvicorn)"]
+            PredictAPI["Prediction API<br/>Port: 8001/TCP"]
+            ModelSync["Background Model Sync Thread<br/>(polls every MODEL_SYNC_INTERVAL_SEC)"]
+            LocalModels["Local Model Cache<br/>(/local_models/)"]
+            BulkFastPath["Bulk Predict Fast Path<br/>ORJSONResponse + numpy"]
+            ModelSync -->|download & validate| LocalModels
+            PredictAPI -->|load model| LocalModels
+            BulkFastPath -->|load model| LocalModels
         end
+
+        subgraph Common["common library"]
+            Types["ModelType, ObjectiveType<br/>QueueGatedModel<br/>RandomDropDeque"]
+        end
+
+        PVC["PVC<br/>/models/<br/>(Persistent Volume)"]
     end
 
-    %% External actors
-    MetricsPipeline["llm-d Metrics Pipeline"] -->|POST /add_training_data_bulk<br/>Latency observations| TrainAPI
-    ModelSyncer -->|GET /model/{name}/download<br/>HTTP 8000/TCP| ModelStore
+    RoutingLayer["llm-d Routing Layer<br/>(Consumer)"]
+    Prometheus["Prometheus<br/>(Monitoring)"]
 
-    Gateway["llm-d Gateway<br/>(gateway-api-inference-extension)"] -->|POST /predict/bulk/strict<br/>HTTP 8001/TCP| PredAPI
-    PredAPI -->|TTFT + TPOT predictions| Gateway
+    %% External flows
+    RoutingLayer -->|"POST /add_training_data_bulk<br/>8000/TCP HTTP"| TrainAPI
+    RoutingLayer -->|"POST /predict/bulk/strict<br/>80/TCP → 8001/TCP HTTP"| PredictAPI
+    ModelSync -->|"GET /model/{name}/info<br/>GET /model/{name}/download<br/>8000/TCP HTTP"| TrainAPI
+    Prometheus -->|"GET /metrics<br/>8000/TCP HTTP"| MetricsEndpoint
 
-    K8s["Kubernetes"] -->|GET /healthz, /readyz<br/>Liveness & Readiness probes| TrainAPI
-    K8s -->|GET /healthz, /readyz<br/>Liveness & Readiness probes| PredAPI
-
-    Prometheus["Prometheus"] -->|GET /metrics<br/>HTTP 8000/TCP| TrainAPI
+    %% Internal references
+    TrainingServer -.->|uses| Common
+    PredictionServer -.->|uses| Common
 
     %% Styling
     style TrainingServer fill:#4a90e2,stroke:#333,color:#fff
     style PredictionServer fill:#4a90e2,stroke:#333,color:#fff
-    style TrainAPI fill:#5ba3f5,stroke:#333,color:#fff
-    style PredAPI fill:#5ba3f5,stroke:#333,color:#fff
-    style DataBuckets fill:#6db3f7,stroke:#333,color:#fff
-    style Trainer fill:#6db3f7,stroke:#333,color:#fff
-    style ModelStore fill:#6db3f7,stroke:#333,color:#fff
-    style ModelSyncer fill:#6db3f7,stroke:#333,color:#fff
-    style InMemoryModels fill:#6db3f7,stroke:#333,color:#fff
-    style LocalModels fill:#6db3f7,stroke:#333,color:#fff
-    style Gateway fill:#7ed321,stroke:#333
-    style MetricsPipeline fill:#7ed321,stroke:#333
-    style K8s fill:#f5a623,stroke:#333
-    style Prometheus fill:#f5a623,stroke:#333
+    style Common fill:#b8d4f0,stroke:#333
+    style PVC fill:#f5a623,stroke:#333
+    style RoutingLayer fill:#7ed321,stroke:#333
+    style Prometheus fill:#e8e8e8,stroke:#333
+    style TrainAPI fill:#357abd,stroke:#333,color:#fff
+    style PredictAPI fill:#357abd,stroke:#333,color:#fff
+    style ModelTrainer fill:#357abd,stroke:#333,color:#fff
+    style DataBuckets fill:#357abd,stroke:#333,color:#fff
+    style MetricsEndpoint fill:#357abd,stroke:#333,color:#fff
+    style ModelSync fill:#357abd,stroke:#333,color:#fff
+    style LocalModels fill:#357abd,stroke:#333,color:#fff
+    style BulkFastPath fill:#357abd,stroke:#333,color:#fff
+    style Types fill:#8bb8e0,stroke:#333

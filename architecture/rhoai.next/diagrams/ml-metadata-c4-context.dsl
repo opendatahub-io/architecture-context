@@ -1,39 +1,45 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Creates and runs ML pipelines, queries experiment metadata and artifact lineage"
-        platformeng = person "Platform Engineer" "Deploys and configures the Data Science Pipelines stack including MLMD"
+        datascientist = person "Data Scientist" "Creates and runs ML pipelines that produce metadata"
+        platformadmin = person "Platform Admin" "Manages RHOAI platform and pipeline infrastructure"
 
-        mlmd = softwareSystem "ML Metadata (MLMD)" "gRPC server and client library for recording and retrieving metadata associated with ML workflows -- artifacts, executions, contexts, events, and lineage" {
-            grpcServer = container "metadata_store_server" "Standalone gRPC server binary exposing MetadataStoreService API (~45 RPCs) for CRUD operations on ML metadata entities" "C++ gRPC Service, Port 8080/TCP"
-            protoAPI = container "MetadataStoreService" "Protobuf/gRPC API definition for metadata operations including type management, entity CRUD, event recording, and lineage graph traversal" "Protobuf/gRPC"
-            pythonClient = container "ml_metadata Python Client" "Python client with pybind11 C++ bindings for direct DB access or gRPC client connection to the metadata store server" "Python, pybind11"
-
-            grpcServer -> protoAPI "Implements"
-            pythonClient -> grpcServer "Connects via gRPC/HTTP2" "gRPC/8080"
+        mlmd = softwareSystem "ML Metadata (MLMD)" "Records and retrieves metadata for ML workflows: artifacts, executions, contexts, events, and lineage" {
+            grpcServer = container "metadata_store_server" "Standalone gRPC server exposing MetadataStoreService API (42 RPCs) on port 8080. Supports type management, node CRUD, edge management, atomic operations, and graph queries." "C++ gRPC Service"
+            protoDefinitions = container "Proto Definitions" "Defines data model (Artifact, Execution, Context, Event) and MetadataStoreService gRPC API" "Protocol Buffers"
+            pythonClient = container "ml_metadata Python SDK" "Python client library providing MetadataStore class for direct DB or gRPC access" "Python Library"
+            pywrapExtension = container "pywrap Extension" "Native C++ extension enabling direct database access from Python without gRPC" "C++ pybind11 Extension"
         }
 
-        kfp = softwareSystem "Kubeflow Pipelines (KFP)" "Pipeline orchestration engine that records pipeline run metadata through MLMD" "Internal RHOAI"
-        dsp = softwareSystem "Data Science Pipelines" "RHOAI pipeline platform that deploys and manages MLMD as its metadata backend" "Internal RHOAI"
-        dspOperator = softwareSystem "Data Science Pipelines Operator" "Kubernetes operator that deploys, configures, and manages the DSP stack including MLMD" "Internal RHOAI"
-        tfx = softwareSystem "TFX (TensorFlow Extended)" "ML pipeline framework that records component metadata through MLMD" "External"
+        kubeflowPipelines = softwareSystem "Kubeflow Pipelines" "ML pipeline orchestration platform" "Internal RHOAI"
+        dataSciencePipelines = softwareSystem "Data Science Pipelines" "RHOAI wrapper around Kubeflow Pipelines" "Internal RHOAI"
+        dspOperator = softwareSystem "Data Science Pipelines Operator" "Deploys and manages MLMD server, services, and configuration" "Internal RHOAI"
+        kubeflowUI = softwareSystem "Kubeflow Pipelines UI" "Web UI for experiment visualization, artifact inspection, and lineage display" "Internal RHOAI"
+        tfx = softwareSystem "TFX (TensorFlow Extended)" "Original upstream consumer for TFX pipeline component metadata" "External"
 
-        mysql = softwareSystem "MySQL / MariaDB" "Relational database for persistent metadata storage" "External"
-        postgresql = softwareSystem "PostgreSQL" "Alternative relational database for persistent metadata storage" "External"
+        postgresql = softwareSystem "PostgreSQL" "Persistent storage for all metadata (types, artifacts, executions, contexts, events, lineage)" "External Database"
+        mysql = softwareSystem "MySQL/MariaDB" "Alternative persistent metadata storage backend" "External Database"
 
-        # User interactions
-        datascientist -> kfp "Creates and runs ML pipelines"
-        datascientist -> mlmd "Queries experiment metadata and artifact lineage via KFP SDK" "gRPC/8080"
-        platformeng -> dspOperator "Configures DSP stack deployment"
+        # Relationships
+        datascientist -> kubeflowPipelines "Defines and triggers ML pipelines"
+        datascientist -> kubeflowUI "Views experiment results and lineage"
 
-        # Platform interactions
-        kfp -> mlmd "Records pipeline artifacts, executions, contexts, events, and lineage" "gRPC/8080"
-        dsp -> mlmd "Connects for pipeline run tracking" "gRPC/8080"
-        dspOperator -> mlmd "Deploys and configures MLMD server, provides database credentials"
-        tfx -> mlmd "Records component metadata through MLMD" "gRPC/8080"
+        kubeflowPipelines -> mlmd "Records pipeline execution metadata, artifacts, and lineage" "gRPC/8080, Optional TLS/mTLS"
+        dataSciencePipelines -> mlmd "Records metadata via Kubeflow Pipelines" "gRPC/8080, Optional TLS/mTLS"
+        kubeflowUI -> mlmd "Queries metadata for visualization and lineage display" "gRPC/8080, Optional TLS/mTLS"
+        tfx -> mlmd "Records TFX pipeline component metadata" "gRPC/8080, Optional TLS/mTLS"
 
-        # Storage
-        mlmd -> mysql "Persistent metadata storage" "MySQL/3306, Optional SSL"
-        mlmd -> postgresql "Alternative persistent metadata storage" "PostgreSQL/5432, Optional SSL"
+        dspOperator -> mlmd "Deploys and manages MLMD gRPC server" "Kubernetes API"
+
+        mlmd -> postgresql "Stores and retrieves all metadata" "PostgreSQL/5432, Optional TLS"
+        mlmd -> mysql "Stores and retrieves all metadata (alternative)" "MySQL/3306, Optional TLS"
+
+        # Internal container relationships
+        pythonClient -> grpcServer "Sends gRPC requests" "gRPC/8080"
+        pythonClient -> pywrapExtension "Uses for direct DB access" "In-process call"
+        protoDefinitions -> grpcServer "Defines API contract"
+        pywrapExtension -> postgresql "Direct database queries" "PostgreSQL/5432"
+
+        platformadmin -> dspOperator "Configures pipeline infrastructure"
     }
 
     views {
@@ -48,21 +54,25 @@ workspace {
         }
 
         styles {
-            element "Person" {
-                shape person
-                background #08427b
-                color #ffffff
-            }
-            element "Software System" {
-                background #1168bd
+            element "External" {
+                background #999999
                 color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "External" {
-                background #999999
+            element "External Database" {
+                background #f5a623
+                color #ffffff
+            }
+            element "Person" {
+                shape Person
+                background #4a90e2
+                color #ffffff
+            }
+            element "Software System" {
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {

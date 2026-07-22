@@ -1,56 +1,42 @@
 sequenceDiagram
-    participant Platform as rhods-operator /<br/>opendatahub-operator
-    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant Operator as trainer-operator<br/>8081/TCP (probes)<br/>8080/TCP (metrics)
-    participant FS as Filesystem<br/>/opt/manifests-work
-    participant OLM as OLM / JobSet Operator
+    participant PlatformOp as RHOAI Platform Operator
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
+    participant TrainerOp as trainer-operator<br/>(controller-runtime)
+    participant Manifests as Manifest Templates<br/>(/opt/manifests-template/)
+    participant TrainerCtrl as kubeflow-trainer-<br/>controller-manager
+    participant Webhook as Validating Webhook<br/>443/TCP → 9443/TCP TLS
+    participant User as Data Scientist
+    participant JobSetCtrl as JobSet Controller
 
-    Note over Platform,OLM: Flow 1: Trainer CR Reconciliation (Managed)
-    Platform->>K8sAPI: Create Trainer CR (default-trainer)<br/>ServiceAccount token
-    K8sAPI-->>Operator: Watch event: Trainer CR created<br/>TLS 1.2+ / SA token
-
-    Note over Operator: Check management state
-    alt ManagementState == Managed
-
-        Note over Operator,OLM: Flow 2: Dependency Checking (OpenShift)
-        Operator->>K8sAPI: GET operators.coreos.com/operatorconditions<br/>HTTPS 443/TCP / SA token
-        K8sAPI-->>Operator: OLM operator conditions
-
-        Operator->>K8sAPI: GET operator.openshift.io/jobsetoperators/cluster<br/>HTTPS 443/TCP / SA token
-        K8sAPI-->>Operator: JobSetOperator CR status
-
-        Operator->>K8sAPI: GET apiextensions/CRDs (jobsets.jobset.x-k8s.io)<br/>HTTPS 443/TCP / SA token
-        K8sAPI-->>Operator: CRD status (Established)
-
-        alt Dependencies not met
-            Operator->>K8sAPI: PATCH Trainer/status<br/>Degraded=True, ProvisioningSucceeded=False
-            Note over Operator: Requeue after 60s
+    rect rgb(230, 230, 250)
+        Note over PlatformOp,TrainerOp: Flow 1: Trainer Component Lifecycle
+        PlatformOp->>K8sAPI: Create Trainer CR (default-trainer)<br/>Bearer Token
+        K8sAPI-->>TrainerOp: Watch event: Trainer CR created
+        TrainerOp->>K8sAPI: Check JobSet Operator installed<br/>Bearer Token
+        K8sAPI-->>TrainerOp: JobSetOperator CR status
+        alt JobSet Not Ready
+            TrainerOp->>K8sAPI: Set Trainer CR → Degraded<br/>Requeue 60s
         end
-
-        Note over Operator,FS: Manifest Rendering Pipeline
-        Operator->>FS: Copy templates from /opt/manifests-template/<br/>to /opt/manifests-work/ (Local I/O)
-        Operator->>FS: Override images in params.env<br/>from RELATED_IMAGE_* env vars
-        Operator->>FS: Render kustomize overlays<br/>(controller, runtimes, imagestreams)
-
-        Note over Operator,K8sAPI: Deploy Resources via Server-Side Apply
-        Operator->>K8sAPI: SSA Apply: Kubeflow Trainer controller<br/>(Deployment, Service, RBAC, CRDs, Webhooks)
-        Operator->>K8sAPI: SSA Apply: ClusterTrainingRuntimes<br/>(15 variants: torch-distributed + training-hub)
-        Operator->>K8sAPI: SSA Apply: Training Hub ImageStreams<br/>(CPU, CUDA, ROCm - OpenShift only)
-
-        Operator->>K8sAPI: PATCH Trainer/status<br/>ProvisioningSucceeded=True
-
-    else ManagementState == Removed
-
-        Note over Operator,K8sAPI: Flow 3: Garbage Collection
-        Operator->>K8sAPI: Discovery API: find resources with<br/>label platform.opendatahub.io/part-of=trainer
-        K8sAPI-->>Operator: List of managed resources
-
-        Operator->>K8sAPI: DELETE ClusterTrainingRuntimes<br/>(cluster-scoped, not covered by GC)
-        Operator->>K8sAPI: DELETE remaining managed resources<br/>(GC collector cleanup)
-        Operator->>K8sAPI: Remove finalizer from Trainer CR
-
+        TrainerOp->>Manifests: Copy templates to /opt/manifests-work
+        TrainerOp->>TrainerOp: Render kustomize with<br/>RELATED_IMAGE_* overrides
+        TrainerOp->>K8sAPI: Apply CRDs (TrainJob,<br/>ClusterTrainingRuntime, TrainingRuntime)<br/>Server-Side Apply
+        TrainerOp->>K8sAPI: Apply RBAC, Deployment,<br/>Services, Webhooks<br/>Server-Side Apply
+        TrainerOp->>K8sAPI: Apply ClusterTrainingRuntimes<br/>(torch-distributed CUDA/ROCm/CPU)
+        TrainerOp->>K8sAPI: Apply ImageStreams<br/>(OpenShift only)
+        K8sAPI-->>TrainerCtrl: Deployment created → Pod starts
+        TrainerOp->>K8sAPI: Monitor Deployment health<br/>Bearer Token
+        TrainerOp->>K8sAPI: Update Trainer CR status<br/>Ready/ProvisioningSucceeded
     end
 
-    Note over Operator,K8sAPI: Ongoing: Drift Correction
-    K8sAPI-->>Operator: Watch: Deployment/Service/ConfigMap modified<br/>(filtered by part-of=trainer label)
-    Operator->>K8sAPI: Re-reconcile: SSA Apply corrected state
+    rect rgb(250, 240, 230)
+        Note over User,JobSetCtrl: Flow 2: TrainJob Execution (operand)
+        User->>K8sAPI: Create TrainJob CR<br/>Bearer Token
+        K8sAPI->>Webhook: Validate TrainJob<br/>HTTPS/TLS (webhook cert)
+        Webhook-->>K8sAPI: Admission Response (allow/deny)
+        K8sAPI-->>User: TrainJob created
+        K8sAPI-->>TrainerCtrl: Watch event: TrainJob created
+        TrainerCtrl->>K8sAPI: Read ClusterTrainingRuntime<br/>Bearer Token
+        TrainerCtrl->>K8sAPI: Create JobSet from<br/>TrainJob + Runtime template<br/>Bearer Token
+        K8sAPI-->>JobSetCtrl: Watch event: JobSet created
+        JobSetCtrl->>K8sAPI: Create Jobs/Pods for<br/>distributed training workers
+    end

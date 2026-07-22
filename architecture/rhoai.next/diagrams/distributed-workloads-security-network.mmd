@@ -1,96 +1,97 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
+        User["User / CI Pipeline"]
         Browser["User Browser"]
-        UserPipeline["User / Pipeline Client"]
     end
 
-    subgraph PlatformIngress["INGRESS (Platform-managed)"]
-        Route["OpenShift Route<br/>443/TCP → 8888/TCP<br/>TLS 1.2+ termination<br/>OAuth proxy / kube-rbac-proxy"]
+    subgraph ControlPlane["OPENSHIFT CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token / X.509"]
     end
 
-    subgraph ControlPlane["CONTROL PLANE (Operators)"]
-        TrainerV2Ctrl["Kubeflow Trainer v2<br/>Controller"]
-        KFTOCtrl["Training Operator<br/>(KFTO v1)"]
-        KubeRayCtrl["KubeRay Operator"]
-        KueueCtrl["Kueue"]
-        NotebooksCtrl["Notebooks Controller"]
+    subgraph OperatorPlane["OPERATOR PLANE (Cluster Services)"]
+        direction TB
+        KFTO["KFTO Controller<br/>watches: PyTorchJob"]
+        TrainerV2["Trainer v2 Controller<br/>watches: TrainJob"]
+        KubeRay["KubeRay Operator<br/>watches: RayJob, RayCluster"]
+        KueueCtrl["Kueue Controller<br/>watches: ClusterQueue"]
+        JobSetCtrl["JobSet Controller<br/>watches: JobSet"]
     end
 
-    subgraph WorkloadPods["WORKLOAD PODS (Cluster-internal)"]
+    subgraph WorkerPlane["WORKER PLANE (Training Pods)"]
         direction TB
 
-        subgraph MPIJob["MPI Training Job"]
-            Rank0["Training Pod (rank 0)<br/>UID:1001 GID:0<br/>SSH:2222/TCP<br/>StrictModes=no"]
-            Workers["Worker Pods (rank 1..N)<br/>UID:1001 GID:0<br/>SSH:2222/TCP<br/>StrictModes=no"]
+        subgraph StandardTraining["Standard Training"]
+            Worker1["Worker Pod 1<br/>Runtime/Universal Image"]
+            WorkerN["Worker Pod N<br/>Runtime/Universal Image"]
         end
 
-        subgraph RayCluster["Ray Cluster"]
-            RayHead["Ray Head<br/>GCS:6379/TCP<br/>Dashboard:8265/TCP<br/>Client:10001/TCP<br/>No encryption, No auth"]
-            RayWorker["Ray Workers"]
+        subgraph MPITraining["MPI Training (OpenMPI)"]
+            Launcher["Launcher Pod<br/>SA: per-job"]
+            MPIWorker1["Worker Pod 1<br/>sshd: 2222/TCP"]
+            MPIWorkerN["Worker Pod N<br/>sshd: 2222/TCP"]
         end
 
-        subgraph JupyterWB["Jupyter Workbench"]
-            Jupyter["Universal Training Image<br/>UID:1001 GID:0<br/>HTTP:8888/TCP<br/>No encryption internally"]
+        subgraph WorkbenchMode["Workbench Mode"]
+            Route["OpenShift Route<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+            Jupyter["JupyterLab Pod<br/>8888/TCP HTTP<br/>Universal Image"]
         end
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        HF["HuggingFace Hub<br/>huggingface.co<br/>HTTPS/443, TLS 1.2+<br/>Bearer Token (optional)"]
-        S3["S3 Storage<br/>HTTPS/443, TLS 1.2+<br/>AWS IAM credentials"]
-        MLflow["MLflow Tracking<br/>HTTP(S)/5000<br/>Bearer Token"]
+        S3["S3 Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
+        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>HF_TOKEN Bearer"]
+        PyPI["PyPI (public)<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+        AIPCCPyPI["AIPCC PyPI (private)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>RHEL subscription"]
+        NVPyPI["NVIDIA PyPI<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+        Prometheus["Prometheus<br/>9090/TCP HTTP<br/>No encryption"]
     end
 
-    subgraph BuildTimeOnly["BUILD-TIME ONLY (not runtime)"]
-        NVIDIA["NVIDIA repos<br/>HTTPS/443"]
-        AMD["AMD ROCm repos<br/>HTTPS/443"]
-        MLNX["Mellanox OFED repos<br/>HTTPS/443"]
-        RHELPyPI["RHEL AI PyPI<br/>HTTPS/443"]
-    end
+    %% Control plane flows
+    User -->|"HTTPS/6443<br/>TLS 1.2+<br/>Bearer Token"| K8sAPI
+    K8sAPI -->|"CRD Watch<br/>HTTPS<br/>ServiceAccount"| KFTO
+    K8sAPI -->|"CRD Watch<br/>HTTPS<br/>ServiceAccount"| TrainerV2
+    K8sAPI -->|"CRD Watch<br/>HTTPS<br/>ServiceAccount"| KubeRay
+    K8sAPI -->|"CRD Watch<br/>HTTPS<br/>ServiceAccount"| KueueCtrl
 
-    %% User → Ingress
-    Browser -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth"| Route
+    %% Operator → Worker scheduling
+    KFTO -->|"Pod scheduling"| Worker1
+    TrainerV2 -->|"Pod scheduling"| Launcher
 
-    %% Ingress → Workbench
-    Route -->|"HTTP/8888<br/>No encryption<br/>Platform token"| Jupyter
+    %% Standard training inter-pod
+    Worker1 <-->|"NCCL/RCCL<br/>Dynamic ports<br/>NO encryption"| WorkerN
 
-    %% User → Ray
-    UserPipeline -->|"Ray Protocol/10001<br/>No encryption<br/>No auth"| RayHead
+    %% MPI training inter-pod
+    Launcher -->|"SSH/2222<br/>SSH key pair"| MPIWorker1
+    Launcher -->|"SSH/2222<br/>SSH key pair"| MPIWorkerN
+    MPIWorker1 <-->|"NCCL/RCCL over IB/RDMA<br/>NO encryption"| MPIWorkerN
 
-    %% Control Plane → K8s API → Pods
-    TrainerV2Ctrl -.->|"creates pods<br/>+ SSH key secrets"| Rank0
-    TrainerV2Ctrl -.->|"creates pods"| Workers
-    KFTOCtrl -.->|"creates PyTorchJob pods"| Rank0
-    KubeRayCtrl -.->|"creates RayCluster"| RayHead
-    KubeRayCtrl -.->|"creates RayCluster"| RayWorker
-    NotebooksCtrl -.->|"creates Notebook"| Jupyter
+    %% Workbench mode
+    Browser -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth/OIDC"| Route
+    Route -->|"HTTP/8888<br/>No encryption<br/>Platform auth"| Jupyter
+    Jupyter -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount"| K8sAPI
 
-    %% MPI inter-pod
-    Rank0 -->|"SSH/2222<br/>Host key (verification DISABLED)<br/>SSH key pair (per-job)"| Workers
-
-    %% NCCL/RCCL
-    Rank0 <-->|"InfiniBand RDMA<br/>NCCL/RCCL<br/>NO encryption"| Workers
-
-    %% Ray inter-pod
-    RayHead -->|"TCP/6379<br/>No encryption<br/>No auth"| RayWorker
-
-    %% Egress
-    Rank0 -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    Rank0 -->|"HTTP(S)/5000<br/>Bearer Token"| MLflow
-    Jupyter -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HF
+    %% Egress flows
+    Worker1 -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    MPIWorker1 -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
     Jupyter -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    Rank0 -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HF
+    Jupyter -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HFHub
+    Worker1 -.->|"HTTPS/443<br/>build-time only"| PyPI
+    Worker1 -.->|"HTTPS/443<br/>build-time only"| AIPCCPyPI
+    Worker1 -.->|"HTTPS/443<br/>build-time only"| NVPyPI
+
+    %% Monitoring
+    K8sAPI -.->|"HTTP/9090<br/>GPU metrics"| Prometheus
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef workload fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef buildtime fill:#f8cecc,stroke:#b85450,stroke-width:1px,stroke-dasharray:5 5
+    classDef operatorplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef workerplane fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef mpizone fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
 
-    class Browser,UserPipeline external
-    class Route ingress
-    class TrainerV2Ctrl,KFTOCtrl,KubeRayCtrl,KueueCtrl,NotebooksCtrl controlplane
-    class Rank0,Workers,RayHead,RayWorker,Jupyter workload
-    class HF,S3,MLflow externalservice
-    class NVIDIA,AMD,MLNX,RHELPyPI buildtime
+    class User,Browser external
+    class K8sAPI controlplane
+    class KFTO,TrainerV2,KubeRay,KueueCtrl,JobSetCtrl operatorplane
+    class Worker1,WorkerN,Launcher,MPIWorker1,MPIWorkerN,Route,Jupyter workerplane
+    class S3,HFHub,PyPI,AIPCCPyPI,NVPyPI,Prometheus externalservice

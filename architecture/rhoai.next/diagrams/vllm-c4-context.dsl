@@ -1,38 +1,51 @@
 workspace {
     model {
-        user = person "Data Scientist / Application" "Sends LLM inference requests via OpenAI API or TGIS gRPC"
+        datascientist = person "Data Scientist / ML Engineer" "Deploys and queries ML models for inference"
+        application = person "Application Client" "Sends inference requests via HTTP or gRPC APIs"
 
-        vllm = softwareSystem "vLLM CUDA (RHOAI)" "GPU-accelerated LLM inference serving with dual-protocol support (OpenAI HTTP + TGIS gRPC)" {
-            krbpSidecar = container "kube-rbac-proxy" "Authentication and authorization enforcement sidecar" "Go Service" "Auth Proxy"
-            vllmContainer = container "vLLM Container" "vllm_tgis_adapter entrypoint - serves OpenAI API (8000) and TGIS gRPC (8033)" "Python (from RHAIIS base image)"
-            nvidiaGpu = container "NVIDIA GPU" "CUDA 12.x+ - executes model inference" "Hardware" "GPU"
+        vllm = softwareSystem "vLLM CUDA Inference Server" "GPU-accelerated LLM inference server with TGIS adapter for NVIDIA CUDA hardware" {
+            tgisAdapter = container "vllm_tgis_adapter" "Entrypoint process that bridges TGIS gRPC protocol to vLLM engine and exposes OpenAI-compatible HTTP API" "Python"
+            vllmEngine = container "vLLM Engine" "Core inference engine with continuous batching, PagedAttention, and CUDA kernel execution" "Python/C++/CUDA"
+            httpApi = container "OpenAI-Compatible HTTP API" "REST API serving completions, chat, embeddings, and model listing" "HTTP/8000"
+            grpcApi = container "TGIS gRPC API" "gRPC service for backward compatibility with IBM TGIS clients" "gRPC/8033"
         }
 
-        kserve = softwareSystem "KServe" "Deploys and manages InferenceService pods with model serving containers" "Internal RHOAI"
-        kserveServingRuntime = softwareSystem "KServe ServingRuntime" "Defines container args, resource limits, and model format support" "Internal RHOAI"
-        gatewayApi = softwareSystem "Gateway API (HTTPRoute)" "External ingress with TLS termination managed by platform operator" "Internal RHOAI"
-        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and alerting" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Kubernetes-native model serving framework that manages ServingRuntime and InferenceService CRs" "Internal RHOAI"
+        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Auth enforcement sidecar injected by platform operator (RHOAI 3.x)" "Internal RHOAI"
+        rhaiisBase = softwareSystem "RHAIIS Base Image" "Red Hat AI Inference Server base image providing vLLM runtime, Python deps, CUDA libs, and TGIS adapter" "Internal Red Hat"
+        konflux = softwareSystem "Konflux Build Pipeline" "Tekton-based CI/CD pipeline for building and validating container images" "Internal Red Hat"
 
-        huggingface = softwareSystem "HuggingFace Hub" "Public model repository for downloading pre-trained model weights" "External"
-        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for model weights (S3, MinIO)" "External"
-        pvcStorage = softwareSystem "PVC Volume" "Persistent volume for pre-loaded model weights" "External"
-        rhaiisBaseImage = softwareSystem "RHAIIS vllm-cuda-rhel9" "Base container image providing vLLM runtime, CUDA drivers, Python deps, TGIS adapter" "External - Red Hat"
+        huggingface = softwareSystem "HuggingFace Hub" "Public model repository for downloading model weights" "External"
+        s3 = softwareSystem "S3-Compatible Storage" "Object storage for model weights and artifacts" "External"
+        nvidiaGpu = softwareSystem "NVIDIA GPU" "CUDA-capable GPU hardware for tensor computation" "External Hardware"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal Platform"
 
-        # Relationships
-        user -> gatewayApi "Sends inference requests" "HTTPS/443 (TLS 1.2+, JWT)"
-        gatewayApi -> krbpSidecar "Routes to inference pod" "HTTPS/8443 (TLS 1.2+)"
-        krbpSidecar -> vllmContainer "Forwards pre-authenticated requests" "HTTP/8000, gRPC/8033 (plaintext localhost)"
-        vllmContainer -> nvidiaGpu "Executes model inference" "CUDA API"
+        # User interactions
+        datascientist -> kserve "Creates InferenceService CR via kubectl/dashboard"
+        application -> kubeRbacProxy "Sends inference requests" "HTTPS/8443"
 
-        kserve -> vllm "Deploys InferenceService pod"
-        kserveServingRuntime -> vllm "Configures container runtime"
+        # Auth enforcement
+        kubeRbacProxy -> vllm "Proxies authenticated requests" "HTTP/8000, gRPC/8033"
 
-        vllmContainer -> huggingface "Downloads model weights (optional)" "HTTPS/443 (Bearer HF_TOKEN)"
-        vllmContainer -> s3Storage "Downloads model weights" "HTTPS/443 (AWS IAM / HMAC)"
-        vllmContainer -> pvcStorage "Mounts model weights" "Filesystem"
-        rhaiisBaseImage -> vllmContainer "Provides base runtime" "Container Image Layer"
+        # KServe orchestration
+        kserve -> vllm "Deploys and manages vLLM pods via ServingRuntime CR"
 
-        prometheus -> vllmContainer "Scrapes metrics" "HTTP/8000 (/metrics)"
+        # Internal container relationships
+        tgisAdapter -> vllmEngine "Bridges TGIS protocol to vLLM"
+        tgisAdapter -> httpApi "Serves HTTP API"
+        tgisAdapter -> grpcApi "Serves gRPC API"
+        vllmEngine -> nvidiaGpu "Executes inference" "CUDA API"
+
+        # Egress
+        vllm -> huggingface "Downloads model weights at startup" "HTTPS/443"
+        vllm -> s3 "Downloads model weights (alternative)" "HTTPS/443"
+
+        # Build supply chain
+        rhaiisBase -> vllm "Provides base image with all runtime dependencies"
+        konflux -> vllm "Builds final container image" "Tekton PipelineRun"
+
+        # Monitoring
+        prometheus -> vllm "Scrapes runtime metrics" "HTTP/8000 GET /metrics"
     }
 
     views {
@@ -47,38 +60,38 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "External - Red Hat" {
-                background #cc0000
+            element "External Hardware" {
+                background #9b59b6
                 color #ffffff
             }
             element "Internal RHOAI" {
-                background #7ed321
+                background #f5a623
+                color #ffffff
+            }
+            element "Internal Red Hat" {
+                background #d35400
+                color #ffffff
+            }
+            element "Internal Platform" {
+                background #3498db
+                color #ffffff
+            }
+            element "Software System" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Container" {
+                background #4a90e2
                 color #ffffff
             }
             element "Person" {
-                background #08427B
+                background #08427b
                 color #ffffff
                 shape person
-            }
-            element "Container" {
-                background #438DD5
-                color #ffffff
-            }
-            element "Auth Proxy" {
-                background #e8a838
-                color #ffffff
-            }
-            element "GPU" {
-                background #76b900
-                color #ffffff
             }
         }
     }

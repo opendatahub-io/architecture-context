@@ -1,62 +1,55 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Creates and deploys ML models for inference"
-        admin = person "Platform Admin" "Configures serving runtimes and cluster settings"
-        client = person "Inference Client" "Sends inference requests to deployed models"
+        dataScientist = person "Data Scientist" "Creates and deploys ML models using Predictor and InferenceService CRs"
+        platformOp = person "Platform Operator" "Configures ServingRuntimes, etcd, storage credentials, and TLS certificates"
 
-        modelmeshServing = softwareSystem "ModelMesh Serving" "Kubernetes operator managing multi-model inference with scale-to-zero, autoscaling, and dynamic model placement" {
-            controller = container "modelmesh-controller" "Manages ServingRuntime, Predictor, and Service resources; deploys ModelMesh runtime pods" "Go Operator (controller-runtime)"
-            webhook = container "Webhook Server" "Validates ServingRuntime and ClusterServingRuntime autoscaling configuration" "Go Service, 9443/TCP HTTPS"
-            servingRuntimeCtrl = container "ServingRuntime Controller" "Creates and manages Deployments for each runtime with sidecars" "controller-runtime Reconciler"
-            predictorCtrl = container "Predictor Controller" "Communicates with ModelMesh gRPC API to register, load, manage models" "controller-runtime Reconciler"
-            serviceCtrl = container "Service Controller" "Creates Kubernetes Services and Prometheus ServiceMonitors" "controller-runtime Reconciler"
+        modelmeshServing = softwareSystem "ModelMesh Serving" "Kubernetes operator managing multi-model inference serving with ModelMesh placement and routing" {
+            controller = container "modelmesh-controller" "Reconciles Predictor, ServingRuntime, ClusterServingRuntime, InferenceService CRDs; manages runtime Deployments with ModelMesh sidecars" "Go Operator (controller-runtime)" "controller"
+            webhookServer = container "Webhook Server" "Validates ServingRuntime and ClusterServingRuntime specs; enforces reserved names, ports, autoscaler config" "Go Webhook (9443/TCP TLS)" "webhook"
+            predictorReconciler = container "PredictorReconciler" "Validates Predictor specs, manages VModel entries via gRPC, tracks model load states" "Go Controller" "controller"
+            srReconciler = container "ServingRuntimeReconciler" "Creates runtime Deployments from templates, scale-to-zero, HPA autoscaling, PVC mounting" "Go Controller" "controller"
+            serviceReconciler = container "ServiceReconciler" "Manages K8s Services, ServiceMonitor for Prometheus, TLS certificate loading" "Go Controller" "controller"
         }
 
-        runtimePod = softwareSystem "ModelMesh Runtime Pod" "Multi-container pod serving inference requests" {
-            modelmesh = container "ModelMesh" "Core inference routing engine, receives gRPC requests and routes to loaded models" "Go/Java, 8033/TCP gRPC"
-            restProxy = container "REST Proxy" "HTTP-to-gRPC translation proxy for REST inference" "Go, 8008/TCP HTTP"
-            puller = container "Puller / Storage Helper" "Downloads model artifacts from object storage" "Go, 8086/TCP gRPC"
-            oauthProxy = container "oauth-proxy" "OpenShift OAuth proxy for authenticated REST access" "Go, 8443/TCP HTTPS"
-            runtimeContainer = container "Runtime Container" "Model server (e.g., Triton, MLServer, OpenVINO)" "Varies"
+        runtimePod = softwareSystem "ModelMesh Runtime Pod" "Multi-container pod with ModelMesh, REST proxy, oauth-proxy, puller, and model server" {
+            mmContainer = container "ModelMesh (mm)" "Model placement, routing, serving orchestration; gRPC API for model management" "Go/Java Sidecar (8033/TCP gRPC)" "sidecar"
+            restProxy = container "REST Proxy" "KServe V2 REST-to-gRPC translation for inference requests" "Go Service (8008/TCP HTTP)" "sidecar"
+            oauthProxy = container "oauth-proxy" "OpenShift OAuth authentication proxy with SAR authorization" "Go Sidecar (8443/TCP HTTPS)" "sidecar"
+            puller = container "Storage Helper/Puller" "Downloads model artifacts from S3/GCS/Azure to shared volume" "Go Sidecar" "sidecar"
+            modelServer = container "Model Server" "Inference runtime (Triton, MLServer, OVMS, or TorchServe)" "Various (8001/7070 TCP gRPC)" "runtime"
         }
 
-        etcd = softwareSystem "etcd" "Distributed key-value store for model registry, vmodel state, and cluster coordination" "External"
-        objectStorage = softwareSystem "Object Storage (S3/MinIO)" "Model artifact storage" "External"
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API for resource management and CRD watches" "External"
-        openshiftOAuth = softwareSystem "OpenShift OAuth" "OAuth token validation for REST inference authentication" "External"
-        prometheusOperator = softwareSystem "Prometheus Operator" "Metrics collection via ServiceMonitor" "External"
-        kserveCRDs = softwareSystem "KServe CRDs" "ServingRuntime, ClusterServingRuntime, InferenceService CRD definitions" "Internal RHOAI"
-        certManager = softwareSystem "cert-manager / OpenShift serving-certificates" "TLS certificate provisioning for webhooks and proxies" "External"
+        etcd = softwareSystem "etcd" "Key-value store for model registry, VModel state, and event coordination" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "API server for CRD management, RBAC, and resource lifecycle" "External"
+        s3 = softwareSystem "S3/GCS/Azure Storage" "Object storage for ML model artifacts" "External"
+        certManager = softwareSystem "cert-manager" "Automatic TLS certificate provisioning for webhook server" "External"
+        prometheusOp = softwareSystem "Prometheus Operator" "Metrics collection via ServiceMonitor CRDs" "External"
+        kserve = softwareSystem "KServe" "Shared CRD types (InferenceService); companion inference platform" "Internal RHOAI"
+        odhModelController = softwareSystem "odh-model-controller" "Companion controller managing InferenceService lifecycle" "Internal RHOAI"
+        dashboard = softwareSystem "RHOAI Dashboard" "Web UI for model management; consumes Grafana dashboards" "Internal RHOAI"
 
-        # User interactions
-        datascientist -> modelmeshServing "Creates Predictor / InferenceService CRs via kubectl/dashboard"
-        admin -> modelmeshServing "Configures ServingRuntime / ClusterServingRuntime CRs"
-        client -> runtimePod "Sends inference requests" "gRPC/8033 or HTTPS/8443"
+        # Relationships
+        dataScientist -> modelmeshServing "Creates Predictor/InferenceService CRs" "kubectl / Dashboard"
+        platformOp -> modelmeshServing "Configures ServingRuntimes, etcd secrets, storage credentials" "kubectl / Kustomize"
 
-        # Controller interactions
-        controller -> servingRuntimeCtrl "Runs reconciliation loop"
-        controller -> predictorCtrl "Runs reconciliation loop"
-        controller -> serviceCtrl "Runs reconciliation loop"
-        servingRuntimeCtrl -> k8sAPI "Creates/updates Deployments and HPAs" "HTTPS/443"
-        predictorCtrl -> modelmesh "Registers/loads models via gRPC" "gRPC/8033"
-        serviceCtrl -> k8sAPI "Creates Services and ServiceMonitors" "HTTPS/443"
-        controller -> k8sAPI "Watches CRDs (Predictor, ServingRuntime, InferenceService)" "HTTPS/443"
-        webhook -> k8sAPI "Receives admission requests" "HTTPS/9443"
+        controller -> k8sAPI "Watches CRDs, CRUD for Deployments/Services/Secrets" "HTTPS/443 Bearer Token"
+        predictorReconciler -> mmContainer "SetVModel, DeleteVModel, GetVModelStatus" "gRPC/8033 TLS mTLS"
+        srReconciler -> k8sAPI "Creates/updates runtime Deployments and HPAs" "HTTPS/443 Bearer Token"
+        serviceReconciler -> k8sAPI "Creates Services and ServiceMonitors" "HTTPS/443 Bearer Token"
 
-        # Runtime pod interactions
-        oauthProxy -> restProxy "Forwards authenticated requests" "HTTP/8008"
-        restProxy -> modelmesh "Translates HTTP to gRPC" "gRPC/8033"
-        modelmesh -> runtimeContainer "Routes inference to loaded model" "gRPC/UDS"
-        modelmesh -> puller "Requests model download" "gRPC/8086"
+        mmContainer -> etcd "Model registry, VModel state, event watch" "gRPC/2379 TLS"
+        puller -> s3 "Downloads model artifacts" "HTTPS/443 AWS IAM"
+        oauthProxy -> restProxy "Proxied inference requests" "HTTP/8008 localhost"
+        restProxy -> mmContainer "gRPC inference forwarding" "gRPC/8033 localhost"
+        mmContainer -> modelServer "Model loading/inference" "gRPC/8001 or 7070 localhost"
 
-        # External dependencies
-        modelmesh -> etcd "Stores/watches model registry state" "gRPC/2379, Optional TLS"
-        predictorCtrl -> etcd "Watches model events (ModelMeshEventStream)" "gRPC/2379"
-        puller -> objectStorage "Downloads model artifacts" "HTTPS/443"
-        oauthProxy -> openshiftOAuth "Validates OAuth tokens (SAR check)" "HTTPS"
-        modelmeshServing -> kserveCRDs "Consumes CRD definitions"
-        modelmeshServing -> certManager "Provisions TLS certificates"
-        modelmeshServing -> prometheusOperator "Creates ServiceMonitor for metrics scraping"
+        dataScientist -> oauthProxy "Inference requests" "HTTPS/8443 OAuth Token"
+
+        modelmeshServing -> certManager "Webhook TLS certificates" "Certificate CRD"
+        modelmeshServing -> prometheusOp "ServiceMonitor for metrics" "ServiceMonitor CRD"
+        kserve -> modelmeshServing "Shared InferenceService CRD" "CRD"
+        odhModelController -> modelmeshServing "Co-manages InferenceService lifecycle" "CRD Watch"
+        dashboard -> modelmeshServing "UI management; Grafana dashboards" "ConfigMap"
     }
 
     views {
@@ -65,7 +58,7 @@ workspace {
             autoLayout
         }
 
-        container modelmeshServing "ControllerContainers" {
+        container modelmeshServing "ControlPlaneContainers" {
             include *
             autoLayout
         }
@@ -84,17 +77,25 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
+            element "controller" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "webhook" {
+                background #e74c3c
+                color #ffffff
+            }
+            element "sidecar" {
+                background #2ecc71
+                color #ffffff
+            }
+            element "runtime" {
+                background #f39c12
+                color #ffffff
+            }
             element "Person" {
-                shape person
-                background #4a90e2
-                color #ffffff
-            }
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Container" {
-                background #5ba3f5
+                shape Person
+                background #08427b
                 color #ffffff
             }
         }

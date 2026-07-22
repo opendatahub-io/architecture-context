@@ -1,63 +1,73 @@
 workspace {
     model {
-        operator = person "Platform Operator" "RHOAI administrator performing upgrades, migrations, and diagnostics"
+        platformEngineer = person "Platform Engineer / Admin" "Manages RHOAI deployments, performs upgrades and migrations"
+        aiAgent = person "AI Agent" "AI assistant (e.g. Claude) consuming CLI capabilities via MCP"
 
-        odhCli = softwareSystem "odh-cli" "CLI tool for RHOAI upgrade readiness, migration automation, workload backup, and operational diagnostics" {
-            cobraCli = container "Cobra CLI Framework" "Root command and subcommand routing" "Go (cobra)"
-            lintEngine = container "Lint Framework" "Upgrade readiness assessment with 38 checks, severity classification, structured output" "Go (pkg/lint/)"
-            migrateEngine = container "Migration Framework" "19 migration actions with prepare/run lifecycle, step recording, RBAC pre-validation" "Go (pkg/migrate/)"
-            backupPipeline = container "Backup Pipeline" "Three-stage pipeline: discovery, dependency resolution, JQ-based writer" "Go (pkg/backup/)"
-            operationalCmds = container "Operational Commands" "components, deps, status, logs, events, get subcommands" "Go"
+        odhCli = softwareSystem "odh-cli (rhai-cli)" "CLI tool for diagnosing, auditing, and migrating RHOAI deployments" {
+            mainCli = container "Main CLI" "cobra-based CLI with status, components, get, deps, events, logs, backup commands" "Go Binary"
+            lintEngine = container "Lint Engine" "Rules-based diagnostic framework with 48 checks across 5 groups" "Go Library (pkg/lint/)"
+            migrateFramework = container "Migration Framework" "Action-based migration system with prepare/run phases, dry-run, backup/restore" "Go Library (pkg/migrate/)"
+            mcpServer = container "MCP Server" "Model Context Protocol server exposing 13 CLI tools via stdio or SSE" "Go Library (pkg/mcp/)"
+            backupPipeline = container "Backup Pipeline" "Three-stage pipeline: discovery, resolution, writing for workload export" "Go Library (pkg/backup/)"
         }
 
-        openshift = softwareSystem "OpenShift / Kubernetes" "Target platform cluster with RHOAI installed" {
-            k8sApi = container "Kubernetes API Server" "Central API for all cluster operations" "6443/TCP HTTPS"
+        k8sCluster = softwareSystem "Kubernetes / OpenShift Cluster" "Target cluster for all CLI operations" "External" {
+            k8sApi = container "Kubernetes API Server" "Central API for all cluster resource operations" "6443/TCP HTTPS"
         }
 
-        odhOperator = softwareSystem "opendatahub-operator" "Manages RHOAI platform lifecycle via DataScienceCluster and DSCInitialization CRDs" "Internal RHOAI"
-        olm = softwareSystem "OLM" "Operator Lifecycle Manager for subscription and CSV management" "OpenShift"
+        rhodsOperator = softwareSystem "RHOAI Operator" "Manages DataScienceCluster and DSCInitialization CRs" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Model serving with InferenceService CRDs" "Internal RHOAI"
+        notebooks = softwareSystem "Kubeflow Notebooks" "Workbench management with Notebook CRDs" "Internal RHOAI"
+        kueue = softwareSystem "Kueue / RHBOK" "Job queueing with ClusterQueue/LocalQueue CRDs" "Internal RHOAI"
+        dsPipelines = softwareSystem "Data Science Pipelines" "ML pipeline orchestration with DSPA CRDs" "Internal RHOAI"
+        trustyai = softwareSystem "TrustyAI" "AI fairness and drift monitoring with REST API" "Internal RHOAI"
+        trainingOperator = softwareSystem "Training Operator" "Distributed training with PyTorchJob/TFJob CRDs" "Internal RHOAI"
+        ray = softwareSystem "Ray" "Distributed computing with RayCluster/RayJob CRDs" "Internal RHOAI"
+        llamaStack = softwareSystem "LlamaStack" "LLM distribution management" "Internal RHOAI"
 
-        kserve = softwareSystem "KServe" "Model serving platform with InferenceService and ServingRuntime CRDs" "Internal RHOAI"
-        notebooks = softwareSystem "Kubeflow Notebooks" "Jupyter notebook workbench management" "Internal RHOAI"
-        dsp = softwareSystem "Data Science Pipelines" "ML pipeline orchestration with DSPA CRDs" "Internal RHOAI"
-        kueue = softwareSystem "Kueue" "Job scheduling and quota management" "Internal RHOAI"
-        ray = softwareSystem "Ray" "Distributed computing framework for ML workloads" "Internal RHOAI"
-        trustyai = softwareSystem "TrustyAI" "AI fairness, drift monitoring, and guardrails" "Internal RHOAI"
-        trainingOp = softwareSystem "Training Operator" "Distributed training job management (PyTorch, TF, MPI, XGBoost)" "Internal RHOAI"
-        llamastack = softwareSystem "LlamaStack" "LLM distribution management" "Internal RHOAI"
-        dashboard = softwareSystem "Dashboard" "RHOAI web UI with accelerator and hardware profiles" "Internal RHOAI"
+        olm = softwareSystem "OLM" "Operator Lifecycle Manager for subscription management" "External"
+        ossm = softwareSystem "OpenShift Service Mesh" "Service mesh (Istio-based) for traffic management" "External"
+        knative = softwareSystem "Knative Serving" "Serverless platform for autoscaling" "External"
+        certManager = softwareSystem "cert-manager" "Certificate management" "External"
+        kuadrant = softwareSystem "Kuadrant / Authorino" "API gateway and authorization" "External"
 
-        github = softwareSystem "GitHub" "Hosts odh-gitops dependency manifests" "External"
-        localFs = softwareSystem "Local Filesystem" "Stores backup files (YAML/JSON) and kubeconfig" "External"
+        odhGitops = softwareSystem "odh-gitops (GitHub)" "Dependency manifest source repository" "External"
 
-        # Relationships - User
-        operator -> odhCli "Runs lint, migrate, backup, status commands via" "CLI (kubectl plugin)"
-
-        # Relationships - CLI to cluster
-        odhCli -> openshift "Reads/writes Kubernetes resources via" "HTTPS/6443, Bearer Token"
-
-        # Relationships - CLI to platform components (via K8s API)
-        odhCli -> odhOperator "Reads DSC/DSCI CRDs, component state" "Kubernetes API"
-        odhCli -> olm "Reads/writes Subscriptions, CSVs, InstallPlans" "Kubernetes API"
-        odhCli -> kserve "Lint checks, migration (serverless->raw, modelmesh->raw)" "Kubernetes API"
-        odhCli -> notebooks "Lint checks, container name migration, backup" "Kubernetes API"
-        odhCli -> dsp "Lint checks, v1alpha1->v1 migration, RBAC patching" "Kubernetes API"
-        odhCli -> kueue "Lint checks, RHBOK migration" "Kubernetes API"
-        odhCli -> ray "Lint checks, backup, migration" "Kubernetes API"
-        odhCli -> trustyai "Data/metrics backup, guardrails patching, OTEL migration" "HTTPS/443 + Kubernetes API"
-        odhCli -> trainingOp "Training workload verification, deprecation notices" "Kubernetes API"
-        odhCli -> llamastack "Backup before 3.5 rename to OGX" "Kubernetes API"
-        odhCli -> dashboard "Accelerator/hardware profile migration checks" "Kubernetes API"
-
-        # Relationships - External
-        odhCli -> github "Fetches dependency manifest (odh-gitops)" "HTTPS/443"
-        odhCli -> localFs "Writes backup files (YAML/JSON, mode 0600)" "File I/O"
+        # User interactions
+        platformEngineer -> odhCli "Runs lint, migrate, status, backup commands via CLI"
+        aiAgent -> mcpServer "Invokes CLI tools via MCP stdio/SSE" "stdio / HTTP SSE (localhost:8080)"
 
         # Internal container relationships
-        cobraCli -> lintEngine "Routes lint subcommand"
-        cobraCli -> migrateEngine "Routes migrate subcommand"
-        cobraCli -> backupPipeline "Routes backup subcommand"
-        cobraCli -> operationalCmds "Routes ops subcommands"
+        mainCli -> lintEngine "Delegates lint commands"
+        mainCli -> migrateFramework "Delegates migrate commands"
+        mainCli -> mcpServer "Starts MCP server"
+        mainCli -> backupPipeline "Delegates backup commands"
+
+        # CLI to cluster
+        odhCli -> k8sCluster "All cluster operations (CRD read/write, pod exec, logs)" "HTTPS/6443, Bearer Token"
+        odhCli -> trustyai "Backup/restore scheduled metrics" "HTTPS/443, Bearer Token, InsecureSkipVerify"
+        odhCli -> odhGitops "Fetch dependency manifests" "HTTPS/443, No Auth"
+
+        # CRD interactions (via K8s API)
+        lintEngine -> rhodsOperator "Read DSC, DSCI state"
+        lintEngine -> kserve "Check InferenceService configs"
+        lintEngine -> notebooks "Check workbench state"
+        lintEngine -> kueue "Check data integrity"
+        lintEngine -> dsPipelines "Check DSPA renaming"
+        lintEngine -> trustyai "Check guardrails state"
+        lintEngine -> ossm "Check service mesh removal"
+        lintEngine -> knative "Check Serverless removal"
+        lintEngine -> kuadrant "Check Kuadrant readiness"
+
+        migrateFramework -> kserve "Migrate ModelMesh to Raw deployment"
+        migrateFramework -> notebooks "Migrate auth model OAuth to RBAC"
+        migrateFramework -> kueue "Migrate embedded Kueue to RHBOK"
+        migrateFramework -> dsPipelines "Migrate v1alpha1 to v1"
+        migrateFramework -> trustyai "Backup/restore metrics via REST"
+        migrateFramework -> ray "Backup/migrate RayClusters"
+        migrateFramework -> olm "Install RHBOK operator subscription"
+
+        backupPipeline -> k8sApi "Discover and export workload definitions"
     }
 
     views {
@@ -80,22 +90,18 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "OpenShift" {
-                background #ee0000
-                color #ffffff
-            }
-            element "Software System" {
+            element "Person" {
+                shape Person
                 background #4a90e2
                 color #ffffff
             }
-            element "Person" {
-                background #08427b
-                color #ffffff
-                shape Person
-            }
-            element "Container" {
+            element "Software System" {
                 background #438dd5
                 color #ffffff
+            }
+            element "Container" {
+                background #85bbf0
+                color #000000
             }
         }
     }

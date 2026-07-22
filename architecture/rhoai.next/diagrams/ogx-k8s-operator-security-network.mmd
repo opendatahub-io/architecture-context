@@ -1,73 +1,91 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        OCIRegistry["OCI Container Registries<br/>quay.io, docker.io<br/>443/TCP HTTPS TLS 1.2+"]
+        User["User / Data Scientist"]
     end
 
-    subgraph IngressZone["INGRESS (Optional External Access)"]
-        IngressResource["{instance}-ingress<br/>Kubernetes Ingress<br/>80/TCP HTTP<br/>Host: auto or configured"]
+    subgraph K8sAPI["KUBERNETES API LAYER"]
+        APIServer["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS<br/>SA Token / User Creds"]
     end
 
-    subgraph ClusterInternal["CLUSTER INTERNAL (Namespace Isolated)"]
+    subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-applications)"]
         direction TB
 
-        subgraph OperatorNS["Namespace: redhat-ods-applications"]
-            Operator["OGX Operator<br/>SA: controller-manager<br/>Ports: 8080 (metrics), 8081 (health), 9443 (webhook)"]
-            WebhookSvc["Webhook Service<br/>443/TCP → 9443/TCP<br/>HTTPS TLS<br/>failurePolicy: Fail"]
-            MetricsSvc["Metrics Service<br/>8443/TCP → 8080/TCP<br/>HTTP, kube-rbac-proxy"]
+        subgraph OperatorPod["OGX Operator Pod"]
+            direction LR
+            WebhookEP["Validating Webhook<br/>9443/TCP HTTPS<br/>TLS (service-serving-cert)<br/>K8s API client cert<br/>failurePolicy: Fail"]
+            MetricsEP["Metrics<br/>8080/TCP HTTPS<br/>TLS (OpenShift profile)<br/>Bearer token"]
+            HealthEP["Health Probes<br/>8081/TCP HTTP<br/>No encryption<br/>No auth"]
         end
-
-        subgraph InstanceNS["Namespace: {user-namespace}"]
-            InstanceSvc["{instance}-service<br/>8321/TCP (configurable)<br/>HTTP, no auth"]
-            OGXPod["OGX Server Pod<br/>SA: {instance}-sa<br/>SCC: anyuid"]
-            NetPol["NetworkPolicy<br/>Ingress: same-ns + operator-ns only"]
-        end
-
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+<br/>ServiceAccount token auth"]
     end
 
-    subgraph PlatformIntegrations["PLATFORM INTEGRATIONS"]
-        CertManager["cert-manager /<br/>service-serving-cert-signer"]
-        ODHCA["odh-trusted-ca-bundle<br/>ConfigMap"]
-        MonitoringCRDs["monitoring.coreos.com<br/>ServiceMonitor / PrometheusRule"]
-        SCC["security.openshift.io<br/>SCC: anyuid"]
+    subgraph InstanceNS["INSTANCE NAMESPACES (user namespaces)"]
+        direction TB
+
+        subgraph OGXServerPod["OGX Server Pod"]
+            direction LR
+            SvcEP["{instance}-service<br/>ClusterIP 8000/TCP<br/>HTTP Plaintext<br/>No auth"]
+            IngressEP["{instance}-ingress<br/>Ingress 80/TCP<br/>External (optional)"]
+        end
+
+        NetPol["NetworkPolicy<br/>(per-instance)"]
     end
 
-    %% External flows
-    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>Registry credentials"| OCIRegistry
+    subgraph InferenceProviders["EXTERNAL: Inference Providers"]
+        direction LR
+        vLLM["vLLM<br/>configurable<br/>HTTP/HTTPS<br/>API token"]
+        OpenAI["OpenAI API<br/>443/TCP HTTPS<br/>TLS<br/>API key (SecretRef)"]
+        AzureOAI["Azure OpenAI<br/>443/TCP HTTPS<br/>TLS<br/>API key (SecretRef)"]
+        Bedrock["AWS Bedrock<br/>443/TCP HTTPS<br/>TLS<br/>AWS IAM (SecretRef)"]
+        VertexAI["Vertex AI<br/>443/TCP HTTPS<br/>TLS<br/>SA credentials"]
+        Watsonx["IBM Watsonx<br/>443/TCP HTTPS<br/>TLS<br/>API key (SecretRef)"]
+    end
 
-    %% Ingress flow
-    IngressResource -->|"HTTP/8321<br/>No encryption<br/>No auth"| InstanceSvc
+    subgraph VectorProviders["EXTERNAL: Vector I/O Providers"]
+        direction LR
+        PGVector["PostgreSQL pgvector<br/>5432/TCP<br/>Configurable TLS<br/>Password (SecretRef)"]
+        Milvus["Milvus<br/>configurable<br/>HTTP/gRPC<br/>Token (optional)"]
+        Qdrant["Qdrant<br/>configurable<br/>HTTP/gRPC<br/>API key (optional)"]
+    end
 
-    %% Operator to K8s API
-    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>ServiceAccount token<br/>Watch + SSA + Status"| K8sAPI
+    subgraph ToolProviders["EXTERNAL: Tool Runtime & Storage"]
+        direction LR
+        BraveSearch["Brave Search<br/>443/TCP HTTPS<br/>TLS<br/>API key (SecretRef)"]
+        Tavily["Tavily Search<br/>443/TCP HTTPS<br/>TLS<br/>API key (SecretRef)"]
+        S3["S3 Storage<br/>443/TCP HTTPS<br/>TLS<br/>AWS creds (SecretRef)"]
+    end
 
-    %% K8s API to Webhook
-    K8sAPI -->|"HTTPS/443<br/>TLS (mTLS)<br/>API server cert<br/>Admission review"| WebhookSvc
+    subgraph InfraServices["INFRASTRUCTURE SERVICES"]
+        direction LR
+        OCIReg["OCI Registries<br/>443/TCP HTTPS<br/>TLS<br/>Registry credentials"]
+        Prometheus["Prometheus / CMO<br/>Scrape: 8080/TCP HTTPS<br/>+ 9464/TCP HTTP<br/>ServiceMonitor"]
+    end
 
-    %% Operator to OGX instances
-    Operator -->|"HTTP/8321<br/>No encryption<br/>No auth<br/>Health: /v1/health, /v1/providers, /v1/version"| InstanceSvc
+    %% Flows
+    User -->|"HTTPS/443<br/>TLS<br/>User credentials"| APIServer
+    APIServer -->|"HTTPS/9443<br/>TLS (service-serving-cert)<br/>API server client cert"| WebhookEP
+    OperatorPod -->|"HTTPS/443<br/>TLS<br/>SA token"| APIServer
+    OperatorPod -->|"HTTP/8000<br/>Plaintext<br/>No auth (5s timeout)"| SvcEP
+    OperatorPod -->|"HTTPS/443<br/>TLS<br/>Registry creds"| OCIReg
+    Prometheus -->|"HTTPS/8080<br/>TLS<br/>Bearer token"| MetricsEP
 
-    %% Instance service to pod
-    InstanceSvc --> OGXPod
-    NetPol -.->|"protects"| OGXPod
-
-    %% Platform integrations
-    CertManager -.->|"provisions TLS cert"| WebhookSvc
-    Operator -.->|"reads CA bundle"| ODHCA
-    Operator -.->|"conditional create"| MonitoringCRDs
-    SCC -.->|"grants anyuid"| OGXPod
+    %% OGX Server egress to providers
+    OGXServerPod -->|"HTTPS/443<br/>TLS<br/>API keys"| InferenceProviders
+    OGXServerPod -->|"Various ports<br/>Configurable TLS"| VectorProviders
+    OGXServerPod -->|"HTTPS/443<br/>TLS<br/>API keys/creds"| ToolProviders
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef api fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef security fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef k8sapi fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef operatorns fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef instancens fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef extservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef infra fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
-    class OCIRegistry external
-    class IngressResource ingress
-    class Operator,WebhookSvc,MetricsSvc,InstanceSvc,OGXPod internal
-    class K8sAPI api
-    class CertManager,ODHCA,MonitoringCRDs,SCC platform
-    class NetPol security
+    class User external
+    class APIServer k8sapi
+    class WebhookEP,MetricsEP,HealthEP operatorns
+    class SvcEP,IngressEP,NetPol instancens
+    class vLLM,OpenAI,AzureOAI,Bedrock,VertexAI,Watsonx extservice
+    class PGVector,Milvus,Qdrant extservice
+    class BraveSearch,Tavily,S3 extservice
+    class OCIReg,Prometheus infra

@@ -1,88 +1,101 @@
 graph TB
-    subgraph "RHAII Cluster Validation"
+    subgraph UserWorkstation["User Workstation"]
+        CLI["kubectl rhaii-validate<br/>(Go CLI / kubectl plugin)"]
+    end
+
+    subgraph Controller["Controller Logic (in CLI process)"]
         direction TB
+        PlatformDetect["Platform Auto-Detection<br/>(OCP/AKS/EKS/CoreWeave)"]
+        Tier1["Tier 1: CRD & Operator Checks<br/>(API-level, no Jobs)"]
+        Tier2["Tier 2: Per-Node GPU/RDMA Checks<br/>(deploys Jobs to GPU nodes)"]
+        Tier3["Tier 3: Multi-Node Network Tests<br/>(bandwidth, pingmesh)"]
+        ReportGen["Report Generator<br/>(JSON / table output)"]
 
-        subgraph "CLI Layer"
-            CLI["rhaii-validator CLI<br/>(kubectl plugin)"]
-        end
+        PlatformDetect --> Tier1
+        Tier1 --> Tier2
+        Tier2 -->|topology data| Tier3
+        Tier3 --> ReportGen
+    end
 
-        subgraph "Orchestration Layer"
-            Controller["controller<br/>Validation lifecycle orchestrator"]
-            JobRunner["jobrunner<br/>Multi-node test scheduler"]
-            Config["config<br/>Platform detection &amp; config"]
-        end
+    subgraph K8sCluster["Kubernetes Cluster"]
+        direction TB
+        API["Kubernetes API Server<br/>6443/TCP HTTPS"]
 
-        subgraph "Check Modules"
-            CRDCheck["checks/crd<br/>CRD presence"]
-            OperatorCheck["checks/operator<br/>Operator health"]
-            GPUCheck["checks/gpu<br/>Driver &amp; ECC"]
-            RDMACheck["checks/rdma<br/>Devices &amp; topology"]
-            NetCheck["checks/networking<br/>TCP bandwidth"]
+        subgraph Namespace["Namespace: rhaii-validation"]
+            SA["ServiceAccount<br/>rhaii-validator<br/>(empty ClusterRole, SCC subject only)"]
+
+            subgraph GPUCheckJobs["GPU Check Jobs (per-node)"]
+                GPUAgent["Validator Agent<br/>(privileged container)<br/>nvidia-smi / rocm-smi / ibstat"]
+            end
+
+            subgraph BandwidthJobs["Bandwidth Test Jobs"]
+                IperfServer["iperf3 Server<br/>5201/TCP"]
+                IperfClient["iperf3 Client"]
+                TCPLatServer["TCP Latency Server<br/>12865/TCP"]
+                TCPLatClient["TCP Latency Client"]
+            end
+
+            subgraph RDMAJobs["RDMA Test Jobs"]
+                BWServer["ib_write_bw Server<br/>18515+/TCP"]
+                BWClient["ib_write_bw Client"]
+                PingmeshServer["ibv_rc_pingpong Server"]
+                PingmeshClient["ibv_rc_pingpong Client"]
+            end
+
+            ConfigMapReport["ConfigMap<br/>rhaii-validate-report"]
+            ConfigMapPingmesh["ConfigMap<br/>rhaii-validate-pingmesh-failures"]
         end
     end
 
-    subgraph "Container Images"
-        ValidatorImage["rhaii-validator<br/>(Go binary)"]
-        ToolsImage["rhaii-validator-tools<br/>(perftest + iperf3 + CUDA)"]
+    subgraph Hardware["Node Hardware (accessed via sysfs)"]
+        GPU["GPU Devices<br/>(NVIDIA / AMD)"]
+        RDMA["RDMA NICs<br/>(InfiniBand / RoCE)"]
+        PCIe["PCIe / NUMA Topology"]
     end
 
-    subgraph "Kubernetes Resources (Ephemeral)"
-        NodeJob["Node Check Job<br/>(privileged, per GPU node)"]
-        IperfServer["iperf3 Server Job<br/>5201/TCP"]
-        IperfClient["iperf3 Client Job"]
-        RDMAServer["ib_write_bw Server Job<br/>18515/TCP"]
-        RDMAClient["ib_write_bw Client Job"]
-        PingServer["ibv_rc_pingpong Server"]
-        PingClient["ibv_rc_pingpong Client"]
-        ReportCM["ConfigMap<br/>rhaii-validate-report"]
-    end
+    %% Controller flows
+    CLI -->|kubeconfig auth| API
+    CLI --> Controller
 
-    CLI -->|subcommands| Controller
-    Controller -->|delegates| JobRunner
-    Controller -->|reads| Config
-    Controller -->|runs| CRDCheck
-    Controller -->|runs| OperatorCheck
-    Controller -->|deploys| NodeJob
-    JobRunner -->|schedules| IperfServer
-    JobRunner -->|schedules| IperfClient
-    JobRunner -->|schedules| RDMAServer
-    JobRunner -->|schedules| RDMAClient
-    JobRunner -->|schedules| PingServer
-    JobRunner -->|schedules| PingClient
+    %% Tier 1
+    Tier1 -->|list CRDs, check pods| API
 
-    NodeJob -->|runs| GPUCheck
-    NodeJob -->|runs| RDMACheck
-    NodeJob -->|uses| ValidatorImage
+    %% Tier 2
+    Tier2 -->|create Jobs| API
+    GPUAgent -->|local exec| GPU
+    GPUAgent -->|local exec| RDMA
+    GPUAgent -->|sysfs read| PCIe
 
-    IperfServer -->|uses| ToolsImage
-    IperfClient -->|uses| ToolsImage
-    RDMAServer -->|uses| ToolsImage
-    RDMAClient -->|uses| ToolsImage
-    PingServer -->|uses| ToolsImage
-    PingClient -->|uses| ToolsImage
+    %% Tier 3
+    Tier3 -->|create Jobs| API
+    IperfClient -->|TCP/5201| IperfServer
+    TCPLatClient -->|TCP/12865| TCPLatServer
+    BWClient -->|RDMA/18515+| BWServer
+    PingmeshClient -->|RDMA/dynamic| PingmeshServer
 
-    IperfClient -->|5201/TCP| IperfServer
-    RDMAClient -->|18515/TCP RDMA| RDMAServer
-    PingClient -->|dynamic RDMA RC| PingServer
+    %% Report
+    ReportGen -->|store results| ConfigMapReport
 
-    Controller -->|stores results| ReportCM
-
+    %% Styling
     style CLI fill:#4a90e2,stroke:#333,color:#fff
-    style Controller fill:#4a90e2,stroke:#333,color:#fff
-    style JobRunner fill:#4a90e2,stroke:#333,color:#fff
-    style Config fill:#4a90e2,stroke:#333,color:#fff
-    style CRDCheck fill:#50c878,stroke:#333,color:#fff
-    style OperatorCheck fill:#50c878,stroke:#333,color:#fff
-    style GPUCheck fill:#50c878,stroke:#333,color:#fff
-    style RDMACheck fill:#50c878,stroke:#333,color:#fff
-    style NetCheck fill:#50c878,stroke:#333,color:#fff
-    style ValidatorImage fill:#f5a623,stroke:#333,color:#fff
-    style ToolsImage fill:#f5a623,stroke:#333,color:#fff
-    style NodeJob fill:#e8e8e8,stroke:#333
-    style IperfServer fill:#e8e8e8,stroke:#333
-    style IperfClient fill:#e8e8e8,stroke:#333
-    style RDMAServer fill:#e8e8e8,stroke:#333
-    style RDMAClient fill:#e8e8e8,stroke:#333
-    style PingServer fill:#e8e8e8,stroke:#333
-    style PingClient fill:#e8e8e8,stroke:#333
-    style ReportCM fill:#dda0dd,stroke:#333
+    style PlatformDetect fill:#4a90e2,stroke:#333,color:#fff
+    style Tier1 fill:#4a90e2,stroke:#333,color:#fff
+    style Tier2 fill:#4a90e2,stroke:#333,color:#fff
+    style Tier3 fill:#4a90e2,stroke:#333,color:#fff
+    style ReportGen fill:#4a90e2,stroke:#333,color:#fff
+    style API fill:#f5a623,stroke:#333
+    style SA fill:#e8e8e8,stroke:#333
+    style GPUAgent fill:#7ed321,stroke:#333
+    style IperfServer fill:#7ed321,stroke:#333
+    style IperfClient fill:#7ed321,stroke:#333
+    style TCPLatServer fill:#7ed321,stroke:#333
+    style TCPLatClient fill:#7ed321,stroke:#333
+    style BWServer fill:#9b59b6,stroke:#333,color:#fff
+    style BWClient fill:#9b59b6,stroke:#333,color:#fff
+    style PingmeshServer fill:#9b59b6,stroke:#333,color:#fff
+    style PingmeshClient fill:#9b59b6,stroke:#333,color:#fff
+    style GPU fill:#e74c3c,stroke:#333,color:#fff
+    style RDMA fill:#e74c3c,stroke:#333,color:#fff
+    style PCIe fill:#e74c3c,stroke:#333,color:#fff
+    style ConfigMapReport fill:#f5a623,stroke:#333
+    style ConfigMapPingmesh fill:#f5a623,stroke:#333

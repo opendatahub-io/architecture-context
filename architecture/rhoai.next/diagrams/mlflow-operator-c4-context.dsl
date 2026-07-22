@@ -1,71 +1,49 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates ML experiments, logs models and artifacts via MLflow tracking API"
-        admin = person "Platform Admin" "Creates MLflow CR to deploy and configure MLflow tracking server instances"
-        nsOwner = person "Namespace Owner" "Creates MLflowConfig CR to override artifact storage for their namespace"
+        datascientist = person "Data Scientist" "Creates and manages MLflow experiments, models, and artifacts via the MLflow UI and API"
+        platformAdmin = person "Platform Admin" "Configures MLflow CR, manages workspace access, and monitors operator health"
 
-        mlflowOperator = softwareSystem "MLflow Operator" "Manages lifecycle of MLflow tracking server deployments on Kubernetes/OpenShift via CRD reconciliation with embedded Helm chart rendering" {
-            controller = container "MLflow Controller" "Reconciles MLflow CRs into Kubernetes resources via embedded Helm chart rendering and Server-Side Apply" "Go (controller-runtime)"
-            helmRenderer = container "Helm Renderer" "Translates MLflow CR spec fields into Helm values and renders the embedded charts/mlflow/ chart into unstructured Kubernetes objects" "Go (Helm v3 library)"
-            migrationManager = container "Migration Manager" "Orchestrates zero-downtime database migrations: scales down deployment, runs migration Job, monitors completion, restores replicas" "Go"
-            routingManager = container "Routing Manager" "Conditionally creates HTTPRoute (Gateway API) and ConsoleLink (OpenShift) resources based on cluster CRD availability" "Go"
-            metricsServer = container "Metrics/Health Server" "Exposes /healthz (8081/TCP), /readyz (8081/TCP), /metrics (8443/TCP HTTPS)" "Go (controller-runtime)"
+        mlflowOperator = softwareSystem "MLflow Operator" "Kubernetes operator managing MLflow tracking server lifecycle, database migrations, Gateway API ingress, and workspace RBAC" {
+            mlflowReconciler = container "MLflowReconciler" "Reconciles MLflow CR; renders embedded Helm chart; manages Deployment, Service, NetworkPolicy, PVC, ServiceMonitor, CronJobs" "Go Controller (controller-runtime)"
+            mlflowOperatorReconciler = container "MLflowOperatorReconciler" "Reconciles MLflowOperator module CR; projects gateway config from platform operator" "Go Controller (controller-runtime)"
+            namespaceRBACReconciler = container "NamespaceRBACReconciler" "Watches labeled namespaces and Auth CR; creates workspace-scoped RoleBindings (view/edit)" "Go Controller (controller-runtime)"
+            helmRenderer = container "Helm Chart Renderer" "Renders embedded charts/mlflow Helm chart with values from MLflow CR spec" "helm.sh/helm/v3 (in-process)"
+            migrationOrchestrator = container "Migration Orchestrator" "Detects version mismatches; scales Deployment to zero; creates migration Job; monitors completion" "Go (embedded)"
+            routingManager = container "Routing Manager" "Creates/updates HTTPRoute for Gateway API ingress and ConsoleLink for OpenShift console" "Go (embedded)"
+            mlflowServer = container "MLflow Server" "MLflow tracking server with kubernetes-auth plugin for SSAR-based authorization" "Python (uvicorn) 8443/TCP HTTPS"
         }
 
-        mlflowServer = softwareSystem "MLflow Tracking Server" "MLflow tracking server deployed and managed by the operator; provides experiment tracking, model registry, and artifact storage APIs" {
-            trackingAPI = container "Tracking API" "REST API for experiments, runs, models, artifacts with Kubernetes-native authentication via SelfSubjectAccessReview" "Python (MLflow v3.13.0)"
-            caAggregator = container "CA Bundle Aggregator" "Init container + sidecar that combines platform and custom CA certificates for TLS verification" "Shell scripts"
-        }
+        gateway = softwareSystem "data-science-gateway" "Platform Gateway CR in openshift-ingress namespace for external traffic routing" "External"
+        authCR = softwareSystem "Auth CR" "Platform Auth CR (services.platform.opendatahub.io) providing workspace group definitions" "Internal RHOAI"
+        mlflowOperatorCR = softwareSystem "MLflowOperator CR" "Platform module CR for coordinated handoff with RHOAI platform operator" "Internal RHOAI"
+        postgresql = softwareSystem "PostgreSQL" "Relational database for MLflow metadata storage (experiments, runs, params, metrics)" "External"
+        s3 = softwareSystem "S3-Compatible Storage" "Object storage for MLflow artifacts (models, datasets, logs)" "External"
+        prometheus = softwareSystem "Prometheus" "Cluster monitoring via ServiceMonitor scraping operator metrics" "External"
+        openshiftConsole = softwareSystem "OpenShift Console" "Web console with ConsoleLink integration for MLflow access" "External"
+        certManager = softwareSystem "OpenShift service-ca" "Automatic TLS certificate provisioning and rotation via service-ca annotations" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API for resource management, RBAC, and SelfSubjectAccessReview" "External"
 
-        migrationJob = softwareSystem "Migration Job" "Kubernetes Job that runs 'mlflow db upgrade' before deployment scaling, with structured exit codes for error handling" "Ephemeral"
-        gcCronJob = softwareSystem "GC CronJob" "Scheduled CronJob that permanently deletes soft-deleted MLflow resources (metadata via direct DB, artifacts via MLflow API)" "Optional"
+        # User interactions
+        datascientist -> mlflowOperator "Accesses MLflow UI and REST API via Gateway" "HTTPS/443"
+        platformAdmin -> mlflowOperator "Creates/updates MLflow CR and MLflowOperator CR" "kubectl"
 
-        gateway = softwareSystem "data-science-gateway" "RHOAI platform Gateway API gateway in openshift-ingress namespace that routes external HTTPS traffic to backend services" "External - Gateway API"
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API server for CRD watches, resource CRUD, RBAC, and SelfSubjectAccessReview authentication" "External - Platform"
-        serviceCA = softwareSystem "OpenShift service-ca" "Controller that automatically provisions and rotates TLS certificates for annotated Services" "External - Platform"
-        prometheus = softwareSystem "Prometheus Operator" "Metrics collection via ServiceMonitor CRD; scrapes MLflow server /metrics endpoint" "External - Platform"
-        console = softwareSystem "OpenShift Console" "Web console that displays ConsoleLink entries in application menu" "External - Platform"
+        # Internal component interactions
+        mlflowReconciler -> helmRenderer "Renders Helm chart with CR spec values" ""
+        mlflowReconciler -> migrationOrchestrator "Triggers DB migration on version mismatch" ""
+        mlflowReconciler -> routingManager "Creates HTTPRoute and ConsoleLink" ""
+        mlflowOperatorReconciler -> mlflowReconciler "Projects gateway domain, name, section title" ""
 
-        postgresql = softwareSystem "PostgreSQL" "Relational database for MLflow backend/registry metadata store" "External"
-        mysql = softwareSystem "MySQL" "Alternative relational database for MLflow metadata store" "External"
-        s3 = softwareSystem "S3-Compatible Storage" "Object storage for MLflow artifacts (MinIO, SeaweedFS, AWS S3, GCS, Azure Blob)" "External"
-
-        # Relationships - Admin/User
-        admin -> mlflowOperator "Creates MLflow CR via kubectl" "HTTPS/6443"
-        nsOwner -> mlflowServer "Creates MLflowConfig CR for namespace storage overrides" "HTTPS/6443"
-        dataScientist -> gateway "Accesses MLflow tracking API" "HTTPS/443"
-
-        # Relationships - Ingress
-        gateway -> mlflowServer "Routes /mlflow/* requests via HTTPRoute" "HTTPS/8443 TLS"
-
-        # Relationships - Operator
-        mlflowOperator -> k8sAPI "Watches CRDs, manages resources via SSA" "HTTPS/6443"
-        mlflowOperator -> mlflowServer "Deploys and manages lifecycle" "Kubernetes API"
-        mlflowOperator -> migrationJob "Creates for DB upgrades" "Kubernetes API"
-        mlflowOperator -> gcCronJob "Creates for scheduled cleanup" "Kubernetes API"
-        mlflowOperator -> gateway "Creates HTTPRoute (conditional)" "Kubernetes API"
-        mlflowOperator -> console "Creates ConsoleLink (conditional)" "Kubernetes API"
-        mlflowOperator -> prometheus "Creates ServiceMonitor (conditional)" "Kubernetes API"
-
-        # Relationships - MLflow Server
-        mlflowServer -> k8sAPI "SelfSubjectAccessReview for auth decisions" "HTTPS/6443"
-        mlflowServer -> postgresql "Stores/queries experiment and model metadata" "TCP/5432 TLS"
-        mlflowServer -> mysql "Alternative metadata store" "TCP/3306 TLS"
-        mlflowServer -> s3 "Stores/retrieves ML artifacts" "HTTPS/443"
-
-        # Relationships - Jobs
-        migrationJob -> postgresql "Runs mlflow db upgrade" "TCP/5432 TLS"
-        gcCronJob -> postgresql "Deletes soft-deleted metadata" "TCP/5432 TLS"
-        gcCronJob -> mlflowServer "Deletes artifacts via API" "HTTPS/8443"
-
-        # Relationships - Platform
-        serviceCA -> mlflowServer "Provisions mlflow-tls Secret" "Auto"
-        prometheus -> mlflowServer "Scrapes /metrics" "HTTPS/8443"
-
-        # Internal container relationships
-        controller -> helmRenderer "Passes CR spec as Helm values"
-        controller -> migrationManager "Triggers on version/spec changes"
-        controller -> routingManager "Delegates HTTPRoute/ConsoleLink creation"
+        # External dependencies
+        mlflowOperator -> gateway "HTTPRoute parent reference for external ingress" "HTTPS/443"
+        mlflowOperator -> authCR "Reads allowedGroups and adminGroups for workspace RBAC" "K8s API/TLS"
+        mlflowOperator -> mlflowOperatorCR "Watches module CR for platform handoff config" "K8s API/TLS"
+        mlflowOperator -> k8sAPI "Resource CRUD, RBAC, leader election, status updates" "HTTPS/6443"
+        mlflowServer -> postgresql "Stores experiment metadata, run data, parameters, metrics" "TCP/5432 TLS optional"
+        mlflowServer -> s3 "Stores and retrieves model artifacts and datasets" "HTTPS/443"
+        migrationOrchestrator -> postgresql "Runs schema migrations via migration Job" "TCP/5432 TLS optional"
+        prometheus -> mlflowOperator "Scrapes operator metrics via ServiceMonitor" "HTTPS/8443"
+        certManager -> mlflowServer "Provisions and rotates TLS certificates" "service-ca annotation"
+        routingManager -> openshiftConsole "Creates ConsoleLink for MLflow access in console menu" "K8s API"
     }
 
     views {
@@ -74,45 +52,28 @@ workspace {
             autoLayout
         }
 
-        container mlflowOperator "OperatorContainers" {
-            include *
-            autoLayout
-        }
-
-        container mlflowServer "ServerContainers" {
+        container mlflowOperator "Containers" {
             include *
             autoLayout
         }
 
         styles {
+            element "Software System" {
+                background #438dd5
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "External - Platform" {
-                background #6c8ebf
-                color #ffffff
-            }
-            element "External - Gateway API" {
-                background #d79b00
-                color #ffffff
-            }
-            element "Ephemeral" {
-                background #9673a6
-                color #ffffff
-            }
-            element "Optional" {
-                background #b85450
+            element "Internal RHOAI" {
+                background #7ed321
                 color #ffffff
             }
             element "Person" {
-                shape Person
                 background #08427b
                 color #ffffff
-            }
-            element "Software System" {
-                background #1168bd
-                color #ffffff
+                shape Person
             }
             element "Container" {
                 background #438dd5

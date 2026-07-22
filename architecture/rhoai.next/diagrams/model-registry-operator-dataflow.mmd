@@ -1,47 +1,41 @@
 sequenceDiagram
-    participant User as User / Platform Operator
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
-    participant Reconciler as ModelRegistryReconciler<br/>(in-process watch)
     participant Client as External Client
-    participant Router as OpenShift Router<br/>443/TCP HTTPS
-    participant Gateway as Data Science Gateway<br/>443/TCP HTTPS
-    participant KRBP as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
-    participant MR as model-registry REST<br/>8080/TCP HTTP
-    participant PG as PostgreSQL<br/>5432/TCP
+    participant Route as OpenShift Route / Gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant Proxy as kube-rbac-proxy Sidecar<br/>8443/TCP HTTPS TLS
+    participant K8sAuth as Kubernetes API<br/>6443/TCP HTTPS
+    participant REST as REST Container<br/>8080/TCP HTTP (loopback)
+    participant DB as PostgreSQL / MySQL<br/>5432/TCP or 3306/TCP
 
-    rect rgb(230, 245, 255)
-        Note over User,PG: Flow 1: Model Registry Instance Provisioning
-        User->>K8sAPI: Create ModelRegistry CR<br/>Auth: ServiceAccount Token
-        K8sAPI->>Reconciler: Watch event (CR created)
-        Reconciler->>K8sAPI: Create Deployment<br/>(model-registry + kube-rbac-proxy)
-        Reconciler->>K8sAPI: Create Service, Route,<br/>HTTPRoute, RBAC, NetworkPolicy
-        Reconciler->>K8sAPI: Update CR status<br/>(Available/Progressing conditions)
-    end
+    Note over Client,DB: Flow 1: Model Registry REST API Request (Authenticated)
+    Client->>Route: HTTPS POST /v1/model_registry/{name}/...<br/>Auth: Bearer Token
+    Route->>Proxy: HTTPS (re-encrypt)<br/>Bearer Token forwarded
+    Proxy->>K8sAuth: TokenReview + SubjectAccessReview<br/>TLS, SA Token
+    K8sAuth-->>Proxy: Authorized (get services/{name})
+    Proxy->>REST: HTTP localhost:8080<br/>No auth (loopback)
+    REST->>DB: TCP 5432/3306<br/>Optional SSL, DB credentials
+    DB-->>REST: Query results
+    REST-->>Proxy: JSON response
+    Proxy-->>Route: HTTPS response
+    Route-->>Client: HTTPS JSON response
 
-    rect rgb(255, 243, 224)
-        Note over Client,PG: Flow 2: REST API Access (kube-rbac-proxy + Route)
-        Client->>Router: GET /v1/model_registry/<br/>TLS 1.2+
-        Router->>KRBP: Forward request<br/>TLS reencrypt to 8443/TCP
-        KRBP->>K8sAPI: SubjectAccessReview<br/>(can user GET services?)
-        K8sAPI-->>KRBP: Allowed
-        KRBP->>MR: Forward to localhost:8080<br/>HTTP (pod-internal)
-        MR->>PG: Query metadata<br/>5432/TCP Configurable SSL
-        PG-->>MR: Query results
-        MR-->>KRBP: JSON response
-        KRBP-->>Router: HTTPS response
-        Router-->>Client: JSON response
-    end
+    Note over Client,DB: Flow 2: Gateway API Model Registry Access
+    participant GW as Data Science Gateway (Envoy)<br/>443/TCP HTTPS
+    Client->>GW: HTTPS POST /model-registry/{name}/*<br/>Auth: Bearer Token
+    GW->>Proxy: HTTPS via HTTPRoute<br/>Bearer Token
+    Proxy->>K8sAuth: TokenReview + SubjectAccessReview
+    K8sAuth-->>Proxy: Authorized
+    Proxy->>REST: HTTP localhost:8080
+    REST->>DB: TCP query
+    DB-->>REST: Results
+    REST-->>Proxy: Response
+    Proxy-->>GW: HTTPS response
+    GW-->>Client: HTTPS JSON response
 
-    rect rgb(232, 245, 233)
-        Note over Client,PG: Flow 3: REST API Access (Gateway API)
-        Client->>Gateway: GET /model-registry/{name}/<br/>TLS 1.2+ Platform auth
-        Gateway->>KRBP: HTTPRoute forward<br/>8443/TCP HTTPS (URL rewrite)
-        KRBP->>K8sAPI: SubjectAccessReview<br/>(can user GET services?)
-        K8sAPI-->>KRBP: Allowed
-        KRBP->>MR: Forward to localhost:8080<br/>HTTP (pod-internal)
-        MR->>PG: Query metadata<br/>5432/TCP Configurable SSL
-        PG-->>MR: Query results
-        MR-->>KRBP: JSON response
-        KRBP-->>Gateway: HTTPS response
-        Gateway-->>Client: JSON response
-    end
+    Note over Client,DB: Flow 3: Operator Reconciliation
+    participant APIServer as Kubernetes API Server<br/>6443/TCP HTTPS
+    participant Operator as Model Registry Operator
+    participant OSAPI as OpenShift API<br/>(Routes, Groups, Config)
+    APIServer->>Operator: Watch notification (Informer)<br/>ModelRegistry CR changed
+    Operator->>APIServer: CRUD Deployments, Services,<br/>ConfigMaps, Secrets, PVCs,<br/>NetworkPolicies, RBAC<br/>TLS, SA Token
+    Operator->>OSAPI: Create/update Routes, Groups<br/>Read Ingress domain, TLS profile<br/>TLS, SA Token
+    APIServer-->>Operator: Resource status updates

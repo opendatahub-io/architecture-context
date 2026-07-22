@@ -1,45 +1,54 @@
 sequenceDiagram
-    participant Build as Image Build<br/>(Konflux)
-    participant Init as Init Container<br/>(odh-pipelines-components)
-    participant Vol as Shared Volume<br/>/config/managed-pipelines/
-    participant KFP as KFP API Server<br/>(managed by DSPO)
+    participant User as Data Scientist
+    participant DSPO as DSPO
+    participant Init as odh-pipelines-components<br/>(Init Container)
+    participant PVC as Shared PVC<br/>/config/managed-pipelines/
+    participant KFP as KFP API Server
     participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant Train as Training Task Pod<br/>(Kubeflow Trainer)
-    participant PVC as PVC<br/>(Shared Workspace)
-    participant Eval as Evaluation Task<br/>(lm-eval / Eval Hub)
-    participant MR as Model Registry<br/>80/TCP HTTP
+    participant S3 as S3 / MinIO<br/>443/TCP HTTPS
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant THub as Training Hub<br/>(ClusterTrainingRuntime)
+    participant GPU as GPU Nodes<br/>(Distributed Training)
+    participant KServe as KServe<br/>8080/TCP HTTP
+    participant MR as Model Registry<br/>8080/TCP HTTP
     participant OGX as OGX API<br/>443/TCP HTTPS
     participant Milvus as Milvus<br/>19530/TCP gRPC
-    participant Docling as Text Extraction<br/>(Docling in AutoRAG)
 
-    rect rgb(220, 240, 220)
-        Note over Build,KFP: Flow 1: Managed Pipeline Initialization
-        Build->>Init: Compile @dsl.pipeline → YAML<br/>(at build time)
-        Init->>Init: Check RELATED_IMAGE_* env vars<br/>(recompile if present)
-        Init->>Vol: Copy managed-pipelines.json +<br/>compiled YAML specs
-        Vol->>KFP: Read pipeline manifests<br/>(emptyDir mount)
-        KFP->>KFP: Register managed pipelines
+    Note over Init,KFP: Flow 1: Managed Pipeline Registration
+    DSPO->>Init: Deploy as init container sidecar
+    Init->>Init: Discover metadata.yaml (managed: true)
+    Init->>Init: Check RELATED_IMAGE_* env vars
+    alt Air-gapped environment
+        Init->>Init: Recompile with image overrides
     end
+    Init->>Init: KFP Compiler → YAML
+    Init->>PVC: Write compiled YAMLs
+    KFP->>PVC: Read & register pipelines
 
-    rect rgb(220, 220, 245)
-        Note over HF,MR: Flow 2: Fine-Tuning Pipeline (SFT/LoRA/OSFT)
-        HF-->>PVC: Step 1: Download dataset<br/>HTTPS/443, TLS 1.2+, HF_TOKEN
-        S3-->>PVC: Step 1 (alt): Download from S3<br/>HTTPS/443, TLS 1.2+, AWS IAM
-        PVC->>Train: Step 2: Read dataset from PVC
-        Train->>Train: Step 3: Train model<br/>(via K8s API → ClusterTrainingRuntime)
-        Train->>PVC: Step 4: Write model checkpoint
-        PVC->>Eval: Step 5: Read model for evaluation
-        Eval->>Eval: Run lm-eval benchmarks<br/>or submit to Eval Hub (HTTPS/443)
-        Eval->>MR: Step 6: Register trained model<br/>HTTP/80, Plaintext, No Auth
-    end
+    Note over User,MR: Flow 2: Fine-Tuning Pipeline (LoRA/SFT/OSFT)
+    User->>KFP: Submit fine-tuning pipeline
+    KFP->>HF: dataset_download<br/>Bearer Token (optional)
+    HF-->>KFP: Dataset artifacts
+    KFP->>S3: dataset_download (S3 source)<br/>AWS IAM credentials
+    S3-->>KFP: Dataset artifacts
+    KFP->>K8s: train_model → TrainerClient<br/>ServiceAccount Token
+    K8s->>THub: Create TrainingJob CR
+    THub->>GPU: Distributed training (NCCL)
+    GPU-->>THub: Training complete
+    THub-->>KFP: Job status
+    KFP->>KServe: evaluator → inference<br/>POST /v1/models/:predict
+    KServe-->>KFP: Evaluation results
+    KFP->>MR: kubeflow_model_registry<br/>Register model + lineage
+    MR-->>KFP: Registration confirmed
 
-    rect rgb(245, 230, 220)
-        Note over S3,Milvus: Flow 3: RAG Optimization Pipeline
-        S3->>Docling: Step 1: Discover documents<br/>HTTPS/443, TLS 1.2+, AWS IAM
-        S3->>Docling: Step 2: Download & extract text<br/>HTTPS/443, TLS 1.2+, AWS IAM
-        Docling->>OGX: Step 3: Generate embeddings<br/>HTTPS/443, TLS 1.2+, API key
-        OGX->>Milvus: Step 4: Store in vector DB<br/>HTTPS/443 via OGX, API key
-        OGX->>OGX: Step 5: AI4RAG optimizer<br/>hyperparameter search
-        OGX-->>OGX: Step 6: Output leaderboard<br/>HTML artifact
-    end
+    Note over User,OGX: Flow 3: AutoRAG Optimization Pipeline
+    User->>KFP: Submit AutoRAG pipeline
+    KFP->>S3: test_data_loader<br/>AWS IAM credentials
+    S3-->>KFP: Test data
+    KFP->>S3: documents_discovery<br/>AWS IAM credentials
+    S3-->>KFP: Input documents
+    KFP->>KFP: text_extraction<br/>Local Docling models (filesystem)
+    KFP->>OGX: search_space_preparation<br/>API Key
+    OGX-->>KFP: Search space config
+    KFP->>OGX: rag_templates_optimization<br/>API Key
+    OGX-->>KFP: Optimized RAG config

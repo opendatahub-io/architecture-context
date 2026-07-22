@@ -1,88 +1,84 @@
 graph TB
-    subgraph BatchGateway["Batch Gateway"]
+    subgraph BatchGateway["Batch Gateway System"]
         direction TB
 
-        subgraph Apiserver["batch-gateway-apiserver<br/>(Go HTTP Service)"]
-            API_BatchCreate["/v1/batches POST"]
-            API_BatchList["/v1/batches GET"]
-            API_BatchGet["/v1/batches/{id} GET"]
-            API_BatchCancel["/v1/batches/{id}/cancel POST"]
-            API_FileUpload["/v1/files POST"]
-            API_FileList["/v1/files GET"]
-            API_FileGet["/v1/files/{id} GET"]
-            API_FileContent["/v1/files/{id}/content GET"]
-            API_FileDelete["/v1/files/{id} DELETE"]
-            API_Health_AS["Health/Ready/Metrics<br/>:8081"]
+        subgraph Apiserver["batch-gateway-apiserver<br/>Port: 8000/TCP (API), 8081/TCP (observability)"]
+            BatchAPI["/v1/batches API<br/>Create, List, Get, Cancel"]
+            FileAPI["/v1/files API<br/>Upload, List, Get, Download, Delete"]
+            Middleware["Request Middleware<br/>Tenant Isolation (X-MaaS-Username)<br/>Security Headers, Recovery"]
+            HealthAPI_A["/health, /ready, /metrics"]
         end
 
-        subgraph Processor["batch-gateway-processor<br/>(Go Background Worker)"]
-            JobDequeue["Job Dequeue<br/>(BZMPOP)"]
-            PlanBuilder["Per-Model<br/>Execution Plans"]
-            Dispatcher["Inference Dispatcher<br/>(AIMD Concurrency)"]
-            ResultWriter["Result Writer"]
-            CrashRecovery["Crash Recovery<br/>(startup scan)"]
-            Metrics_Proc["Health/Metrics<br/>:9090"]
+        subgraph Processor["batch-gateway-processor<br/>Port: 9090/TCP (observability)"]
+            Poller["Queue Poller<br/>poll_interval: 5s"]
+            WorkerPool["Worker Pool<br/>num_workers: 20"]
+            Pipeline["Dispatch Pipeline<br/>PreDispatcher → AIMDDispatcher → DirectDispatcher"]
+            AsyncPipeline["Async Pipeline (optional)<br/>PreDispatcher → AsyncDispatcher"]
+            Recovery["Crash Recovery<br/>Phase-aware job recovery"]
+            HealthAPI_P["/health, /ready, /metrics"]
         end
 
-        subgraph GC["batch-gateway-gc<br/>(Go Background Worker)"]
-            Collector["Expired Job/File<br/>Collector"]
-            Reconciler["Orphan Job<br/>Reconciler"]
-            Metrics_GC["Health/Metrics<br/>:9091"]
+        subgraph GC["batch-gateway-gc<br/>Port: 9091/TCP (observability)"]
+            Collector["GC Collector<br/>interval: 30m"]
+            Reconciler["Orphan Reconciler<br/>interval: 60m"]
+            HealthAPI_G["/health, /metrics"]
         end
     end
 
-    %% External Clients
-    Client[External Client] -->|"POST /v1/batches<br/>8000/TCP"| API_BatchCreate
-    Client -->|"POST /v1/files<br/>8000/TCP"| API_FileUpload
+    %% External clients
+    Client[External Client] -->|"POST /v1/batches<br/>Tenant Header"| BatchAPI
+    Client -->|"POST /v1/files<br/>Tenant Header"| FileAPI
+    Middleware -->|validates tenant| BatchAPI
+    Middleware -->|validates tenant| FileAPI
 
-    %% Gateway Auth
-    Gateway["Kuadrant / Authorino<br/>(Gateway Auth)"] -.->|"AuthN/AuthZ<br/>before request"| Apiserver
+    %% Internal flows
+    BatchAPI -->|"enqueue job"| RedisQueue
+    Poller -->|"dequeue job"| RedisQueue
+    Poller --> WorkerPool
+    WorkerPool --> Pipeline
+    WorkerPool -.->|"async mode"| AsyncPipeline
+    Collector -->|"find expired"| PostgreSQL
+    Reconciler -->|"detect orphans"| RedisInflight
 
-    %% Shared Data Layer
-    subgraph DataLayer["Shared Data Layer"]
-        PostgreSQL[("PostgreSQL<br/>5432/TCP<br/>Metadata")]
-        Redis[("Redis / Valkey<br/>6379/TCP<br/>Queue + Events")]
-        S3[("S3 Storage<br/>443/TCP<br/>Files")]
-    end
+    %% Data stores
+    PostgreSQL[(PostgreSQL<br/>5432/TCP)]
+    RedisQueue[(Redis/Valkey<br/>6379/TCP<br/>Priority Queue)]
+    RedisInflight[(Redis/Valkey<br/>In-Flight Tracking)]
+    S3[(S3 Object Store<br/>443/TCP)]
 
-    %% Apiserver → Data Layer
-    API_BatchCreate -->|"pgx"| PostgreSQL
-    API_BatchCreate -->|"ZADD priority queue"| Redis
-    API_FileUpload -->|"PutObject"| S3
+    BatchAPI --> PostgreSQL
+    FileAPI --> PostgreSQL
+    FileAPI --> S3
+    Pipeline -->|"inference requests"| InferenceGW
+    Pipeline --> PostgreSQL
+    Pipeline --> S3
+    Collector --> S3
+    Reconciler -->|"re-enqueue"| RedisQueue
 
-    %% Processor → Data Layer
-    JobDequeue -->|"BZMPOP"| Redis
-    PlanBuilder -->|"query jobs"| PostgreSQL
-    Dispatcher -->|"read input"| S3
-    ResultWriter -->|"write output"| S3
-    ResultWriter -->|"update status"| PostgreSQL
+    %% External services
+    InferenceGW["LLM Inference Gateway<br/>(vLLM / GIE/EPP)<br/>AIMD Concurrency Control"]
+    OTLP["OpenTelemetry Collector<br/>4317/TCP gRPC"]
+    Prometheus["Prometheus<br/>Scrapes /metrics"]
 
-    %% Processor → Inference
-    InferenceGW["llm-d Router<br/>Inference Gateway"]
-    Dispatcher -->|"HTTP/HTTPS POST<br/>chat/completions"| InferenceGW
+    Apiserver -.->|"traces"| OTLP
+    Processor -.->|"traces"| OTLP
+    Prometheus -.->|"scrape 8081"| HealthAPI_A
+    Prometheus -.->|"scrape 9090"| HealthAPI_P
+    Prometheus -.->|"scrape 9091"| HealthAPI_G
 
-    %% GC → Data Layer
-    Collector -->|"query expired"| PostgreSQL
-    Collector -->|"delete files"| S3
-    Reconciler -->|"scan inflight hash"| Redis
-
-    %% Cancellation flow
-    API_BatchCancel -->|"RPUSH event"| Redis
-    Redis -->|"BLMPOP event"| Dispatcher
-
-    %% Observability
-    Prometheus["Prometheus"] -.->|"scrape"| API_Health_AS
-    Prometheus -.->|"scrape"| Metrics_Proc
-    Prometheus -.->|"scrape"| Metrics_GC
+    %% Optional ingress
+    Gateway["Gateway API<br/>(HTTPRoute)"] -->|"/v1/batches, /v1/files"| BatchAPI
 
     %% Styling
     style Apiserver fill:#4a90e2,stroke:#333,color:#fff
-    style Processor fill:#7ed321,stroke:#333,color:#fff
-    style GC fill:#f5a623,stroke:#333,color:#fff
+    style Processor fill:#4a90e2,stroke:#333,color:#fff
+    style GC fill:#4a90e2,stroke:#333,color:#fff
     style PostgreSQL fill:#336791,stroke:#333,color:#fff
-    style Redis fill:#dc382d,stroke:#333,color:#fff
-    style S3 fill:#ff9900,stroke:#333,color:#fff
-    style InferenceGW fill:#9b59b6,stroke:#333,color:#fff
-    style Gateway fill:#e8e8e8,stroke:#333
-    style Client fill:#f9f9f9,stroke:#333
+    style RedisQueue fill:#dc382d,stroke:#333,color:#fff
+    style RedisInflight fill:#dc382d,stroke:#333,color:#fff
+    style S3 fill:#f5a623,stroke:#333,color:#fff
+    style InferenceGW fill:#7ed321,stroke:#333
+    style OTLP fill:#e8e8e8,stroke:#333
     style Prometheus fill:#e8e8e8,stroke:#333
+    style Gateway fill:#e8e8e8,stroke:#333
+    style Client fill:#f9f9f9,stroke:#999

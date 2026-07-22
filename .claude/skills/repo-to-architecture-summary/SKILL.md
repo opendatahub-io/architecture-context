@@ -443,6 +443,59 @@ If the pre-gathered metadata section is missing (e.g., when running this skill m
 git describe --tags --always 2>/dev/null; git branch --show-current; git remote get-url origin 2>/dev/null; git log --oneline --no-merges -20
 ```
 
+### Step 5a: Provenance Analysis
+
+Populate the `## Provenance` section (Repo Lineage and Aliases tables) using either structured provenance data or local repo analysis.
+
+**Path 1: Provenance data available**
+
+Check if a `component-map.json` with a `"provenance"` key is accessible — either passed via orchestrator context, or at a known relative path (e.g., `../../component-map.json` from the component checkout):
+
+```bash
+# Check common locations for component-map.json
+for f in ../../component-map.json ../../../component-map.json; do
+  if [ -f "$f" ]; then
+    python3 -c "import json; d=json.load(open('$f')); print('has provenance' if 'provenance' in d else 'no provenance')"
+    break
+  fi
+done
+```
+
+If provenance data is available:
+1. Look up the component's `org/repo` in `provenance.repos`
+2. Walk the upstream/downstream chain to build the full lineage — each repo entry has `upstream` and `downstream` keys pointing to related `org/repo` entries
+3. Construct full repository URLs as `https://github.com/{org}/{repo}` for each entry
+4. Extract sync mechanism, sync branch, sync workflows, and detection method from each repo's provenance fields
+5. Render the **Repo Lineage** table with Role (`Upstream`, `Midstream`, `Downstream`), full URL, and sync details
+
+For **Aliases**:
+- Compare upstream repo name vs midstream repo name — if they differ (e.g., `kagenti-extensions` upstream → `agents-operator` midstream), add an entry with Type `upstream_name_differs`
+- Check for `-legacy` or `-archive` suffixed sibling repos in the same org — these indicate renames or archived predecessors (Type `rename` or `archive`)
+- Consult `KNOWN_NAME_ALIASES` in `discover-components/scripts/parse_repo_provenance.py` for cases heuristics miss (e.g., `llama-stack` → `ogx`)
+
+**Path 2: No provenance data (standalone run on a bare checkout)**
+
+Fall back to local repo analysis:
+
+```bash
+# Get the repo's remote URL
+git remote -v
+
+# Scan for sync workflows that reference upstream repos
+find .github/workflows -name "sync*.yaml" -o -name "sync*.yml" 2>/dev/null | head -10
+
+# Check for fork indicators in workflow files
+grep -r "upstream\|fork\|sync" .github/workflows/ --include="*.yaml" --include="*.yml" 2>/dev/null | head -20
+```
+
+1. Use `git remote -v` to get the repo URL for the current entry
+2. Scan `.github/workflows/sync*.yaml` for sync workflow names and upstream repository references
+3. Check for fork indicators (upstream remote names, sync workflow targets)
+4. Use Detection Method `local_analysis` for all entries discovered this way
+5. This produces a partial but still valuable Repo Lineage table
+
+Populate both the **Repo Lineage** and **Aliases** tables in the output. If no aliases are detected, keep the `### Aliases` heading and table header but omit data rows.
+
 ### Step 6: Generate GENERATED_ARCHITECTURE.md
 
 Follow the template exactly as defined in [architecture template](references/architecture-template.md). Read that file before writing.

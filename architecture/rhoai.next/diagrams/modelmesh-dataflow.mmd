@@ -1,44 +1,54 @@
 sequenceDiagram
     participant Client as External Client
-    participant MM_A as ModelMesh Pod A<br/>8033/TCP gRPC<br/>TLS + mTLS (opt)
-    participant MM_B as ModelMesh Pod B<br/>8080/TCP Litelinks<br/>TLS + mTLS (opt)
-    participant Runtime as Model Runtime<br/>8085/TCP or UDS<br/>plaintext
-    participant etcd as etcd Cluster<br/>2379/TCP gRPC<br/>TLS (configurable)
-    participant Storage as Model Storage<br/>(S3/PVC)<br/>443/TCP HTTPS
+    participant API as ModelMesh gRPC API<br/>8033/TCP TLS(opt)
+    participant Core as ModelMesh Core<br/>Routing Engine
+    participant Thrift as LiteLinks Thrift<br/>8080/TCP TLS(opt)
+    participant RemoteMM as Remote ModelMesh<br/>Instance
+    participant Runtime as Co-located Runtime<br/>8085/TCP or UDS<br/>plaintext
+    participant RemoteRT as Remote Runtime<br/>8085/TCP or UDS
+    participant etcd as etcd Cluster<br/>2379/TCP TLS(opt)
+    participant Prom as Prometheus<br/>Scraper
 
-    Note over Client, Storage: Flow 1: Inference Request (gRPC Proxy)
-    Client->>MM_A: gRPC inference request<br/>mm-model-id or mm-vmodel-id header<br/>TLS + mTLS (optional)
-    MM_A->>MM_A: Lookup model location<br/>(in-memory cache + etcd registry)
-    alt Model on this pod
-        MM_A->>Runtime: gRPC inference (zero-copy ByteBuf)<br/>ProtoSplicer injects model-id<br/>plaintext (localhost)
-        Runtime-->>MM_A: Inference response
-    else Model on another pod
-        MM_A->>MM_B: Litelinks forward request<br/>Thrift over TCP 8080<br/>TLS + mTLS (optional)
-        MM_B->>Runtime: gRPC inference (zero-copy ByteBuf)<br/>plaintext (localhost)
-        Runtime-->>MM_B: Inference response
-        MM_B-->>MM_A: Litelinks response<br/>Thrift 8080/TCP
+    Note over Client,etcd: Flow 1: Model Inference Request
+
+    Client->>API: gRPC inference request<br/>TLS (optional)
+    API->>Core: Route request (in-process)
+
+    alt Model loaded locally
+        Core->>Runtime: gRPC loadModel/predict<br/>plaintext (localhost/UDS)
+        Runtime-->>Core: Prediction result
+    else Model on remote instance
+        Core->>Thrift: Forward to peer<br/>Thrift/8080 TLS(opt) mTLS(opt)
+        Thrift->>RemoteMM: applyModel RPC
+        RemoteMM->>RemoteRT: gRPC predict<br/>plaintext (localhost/UDS)
+        RemoteRT-->>RemoteMM: Prediction result
+        RemoteMM-->>Thrift: Response
+        Thrift-->>Core: Response
     end
-    MM_A-->>Client: gRPC inference response<br/>TLS + mTLS (optional)
 
-    Note over Client, Storage: Flow 2: Model Load on Cache Miss
-    Client->>MM_A: gRPC inference for unloaded model
-    MM_A->>etcd: Lookup model record<br/>gRPC 2379/TCP
-    etcd-->>MM_A: Model metadata (path, type, size)
-    MM_A->>Runtime: loadModel RPC<br/>gRPC 8085/TCP or UDS
-    Runtime->>Storage: Download model artifacts<br/>HTTPS 443/TCP<br/>IAM / access keys
-    Storage-->>Runtime: Model artifacts
-    Runtime-->>MM_A: Load complete (model size)
-    MM_A->>etcd: Update model record (LOADED)<br/>gRPC 2379/TCP
-    MM_A->>Runtime: Inference request<br/>gRPC plaintext
-    Runtime-->>MM_A: Inference response
-    MM_A-->>Client: gRPC response
+    Core-->>API: Prediction result
+    API-->>Client: gRPC response<br/>TLS (optional)
 
-    Note over Client, Storage: Flow 3: VModel Transition (Blue-Green)
-    Client->>MM_A: setVModel RPC<br/>gRPC 8033/TCP TLS
-    MM_A->>etcd: Update vmodel record<br/>(set target model)
-    MM_A->>Runtime: loadModel (new target)<br/>gRPC 8085/TCP or UDS
-    Runtime->>Storage: Download new model<br/>HTTPS 443/TCP
-    Storage-->>Runtime: Model artifacts
-    Runtime-->>MM_A: Load complete
-    MM_A->>etcd: Promote target to active<br/>(atomic switch)
-    MM_A-->>Client: setVModel response<br/>(zero-downtime transition)
+    Note over Client,etcd: Flow 2: Model Registration & Loading
+
+    Client->>API: registerModel RPC<br/>gRPC/8033 TLS(opt)
+    API->>Core: Register model
+    Core->>etcd: Store model record<br/>gRPC/2379 TLS(opt)<br/>client cert(opt)
+    etcd-->>Core: Confirmed
+
+    Core->>Core: Leader election<br/>selects target instance
+    Core->>Thrift: Route to selected instance<br/>Thrift/8080 TLS(opt)
+    Thrift->>RemoteMM: applyModel (load)
+    RemoteMM->>RemoteRT: loadModel RPC<br/>gRPC/8085 plaintext
+    RemoteRT-->>RemoteMM: Load complete + model size
+    RemoteMM->>etcd: Update model registry<br/>gRPC/2379 TLS(opt)
+    etcd-->>RemoteMM: Confirmed
+    RemoteMM-->>Thrift: Load success
+    Thrift-->>Core: Response
+    Core-->>API: Model registered
+    API-->>Client: Registration response
+
+    Note over Prom,Prom: Flow 3: Metrics Scraping
+
+    Prom->>API: GET /metrics<br/>HTTPS/2112<br/>TLS (self-signed)
+    API-->>Prom: Prometheus metrics<br/>(latency, cache, health)

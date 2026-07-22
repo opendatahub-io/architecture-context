@@ -1,79 +1,51 @@
 workspace {
     model {
-        admin = person "Platform Administrator" "Deploys and configures RHOAI/ODH platform and its dependencies"
-        client = person "Inference Client" "Sends inference requests to deployed ML models"
+        platformEngineer = person "Platform Engineer" "Deploys and manages RHOAI/ODH platform on OpenShift or xKS clusters"
+        dataScienceAdmin = person "Data Science Admin" "Configures platform components via DSC/DSCI CRs or Helm values"
 
-        odhGitops = softwareSystem "odh-gitops" "GitOps repository providing Kustomize manifests and Helm charts for deploying RHOAI/ODH platform dependencies and operator configurations" {
-            kustomizeLayer = container "Kustomize Layer" "12 operator installation components (Namespace, OperatorGroup, Subscription) + post-install CR configurations" "Kustomize Components/Overlays"
-            rhaiOCPChart = container "rhai-on-openshift-chart" "Full-stack RHOAI/ODH deployment on OpenShift with OLM — 13 platform components, 11 dependency operators, profile-based defaults, tri-state dependencies" "Helm Chart v3.4.0"
-            rhaiXKSChart = container "rhai-on-xks-chart" "RHAI deployment on non-OpenShift Kubernetes (Azure AKS, CoreWeave, AWS EKS) — bundles operator, cloud managers, CRDs, Gateway API, post-install hooks" "Helm Chart v3.5.0-ea.2"
-            depCharts = container "Dependency Sub-Charts" "Standalone operator charts (cert-manager, gateway-api, lws, sail) extracted from OLM bundles for vanilla Kubernetes" "Helm Dependency Charts"
-            crdSchemas = container "CRD Contract Schemas" "40+ JSON schemas validating CRD structures for KServe, Platform, Gateway API, Istio, cert-manager, cloud providers" "JSON Schema"
-            cicd = container "CI/CD Pipelines" "Tekton pipelines for ephemeral AWS HyperShift cluster provisioning and end-to-end validation" "Tekton / Bash"
+        odhGitops = softwareSystem "odh-gitops" "GitOps configuration layer providing Helm charts and Kustomize manifests for deploying RHOAI/ODH platform dependencies" {
+            xksChart = container "rhai-on-xks-chart" "Helm chart for non-OpenShift Kubernetes (AWS EKS, Azure AKS, CoreWeave)" "Helm Go Templates"
+            openshiftChart = container "rhai-on-openshift-chart" "Helm chart for OpenShift with OLM-based operator management" "Helm Go Templates"
+            kustomizeManifests = container "Kustomize Manifests" "Layered kustomize structure for operator subscriptions and configurations" "Kustomize YAML"
+            depSubCharts = container "Dependency Sub-Charts" "Non-OLM Helm-based installation of cert-manager, gateway-api, sail, lws, rhcl operators" "Helm Go Templates"
+            contractSchemas = container "Contract Schemas" "JSON Schema definitions for CRD validation (~85K lines)" "JSON Schema"
+            helmSyncWorkflow = container "Helm Sync Workflow" "GitHub Actions workflow syncing charts to RHOAI-Build-Config" "GitHub Actions"
         }
 
-        // Internal ODH/RHOAI Platform
-        rhodsOperator = softwareSystem "rhods-operator / opendatahub-operator" "Main RHOAI/ODH platform operator managing DataScienceCluster and DSCInitialization" "Internal ODH"
-        certManager = softwareSystem "cert-manager" "TLS certificate lifecycle management for Gateway, Authorino, webhooks, KServe, Kueue, Ray, Trainer" "Internal Dependency"
-        kueue = softwareSystem "Kueue" "Job queueing operator with integration framework (Deployment, Pod, PyTorchJob, RayCluster, StatefulSet, TrainJob)" "Internal Dependency"
-        lws = softwareSystem "Leader Worker Set" "Distributed inference and training workflows" "Internal Dependency"
-        jobset = softwareSystem "JobSet" "Coordinated job management for Trainer" "Internal Dependency"
-        kuadrant = softwareSystem "Kuadrant / Authorino (RHCL)" "API management and external authorization for KServe inference endpoints" "Internal Dependency"
-        istioSail = softwareSystem "Istio / Sail Operator" "Service mesh for Gateway API, traffic management, mTLS between services" "Internal Dependency"
-        gatewayAPI = softwareSystem "Gateway API CRDs" "Kubernetes-native ingress routing CRDs consumed by Istio and KServe" "Internal Dependency"
-        coo = softwareSystem "Cluster Observability Operator" "Platform monitoring and observability" "Internal Dependency"
-        otel = softwareSystem "OpenTelemetry" "Distributed tracing and metrics collection" "Internal Dependency"
-        tempo = softwareSystem "Tempo" "Trace storage backend" "Internal Dependency"
-        keda = softwareSystem "Custom Metrics Autoscaler (KEDA)" "Event-driven pod autoscaling for KServe" "Internal Dependency"
-        nfd = softwareSystem "NFD" "Hardware capability detection on cluster nodes" "Internal Dependency"
-        gpuOperator = softwareSystem "NVIDIA GPU Operator" "GPU runtime, drivers, device plugin" "Internal Dependency"
-        mariadb = softwareSystem "MariaDB Operator" "Optional database backend for TrustyAI" "Internal Dependency"
+        rhodsOperator = softwareSystem "rhods-operator / opendatahub-operator" "The RHAI operator binary that reconciles platform CRs" "Internal ODH"
+        certManager = softwareSystem "cert-manager" "TLS certificate provisioning and management" "External"
+        sailOperator = softwareSystem "Sail Operator (Istio)" "Service mesh and Gateway API data plane" "External"
+        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API CRDs for ingress" "External"
+        lwsOperator = softwareSystem "LeaderWorkerSet Operator" "Distributed inference workflow orchestration" "External"
+        rhclKuadrant = softwareSystem "RHCL / Kuadrant" "API management with AuthPolicy, RateLimitPolicy" "External"
+        kueueOperator = softwareSystem "Kueue Operator" "Job queue for distributed workloads" "External"
+        jobSetOperator = softwareSystem "JobSet Operator" "Job management for training workloads" "External"
+        olm = softwareSystem "OLM" "Operator Lifecycle Manager (OpenShift)" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API" "Kubernetes control plane" "External"
+        rhoaiBuildConfig = softwareSystem "RHOAI-Build-Config" "Build configuration repository receiving chart syncs" "Internal ODH"
+        nvidiaGPU = softwareSystem "NVIDIA GPU Operator" "GPU-accelerated workload enablement" "External"
+        nfd = softwareSystem "NFD" "Node feature detection for GPU support" "External"
 
-        // External Systems
-        openshift = softwareSystem "OpenShift" "Target platform for OLM-based deployment (4.19.9+)" "External"
-        kubernetes = softwareSystem "Kubernetes" "Target platform for non-OpenShift deployment (1.28+)" "External"
-        olm = softwareSystem "OLM" "Operator Lifecycle Manager for operator subscriptions" "External"
-        registries = softwareSystem "Container Registries" "registry.redhat.io, quay.io — operator image hosting" "External"
-        cloudAPIs = softwareSystem "Cloud Provider APIs" "Azure, CoreWeave, AWS infrastructure management" "External"
-        argocd = softwareSystem "ArgoCD / Flux" "Optional GitOps continuous delivery" "External"
+        platformEngineer -> odhGitops "Deploys RHOAI/ODH platform via Helm or kustomize"
+        dataScienceAdmin -> odhGitops "Configures component profiles and dependencies"
 
-        // Relationships
-        admin -> odhGitops "Deploys platform using kubectl/helm/ArgoCD"
-        admin -> kustomizeLayer "kubectl apply -k" "HTTPS/6443"
-        admin -> rhaiOCPChart "helm install" "HTTPS/6443"
-        admin -> rhaiXKSChart "helm install" "HTTPS/6443"
+        odhGitops -> kubernetesAPI "Creates/manages CRDs, Deployments, RBAC, Gateways" "HTTPS/443"
+        odhGitops -> rhodsOperator "Deploys operator Deployment (xKS) or OLM Subscription (OpenShift)"
+        odhGitops -> certManager "Creates TLS Certificates for gateways and webhooks"
+        odhGitops -> sailOperator "Deploys Istio for service mesh and Gateway data plane"
+        odhGitops -> gatewayAPI "Installs Gateway API CRDs and creates Gateway CRs"
+        odhGitops -> lwsOperator "Installs LeaderWorkerSet for distributed inference"
+        odhGitops -> rhclKuadrant "Deploys Kuadrant for AuthPolicy and RateLimitPolicy"
+        odhGitops -> kueueOperator "Installs Kueue for workload queuing"
+        odhGitops -> jobSetOperator "Installs JobSet for training job management"
+        odhGitops -> olm "Creates OLM Subscriptions (OpenShift path)" "HTTPS/443"
+        odhGitops -> nvidiaGPU "Optional: installs NVIDIA GPU Operator"
+        odhGitops -> nfd "Optional: installs Node Feature Discovery"
+        helmSyncWorkflow -> rhoaiBuildConfig "Syncs Helm charts on release branches" "HTTPS/443"
 
-        odhGitops -> rhodsOperator "Installs and configures via OLM Subscription / Helm Deployment"
-        odhGitops -> certManager "Installs via OLM Subscription / Helm Sub-chart"
-        odhGitops -> kueue "Installs via OLM Subscription + Kueue CR"
-        odhGitops -> lws "Installs via OLM Subscription / Helm Sub-chart"
-        odhGitops -> jobset "Installs via OLM Subscription + JobSetOperator CR"
-        odhGitops -> kuadrant "Installs via OLM Subscription + Kuadrant/Authorino CRs"
-        odhGitops -> istioSail "Installs via OLM Subscription / Helm Sub-chart"
-        odhGitops -> gatewayAPI "Installs CRDs via Helm Sub-chart"
-        odhGitops -> coo "Installs via OLM Subscription"
-        odhGitops -> otel "Installs via OLM Subscription"
-        odhGitops -> tempo "Installs via OLM Subscription"
-        odhGitops -> keda "Installs via OLM Subscription"
-        odhGitops -> nfd "Installs via OLM Subscription + NFD CR"
-        odhGitops -> gpuOperator "Installs via OLM Subscription + ClusterPolicy CR"
-        odhGitops -> mariadb "Installs via OLM Subscription (optional)"
-
-        kustomizeLayer -> olm "Creates OLM Subscriptions" "gRPC/50051"
-        rhaiOCPChart -> olm "Creates OLM Subscriptions" "gRPC/50051"
-        rhaiXKSChart -> kubernetes "Direct deployment (no OLM)" "HTTPS/6443"
-        rhaiXKSChart -> cloudAPIs "Cloud infrastructure management" "HTTPS/443"
-
-        rhaiXKSChart -> depCharts "Includes as Helm dependencies"
-
-        olm -> registries "Pulls operator images" "HTTPS/443"
-        odhGitops -> openshift "Deploys on OpenShift 4.19.9+" "HTTPS/6443"
-        odhGitops -> kubernetes "Deploys on Kubernetes 1.28+" "HTTPS/6443"
-        odhGitops -> argocd "Optional GitOps delivery"
-
-        client -> odhGitops "Inference requests via Gateway" "HTTPS/443"
-
-        cicd -> openshift "Provisions ephemeral HyperShift clusters"
+        xksChart -> depSubCharts "Includes as Helm dependency sub-charts"
+        contractSchemas -> xksChart "Validates CRD structures in templates"
+        contractSchemas -> openshiftChart "Validates CRD structures in templates"
     }
 
     views {
@@ -96,13 +68,17 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal Dependency" {
+            element "Person" {
+                shape Person
                 background #4a90e2
                 color #ffffff
             }
-            element "Person" {
-                shape Person
-                background #08427b
+            element "Software System" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Container" {
+                background #438dd5
                 color #ffffff
             }
         }

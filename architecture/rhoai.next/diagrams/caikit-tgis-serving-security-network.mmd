@@ -4,63 +4,72 @@ graph TB
     end
 
     subgraph Ingress["INGRESS (DMZ)"]
-        Gateway["Istio Ingress Gateway<br/>443/TCP → 8080/8085<br/>TLS 1.2+<br/>RequestAuthentication (JWT)"]
+        Gateway["knative-ingress-gateway<br/>Istio Gateway<br/>443/TCP → 8012/TCP<br/>TLS 1.2+ (SIMPLE)<br/>RequestAuthentication"]
+        LocalGW["knative-local-gateway<br/>Istio Gateway<br/>80/TCP (cluster-local)<br/>No TLS"]
     end
 
-    subgraph ServiceMesh["SERVICE MESH (mTLS STRICT)"]
+    subgraph ServiceMesh["SERVICE MESH (Istio mTLS STRICT)"]
         direction TB
 
-        subgraph ServingPod["KServe Serving Pod<br/>Namespace: user-namespace"]
+        QueueProxy["Knative Queue-Proxy<br/>Namespace: user-ns<br/>Concurrency enforcement"]
+
+        subgraph SRPod["KServe ServingRuntime Pod"]
             direction TB
 
-            Sidecar["Istio Sidecar (Envoy)<br/>PeerAuth: STRICT<br/>mTLS termination"]
-
-            subgraph Containers["Pod Containers"]
-                direction LR
-                Caikit["transformer-container<br/>Caikit Runtime<br/>UID: 1001 (non-root)<br/>Ports: 8080, 8085, 8086<br/>Image: caikit-tgis-serving"]
-                TGISContainer["kserve-container<br/>TGIS Inference Engine<br/>Port: 8033/TCP gRPC<br/>GPU inference"]
+            subgraph Transformer["transformer-container"]
+                CaikitRuntime["Caikit Runtime<br/>caikit-tgis-serving<br/>Python 3.11 / UBI 9<br/>Ports: 8080, 8085, 8086"]
             end
 
-            SharedVol["/mnt/models<br/>Model Artifacts Volume"]
+            subgraph KServeContainer["kserve-container"]
+                TGIS["TGIS Server<br/>Port: 8033/TCP gRPC<br/>Model weights: /mnt/models"]
+            end
+
+            subgraph Init["init-container"]
+                StorageInit["KServe Storage Initializer<br/>Downloads model artifacts"]
+            end
         end
 
-        subgraph Monitoring["Namespace: openshift-user-workload-monitoring"]
-            Prometheus["Prometheus<br/>ServiceMonitor: caikit-metrics"]
-        end
+        Prometheus["Prometheus<br/>User Workload Monitoring"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        S3["S3-Compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM / Secret"]
+        ModelStorage["Model Storage<br/>S3 / MinIO / PVC<br/>TLS (S3) or local (PVC)<br/>Auth: S3 credentials"]
+        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>Auth: API token (optional)<br/>(dev only)"]
     end
 
-    subgraph OptionalAuth["OPTIONAL AUTH"]
-        Authorino["Authorino<br/>Bearer Token Validation"]
-    end
-
-    %% Flows with security details
+    %% External → Ingress
     Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (optional)"| Gateway
-    Gateway -->|"HTTP/8080 or gRPC/8085<br/>mTLS STRICT<br/>Istio PeerAuth"| Sidecar
-    Sidecar -->|"HTTP/8080 or gRPC/8085<br/>Loopback (no encryption)<br/>Trusted after mTLS"| Caikit
-    Caikit -->|"gRPC/8033<br/>Localhost (no encryption)<br/>Pod-internal"| TGISContainer
-    TGISContainer --> SharedVol
 
-    Prometheus -->|"HTTP/8086<br/>PERMISSIVE mTLS<br/>NetworkPolicy restricted"| Caikit
+    %% Ingress → Service Mesh
+    Gateway -->|"HTTP/8012<br/>mTLS STRICT<br/>PeerAuthentication"| QueueProxy
+    LocalGW -->|"HTTP/80<br/>cluster-local"| QueueProxy
 
-    S3 -.->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM credentials<br/>(via KServe storage initializer)"| SharedVol
+    %% Queue-Proxy → Caikit
+    QueueProxy -->|"HTTP/8080<br/>mTLS STRICT<br/>PeerAuthentication"| CaikitRuntime
 
-    Gateway -.->|"token validation<br/>(when enabled)"| Authorino
+    %% Intra-pod communication
+    CaikitRuntime -->|"gRPC/8033<br/>plaintext (localhost)<br/>No auth"| TGIS
+
+    %% Metrics scraping
+    Prometheus -->|"HTTP/8086<br/>No TLS<br/>PeerAuth PERMISSIVE"| CaikitRuntime
+
+    %% Storage
+    StorageInit -->|"Model download<br/>S3 creds (Opaque secret)"| ModelStorage
+
+    %% HuggingFace (dev only)
+    CaikitRuntime -.->|"HTTPS/443<br/>TLS 1.2+<br/>(convert.py only)"| HFHub
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef pod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef container fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef optional fill:#f8cecc,stroke:#b85450,stroke-width:1px,stroke-dasharray:5
+    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
     class Client external
-    class Gateway ingress
-    class Sidecar,Caikit,TGISContainer,Prometheus servicemesh
-    class S3 externalservice
-    class Authorino optional
-    class SharedVol container
+    class Gateway,LocalGW ingress
+    class QueueProxy servicemesh
+    class CaikitRuntime,TGIS,StorageInit pod
+    class ModelStorage,HFHub externalservice
+    class Prometheus monitoring

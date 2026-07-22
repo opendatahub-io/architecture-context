@@ -1,88 +1,76 @@
 graph TB
     subgraph External["EXTERNAL (User Workstation)"]
-        User["User / SRE<br/>oc CLI or kubectl"]
+        User["User / SRE<br/>oc adm must-gather (OCP)<br/>kubectl apply (xKS)"]
     end
 
-    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
-        API["Kubernetes API Server<br/>443/TCP<br/>TLS 1.2+<br/>RBAC AuthZ"]
-    end
-
-    subgraph MustGatherPod["MUST-GATHER POD (Ephemeral Batch Job)"]
+    subgraph Cluster["CLUSTER (RBAC Enforced)"]
         direction TB
 
-        subgraph EntryPoint["Entry Point"]
-            Gather["gather.sh<br/>Distro Detection<br/>Namespace Config"]
+        subgraph MustGatherPod["must-gather Pod"]
+            MG["must-gather Container<br/>Image: odh-must-gather-rhel9<br/>Base: ose-must-gather-rhel9:v4.20<br/>SA: must-gather (OCP) / must-gather-sa (xKS)<br/>Pure Bash — no compiled binaries"]
+
+            subgraph CLIs["CLI Tools (TLS delegated)"]
+                OC_CLI["oc CLI"]
+                Kubectl_CLI["kubectl CLI"]
+                Helm_CLI["helm CLI"]
+            end
         end
 
-        subgraph Parallel["13 Parallel Component Gatherers"]
-            Serving["gather_serving.sh"]
-            DSP["gather_dsp.sh"]
-            Notebooks["gather_notebooks.sh"]
-            Dashboard["gather_dashboard.sh"]
-            KubeRay["gather_kuberay.sh"]
-            Kueue["gather_kueue.sh"]
-            KFTO["gather_kfto.sh"]
-            MR["gather_mr.sh"]
-            TrustyAI["gather_trustyai.sh"]
-            Feast["gather_feast.sh"]
-            LLS["gather_lls.sh"]
-            MLflow["gather_mlflow.sh"]
-            Spark["gather_spark.sh"]
+        APIServer["kube-apiserver<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>RBAC: must-gather / must-gather-reader ClusterRole"]
+
+        subgraph Resources["Resources Accessed (Read-Only)"]
+            direction TB
+
+            subgraph PlatformCRDs["RHOAI Platform CRDs"]
+                DSC["DSCInitialization<br/>DataScienceCluster"]
+                ComponentCRs["InferenceService, DSP,<br/>Dashboard, KubeRay, Kueue,<br/>Training, ModelRegistry,<br/>TrustyAI, Feast, MLflow,<br/>Spark, AIGateway, MCP"]
+            end
+
+            subgraph NetworkCRDs["Networking CRDs"]
+                GatewayAPI["Gateway, HTTPRoute,<br/>GRPCRoute, ReferenceGrant"]
+                IstioCRDs["VirtualService, DestinationRule,<br/>AuthorizationPolicy,<br/>PeerAuthentication"]
+            end
+
+            subgraph DepCRDs["Dependency CRDs (LLM-D)"]
+                CertMgr["cert-manager:<br/>Certificate, Issuer"]
+                LWS["LeaderWorkerSet"]
+                KEDA["ScaledObject, ScaledJob"]
+            end
+
+            subgraph Namespaces["Namespace Inspections"]
+                NS["redhat-ods-operator<br/>redhat-ods-applications<br/>redhat-ods-monitoring<br/>rhods-notebooks<br/>rhoai-model-registries<br/>openshift-ingress<br/>kuadrant-system<br/>rhai-gitops"]
+            end
         end
 
-        subgraph LLMD["LLM-D Sub-Gatherers"]
-            LLMDMain["gather_llmd.sh"]
-            CertMgr["cert-manager.sh"]
-            LWSScript["lws.sh"]
-            SailScript["sail.sh"]
-        end
-    end
-
-    subgraph TargetNamespaces["TARGET NAMESPACES (Read-Only)"]
-        direction LR
-        NS_Operator["redhat-ods-operator"]
-        NS_Apps["redhat-ods-applications"]
-        NS_Notebooks["rhods-notebooks"]
-        NS_Monitoring["redhat-ods-monitoring"]
-        NS_MR["rhoai-model-registries"]
-        NS_Ingress["openshift-ingress"]
-        NS_Istio["istio-system"]
-        NS_CertMgr["cert-manager"]
-        NS_Dynamic["Dynamic Namespaces<br/>(discovered via CRD listing)"]
-    end
-
-    subgraph DataOutput["DATA OUTPUT"]
-        FS["Local Filesystem<br/>$DST_DIR<br/>YAML + Logs + Events"]
+        Output["/must-gather/ tarball<br/>Filesystem only — no network egress"]
     end
 
     %% Flows
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>kubeconfig auth"| API
-    API -->|"Pod Scheduling<br/>SA: cluster-admin (OCP)<br/>SA: must-gather-sa (xKS)"| Gather
-
-    Gather -->|"fork"| Parallel
-    Serving --> LLMDMain
-    LLMDMain -->|"parallel deps"| CertMgr
-    LLMDMain -->|"parallel deps"| LWSScript
-    LLMDMain -->|"parallel deps"| SailScript
-
-    Parallel -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token (read-only)<br/>oc adm inspect / kubectl get"| API
-    LLMD -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token (read-only)"| API
-
-    API -->|"GET resources"| TargetNamespaces
-    Parallel -->|"Write YAML + logs"| FS
-    LLMD -->|"Write YAML + logs"| FS
-
-    FS -->|"tar stream (OCP)<br/>kubectl cp (xKS)<br/>TLS 1.2+"| User
+    User -->|"kubeconfig auth<br/>(client cert / OIDC)"| MG
+    MG --> OC_CLI
+    MG --> Kubectl_CLI
+    MG --> Helm_CLI
+    OC_CLI -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Bearer Token<br/>GET, LIST only"| APIServer
+    Kubectl_CLI -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Bearer Token<br/>GET, LIST only"| APIServer
+    Helm_CLI -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Bearer Token<br/>GET, LIST only"| APIServer
+    APIServer -->|read-only| PlatformCRDs
+    APIServer -->|read-only| NetworkCRDs
+    APIServer -->|read-only| DepCRDs
+    APIServer -->|inspect| Namespaces
+    MG -->|writes| Output
+    Output -->|"oc rsync (OCP)<br/>kubectl cp (xKS)"| User
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef controlplane fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef pod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef target fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef output fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef apiserver fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef resources fill:#dae8fc,stroke:#6c8ebf,stroke-width:1px
+    classDef output fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef tools fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
 
     class User external
-    class API controlplane
-    class Gather,Serving,DSP,Notebooks,Dashboard,KubeRay,Kueue,KFTO,MR,TrustyAI,Feast,LLS,MLflow,Spark,LLMDMain,CertMgr,LWSScript,SailScript pod
-    class NS_Operator,NS_Apps,NS_Notebooks,NS_Monitoring,NS_MR,NS_Ingress,NS_Istio,NS_CertMgr,NS_Dynamic target
-    class FS output
+    class MG cluster
+    class APIServer apiserver
+    class DSC,ComponentCRs,GatewayAPI,IstioCRDs,CertMgr,LWS,KEDA,NS resources
+    class Output output
+    class OC_CLI,Kubectl_CLI,Helm_CLI tools

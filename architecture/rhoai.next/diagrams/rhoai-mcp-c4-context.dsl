@@ -1,67 +1,63 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist / ML Engineer" "Creates ML projects, deploys models, runs training jobs via AI agent"
-        platformAdmin = person "Platform Admin" "Manages RHOAI platform configuration and components"
+        dataScientist = person "Data Scientist / ML Engineer" "Creates projects, deploys models, runs training jobs via AI agent"
+        aiAgent = person "AI Agent" "Claude Desktop, VS Code Copilot, or other MCP client"
 
-        rhoaiMCP = softwareSystem "RHOAI MCP Server" "MCP protocol server exposing RHOAI platform operations as tools for AI agents" {
-            mcpServer = container "FastMCP Server" "Handles MCP protocol (SSE/streamable-http/stdio) and request routing" "Python / FastMCP"
-            pluginManager = container "Plugin Manager" "Loads and manages domain/composite plugins via pluggy hooks" "Python / pluggy"
-            k8sClient = container "K8s Dynamic Client" "Kubernetes API abstraction with CRD caching and impersonation" "Python / kubernetes-python"
-            authSystem = container "Auth System" "OIDC JWT / OCP TokenReview validation with per-tool RBAC filtering" "Python / PyJWT / ASGI middleware"
-
-            mcpServer -> pluginManager "Routes tool calls to"
-            mcpServer -> authSystem "Validates requests via"
-            pluginManager -> k8sClient "Executes K8s operations via"
-            authSystem -> k8sClient "SubjectAccessReview via"
+        rhoaiMcp = softwareSystem "RHOAI MCP Server" "MCP server bridging AI agents to Red Hat OpenShift AI clusters via 55+ tools" {
+            mcpServer = container "MCP Server Core" "FastMCP-based server with pluggy plugin system, multi-transport (stdio/SSE/streamable-http)" "Python / FastMCP"
+            authModule = container "Auth Module" "OIDC JWT validation, Kubernetes TokenReview, RBAC filtering via SubjectAccessReview" "Python / PyJWT"
+            k8sClient = container "K8s Client" "Multi-auth Kubernetes API client with user impersonation and CRD support" "Python / kubernetes"
+            domainPlugins = container "Domain Plugins (7)" "CRUD operations for projects, notebooks, inference, pipelines, connections, storage, training" "Python / pluggy"
+            compositePlugins = container "Composite Plugins (4)" "Cross-domain orchestration: cluster explorer, training workflows, meta/discovery, planner" "Python / pluggy"
+            plannerClient = container "Planner Client" "REST client for external Planner API providing model recommendations" "Python / httpx"
+            modelRegClient = container "Model Registry Client" "Auto-discovers and connects to Kubeflow Model Registry or Red Hat AI Model Catalog" "Python / httpx"
         }
 
-        aiAgent = softwareSystem "AI Agent" "Claude Desktop, Claude Code, or Lightspeed" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "OpenShift/Kubernetes control plane for all CRD CRUD operations" "External"
+        kubeflowNotebook = softwareSystem "Kubeflow Notebook Controller" "Manages workbench (Notebook) CRDs" "Internal RHOAI"
+        kserve = softwareSystem "KServe Controller" "Model serving via InferenceService CRDs" "Internal RHOAI"
+        trainingOperator = softwareSystem "Kubeflow Training Operator v2" "Training job lifecycle via TrainJob CRDs" "Internal RHOAI"
+        dspOperator = softwareSystem "Data Science Pipelines Operator" "Pipeline server management via DSPA CRDs" "Internal RHOAI"
+        modelRegistry = softwareSystem "Model Registry / Model Catalog" "Model metadata storage and discovery" "Internal RHOAI"
+        plannerService = softwareSystem "Planner Service" "Model recommendation and deployment config generation" "Internal RHOAI"
+        oidcProvider = softwareSystem "OIDC Provider" "Identity provider for JWT token validation" "External"
+        openshiftOAuth = softwareSystem "OpenShift OAuth Server" "Validates opaque OCP OAuth tokens via TokenReview" "External"
+        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "DataScienceCluster/DSCI status and component health" "Internal RHOAI"
 
-        k8sAPIServer = softwareSystem "Kubernetes API Server" "OpenShift/Kubernetes control plane" "External"
-        kubeflowNotebooks = softwareSystem "Kubeflow Notebook Controller" "Manages Jupyter workbench lifecycle via Notebook CRD" "Internal RHOAI"
-        kserve = softwareSystem "KServe" "Serverless ML inference serving via InferenceService CRD" "Internal RHOAI"
-        dsPipelines = softwareSystem "Data Science Pipelines Operator" "ML pipeline infrastructure via DSPA CRD" "Internal RHOAI"
-        trainingOperator = softwareSystem "Kubeflow Training Operator" "Distributed training job management via TrainJob CRD" "Internal RHOAI"
-        modelRegistry = softwareSystem "Model Registry" "Stores model metadata, versions, and artifacts" "Internal RHOAI"
-        modelCatalog = softwareSystem "Model Catalog" "Red Hat AI Model Catalog for model artifact resolution" "Internal RHOAI"
-        plannerBackend = softwareSystem "Planner Backend" "Model recommendation engine via natural language intent" "Internal RHOAI"
-        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "Web UI for RHOAI platform (AcceleratorProfile, DSC)" "Internal RHOAI"
-        openshiftOAuth = softwareSystem "OpenShift OAuth Server" "Token validation via TokenReview API" "External"
-        oidcProvider = softwareSystem "OIDC Identity Provider" "JWT token issuance and JWKS for validation" "External"
-        github = softwareSystem "GitHub" "Hosts rh-ai-quickstart repositories for template deployments" "External"
+        # Relationships - External
+        dataScientist -> aiAgent "Uses AI agent to interact with RHOAI"
+        aiAgent -> rhoaiMcp "MCP Protocol (stdio/SSE/streamable-http) over HTTPS/443"
 
-        # User interactions
-        dataScientist -> aiAgent "Instructs agent to perform RHOAI operations"
-        aiAgent -> rhoaiMCP "Invokes MCP tools via SSE/HTTP" "MCP Protocol 8000/TCP"
+        # Relationships - Internal
+        mcpServer -> authModule "Validates requests"
+        mcpServer -> domainPlugins "Dispatches MCP tool calls via pluggy hooks"
+        mcpServer -> compositePlugins "Dispatches composite tool calls"
+        domainPlugins -> k8sClient "CRUD operations"
+        compositePlugins -> k8sClient "Cross-domain queries"
+        compositePlugins -> plannerClient "Model recommendations"
+        compositePlugins -> modelRegClient "Model discovery"
+        authModule -> oidcProvider "JWKS fetching, token validation" "HTTPS/443"
+        authModule -> k8sAPI "TokenReview, SubjectAccessReview" "HTTPS/443"
+        k8sClient -> k8sAPI "CRD CRUD, namespace/secret mgmt" "HTTPS/443"
 
-        # Internal integrations (all via K8s API)
-        rhoaiMCP -> k8sAPIServer "CRUD operations on 19 API resource types" "HTTPS 6443/TCP TLS 1.2+"
-        rhoaiMCP -> kubeflowNotebooks "Create/start/stop/delete workbenches" "via K8s API (Notebook CRD)"
-        rhoaiMCP -> kserve "Deploy models, list runtimes, get endpoints" "via K8s API (InferenceService CRD)"
-        rhoaiMCP -> dsPipelines "Create/manage pipeline infrastructure" "via K8s API (DSPA CRD)"
-        rhoaiMCP -> trainingOperator "Create/monitor/suspend/resume training jobs" "via K8s API (TrainJob CRD)"
-        rhoaiMCP -> rhoaiDashboard "Query platform component status, GPU profiles" "via K8s API (DSC, AcceleratorProfile CRDs)"
-
-        # Direct REST API integrations
-        rhoaiMCP -> modelRegistry "Query registered models, versions, artifacts" "REST API HTTP(S) 8080/8443"
-        rhoaiMCP -> modelCatalog "Resolve model artifact URIs" "REST API HTTP(S) 8080/8443"
-        rhoaiMCP -> plannerBackend "Model recommendations via NL intent" "REST API HTTP 8000/TCP"
-
-        # Auth integrations
-        rhoaiMCP -> openshiftOAuth "Validate OCP OAuth tokens" "TokenReview API HTTPS 6443/TCP"
-        rhoaiMCP -> oidcProvider "Fetch JWKS for JWT validation" "HTTPS 443/TCP"
-
-        # External integrations
-        rhoaiMCP -> github "Clone quickstart repositories" "HTTPS 443/TCP"
+        # Relationships - Platform
+        rhoaiMcp -> kubeflowNotebook "Manages Notebook CRDs" "via K8s API"
+        rhoaiMcp -> kserve "Manages InferenceService/ServingRuntime CRDs" "via K8s API"
+        rhoaiMcp -> trainingOperator "Manages TrainJob/ClusterTrainingRuntime CRDs" "via K8s API"
+        rhoaiMcp -> dspOperator "Manages DSPA CRDs" "via K8s API"
+        rhoaiMcp -> modelRegistry "REST API queries" "HTTP(S)/8080-8443"
+        rhoaiMcp -> plannerService "Model recommendations" "HTTP(S)"
+        rhoaiMcp -> rhoaiDashboard "Reads DataScienceCluster status" "via K8s API"
+        rhoaiMcp -> openshiftOAuth "TokenReview for opaque tokens" "via K8s API"
     }
 
     views {
-        systemContext rhoaiMCP "SystemContext" {
+        systemContext rhoaiMcp "SystemContext" {
             include *
             autoLayout
         }
 
-        container rhoaiMCP "Containers" {
+        container rhoaiMcp "Containers" {
             include *
             autoLayout
         }
@@ -76,16 +72,16 @@ workspace {
                 color #ffffff
             }
             element "Person" {
-                shape Person
                 background #4a90e2
                 color #ffffff
+                shape person
             }
             element "Software System" {
-                shape RoundedBox
+                background #1168bd
+                color #ffffff
             }
             element "Container" {
-                shape RoundedBox
-                background #4a90e2
+                background #438dd5
                 color #ffffff
             }
         }

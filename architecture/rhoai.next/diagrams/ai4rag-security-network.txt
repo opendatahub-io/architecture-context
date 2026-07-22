@@ -1,107 +1,100 @@
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  CONSUMER PROCESS (Trusted - same process boundary)                          │
-│                                                                              │
-│  [User Code / KFP Pipeline Component]                                        │
-│         │                                                                    │
-│         │ In-process Python call                                             │
-│         │ Protocol: Python method invocation                                 │
-│         │ Encryption: N/A (in-process)                                       │
-│         │ Auth: N/A                                                          │
-│         ▼                                                                    │
-│  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │  ai4rag Library (in-process)                                           │  │
-│  │                                                                        │  │
-│  │  [AI4RAGExperiment]                                                    │  │
-│  │    ├── [ModelsPreSelector] ── [ChromaDB (in-memory, ephemeral)]        │  │
-│  │    ├── [GAMOptimizer / RandomOptimizer]                                │  │
-│  │    ├── [SimpleRAG Template]                                            │  │
-│  │    │     ├── [LangChainChunker] (in-process, no network)              │  │
-│  │    │     └── [Retriever] (in-process, delegates to vector store)      │  │
-│  │    ├── [UnitxtEvaluator] (in-process, no network)                     │  │
-│  │    └── [EventHandler] (in-process callback)                           │  │
-│  │                                                                        │  │
-│  │  Provider Adapters (outbound network calls):                           │  │
-│  │    ├── [OGXFoundationModel]                                           │  │
-│  │    ├── [OGXEmbeddingModel]                                            │  │
-│  │    └── [OGXVectorStore]                                               │  │
-│  │              │                                                         │  │
-│  └──────────────┼─────────────────────────────────────────────────────────┘  │
-│                 │                                                            │
-│                 │ Port: Configurable (default HTTPS)                         │
-│                 │ Protocol: HTTPS (REST API via ogx-client)                  │
-│                 │ Encryption: TLS 1.2+                                       │
-│                 │ Auth: API Key (Bearer token)                               │
-│                 │ Client Library: ogx-client ~1.0.0 → httpx                  │
-│                 ▼                                                            │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES                                                           │
-│                                                                              │
-│  [OGX Server]                                                                │
-│  - Endpoints:                                                                │
-│    • POST /chat/completions       (foundation model inference)               │
-│    • POST /embeddings             (text embedding generation)                │
-│    • POST /vector_stores          (create vector store)                      │
-│    • GET  /vector_stores/{id}     (retrieve vector store)                    │
-│    • DELETE /vector_stores/{id}   (delete vector store)                      │
-│    • POST /vector_io/insert       (insert document chunks)                   │
-│    • POST /vector_io/query        (similarity search)                        │
-│    • GET  /models                 (model discovery)                           │
-│  - Auth: API Key required (Bearer token in Authorization header)             │
-│  - Encryption: TLS 1.2+ (enforced by ogx-client via httpx)                  │
-│  - Certificate validation: System trust store (Python ssl defaults)          │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│  LOCAL PROCESS (Trusted - Library Context)                              │
+│                                                                          │
+│  [ai4rag Library]                                                        │
+│  - Deployment: Python library (in-process)                               │
+│  - No Kubernetes services, no listening ports                            │
+│  - Runs within consumer process (e.g., KFP component, notebook)         │
+│                                                                          │
+│  Internal Modules (no network traffic):                                  │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │  AI4RAGExperiment → HPO Engine (GAM/Random)                      │   │
+│  │  DoclingChunker / LangChainChunker → AI4RAGChunks                │   │
+│  │  UnitxtEvaluator → metric scores (in-process)                    │   │
+│  │  ChromaDB → in-memory vector store (no network egress)           │   │
+│  │  EventHandler → LocalEventHandler (writes JSON to disk)          │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+│  Outbound connections from ai4rag:                                       │
+│         │                                                                │
+│         ├──────────────────────────────────────────────┐                 │
+│         │                                              │                 │
+│         │ OGX Server Connection                        │ S3 Connection   │
+│         │ Port: Configurable                           │ Port: 443/TCP   │
+│         │ Protocol: HTTPS                              │ Protocol: HTTPS │
+│         │ Encryption: TLS (default)                    │ Encryption: TLS │
+│         │   ⚠ FALLBACK: verify=False on                │ Auth: AWS IAM   │
+│         │     SSL errors (self-signed certs)            │   (Access Key + │
+│         │ Auth: API Key (Bearer Token)                 │    Secret Key)  │
+│         │                                              │                 │
+│         ▼                                              ▼                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [OGX Server]                                                            │
+│  - Purpose: Foundation model inference, embedding generation,            │
+│             vector store management, vector I/O                          │
+│  - Endpoints used:                                                       │
+│    • POST /chat/completions (inference)                                  │
+│    • POST /embeddings (embedding generation)                             │
+│    • POST /vector_io/insert (store vectors)                              │
+│    • POST /vector_io/query (search vectors)                              │
+│    • DELETE /vector_io/delete (remove vectors)                           │
+│    • POST /vector_stores (create collection)                             │
+│    • GET /models (list available models)                                 │
+│  - Auth: API Key (Bearer Token) per request                             │
+│  - Encryption: TLS (httpx default)                                       │
+│  - ⚠ Security Risk: SSL verify=False fallback on self-signed certs      │
+│    (logged as warning, potential MITM in production)                     │
+│                                                                          │
+│  [S3-compatible Storage - configurable endpoint]                         │
+│  - Purpose: Document and experiment artifact persistence                 │
+│  - Auth: AWS IAM credentials (AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY)│
+│  - Endpoint: AWS_S3_ENDPOINT (environment variable)                     │
+│  - Encryption: TLS (configurable via verify param, default True)         │
+│  - Port: 443/TCP                                                         │
+│                                                                          │
+│  [ChromaDB - In-Process Only]                                            │
+│  - Purpose: Local in-memory vector store (development/pre-selection)     │
+│  - NO network egress (runs in-process via langchain-chroma)              │
+│  - Auth: None                                                            │
+│  - Encryption: N/A                                                       │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 
-NETWORK SUMMARY:
-===============
+Secrets Summary:
+- OGX API Key (API Key) - Authentication to OGX server
+  • Provisioned by: User (via OgxClient constructor or environment variable)
+  • Auto-rotate: No
+- AWS_ACCESS_KEY_ID (AWS Credential) - S3 storage authentication
+  • Provisioned by: Environment variable or Kubernetes Secret
+  • Auto-rotate: No
+- AWS_SECRET_ACCESS_KEY (AWS Credential) - S3 storage authentication
+  • Provisioned by: Environment variable or Kubernetes Secret
+  • Auto-rotate: No
+- AWS_S3_ENDPOINT (Endpoint URL) - S3-compatible endpoint address
+  • Provisioned by: Environment variable or Kubernetes Secret
+  • Auto-rotate: No
 
-Ingress:  None (ai4rag is a library, not a network service)
-Egress:   OGX Server only (all API calls via ogx-client over HTTPS)
+RBAC Summary:
+- No Kubernetes RBAC — ai4rag is a Python library, not a Kubernetes operator.
+- RBAC is the responsibility of the consuming workload.
 
-TRUST BOUNDARIES:
-=================
+Crypto Summary:
+- hashlib.sha256: Used for deterministic chunk ID generation (NOT cryptographic security)
+- httpx TLS: Default TLS for OGX Server connections
+- boto3 TLS: Default TLS for S3 connections
+- ⚠ SSL verify=False fallback: create_ogx_client() silently downgrades to unverified TLS
+  on self-signed certificates. Potential MITM risk in production deployments.
 
-1. In-Process Boundary:
-   - All ai4rag components run in the same Python process
-   - ChromaDB runs in-memory (no network, ephemeral)
-   - LangChain, Unitxt, scikit-learn, pygam all run in-process
-   - No inter-process or inter-container communication
+Authentication Summary:
+| Endpoint              | Methods                    | Auth Mechanism              | Enforcement Point |
+|-----------------------|----------------------------|-----------------------------|-------------------|
+| OGX Server            | REST (POST, GET, DELETE)   | API Key (Bearer Token)      | OGX Server        |
+| S3-compatible storage | REST (GET, PUT, DELETE)    | AWS IAM (Access Key+Secret) | S3 endpoint       |
 
-2. Network Boundary (Egress Only):
-   - ai4rag → OGX Server via HTTPS/TLS 1.2+
-   - Authentication: API Key (Bearer token)
-   - Client: ogx-client SDK wrapping httpx
-   - Certificate validation: System trust store
-
-RBAC SUMMARY:
-=============
-
-None. ai4rag is a Python library with no Kubernetes RBAC requirements.
-RBAC is the responsibility of the consuming service (e.g., KFP component pod).
-
-SECRETS:
-========
-
-| Secret              | Type      | Storage                    | Rotation    |
-|---------------------|-----------|----------------------------|-------------|
-| OGX API Key         | API Key   | User-provisioned (.env)    | Manual (No) |
-
-- The API key is passed to OgxClient(api_key=...) at construction time
-- No secrets are stored or managed by ai4rag itself
-- In KFP context, the API key would typically come from a Kubernetes Secret
-  mounted as an environment variable in the pipeline component pod
-
-SERVICE MESH:
-=============
-
-Not applicable. ai4rag is a library, not a deployed service.
-Service mesh participation depends on the consuming service's deployment.
-
-TLS CONFIGURATION:
-==================
-
-- ai4rag does not configure TLS directly
-- TLS behavior is inherited from ogx-client → httpx → Python ssl module
-- Certificate trust store: System default (inherited from container/host)
-- Minimum TLS version: Depends on Python ssl module configuration
-- FIPS compliance: Depends on the system OpenSSL and Python build
+FIPS Compliance:
+- ai4rag is a Python library (no container image, no Go binary)
+- FIPS build-time validation is the responsibility of the consuming container
+- hashlib.sha256 usage is for chunk IDs (not security-critical)
+- SSL verify=False fallback is a non-FIPS concern for production

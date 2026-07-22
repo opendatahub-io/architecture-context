@@ -1,131 +1,102 @@
 graph TD
-    subgraph ClientRequest["Client Request"]
-        Client["Client<br/>Authorization: Bearer {JWT}"]
-    end
-
-    subgraph AuthenticationLayer["Authentication Layer (ASGI Middleware)"]
+    subgraph AuthFlow["Authentication Flow"]
         direction TB
-        ExtractToken["Extract Bearer Token<br/>from Authorization header"]
-        ValidateToken["Validate Token"]
-
-        subgraph AuthProviders["Auth Provider Options"]
-            OAuth2JWKS["OAuth2 JWKS<br/>Fetch public keys from<br/>/.well-known/jwks.json<br/>Validate JWT signature"]
-            OAuth2Introspect["OAuth2 Introspection<br/>POST to introspection endpoint<br/>RFC 7662<br/>Basic Auth (client_id/secret)"]
-            CustomAuth["Custom Endpoint<br/>Forward token to<br/>external validation URL"]
-        end
-
-        ExtractClaims["Extract Claims & Attributes<br/>sub, username, roles,<br/>teams, projects, namespaces"]
+        Request["Incoming Request<br/>Authorization: Bearer &lt;token&gt;"]
+        AuthMW["AuthenticationMiddleware<br/>(ASGI Layer)"]
+        Request --> AuthMW
     end
 
-    subgraph QuotaLayer["Rate Limiting Layer (Optional)"]
-        QuotaCheck["QuotaMiddleware<br/>Per-client rate limits"]
-        AuthLimits["Authenticated Client Limits"]
-        AnonLimits["Anonymous Client Limits"]
+    subgraph AuthProviders["Auth Provider (pluggable)"]
+        direction LR
+        OAuth2["OAuth2Provider<br/>• JWKS key rotation<br/>• JWT verification<br/>• Token introspection (RFC 7662)<br/>• Configurable refresh period"]
+        CustomAuth["CustomProvider<br/>• Forwards token to external endpoint<br/>• Configurable URL and TLS"]
     end
 
-    subgraph AccessControlLayer["Access Control Layer (ABAC)"]
+    AuthMW -->|"delegates to"| OAuth2
+    AuthMW -->|"OR delegates to"| CustomAuth
+
+    subgraph Identity["Authenticated Identity"]
+        Principal["Principal<br/>(extracted from JWT claims)"]
+        Attributes["User Attributes<br/>• roles<br/>• teams<br/>• projects<br/>• namespaces"]
+    end
+
+    OAuth2 -->|"extracts"| Principal
+    OAuth2 -->|"extracts"| Attributes
+    CustomAuth -->|"extracts"| Principal
+    CustomAuth -->|"extracts"| Attributes
+
+    subgraph QuotaEnforcement["Quota Enforcement (QuotaMiddleware)"]
+        QuotaCheck["Per-Client Rate Limiting"]
+        AnonQuota["Anonymous: 100 req/day"]
+        AuthQuota["Authenticated: 1000 req/day"]
+        QuotaCheck --> AnonQuota
+        QuotaCheck --> AuthQuota
+    end
+
+    Principal --> QuotaCheck
+
+    subgraph ABACEngine["Access Control Engine (Cedar-inspired ABAC)"]
         direction TB
-        ABACEngine["ABAC Engine<br/>Cedar-like Policy Language"]
-
-        subgraph PolicyEvaluation["Policy Evaluation"]
-            direction LR
-            PermitRules["Permit Rules<br/>permit(principal, action, resource)<br/>when { conditions }"]
-            ForbidRules["Forbid Rules<br/>forbid(principal, action, resource)<br/>unless { conditions }"]
-        end
-
-        subgraph Actions["Actions"]
-            Create["create"]
-            Read["read"]
-            Update["update"]
-            Delete["delete"]
-        end
-
-        subgraph ResourceTypes["Resource Types"]
-            ModelRes["model::*<br/>model::my-llama-model"]
-            VectorDBRes["vector_db::*<br/>vector_db::my-rag-db"]
-            ShieldRes["shield::*"]
-            DatasetRes["dataset::*"]
-            BenchmarkRes["benchmark::*"]
-            AgentRes["agent::*"]
-            ToolGroupRes["toolgroup::*"]
-        end
-
-        subgraph Conditions["Conditions"]
-            UserAttr["user with {value} in {attr}<br/>(e.g., user with 'admin' in roles)"]
-            OwnerCheck["user is owner<br/>(resource owner match)"]
-            OwnerAttr["user in owners {attr}<br/>(e.g., user in owners teams)"]
-        end
-
-        DefaultPolicy["Default Policy<br/>Owners have full access<br/>(backward compatibility)"]
+        PolicyEval["Policy Evaluation<br/>CommonRoutingTableImpl"]
+        Conditions["Conditions Evaluated:<br/>• Principal identity<br/>• Resource type & ID<br/>• User attributes (roles, teams)<br/>• Project membership<br/>• Namespace scope"]
     end
 
-    subgraph PublicBypass["Public Endpoints (bypass all auth)"]
-        HealthEP["/health"]
-        VersionEP["/version"]
-        DocsEP["/docs"]
-        OpenAPIEP["/openapi.json"]
+    Attributes -->|"input to"| PolicyEval
+    PolicyEval --> Conditions
+
+    subgraph Resources["Protected Resources"]
+        direction LR
+        Models["Models<br/>/v1/models/*"]
+        Shields["Shields<br/>/v1/shields/*"]
+        VectorDBs["Vector DBs<br/>/v1/vector-io/*"]
+        Agents["Agents<br/>/v1/agents/*"]
+        Datasets["Datasets<br/>/v1/datasets/*"]
+        ToolGroups["Tool Groups<br/>/v1/toolgroups/*"]
+        Benchmarks["Benchmarks<br/>/v1/eval/benchmarks/*"]
     end
 
-    subgraph ProtectedAPIs["Protected API Endpoints"]
-        InferenceEP["/v1/inference/*"]
-        AgentsEP["/v1/agents/*"]
-        SafetyEP["/v1/safety/*"]
-        VectorIOEP["/v1/vector-io/*"]
-        ModelsEP["/v1/models"]
-        EvalEP["/v1/eval/*"]
-        ToolsEP["/v1/tool-runtime/*"]
-        OtherAPIs["+ 10 more API groups"]
+    Conditions -->|"ALLOW / DENY"| Models
+    Conditions -->|"ALLOW / DENY"| Shields
+    Conditions -->|"ALLOW / DENY"| VectorDBs
+    Conditions -->|"ALLOW / DENY"| Agents
+    Conditions -->|"ALLOW / DENY"| Datasets
+    Conditions -->|"ALLOW / DENY"| ToolGroups
+    Conditions -->|"ALLOW / DENY"| Benchmarks
+
+    subgraph UnprotectedEndpoints["Unauthenticated Endpoints"]
+        Health["/v1/health<br/>No auth required"]
+        Version["/v1/version<br/>No auth required"]
+        Routes["/v1/inspect/routes<br/>No auth required"]
     end
 
-    %% Flow
-    Client -->|"1. HTTP Request"| ExtractToken
-    ExtractToken -->|"2. Token"| ValidateToken
-    ValidateToken --> OAuth2JWKS
-    ValidateToken --> OAuth2Introspect
-    ValidateToken --> CustomAuth
-    OAuth2JWKS -->|validated| ExtractClaims
-    OAuth2Introspect -->|validated| ExtractClaims
-    CustomAuth -->|validated| ExtractClaims
-
-    ExtractClaims -->|"3. User context"| QuotaCheck
-    QuotaCheck --> AuthLimits
-    QuotaCheck --> AnonLimits
-
-    QuotaCheck -->|"4. Rate limit OK"| ABACEngine
-    ABACEngine --> PermitRules
-    ABACEngine --> ForbidRules
-    PermitRules --> Actions
-    ForbidRules --> Actions
-    Actions --> ResourceTypes
-    PermitRules --> Conditions
-    ForbidRules --> Conditions
-    ABACEngine --> DefaultPolicy
-
-    ABACEngine -->|"5. Authorized"| ProtectedAPIs
-
-    Client -.->|"Direct (no auth)"| PublicBypass
+    subgraph Notes["Important Notes"]
+        Note1["Auth is OPTIONAL<br/>Server runs without auth by default"]
+        Note2["ABAC policies only enforced<br/>when auth is enabled"]
+        Note3["No Kubernetes RBAC<br/>All authorization is application-level"]
+    end
 
     %% Styling
-    style Client fill:#ecf0f1,stroke:#333
-    style ExtractToken fill:#f39c12,stroke:#333,color:#fff
-    style ValidateToken fill:#f39c12,stroke:#333,color:#fff
-    style OAuth2JWKS fill:#e74c3c,stroke:#333,color:#fff
-    style OAuth2Introspect fill:#e74c3c,stroke:#333,color:#fff
-    style CustomAuth fill:#e74c3c,stroke:#333,color:#fff
-    style ExtractClaims fill:#f39c12,stroke:#333,color:#fff
-    style QuotaCheck fill:#9b59b6,stroke:#333,color:#fff
-    style ABACEngine fill:#e74c3c,stroke:#333,color:#fff
-    style PermitRules fill:#27ae60,stroke:#333,color:#fff
-    style ForbidRules fill:#c0392b,stroke:#333,color:#fff
-    style DefaultPolicy fill:#95a5a6,stroke:#333,color:#fff
-    style Create fill:#3498db,stroke:#333,color:#fff
-    style Read fill:#3498db,stroke:#333,color:#fff
-    style Update fill:#3498db,stroke:#333,color:#fff
-    style Delete fill:#3498db,stroke:#333,color:#fff
-    style ModelRes fill:#7ed321,stroke:#333
-    style VectorDBRes fill:#7ed321,stroke:#333
-    style ShieldRes fill:#7ed321,stroke:#333
-    style DatasetRes fill:#7ed321,stroke:#333
-    style BenchmarkRes fill:#7ed321,stroke:#333
-    style AgentRes fill:#7ed321,stroke:#333
-    style ToolGroupRes fill:#7ed321,stroke:#333
+    style Request fill:#e8e8e8,stroke:#333,stroke-width:2px
+    style AuthMW fill:#f5a623,stroke:#333,stroke-width:2px
+    style OAuth2 fill:#4a90e2,stroke:#333,color:#fff
+    style CustomAuth fill:#4a90e2,stroke:#333,color:#fff
+    style Principal fill:#7ed321,stroke:#333
+    style Attributes fill:#7ed321,stroke:#333
+    style PolicyEval fill:#f5a623,stroke:#333,stroke-width:2px
+    style QuotaCheck fill:#ff9900,stroke:#333
+
+    style Models fill:#dae8fc,stroke:#6c8ebf
+    style Shields fill:#dae8fc,stroke:#6c8ebf
+    style VectorDBs fill:#dae8fc,stroke:#6c8ebf
+    style Agents fill:#dae8fc,stroke:#6c8ebf
+    style Datasets fill:#dae8fc,stroke:#6c8ebf
+    style ToolGroups fill:#dae8fc,stroke:#6c8ebf
+    style Benchmarks fill:#dae8fc,stroke:#6c8ebf
+
+    style Health fill:#d5e8d4,stroke:#82b366
+    style Version fill:#d5e8d4,stroke:#82b366
+    style Routes fill:#d5e8d4,stroke:#82b366
+
+    style Note1 fill:#f8cecc,stroke:#b85450
+    style Note2 fill:#f8cecc,stroke:#b85450
+    style Note3 fill:#f8cecc,stroke:#b85450

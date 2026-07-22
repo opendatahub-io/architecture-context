@@ -1,0 +1,76 @@
+sequenceDiagram
+    participant KServe as KServe Agent
+    participant MMesh as ModelMesh Agent
+    participant Dashboard as RHOAI Dashboard
+    participant KRBP as kube-rbac-proxy<br/>8443/TCP TLS
+    participant TrustyAI as TrustyAI Service<br/>8080/TCP (loopback)
+    participant Scheduler as Prometheus Scheduler<br/>(asyncio background)
+    participant PVC as PVC Storage<br/>HDF5 Files
+    participant MariaDB as MariaDB<br/>3306/TCP TLS
+    participant Prometheus as Prometheus<br/>Scraper
+
+    Note over KServe,MariaDB: Flow 1: KServe V2 Inference Data Ingestion
+
+    KServe->>KRBP: POST / (CloudEvent)<br/>HTTPS/8443, Bearer Token
+    KRBP->>TrustyAI: POST / (forwarded)<br/>HTTP/8080 loopback, trusted
+    TrustyAI->>TrustyAI: Gzip decompress<br/>Parse KServe V2 payload<br/>Reconcile input/output pairs
+
+    alt PVC Storage Mode
+        TrustyAI->>PVC: Write HDF5 datasets<br/>Local I/O
+    else MariaDB Storage Mode
+        TrustyAI->>MariaDB: INSERT inference data<br/>3306/TCP, TLS (optional)<br/>Username/Password
+    end
+
+    TrustyAI-->>KRBP: 200 OK
+    KRBP-->>KServe: 200 OK
+
+    Note over MMesh,MariaDB: Flow 1b: ModelMesh Protobuf Ingestion
+
+    MMesh->>KRBP: POST /consumer/kserve/v2<br/>HTTPS/8443, Bearer Token
+    KRBP->>TrustyAI: POST /consumer/kserve/v2<br/>HTTP/8080 loopback
+    TrustyAI->>TrustyAI: Decode base64 protobuf<br/>Parse grpc_predict_v2.proto<br/>Stage partial payload
+    TrustyAI->>TrustyAI: Reconcile when<br/>input+output pair complete
+
+    alt PVC Storage Mode
+        TrustyAI->>PVC: Write reconciled data
+    else MariaDB Storage Mode
+        TrustyAI->>MariaDB: INSERT reconciled data
+    end
+
+    TrustyAI-->>KRBP: 200 OK
+    KRBP-->>MMesh: 200 OK
+
+    Note over Scheduler,Prometheus: Flow 2: Scheduled Metric Computation
+
+    loop Every N seconds (default 30s)
+        Scheduler->>Scheduler: Check MetricsDirectory<br/>for registered metrics
+
+        alt PVC Storage Mode
+            Scheduler->>PVC: Read inference data<br/>Local I/O
+        else MariaDB Storage Mode
+            Scheduler->>MariaDB: SELECT inference data<br/>3306/TCP
+        end
+
+        Scheduler->>Scheduler: Compute metrics<br/>(SPD, DIR, KS, t-test, mean)
+        Scheduler->>Scheduler: Update Prometheus gauges<br/>via PrometheusPublisher
+    end
+
+    Prometheus->>KRBP: GET /q/metrics<br/>HTTPS/8443, Bearer Token
+    KRBP->>TrustyAI: GET /q/metrics<br/>HTTP/8080 loopback
+    TrustyAI-->>KRBP: OpenMetrics text<br/>(trustyai_* gauges)
+    KRBP-->>Prometheus: OpenMetrics response
+
+    Note over Dashboard,MariaDB: Flow 3: On-Demand Metric Computation
+
+    Dashboard->>KRBP: POST /metrics/group/fairness/spd<br/>HTTPS/8443, Bearer Token
+    KRBP->>TrustyAI: POST /metrics/group/fairness/spd<br/>HTTP/8080 loopback
+
+    alt PVC Storage Mode
+        TrustyAI->>PVC: Read inference data
+    else MariaDB Storage Mode
+        TrustyAI->>MariaDB: SELECT inference data
+    end
+
+    TrustyAI->>TrustyAI: Compute SPD metric
+    TrustyAI-->>KRBP: JSON response<br/>(metric value + metadata)
+    KRBP-->>Dashboard: JSON response

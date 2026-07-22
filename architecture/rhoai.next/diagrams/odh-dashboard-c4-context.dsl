@@ -1,90 +1,88 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Creates notebooks, deploys models, runs experiments"
-        mlops = person "MLOps Engineer" "Manages ML pipelines, model registry, serving infrastructure"
-        admin = person "Platform Admin" "Configures cluster settings, manages user access"
+        datascientist = person "Data Scientist" "Creates projects, deploys models, runs experiments, builds AI agents"
+        mlops = person "MLOps Engineer" "Manages model serving, pipelines, and platform configuration"
+        admin = person "Platform Admin" "Configures dashboard features, manages user access, platform settings"
 
-        odhDashboard = softwareSystem "ODH Dashboard" "Unified web UI and API gateway for Red Hat OpenShift AI" {
-            frontend = container "React SPA" "PatternFly 6 UI with Module Federation host" "TypeScript/React"
-            backend = container "Node.js Backend" "Fastify API proxy, K8s pass-through, WebSocket relay, static serving" "Node.js 22"
-            kubeRbacProxy = container "kube-rbac-proxy" "TLS-terminating authentication sidecar, enforces OpenShift project list access" "Go"
-            genAiBff = container "gen-ai BFF" "LlamaStack integration, chatbot, prompts, vector stores, MCP tools, agent profiles" "Go"
-            maasBff = container "maas BFF" "API key management, model subscriptions, policies" "Go"
-            modelRegistryBff = container "model-registry BFF" "Model catalog browsing, version management" "Go"
-            mlflowBff = container "mlflow BFF" "Experiment tracking, run management" "Go"
-            evalHubBff = container "eval-hub BFF" "TrustyAI evaluation management" "Go"
-            automlBff = container "automl BFF" "AutoML pipeline creation and management" "Go"
-            autoragBff = container "autorag BFF" "AutoRAG pipeline creation and management" "Go"
-            agentOpsBff = container "agent-ops BFF" "Agent runtime monitoring and management" "Go"
-            dashboardOperator = container "Dashboard Operator" "Manages Dashboard CR lifecycle, module enablement, kustomize rendering" "Go Operator"
-            pluginCore = container "plugin-core" "Shared plugin SDK: extension points, PluginStore, navigation/route APIs" "TypeScript Library"
+        odhDashboard = softwareSystem "ODH Dashboard" "RHOAI web console — unified UI for data science projects, model serving, notebooks, pipelines, and generative AI" {
+            frontend = container "React Frontend" "PatternFly 6 shell application with Webpack Module Federation" "TypeScript/React"
+            legacyBackend = container "Legacy Backend" "Monolithic BFF — K8s API proxy, WebSocket watches, auth, static file serving" "Node.js/Fastify"
+            kubeRbacProxy = container "kube-rbac-proxy" "OAuth token validation sidecar, header injection" "Go Sidecar"
+            coreBff = container "core-bff" "Next-gen core BFF for base dashboard features" "Go"
+            genAiBff = container "gen-ai BFF" "LLM playground, RAG, guardrails, MCP integration" "Go"
+            maasBff = container "maas BFF" "Managed model deployment, gateway-backed inference" "Go"
+            modelRegBff = container "model-registry BFF" "Model catalog browsing, registration, versioning" "Go"
+            mlflowBff = container "mlflow BFF" "MLflow experiment tracking UI" "Go"
+            evalHubBff = container "eval-hub BFF" "LM evaluation jobs and results" "Go"
+            automlBff = container "automl BFF" "Automated tabular/time-series ML pipelines" "Go"
+            autoragBff = container "autorag BFF" "Automated RAG optimization pipelines" "Go"
+            agentOpsBff = container "agent-ops BFF" "AI agent lifecycle management" "Go"
+            dashboardOperator = container "Dashboard Operator" "Reconciles Dashboard CR, manages module deployment lifecycle" "Go/controller-runtime"
         }
 
-        gatewayApi = softwareSystem "Gateway API" "data-science-gateway for external ingress" "External"
-        k8sApi = softwareSystem "Kubernetes API" "Cluster API server for resource operations" "External"
-        rhodsOperator = softwareSystem "RHOAI Operator" "Deploys and manages Dashboard CR lifecycle" "Internal Platform"
-        dspApi = softwareSystem "DataScience Pipelines" "Pipeline execution and management" "Internal Platform"
-        modelRegistryApi = softwareSystem "Model Registry" "Model version tracking and catalog" "Internal Platform"
-        kserve = softwareSystem "KServe" "Model serving and inference" "Internal Platform"
-        mlmd = softwareSystem "ML Metadata" "Artifact and execution tracking" "Internal Platform"
-        trustyai = softwareSystem "TrustyAI" "AI fairness, explainability, and evaluation" "Internal Platform"
-        llamaStack = softwareSystem "LlamaStack Server" "LLM inference, vector stores, file management" "External"
-        maasApi = softwareSystem "MaaS API Server" "Model-as-a-Service API keys and subscriptions" "External"
-        mlflowServer = softwareSystem "MLflow Tracking" "Experiment and prompt management" "External"
-        nemoGuardrails = softwareSystem "NeMo Guardrails" "Content moderation" "External"
-        prometheus = softwareSystem "Prometheus/Thanos" "Metrics queries" "Internal Platform"
-        perses = softwareSystem "Perses" "Observability dashboards" "Internal Platform"
-        mcpServers = softwareSystem "MCP Servers" "Tool discovery for AI agents" "External"
+        # Platform components (Internal RHOAI)
+        rhodsOperator = softwareSystem "RHOAI Operator" "Creates Dashboard CR, manages platform lifecycle" "Internal RHOAI"
+        k8sApi = softwareSystem "Kubernetes API Server" "Resource CRUD, RBAC, watch" "Platform"
+        kserve = softwareSystem "KServe" "Model serving with InferenceService" "Internal RHOAI"
+        modelRegistry = softwareSystem "Model Registry" "Model catalog and versioning" "Internal RHOAI"
+        kfPipelines = softwareSystem "Kubeflow Pipelines" "ML workflow orchestration" "Internal RHOAI"
+        mlflowServer = softwareSystem "MLflow Tracking Server" "Experiment and run tracking" "Internal RHOAI"
+        trustyai = softwareSystem "TrustyAI" "Bias and explainability metrics" "Internal RHOAI"
+        kueue = softwareSystem "Kueue" "Workload queue management" "Internal RHOAI"
+        feast = softwareSystem "Feast" "Feature store management" "Internal RHOAI"
 
-        # User interactions
-        datascientist -> odhDashboard "Uses dashboard for notebooks, model serving, experiments" "HTTPS/443"
-        mlops -> odhDashboard "Manages pipelines, model registry, AutoML" "HTTPS/443"
-        admin -> odhDashboard "Configures cluster settings, manages access" "HTTPS/443"
+        # External services
+        llamaStack = softwareSystem "Llama Stack" "LLM inference and agent runtime" "External"
+        nemoGuardrails = softwareSystem "NeMo Guardrails" "Content moderation and safety guardrails" "External"
+        s3Storage = softwareSystem "S3 Storage" "Object storage for models, data, artifacts" "External"
+        openaiApi = softwareSystem "OpenAI API" "Fallback LLM provider" "External"
+        ogx = softwareSystem "OGX" "Open GenAI Stack — RAG optimization orchestration" "External"
+        mcpServers = softwareSystem "MCP Servers" "Model Context Protocol tool servers" "External"
+        thanosQuerier = softwareSystem "Thanos Querier" "Prometheus metrics" "Platform"
+        platformGateway = softwareSystem "Platform Gateway" "Envoy-based ingress routing" "Platform"
 
-        # External ingress
-        gatewayApi -> kubeRbacProxy "Routes external traffic" "HTTPS/8443 TLS"
-        kubeRbacProxy -> backend "Forwards authenticated requests" "HTTP/8080"
-        backend -> frontend "Serves SPA and module federation remotes"
+        # Relationships - Users
+        datascientist -> odhDashboard "Creates projects, deploys models, runs experiments via" "HTTPS/443"
+        mlops -> odhDashboard "Manages serving endpoints, monitors pipelines via" "HTTPS/443"
+        admin -> odhDashboard "Configures features, manages access via" "HTTPS/443"
 
-        # Backend to BFF sidecars
-        backend -> genAiBff "Proxies gen-ai requests" "HTTPS/8143 TLS"
-        backend -> maasBff "Proxies MaaS requests" "HTTPS/8243 TLS"
-        backend -> modelRegistryBff "Proxies model registry requests" "HTTPS/8043 TLS"
-        backend -> mlflowBff "Proxies MLflow requests" "HTTPS/8343 TLS"
-        backend -> evalHubBff "Proxies eval-hub requests" "HTTPS/8543 TLS"
-        backend -> automlBff "Proxies AutoML requests" "HTTPS/8643 TLS"
-        backend -> autoragBff "Proxies AutoRAG requests" "HTTPS/8743 TLS"
-        backend -> agentOpsBff "Proxies agent-ops requests" "HTTPS/8843 TLS"
+        # Relationships - Internal containers
+        frontend -> legacyBackend "Served by and API calls to" "HTTP/8080"
+        kubeRbacProxy -> legacyBackend "Forwards authenticated requests" "HTTP/8080"
+        legacyBackend -> genAiBff "Proxies /gen-ai/api requests" "HTTPS/8143"
+        legacyBackend -> maasBff "Proxies /maas/api requests" "HTTPS/8243"
+        legacyBackend -> modelRegBff "Proxies /model-registry/api requests" "HTTPS/8043"
+        legacyBackend -> mlflowBff "Proxies /_bff/mlflow/api requests" "HTTPS/8343"
+        legacyBackend -> evalHubBff "Proxies /eval-hub/api requests" "HTTPS/8543"
+        legacyBackend -> automlBff "Proxies /automl/api requests" "HTTPS/8643"
+        legacyBackend -> autoragBff "Proxies /autorag/api requests" "HTTPS/8743"
+        legacyBackend -> agentOpsBff "Proxies /agent-ops/api requests" "HTTPS/8843"
+        genAiBff -> maasBff "Inter-BFF: model catalog queries" "HTTPS/8243"
+        genAiBff -> mlflowBff "Inter-BFF: experiment tracking" "HTTPS/8343"
+        evalHubBff -> modelRegBff "Inter-BFF: model lookups" "HTTPS/8043"
+        dashboardOperator -> k8sApi "Reconciles Dashboard CR, deploys modules" "HTTPS/6443"
 
-        # Inter-BFF
-        genAiBff -> maasBff "Token management" "HTTPS/8243 TLS"
-
-        # Operator
-        rhodsOperator -> odhDashboard "Creates Dashboard CR" "K8s API"
-        dashboardOperator -> k8sApi "Reconciles Dashboard, deploys manifests" "HTTPS/6443"
-
-        # Backend upstream
-        backend -> k8sApi "K8s resource CRUD, impersonation, WebSocket watch" "HTTPS/6443"
-        backend -> dspApi "Pipeline management proxy" "HTTPS/8443"
-        backend -> modelRegistryApi "Model registry proxy" "HTTPS/8443"
-        backend -> kserve "Model serving proxy" "HTTPS"
-        backend -> mlmd "Artifact tracking proxy" "gRPC-web/8443"
-        backend -> trustyai "Fairness metrics proxy" "HTTPS"
-        backend -> prometheus "Metrics queries" "HTTPS/9091"
-        backend -> perses "Observability dashboards" "HTTP/8080"
-
-        # BFF upstream
-        genAiBff -> llamaStack "LLM inference, vector stores" "HTTPS"
-        genAiBff -> mlflowServer "Prompt registry" "HTTPS"
-        genAiBff -> nemoGuardrails "Content moderation" "HTTPS"
-        genAiBff -> mcpServers "Tool discovery" "Stdio/HTTP"
-        genAiBff -> k8sApi "Resource operations" "HTTPS/6443"
-        maasBff -> maasApi "API keys, models, subscriptions" "HTTPS"
-        maasBff -> k8sApi "Resource operations" "HTTPS/6443"
-        agentOpsBff -> k8sApi "Agent resource queries with SSAR" "HTTPS/6443"
-
-        # Plugin
-        frontend -> pluginCore "Uses extension point APIs"
+        # Relationships - External dependencies
+        odhDashboard -> k8sApi "All K8s resource operations" "HTTPS/6443"
+        odhDashboard -> platformGateway "Exposed via HTTPRoute" "HTTPS/443"
+        platformGateway -> kubeRbacProxy "Routes traffic to dashboard" "HTTPS/8443"
+        rhodsOperator -> odhDashboard "Creates Dashboard CR" "CRD"
+        odhDashboard -> kserve "Watches InferenceService CRs" "CRD Watch"
+        odhDashboard -> modelRegistry "Model catalog CRUD" "HTTP/8080"
+        odhDashboard -> kfPipelines "Pipeline execution" "HTTPS"
+        odhDashboard -> mlflowServer "Experiment tracking" "HTTPS"
+        odhDashboard -> trustyai "Bias metrics" "HTTP/8080"
+        odhDashboard -> kueue "Workload queue status" "CRD Watch"
+        odhDashboard -> feast "Feature store status" "CRD Watch"
+        odhDashboard -> thanosQuerier "Prometheus metrics" "HTTPS/9092"
+        genAiBff -> llamaStack "LLM inference" "HTTPS/443"
+        genAiBff -> nemoGuardrails "Content moderation" "HTTPS/443"
+        genAiBff -> openaiApi "Fallback LLM" "HTTPS/443"
+        genAiBff -> mcpServers "MCP tools" "HTTPS"
+        automlBff -> s3Storage "Data source access" "HTTPS/443"
+        automlBff -> kfPipelines "Pipeline execution" "HTTPS"
+        autoragBff -> ogx "RAG optimization" "HTTPS/443"
+        autoragBff -> s3Storage "Document source access" "HTTPS/443"
     }
 
     views {
@@ -103,17 +101,21 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal Platform" {
+            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Person" {
-                shape Person
+            element "Platform" {
                 background #4a90e2
                 color #ffffff
             }
+            element "Person" {
+                shape person
+                background #08427b
+                color #ffffff
+            }
             element "Software System" {
-                background #4a90e2
+                background #1168bd
                 color #ffffff
             }
             element "Container" {

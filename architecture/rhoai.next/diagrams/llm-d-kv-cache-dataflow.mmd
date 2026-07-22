@@ -1,58 +1,37 @@
 sequenceDiagram
-    autonumber
-
-    participant VLLMPod as vLLM/SGLang Pod
-    participant ZMQ as ZMQ Subscriber<br/>5557/TCP ZMQ PUB/SUB
-    participant Pool as Sharded Worker Pool<br/>(FNV-1a routing)
+    participant vLLM as vLLM Pod<br/>ZMQ PUB 5557/TCP
+    participant ZMQ as ZMQ PUB Socket<br/>5557/TCP
+    participant Pool as kvevents.Pool<br/>ZMQ SUB (sharded)
     participant Adapter as Engine Adapter<br/>(vLLM/SGLang)
-    participant Index as KV Block Index<br/>(In-Memory / Redis)
-    participant EPP as llm-d-router (EPP)
+    participant Index as kvblock.Index<br/>(CostAware/Redis/Valkey/LRU)
+    participant Indexer as kvcache.Indexer<br/>Score()
     participant Tokenizer as UDS Tokenizer<br/>gRPC over UDS
-    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
-    participant FSBackend as llmd-fs-backend<br/>(vLLM Plugin)
-    participant Storage as Shared Storage<br/>NFS/PVC
-    participant Evictor as PVC Evictor
+    participant Router as llm-d-router<br/>(Scheduler)
+    participant GPU as vLLM GPU<br/>CUDA
+    participant Worker as llmd-fs-backend<br/>Worker
+    participant PVC as Shared PVC<br/>POSIX filesystem
+    participant Evictor as PVC Evictor<br/>N+2 processes
 
-    rect rgb(230, 245, 255)
-        Note over VLLMPod,Index: Flow 1: KV-Cache Event Ingestion (Write Path)
-        VLLMPod->>ZMQ: BlockStored/BlockRemoved event<br/>ZMQ PUB (plaintext, no auth)
-        ZMQ->>Pool: Route by FNV-1a(pod_id)<br/>Go channels (in-process)
-        Pool->>Adapter: Parse event payload<br/>msgpack (array or map encoded)
-        Adapter-->>Pool: Normalized KVEvent
-        Pool->>Index: Store/Remove block mapping<br/>Go interface / Redis protocol
-    end
+    Note over vLLM,Index: Flow 1: KV-Cache Event Ingestion (Write Path)
+    vLLM->>ZMQ: KVEvent (3-frame msg)<br/>topic + seqnum + msgpack
+    ZMQ->>Pool: ZMQ SUB 5557/TCP<br/>No encryption, No auth
+    Pool->>Adapter: FNV-1a sharded dispatch<br/>msgpack decode
+    Adapter->>Index: BlockStored / BlockRemoved /<br/>AllBlocksCleared
 
-    rect rgb(255, 245, 230)
-        Note over EPP,Index: Flow 2: Pod Scoring (Read Path)
-        EPP->>Tokenizer: Tokenize prompt<br/>gRPC over UDS (no encryption)
-        Tokenizer-->>EPP: Token IDs
-        EPP->>EPP: Indexer.ScoreTokens()<br/>In-process Go call
-        EPP->>Index: Lookup block residency<br/>Go interface / Redis
-        Index-->>EPP: Block locations per pod
-        EPP->>EPP: Scorer.Score()<br/>Rank pods by cache hit ratio
-        Note right of EPP: Route request to<br/>best-scoring pod
-    end
+    Note over Router,Indexer: Flow 2: Pod Scoring (Read Path)
+    Router->>Indexer: Score() Go method call<br/>in-process
+    Indexer->>Tokenizer: TokenizeRequest<br/>gRPC over UDS<br/>No encryption
+    Tokenizer-->>Indexer: Token IDs<br/>gRPC response
+    Indexer->>Index: Longest-prefix-match lookup
+    Index-->>Indexer: Block locality scores<br/>(GPU/CPU/disk tier)
+    Indexer-->>Router: Pod scores<br/>(sorted by cache hit ratio)
 
-    rect rgb(230, 255, 230)
-        Note over Tokenizer,HFHub: Flow 3: Tokenization (UDS Sidecar)
-        EPP->>Tokenizer: RenderChatCompletion RPC<br/>UDS /tmp/tokenizer/tokenizer-uds.socket
-        Note right of Tokenizer: First load only:
-        Tokenizer->>HFHub: Download tokenizer files<br/>HTTPS TLS 1.2+ / Bearer Token
-        HFHub-->>Tokenizer: Model tokenizer artifacts
-        Tokenizer-->>EPP: Token IDs + metadata<br/>gRPC over UDS
-    end
+    Note over GPU,PVC: Flow 3: KV-Cache Offloading (Storage Path)
+    GPU->>Worker: KV-cache blocks<br/>CUDA/torch in-process
+    Worker->>PVC: Write blocks<br/>POSIX I/O
+    Worker->>ZMQ: Storage event<br/>ZMQ PUB (optional)
 
-    rect rgb(255, 230, 255)
-        Note over VLLMPod,Storage: Flow 4: KV-Cache Offloading (GPU ↔ Storage)
-        VLLMPod->>FSBackend: Offload KV blocks<br/>Python function call (in-process)
-        FSBackend->>Storage: Write blocks via cudaMemcpyBatchAsync<br/>POSIX filesystem (file permissions)
-        FSBackend->>ZMQ: Publish storage event (optional)<br/>ZMQ PUSH (plaintext)
-    end
-
-    rect rgb(255, 240, 240)
-        Note over Storage,Evictor: Flow 5: PVC Eviction (Disk Management)
-        Evictor->>Storage: Crawl and check disk usage<br/>POSIX filesystem
-        Note right of Evictor: Trigger at 85% usage<br/>Stop at 70% usage
-        Evictor->>Storage: Delete stale cache files<br/>Batch deletion (100 files/batch)
-        Evictor->>ZMQ: Publish removal events (optional)<br/>ZMQ PUSH (plaintext)
-    end
+    Note over Evictor,PVC: Flow 4: PVC Space Management
+    Evictor->>PVC: Monitor disk usage<br/>(N crawlers)
+    Note right of Evictor: Trigger at 85%<br/>Stop at 70%
+    Evictor->>PVC: Delete stale blocks<br/>(batch of 100)

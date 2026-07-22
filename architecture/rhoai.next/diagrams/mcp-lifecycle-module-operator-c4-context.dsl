@@ -1,75 +1,66 @@
 workspace {
     model {
-        platformAdmin = person "Platform Admin" "Configures RHOAI platform components via the ODH operator"
+        platformAdmin = person "Platform Admin" "Manages ODH/RHOAI platform deployment and configuration"
 
-        mcpLifecycleModuleOperator = softwareSystem "MCP Lifecycle Module Operator" "Thin lifecycle management layer that deploys and manages the MCP Lifecycle Operator operand via Server-Side Apply (SSA)" {
-            reconciler = container "MCPLifecycleOperatorReconciler" "Watches MCPLifecycleOperator CRs, renders manifests, applies via SSA, garbage-collects stale resources, checks operand readiness" "Go controller-runtime"
-            kustomizeProvider = container "KustomizeProvider" "Loads pre-rendered operand YAML from embedded filesystem, patches namespace/image/labels via manifestival transformers" "Go manifestival"
-            conditionsManager = container "ConditionsManager" "Manages standard ODH platform conditions (Ready, ProvisioningSucceeded, Degraded, MCPLifecycleOperatorAvailable)" "Go"
+        mcpModuleOperator = softwareSystem "MCP Lifecycle Module Operator" "Manages the lifecycle of the MCP Lifecycle Operator as a deployable module within the ODH/RHOAI platform" {
+            reconciler = container "Reconciler" "Watches MCPLifecycleOperator CR and reconciles operand state" "Go (controller-runtime)"
+            tlsReader = container "TLS Profile Reader" "Reads OpenShift APIServer CR for cluster TLS configuration" "Go"
+            manifestProvider = container "Manifest Provider" "Renders and transforms embedded operand manifests" "Go (manifestival)"
+            garbageCollector = container "Garbage Collector" "Discovers and removes stale operand resources" "Go (odh-platform-utilities)"
+            embeddedManifests = container "Embedded Manifests" "Pre-rendered operand install manifest (2167 lines, go:embed)" "YAML"
+
+            reconciler -> tlsReader "Reads TLS config"
+            reconciler -> manifestProvider "Renders manifests"
+            reconciler -> garbageCollector "Triggers cleanup"
+            manifestProvider -> embeddedManifests "Loads manifest YAML"
         }
 
-        odhPlatformOperator = softwareSystem "ODH Platform Operator" "Creates and manages MCPLifecycleOperator CR to trigger operand deployment" "Internal ODH"
-        mcpLifecycleOperator = softwareSystem "MCP Lifecycle Operator (Operand)" "Manages MCPServer CRDs for running Model Context Protocol servers in Kubernetes" "Internal ODH"
-        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster API for resource CRUD operations" "External"
-
-        # Library dependencies (compile-time)
-        controllerRuntime = softwareSystem "controller-runtime" "Kubernetes controller framework v0.24.1" "External Library"
-        manifestival = softwareSystem "manifestival" "YAML manifest loading and transformation v0.7.2" "External Library"
-        odhPlatformUtilities = softwareSystem "odh-platform-utilities" "SSA deployer, garbage collector, label utilities, platform API types v0.1.0" "Internal ODH Library"
+        odhPlatformOperator = softwareSystem "ODH Platform Operator" "Platform operator (odh-operator / rhods-operator) that manages all ODH/RHOAI modules" "Internal Platform"
+        mcpLifecycleOperator = softwareSystem "MCP Lifecycle Operator" "Operand that manages MCPServer custom resources for running MCP servers in Kubernetes" "Internal Platform"
+        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster API server for all resource operations" "Infrastructure"
+        openshiftAPIServer = softwareSystem "OpenShift APIServer" "Provides cluster-wide TLS profile configuration (config.openshift.io)" "Infrastructure"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring via ServiceMonitor" "Infrastructure"
 
         # Relationships
-        platformAdmin -> odhPlatformOperator "Configures platform components"
-        odhPlatformOperator -> mcpLifecycleModuleOperator "Creates MCPLifecycleOperator CR" "Kubernetes API / HTTPS 443"
-        mcpLifecycleModuleOperator -> kubernetesAPI "SSA Apply, Garbage Collect, Status Patch, RBAC management" "HTTPS/443, TLS 1.2+, ServiceAccount token"
-        mcpLifecycleModuleOperator -> mcpLifecycleOperator "Deploys and manages operand via embedded manifests" "SSA via Kubernetes API"
-
-        # Internal container relationships
-        reconciler -> kustomizeProvider "Loads rendered manifests"
-        reconciler -> conditionsManager "Updates CR status conditions"
-        reconciler -> kubernetesAPI "SSA Apply, Watch, List, Delete" "HTTPS/443"
+        odhPlatformOperator -> mcpModuleOperator "Creates MCPLifecycleOperator CR to trigger deployment" "HTTPS/443, TLS 1.2+, SA Token"
+        mcpModuleOperator -> kubernetesAPI "CRUD on CRDs, Deployments, RBAC, Services, NetworkPolicies" "HTTPS/443, TLS 1.2+, SA Token"
+        mcpModuleOperator -> openshiftAPIServer "Reads cluster TLS profile" "HTTPS/443, TLS 1.2+, SA Token"
+        mcpModuleOperator -> mcpLifecycleOperator "Deploys and manages via SSA (Server-Side Apply)" "HTTPS/443, TLS 1.2+, SA Token"
+        prometheus -> mcpLifecycleOperator "Scrapes /metrics endpoint" "HTTPS/8443, Bearer Token"
+        mcpLifecycleOperator -> kubernetesAPI "Manages MCPServer custom resources" "HTTPS/443, TLS 1.2+, SA Token"
     }
 
     views {
-        systemContext mcpLifecycleModuleOperator "SystemContext" {
+        systemContext mcpModuleOperator "SystemContext" {
             include *
-            exclude controllerRuntime manifestival odhPlatformUtilities
             autoLayout
         }
 
-        container mcpLifecycleModuleOperator "Containers" {
+        container mcpModuleOperator "Containers" {
             include *
-            exclude controllerRuntime manifestival odhPlatformUtilities
             autoLayout
         }
 
         styles {
-            element "External" {
-                background #999999
-                color #ffffff
-            }
-            element "External Library" {
-                background #cccccc
-                color #333333
-            }
-            element "Internal ODH" {
-                background #7ed321
-                color #333333
-            }
-            element "Internal ODH Library" {
-                background #a8e063
-                color #333333
-            }
             element "Software System" {
                 background #4a90e2
                 color #ffffff
             }
-            element "Person" {
-                background #08427b
+            element "Internal Platform" {
+                background #7ed321
                 color #ffffff
-                shape Person
+            }
+            element "Infrastructure" {
+                background #999999
+                color #ffffff
+            }
+            element "Person" {
+                background #9b59b6
+                color #ffffff
+                shape person
             }
             element "Container" {
-                background #3a7bd5
+                background #4a90e2
                 color #ffffff
             }
         }

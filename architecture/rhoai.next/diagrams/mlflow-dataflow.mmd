@@ -1,45 +1,36 @@
 sequenceDiagram
-    participant SDK as MLflow SDK<br/>(Notebook Pod)
-    participant Browser as Browser
-    participant Gateway as ODH Data Science Gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant MLflow as MLflow Server<br/>5000/TCP HTTP/HTTPS
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant SDK as ML Training Code<br/>(Python SDK)
+    participant Client as Client Application
+    participant OTel as OTel-instrumented<br/>Service
+    participant Pod as ML Workload Pod
+    participant MLflow as MLflow Server<br/>5000/TCP HTTP
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
     participant PG as PostgreSQL<br/>5432/TCP
-    participant S3 as S3/MinIO<br/>443/TCP HTTPS
+    participant S3 as S3 / MinIO<br/>443/TCP HTTPS
+    participant LLM as LLM Provider<br/>(OpenAI/Anthropic/Gemini)<br/>443/TCP HTTPS
 
-    Note over SDK,S3: Flow 1: SDK Client Experiment Tracking
+    Note over SDK,S3: Flow 1: Experiment Tracking
+    SDK->>MLflow: POST /api/2.0/mlflow/runs/create<br/>Auth: Bearer Token (K8s SA)<br/>HTTP 5000/TCP, Optional TLS
+    MLflow->>PG: INSERT experiment/run metadata<br/>PostgreSQL wire protocol<br/>5432/TCP, Optional TLS, Password auth
+    MLflow->>S3: PUT artifact (model, dataset)<br/>HTTPS 443/TCP, TLS 1.2+<br/>AWS IAM / Access Key
+    S3-->>MLflow: 200 OK
+    MLflow-->>SDK: Run ID + artifact URI
 
-    SDK->>Gateway: POST /mlflow/api/2.0/mlflow/runs/create<br/>Auth: Bearer Token (K8s SA)<br/>Header: X-MLFLOW-WORKSPACE
-    Gateway->>MLflow: Forward request<br/>HTTP/5000
-    MLflow->>K8sAPI: SelfSubjectAccessReview<br/>TLS 1.2+ / SA Token
-    K8sAPI-->>MLflow: Authorized (mlflow.kubeflow.org)
-    MLflow->>PG: INSERT run metadata<br/>DB credentials
-    PG-->>MLflow: OK
-    MLflow->>S3: PUT artifact<br/>AWS credentials
-    S3-->>MLflow: OK
-    MLflow-->>Gateway: 200 JSON Response
-    Gateway-->>SDK: 200 JSON Response
+    Note over Client,LLM: Flow 2: AI Gateway Inference
+    Client->>MLflow: POST /gateway/{endpoint}/mlflow/invocations<br/>Auth: Bearer Token<br/>HTTP 5000/TCP, Optional TLS
+    MLflow->>LLM: POST /v1/chat/completions<br/>HTTPS 443/TCP, TLS 1.2+<br/>Auth: API Key (Bearer Token)
+    LLM-->>MLflow: Chat completion response (JSON/SSE)
+    MLflow-->>Client: Proxied response<br/>HTTP/SSE, Optional TLS
 
-    Note over SDK,S3: Flow 2: UI Access via Gateway
+    Note over OTel,PG: Flow 3: OpenTelemetry Trace Ingestion
+    OTel->>MLflow: POST /v1/traces<br/>Auth: Bearer Token + X-MLflow-Experiment-ID<br/>HTTP 5000/TCP, Optional TLS
+    MLflow->>PG: INSERT trace spans<br/>PostgreSQL 5432/TCP<br/>Optional TLS, Password auth
+    MLflow-->>OTel: 200 OK
 
-    Browser->>Gateway: GET /mlflow/<br/>Auth: OpenShift OAuth Token
-    Gateway->>MLflow: Forward request<br/>HTTP/5000
-    MLflow-->>Gateway: React UI HTML/JS
-    Gateway-->>Browser: React UI
-    Browser->>Gateway: GET /mlflow/ajax-api/2.0/mlflow/experiments/search<br/>Auth: OAuth Token
-    Gateway->>MLflow: Forward request
-    MLflow->>K8sAPI: SelfSubjectAccessReview
-    K8sAPI-->>MLflow: Authorized
-    MLflow->>PG: SELECT experiments<br/>DB credentials
-    PG-->>MLflow: Result set
-    MLflow-->>Gateway: 200 JSON
-    Gateway-->>Browser: 200 JSON
-
-    Note over SDK,S3: Flow 3: OTLP Trace Ingestion
-
-    SDK->>MLflow: POST /v1/traces<br/>OTLP/HTTP protobuf<br/>Auth: Bearer Token (K8s SA)
-    MLflow->>K8sAPI: SelfSubjectAccessReview
-    K8sAPI-->>MLflow: Authorized
-    MLflow->>PG: INSERT trace spans<br/>DB credentials
-    PG-->>MLflow: OK
-    MLflow-->>SDK: 200 OK
+    Note over Pod,K8sAPI: Flow 4: Kubernetes Workspace Authentication
+    Pod->>MLflow: GET /api/2.0/mlflow/experiments/list<br/>Auth: Bearer Token (SA) + X-MLFLOW-WORKSPACE<br/>HTTP 5000/TCP, Optional TLS
+    MLflow->>K8sAPI: GET /api/v1/namespaces/{ns}<br/>HTTPS 6443/TCP, TLS 1.2+<br/>Auth: Service Account Token
+    K8sAPI-->>MLflow: Namespace info (workspace mapping)
+    MLflow->>PG: SELECT experiments WHERE workspace = {ws}<br/>5432/TCP
+    PG-->>MLflow: Filtered experiment list
+    MLflow-->>Pod: Workspace-scoped experiments

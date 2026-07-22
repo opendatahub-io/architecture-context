@@ -1,70 +1,56 @@
 sequenceDiagram
-    participant MM as ModelMesh<br/>Controller
+    participant MM as ModelMesh Controller
     participant Puller as model-serving-puller<br/>8084/TCP gRPC
-    participant Pullman as pullman<br/>(Storage Library)
-    participant Store as Remote Storage<br/>443/TCP HTTPS
-    participant FS as /models<br/>(Local Filesystem)
+    participant Storage as Cloud Storage<br/>443/TCP HTTPS TLS 1.2+
+    participant FS as Local Filesystem<br/>/models/{model_id}/
     participant Adapter as Runtime Adapter<br/>8085/TCP gRPC
-    participant TFPy as tf_pb.py<br/>(Python)
-    participant Runtime as Model Runtime<br/>(Triton/MLServer/OVMS/TorchServe)
+    participant Runtime as Inference Runtime<br/>8001/7071/TCP
 
-    Note over MM,Runtime: Flow 1: Model Load (Storage → Runtime)
+    Note over MM,Runtime: Flow 1: Model Load (Puller + Adapter Mode)
 
     MM->>Puller: LoadModel(modelId, modelPath)<br/>gRPC plaintext (pod-local)
-    activate Puller
-    Puller->>Pullman: Download model artifacts
-    activate Pullman
-    Pullman->>Store: S3/GCS/Azure/HTTP GET<br/>TLS 1.2+ / Storage credentials
-    Store-->>Pullman: Model artifacts
-    Pullman->>FS: Write artifacts to /models/{modelId}
-    deactivate Pullman
+    Puller->>Storage: Download model artifacts<br/>HTTPS TLS 1.2+<br/>Auth: Per-provider credentials
+    Storage-->>Puller: Model files
+    Puller->>FS: Write to /models/{model_id}/
     Puller->>Adapter: LoadModel(modelId, modelPath)<br/>gRPC plaintext (pod-local)
-    activate Adapter
-
-    alt Triton + Keras H5 model
-        Adapter->>TFPy: exec tf_pb.py (subprocess)
-        activate TFPy
-        TFPy->>FS: Read H5, write SavedModel
-        TFPy-->>Adapter: Conversion complete
-        deactivate TFPy
-    end
-
-    Adapter->>FS: Adapt model layout<br/>(runtime-specific directory structure)
-    Adapter->>Runtime: Load model<br/>gRPC 8001/TCP (Triton/MLServer/TorchServe)<br/>HTTP 8001/TCP (OVMS)
-    activate Runtime
-    Runtime-->>Adapter: Model loaded
-    deactivate Runtime
-    Adapter-->>Puller: LoadModel response<br/>(model size, max concurrency)
-    deactivate Adapter
+    Note over Adapter: Adapt model layout:<br/>- Triton: config.pbtxt<br/>- MLServer: model-settings.json<br/>- OVMS: model_config_list.json<br/>- TorchServe: MAR registration
+    Adapter->>Runtime: Load model via native API<br/>gRPC/HTTP plaintext (pod-local)
+    Runtime-->>Adapter: Load confirmation
+    Adapter-->>Puller: LoadModel response (SizeInBytes)
     Puller-->>MM: LoadModel response
-    deactivate Puller
 
-    Note over MM,Runtime: Flow 2: Model Unload (Cleanup)
+    Note over MM,Runtime: Flow 2: Model Load (Embedded Puller Mode)
 
-    MM->>Puller: UnloadModel(modelId)<br/>gRPC plaintext (pod-local)
-    activate Puller
-    Puller->>Adapter: UnloadModel(modelId)<br/>gRPC plaintext (pod-local)
-    activate Adapter
-    Adapter->>Runtime: Unload model<br/>gRPC/HTTP (pod-local)
-    activate Runtime
-    Runtime-->>Adapter: Model unloaded
-    deactivate Runtime
+    MM->>Adapter: LoadModel(modelId, modelPath)<br/>gRPC plaintext (pod-local)
+    Note over Adapter: USE_EMBEDDED_PULLER=true
+    Adapter->>Storage: Download model artifacts<br/>HTTPS TLS 1.2+<br/>Auth: Per-provider credentials
+    Storage-->>Adapter: Model files
+    Adapter->>FS: Write to /models/{model_id}/
+    Note over Adapter: Adapt model layout
+    Adapter->>Runtime: Load model via native API<br/>gRPC/HTTP plaintext (pod-local)
+    Runtime-->>Adapter: Load confirmation
+    Adapter-->>MM: LoadModel response
+
+    Note over MM,Runtime: Flow 3: Keras Model Conversion (Triton Only)
+
+    MM->>Puller: LoadModel (Keras .h5 model)
+    Puller->>Storage: Download .h5 file
+    Storage-->>Puller: Keras .h5 model
+    Puller->>FS: Write .h5 to /models/{model_id}/
+    Puller->>Adapter: LoadModel (Triton adapter)
+    Note over Adapter: Detect Keras model type
+    Adapter->>Adapter: subprocess: python /opt/scripts/tf_pb.py<br/>Convert .h5 → TF SavedModel
+    Adapter->>Runtime: RepositoryModelLoad<br/>gRPC 8001/TCP plaintext
+    Runtime-->>Adapter: Load confirmation
+    Adapter-->>Puller: LoadModel response
+    Puller-->>MM: LoadModel response
+
+    Note over MM,Runtime: Flow 4: Model Unload
+
+    MM->>Puller: UnloadModel(modelId)
+    Puller->>Adapter: UnloadModel(modelId)<br/>gRPC plaintext
+    Adapter->>Runtime: Unload via native API
+    Runtime-->>Adapter: Unload confirmation
+    Adapter->>FS: Remove /models/{model_id}/
     Adapter-->>Puller: UnloadModel response
-    deactivate Adapter
-    Puller->>FS: Delete /models/{modelId}<br/>(recursive cleanup)
     Puller-->>MM: UnloadModel response
-    deactivate Puller
-
-    Note over MM,Runtime: Flow 3: Runtime Status Check
-
-    MM->>Puller: RuntimeStatus()<br/>gRPC plaintext (pod-local)
-    activate Puller
-    Puller->>Adapter: RuntimeStatus()<br/>gRPC plaintext (pod-local)
-    activate Adapter
-    Adapter->>Runtime: Health check<br/>(ServerReady / Ping)
-    Runtime-->>Adapter: Status
-    Adapter-->>Puller: RuntimeStatus response<br/>(capacity, max loading concurrency)
-    deactivate Adapter
-    Note over Puller: On startup: purge stale<br/>model files from /models
-    Puller-->>MM: RuntimeStatus response
-    deactivate Puller

@@ -1,93 +1,77 @@
 workspace {
     model {
-        user = person "Data Scientist / Developer" "Creates inference requests, uploads documents, builds agentic workflows"
-        admin = person "Platform Admin" "Configures OGX providers and deployment"
+        user = person "Data Scientist / Developer" "Creates inference requests, agentic workflows, and RAG pipelines"
+        operator = person "Platform Operator" "Deploys and configures OGX via rhods-operator"
 
-        ogxDistribution = softwareSystem "OGX Distribution" "Multi-API AI gateway for inference, agentic responses, vector storage, file processing, and tool runtime" {
-            ogxServer = container "OGX Server" "AI gateway providing OpenAI-compatible, Anthropic-compatible, and agentic APIs" "Python (Llama Stack fork)" {
-                authMiddleware = component "OAuth2 Auth Middleware" "Validates JWT tokens against JWKS endpoint when AUTH_ISSUER is set" "Python"
-                inferenceRouter = component "Inference Router" "Routes requests to configured inference providers based on env-activated config" "Python"
-                agentEngine = component "Agent Engine" "Orchestrates multi-turn tool-use agentic responses" "Python"
-                vectorIO = component "Vector I/O" "Manages vector store operations (insert, query, search)" "Python"
-                fileProcessor = component "File Processor" "Processes documents via Docling, PyPDF, MarkItDown" "Python"
-                toolRuntime = component "Tool Runtime" "Executes web search, file search, MCP tool calls" "Python"
-            }
-            entrypoint = container "Entrypoint" "Container entrypoint running ogx server with optional OpenTelemetry instrumentation" "Shell Script"
-            configYAML = container "Distribution Config" "Runtime configuration with conditional provider activation via env vars" "YAML"
+        ogxDistribution = softwareSystem "OGX Distribution" "Pre-configured, multi-provider AI/ML API server for inference, agentic workflows, RAG, and file processing" {
+            ogxServer = container "OGX Server (ogx-core)" "Multi-provider AI/ML API server with env-var-activated providers" "Python 3.12 Container"
+            entrypoint = container "Entrypoint Script" "Secret _FILE resolution, provider activation, process exec" "Shell Script"
+            buildPipeline = container "Build Pipeline" "Code generation from build.yaml (config, Containerfile, lockfile, docs)" "Python Scripts"
+            artifactFetcher = container "Artifact Fetcher" "Downloads ML model artifacts with SHA-256 verification" "Python Script"
         }
 
-        buildPipeline = softwareSystem "Build Pipeline" "Generates distribution artifacts from canonical provider manifest" {
-            buildScript = container "build.py" "Processes build.yaml to generate config.yaml, requirements.txt, Containerfile" "Python"
-            buildManifest = container "build.yaml" "Canonical provider manifest defining all supported providers and dependencies" "YAML"
-        }
+        # Internal Platform Dependencies
+        vllm = softwareSystem "vLLM" "LLM inference and embedding model serving" "Internal Platform"
+        postgresql = softwareSystem "PostgreSQL" "State storage for conversations, batches, agent state, file metadata" "Internal Platform"
 
-        // External Inference Providers
-        vllm = softwareSystem "vLLM" "Primary inference provider for LLM completions and embeddings" "External"
-        awsBedrock = softwareSystem "AWS Bedrock" "Remote inference provider (cloud)" "External"
-        ibmWatsonX = softwareSystem "IBM WatsonX" "Remote inference provider (cloud)" "External"
-        azureOpenAI = softwareSystem "Azure OpenAI" "Remote inference provider (cloud)" "External"
-        googleVertexAI = softwareSystem "Google Vertex AI" "Remote inference provider (cloud)" "External"
-        openai = softwareSystem "OpenAI" "Remote inference provider (cloud)" "External"
-        googleGemini = softwareSystem "Google Gemini" "Remote inference provider (cloud)" "External"
-        anthropic = softwareSystem "Anthropic" "Remote inference provider (cloud)" "External"
+        # Vector Storage Backends
+        milvus = softwareSystem "Milvus" "Vector storage and similarity search" "Internal Platform"
+        pgvector = softwareSystem "pgvector" "PostgreSQL-based vector storage" "Internal Platform"
+        qdrant = softwareSystem "Qdrant" "Vector storage and similarity search" "Internal Platform"
 
-        // State Store
-        postgresql = softwareSystem "PostgreSQL" "Primary state store for inference logs, agent state, batch jobs, conversations, file metadata" "External"
+        # Cloud Inference Providers
+        awsBedrock = softwareSystem "AWS Bedrock" "Cloud inference (Claude, Titan)" "External Cloud"
+        ibmWatsonx = softwareSystem "IBM WatsonX" "Cloud inference (Granite)" "External Cloud"
+        azureOpenai = softwareSystem "Azure OpenAI" "Cloud inference (GPT models)" "External Cloud"
+        googleVertexAI = softwareSystem "Google Vertex AI" "Cloud inference (Gemini models)" "External Cloud"
+        openai = softwareSystem "OpenAI API" "Cloud inference (GPT models)" "External Cloud"
+        googleGemini = softwareSystem "Google Gemini API" "Cloud inference (Gemini models)" "External Cloud"
+        anthropic = softwareSystem "Anthropic API" "Cloud inference (Claude models)" "External Cloud"
 
-        // Vector Databases
-        milvus = softwareSystem "Milvus" "Remote vector database for similarity search" "External"
-        pgvector = softwareSystem "pgvector" "Vector database using PostgreSQL extension" "External"
-        qdrant = softwareSystem "Qdrant" "Remote vector database" "External"
+        # Tool Services
+        braveSearch = softwareSystem "Brave Search API" "Web search for agentic workflows" "External Service"
+        tavilySearch = softwareSystem "Tavily Search API" "Web search for agentic workflows" "External Service"
+        s3 = softwareSystem "S3 / Object Storage" "File storage backend" "External Service"
+        doclingServe = softwareSystem "Docling Serve" "Remote document processing" "External Service"
+        mcpServers = softwareSystem "MCP Servers" "External tool execution via Model Context Protocol" "External Service"
 
-        // Tool Runtimes
-        braveSearch = softwareSystem "Brave Search" "Web search tool runtime" "External"
-        tavilySearch = softwareSystem "Tavily Search" "Web search tool runtime" "External"
-        mcpServers = softwareSystem "MCP Servers" "Model Context Protocol tool servers" "External"
-        doclingServe = softwareSystem "Docling Serve" "Remote document processing service" "External"
+        # Observability
+        otelCollector = softwareSystem "OTEL Collector" "OpenTelemetry traces and metrics" "Observability"
+        jwksEndpoint = softwareSystem "JWKS Endpoint" "OAuth2 token validation key retrieval" "Auth Infrastructure"
 
-        // Storage
-        s3 = softwareSystem "AWS S3" "Remote file storage for model artifacts and documents" "External"
+        # Platform
+        rhodsOperator = softwareSystem "rhods-operator / opendatahub-operator" "Deploys and manages OGX container" "Internal Platform"
+        aipccBaseImage = softwareSystem "AIPCC Base Image" "RHEL 9.6 UBI with Python 3.12, FIPS-validated OpenSSL" "Build Infrastructure"
 
-        // Auth
-        oidcIssuer = softwareSystem "OAuth2/OIDC Issuer" "JWKS key retrieval for JWT token validation" "External"
+        # Relationships
+        user -> ogxDistribution "Sends inference/RAG/agent requests via HTTP" "HTTP/8321, OAuth2 JWT"
+        operator -> rhodsOperator "Configures OGX deployment"
+        rhodsOperator -> ogxDistribution "Deploys and manages"
 
-        // Observability
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Traces and metrics collection" "External"
+        ogxDistribution -> vllm "Sends inference and embedding requests" "HTTP/HTTPS, Bearer Token"
+        ogxDistribution -> postgresql "Persists state (conversations, batches, metadata)" "PostgreSQL/5432, Password"
+        ogxDistribution -> milvus "Vector storage and search" "HTTP/gRPC, mTLS, Token"
+        ogxDistribution -> pgvector "Vector similarity search" "PostgreSQL/5432, Password"
+        ogxDistribution -> qdrant "Vector storage and search" "HTTP-gRPC/6333-6334, API Key"
 
-        // Platform
-        aipccBaseImage = softwareSystem "AIPCC Base Image" "RHEL 9 + Python 3.12 + RHEL AI PyPI container base" "Internal RHOAI"
-        ogxUpstream = softwareSystem "opendatahub-io/ogx" "Upstream OGX server codebase (Llama Stack fork)" "Internal ODH"
+        ogxDistribution -> awsBedrock "Cloud inference" "HTTPS/443, AWS IAM"
+        ogxDistribution -> ibmWatsonx "Cloud inference" "HTTPS/443, API Key"
+        ogxDistribution -> azureOpenai "Cloud inference" "HTTPS/443, API Key"
+        ogxDistribution -> googleVertexAI "Cloud inference" "HTTPS/443, Google ADC"
+        ogxDistribution -> openai "Cloud inference" "HTTPS/443, API Key"
+        ogxDistribution -> googleGemini "Cloud inference" "HTTPS/443, API Key"
+        ogxDistribution -> anthropic "Cloud inference" "HTTPS/443, API Key"
 
-        // Relationships
-        user -> ogxDistribution "Sends inference, agentic, and RAG requests" "HTTP/8321"
-        admin -> ogxDistribution "Configures via environment variables"
+        ogxDistribution -> braveSearch "Web search tool" "HTTPS/443, API Key"
+        ogxDistribution -> tavilySearch "Web search tool" "HTTPS/443, API Key"
+        ogxDistribution -> s3 "File storage" "HTTPS/443, AWS IAM"
+        ogxDistribution -> doclingServe "Document processing" "HTTP/HTTPS, API Key"
+        ogxDistribution -> mcpServers "External tool execution" "HTTP/HTTPS, Configurable"
 
-        ogxDistribution -> vllm "Inference and embedding requests" "HTTP(S)/8000-8001, Bearer Token"
-        ogxDistribution -> awsBedrock "Remote inference" "HTTPS/443, IAM"
-        ogxDistribution -> ibmWatsonX "Remote inference" "HTTPS/443, API Key"
-        ogxDistribution -> azureOpenAI "Remote inference" "HTTPS/443, API Key"
-        ogxDistribution -> googleVertexAI "Remote inference" "HTTPS/443, GCP ADC"
-        ogxDistribution -> openai "Remote inference" "HTTPS/443, API Key"
-        ogxDistribution -> googleGemini "Remote inference" "HTTPS/443, API Key"
-        ogxDistribution -> anthropic "Remote inference" "HTTPS/443, API Key"
+        ogxDistribution -> otelCollector "Exports traces and metrics" "OTLP HTTP/gRPC"
+        ogxDistribution -> jwksEndpoint "Retrieves OAuth2 validation keys" "HTTPS/443"
 
-        ogxDistribution -> postgresql "State persistence" "PostgreSQL/5432, User/Pass"
-
-        ogxDistribution -> milvus "Vector operations" "gRPC/HTTPS, TLS+mTLS, Token"
-        ogxDistribution -> pgvector "Vector operations" "PostgreSQL/5432, User/Pass"
-        ogxDistribution -> qdrant "Vector operations" "HTTP(S)/6333-6334, API Key"
-
-        ogxDistribution -> braveSearch "Web search" "HTTPS/443, API Key"
-        ogxDistribution -> tavilySearch "Web search" "HTTPS/443, API Key"
-        ogxDistribution -> mcpServers "Tool execution" "HTTP(S), Configurable"
-        ogxDistribution -> doclingServe "Document processing" "HTTP(S), API Key"
-
-        ogxDistribution -> s3 "File storage" "HTTPS/443, IAM"
-        ogxDistribution -> oidcIssuer "JWT validation (JWKS)" "HTTPS/443"
-        ogxDistribution -> otelCollector "Traces and metrics" "OTLP gRPC/HTTP"
-
-        ogxUpstream -> ogxDistribution "Provides OGX server packages" "Python pip install"
-        aipccBaseImage -> ogxDistribution "Provides base container layer" "Container FROM"
+        aipccBaseImage -> ogxDistribution "Provides base container layer" "Build-time"
     }
 
     views {
@@ -101,40 +85,38 @@ workspace {
             autoLayout
         }
 
-        component ogxServer "Components" {
-            include *
-            autoLayout
-        }
-
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
-            element "External" {
-                background #999999
-                color #ffffff
-            }
-            element "Internal ODH" {
+            element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal RHOAI" {
-                background #cc0000
+            element "External Cloud" {
+                background #f5a623
                 color #ffffff
+            }
+            element "External Service" {
+                background #e74c3c
+                color #ffffff
+            }
+            element "Observability" {
+                background #999999
+                color #ffffff
+            }
+            element "Auth Infrastructure" {
+                background #9b59b6
+                color #ffffff
+            }
+            element "Build Infrastructure" {
+                background #e8e8e8
+                color #333333
             }
             element "Person" {
-                background #08427B
-                color #ffffff
-                shape Person
-            }
-            element "Container" {
-                background #438DD5
+                shape person
+                background #4a90e2
                 color #ffffff
             }
-            element "Component" {
-                background #85BBF0
-                color #000000
+            element "Software System" {
+                shape roundedbox
             }
         }
     }

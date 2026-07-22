@@ -1,83 +1,101 @@
 workspace {
     model {
-        user = person "Data Scientist / Application Developer" "Deploys LLMs and sends inference requests via HTTP/gRPC"
+        dataScientist = person "Data Scientist" "Deploys and queries LLM models via KServe InferenceService"
+        platformAdmin = person "Platform Admin" "Manages RHOAI platform, configures ServingRuntimes"
+        developer = person "Developer" "Converts models to Caikit format using convert.py utility"
 
-        caikitTgisServing = softwareSystem "Caikit-TGIS-Serving" "Container image packaging Caikit AI runtime with TGIS backend for LLM inference via KServe ServingRuntimes" {
-            caikitRuntime = container "Caikit Runtime" "Python runtime (caikit + caikit-nlp + caikit-tgis-backend) providing HTTP/gRPC API for model inference" "Python 3.11, transformer-container" {
-                httpApi = component "HTTP REST API" "Exposes /api/v1/task/text-generation and streaming endpoints" "Port 8080/TCP"
-                grpcApi = component "gRPC API" "Exposes caikit.runtime.Nlp service for inference" "Port 8085/TCP"
-                metricsEndpoint = component "Metrics Endpoint" "Prometheus metrics for runtime observability" "Port 8086/TCP"
-                healthProbe = component "Health Probe" "caikit_health_probe for readiness/liveness" "HTTP"
-                tgisConnector = component "TGIS Backend Connector" "caikit-tgis-backend: translates Caikit requests to TGIS gRPC calls" "gRPC client"
+        caikitTgisServing = softwareSystem "Caikit-TGIS-Serving" "API translation layer that bridges Caikit NLP APIs to the TGIS inference backend for LLM serving" {
+            caikitRuntime = container "Caikit Runtime" "Python application providing REST/gRPC API surface for model inference" "Python 3.11 / caikit 0.28.1" {
+                httpHandler = component "HTTP Handler" "Serves /api/v1/task/* endpoints on port 8080" "caikit.runtime"
+                grpcHandler = component "gRPC Handler" "Serves caikit.runtime.Nlp service on port 8085" "caikit.runtime"
+                tgisConnector = component "TGIS Backend Connector" "Translates Caikit API calls to TGIS gRPC protocol" "caikit-tgis-backend 0.1.39"
+                nlpModule = component "NLP Module" "Text generation task implementations" "caikit-nlp 0.5.14"
+                healthProbe = component "Health Probe" "Readiness/liveness checks including TGIS backend verification" "caikit_health_probe"
+                metricsExporter = component "Metrics Exporter" "Exposes runtime metrics on port 8086" "caikit.runtime"
             }
-            tgis = container "TGIS (Text Generation Inference Server)" "GPU-accelerated inference engine for LLM model loading and execution" "kserve-container, Port 8033/TCP gRPC"
-            modelVolume = container "Model Volume" "Shared /mnt/models volume for model artifacts" "PVC or S3-initialized"
+            convertTool = container "convert.py" "CLI utility to convert HuggingFace models to Caikit format" "Python Script"
         }
 
-        kserve = softwareSystem "KServe" "ML model serving platform managing ServingRuntime and InferenceService lifecycle" "Internal Platform"
-        istio = softwareSystem "Istio Service Mesh" "Provides mTLS, traffic management, ingress gateway, and access control" "Internal Platform"
-        knative = softwareSystem "Knative Serving" "Serverless autoscaling platform with scale-to-zero capability" "Internal Platform"
-        prometheus = softwareSystem "Prometheus (User Workload Monitoring)" "Metrics collection and monitoring via ServiceMonitor" "Internal Platform"
-        authorino = softwareSystem "Authorino" "External authorization service for Bearer token validation" "Internal Platform"
-        s3 = softwareSystem "S3-Compatible Storage" "Model artifact storage (AWS S3, MinIO, Ceph)" "External"
+        tgis = softwareSystem "TGIS" "Text Generation Inference Server — loads model weights and executes LLM inference" "Co-located"
+        kserve = softwareSystem "KServe" "Model serving platform that orchestrates ServingRuntime lifecycle, creates Knative services" "Internal RHOAI"
+        istio = softwareSystem "Istio Service Mesh" "Provides mTLS, traffic management, PeerAuthentication enforcement" "External"
+        knative = softwareSystem "Knative Serving" "Provides autoscaling, revision management, and traffic splitting" "External"
+        modelStorage = softwareSystem "Model Storage" "S3/MinIO/PVC for model artifact storage" "External"
+        huggingface = softwareSystem "HuggingFace Hub" "Model repository for downloading pre-trained models" "External"
+        prometheus = softwareSystem "Prometheus" "User Workload Monitoring for metrics collection" "Internal RHOAI"
+        rhodsOperator = softwareSystem "RHODS Operator" "Platform operator managing RHOAI component lifecycle" "Internal RHOAI"
+        konflux = softwareSystem "Konflux CI" "Multi-arch container build system via Tekton PipelineRuns" "External"
 
         # Relationships
-        user -> istio "Sends inference requests" "HTTPS/443, TLS 1.2+, Bearer Token"
-        istio -> caikitRuntime "Routes requests via mTLS sidecar" "HTTP/8080, gRPC/8085, mTLS STRICT"
-        caikitRuntime -> tgis "Forwards inference requests" "gRPC/8033, localhost"
-        tgis -> modelVolume "Loads model artifacts" "Filesystem /mnt/models"
+        dataScientist -> caikitTgisServing "Sends inference requests via HTTP/gRPC" "HTTPS/443 → HTTP/8080"
+        platformAdmin -> kserve "Configures ServingRuntime CRs referencing caikit-tgis-serving image"
+        developer -> convertTool "Runs model conversion" "CLI"
 
-        kserve -> caikitTgisServing "Manages pod lifecycle via ServingRuntime/InferenceService CRs"
-        knative -> caikitTgisServing "Provides autoscaling and scale-to-zero"
-        prometheus -> caikitRuntime "Scrapes metrics" "HTTP/8086, PERMISSIVE mTLS"
-        s3 -> modelVolume "Provides model artifacts via KServe storage initializer" "HTTPS/443, TLS 1.2+, AWS IAM"
-        istio -> authorino "Delegates token validation (optional)" "gRPC"
+        caikitTgisServing -> tgis "Forwards inference requests" "gRPC/8033 (localhost, plaintext)"
+        caikitTgisServing -> modelStorage "Reads model artifacts (via KServe storage initializer)" "S3/PVC"
+        convertTool -> huggingface "Downloads models for conversion" "HTTPS/443"
+
+        kserve -> caikitTgisServing "Deploys as transformer-container in ServingRuntime pod"
+        istio -> caikitTgisServing "Provides mTLS sidecar injection and PeerAuthentication"
+        knative -> caikitTgisServing "Manages autoscaling and traffic routing"
+        prometheus -> caikitTgisServing "Scrapes metrics" "HTTP/8086 (PERMISSIVE)"
+        rhodsOperator -> kserve "Manages KServe deployment and configuration"
+        konflux -> caikitTgisServing "Builds multi-arch container image (x86_64, arm64)" "Tekton"
+
+        # Internal component relationships
+        httpHandler -> tgisConnector "Delegates inference"
+        grpcHandler -> tgisConnector "Delegates inference"
+        tgisConnector -> nlpModule "Uses NLP task implementations"
+        healthProbe -> tgisConnector "Checks TGIS backend connectivity"
     }
 
     views {
         systemContext caikitTgisServing "SystemContext" {
             include *
             autoLayout
-            description "System context showing caikit-tgis-serving within the RHOAI platform ecosystem"
+            description "System context showing caikit-tgis-serving in the RHOAI ecosystem"
         }
 
         container caikitTgisServing "Containers" {
             include *
             autoLayout
-            description "Container view of the two-container pod architecture (Caikit + TGIS)"
+            description "Container view showing Caikit Runtime and convert.py utility"
         }
 
         component caikitRuntime "Components" {
             include *
             autoLayout
-            description "Internal components of the Caikit Runtime container"
+            description "Component view showing internal structure of the Caikit Runtime"
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
-            element "Internal Platform" {
-                background #27ae60
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
+            element "Internal RHOAI" {
+                background #7ed321
+                color #ffffff
+            }
+            element "Co-located" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Person" {
+                shape Person
+                background #08427b
+                color #ffffff
+            }
+            element "Software System" {
+                shape RoundedBox
+            }
             element "Container" {
-                background #438DD5
+                background #438dd5
                 color #ffffff
             }
             element "Component" {
-                background #85BBF0
+                background #85bbf0
                 color #000000
-            }
-            element "Person" {
-                background #08427B
-                color #ffffff
-                shape person
             }
         }
     }

@@ -1,52 +1,38 @@
 sequenceDiagram
     participant User as User Python Code
-    participant SDK as TrainerClient SDK
-    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant TrainerOp as Trainer Operator
-    participant JobSet as JobSet Controller
+    participant TC as TrainerClient
+    participant KB as KubernetesBackend
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant Operator as Trainer Operator
     participant Pod as Training Pod
-    participant MetricsSrv as HTTP Metrics Server<br/>(injected by RHAI)
-    participant S3 as S3 Object Storage<br/>443/TCP HTTPS TLS 1.2+
-    participant SparkOp as Spark Operator
-    participant SparkPod as Spark Driver Pod<br/>15002/TCP gRPC
-    participant ModelReg as Model Registry<br/>443/8080 TCP HTTP/HTTPS
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
 
     Note over User,S3: Flow 1: Training Job Submission (Kubernetes Backend)
-    User->>SDK: trainer.train(train_func, config)
-    SDK->>K8sAPI: POST TrainJob CR<br/>Auth: Bearer Token
-    K8sAPI->>TrainerOp: Reconcile TrainJob
-    TrainerOp->>JobSet: Create JobSet
-    JobSet->>Pod: Schedule training pods
-    SDK->>K8sAPI: GET pods/log (stream)<br/>Auth: Bearer Token
-    K8sAPI-->>SDK: Training logs
+    User->>TC: create(trainer, config)
+    TC->>KB: dispatch (KubernetesBackendConfig)
+    KB->>K8s: POST TrainJob CR<br/>Auth: Bearer Token
+    K8s-->>KB: TrainJob created
+    K8s->>Operator: Watch event (reconcile)
+    Operator->>K8s: Create JobSet + Pods
+    K8s-->>Pod: Schedule & Run
 
-    Note over User,S3: Flow 2: RHAI Training with Progression Tracking
-    User->>SDK: trainer.train(TransformersTrainer, config)
-    SDK->>K8sAPI: POST TrainJob CR<br/>(with instrumented code + annotations)
-    K8sAPI->>TrainerOp: Reconcile TrainJob
-    TrainerOp->>Pod: Create training pod<br/>(with metrics server injected)
-    Pod->>MetricsSrv: Start HTTP server
-    TrainerOp->>MetricsSrv: GET /metrics (poll)<br/>HTTP, no encryption
-    MetricsSrv-->>TrainerOp: JSON metrics<br/>(progress, ETA, step, loss)
-    Pod->>Pod: Write /dev/termination-log<br/>(final metrics)
+    Note over User,S3: Flow 2: RHAI TransformersTrainer with Checkpointing
+    User->>TC: create(TransformersTrainer, config)
+    TC->>KB: dispatch with injected code<br/>(inspect.getsource serialization)
+    KB->>K8s: POST TrainJob CR<br/>with progression annotations<br/>Auth: Bearer Token
+    K8s->>Operator: Watch event (reconcile)
+    Operator->>K8s: Create Pods with<br/>injected checkpoint code
+    K8s-->>Pod: Schedule & Run
+    Pod->>S3: Async checkpoint upload<br/>Auth: AWS IAM/Access Keys
+    S3-->>Pod: Upload confirmed
+    Pod->>K8s: PATCH annotations<br/>trainer.opendatahub.io/progression-*<br/>Auth: ServiceAccount
 
-    Note over User,S3: Flow 3: JIT Checkpoint to S3
-    Pod->>Pod: Receive SIGTERM<br/>(preemption/scale-down)
-    Pod->>Pod: CheckpointManager saves to<br/>/mnt/kubeflow-checkpoints
-    Pod->>S3: Upload checkpoint<br/>fsspec/s3fs<br/>Auth: AWS credentials from Secret
-    S3-->>Pod: Upload complete
-    Note over Pod: Removes checkpoint-is-incomplete.txt<br/>marker on success
+    Note over User,S3: Flow 3: Container Backend (Local Development)
+    participant CB as ContainerBackend
+    participant Docker as Docker/Podman<br/>Unix Socket
 
-    Note over User,SparkPod: Flow 4: Spark Connect Session
-    User->>SDK: spark.create_session(config)
-    SDK->>K8sAPI: POST SparkConnect CR<br/>Auth: Bearer Token
-    K8sAPI->>SparkOp: Reconcile SparkConnect
-    SparkOp->>SparkPod: Create driver + executor pods
-    SDK->>SparkPod: gRPC Connect<br/>15002/TCP, no encryption
-    User->>SDK: spark.execute(query)
-    SDK->>SparkPod: Spark SQL via gRPC<br/>15002/TCP
-
-    Note over User,ModelReg: Flow 5: Model Registration
-    User->>SDK: hub.register_model(model)
-    SDK->>ModelReg: POST /api/model_registry<br/>Auth: Bearer Token (optional)<br/>Custom CA (optional)
-    ModelReg-->>SDK: Model version registered
+    User->>TC: create(trainer, ContainerBackendConfig)
+    TC->>CB: dispatch
+    CB->>Docker: Create container(s)<br/>Auth: None
+    Docker-->>CB: Container started
+    CB-->>TC: Training running locally

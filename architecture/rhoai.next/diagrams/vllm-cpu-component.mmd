@@ -1,50 +1,70 @@
 graph TB
-    subgraph "vLLM CPU Component"
-        subgraph "API Layer"
-            OpenAIServer["vllm-openai<br/>(FastAPI/uvicorn)<br/>Port 8000/TCP"]
-            GRPCServer["vLLM gRPC Server<br/>(grpcio)<br/>Port 50051/TCP"]
+    subgraph vllm_cpu["vllm-cpu (LLM Inference Server)"]
+        direction TB
+
+        subgraph api_layer["API Layer"]
+            OpenAIServer["OpenAI API Server<br/>FastAPI/Uvicorn<br/>Port 8000/TCP"]
+            GRPCServer["gRPC Server<br/>smg-grpc-servicer<br/>Port 50051/TCP"]
+            MCPServer["MCP Tool Server<br/>Model Context Protocol<br/>External Tool Calling"]
         end
 
-        subgraph "Engine Layer"
-            AsyncEngine["vLLM Engine v1<br/>Async Scheduling<br/>KV Cache Management"]
-            ZMQ["ZeroMQ IPC<br/>Engine-Frontend<br/>Communication"]
+        subgraph engine_layer["Engine Layer"]
+            AsyncEngine["AsyncLLM Engine<br/>Continuous Batching<br/>KV Cache Management"]
+            InputProc["Input Processor"]
+            Scheduler["Scheduler<br/>Chunked Prefill<br/>Prefix Caching"]
+            OutputProc["Output Processor"]
         end
 
-        subgraph "Execution Layer"
-            ModelExecutor["Model Executor<br/>(CPU Worker)"]
-            CppExtensions["C++ Extensions<br/>(csrc/)<br/>CPU-Optimized Kernels"]
-            PyTorch["PyTorch CPU Backend<br/>Tensor Computation"]
+        subgraph extensions["Native Extensions"]
+            RustExt["Rust Extensions (PyO3)<br/>13 Crates: Tokenization,<br/>Tool Parsing, Chat Rendering"]
+            CppExt["C++ Extensions (CMake)<br/>CPU Kernels: AVX-512,<br/>AVX2, BF16 ISA Variants"]
         end
 
-        OpenAIServer -->|"requests"| ZMQ
-        GRPCServer -->|"requests"| ZMQ
-        ZMQ -->|"dispatches"| AsyncEngine
-        AsyncEngine -->|"schedules"| ModelExecutor
-        ModelExecutor -->|"custom ops"| CppExtensions
-        ModelExecutor -->|"forward pass"| PyTorch
+        subgraph dp["Data Parallel"]
+            DPSupervisor["DP Supervisor<br/>Port 9256/TCP<br/>Readiness Probes"]
+        end
     end
 
-    Client["External Client"] -->|"POST /v1/chat/completions<br/>HTTP/HTTPS 8000/TCP<br/>API Key (optional)"| OpenAIServer
-    GRPCClient["gRPC Client"] -->|"gRPC 50051/TCP<br/>Plaintext"| GRPCServer
+    %% Internal flows
+    OpenAIServer -->|"REST requests"| InputProc
+    GRPCServer -->|"gRPC requests"| InputProc
+    InputProc -->|"tokenized input"| AsyncEngine
+    AsyncEngine -->|"schedule"| Scheduler
+    Scheduler -->|"execute"| CppExt
+    AsyncEngine -->|"results"| OutputProc
+    OutputProc -->|"SSE stream"| OpenAIServer
+    OutputProc -->|"gRPC stream"| GRPCServer
+    OpenAIServer -->|"tool calls"| MCPServer
+    RustExt -.->|"tokenization/parsing"| InputProc
+    RustExt -.->|"rendering"| OutputProc
+    DPSupervisor -.->|"manages"| AsyncEngine
 
-    KServe["KServe / ModelMesh<br/>(Platform Operator)"] -->|"manages lifecycle<br/>autoscaling, ingress"| OpenAIServer
-    Prometheus["Prometheus /<br/>OpenShift Monitoring"] -->|"scrapes /metrics<br/>HTTP 8000/TCP"| OpenAIServer
+    %% External interactions
+    Client["External Client"] -->|"POST /v1/chat/completions<br/>HTTP 8000/TCP"| OpenAIServer
+    GRPCClient["gRPC Client"] -->|"gRPC 50051/TCP"| GRPCServer
+    Prometheus["Prometheus"] -->|"GET /metrics<br/>8000/TCP"| OpenAIServer
 
-    AsyncEngine -->|"downloads models<br/>HTTPS 443/TCP"| HFHub["HuggingFace Hub"]
-    AsyncEngine -->|"loads models<br/>HTTPS 443/TCP"| S3["S3 / Object Storage"]
-    AsyncEngine -->|"exports traces<br/>gRPC 4317/TCP"| OTEL["OpenTelemetry<br/>Collector"]
+    %% Platform integration
+    KServe["KServe ServingRuntime"] -.->|"deploys as container"| vllm_cpu
+    HFHub["HuggingFace Hub<br/>443/TCP HTTPS"] -->|"model weights"| AsyncEngine
+    ModelStorage["Model Storage<br/>(S3/GCS/PVC)"] -->|"model artifacts"| AsyncEngine
+    MCPServer -->|"HTTP/SSE"| MCPTools["MCP Tool Servers"]
 
+    %% Styling
     style OpenAIServer fill:#4a90e2,stroke:#333,color:#fff
     style GRPCServer fill:#4a90e2,stroke:#333,color:#fff
-    style AsyncEngine fill:#4a90e2,stroke:#333,color:#fff
-    style ZMQ fill:#4a90e2,stroke:#333,color:#fff
-    style ModelExecutor fill:#4a90e2,stroke:#333,color:#fff
-    style CppExtensions fill:#4a90e2,stroke:#333,color:#fff
-    style PyTorch fill:#4a90e2,stroke:#333,color:#fff
-    style KServe fill:#7ed321,stroke:#333,color:#000
-    style Prometheus fill:#7ed321,stroke:#333,color:#000
-    style HFHub fill:#f5a623,stroke:#333,color:#000
-    style S3 fill:#f5a623,stroke:#333,color:#000
-    style OTEL fill:#f5a623,stroke:#333,color:#000
-    style Client fill:#e8e8e8,stroke:#999
-    style GRPCClient fill:#e8e8e8,stroke:#999
+    style MCPServer fill:#4a90e2,stroke:#333,color:#fff
+    style AsyncEngine fill:#7ed321,stroke:#333,color:#fff
+    style InputProc fill:#7ed321,stroke:#333,color:#fff
+    style Scheduler fill:#7ed321,stroke:#333,color:#fff
+    style OutputProc fill:#7ed321,stroke:#333,color:#fff
+    style RustExt fill:#f5a623,stroke:#333,color:#fff
+    style CppExt fill:#f5a623,stroke:#333,color:#fff
+    style DPSupervisor fill:#9b59b6,stroke:#333,color:#fff
+    style Client fill:#e8e8e8,stroke:#333
+    style GRPCClient fill:#e8e8e8,stroke:#333
+    style Prometheus fill:#e8e8e8,stroke:#333
+    style KServe fill:#e8e8e8,stroke:#333
+    style HFHub fill:#f9f9f9,stroke:#999
+    style ModelStorage fill:#f9f9f9,stroke:#999
+    style MCPTools fill:#f9f9f9,stroke:#999

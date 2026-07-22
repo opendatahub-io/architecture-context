@@ -1,58 +1,55 @@
 sequenceDiagram
-    participant Producer as External Producer
-    participant Redis as Redis<br/>6379/TCP
-    participant AP as Async Processor<br/>(N=8 workers)
-    participant Prom as Prometheus<br/>9090/TCP
-    participant IGW as Inference Gateway<br/>80/443 TCP
-    participant Consumer as External Consumer
+    participant Producer as Producer Client<br/>(Go library)
+    participant Redis as Redis / Valkey<br/>6379/TCP
+    participant AP as Async Processor<br/>(async-processor pod)
+    participant Gate as Dispatch Gate<br/>(Redis/Prometheus/local)
+    participant IGW as llm-d-router /<br/>Inference Gateway
+    participant OTLP as OTLP Collector<br/>4317/TCP gRPC
 
-    Note over Producer,Consumer: Flow 1: Async Inference Request (Redis Sorted Set)
+    rect rgb(230, 245, 255)
+        Note over Producer,Redis: Flow 1: Redis Sorted Set (Priority Queue)
+        Producer->>Redis: ZADD request-queue<br/>(priority score, JSON payload)<br/>Redis protocol, Optional TLS (rediss://)
+        Producer->>Redis: SET request-active:{ID}<br/>(16-byte cancel token, TTL=deadline)
 
-    Producer->>Redis: ZADD request queue<br/>(score=deadline, Redis protocol)<br/>Optional TLS, URL credentials
-    AP->>Redis: ZPOPMIN request queue<br/>(poll for next job)<br/>Optional TLS, URL credentials
+        loop Worker Pool (configurable concurrency)
+            AP->>Redis: ZPOPMIN request-queue<br/>Redis protocol, Optional TLS
+            Redis-->>AP: Next highest-priority request
 
-    Note over AP: RandomRobinPolicy merges<br/>multiple queue channels
+            AP->>AP: Check cancellation<br/>(request-active:{ID} vs request-cancel:{ID})
 
-    AP->>Prom: GET PromQL query<br/>HTTP/9090 (no TLS)<br/>Check dispatch gate budget
-    Note over AP: Gate evaluates:<br/>D = max_SYS - running - queue_size<br/>if D > baseline → dispatch
+            AP->>Gate: Check dispatch budget
+            Gate-->>AP: Admit / Refuse / Shed
 
-    AP->>IGW: POST /v1/completions<br/>HTTP(S) 80/443<br/>TLS 1.2+ / optional mTLS<br/>Header: x-gateway-inference-objective
+            alt Gate admits
+                AP->>AP: Apply request transforms<br/>(e.g., gcs_uri_multipart)
+                AP->>IGW: POST /v1/completions<br/>HTTP/HTTPS, Optional mTLS<br/>x-gateway-inference-objective header
+                AP->>OTLP: Export trace span<br/>gRPC, W3C TraceContext
+                IGW-->>AP: Inference response (JSON)
+                AP->>Redis: LPUSH result-list:{ID}<br/>(response payload)
+            else Gate refuses (wait-on-refuse)
+                AP->>AP: Park request in memory<br/>(retry after backoff)
+            else Gate sheds
+                AP->>Redis: LPUSH result-list:{ID}<br/>(shed error response)
+            end
+        end
 
-    alt Success (2xx)
-        IGW-->>AP: 200 OK (inference result)
-        AP->>Redis: LPUSH result queue<br/>Optional TLS, URL credentials
-        Consumer->>Redis: BRPOP result queue<br/>Optional TLS, URL credentials
-        Redis-->>Consumer: Inference result
-
-    else Rate Limited (429) or Server Error (5xx)
-        IGW-->>AP: 429/5xx response
-        Note over AP: Exponential backoff:<br/>jitter in [temp/2, temp)<br/>capped at 60s<br/>Respects Retry-After header
-
-        AP->>Redis: ZADD request queue<br/>(re-enqueue with backoff score)<br/>Optional TLS, URL credentials
-        Note over AP: Next poll cycle picks up<br/>retried request via ZPOPMIN
-
-    else Deadline Exceeded
-        Note over AP: Request deadline passed<br/>Drop request, log error
-        AP->>Redis: LPUSH result queue<br/>(error result with deadline_exceeded)
+        Producer->>Redis: BRPOP result-list:{ID}<br/>(blocking wait for result)
+        Redis-->>Producer: Response payload
     end
 
-    Note over Producer,Consumer: Flow 2: Async Inference Request (GCP Pub/Sub)
+    rect rgb(255, 243, 224)
+        Note over Producer,IGW: Flow 2: GCP Pub/Sub
+        Producer->>Producer: Publish to request topic<br/>gRPC/443, TLS 1.2+, GCP ADC
 
-    participant GCP as GCP Pub/Sub<br/>443/TCP
+        AP->>AP: Subscriber.Receive<br/>gRPC/443, TLS 1.2+, GCP ADC
+        Note right of AP: Message pulled from<br/>subscription
 
-    Producer->>GCP: Publish to request topic<br/>HTTPS/443, TLS 1.2+<br/>GCP IAM auth
-    GCP->>AP: Receive subscription message<br/>HTTPS/443, TLS 1.2+<br/>OAuth2 credentials
+        AP->>Gate: Check dispatch budget
+        Gate-->>AP: Admit / Refuse / Shed
 
-    AP->>Prom: GET PromQL query<br/>Check dispatch gate
-    AP->>IGW: POST inference request<br/>HTTP(S) 80/443
-
-    alt Success
-        IGW-->>AP: 200 OK
-        AP->>GCP: Publish to result topic<br/>HTTPS/443, TLS 1.2+<br/>OAuth2 credentials
-    else Failure
-        Note over AP: Nack message for redelivery
+        alt Gate admits
+            AP->>IGW: POST /v1/completions<br/>HTTP/HTTPS, Optional mTLS
+            IGW-->>AP: Inference response
+            AP->>AP: Publish to result topic<br/>gRPC/443, TLS 1.2+, GCP ADC
+        end
     end
-
-    Note over AP: Graceful Shutdown
-
-    Note over AP: Context cancelled →<br/>1. Re-enqueue in-flight requests<br/>2. Flush pending retries<br/>3. Drain result channel<br/>4. Release quota (sync.Map)<br/>5. Wait drainWg (130s grace)

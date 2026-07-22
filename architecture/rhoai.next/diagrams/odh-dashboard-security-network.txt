@@ -1,271 +1,251 @@
-┌──────────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                            │
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                           │
 │                                                                                  │
-│  [Browser / External Client]                                                     │
+│  [User Browser]                                                                  │
 │         │                                                                        │
 │         │ Port: 443/TCP                                                          │
 │         │ Protocol: HTTPS                                                        │
 │         │ Encryption: TLS 1.2+                                                   │
-│         │ Auth: None (initial); Bearer Token (API requests)                      │
+│         │ Auth: OAuth Token                                                      │
 │         ▼                                                                        │
-├──────────────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (Gateway API)                                                           │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                                  │
 │                                                                                  │
-│  [data-science-gateway]                                                          │
-│  - Type: HTTPRoute (Gateway API)                                                 │
-│  - PathPrefix: /                                                                 │
-│  - Port: 443/TCP (external) → 8443/TCP (internal)                               │
-│  - TLS Mode: SIMPLE (Gateway-terminated)                                         │
-│  - Encryption: TLS 1.2+                                                          │
+│  [Platform Gateway (Envoy)]                                                      │
+│  - Port: 443/TCP (external) → 8443/TCP (internal)                              │
+│  - TLS Termination: TLS 1.2+ (Gateway-terminated, SIMPLE mode)                  │
+│  - Routing: HTTPRoute, PathPrefix "/"                                            │
 │         │                                                                        │
 │         │ Port: 8443/TCP                                                         │
 │         │ Protocol: HTTPS                                                        │
-│         │ Encryption: TLS (service-ca signed)                                    │
-│         │ Auth: OpenShift project list check                                     │
+│         │ Encryption: TLS (serving cert, auto-rotated by service-ca)             │
+│         │ Auth: OAuth token passthrough                                           │
 │         ▼                                                                        │
-├──────────────────────────────────────────────────────────────────────────────────┤
-│  AUTHENTICATION LAYER                                                            │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  AUTH ENFORCEMENT LAYER                                                          │
 │                                                                                  │
-│  [kube-rbac-proxy Sidecar]                                                       │
-│  - Image: quay.io/opendatahub/odh-kube-auth-proxy                               │
+│  [kube-rbac-proxy sidecar]                                                       │
+│  - Namespace: (applications namespace)                                           │
 │  - Port: 8443/TCP (listen) → 8080/TCP (upstream)                                │
-│  - TLS: service-ca operator signed cert (dashboard-proxy-tls secret)             │
-│  - AuthN: Validates user can `list projects` in project.openshift.io             │
-│  - AuthZ: Forwards X-Auth-Request-User, X-Auth-Request-Groups headers           │
-│  - Token: x-forwarded-access-token header passed through                         │
+│  - Function: OAuth token validation, header injection                            │
+│  - Injects: X-Auth-Request-User, X-Auth-Request-Groups,                         │
+│             x-forwarded-access-token                                             │
+│  - TLS Cert: dashboard-proxy-tls (service-ca, auto-rotate)                      │
 │         │                                                                        │
 │         │ Port: 8080/TCP                                                         │
 │         │ Protocol: HTTP                                                         │
-│         │ Encryption: None (localhost / pod-internal)                             │
-│         │ Auth: X-Auth-Request-User/Groups + x-forwarded-access-token            │
+│         │ Encryption: None (localhost / same-pod)                                 │
+│         │ Auth: x-forwarded-access-token header                                  │
 │         ▼                                                                        │
-├──────────────────────────────────────────────────────────────────────────────────┤
-│  APPLICATION LAYER (Dashboard Pod)                                               │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  DASHBOARD POD (Sidecar Mode - up to 10 containers)                             │
 │                                                                                  │
-│  [Node.js Backend (Fastify)]                                                     │
-│  - Namespace: redhat-ods-applications (RHOAI)                                    │
-│  - ServiceAccount: odh-dashboard                                                 │
-│  - Port: 8080/TCP (HTTP)                                                         │
-│  - automountServiceAccountToken: false                                           │
-│  - Token: Projected volume (dashboard-sa-token)                                  │
-│  - Functions: SPA serving, API proxy, WebSocket relay, MF remote proxy           │
+│  [Dashboard Backend (Node.js/Fastify)]                                           │
+│  - Port: 8080/TCP (HTTP, internal only)                                          │
+│  - SA: odh-dashboard (broad K8s API permissions)                                 │
+│  - Function: Shell app, K8s API proxy, Module Federation host                    │
+│  - Reads: federation-configmap.yaml for BFF routing                              │
 │         │                                                                        │
-│    ┌────┴────────────────────────────────────────────────────────┐                │
-│    │ Module Federation BFF Proxy (/_mf/:name/*)                 │                │
-│    │                                                             │                │
-│    │  Port: 8143/TCP  → [gen-ai BFF]      (TLS, user_token)    │                │
-│    │  Port: 8243/TCP  → [maas BFF]        (TLS, user_token)    │                │
-│    │  Port: 8043/TCP  → [model-reg BFF]   (TLS, user_token)    │                │
-│    │  Port: 8343/TCP  → [mlflow BFF]      (TLS, user_token)    │                │
-│    │  Port: 8543/TCP  → [eval-hub BFF]    (TLS, user_token)    │                │
-│    │  Port: 8643/TCP  → [automl BFF]      (TLS, user_token)    │                │
-│    │  Port: 8743/TCP  → [autorag BFF]     (TLS, user_token)    │                │
-│    │  Port: 8843/TCP  → [agent-ops BFF]   (TLS, user_token)    │                │
-│    │                                                             │                │
-│    │  All BFF sidecars:                                          │                │
-│    │  - Language: Go (strictfipsruntime, CGO_ENABLED=1)          │                │
-│    │  - TLS: TLS 1.3 minimum (server), TLS 1.2 minimum (client) │                │
-│    │  - Auth: x-forwarded-access-token → K8s Impersonation       │                │
-│    │  - Token: Projected volume (modules-sa-token, separate SA)  │                │
-│    │  - Middleware: RequireAccessToService (validates via K8s API)│                │
-│    └─────────────────────────────────────────────────────────────┘                │
+│         ├── Port: 8143/TCP ── [gen-ai BFF]                                       │
+│         │   Protocol: HTTPS, TLS (shared proxy-tls)                              │
+│         │   SA Token: odh-dashboard-modules (restricted)                          │
+│         │   Auth: x-forwarded-access-token                                       │
+│         │                                                                        │
+│         ├── Port: 8243/TCP ── [maas BFF]                                         │
+│         │   Protocol: HTTPS, TLS (shared proxy-tls)                              │
+│         │   SA Token: odh-dashboard-modules (restricted)                          │
+│         │   Auth: x-forwarded-access-token                                       │
+│         │                                                                        │
+│         ├── Port: 8043/TCP ── [model-registry BFF]                               │
+│         │   Protocol: HTTPS, TLS                                                 │
+│         │   SA Token: odh-dashboard-modules (restricted)                          │
+│         │   Auth: x-forwarded-access-token                                       │
+│         │                                                                        │
+│         ├── Port: 8343/TCP ── [mlflow BFF]                                       │
+│         │   Protocol: HTTPS, TLS                                                 │
+│         │   SA Token: odh-dashboard-modules (restricted)                          │
+│         │   Auth: x-forwarded-access-token                                       │
+│         │                                                                        │
+│         ├── Port: 8543/TCP ── [eval-hub BFF]                                     │
+│         │   Protocol: HTTPS, TLS                                                 │
+│         │   SA Token: odh-dashboard-modules (restricted)                          │
+│         │   Auth: x-forwarded-access-token                                       │
+│         │                                                                        │
+│         ├── Port: 8643/TCP ── [automl BFF]                                       │
+│         │   Protocol: HTTPS, TLS                                                 │
+│         │   SA Token: odh-dashboard-modules (restricted)                          │
+│         │   Auth: x-forwarded-access-token                                       │
+│         │                                                                        │
+│         ├── Port: 8743/TCP ── [autorag BFF]                                      │
+│         │   Protocol: HTTPS, TLS                                                 │
+│         │   SA Token: odh-dashboard-modules (restricted)                          │
+│         │   Auth: x-forwarded-access-token                                       │
+│         │                                                                        │
+│         └── Port: 8843/TCP ── [agent-ops BFF]                                    │
+│             Protocol: HTTPS, TLS                                                 │
+│             SA Token: odh-dashboard-modules (restricted)                          │
+│             Auth: x-forwarded-access-token                                       │
 │                                                                                  │
 │  Inter-BFF Communication:                                                        │
-│  [gen-ai BFF] → [maas BFF]                                                      │
-│  - Port: 8243/TCP                                                                │
-│  - Protocol: HTTPS                                                               │
-│  - Encryption: TLS 1.2+                                                          │
-│  - Auth: x-forwarded-access-token (user_token)                                   │
-│  - Purpose: Token management                                                     │
+│  - gen-ai → maas (8243/TCP, HTTPS/TLS, x-forwarded-access-token)               │
+│  - gen-ai → mlflow (8343/TCP, HTTPS/TLS, x-forwarded-access-token)             │
+│  - eval-hub → model-registry (8043/TCP, HTTPS/TLS, x-forwarded-access-token)   │
+│                                                                                  │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR (Control Plane)                                                        │
+│                                                                                  │
+│  [dashboard-operator]                                                            │
+│  - Namespace: (operator namespace)                                               │
+│  - Port: 8080/TCP (metrics), 8081/TCP (health), 9443/TCP (webhook)              │
+│  - Reconciles: Dashboard CR (cluster-scoped)                                     │
+│  - Watches: DataScienceCluster for module enablement                             │
 │         │                                                                        │
-│         │ (Egress from pod)                                                      │
+│         │ Port: 6443/TCP                                                         │
+│         │ Protocol: HTTPS                                                        │
+│         │ Encryption: TLS                                                         │
+│         │ Auth: Bearer Token (SA)                                                │
 │         ▼                                                                        │
-├──────────────────────────────────────────────────────────────────────────────────┤
-│  CLUSTER INTERNAL SERVICES                                                       │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES (Internal)                                                    │
 │                                                                                  │
 │  [Kubernetes API Server]                                                         │
-│  - Port: 6443/TCP                                                                │
-│  - Protocol: HTTPS                                                               │
-│  - Encryption: TLS 1.2+                                                          │
-│  - Auth: ServiceAccount Token + User Impersonation                               │
-│  - Purpose: All K8s resource CRUD, CRD watches, RBAC checks                     │
+│  - Port: 6443/TCP, Protocol: HTTPS, Auth: Bearer Token (SA/user)               │
+│  - Purpose: All K8s resource CRUD, RBAC checks, watch                           │
 │                                                                                  │
-│  [DataScience Pipelines API]                                                     │
-│  - Port: 8443/TCP                                                                │
-│  - Protocol: HTTPS                                                               │
-│  - Encryption: TLS                                                               │
-│  - Auth: Bearer Token                                                            │
-│  - Purpose: Pipeline execution and management                                    │
+│  [Thanos Querier (openshift-monitoring)]                                         │
+│  - Port: 9092/TCP, Protocol: HTTPS, Auth: Bearer Token                          │
+│  - Purpose: Prometheus metrics queries                                           │
 │                                                                                  │
 │  [Model Registry API]                                                            │
-│  - Port: 8443/TCP                                                                │
-│  - Protocol: HTTPS                                                               │
-│  - Encryption: TLS                                                               │
-│  - Auth: Bearer Token                                                            │
-│  - Purpose: Model version tracking                                               │
+│  - Port: 8080/TCP, Protocol: HTTP/gRPC, Auth: Bearer Token                      │
+│  - Purpose: Model catalog CRUD                                                   │
 │                                                                                  │
-│  [ML Metadata (MLMD)]                                                            │
-│  - Port: 8443/TCP                                                                │
-│  - Protocol: gRPC-web                                                            │
-│  - Encryption: TLS                                                               │
-│  - Auth: Bearer Token                                                            │
-│  - Purpose: Artifact and execution tracking                                      │
-│                                                                                  │
-│  [TrustyAI Service]                                                              │
-│  - Port: varies                                                                  │
-│  - Protocol: HTTPS                                                               │
-│  - Encryption: TLS                                                               │
-│  - Auth: Bearer Token                                                            │
-│  - Purpose: AI fairness and explainability metrics                               │
-│                                                                                  │
-│  [Model Serving (KServe)]                                                        │
-│  - Port: varies                                                                  │
-│  - Protocol: HTTPS                                                               │
-│  - Encryption: TLS                                                               │
-│  - Auth: Bearer Token                                                            │
-│  - Purpose: Inference service management                                         │
-│                                                                                  │
-│  [Prometheus/Thanos]                                                             │
-│  - Port: 9091/TCP                                                                │
-│  - Protocol: HTTPS                                                               │
-│  - Encryption: TLS                                                               │
-│  - Auth: Bearer Token                                                            │
-│  - Purpose: Metrics queries                                                      │
+│  [TrustyAI]                                                                      │
+│  - Port: 8080/TCP, Protocol: HTTP/HTTPS, Auth: Bearer Token                     │
+│  - Purpose: Bias/explainability metrics                                          │
 │                                                                                  │
 │  [Perses]                                                                        │
-│  - Port: 8080/TCP                                                                │
-│  - Protocol: HTTP                                                                │
-│  - Encryption: None                                                              │
-│  - Auth: None                                                                    │
+│  - Port: 8080/TCP, Protocol: HTTP, Encryption: None, Auth: user_token           │
 │  - Purpose: Observability dashboards                                             │
 │                                                                                  │
-├──────────────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES (Egress)                                                      │
+│  [pgvector (PostgreSQL)]                                                         │
+│  - Port: 5432/TCP, Protocol: TCP, Encryption: TLS (optional)                    │
+│  - Auth: credentials (genai-pgvector-credentials secret)                         │
+│  - Purpose: Vector store for RAG (auto-provisioned by gen-ai BFF)               │
 │                                                                                  │
-│  [LlamaStack Server]                                                             │
-│  - Port: varies                                                                  │
-│  - Protocol: HTTPS                                                               │
-│  - Encryption: TLS 1.2+                                                          │
-│  - Auth: Bearer Token / API Key                                                  │
-│  - Purpose: LLM inference, vector stores, file management                        │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                               │
 │                                                                                  │
-│  [MaaS API Server]                                                               │
-│  - Port: varies                                                                  │
-│  - Protocol: HTTPS                                                               │
-│  - Encryption: TLS                                                               │
+│  [Llama Stack]                                                                   │
+│  - Port: 443/TCP, Protocol: HTTPS, Encryption: TLS 1.3                          │
 │  - Auth: Bearer Token                                                            │
-│  - Purpose: Model-as-a-Service API keys, models, subscriptions                   │
-│                                                                                  │
-│  [MLflow Tracking Server]                                                        │
-│  - Port: varies                                                                  │
-│  - Protocol: HTTPS                                                               │
-│  - Encryption: TLS                                                               │
-│  - Auth: Session                                                                 │
-│  - Purpose: Experiment and prompt management                                     │
+│  - Purpose: LLM inference and agent runtime                                      │
 │                                                                                  │
 │  [NeMo Guardrails]                                                               │
-│  - Port: varies                                                                  │
-│  - Protocol: HTTPS                                                               │
-│  - Encryption: TLS                                                               │
-│  - Auth: API Key                                                                 │
-│  - Purpose: Content moderation                                                   │
+│  - Port: 443/TCP, Protocol: HTTPS, Encryption: TLS 1.2+                         │
+│  - Auth: Bearer Token                                                            │
+│  - Purpose: Content moderation for Gen AI                                        │
+│                                                                                  │
+│  [S3-compatible storage]                                                         │
+│  - Port: 443/TCP, Protocol: HTTPS, Encryption: TLS 1.2+                         │
+│  - Auth: AWS IAM credentials                                                     │
+│  - Purpose: Object storage for AutoML/AutoRAG                                    │
+│                                                                                  │
+│  [OpenAI API]                                                                    │
+│  - Port: 443/TCP, Protocol: HTTPS, Encryption: TLS 1.2+                         │
+│  - Auth: Bearer Token                                                            │
+│  - Purpose: Fallback LLM provider                                                │
+│                                                                                  │
+│  [OGX (Open GenAI Stack)]                                                        │
+│  - Port: 443/TCP, Protocol: HTTPS, Encryption: TLS                              │
+│  - Auth: Bearer Token                                                            │
+│  - Purpose: RAG optimization orchestration                                       │
 │                                                                                  │
 │  [MCP Servers]                                                                   │
-│  - Port: varies                                                                  │
-│  - Protocol: Stdio/HTTP                                                          │
-│  - Encryption: varies                                                            │
-│  - Auth: None                                                                    │
-│  - Purpose: Tool discovery                                                       │
+│  - Port: various, Protocol: HTTPS, Encryption: TLS                               │
+│  - Auth: Bearer Token                                                            │
+│  - Purpose: Model Context Protocol tools                                         │
 │                                                                                  │
-└──────────────────────────────────────────────────────────────────────────────────┘
+│  [EvalHub API Server]                                                            │
+│  - Port: 443/TCP, Protocol: HTTPS, Encryption: TLS                              │
+│  - Auth: Bearer Token                                                            │
+│  - Purpose: Evaluation job management                                            │
+│                                                                                  │
+│  [MLflow Tracking Server]                                                        │
+│  - Port: 443/TCP, Protocol: HTTPS, Encryption: TLS                              │
+│  - Auth: Bearer Token                                                            │
+│  - Purpose: Experiment/run data                                                  │
+│                                                                                  │
+│  [Kubeflow Pipelines]                                                            │
+│  - Port: various, Protocol: HTTPS, Encryption: TLS                               │
+│  - Auth: Bearer Token                                                            │
+│  - Purpose: Pipeline execution for AutoML/AutoRAG                                │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+SA Token Isolation:
+- odh-dashboard SA: Full K8s API permissions (shell + kube-rbac-proxy)
+  - automountServiceAccountToken: disabled, uses projected volume
+- odh-dashboard-modules SA: Restricted permissions (BFF modules only)
+  - Separate projected volume mount per BFF container
+  - Limited blast radius if compromised
 
 RBAC Summary:
+- ClusterRole: odh-dashboard
+  - API Groups: storage.k8s.io, machine.openshift.io, config.openshift.io,
+    operators.coreos.com, kubeflow.org, serving.kserve.io,
+    modelregistry.opendatahub.io, feast.dev, mlflow.opendatahub.io,
+    datasciencecluster.opendatahub.io, dscinitialization.opendatahub.io,
+    authentication.k8s.io, authorization.k8s.io,
+    services.platform.opendatahub.io, route.openshift.io, user.openshift.io,
+    rbac.authorization.k8s.io
+  - Resources: storageclasses, nodes, machineautoscalers, machinesets,
+    clusterversions, ingresses, clusterserviceversions, subscriptions,
+    configmaps, pvc, secrets, routes, groups, users, rolebindings,
+    clusterrolebindings, roles, notebooks, datascienceclusters,
+    dscinitializations, inferenceservices, modelregistries, featurestores,
+    mlflows, tokenreviews, subjectaccessreviews, auths
+  - Verbs: varies per resource (get, list, watch, create, update, patch, delete)
 
-Service Account: odh-dashboard
-  ClusterRole: odh-dashboard
-  - storage.k8s.io / storageclasses: update, patch
-  - "" / nodes: get, list
-  - machine.openshift.io / machineautoscalers, machinesets: get, list
-  - config.openshift.io / clusterversions, ingresses: get, watch, list
-  - operators.coreos.com / clusterserviceversions, subscriptions: get, list, watch
-  - image.openshift.io / imagestreams/layers: get
-  - "" / configmaps, persistentvolumeclaims, secrets: create, delete, get, list, patch, update, watch
-  - route.openshift.io / routes: get, list, watch
-  - console.openshift.io / consolelinks: get, list, watch
-  - user.openshift.io / groups, users: get, list, watch
-  - "" / pods, serviceaccounts, services: get, list, watch
-  - "" / namespaces: patch
-  - rbac.authorization.k8s.io / rolebindings, clusterrolebindings, roles: list, get, create, patch, delete
-  - events.k8s.io / events: get, list, watch
-  - kubeflow.org / notebooks: get, list, watch, create, update, patch, delete
-  - datasciencecluster.opendatahub.io / datascienceclusters: list, watch, get
-  - dscinitialization.opendatahub.io / dscinitializations: list, watch, get
-  - serving.kserve.io / inferenceservices: get, list, watch
-  - modelregistry.opendatahub.io / modelregistries: get, list, watch, create, update, patch, delete
-  - services.platform.opendatahub.io / auths: get
-  - ogx.io / ogxservers: get, list, watch
-  - trustyai.opendatahub.io / guardrailsorchestrators, evalhubs: get, list, watch
-  - feast.dev / featurestores: get, list, watch
-  - mlflow.opendatahub.io / mlflows: get, list, watch
-  - authentication.k8s.io / tokenreviews: create
-  - authorization.k8s.io / subjectaccessreviews: create
+- ClusterRole: odh-dashboard-gen-ai
+  - API Groups: opentelemetry.io, "", apps, networking.k8s.io
+  - Resources: opentelemetrycollectors, secrets, services, pvc, configmaps,
+    deployments, networkpolicies
+  - Verbs: get, list, create, update, delete
 
-Service Account: dashboard-operator
-  ClusterRole: dashboard-operator-role
-  - components.platform.opendatahub.io / dashboards: get, list, watch, create, update, patch, delete (+status, finalizers)
-  - "" / configmaps, secrets, services, serviceaccounts, pvc: create, delete, get, list, patch, update, watch
-  - apps / deployments, replicasets: create, delete, get, list, patch, update, watch
-  - route.openshift.io / routes: create, delete, get, list, patch, update, watch
-  - rbac.authorization.k8s.io / clusterroles, clusterrolebindings, roles, rolebindings: create, delete, get, list, patch, update, watch
-  - apiextensions.k8s.io / customresourcedefinitions: create, delete, get, list, patch, update, watch
-  - networking.k8s.io / networkpolicies, ingresses: create, delete, get, list, patch, update, watch
-  - oauth.openshift.io / oauthclients: create, delete, get, list, patch, update, watch
-  - console.openshift.io / consolelinks: create, delete, get, list, patch, update, watch
-
-Role Bindings:
-  - odh-dashboard → odh-dashboard (ClusterRole) → SA: odh-dashboard
-  - odh-dashboard → odh-dashboard (Role) → SA: odh-dashboard
-  - odh-dashboard-auth-delegator → system:auth-delegator → SA: odh-dashboard (ns: kube-system)
-  - odh-dashboard-cluster-monitoring → cluster-monitoring-view → SA: odh-dashboard
-  - odh-dashboard-image-puller → system:image-puller → SA: odh-dashboard
-  - dashboard-operator-rolebinding → dashboard-operator-role → SA: dashboard-operator
+- RoleBinding: odh-dashboard-auth-delegator → system:auth-delegator
+- RoleBinding: odh-dashboard-monitoring → cluster-monitoring-view
 
 Secrets:
-  - dashboard-proxy-tls (kubernetes.io/tls)
-    Purpose: TLS cert/key for kube-rbac-proxy
-    Provisioned by: service-ca operator (OpenShift)
-    Auto-Rotate: Yes
+- dashboard-proxy-tls (kubernetes.io/tls) - TLS cert for kube-rbac-proxy,
+  provisioned by OpenShift service-ca, auto-rotated
+- gen-ai-proxy-tls (kubernetes.io/tls) - TLS cert for gen-ai standalone,
+  provisioned by OpenShift service-ca, auto-rotated
+- odh-dashboard-modules-token (kubernetes.io/service-account-token) -
+  SA token for BFF modules, provisioned by Kubernetes, auto-rotated
+- genai-pgvector-credentials (Opaque) - PostgreSQL credentials for
+  pgvector auto-provisioning, provisioned by gen-ai BFF, NOT auto-rotated
 
-  - odh-dashboard-modules-token (Opaque)
-    Purpose: ServiceAccount token for BFF module sidecars
-    Provisioned by: Kubernetes (projected volume)
-    Auto-Rotate: Yes
-
-Token Isolation:
-  - automountServiceAccountToken: false (pod-level)
-  - dashboard-sa-token: Projected volume for core containers (Node.js backend)
-  - modules-sa-token: Separate projected volume for BFF sidecars (from odh-dashboard-modules-token secret)
-  - Limits blast radius if a BFF sidecar is compromised
-
-SSRF Protection:
-  - K8s proxy (internal/proxy/k8s_proxy.go) restricts DNS resolution targets
-  - Only allows connections to the Kubernetes API host
-  - Prevents proxy abuse for lateral movement
+Authentication Flow:
+1. User authenticates via OAuth → obtains token
+2. Token sent in Authorization header to Gateway
+3. Gateway forwards to kube-rbac-proxy (8443/TCP TLS)
+4. kube-rbac-proxy validates token, injects identity headers
+5. Backend receives x-forwarded-access-token for upstream calls
+6. BFF modules receive forwarded token for domain-specific API calls
+7. K8s API calls use user's identity for RBAC enforcement
 
 FIPS Compliance:
-  - Go BFFs: CGO_ENABLED=1, -tags strictfipsruntime (OpenSSL-backed crypto)
-  - TLS 1.3 minimum for BFF servers, TLS 1.2 minimum for outbound clients
-  - esbuild (non-FIPS Go binary) explicitly removed from runtime image
-  - UBI9 base images with system OpenSSL
+- Go BFFs: CGO_ENABLED=1, -tags strictfipsruntime, dynamic linking
+- TLS 1.3 minimum for Go BFF HTTPS listeners
+- All base images: UBI9 (FIPS-validated OpenSSL)
+- esbuild Go binaries removed from node_modules for check-payload compliance
 
-Authentication Chain:
-  1. Gateway API → TLS termination
-  2. kube-rbac-proxy → OpenShift project list permission check
-  3. Node.js backend → x-forwarded-access-token extraction
-  4. K8s API → ServiceAccount + User Impersonation
-  5. BFF sidecars → RequireAccessToService middleware → K8s token validation
+Network Policy (Sidecar Mode):
+- Single NetworkPolicy opens ports 8043-8843 + broad egress
+- Less granular than standalone mode
 
-Admission Webhooks:
-  - vworkspace.kb.io (validating) → Workspace create/update
-  - vworkspacekind.kb.io (validating) → WorkspaceKind create/update/delete
-  - conversion.workspacekinds.kubeflow.org (conversion) → WorkspaceKind version conversion
+Network Policy (Standalone Mode):
+- Per-module NetworkPolicy with precise egress rules
+- Example: gen-ai allows egress only to MaaS (8243), MLflow (8343),
+  K8s API (6443), DNS, and external HTTPS (443)

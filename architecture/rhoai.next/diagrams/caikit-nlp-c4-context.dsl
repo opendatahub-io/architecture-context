@@ -1,45 +1,47 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates inference requests and fine-tunes models via prompt tuning"
-        mlEngineer = person "ML Engineer" "Deploys and configures Caikit runtime with caikit-nlp library"
+        dataScientist = person "Data Scientist" "Creates, deploys, and queries ML models for NLP tasks"
+        mlEngineer = person "ML Engineer" "Configures model serving infrastructure and training pipelines"
 
-        caikitNlp = softwareSystem "Caikit-NLP" "Python NLP module library providing text generation, embedding, reranking, classification, and tokenization for the Caikit runtime" {
-            embeddingModule = container "EmbeddingModule" "Text embedding, sentence similarity, and semantic reranking using sentence-transformers" "Python / PyTorch"
-            crossEncoderModule = container "CrossEncoderModule" "Cross-encoder based reranking and tokenization" "Python / PyTorch"
-            textGeneration = container "TextGeneration" "Local text generation using HuggingFace CausalLM and Seq2Seq models" "Python / PyTorch"
-            textGenerationTGIS = container "TextGenerationTGIS" "Remote text generation via TGIS backend over gRPC" "Python / gRPC"
-            peftPromptTuning = container "PeftPromptTuning" "PEFT-based prompt tuning for text generation fine-tuning" "Python / PyTorch / Accelerate"
-            peftPromptTuningTGIS = container "PeftPromptTuningTGIS" "Remote inference of PEFT-tuned models via TGIS" "Python / gRPC"
-            sequenceClassification = container "SequenceClassification" "Text classification using AutoModelForSequenceClassification" "Python / PyTorch"
-            tgisAutoFinder = container "TGISAutoFinder" "Auto-discovery of text generation models on remote TGIS servers" "Python / gRPC"
-            pretrainedModelBase = container "PretrainedModelBase" "Abstract base for HuggingFace pretrained model loading" "Python"
+        caikitNlp = softwareSystem "Caikit-NLP" "NLP model-serving runtime providing text generation, embeddings, reranking, classification, and tokenization via Caikit framework" {
+            grpcRuntime = container "gRPC Runtime Server" "Hosts Caikit modules and serves gRPC API for all NLP tasks" "Python / Caikit Runtime" "8085/TCP"
+            restGateway = container "REST Gateway" "REST-to-gRPC proxy providing HTTP API access" "Python / Caikit HTTP Server" "8080/TCP"
+            textGenModules = container "Text Generation Modules" "PeftPromptTuning, TextGeneration, PeftPromptTuningTGIS, TextGenerationTGIS" "Python / PEFT / Transformers"
+            embeddingModules = container "Embedding & Reranking Modules" "EmbeddingModule, CrossEncoderModule using sentence-transformers" "Python / Sentence Transformers"
+            classificationModules = container "Classification Modules" "SequenceClassification, FilteredSpanClassification" "Python / Transformers"
+            tgisAutoFinder = container "TGISAutoFinder" "Automatic discovery of TGIS-connectable models via gRPC probing" "Python"
         }
 
-        caikitRuntime = softwareSystem "Caikit Runtime" "Core AI framework providing gRPC/HTTP serving, module registry, and data model" "Internal RHOAI"
-        tgis = softwareSystem "TGIS" "Text Generation Inference Server for remote model inference" "Internal RHOAI"
-        caikitTgisBackend = softwareSystem "caikit-tgis-backend" "Backend integration library for TGIS connections and model management" "Internal RHOAI"
-        huggingfaceHub = softwareSystem "HuggingFace Hub" "Public model repository for downloading pretrained models" "External"
-        localModelStorage = softwareSystem "Local Model Storage" "Filesystem storage for pretrained and fine-tuned model artifacts" "External"
-        pytorchCuda = softwareSystem "PyTorch CUDA / IPEX" "GPU acceleration runtime for inference and training" "External"
+        tgis = softwareSystem "TGIS" "Text Generation Inference Server for remote model inference with prompt caching" "Internal"
+        kserve = softwareSystem "KServe / ModelMesh" "Model serving platform that deploys caikit-nlp as InferenceService containers" "Internal RHOAI"
+        caikitRuntime = softwareSystem "Caikit Runtime" "Core AI framework providing module system, data models, and server infrastructure" "Library"
+        caikitTgisBackend = softwareSystem "caikit-tgis-backend" "TGIS backend integration, connection management, prompt artifact loading" "Library"
 
-        # Relationships
-        dataScientist -> caikitRuntime "Sends inference/training requests" "HTTP/8080, gRPC/8085"
-        mlEngineer -> caikitRuntime "Configures and deploys" "RUNTIME_LIBRARY=caikit_nlp"
+        huggingfaceHub = softwareSystem "HuggingFace Hub" "Public model registry for downloading pre-trained NLP models" "External"
+        pytorch = softwareSystem "PyTorch" "Deep learning framework for model training and local inference" "Library"
+        konfluxCI = softwareSystem "Konflux CI" "Tekton pipeline that builds and pushes container images to quay.io" "External"
 
-        caikitRuntime -> caikitNlp "Loads as runtime library and dispatches task requests" "In-process Python"
+        # User interactions
+        dataScientist -> caikitNlp "Sends inference requests (text generation, embeddings, reranking)" "HTTP/gRPC"
+        mlEngineer -> kserve "Deploys InferenceService with caikit-nlp runtime" "kubectl"
 
-        textGenerationTGIS -> tgis "Remote text generation inference" "gRPC/8033 (TLS optional, mTLS configurable)"
-        peftPromptTuningTGIS -> tgis "Remote PEFT model inference" "gRPC/8033 (TLS optional)"
-        tgisAutoFinder -> tgis "Discovers available models" "gRPC/8033"
+        # Internal container relationships
+        restGateway -> grpcRuntime "Proxies HTTP requests" "gRPC/8085 localhost"
+        grpcRuntime -> textGenModules "Dispatches text generation tasks"
+        grpcRuntime -> embeddingModules "Dispatches embedding/reranking tasks"
+        grpcRuntime -> classificationModules "Dispatches classification tasks"
+        tgisAutoFinder -> tgis "Probes for model availability" "gRPC"
 
-        caikitNlp -> caikitTgisBackend "Uses TGISBackend for connection management" "In-process Python"
-        pretrainedModelBase -> huggingfaceHub "Downloads pretrained models (disabled by default)" "HTTPS/443"
-        pretrainedModelBase -> localModelStorage "Loads model weights and configurations" "Filesystem"
-        peftPromptTuning -> localModelStorage "Saves fine-tuned prompt vectors and training metadata" "Filesystem"
+        # External dependencies
+        caikitNlp -> tgis "Remote text generation inference" "gRPC/configurable, Optional TLS/mTLS"
+        caikitNlp -> huggingfaceHub "Downloads pre-trained models" "HTTPS/443, TLS 1.2+"
+        caikitNlp -> caikitRuntime "Uses module system and server framework" "Library"
+        caikitNlp -> caikitTgisBackend "Uses TGIS connection management" "Library"
+        caikitNlp -> pytorch "Model training and local inference" "Library"
 
-        embeddingModule -> pytorchCuda "GPU-accelerated embedding inference" "In-process"
-        peftPromptTuning -> pytorchCuda "GPU-accelerated training with mixed precision" "In-process"
-        textGeneration -> pytorchCuda "GPU-accelerated text generation" "In-process"
+        # Platform dependencies
+        kserve -> caikitNlp "Deploys as container in InferenceService"
+        konfluxCI -> caikitNlp "Builds container image" "Tekton pipeline"
     }
 
     views {
@@ -58,17 +60,25 @@ workspace {
                 background #999999
                 color #ffffff
             }
+            element "Internal" {
+                background #438dd5
+                color #ffffff
+            }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
+            element "Library" {
+                background #f5a623
+                color #ffffff
+            }
             element "Person" {
-                shape Person
-                background #4a90e2
+                shape person
+                background #08427b
                 color #ffffff
             }
             element "Software System" {
-                background #4a90e2
+                background #1168bd
                 color #ffffff
             }
             element "Container" {

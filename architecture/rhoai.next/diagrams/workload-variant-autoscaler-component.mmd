@@ -1,86 +1,92 @@
 graph TB
     subgraph WVA["Workload Variant Autoscaler"]
         direction TB
-        Controller["controller-manager<br/>(Go Operator)"]
 
-        subgraph Engines["Scaling Engines"]
-            direction LR
-            SatV1["Saturation Engine V1<br/>Percentage-based<br/>KV Cache + Queue Depth"]
-            SatV2["Saturation Engine V2<br/>Token-based Capacity<br/>k₁ memory + k₂ compute"]
-            SFZ["Scale-from-Zero Engine<br/>0→1 Replica Scaling"]
+        subgraph ControlPlane["Controller Manager"]
+            Controller["WVA Controller Manager<br/>(controller-runtime)"]
+            HPAReconciler["HPA Reconciler"]
+            SOReconciler["ScaledObject Reconciler"]
+            CMReconciler["ConfigMap Reconciler"]
+            IPReconciler["InferencePool Reconciler"]
+            Controller --> HPAReconciler
+            Controller --> SOReconciler
+            Controller --> CMReconciler
+            Controller --> IPReconciler
         end
 
-        subgraph Analyzers["Analyzer Plugins"]
-            direction LR
-            Throughput["Throughput Analyzer<br/>ITL Model + Two-tier OLS"]
-            Queueing["Queueing Model Analyzer<br/>M/M/c + Kalman Filter"]
+        subgraph Engines["Optimization Engines"]
+            SatV1["Saturation Engine V1<br/>(Percentage-based)"]
+            SatV2["Saturation Engine V2<br/>(Token-capacity)"]
+            QueueModel["Queueing Model Engine<br/>(M/M/1/K Theory)"]
+            ScaleZero["Scale-from-Zero Engine"]
+            Throughput["Throughput Analyzer"]
         end
 
-        subgraph Coordinator["Coordinator (Experimental)"]
-            direction LR
-            CoordLoop["Leader-Elected Loop"]
-            GPURebalance["GPU Rebalance Plugin<br/>Proportional Quota Allocation"]
-            CoordLoop --> GPURebalance
+        subgraph Pipeline["Analysis Pipeline"]
+            Analyzer["Analyzers"] --> Optimizer["Optimizer<br/>(Greedy / Cost-aware)"]
+            Optimizer --> Limiter["Limiter<br/>(GPU Inventory / Quota)"]
+            Limiter --> Enforcer["Enforcer<br/>(Safety Policies)"]
         end
 
-        Controller -->|runs| SatV1
-        Controller -->|runs| SatV2
-        Controller -->|runs| SFZ
-        SatV1 -->|uses| Throughput
-        SatV1 -->|uses| Queueing
-        SatV2 -->|uses| Throughput
-        Controller -->|starts| CoordLoop
+        subgraph DataCollection["Metrics Collection"]
+            Collector["Metrics Collector"]
+            PromSource["Prometheus Source"]
+            PodScraper["Pod Scraping Source"]
+            LRUCache["LRU Cache<br/>(4096 entries)"]
+            Collector --> PromSource
+            Collector --> PodScraper
+            Collector --> LRUCache
+        end
+
+        subgraph Experimental["Experimental"]
+            Coordinator["Coordinator<br/>(Leader-elected)"]
+            GPURebalance["GPU Rebalance Plugin"]
+            Coordinator --> GPURebalance
+        end
+
+        Controller --> Engines
+        Engines --> Pipeline
+        Collector --> Engines
     end
 
-    %% CRDs
-    VACR["VariantAutoscaling CR<br/>(DEPRECATED)"]
-    HPA["HPA<br/>(llm-d.ai/managed=true)"]
-    ScaledObj["KEDA ScaledObject<br/>(llm-d.ai/managed=true)"]
-    InfPool["InferencePool CR"]
+    %% External CRDs watched
+    HPA["HorizontalPodAutoscaler<br/>(autoscaling/v2)<br/>annotation: llm-d.ai/managed"]
+    ScaledObject["KEDA ScaledObject<br/>(keda.sh/v1alpha1)<br/>annotation: llm-d.ai/managed"]
+    InferencePool["InferencePool CR<br/>(inference.networking.k8s.io)"]
+    ConfigMap["ConfigMap<br/>(saturation thresholds,<br/>scale-to-zero settings)"]
+    VariantAutoscaling["VariantAutoscaling CR<br/>(llmd.ai/v1alpha1)"]
 
-    VACR -->|watched by| Controller
-    HPA -->|watched by| Controller
-    ScaledObj -->|watched by| Controller
-    InfPool -->|watched by| Controller
-
-    %% Config
-    ManagerCM["ConfigMap<br/>manager-config"]
-    SatCM["ConfigMap<br/>saturation-scaling-config"]
-    ManagerCM -->|mounted into| Controller
-    SatCM -->|watched by| Controller
+    HPA -->|watched by| HPAReconciler
+    ScaledObject -->|watched by| SOReconciler
+    InferencePool -->|watched by| IPReconciler
+    ConfigMap -->|watched by| CMReconciler
 
     %% Outputs
-    Controller -->|emits| Metrics["/metrics :8443<br/>wva_desired_replicas"]
-    Metrics -->|scraped by| Prometheus["Prometheus"]
-    Prometheus -->|external metric| HPA
-    Prometheus -->|external metric| ScaledObj
+    Enforcer -->|emit| DesiredReplicas["wva_desired_replicas<br/>(Prometheus gauge)"]
+    ScaleZero -->|direct patch| DeploymentScale["Deployment/LWS<br/>Scale Subresource"]
 
-    %% Scale targets
-    HPA -->|scales| Deploy["Deployment"]
-    ScaledObj -->|scales| Deploy
-    SFZ -->|patches scale 0→1| Deploy
-    SFZ -->|patches scale 0→1| LWS["LeaderWorkerSet"]
+    %% External dependencies
+    Prometheus["Prometheus / Thanos Querier"]
+    K8sAPI["Kubernetes API Server"]
 
-    %% Prometheus as input
-    Prometheus -->|vLLM metrics| Controller
-    EPP["EPP / Inference Scheduler"] -->|queue metrics via Prometheus| SFZ
-    EPP -->|queue depth via Prometheus| GPURebalance
+    PromSource -->|PromQL queries| Prometheus
+    PodScraper -->|HTTP scrape| InferencePods["vLLM / SGLang Pods"]
+    Controller -->|watch/list/update| K8sAPI
 
     %% Styling
-    style Controller fill:#4a90e2,stroke:#333,stroke-width:3px,color:#fff
-    style SatV1 fill:#5b9bd5,stroke:#333,color:#fff
-    style SatV2 fill:#5b9bd5,stroke:#333,color:#fff
-    style SFZ fill:#5b9bd5,stroke:#333,color:#fff
-    style Throughput fill:#70ad47,stroke:#333,color:#fff
-    style Queueing fill:#70ad47,stroke:#333,color:#fff
-    style CoordLoop fill:#ed7d31,stroke:#333,color:#fff
-    style GPURebalance fill:#ed7d31,stroke:#333,color:#fff
-    style VACR fill:#f5a623,stroke:#333
+    style WVA fill:#e8f4fd,stroke:#4a90e2,stroke-width:2px
+    style ControlPlane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    style Engines fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    style Pipeline fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    style DataCollection fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    style Experimental fill:#e1d5e7,stroke:#9673a6,stroke-width:2px,stroke-dasharray: 5 5
+    style Controller fill:#4a90e2,color:#fff
+    style DesiredReplicas fill:#f5a623,stroke:#333
     style HPA fill:#f5a623,stroke:#333
-    style ScaledObj fill:#f5a623,stroke:#333
-    style InfPool fill:#f5a623,stroke:#333
-    style Metrics fill:#7ed321,stroke:#333
-    style Prometheus fill:#e8e8e8,stroke:#333
-    style Deploy fill:#e8e8e8,stroke:#333
-    style LWS fill:#e8e8e8,stroke:#333
-    style EPP fill:#e8e8e8,stroke:#333
+    style ScaledObject fill:#f5a623,stroke:#333
+    style InferencePool fill:#f5a623,stroke:#333
+    style VariantAutoscaling fill:#f5a623,stroke:#333
+    style ConfigMap fill:#f5a623,stroke:#333
+    style Prometheus fill:#999,stroke:#333
+    style K8sAPI fill:#999,stroke:#333
+    style InferencePods fill:#999,stroke:#333

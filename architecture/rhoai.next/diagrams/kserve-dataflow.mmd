@@ -1,58 +1,59 @@
 sequenceDiagram
-    autonumber
-
-    participant User as User / kubectl
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
-    participant Webhook as KServe Webhook<br/>9443/TCP HTTPS TLS
-    participant KServeCtrl as kserve-controller-manager
-    participant LLMCtrl as llmisvc-controller-manager
-    participant StorageInit as storage-initializer<br/>Python Init Container
-    participant CloudStore as Cloud Storage<br/>443/TCP HTTPS TLS 1.2+
-    participant Gateway as Gateway / Istio<br/>443/TCP HTTPS
-    participant EPP as Inference Scheduler<br/>8080/TCP HTTP
-    participant Predictor as Predictor Pod<br/>8080/TCP HTTP
     participant Client as External Client
-    participant IGRouter as InferenceGraph Router<br/>8080/TCP HTTP
+    participant GW as Gateway / Ingress<br/>443/TCP HTTPS TLS 1.2+
+    participant HR as HTTPRoute /<br/>VirtualService
+    participant Svc as K8s Service<br/>8080/TCP
+    participant Init as storage-initializer<br/>(Init Container)
+    participant Pred as Predictor Pod<br/>8080/TCP
+    participant S3 as Storage Backend<br/>(S3/GCS/HF/Azure)<br/>443/TCP HTTPS
 
-    rect rgb(230, 245, 255)
-        Note over User,CloudStore: Flow 1: InferenceService Model Deployment
-        User->>K8sAPI: POST InferenceService CR<br/>Auth: Bearer Token (kubeconfig)
-        K8sAPI->>Webhook: Mutate & Validate<br/>TLS (OpenShift serving cert)
-        Webhook-->>K8sAPI: Admitted (defaults applied)
-        K8sAPI-->>KServeCtrl: Watch event: InferenceService created
-        KServeCtrl->>K8sAPI: Create Deployment + init container spec<br/>Auth: ServiceAccount Token
-        Note over StorageInit,CloudStore: Init container phase
-        StorageInit->>CloudStore: Download model artifacts<br/>Auth: AWS IAM / GCS SA / Azure / HF Token
-        CloudStore-->>StorageInit: Model artifacts to emptyDir volume
-        KServeCtrl->>K8sAPI: Create Service<br/>Auth: ServiceAccount Token
-        KServeCtrl->>K8sAPI: Create HTTPRoute / VirtualService / Ingress<br/>Auth: ServiceAccount Token
-        KServeCtrl-->>K8sAPI: InferenceService status: Ready
-    end
+    Note over Client,S3: Flow 1: InferenceService Model Serving (Standard/Raw Mode)
 
-    rect rgb(255, 243, 224)
-        Note over User,Predictor: Flow 2: LLMInferenceService Disaggregated Serving
-        User->>K8sAPI: POST LLMInferenceService CR<br/>Auth: Bearer Token
-        K8sAPI->>Webhook: Mutate & Validate (v1alpha2)<br/>TLS
-        Webhook-->>K8sAPI: Admitted
-        K8sAPI-->>LLMCtrl: Watch event: LLMInferenceService created
-        LLMCtrl->>K8sAPI: Create Deployment / LeaderWorkerSet<br/>+ scheduler + routing sidecar
-        LLMCtrl->>K8sAPI: Create HTTPRoute + InferencePool
-        LLMCtrl->>K8sAPI: Create ScaledObject (KEDA)<br/>+ OTelCollector
-        Note over Client,Predictor: Inference request path
-        Client->>Gateway: POST /v1/models/model:predict<br/>HTTPS TLS
-        Gateway->>EPP: Forward request<br/>HTTP in-cluster
-        EPP->>Predictor: Route to vLLM decode pod<br/>HTTP in-cluster
-        Predictor-->>EPP: Prediction result
-        EPP-->>Gateway: Response
-        Gateway-->>Client: JSON Response
-    end
+    Init->>S3: Download model artifacts<br/>HTTPS/443 TLS 1.2+<br/>Backend credentials (IAM/GCP/Azure/HF Token)
+    S3-->>Init: Model artifacts
 
-    rect rgb(232, 245, 233)
-        Note over Client,IGRouter: Flow 3: InferenceGraph Request Routing
-        Client->>IGRouter: Request to graph endpoint<br/>HTTP 8080/TCP
-        IGRouter->>Predictor: Step 1: InferenceService A<br/>HTTP 80/TCP in-cluster
-        Predictor-->>IGRouter: Result A
-        IGRouter->>Predictor: Step 2: InferenceService B (transform)<br/>HTTP 80/TCP in-cluster
-        Predictor-->>IGRouter: Result B
-        IGRouter-->>Client: Combined/routed response
-    end
+    Client->>GW: POST /v1/models/{model}:predict<br/>HTTPS/443 TLS 1.2+<br/>Auth: None or Bearer Token
+    GW->>HR: Route to backend service
+    HR->>Svc: Forward request<br/>HTTP/8080 (cluster-internal)
+    Svc->>Pred: Inference request<br/>HTTP/8080
+    Pred-->>Svc: Prediction response
+    Svc-->>HR: Response
+    HR-->>GW: Response
+    GW-->>Client: JSON Response
+
+    participant GW2 as data-science-gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant HR2 as HTTPRoute →<br/>InferencePool
+    participant EPP as Scheduler (EPP)<br/>gRPC
+    participant VLLM as Workload Pod (vLLM)<br/>8000/TCP
+    participant Prom as Prometheus<br/>9090/TCP
+
+    Note over Client,Prom: Flow 2: LLMInferenceService Serving (RHOAI 3.x)
+
+    Client->>GW2: POST /v1/completions<br/>HTTPS/443 TLS 1.2+<br/>Auth: Bearer / OAuth
+    GW2->>HR2: Route via HTTPRoute
+    HR2->>EPP: Endpoint picking<br/>gRPC mTLS (DestinationRule)
+    EPP->>VLLM: Forward to selected pod<br/>HTTP or HTTPS/8000<br/>TLS (self-signed)
+    VLLM-->>EPP: LLM response
+    EPP-->>HR2: Response
+    HR2-->>GW2: Response
+    GW2-->>Client: Streaming/JSON Response
+
+    Prom->>VLLM: Scrape metrics<br/>PodMonitor HTTPS/8000<br/>insecureSkipVerify
+    Prom->>EPP: Scrape metrics<br/>ServiceMonitor HTTP<br/>Bearer token auth
+
+    participant LMCtrl as LocalModel Controller
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant LMAgent as LocalModelNode Agent
+    participant DLJob as Download Job Pod
+    participant Store as Storage Backend<br/>443/TCP HTTPS
+
+    Note over LMCtrl,Store: Flow 3: LocalModel Cache Download
+
+    LMCtrl->>K8sAPI: Watch LocalModelCache CRs<br/>HTTPS/443 TLS<br/>ServiceAccount token
+    LMCtrl->>K8sAPI: Create PV/PVC resources
+    K8sAPI-->>LMCtrl: Resources created
+    LMAgent->>K8sAPI: Watch LocalModelNode CRs
+    LMAgent->>DLJob: Create download Job
+    DLJob->>Store: Download model<br/>HTTPS/443 TLS 1.2+<br/>Backend credentials
+    Store-->>DLJob: Model artifacts
+    DLJob-->>LMAgent: Job completed

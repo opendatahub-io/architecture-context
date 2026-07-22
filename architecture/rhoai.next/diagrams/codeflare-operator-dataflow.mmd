@@ -1,41 +1,38 @@
 sequenceDiagram
     participant User as User Browser
     participant Router as OpenShift Router<br/>443/TCP HTTPS
-    participant OAuthProxy as oauth-proxy Sidecar<br/>8443/TCP HTTPS
-    participant OAuthServer as OpenShift OAuth<br/>443/TCP HTTPS
-    participant Dashboard as Ray Dashboard<br/>8265/TCP HTTP
+    participant OAuth as OAuth Proxy Sidecar<br/>8443/TCP HTTPS
+    participant Dashboard as Ray Head Dashboard<br/>8265/TCP HTTP
+    participant Client as Ray Client
+    participant HeadSvc as Ray Head Service<br/>10001/TCP mTLS
+    participant Worker as Ray Workers<br/>10001/TCP mTLS
     participant Operator as CodeFlare Operator
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant InitContainer as mTLS Init Container
-    participant RayHead as Ray Head Pod<br/>10001/TCP mTLS
-    participant RayWorker as Ray Worker Pod<br/>mTLS
-    participant RayClient as Ray Client
+    participant Webhook as Admission Webhook<br/>9443/TCP HTTPS
 
-    Note over User,Dashboard: Flow 1: Ray Dashboard OAuth Access (OpenShift)
-    User->>Router: GET ray-dashboard-{name}<br/>HTTPS/443, TLS 1.2+
-    Router->>OAuthProxy: Forward (TLS Reencrypt)<br/>HTTPS/8443
-    OAuthProxy->>OAuthServer: OAuth redirect flow<br/>HTTPS/443, TLS 1.2+
-    OAuthServer-->>OAuthProxy: Auth token
-    OAuthProxy->>Dashboard: Forward request<br/>HTTP/8265 (localhost)
-    Dashboard-->>OAuthProxy: Dashboard response
-    OAuthProxy-->>Router: HTTPS response
+    Note over User, Dashboard: Flow 1: RayCluster OAuth Dashboard Access (OpenShift)
+    User->>Router: GET https://ray-dashboard-{cluster}<br/>443/TCP HTTPS TLS
+    Router->>OAuth: Reencrypt TLS<br/>8443/TCP HTTPS
+    Note right of OAuth: OpenShift OAuth Token validation
+    OAuth->>Dashboard: Proxy request<br/>8265/TCP HTTP (localhost)
+    Dashboard-->>OAuth: Dashboard response
+    OAuth-->>Router: HTTPS response
     Router-->>User: Dashboard HTML
 
-    Note over Operator,RayWorker: Flow 2: mTLS Certificate Provisioning
-    Operator->>K8sAPI: Watch RayCluster CRs<br/>HTTPS/443, SA Token
-    K8sAPI-->>Operator: RayCluster event
-    Operator->>K8sAPI: Create ca-secret-{cluster}<br/>RSA 2048-bit CA cert
-    Note over InitContainer: Pod starts with init containers
-    InitContainer->>InitContainer: Read CA from Secret volume
-    InitContainer->>InitContainer: Generate node cert<br/>(openssl, signed by cluster CA)
-    InitContainer->>InitContainer: Write cert to EmptyDir
+    Note over Client, Worker: Flow 2: RayCluster mTLS Client Connection
+    Client->>Router: Ray client connect<br/>443/TCP HTTPS TLS Passthrough
+    Note right of Client: Client cert signed by<br/>per-cluster CA
+    Router->>HeadSvc: TLS Passthrough<br/>10001/TCP mTLS
+    HeadSvc->>Worker: Distribute work<br/>10001/TCP mTLS
+    Worker-->>HeadSvc: Results
+    HeadSvc-->>Router: Response
+    Router-->>Client: Results
 
-    Note over RayHead,RayWorker: Flow 2 (cont): Ray Inter-node mTLS
-    RayHead->>RayWorker: Ray GCS/Object Store<br/>10001/TCP, mTLS (cluster CA)
-    RayWorker->>RayHead: Ray protocol<br/>mTLS (cluster CA)
-
-    Note over RayClient,RayHead: Flow 3: Ray Client Connection (OpenShift)
-    RayClient->>Router: Connect to rayclient-{name}<br/>HTTPS/443, TLS passthrough
-    Router->>RayHead: Forward (TLS Passthrough)<br/>10001/TCP, mTLS
-    RayHead-->>Router: Ray response<br/>mTLS (cluster CA)
-    Router-->>RayClient: Response
+    Note over Operator, Webhook: Flow 3: RayCluster mTLS Certificate Bootstrap
+    Operator->>K8sAPI: Create CA Secret<br/>443/TCP HTTPS TLS<br/>ServiceAccount Token
+    Note right of Operator: RSA 2048-bit CA key + cert<br/>1 year validity
+    K8sAPI-->>Operator: Secret created
+    K8sAPI->>Webhook: RayCluster create/update<br/>9443/TCP HTTPS TLS
+    Note right of Webhook: Inject oauth-proxy sidecar<br/>Inject mTLS init containers<br/>Mount CA volumes
+    Webhook-->>K8sAPI: Mutated pod spec
+    Note over Worker: Init container runs:<br/>openssl CLI generates<br/>node cert signed by CA

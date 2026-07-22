@@ -1,55 +1,40 @@
 workspace {
     model {
-        platformAdmin = person "Platform Admin" "Manages RHOAI platform configuration via DSC/DSCI resources"
-        dataScienceUser = person "Data Scientist" "Uses Jupyter notebook workbenches for ML development"
+        clusterAdmin = person "Cluster Admin" "Deploys and configures the RHOAI platform"
+        datascientist = person "Data Scientist" "Creates and uses Notebooks (Workbenches)"
 
-        workbenchesOperator = softwareSystem "Workbenches Operator" "Manages lifecycle of workbench (notebook) infrastructure for RHOAI platform" {
-            controller = container "Workbenches Controller" "Reconciles Workbenches CR, manages namespace lifecycle, monitors deployment health, computes kustomize parameters" "Go (controller-runtime v0.23.3)"
-            metricsServer = container "Metrics Server" "Exposes Prometheus metrics with SubjectAccessReview auth" "HTTPS 8443/TCP"
-            healthProbes = container "Health Probes" "Liveness and readiness endpoints" "HTTP 8081/TCP"
+        workbenchesOperator = softwareSystem "Workbenches Operator" "Module operator managing Workbenches component lifecycle — deploys kf-notebook-controller, odh-notebook-controller, and notebook ImageStreams" {
+            controller = container "Workbenches Controller" "Watches Workbenches CR and platform ConfigMap; renders kustomize manifests; applies via SSA; tracks deployment readiness" "Go (controller-runtime)"
+            hwWebhook = container "Hardware Profile Webhook" "Mutating webhook injecting HardwareProfile resource requirements, nodeSelector, tolerations into Notebooks" "Go (admission webhook)"
+            connWebhook = container "Notebook Connection Webhook" "Mutating webhook validating and injecting connection secret references into Notebooks via SubjectAccessReview" "Go (admission webhook)"
+            tlsBootstrap = container "TLS Bootstrap" "Reads OpenShift cluster TLS security profile; configures webhook and metrics server TLS; watches for profile changes" "Go (library)"
         }
 
-        platformOrchestrator = softwareSystem "Platform Orchestrator" "Central operator (rhods-operator) managing all RHOAI component operators" "Internal RHOAI" {
-            tags "Internal"
-        }
+        platformOrchestrator = softwareSystem "Platform Orchestrator" "rhods-operator / opendatahub-operator — creates Workbenches CR and manages platform ConfigMap" "Internal RHOAI"
+        kfNotebookController = softwareSystem "kf-notebook-controller" "Kubeflow Notebook controller — manages Notebook pod lifecycle" "Internal - Deployed by Operator"
+        odhNotebookController = softwareSystem "odh-notebook-controller" "ODH Notebook controller — ODH-specific Notebook lifecycle management with gateway and MLflow integration" "Internal - Deployed by Operator"
+        notebookImageStreams = softwareSystem "Notebook ImageStreams" "Available workbench container images (ODH / RHOAI variants)" "Internal - Deployed by Operator"
 
-        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster API for all resource operations" "External" {
-            tags "External"
-        }
-
-        notebookControllers = softwareSystem "Notebook Controller Deployments" "Deployments labeled app.opendatahub.io/workbenches=true managing notebook pods" "Internal RHOAI" {
-            tags "Internal"
-        }
-
-        kubeflowNotebook = softwareSystem "Kubeflow Notebook CRD" "kubeflow.org/v1 Notebook custom resource for workbench instances" "External" {
-            tags "Future"
-        }
-
-        openshiftImageStream = softwareSystem "OpenShift ImageStream" "image.openshift.io/v1 ImageStream for workbench container images" "External" {
-            tags "Future"
-        }
-
-        hardwareProfile = softwareSystem "HardwareProfile CRD" "infrastructure.platform.opendatahub.io/v1 HardwareProfile for GPU/accelerator selection" "Internal RHOAI" {
-            tags "Future"
-        }
-
-        prometheus = softwareSystem "Prometheus" "Monitoring and alerting system" "External" {
-            tags "External"
-        }
+        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster control plane" "External Infrastructure"
+        openshiftAPIServer = softwareSystem "OpenShift APIServer" "Provides cluster TLS security profile configuration" "External Infrastructure"
+        serviceCA = softwareSystem "OpenShift Service-CA Controller" "Provisions and rotates webhook TLS certificates" "External Infrastructure"
+        hardwareProfileCRD = softwareSystem "HardwareProfile CRD" "infrastructure.opendatahub.io — defines hardware resource profiles" "Internal RHOAI"
 
         # Relationships
-        platformAdmin -> platformOrchestrator "Configures RHOAI platform via DSC/DSCI"
-        platformOrchestrator -> workbenchesOperator "Creates/updates Workbenches CR with projected config" "K8s API / HTTPS 443"
-        workbenchesOperator -> kubernetesAPI "CRUD on CRs, Namespaces, Deployments; leader election; SubjectAccessReview" "HTTPS/443 TLS 1.2+"
-        workbenchesOperator -> notebookControllers "Monitors deployment health via label selector" "K8s API"
-        prometheus -> workbenchesOperator "Scrapes metrics" "HTTPS/8443 SubjectAccessReview"
+        clusterAdmin -> platformOrchestrator "Configures platform components"
+        datascientist -> kubernetesAPI "Creates/updates Notebook CRs via kubectl/Dashboard"
 
-        # Future integrations (planned)
-        workbenchesOperator -> kubeflowNotebook "Planned: manage notebook instances" "K8s API"
-        workbenchesOperator -> openshiftImageStream "Planned: manage workbench images" "K8s API"
-        workbenchesOperator -> hardwareProfile "Planned: GPU/accelerator profiles" "K8s API"
+        platformOrchestrator -> workbenchesOperator "Creates Workbenches CR and manages odh-workbenches-config ConfigMap" "HTTPS/443 via Kubernetes API"
+        workbenchesOperator -> kubernetesAPI "Watch CRs, SSA Patch, SubjectAccessReview, status updates" "HTTPS/443, TLS 1.2+, SA token"
+        workbenchesOperator -> openshiftAPIServer "Read cluster TLS security profile" "HTTPS/443, TLS 1.2+, SA token"
+        serviceCA -> workbenchesOperator "Provisions webhook TLS certificate" "service-CA annotation"
 
-        dataScienceUser -> notebookControllers "Uses notebook workbenches"
+        workbenchesOperator -> kfNotebookController "Deploys and monitors readiness" "SSA via Kubernetes API"
+        workbenchesOperator -> odhNotebookController "Deploys with gateway-url and mlflow-enabled params" "SSA via Kubernetes API"
+        workbenchesOperator -> notebookImageStreams "Deploys platform-specific notebook images" "SSA via Kubernetes API"
+
+        kubernetesAPI -> workbenchesOperator "Sends Notebook create/update webhook calls" "HTTPS/9443, TLS (service-CA)"
+        workbenchesOperator -> hardwareProfileCRD "Reads HardwareProfile specs for webhook injection" "HTTPS/443 via Kubernetes API"
     }
 
     views {
@@ -64,7 +49,15 @@ workspace {
         }
 
         styles {
-            element "Software System" {
+            element "External Infrastructure" {
+                background #999999
+                color #ffffff
+            }
+            element "Internal RHOAI" {
+                background #7ed321
+                color #ffffff
+            }
+            element "Internal - Deployed by Operator" {
                 background #4a90e2
                 color #ffffff
             }
@@ -73,22 +66,13 @@ workspace {
                 background #08427b
                 color #ffffff
             }
+            element "Software System" {
+                background #1168bd
+                color #ffffff
+            }
             element "Container" {
                 background #438dd5
                 color #ffffff
-            }
-            element "External" {
-                background #999999
-                color #ffffff
-            }
-            element "Internal" {
-                background #7ed321
-                color #ffffff
-            }
-            element "Future" {
-                background #cccccc
-                color #666666
-                border dashed
             }
         }
     }

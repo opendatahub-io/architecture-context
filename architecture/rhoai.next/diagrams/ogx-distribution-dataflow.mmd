@@ -1,42 +1,37 @@
 sequenceDiagram
     participant Client as External Client
+    participant Ingress as Ingress / Service Mesh<br/>(managed by operator)
     participant OGX as OGX Server<br/>8321/TCP HTTP
-    participant vLLM_Inf as vLLM Inference<br/>8000/TCP HTTP/S
-    participant vLLM_Emb as vLLM Embedding<br/>8001/TCP HTTP/S
+    participant vLLM as vLLM Endpoint<br/>HTTP/HTTPS
+    participant VectorDB as Vector DB<br/>(Milvus/pgvector/Qdrant)
     participant PG as PostgreSQL<br/>5432/TCP
-    participant Search as Search API<br/>443/TCP HTTPS
-    participant VecDB as Vector DB<br/>(Milvus/pgvector/Qdrant)
-    participant FilProc as File Processor<br/>(inline/Docling)
+    participant S3 as S3 / Object Storage<br/>443/TCP HTTPS
 
-    Note over Client,PG: Flow 1: Client Inference Request
-    Client->>OGX: POST /v1/chat/completions<br/>Auth: OAuth2 Bearer (optional)
-    OGX->>vLLM_Inf: Forward inference request<br/>Auth: API Token (Bearer)<br/>TLS configurable
-    vLLM_Inf-->>OGX: LLM completion response
-    OGX->>PG: Log inference request<br/>Auth: Username/Password<br/>Plaintext
-    OGX-->>Client: JSON response (streaming or batch)
+    Note over Client,S3: Flow 1: Inference Request
+    Client->>Ingress: POST /v1/inference/chat-completion<br/>Auth: OAuth2 JWT (conditional)
+    Ingress->>OGX: Forward request<br/>HTTP 8321/TCP
+    OGX->>vLLM: Forward to inference backend<br/>HTTP/HTTPS, Bearer Token
+    vLLM-->>OGX: Inference response
+    OGX->>PG: Persist conversation state<br/>PostgreSQL 5432/TCP, Username/Password
+    PG-->>OGX: Ack
+    OGX-->>Ingress: JSON response
+    Ingress-->>Client: Response
 
-    Note over Client,Search: Flow 2: Agentic Response with Tool Use
-    Client->>OGX: POST /v1/responses<br/>Auth: OAuth2 Bearer (optional)
-    OGX->>vLLM_Inf: Initial inference (tool selection)<br/>Auth: API Token
-    vLLM_Inf-->>OGX: Response with tool_calls
-    OGX->>Search: Execute web search<br/>(Tavily/Brave)<br/>Auth: API Key<br/>TLS 1.2+
-    Search-->>OGX: Search results
-    OGX->>PG: Persist agent state<br/>Auth: Username/Password
-    OGX->>vLLM_Inf: Follow-up inference (with context)<br/>Auth: API Token
-    vLLM_Inf-->>OGX: Final response
-    OGX-->>Client: Agentic response with tool outputs
+    Note over Client,S3: Flow 2: Agentic RAG Workflow
+    Client->>Ingress: POST /v1/responses<br/>Auth: OAuth2 JWT (conditional)
+    Ingress->>OGX: Forward request<br/>HTTP 8321/TCP
+    OGX->>OGX: File Search (inline/in-process)
+    OGX->>VectorDB: Vector similarity search<br/>HTTP/gRPC/PostgreSQL, Token/Password
+    VectorDB-->>OGX: Relevant documents
+    OGX->>vLLM: LLM inference with context<br/>HTTP/HTTPS, Bearer Token
+    vLLM-->>OGX: Generated response
+    OGX->>PG: Persist agent state<br/>PostgreSQL 5432/TCP
+    PG-->>OGX: Ack
+    OGX-->>Ingress: Streaming/JSON response
+    Ingress-->>Client: Response
 
-    Note over Client,VecDB: Flow 3: RAG with Vector Store
-    Client->>OGX: POST /v1/files (upload document)<br/>Auth: OAuth2 Bearer (optional)
-    OGX->>FilProc: Process document<br/>(Docling/PyPDF/MarkItDown)
-    FilProc-->>OGX: Extracted text chunks
-    OGX->>vLLM_Emb: Generate embeddings<br/>Auth: API Token<br/>TLS configurable
-    vLLM_Emb-->>OGX: Embedding vectors
-    OGX->>VecDB: Store vectors<br/>Auth: Token/Password<br/>TLS configurable
-    VecDB-->>OGX: Stored confirmation
-    Client->>OGX: POST /v1/responses (RAG query)<br/>Auth: OAuth2 Bearer (optional)
-    OGX->>VecDB: Similarity search<br/>Auth: Token/Password
-    VecDB-->>OGX: Relevant chunks
-    OGX->>vLLM_Inf: Inference with retrieved context<br/>Auth: API Token
-    vLLM_Inf-->>OGX: Contextual response
-    OGX-->>Client: RAG-augmented response
+    Note over Client,S3: Flow 3: Secret Resolution at Startup
+    Note right of OGX: entrypoint.sh reads mounted<br/>secret files (_FILE variants)<br/>for all 18 secret env vars
+    OGX->>OGX: Read /mounted/secret files<br/>Resolve _FILE variants → env vars
+    OGX->>OGX: Export env vars<br/>Activate providers based on env presence
+    OGX->>OGX: exec ogx-server process

@@ -1,174 +1,170 @@
 sequenceDiagram
     participant User as Data Scientist
-    participant Dashboard as ODH Dashboard
-    participant KServe as KServe Controller
-    participant ODHModel as odh-model-controller
-    participant Runtime as Runtime Container<br/>(vLLM/Caikit/OVMS)
-    participant S3 as Object Storage (S3)
-    participant IstioGW as Istio Gateway<br/>(data-science-gateway)
-    participant Authorino as Authorino
+    participant Dashboard as ODH Dashboard<br/>(Gen AI Studio)
+    participant KServe as KServe<br/>(llmisvc-controller)
+    participant StorageInit as storage-initializer<br/>(Init Container)
+    participant vLLM as vLLM<br/>(Model Server)
+    participant EPP as llm-d Router (EPP)<br/>(Cache-aware Routing)
+    participant EnvoyGW as Envoy Gateway<br/>(data-science-gateway)
     participant Client as External Client
 
-    Note over User,Client: Workflow 1: Model Deployment via InferenceService
+    Note over User,Client: Workflow 1: LLM Model Deployment and Serving
 
-    User->>Dashboard: Login via OAuth/OIDC
-    Dashboard-->>User: Show model serving UI
-    User->>Dashboard: Create InferenceService CR<br/>(model URI, runtime, resources)
-    Dashboard->>KServe: InferenceService CR created
+    User->>Dashboard: Create LLMInferenceService<br/>via Gen AI Studio UI
+    Dashboard->>KServe: Submit LLMISvc CR<br/>(HTTPS, SA token)
+    KServe->>KServe: Reconcile LLMISvc CR
+    KServe->>KServe: Create Deployment,<br/>InferencePool, HTTPRoute,<br/>LeaderWorkerSet
 
-    KServe->>KServe: Reconcile: select ServingRuntime,<br/>create Deployment with<br/>storage-initializer init container
-    KServe->>Runtime: Create predictor pod
+    Note over StorageInit: Init container phase
+    StorageInit->>StorageInit: Download model from<br/>S3/HuggingFace/PVC<br/>(HTTPS, AWS IAM)
 
-    Note over Runtime: Init container runs
-    Runtime->>S3: Download model artifacts<br/>(HTTPS/443, AWS IAM)
-    S3-->>Runtime: Model files
+    Note over vLLM: Model server starts
+    vLLM->>vLLM: Load model, expose<br/>OpenAI-compatible API
+    vLLM->>EPP: Report Prometheus metrics<br/>(KV cache, queue depth)
+    EPP->>EPP: Scrape metrics,<br/>cache-aware endpoint selection
 
-    ODHModel->>KServe: Watch InferenceService status
-    ODHModel->>IstioGW: Create HTTPRoute for external access
-    ODHModel->>Authorino: Create AuthPolicy CRD
-    ODHModel->>ODHModel: Create Prometheus ServiceMonitor
+    Note over Client,EnvoyGW: Production inference
+    Client->>EnvoyGW: POST /v1/completions<br/>(HTTPS/443, TLS)
+    EnvoyGW->>EPP: ext_proc: pick endpoint<br/>(Filter-Score-Pick)
+    EPP-->>EnvoyGW: Selected vLLM pod endpoint
+    EnvoyGW->>vLLM: Forward request<br/>(HTTP, InferencePool routing)
+    vLLM-->>EnvoyGW: Streaming response
+    EnvoyGW-->>Client: JSON/SSE response<br/>(HTTPS)
 
-    Note over Runtime: Model loaded, serving ready
-    Client->>IstioGW: POST predict endpoint<br/>(HTTPS/443, TLS 1.2+)
-    IstioGW->>Authorino: Evaluate auth (API key/JWT)
-    Authorino-->>IstioGW: Auth passed
-    IstioGW->>Runtime: Forward request (HTTP/8080)
-    Runtime-->>IstioGW: Prediction result
-    IstioGW-->>Client: JSON response (HTTPS)
+    User->>Dashboard: View model metrics
+    Dashboard->>KServe: Query model status<br/>(K8s API)
+    Dashboard-->>User: Show serving status<br/>and performance metrics
 
-sequenceDiagram
-    participant User as User / Notebook
-    participant TrainOp as Training Operator
-    participant Kueue as Kueue Controller
-    participant Workers as Worker Pods<br/>(PyTorch DDP)
-    participant S3 as Object Storage
-
-    Note over User,S3: Workflow 2: Distributed Training with Resource Queuing
-
-    User->>TrainOp: Submit PyTorchJob CR<br/>(resources, training config)
-    TrainOp->>TrainOp: Create master + worker pod specs<br/>Set MASTER_ADDR, WORLD_SIZE env vars
-    TrainOp->>Kueue: Suspend job (Kueue integration)
-
-    Kueue->>Kueue: Evaluate Workload against<br/>ClusterQueue quota + priority
-    alt Resources available
-        Kueue->>TrainOp: Admit workload (unsuspend)
-    else Queue full
-        Kueue->>Kueue: Queue workload,<br/>evaluate preemption
-        Note over Kueue: Wait for resources...
-        Kueue->>TrainOp: Admit workload (unsuspend)
-    end
-
-    TrainOp->>Workers: Create pods + headless Service<br/>DNS-based inter-pod communication
-    Workers->>S3: Download training data<br/>(HTTPS/443)
-    Note over Workers: Execute distributed training<br/>(PyTorch DDP / DeepSpeed / FSDP)
-    Workers->>S3: Upload trained model<br/>(HTTPS/443)
-    Workers-->>TrainOp: Report completion status
-    TrainOp->>Kueue: Release resources
+---
 
 sequenceDiagram
-    participant User as User / Dashboard
-    participant DSPA as DSPA API Server
-    participant MariaDB as MariaDB
-    participant Argo as Argo Workflow Controller
-    participant Step as Pipeline Step Containers
-    participant MLMD as ML Metadata
-    participant S3 as Object Storage
+    participant Admin as Platform Admin
+    participant MaaSCtrl as maas-controller
+    participant PayloadPre as payload-processing<br/>(pre-auth ext_proc)
+    participant Authorino as Authorino
+    participant MaaSAPI as maas-api
+    participant PayloadPost as payload-processing<br/>(post-auth ext_proc)
+    participant KServe as KServe / External LLM
+    participant Tenant as Tenant Client
+
+    Note over Admin,Tenant: Workflow 2: Multi-Tenant Model Access (MaaS)
+
+    Admin->>MaaSCtrl: Create AITenant,<br/>MaaSSubscription,<br/>MaaSAuthPolicy CRDs
+    MaaSCtrl->>MaaSCtrl: Reconcile tenant:<br/>create HTTPRoutes,<br/>Kuadrant AuthPolicy,<br/>TokenRateLimitPolicy,<br/>EnvoyFilter (ext_proc)
+
+    Note over Tenant,KServe: Tenant inference request
+    Tenant->>PayloadPre: POST /v1/chat/completions<br/>(HTTPS, API key header)
+    PayloadPre->>PayloadPre: Extract model name,<br/>set X-Gateway-Model-Name
+    PayloadPre->>Authorino: Forward for auth<br/>(with model header)
+    Authorino->>MaaSAPI: HTTP callback:<br/>validate API key (SHA-256)
+    MaaSAPI-->>Authorino: Key valid,<br/>tenant context
+    Authorino-->>PayloadPost: Auth passed,<br/>forward to post-auth
+    PayloadPost->>PayloadPost: API translation<br/>(OpenAI to native),<br/>credential injection,<br/>stream usage enforcement
+    PayloadPost->>KServe: Forward to backend<br/>(HTTPS, injected creds)
+    KServe-->>PayloadPost: Inference response
+    PayloadPost-->>Tenant: Translated response<br/>(HTTPS, rate-limited)
+
+---
+
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as ODH Dashboard
+    participant DSP as DS Pipelines<br/>(api-server)
+    participant Argo as Argo Workflows<br/>(workflow-controller)
+    participant StepPod as Pipeline Step Pods
+    participant MLMD as ML Metadata<br/>(gRPC store)
+    participant ModelReg as Model Registry
     participant KServe as KServe
-    participant CodeFlare as CodeFlare
 
-    Note over User,CodeFlare: Workflow 3: Data Science Pipeline Execution
+    Note over User,KServe: Workflow 3: Data Science Pipeline Execution
 
-    User->>DSPA: Create pipeline run<br/>(via kube-rbac-proxy, REST/8888)
-    DSPA->>MariaDB: Store pipeline definition<br/>(3306/TCP)
-    DSPA->>Argo: Create Argo Workflow CR
+    User->>Dashboard: Submit pipeline definition<br/>(IR YAML or Python SDK)
+    Dashboard->>DSP: Create pipeline run<br/>(HTTP, kube-rbac-proxy auth)
+    DSP->>DSP: Store pipeline definition,<br/>schedule execution
+    DSP->>Argo: Create Workflow CR<br/>(K8s API)
+    Argo->>StepPod: Create execution pods<br/>per pipeline step<br/>(manage DAG dependencies)
 
-    Argo->>Step: Orchestrate DAG execution<br/>Create pod per step<br/>argoexec sidecar for artifacts
-
-    loop Each pipeline step
-        Step->>S3: Read/write step artifacts<br/>(HTTPS/443)
-        Step->>MLMD: Log metadata<br/>(gRPC via Envoy proxy)
+    loop For each pipeline step
+        StepPod->>StepPod: Execute ML task<br/>(training, eval, processing)
+        StepPod->>MLMD: Log artifacts<br/>and lineage<br/>(gRPC)
+        StepPod->>StepPod: Upload artifacts to S3<br/>(HTTPS, AWS IAM)
     end
 
-    alt Deploy trained model
-        Step->>KServe: Create InferenceService CR
-        Note over KServe: See Workflow 1
-    end
+    StepPod->>ModelReg: Register model version<br/>(gRPC)
+    ModelReg-->>Dashboard: Model available<br/>for serving
+    User->>Dashboard: Deploy model to serving
+    Dashboard->>KServe: Create InferenceService CR
+    KServe->>KServe: Deploy model endpoint
 
-    alt Distributed computation
-        Step->>CodeFlare: Create RayCluster CR
-        Note over CodeFlare: Provisions Ray cluster
-    end
-
-    Argo-->>DSPA: Workflow completed
-    DSPA->>MariaDB: Update run status
+---
 
 sequenceDiagram
-    participant Client as User / Application
-    participant Envoy as Istio Gateway<br/>(Envoy Proxy)
-    participant Router as llm-d-router<br/>(EPP - 60+ plugins)
-    participant vLLM1 as vLLM Instance 1
-    participant vLLM2 as vLLM Instance 2
-    participant KVCache as llm-d-kv-cache
-    participant Sidecar as llm-d-routing-sidecar
+    participant User as Data Scientist
+    participant Dashboard as ODH Dashboard
+    participant TrainOp as Training Operator
+    participant Kueue as Kueue<br/>(Job Scheduler)
+    participant K8sSched as Kubernetes Scheduler
+    participant KubeRay as KubeRay Operator
+    participant Workers as Worker Pods
+    participant MLflow as MLflow<br/>(Experiment Tracking)
 
-    Note over Client,Sidecar: Workflow 4: LLM Inference with Disaggregated Serving (llm-d)
+    Note over User,MLflow: Workflow 4: Distributed Training with Job Scheduling
 
-    Client->>Envoy: OpenAI chat completion request<br/>(HTTPS/443, TLS 1.2+)
-    Envoy->>Router: ext_proc protocol<br/>(routing decision request)
+    User->>Dashboard: Create TrainJob/PyTorchJob<br/>specifying distributed params
+    Dashboard->>TrainOp: Submit training CR<br/>(K8s API)
+    TrainOp->>TrainOp: Reconcile training job,<br/>create per-replica pods
+    TrainOp->>Kueue: Submit workload for<br/>admission control
+    Kueue->>Kueue: Check ClusterQueue quotas,<br/>apply scheduling gates for<br/>topology-aware placement
+    Kueue->>K8sSched: Release scheduling gates<br/>(workload admitted)
+    K8sSched->>Workers: Schedule worker pods
 
-    Note over Router: Execute plugin pipeline:<br/>1. Prefix-cache scoring<br/>2. Load-aware filtering<br/>3. KV-cache awareness<br/>4. Latency prediction<br/>5. Destination selection
-
-    Router-->>Envoy: Set destination header<br/>(selected vLLM instance)
-
-    alt Standard inference
-        Envoy->>vLLM1: Forward to selected instance<br/>(HTTP/8080)
-        vLLM1-->>Envoy: Streaming response
+    opt Ray-based Training
+        KubeRay->>KubeRay: Create RayCluster<br/>with OAuth proxy sidecar
+        KubeRay->>Workers: Inject mTLS certs<br/>(CodeFlare Operator)
     end
 
-    alt Disaggregated prefill/decode
-        Envoy->>vLLM1: Prefill phase<br/>(HTTP/8080)
-        vLLM1->>KVCache: Transfer KV-cache state
-        KVCache->>Sidecar: KV-cache event notification
-        Sidecar->>vLLM2: Route decode phase<br/>with cached KV state
-        vLLM2-->>Envoy: Streaming decode response
-    end
+    Workers->>Workers: Execute distributed training<br/>(PyTorch DDP, Horovod, Ray)
+    Workers->>MLflow: Report metrics,<br/>log experiments<br/>(HTTP)
+    Workers->>Workers: Save checkpoints to S3<br/>(HTTPS, AWS IAM)
 
-    Envoy-->>Client: Streaming JSON response<br/>(HTTPS)
+    User->>Dashboard: Monitor training progress
+    Dashboard->>Kueue: Query workload status<br/>(K8s API)
+    Dashboard-->>User: Show training metrics<br/>and resource usage
+
+---
 
 sequenceDiagram
-    participant Client as User / Application
-    participant Envoy as Istio Gateway
-    participant AIGW as AI Gateway<br/>Payload Processing
-    participant NeMo as NeMo Guardrails
-    participant Secret as K8s Secret<br/>(API keys)
-    participant Provider as External LLM Provider<br/>(OpenAI/Anthropic/Azure/Bedrock)
+    participant User as Data Scientist
+    participant Dashboard as ODH Dashboard<br/>(Eval Hub)
+    participant TrustyAIOp as TrustyAI Operator
+    participant TrustyAISvc as TrustyAI Service
+    participant LMEval as lm-evaluation-harness
+    participant KServe as KServe<br/>(InferenceService)
+    participant Prom as Prometheus
+    participant ModelReg as Model Registry
 
-    Note over Client,Provider: Workflow 5: External AI Provider Access via MaaS Gateway
+    Note over User,ModelReg: Workflow 5: Model Fairness and Evaluation
 
-    Client->>Envoy: OpenAI-format request<br/>(HTTPS/443)
-    Envoy->>AIGW: ext_proc protocol
+    User->>Dashboard: Configure TrustyAI monitoring<br/>or create LMEvalJob<br/>via Eval Hub UI
+    Dashboard->>TrustyAIOp: Create TrustyAI CR<br/>or LMEvalJob CR
 
-    AIGW->>AIGW: Resolve ExternalModel<br/>to ExternalProvider mapping
-
-    AIGW->>NeMo: Apply input guardrails<br/>(content safety, PII detection)
-    NeMo-->>AIGW: Input validated
-
-    AIGW->>AIGW: Translate API format<br/>(OpenAI to Anthropic/Azure/Bedrock)
-
-    AIGW->>Secret: Read API key from<br/>labeled K8s Secret
-    Secret-->>AIGW: API key / credentials
-
-    alt AWS Bedrock
-        AIGW->>AIGW: Apply AWS SigV4 signing
+    alt Fairness Monitoring
+        TrustyAIOp->>TrustyAISvc: Deploy TrustyAI Service<br/>watching InferenceServices
+        TrustyAISvc->>KServe: Patch InferenceService Logger<br/>(capture inference payloads)
+        KServe-->>TrustyAISvc: Forward inference payloads
+        TrustyAISvc->>TrustyAISvc: Compute fairness metrics<br/>(SPD, DIR)
+        TrustyAISvc->>Prom: Expose fairness metrics<br/>at /metrics endpoint
     end
 
-    AIGW->>Provider: Forward translated request<br/>(HTTPS/443, API key injected)
-    Provider-->>AIGW: Provider-format response
+    alt Batch Evaluation
+        TrustyAIOp->>LMEval: Create evaluation Pod<br/>(driver sidecar pattern)
+        LMEval->>KServe: Execute batch evaluation<br/>against model endpoint
+        KServe-->>LMEval: Inference results
+        LMEval->>LMEval: Compute benchmark scores
+        LMEval->>ModelReg: Store benchmark results<br/>(gRPC)
+    end
 
-    AIGW->>AIGW: Translate response back<br/>to OpenAI format
-
-    AIGW->>NeMo: Apply output guardrails<br/>(content filtering)
-    NeMo-->>AIGW: Output validated
-
-    AIGW-->>Envoy: OpenAI-format response
-    Envoy-->>Client: JSON response (HTTPS)
+    User->>Dashboard: View evaluation results
+    Dashboard->>ModelReg: Fetch benchmark data
+    Dashboard->>Prom: Query fairness metrics
+    Dashboard-->>User: Show model quality<br/>and fairness dashboard

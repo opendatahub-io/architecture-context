@@ -3,76 +3,88 @@ graph TB
         User["User Browser"]
     end
 
-    subgraph Ingress["INGRESS (OpenShift Gateway)"]
-        Gateway["HTTPRoute → OpenShift Gateway<br/>443/TCP<br/>TLS 1.3<br/>OAuth session"]
+    subgraph Ingress["INGRESS (Platform-Managed)"]
+        Gateway["Platform Ingress / Route<br/>443/TCP → 8443/TCP<br/>TLS 1.3<br/>OAuth"]
     end
 
-    subgraph WorkbenchPod["WORKBENCH POD (user namespace)"]
+    subgraph NotebookPod["NOTEBOOK POD BOUNDARY"]
         direction TB
 
-        subgraph JupyterPod["Jupyter Workbench"]
-            KRBP_J["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>OAuth + RBAC"]
-            JLab["JupyterLab Server<br/>8888/TCP HTTP<br/>No auth (trusted after proxy)"]
-            KRBP_J -->|"HTTP/8888<br/>plaintext loopback"| JLab
+        subgraph JupyterPath["Jupyter Workbench Path"]
+            RBACProxy1["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>mTLS + OAuth validation"]
+            JupyterLab["JupyterLab Server<br/>8888/TCP HTTP<br/>localhost only<br/>Token disabled"]
         end
 
-        subgraph CodeServerPod["Code-Server Workbench (alternative)"]
-            KRBP_CS["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>OAuth + RBAC"]
-            CodeServer["code-server v4.106.3<br/>8787/TCP HTTP<br/>--auth none"]
-            NginxProxy["nginx<br/>80/TCP HTTP<br/>idle culling logs"]
-            HTTPDCGI["httpd CGI<br/>8080/TCP HTTP<br/>/api/kernels/ emulation"]
-            KRBP_CS -->|"HTTP/8787<br/>plaintext loopback"| CodeServer
-            HTTPDCGI -->|"polls /codeserver/healthz<br/>8787/TCP"| CodeServer
+        subgraph CodeServerPath["Code-Server Path"]
+            RBACProxy2["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>mTLS + OAuth validation"]
+            Nginx["nginx Proxy<br/>80/TCP HTTP<br/>localhost only"]
+            HTTPD["httpd CGI<br/>8080/TCP HTTP<br/>localhost only<br/>/api/kernels/ (fake)"]
+            CodeSrv["code-server IDE<br/>8585/TCP HTTP<br/>localhost only"]
         end
-
-        Culler["Notebook Controller<br/>Culler"]
     end
 
-    subgraph EgressTargets["EGRESS TARGETS"]
-        K8sAPI["OpenShift API Server<br/>443/TCP HTTPS TLS<br/>ServiceAccount token"]
-        DSPA["DSPA API<br/>443/TCP HTTPS TLS<br/>SA token"]
-        Registry["Container Registries<br/>443/TCP HTTPS TLS<br/>Registry credentials"]
-        PyPI["External PyPI<br/>443/TCP HTTPS TLS<br/>No auth"]
+    subgraph ClusterInternal["CLUSTER INTERNAL (Trusted)"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA token"]
+        NotebookCtrl["Notebook Controller<br/>Culler: polls /api/kernels/<br/>via kube-rbac-proxy"]
+        Operator["ODH/RHOAI Operator<br/>ImageStream deploy"]
+        Dashboard["ODH Dashboard<br/>Image discovery"]
     end
 
-    subgraph BuildInfra["BUILD INFRASTRUCTURE (Konflux)"]
-        Konflux["Konflux / Tekton<br/>(hermetic build)"]
-        Hermeto["Hermeto/Cachi2<br/>(dependency prefetch)"]
-        QuayIO["Quay.io Registry<br/>quay.io/modh/<br/>443/TCP HTTPS TLS"]
+    subgraph EgressTargets["EGRESS (Outbound)"]
+        DSPA["DSPA Backend<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token"]
+        PyPI["Package Registries<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>No auth"]
+        Git["Git Repositories<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>User credentials"]
     end
 
-    %% External to Ingress
+    subgraph BuildTime["BUILD-TIME ONLY"]
+        AIPCC["AIPCC Base Images<br/>quay.io/aipcc/base-images<br/>443/TCP HTTPS<br/>SHA256 digest pinned"]
+        RHAI["RHEL AI Python Index<br/>443/TCP HTTPS<br/>Prefetched by Cachi2"]
+        Konflux["Konflux / Tekton<br/>Hermetic builds<br/>No network at build"]
+    end
+
+    %% External → Ingress
     User -->|"HTTPS/443<br/>TLS 1.3<br/>OAuth"| Gateway
 
-    %% Ingress to Pods
-    Gateway -->|"HTTPS/8443<br/>TLS<br/>OAuth token"| KRBP_J
-    Gateway -->|"HTTPS/8443<br/>TLS<br/>OAuth token"| KRBP_CS
+    %% Ingress → Pod (Jupyter path)
+    Gateway -->|"HTTPS/8443<br/>mTLS<br/>SA token"| RBACProxy1
+    RBACProxy1 -->|"HTTP/8888<br/>localhost<br/>Proxied"| JupyterLab
 
-    %% Culler polling
-    Culler -->|"HTTP GET /api/kernels/<br/>8888/TCP<br/>No auth (internal)"| JLab
-    Culler -->|"HTTP GET /api/kernels/<br/>80/TCP<br/>No auth (internal)"| NginxProxy
+    %% Ingress → Pod (Code-Server path)
+    Gateway -->|"HTTPS/8443<br/>mTLS<br/>SA token"| RBACProxy2
+    RBACProxy2 -->|"HTTP/80<br/>localhost<br/>Proxied"| Nginx
+    Nginx -->|"HTTP/8080<br/>localhost"| HTTPD
+    Nginx -->|"HTTP/8585<br/>localhost"| CodeSrv
+    HTTPD -->|"HTTP/8585<br/>healthz check"| CodeSrv
 
-    %% Egress from workbench
-    JLab -->|"HTTPS/443<br/>SA token"| K8sAPI
-    JLab -->|"HTTPS/443<br/>SA token"| DSPA
-    JLab -->|"HTTPS/443<br/>Registry creds"| Registry
-    JLab -->|"HTTPS/443<br/>No auth"| PyPI
+    %% Culler
+    NotebookCtrl -->|"HTTPS/8443<br/>mTLS<br/>SA token"| RBACProxy1
+    NotebookCtrl -->|"HTTPS/8443<br/>mTLS<br/>SA token"| RBACProxy2
 
-    %% Build infra
-    Hermeto -->|"prefetch deps<br/>(rpm, pip, go, npm)"| Konflux
-    Konflux -->|"push image<br/>HTTPS/443 TLS<br/>Registry push creds"| QuayIO
+    %% Cluster internal
+    Operator -->|"HTTPS/6443<br/>SA token"| K8sAPI
+    Dashboard -->|"HTTPS/6443<br/>User OAuth"| K8sAPI
+    NotebookCtrl -->|"HTTPS/6443<br/>SA token"| K8sAPI
+
+    %% Egress
+    JupyterLab -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| DSPA
+    JupyterLab -->|"HTTPS/443<br/>TLS 1.2+"| PyPI
+    JupyterLab -->|"HTTPS/443<br/>TLS 1.2+<br/>User creds"| Git
+
+    %% Build-time
+    Konflux -->|"Registry pull<br/>SHA256 pinned"| AIPCC
+    Konflux -->|"Cachi2 prefetch"| RHAI
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef pod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef proxy fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef pod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef build fill:#e8e8e8,stroke:#666,stroke-width:2px
+    classDef buildtime fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
     class User external
     class Gateway ingress
-    class KRBP_J,KRBP_CS proxy
-    class JLab,CodeServer,NginxProxy,HTTPDCGI,Culler pod
-    class K8sAPI,DSPA,Registry,PyPI egress
-    class Konflux,Hermeto,QuayIO build
+    class RBACProxy1,RBACProxy2,JupyterLab,Nginx,HTTPD,CodeSrv pod
+    class K8sAPI,NotebookCtrl,Operator,Dashboard cluster
+    class DSPA,PyPI,Git egress
+    class AIPCC,RHAI,Konflux buildtime

@@ -1,109 +1,89 @@
 graph TB
-    subgraph KServe["KServe Platform"]
+    subgraph KServe["KServe Platform (Multi-Controller)"]
         direction TB
 
         subgraph Controllers["Controllers"]
-            KServeCtrl["kserve-controller-manager<br/><i>Go Operator</i><br/>InferenceService, InferenceGraph,<br/>TrainedModel reconciliation"]
-            LLMCtrl["llmisvc-controller-manager<br/><i>Go Operator</i><br/>LLMInferenceService with<br/>disaggregated serving"]
-            LocalModelCtrl["localmodel-controller<br/><i>Go Operator</i><br/>LocalModelCache &amp;<br/>LocalModelNamespaceCache"]
-            ModuleCtrl["kserve-module-controller<br/><i>Go Operator</i><br/>ODH platform lifecycle<br/>via Kserve CR"]
+            KServeCtrl["kserve-controller<br/>(cmd/manager)<br/>Go Operator<br/>9443/TCP webhook<br/>8080/TCP metrics"]
+            LLMISvcCtrl["llmisvc-controller<br/>(cmd/llmisvc)<br/>Go Operator<br/>9443/TCP webhook<br/>8080/TCP metrics"]
+            LocalModelCtrl["localmodel-controller<br/>(cmd/localmodel)<br/>Go Operator<br/>8081/TCP health"]
+            LocalModelNodeAgent["localmodelnode-agent<br/>(cmd/localmodelnode)<br/>Go Operator (DaemonSet)<br/>8081/TCP health"]
+            ModuleCtrl["kserve-module-controller<br/>(kserve-module/)<br/>Go Operator<br/>8081/TCP health"]
         end
 
-        subgraph NodeAgents["Node Agents"]
-            NodeAgent["localmodelnode-agent<br/><i>Go DaemonSet</i><br/>Per-node model downloads<br/>PV/PVC lifecycle"]
+        subgraph DataPlane["Data Plane Components"]
+            Agent["inference-agent<br/>Sidecar<br/>Go Service<br/>8080/TCP"]
+            Router["inference-router<br/>Graph Router<br/>Go Service<br/>8080/8443 TCP"]
+            StorageInit["storage-initializer<br/>Init Container<br/>Python 3.11"]
         end
 
-        subgraph Sidecars["Injected Sidecars &amp; Init Containers"]
-            StorageInit["storage-initializer<br/><i>Python Init Container</i><br/>S3/GCS/Azure/HF/OCI<br/>model downloads"]
-            Agent["inference-agent<br/><i>Go Sidecar</i><br/>Logging, batching,<br/>request capture"]
-            QPExt["qpext<br/><i>Go Extension</i><br/>Knative metrics<br/>aggregation"]
+        subgraph Runtimes["Serving Runtimes"]
+            AutoGluon["autogluon-server<br/>Python 3.12<br/>8080/TCP"]
+            OtherRuntimes["Other ServingRuntimes<br/>(vLLM, TorchServe, etc.)"]
         end
-
-        subgraph Routing["Routing"]
-            Router["inference-router<br/><i>Go Service</i><br/>InferenceGraph DAG routing:<br/>Sequence, Splitter, Ensemble, Switch"]
-        end
-
-        Webhook["Webhook Server<br/><i>9443/TCP HTTPS</i><br/>4 mutating + 11 validating<br/>+ 1 conversion webhook"]
     end
 
-    %% CRDs
     subgraph CRDs["Custom Resource Definitions"]
-        ISVC["InferenceService<br/><i>v1beta1 Namespaced</i>"]
-        LLMISVC["LLMInferenceService<br/><i>v1alpha2 Namespaced</i>"]
-        IG["InferenceGraph<br/><i>v1alpha1 Namespaced</i>"]
-        LMC["LocalModelCache<br/><i>v1alpha1 Cluster</i>"]
-        SR["ServingRuntime<br/><i>v1alpha1 Namespaced</i>"]
-        TM["TrainedModel<br/><i>v1alpha1 Namespaced</i>"]
-        KserveCR["Kserve CR<br/><i>v1alpha1 Cluster</i>"]
+        ISVC["InferenceService<br/>v1beta1"]
+        LLMISVC["LLMInferenceService<br/>v1alpha2"]
+        LLMISVCConfig["LLMInferenceServiceConfig<br/>v1alpha2"]
+        IG["InferenceGraph<br/>v1alpha1"]
+        TM["TrainedModel<br/>v1alpha1"]
+        SR["ServingRuntime<br/>v1alpha1"]
+        CSR["ClusterServingRuntime<br/>v1alpha1"]
+        LMC["LocalModelCache<br/>v1alpha1"]
+        LMNC["LocalModelNamespaceCache<br/>v1alpha1"]
+        KserveCR["Kserve CR<br/>platform v1alpha1"]
     end
 
-    %% User interactions
-    User["Data Scientist / User"] -->|creates| ISVC
+    User["Data Scientist / Client"] -->|creates| ISVC
     User -->|creates| LLMISVC
     User -->|creates| IG
 
-    %% Controller watches
     ISVC -->|watched by| KServeCtrl
-    LLMISVC -->|watched by| LLMCtrl
-    IG -->|watched by| KServeCtrl
+    LLMISVC -->|watched by| LLMISvcCtrl
     LMC -->|watched by| LocalModelCtrl
-    TM -->|watched by| KServeCtrl
+    LMNC -->|watched by| LocalModelCtrl
     KserveCR -->|watched by| ModuleCtrl
+    IG -->|watched by| KServeCtrl
+    TM -->|watched by| KServeCtrl
 
-    %% Controller creates
-    KServeCtrl -->|creates| Deployments["Deployments<br/>Services<br/>HTTPRoutes"]
-    LLMCtrl -->|creates| LLMResources["Deployments / LWS<br/>HTTPRoutes<br/>InferencePools<br/>ScaledObjects"]
-    LocalModelCtrl -->|creates| PVs["PVs / PVCs<br/>Download Jobs"]
+    KServeCtrl -->|creates| PredictorDeploy["Predictor Deployment"]
+    KServeCtrl -->|creates| KnativeSvc["Knative Service"]
+    KServeCtrl -->|creates| HTTPRoute1["HTTPRoute / VirtualService"]
+    KServeCtrl -->|injects| Agent
+    KServeCtrl -->|injects| StorageInit
 
-    %% Webhook validates/mutates
-    KServeCtrl -->|registers| Webhook
-    LLMCtrl -->|registers| Webhook
+    LLMISvcCtrl -->|creates| WorkloadDeploy["Workload Deployment (vLLM)"]
+    LLMISvcCtrl -->|creates| SchedulerDeploy["Scheduler (EPP) Deployment"]
+    LLMISvcCtrl -->|creates| InferencePool["InferencePool"]
+    LLMISvcCtrl -->|creates| HTTPRoute2["HTTPRoute"]
+    LLMISvcCtrl -->|creates| LWS["LeaderWorkerSet (multi-node)"]
 
-    %% Sidecar injection
-    Webhook -->|injects| StorageInit
-    Webhook -->|injects| Agent
+    LocalModelNodeAgent -->|creates| DownloadJob["Download Jobs"]
 
-    %% External dependencies
-    subgraph External["External Dependencies"]
-        Knative["Knative Serving"]
-        Istio["Istio / Service Mesh"]
-        GatewayAPI["Gateway API"]
-        KEDA["KEDA"]
-        OTel["OpenTelemetry Operator"]
-    end
-
-    KServeCtrl -->|serverless mode| Knative
-    KServeCtrl -->|ingress routing| Istio
-    KServeCtrl -->|raw mode ingress| GatewayAPI
-    LLMCtrl -->|autoscaling| KEDA
-    LLMCtrl -->|metrics pipeline| OTel
-    LLMCtrl -->|ingress| GatewayAPI
-
-    %% Cloud storage
-    CloudStorage["Cloud Storage<br/>S3 / GCS / Azure / HF"]
-    StorageInit -->|downloads models| CloudStorage
+    ModuleCtrl -->|deploys| KServeCtrl
+    ModuleCtrl -->|deploys| LLMISvcCtrl
+    ModuleCtrl -->|deploys| LocalModelCtrl
 
     %% Styling
-    style KServeCtrl fill:#4a90e2,stroke:#333,color:#fff
-    style LLMCtrl fill:#4a90e2,stroke:#333,color:#fff
-    style LocalModelCtrl fill:#4a90e2,stroke:#333,color:#fff
-    style ModuleCtrl fill:#4a90e2,stroke:#333,color:#fff
-    style NodeAgent fill:#4a90e2,stroke:#333,color:#fff
-    style StorageInit fill:#50c878,stroke:#333,color:#fff
-    style Agent fill:#50c878,stroke:#333,color:#fff
-    style QPExt fill:#50c878,stroke:#333,color:#fff
-    style Router fill:#9b59b6,stroke:#333,color:#fff
-    style Webhook fill:#e67e22,stroke:#333,color:#fff
-    style ISVC fill:#f5a623,stroke:#333
-    style LLMISVC fill:#f5a623,stroke:#333
-    style IG fill:#f5a623,stroke:#333
-    style LMC fill:#f5a623,stroke:#333
-    style SR fill:#f5a623,stroke:#333
-    style TM fill:#f5a623,stroke:#333
-    style KserveCR fill:#f5a623,stroke:#333
-    style Knative fill:#999,stroke:#333,color:#fff
-    style Istio fill:#999,stroke:#333,color:#fff
-    style GatewayAPI fill:#999,stroke:#333,color:#fff
-    style KEDA fill:#999,stroke:#333,color:#fff
-    style OTel fill:#999,stroke:#333,color:#fff
-    style CloudStorage fill:#e8e8e8,stroke:#333
+    style KServeCtrl fill:#4a90e2,color:#fff
+    style LLMISvcCtrl fill:#4a90e2,color:#fff
+    style LocalModelCtrl fill:#4a90e2,color:#fff
+    style LocalModelNodeAgent fill:#4a90e2,color:#fff
+    style ModuleCtrl fill:#4a90e2,color:#fff
+    style Agent fill:#50c878,color:#fff
+    style Router fill:#50c878,color:#fff
+    style StorageInit fill:#50c878,color:#fff
+    style AutoGluon fill:#9b59b6,color:#fff
+    style OtherRuntimes fill:#9b59b6,color:#fff
+    style ISVC fill:#f5a623
+    style LLMISVC fill:#f5a623
+    style LLMISVCConfig fill:#f5a623
+    style IG fill:#f5a623
+    style TM fill:#f5a623
+    style SR fill:#f5a623
+    style CSR fill:#f5a623
+    style LMC fill:#f5a623
+    style LMNC fill:#f5a623
+    style KserveCR fill:#f5a623
+    style User fill:#e8e8e8,stroke:#333

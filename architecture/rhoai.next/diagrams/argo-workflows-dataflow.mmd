@@ -1,52 +1,39 @@
 sequenceDiagram
-    participant DSP as DSP API Server
-    participant K8s as Kubernetes API<br/>443/TCP HTTPS
-    participant WFC as workflow-controller<br/>9090/TCP Metrics<br/>6060/TCP Health
-    participant Pod as Workflow Step Pod
-    participant Exec as argoexec Sidecar
-    participant User as User Container
-    participant S3 as Artifact Repository<br/>(S3/MinIO/GCS)<br/>443/TCP HTTPS
+    participant User as User / DSP API
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
+    participant Controller as workflow-controller<br/>9090/TCP metrics<br/>6060/TCP health
+    participant K8sPod as Kubernetes<br/>Pod Scheduler
+    participant ArgoExec as argoexec<br/>(emissary in pod)
+    participant S3 as S3-compatible Storage<br/>443/TCP HTTPS TLS 1.2+
+    participant DB as PostgreSQL/MySQL<br/>5432/3306 TCP
 
-    Note over DSP,S3: Flow 1: Workflow Execution
+    Note over User,DB: Flow 1: Workflow Execution
 
-    DSP->>K8s: 1. Create Workflow CR<br/>HTTPS/443 | SA Token
-    K8s-->>WFC: 2. Watch notification (Workflow created)<br/>HTTPS | SA Token
-    WFC->>K8s: 3. Create step Pod<br/>HTTPS/443 | SA Token
+    User->>K8sAPI: Create Workflow CR<br/>HTTPS/443 | SA Token
+    K8sAPI-->>Controller: Informer watch event<br/>HTTPS/443 | SA Token
+    Controller->>Controller: Reconcile workflow<br/>(32 concurrent workers)
 
-    Note over Pod,S3: Pod starts with argoexec + user container
+    Controller->>K8sAPI: Create execution Pod<br/>HTTPS/443 | SA Token
+    K8sAPI->>K8sPod: Schedule Pod
 
-    activate Pod
-    activate Exec
+    K8sPod->>ArgoExec: Start emissary executor<br/>(init + main container)
+    ArgoExec->>ArgoExec: Wrap user container lifecycle<br/>Capture stdout/stderr
 
-    Exec->>S3: 4. Download input artifacts<br/>HTTPS/443 | IAM/AccessKey
-    S3-->>Exec: Artifact data
+    ArgoExec->>S3: Upload/Download artifacts<br/>HTTPS/443 | SecretKeySelector credentials
+    S3-->>ArgoExec: Artifact data
 
-    activate User
-    Note over User: 5. Execute ML pipeline step
-    User->>User: Write outputs to<br/>/var/run/argo/outputs/
-    deactivate User
+    ArgoExec->>K8sAPI: Update WorkflowTaskResult CR<br/>HTTPS/443 | SA Token
+    K8sAPI-->>Controller: TaskResult watch event
 
-    Exec->>Exec: Compress output artifacts (tar.gz)
-    Exec->>S3: 5. Upload output artifacts<br/>HTTPS/443 | IAM/AccessKey
-    Exec->>K8s: 6. Create WorkflowTaskResult CR<br/>HTTPS/443 | SA Token
+    Controller->>K8sAPI: Update Workflow status<br/>HTTPS/443 | SA Token
 
-    deactivate Exec
-    deactivate Pod
+    Note over User,DB: Flow 2: Workflow Archiving (Optional)
 
-    K8s-->>WFC: 7. Watch notification (TaskResult)<br/>HTTPS | SA Token
-    WFC->>K8s: Update Workflow status<br/>HTTPS/443 | SA Token
+    Controller->>K8sAPI: Watch completed Workflows<br/>HTTPS/443 | SA Token
+    K8sAPI-->>Controller: Workflow completion event
+    Controller->>DB: Archive workflow data<br/>TCP/5432 or 3306 | Username/Password<br/>SSL configurable
 
-    Note over DSP,S3: Flow 2: Artifact Management Detail
+    Note over User,DB: Flow 3: CronWorkflow Scheduling
 
-    rect rgb(240, 248, 255)
-        Note over Exec,S3: Init Container Phase
-        Exec->>S3: Download input artifacts<br/>HTTPS/443 | IAM/AccessKey
-        S3-->>Exec: Artifact files
-
-        Note over User: Main Container Phase
-        User->>User: Process data<br/>Write to /var/run/argo/outputs/
-
-        Note over Exec,S3: Wait/Sidecar Phase
-        Exec->>Exec: Read /var/run/argo/outputs/<br/>Compress to tar.gz
-        Exec->>S3: Upload output artifacts<br/>HTTPS/443 | IAM/AccessKey
-    end
+    Controller->>Controller: Cron scheduler tick<br/>(8 dedicated workers)
+    Controller->>K8sAPI: Create new Workflow from CronWorkflow<br/>HTTPS/443 | SA Token

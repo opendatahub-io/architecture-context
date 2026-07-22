@@ -1,65 +1,89 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["Client Application<br/>Data Scientist / ML Engineer"]
+        Client["ML Inference Client"]
+        CronJobExt["CronJob / Scheduled Task"]
     end
 
-    subgraph Ingress["INGRESS (OpenShift Route)"]
-        UIRoute["feast-{name}-ui Route<br/>443/TCP → 8888/8443<br/>TLS edge/reencrypt"]
+    subgraph Ingress["INGRESS (OpenShift Routes)"]
+        UIRoute["feast-{name}-ui Route<br/>443/TCP HTTPS<br/>TLS edge/reencrypt<br/>Auth: None"]
     end
 
-    subgraph ClusterServices["CLUSTER SERVICES (Internal - ClusterIP)"]
+    subgraph OperatorNS["OPERATOR NAMESPACE (feast-operator-system)"]
+        Operator["feast-operator Controller Manager<br/>SA: controller-manager<br/>Image: odh-feast-operator-rhel9<br/>Health: 8081/TCP HTTP<br/>Metrics: 8443/TCP HTTPS (SA token auth)"]
+    end
+
+    subgraph UserNS["USER NAMESPACE ({user-namespace})"]
         direction TB
 
-        subgraph NS_Operator["Namespace: redhat-ods-applications"]
-            Operator["feast-operator-controller-manager<br/>SA: feast-operator-controller-manager<br/>Health: 8081/TCP<br/>Metrics: 8443/TCP (HTTPS, kube-rbac-proxy)"]
-        end
+        OnlineSvc["feast-{name}-online<br/>ClusterIP 80→6566 / 443→6567<br/>HTTP/HTTPS<br/>TLS: service serving certs<br/>Auth: Bearer (OIDC/K8s/None)"]
 
-        subgraph NS_User["Namespace: {user-namespace}"]
-            RegistrySvc["feast-{name}-registry<br/>80/443 → 6570(gRPC), 6572(REST)<br/>TLS: OpenShift service-serving CA<br/>Auth: Bearer JWT / None"]
-            OnlineSvc["feast-{name}-online<br/>80/443 → 6566/TCP<br/>TLS: OpenShift service-serving CA<br/>Auth: Bearer JWT (K8s/OIDC) / None"]
-            OfflineSvc["feast-{name}-offline<br/>80/443 → 8815/TCP<br/>TLS: OpenShift service-serving CA<br/>Auth: Bearer JWT / None"]
-            UISvc["feast-{name}-ui<br/>80/443 → 8888/8443<br/>TLS: OpenShift service-serving CA<br/>Auth: None"]
-        end
+        OfflineSvc["feast-{name}-offline<br/>ClusterIP 80→8815 / 443→8816<br/>HTTP/HTTPS<br/>TLS: service serving certs<br/>Auth: Bearer (OIDC/K8s/None)"]
+
+        RegistrySvc["feast-{name}-registry<br/>ClusterIP 80→6570/6571 (gRPC)<br/>ClusterIP 80→6572/6573 (REST)<br/>TLS: service serving certs<br/>Auth: Bearer / Intra-comm JWT"]
+
+        UISvc["feast-{name}-ui<br/>ClusterIP 80→8888 / 443→8443<br/>HTTP/HTTPS<br/>Auth: None"]
+
+        MetricsExporter["Prometheus Metrics<br/>8000/TCP HTTP<br/>Auth: None"]
     end
 
-    subgraph EgressServices["EGRESS (External Services)"]
-        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA token"]
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS optional<br/>Password"]
-        Redis["Redis<br/>6379/TCP<br/>TLS optional<br/>Password optional"]
-        Snowflake["Snowflake<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Account creds"]
+    subgraph PlatformServices["PLATFORM SERVICES (Cluster Internal)"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA token auth"]
+        OSRoute["OpenShift Route API<br/>443/TCP HTTPS"]
+        OSAPIServer["OpenShift APIServer CR<br/>443/TCP HTTPS<br/>TLS profile source"]
+        KubeflowNB["Kubeflow Notebook API<br/>443/TCP HTTPS"]
+        SparkOp["Spark Operator API<br/>443/TCP HTTPS"]
+        PromOp["Prometheus Operator<br/>ServiceMonitor CRD"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        Redis["Redis<br/>6379/TCP<br/>TLS optional<br/>Credentials via Secret"]
+        Postgres["PostgreSQL<br/>5432/TCP<br/>TLS optional<br/>Credentials via Secret"]
         DynamoDB["AWS DynamoDB<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
-        BigQuery["GCP BigQuery<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>GCP creds"]
-        OIDC["OIDC Provider<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Client creds"]
+        Snowflake["Snowflake<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Credentials via Secret"]
+        BigQuery["Google BigQuery<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Credentials via Secret"]
+        OIDC["OIDC Provider<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>JWKS validation"]
+        OpenLineage["OpenLineage<br/>HTTP/HTTPS<br/>API key auth"]
     end
 
     %% External → Ingress
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer JWT (optional)"| UIRoute
-    Client -->|"HTTP(S)/6566<br/>TLS configurable<br/>Bearer JWT (optional)"| OnlineSvc
+    Client -->|"HTTP/HTTPS 80/443<br/>TLS (configurable)<br/>Bearer Token"| OnlineSvc
+    Client -->|"HTTP/HTTPS 80/443<br/>TLS (configurable)<br/>Bearer Token"| OfflineSvc
+    Client -->|"gRPC 80/443<br/>TLS (configurable)<br/>Bearer Token"| RegistrySvc
+    CronJobExt -->|"HTTP/HTTPS 80/443<br/>Bearer Token"| OnlineSvc
+    UIRoute -->|"HTTP/HTTPS<br/>8888/8443<br/>TLS reencrypt"| UISvc
 
-    %% Ingress → Services
-    UIRoute -->|"HTTP(S)/8888 or 8443<br/>TLS (service-serving CA)"| UISvc
+    %% Operator → User NS
+    Operator -->|"HTTP/HTTPS 6572-6573<br/>Intra-comm JWT<br/>InsecureSkipVerify: true"| RegistrySvc
 
-    %% Internal flows
-    UISvc -->|"HTTP(S)/6572<br/>REST API<br/>Bearer JWT"| RegistrySvc
-    Operator -->|"HTTP(S)/6572<br/>Bearer JWT<br/>(HMAC-SHA256 intra-comm)"| RegistrySvc
+    %% Operator → Platform
+    Operator -->|"HTTPS 443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    Operator -->|"HTTPS 443<br/>SA token"| OSRoute
+    Operator -->|"HTTPS 443<br/>SA token"| OSAPIServer
+    Operator -->|"HTTPS 443<br/>SA token"| KubeflowNB
+    Operator -->|"HTTPS 443<br/>SA token"| SparkOp
+    Operator -->|"HTTPS 443<br/>SA token"| PromOp
 
-    %% Egress flows
-    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    OnlineSvc -->|"TCP/6379<br/>TLS optional<br/>Password"| Redis
-    OnlineSvc -->|"TCP/5432<br/>TLS optional<br/>Password"| PostgreSQL
-    RegistrySvc -->|"TCP/5432<br/>TLS optional<br/>Password"| PostgreSQL
-    OfflineSvc -->|"HTTPS/443<br/>TLS 1.2+<br/>Account creds"| Snowflake
-    OfflineSvc -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP creds"| BigQuery
-    OnlineSvc -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| DynamoDB
-    OnlineSvc -->|"HTTPS/443<br/>TLS 1.2+<br/>Client creds"| OIDC
+    %% Feature Server → External Services
+    OnlineSvc -->|"Various ports<br/>TLS (configurable)<br/>Credentials Secret"| Redis
+    OnlineSvc -->|"5432/TCP<br/>TLS optional<br/>Credentials Secret"| Postgres
+    OnlineSvc -->|"443/TCP HTTPS<br/>AWS IAM"| DynamoDB
+    OfflineSvc -->|"443/TCP HTTPS<br/>Credentials Secret"| Snowflake
+    OfflineSvc -->|"443/TCP HTTPS<br/>Credentials Secret"| BigQuery
+    OfflineSvc -->|"5432/TCP<br/>Credentials Secret"| Postgres
+    OnlineSvc -->|"443/TCP HTTPS<br/>TLS 1.2+"| OIDC
+    OnlineSvc -->|"HTTP/HTTPS<br/>API key"| OpenLineage
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef clusterservice fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef egressservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef userns fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef platform fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
-    class Client external
+    class Client,CronJobExt external
     class UIRoute ingress
-    class Operator,RegistrySvc,OnlineSvc,OfflineSvc,UISvc clusterservice
-    class K8sAPI,PostgreSQL,Redis,Snowflake,DynamoDB,BigQuery,OIDC egressservice
+    class Operator operator
+    class OnlineSvc,OfflineSvc,RegistrySvc,UISvc,MetricsExporter userns
+    class K8sAPI,OSRoute,OSAPIServer,KubeflowNB,SparkOp,PromOp platform
+    class Redis,Postgres,DynamoDB,Snowflake,BigQuery,OIDC,OpenLineage externalservice

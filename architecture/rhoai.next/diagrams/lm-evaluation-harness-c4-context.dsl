@@ -1,57 +1,65 @@
 workspace {
     model {
         dataScientist = person "Data Scientist" "Creates LMEvalJob CRs to benchmark language models"
-        platformEngineer = person "Platform Engineer" "Configures model endpoints and evaluation infrastructure"
+        platformAdmin = person "Platform Admin" "Manages RHOAI platform and model deployments"
 
-        lmeval = softwareSystem "LM Evaluation Harness" "Batch job runtime for executing language model benchmarks using EleutherAI's lm-evaluation-harness with EvalHub integration" {
-            adapter = container "EvalHub Adapter" "Orchestrates benchmark execution, credential management, status reporting, and artifact persistence" "Python (main.py)"
-            harness = container "lm-evaluation-harness" "Core evaluation framework with 150+ benchmarks, metrics, and task management" "Python Library (EleutherAI fork)"
-            s3Downloader = container "S3 Downloader" "Downloads model/dataset assets from S3-compatible storage for offline evaluation" "Python Script"
-            ociBuilder = container "OCI Artifact Builder" "Creates and pushes OCI artifacts containing evaluation results and traces" "Python Script + skopeo"
+        lmEvalHarness = softwareSystem "LM Evaluation Harness" "Batch-oriented LLM evaluation framework that runs benchmarks against model endpoints and reports results" {
+            adapter = container "LMEval Adapter" "Orchestrates evaluation: reads job spec, configures model backend, runs lm-eval, reports results via callbacks" "Python (main.py)"
+            lmEvalLib = container "lm-eval Library" "Core evaluation framework providing task management, model backends, metrics, and evaluation pipeline" "Python Library (EleutherAI upstream)"
+            ociPublisher = container "OCI Artifact Publisher" "Pushes evaluation results as OCI artifacts to registries using skopeo and olot" "Python Script"
+            s3Downloader = container "S3 Downloader" "Downloads model assets from S3-compatible storage for offline/air-gapped evaluations" "Python Script (boto3)"
         }
 
-        trustyai = softwareSystem "TrustyAI Operator" "Manages LMEvalJob CRD lifecycle, creates Kubernetes Jobs" "Internal RHOAI"
-        evalhub = softwareSystem "EvalHub Service" "Job orchestration, credential management, and result persistence platform" "Internal RHOAI"
-        mlflow = softwareSystem "MLflow" "Experiment tracking and metric persistence" "Internal RHOAI"
-        modelServer = softwareSystem "Model Inference Server" "Target LLM being evaluated via OpenAI-compatible API" "External"
-        hfHub = softwareSystem "HuggingFace Hub" "Tokenizer and benchmark dataset repository" "External"
-        ociRegistry = softwareSystem "OCI Registry (Quay.io)" "Stores evaluation result OCI artifacts" "External"
-        s3Storage = softwareSystem "S3-compatible Storage" "Model and dataset asset storage for air-gapped deployments" "External"
+        lmEvalOperator = softwareSystem "TrustyAI LMEval Operator" "Creates and manages Kubernetes Jobs for LMEval execution" "Internal RHOAI"
+        evalHub = softwareSystem "EvalHub Service" "Orchestrates evaluation jobs, receives status callbacks and results" "Internal RHOAI"
+        modelServing = softwareSystem "Model Serving Endpoint" "Serves LLM via OpenAI-compatible API (vLLM, TGI, etc.)" "Internal RHOAI"
+        mlflow = softwareSystem "MLflow Tracking Server" "Experiment tracking and metric logging" "Internal RHOAI"
 
-        # User interactions
-        dataScientist -> trustyai "Creates LMEvalJob CR via kubectl/Dashboard"
-        platformEngineer -> modelServer "Deploys and configures model endpoint"
+        ociRegistry = softwareSystem "OCI Registry (Quay)" "Stores evaluation results as OCI artifacts" "External"
+        hfHub = softwareSystem "HuggingFace Hub" "Hosts benchmark datasets, tokenizers, and model configs" "External"
+        s3Storage = softwareSystem "S3-compatible Storage" "Stores pre-staged model weights and datasets for air-gapped mode" "External"
+        k8sAPI = softwareSystem "Kubernetes API" "Manages Jobs, ConfigMaps, Secrets" "Infrastructure"
 
-        # TrustyAI creates Jobs
-        trustyai -> lmeval "Creates K8s Job with container image + ConfigMap"
+        # Relationships
+        dataScientist -> lmEvalOperator "Creates LMEvalJob CR via kubectl/Dashboard"
+        lmEvalOperator -> k8sAPI "Creates Job + ConfigMap + Secrets" "HTTPS/6443"
+        k8sAPI -> lmEvalHarness "Schedules Job Pod"
 
-        # Internal container interactions
-        adapter -> harness "Invokes simple_evaluate()"
-        adapter -> ociBuilder "Creates result artifacts post-evaluation"
-        s3Downloader -> s3Storage "Downloads assets for offline mode" "HTTPS/443 AWS IAM"
+        adapter -> evalHub "Reports job status and results" "HTTPS/443 Bearer Token"
+        lmEvalLib -> modelServing "Sends evaluation prompts" "HTTPS/443 OpenAI API"
+        ociPublisher -> ociRegistry "Pushes result artifacts" "HTTPS/443 Docker Auth"
+        lmEvalLib -> hfHub "Downloads datasets and tokenizers" "HTTPS/443 HF_TOKEN"
+        s3Downloader -> s3Storage "Downloads model assets" "HTTPS/443 AWS IAM"
+        adapter -> mlflow "Logs metrics and results" "HTTPS/443 Bearer Token"
 
-        # Egress from adapter
-        adapter -> evalhub "Reports status updates and results" "HTTPS/443 Bearer Token"
-        adapter -> mlflow "Persists experiment runs" "HTTPS/443"
-        ociBuilder -> ociRegistry "Pushes result OCI artifacts" "HTTPS/443 Docker auth"
-
-        # Egress from harness
-        harness -> modelServer "Sends evaluation prompts via /v1/completions" "HTTPS/443 Bearer Token"
-        harness -> hfHub "Downloads tokenizers and datasets" "HTTPS/443 HF_TOKEN"
+        adapter -> lmEvalLib "Configures and runs evaluations"
+        adapter -> ociPublisher "Triggers result persistence"
     }
 
     views {
-        systemContext lmeval "SystemContext" {
+        systemContext lmEvalHarness "SystemContext" {
             include *
             autoLayout
         }
 
-        container lmeval "Containers" {
+        container lmEvalHarness "Containers" {
             include *
             autoLayout
         }
 
         styles {
+            element "External" {
+                background #999999
+                color #ffffff
+            }
+            element "Internal RHOAI" {
+                background #7ed321
+                color #ffffff
+            }
+            element "Infrastructure" {
+                background #4a90e2
+                color #ffffff
+            }
             element "Person" {
                 shape Person
                 background #08427b
@@ -59,14 +67,6 @@ workspace {
             }
             element "Software System" {
                 background #1168bd
-                color #ffffff
-            }
-            element "External" {
-                background #999999
-                color #ffffff
-            }
-            element "Internal RHOAI" {
-                background #7ed321
                 color #ffffff
             }
             element "Container" {

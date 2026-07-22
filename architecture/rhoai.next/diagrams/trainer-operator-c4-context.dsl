@@ -1,46 +1,49 @@
 workspace {
     model {
+        dataScientist = person "Data Scientist" "Submits distributed training jobs via TrainJob CRs"
         platformAdmin = person "Platform Admin" "Manages RHOAI platform components"
-        dataScientist = person "Data Scientist" "Creates TrainJobs for distributed training"
 
-        trainerOperator = softwareSystem "Trainer Operator" "Module operator that deploys and manages Kubeflow Trainer v2 resources on RHOAI/ODH" {
-            controller = container "Trainer Controller" "Reconciles Trainer CR, renders kustomize manifests, deploys resources via SSA" "Go (controller-runtime)"
-            manifestPipeline = container "Manifest Renderer" "Copies templates, applies RELATED_IMAGE overrides to params.env, renders kustomize overlays" "Kustomize + SSA"
-            dependencyChecker = container "Dependency Checker" "Validates JobSet Operator and CRD availability before provisioning" "Go"
-            gcCollector = container "GC Collector" "Label-based garbage collection via discovery API for cleanup" "Go (odh-platform-utilities)"
-            driftWatcher = container "Drift Watcher" "Watches downstream resources with part-of=trainer label, re-reconciles on drift" "Go (controller-runtime)"
+        trainerOperator = softwareSystem "Trainer Operator" "Manages lifecycle of Kubeflow Trainer V2 on RHOAI clusters" {
+            controller = container "trainer-operator" "Watches Trainer CR, renders kustomize manifests, deploys operand" "Go Operator (controller-runtime)"
+            depChecker = container "Dependency Checker" "Verifies JobSet Operator is installed and healthy" "Go Module"
+            manifestRenderer = container "Manifest Renderer" "Copies templates, applies RELATED_IMAGE_* overrides, renders via kustomize" "odh-platform-utilities"
         }
 
-        rhodsOperator = softwareSystem "rhods-operator / opendatahub-operator" "Platform orchestrator that creates Trainer CR" "Internal RHOAI"
+        kubeflowTrainer = softwareSystem "Kubeflow Trainer V2" "Upstream controller that reconciles TrainJobs into distributed training workloads" {
+            trainerController = container "kubeflow-trainer-controller-manager" "Watches TrainJob CRs, creates JobSets for distributed training" "Go Controller"
+            validatingWebhook = container "Validating Webhook" "Validates TrainJob, ClusterTrainingRuntime, TrainingRuntime on admission" "HTTPS/9443"
+        }
 
-        kubeflowTrainer = softwareSystem "Kubeflow Trainer v2" "Upstream ML training controller managing TrainJob lifecycle and JobSets" "Deployed by trainer-operator"
+        rhoaiPlatform = softwareSystem "RHOAI Platform Operator" "Creates Trainer CR to trigger component deployment; injects image refs" "Internal RHOAI"
+        jobsetOperator = softwareSystem "JobSet Operator" "Provides JobSet CRD for orchestrating multi-replica distributed jobs" "OpenShift"
+        k8sApi = softwareSystem "Kubernetes/OpenShift API" "Central API for cluster resource management" "Infrastructure"
+        prometheus = softwareSystem "OpenShift Monitoring" "Metrics collection and alerting" "Infrastructure"
+        olmSystem = softwareSystem "OLM" "Operator Lifecycle Manager for operator installation" "Infrastructure"
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane API" "Infrastructure"
-        jobSetOperator = softwareSystem "JobSet Operator" "Manages JobSet resources for batch workloads" "External (OLM)"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Infrastructure"
-        openShift = softwareSystem "OpenShift Platform" "Container platform (ClusterVersion, ImageStreams, OLM)" "Infrastructure"
-        odhPlatformUtils = softwareSystem "odh-platform-utilities" "Shared library for ODH module operators" "Internal ODH"
+        # Platform Admin flows
+        platformAdmin -> rhoaiPlatform "Manages RHOAI platform"
+        rhoaiPlatform -> trainerOperator "Creates Trainer CR (default-trainer)" "CRD Watch"
+        rhoaiPlatform -> trainerOperator "Injects RELATED_IMAGE_* env vars" "Environment"
 
-        # Relationships - External
-        rhodsOperator -> trainerOperator "Creates/deletes Trainer CR (default-trainer)" "HTTPS/443 via K8s API"
-        platformAdmin -> rhodsOperator "Configures RHOAI components"
-        dataScientist -> kubeflowTrainer "Creates TrainJobs for distributed training" "kubectl / HTTPS"
+        # Operator internal flows
+        controller -> depChecker "Checks dependencies before deploying"
+        controller -> manifestRenderer "Renders kustomize manifests"
+        depChecker -> jobsetOperator "Verifies installed and healthy" "K8s API"
+        depChecker -> olmSystem "Checks OperatorConditions" "K8s API"
 
-        # Relationships - Internal
-        controller -> manifestPipeline "Triggers manifest rendering"
-        controller -> dependencyChecker "Checks prerequisites before provisioning"
-        controller -> gcCollector "Initiates cleanup on Removed/Deleted"
-        controller -> driftWatcher "Monitors managed resources for drift"
+        # Operator → Operand deployment
+        trainerOperator -> kubeflowTrainer "Deploys and monitors" "kustomize + Server-Side Apply"
+        trainerOperator -> k8sApi "CRUD on CRDs, Deployments, RBAC, Services, ConfigMaps" "HTTPS/443"
 
-        # Relationships - External systems
-        trainerOperator -> k8sAPI "CRUD on managed resources (SSA Apply)" "HTTPS/443 TLS 1.2+"
-        trainerOperator -> kubeflowTrainer "Deploys controller, CRDs, webhooks, RBAC" "SSA via K8s API"
-        trainerOperator -> jobSetOperator "Validates installation before provisioning" "HTTPS/443 via K8s API"
-        trainerOperator -> openShift "Reads ClusterVersion, manages ImageStreams" "HTTPS/443 via K8s API"
-        prometheus -> trainerOperator "Scrapes controller metrics" "HTTP/8080"
+        # User flows
+        dataScientist -> k8sApi "Creates TrainJob CR" "kubectl / HTTPS"
+        k8sApi -> validatingWebhook "Validates admission" "HTTPS/443→9443"
+        trainerController -> k8sApi "Creates JobSets from TrainJobs" "HTTPS/443"
+        jobsetOperator -> k8sApi "Creates Jobs/Pods for distributed training" "HTTPS/443"
 
-        # Library dependency
-        trainerOperator -> odhPlatformUtils "Uses PlatformObject, conditions, GC, kustomize rendering" "Go module"
+        # Monitoring
+        prometheus -> trainerOperator "Scrapes operator metrics" "HTTP/8080"
+        prometheus -> kubeflowTrainer "Scrapes controller metrics" "HTTPS/8443 (insecureSkipVerify)"
     }
 
     views {
@@ -49,7 +52,12 @@ workspace {
             autoLayout
         }
 
-        container trainerOperator "Containers" {
+        container trainerOperator "TrainerOperatorContainers" {
+            include *
+            autoLayout
+        }
+
+        container kubeflowTrainer "KubeflowTrainerContainers" {
             include *
             autoLayout
         }
@@ -59,33 +67,25 @@ workspace {
                 background #438dd5
                 color #ffffff
             }
-            element "Container" {
-                background #4a90e2
+            element "Internal RHOAI" {
+                background #7ed321
                 color #ffffff
             }
-            element "Person" {
-                background #08427b
+            element "OpenShift" {
+                background #ee0000
                 color #ffffff
-                shape person
             }
             element "Infrastructure" {
                 background #999999
                 color #ffffff
             }
-            element "External (OLM)" {
-                background #999999
+            element "Person" {
+                shape person
+                background #08427b
                 color #ffffff
             }
-            element "Internal RHOAI" {
-                background #9b59b6
-                color #ffffff
-            }
-            element "Internal ODH" {
-                background #7ed321
-                color #ffffff
-            }
-            element "Deployed by trainer-operator" {
-                background #27ae60
+            element "Container" {
+                background #438dd5
                 color #ffffff
             }
         }

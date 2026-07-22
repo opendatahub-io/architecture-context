@@ -1,62 +1,48 @@
 workspace {
     model {
-        user = person "Data Scientist / Application" "Sends inference requests to external LLM models via the AI Gateway"
+        user = person "Data Scientist / Developer" "Creates ExternalModel and ExternalProvider CRs to route inference requests to external LLM providers"
 
-        platformAdmin = person "Platform Admin" "Creates ExternalModel and ExternalProvider CRs to configure model routing"
-
-        aiGatewayPayloadProcessing = softwareSystem "AI Gateway Payload Processing" "Envoy ext_proc filter with embedded controllers. Intercepts inference requests, resolves model-to-provider mappings, translates API formats, injects credentials, and enforces guardrails." {
-            extProcServer = container "ext_proc gRPC Server" "Receives request/response bodies from Envoy for mutation via plugin pipeline" "Go / llm-d IPP framework" "9004/TCP"
-            pluginPipeline = container "Plugin Pipeline" "Ordered plugins: maas-headers-guard → model-provider-resolver → api-translation → apikey-injection → nemo-guards" "Go plugins"
-            externalModelController = container "ExternalModel Controller" "Reconciles ExternalModel CRs, creates HTTPRoute resources for traffic routing" "controller-runtime"
-            externalProviderController = container "ExternalProvider Controller" "Reconciles ExternalProvider CRs, creates ExternalName Service + ServiceEntry + DestinationRule" "controller-runtime"
-            legacyMigrationController = container "Legacy Migration Controller" "Watches maas.opendatahub.io ExternalModel CRs, creates inference.opendatahub.io equivalents" "controller-runtime"
-            modelProviderStore = container "Model-Provider Store" "In-memory cache of ExternalModel/ExternalProvider mappings used by resolver plugin" "Go in-memory"
-            secretStore = container "Secret Store" "In-memory cache of labeled Kubernetes Secrets for API key injection" "Go in-memory"
+        agpp = softwareSystem "AI Gateway Payload Processing" "Envoy ext_proc filter and Kubernetes controller that routes, translates, authenticates, and meters inference requests to external LLM providers via the AI Gateway" {
+            extProcServer = container "ext_proc gRPC Server" "Envoy external processing filter endpoint" "Go Service" "9004/TCP gRPC"
+            pluginPipeline = container "Plugin Pipeline" "Chained plugins: maas-headers-guard, model-provider-resolver, stream-usage-enforcer, api-translation, apikey-injection" "IPP Framework"
+            externalModelController = container "ExternalModel Controller" "Watches ExternalModel CRs, creates HTTPRoute resources for Gateway API routing" "Go Controller (controller-runtime)"
+            externalProviderController = container "ExternalProvider Controller" "Watches ExternalProvider CRs, creates Service/ServiceEntry/DestinationRule for Istio mesh routing" "Go Controller (controller-runtime)"
+            legacyMigrationController = container "Legacy Migration Controller" "Migrates maas.opendatahub.io/v1alpha1 CRDs to inference.opendatahub.io/v1alpha1" "Go Controller"
         }
 
-        aiGateway = softwareSystem "AI Gateway" "Istio Envoy Gateway that terminates TLS and routes inference traffic" "External"
-        istio = softwareSystem "Istio Service Mesh" "Provides EnvoyFilter, ServiceEntry, DestinationRule for mesh networking and TLS origination" "External"
-        gatewayAPI = softwareSystem "Gateway API" "Provides HTTPRoute CRDs for declarative traffic routing" "External"
-        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for CRD reconciliation, Secret access, and resource creation" "External"
-        nemoGuardrails = softwareSystem "NeMo Guardrails" "Optional content safety service for evaluating input/output rails" "Internal ODH"
+        istioGateway = softwareSystem "Istio Gateway (Envoy)" "Service mesh gateway with EnvoyFilter attachment for ext_proc" "External"
+        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for CRD watch, resource creation, and Secret access" "External"
+        ippFramework = softwareSystem "llm-d IPP Framework" "Inference Payload Processor providing ext_proc server, plugin lifecycle, CycleState, and runner" "External"
 
-        openAI = softwareSystem "OpenAI API" "External LLM provider (api.openai.com)" "External Provider"
-        anthropic = softwareSystem "Anthropic API" "External LLM provider (api.anthropic.com)" "External Provider"
-        azureOpenAI = softwareSystem "Azure OpenAI" "External LLM provider ({resource}.openai.azure.com)" "External Provider"
-        awsBedrock = softwareSystem "AWS Bedrock" "External LLM provider (bedrock-runtime.{region}.amazonaws.com)" "External Provider"
-        vertexAI = softwareSystem "Vertex AI" "External LLM provider ({endpoint}.aiplatform.googleapis.com)" "External Provider"
+        openai = softwareSystem "OpenAI API" "Chat Completions API (api.openai.com)" "External LLM Provider"
+        anthropic = softwareSystem "Anthropic API" "Messages API (api.anthropic.com)" "External LLM Provider"
+        azure = softwareSystem "Azure OpenAI API" "Azure-hosted OpenAI inference ({resource}.openai.azure.com)" "External LLM Provider"
+        vertex = softwareSystem "Vertex AI API" "Gemini GenerateContent and OpenAI-compat ({region}-aiplatform.googleapis.com)" "External LLM Provider"
+        bedrock = softwareSystem "AWS Bedrock API" "Bedrock InvokeModel OpenAI-compat (bedrock-runtime.{region}.amazonaws.com)" "External LLM Provider"
 
-        # Relationships
-        user -> aiGateway "Sends inference requests" "HTTPS/443 TLS 1.2+"
-        platformAdmin -> k8sAPI "Creates ExternalModel/ExternalProvider CRs" "kubectl HTTPS/443"
+        meteringService = softwareSystem "External Metering Service" "Token budget enforcement and CloudEvents usage reporting" "Internal"
+        nemoGuardrails = softwareSystem "NeMo Guardrails Service" "Content safety filtering — input and output rails" "Internal"
 
-        aiGateway -> aiGatewayPayloadProcessing "Forwards requests via ext_proc filter" "gRPC/9004 plaintext"
-        aiGatewayPayloadProcessing -> k8sAPI "Watches CRDs, reads Secrets, creates networking resources" "HTTPS/443 mTLS"
-        aiGatewayPayloadProcessing -> nemoGuardrails "Evaluates content safety rails" "HTTP POST"
-        aiGatewayPayloadProcessing -> istio "Creates ServiceEntry, DestinationRule" "via K8s API"
-        aiGatewayPayloadProcessing -> gatewayAPI "Creates HTTPRoute" "via K8s API"
-
-        aiGateway -> openAI "Proxied inference (via ExternalName + DestinationRule)" "HTTPS/443 Bearer Token"
-        aiGateway -> anthropic "Proxied inference (translated to Messages API)" "HTTPS/443 x-api-key"
-        aiGateway -> azureOpenAI "Proxied inference (path rewritten)" "HTTPS/443 api-key"
-        aiGateway -> awsBedrock "Proxied inference (SigV4 signed)" "HTTPS/443 SigV4"
-        aiGateway -> vertexAI "Proxied inference (path rewritten)" "HTTPS/443 Bearer OAuth2"
-
-        # Container relationships
-        extProcServer -> pluginPipeline "Invokes plugin chain"
-        pluginPipeline -> modelProviderStore "Reads model-to-provider mapping"
-        pluginPipeline -> secretStore "Reads API keys"
-        externalModelController -> modelProviderStore "Updates model mappings"
-        externalProviderController -> modelProviderStore "Updates provider mappings"
+        user -> agpp "Creates ExternalModel/ExternalProvider CRs via kubectl"
+        istioGateway -> agpp "Sends inference requests via ext_proc gRPC/9004" "gRPC"
+        agpp -> k8sAPI "Watches CRDs, creates HTTPRoutes/Services/ServiceEntries/DestinationRules, reads Secrets" "HTTPS/443"
+        agpp -> openai "Routes translated inference requests" "HTTPS/443, Bearer Token"
+        agpp -> anthropic "Routes translated inference requests" "HTTPS/443, x-api-key"
+        agpp -> azure "Routes translated inference requests" "HTTPS/443, api-key header"
+        agpp -> vertex "Routes translated inference requests" "HTTPS/443, OAuth2 Bearer"
+        agpp -> bedrock "Routes translated inference requests" "HTTPS/443, AWS SigV4"
+        agpp -> meteringService "Budget check (GET) and usage events (POST)" "HTTP/HTTPS"
+        agpp -> nemoGuardrails "Content filtering (input/output rails)" "HTTP/HTTPS"
+        agpp -> ippFramework "Uses as Go module dependency for ext_proc server and plugin framework" "Go import"
     }
 
     views {
-        systemContext aiGatewayPayloadProcessing "SystemContext" {
+        systemContext agpp "SystemContext" {
             include *
             autoLayout
         }
 
-        container aiGatewayPayloadProcessing "Containers" {
+        container agpp "Containers" {
             include *
             autoLayout
         }
@@ -66,21 +52,25 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "External Provider" {
+            element "External LLM Provider" {
                 background #f5a623
                 color #ffffff
             }
-            element "Internal ODH" {
+            element "Internal" {
                 background #7ed321
-                color #ffffff
-            }
-            element "Person" {
-                shape person
-                background #4a90e2
                 color #ffffff
             }
             element "Software System" {
                 background #4a90e2
+                color #ffffff
+            }
+            element "Person" {
+                background #08427b
+                color #ffffff
+                shape Person
+            }
+            element "Container" {
+                background #438dd5
                 color #ffffff
             }
         }

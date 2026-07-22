@@ -1,82 +1,72 @@
 graph TB
-    subgraph External["EXTERNAL CLIENTS (Untrusted)"]
-        Browser["Browser Client"]
-        APIClient["API Client<br/>(JWT / sha256~ token)"]
-        MLflow["MLflow Python SDK<br/>(mlflow-python-client/* UA)"]
-        K8sSA["K8s Service Account<br/>Client"]
+    subgraph External["EXTERNAL (Untrusted)"]
+        Browser["Browser / External Client"]
     end
 
-    subgraph Gateway["GATEWAY LAYER (RHOAI 3.x)"]
-        Envoy["Envoy Gateway<br/>ext_authz subrequest<br/>Returns 202/401/403"]
-    end
-
-    subgraph ProxyService["PROXY SERVICE (Sidecar Container)"]
+    subgraph ProxyLayer["PROXY LAYER (Authentication Boundary)"]
         direction TB
-        Proxy["kube-auth-proxy<br/>Ports: 4180/TCP (HTTP), 443/TCP (HTTPS)<br/>FIPS: GOEXPERIMENT=strictfipsruntime<br/>TLS: 1.2+ (configurable to 1.3)<br/>Base: UBI9 ubi-minimal"]
-        MetricsSrv["Metrics Server<br/>Configurable port<br/>/metrics endpoint"]
+        KAP["kube-auth-proxy<br/>HTTP: 4180/TCP | HTTPS: 8443/TCP<br/>TLS 1.2+ (configurable ciphers)<br/>FIPS: strictfipsruntime"]
+
+        subgraph AuthMethods["Authentication Methods"]
+            OIDC_Auth["OIDC Flow"]
+            OS_Auth["OpenShift OAuth"]
+            K8s_Auth["K8s TokenReview"]
+            Basic_Auth["htpasswd Basic"]
+            Bearer_Auth["Bearer Token (JWT/OAuth)"]
+        end
+
+        subgraph SessionBackends["Session Storage"]
+            CookieSess["Cookie<br/>(CFB/GCM encrypted,<br/>LZ4 compressed)"]
+            RedisSess["Redis<br/>(Standalone/Sentinel/Cluster)"]
+        end
     end
 
-    subgraph UpstreamZone["UPSTREAM (Protected Backend)"]
-        Upstream["Upstream Application<br/>Configurable port<br/>HTTP/HTTPS/Unix socket"]
+    subgraph ClusterInternal["CLUSTER INTERNAL (Pod-to-Pod)"]
+        Envoy["Envoy Proxy<br/>(RHOAI 3.x Gateway)<br/>ext_authz integration"]
+        K8sPod["K8s Pod<br/>(ServiceAccount token)"]
+        Upstream["Upstream Application<br/>Configurable port<br/>HTTP/HTTPS (optional TLS)"]
+        Prometheus["Prometheus<br/>Metrics scrape"]
     end
 
-    subgraph IdentityProviders["IDENTITY PROVIDERS (Egress)"]
-        OIDC["OIDC Provider<br/>(e.g., Keycloak)<br/>443/TCP HTTPS<br/>TLS 1.2+"]
-        OShiftOAuth["OpenShift OAuth Server<br/>443/TCP HTTPS<br/>TLS 1.2+ (custom CA)<br/>Retryable discovery"]
-    end
-
-    subgraph K8sAPIs["KUBERNETES / OPENSHIFT APIs (Egress)"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS (in-cluster CA)<br/>TokenReview endpoint"]
-        OShiftAPI["OpenShift API<br/>kubernetes.default.svc<br/>443/TCP HTTPS<br/>TLS (cluster CA)<br/>User info + token deletion"]
-    end
-
-    subgraph SessionStore["SESSION STORE (Optional Egress)"]
-        Redis["Redis<br/>6379/TCP TCP/TLS<br/>Optional TLS + custom CA<br/>Auth: Username/Password<br/>Modes: Standalone/Sentinel/Cluster"]
-    end
-
-    subgraph Observability["OBSERVABILITY"]
-        Prometheus["Prometheus<br/>HTTP scrape"]
+    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
+        OIDCProvider["OIDC Provider<br/>(Keycloak, Dex)<br/>443/TCP HTTPS TLS 1.2+<br/>Client creds + Bearer"]
+        OSAuthServer["OpenShift OAuth Server<br/>443/TCP HTTPS TLS 1.2+<br/>Client creds + auth code"]
+        OSUserAPI["OpenShift User API<br/>443/TCP HTTPS TLS 1.2+<br/>Bearer access token"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+<br/>SA Bearer token<br/>(TokenReview)"]
+        Redis["Redis (optional)<br/>6379/TCP or 26379/TCP<br/>Optional TLS<br/>Password / ACL"]
     end
 
     %% Ingress flows
-    Browser -->|"HTTPS/443<br/>TLS 1.2+<br/>Session cookie"| Proxy
-    APIClient -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer token"| Proxy
-    MLflow -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer token"| Proxy
-    K8sSA -->|"HTTPS/443<br/>TLS 1.2+<br/>K8s SA token"| Proxy
-    Envoy -->|"HTTP(S)/4180 or 443<br/>ext_authz /oauth2/auth<br/>Forwarded credentials"| Proxy
+    Browser -->|"HTTP/HTTPS<br/>4180 or 8443/TCP<br/>TLS 1.2+<br/>Cookie / Bearer / None"| KAP
+    Envoy -->|"ext_authz<br/>4180 or 8443/TCP<br/>HTTP/HTTPS<br/>Forwarded cookie/Bearer<br/>Response: 202 or 401"| KAP
+    K8sPod -->|"HTTP/HTTPS<br/>4180 or 8443/TCP<br/>Bearer SA token"| KAP
+    Prometheus -->|"HTTP/HTTPS<br/>Configurable port<br/>No auth"| KAP
+
+    %% Internal auth flows
+    KAP --- AuthMethods
+    KAP --- SessionBackends
+
+    %% Egress flows
+    OIDC_Auth -->|"HTTPS/443<br/>TLS 1.2+<br/>Client creds"| OIDCProvider
+    OS_Auth -->|"HTTPS/443<br/>TLS 1.2+<br/>Client creds"| OSAuthServer
+    OS_Auth -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer token"| OSUserAPI
+    K8s_Auth -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Bearer"| K8sAPI
+    RedisSess -->|"TCP/TLS<br/>6379/TCP<br/>Password/ACL"| Redis
 
     %% Upstream flow
-    Proxy -->|"HTTP/HTTPS/Unix<br/>Configurable port<br/>HMAC-SHA256 (optional)<br/>X-Forwarded-* headers"| Upstream
-
-    %% IdP egress
-    Proxy -->|"HTTPS/443<br/>TLS 1.2+<br/>Client credentials"| OIDC
-    Proxy -->|"HTTPS/443<br/>TLS 1.2+<br/>Client credentials / SA token"| OShiftOAuth
-
-    %% K8s API egress
-    Proxy -->|"HTTPS/443<br/>TLS (in-cluster CA)<br/>SA token<br/>POST tokenreviews"| K8sAPI
-    Proxy -->|"HTTPS/443<br/>TLS (cluster CA)<br/>User's Bearer token<br/>GET users/~ DELETE oauthaccesstokens"| OShiftAPI
-
-    %% Session store
-    Proxy -->|"TCP/TLS 6379<br/>Optional TLS<br/>Username/Password"| Redis
-
-    %% Observability
-    Prometheus -->|"HTTP(S)<br/>Configurable port<br/>No auth"| MetricsSrv
+    KAP -->|"HTTP/HTTPS<br/>Configurable<br/>Optional TLS<br/>+ X-Forwarded-User<br/>+ X-Forwarded-Email<br/>+ X-Forwarded-Groups<br/>+ X-Forwarded-Access-Token"| Upstream
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef gateway fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef proxy fill:#d5e8d4,stroke:#82b366,stroke-width:3px
-    classDef upstream fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef idp fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef k8sapi fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef sessionstore fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef observability fill:#e6e6e6,stroke:#666,stroke-width:1px
+    classDef proxy fill:#dae8fc,stroke:#6c8ebf,stroke-width:3px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef authmethods fill:#f8cecc,stroke:#b85450,stroke-width:1px
+    classDef sessions fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
 
-    class Browser,APIClient,MLflow,K8sSA external
-    class Envoy gateway
-    class Proxy,MetricsSrv proxy
-    class Upstream upstream
-    class OIDC,OShiftOAuth idp
-    class K8sAPI,OShiftAPI k8sapi
-    class Redis sessionstore
-    class Prometheus observability
+    class Browser external
+    class KAP proxy
+    class Envoy,K8sPod,Upstream,Prometheus internal
+    class OIDCProvider,OSAuthServer,OSUserAPI,K8sAPI,Redis externalservice
+    class OIDC_Auth,OS_Auth,K8s_Auth,Basic_Auth,Bearer_Auth authmethods
+    class CookieSess,RedisSess sessions

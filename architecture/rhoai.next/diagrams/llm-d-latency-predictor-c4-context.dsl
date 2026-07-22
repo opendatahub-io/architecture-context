@@ -1,25 +1,26 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Deploys LLM models and monitors inference performance"
-        sre = person "SRE / Platform Engineer" "Monitors and operates the inference platform"
+        routingLayer = person "llm-d Routing Layer" "Intelligent LLM request routing component that schedules inference requests across pods based on latency predictions"
 
-        latencyPredictor = softwareSystem "llm-d-latency-predictor" "ML-based latency prediction service for TTFT/TPOT in LLM inference workloads" {
-            trainingServer = container "Training Server" "Collects latency observations, trains quantile/mean regression models (XGBoost/LightGBM/BayesianRidge), serves trained models for download" "Python FastAPI 8000/TCP"
-            predictionServer = container "Prediction Server" "Serves low-latency TTFT/TPOT predictions using synced ML models, 10 replicas with 8 workers each" "Python FastAPI 8001/TCP"
-
-            predictionServer -> trainingServer "Downloads trained models" "HTTP/8000 (every 10s)"
+        latencyPredictor = softwareSystem "llm-d Latency Predictor" "Online ML service that predicts LLM inference latencies (TTFT and TPOT) for routing decisions" {
+            predictionServer = container "Prediction Server" "Serves real-time TTFT/TPOT latency predictions via REST API. Scales horizontally (10 replicas). Each worker syncs models independently." "Python FastAPI/Uvicorn, 8001/TCP"
+            trainingServer = container "Training Server" "Ingests telemetry, continuously retrains regression models (XGBoost/LightGBM/BayesianRidge). Single replica with persistent storage." "Python FastAPI/Uvicorn, 8000/TCP"
+            commonLib = container "Common Library" "Shared types (ModelType, ObjectiveType), data structures (QueueGatedModel, RandomDropDeque)" "Python Library"
+            modelStorage = container "Model Storage" "Persistent volume for trained model artifacts (joblib files)" "PVC /models/"
         }
 
-        llmdGateway = softwareSystem "llm-d Gateway" "Gateway API inference extension for intelligent LLM request routing" "Internal llm-d"
-        llmdMetrics = softwareSystem "llm-d Metrics Pipeline" "Collects and forwards actual latency observations from LLM inference" "Internal llm-d"
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
+        prometheus = softwareSystem "Prometheus" "Monitoring system that scrapes metrics" "External"
 
-        llmdMetrics -> latencyPredictor "Sends latency observations" "HTTP POST /add_training_data_bulk 8000/TCP"
-        llmdGateway -> latencyPredictor "Requests TTFT/TPOT predictions for routing" "HTTP POST /predict/bulk/strict 8001/TCP"
-        kubernetes -> latencyPredictor "Health and readiness probes" "HTTP GET /healthz, /readyz"
-        prometheus -> latencyPredictor "Scrapes metrics" "HTTP GET /metrics 8000/TCP"
-        sre -> prometheus "Monitors system health"
+        # Relationships - external
+        routingLayer -> predictionServer "Requests latency predictions" "HTTP POST /predict/bulk/strict, 80/TCP"
+        routingLayer -> trainingServer "Pushes request telemetry samples" "HTTP POST /add_training_data_bulk, 8000/TCP"
+        prometheus -> trainingServer "Scrapes metrics" "HTTP GET /metrics, 8000/TCP"
+
+        # Relationships - internal
+        predictionServer -> trainingServer "Downloads trained model files" "HTTP GET /model/{name}/download, 8000/TCP"
+        trainingServer -> modelStorage "Saves trained models" "Filesystem (joblib)"
+        predictionServer -> commonLib "Uses shared types and enums"
+        trainingServer -> commonLib "Uses shared types and enums"
     }
 
     views {
@@ -34,25 +35,22 @@ workspace {
         }
 
         styles {
-            element "Person" {
-                shape Person
-                background #08427b
-                color #ffffff
-            }
             element "Software System" {
-                background #1168bd
+                background #4a90e2
                 color #ffffff
+                shape RoundedBox
             }
             element "Container" {
-                background #438dd5
+                background #357abd
                 color #ffffff
+            }
+            element "Person" {
+                background #7ed321
+                color #ffffff
+                shape Person
             }
             element "External" {
                 background #999999
-                color #ffffff
-            }
-            element "Internal llm-d" {
-                background #7ed321
                 color #ffffff
             }
         }

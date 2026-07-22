@@ -1,46 +1,93 @@
 workspace {
     model {
-        admin = person "Cluster Admin" "Configures ClusterQueues, ResourceFlavors, and quota policies"
-        datascientist = person "Data Scientist" "Submits ML training jobs and inference workloads via LocalQueues"
+        // People
+        dataScientist = person "Data Scientist" "Submits ML training jobs and batch workloads"
+        platformAdmin = person "Platform Admin" "Configures ClusterQueues, ResourceFlavors, and quotas"
+        securityTeam = person "Security / SRE" "Monitors alerts and reviews RBAC"
 
-        kueue = softwareSystem "Kueue" "Kubernetes-native job queueing system providing quota management, fair sharing, and priority-based scheduling" {
-            controller = container "kueue-controller-manager" "Core controller managing quota admission, scheduling, preemption, and workload lifecycle" "Go Operator (controller-runtime)"
-            webhookServer = container "Webhook Server" "Mutating and validating webhooks intercepting workload creation across 14+ frameworks (36 webhooks total)" "HTTPS 9443/TCP"
-            metricsServer = container "Metrics Server" "Prometheus metrics for admission, quota, scheduling, and queue metrics" "HTTPS 8443/TCP"
-            scheduler = container "Scheduler" "Implements StrictFIFO and BestEffortFIFO queueing strategies with DRF fair sharing" "Go"
-            preemptionEngine = container "Preemption Engine" "Evaluates preemption candidates with configurable policies (LowerPriority, Any)" "Go"
-            certManager = container "Internal Cert Manager" "Self-signed TLS certificate management for webhook server" "Go"
+        // Kueue System
+        kueue = softwareSystem "Kueue" "Kubernetes-native job queueing system managing quota and admission control for batch workloads" {
+            controllerManager = container "Kueue Controller Manager" "controller-runtime based operator managing job queueing, quota admission, workload scheduling, webhook validation, and metrics" "Go Operator" {
+                cqController = component "ClusterQueue Controller" "Manages ClusterQueue lifecycle and resource allocation cache"
+                lqController = component "LocalQueue Controller" "Manages LocalQueue lifecycle and workload queue ordering"
+                wlController = component "Workload Controller" "Manages Workload lifecycle, admission state, and job synchronization"
+                scheduler = component "Scheduler" "Dequeues workloads and makes admission decisions against quota cache"
+                cache = component "Cache" "In-memory real-time view of resource allocation across ClusterQueues and Cohorts"
+                queueManager = component "Queue Manager" "Maintains ordered workload queues per LocalQueue/ClusterQueue"
+                provisioningCtrl = component "Provisioning Controller" "Manages ProvisioningRequest admission checks with Cluster Autoscaler"
+                multiKueueCtrl = component "MultiKueue Controller" "Federates workloads to remote Kueue clusters"
+                tasController = component "TAS Controller" "Topology-Aware Scheduling: assigns topology domains to pods"
+                topologyUngater = component "TopologyUngater" "Removes scheduling gates after topology assignment"
+            }
+            webhookServer = container "Webhook Server" "Mutating and validating admission webhooks for all supported job types and Kueue CRDs" "Go (controller-runtime webhook)" {
+                tags "Webhook"
+            }
+            visibilityAPI = container "Visibility API Server" "On-demand pending workloads API (extension API server)" "Go" {
+                tags "API"
+            }
+            metricsEndpoint = container "Metrics Endpoint" "Prometheus metrics at /metrics with bearer token auth" "Go (controller-runtime)" {
+                tags "Monitoring"
+            }
         }
 
-        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster API server for resource management" "External"
-        kubeflowTraining = softwareSystem "Kubeflow Training Operator" "Manages distributed training jobs (PyTorch, TF, MPI, Paddle, XGBoost)" "Internal ODH"
-        kuberayOperator = softwareSystem "KubeRay Operator" "Manages Ray clusters and Ray jobs" "Internal ODH"
-        jobsetController = softwareSystem "JobSet Controller" "Manages multi-job sets" "Internal ODH"
-        codeflareOperator = softwareSystem "CodeFlare Operator" "Manages AppWrapper workloads" "Internal ODH"
-        leaderworkersetController = softwareSystem "LeaderWorkerSet Controller" "Manages leader-worker pattern workloads" "External"
-        certManagerExternal = softwareSystem "cert-manager" "Optional external certificate management" "External"
-        clusterAutoscaler = softwareSystem "Cluster Autoscaler" "Provisions nodes via ProvisioningRequest CRDs" "External"
-        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and alerting" "External"
+        // External Systems
+        k8sAPI = softwareSystem "Kubernetes API Server" "Control plane for cluster resource management" {
+            tags "External"
+        }
+        clusterAutoscaler = softwareSystem "Cluster Autoscaler" "Provisions node capacity via ProvisioningRequest API" {
+            tags "External"
+        }
+        prometheus = softwareSystem "Prometheus" "Metrics collection and alerting (RHOAI monitoring stack)" {
+            tags "Monitoring"
+        }
+        certManager = softwareSystem "cert-manager" "Optional external certificate management for webhook TLS" {
+            tags "External"
+        }
 
-        # User interactions
-        admin -> kueue "Configures quotas and queues via kubectl"
-        datascientist -> kueue "Submits workloads to LocalQueues"
+        // Internal Platform Systems
+        kubeflowTraining = softwareSystem "Kubeflow Training Operator" "Manages distributed training jobs (PyTorchJob, TFJob, MPIJob, PaddleJob, XGBoostJob)" {
+            tags "Internal RHOAI"
+        }
+        rayOperator = softwareSystem "Ray Operator" "Manages RayJob and RayCluster workloads" {
+            tags "Internal RHOAI"
+        }
+        codeflare = softwareSystem "CodeFlare Operator" "Manages AppWrapper workloads" {
+            tags "Internal RHOAI"
+        }
+        jobsetController = softwareSystem "JobSet Controller" "Manages JobSet workloads" {
+            tags "Internal RHOAI"
+        }
 
-        # Core integrations
-        kueue -> kubernetesAPI "Watches CRDs, manages workload lifecycle, leader election" "HTTPS/443 TLS 1.2+ SA Bearer Token"
-        kubernetesAPI -> kueue "Webhook calls on workload create/update" "HTTPS/9443 TLS mTLS"
+        // Remote clusters (MultiKueue)
+        remoteKueue = softwareSystem "Remote Kueue Clusters" "Worker clusters for multi-cluster workload federation (disabled in RHOAI)" {
+            tags "External" "Disabled"
+        }
 
-        # Framework integrations
-        kueue -> kubeflowTraining "Intercepts and manages training job admission" "Webhook 9443/TCP"
-        kueue -> kuberayOperator "Intercepts and manages Ray workload admission" "Webhook 9443/TCP"
-        kueue -> jobsetController "Intercepts and manages JobSet admission" "Webhook 9443/TCP"
-        kueue -> codeflareOperator "Intercepts and manages AppWrapper admission" "Webhook 9443/TCP"
-        kueue -> leaderworkersetController "Intercepts and manages LeaderWorkerSet admission" "Webhook 9443/TCP"
+        // Relationships - People
+        dataScientist -> kueue "Submits jobs with queue-name labels via kubectl/API"
+        platformAdmin -> kueue "Configures ClusterQueues, LocalQueues, ResourceFlavors, Cohorts"
+        securityTeam -> prometheus "Reviews alerts: KueuePodDown, ResourceReservationExceedsQuota"
 
-        # External integrations
-        kueue -> clusterAutoscaler "Creates ProvisioningRequest CRs for capacity" "CRD API"
-        kueue -> certManagerExternal "Optional webhook cert management" "CRD API"
-        prometheus -> kueue "Scrapes admission, quota, scheduling metrics" "HTTPS/8443 Bearer Token"
+        // Relationships - Kueue to External
+        kueue -> k8sAPI "Watches and manages CRDs, Pods, Jobs, Secrets, ConfigMaps, Nodes" "HTTPS/443, ServiceAccount token"
+        kueue -> clusterAutoscaler "Creates ProvisioningRequests for capacity checks" "HTTPS/443, ServiceAccount token"
+        kueue -> remoteKueue "Federates Workloads to remote clusters (MultiKueue=false)" "HTTPS/443, kubeconfig credentials"
+
+        // Relationships - External to Kueue
+        k8sAPI -> webhookServer "Sends admission review requests" "HTTPS/9443, TLS client auth"
+        prometheus -> metricsEndpoint "Scrapes /metrics via ServiceMonitor" "HTTPS/8443, Bearer Token"
+        certManager -> kueue "Provisions webhook TLS certificates (optional)" "Kubernetes Secret"
+
+        // Relationships - Internal platform
+        kubeflowTraining -> k8sAPI "Creates training job CRs"
+        rayOperator -> k8sAPI "Creates RayJob/RayCluster CRs"
+        codeflare -> k8sAPI "Creates AppWrapper CRs"
+        jobsetController -> k8sAPI "Creates JobSet CRs"
+
+        // Internal container relationships
+        controllerManager -> webhookServer "Manages webhook lifecycle"
+        controllerManager -> visibilityAPI "Serves pending workload queries"
+        controllerManager -> metricsEndpoint "Exposes controller metrics"
     }
 
     views {
@@ -54,26 +101,52 @@ workspace {
             autoLayout
         }
 
+        component controllerManager "Components" {
+            include *
+            autoLayout
+        }
+
         styles {
             element "Software System" {
-                background #438dd5
+                background #438DD5
                 color #ffffff
             }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal ODH" {
+            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Container" {
-                background #438dd5
+            element "Monitoring" {
+                background #f5a623
                 color #ffffff
             }
+            element "Disabled" {
+                background #cccccc
+                color #666666
+                border dashed
+            }
             element "Person" {
-                shape Person
-                background #08427b
+                shape person
+                background #08427B
+                color #ffffff
+            }
+            element "Container" {
+                background #438DD5
+                color #ffffff
+            }
+            element "Component" {
+                background #85BBF0
+                color #000000
+            }
+            element "Webhook" {
+                background #ff9800
+                color #ffffff
+            }
+            element "API" {
+                background #4caf50
                 color #ffffff
             }
         }

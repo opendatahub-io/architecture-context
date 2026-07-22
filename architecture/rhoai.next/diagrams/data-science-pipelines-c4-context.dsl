@@ -1,64 +1,85 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Authors, compiles, and executes ML pipelines via SDK or UI"
-        platformadmin = person "Platform Admin" "Deploys and manages DSP instances via DSPA operator"
+        dataScientist = person "Data Scientist" "Defines, schedules, and monitors ML pipelines via SDK or UI"
+        platformAdmin = person "Platform Admin" "Deploys and manages DSP stack via DSPO operator"
 
-        dsp = softwareSystem "Data Science Pipelines" "ML pipeline orchestration platform — define, compile, execute, schedule, cache, and track ML workflows (Kubeflow Pipelines v2)" {
-            apiserver = container "API Server" "Central REST/gRPC API for pipeline, run, experiment, and artifact management with dual v1beta1/v2beta1 support" "Go Service" "Primary"
-            frontend = container "Frontend UI" "Express-based BFF serving React UI, proxying API requests, handling artifact retrieval" "Node.js/TypeScript"
-            persistenceagent = container "Persistence Agent" "Watches Argo Workflows, syncs execution status and metrics to database via gRPC" "Go Service"
-            swcontroller = container "Scheduled Workflow Controller" "Manages ScheduledWorkflow CRDs, creates pipeline runs on cron/periodic schedules" "Go Controller"
-            viewercontroller = container "Viewer CRD Controller" "Watches Viewer CRDs and creates TensorBoard Deployment + Service instances" "Go Controller"
-            cacheserver = container "Cache Server" "Mutating admission webhook for step-level caching in KFP v1 pipelines" "Go Webhook Server"
-            cachedeployer = container "Cache Deployer" "Manages webhook certificates and MutatingWebhookConfiguration lifecycle" "Go Service"
-            driver = container "V2 Driver" "Argo Workflow sidecar — resolves inputs, manages metadata, computes cache keys, generates pod spec patches" "Go CLI"
-            launcher = container "V2 Launcher" "Runs inside user containers to execute pipeline components, handle artifact I/O, publish results" "Go CLI"
-            metadatawriter = container "Metadata Writer" "Watches completed Argo Workflow pods and propagates metadata annotations" "Go/Python Service"
+        dsp = softwareSystem "Data Science Pipelines" "Kubeflow Pipelines backend for defining, scheduling, and executing ML/AI pipelines as Argo Workflows on Kubernetes" {
+            apiServer = container "API Server" "Central API gateway for pipeline, run, experiment, and artifact management with multi-user RBAC" "Go Service" {
+                tags "Primary"
+            }
+            persistenceAgent = container "Persistence Agent" "Watches Argo Workflow and ScheduledWorkflow resources, persists status to API server database" "Go Service" {
+                tags "Primary"
+            }
+            scheduledWorkflowController = container "Scheduled Workflow Controller" "Kubernetes controller managing ScheduledWorkflow CRDs — triggers Argo Workflows on cron/periodic schedules" "Go Controller" {
+                tags "Primary"
+            }
+            cacheServer = container "Cache Server" "Mutating admission webhook that injects cached outputs for reusable pipeline steps" "Go Webhook" {
+                tags "Supporting"
+            }
+            viewerController = container "Viewer Controller" "Kubernetes controller that deploys TensorBoard visualization instances" "Go Controller" {
+                tags "Supporting"
+            }
+            driver = container "Driver" "Orchestrates individual pipeline step execution within Argo Workflow DAG nodes — resolves inputs, checks cache, creates K8s resources" "Go CLI (init container)" {
+                tags "Runtime"
+            }
+            launcher = container "Launcher" "Executes user container tasks, handles artifact upload/download to/from object storage, reports metadata to MLMD" "Go CLI (step container)" {
+                tags "Runtime"
+            }
         }
 
-        argoworkflows = softwareSystem "Argo Workflows" "DAG workflow execution engine (v3.7.14)" "External"
-        sqldb = softwareSystem "MySQL / PostgreSQL" "Relational database for pipeline, run, experiment, cache storage" "External"
-        objectstore = softwareSystem "SeaweedFS / MinIO" "S3-compatible object storage for artifacts and pipeline packages" "External"
-        mlmd = softwareSystem "ML Metadata (MLMD)" "Execution lineage tracking and artifact metadata service" "External"
-        k8sapi = softwareSystem "Kubernetes API" "Cluster API server for CRD operations, RBAC, authentication" "External"
-        dspaoperator = softwareSystem "DSPA Operator" "RHOAI platform operator that creates/manages DSP instances" "Internal RHOAI"
-        certmanager = softwareSystem "cert-manager" "TLS certificate provisioning (optional)" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
-        mlflow = softwareSystem "MLflow" "Experiment tracking integration (optional)" "External"
+        dspo = softwareSystem "Data Science Pipelines Operator" "OLM operator that deploys and manages the entire DSP component stack" "Internal RHOAI" {
+            tags "Internal"
+        }
+        argoWorkflows = softwareSystem "Argo Workflows" "Pipeline step execution engine — pipelines compile to Argo Workflow DAGs" "External" {
+            tags "External"
+        }
+        database = softwareSystem "MySQL / PostgreSQL" "Pipeline, run, experiment, and job metadata persistence" "External" {
+            tags "External"
+        }
+        objectStorage = softwareSystem "S3 / MinIO" "Pipeline spec YAML and artifact binary storage" "External" {
+            tags "External"
+        }
+        mlmd = softwareSystem "ML Metadata (MLMD)" "Artifact lineage, execution context, and metadata tracking" "External" {
+            tags "External"
+        }
+        mlflow = softwareSystem "MLflow Server" "Optional ML experiment and run tracking synchronization" "External" {
+            tags "External Optional"
+        }
+        kubernetes = softwareSystem "Kubernetes API" "Container orchestration, CRD hosting, RBAC enforcement" "External" {
+            tags "External"
+        }
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External" {
+            tags "External"
+        }
 
-        # User interactions
-        datascientist -> dsp "Creates/manages pipelines and runs" "REST API / gRPC / Web UI"
-        datascientist -> frontend "Browses pipelines, views run results" "HTTPS"
-        platformadmin -> dspaoperator "Creates DataSciencePipelinesApplication CR" "kubectl / GitOps"
-        dspaoperator -> dsp "Deploys and manages DSP instance" "K8s API"
+        # Person interactions
+        dataScientist -> dsp "Creates pipelines, runs, and experiments via SDK or REST API"
+        platformAdmin -> dspo "Configures DataSciencePipelinesApplication CR"
+        dspo -> dsp "Deploys and manages DSP component stack"
 
-        # Internal container interactions
-        frontend -> apiserver "Proxies API requests" "HTTP/8888"
-        persistenceagent -> apiserver "Reports run status and metrics" "gRPC/8887"
-        swcontroller -> apiserver "Creates V2 pipeline runs" "gRPC/8887"
-        driver -> apiserver "Cache key lookup" "gRPC/8887"
+        # Container-level interactions
+        dataScientist -> apiServer "REST/gRPC: pipeline CRUD, run management" "HTTP/gRPC 8888/8887"
+        apiServer -> database "Store/retrieve pipeline metadata" "MySQL/PG 3306/5432"
+        apiServer -> objectStorage "Store/retrieve pipeline specs and artifacts" "S3 API 443"
+        apiServer -> mlmd "Query artifact lineage and metadata" "gRPC 8080"
+        apiServer -> mlflow "Sync experiment and run tracking" "HTTP/HTTPS"
+        apiServer -> kubernetes "CRD operations, TokenReview, SAR" "HTTPS 443"
+        apiServer -> argoWorkflows "Create Argo Workflow CRs" "Kubernetes API"
 
-        # External dependencies
-        apiserver -> sqldb "CRUD pipeline/run/experiment records" "SQL/3306 or 5432"
-        apiserver -> objectstore "Store/retrieve artifacts and pipeline packages" "S3 API/9000"
-        apiserver -> mlmd "Record and query ML metadata" "gRPC/8080"
-        apiserver -> k8sapi "Submit workflows, RBAC checks, TokenReview" "HTTPS/443"
-        apiserver -> argoworkflows "Submit and monitor pipeline workflows" "K8s API/443"
+        persistenceAgent -> kubernetes "Watch Argo Workflow status" "HTTPS 443"
+        persistenceAgent -> apiServer "Report workflow status and metrics" "HTTP/HTTPS 8888"
 
-        cacheserver -> sqldb "Lookup cache keys" "SQL/3306"
-        persistenceagent -> k8sapi "Watch Argo Workflows" "HTTPS/443"
-        swcontroller -> k8sapi "Watch/create ScheduledWorkflow CRs" "HTTPS/443"
-        swcontroller -> argoworkflows "Create Argo Workflows (V1)" "K8s API/443"
+        scheduledWorkflowController -> kubernetes "Watch ScheduledWorkflow CRs, create Argo Workflows" "HTTPS 443"
 
-        driver -> mlmd "Create/update execution records" "gRPC/8080"
-        driver -> k8sapi "Read ConfigMaps, manage PVCs" "HTTPS/443"
-        launcher -> objectstore "Download/upload artifacts" "S3 API/9000"
-        launcher -> mlmd "Publish execution results" "gRPC/8080"
+        driver -> mlmd "Record execution context and artifacts" "gRPC 8080"
+        driver -> kubernetes "Cache check, create pods, read secrets" "HTTPS 443"
+        driver -> objectStorage "Read/write pipeline artifacts" "S3 API 443"
+        driver -> apiServer "Report status, resolve specs" "gRPC 8887"
 
-        cachedeployer -> certmanager "Request webhook certificates" "K8s API"
-        prometheus -> apiserver "Scrape /metrics" "HTTP/8888"
-        prometheus -> swcontroller "Scrape /metrics" "HTTP/9090"
-        apiserver -> mlflow "Experiment tracking (optional plugin)" "HTTPS/8443"
+        launcher -> mlmd "Record output artifacts" "gRPC 8080"
+        launcher -> objectStorage "Download inputs, upload outputs" "S3 API 443"
+
+        prometheus -> apiServer "Scrape /metrics endpoint" "HTTP 8888"
     }
 
     views {
@@ -73,20 +94,8 @@ workspace {
         }
 
         styles {
-            element "External" {
-                background #999999
-                color #ffffff
-            }
-            element "Internal RHOAI" {
-                background #7ed321
-                color #ffffff
-            }
-            element "Primary" {
-                background #4a90e2
-                color #ffffff
-            }
             element "Person" {
-                shape person
+                shape Person
                 background #08427b
                 color #ffffff
             }
@@ -94,9 +103,31 @@ workspace {
                 background #1168bd
                 color #ffffff
             }
+            element "External" {
+                background #999999
+                color #ffffff
+            }
+            element "External Optional" {
+                background #999999
+                color #ffffff
+                border dashed
+            }
+            element "Internal" {
+                background #7ed321
+                color #ffffff
+            }
             element "Container" {
                 background #438dd5
                 color #ffffff
+            }
+            element "Primary" {
+                background #4a90e2
+            }
+            element "Supporting" {
+                background #85c1e9
+            }
+            element "Runtime" {
+                background #50c878
             }
         }
     }

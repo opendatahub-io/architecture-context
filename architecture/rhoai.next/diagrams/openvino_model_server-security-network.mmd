@@ -1,79 +1,79 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client / Data Scientist"]
+        Client["External Client"]
     end
 
-    subgraph PlatformSecurity["PLATFORM SECURITY LAYER"]
-        KRBAC["kube-rbac-proxy (Sidecar)<br/>8443/TCP HTTPS<br/>TLS 1.2+<br/>AuthN: TokenReview<br/>AuthZ: SubjectAccessReview"]
+    subgraph Ingress["INGRESS (DMZ)<br/>Managed by KServe / RHOAI"]
+        Gateway["Platform Ingress<br/>(Gateway API / kube-rbac-proxy)<br/>443/TCP → rest_port or port/TCP<br/>TLS 1.2+ termination<br/>Platform auth"]
     end
 
-    subgraph OVMSPod["APPLICATION LAYER (OVMS Pod - No Built-in TLS)"]
+    subgraph AppPod["APPLICATION (KServe InferenceService Pod)<br/>UID 5000 (non-root) | No K8s API access"]
         direction TB
 
-        RESTServer["OVMS REST Server (Drogon)<br/>configurable/TCP HTTP (plaintext)<br/>Auth: Optional Bearer Token (/v3/* only)<br/>Endpoints: /v1/*, /v2/*, /v3/*, /metrics"]
-
-        GRPCServer["OVMS gRPC Server<br/>configurable/TCP HTTP/2 (plaintext)<br/>InsecureServerCredentials<br/>Services: TFS Predict, KServe v2 Infer"]
-
-        subgraph InternalProcessing["In-Process (No Network)"]
-            ModelMgr["Model Manager"]
-            OVRuntime["OpenVINO Runtime 2026.1<br/>CPU/GPU/NPU"]
-            OVGenAI["OpenVINO GenAI 2026.1<br/>ContinuousBatchingPipeline"]
-            MediaPipe["MediaPipe Graph Engine"]
+        subgraph HTTPLayer["HTTP Frontend (Drogon)"]
+            HTTPFE["OVMS HTTP Server<br/>rest_port/TCP<br/>HTTP (plaintext)<br/>Bearer Token on /v3/* only"]
         end
+
+        subgraph GRPCLayer["gRPC Frontend"]
+            GRPCFE["OVMS gRPC Server<br/>port/TCP<br/>gRPC (plaintext)<br/>No auth"]
+        end
+
+        subgraph InferenceEngine["Inference Engine (in-process)"]
+            OVRuntime["OpenVINO Runtime 2026.2"]
+            OVGenAI["OpenVINO GenAI 2026.2"]
+            OVTokenizers["OpenVINO Tokenizers 2026.2"]
+        end
+
+        subgraph Pipelines["Pipeline Execution (in-process)"]
+            MPipe["MediaPipe Graphs"]
+            DAG["DAG Pipeline Engine"]
+            PyNode["Python Nodes (pybind11)"]
+        end
+
+        HfPull["HfPullModelModule<br/>(libgit2 / curl)"]
+
+        HTTPFE --> OVRuntime
+        HTTPFE --> MPipe
+        GRPCFE --> OVRuntime
+        MPipe --> OVGenAI
+        MPipe --> OVTokenizers
+        DAG --> OVRuntime
     end
 
-    subgraph CloudStorage["EXTERNAL SERVICES (Egress)"]
-        S3["Amazon S3<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
-        GCS["Google Cloud Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>OAuth 2.0"]
-        Azure["Azure Blob Storage<br/>*.blob.core.windows.net<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SAS / Managed Identity"]
-        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+ (libgit2)<br/>Bearer Token (HF_TOKEN)"]
+    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
+        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS (system CA)<br/>HF Token (Bearer)"]
+        S3["AWS S3<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>TLS<br/>AWS IAM"]
+        GCS["Google Cloud Storage<br/>storage.googleapis.com<br/>443/TCP HTTPS<br/>TLS<br/>ADC"]
+        Azure["Azure Blob Storage<br/>*.blob.core.windows.net<br/>443/TCP HTTPS<br/>TLS<br/>Connection string"]
     end
 
-    subgraph PlatformInternal["INTERNAL PLATFORM SERVICES"]
-        K8sProbes["Kubernetes Kubelet<br/>Liveness/Readiness Probes"]
-        Prometheus["Prometheus<br/>Metrics Scraping"]
-        PVC["PVC / NFS Volume<br/>Filesystem Mount<br/>POSIX Permissions"]
-        KServeRT["KServe ServingRuntime<br/>Container Lifecycle"]
+    subgraph Monitoring["MONITORING"]
+        Prometheus["Prometheus<br/>Scrapes /metrics"]
     end
 
-    %% External → Platform Security
-    Client -->|"HTTPS/8443<br/>TLS 1.2+<br/>K8s RBAC Token"| KRBAC
-
-    %% Platform Security → OVMS (plaintext, pod-internal)
-    KRBAC -->|"HTTP/configurable<br/>Plaintext (pod-local)<br/>AuthN/AuthZ verified"| RESTServer
-    KRBAC -->|"gRPC/configurable<br/>Plaintext (pod-local)<br/>AuthN/AuthZ verified"| GRPCServer
-
-    %% Internal processing
-    RESTServer --> ModelMgr
-    GRPCServer --> ModelMgr
-    ModelMgr --> OVRuntime
-    ModelMgr --> MediaPipe
-    MediaPipe --> OVGenAI
-    OVGenAI --> OVRuntime
-
-    %% Egress to cloud storage
-    ModelMgr -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    ModelMgr -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth 2.0"| GCS
-    ModelMgr -->|"HTTPS/443<br/>TLS 1.2+<br/>SAS/MI"| Azure
-    ModelMgr -->|"HTTPS/443<br/>TLS 1.2+ (libgit2)<br/>Bearer Token"| HFHub
-
-    %% Platform internal
-    K8sProbes -->|"HTTP GET /v2/health/*<br/>Plaintext"| RESTServer
-    Prometheus -->|"HTTP GET /metrics<br/>Plaintext"| RESTServer
-    PVC -.->|"Filesystem mount"| ModelMgr
-    KServeRT -.->|"Container lifecycle"| OVMSPod
+    %% Flows
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Platform auth"| Gateway
+    Gateway -->|"HTTP/rest_port<br/>Plaintext (pod-internal)<br/>No encryption"| HTTPFE
+    Gateway -->|"gRPC/port<br/>Plaintext (pod-internal)<br/>No encryption"| GRPCFE
+    HfPull -->|"HTTPS/443<br/>TLS (libgit2/curl)<br/>HF Token"| HFHub
+    HfPull -->|"HTTPS/443<br/>TLS (AWS SDK)<br/>IAM credentials"| S3
+    HfPull -->|"HTTPS/443<br/>TLS (GCS SDK)<br/>ADC"| GCS
+    HfPull -->|"HTTPS/443<br/>TLS (Azure SDK)<br/>Connection string"| Azure
+    Prometheus -->|"HTTP/rest_port<br/>GET /metrics<br/>No auth"| HTTPFE
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef platformsec fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef app fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:1px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef app fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef platformint fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
+    classDef monitoring fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef runtime fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
     class Client external
-    class KRBAC platformsec
-    class RESTServer,GRPCServer app
-    class ModelMgr,OVRuntime,OVGenAI,MediaPipe internal
-    class S3,GCS,Azure,HFHub externalservice
-    class K8sProbes,Prometheus,PVC,KServeRT platformint
+    class Gateway ingress
+    class HTTPFE,GRPCFE app
+    class OVRuntime,OVGenAI,OVTokenizers runtime
+    class MPipe,DAG,PyNode app
+    class HfPull app
+    class HFHub,S3,GCS,Azure externalservice
+    class Prometheus monitoring

@@ -1,38 +1,52 @@
 sequenceDiagram
-    participant User as Data Scientist<br/>Jupyter Notebook
-    participant SDK as CodeFlare SDK<br/>Cluster / RayJobClient
-    participant KueueAPI as Kueue API<br/>6443/TCP HTTPS
+    participant User as Data Scientist<br/>(Jupyter Notebook)
+    participant SDK as CodeFlare SDK<br/>(Python Client)
     participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
+    participant CFOp as CodeFlare Operator
     participant KubeRay as KubeRay Operator
-    participant RouteAPI as OpenShift Routes API<br/>6443/TCP HTTPS
-    participant RayDash as Ray Dashboard<br/>8265/TCP HTTP/HTTPS
-    participant RayClient as Ray Client Server<br/>10001/TCP mTLS
-    participant SecretsAPI as Kubernetes Secrets<br/>6443/TCP HTTPS
+    participant Kueue as Kueue Controller
+    participant RayHead as Ray Head Pod<br/>8265/TCP Dashboard
+    participant RayWorker as Ray Worker Pods
 
-    Note over User,SecretsAPI: Flow 1: Cluster Creation
+    Note over User,RayWorker: Flow 1: Cluster Creation via AppWrapper
 
-    User->>SDK: ClusterConfiguration(cpu, mem, gpu, ...)
-    SDK->>SDK: generate_yaml(config)<br/>Render base-template.yaml
-    SDK->>KueueAPI: List LocalQueues<br/>Auth: Bearer Token
-    KueueAPI-->>SDK: Default LocalQueue<br/>(queue-name label)
-    SDK->>K8sAPI: Create RayCluster CR<br/>(or AppWrapper CR)<br/>Auth: Bearer Token
-    K8sAPI-->>SDK: 201 Created
-    K8sAPI->>KubeRay: Watch event:<br/>new RayCluster
-    KubeRay->>K8sAPI: Create Ray head + worker Pods<br/>Auth: ServiceAccount
+    User->>SDK: Cluster(ClusterConfiguration(...))
+    SDK->>K8sAPI: GET /apis/kueue.x-k8s.io/v1beta1/localqueues<br/>Auth: Bearer Token
+    K8sAPI-->>SDK: Default LocalQueue name
+    SDK->>SDK: Generate RayCluster YAML from template<br/>Apply CPU/Memory/GPU config
+    SDK->>SDK: Wrap RayCluster in AppWrapper YAML<br/>Add kueue.x-k8s.io/queue-name label
+    SDK->>K8sAPI: POST /apis/workload.codeflare.dev/v1beta2/appwrappers<br/>Auth: Bearer Token
+    K8sAPI-->>SDK: AppWrapper created
+    CFOp->>K8sAPI: Watch AppWrapper CR
+    CFOp->>Kueue: Submit workload for scheduling
+    Kueue-->>CFOp: Workload admitted
+    CFOp->>K8sAPI: Create RayCluster CR
+    KubeRay->>K8sAPI: Watch RayCluster CR
+    KubeRay->>K8sAPI: Create Head Pod + Worker Pods
+    K8sAPI-->>RayHead: Pod scheduled
+    K8sAPI-->>RayWorker: Pods scheduled
 
-    Note over User,SecretsAPI: Flow 2: Job Submission
+    Note over User,RayWorker: Flow 2: Ray Job Submission
 
-    User->>SDK: RayJobClient.submit_job(entrypoint)
-    SDK->>RouteAPI: GET Routes<br/>(discover dashboard URL)<br/>Auth: Bearer Token
-    RouteAPI-->>SDK: ray-dashboard-{name} Route
-    SDK->>RayDash: POST /api/jobs/<br/>Auth: Bearer Token (OpenShift)
-    RayDash-->>SDK: Job ID + Status
+    User->>SDK: RayJobClient(cluster)
+    SDK->>K8sAPI: GET /apis/route.openshift.io/v1/routes<br/>Auth: Bearer Token
+    K8sAPI-->>SDK: Ray dashboard Route URL
+    SDK->>RayHead: POST /api/jobs/<br/>8265/TCP via Route (HTTPS)<br/>Auth: Bearer Token
+    RayHead-->>SDK: Job ID
+    loop Poll job status
+        SDK->>RayHead: GET /api/jobs/{id}<br/>8265/TCP via Route (HTTPS)
+        RayHead-->>SDK: Job status (PENDING/RUNNING/SUCCEEDED/FAILED)
+    end
+    SDK->>RayHead: GET /api/jobs/{id}/logs<br/>8265/TCP via Route (HTTPS)
+    RayHead-->>SDK: Job logs
+    SDK-->>User: Job results + logs
 
-    Note over User,SecretsAPI: Flow 3: TLS Certificate Generation
+    Note over User,RayWorker: Flow 3: TLS Certificate Generation for Ray Client
 
-    User->>SDK: generate_tls_cert(cluster_name, ns)
-    SDK->>SecretsAPI: GET Secret {name}-ca-secret<br/>Auth: Bearer Token
-    SecretsAPI-->>SDK: ca.key + ca.crt
-    SDK->>SDK: Generate client cert<br/>(RSA 2048, SHA-256)
-    SDK-->>User: TLS certs written to<br/>tls-{cluster}-{ns}/
-    User->>RayClient: ray://... connect<br/>mTLS with client cert
+    User->>SDK: generate_cert(cluster_name, namespace)
+    SDK->>K8sAPI: GET /api/v1/secrets/{cluster}-ca-secret-{suffix}<br/>Auth: Bearer Token
+    K8sAPI-->>SDK: CA cert + key (ca.crt, ca.key)
+    SDK->>SDK: Generate RSA-2048 client key<br/>Create X.509 cert signed by cluster CA<br/>SHA256 signing, SAN: localhost, 127.0.0.1
+    SDK->>SDK: Write certs to tls-{name}-{ns}/ directory<br/>Set RAY_TLS_* environment variables
+    User->>RayHead: ray:// connect<br/>10001/TCP via Route (gRPC/TLS)<br/>Auth: mTLS client certificate
+    RayHead-->>User: Interactive Ray session

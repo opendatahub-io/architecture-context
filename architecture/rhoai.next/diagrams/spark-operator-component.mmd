@@ -1,71 +1,92 @@
 graph TB
-    subgraph SparkOperator["Spark Operator (v2.3.0)"]
+    subgraph SparkOperator["Spark Operator (spark-operator binary)"]
         direction TB
 
-        subgraph ControllerDeploy["Controller Deployment"]
-            Controller["spark-operator-controller<br/>Go Operator (controller-runtime)<br/>Watches CRs, manages Spark lifecycle"]
-            SparkSubmit["spark-submit<br/>(local exec in controller pod)"]
-            Controller -->|"executes"| SparkSubmit
+        subgraph ControllerPlane["Controller Deployment"]
+            Controller["spark-operator controller<br/>Go Operator (controller-runtime)<br/>Port: 8080/TCP metrics, 8081/TCP probes"]
+            SAController["SparkApplication Controller<br/>17-state state machine"]
+            SSAController["ScheduledSparkApplication Controller<br/>Cron-based scheduling"]
+            SCController["SparkConnect Controller<br/>gRPC server provisioning"]
+            CertController["Certificate Controller<br/>Self-signed cert rotation"]
+            Controller --> SAController
+            Controller --> SSAController
+            Controller --> SCController
+            Controller --> CertController
         end
 
-        subgraph WebhookDeploy["Webhook Deployment"]
-            Webhook["spark-operator-webhook<br/>Admission Webhook Server<br/>9443/TCP HTTPS"]
-            MutatingPod["Pod Mutator<br/>(22 mutation steps)"]
-            MutatingSA["SparkApplication<br/>Defaulter"]
-            MutatingSSA["ScheduledSparkApp<br/>Defaulter"]
-            ValidatingSA["SparkApplication<br/>Validator"]
-            ValidatingSSA["ScheduledSparkApp<br/>Validator"]
-            CertProvider["Certificate Provider<br/>(self-signed TLS)"]
-            Webhook --> MutatingPod
-            Webhook --> MutatingSA
-            Webhook --> MutatingSSA
-            Webhook --> ValidatingSA
-            Webhook --> ValidatingSSA
-            Webhook --> CertProvider
+        subgraph WebhookPlane["Webhook Deployment"]
+            Webhook["spark-operator webhook<br/>Port: 9443/TCP (TLS)"]
+            MutatingWH["Mutating Webhooks<br/>Pod, SparkApp, ScheduledSparkApp, SparkConnect"]
+            ValidatingWH["Validating Webhooks<br/>SparkApp, ScheduledSparkApp, SparkConnect"]
+            Webhook --> MutatingWH
+            Webhook --> ValidatingWH
         end
     end
 
+    subgraph ModuleController["Spark Operator Module"]
+        Module["spark-operator-module<br/>ODH Platform Module Controller<br/>Manages SparkOperatorModule CRD"]
+    end
+
     %% CRDs
-    User["User / Data Scientist"] -->|"kubectl apply"| SparkAppCR["SparkApplication CR<br/>(v1beta2)"]
-    User -->|"kubectl apply"| ScheduledCR["ScheduledSparkApplication CR<br/>(v1beta2)"]
-    User -->|"kubectl apply"| SparkConnectCR["SparkConnect CR<br/>(v1alpha1)"]
+    SparkAppCR["SparkApplication CR<br/>sparkoperator.k8s.io/v1beta2"]
+    ScheduledCR["ScheduledSparkApplication CR<br/>sparkoperator.k8s.io/v1beta2"]
+    SparkConnectCR["SparkConnect CR<br/>sparkoperator.k8s.io/v1alpha1"]
 
-    %% Controller watches CRDs
-    SparkAppCR -->|"watched by"| Controller
-    ScheduledCR -->|"watched by"| Controller
-    SparkConnectCR -->|"watched by"| Controller
+    %% Managed Resources
+    DriverPod["Driver Pod<br/>spark-submit execution"]
+    ExecutorPods["Executor Pods<br/>Spark workers"]
+    DriverSvc["Driver Service<br/>4040/TCP Spark UI"]
+    Ingress["Ingress<br/>Optional external UI access"]
+    PDB["PodDisruptionBudget<br/>Driver protection"]
+    MonitoringCM["Monitoring ConfigMap<br/>JMX exporter config"]
+    NetworkPol["NetworkPolicy<br/>RHOAI only"]
+    ConnectSvc["SparkConnect Service<br/>15002/TCP gRPC"]
 
-    %% Controller creates resources
-    Controller -->|"creates"| DriverPod["Spark Driver Pod<br/>7078/TCP, 7079/TCP"]
-    DriverPod -->|"creates"| ExecutorPods["Spark Executor Pods<br/>7078/TCP, 7079/TCP"]
-    Controller -->|"creates"| SparkUISvc["Spark UI Service<br/>4040/TCP"]
-    Controller -->|"creates"| SparkConnectSvc["SparkConnect Service<br/>15002/TCP gRPC"]
-    Controller -->|"creates (optional)"| SparkIngress["Ingress<br/>(optional, per app)"]
+    %% User interaction
+    User["User / Data Scientist"] -->|"kubectl create"| SparkAppCR
+    User -->|"kubectl create"| ScheduledCR
+    User -->|"kubectl create"| SparkConnectCR
+
+    %% Controller watches
+    SparkAppCR -->|"watched by"| SAController
+    ScheduledCR -->|"watched by"| SSAController
+    SparkConnectCR -->|"watched by"| SCController
+
+    %% Controller creates
+    SAController -->|"creates"| DriverPod
+    SAController -->|"creates"| DriverSvc
+    SAController -->|"creates"| Ingress
+    SAController -->|"creates"| PDB
+    SAController -->|"creates"| MonitoringCM
+    SAController -->|"creates"| NetworkPol
+    DriverPod -->|"spawns"| ExecutorPods
+    SCController -->|"creates"| ConnectSvc
 
     %% Webhook intercepts
-    K8sAPI["Kubernetes API Server"] -->|"admission review<br/>9443/TCP HTTPS"| Webhook
-    Webhook -->|"mutated/validated"| K8sAPI
+    SparkAppCR -.->|"admission"| Webhook
+    ScheduledCR -.->|"admission"| Webhook
+    SparkConnectCR -.->|"admission"| Webhook
+    DriverPod -.->|"pod mutation"| MutatingWH
 
-    %% External interactions
-    Controller -->|"443/TCP HTTPS"| K8sAPI
-    Webhook -->|"reads TLS profile"| OpenShiftAPI["OpenShift APIServer CR<br/>config.openshift.io"]
-
-    %% Workbench access
-    Workbench["ODH/RHOAI Workbench"] -->|"15002/TCP gRPC"| SparkConnectSvc
-    Browser["Browser"] -->|"4040/TCP HTTP"| SparkUISvc
+    %% External dependencies
+    K8sAPI["Kubernetes API Server"]
+    Controller -->|"reconciles via"| K8sAPI
+    Webhook -->|"ResourceQuota check"| K8sAPI
 
     %% Styling
-    style Controller fill:#4a90e2,stroke:#333,color:#fff
-    style Webhook fill:#4a90e2,stroke:#333,color:#fff
-    style SparkAppCR fill:#f5a623,stroke:#333
-    style ScheduledCR fill:#f5a623,stroke:#333
-    style SparkConnectCR fill:#f5a623,stroke:#333
-    style DriverPod fill:#7ed321,stroke:#333
-    style ExecutorPods fill:#7ed321,stroke:#333
-    style SparkUISvc fill:#b8e986,stroke:#333
-    style SparkConnectSvc fill:#b8e986,stroke:#333
-    style K8sAPI fill:#e8e8e8,stroke:#333
-    style OpenShiftAPI fill:#e8e8e8,stroke:#333
-    style User fill:#fff,stroke:#333
-    style Workbench fill:#fff,stroke:#333
-    style Browser fill:#fff,stroke:#333
+    style Controller fill:#4a90e2,color:#fff
+    style Webhook fill:#4a90e2,color:#fff
+    style Module fill:#4a90e2,color:#fff
+    style SparkAppCR fill:#f5a623,color:#fff
+    style ScheduledCR fill:#f5a623,color:#fff
+    style SparkConnectCR fill:#f5a623,color:#fff
+    style DriverPod fill:#7ed321,color:#fff
+    style ExecutorPods fill:#7ed321,color:#fff
+    style DriverSvc fill:#b8e986
+    style ConnectSvc fill:#b8e986
+    style Ingress fill:#b8e986
+    style PDB fill:#b8e986
+    style MonitoringCM fill:#b8e986
+    style NetworkPol fill:#b8e986
+    style K8sAPI fill:#e8e8e8
+    style User fill:#d0d0d0
