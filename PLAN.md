@@ -19,6 +19,22 @@ None yet.
 ## Decisions
 
 - [ADR-0001: Architecture Diagram Proposal](docs/decisions/ADR-0001-architecture-diagram-proposal.md)
+- [ADR-0002: Skills-First MVP](docs/decisions/ADR-0002-skills-first-mvp.md)
+- [ADR-0003: Python Orchestrator Pipeline](docs/decisions/ADR-0003-python-orchestrator.md)
+- [ADR-0004: Kustomize Overlay Context Injection](docs/decisions/ADR-0004-kustomize-overlay-context.md)
+- [ADR-0005: Architecture Context Overlays](docs/decisions/ADR-0005-architecture-context-overlays.md)
+- [ADR-0006: platforms.yaml Configuration](docs/decisions/ADR-0006-platforms-yaml.md)
+- [ADR-0007: component-map.json Intermediate Artifact](docs/decisions/ADR-0007-component-map-json.md)
+- [ADR-0008: Pure Skill Invocation](docs/decisions/ADR-0008-pure-skill-invocation.md)
+- [ADR-0009: Sub-Agent Dispatch](docs/decisions/ADR-0009-sub-agent-dispatch.md)
+- [ADR-0010: arch-query Go CLI](docs/decisions/ADR-0010-arch-query-go-cli.md)
+- [ADR-0011: rhoai.next Rolling Target](docs/decisions/ADR-0011-rhoai-next-rolling-target.md)
+- [ADR-0012: Linting and CI](docs/decisions/ADR-0012-linting-and-ci.md)
+- [ADR-0013: Webhook Inventory Phase](docs/decisions/ADR-0013-webhook-inventory-phase.md)
+- [ADR-0014: Declarative exclude_files](docs/decisions/ADR-0014-exclude-files.md)
+- [ADR-0015: Build Metadata Extraction](docs/decisions/ADR-0015-build-metadata-extraction.md)
+- [ADR-0016: Image and Repo Provenance](docs/decisions/ADR-0016-image-and-repo-provenance.md)
+
 ## Notes
 
 - [Agentic Work Ledger spec](docs/notes/agentic_work_ledger.md)
